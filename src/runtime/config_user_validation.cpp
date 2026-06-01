@@ -22,17 +22,38 @@
 #include "dsd-neo/core/safe_api.h"
 
 static int
-validate_bool_value(const char* val) {
-    if (!val || !*val) {
+parse_bool_value(const char* val, int* out) {
+    if (!val || !*val || !out) {
         return -1;
     }
     if (dsd_strcasecmp(val, "1") == 0 || dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0
-        || dsd_strcasecmp(val, "on") == 0 || dsd_strcasecmp(val, "0") == 0 || dsd_strcasecmp(val, "false") == 0
-        || dsd_strcasecmp(val, "no") == 0 || dsd_strcasecmp(val, "off") == 0) {
+        || dsd_strcasecmp(val, "on") == 0) {
+        *out = 1;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "0") == 0 || dsd_strcasecmp(val, "false") == 0 || dsd_strcasecmp(val, "no") == 0
+        || dsd_strcasecmp(val, "off") == 0) {
+        *out = 0;
         return 0;
     }
     return -1;
 }
+
+static int
+validate_bool_value(const char* val) {
+    int parsed = 0;
+    return parse_bool_value(val, &parsed);
+}
+
+namespace {
+typedef struct {
+    int trunk_scan_enabled_true;
+    int trunk_scan_enabled_line;
+    int trunk_scan_targets_csv_seen;
+    int trunk_scan_targets_csv_nonempty;
+    int trunk_scan_targets_csv_line;
+} dsd_config_cross_fields_t;
+} // namespace
 
 static int
 validate_int_value(const char* val, int* out_val) {
@@ -277,8 +298,42 @@ validate_profile_key_value(char* key, const char* val, dsdcfg_diagnostics_t* dia
 }
 
 static void
+note_trunk_scan_cross_field(const char* key_lc, const char* val, int line_num, dsd_config_cross_fields_t* cross) {
+    if (!key_lc || !val || !cross) {
+        return;
+    }
+
+    if (strcmp(key_lc, "enabled") == 0) {
+        int enabled = 0;
+        if (parse_bool_value(val, &enabled) == 0) {
+            cross->trunk_scan_enabled_true = enabled ? 1 : 0;
+            cross->trunk_scan_enabled_line = line_num;
+        }
+        return;
+    }
+
+    if (strcmp(key_lc, "targets_csv") == 0) {
+        cross->trunk_scan_targets_csv_seen = 1;
+        cross->trunk_scan_targets_csv_nonempty = val[0] != '\0';
+        cross->trunk_scan_targets_csv_line = line_num;
+    }
+}
+
+static void
+validate_cross_fields(const dsd_config_cross_fields_t* cross, dsdcfg_diagnostics_t* diags) {
+    if (!cross || !diags || !cross->trunk_scan_enabled_true || cross->trunk_scan_targets_csv_nonempty) {
+        return;
+    }
+
+    const int line_num =
+        cross->trunk_scan_targets_csv_seen ? cross->trunk_scan_targets_csv_line : cross->trunk_scan_enabled_line;
+    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, "trunk_scan", "targets_csv",
+                     "targets_csv is required when trunk_scan.enabled is true");
+}
+
+static void
 validate_section_key_value(char* key, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
-                           const char* current_section) {
+                           const char* current_section, dsd_config_cross_fields_t* cross) {
     if (!key || !val || !diags || !current_section) {
         return;
     }
@@ -300,11 +355,14 @@ validate_section_key_value(char* key, const char* val, dsdcfg_diagnostics_t* dia
     }
 
     validate_entry_value(entry, current_section, key, val, diags, line_num, current_section, key);
+    if (dsd_strcasecmp(current_section, "trunk_scan") == 0) {
+        note_trunk_scan_cross_field(key_lc.c_str(), val, line_num, cross);
+    }
 }
 
 static void
 validate_config_line(char* p, int line_num, const char* current_section, int is_profile_section,
-                     dsdcfg_diagnostics_t* diags) {
+                     dsdcfg_diagnostics_t* diags, dsd_config_cross_fields_t* cross) {
     if (!p || !current_section || !diags) {
         return;
     }
@@ -329,7 +387,7 @@ validate_config_line(char* p, int line_num, const char* current_section, int is_
         validate_profile_key_value(key, val, diags, line_num, current_section);
         return;
     }
-    validate_section_key_value(key, val, diags, line_num, current_section);
+    validate_section_key_value(key, val, diags, line_num, current_section, cross);
 }
 
 int
@@ -355,6 +413,8 @@ dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
     current_section[0] = '\0';
     int line_num = 0;
     int is_profile_section = 0;
+    dsd_config_cross_fields_t cross;
+    DSD_MEMSET(&cross, 0, sizeof(cross));
 
     while (fgets(line, sizeof line, stream)) {
         line_num++;
@@ -370,9 +430,10 @@ dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
             continue;
         }
 
-        validate_config_line(p, line_num, current_section, is_profile_section, diags);
+        validate_config_line(p, line_num, current_section, is_profile_section, diags, &cross);
     }
 
+    validate_cross_fields(&cross, diags);
     return diags->error_count > 0 ? -1 : 0;
 }
 

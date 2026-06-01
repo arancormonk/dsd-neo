@@ -86,6 +86,10 @@ typedef struct {
     int lcn_freq_roll;
     int is_con_plus;
     int has_cc_candidates;
+    unsigned int dmr_fid;
+    unsigned int dmr_so;
+    unsigned int dmr_fidR;
+    unsigned int dmr_soR;
     char dmr_site_parms[200];
     char dmr_branding[20];
     char dmr_branding_sub[80];
@@ -277,7 +281,16 @@ static int
 scan_split_row(char* line, char* fields[7]) {
     char* p = line;
     for (int i = 0; i < 6; i++) {
-        char* comma = strchr(p, ',');
+        char* comma = NULL;
+        int in_quote = 0;
+        for (char* q = p; *q; q++) {
+            if (*q == '"') {
+                in_quote = !in_quote;
+            } else if (*q == ',' && !in_quote) {
+                comma = q;
+                break;
+            }
+        }
         if (!comma) {
             return -1;
         }
@@ -588,6 +601,10 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     snapshot->p25_cc_eval_start_m = state->p25_cc_eval_start_m;
     snapshot->p25_cc_cache_loaded = state->p25_cc_cache_loaded;
     snapshot->dmr_mfid = state->dmr_mfid;
+    snapshot->dmr_fid = state->dmr_fid;
+    snapshot->dmr_so = state->dmr_so;
+    snapshot->dmr_fidR = state->dmr_fidR;
+    snapshot->dmr_soR = state->dmr_soR;
     trunk_scan_save_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->dmr_branding, state->dmr_branding, sizeof(snapshot->dmr_branding));
     DSD_MEMCPY(snapshot->dmr_branding_sub, state->dmr_branding_sub, sizeof(snapshot->dmr_branding_sub));
@@ -682,6 +699,10 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->p25_cc_eval_start_m = snapshot->p25_cc_eval_start_m;
     state->p25_cc_cache_loaded = snapshot->p25_cc_cache_loaded;
     state->dmr_mfid = snapshot->dmr_mfid;
+    state->dmr_fid = snapshot->dmr_fid;
+    state->dmr_so = snapshot->dmr_so;
+    state->dmr_fidR = snapshot->dmr_fidR;
+    state->dmr_soR = snapshot->dmr_soR;
     trunk_scan_restore_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(state->dmr_branding, snapshot->dmr_branding, sizeof(state->dmr_branding));
     DSD_MEMCPY(state->dmr_branding_sub, snapshot->dmr_branding_sub, sizeof(state->dmr_branding_sub));

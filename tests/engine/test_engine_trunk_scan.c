@@ -326,6 +326,45 @@ test_parser_valid_mixed_targets_and_relative_chan_csv(void) {
 }
 
 static int
+test_parser_accepts_quoted_chan_csv_with_comma(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char chan_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "site,1.csv") != 0
+        || write_text_file(chan_path, "channel,frequency\n1,851012500\n") != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    if (write_targets_file(dir, "p25,p25-trunk,851000000,\"site,1.csv\",,,quoted path\n", target_path,
+                           sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    dsd_trunk_scan_target_list list;
+    char err[256] = {0};
+    int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+
+    int test_rc = 0;
+    if (rc != 0 || list.count != 1 || strstr(list.targets[0].chan_csv, "site,1.csv") == NULL) {
+        DSD_FPRINTF(stderr, "quoted chan_csv parse rc=%d count=%zu path='%s' err=%s\n", rc, list.count,
+                    rc == 0 ? list.targets[0].chan_csv : "", err);
+        test_rc = 1;
+    }
+
+    cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
+static int
 expect_parser_rejects(const char* name, const char* body) {
     char dir[DSD_TEST_PATH_MAX];
     if (make_temp_dir(dir, sizeof dir) != 0) {
@@ -773,6 +812,75 @@ test_dmr_confidence_state_isolated_per_target(void) {
         test_rc = 1;
     }
     test_rc |= expect_dmr_confidence("restored target", &state, 3, 1);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static void
+seed_dmr_service_options(dsd_state* state, unsigned int fid, unsigned int so, unsigned int fidR, unsigned int soR) {
+    state->dmr_fid = fid;
+    state->dmr_so = so;
+    state->dmr_fidR = fidR;
+    state->dmr_soR = soR;
+}
+
+static int
+expect_dmr_service_options(const char* label, const dsd_state* state, unsigned int fid, unsigned int so,
+                           unsigned int fidR, unsigned int soR) {
+    if (state->dmr_fid != fid || state->dmr_so != so || state->dmr_fidR != fidR || state->dmr_soR != soR) {
+        DSD_FPRINTF(stderr, "%s DMR service options mismatch fid=%u so=%u fidR=%u soR=%u\n", label, state->dmr_fid,
+                    state->dmr_so, state->dmr_fidR, state->dmr_soR);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_dmr_service_options_state_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("cap,dmr-trunk,451000000,,250,,\n"
+                             "xpt,dmr-trunk,452000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr service option scan init failed rc=%d active=%zu err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), err);
+        test_rc = 1;
+    }
+
+    seed_dmr_service_options(&state, 0x10U, 0x40U, 0x68U, 0x41U);
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "dmr service option scan did not rotate to second target\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_dmr_service_options("fresh target", &state, 0U, 0U, 0U, 0U);
+
+    seed_dmr_service_options(&state, 0x22U, 0x02U, 0x33U, 0x03U);
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr service option scan did not rotate back to first target\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_dmr_service_options("restored target", &state, 0x10U, 0x40U, 0x68U, 0x41U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     dsd_engine_trunk_scan_test_clear_now();
@@ -1877,11 +1985,13 @@ int
 main(void) {
     int rc = 0;
     rc |= test_parser_valid_mixed_targets_and_relative_chan_csv();
+    rc |= test_parser_accepts_quoted_chan_csv_with_comma();
     rc |= test_parser_rejects_invalid_inputs();
     rc |= test_parser_rejects_too_many_targets();
     rc |= test_coordinator_idle_rotation_and_state_restore();
     rc |= test_dmr_branding_state_isolated_per_target();
     rc |= test_dmr_confidence_state_isolated_per_target();
+    rc |= test_dmr_service_options_state_isolated_per_target();
     rc |= test_p25_targets_seed_valid_control_channel_timing();
     rc |= test_mixed_target_switch_resets_dmr_demod_profile();
     rc |= test_conventional_activity_hold_and_allowlist_block();

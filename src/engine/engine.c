@@ -1376,7 +1376,7 @@ no_carrier_close_mbe_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-no_carrier_reset_decode_state(dsd_state* state) {
+no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
     state->jitter = -1;
     state->lastsynctype = DSD_SYNC_NONE;
     state->carrier = 0;
@@ -1390,7 +1390,9 @@ no_carrier_reset_decode_state(dsd_state* state) {
     set_spaces(state->ftype, 13);
     state->errs = 0;
     state->errs2 = 0;
-    dmr_confidence_reset(state);
+    if (!preserve_dmr_confidence) {
+        dmr_confidence_reset(state);
+    }
 }
 
 static void
@@ -1582,7 +1584,7 @@ no_carrier_reset_dmr_misc_state(dsd_state* state) {
 }
 
 static void
-no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
+no_carrier_reset_p25_metrics(dsd_state* state) {
     state->p25_p1_fec_ok = 0;
     state->p25_p1_fec_err = 0;
     state->p25_p1_voice_fec_ok = 0;
@@ -1596,13 +1598,22 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
     state->p25_p2_rs_ess_ok = 0;
     state->p25_p2_rs_ess_err = 0;
     state->p25_p2_rs_ess_corr = 0;
+}
 
+static void
+no_carrier_reset_p25_cc_cache(dsd_state* state) {
     dsd_trunk_cc_candidates* cc_candidates = dsd_trunk_cc_candidates_get(state);
     if (cc_candidates) {
         cc_candidates->count = 0;
         cc_candidates->idx = 0;
     }
     state->p25_cc_cache_loaded = 0;
+}
+
+static void
+no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
+    no_carrier_reset_p25_metrics(state);
+    no_carrier_reset_p25_cc_cache(state);
 }
 
 static void
@@ -1731,7 +1742,8 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
-    no_carrier_reset_decode_state(state);
+    const int preserve_scan_state = opts && opts->trunk_scan_enabled == 1;
+    no_carrier_reset_decode_state(state, preserve_scan_state);
     no_carrier_reset_non_trunk_fields_if_needed(opts, state);
     no_carrier_reset_last_call_display(state);
     no_carrier_reset_voice_and_audio_metrics(state);
@@ -1740,7 +1752,11 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     no_carrier_reset_nxdn_alias_state(state);
     no_carrier_unload_keys_if_needed(state);
     no_carrier_reset_dmr_misc_state(state);
-    no_carrier_reset_p25_metrics_and_cache(state);
+    if (preserve_scan_state) {
+        no_carrier_reset_p25_metrics(state);
+    } else {
+        no_carrier_reset_p25_metrics_and_cache(state);
+    }
     no_carrier_reset_call_strings_and_dpmr(opts, state);
     no_carrier_clear_stale_follow_state_if_needed(opts, state, now);
     no_carrier_reset_ysf_and_dstar_strings(state);

@@ -97,6 +97,46 @@ test_valid_config(void) {
 }
 
 static int
+test_trunk_scan_enabled_requires_targets_csv(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[trunk_scan]\n"
+                             "enabled = true\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+
+    int rc = dsd_user_config_validate(path, &diags);
+
+    int result = 0;
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "FAIL: trunk_scan enabled without targets_csv should cause error\n");
+        result = 1;
+    }
+    int found_error = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (diags.items[i].level == DSDCFG_DIAG_ERROR && strcmp(diags.items[i].section, "trunk_scan") == 0
+            && strcmp(diags.items[i].key, "targets_csv") == 0 && strstr(diags.items[i].message, "required")) {
+            found_error = 1;
+            break;
+        }
+    }
+    if (!found_error) {
+        DSD_FPRINTF(stderr, "FAIL: missing trunk_scan targets_csv diagnostic\n");
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_unknown_key_warning(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -658,6 +698,7 @@ main(void) {
     int rc = 0;
 
     rc |= test_valid_config();
+    rc |= test_trunk_scan_enabled_requires_targets_csv();
     rc |= test_unknown_key_warning();
     rc |= test_unknown_section_warning();
     rc |= test_invalid_enum_error();

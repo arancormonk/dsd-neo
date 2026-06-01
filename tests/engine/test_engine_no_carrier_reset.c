@@ -11,6 +11,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -151,6 +152,38 @@ main(void) {
 
     rc |= expect_true("p25-stale-vc-clears-tuned", opts->p25_is_tuned == 0);
     rc |= expect_true("p25-stale-vc-clears-freq", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
+
+    opts->trunk_scan_enabled = 1;
+    state->dmr_color_code = 5;
+    state->dmr_confidence_locked = 1;
+    state->dmr_confidence_color_code = 5;
+    state->dmr_confidence_candidate_cc = 5;
+    state->dmr_confidence_candidate_count = 2;
+    state->dmr_confidence_voice_sync_seen[0] = 1;
+    state->p25_cc_cache_loaded = 1;
+    state->p25_p1_fec_ok = 7;
+    dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_get(state);
+    if (cc == NULL) {
+        DSD_FPRINTF(stderr, "alloc-failed: cc-candidates\n");
+        rc = 1;
+    } else {
+        cc->count = 2;
+        cc->idx = 1;
+        cc->candidates[0] = 851012500L;
+        cc->candidates[1] = 852012500L;
+    }
+
+    noCarrier(opts, state);
+
+    rc |=
+        expect_true("trunk-scan-preserves-dmr-confidence",
+                    state->dmr_color_code == 5 && state->dmr_confidence_locked == 1
+                        && state->dmr_confidence_color_code == 5 && state->dmr_confidence_candidate_cc == 5
+                        && state->dmr_confidence_candidate_count == 2 && state->dmr_confidence_voice_sync_seen[0] == 1);
+    rc |= expect_true("trunk-scan-preserves-p25-cache", state->p25_cc_cache_loaded == 1 && cc != NULL && cc->count == 2
+                                                            && cc->idx == 1 && cc->candidates[0] == 851012500L
+                                                            && cc->candidates[1] == 852012500L);
+    rc |= expect_true("trunk-scan-still-resets-p25-metrics", state->p25_p1_fec_ok == 0);
 
 #ifdef USE_RADIO
     dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_rtl_fsk_output_kind};
