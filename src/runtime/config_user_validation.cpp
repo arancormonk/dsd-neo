@@ -359,8 +359,19 @@ validate_composed_trunk_scan_requirements(const dsdneoUserConfig* cfg, const cha
 }
 
 static void
+validate_composed_trunk_scan_channel_map_conflict(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                                  dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !cfg->trunk_scan_enabled || cfg->trunk_chan_csv[0] == '\0') {
+        return;
+    }
+    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "trunking", key ? key : "chan_csv",
+                     "trunking.chan_csv cannot be combined with trunk_scan.enabled; use per-target chan_csv values");
+}
+
+static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
     validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
+    validate_composed_trunk_scan_channel_map_conflict(cfg, "trunking", "chan_csv", diags);
 }
 
 static void
@@ -369,6 +380,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     DSD_SNPRINTF(section, sizeof section, "profile.%s", profile_name ? profile_name : "");
     section[sizeof section - 1] = '\0';
     validate_composed_trunk_scan_requirements(cfg, section, "trunk_scan.targets_csv", diags);
+    validate_composed_trunk_scan_channel_map_conflict(cfg, section, "trunking.chan_csv", diags);
 }
 
 static void

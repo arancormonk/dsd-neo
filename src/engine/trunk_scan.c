@@ -97,6 +97,7 @@ typedef struct {
     unsigned int dmr_so;
     unsigned int dmr_fidR;
     unsigned int dmr_soR;
+    unsigned int dmr_t3_syscode;
     char dmr_site_parms[200];
     char dmr_branding[20];
     char dmr_branding_sub[80];
@@ -612,6 +613,7 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     snapshot->dmr_so = state->dmr_so;
     snapshot->dmr_fidR = state->dmr_fidR;
     snapshot->dmr_soR = state->dmr_soR;
+    snapshot->dmr_t3_syscode = state->dmr_t3_syscode;
     trunk_scan_save_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->dmr_branding, state->dmr_branding, sizeof(snapshot->dmr_branding));
     DSD_MEMCPY(snapshot->dmr_branding_sub, state->dmr_branding_sub, sizeof(snapshot->dmr_branding_sub));
@@ -710,6 +712,7 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->dmr_so = snapshot->dmr_so;
     state->dmr_fidR = snapshot->dmr_fidR;
     state->dmr_soR = snapshot->dmr_soR;
+    state->dmr_t3_syscode = snapshot->dmr_t3_syscode;
     trunk_scan_restore_dmr_confidence_snapshot(state, snapshot);
     DSD_MEMCPY(state->dmr_branding, snapshot->dmr_branding, sizeof(state->dmr_branding));
     DSD_MEMCPY(state->dmr_branding_sub, snapshot->dmr_branding_sub, sizeof(state->dmr_branding_sub));
@@ -842,6 +845,9 @@ trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_
         int p25_sps = trunk_scan_p25_cc_sps(opts, state);
         state->samplesPerSymbol = p25_sps;
         state->symbolCenter = dsd_opts_symbol_center(p25_sps);
+        if (!opts->mod_cli_lock) {
+            state->rf_mod = 0;
+        }
         return;
     }
     if (!trunk_scan_target_is_dmr(target)) {

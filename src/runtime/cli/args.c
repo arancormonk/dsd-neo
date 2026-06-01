@@ -42,7 +42,8 @@
 #endif
 
 // Local helpers --------------------------------------------------------------
-static int dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc);
+static int dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc,
+                                int* out_chan_csv_cli_seen);
 extern int optind;
 extern char* optarg;
 
@@ -217,6 +218,50 @@ cli_parse_decimal_u64(const char* in, uint64_t* out) {
     }
     *out = (uint64_t)v;
     return 1;
+}
+
+static int
+cli_has_validate_config_arg(int argc, char** argv) {
+    if (argc <= 1 || !argv) {
+        return 0;
+    }
+    for (int i = 1; i < argc; i++) {
+        const char* arg = argv[i];
+        if (!arg) {
+            break;
+        }
+        if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, int chan_csv_cli_seen,
+                                     int validate_config_cli_seen, int* out_exit_rc) {
+    if (!opts || !opts->trunk_scan_enabled || validate_config_cli_seen) {
+        return DSD_PARSE_CONTINUE;
+    }
+    if (opts->scanner_mode == 1) {
+        LOG_ERROR("--trunk-scan cannot be combined with -Y scanner mode\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
+    if (trunk_scan_cli_seen && !chan_csv_cli_seen) {
+        opts->chan_in_file[0] = '\0';
+    }
+    if (opts->chan_in_file[0] != '\0') {
+        LOG_ERROR("--trunk-scan cannot be combined with global -C/channel-map config; use per-target chan_csv\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
+    if (opts->trunk_scan_targets_csv[0] == '\0') {
+        LOG_ERROR("--trunk-scan requires a target CSV path\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
+    return DSD_PARSE_CONTINUE;
 }
 
 static int
@@ -721,6 +766,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
                          DSD_PARSE_ARGS_NEXT_ARG());                                                                   \
             opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';                              \
             opts->trunk_scan_enabled = 1;                                                                              \
+            trunk_scan_cli_seen = 1;                                                                                   \
             opts->trunk_cli_seen = 1;                                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -728,6 +774,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", argv[i] + 13);       \
             opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';                              \
             opts->trunk_scan_enabled = 1;                                                                              \
+            trunk_scan_cli_seen = 1;                                                                                   \
             opts->trunk_cli_seen = 1;                                                                                  \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1355,6 +1402,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int rtl_udp_control_cli_seen = 0;
     unsigned long rtl_udp_control_cli_port = 0;
     const char* rtl_udp_control_cli_bindaddr = NULL;
+    int trunk_scan_cli_seen = 0;
+    int chan_csv_cli_seen = 0;
+    int validate_config_cli_seen = cli_has_validate_config_arg(argc, argv);
 
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();
@@ -1384,23 +1434,10 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     optreset = 1;
 #endif
 
-    int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc);
-    if (parse_rc == DSD_PARSE_CONTINUE && opts->trunk_scan_enabled) {
-        if (opts->scanner_mode == 1) {
-            LOG_ERROR("--trunk-scan cannot be combined with -Y scanner mode\n");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        if (opts->chan_in_file[0] != '\0') {
-            LOG_ERROR("--trunk-scan cannot be combined with global -C/channel-map config; use per-target chan_csv\n");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
-        if (opts->trunk_scan_targets_csv[0] == '\0') {
-            LOG_ERROR("--trunk-scan requires a target CSV path\n");
-            cli_set_exit_rc(out_exit_rc, 1);
-            return DSD_PARSE_ERROR;
-        }
+    int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc, &chan_csv_cli_seen);
+    if (parse_rc == DSD_PARSE_CONTINUE) {
+        parse_rc = cli_validate_trunk_scan_runtime_args(opts, trunk_scan_cli_seen, chan_csv_cli_seen,
+                                                        validate_config_cli_seen, out_exit_rc);
     }
     if (parse_rc == DSD_PARSE_CONTINUE && opts->iq_replay_requested && opts->iq_replay_path[0] != '\0') {
         opts->audio_in_type = AUDIO_IN_RTL;
@@ -1890,6 +1927,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         case 'C': {                                                                                                    \
             /* Import channel map CSV (channum,freq) */                                                                \
+            if (out_chan_csv_cli_seen) {                                                                               \
+                *out_chan_csv_cli_seen = 1;                                                                            \
+            }                                                                                                          \
             if (opts->trunk_scan_enabled) {                                                                            \
                 LOG_ERROR("-C cannot be combined with --trunk-scan; use per-target chan_csv\n");                       \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
@@ -2464,7 +2504,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     }
 
 static int
-dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc) {
+dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc,
+                     int* out_chan_csv_cli_seen) {
 
     int c;
     dsd_stat_t st = {0};

@@ -666,8 +666,10 @@ test_coordinator_idle_rotation_and_state_restore(void) {
 }
 
 static void
-seed_dmr_identity(dsd_state* state, int mfid, const char* branding, const char* branding_sub, const char* site_parms) {
+seed_dmr_identity(dsd_state* state, int mfid, unsigned int syscode, const char* branding, const char* branding_sub,
+                  const char* site_parms) {
     state->dmr_mfid = mfid;
+    state->dmr_t3_syscode = syscode;
     DSD_SNPRINTF(state->dmr_branding, sizeof state->dmr_branding, "%s", branding);
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", branding_sub);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof state->dmr_site_parms, "%s", site_parms);
@@ -675,11 +677,12 @@ seed_dmr_identity(dsd_state* state, int mfid, const char* branding, const char* 
 
 static int
 expect_dmr_identity(const char* label, const dsd_state* state, int mfid, const char* branding, const char* branding_sub,
-                    const char* site_parms) {
-    if (state->dmr_mfid != mfid || strcmp(state->dmr_branding, branding) != 0
+                    const char* site_parms, unsigned int syscode) {
+    if (state->dmr_mfid != mfid || state->dmr_t3_syscode != syscode || strcmp(state->dmr_branding, branding) != 0
         || strcmp(state->dmr_branding_sub, branding_sub) != 0 || strcmp(state->dmr_site_parms, site_parms) != 0) {
-        DSD_FPRINTF(stderr, "%s DMR identity mismatch mfid=%d branding='%s' sub='%s' site='%s'\n", label,
-                    state->dmr_mfid, state->dmr_branding, state->dmr_branding_sub, state->dmr_site_parms);
+        DSD_FPRINTF(stderr, "%s DMR identity mismatch mfid=%d syscode=%u branding='%s' sub='%s' site='%s'\n", label,
+                    state->dmr_mfid, state->dmr_t3_syscode, state->dmr_branding, state->dmr_branding_sub,
+                    state->dmr_site_parms);
         return 1;
     }
     return 0;
@@ -711,23 +714,23 @@ test_dmr_branding_state_isolated_per_target(void) {
         test_rc = 1;
     }
 
-    seed_dmr_identity(&state, 0x10, "Motorola", "Cap+ ", "cap-site ");
+    seed_dmr_identity(&state, 0x10, 0x123U, "Motorola", "Cap+ ", "cap-site ");
     dsd_engine_trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "dmr identity scan did not rotate to second target\n");
         test_rc = 1;
     }
-    test_rc |= expect_dmr_identity("fresh target", &state, -1, "", "", "");
+    test_rc |= expect_dmr_identity("fresh target", &state, -1, "", "", "", 0U);
 
-    seed_dmr_identity(&state, 0x68, "  Hytera", "XPT ", "xpt-site ");
+    seed_dmr_identity(&state, 0x68, 0x456U, "  Hytera", "XPT ", "xpt-site ");
     dsd_engine_trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "dmr identity scan did not rotate back to first target\n");
         test_rc = 1;
     }
-    test_rc |= expect_dmr_identity("restored target", &state, 0x10, "Motorola", "Cap+ ", "cap-site ");
+    test_rc |= expect_dmr_identity("restored target", &state, 0x10, "Motorola", "Cap+ ", "cap-site ", 0x123U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     dsd_engine_trunk_scan_test_clear_now();
@@ -993,6 +996,19 @@ test_mixed_target_switch_resets_dmr_demod_profile(void) {
     if (dsd_engine_trunk_scan_active_index(&state) != 2 || state.rf_mod != 2 || state.samplesPerSymbol != 10
         || state.symbolCenter != 4) {
         DSD_FPRINTF(stderr, "DMR conventional target inherited P25 demod state active=%zu rf_mod=%d sps=%d center=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.rf_mod, state.samplesPerSymbol,
+                    state.symbolCenter);
+        test_rc = 1;
+    }
+
+    state.rf_mod = 2;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    dsd_engine_trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.rf_mod != 0 || state.samplesPerSymbol != 10
+        || state.symbolCenter != 4) {
+        DSD_FPRINTF(stderr, "P25 target inherited DMR demod state active=%zu rf_mod=%d sps=%d center=%d\n",
                     dsd_engine_trunk_scan_active_index(&state), state.rf_mod, state.samplesPerSymbol,
                     state.symbolCenter);
         test_rc = 1;
@@ -1639,6 +1655,15 @@ test_locked_demod_mode_preserved_when_seeding_targets(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rf_mod != 1) {
         DSD_FPRINTF(stderr, "locked demod overwritten on DMR target active=%zu rf_mod=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.rf_mod);
+        test_rc = 1;
+    }
+
+    state.rf_mod = 1;
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.rf_mod != 1) {
+        DSD_FPRINTF(stderr, "locked demod overwritten on P25 return active=%zu rf_mod=%d\n",
                     dsd_engine_trunk_scan_active_index(&state), state.rf_mod);
         test_rc = 1;
     }

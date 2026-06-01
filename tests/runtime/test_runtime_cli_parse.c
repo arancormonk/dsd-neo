@@ -1373,6 +1373,56 @@ test_bootstrap_validate_config_accepts_external_path(void) {
 }
 
 static int
+test_bootstrap_validate_config_reports_trunk_scan_diagnostics(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_in_tmpdir_with_contents("version = 1\n"
+                                                     "\n"
+                                                     "[trunk_scan]\n"
+                                                     "enabled = true\n",
+                                                     cfg_path, sizeof cfg_path)
+        != 0) {
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--validate-config";
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected validate-config diagnostics exit, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_bootstrap_list_profiles_accepts_external_config_path(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -4095,6 +4145,42 @@ test_trunk_scan_rejects_global_channel_map(void) {
 }
 
 static int
+test_trunk_scan_cli_clears_inherited_channel_map(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "inherited.csv");
+    opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--trunk-scan";
+    char arg2[] = "targets.csv";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = (rc == DSD_PARSE_CONTINUE && opts->trunk_scan_enabled == 1
+                   && strcmp(opts->trunk_scan_targets_csv, "targets.csv") == 0 && opts->chan_in_file[0] == '\0')
+                      ? 0
+                      : 1;
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "expected explicit trunk scan to clear inherited channel map, rc=%d enabled=%d chan=%s\n",
+                    rc, opts->trunk_scan_enabled, opts->chan_in_file);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -4600,6 +4686,7 @@ main(void) {
     rc |= test_bootstrap_accepts_explicit_config_path_outside_cwd();
     rc |= test_bootstrap_missing_explicit_config_keeps_autosave_path();
     rc |= test_bootstrap_validate_config_accepts_external_path();
+    rc |= test_bootstrap_validate_config_reports_trunk_scan_diagnostics();
     rc |= test_bootstrap_list_profiles_accepts_external_config_path();
     rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
@@ -4619,6 +4706,7 @@ main(void) {
     rc |= test_trunk_scan_long_options_parse();
     rc |= test_trunk_scan_conflicts_with_legacy_scanner();
     rc |= test_trunk_scan_rejects_global_channel_map();
+    rc |= test_trunk_scan_cli_clears_inherited_channel_map();
     rc |= test_iq_capture_long_options_parse();
     rc |= test_iq_capture_missing_value_returns_error();
     rc |= test_iq_capture_format_missing_value_returns_error();

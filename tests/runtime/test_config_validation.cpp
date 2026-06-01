@@ -111,6 +111,20 @@ has_trunk_scan_required_diag(const dsdcfg_diagnostics_t* diags, const char* sect
 }
 
 static int
+has_trunk_scan_channel_map_conflict_diag(const dsdcfg_diagnostics_t* diags, const char* section, const char* key) {
+    if (!diags || !section || !key) {
+        return 0;
+    }
+    for (int i = 0; i < diags->count; i++) {
+        if (diags->items[i].level == DSDCFG_DIAG_ERROR && strcmp(diags->items[i].section, section) == 0
+            && strcmp(diags->items[i].key, key) == 0 && strstr(diags->items[i].message, "trunking.chan_csv")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 test_trunk_scan_enabled_requires_targets_csv(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -134,6 +148,42 @@ test_trunk_scan_enabled_requires_targets_csv(void) {
     }
     if (!has_trunk_scan_required_diag(&diags, "trunk_scan", "targets_csv")) {
         DSD_FPRINTF(stderr, "FAIL: missing trunk_scan targets_csv diagnostic\n");
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
+test_trunk_scan_rejects_global_channel_map(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[trunking]\n"
+                             "chan_csv = \"/tmp/chan.csv\"\n"
+                             "\n"
+                             "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"/tmp/targets.csv\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+
+    int rc = dsd_user_config_validate(path, &diags);
+
+    int result = 0;
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "FAIL: trunk_scan with trunking.chan_csv should cause error\n");
+        result = 1;
+    }
+    if (!has_trunk_scan_channel_map_conflict_diag(&diags, "trunking", "chan_csv")) {
+        DSD_FPRINTF(stderr, "FAIL: missing trunk_scan/global channel map diagnostic\n");
         result = 1;
     }
 
@@ -178,6 +228,42 @@ test_trunk_scan_include_composed_targets_csv_is_valid(void) {
     dsd_user_config_diags_free(&diags);
     (void)remove(path);
     (void)remove(inc_path);
+    return result;
+}
+
+static int
+test_profile_trunk_scan_rejects_inherited_channel_map(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[trunking]\n"
+                             "chan_csv = \"/tmp/chan.csv\"\n"
+                             "\n"
+                             "[profile.scan]\n"
+                             "trunk_scan.enabled = true\n"
+                             "trunk_scan.targets_csv = \"/tmp/targets.csv\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+
+    int rc = dsd_user_config_validate(path, &diags);
+
+    int result = 0;
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "FAIL: profile trunk_scan with inherited trunking.chan_csv should cause error\n");
+        result = 1;
+    }
+    if (!has_trunk_scan_channel_map_conflict_diag(&diags, "profile.scan", "trunking.chan_csv")) {
+        DSD_FPRINTF(stderr, "FAIL: missing profile trunk_scan/global channel map diagnostic\n");
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
+    (void)remove(path);
     return result;
 }
 
@@ -809,7 +895,9 @@ main(void) {
 
     rc |= test_valid_config();
     rc |= test_trunk_scan_enabled_requires_targets_csv();
+    rc |= test_trunk_scan_rejects_global_channel_map();
     rc |= test_trunk_scan_include_composed_targets_csv_is_valid();
+    rc |= test_profile_trunk_scan_rejects_inherited_channel_map();
     rc |= test_profile_trunk_scan_enabled_requires_targets_csv();
     rc |= test_profile_trunk_scan_inherits_base_targets_csv();
     rc |= test_unknown_key_warning();
