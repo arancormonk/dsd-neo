@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -12,9 +13,11 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,6 +33,10 @@ static int g_dmr_tick_calls = 0;
 static int g_dmr_tick_release_tuned = 0;
 static int g_csv_import_result = 0;
 static int g_scan_tune_to_freq_ted_sps = 0;
+static int g_p25_tick_guard_available = 1;
+static int g_p25_tick_guard_depth = 0;
+static int g_p25_tick_guard_enter_calls = 0;
+static int g_p25_tick_guard_leave_calls = 0;
 
 static int
 test_tg_policy_tune_allowed(const dsd_opts* opts, int call_type_enabled, int encrypted, int data_call) {
@@ -53,6 +60,24 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->initialized = 1;
     ctx->state = (opts && state && opts->p25_trunk == 1 && state->trunk_cc_freq != 0) ? P25_SM_ON_CC : P25_SM_IDLE;
+}
+
+int
+p25_sm_tick_guard_try_enter(void) {
+    g_p25_tick_guard_enter_calls++;
+    if (!g_p25_tick_guard_available) {
+        return 0;
+    }
+    g_p25_tick_guard_depth++;
+    return 1;
+}
+
+void
+p25_sm_tick_guard_leave(void) {
+    g_p25_tick_guard_leave_calls++;
+    if (g_p25_tick_guard_depth > 0) {
+        g_p25_tick_guard_depth--;
+    }
 }
 
 void
@@ -98,8 +123,37 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
 
 int
 csvChanImport(const dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
+    if (g_csv_import_result != 0) {
+        return g_csv_import_result;
+    }
+    if (!opts || !state || opts->chan_in_file[0] == '\0') {
+        return 0;
+    }
+    FILE* fp = fopen(opts->chan_in_file, "rb");
+    if (!fp) {
+        return 0;
+    }
+    char line[256];
+    while (fgets(line, sizeof line, fp)) {
+        char* comma = strchr(line, ',');
+        if (!comma) {
+            continue;
+        }
+        *comma = '\0';
+        char* freq_text = comma + 1;
+        char* freq_end = freq_text;
+        while (*freq_end && *freq_end != '\r' && *freq_end != '\n') {
+            freq_end++;
+        }
+        *freq_end = '\0';
+        uint32_t channel = 0;
+        long freq = 0;
+        if (dsd_parse_uint32_strict(line, 10, 0xFFFFU, &channel) == 0
+            && dsd_parse_long_strict(freq_text, 10, 0L, LONG_MAX, &freq) == 0) {
+            dsd_state_set_trunk_chan_freq(state, channel, freq);
+        }
+    }
+    (void)fclose(fp);
     return g_csv_import_result;
 }
 
@@ -345,6 +399,10 @@ reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     opts->trunk_tune_enc_calls = 1;
+    g_p25_tick_guard_available = 1;
+    g_p25_tick_guard_depth = 0;
+    g_p25_tick_guard_enter_calls = 0;
+    g_p25_tick_guard_leave_calls = 0;
 }
 
 static void
@@ -910,6 +968,231 @@ counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
 }
 
 static int
+test_p25_targets_pass_cc_sps_to_retune_paths(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_result = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 0;
+    g_counting_tune_to_cc_ted_sps = 0;
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || g_counting_tune_to_cc_calls != 1 || g_counting_tune_to_cc_ted_sps != 10) {
+        DSD_FPRINTF(stderr, "p25 initial retune did not receive P25 CC sps rc=%d calls=%d sps=%d err=%s\n", rc,
+                    g_counting_tune_to_cc_calls, g_counting_tune_to_cc_ted_sps, err);
+        test_rc = 1;
+    }
+
+    state.p25_cc_is_tdma = 1;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_ted_sps != 10) {
+        DSD_FPRINTF(stderr, "p25 fdma target retune did not receive FDMA CC sps active=%zu sps=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_ted_sps);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_ted_sps != 8) {
+        DSD_FPRINTF(stderr, "p25 tdma target retune did not receive TDMA CC sps active=%zu sps=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_ted_sps);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_channel_map_sequence_advances_on_equal_count_target_switches(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+
+    char chan_a_path[DSD_TEST_PATH_MAX];
+    char chan_b_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(chan_a_path, sizeof chan_a_path, dir, "chan_a.csv") != 0
+        || dsd_test_path_join(chan_b_path, sizeof chan_b_path, dir, "chan_b.csv") != 0
+        || write_text_file(chan_a_path, "channel,frequency\n101,851012500\n") != 0
+        || write_text_file(chan_b_path, "channel,frequency\n202,852012500\n") != 0
+        || write_targets_file(dir,
+                              "a,p25-trunk,851000000,chan_a.csv,250,,\n"
+                              "b,p25-trunk,852000000,chan_b.csv,250,,\n",
+                              target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    const uint64_t seq0 = state.trunk_chan_map_seq;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || state.trunk_chan_map_used_count != 1U
+        || state.trunk_chan_map[101] != 851012500L || state.trunk_chan_map[202] != 0) {
+        DSD_FPRINTF(stderr, "channel-map scan init failed rc=%d active=%zu count=%u a=%ld b=%ld err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), state.trunk_chan_map_used_count,
+                    state.trunk_chan_map[101], state.trunk_chan_map[202], err);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    const uint64_t seq1 = state.trunk_chan_map_seq;
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map_used_count != 1U
+        || state.trunk_chan_map[101] != 0 || state.trunk_chan_map[202] != 852012500L || seq1 <= seq0) {
+        DSD_FPRINTF(
+            stderr, "channel-map target switch kept stale map or seq active=%zu count=%u a=%ld b=%ld seq=%llu/%llu\n",
+            dsd_engine_trunk_scan_active_index(&state), state.trunk_chan_map_used_count, state.trunk_chan_map[101],
+            state.trunk_chan_map[202], (unsigned long long)seq0, (unsigned long long)seq1);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    const uint64_t seq2 = state.trunk_chan_map_seq;
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.trunk_chan_map_used_count != 1U
+        || state.trunk_chan_map[101] != 851012500L || state.trunk_chan_map[202] != 0 || seq2 <= seq1) {
+        DSD_FPRINTF(
+            stderr, "channel-map return switch kept stale map or seq active=%zu count=%u a=%ld b=%ld seq=%llu/%llu\n",
+            dsd_engine_trunk_scan_active_index(&state), state.trunk_chan_map_used_count, state.trunk_chan_map[101],
+            state.trunk_chan_map[202], (unsigned long long)seq1, (unsigned long long)seq2);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    (void)remove(chan_b_path);
+    cleanup_paths(dir, target_path, chan_a_path);
+    return test_rc;
+}
+
+static int
+test_locked_demod_mode_preserved_when_seeding_targets(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("p25,p25-trunk,851000000,,250,,\n"
+                             "dmr,dmr-trunk,452000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || state.rf_mod != 1) {
+        DSD_FPRINTF(stderr, "locked P25 demod not preserved on init rc=%d active=%zu rf_mod=%d err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), state.rf_mod, err);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rf_mod != 1) {
+        DSD_FPRINTF(stderr, "locked demod overwritten on DMR target active=%zu rf_mod=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.rf_mod);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_tick_skips_rotation_when_p25_guard_busy(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "guard scan init failed rc=%d active=%zu err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), err);
+        test_rc = 1;
+    }
+
+    g_p25_tick_guard_available = 0;
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_p25_tick_guard_leave_calls != 0) {
+        DSD_FPRINTF(stderr, "scan rotated or left guard while P25 guard busy active=%zu leaves=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_leave_calls);
+        test_rc = 1;
+    }
+
+    g_p25_tick_guard_available = 1;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_p25_tick_guard_depth != 0
+        || g_p25_tick_guard_leave_calls != 1) {
+        DSD_FPRINTF(stderr, "scan did not rotate cleanly after P25 guard released active=%zu depth=%d leaves=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_p25_tick_guard_depth, g_p25_tick_guard_leave_calls);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_single_target_retune_failure_retries_after_cooldown(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
@@ -1129,6 +1412,10 @@ main(void) {
     rc |= test_conventional_activity_encrypted_lockout_does_not_hold();
     rc |= test_state_ext_cleanup_clears_scan_hooks();
     rc |= test_dmr_trunk_sm_timeout_releases_scan_hold();
+    rc |= test_p25_targets_pass_cc_sps_to_retune_paths();
+    rc |= test_channel_map_sequence_advances_on_equal_count_target_switches();
+    rc |= test_locked_demod_mode_preserved_when_seeding_targets();
+    rc |= test_scan_tick_skips_rotation_when_p25_guard_busy();
     rc |= test_single_target_retune_failure_retries_after_cooldown();
     rc |= test_retune_failure_cooldown();
     rc |= test_dmr_targets_pass_sps_to_retune_paths();

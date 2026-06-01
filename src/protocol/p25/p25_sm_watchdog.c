@@ -27,19 +27,29 @@ static dsd_opts* g_opts = NULL;
 static dsd_state* g_state = NULL;
 static int g_p25_sm_wd_ms = 0; // 0 => unset (use defaults per UI mode)
 
+int
+p25_sm_tick_guard_try_enter(void) {
+    int expected = 0;
+    return atomic_compare_exchange_strong(&g_p25_sm_tick_lock, &expected, 1) ? 1 : 0;
+}
+
+void
+p25_sm_tick_guard_leave(void) {
+    atomic_store(&g_p25_sm_tick_lock, 0);
+}
+
 void
 p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    int expected = 0;
-    if (atomic_compare_exchange_strong(&g_p25_sm_tick_lock, &expected, 1)) {
+    if (p25_sm_tick_guard_try_enter()) {
         /* Only one tick runs at a time across all callers. */
         atomic_store(&g_p25_sm_in_tick, 1);
         // Drive the high-level trunk SM tick
         p25_sm_tick(opts, state);
         atomic_store(&g_p25_sm_in_tick, 0);
-        atomic_store(&g_p25_sm_tick_lock, 0);
+        p25_sm_tick_guard_leave();
     }
 }
 

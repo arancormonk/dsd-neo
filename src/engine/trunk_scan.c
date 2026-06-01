@@ -13,6 +13,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -130,6 +131,7 @@ typedef struct {
     int saved_trunk_enable;
     int saved_p25_is_tuned;
     int saved_trunk_is_tuned;
+    uint64_t last_trunk_chan_map_seq;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -647,6 +649,45 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     }
 }
 
+static void
+trunk_scan_note_chan_map_seq(dsd_trunk_scan_coord* coord, uint64_t seq) {
+    if (coord && seq > coord->last_trunk_chan_map_seq) {
+        coord->last_trunk_chan_map_seq = seq;
+    }
+}
+
+static uint64_t
+trunk_scan_next_chan_map_seq(dsd_trunk_scan_coord* coord, uint64_t restored_seq) {
+    if (!coord) {
+        return restored_seq;
+    }
+    trunk_scan_note_chan_map_seq(coord, restored_seq);
+    if (coord->last_trunk_chan_map_seq == UINT64_MAX) {
+        coord->last_trunk_chan_map_seq = 0;
+    }
+    return ++coord->last_trunk_chan_map_seq;
+}
+
+static void
+trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
+    if (!rt) {
+        return;
+    }
+    trunk_scan_restore_snapshot(state, &rt->snapshot);
+    state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
+    rt->snapshot.trunk_chan_map_seq = state->trunk_chan_map_seq;
+}
+
+static void
+trunk_scan_save_target_snapshot(dsd_trunk_scan_coord* coord, const dsd_state* state,
+                                dsd_trunk_scan_target_runtime* rt) {
+    if (!rt) {
+        return;
+    }
+    trunk_scan_save_snapshot(state, &rt->snapshot);
+    trunk_scan_note_chan_map_seq(coord, rt->snapshot.trunk_chan_map_seq);
+}
+
 static dsd_trunk_scan_coord*
 trunk_scan_get(dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(dsd_trunk_scan_coord, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
@@ -754,6 +795,20 @@ trunk_scan_seed_target_state(dsd_state* state, const dsd_trunk_scan_target* targ
     }
 }
 
+static void
+trunk_scan_seed_empty_snapshot(dsd_trunk_scan_snapshot* snapshot, const dsd_opts* opts, const dsd_state* state) {
+    if (!snapshot) {
+        return;
+    }
+    trunk_scan_snapshot_clear(snapshot);
+    if (!opts || !state || !opts->mod_cli_lock) {
+        return;
+    }
+    snapshot->samplesPerSymbol = state->samplesPerSymbol;
+    snapshot->symbolCenter = state->symbolCenter;
+    snapshot->rf_mod = state->rf_mod;
+}
+
 static int
 trunk_scan_import_target_chan_csv(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target* target,
                                   char* err, size_t err_sz) {
@@ -782,7 +837,7 @@ static int
 trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd_state* state,
                                 const dsd_trunk_scan_target_list* list, char* err, size_t err_sz) {
     dsd_trunk_scan_snapshot empty_snapshot;
-    trunk_scan_snapshot_clear(&empty_snapshot);
+    trunk_scan_seed_empty_snapshot(&empty_snapshot, opts, state);
     double now_m = trunk_scan_now_m();
 
     for (size_t i = 0; i < list->count; i++) {
@@ -798,6 +853,7 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         p25_sm_init_ctx(&rt->p25_ctx, opts, state);
         dmr_sm_init_ctx(&rt->dmr_ctx, opts, state);
         trunk_scan_save_snapshot(state, &rt->snapshot);
+        trunk_scan_note_chan_map_seq(coord, rt->snapshot.trunk_chan_map_seq);
         rt->parked_since_m = now_m;
         rt->idle_since_m = now_m;
     }
@@ -810,7 +866,7 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
         state->p25_cc_freq = freq;
         state->trunk_cc_freq = freq;
-        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0);
+        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_p25_cc_sps(opts, state));
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
         state->p25_cc_freq = 0;
@@ -826,12 +882,12 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
         return -1;
     }
     if (save_current && coord->active < coord->count) {
-        trunk_scan_save_snapshot(state, &coord->targets[coord->active].snapshot);
+        trunk_scan_save_target_snapshot(coord, state, &coord->targets[coord->active]);
     }
 
     coord->active = next;
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    trunk_scan_restore_snapshot(state, &rt->snapshot);
+    trunk_scan_restore_target_snapshot(coord, state, rt);
     trunk_scan_apply_target_opts(opts, &rt->target);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
 
@@ -925,13 +981,8 @@ trunk_scan_tick_active_target_sm(dsd_opts* opts, dsd_state* state, dsd_trunk_sca
     }
 }
 
-void
-dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
-    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
-    if (!opts || !state || !coord || coord->count == 0) {
-        return;
-    }
-
+static void
+trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     double now_m = trunk_scan_now_m();
     trunk_scan_retry_active_if_due(opts, state, coord, now_m);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -948,6 +999,19 @@ dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
     if ((now_m - rt->idle_since_m) >= dwell_s) {
         trunk_scan_advance(opts, state, coord);
     }
+}
+
+void
+dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || coord->count == 0) {
+        return;
+    }
+    if (!p25_sm_tick_guard_try_enter()) {
+        return;
+    }
+    trunk_scan_tick_locked(opts, state, coord);
+    p25_sm_tick_guard_leave();
 }
 
 void*
