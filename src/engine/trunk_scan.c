@@ -80,6 +80,7 @@ typedef struct {
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
     int p25_sm_mode;
+    int nac;
     int samplesPerSymbol;
     int symbolCenter;
     int rf_mod;
@@ -603,6 +604,7 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     snapshot->p25_vc_cqpsk_pref = state->p25_vc_cqpsk_pref;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
     snapshot->p25_sm_mode = state->p25_sm_mode;
+    snapshot->nac = state->nac;
     snapshot->samplesPerSymbol = state->samplesPerSymbol;
     snapshot->symbolCenter = state->symbolCenter;
     snapshot->rf_mod = state->rf_mod;
@@ -701,6 +703,7 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
     state->p25_sm_mode = snapshot->p25_sm_mode;
+    state->nac = snapshot->nac;
     state->samplesPerSymbol = snapshot->samplesPerSymbol;
     state->symbolCenter = snapshot->symbolCenter;
     state->rf_mod = snapshot->rf_mod;
