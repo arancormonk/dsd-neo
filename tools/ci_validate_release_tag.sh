@@ -87,8 +87,11 @@ if [[ ! -f "${trusted_key}" ]]; then
 fi
 
 gnupg_home="$(mktemp -d)"
+tag_payload="$(mktemp)"
+tag_signature="$(mktemp)"
 cleanup_gnupg_home() {
   rm -rf "${gnupg_home}"
+  rm -f "${tag_payload}" "${tag_signature}"
 }
 trap cleanup_gnupg_home EXIT
 chmod 700 "${gnupg_home}"
@@ -106,7 +109,21 @@ if [[ "${imported_primary_fingerprint}" != "${expected_release_signing_fingerpri
 fi
 printf '%s:6:\n' "${expected_release_signing_fingerprint}" |
   GNUPGHOME="${gnupg_home}" gpg --batch --import-ownertrust > /dev/null
-if ! GNUPGHOME="${gnupg_home}" git verify-tag "${tag}" > /dev/null; then
+
+# Verify the tag object directly so Git for Windows cannot rewrite GNUPGHOME
+# before invoking gpg.
+tag_object="$(git rev-parse "refs/tags/${tag}^{tag}")"
+if ! git cat-file tag "${tag_object}" |
+  awk -v payload="${tag_payload}" -v signature="${tag_signature}" '
+    /^-----BEGIN PGP SIGNATURE-----$/ { in_signature = 1; found_signature = 1 }
+    in_signature { print > signature; next }
+    { print > payload }
+    END { exit(found_signature ? 0 : 1) }
+  '; then
+  echo "Release tag ${tag} does not contain an OpenPGP signature." >&2
+  exit 1
+fi
+if ! GNUPGHOME="${gnupg_home}" gpg --batch --verify "${tag_signature}" "${tag_payload}" > /dev/null; then
   echo "Release tag ${tag} is not signed by a trusted DSD-neo release key." >&2
   exit 1
 fi
