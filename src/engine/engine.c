@@ -1336,6 +1336,14 @@ no_carrier_has_p25_cc_identity(const dsd_state* state) {
 }
 
 static int
+no_carrier_has_active_p25_voice_state(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->p25_is_tuned != 1 || !no_carrier_has_p25_cc_identity(state)) {
+        return 0;
+    }
+    return (state->p25_vc_freq[0] != 0 || state->p25_vc_freq[1] != 0) ? 1 : 0;
+}
+
+static int
 no_carrier_selected_cc_is_p25_alias(const dsd_state* state, long cc) {
     if (cc == 0 || state->p25_cc_freq == 0 || !no_carrier_has_p25_cc_identity(state)) {
         return 0;
@@ -1361,6 +1369,9 @@ no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state, lon
     }
     if (no_carrier_generic_trunk_synctype(state->lastsynctype) || no_carrier_generic_trunk_synctype(state->synctype)) {
         return 0;
+    }
+    if (no_carrier_has_active_p25_voice_state(opts, state)) {
+        return 1;
     }
     return no_carrier_selected_cc_is_p25_alias(state, cc);
 }
@@ -1523,6 +1534,7 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     const int clear_generic_p25_alias = no_carrier_should_clear_generic_p25_alias(state, cc, p25_return);
     int accepted_cc_return = 0;
     int clear_failed_helper_state = 0;
+    int clear_unreturnable_voice_state = 0;
     if (cc != 0) {
         int p25_helper_attempted = 0;
         dsd_trunk_tune_result p25_helper_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -1543,9 +1555,11 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
                    && !no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result)) {
             clear_failed_helper_state = 1;
         }
+    } else {
+        clear_unreturnable_voice_state = 1;
     }
 
-    if (accepted_cc_return || clear_failed_helper_state) {
+    if (accepted_cc_return || clear_failed_helper_state || clear_unreturnable_voice_state) {
         no_carrier_clear_voice_tune_state(opts, state);
         DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
         state->is_con_plus = 0;

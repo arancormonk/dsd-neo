@@ -323,6 +323,30 @@ main(void) {
         return 1;
     }
 
+    opts->p25_trunk = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->last_cc_sync_time = time(NULL);
+    state->last_vc_sync_time = time(NULL) - 3;
+    state->p25_vc_freq[0] = 851012500;
+    state->p25_vc_freq[1] = 851012500;
+    state->trunk_vc_freq[0] = 851012500;
+    state->trunk_vc_freq[1] = 851012500;
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: stale");
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("p25-no-cc-hangtime-clears-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);
+    rc |= expect_true("p25-no-cc-hangtime-clears-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0
+                                                          && state->trunk_vc_freq[0] == 0
+                                                          && state->trunk_vc_freq[1] == 0);
+    rc |= expect_true("p25-no-cc-hangtime-clears-active", state->active_channel[0][0] == '\0');
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
     opts->trunk_enable = 1;
     opts->p25_trunk = 0;
     opts->p25_is_tuned = 0;
@@ -498,6 +522,38 @@ main(void) {
     rc |= expect_true("p25-rtl-nocarrier-auto-delayed-keeps-p25-cc",
                       state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
     rc |= expect_true("p25-rtl-nocarrier-auto-delayed-profile", g_rtl_symbol_rate_hz == 4800);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    reset_rtl_profile_fakes();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    opts->mod_qpsk = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 769768750;
+    state->trunk_cc_freq = 769868750;
+    state->p25_cc_is_tdma = 0;
+    state->p2_cc = 0x293;
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->p25_vc_freq[0] = 771056250;
+    state->p25_vc_freq[1] = 771056250;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("p25-rtl-nocarrier-delayed-selected-cc-retune",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769868750U);
+    rc |= expect_true("p25-rtl-nocarrier-delayed-selected-cc-profile", g_rtl_symbol_rate_hz == 4800);
+    rc |= expect_true("p25-rtl-nocarrier-delayed-selected-cc-sync",
+                      state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
 
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
