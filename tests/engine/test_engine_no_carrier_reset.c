@@ -12,12 +12,14 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -38,6 +40,140 @@ static int
 fake_rtl_fsk_output_kind(void) {
     return RTL_STREAM_OUTPUT_SYMBOL_FSK;
 }
+
+static int g_rtl_tune_calls = 0;
+static uint32_t g_rtl_tune_freq = 0;
+static int g_rtl_output_rate = 48000;
+static int g_rtl_cqpsk_enable = 0;
+static int g_rtl_symbol_rate_hz = 6000;
+static int g_rtl_symbol_levels = 4;
+static int g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+static int g_rtl_ted_sps = 8;
+static int g_rtl_ted_sps_override = 8;
+static int g_pending_active = 0;
+static uint32_t g_pending_target_freq_hz = 0;
+static int g_pending_cqpsk = -1;
+static int g_pending_symbol_rate_hz = 0;
+static int g_pending_symbol_levels = 0;
+static int g_pending_channel_profile = 0;
+static int g_pending_ted_sps = 0;
+static int g_pending_ted_override = 0;
+
+static void
+reset_rtl_profile_fakes(void) {
+    g_rtl_tune_calls = 0;
+    g_rtl_tune_freq = 0;
+    g_rtl_output_rate = 48000;
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_symbol_rate_hz = 6000;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    g_rtl_ted_sps = 8;
+    g_rtl_ted_sps_override = 8;
+    g_pending_active = 0;
+    g_pending_target_freq_hz = 0;
+    g_pending_cqpsk = -1;
+    g_pending_symbol_rate_hz = 0;
+    g_pending_symbol_levels = 0;
+    g_pending_channel_profile = 0;
+    g_pending_ted_sps = 0;
+    g_pending_ted_override = 0;
+}
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+uint32_t
+__wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
+    (void)ctx;
+    return (uint32_t)g_rtl_output_rate;
+}
+
+int
+__wrap_rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
+    if (cqpsk_enable) {
+        *cqpsk_enable = g_rtl_cqpsk_enable;
+    }
+    if (fll_enable) {
+        *fll_enable = 0;
+    }
+    if (ted_enable) {
+        *ted_enable = 1;
+    }
+    return 0;
+}
+
+int
+__wrap_rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = g_rtl_symbol_rate_hz;
+    }
+    if (out_levels) {
+        *out_levels = g_rtl_symbol_levels;
+    }
+    if (out_channel_profile) {
+        *out_channel_profile = g_rtl_channel_profile;
+    }
+    return 0;
+}
+
+int
+__wrap_rtl_stream_get_ted_sps(void) {
+    return g_rtl_ted_sps;
+}
+
+int
+__wrap_rtl_stream_get_ted_sps_override(void) {
+    return g_rtl_ted_sps_override;
+}
+
+void
+__wrap_rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
+                                                    int levels, int channel_profile, int ted_sps,
+                                                    int persist_ted_override) {
+    g_pending_active = 1;
+    g_pending_target_freq_hz = target_freq_hz;
+    g_pending_cqpsk = cqpsk_enable;
+    g_pending_symbol_rate_hz = symbol_rate_hz;
+    g_pending_symbol_levels = levels;
+    g_pending_channel_profile = channel_profile;
+    g_pending_ted_sps = ted_sps;
+    g_pending_ted_override = persist_ted_override ? 1 : 0;
+}
+
+static void
+apply_pending_profile(uint32_t target_freq_hz) {
+    if (!g_pending_active) {
+        return;
+    }
+    if (g_pending_target_freq_hz != 0 && g_pending_target_freq_hz != target_freq_hz) {
+        return;
+    }
+    if (g_pending_cqpsk >= 0) {
+        g_rtl_cqpsk_enable = g_pending_cqpsk ? 1 : 0;
+    }
+    if (g_pending_symbol_rate_hz > 0) {
+        g_rtl_symbol_rate_hz = g_pending_symbol_rate_hz;
+        g_rtl_symbol_levels = g_pending_symbol_levels;
+        g_rtl_channel_profile = g_pending_channel_profile;
+    }
+    if (g_pending_ted_sps > 0) {
+        g_rtl_ted_sps = g_pending_ted_sps;
+        g_rtl_ted_sps_override = g_pending_ted_override ? g_pending_ted_sps : 0;
+    }
+    g_pending_active = 0;
+    g_pending_target_freq_hz = 0;
+}
+
+int
+__wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
+    (void)ctx;
+    g_rtl_tune_calls++;
+    g_rtl_tune_freq = center_freq_hz;
+    apply_pending_profile(center_freq_hz);
+    return RTL_STREAM_TUNE_OK;
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 #endif
 
 int
@@ -163,6 +299,42 @@ main(void) {
 
     rc |= expect_true("p25-stale-vc-clears-tuned", opts->p25_is_tuned == 0);
     rc |= expect_true("p25-stale-vc-clears-freq", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
+
+#ifdef USE_RADIO
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    reset_rtl_profile_fakes();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    opts->mod_qpsk = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 769768750;
+    state->trunk_cc_freq = 769768750;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p2_active_slot = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->p25_vc_freq[0] = 771056250;
+    state->p25_vc_freq[1] = 771056250;
+    state->samplesPerSymbol = 8;
+    state->symbolCenter = 3;
+    state->rf_mod = 1;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("p25-rtl-nocarrier-cc-retune", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769768750U);
+    rc |= expect_true("p25-rtl-nocarrier-cc-profile-rate", g_rtl_symbol_rate_hz == 4800);
+    rc |= expect_true("p25-rtl-nocarrier-cc-profile-cqpsk", g_rtl_cqpsk_enable == 1);
+    rc |= expect_true("p25-rtl-nocarrier-cc-profile-ted", g_rtl_ted_sps == 10 && g_rtl_ted_sps_override == 0);
+    rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);
+    rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
+#endif
 
     // Trunk scan keeps long-lived discovery state across carrier gaps. The test
     // keeps DMR confidence and P25 control-channel candidates populated while

@@ -24,6 +24,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -66,6 +67,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/p25p1_heuristics.h"
 #include "dsd-neo/platform/sockets.h"
+#include "dsd-neo/runtime/trunk_tuning_hooks.h"
 #include "engine_hooks_install.h"
 
 struct CODEC2;
@@ -1323,23 +1325,36 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     }
 
     long cc = no_carrier_select_control_channel(state);
+    int used_trunk_helper = 0;
+    int legacy_clear_state = 0;
     if (cc != 0) {
-        if (opts->use_rigctl == 1) {
+        dsd_trunk_tune_result tune_result = dsd_engine_return_to_cc(opts, state);
+        if (dsd_trunk_tune_result_is_ok(tune_result)) {
+            used_trunk_helper = 1;
+            state->edacs_tuned_lcn = -1;
+        } else if (opts->use_rigctl == 1) {
             no_carrier_tune_rigctl_if_needed(opts, cc);
             state->dmr_rest_channel = -1;
+            legacy_clear_state = 1;
         } else if (opts->audio_in_type == AUDIO_IN_RTL) {
-            no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)cc);
+            if (!state->rtl_ctx) {
+                legacy_clear_state = 1;
+            }
 #ifdef USE_RADIO
             state->dmr_rest_channel = -1;
 #endif
+        } else {
+            legacy_clear_state = 1;
         }
 
-        opts->p25_is_tuned = 0;
-        opts->trunk_is_tuned = 0;
-        state->edacs_tuned_lcn = -1;
-        state->last_cc_sync_time = now;
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-        no_carrier_apply_p25_cc_symbolrate(opts, state);
+        if (!used_trunk_helper && legacy_clear_state) {
+            opts->p25_is_tuned = 0;
+            opts->trunk_is_tuned = 0;
+            state->edacs_tuned_lcn = -1;
+            state->last_cc_sync_time = now;
+            state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+            no_carrier_apply_p25_cc_symbolrate(opts, state);
+        }
     }
 
     state->p25_vc_freq[0] = 0;
