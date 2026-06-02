@@ -1324,7 +1324,18 @@ no_carrier_has_p25_cc_identity(const dsd_state* state) {
     if (state->p2_rfssid != 0 || state->p2_siteid != 0) {
         return 1;
     }
-    return (state->p25_cc_is_tdma == 1 || state->p25_sys_is_tdma == 1 || state->p25_p2_active_slot != -1) ? 1 : 0;
+    return (state->p25_cc_is_tdma == 0 || state->p25_cc_is_tdma == 1 || state->p25_sys_is_tdma == 1) ? 1 : 0;
+}
+
+static int
+no_carrier_selected_cc_is_p25_alias(const dsd_state* state, long cc) {
+    if (cc == 0 || state->p25_cc_freq == 0 || !no_carrier_has_p25_cc_identity(state)) {
+        return 0;
+    }
+    if (cc == state->p25_cc_freq) {
+        return 1;
+    }
+    return (state->trunk_cc_freq != 0 && cc == state->trunk_cc_freq) ? 1 : 0;
 }
 
 static int
@@ -1349,20 +1360,31 @@ no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state, lon
     if (no_carrier_generic_trunk_synctype(state->lastsynctype) || no_carrier_generic_trunk_synctype(state->synctype)) {
         return 0;
     }
-    if (cc != 0 && state->p25_cc_freq != 0 && cc == state->p25_cc_freq && no_carrier_has_p25_cc_identity(state)) {
+    return no_carrier_selected_cc_is_p25_alias(state, cc);
+}
+
+static int
+no_carrier_should_clear_generic_p25_alias(const dsd_state* state, long cc, int is_p25_return) {
+    if (is_p25_return) {
+        return 0;
+    }
+    if (state->dmr_rest_channel != -1 && state->trunk_chan_map[state->dmr_rest_channel] != 0) {
         return 1;
     }
-    return 0;
+    return (state->p25_cc_freq != 0 && state->trunk_cc_freq != 0 && state->p25_cc_freq != state->trunk_cc_freq
+            && state->p25_cc_freq != cc)
+               ? 1
+               : 0;
 }
 
 static void
-no_carrier_sync_selected_control_channel(dsd_state* state, long cc, int is_p25_return) {
+no_carrier_sync_selected_control_channel(dsd_state* state, long cc, int is_p25_return, int clear_generic_p25_alias) {
     if (cc == 0) {
         return;
     }
 
     state->trunk_cc_freq = cc;
-    state->p25_cc_freq = is_p25_return ? cc : 0;
+    state->p25_cc_freq = (is_p25_return || !clear_generic_p25_alias) ? cc : 0;
 }
 
 static void
@@ -1396,14 +1418,21 @@ no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, int p25_return, int* helper_attempted) {
+no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
+                                   int clear_generic_p25_alias, int* helper_attempted) {
     if (!p25_return) {
         return 0;
     }
 
     *helper_attempted = 1;
+    const long old_p25_cc_freq = state->p25_cc_freq;
+    const long old_trunk_cc_freq = state->trunk_cc_freq;
+    no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
+
     dsd_trunk_tune_result tune_result = dsd_engine_return_to_cc(opts, state);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        state->p25_cc_freq = old_p25_cc_freq;
+        state->trunk_cc_freq = old_trunk_cc_freq;
         return 0;
     }
 
@@ -1459,13 +1488,15 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
 
     long cc = no_carrier_select_control_channel(state);
     const int p25_return = no_carrier_is_p25_trunk_return(opts, state, cc);
+    const int clear_generic_p25_alias = no_carrier_should_clear_generic_p25_alias(state, cc, p25_return);
     int accepted_cc_return = 0;
     if (cc != 0) {
         int p25_helper_attempted = 0;
-        no_carrier_sync_selected_control_channel(state, cc, p25_return);
-        if (no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, &p25_helper_attempted)) {
+        if (no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
+                                               &p25_helper_attempted)) {
             accepted_cc_return = 1;
         } else if (no_carrier_apply_legacy_cc_return(opts, state, cc, p25_helper_attempted)) {
+            no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
             accepted_cc_return = 1;
             state->edacs_tuned_lcn = -1;
             state->last_cc_sync_time = now;

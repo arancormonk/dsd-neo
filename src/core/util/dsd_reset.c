@@ -261,8 +261,9 @@ reset_p25_tables_and_hints(dsd_state* state) {
     DSD_MEMSET(state->p25_aff_last_seen, 0, sizeof(state->p25_aff_last_seen));
 
     // Reset P25 CC/system TDMA hints
-    state->p25_cc_is_tdma = 0;
+    state->p25_cc_is_tdma = 2;
     state->p25_sys_is_tdma = 0;
+    state->p25_p2_active_slot = -1;
     state->p25_vc_cqpsk_pref = -1;
     state->p25_vc_cqpsk_override = -1;
 
