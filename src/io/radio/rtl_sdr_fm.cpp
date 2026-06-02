@@ -5217,10 +5217,11 @@ stream_open_open_device_soapy(const dsd_opts* opts) {
     soapy_cfg.profile = opts->soapy_profile;
     soapy_cfg.antenna = opts->soapy_antenna;
     soapy_cfg.clock_source = opts->soapy_clock;
+    soapy_cfg.settings = opts->soapy_settings;
     soapy_cfg.gains = opts->soapy_gains;
     soapy_cfg.stream_format = opts->soapy_stream_format;
     soapy_cfg.bandwidth_hz = opts->soapy_bandwidth_hz;
-    int soapy_cfg_rc = rtl_device_configure_soapy(rtl_device_handle, &soapy_cfg);
+    int soapy_cfg_rc = rtl_device_configure_soapy_sized(rtl_device_handle, &soapy_cfg, RTL_SOAPY_CONFIG_SIZE);
     if (soapy_cfg_rc != 0) {
         LOG_ERROR("Failed to apply SoapySDR profile/configuration (rc=%d).\n", soapy_cfg_rc);
         rtl_device_destroy(rtl_device_handle);

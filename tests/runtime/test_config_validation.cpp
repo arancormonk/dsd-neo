@@ -498,6 +498,7 @@ test_soapy_source_valid(void) {
                              "[input]\n"
                              "source = \"soapy\"\n"
                              "soapy_args = \"driver=airspy\"\n"
+                             "soapy_settings = \"rfnotch_ctrl=true,rx:agc_setpoint=-30\"\n"
                              "rtl_freq = \"162.550M\"\n";
 
     char path[DSD_TEST_PATH_MAX];

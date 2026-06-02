@@ -32,6 +32,18 @@ enum class SoapyStreamFormat : uint8_t {
     CS16,
 };
 
+enum class SoapySettingScope : uint8_t {
+    Device = 0,
+    Rx0,
+};
+
+enum class SoapySettingValueType : uint8_t {
+    Bool = 0,
+    Int,
+    Float,
+    String,
+};
+
 struct SoapyRange {
     double minimum;
     double maximum;
@@ -58,6 +70,12 @@ struct SoapyBandwidthChoice {
     bool explicit_request;
 };
 
+struct SoapySettingRequest {
+    SoapySettingScope scope;
+    std::string key;
+    std::string value;
+};
+
 const SoapyProfile& soapy_profile_by_id(SoapyProfileId id);
 bool soapy_profile_parse_name(const std::string& value, SoapyProfileId* out_id);
 SoapyProfileId soapy_select_profile_id(const SoapyProfileSelection& selection);
@@ -74,6 +92,11 @@ double soapy_nearest_in_ranges(double requested, const std::vector<SoapyRange>& 
 double soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_rates,
                                  const std::vector<SoapyRange>& ranges, bool* out_adjusted);
 std::string soapy_join_names(const std::vector<std::string>& names, size_t max_chars);
+const char* soapy_setting_scope_name(SoapySettingScope scope);
+bool soapy_parse_settings(const std::string& spec, std::vector<SoapySettingRequest>* out_requests,
+                          std::string* out_error);
+bool soapy_validate_setting_value(SoapySettingValueType type, const SoapyRange* range, const std::string& value,
+                                  std::string* out_error);
 
 } // namespace dsdneo
 

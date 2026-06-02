@@ -308,6 +308,9 @@ apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (cfg->soapy_clock[0]) {
         copy_token_string(opts->soapy_clock, sizeof opts->soapy_clock, cfg->soapy_clock);
     }
+    if (cfg->soapy_settings[0]) {
+        copy_token_string(opts->soapy_settings, sizeof opts->soapy_settings, cfg->soapy_settings);
+    }
     if (cfg->soapy_gains[0]) {
         copy_token_string(opts->soapy_gains, sizeof opts->soapy_gains, cfg->soapy_gains);
     }
@@ -350,6 +353,9 @@ snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     }
     if (opts->soapy_clock[0]) {
         copy_token_string(cfg->soapy_clock, sizeof cfg->soapy_clock, opts->soapy_clock);
+    }
+    if (opts->soapy_settings[0]) {
+        copy_token_string(cfg->soapy_settings, sizeof cfg->soapy_settings, opts->soapy_settings);
     }
     if (opts->soapy_gains[0]) {
         copy_token_string(cfg->soapy_gains, sizeof cfg->soapy_gains, opts->soapy_gains);
@@ -721,6 +727,9 @@ render_input_soapy(FILE* out, const dsdneoUserConfig* cfg) {
     }
     if (cfg->soapy_clock[0]) {
         DSD_FPRINTF(out, "soapy_clock = \"%s\"\n", cfg->soapy_clock);
+    }
+    if (cfg->soapy_settings[0]) {
+        DSD_FPRINTF(out, "soapy_settings = \"%s\"\n", cfg->soapy_settings);
     }
     if (cfg->soapy_gains[0]) {
         DSD_FPRINTF(out, "soapy_gains = \"%s\"\n", cfg->soapy_gains);

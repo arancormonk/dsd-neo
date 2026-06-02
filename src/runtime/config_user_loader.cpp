@@ -339,6 +339,8 @@ apply_input_rtltcp_soapy_keys(dsdneoUserConfig* cfg, const char* key_lc, const c
         copy_text_value(cfg->soapy_antenna, sizeof cfg->soapy_antenna, val);
     } else if (strcmp(key_lc, "soapy_clock") == 0) {
         copy_text_value(cfg->soapy_clock, sizeof cfg->soapy_clock, val);
+    } else if (strcmp(key_lc, "soapy_settings") == 0) {
+        copy_text_value(cfg->soapy_settings, sizeof cfg->soapy_settings, val);
     } else if (strcmp(key_lc, "soapy_gains") == 0) {
         copy_text_value(cfg->soapy_gains, sizeof cfg->soapy_gains, val);
     } else if (strcmp(key_lc, "soapy_bandwidth_hz") == 0) {

@@ -341,6 +341,7 @@ struct dsd_opts {
     char soapy_stream_format[16];
     char soapy_antenna[64];
     char soapy_clock[64];
+    char soapy_settings[1024];
     char soapy_gains[512];
     char audio_in_dev[2048]; //increase size for super long directory/file names
     char iq_capture_path[2048];

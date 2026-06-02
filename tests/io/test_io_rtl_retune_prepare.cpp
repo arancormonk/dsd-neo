@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -19,6 +20,8 @@ extern "C" void rtl_device_test_end_capture_reconfigure_with_odd_carry(int* out_
                                                                        int* out_mute_byte_phase);
 extern "C" int rtl_device_test_begin_capture_reconfigure_without_writer(int* out_hold);
 extern "C" int rtl_device_test_usb_reconfigure_discards_samples(size_t input_bytes, size_t* out_ring_used);
+extern "C" int rtl_device_test_soapy_config_settings_visibility(size_t config_size, const char* settings,
+                                                                int* out_seen);
 extern "C" void rtl_device_test_replay_dispatch_reset_event_state(int* phase, int* have_carry, uint8_t* carry_byte);
 extern "C" int rtl_device_test_replay_event_boundary_drained(size_t ring_used, uint64_t submitted_gen,
                                                              uint64_t consumed_gen);
@@ -179,6 +182,17 @@ main(void) {
     failed |= expect_int_eq("coalesced no-profile retune keeps request id", (int)coalesced_request_id, 1);
     failed |= expect_int_eq("coalesced no-profile retune returns coalesced request id",
                             (int)coalesced_returned_request_id, 1);
+
+    int settings_seen = -1;
+    failed |= expect_int_eq("legacy Soapy config settings visibility helper",
+                            rtl_device_test_soapy_config_settings_visibility(RTL_SOAPY_CONFIG_LEGACY_SIZE,
+                                                                             "biasT_ctrl=false", &settings_seen),
+                            0);
+    failed |= expect_int_eq("legacy Soapy config ignores appended settings", settings_seen, 0);
+    failed |= expect_int_eq(
+        "sized Soapy config settings visibility helper",
+        rtl_device_test_soapy_config_settings_visibility(RTL_SOAPY_CONFIG_SIZE, "biasT_ctrl=false", &settings_seen), 0);
+    failed |= expect_int_eq("sized Soapy config observes appended settings", settings_seen, 1);
 
     // Fragmented mute spans are coalesced so capture metadata stays IQ-pair aligned.
     uint64_t pending_mute = 0U;

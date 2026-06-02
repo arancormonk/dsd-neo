@@ -38,6 +38,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #endif
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -362,6 +363,7 @@ struct rtl_device {
     char soapy_requested_profile[32];
     char soapy_requested_antenna[64];
     char soapy_requested_clock[64];
+    char soapy_requested_settings[1024];
     char soapy_requested_gains[512];
     char soapy_requested_stream_format[16];
     /* TCP stats (optional) */
@@ -2137,6 +2139,21 @@ rtl_device_copy_cstr(char* dst, size_t dst_size, const char* src) {
     dst[dst_size - 1] = '\0';
 }
 
+static bool
+rtl_soapy_config_has_field(size_t config_size, size_t field_offset, size_t field_size) {
+    return field_offset <= config_size && field_size <= config_size - field_offset;
+}
+
+static bool
+rtl_soapy_config_field_available(const struct rtl_soapy_config* cfg, size_t config_size, size_t field_offset,
+                                 size_t field_size) {
+    return cfg && rtl_soapy_config_has_field(config_size, field_offset, field_size);
+}
+
+#define RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, field)                                                      \
+    rtl_soapy_config_field_available((cfg), (config_size), offsetof(struct rtl_soapy_config, field),                   \
+                                     sizeof(((struct rtl_soapy_config*)0)->field))
+
 #ifdef USE_SOAPYSDR
 template <typename Fn>
 static int
@@ -2338,6 +2355,175 @@ soapy_apply_clock_locked(struct rtl_device* dev) {
     }
     dev->soapy_dev->setClockSource(dev->soapy_requested_clock);
     DSD_FPRINTF(stderr, "SoapySDR: selected clock source '%s'.\n", dev->soapy_requested_clock);
+    return 0;
+}
+
+static std::vector<std::string>
+soapy_setting_keys_from_info(const SoapySDR::ArgInfoList& infos) {
+    std::vector<std::string> keys;
+    keys.reserve(infos.size());
+    for (const SoapySDR::ArgInfo& info : infos) {
+        if (!info.key.empty()) {
+            keys.push_back(info.key);
+        }
+    }
+    return keys;
+}
+
+static const SoapySDR::ArgInfo*
+soapy_find_setting_info(const SoapySDR::ArgInfoList& infos, const std::string& key) {
+    SoapySDR::ArgInfoList::const_iterator it =
+        std::find_if(infos.begin(), infos.end(), [&key](const SoapySDR::ArgInfo& info) { return info.key == key; });
+    return it != infos.end() ? &(*it) : NULL;
+}
+
+static bool
+soapy_setting_option_allowed(const SoapySDR::ArgInfo& info, const std::string& value) {
+    return std::find(info.options.begin(), info.options.end(), value) != info.options.end();
+}
+
+static dsdneo::SoapySettingValueType
+soapy_setting_value_type_from_arg_info(const SoapySDR::ArgInfo& info) {
+    switch (info.type) {
+        case SoapySDR::ArgInfo::BOOL: return dsdneo::SoapySettingValueType::Bool;
+        case SoapySDR::ArgInfo::INT: return dsdneo::SoapySettingValueType::Int;
+        case SoapySDR::ArgInfo::FLOAT: return dsdneo::SoapySettingValueType::Float;
+        case SoapySDR::ArgInfo::STRING:
+        default: return dsdneo::SoapySettingValueType::String;
+    }
+}
+
+static bool
+soapy_arg_info_has_numeric_range(const SoapySDR::ArgInfo& info) {
+    if (info.type != SoapySDR::ArgInfo::INT && info.type != SoapySDR::ArgInfo::FLOAT) {
+        return false;
+    }
+    const double minimum = info.range.minimum();
+    const double maximum = info.range.maximum();
+    const double step = info.range.step();
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || maximum < minimum) {
+        return false;
+    }
+    /* Soapy's default empty Range is 0..0; no separate presence flag is exposed. */
+    return minimum != 0.0 || maximum != 0.0 || step != 0.0;
+}
+
+static dsdneo::SoapyRange
+soapy_range_from_arg_info(const SoapySDR::ArgInfo& info) {
+    return {info.range.minimum(), info.range.maximum(), info.range.step()};
+}
+
+static bool
+soapy_get_setting_info_locked(struct rtl_device* dev, dsdneo::SoapySettingScope scope,
+                              SoapySDR::ArgInfoList* out_infos) {
+    if (out_infos) {
+        out_infos->clear();
+    }
+    if (!dev || !dev->soapy_dev || !out_infos) {
+        return false;
+    }
+    try {
+        if (scope == dsdneo::SoapySettingScope::Rx0) {
+            *out_infos = dev->soapy_dev->getSettingInfo(SOAPY_SDR_RX, 0);
+        } else {
+            *out_infos = dev->soapy_dev->getSettingInfo();
+        }
+        return true;
+    } catch (const std::exception& e) {
+        DSD_FPRINTF(stderr, "SoapySDR: could not query %s settings metadata: %s\n",
+                    dsdneo::soapy_setting_scope_name(scope), e.what());
+        return false;
+    }
+}
+
+static int
+soapy_validate_setting_request_locked(const dsdneo::SoapySettingRequest& request, const SoapySDR::ArgInfoList& infos) {
+    if (infos.empty()) {
+        return 0;
+    }
+
+    const SoapySDR::ArgInfo* info = soapy_find_setting_info(infos, request.key);
+    if (!info) {
+        std::vector<std::string> keys = soapy_setting_keys_from_info(infos);
+        DSD_FPRINTF(stderr, "SoapySDR: setting '%s' is unavailable for %s scope; choices=[%s].\n", request.key.c_str(),
+                    dsdneo::soapy_setting_scope_name(request.scope), dsdneo::soapy_join_names(keys, 200).c_str());
+        return DSD_ERR_NOT_SUPPORTED;
+    }
+
+    if (!info->options.empty() && !soapy_setting_option_allowed(*info, request.value)) {
+        DSD_FPRINTF(stderr, "SoapySDR: setting '%s' value is invalid for %s scope; choices=[%s].\n",
+                    request.key.c_str(), dsdneo::soapy_setting_scope_name(request.scope),
+                    dsdneo::soapy_join_names(info->options, 200).c_str());
+        return DSD_ERR_NOT_SUPPORTED;
+    }
+    if (info->options.empty()) {
+        const dsdneo::SoapyRange range = soapy_range_from_arg_info(*info);
+        const dsdneo::SoapyRange* range_ptr = soapy_arg_info_has_numeric_range(*info) ? &range : NULL;
+        std::string error;
+        if (!dsdneo::soapy_validate_setting_value(soapy_setting_value_type_from_arg_info(*info), range_ptr,
+                                                  request.value, &error)) {
+            DSD_FPRINTF(stderr, "SoapySDR: setting '%s' value is invalid for %s scope; %s.\n", request.key.c_str(),
+                        dsdneo::soapy_setting_scope_name(request.scope), error.c_str());
+            return DSD_ERR_NOT_SUPPORTED;
+        }
+    }
+
+    return 0;
+}
+
+static int
+soapy_write_setting_locked(struct rtl_device* dev, const dsdneo::SoapySettingRequest& request,
+                           const SoapySDR::ArgInfoList& infos) {
+    try {
+        if (request.scope == dsdneo::SoapySettingScope::Rx0) {
+            dev->soapy_dev->writeSetting(SOAPY_SDR_RX, 0, request.key, request.value);
+        } else {
+            dev->soapy_dev->writeSetting(request.key, request.value);
+        }
+        return 0;
+    } catch (const std::exception& e) {
+        std::vector<std::string> keys = soapy_setting_keys_from_info(infos);
+        DSD_FPRINTF(stderr, "SoapySDR: failed to write setting '%s' for %s scope: %s", request.key.c_str(),
+                    dsdneo::soapy_setting_scope_name(request.scope), e.what());
+        if (!keys.empty()) {
+            DSD_FPRINTF(stderr, "; choices=[%s]", dsdneo::soapy_join_names(keys, 200).c_str());
+        }
+        DSD_FPRINTF(stderr, ".\n");
+        return -1;
+    }
+}
+
+static int
+soapy_apply_settings_locked(struct rtl_device* dev) {
+    if (!dev || !dev->soapy_dev || dev->soapy_requested_settings[0] == '\0') {
+        return 0;
+    }
+
+    std::vector<dsdneo::SoapySettingRequest> requests;
+    std::string error;
+    if (!dsdneo::soapy_parse_settings(dev->soapy_requested_settings, &requests, &error)) {
+        DSD_FPRINTF(stderr, "SoapySDR: invalid soapy_settings: %s.\n", error.c_str());
+        return -1;
+    }
+
+    int applied_count = 0;
+    for (const dsdneo::SoapySettingRequest& request : requests) {
+        SoapySDR::ArgInfoList infos;
+        (void)soapy_get_setting_info_locked(dev, request.scope, &infos);
+        int rc = soapy_validate_setting_request_locked(request, infos);
+        if (rc != 0) {
+            return rc;
+        }
+        rc = soapy_write_setting_locked(dev, request, infos);
+        if (rc != 0) {
+            return rc;
+        }
+        applied_count++;
+    }
+
+    if (applied_count > 0) {
+        DSD_FPRINTF(stderr, "SoapySDR: applied %d driver setting%s.\n", applied_count, applied_count == 1 ? "" : "s");
+    }
     return 0;
 }
 
@@ -3801,6 +3987,7 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->soapy_requested_profile[0] = '\0';
     dev->soapy_requested_antenna[0] = '\0';
     dev->soapy_requested_clock[0] = '\0';
+    dev->soapy_requested_settings[0] = '\0';
     dev->soapy_requested_gains[0] = '\0';
     dev->soapy_requested_stream_format[0] = '\0';
     if (dsd_mutex_init(&dev->tcp_metrics_lock) == 0) {
@@ -4097,18 +4284,27 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
 }
 
 static void
-rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_soapy_config* cfg) {
+rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_soapy_config* cfg, size_t config_size) {
     if (!dev) {
         return;
     }
-    rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile), cfg ? cfg->profile : NULL);
-    rtl_device_copy_cstr(dev->soapy_requested_antenna, sizeof(dev->soapy_requested_antenna), cfg ? cfg->antenna : NULL);
-    rtl_device_copy_cstr(dev->soapy_requested_clock, sizeof(dev->soapy_requested_clock),
-                         cfg ? cfg->clock_source : NULL);
-    rtl_device_copy_cstr(dev->soapy_requested_gains, sizeof(dev->soapy_requested_gains), cfg ? cfg->gains : NULL);
-    rtl_device_copy_cstr(dev->soapy_requested_stream_format, sizeof(dev->soapy_requested_stream_format),
-                         cfg ? cfg->stream_format : NULL);
-    dev->soapy_requested_bandwidth_hz = cfg ? cfg->bandwidth_hz : -1;
+    const char* profile = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, profile) ? cfg->profile : NULL;
+    const char* antenna = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, antenna) ? cfg->antenna : NULL;
+    const char* clock_source =
+        RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, clock_source) ? cfg->clock_source : NULL;
+    const char* settings = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, settings) ? cfg->settings : NULL;
+    const char* gains = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, gains) ? cfg->gains : NULL;
+    const char* stream_format =
+        RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, stream_format) ? cfg->stream_format : NULL;
+
+    rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile), profile);
+    rtl_device_copy_cstr(dev->soapy_requested_antenna, sizeof(dev->soapy_requested_antenna), antenna);
+    rtl_device_copy_cstr(dev->soapy_requested_clock, sizeof(dev->soapy_requested_clock), clock_source);
+    rtl_device_copy_cstr(dev->soapy_requested_settings, sizeof(dev->soapy_requested_settings), settings);
+    rtl_device_copy_cstr(dev->soapy_requested_gains, sizeof(dev->soapy_requested_gains), gains);
+    rtl_device_copy_cstr(dev->soapy_requested_stream_format, sizeof(dev->soapy_requested_stream_format), stream_format);
+    dev->soapy_requested_bandwidth_hz =
+        RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, bandwidth_hz) ? cfg->bandwidth_hz : -1;
 }
 
 #ifdef USE_SOAPYSDR
@@ -4132,6 +4328,10 @@ rtl_device_apply_soapy_configuration_locked(struct rtl_device* dev) {
     if (rc != 0) {
         return rc;
     }
+    rc = soapy_apply_settings_locked(dev);
+    if (rc != 0) {
+        return rc;
+    }
     rc = soapy_apply_named_gains_locked(dev);
     if (rc != 0) {
         return rc;
@@ -4142,10 +4342,15 @@ rtl_device_apply_soapy_configuration_locked(struct rtl_device* dev) {
 
 int
 rtl_device_configure_soapy(struct rtl_device* dev, const struct rtl_soapy_config* config) {
+    return rtl_device_configure_soapy_sized(dev, config, RTL_SOAPY_CONFIG_LEGACY_SIZE);
+}
+
+int
+rtl_device_configure_soapy_sized(struct rtl_device* dev, const struct rtl_soapy_config* config, size_t config_size) {
     if (!dev || dev->backend != RTL_BACKEND_SOAPY) {
         return DSD_ERR_NOT_SUPPORTED;
     }
-    rtl_device_store_soapy_config_request(dev, config);
+    rtl_device_store_soapy_config_request(dev, config, config ? config_size : 0U);
 #ifndef USE_SOAPYSDR
     return DSD_ERR_NOT_SUPPORTED;
 #else
@@ -5373,6 +5578,24 @@ rtl_device_test_usb_reconfigure_discards_samples(size_t input_bytes, size_t* out
     rtl_device_cleanup_common_state(&dev);
     free(buf);
     input_ring_destroy(&ring);
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_soapy_config_settings_visibility(size_t config_size, const char* settings, int* out_seen) {
+    if (!out_seen) {
+        return -1;
+    }
+
+    rtl_device dev{};
+    rtl_device_init_common_state(&dev);
+    rtl_soapy_config cfg{};
+    cfg.settings = settings;
+
+    rtl_device_store_soapy_config_request(&dev, &cfg, config_size);
+    *out_seen = dev.soapy_requested_settings[0] != '\0' ? 1 : 0;
+
+    rtl_device_cleanup_common_state(&dev);
     return 0;
 }
 #endif

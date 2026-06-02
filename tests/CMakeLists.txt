@@ -1926,6 +1926,19 @@ file(
     "[mode]\n"
     "decode = \"dmr\"\n"
 )
+set(_DSD_BOOTSTRAP_SOAPY_CONFIG
+    "${_DSD_BOOTSTRAP_FIXTURE_DIR}/soapy_config.ini"
+)
+file(
+    WRITE "${_DSD_BOOTSTRAP_SOAPY_CONFIG}"
+    "version = 1\n"
+    "\n"
+    "[input]\n"
+    "source = \"soapy\"\n"
+    "soapy_args = \"driver=sdrplay\"\n"
+    "soapy_settings = \"rfnotch_ctrl=true,rx:agc_setpoint=-30\"\n"
+    "rtl_freq = \"851.375M\"\n"
+)
 
 add_test(
     NAME RUNTIME_BOOTSTRAP_ENV_CONFIG
@@ -1958,6 +1971,18 @@ set_tests_properties(
         ENVIRONMENT "${_DSD_BOOTSTRAP_CLI_OVERRIDE_ENV}"
         WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
         PASS_REGULAR_EXPRESSION [=[decode = "dmr"]=]
+)
+
+add_test(
+    NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_SOAPY_SETTINGS
+    COMMAND $<TARGET_FILE:dsd-neo> --config "soapy_config.ini" --print-config
+)
+set_tests_properties(
+    RUNTIME_BOOTSTRAP_PRINT_CONFIG_SOAPY_SETTINGS
+    PROPERTIES
+        WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+        PASS_REGULAR_EXPRESSION
+            [=[soapy_settings = "rfnotch_ctrl=true,rx:agc_setpoint=-30"]=]
 )
 
 add_test(
@@ -4784,7 +4809,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_io_soapy_profile
-    PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
 )
 add_test(NAME IO_SOAPY_PROFILE COMMAND dsd-neo_test_io_soapy_profile)
 

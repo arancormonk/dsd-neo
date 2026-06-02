@@ -17,7 +17,7 @@ Input syntax:
 
 You need three pieces:
 
-- SoapySDR runtime libraries
+- SoapySDR runtime/development libraries, version 0.8.1 or newer
 - `SoapySDRUtil` (device discovery/probe tool)
 - A SoapySDR module/plugin for your radio (Airspy/SDRplay/HackRF/LimeSDR/etc.)
 
@@ -42,7 +42,8 @@ During configure, confirm Soapy availability from the status line:
 
 - `SoapySDR backend enabled: ON (available: ON)`
 
-If availability is `OFF`, install SoapySDR development packages and the module for your radio, then reconfigure.
+If availability is `OFF`, install SoapySDR 0.8.1 or newer development packages and the module for your radio, then
+reconfigure. Older 0.7.x CMake package compatibility is intentionally not supported.
 
 ## 2) Discover device arguments
 
@@ -93,9 +94,23 @@ Optional Soapy-specific keys:
   format when it is `CF32` or `CS16`, then falls back to supported formats.
 - `soapy_antenna = "<name>"` selects a listed RX antenna.
 - `soapy_clock = "<source>"` selects a listed clock source.
+- `soapy_settings = "key=value[,key=value...]"` writes generic Soapy device settings before stream setup. Use
+  `rx:key=value` or `rx0:key=value` for RX channel 0 settings.
 - `soapy_gains = "NAME:dB[,NAME:dB...]"` applies named Soapy gain stages and suppresses aggregate gain changes.
 - `soapy_bandwidth_hz = -1|0|<Hz>` uses profile/default behavior for `-1`, driver automatic/no explicit request for
   `0`, or validates and applies an explicit hardware bandwidth in Hz.
+
+`soapy_settings` is a strict passthrough to the installed Soapy driver. DSD-neo checks reported setting keys and
+option lists when the driver provides metadata, then calls Soapy `writeSetting`. Startup fails for malformed items,
+unknown scopes, missing settings, invalid option values, or write errors.
+
+Common SDRplay module examples include:
+
+- `rfnotch_ctrl=true`
+- `dabnotch_ctrl=true`
+- `biasT_ctrl=false`
+- `agc_setpoint=-30`
+- `rfgain_sel=4`
 
 Full example:
 
@@ -105,6 +120,7 @@ source = "soapy"
 soapy_args = "driver=sdrplay,serial=123456"
 soapy_profile = "sdrplay"
 soapy_stream_format = "auto"
+soapy_settings = "rfnotch_ctrl=true,dabnotch_ctrl=true,biasT_ctrl=false,agc_setpoint=-30,rfgain_sel=4"
 soapy_gains = "IFGR:35"
 soapy_bandwidth_hz = 200000
 rtl_freq = "851.375M"
@@ -136,10 +152,12 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
 ## Behavior and limits vs RTL/RTL-TCP
 
 - `rtl_device` index selection is ignored in Soapy mode.
-- Some RTL-specific controls are not available in Soapy mode (bias tee, direct sampling, offset tuning, xtal/IF-gain
-  controls, test mode, RTL-TCP autotune).
+- Some RTL-specific shortcuts are not available in Soapy mode (RTL bias-tee UI/CLI shortcut, direct sampling, offset
+  tuning, xtal/IF-gain controls, test mode, RTL-TCP autotune). Use `soapy_settings` for driver-specific controls when
+  the Soapy module exposes them, such as SDRplay `biasT_ctrl`.
 - Driver capability support varies. Frequency correction (PPM), manual gain mode/range, and bandwidth control may be
   unavailable on some hardware.
+- Native SDRplay/Airspy APIs are intentionally out of scope for now; DSD-neo controls non-RTL radios through SoapySDR.
 - Requested sample rate/gain may be quantized or clamped by the driver.
 - The current backend expects Soapy RX stream format support for `CF32` or `CS16`; `auto` chooses the native format
   first when it is supported.
@@ -149,11 +167,14 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
 ## Troubleshooting
 
 - `SoapySDR backend unavailable in this build.`:
-  Rebuild with Soapy enabled and installed.
+  Rebuild with Soapy enabled and SoapySDR 0.8.1 or newer installed.
 - `SoapySDR: enumerate found no devices ...`:
   Your args likely do not match any available device; verify with `SoapySDRUtil --find`.
 - `SoapySDR: invalid args string ...`:
   Fix formatting in `soapy_args` or `-i soapy:<args>`.
+- `SoapySDR: invalid soapy_settings ...`, `setting ... is unavailable`, or `failed to write setting`:
+  Compare the configured setting keys and values with `SoapySDRUtil --probe="<args>"`. If a setting appears under
+  channel settings in the probe output, use the `rx:` or `rx0:` prefix.
 - `RX stream formats do not include CF32 or CS16.`:
   The current backend cannot consume that driver stream format.
 - `SoapySDR: RX overflow count=...`:
@@ -161,3 +182,10 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
   and/or overriding tuner bandwidth (env `DSD_NEO_TUNER_BW_HZ=<Hz|auto>`), then reduce system load or adjust driver settings.
 - Discovery/plugin issues:
   Confirm `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your Soapy drivers.
+
+Manual driver-setting check:
+
+```bash
+SoapySDRUtil --probe="driver=sdrplay"
+dsd-neo --config ~/.config/dsd-neo/config.ini -N
+```

@@ -104,13 +104,14 @@ Requirements
 - CMake ≥ 3.20.
 - Dependencies:
   - Required: libsndfile; OpenSSL 3.x libcrypto; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
-  - Optional: librtlsdr (RTL‑SDR support), SoapySDR (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl (rdio API uploads), PortAudio on non-Windows builds, help2man (man page generation).
+  - Optional: librtlsdr (RTL‑SDR support), SoapySDR >= 0.8.1 (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl (rdio API uploads), PortAudio on non-Windows builds, help2man (man page generation).
   - Vocoder: mbelib-neo 2.x (`mbe-neo` CMake package) is required.
 
 OS package hints
 
 - Ubuntu/Debian (apt):
   - `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libssl-dev libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev`
+  - Older distro packages may provide unsupported SoapySDR 0.7.x; install or build SoapySDR 0.8.1 or newer when enabling that backend.
 - macOS (Homebrew):
   - `brew install cmake ninja openssl libsndfile ncurses pulseaudio librtlsdr soapysdr codec2`
 - Windows:
@@ -143,6 +144,7 @@ Build recipes (copy/paste)
 #
 # OS deps (examples):
 # - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libssl-dev libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev
+#   Older distro packages may need a separate SoapySDR 0.8.1+ install.
 # - macOS:         brew install cmake ninja openssl libsndfile ncurses pulseaudio librtlsdr soapysdr codec2
 #
 # Install is optional; you can run directly from the build tree.
@@ -163,6 +165,7 @@ cmake --install build/dev-release --prefix "$HOME/.local"
 ```bash
 # OS deps (examples):
 # - Ubuntu/Debian: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libssl-dev libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev
+#   Older distro packages may need a separate SoapySDR 0.8.1+ install.
 # - macOS:         brew install cmake ninja openssl libsndfile ncurses pulseaudio librtlsdr soapysdr codec2
 
 cmake --preset dev-debug
@@ -247,7 +250,7 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_ENABLE_RTLSDR=ON|OFF` — Enable/disable RTL-SDR backend discovery.
   - `-DDSD_ENABLE_SOAPYSDR=ON|OFF` — Enable/disable SoapySDR backend discovery.
   - `-DDSD_REQUIRE_RTLSDR=ON|OFF` — Fail configure when RTL-SDR is enabled but unavailable.
-  - `-DDSD_REQUIRE_SOAPYSDR=ON|OFF` — Fail configure when SoapySDR is enabled but unavailable.
+  - `-DDSD_REQUIRE_SOAPYSDR=ON|OFF` — Fail configure when SoapySDR >= 0.8.1 is enabled but unavailable.
 - UI and behavior toggles:
   - `-DCOLORS=OFF` — Disable ncurses color output.
   - `-DCOLORSLOGS=OFF` — Disable colored terminal/log output.
@@ -257,7 +260,7 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DSID=ON` — Enable experimental P25p1 Soft ID decoding.
 - Optional features (auto‑detected):
   - RTL‑SDR support is enabled when `librtlsdr` is found.
-  - SoapySDR support is enabled when SoapySDR is found.
+  - SoapySDR support is enabled when SoapySDR >= 0.8.1 is found through a CMake package that exports an imported target.
   - Codec2 support is enabled when `codec2` is found.
   - rdio API upload support is enabled when libcurl is found.
 
@@ -321,7 +324,8 @@ Common options:
 ## SoapySDR Quickstart
 
 - Use SoapySDR when your hardware is not accessed through `librtlsdr` directly.
-- Build with Soapy enabled (`-DDSD_ENABLE_SOAPYSDR=ON`) and optionally require it (`-DDSD_REQUIRE_SOAPYSDR=ON`).
+- Build with Soapy enabled (`-DDSD_ENABLE_SOAPYSDR=ON`) and optionally require it (`-DDSD_REQUIRE_SOAPYSDR=ON`);
+  DSD-neo requires SoapySDR >= 0.8.1 for this backend.
 - Install SoapySDR tools and the Soapy module for your radio; verify with `SoapySDRUtil --info` and discover args with
   `SoapySDRUtil --find`.
 - Run with `-i soapy[:args]`. The `soapy:` string selects backend/device only; set tuning via `rtl_*` keys (at minimum

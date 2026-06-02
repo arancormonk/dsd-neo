@@ -702,6 +702,7 @@ typedef struct dsdneoUserConfig {
     char soapy_stream_format[16];
     char soapy_antenna[64];
     char soapy_clock[64];
+    char soapy_settings[1024];
     char soapy_gains[512];
     int soapy_bandwidth_hz;
     int soapy_bandwidth_hz_is_set;

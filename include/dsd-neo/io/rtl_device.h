@@ -15,6 +15,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -31,7 +32,9 @@ struct dsd_iq_capture_writer;
  *
  * String pointers may be NULL or empty. bandwidth_hz uses -1 for profile/default
  * behavior, 0 for driver automatic/no explicit bandwidth request, and positive
- * values for a requested hardware bandwidth in Hz.
+ * values for a requested hardware bandwidth in Hz. Fields appended after
+ * bandwidth_hz are read only by rtl_device_configure_soapy_sized() when the
+ * supplied config_size includes them.
  */
 struct rtl_soapy_config {
     const char* profile;
@@ -40,7 +43,11 @@ struct rtl_soapy_config {
     const char* gains;
     const char* stream_format;
     int bandwidth_hz;
+    const char* settings;
 };
+
+#define RTL_SOAPY_CONFIG_LEGACY_SIZE offsetof(struct rtl_soapy_config, settings)
+#define RTL_SOAPY_CONFIG_SIZE        sizeof(struct rtl_soapy_config)
 
 /**
  * @brief Create and initialize a local RTL-SDR device over USB (librtlsdr).
@@ -84,9 +91,20 @@ struct rtl_device* rtl_device_create_soapy(const char* soapy_args, struct input_
  * @brief Apply SoapySDR-specific profile and capability-aware startup options.
  *
  * Must be called after rtl_device_create_soapy() and before rtl_device_start_async().
+ * Preserves compatibility with callers built against the legacy six-field
+ * rtl_soapy_config layout and ignores fields appended after bandwidth_hz.
  * Returns 0 for success, negative for failure/unsupported backend.
  */
 int rtl_device_configure_soapy(struct rtl_device* dev, const struct rtl_soapy_config* config);
+
+/**
+ * @brief Apply SoapySDR-specific startup options with an explicit config size.
+ *
+ * Pass sizeof(struct rtl_soapy_config), or RTL_SOAPY_CONFIG_SIZE, to opt in to
+ * appended fields such as settings. Smaller sizes are accepted and only fields
+ * fully contained by config_size are read.
+ */
+int rtl_device_configure_soapy_sized(struct rtl_device* dev, const struct rtl_soapy_config* config, size_t config_size);
 
 /**
  * @brief Destroy an RTL-SDR device and free resources.

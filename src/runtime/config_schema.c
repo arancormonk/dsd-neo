@@ -41,6 +41,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"input", "soapy_stream_format", "SoapySDR RX stream format", "auto", "auto|cf32|cs16", DSDCFG_TYPE_ENUM, 0, 0, 0},
     {"input", "soapy_antenna", "SoapySDR RX antenna name", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
     {"input", "soapy_clock", "SoapySDR clock source name", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
+    {"input", "soapy_settings", "SoapySDR device/RX setting overrides (key=value[,rx:key=value])", "", NULL,
+     DSDCFG_TYPE_STRING, 0, 0, 0},
     {"input", "soapy_gains", "SoapySDR named gain stages (NAME:dB[,NAME:dB])", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
     {"input", "soapy_bandwidth_hz", "SoapySDR hardware bandwidth in Hz (-1 profile, 0 auto)", "-1", NULL,
      DSDCFG_TYPE_INT, -1, 20000000, 0},

@@ -5,10 +5,15 @@
 
 #include "soapy_profile.h"
 
+#include <dsd-neo/core/parse.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <iterator>
+#include <limits.h>
+#include <limits>
+#include <sstream>
 
 namespace dsdneo {
 
@@ -42,6 +47,114 @@ contains_any_lower(const std::string& lower_haystack, const char* const* needles
 bool
 equals_ci(const std::string& lhs, const char* rhs) {
     return rhs && lower_copy(lhs) == rhs;
+}
+
+std::string
+trim_copy(const std::string& value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace((unsigned char)value[start])) {
+        start++;
+    }
+    size_t end = value.size();
+    while (end > start && std::isspace((unsigned char)value[end - 1])) {
+        end--;
+    }
+    return value.substr(start, end - start);
+}
+
+bool
+parse_setting_item(const std::string& item, SoapySettingRequest* out_request, std::string* out_error) {
+    if (!out_request) {
+        return false;
+    }
+    const std::string trimmed = trim_copy(item);
+    if (trimmed.empty()) {
+        if (out_error) {
+            *out_error = "empty Soapy setting item";
+        }
+        return false;
+    }
+
+    const size_t eq = trimmed.find('=');
+    if (eq == std::string::npos) {
+        if (out_error) {
+            *out_error = "Soapy setting '" + trimmed + "' must use key=value syntax";
+        }
+        return false;
+    }
+
+    SoapySettingScope scope = SoapySettingScope::Device;
+    size_t key_start = 0;
+    const size_t colon = trimmed.find(':');
+    if (colon != std::string::npos && colon < eq) {
+        const std::string scope_text = trim_copy(trimmed.substr(0, colon));
+        if (scope_text == "rx" || scope_text == "rx0") {
+            scope = SoapySettingScope::Rx0;
+        } else {
+            if (out_error) {
+                *out_error = "unknown Soapy setting scope '" + scope_text + "'";
+            }
+            return false;
+        }
+        key_start = colon + 1;
+    }
+
+    const std::string key = trim_copy(trimmed.substr(key_start, eq - key_start));
+    const std::string value = trim_copy(trimmed.substr(eq + 1));
+    if (key.empty()) {
+        if (out_error) {
+            *out_error = "Soapy setting '" + trimmed + "' has an empty key";
+        }
+        return false;
+    }
+    if (value.empty()) {
+        if (out_error) {
+            *out_error = "Soapy setting '" + trimmed + "' has an empty value";
+        }
+        return false;
+    }
+
+    out_request->scope = scope;
+    out_request->key = key;
+    out_request->value = value;
+    return true;
+}
+
+void
+set_error(std::string* out_error, const std::string& text) {
+    if (out_error) {
+        *out_error = text;
+    }
+}
+
+std::string
+range_text(const SoapyRange& range) {
+    std::ostringstream out;
+    out << '[' << range.minimum << ", " << range.maximum << ']';
+    return out.str();
+}
+
+bool
+value_in_range(double value, const SoapyRange& range) {
+    return std::isfinite(value) && range.minimum <= range.maximum && value >= range.minimum && value <= range.maximum;
+}
+
+bool
+parse_finite_double(const std::string& value, double* out) {
+    if (!out) {
+        return false;
+    }
+    double parsed = 0.0;
+    if (dsd_parse_double_strict(value.c_str(), -std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+                                &parsed)
+        != 0) {
+        return false;
+    }
+    if (!std::isfinite(parsed)) {
+        return false;
+    }
+    *out = parsed;
+    return true;
 }
 
 const SoapyProfile k_profiles[] = {
@@ -353,6 +466,96 @@ soapy_join_names(const std::vector<std::string>& names, size_t max_chars) {
         out += name;
     }
     return out.empty() ? "-" : out;
+}
+
+const char*
+soapy_setting_scope_name(SoapySettingScope scope) {
+    switch (scope) {
+        case SoapySettingScope::Rx0: return "rx0";
+        case SoapySettingScope::Device:
+        default: return "device";
+    }
+}
+
+bool
+soapy_parse_settings(const std::string& spec, std::vector<SoapySettingRequest>* out_requests, std::string* out_error) {
+    if (out_requests) {
+        out_requests->clear();
+    }
+    if (out_error) {
+        out_error->clear();
+    }
+    const std::string trimmed = trim_copy(spec);
+    if (trimmed.empty()) {
+        return true;
+    }
+
+    std::vector<SoapySettingRequest> parsed;
+    size_t pos = 0;
+    while (pos <= spec.size()) {
+        const size_t next = spec.find_first_of(",;", pos);
+        const std::string item = spec.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
+        SoapySettingRequest request = {};
+        if (!parse_setting_item(item, &request, out_error)) {
+            return false;
+        }
+        parsed.push_back(request);
+        if (next == std::string::npos) {
+            break;
+        }
+        pos = next + 1;
+    }
+
+    if (out_requests) {
+        *out_requests = parsed;
+    }
+    return true;
+}
+
+bool
+soapy_validate_setting_value(SoapySettingValueType type, const SoapyRange* range, const std::string& value,
+                             std::string* out_error) {
+    if (out_error) {
+        out_error->clear();
+    }
+
+    switch (type) {
+        case SoapySettingValueType::Bool:
+            if (value == "true" || value == "false") {
+                return true;
+            }
+            set_error(out_error, "expected boolean true or false");
+            return false;
+
+        case SoapySettingValueType::Int: {
+            long parsed = 0;
+            if (dsd_parse_long_strict(value.c_str(), 10, LONG_MIN, LONG_MAX, &parsed) != 0) {
+                set_error(out_error, "expected integer");
+                return false;
+            }
+            if (range && !value_in_range((double)parsed, *range)) {
+                set_error(out_error, "expected integer in reported range " + range_text(*range));
+                return false;
+            }
+            return true;
+        }
+
+        case SoapySettingValueType::Float: {
+            double parsed = 0.0;
+            if (!parse_finite_double(value, &parsed)) {
+                set_error(out_error, "expected finite number");
+                return false;
+            }
+            if (range && !value_in_range(parsed, *range)) {
+                set_error(out_error, "expected number in reported range " + range_text(*range));
+                return false;
+            }
+            return true;
+        }
+
+        case SoapySettingValueType::String:
+        default: return true;
+    }
 }
 
 } // namespace dsdneo
