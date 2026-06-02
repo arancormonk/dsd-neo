@@ -45,6 +45,7 @@ fake_rtl_fsk_output_kind(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 static int g_rtl_tune_calls = 0;
 static uint32_t g_rtl_tune_freq = 0;
+static int g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 static int g_rtl_output_rate = 48000;
 static int g_rtl_cqpsk_enable = 0;
 static int g_rtl_symbol_rate_hz = 6000;
@@ -65,6 +66,7 @@ static void
 reset_rtl_profile_fakes(void) {
     g_rtl_tune_calls = 0;
     g_rtl_tune_freq = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_output_rate = 48000;
     g_rtl_cqpsk_enable = 1;
     g_rtl_symbol_rate_hz = 6000;
@@ -171,8 +173,10 @@ __wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     (void)ctx;
     g_rtl_tune_calls++;
     g_rtl_tune_freq = center_freq_hz;
-    apply_pending_profile(center_freq_hz);
-    return RTL_STREAM_TUNE_OK;
+    if (g_rtl_tune_result == RTL_STREAM_TUNE_OK) {
+        apply_pending_profile(center_freq_hz);
+    }
+    return g_rtl_tune_result;
 }
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -320,6 +324,7 @@ main(void) {
     state->trunk_cc_freq = 769868750;
     state->p25_cc_is_tdma = 0;
     state->p25_p2_active_slot = 0;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
     state->last_cc_sync_time = time(NULL) - 11;
     state->last_vc_sync_time = time(NULL) - 11;
     state->p25_vc_freq[0] = 771056250;
@@ -346,15 +351,88 @@ main(void) {
 
     reset_rtl_profile_fakes();
     opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->p25_trunk = 1;
     opts->trunk_enable = 1;
+    opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
+    opts->mod_qpsk = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 771156250;
+    state->lcn_freq_count = 1;
+    state->p25_cc_freq = 769868750;
+    state->trunk_cc_freq = 769868750;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("p25-rtl-nocarrier-cache-prime", g_rtl_tune_calls == 2 && g_rtl_tune_freq == 769868750U);
+
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->lcn_freq_roll = 0;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("p25-rtl-nocarrier-cache-allows-scan-retune",
+                      g_rtl_tune_calls == 3 && g_rtl_tune_freq == 771156250U);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    reset_rtl_profile_fakes();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    opts->mod_qpsk = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 769868750;
+    state->trunk_cc_freq = 769868750;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->p25_vc_freq[0] = 771056250;
+    state->p25_vc_freq[1] = 771056250;
+    state->trunk_vc_freq[0] = 771056250;
+    state->trunk_vc_freq[1] = 771056250;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("p25-rtl-nocarrier-deferred-tune", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769868750U);
+    rc |= expect_true("p25-rtl-nocarrier-deferred-clears-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);
+    rc |= expect_true("p25-rtl-nocarrier-deferred-clears-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0
+                                                                  && state->trunk_vc_freq[0] == 0
+                                                                  && state->trunk_vc_freq[1] == 0);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    reset_rtl_profile_fakes();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    opts->frame_p25p1 = 0;
+    opts->frame_p25p2 = 0;
+    opts->frame_dmr = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->p25_cc_freq = 852012500;
     state->trunk_cc_freq = 851012500;
     state->dmr_rest_channel = 7;
     state->trunk_chan_map[7] = 853012500;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state->last_cc_sync_time = time(NULL) - 11;
     state->last_vc_sync_time = time(NULL) - 11;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
 
     noCarrier(opts, state);
 
@@ -362,6 +440,8 @@ main(void) {
     rc |= expect_true("dmr-rtl-nocarrier-clears-rest", state->dmr_rest_channel == -1);
     rc |= expect_true("dmr-rtl-nocarrier-clears-stale-p25-cc",
                       state->trunk_cc_freq == 853012500 && state->p25_cc_freq == 0);
+    rc |= expect_true("dmr-rtl-nocarrier-keeps-generic-profile",
+                      g_rtl_symbol_rate_hz == 6000 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_WIDE);
 
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
