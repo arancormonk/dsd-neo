@@ -313,7 +313,7 @@ dpmr_print_scrambler_state(const dsd_state* state) {
     }
 }
 
-static void
+static void DSD_ATTR_USED
 dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
     uint32_t start = 0;
     uint32_t end = 4;

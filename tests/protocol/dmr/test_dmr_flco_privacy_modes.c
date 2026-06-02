@@ -9,6 +9,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -55,6 +56,32 @@ hytera_checksum(const uint8_t bytes[8]) {
     checksum = (uint8_t)(~checksum & 0xFFU);
     checksum++;
     return checksum;
+}
+
+static int s_scan_activity_calls = 0;
+static uint32_t s_scan_activity_target = 0;
+static uint32_t s_scan_activity_source = 0;
+static int s_scan_activity_is_private = 0;
+static int s_scan_activity_encrypted = 0;
+static int s_scan_activity_data_call = 0;
+
+static void
+capture_scan_dmr_conventional_activity(const dsd_opts* opts, dsd_state* state, uint32_t target, uint32_t source,
+                                       int is_private, int encrypted, int data_call) {
+    (void)opts;
+    (void)state;
+    s_scan_activity_calls++;
+    s_scan_activity_target = target;
+    s_scan_activity_source = source;
+    s_scan_activity_is_private = is_private;
+    s_scan_activity_encrypted = encrypted;
+    s_scan_activity_data_call = data_call;
+}
+
+static void
+clear_scan_hooks(void) {
+    dsd_trunk_scan_hooks hooks = {0};
+    dsd_trunk_scan_hooks_set(hooks);
 }
 
 static void
@@ -168,11 +195,76 @@ test_hytera_enhanced_flco_uses_secondary_checksum(void) {
     assert(state.payload_mi == 0x0123456789ULL);
 }
 
+static void
+test_flco_scan_hook_reports_encrypted_service_option(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    s_scan_activity_calls = 0;
+    s_scan_activity_target = 0;
+    s_scan_activity_source = 0;
+    s_scan_activity_is_private = 0;
+    s_scan_activity_encrypted = 0;
+    s_scan_activity_data_call = 0;
+
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.dmr_conventional_activity = capture_scan_dmr_conventional_activity;
+    dsd_trunk_scan_hooks_set(hooks);
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    clear_scan_hooks();
+
+    assert(irr == 0);
+    assert(s_scan_activity_calls == 1);
+    assert(s_scan_activity_target == 1001U);
+    assert(s_scan_activity_source == 2002U);
+    assert(s_scan_activity_is_private == 0);
+    assert(s_scan_activity_encrypted == 1);
+    assert(s_scan_activity_data_call == 0);
+}
+
+static void
+test_hytera_flco_scan_hook_uses_final_call_type(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.gi[0] = 0;
+
+    s_scan_activity_calls = 0;
+    s_scan_activity_is_private = 0;
+
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.dmr_conventional_activity = capture_scan_dmr_conventional_activity;
+    dsd_trunk_scan_hooks_set(hooks);
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x03U, 0x68U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    clear_scan_hooks();
+
+    assert(irr == 0);
+    assert(state.gi[0] == 1);
+    assert(s_scan_activity_calls == 1);
+    assert(s_scan_activity_is_private == 1);
+}
+
 int
 main(void) {
     test_flco_output_uses_real_newlines();
     test_kirisun_flco_sets_late_entry_mode();
     test_hytera_enhanced_flco_uses_secondary_checksum();
+    test_flco_scan_hook_reports_encrypted_service_option();
+    test_hytera_flco_scan_hook_uses_final_call_type();
     printf("DMR FLCO privacy modes: OK\n");
     return 0;
 }

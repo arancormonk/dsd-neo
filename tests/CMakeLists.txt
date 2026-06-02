@@ -1724,6 +1724,31 @@ else()
 endif()
 add_test(NAME ENGINE_CLEANUP_AUDIO COMMAND dsd-neo_test_engine_cleanup_audio)
 
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_engine_synced_trunk_scan_tick
+        engine/test_engine_synced_trunk_scan_tick.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_synced_trunk_scan_tick
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_synced_trunk_scan_tick
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_SYNCED_TRUNK_SCAN_TICK
+        COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
+    )
+endif()
+
 add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
@@ -1741,6 +1766,21 @@ add_test(
     NAME ENGINE_TRUNK_RETUNE_REGRESSION
     COMMAND dsd-neo_test_engine_trunk_retune_regression
 )
+
+add_executable(
+    dsd-neo_test_engine_trunk_scan
+    engine/test_engine_trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_trunk_scan
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_engine_trunk_scan
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
 
 add_executable(
     dsd-neo_test_runtime_config_user

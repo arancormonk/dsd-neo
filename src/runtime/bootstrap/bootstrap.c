@@ -330,6 +330,124 @@ bootstrap_parse_runtime_args(dsd_opts* opts, dsd_state* state, int argc, char** 
 }
 
 static int
+bootstrap_short_arg_consumes_value(char opt) {
+    return strchr("stvziodcgnwBCRfmxASMGDLVUKbHXQ@!12567_9kIJ", opt) != NULL;
+}
+
+static int
+bootstrap_short_arg_disables_inherited_trunk_scan(char opt) {
+    return opt == 'C' || opt == 'T' || opt == 'Y' || opt == 'f' || opt == 'i' || opt == 'm' || opt == 'r' || opt == 's';
+}
+
+static int
+bootstrap_long_arg_disables_inherited_trunk_scan(const char* arg) {
+    if (!arg) {
+        return 0;
+    }
+    return strcmp(arg, "--iq-replay") == 0 || strncmp(arg, "--iq-replay=", 12) == 0 || strcmp(arg, "--trunk-scan") == 0
+           || strncmp(arg, "--trunk-scan=", 13) == 0;
+}
+
+static int
+bootstrap_clamp_compacted_argc(int compacted_argc, int original_argc) {
+    if (compacted_argc < 0) {
+        return 0;
+    }
+    if (compacted_argc > original_argc) {
+        return original_argc;
+    }
+    return compacted_argc;
+}
+
+static int
+bootstrap_compacted_short_arg_disables_inherited_trunk_scan(const char* arg, int* out_consumes_next) {
+    if (out_consumes_next) {
+        *out_consumes_next = 0;
+    }
+    if (!arg) {
+        return 0;
+    }
+    for (int j = 1; arg[j] != '\0'; j++) {
+        if (bootstrap_short_arg_disables_inherited_trunk_scan(arg[j])) {
+            return 1;
+        }
+        if (bootstrap_short_arg_consumes_value(arg[j])) {
+            if (out_consumes_next && arg[j + 1] == '\0') {
+                *out_consumes_next = 1;
+            }
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static int
+bootstrap_compacted_arg_disables_inherited_trunk_scan(int argc, char** argv) {
+    char** argv_copy = (char**)calloc((size_t)argc + 1U, sizeof(*argv_copy));
+    if (!argv_copy) {
+        return 1;
+    }
+    for (int i = 0; i < argc; i++) {
+        argv_copy[i] = argv[i];
+    }
+
+    int compacted_argc = bootstrap_clamp_compacted_argc(dsd_cli_compact_args(argc, argv_copy), argc);
+    int disables = 0;
+    for (int i = 1, advance = 1; i < compacted_argc && !disables; i += advance) {
+        advance = 1;
+        const char* arg = argv_copy[i];
+        if (!arg) {
+            break;
+        }
+        if (arg[0] != '-' || arg[1] == '\0') {
+            disables = 1;
+            break;
+        }
+        if (arg[1] == '-') {
+            continue;
+        }
+
+        int consumes_next = 0;
+        if (bootstrap_compacted_short_arg_disables_inherited_trunk_scan(arg, &consumes_next)) {
+            disables = 1;
+        } else if (consumes_next && i + 1 < compacted_argc) {
+            advance = 2;
+        }
+    }
+
+    free((void*)argv_copy);
+    return disables;
+}
+
+static int
+bootstrap_cli_disables_inherited_trunk_scan(int argc, char** argv, int cfg_path_positional_ini) {
+    if (cfg_path_positional_ini || argc <= 1 || !argv) {
+        return 0;
+    }
+    for (int i = 1; i < argc; i++) {
+        const char* arg = argv[i];
+        if (!arg) {
+            break;
+        }
+        if (bootstrap_long_arg_disables_inherited_trunk_scan(arg)) {
+            return 1;
+        }
+    }
+    return bootstrap_compacted_arg_disables_inherited_trunk_scan(argc, argv);
+}
+
+static void
+bootstrap_apply_trunk_scan_pre_cli_gating(dsd_opts* opts, int argc, char** argv, int cfg_path_positional_ini,
+                                          int user_cfg_loaded, int explicit_profile_selected) {
+    if (!opts || !user_cfg_loaded || explicit_profile_selected || !opts->trunk_scan_enabled) {
+        return;
+    }
+    if (bootstrap_cli_disables_inherited_trunk_scan(argc, argv, cfg_path_positional_ini)) {
+        opts->trunk_scan_enabled = 0;
+    }
+}
+
+static int
 bootstrap_handle_print_config(const bootstrap_cli_args* args, dsd_opts* opts, const dsd_state* state,
                               int* out_exit_rc) {
     if (!args->print_config_cli) {
@@ -373,8 +491,8 @@ bootstrap_handle_validate_config(const bootstrap_cli_args* args, const char* con
             return DSD_BOOTSTRAP_ERROR;
         }
         vpath = resolved_vpath;
-        rc = dsd_user_config_validate_stream(validate_stream, &diags);
         fclose(validate_stream);
+        rc = dsd_user_config_validate(vpath, &diags);
     } else {
         const char* default_vpath = dsd_user_config_default_path();
         if (!default_vpath || !*default_vpath) {
@@ -588,6 +706,8 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
         return boot_rc;
     }
 
+    bootstrap_apply_trunk_scan_pre_cli_gating(opts, argc, argv, args.cfg_path_positional_ini, user_cfg_loaded,
+                                              explicit_profile_selected);
     boot_rc = bootstrap_parse_runtime_args(opts, state, argc, argv, args.cfg_path_positional_ini, &user_cfg,
                                            user_cfg_loaded, args.cli_file_rate_override, &argc_effective, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {

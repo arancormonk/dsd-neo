@@ -21,6 +21,7 @@
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1591,6 +1592,10 @@ static int g_sm_initialized = 0;
 
 p25_sm_ctx_t*
 p25_sm_get_ctx(void) {
+    p25_sm_ctx_t* scan_ctx = (p25_sm_ctx_t*)dsd_trunk_scan_hook_p25_ctx();
+    if (scan_ctx) {
+        return scan_ctx;
+    }
     if (!g_sm_initialized) {
         p25_sm_init_ctx(&g_sm_ctx, NULL, NULL);
         g_sm_initialized = 1;

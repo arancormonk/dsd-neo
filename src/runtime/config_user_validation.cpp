@@ -22,17 +22,33 @@
 #include "dsd-neo/core/safe_api.h"
 
 static int
-validate_bool_value(const char* val) {
-    if (!val || !*val) {
+parse_bool_value(const char* val, int* out) {
+    if (!val || !*val || !out) {
         return -1;
     }
     if (dsd_strcasecmp(val, "1") == 0 || dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0
-        || dsd_strcasecmp(val, "on") == 0 || dsd_strcasecmp(val, "0") == 0 || dsd_strcasecmp(val, "false") == 0
-        || dsd_strcasecmp(val, "no") == 0 || dsd_strcasecmp(val, "off") == 0) {
+        || dsd_strcasecmp(val, "on") == 0) {
+        *out = 1;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "0") == 0 || dsd_strcasecmp(val, "false") == 0 || dsd_strcasecmp(val, "no") == 0
+        || dsd_strcasecmp(val, "off") == 0) {
+        *out = 0;
         return 0;
     }
     return -1;
 }
+
+static int
+validate_bool_value(const char* val) {
+    int parsed = 0;
+    return parse_bool_value(val, &parsed);
+}
+
+namespace {
+static const int DSD_CONFIG_VALIDATE_MAX_PROFILES = 64;
+static const size_t DSD_CONFIG_VALIDATE_PROFILE_BUF_SIZE = 4096U;
+} // namespace
 
 static int
 validate_int_value(const char* val, int* out_val) {
@@ -332,8 +348,107 @@ validate_config_line(char* p, int line_num, const char* current_section, int is_
     validate_section_key_value(key, val, diags, line_num, current_section);
 }
 
-int
-dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
+static void
+validate_composed_trunk_scan_requirements(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                          dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !cfg->trunk_scan_enabled || cfg->trunk_scan_targets_csv[0] != '\0') {
+        return;
+    }
+    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "trunk_scan", key ? key : "targets_csv",
+                     "targets_csv is required when trunk_scan.enabled is true");
+}
+
+static void
+validate_composed_trunk_scan_channel_map_conflict(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                                  dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !cfg->trunk_scan_enabled || cfg->trunk_chan_csv[0] == '\0') {
+        return;
+    }
+    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, section ? section : "trunking", key ? key : "chan_csv",
+                     "trunking.chan_csv cannot be combined with trunk_scan.enabled; use per-target chan_csv values");
+}
+
+static void
+validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
+    validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
+    validate_composed_trunk_scan_channel_map_conflict(cfg, "trunking", "chan_csv", diags);
+}
+
+static void
+validate_composed_profile_config(const char* profile_name, const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
+    char section[64];
+    DSD_SNPRINTF(section, sizeof section, "profile.%s", profile_name ? profile_name : "");
+    section[sizeof section - 1] = '\0';
+    validate_composed_trunk_scan_requirements(cfg, section, "trunk_scan.targets_csv", diags);
+    validate_composed_trunk_scan_channel_map_conflict(cfg, section, "trunking.chan_csv", diags);
+}
+
+static void
+validate_composed_config_path(const char* path, dsdcfg_diagnostics_t* diags) {
+    if (!path || !diags) {
+        return;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load_profile(path, NULL, &cfg) == 0) {
+        validate_composed_config_base(&cfg, diags);
+    }
+
+    const char* names[DSD_CONFIG_VALIDATE_MAX_PROFILES];
+    char names_buf[DSD_CONFIG_VALIDATE_PROFILE_BUF_SIZE];
+    int count =
+        dsd_user_config_list_profiles(path, names, names_buf, sizeof names_buf, DSD_CONFIG_VALIDATE_MAX_PROFILES);
+    if (count <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (dsd_user_config_load_profile(path, names[i], &cfg) == 0) {
+            validate_composed_profile_config(names[i], &cfg, diags);
+        }
+    }
+}
+
+static void
+validate_composed_config_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
+    if (!stream || !diags) {
+        return;
+    }
+
+    dsdneoUserConfig cfg;
+    if (fseek(stream, 0L, SEEK_SET) != 0) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "Cannot seek config stream");
+        return;
+    }
+    if (dsd_user_config_load_profile_stream(stream, "<stream>", NULL, &cfg) == 0) {
+        validate_composed_config_base(&cfg, diags);
+    }
+
+    const char* names[DSD_CONFIG_VALIDATE_MAX_PROFILES];
+    char names_buf[DSD_CONFIG_VALIDATE_PROFILE_BUF_SIZE];
+    if (fseek(stream, 0L, SEEK_SET) != 0) {
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "Cannot seek config stream");
+        return;
+    }
+    int count = dsd_user_config_list_profiles_stream(stream, names, names_buf, sizeof names_buf,
+                                                     DSD_CONFIG_VALIDATE_MAX_PROFILES);
+    if (count <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (fseek(stream, 0L, SEEK_SET) != 0) {
+            dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "Cannot seek config stream");
+            return;
+        }
+        if (dsd_user_config_load_profile_stream(stream, "<stream>", names[i], &cfg) == 0) {
+            validate_composed_profile_config(names[i], &cfg, diags);
+        }
+    }
+}
+
+static int
+validate_config_stream_syntax(FILE* stream, dsdcfg_diagnostics_t* diags) {
     if (!diags) {
         return -1;
     }
@@ -377,6 +492,15 @@ dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
 }
 
 int
+dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags) {
+    int rc = validate_config_stream_syntax(stream, diags);
+    if (rc == 0) {
+        validate_composed_config_stream(stream, diags);
+    }
+    return diags && diags->error_count > 0 ? -1 : rc;
+}
+
+int
 dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
     if (!diags) {
         return -1;
@@ -398,9 +522,12 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
         return -1;
     }
 
-    int rc = dsd_user_config_validate_stream(fp, diags);
+    int rc = validate_config_stream_syntax(fp, diags);
     fclose(fp);
-    return rc;
+    if (rc == 0) {
+        validate_composed_config_path(path, diags);
+    }
+    return diags->error_count > 0 ? -1 : rc;
 }
 
 void

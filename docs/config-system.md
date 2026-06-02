@@ -99,6 +99,7 @@ Path expansion is applied to:
 - `[input] file_path`
 - `[trunking] chan_csv`
 - `[trunking] group_csv`
+- `[trunk_scan] targets_csv`
 - `[logging] event_log`
 - `[logging] frame_log`
 - `[recording] per_call_wav_dir`
@@ -316,6 +317,14 @@ small subset is exposed as config keys for convenience (for example
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow encrypted calls | `true` |
+
+**[trunk_scan] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `enabled` | BOOL | Enable single-tuner trunk scan | `false` |
+| `targets_csv` | PATH | Scan target list CSV | (empty) |
+| `idle_dwell_ms` | INT (250-600000) | Default idle dwell per target | `3000` |
+| `activity_hold_ms` | INT (250-600000) | Conventional DMR activity hold | `1200` |
 
 **[logging] section:**
 | Key | Type | Description | Default |
@@ -540,6 +549,48 @@ When `[trunking] enabled = true`:
 - If you start DSD-neo with any CLI args and you do not explicitly set trunking
   or scan mode (`-T`/`-Y`), trunking inherited from the config is disabled for
   that run.
+
+When `[trunk_scan] enabled = true`:
+
+- `targets_csv` is required and must use the target format in `docs/csv-formats.md`.
+- Global `[trunking] chan_csv` is rejected; each trunk target must name its own `chan_csv` if it needs a channel map.
+- The group policy remains global, so `[trunking] group_csv`, `allow_list`, and tune controls apply uniformly across all
+  scan targets.
+- One tuner is rotated across targets. Calls on systems that are not currently parked can be missed.
+- Runtime still needs a retuning path, either RTL-family input opened by DSD-neo or rigctl tuning. IQ replay is rejected.
+- Full user workflow, examples, and troubleshooting: `docs/trunk-scan.md`.
+
+Example:
+
+```ini
+[input]
+source = "rtl"
+rtl_freq = "851.0125M"
+rtl_gain = 22
+rtl_bw_khz = 48
+
+[mode]
+decode = "tdma"
+
+[trunking]
+group_csv = "~/radio/group.csv"
+
+[trunk_scan]
+enabled = true
+targets_csv = "~/radio/trunk_scan_targets.csv"
+idle_dwell_ms = 3000
+activity_hold_ms = 1200
+```
+
+Config/CLI interaction:
+
+- `--validate-config` reports an error when `trunk_scan.enabled = true` lacks `targets_csv`.
+- `--validate-config` reports an error when trunk scan and `[trunking] chan_csv` are both enabled.
+- If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
+  file/replay input, trunking mode, or legacy scan mode disable the inherited scan for that run. UI-only flags such as
+  `-N` and trunk-scan timing overrides keep the inherited scan enabled.
+- Explicit profile runs preserve the profile's trunk scan settings and disable autosave for that process, like other
+  profile-based runs.
 
 ---
 

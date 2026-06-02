@@ -435,6 +435,32 @@ main(void) {
     assert(g_drain_audio_calls == 0);
     assert(g_rtl_tune_calls == 1);
 
+    /* DMR/GFSK control-channel retunes must replace any previous P25 CQPSK
+     * profile at the RTL retune boundary. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 2;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_symbol_rate_hz = 6000;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    g_rtl_ted_sps = 8;
+    g_rtl_ted_sps_override = 8;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_trunk_tune_to_cc(opts, state, 452000000, 10) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->trunk_cc_freq == 452000000);
+    assert(g_rtl_pending_active == 0);
+    assert(g_rtl_cqpsk_enable == 0);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_symbol_levels == 4);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_12K5);
+    assert(g_rtl_ted_sps == 10);
+    assert(g_rtl_ted_sps_override == 0);
+
     /* Deferred RTL voice retunes must roll back the demod profile/TED changes
      * prepared for the requested channel. */
     DSD_MEMSET(opts, 0, sizeof(*opts));

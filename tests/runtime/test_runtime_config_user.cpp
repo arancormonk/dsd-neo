@@ -162,6 +162,12 @@ test_load_and_apply_basic(void) {
                              "group_csv = \"/tmp/group.csv\"\n"
                              "allow_list = true\n"
                              "\n"
+                             "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"/tmp/targets.csv\"\n"
+                             "idle_dwell_ms = 5000\n"
+                             "activity_hold_ms = 2000\n"
+                             "\n"
                              "[logging]\n"
                              "event_log = \"/tmp/events.log\"\n"
                              "frame_log = \"/tmp/frames.log\"\n"
@@ -212,6 +218,11 @@ test_load_and_apply_basic(void) {
         DSD_FPRINTF(stderr, "trunking section not parsed correctly\n");
         rc |= 1;
     }
+    if (!cfg.has_trunk_scan || !cfg.trunk_scan_enabled || strcmp(cfg.trunk_scan_targets_csv, "/tmp/targets.csv") != 0
+        || cfg.trunk_scan_idle_dwell_ms != 5000 || cfg.trunk_scan_activity_hold_ms != 2000) {
+        DSD_FPRINTF(stderr, "trunk_scan section not parsed correctly\n");
+        rc |= 1;
+    }
     if (!cfg.has_alerts || !cfg.call_alert_enabled
         || cfg.call_alert_events != (DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_DATA)) {
         DSD_FPRINTF(stderr, "alerts section not parsed correctly enabled=%d events=%d\n", cfg.call_alert_enabled,
@@ -258,6 +269,13 @@ test_load_and_apply_basic(void) {
     }
     if (opts.trunk_use_allow_list != 1) {
         DSD_FPRINTF(stderr, "trunk_use_allow_list not set\n");
+        rc |= 1;
+    }
+    if (opts.trunk_scan_enabled != 1 || strcmp(opts.trunk_scan_targets_csv, "/tmp/targets.csv") != 0
+        || opts.trunk_scan_idle_dwell_ms != 5000 || opts.trunk_scan_activity_hold_ms != 2000) {
+        DSD_FPRINTF(stderr, "trunk scan config not applied correctly enabled=%d targets=%s dwell=%d hold=%d\n",
+                    opts.trunk_scan_enabled, opts.trunk_scan_targets_csv, opts.trunk_scan_idle_dwell_ms,
+                    opts.trunk_scan_activity_hold_ms);
         rc |= 1;
     }
     if (strcmp(opts.event_out_file, "/tmp/events.log") != 0 || strcmp(opts.frame_log_file, "/tmp/frames.log") != 0) {

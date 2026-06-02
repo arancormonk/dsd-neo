@@ -72,6 +72,9 @@ static const char* const k_skip_exact_next_any[] = {
     "--p25-force-release-margin",
     "--p25-p1-err-hold-pct",
     "--p25-p1-err-hold-sec",
+    "--trunk-scan",
+    "--trunk-scan-dwell-ms",
+    "--trunk-scan-activity-hold-ms",
     "--calc-lcn",
     "--calc-step",
     "--calc-cc-freq",
@@ -92,10 +95,24 @@ static const char* const k_skip_exact_next_nonopt[] = {
 };
 
 static const char* const k_skip_prefix[] = {
-    "--rtl-udp-control=",   "--rtl-udp-control-bind=",     "--iq-capture=",   "--iq-capture-format=",
-    "--iq-capture-max-mb=", "--symbol-capture-format=",    "--iq-replay=",    "--iq-replay-rate=",
-    "--iq-info=",           "--dmr-baofeng-pc5=",          "--dmr-csi-ee72=", "--dmr-vertex-ks-csv=",
-    "--dmr-force-algid=",   "--m17-signature-public-key=", "--config=",
+    "--rtl-udp-control=",
+    "--rtl-udp-control-bind=",
+    "--iq-capture=",
+    "--iq-capture-format=",
+    "--iq-capture-max-mb=",
+    "--symbol-capture-format=",
+    "--iq-replay=",
+    "--iq-replay-rate=",
+    "--iq-info=",
+    "--dmr-baofeng-pc5=",
+    "--dmr-csi-ee72=",
+    "--dmr-vertex-ks-csv=",
+    "--dmr-force-algid=",
+    "--m17-signature-public-key=",
+    "--config=",
+    "--trunk-scan=",
+    "--trunk-scan-dwell-ms=",
+    "--trunk-scan-activity-hold-ms=",
 };
 
 int

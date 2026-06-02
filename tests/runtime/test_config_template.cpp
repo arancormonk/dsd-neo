@@ -110,6 +110,10 @@ test_template_contains_sections(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing [trunking] section\n");
         rc = 1;
     }
+    if (!strstr(content, "[trunk_scan]")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing [trunk_scan] section\n");
+        rc = 1;
+    }
     if (!strstr(content, "[alerts]")) {
         DSD_FPRINTF(stderr, "FAIL: template missing [alerts] section\n");
         rc = 1;

@@ -23,6 +23,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -575,6 +576,11 @@ dmr_flco_print_call_class(dmr_flco_ctx* ctx) {
     if (ctx->fid == 0x68) {
         DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
                      " Hytera  ");
+        if (ctx->flco == 0x00) {
+            ctx->state->gi[ctx->slot] = 0;
+        } else if (ctx->flco == 0x03) {
+            ctx->state->gi[ctx->slot] = 1;
+        }
     } else if (ctx->flco == 0x4 || ctx->flco == 0x5 || ctx->flco == 0x7 || ctx->flco == 0x23) {
         DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]), "%s", "");
         DSD_FPRINTF(stderr, "Cap+ ");
@@ -907,6 +913,8 @@ dmr_flco_body(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCC
     if (regular_state > 0) {
         dmr_flco_print_regular_header(&ctx);
         dmr_flco_print_call_class(&ctx);
+        dsd_trunk_scan_hook_dmr_conventional_activity(opts, state, ctx.target, ctx.source, state->gi[ctx.slot],
+                                                      (ctx.so & 0x40U) != 0U, 0);
         dmr_flco_print_emergency_flag(&ctx);
         dmr_flco_apply_enc_lockout(&ctx);
         dmr_flco_print_service_options(&ctx);

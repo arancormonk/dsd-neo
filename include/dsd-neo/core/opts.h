@@ -263,6 +263,9 @@ struct dsd_opts {
     int trunk_is_tuned;   //protocol-agnostic alias (kept in sync with p25_is_tuned)
     float trunk_hangtime; //hangtime in seconds before tuning back to CC
     int scanner_mode;     //experimental -- use the channel map as a conventional scanner, quicker tuning, but no CC
+    int trunk_scan_enabled;
+    int trunk_scan_idle_dwell_ms;
+    int trunk_scan_activity_hold_ms;
     int setmod_bw;
     int slot_preference;
     int slot1_on;
@@ -332,6 +335,7 @@ struct dsd_opts {
     char group_in_file[1024];
     char lcn_in_file[1024];
     char chan_in_file[1024];
+    char trunk_scan_targets_csv[1024];
     char key_in_file[1024];
     char soapy_profile[32];
     char soapy_stream_format[16];

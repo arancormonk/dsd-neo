@@ -17,6 +17,7 @@ target_sources(
         input_spec.c
         path_policy.c
         frame_sync_hooks.c
+        trunk_scan_hooks.c
         trunk_tuning_hooks.c
         trunk_cc_candidates.c
         rtl_stream_io_hooks.c

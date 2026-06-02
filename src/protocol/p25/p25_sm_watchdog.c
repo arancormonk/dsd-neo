@@ -27,19 +27,31 @@ static dsd_opts* g_opts = NULL;
 static dsd_state* g_state = NULL;
 static int g_p25_sm_wd_ms = 0; // 0 => unset (use defaults per UI mode)
 
+int
+p25_sm_tick_guard_try_enter(void) {
+    int expected = 0;
+    return atomic_compare_exchange_strong(&g_p25_sm_tick_lock, &expected, 1) ? 1 : 0;
+}
+
+void
+p25_sm_tick_guard_leave(void) {
+    atomic_store(&g_p25_sm_tick_lock, 0);
+}
+
 void
 p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    int expected = 0;
-    if (atomic_compare_exchange_strong(&g_p25_sm_tick_lock, &expected, 1)) {
-        /* Only one tick runs at a time across all callers. */
-        atomic_store(&g_p25_sm_in_tick, 1);
-        // Drive the high-level trunk SM tick
-        p25_sm_tick(opts, state);
-        atomic_store(&g_p25_sm_in_tick, 0);
-        atomic_store(&g_p25_sm_tick_lock, 0);
+    if (p25_sm_tick_guard_try_enter()) {
+        if (opts->p25_trunk == 1) {
+            /* Only one tick runs at a time across all callers. */
+            atomic_store(&g_p25_sm_in_tick, 1);
+            // Drive the high-level trunk SM tick
+            p25_sm_tick(opts, state);
+            atomic_store(&g_p25_sm_in_tick, 0);
+        }
+        p25_sm_tick_guard_leave();
     }
 }
 
@@ -50,7 +62,7 @@ static DSD_THREAD_RETURN_TYPE
     p25_sm_watchdog_thread(void* arg) {
     (void)arg;
     while (atomic_load(&g_p25_sm_wd_running) && !exitflag) {
-        if (g_opts && g_state && g_opts->p25_trunk == 1) {
+        if (g_opts && g_state) {
             p25_sm_try_tick(g_opts, g_state);
         }
         // Compute watchdog cadence. Prefer env override when provided;

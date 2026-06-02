@@ -53,6 +53,7 @@ This project is an active work in progress as we decouple from the upstream fork
 - Built‑in trunking workflow
 
   - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `-N`).
+  - Rotate one tuner across CSV-defined P25 trunk, DMR trunk, and one-frequency DMR targets with `--trunk-scan targets.csv`.
   - On‑the‑fly retune control via rigctl (`-U`) for external SDR front-ends (e.g., SDR++). For RTL/RTL‑TCP input, DSD-neo retunes directly (optional external UDP retune control can be enabled on loopback with `--rtl-udp-control <port>`; remote exposure requires `--rtl-udp-control-bind <ipv4>`; see `docs/udp-control.md`).
 
 - RTL‑SDR quality‑of‑life features
@@ -337,12 +338,14 @@ Common options:
   - DMR mono helpers:
     - Modern form: `-fs -nm` (DMR BS/MS simplex + mono audio).
     - Legacy alias: `-fr` (kept as a shorthand for the same DMR‑mono profile).
-  - CSV formats (channel maps, group lists, key lists): `docs/csv-formats.md` (examples in `examples/`)
+  - Single-tuner trunk scan workflow: `docs/trunk-scan.md`
+  - CSV formats (channel maps, trunk scan targets, group lists, key lists): `docs/csv-formats.md` (examples in `examples/`)
 
 Quick examples
 
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
 - DMR trunking from TCP PCM input (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
+- Single-tuner P25/DMR trunk scan from RTL-SDR: `dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv -N`
 - IQ capture + inspect + replay: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq -N` then `dsd-neo --iq-info p25-control.iq.json` then `dsd-neo --iq-replay p25-control.iq.json -f1 -N`
 
 ## Configuration
@@ -361,11 +364,12 @@ Quick examples
 ## Documentation
 
 - CLI usage and options: `docs/cli.md`
+- Single-tuner trunk scan workflow: `docs/trunk-scan.md`
 - M17 support scope and non-goals: `docs/m17-support.md`
 - IQ capture/replay format and workflow: `docs/iq-capture-replay.md`
 - SoapySDR non-RTL setup and usage: `docs/soapysdr.md`
 - User config system (INI): `docs/config-system.md`
-- Trunking CSV formats: `docs/csv-formats.md` (examples in `examples/`)
+- Trunking and trunk scan CSV formats: `docs/csv-formats.md` (examples in `examples/`)
 - Network audio I/O details (TCP/UDP/stdin/stdout): `docs/network-audio.md`
 - Terminal UI hotkeys and menus: `docs/ui-terminal.md`
 - RTL UDP retune control protocol: `docs/udp-control.md`

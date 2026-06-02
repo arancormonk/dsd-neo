@@ -3,14 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
 
 void p25_sm_init(dsd_opts* opts, dsd_state* state);
 void p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
@@ -199,6 +199,18 @@ main(void) {
 
     p25_sm_tick(opts, state);
     rc |= expect_eq_int("tick_calls", g_tick_calls, 1);
+
+    static dsd_opts guarded_opts;
+    static dsd_state guarded_state;
+    DSD_MEMSET(&guarded_opts, 0, sizeof(guarded_opts));
+    DSD_MEMSET(&guarded_state, 0, sizeof(guarded_state));
+    g_tick_calls = 0;
+    p25_sm_try_tick(&guarded_opts, &guarded_state);
+    rc |= expect_eq_int("try_tick_disabled", g_tick_calls, 0);
+
+    guarded_opts.p25_trunk = 1;
+    p25_sm_try_tick(&guarded_opts, &guarded_state);
+    rc |= expect_eq_int("try_tick_enabled", g_tick_calls, 1);
 
     return rc;
 }

@@ -34,6 +34,18 @@ extern "C" {
 void p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief Try to enter the critical section shared with P25 SM ticks.
+ *
+ * Callers that temporarily restore or swap trunking state shared with the P25
+ * watchdog can use this to avoid racing an in-flight tick. Returns 1 when the
+ * caller owns the guard and must call p25_sm_tick_guard_leave().
+ */
+int p25_sm_tick_guard_try_enter(void);
+
+/** @brief Leave a critical section entered by p25_sm_tick_guard_try_enter(). */
+void p25_sm_tick_guard_leave(void);
+
+/**
  * @brief Start the background 1 Hz watchdog thread.
  *
  * No-op if already started.

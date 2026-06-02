@@ -23,6 +23,7 @@
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -47,6 +48,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <errno.h>
 #include <limits.h>
@@ -277,21 +279,25 @@ autosave_user_config(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static int
-import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return 0;
+import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
+    const int trunk_or_scan = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->scanner_mode == 1);
+    if (opts->trunk_scan_enabled == 1 && opts->chan_in_file[0] != '\0') {
+        LOG_ERROR("Trunk scan does not allow global channel maps; use per-target chan_csv values.\n");
+        return -1;
     }
 
-    const int trunk_or_scan = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->scanner_mode == 1);
-    const int trunk_enabled = (opts->trunk_enable == 1) || (opts->p25_trunk == 1);
-
-    if (trunk_or_scan && opts->chan_in_file[0] != '\0' && state->lcn_freq_count == 0) {
+    if (trunk_or_scan && opts->trunk_scan_enabled != 1 && opts->chan_in_file[0] != '\0' && state->lcn_freq_count == 0) {
         if (csvChanImport(opts, state) != 0) {
             return -1;
         }
         LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
     }
+    return 0;
+}
 
+static int
+import_group_csv_if_needed(dsd_opts* opts, dsd_state* state) {
+    const int trunk_enabled = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->trunk_scan_enabled == 1);
     if (trunk_enabled && opts->group_in_file[0] != '\0' && !dsd_tg_policy_has_entries(state)) {
         if (csvGroupImport(opts, state) != 0) {
             return -1;
@@ -299,6 +305,17 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
         LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
     }
     return 0;
+}
+
+static int
+import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    if (import_global_channel_map_if_needed(opts, state) != 0) {
+        return -1;
+    }
+    return import_group_csv_if_needed(opts, state);
 }
 
 static void
@@ -1359,7 +1376,7 @@ no_carrier_close_mbe_outputs_if_needed(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-no_carrier_reset_decode_state(dsd_state* state) {
+no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
     state->jitter = -1;
     state->lastsynctype = DSD_SYNC_NONE;
     state->carrier = 0;
@@ -1373,12 +1390,14 @@ no_carrier_reset_decode_state(dsd_state* state) {
     set_spaces(state->ftype, 13);
     state->errs = 0;
     state->errs2 = 0;
-    dmr_confidence_reset(state);
+    if (!preserve_dmr_confidence) {
+        dmr_confidence_reset(state);
+    }
 }
 
 static void
 no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* state) {
-    if (opts->p25_trunk != 0) {
+    if (opts->p25_trunk != 0 || opts->trunk_enable != 0) {
         return;
     }
     state->lasttg = 0;
@@ -1565,7 +1584,7 @@ no_carrier_reset_dmr_misc_state(dsd_state* state) {
 }
 
 static void
-no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
+no_carrier_reset_p25_metrics(dsd_state* state) {
     state->p25_p1_fec_ok = 0;
     state->p25_p1_fec_err = 0;
     state->p25_p1_voice_fec_ok = 0;
@@ -1579,13 +1598,22 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
     state->p25_p2_rs_ess_ok = 0;
     state->p25_p2_rs_ess_err = 0;
     state->p25_p2_rs_ess_corr = 0;
+}
 
+static void
+no_carrier_reset_p25_cc_cache(dsd_state* state) {
     dsd_trunk_cc_candidates* cc_candidates = dsd_trunk_cc_candidates_get(state);
     if (cc_candidates) {
         cc_candidates->count = 0;
         cc_candidates->idx = 0;
     }
     state->p25_cc_cache_loaded = 0;
+}
+
+static void
+no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
+    no_carrier_reset_p25_metrics(state);
+    no_carrier_reset_p25_cc_cache(state);
 }
 
 static void
@@ -1714,7 +1742,8 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
-    no_carrier_reset_decode_state(state);
+    const int preserve_scan_state = opts && opts->trunk_scan_enabled == 1;
+    no_carrier_reset_decode_state(state, preserve_scan_state);
     no_carrier_reset_non_trunk_fields_if_needed(opts, state);
     no_carrier_reset_last_call_display(state);
     no_carrier_reset_voice_and_audio_metrics(state);
@@ -1723,7 +1752,11 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     no_carrier_reset_nxdn_alias_state(state);
     no_carrier_unload_keys_if_needed(state);
     no_carrier_reset_dmr_misc_state(state);
-    no_carrier_reset_p25_metrics_and_cache(state);
+    if (preserve_scan_state) {
+        no_carrier_reset_p25_metrics(state);
+    } else {
+        no_carrier_reset_p25_metrics_and_cache(state);
+    }
     no_carrier_reset_call_strings_and_dpmr(opts, state);
     no_carrier_clear_stale_follow_state_if_needed(opts, state, now);
     no_carrier_reset_ysf_and_dstar_strings(state);
@@ -1746,26 +1779,32 @@ live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-static void
-live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
+static int
+live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (state->rtl_ctx == NULL) {
             if (rtl_stream_create_mirrored(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create radio stream.\n");
+                opts->rtl_started = 0;
+                opts->rtl_needs_restart = 0;
+                return -1;
             }
         }
         if (state->rtl_ctx && rtl_stream_start(state->rtl_ctx) < 0) {
             LOG_ERROR("Failed to open radio stream.\n");
+            rtl_stream_destroy(state->rtl_ctx);
+            state->rtl_ctx = NULL;
+            opts->rtl_started = 0;
+            opts->rtl_needs_restart = 0;
+            return -1;
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
     }
-#else
-    UNUSED(opts);
-    UNUSED(state);
-#endif
+    return 0;
 }
+#endif
 
 static int
 live_scanner_open_audio_if_needed(dsd_opts* opts) {
@@ -1778,6 +1817,19 @@ live_scanner_open_audio_if_needed(dsd_opts* opts) {
         if (openAudioOutput(opts) != 0) {
             return -1;
         }
+    }
+    return 0;
+}
+
+static int
+live_scanner_start_trunk_scan_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->trunk_scan_enabled != 1) {
+        return 0;
+    }
+    char scan_err[256] = {0};
+    if (dsd_engine_trunk_scan_init(opts, state, scan_err, sizeof scan_err) != 0) {
+        LOG_ERROR("Trunk scan: %s\n", scan_err[0] ? scan_err : "initialization failed");
+        return -1;
     }
     return 0;
 }
@@ -1834,6 +1886,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
     while (state->synctype != DSD_SYNC_NONE) {
         dsd_runtime_pump_controls(opts, state);
         processFrame(opts, state);
+        dsd_trunk_scan_hook_tick(opts, state);
 
 #ifdef TRACE_DSD
         state->debug_prefix = '\0';
@@ -1853,6 +1906,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     while (!exitflag) {
         dsd_runtime_pump_controls(opts, state);
         p25_sm_try_tick(opts, state);
+        dsd_trunk_scan_hook_tick(opts, state);
         dsd_runtime_pump_controls(opts, state);
 
         noCarrier(opts, state);
@@ -1868,8 +1922,15 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     (void)live_scanner_apply_audio_gain(opts, state);
-    live_scanner_start_rtl_if_needed(opts, state);
+#ifdef USE_RADIO
+    if (live_scanner_start_rtl_if_needed(opts, state) != 0) {
+        return -1;
+    }
+#endif
     if (live_scanner_open_audio_if_needed(opts) != 0) {
+        return -1;
+    }
+    if (live_scanner_start_trunk_scan_if_needed(opts, state) != 0) {
         return -1;
     }
 
@@ -2015,6 +2076,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_close_radio(opts, state);
     dsd_engine_cleanup_close_net(opts);
     dsd_engine_cleanup_close_mbe(opts, state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     autosave_user_config(opts, state);
     dsd_engine_cleanup_print_stats(state);
 
@@ -2053,6 +2115,13 @@ dsd_engine_run_install_hooks(void) {
 
 static int
 dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
+    if (!opts || !state || !early_exit) {
+        return -1;
+    }
+    if (opts->trunk_scan_enabled == 1 && opts->scanner_mode == 1) {
+        LOG_ERROR("Trunk scan cannot be combined with legacy scanner mode.\n");
+        return -1;
+    }
     if (import_trunking_csvs_if_needed(opts, state) != 0) {
         return -1;
     }

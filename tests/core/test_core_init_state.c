@@ -4,14 +4,33 @@
  */
 
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static int
+test_init_opts_clears_trunk_scan_targets_csv(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0xA5, sizeof(opts));
+    initOpts(&opts);
+    if (opts.trunk_scan_targets_csv[0] != '\0') {
+        DSD_FPRINTF(stderr, "initOpts did not clear trunk_scan_targets_csv\n");
+        return 20;
+    }
+    return 0;
+}
+
 int
 main(void) {
+    int init_opts_rc = test_init_opts_clears_trunk_scan_targets_csv();
+    if (init_opts_rc != 0) {
+        return init_opts_rc;
+    }
+
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!state) {
         DSD_FPRINTF(stderr, "out of memory\n");
