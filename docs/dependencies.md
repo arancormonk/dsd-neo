@@ -37,7 +37,7 @@ Vendored code retains upstream notices. License and attribution details are in
 `THIRD_PARTY.md`.
 
 Registry-managed vcpkg dependencies are pinned by the manifest
-`builtin-baseline`. At baseline `56bb2411609227288b70117ead2c47585ba07713`,
+`builtin-baseline`. At baseline `d015e31e90838a4c9dfa3eed45979bc70d9357fc`,
 the `openssl` port resolves to OpenSSL `3.6.2` and the `curl` port resolves to
 curl `8.19.0`; system-package builds enforce the OpenSSL requirement through
 `find_package(OpenSSL 3.0 REQUIRED)`.
