@@ -355,6 +355,29 @@ main(void) {
         return 1;
     }
 
+    opts->trunk_enable = 1;
+    opts->p25_trunk = 0;
+    opts->p25_is_tuned = 0;
+    opts->trunk_is_tuned = 1;
+    state->p25_cc_freq = 0;
+    state->trunk_cc_freq = 936000000;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->trunk_vc_freq[0] = 936500000;
+    state->trunk_vc_freq[1] = 936500000;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("generic-trunk-cc-only-keeps-p25-empty",
+                      state->p25_cc_freq == 0 && state->trunk_cc_freq == 936000000);
+    rc |= expect_true("generic-trunk-cc-only-clears-vc", state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
@@ -368,6 +391,8 @@ main(void) {
     opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     opts->mod_qpsk = 1;
+    opts->slot1_on = 0;
+    opts->slot2_on = 0;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->p25_cc_freq = 769768750;
     state->trunk_cc_freq = 769868750;
@@ -390,6 +415,7 @@ main(void) {
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-rate", g_rtl_symbol_rate_hz == 4800);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-cqpsk", g_rtl_cqpsk_enable == 1);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-ted", g_rtl_ted_sps == 10 && g_rtl_ted_sps_override == 0);
+    rc |= expect_true("p25-rtl-nocarrier-reenables-slots", opts->slot1_on == 1 && opts->slot2_on == 1);
     rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
 
