@@ -1339,11 +1339,8 @@ no_carrier_selected_cc_is_p25_alias(const dsd_state* state, long cc) {
 }
 
 static int
-no_carrier_has_known_control_channel(const dsd_state* state) {
-    if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
-        return 1;
-    }
-    return (state->dmr_rest_channel != -1 && state->trunk_chan_map[state->dmr_rest_channel] != 0) ? 1 : 0;
+no_carrier_has_selectable_control_channel(const dsd_state* state) {
+    return (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) ? 1 : 0;
 }
 
 static int
@@ -1787,7 +1784,7 @@ no_carrier_clear_stale_follow_state_if_needed(dsd_opts* opts, dsd_state* state, 
     const int trunking_enabled = (opts->p25_trunk == 1 || opts->trunk_enable == 1) ? 1 : 0;
     const int voice_tuned = (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) ? 1 : 0;
     const int vc_recent = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= 10) ? 1 : 0;
-    const int retryable_cc_return = no_carrier_has_known_control_channel(state);
+    const int retryable_cc_return = no_carrier_has_selectable_control_channel(state);
     const int preserve_voice_state = (trunking_enabled && voice_tuned && (vc_recent || retryable_cc_return)) ? 1 : 0;
 
     if (now - state->last_cc_sync_time > 10 && !preserve_voice_state) {

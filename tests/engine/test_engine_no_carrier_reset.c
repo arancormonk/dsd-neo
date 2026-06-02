@@ -332,6 +332,29 @@ main(void) {
         return 1;
     }
 
+    opts->trunk_enable = 1;
+    opts->p25_trunk = 0;
+    opts->p25_is_tuned = 0;
+    opts->trunk_is_tuned = 1;
+    state->dmr_rest_channel = 4;
+    state->trunk_chan_map[4] = 851012500;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->trunk_vc_freq[0] = 852012500;
+    state->trunk_vc_freq[1] = 852012500;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("dmr-rest-only-stale-clears-rest", state->dmr_rest_channel == -1);
+    rc |= expect_true("dmr-rest-only-stale-clears-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);
+    rc |= expect_true("dmr-rest-only-stale-clears-vc", state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
+    rc |= expect_true("dmr-rest-only-stale-keeps-cc-empty", state->p25_cc_freq == 0 && state->trunk_cc_freq == 0);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
