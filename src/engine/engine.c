@@ -1289,13 +1289,21 @@ no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t
     return dt > opts->trunk_hangtime;
 }
 
+static int
+no_carrier_has_mapped_dmr_rest_channel(const dsd_state* state) {
+    if (state->dmr_rest_channel < 0 || state->dmr_rest_channel >= DSD_TRUNK_CHAN_MAP_SIZE) {
+        return 0;
+    }
+    return (state->trunk_chan_map[state->dmr_rest_channel] != 0) ? 1 : 0;
+}
+
 static long
 no_carrier_select_control_channel(dsd_state* state) {
     long cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
     if (cc == 0) {
         return 0;
     }
-    if (state->dmr_rest_channel != -1 && state->trunk_chan_map[state->dmr_rest_channel] != 0) {
+    if (no_carrier_has_mapped_dmr_rest_channel(state)) {
         cc = state->trunk_chan_map[state->dmr_rest_channel];
         state->p25_cc_freq = cc;
         state->trunk_cc_freq = cc;
@@ -1332,10 +1340,7 @@ no_carrier_selected_cc_is_p25_alias(const dsd_state* state, long cc) {
     if (cc == 0 || state->p25_cc_freq == 0 || !no_carrier_has_p25_cc_identity(state)) {
         return 0;
     }
-    if (cc == state->p25_cc_freq) {
-        return 1;
-    }
-    return (state->trunk_cc_freq != 0 && cc == state->trunk_cc_freq) ? 1 : 0;
+    return (cc == state->p25_cc_freq) ? 1 : 0;
 }
 
 static int
@@ -1348,7 +1353,7 @@ no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state, lon
     if (!opts || !state || opts->p25_trunk != 1 || !no_carrier_p25_frames_enabled(opts)) {
         return 0;
     }
-    if (state->dmr_rest_channel != -1) {
+    if (no_carrier_has_mapped_dmr_rest_channel(state)) {
         return 0;
     }
     if (DSD_SYNC_IS_P25(state->lastsynctype) || DSD_SYNC_IS_P25(state->synctype)) {
@@ -1365,7 +1370,7 @@ no_carrier_should_clear_generic_p25_alias(const dsd_state* state, long cc, int i
     if (is_p25_return) {
         return 0;
     }
-    if (state->dmr_rest_channel != -1 && state->trunk_chan_map[state->dmr_rest_channel] != 0) {
+    if (no_carrier_has_mapped_dmr_rest_channel(state)) {
         return 1;
     }
     return (state->p25_cc_freq != 0 && state->trunk_cc_freq != 0 && state->p25_cc_freq != state->trunk_cc_freq
@@ -1416,7 +1421,11 @@ no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
 
 static int
 no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
-                                   int clear_generic_p25_alias, int* helper_attempted) {
+                                   int clear_generic_p25_alias, int* helper_attempted,
+                                   dsd_trunk_tune_result* helper_result) {
+    if (helper_result) {
+        *helper_result = DSD_TRUNK_TUNE_RESULT_OK;
+    }
     if (!p25_return) {
         return 0;
     }
@@ -1427,6 +1436,9 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
     no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
 
     dsd_trunk_tune_result tune_result = dsd_engine_return_to_cc(opts, state);
+    if (helper_result) {
+        *helper_result = tune_result;
+    }
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         state->p25_cc_freq = old_p25_cc_freq;
         state->trunk_cc_freq = old_trunk_cc_freq;
@@ -1437,6 +1449,11 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
     state->edacs_tuned_lcn = -1;
     state->dmr_rest_channel = -1;
     return 1;
+}
+
+static int
+no_carrier_helper_result_is_deferred(int helper_attempted, dsd_trunk_tune_result helper_result) {
+    return (helper_attempted && helper_result == DSD_TRUNK_TUNE_RESULT_DEFERRED) ? 1 : 0;
 }
 
 static int
@@ -1487,10 +1504,12 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     const int p25_return = no_carrier_is_p25_trunk_return(opts, state, cc);
     const int clear_generic_p25_alias = no_carrier_should_clear_generic_p25_alias(state, cc, p25_return);
     int accepted_cc_return = 0;
+    int clear_failed_helper_state = 0;
     if (cc != 0) {
         int p25_helper_attempted = 0;
+        dsd_trunk_tune_result p25_helper_result = DSD_TRUNK_TUNE_RESULT_OK;
         if (no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
-                                               &p25_helper_attempted)) {
+                                               &p25_helper_attempted, &p25_helper_result)) {
             accepted_cc_return = 1;
         } else if (no_carrier_apply_legacy_cc_return(opts, state, cc, p25_helper_attempted)) {
             no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
@@ -1501,10 +1520,13 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
             if (p25_return) {
                 no_carrier_apply_p25_cc_symbolrate(opts, state);
             }
+        } else if (p25_helper_attempted
+                   && !no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result)) {
+            clear_failed_helper_state = 1;
         }
     }
 
-    if (accepted_cc_return) {
+    if (accepted_cc_return || clear_failed_helper_state) {
         no_carrier_clear_voice_tune_state(opts, state);
         DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
         state->is_con_plus = 0;
