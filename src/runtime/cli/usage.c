@@ -32,7 +32,7 @@ dsd_cli_usage_section_intro(void) {
     printf("\n");
     printf("Display Options:\n");
     printf("  -N            Use NCurses Terminal\n");
-    printf("                 dsd-neo -N 2> console_log.txt \n");
+    printf("                 dsd-neo -N 2> console_log.txt\n");
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("      --frame-log <file>    Append one-line timestamped frame trace output\n");
     printf("      --symbol-capture-format <fmt>  Symbol capture format (soft|legacy; default soft)\n");
@@ -59,9 +59,9 @@ dsd_cli_usage_section_io(void) {
     printf("\n");
     printf("Input/Output options:\n");
     printf("  -i <device>   Audio input device (default is pulse)\n");
-    printf("                pulse for pulse audio signal input \n");
+    printf("                pulse for pulse audio signal input\n");
     printf("                pulse:6 or pulse:virtual_sink2.monitor for pulse audio signal input on virtual_sink2 (see "
-           "-O) \n");
+           "-O)\n");
     printf("                rtl for rtl dongle (Default Values -- see below)\n");
     printf("                rtl:dev:freq:gain:ppm:bw:sql:vol for rtl dongle (see below)\n");
     printf("                rtltcp for rtl_tcp (default 127.0.0.1:1234)\n");
@@ -86,7 +86,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -o <device>   Audio output device (default is pulse)\n");
     printf("                pulse for pulse audio decoded voice or analog output\n");
     printf("                pulse:1 or pulse:alsa_output.pci-0000_0d_00.3.analog-stereo for pulse audio decoded voice "
-           "or analog output on device (see -O) \n");
+           "or analog output on device (see -O)\n");
     printf("                null for no audio output\n");
     printf("                udp for UDP socket blaster output (default host 127.0.0.1; default port 23456)\n");
     printf("                udp:192.168.7.8:23470 for UDP socket blaster output (target address and port)\n");
@@ -140,7 +140,7 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf(" Usage: rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]\n");
     printf("  NOTE: all arguments after rtl are optional now for trunking, but user configuration is recommended\n");
     printf("  dev  <num>    RTL-SDR Device Index Number (default 0)\n");
-    printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M) \n");
+    printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M)\n");
     printf("  gain <num>    RTL-SDR Device Gain (0-49)(default = 0; Hardware AGC recommended)\n");
     printf("  ppm  <num>    RTL-SDR PPM Error (default = 0)\n");
     printf("  bw   <num>    RTL-SDR DSP Bandwidth (kHz) (default 48). Allowed: 4,6,8,12,16,24,48.\n");
@@ -175,18 +175,18 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("  -fZ           M17 Stream Voice Encoder\n");
     printf("\n");
     printf("Other options:\n");
-    printf("  --auto-ppm    Enable carrier-assisted RTL auto PPM correction\n");
-    printf("  --auto-ppm-snr <dB>  Set SNR gate for auto PPM (default 6)\n");
-    printf("  --rtltcp-autotune    Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
-    printf("  --rtl-udp-control <port>  Enable external RTL retune control on 127.0.0.1:<port>\n");
-    printf("  --rtl-udp-control-bind <ipv4>  Bind RTL retune control to this numeric IPv4 address\n");
-    printf("  --iq-capture <path>        Write I/Q capture data + metadata sidecar\n");
-    printf("  --iq-capture-format <fmt>  Capture format (cu8|cf32)\n");
-    printf("  --iq-capture-max-mb <n>    Capture size limit in MiB (0 = unlimited)\n");
-    printf("  --iq-replay <path>         Replay I/Q capture metadata/data through RTL path (requires radio)\n");
-    printf("  --iq-replay-rate <mode>    Replay pacing mode (fast|realtime)\n");
-    printf("  --iq-loop                  Loop I/Q replay at EOF\n");
-    printf("  --iq-info <path>           Print metadata/alignment summary and exit\n");
+    printf("      --auto-ppm             Enable carrier-assisted RTL auto PPM correction\n");
+    printf("      --auto-ppm-snr <dB>    Set SNR gate for auto PPM (default 6)\n");
+    printf("      --rtltcp-autotune      Enable RTL-TCP adaptive networking (buffer/recv tuning)\n");
+    printf("      --rtl-udp-control <port>  Enable external RTL retune control on 127.0.0.1:<port>\n");
+    printf("      --rtl-udp-control-bind <ipv4>  Bind RTL retune control to this numeric IPv4 address\n");
+    printf("      --iq-capture <path>    Write I/Q capture data + metadata sidecar\n");
+    printf("      --iq-capture-format <fmt>  Capture format (cu8|cf32)\n");
+    printf("      --iq-capture-max-mb <n>  Capture size limit in MiB (0 = unlimited)\n");
+    printf("      --iq-replay <path>     Replay I/Q capture metadata/data through RTL path (requires radio)\n");
+    printf("      --iq-replay-rate <mode>  Replay pacing mode (fast|realtime)\n");
+    printf("      --iq-loop              Loop I/Q replay at EOF\n");
+    printf("      --iq-info <path>       Print metadata/alignment summary and exit\n");
     printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to pulse audio server, with internal decode/playback and output to 48k/1 "
            "wav file\n");
@@ -223,21 +223,20 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fd           Decode only DSTAR\n");
     printf("  -fx           Decode only X2-TDMA\n");
     printf("  -fy           Decode only YSF\n");
-    printf("  -fz             Decode only M17\n");
-    printf("  -fU             Decode only M17 UDP/IP Frame***\n");
+    printf("  -fz           Decode only M17\n");
+    printf("  -fU           Decode only M17 UDP/IP Frame***\n");
     printf(
         "      --m17-signature-public-key <hex>  M17 secp256r1 public key X||Y for signed voice-stream verification\n");
-    printf("  -fi             Decode only NXDN48 (6.25 kHz) / IDAS\n");
-    printf("  -fn             Decode only NXDN96 (12.5 kHz)\n");
-    printf("  -fp             Decode only ProVoice\n");
-    printf("  -fh             Decode only EDACS Standard/ProVoice\n");
-    printf("  -fH             Decode only EDACS Standard/ProVoice with ESK 0xA0\n");
-    printf(
-        "  -fh344          Decode only EDACS Standard/ProVoice and set AFS to 344 or similar custom 11-bit scheme\n");
-    printf("  -fH434          Decode only EDACS Standard/ProVoice and set AFS to custom 11-bit scheme with ESK 0xA0\n");
-    printf("  -fe             Decode only EDACS EA/ProVoice\n");
-    printf("  -fE             Decode only EDACS EA/ProVoice with ESK 0xA0\n");
-    printf("  -fm             Decode only dPMR\n");
+    printf("  -fi           Decode only NXDN48 (6.25 kHz) / IDAS\n");
+    printf("  -fn           Decode only NXDN96 (12.5 kHz)\n");
+    printf("  -fp           Decode only ProVoice\n");
+    printf("  -fh           Decode only EDACS Standard/ProVoice\n");
+    printf("  -fH           Decode only EDACS Standard/ProVoice with ESK 0xA0\n");
+    printf("  -fh344        Decode only EDACS Standard/ProVoice and set AFS to 344 or similar custom 11-bit scheme\n");
+    printf("  -fH434        Decode only EDACS Standard/ProVoice and set AFS to custom 11-bit scheme with ESK 0xA0\n");
+    printf("  -fe           Decode only EDACS EA/ProVoice\n");
+    printf("  -fE           Decode only EDACS EA/ProVoice with ESK 0xA0\n");
+    printf("  -fm           Decode only dPMR\n");
     printf("  -l            Disable DMR, dPMR, NXDN, M17 input filtering\n");
     printf("  -xx           Expect non-inverted X2-TDMA signal\n");
     printf("  -xr           Expect inverted DMR signal\n");
@@ -276,53 +275,53 @@ dsd_cli_usage_section_advanced(void) {
     printf("  -F            Relax M17 LSF/PKT CRC Error Checking\n");
     printf("\n");
     printf("  -b <dec>      Manually Enter Basic Privacy Key (Decimal Value of Key Number)\n");
-    printf("                 (NOTE: This used to be the 'K' option! \n");
+    printf("                 (NOTE: This used to be the 'K' option!)\n");
     printf("\n");
     printf("  -H <hex>      Manually Enter Hytera 10/32/64 Char Basic Privacy Hex Key (see example below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
-    printf("                 -H 0B57935150 \n");
-    printf("                 -H '736B9A9C5645288B 243AD5CB8701EF8A' \n");
-    printf("                 -H '20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8' \n");
+    printf("                 -H 0B57935150\n");
+    printf("                 -H '736B9A9C5645288B 243AD5CB8701EF8A'\n");
+    printf("                 -H '20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8'\n");
     printf("\n");
     printf("  -H <hex>      Manually Enter AES-128 or AES-256 Hex Key (see example below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
-    printf("                 -H '736B9A9C5645288B 243AD5CB8701EF8A' \n");
-    printf("                 -H '20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8' \n");
+    printf("                 -H '736B9A9C5645288B 243AD5CB8701EF8A'\n");
+    printf("                 -H '20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8'\n");
     printf("\n");
     printf("  -R <dec>      Manually Enter dPMR or NXDN EHR Scrambler Key Value (Decimal Value)\n");
-    printf("                 \n");
+    printf("\n");
     printf("  -_ <dec>      Manually Set NXDN PN95 Dibit Scrambler Seed (1-511)\n");
-    printf("                 \n");
-    printf("  -1 <hex>      Manually Enter RC4 or DES Key Value (DMR, P25, NXDN) (Hex Value) \n");
-    printf("                 \n");
-    printf("  -2 <hex>      Manually Enter and Enforce TYT 16-bit BP Key Value (DMR) (Hex Value) \n");
-    printf("                 \n");
+    printf("\n");
+    printf("  -1 <hex>      Manually Enter RC4 or DES Key Value (DMR, P25, NXDN) (Hex Value)\n");
+    printf("\n");
+    printf("  -2 <hex>      Manually Enter and Enforce TYT 16-bit BP Key Value (DMR) (Hex Value)\n");
+    printf("\n");
     printf("  -! <hex>      Manually Enter and Enforce TYT Advanced Privacy (PC4) 128 or 256 bit AP Hex Key "
            "(see examples below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
-    printf("                 -! '736B9A9C5645288B 243AD5CB8701EF8A' \n");
-    printf("                 -! '1111111111111111 1111111111111111 1111111111111111 1111111111111111' \n");
-    printf("                 \n");
+    printf("                 -! '736B9A9C5645288B 243AD5CB8701EF8A'\n");
+    printf("                 -! '1111111111111111 1111111111111111 1111111111111111 1111111111111111'\n");
+    printf("\n");
     printf("  -@ <hex>      Manually Enter and Enforce Retevis Advanced Privacy (RC2) 128 or 256 bit AP Hex Key "
            "(see examples below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
-    printf("                 -@ '736B9A9C5645288B 243AD5CB8701EF8A' \n");
-    printf("                 -@ '1122334455667788 99AABBCCDDEEFF11 1122334455667788 99AABBCCDDEEFF11' \n");
-    printf("                 \n");
+    printf("                 -@ '736B9A9C5645288B 243AD5CB8701EF8A'\n");
+    printf("                 -@ '1122334455667788 99AABBCCDDEEFF11 1122334455667788 99AABBCCDDEEFF11'\n");
+    printf("\n");
     printf(
         "  -5 <hex>      Manually Enter and Enforce TYT Enhanced Privacy (AES-128) EP Hex Key (see example below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
-    printf("                 -5 '736B9A9C5645288B 243AD5CB8701EF8A' \n");
-    printf("                 \n");
+    printf("                 -5 '736B9A9C5645288B 243AD5CB8701EF8A'\n");
+    printf("\n");
     printf("      --dmr-baofeng-pc5 <hex>  Force Baofeng AP (PC5) key (32 or 64 hex chars).\n");
     printf("      --dmr-csi-ee72 <hex>     Force Connect Systems EE72 key (18 hex chars).\n");
     printf("      --dmr-vertex-ks-csv <file>  Vertex ALG 0x07 key->keystream map CSV (key_hex, "
            "bits:hex[:offset[:step]]).\n");
-    printf("                 \n");
-    printf("  -9 <dec>      Manually Enter and Enforce Kenwood 15-bit Scrambler Key Value (DMR) (Dec Value) \n");
-    printf("                 \n");
-    printf("  -A <hex>      Manually Enter and Enforce Anytone 16-bit BP Key Value (DMR) (Hex Value) \n");
-    printf("                 \n");
+    printf("\n");
+    printf("  -9 <dec>      Manually Enter and Enforce Kenwood 15-bit Scrambler Key Value (DMR) (Dec Value)\n");
+    printf("\n");
+    printf("  -A <hex>      Manually Enter and Enforce Anytone 16-bit BP Key Value (DMR) (Hex Value)\n");
+    printf("\n");
     printf("  -S <str>      Manually Enter and Enforce Generic Static Keystream -> bits:hex[:offset[:step]] "
            "(up to 882 bits)\n");
     printf("                  For Example, enter 16-bit Keystream 0909 as:\n");
@@ -334,51 +333,52 @@ dsd_cli_usage_section_advanced(void) {
     printf("                  Optional frame alignment controls (decimal bits):\n");
     printf("                    -S 168:0123456789ABCDEF0123456789ABCDEF0123456789:0:49\n");
     printf("                  (offset only defaults step to 49 bits per AMBE frame)\n");
-    printf("                 \n");
+    printf("\n");
     printf("  -k <file>     Import Key List from csv file (Decimal Format) -- Lower Case 'k'.\n");
-    printf("                  Only supports NXDN, DMR Basic Privacy (decimal value). \n");
+    printf("                  Only supports NXDN, DMR Basic Privacy (decimal value).\n");
     printf("                  (dPMR and Hytera 32/64 char not supported, DMR uses TG value as key id -- "
-           "EXPERIMENTAL!!). \n");
-    printf("                 \n");
+           "EXPERIMENTAL!!).\n");
+    printf("\n");
     printf("  -K <file>     Import Key List from csv file (Hexidecimal Format) -- Capital 'K'.\n");
     printf("                  Use for Hex Value Hytera 10-char BP keys, RC4 10-char, DES 16-char Hex Keys, and "
-           "AES128/256 32/64-char keys. \n");
-    printf("                 \n");
-    printf("  -4            Force Privacy Key over Encryption Identifiers (DMR MBP/HBP and NXDN Scrambler) \n");
-    printf("                 \n");
-    printf("  -0            Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR) \n");
-    printf("                 \n");
+           "AES128/256 32/64-char keys.\n");
+    printf("\n");
+    printf("  -4            Force Privacy Key over Encryption Identifiers (DMR MBP/HBP and NXDN Scrambler)\n");
+    printf("\n");
+    printf("  -0            Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR)\n");
+    printf("\n");
     printf("      --dmr-force-algid <hex>  Force DMR ALG ID over Missing PI header/LE Encryption Identifiers.\n");
-    printf("                 \n");
-    printf("  -3            Disable DMR Late Entry Encryption Identifiers (VC6 Single Burst) \n");
-    printf("                  Note: Disable this if false positives on Voice ENC occur. \n");
+    printf("\n");
+    printf("  -3            Disable DMR Late Entry Encryption Identifiers (VC6 Single Burst)\n");
+    printf("                  Note: Disable this if false positives on Voice ENC occur.\n");
     printf("\n");
 }
 
 static void
 dsd_cli_usage_section_trunking_and_tools(void) {
-    printf(" Trunking Options:\n");
-    printf("  -C <file>     Import Channel to Frequency Map (channum, freq) from csv file. (Capital C)                 "
-           "  \n");
+    printf("Trunking Options:\n");
+    printf("  -C <file>     Import Channel to Frequency Map (channum, freq) from csv file. (Capital C)\n");
     printf("                 (See channel_map.csv for example)\n");
     printf("  -G <file>     Import Group List Allow/Block and Label from csv file.\n");
     printf("                 (See group.csv for example)\n");
     printf("  -T            Enable Trunking Features (NXDN/P25/EDACS/DMR) with RIGCTL/TCP or RTL Input\n");
-    printf("  -Y            Enable Scanning Mode with RIGCTL/TCP or RTL Input \n");
+    printf("  -Y            Enable Scanning Mode with RIGCTL/TCP or RTL Input\n");
     printf(
         "                 Experimental -- Can only scan for sync with enabled decoders, don't mix NXDN and DMR/P25!\n");
     printf("                 This is not a Trunking Feature, just scans through conventional frequencies fast!\n");
-    printf("  --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
-    printf("  --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
-    printf("  --trunk-scan-activity-hold-ms <ms>  Set conventional DMR activity hold (250..600000, default 1200).\n");
+    printf("      --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
+    printf("                 Uses per-target chan_csv values; cannot be combined with global -C or IQ replay.\n");
+    printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
+    printf(
+        "      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR activity hold (250..600000, default 1200).\n");
     printf("  -W            Use Imported Group List as a Trunking Allow/White List -- Only Tune with Mode A\n");
     printf("  -p            Disable Tune to Private Calls (DMR TIII, P25, NXDN Type-C and Type-D)\n");
     printf("  -E            Disable Tune to Group Calls (DMR TIII, Con+, Cap+, P25, NXDN Type-C, and Type-D)\n");
     printf("  -e            Enable Tune to Data Calls (DMR TIII, Cap+, NXDN Type-C)\n");
     printf("                 (NOTE: No Clear Distinction between Cap+ Private Voice Calls and Data Calls -- Both "
-           "enabled with Data Calls \n");
-    printf("  --enc-lockout  P25: Do not tune encrypted calls (ENC lockout On)\n");
-    printf("  --enc-follow   P25: Allow encrypted calls (ENC lockout Off; default)\n");
+           "enabled with Data Calls)\n");
+    printf("      --enc-lockout          P25: Do not tune encrypted calls (ENC lockout On)\n");
+    printf("      --enc-follow           P25: Allow encrypted calls (ENC lockout Off; default)\n");
     printf("  -I <dec>      Specify TG to Hold During Trunking (DMR, P25, NXDN Type-C Trunking)\n");
     printf("  -U <port>     Enable RIGCTL/TCP; Set TCP Port for RIGCTL. (4532 on SDR++)\n");
     printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");
@@ -391,11 +391,11 @@ dsd_cli_usage_section_trunking_and_tools(void) {
            "log.txt\n");
     printf("\n");
     printf("DMR TIII Tools:\n");
-    printf("  --calc-lcn <file>           Calculate LCNs from a CSV of frequencies (Hz or MHz).\n");
-    printf("  --calc-cc-freq <freq>       Anchor CC frequency (Hz or MHz).\n");
-    printf("  --calc-cc-lcn <int>         Anchor CC LCN number.\n");
-    printf("  --calc-step <hz>            Override inferred channel step (Hz, e.g., 12500).\n");
-    printf("  --calc-start-lcn <int>      Starting LCN when no anchor (default 1).\n");
+    printf("      --calc-lcn <file>      Calculate LCNs from a CSV of frequencies (Hz or MHz).\n");
+    printf("      --calc-cc-freq <freq>  Anchor CC frequency (Hz or MHz).\n");
+    printf("      --calc-cc-lcn <int>    Anchor CC LCN number.\n");
+    printf("      --calc-step <hz>       Override inferred channel step (Hz, e.g., 12500).\n");
+    printf("      --calc-start-lcn <int>  Starting LCN when no anchor (default 1).\n");
     printf(" Example: dsd-neo --calc-lcn freqs.csv --calc-cc-freq 451.2375 --calc-cc-lcn 50\n");
     printf("\n");
 }
