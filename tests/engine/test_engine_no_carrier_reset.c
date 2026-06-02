@@ -144,6 +144,18 @@ __wrap_rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int
     g_pending_ted_override = persist_ted_override ? 1 : 0;
 }
 
+void
+__wrap_rtl_stream_clear_pending_retune_profile(void) {
+    g_pending_active = 0;
+    g_pending_target_freq_hz = 0;
+    g_pending_cqpsk = -1;
+    g_pending_symbol_rate_hz = 0;
+    g_pending_symbol_levels = 0;
+    g_pending_channel_profile = 0;
+    g_pending_ted_sps = 0;
+    g_pending_ted_override = 0;
+}
+
 static void
 apply_pending_profile(uint32_t target_freq_hz) {
     if (!g_pending_active) {
@@ -385,6 +397,7 @@ main(void) {
     }
 
     reset_rtl_profile_fakes();
+    g_rtl_output_rate = 96000;
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->p25_trunk = 1;
     opts->trunk_enable = 1;
@@ -414,7 +427,9 @@ main(void) {
                       state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-rate", g_rtl_symbol_rate_hz == 4800);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-cqpsk", g_rtl_cqpsk_enable == 1);
-    rc |= expect_true("p25-rtl-nocarrier-cc-profile-ted", g_rtl_ted_sps == 10 && g_rtl_ted_sps_override == 0);
+    rc |= expect_true("p25-rtl-nocarrier-cc-profile-ted", g_rtl_ted_sps == 20 && g_rtl_ted_sps_override == 0);
+    rc |= expect_true("p25-rtl-nocarrier-dynamic-symbol-timing",
+                      state->samplesPerSymbol == 20 && state->symbolCenter == 9);
     rc |= expect_true("p25-rtl-nocarrier-reenables-slots", opts->slot1_on == 1 && opts->slot2_on == 1);
     rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
@@ -497,7 +512,7 @@ main(void) {
     opts->trunk_is_tuned = 1;
     opts->mod_qpsk = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
-    state->p25_cc_freq = 769868750;
+    state->p25_cc_freq = 769768750;
     state->trunk_cc_freq = 769868750;
     state->p25_cc_is_tdma = 0;
     state->p2_cc = 0x293;
@@ -518,13 +533,15 @@ main(void) {
     rc |= expect_true("p25-rtl-nocarrier-deferred-preserves-vc",
                       state->p25_vc_freq[0] == 771056250 && state->p25_vc_freq[1] == 771056250
                           && state->trunk_vc_freq[0] == 771056250 && state->trunk_vc_freq[1] == 771056250);
-    rc |= expect_true("p25-rtl-nocarrier-deferred-restores-cc",
+    rc |= expect_true("p25-rtl-nocarrier-deferred-preserves-selected-cc",
                       state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
 
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     noCarrier(opts, state);
 
     rc |= expect_true("p25-rtl-nocarrier-deferred-retries", g_rtl_tune_calls == 2 && g_rtl_tune_freq == 769868750U);
+    rc |= expect_true("p25-rtl-nocarrier-deferred-retry-profile",
+                      g_rtl_symbol_rate_hz == 4800 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
     rc |= expect_true("p25-rtl-nocarrier-retry-syncs-cc",
                       state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
     rc |= expect_true("p25-rtl-nocarrier-retry-clears-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);

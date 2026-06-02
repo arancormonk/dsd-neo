@@ -1445,8 +1445,10 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
         *helper_result = tune_result;
     }
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-        state->p25_cc_freq = old_p25_cc_freq;
-        state->trunk_cc_freq = old_trunk_cc_freq;
+        if (tune_result != DSD_TRUNK_TUNE_RESULT_DEFERRED) {
+            state->p25_cc_freq = old_p25_cc_freq;
+            state->trunk_cc_freq = old_trunk_cc_freq;
+        }
         return 0;
     }
 
@@ -1485,17 +1487,28 @@ no_carrier_apply_legacy_cc_return(const dsd_opts* opts, dsd_state* state, long c
 }
 
 static void
+no_carrier_enable_p25_cc_slots(dsd_opts* opts) {
+    opts->slot1_on = 1;
+    opts->slot2_on = 1;
+}
+
+static void
+no_carrier_enable_p25_cc_slots_if_known(dsd_opts* opts, const dsd_state* state) {
+    if (state->p25_cc_is_tdma == 0 || state->p25_cc_is_tdma == 1) {
+        no_carrier_enable_p25_cc_slots(opts);
+    }
+}
+
+static void
 no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
     if (state->p25_cc_is_tdma == 0) {
         state->samplesPerSymbol = 10;
         state->symbolCenter = 4;
-        opts->slot1_on = 1;
-        opts->slot2_on = 1;
+        no_carrier_enable_p25_cc_slots(opts);
     } else if (state->p25_cc_is_tdma == 1) {
         state->samplesPerSymbol = 8;
         state->symbolCenter = 3;
-        opts->slot1_on = 1;
-        opts->slot2_on = 1;
+        no_carrier_enable_p25_cc_slots(opts);
     }
 }
 
@@ -1515,7 +1528,7 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
         dsd_trunk_tune_result p25_helper_result = DSD_TRUNK_TUNE_RESULT_OK;
         if (no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
                                                &p25_helper_attempted, &p25_helper_result)) {
-            no_carrier_apply_p25_cc_symbolrate(opts, state);
+            no_carrier_enable_p25_cc_slots_if_known(opts, state);
             accepted_cc_return = 1;
         } else if (no_carrier_apply_legacy_cc_return(opts, state, cc, p25_helper_attempted)) {
             no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);

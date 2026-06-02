@@ -1683,6 +1683,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"
+            "-Wl,--wrap=rtl_stream_clear_pending_retune_profile"
             "-Wl,--wrap=rtl_stream_dsp_get"
             "-Wl,--wrap=rtl_stream_get_symbol_profile_full"
             "-Wl,--wrap=rtl_stream_get_ted_sps"
