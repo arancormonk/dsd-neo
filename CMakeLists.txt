@@ -74,6 +74,7 @@ option(
 )
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
+set(DSD_SOAPYSDR_MIN_VERSION "0.8.1")
 option(
     DSD_REQUIRE_RTLSDR
     "Fail configure when RTL-SDR is enabled but not found"
@@ -615,21 +616,7 @@ if(DSD_ENABLE_RTLSDR)
 endif()
 
 if(DSD_ENABLE_SOAPYSDR)
-    # Ubuntu 20.04's SoapySDRConfig.cmake (0.7.x) sets CMAKE_CXX_STANDARD=11
-    # as a side effect. Preserve this project's configured language standard.
-    set(_dsd_saved_cxx_standard "${CMAKE_CXX_STANDARD}")
-    set(_dsd_saved_cxx_standard_required "${CMAKE_CXX_STANDARD_REQUIRED}")
-    set(_dsd_saved_cxx_extensions "${CMAKE_CXX_EXTENSIONS}")
-
-    find_package(SoapySDR CONFIG QUIET)
-
-    set(CMAKE_CXX_STANDARD "${_dsd_saved_cxx_standard}")
-    set(CMAKE_CXX_STANDARD_REQUIRED "${_dsd_saved_cxx_standard_required}")
-    set(CMAKE_CXX_EXTENSIONS "${_dsd_saved_cxx_extensions}")
-
-    unset(_dsd_saved_cxx_standard)
-    unset(_dsd_saved_cxx_standard_required)
-    unset(_dsd_saved_cxx_extensions)
+    find_package(SoapySDR ${DSD_SOAPYSDR_MIN_VERSION} CONFIG QUIET)
 endif()
 
 set(DSD_HAS_RTLSDR OFF)
@@ -640,8 +627,6 @@ endif()
 set(DSD_HAS_SOAPYSDR OFF)
 if(DSD_ENABLE_SOAPYSDR)
     if(TARGET SoapySDR OR TARGET SoapySDR::SoapySDR)
-        set(DSD_HAS_SOAPYSDR ON)
-    elseif(SoapySDR_INCLUDE_DIRS AND SoapySDR_LIBRARIES)
         set(DSD_HAS_SOAPYSDR ON)
     endif()
 endif()
@@ -667,7 +652,8 @@ endif()
 if(DSD_REQUIRE_SOAPYSDR AND NOT DSD_HAS_SOAPYSDR)
     message(
         FATAL_ERROR
-        "SoapySDR backend was required but not found. Install SoapySDR or disable DSD_REQUIRE_SOAPYSDR."
+        "SoapySDR backend was required but SoapySDR >= ${DSD_SOAPYSDR_MIN_VERSION} was not found. "
+        "Install a supported SoapySDR development package or disable DSD_REQUIRE_SOAPYSDR."
     )
 endif()
 
@@ -681,7 +667,8 @@ endif()
 if(DSD_ENABLE_SOAPYSDR AND NOT DSD_HAS_SOAPYSDR AND NOT DSD_REQUIRE_SOAPYSDR)
     message(
         STATUS
-        "SoapySDR not found; building without SoapySDR backend (set DSD_REQUIRE_SOAPYSDR=ON to fail)."
+        "SoapySDR >= ${DSD_SOAPYSDR_MIN_VERSION} not found; building without SoapySDR backend "
+        "(set DSD_REQUIRE_SOAPYSDR=ON to fail)."
     )
 endif()
 
@@ -861,16 +848,6 @@ if(DSD_HAS_SOAPYSDR)
         target_link_libraries(
             dsd-neo_feature_soapy
             INTERFACE SoapySDR::SoapySDR
-        )
-    elseif(SoapySDR_INCLUDE_DIRS AND SoapySDR_LIBRARIES)
-        target_include_directories(
-            dsd-neo_feature_soapy
-            SYSTEM
-            INTERFACE ${SoapySDR_INCLUDE_DIRS}
-        )
-        target_link_libraries(
-            dsd-neo_feature_soapy
-            INTERFACE ${SoapySDR_LIBRARIES}
         )
     endif()
 endif()

@@ -281,7 +281,7 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 - `dsd-neo_feature_sid` — `SOFTID` when P25p1 soft ID decoding is enabled (`SID`)
 - `dsd-neo_feature_radio` — `USE_RADIO` when any radio backend is available (`DSD_HAS_RADIO`)
 - `dsd-neo_feature_rtlsdr` — `USE_RTLSDR` (+ `USE_RTLSDR_BIAS_TEE` when supported by librtlsdr)
-- `dsd-neo_feature_soapy` — `USE_SOAPYSDR` + SoapySDR link/includes when available
+- `dsd-neo_feature_soapy` — `USE_SOAPYSDR` + SoapySDR >= 0.8.1 imported-target link/includes when available
 - `dsd-neo_feature_codec2` — `USE_CODEC2`
 - `dsd-neo_feature_curl` — `USE_CURL` + libcurl link when available
 
@@ -289,4 +289,4 @@ External dependencies (resolved via CMake):
 
 - Required: LibSndFile; curses (ncursesw/PDCurses); an audio backend (PulseAudio by default, PortAudio on Windows);
   MBE vocoder (`mbe-neo` 2.x).
-- Optional: RTL‑SDR, SoapySDR, CODEC2, libcurl.
+- Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl.

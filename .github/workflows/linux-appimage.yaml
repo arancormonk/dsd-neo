@@ -116,6 +116,9 @@ jobs:
             echo "mbe_sha=$MBELIB_NEO_SHA"
             echo "codec2_sha=$CODEC2_SHA"
             echo "rtlsdr_sha=$RTL_SDR_SHA"
+            echo "soapy_sdr_sha=$SOAPY_SDR_SHA"
+            echo "soapy_sdr_root=/usr"
+            echo "soapy_sdr_root_key=usr"
             echo "openssl_sha=$OPENSSL_SHA"
             echo "image_ref=$image_ref"
             echo "image_pin=$image_pin"
@@ -132,7 +135,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.APPIMAGE_DEPS_DIR }}
-          key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.image_pin }}-${{ steps.dep-shas.outputs.cmake_sha }}-${{ steps.dep-shas.outputs.openssl_sha }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
+          key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.image_pin }}-${{ steps.dep-shas.outputs.cmake_sha }}-${{ steps.dep-shas.outputs.openssl_sha }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_root_key }}
           restore-keys: |
             deps-appimage-${{ runner.os }}-${{ matrix.arch }}-
 
@@ -146,6 +149,8 @@ jobs:
                grep -Fxq "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" "$mf" &&
                grep -Fxq "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" "$mf" &&
                grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf" &&
+               grep -Fxq "soapy_sdr_sha=${{ steps.dep-shas.outputs.soapy_sdr_sha }}" "$mf" &&
+               grep -Fxq "soapy_sdr_root=${{ steps.dep-shas.outputs.soapy_sdr_root }}" "$mf" &&
                grep -Fxq "openssl_sha=${{ steps.dep-shas.outputs.openssl_sha }}" "$mf" &&
                grep -Fxq "image_ref=${{ steps.dep-shas.outputs.image_ref }}" "$mf" &&
                grep -Fxq "cmake_sha=${{ steps.dep-shas.outputs.cmake_sha }}" "$mf"; then
@@ -195,6 +200,8 @@ jobs:
             -e MBE_SHA='${{ steps.dep-shas.outputs.mbe_sha }}' \
             -e CODEC2_SHA='${{ steps.dep-shas.outputs.codec2_sha }}' \
             -e RTLSDR_SHA='${{ steps.dep-shas.outputs.rtlsdr_sha }}' \
+            -e SOAPY_SDR_SHA='${{ steps.dep-shas.outputs.soapy_sdr_sha }}' \
+            -e SOAPY_SDR_RUNTIME_ROOT='${{ steps.dep-shas.outputs.soapy_sdr_root }}' \
             -e OPENSSL_SHA='${{ steps.dep-shas.outputs.openssl_sha }}' \
             -e DEPS_DIR="/work/.deps/appimage-${{ matrix.arch }}" \
             -e CCACHE_DIR="/work/.ccache/appimage-${{ matrix.arch }}" \
@@ -206,7 +213,6 @@ jobs:
               apt-get install -y --no-install-recommends \
                 ca-certificates wget git build-essential cmake ninja-build pkg-config ccache perl \
                 libsndfile1-dev libpulse-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-                libsoapysdr-dev \
                 libncurses-dev patchelf file squashfs-tools desktop-file-utils doxygen graphviz imagemagick \
                 libboost-all-dev libarchive-dev libcurl4-openssl-dev zsync libglib2.0-dev \
                 libzstd-dev liblzma-dev libgpgme-dev libgcrypt20-dev gnupg \
@@ -234,10 +240,14 @@ jobs:
               : "${MBE_SHA:?MBE_SHA not set}"
               : "${CODEC2_SHA:?CODEC2_SHA not set}"
               : "${RTLSDR_SHA:?RTLSDR_SHA not set}"
+              : "${SOAPY_SDR_SHA:?SOAPY_SDR_SHA not set}"
+              : "${SOAPY_SDR_RUNTIME_ROOT:?SOAPY_SDR_RUNTIME_ROOT not set}"
               : "${OPENSSL_SHA:?OPENSSL_SHA not set}"
               mbe_sha="$MBE_SHA"
               codec2_sha="$CODEC2_SHA"
               rtlsdr_sha="$RTLSDR_SHA"
+              soapy_sdr_sha="$SOAPY_SDR_SHA"
+              soapy_sdr_root="$SOAPY_SDR_RUNTIME_ROOT"
               openssl_sha="$OPENSSL_SHA"
 
               mkdir -p "$CCACHE_DIR"
@@ -314,12 +324,16 @@ jobs:
               build_dep https://github.com/arancormonk/mbelib-neo "$mbe_sha" libmbe-neo mbe_sha ""
               build_dep https://github.com/arancormonk/codec2 "$codec2_sha" codec2 codec2_sha ""
               build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr rtlsdr_sha "-DDETACH_KERNEL_DRIVER=ON"
+              build_dep https://github.com/pothosware/SoapySDR "$soapy_sdr_sha" SoapySDR soapy_sdr_sha \
+                "-DENABLE_APPS=OFF -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DENABLE_PYTHON=OFF -DENABLE_PYTHON3=OFF -DSOAPY_SDR_ROOT=$soapy_sdr_root"
 
               mf="$DEPS/.manifest"
               {
                 echo "mbe_sha=$mbe_sha"
                 echo "codec2_sha=$codec2_sha"
                 echo "rtlsdr_sha=$rtlsdr_sha"
+                echo "soapy_sdr_sha=$soapy_sdr_sha"
+                echo "soapy_sdr_root=$soapy_sdr_root"
                 echo "openssl_sha=$openssl_sha"
                 echo "image_ref=${{ steps.dep-shas.outputs.image_ref }}"
                 echo "cmake_sha=${{ steps.dep-shas.outputs.cmake_sha }}"
@@ -327,6 +341,13 @@ jobs:
               } > "$mf"
 
               pkg-config --modversion SoapySDR || true
+              soapy_modules_cpp="/tmp/SoapySDR/build/lib/Modules.cpp"
+              if [ -f "$soapy_modules_cpp" ]; then
+                if ! grep -Fq "return \"$soapy_sdr_root\";" "$soapy_modules_cpp"; then
+                  echo "ERROR: SoapySDR generated module loader does not use root $soapy_sdr_root" >&2
+                  exit 1
+                fi
+              fi
 
               cmake -S . -B build/appimage -G Ninja -DCMAKE_BUILD_TYPE=Release -DDSD_ENABLE_LTO=OFF \
                 -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON \
@@ -354,6 +375,23 @@ jobs:
               src_icon="images/dsd-neo.png"; [ -f "$src_icon" ] || src_icon="images/dsd-neo_const_view.png"
               # Normalize to a valid square icon size
               convert "$src_icon" -resize 256x256^ -gravity center -extent 256x256 PNG32:/work/AppDir/usr/share/icons/hicolor/256x256/apps/dsd-neo.png
+
+              host_multiarch="$(gcc -dumpmachine)"
+              soapy_abi="$(sed -n "s/^#define SOAPY_SDR_ABI_VERSION \"\\([^\"]*\\)\"/\\1/p" "$DEPS/include/SoapySDR/Version.h" | head -n1)"
+              if [ -z "$soapy_abi" ]; then
+                echo "ERROR: could not read SoapySDR ABI version" >&2
+                exit 1
+              fi
+              mkdir -p AppDir/apprun-hooks
+              cat > AppDir/apprun-hooks/10-soapy-module-path.sh <<EOF
+              soapy_module_paths="/usr/lib/${host_multiarch}/SoapySDR/modules${soapy_abi}:/usr/local/lib/${host_multiarch}/SoapySDR/modules${soapy_abi}:/usr/lib64/SoapySDR/modules${soapy_abi}:/usr/local/lib64/SoapySDR/modules${soapy_abi}:/usr/lib/SoapySDR/modules${soapy_abi}:/usr/local/lib/SoapySDR/modules${soapy_abi}"
+              if [ -n "\${SOAPY_SDR_PLUGIN_PATH:-}" ]; then
+                export SOAPY_SDR_PLUGIN_PATH="\${SOAPY_SDR_PLUGIN_PATH}:\${soapy_module_paths}"
+              else
+                export SOAPY_SDR_PLUGIN_PATH="\${soapy_module_paths}"
+              fi
+              unset soapy_module_paths
+          EOF
 
               export OUTPUT="/work/${{ steps.names.outputs.OUT }}"
               mkdir -p "$(dirname "$OUTPUT")"

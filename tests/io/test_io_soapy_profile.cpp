@@ -4,15 +4,32 @@
  */
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/io/rtl_device.h"
 #include "soapy_profile.h"
 
 using dsdneo::SoapyProfileId;
 using dsdneo::SoapyProfileSelection;
 using dsdneo::SoapyRange;
+using dsdneo::SoapySettingScope;
+using dsdneo::SoapySettingValueType;
+
+static_assert(offsetof(struct rtl_soapy_config, profile) < offsetof(struct rtl_soapy_config, antenna),
+              "rtl_soapy_config legacy field order changed");
+static_assert(offsetof(struct rtl_soapy_config, antenna) < offsetof(struct rtl_soapy_config, clock_source),
+              "rtl_soapy_config legacy field order changed");
+static_assert(offsetof(struct rtl_soapy_config, clock_source) < offsetof(struct rtl_soapy_config, gains),
+              "rtl_soapy_config legacy field order changed");
+static_assert(offsetof(struct rtl_soapy_config, gains) < offsetof(struct rtl_soapy_config, stream_format),
+              "rtl_soapy_config legacy field order changed");
+static_assert(offsetof(struct rtl_soapy_config, stream_format) < offsetof(struct rtl_soapy_config, bandwidth_hz),
+              "rtl_soapy_config legacy field order changed");
+static_assert(offsetof(struct rtl_soapy_config, bandwidth_hz) < offsetof(struct rtl_soapy_config, settings),
+              "rtl_soapy_config settings must remain appended");
 
 static int
 expect_true(const char* label, bool value) {
@@ -37,6 +54,15 @@ static int
 expect_string(const char* label, const std::string& got, const char* want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", label, got.c_str(), want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_scope(const char* label, SoapySettingScope got, SoapySettingScope want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got scope=%d want=%d\n", label, (int)got, (int)want);
         return 1;
     }
     return 0;
@@ -120,6 +146,100 @@ test_range_selection(void) {
     return rc;
 }
 
+static int
+test_settings_parser_accepts_device_and_rx_scopes(void) {
+    int rc = 0;
+    std::vector<dsdneo::SoapySettingRequest> settings;
+    std::string error;
+    if (!dsdneo::soapy_parse_settings("rfnotch_ctrl=true; rx:agc_setpoint=-30, rx0:rfgain_sel=4", &settings, &error)) {
+        DSD_FPRINTF(stderr, "settings parser rejected valid input: %s\n", error.c_str());
+        return 1;
+    }
+    if (settings.size() != 3U) {
+        DSD_FPRINTF(stderr, "settings parser count mismatch: got %zu want 3\n", settings.size());
+        return 1;
+    }
+    rc |= expect_scope("device setting scope", settings[0].scope, SoapySettingScope::Device);
+    rc |= expect_string("device setting key", settings[0].key, "rfnotch_ctrl");
+    rc |= expect_string("device setting value", settings[0].value, "true");
+    rc |= expect_scope("rx setting scope", settings[1].scope, SoapySettingScope::Rx0);
+    rc |= expect_string("rx setting key", settings[1].key, "agc_setpoint");
+    rc |= expect_string("rx setting value", settings[1].value, "-30");
+    rc |= expect_scope("rx0 setting scope", settings[2].scope, SoapySettingScope::Rx0);
+    rc |= expect_string("rx0 setting key", settings[2].key, "rfgain_sel");
+    rc |= expect_string("rx0 setting value", settings[2].value, "4");
+    return rc;
+}
+
+static int
+expect_settings_parse_rejects(const char* label, const char* spec) {
+    std::vector<dsdneo::SoapySettingRequest> settings;
+    std::string error;
+    if (dsdneo::soapy_parse_settings(spec, &settings, &error)) {
+        DSD_FPRINTF(stderr, "%s: parser accepted invalid spec '%s'\n", label, spec);
+        return 1;
+    }
+    if (error.empty()) {
+        DSD_FPRINTF(stderr, "%s: parser rejected without an error\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_settings_parser_rejects_invalid_items(void) {
+    int rc = 0;
+    rc |= expect_settings_parse_rejects("missing equals", "rfnotch_ctrl");
+    rc |= expect_settings_parse_rejects("unknown scope", "tx:rfnotch_ctrl=true");
+    rc |= expect_settings_parse_rejects("empty key", "=true");
+    rc |= expect_settings_parse_rejects("empty rx key", "rx:=true");
+    rc |= expect_settings_parse_rejects("empty value", "rfnotch_ctrl=");
+    rc |= expect_settings_parse_rejects("empty separated item", "rfnotch_ctrl=true,,biasT_ctrl=false");
+    return rc;
+}
+
+static int
+expect_setting_value(const char* label, SoapySettingValueType type, const SoapyRange* range, const char* value,
+                     bool want_valid) {
+    std::string error;
+    const bool got_valid = dsdneo::soapy_validate_setting_value(type, range, value, &error);
+    if (got_valid != want_valid) {
+        DSD_FPRINTF(stderr, "%s: got valid=%d want=%d error='%s'\n", label, got_valid ? 1 : 0, want_valid ? 1 : 0,
+                    error.c_str());
+        return 1;
+    }
+    if (!want_valid && error.empty()) {
+        DSD_FPRINTF(stderr, "%s: invalid value produced no error\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_setting_value_validation(void) {
+    int rc = 0;
+    const SoapyRange agc_range = {-60.0, 0.0, 1.0};
+    const SoapyRange float_range = {0.0, 2.0, 0.0};
+
+    rc |= expect_setting_value("bool true accepted", SoapySettingValueType::Bool, NULL, "true", true);
+    rc |= expect_setting_value("bool false accepted", SoapySettingValueType::Bool, NULL, "false", true);
+    rc |= expect_setting_value("bool typo rejected", SoapySettingValueType::Bool, NULL, "treu", false);
+    rc |= expect_setting_value("bool numeric rejected", SoapySettingValueType::Bool, NULL, "1", false);
+
+    rc |= expect_setting_value("int in range accepted", SoapySettingValueType::Int, &agc_range, "-30", true);
+    rc |= expect_setting_value("int out of range rejected", SoapySettingValueType::Int, &agc_range, "-90", false);
+    rc |= expect_setting_value("int decimal rejected", SoapySettingValueType::Int, &agc_range, "-30.5", false);
+    rc |= expect_setting_value("int without range accepted", SoapySettingValueType::Int, NULL, "1234", true);
+
+    rc |= expect_setting_value("float in range accepted", SoapySettingValueType::Float, &float_range, "1.25", true);
+    rc |= expect_setting_value("float out of range rejected", SoapySettingValueType::Float, &float_range, "2.5", false);
+    rc |= expect_setting_value("float nan rejected", SoapySettingValueType::Float, NULL, "nan", false);
+    rc |= expect_setting_value("float suffix rejected", SoapySettingValueType::Float, NULL, "1.0dB", false);
+
+    rc |= expect_setting_value("string accepted", SoapySettingValueType::String, NULL, "driver-specific", true);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -127,5 +247,8 @@ main(void) {
     rc |= test_bandwidth_selection();
     rc |= test_stream_format_selection();
     rc |= test_range_selection();
+    rc |= test_settings_parser_accepts_device_and_rx_scopes();
+    rc |= test_settings_parser_rejects_invalid_items();
+    rc |= test_setting_value_validation();
     return rc;
 }

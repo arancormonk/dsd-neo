@@ -562,6 +562,7 @@ test_profile_soapy_settings(void) {
                              "[profile.soapy_scan]\n"
                              "input.source = \"soapy\"\n"
                              "input.soapy_args = \"driver=airspy,serial=ABC123\"\n"
+                             "input.soapy_settings = \"rfnotch_ctrl=true,biasT_ctrl=false\"\n"
                              "input.rtl_freq = \"162.550M\"\n"
                              "input.rtl_gain = 27\n";
 
@@ -586,6 +587,10 @@ test_profile_soapy_settings(void) {
     }
     if (strcmp(cfg.soapy_args, "driver=airspy,serial=ABC123") != 0) {
         DSD_FPRINTF(stderr, "FAIL: expected soapy_args driver=airspy,serial=ABC123, got %s\n", cfg.soapy_args);
+        result = 1;
+    }
+    if (strcmp(cfg.soapy_settings, "rfnotch_ctrl=true,biasT_ctrl=false") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: expected soapy_settings to survive profile overlay, got %s\n", cfg.soapy_settings);
         result = 1;
     }
     if (strcmp(cfg.rtl_freq, "162.550M") != 0) {

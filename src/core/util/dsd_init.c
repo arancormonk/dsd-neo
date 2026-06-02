@@ -187,6 +187,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->soapy_stream_format[0] = '\0';
     opts->soapy_antenna[0] = '\0';
     opts->soapy_clock[0] = '\0';
+    opts->soapy_settings[0] = '\0';
     opts->soapy_gains[0] = '\0';
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;

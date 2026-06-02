@@ -285,6 +285,7 @@ small subset is exposed as config keys for convenience (for example
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
 | `soapy_args` | STRING | SoapySDR device selection args (from SoapySDRUtil `--find`/`--probe`) | (empty) |
+| `soapy_settings` | STRING | SoapySDR driver settings (`key=value`, `rx:key=value`) | (empty) |
 | `file_path` | PATH | Input file path (WAV/BIN/RAW/SYM) | (empty) |
 | `file_sample_rate` | INT (8000-192000) | File sample rate (WAV/RAW) | `48000` |
 | `tcp_host` | STRING | TCP PCM input host | `127.0.0.1` |
@@ -456,6 +457,7 @@ version = 1
   the input to RTL-TCP at startup, set at least `rtltcp_host`.
 
 - **SoapySDR (`source = "soapy"`)**:
+  - Requires SoapySDR 0.8.1 or newer when the backend is enabled.
   - Uses `soapy_args` for device selection only (same semantics as CLI `-i soapy[:args]`).
   - CLI also supports optional shorthand tuning:
     `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
@@ -510,6 +512,7 @@ source = "soapy"
 soapy_args = "driver=sdrplay,serial=123456"
 soapy_profile = "sdrplay"
 soapy_stream_format = "auto"
+soapy_settings = "rfnotch_ctrl=true,dabnotch_ctrl=true,biasT_ctrl=false,agc_setpoint=-30,rfgain_sel=4"
 soapy_gains = "IFGR:35"
 soapy_bandwidth_hz = 200000
 
@@ -524,15 +527,22 @@ rtl_volume = 2
 
 If you omit `soapy_args`, DSD-neo uses the default Soapy device args (equivalent to `-i soapy`).
 For multiple identical devices, prefer including a stable selector like `serial=...`.
-Soapy-specific keys are optional: profiles default to `auto`, stream format defaults to `auto`, named gains are only
-applied when `soapy_gains` is present, and `soapy_bandwidth_hz = 0` leaves bandwidth selection to the driver.
+Soapy-specific keys are optional: profiles default to `auto`, stream format defaults to `auto`,
+`soapy_settings` is applied only when present, named gains are only applied when `soapy_gains` is present, and
+`soapy_bandwidth_hz = 0` leaves bandwidth selection to the driver.
+`soapy_settings` accepts comma/semicolon-separated `key=value` items for device settings, plus `rx:key=value` or
+`rx0:key=value` for RX channel 0 settings. Startup fails if an item is malformed, the scope is unknown, the key/value
+is rejected by Soapy metadata, or the driver rejects `writeSetting`.
 
 ### Soapy Troubleshooting
 
-- If device discovery is empty, run `SoapySDRUtil --find` first and verify your hardware module is installed.
+- If device discovery is empty, run `SoapySDRUtil --find` first and verify SoapySDR 0.8.1 or newer plus your hardware
+  module are installed.
 - If Soapy devices/modules are not discovered, confirm plugin discovery path via `SOAPY_SDR_PLUGIN_PATH`.
 - Driver capabilities differ by hardware: some devices may not support PPM correction, bandwidth selection, or manual
   gain range controls.
+- Native SDRplay/Airspy APIs are not used by this backend; driver-specific controls are exposed through Soapy settings
+  when the installed Soapy module provides them.
 - Expected sample-rate and gain behavior can vary by driver; requested values may be quantized/clamped to supported
   ranges.
 - See `docs/soapysdr.md` for a full non-RTL setup flow.
@@ -601,7 +611,8 @@ Config/CLI interaction:
 3. One-shot commands (`--dump-config-template`, `--validate-config`,
    `--list-profiles`, `--print-config`) execute and exit immediately.
    Before `--print-config` renders, Soapy shorthand input specs are normalized
-   into `soapy_args` plus shared `rtl_*` tuning keys.
+   into `soapy_args` plus shared `rtl_*` tuning keys. Explicit `soapy_settings`
+   values are rendered under their normalized key.
 4. If no CLI args and no config is loaded, the interactive bootstrap wizard runs.
 5. When a config is loaded: interactive bootstrap is skipped unless
    `--interactive-setup` is specified.

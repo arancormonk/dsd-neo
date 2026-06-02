@@ -275,9 +275,9 @@ Advanced (env)
 
 ## SoapySDR details (`-i soapy`)
 
-- Use this path for non-RTL radios exposed through Soapy modules.
+- Use this path for non-RTL radios exposed through Soapy modules. The backend requires SoapySDR 0.8.1 or newer.
 - Typical workflow:
-  1. Install SoapySDR runtime and the module for your radio.
+  1. Install SoapySDR 0.8.1 or newer and the module for your radio.
   2. Verify Soapy is installed and check plugin search paths: `SoapySDRUtil --info`
   3. Enumerate radios: `SoapySDRUtil --find`
   4. Probe one candidate and capture its args: `SoapySDRUtil --probe="driver=sdrplay"`
@@ -288,22 +288,30 @@ Advanced (env)
 - Those trailing fields map to existing shared controls and keys:
   `rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`.
 - Additional `[input]` keys expose Soapy-specific capabilities: `soapy_profile`, `soapy_stream_format`,
-  `soapy_antenna`, `soapy_clock`, `soapy_gains`, and `soapy_bandwidth_hz`.
+  `soapy_antenna`, `soapy_clock`, `soapy_settings`, `soapy_gains`, and `soapy_bandwidth_hz`.
+- `soapy_settings = "key=value[,rx:key=value...]"` writes driver settings through Soapy. For example, SDRplay
+  modules may expose `rfnotch_ctrl`, `dabnotch_ctrl`, `biasT_ctrl`, `agc_setpoint`, or `rfgain_sel`.
 - `soapy_gains = "NAME:dB[,NAME:dB...]"` uses named gain stages and takes precedence over aggregate `rtl_gain`.
 - `--print-config` reflects shorthand as normalized config fields (`soapy_args` + `rtl_*`) rather than the raw input
   string.
 - If your Soapy args string itself contains `:`, prefer config keys (`soapy_args` + `rtl_*`) to avoid ambiguity.
 - `rtl_device` index selection is for `rtl` input and is ignored in Soapy mode.
 - Set an explicit `rtl_freq` for predictable startup frequency (otherwise defaults may not match your target system).
-- Some controls are RTL/RTL-TCP specific and not supported in the Soapy backend path (`bias tee`, direct sampling, offset tuning, xtal/IF-gain/testmode controls, RTL-TCP autotune).
+- Some shortcuts are RTL/RTL-TCP specific and not supported in the Soapy backend path (RTL bias-tee UI/CLI shortcut,
+  direct sampling, offset tuning, xtal/IF-gain/testmode controls, RTL-TCP autotune). Use `soapy_settings` for
+  driver-specific controls when the Soapy module exposes them, such as SDRplay `biasT_ctrl`.
+- Native SDRplay/Airspy APIs are intentionally out of scope for now; non-RTL radios are controlled through SoapySDR.
 - The Soapy backend requires an RX stream format of `CF32` or `CS16` from the driver; `soapy_stream_format = "auto"`
   prefers a supported native format first.
 
 Troubleshooting:
 
-- If you see `SoapySDR backend unavailable in this build.`, rebuild with Soapy enabled and installed.
+- If you see `SoapySDR backend unavailable in this build.`, rebuild with Soapy enabled and SoapySDR 0.8.1 or newer
+  installed.
 - If Soapy device discovery fails, verify Soapy modules are installed and `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your driver.
 - If logs report `invalid args string` or `failed to create device`, re-check your `soapy:` args from `SoapySDRUtil --find` / `--probe`.
+- If logs report `invalid soapy_settings`, `setting ... is unavailable`, or `failed to write setting`, compare your
+  setting names and allowed values with `SoapySDRUtil --probe="<args>"`.
 - If logs report `RX stream formats do not include CF32 or CS16`, that driver/device stream format is not currently usable in this backend.
 - If logs report `SoapySDR: RX overflow count=...`, try lowering `rtl_bw_khz` (config key; for example 48 -> 16) and reduce system load.
 - Capability support varies by driver/device. Some radios do not support one or more of: frequency correction (PPM), manual gain range, or bandwidth control.
@@ -527,6 +535,7 @@ Debug (verbose/developer)
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
 - RTL‑TCP in with ncurses UI: `dsd-neo -i rtltcp:127.0.0.1:1234 -N`
 - SoapySDR in with explicit driver args: `dsd-neo -i soapy:driver=sdrplay -N`
+- SoapySDR with SDRplay settings in config: `soapy_settings = "rfnotch_ctrl=true,dabnotch_ctrl=true,biasT_ctrl=false,agc_setpoint=-30,rfgain_sel=4"`
 - SoapySDR args + RTL-style tuning in one input spec: `dsd-neo -i soapy:driver=sdrplay:851.375M:22:-2:24:0:2 -N`
 - Save per‑call WAVs to a folder: `dsd-neo -7 ./calls -P -N`
 - Strictly P25 Phase 1 from TCP audio: `dsd-neo -f1 -i tcp -N`

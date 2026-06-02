@@ -13,7 +13,7 @@ DSD-neo keeps release and CI dependencies explicit so analyzer results and binar
 
 ## Pinned CI Source Checkouts
 
-`tools/ci-dependency-pins.env` is the checked-in source of truth for CI-only GitHub source dependencies such as OpenSSL, `mbelib-neo`, `codec2`, `rtl-sdr`, `include-what-you-use`, AppImage helper projects, CI container digests, vcpkg overlay archive SHA512 values, and installer SHA256 values.
+`tools/ci-dependency-pins.env` is the checked-in source of truth for CI-only GitHub source dependencies such as OpenSSL, `mbelib-neo`, `codec2`, `rtl-sdr`, SoapySDR, `include-what-you-use`, AppImage helper projects, CI container digests, vcpkg overlay archive SHA512 values, and installer SHA256 values.
 
 To refresh one of these pins:
 

@@ -20,7 +20,8 @@ Required dependencies are:
 Optional compiled dependencies are:
 
 - librtlsdr for RTL-SDR input
-- SoapySDR for non-RTL SDR devices
+- SoapySDR 0.8.1 or newer for non-RTL SDR devices; the CMake package must
+  export an imported target (`SoapySDR` or `SoapySDR::SoapySDR`)
 - Codec2 for additional vocoder paths
 - libcurl for rdio-scanner API uploads
 - PortAudio on non-Windows builds when selected
@@ -45,9 +46,10 @@ curl `8.19.0`; system-package builds enforce the OpenSSL requirement through
 
 Windows builds use vcpkg overlays under `vcpkg-ports/` and triplets under
 `vcpkg-triplets/`. AppImage builds use pinned CI source checkouts for compiled
-dependencies that are not suitable from the Ubuntu 20.04 base image. Overlay
-ports and CI source checkouts must use immutable source references and hashes as
-described in `docs/supply-chain-guardrails.md`.
+dependencies that are not suitable from the Ubuntu 20.04 base image, including
+SoapySDR 0.8.1 or newer. Overlay ports and CI source checkouts must use
+immutable source references and hashes as described in
+`docs/supply-chain-guardrails.md`.
 
 ## Tooling Dependencies
 
