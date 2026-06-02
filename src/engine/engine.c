@@ -1337,9 +1337,13 @@ no_carrier_has_p25_cc_identity(const dsd_state* state) {
 
 static int
 no_carrier_has_active_p25_voice_state(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->p25_is_tuned != 1 || !no_carrier_has_p25_cc_identity(state)) {
+    if (opts->p25_is_tuned != 1) {
         return 0;
     }
+    /*
+     * Configured P25 follows can tune a voice channel before CC identity hints
+     * are decoded; p25_is_tuned plus a tracked P25 VC is still a P25 return hint.
+     */
     return (state->p25_vc_freq[0] != 0 || state->p25_vc_freq[1] != 0) ? 1 : 0;
 }
 
