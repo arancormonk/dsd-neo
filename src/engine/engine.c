@@ -1304,6 +1304,16 @@ no_carrier_select_control_channel(dsd_state* state) {
 }
 
 static void
+no_carrier_sync_selected_control_channel(const dsd_opts* opts, dsd_state* state, long cc) {
+    if (cc == 0) {
+        return;
+    }
+
+    state->trunk_cc_freq = cc;
+    state->p25_cc_freq = (opts->p25_trunk == 1) ? cc : 0;
+}
+
+static void
 no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
     if (state->p25_cc_is_tdma == 0) {
         state->samplesPerSymbol = 10;
@@ -1328,10 +1338,12 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     int used_trunk_helper = 0;
     int legacy_clear_state = 0;
     if (cc != 0) {
+        no_carrier_sync_selected_control_channel(opts, state, cc);
         dsd_trunk_tune_result tune_result = dsd_engine_return_to_cc(opts, state);
         if (dsd_trunk_tune_result_is_ok(tune_result)) {
             used_trunk_helper = 1;
             state->edacs_tuned_lcn = -1;
+            state->dmr_rest_channel = -1;
         } else if (opts->use_rigctl == 1) {
             no_carrier_tune_rigctl_if_needed(opts, cc);
             state->dmr_rest_channel = -1;

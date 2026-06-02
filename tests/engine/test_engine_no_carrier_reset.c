@@ -40,7 +40,9 @@ static int
 fake_rtl_fsk_output_kind(void) {
     return RTL_STREAM_OUTPUT_SYMBOL_FSK;
 }
+#endif
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 static int g_rtl_tune_calls = 0;
 static uint32_t g_rtl_tune_freq = 0;
 static int g_rtl_output_rate = 48000;
@@ -300,7 +302,7 @@ main(void) {
     rc |= expect_true("p25-stale-vc-clears-tuned", opts->p25_is_tuned == 0);
     rc |= expect_true("p25-stale-vc-clears-freq", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
 
-#ifdef USE_RADIO
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
@@ -315,7 +317,7 @@ main(void) {
     opts->mod_qpsk = 1;
     state->rtl_ctx = (RtlSdrContext*)state;
     state->p25_cc_freq = 769768750;
-    state->trunk_cc_freq = 769768750;
+    state->trunk_cc_freq = 769868750;
     state->p25_cc_is_tdma = 0;
     state->p25_p2_active_slot = 0;
     state->last_cc_sync_time = time(NULL) - 11;
@@ -328,12 +330,43 @@ main(void) {
 
     noCarrier(opts, state);
 
-    rc |= expect_true("p25-rtl-nocarrier-cc-retune", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769768750U);
+    rc |= expect_true("p25-rtl-nocarrier-cc-retune", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769868750U);
+    rc |= expect_true("p25-rtl-nocarrier-syncs-selected-cc",
+                      state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-rate", g_rtl_symbol_rate_hz == 4800);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-cqpsk", g_rtl_cqpsk_enable == 1);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-ted", g_rtl_ted_sps == 10 && g_rtl_ted_sps_override == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    reset_rtl_profile_fakes();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 852012500;
+    state->trunk_cc_freq = 851012500;
+    state->dmr_rest_channel = 7;
+    state->trunk_chan_map[7] = 853012500;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("dmr-rtl-nocarrier-rest-cc-retune", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 853012500U);
+    rc |= expect_true("dmr-rtl-nocarrier-clears-rest", state->dmr_rest_channel == -1);
+    rc |= expect_true("dmr-rtl-nocarrier-clears-stale-p25-cc",
+                      state->trunk_cc_freq == 853012500 && state->p25_cc_freq == 0);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
 #endif
 
     // Trunk scan keeps long-lived discovery state across carrier gaps. The test

@@ -1673,6 +1673,10 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_engine_no_carrier_reset
+        PRIVATE DSD_NEO_TEST_RTL_WRAP=1
+    )
     target_link_libraries(
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE
