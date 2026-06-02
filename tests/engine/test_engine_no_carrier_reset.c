@@ -90,6 +90,10 @@ main(void) {
         return 1;
     }
 
+    // DMR payload and reliability history share noCarrier's generic reset path.
+    // Seed both buffers with sentinels and move the payload pointer into the
+    // dibit buffer to catch regressions that reset through the wrong backing
+    // store after carrier loss.
     for (int i = 0; i < 200; i++) {
         state->dmr_payload_buf[i] = 0x7F7F7F7F;
         if (state->dmr_reliab_buf != NULL) {
@@ -127,6 +131,10 @@ main(void) {
         }
     }
 
+    // A recent P25 voice-channel sync means noCarrier should keep trunk tuning
+    // state intact even when the control-channel timer is stale. This preserves
+    // an active voice call rather than forcing an unnecessary control-channel
+    // reacquisition.
     opts->p25_trunk = 1;
     opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
@@ -141,6 +149,9 @@ main(void) {
     rc |= expect_true("p25-vc-sync-preserves-alias", opts->trunk_is_tuned == 1);
     rc |= expect_true("p25-vc-sync-preserves-freq", state->p25_vc_freq[0] == 851012500);
 
+    // Once both control and voice sync are stale, the same reset path should
+    // clear the tuned flags and cached voice frequencies so scanning can resume
+    // from a clean trunking state.
     opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     state->last_cc_sync_time = time(NULL) - 11;
@@ -153,6 +164,9 @@ main(void) {
     rc |= expect_true("p25-stale-vc-clears-tuned", opts->p25_is_tuned == 0);
     rc |= expect_true("p25-stale-vc-clears-freq", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
 
+    // Trunk scan keeps long-lived discovery state across carrier gaps. The test
+    // keeps DMR confidence and P25 control-channel candidates populated while
+    // still requiring transient P25 frame metrics to be reset.
     opts->trunk_scan_enabled = 1;
     state->dmr_color_code = 5;
     state->dmr_confidence_locked = 1;
@@ -186,6 +200,9 @@ main(void) {
     rc |= expect_true("trunk-scan-still-resets-p25-metrics", state->p25_p1_fec_ok == 0);
 
 #ifdef USE_RADIO
+    // Radio builds also exercise the RTL/FSK reacquisition counters. A recovered
+    // sync must close the current gap and refresh the last-sync timer without
+    // depending on real hardware.
     dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_rtl_fsk_output_kind};
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     opts->audio_in_type = AUDIO_IN_RTL;
