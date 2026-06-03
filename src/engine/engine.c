@@ -1317,6 +1317,19 @@ no_carrier_p25_frames_enabled(const dsd_opts* opts) {
 }
 
 static int
+no_carrier_generic_trunk_frames_enabled(const dsd_opts* opts) {
+    return (opts->frame_x2tdma == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dmr == 1
+            || opts->frame_provoice == 1)
+               ? 1
+               : 0;
+}
+
+static int
+no_carrier_p25_only_frames_enabled(const dsd_opts* opts) {
+    return (no_carrier_p25_frames_enabled(opts) && !no_carrier_generic_trunk_frames_enabled(opts)) ? 1 : 0;
+}
+
+static int
 no_carrier_generic_trunk_synctype(int synctype) {
     if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)) {
         return 1;
@@ -1332,7 +1345,7 @@ no_carrier_has_p25_cc_identity(const dsd_state* state) {
     if (state->p2_rfssid != 0 || state->p2_siteid != 0) {
         return 1;
     }
-    return (state->p25_cc_is_tdma == 0 || state->p25_cc_is_tdma == 1 || state->p25_sys_is_tdma == 1) ? 1 : 0;
+    return (state->p25_sys_is_tdma == 1) ? 1 : 0;
 }
 
 static int
@@ -1348,11 +1361,11 @@ no_carrier_has_active_p25_voice_state(const dsd_opts* opts, const dsd_state* sta
 }
 
 static int
-no_carrier_selected_cc_is_p25_alias(const dsd_state* state, long cc) {
-    if (cc == 0 || state->p25_cc_freq == 0 || !no_carrier_has_p25_cc_identity(state)) {
+no_carrier_selected_cc_has_p25_identity(const dsd_state* state, long cc) {
+    if (cc == 0 || state->p25_cc_freq == 0 || cc != state->p25_cc_freq) {
         return 0;
     }
-    return (cc == state->p25_cc_freq) ? 1 : 0;
+    return no_carrier_has_p25_cc_identity(state);
 }
 
 static int
@@ -1374,10 +1387,16 @@ no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state, lon
     if (no_carrier_generic_trunk_synctype(state->lastsynctype) || no_carrier_generic_trunk_synctype(state->synctype)) {
         return 0;
     }
-    if (no_carrier_has_active_p25_voice_state(opts, state)) {
+    if (no_carrier_selected_cc_has_p25_identity(state, cc)) {
         return 1;
     }
-    return no_carrier_selected_cc_is_p25_alias(state, cc);
+    if (no_carrier_has_p25_cc_identity(state) && no_carrier_has_active_p25_voice_state(opts, state)) {
+        return 1;
+    }
+    if (!no_carrier_p25_only_frames_enabled(opts)) {
+        return 0;
+    }
+    return no_carrier_has_active_p25_voice_state(opts, state);
 }
 
 static int
@@ -1437,6 +1456,7 @@ no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
     state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = 0;
     state->trunk_vc_freq[1] = 0;
+    state->p25_p2_active_slot = -1;
 }
 
 static int
