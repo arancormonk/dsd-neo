@@ -65,6 +65,12 @@
 #include <math.h>
 #endif
 
+#ifdef DSD_NEO_TEST_HOOKS
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void dsd_neo_edacs_test_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long int msg_1,
+                                            unsigned long long int msg_2);
+#endif
+
 static void
 edacs_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
@@ -1973,6 +1979,16 @@ edacs_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long i
     edacs_print_mode_selection_hint(msg_1, msg_2);
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long int msg_1,
+                                       unsigned long long int msg_2) {
+    edacs_init_afs_layout(state);
+    edacs_process_valid_frame(opts, state, msg_1, msg_2);
+}
+#endif
+
 void
 edacs(dsd_opts* opts, dsd_state* state) {
     edacs_init_afs_layout(state);
@@ -2079,6 +2095,7 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
         DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
         DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "%s", "");
         DSD_SNPRINTF(state->active_channel[1], sizeof state->active_channel[1], "%s", "");
+        state->edacs_tuned_lcn = -1;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }

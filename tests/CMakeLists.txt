@@ -1673,12 +1673,24 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_engine_no_carrier_reset
+        PRIVATE DSD_NEO_TEST_RTL_WRAP=1
+    )
     target_link_libraries(
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"
+            "-Wl,--wrap=rtl_stream_clear_pending_retune_profile"
+            "-Wl,--wrap=rtl_stream_dsp_get"
+            "-Wl,--wrap=rtl_stream_get_symbol_profile_full"
+            "-Wl,--wrap=rtl_stream_get_ted_sps"
+            "-Wl,--wrap=rtl_stream_get_ted_sps_override"
+            "-Wl,--wrap=rtl_stream_output_rate"
+            "-Wl,--wrap=rtl_stream_prepare_retune_profile_for_target"
+            "-Wl,--wrap=rtl_stream_tune"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
@@ -1696,6 +1708,40 @@ endif()
 add_test(
     NAME ENGINE_NO_CARRIER_RESET
     COMMAND dsd-neo_test_engine_no_carrier_reset
+)
+
+add_executable(
+    dsd-neo_test_engine_generic_trunk_return_matrix
+    engine/test_engine_generic_trunk_return_matrix.c
+)
+target_include_directories(
+    dsd-neo_test_engine_generic_trunk_return_matrix
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_generic_trunk_return_matrix
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_generic_trunk_return_matrix
+        PRIVATE
+            dsd-neo_engine
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME ENGINE_GENERIC_TRUNK_RETURN_MATRIX
+    COMMAND dsd-neo_test_engine_generic_trunk_return_matrix
 )
 
 add_executable(
@@ -3284,6 +3330,27 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
 
+add_executable(
+    dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
+    protocol/dmr/test_dmr_t3_sm_return_to_cc_matrix.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/dmr
+        ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
+    PRIVATE dsd-neo_platform dsd-neo_runtime
+)
+add_test(
+    NAME DMR_T3_SM_RETURN_TO_CC_MATRIX
+    COMMAND dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
+)
+
 # DMR Tier III end-to-end shim (neighbor → grant → release)
 add_executable(
     dsd-neo_test_dmr_t3_shim
@@ -4247,6 +4314,24 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_sm_core PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_CORE COMMAND dsd-neo_test_p25_sm_core)
 
+# P25 return-to-control-channel stress matrix
+add_executable(
+    dsd-neo_test_p25_sm_return_to_cc_matrix
+    protocol/p25/test_p25_sm_return_to_cc_matrix.c
+)
+target_include_directories(
+    dsd-neo_test_p25_sm_return_to_cc_matrix
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_sm_return_to_cc_matrix
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_SM_RETURN_TO_CC_MATRIX
+    COMMAND dsd-neo_test_p25_sm_return_to_cc_matrix
+)
+
 # P25 SM candidate cooldown
 add_executable(
     dsd-neo_test_p25_sm_cand_cooldown
@@ -4405,6 +4490,23 @@ target_link_libraries(dsd-neo_test_nxdn_grant_policy PRIVATE dsd-neo_proto_nxdn)
 add_test(NAME NXDN_GRANT_POLICY COMMAND dsd-neo_test_nxdn_grant_policy)
 
 add_executable(
+    dsd-neo_test_nxdn_grant_tune_matrix
+    protocol/nxdn/test_nxdn_grant_tune_matrix.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_grant_tune_matrix
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_grant_tune_matrix
+    PRIVATE dsd-neo_proto_nxdn
+)
+add_test(
+    NAME NXDN_GRANT_TUNE_MATRIX
+    COMMAND dsd-neo_test_nxdn_grant_tune_matrix
+)
+
+add_executable(
     dsd-neo_test_edacs_bch
     protocol/edacs/test_edacs_bch.c
     ${PROJECT_SOURCE_DIR}/src/protocol/edacs/edacs-bch3.c
@@ -4448,6 +4550,39 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_edacs_grant_policy PRIVATE dsd-neo_core)
 add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
+
+# This matrix drives eot_cc(); it must not call real skipDibit from the unit-test fixture.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(dsd-neo_proto_edacs PRIVATE DSD_NEO_TEST_HOOKS)
+    add_executable(
+        dsd-neo_test_edacs_grant_tune_matrix
+        protocol/edacs/test_edacs_grant_tune_matrix.c
+    )
+    target_include_directories(
+        dsd-neo_test_edacs_grant_tune_matrix
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_edacs_grant_tune_matrix
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_edacs_grant_tune_matrix
+        PRIVATE
+            "-Wl,--wrap=skipDibit"
+            "-Wl,--wrap=watchdog_event_current"
+            "-Wl,--wrap=watchdog_event_history"
+    )
+    add_test(
+        NAME EDACS_GRANT_TUNE_MATRIX
+        COMMAND dsd-neo_test_edacs_grant_tune_matrix
+    )
+endif()
 
 # CQPSK reliability metric unit test
 # Note: compiles its own test stub rather than linking dsd-neo_core to avoid
