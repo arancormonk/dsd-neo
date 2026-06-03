@@ -846,6 +846,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
 
     // Clear voice activity indicator to prevent audio routing logic from
     // treating this locked-out slot as having active voice
+    ctx->slots[slot].voice_active = 0;
     if (slot == 0) {
         state->dmrburstL = 0;
         // Reset voice counters to prevent stale state from affecting later calls
