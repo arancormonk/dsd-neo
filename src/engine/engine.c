@@ -1317,35 +1317,11 @@ no_carrier_p25_frames_enabled(const dsd_opts* opts) {
 }
 
 static int
-no_carrier_generic_trunk_frames_enabled(const dsd_opts* opts) {
-    return (opts->frame_x2tdma == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dmr == 1
-            || opts->frame_provoice == 1)
-               ? 1
-               : 0;
-}
-
-static int
-no_carrier_p25_only_frames_enabled(const dsd_opts* opts) {
-    return (no_carrier_p25_frames_enabled(opts) && !no_carrier_generic_trunk_frames_enabled(opts)) ? 1 : 0;
-}
-
-static int
 no_carrier_generic_trunk_synctype(int synctype) {
     if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)) {
         return 1;
     }
     return DSD_SYNC_IS_X2TDMA(synctype) ? 1 : 0;
-}
-
-static int
-no_carrier_has_p25_cc_identity(const dsd_state* state) {
-    if (state->p2_cc != 0 || state->p2_wacn != 0 || state->p2_sysid != 0) {
-        return 1;
-    }
-    if (state->p2_rfssid != 0 || state->p2_siteid != 0) {
-        return 1;
-    }
-    return (state->p25_sys_is_tdma == 1) ? 1 : 0;
 }
 
 static int
@@ -1361,20 +1337,37 @@ no_carrier_has_active_p25_voice_state(const dsd_opts* opts, const dsd_state* sta
 }
 
 static int
-no_carrier_selected_cc_has_p25_identity(const dsd_state* state, long cc) {
-    if (cc == 0 || state->p25_cc_freq == 0 || cc != state->p25_cc_freq) {
-        return 0;
-    }
-    return no_carrier_has_p25_cc_identity(state);
-}
-
-static int
 no_carrier_has_selectable_control_channel(const dsd_state* state) {
     return (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) ? 1 : 0;
 }
 
+static void
+no_carrier_clear_stale_p25_return_hints_after_generic_activity(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    if (opts->p25_trunk != 1 && opts->trunk_enable != 1) {
+        return;
+    }
+    if (!no_carrier_generic_trunk_synctype(state->lastsynctype)
+        && !no_carrier_generic_trunk_synctype(state->synctype)) {
+        return;
+    }
+
+    state->p2_cc = 0;
+    state->p2_wacn = 0;
+    state->p2_sysid = 0;
+    state->p2_rfssid = 0;
+    state->p2_siteid = 0;
+    state->p25_sys_is_tdma = 0;
+    state->p25_vc_freq[0] = 0;
+    state->p25_vc_freq[1] = 0;
+    state->p25_p2_active_slot = -1;
+    opts->p25_is_tuned = 0;
+}
+
 static int
-no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state, long cc) {
+no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->p25_trunk != 1 || !no_carrier_p25_frames_enabled(opts)) {
         return 0;
     }
@@ -1385,15 +1378,6 @@ no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state, lon
         return 1;
     }
     if (no_carrier_generic_trunk_synctype(state->lastsynctype) || no_carrier_generic_trunk_synctype(state->synctype)) {
-        return 0;
-    }
-    if (no_carrier_selected_cc_has_p25_identity(state, cc)) {
-        return 1;
-    }
-    if (no_carrier_has_p25_cc_identity(state) && no_carrier_has_active_p25_voice_state(opts, state)) {
-        return 1;
-    }
-    if (!no_carrier_p25_only_frames_enabled(opts)) {
         return 0;
     }
     return no_carrier_has_active_p25_voice_state(opts, state);
@@ -1554,7 +1538,7 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     }
 
     long cc = no_carrier_select_control_channel(state);
-    const int p25_return = no_carrier_is_p25_trunk_return(opts, state, cc);
+    const int p25_return = no_carrier_is_p25_trunk_return(opts, state);
     const int clear_generic_p25_alias = no_carrier_should_clear_generic_p25_alias(state, cc, p25_return);
     int accepted_cc_return = 0;
     int clear_failed_helper_state = 0;
@@ -1987,6 +1971,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 
     no_carrier_step_scanner_mode_if_needed(opts, state, now);
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
+    no_carrier_clear_stale_p25_return_hints_after_generic_activity(opts, state);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
     const int preserve_scan_state = opts && opts->trunk_scan_enabled == 1;
