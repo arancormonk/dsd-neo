@@ -1363,6 +1363,10 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(dsd_opts* opts, d
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
     state->p25_p2_active_slot = -1;
+    state->p25_p2_audio_allowed[0] = 0;
+    state->p25_p2_audio_allowed[1] = 0;
+    state->p25_call_is_packet[0] = 0;
+    state->p25_call_is_packet[1] = 0;
     opts->p25_is_tuned = 0;
 }
 
@@ -1441,6 +1445,10 @@ no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
     state->trunk_vc_freq[0] = 0;
     state->trunk_vc_freq[1] = 0;
     state->p25_p2_active_slot = -1;
+    state->p25_p2_audio_allowed[0] = 0;
+    state->p25_p2_audio_allowed[1] = 0;
+    state->p25_call_is_packet[0] = 0;
+    state->p25_call_is_packet[1] = 0;
 }
 
 static int
@@ -1502,6 +1510,7 @@ no_carrier_apply_legacy_cc_return(const dsd_opts* opts, dsd_state* state, long c
 #endif
         return state->rtl_ctx ? 0 : 1;
     }
+    state->dmr_rest_channel = -1;
     return 1;
 }
 
