@@ -4,6 +4,10 @@ Official releases are published through GitHub Releases:
 
 https://github.com/arancormonk/dsd-neo/releases
 
+The `release` workflow owns release metadata for version tags and creates the
+generated release notes exactly once. Platform packaging workflows wait for that
+release to exist, then upload their assets without rewriting the release body.
+
 ## Release Identifiers
 
 Release tags use the form `vX.Y.Z`. The tag must match the project version

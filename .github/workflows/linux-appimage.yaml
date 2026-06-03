@@ -513,6 +513,13 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     steps:
+      - name: Checkout release helpers
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Prepare artifact naming
         id: names
         shell: bash
@@ -558,18 +565,30 @@ jobs:
           set -euo pipefail
           test -f "${{ steps.names.outputs.OUT }}"
           test -f "${{ steps.names.outputs.OUT }}.spdx.json"
-      - name: Upload release asset
+      - name: Wait for release metadata
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
-        with:
-          files: |
-            ${{ steps.names.outputs.OUT }}
-            ${{ steps.names.outputs.OUT }}.spdx.json
-          name: ${{ steps.names.outputs.RELEASE_TITLE }}
-          generate_release_notes: true
-          overwrite_files: true
-          fail_on_unmatched_files: true
-          token: ${{ github.token }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: tools/ci_wait_for_release.sh
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          APPIMAGE_PATH: ${{ steps.names.outputs.OUT }}
+          SBOM_PATH: ${{ steps.names.outputs.OUT }}.spdx.json
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "${APPIMAGE_PATH}" \
+            "${SBOM_PATH}" \
+            --repo "${RELEASE_REPOSITORY}" \
+            --clobber
       - name: Upload nightly assets (overwrite)
         if: >-
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
