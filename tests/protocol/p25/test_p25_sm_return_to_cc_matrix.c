@@ -15,6 +15,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -265,6 +266,7 @@ static void
 matrix_setup_fixture(matrix_fixture* fixture, const matrix_mode_case* mode) {
     double now_m = dsd_time_now_monotonic_s();
     DSD_MEMSET(fixture->opts, 0, sizeof(*fixture->opts));
+    dsd_state_ext_free_all(fixture->state);
     DSD_MEMSET(fixture->state, 0, sizeof(*fixture->state));
     DSD_MEMSET(&fixture->ctx, 0, sizeof(fixture->ctx));
 
@@ -736,6 +738,7 @@ main(void) {
     }
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_state_ext_free_all(g_fixture.state);
     if (rc != 0) {
         return 1;
     }
