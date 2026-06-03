@@ -393,111 +393,124 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
     return rc;
 }
 
+static void
+matrix_send_event(matrix_fixture* fixture, const p25_sm_event_t* ev) {
+    p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, ev);
+}
+
+static void
+matrix_tick_expired_voice(matrix_fixture* fixture) {
+    matrix_age_tuned_timers(fixture);
+    p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+}
+
+static void
+matrix_flow_grant_timeout(matrix_fixture* fixture) {
+    matrix_age_tuned_timers(fixture);
+    fixture->ctx.t_voice_m = 0.0;
+    p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+}
+
+static void
+matrix_flow_vc_sync_hang(matrix_fixture* fixture, int event_slot) {
+    p25_sm_event_t ev = {0};
+    ev.type = P25_SM_EV_VC_SYNC;
+    ev.slot = event_slot;
+    matrix_send_event(fixture, &ev);
+    matrix_tick_expired_voice(fixture);
+}
+
+static void
+matrix_flow_idle_hang(matrix_fixture* fixture, int event_slot, int use_active) {
+    p25_sm_event_t ev = use_active ? p25_sm_ev_active(event_slot) : p25_sm_ev_ptt(event_slot);
+    matrix_send_event(fixture, &ev);
+    fixture->state->p25_p2_audio_allowed[event_slot] = 1;
+    ev = p25_sm_ev_idle(event_slot);
+    matrix_send_event(fixture, &ev);
+    fixture->state->p25_p2_audio_allowed[event_slot] = 0;
+    matrix_tick_expired_voice(fixture);
+}
+
+static void
+matrix_flow_explicit_end(matrix_fixture* fixture, int event_slot) {
+    p25_sm_event_t ev = p25_sm_ev_ptt(event_slot);
+    matrix_send_event(fixture, &ev);
+    fixture->state->p25_p2_audio_allowed[event_slot] = 1;
+    fixture->state->p25_p2_audio_ring_count[event_slot] = 3;
+    ev = p25_sm_ev_end(event_slot);
+    matrix_send_event(fixture, &ev);
+}
+
+static void
+matrix_flow_tdu(matrix_fixture* fixture) {
+    p25_sm_event_t ev = p25_sm_ev_ptt(0);
+    matrix_send_event(fixture, &ev);
+    fixture->state->p25_p2_audio_allowed[0] = 1;
+    ev = p25_sm_ev_tdu();
+    matrix_send_event(fixture, &ev);
+}
+
+static int
+matrix_flow_dual_partial_end(matrix_fixture* fixture, const matrix_mode_case* mode, const matrix_flow_case* flow,
+                             const matrix_return_script* script) {
+    p25_sm_event_t ev = p25_sm_ev_ptt(0);
+    matrix_send_event(fixture, &ev);
+    ev = p25_sm_ev_ptt(1);
+    matrix_send_event(fixture, &ev);
+    fixture->state->p25_p2_audio_allowed[0] = 1;
+    fixture->state->p25_p2_audio_allowed[1] = 1;
+
+    ev = p25_sm_ev_end(0);
+    matrix_send_event(fixture, &ev);
+
+    int rc = 0;
+    rc |= matrix_expect(fixture->ctx.state == P25_SM_TUNED, mode->name, flow->name, script->name,
+                        "partial dual-slot end remains tuned");
+    rc |= matrix_expect(g_hooks.return_calls == 0, mode->name, flow->name, script->name,
+                        "partial dual-slot end does not return");
+
+    fixture->state->p25_p2_audio_allowed[1] = 0;
+    ev = p25_sm_ev_end(1);
+    matrix_send_event(fixture, &ev);
+    return rc;
+}
+
+static void
+matrix_flow_force_release(matrix_fixture* fixture, int event_slot) {
+    p25_sm_event_t ev = p25_sm_ev_ptt(event_slot);
+    matrix_send_event(fixture, &ev);
+    fixture->state->p25_p2_audio_allowed[event_slot] = 1;
+    fixture->state->p25_sm_force_release = 1;
+    p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+}
+
+static void
+matrix_flow_enc_lockout(matrix_fixture* fixture, int event_slot) {
+    fixture->opts->trunk_tune_enc_calls = 0;
+    p25_sm_event_t ev = p25_sm_ev_ptt(event_slot);
+    matrix_send_event(fixture, &ev);
+    fixture->state->p25_p2_audio_allowed[event_slot] = 1;
+    ev = p25_sm_ev_enc(event_slot, 0x84, 0x1234, 2000);
+    matrix_send_event(fixture, &ev);
+}
+
 static int
 matrix_apply_terminal_flow(matrix_fixture* fixture, const matrix_mode_case* mode, const matrix_flow_case* flow,
                            const matrix_return_script* script) {
     int slot = matrix_expected_slot(mode);
     int event_slot = (slot >= 0) ? slot : 0;
-    p25_sm_event_t ev;
     int rc = 0;
 
     switch (flow->kind) {
-        case MATRIX_FLOW_GRANT_TIMEOUT:
-            matrix_age_tuned_timers(fixture);
-            fixture->ctx.t_voice_m = 0.0;
-            p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
-            break;
-
-        case MATRIX_FLOW_VC_SYNC_HANG:
-            ev.type = P25_SM_EV_VC_SYNC;
-            ev.slot = event_slot;
-            ev.channel = 0;
-            ev.freq_hz = 0;
-            ev.tg = 0;
-            ev.src = 0;
-            ev.dst = 0;
-            ev.svc_bits = 0;
-            ev.is_group = 0;
-            ev.algid = 0;
-            ev.keyid = 0;
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            matrix_age_tuned_timers(fixture);
-            p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
-            break;
-
-        case MATRIX_FLOW_PTT_IDLE_HANG:
-            ev = p25_sm_ev_ptt(event_slot);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            fixture->state->p25_p2_audio_allowed[event_slot] = 1;
-            ev = p25_sm_ev_idle(event_slot);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            fixture->state->p25_p2_audio_allowed[event_slot] = 0;
-            matrix_age_tuned_timers(fixture);
-            p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
-            break;
-
-        case MATRIX_FLOW_ACTIVE_IDLE_HANG:
-            ev = p25_sm_ev_active(event_slot);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            fixture->state->p25_p2_audio_allowed[event_slot] = 1;
-            ev = p25_sm_ev_idle(event_slot);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            fixture->state->p25_p2_audio_allowed[event_slot] = 0;
-            matrix_age_tuned_timers(fixture);
-            p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
-            break;
-
-        case MATRIX_FLOW_EXPLICIT_END:
-            ev = p25_sm_ev_ptt(event_slot);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            fixture->state->p25_p2_audio_allowed[event_slot] = 1;
-            fixture->state->p25_p2_audio_ring_count[event_slot] = 3;
-            ev = p25_sm_ev_end(event_slot);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            break;
-
-        case MATRIX_FLOW_TDU:
-            ev = p25_sm_ev_ptt(0);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            fixture->state->p25_p2_audio_allowed[0] = 1;
-            ev = p25_sm_ev_tdu();
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            break;
-
-        case MATRIX_FLOW_DUAL_PARTIAL_END:
-            ev = p25_sm_ev_ptt(0);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            ev = p25_sm_ev_ptt(1);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            fixture->state->p25_p2_audio_allowed[0] = 1;
-            fixture->state->p25_p2_audio_allowed[1] = 1;
-            ev = p25_sm_ev_end(0);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            rc |= matrix_expect(fixture->ctx.state == P25_SM_TUNED, mode->name, flow->name, script->name,
-                                "partial dual-slot end remains tuned");
-            rc |= matrix_expect(g_hooks.return_calls == 0, mode->name, flow->name, script->name,
-                                "partial dual-slot end does not return");
-            fixture->state->p25_p2_audio_allowed[1] = 0;
-            ev = p25_sm_ev_end(1);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            break;
-
-        case MATRIX_FLOW_FORCE_RELEASE:
-            ev = p25_sm_ev_ptt(event_slot);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            fixture->state->p25_p2_audio_allowed[event_slot] = 1;
-            fixture->state->p25_sm_force_release = 1;
-            p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
-            break;
-
-        case MATRIX_FLOW_ENC_LOCKOUT:
-            fixture->opts->trunk_tune_enc_calls = 0;
-            ev = p25_sm_ev_ptt(event_slot);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            fixture->state->p25_p2_audio_allowed[event_slot] = 1;
-            ev = p25_sm_ev_enc(event_slot, 0x84, 0x1234, 2000);
-            p25_sm_event(&fixture->ctx, fixture->opts, fixture->state, &ev);
-            break;
+        case MATRIX_FLOW_GRANT_TIMEOUT: matrix_flow_grant_timeout(fixture); break;
+        case MATRIX_FLOW_VC_SYNC_HANG: matrix_flow_vc_sync_hang(fixture, event_slot); break;
+        case MATRIX_FLOW_PTT_IDLE_HANG: matrix_flow_idle_hang(fixture, event_slot, 0); break;
+        case MATRIX_FLOW_ACTIVE_IDLE_HANG: matrix_flow_idle_hang(fixture, event_slot, 1); break;
+        case MATRIX_FLOW_EXPLICIT_END: matrix_flow_explicit_end(fixture, event_slot); break;
+        case MATRIX_FLOW_TDU: matrix_flow_tdu(fixture); break;
+        case MATRIX_FLOW_DUAL_PARTIAL_END: rc |= matrix_flow_dual_partial_end(fixture, mode, flow, script); break;
+        case MATRIX_FLOW_FORCE_RELEASE: matrix_flow_force_release(fixture, event_slot); break;
+        case MATRIX_FLOW_ENC_LOCKOUT: matrix_flow_enc_lockout(fixture, event_slot); break;
     }
 
     rc |= matrix_drive_to_cc(fixture, mode, flow, script);
