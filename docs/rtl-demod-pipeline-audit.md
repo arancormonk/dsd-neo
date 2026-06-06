@@ -19,8 +19,8 @@ contract into the legacy slicers.
    - FSK symbol output runs the channel LPF, then `dsd_fsk_modem_process()` on
      complex I/Q, producing one normalized float per symbol.
    - CQPSK symbol output runs the OP25-style chain:
-     AGC -> band-edge FLL -> Gardner -> CMA equalizer -> differential phasor ->
-     Costas -> phase symbol scaling.
+     AGC -> band-edge FLL -> Gardner -> differential phasor -> Costas ->
+     phase symbol scaling.
 4. Symbol outputs are written to the RTL output ring without monitor volume,
    audio resampling, deemphasis, audio LPF, DC-block audio filtering, or legacy
    scalar matched filters.

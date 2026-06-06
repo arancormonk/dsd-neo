@@ -14,7 +14,6 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/halfband.h>
@@ -920,33 +919,6 @@ cqpsk_rms_agc(struct demod_state* d) {
     d->cqpsk_agc_avg = avg;
 }
 
-/*
- * Symbol-rate blind equalizer for CQPSK/H-DQPSK simulcast multipath.
- *
- * Placement matters: this runs after Gardner has produced one complex sample
- * per symbol, and before diff_phasor turns phase memory into differential
- * symbols. Equalizing after differential decoding would leave the channel ISI
- * folded into the phase-delta stream.
- */
-static inline void
-cqpsk_cma_equalizer(struct demod_state* d) {
-    if (!d || !d->cqpsk_eq_enable || !d->lowpassed || d->lp_len < 2) {
-        return;
-    }
-
-    dsd_cqpsk_cma_equalizer_apply(&d->cqpsk_eq_state, d->lowpassed, d->lp_len, d->cqpsk_eq_taps, d->cqpsk_eq_mu,
-                                  d->cqpsk_eq_modulus);
-
-    {
-        static int call_count = 0;
-        if (debug_cqpsk_enabled() && (++call_count % 50) == 0) {
-            DSD_FPRINTF(stderr, "[CMA] taps:%d mu:%.5f mag2:%.3f err:%.4f symbols:%u\n", d->cqpsk_eq_state.taps,
-                        d->cqpsk_eq_mu, d->cqpsk_eq_state.mag2_ema, d->cqpsk_eq_state.err_ema,
-                        d->cqpsk_eq_state.symbols);
-        }
-    }
-}
-
 /**
  * @brief Apply post-demod deemphasis IIR filter.
  *
@@ -1442,7 +1414,6 @@ full_demod_run_cqpsk_chain(struct demod_state* d) {
     int pre_len = d->lp_len;
     op25_fll_band_edge_cc(d);
     op25_gardner_cc(d);
-    cqpsk_cma_equalizer(d);
     op25_diff_phasor_cc(d);
     op25_costas_loop_cc(d);
     full_demod_debug_op25_state(d, pre_len);

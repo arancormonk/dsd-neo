@@ -23,7 +23,6 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -1479,9 +1478,6 @@ demod_reset_common_state_for_retune(struct demod_state* s) {
     s->pre_j = 0.0f;
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
-    if (s->cqpsk_enable) {
-        dsd_cqpsk_cma_equalizer_reset(&s->cqpsk_eq_state, s->cqpsk_eq_taps);
-    }
     s->costas_err_avg_q14 = 0;
     s->costas_err_raw_avg_q14 = 0;
     s->costas_conf_avg_q14 = 0;
@@ -6938,25 +6934,12 @@ rtl_stream_enable_cqpsk_mode(void) {
     demod.mode_demod = &qpsk_differential_demod;
     demod.cqpsk_diff_prev_r = 1.0f;
     demod.cqpsk_diff_prev_j = 0.0f;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    demod.cqpsk_eq_enable = (cfg && cfg->cqpsk_eq_is_set) ? cfg->cqpsk_eq_enable : 1;
-    if (cfg && cfg->cqpsk_eq_taps_is_set) {
-        demod.cqpsk_eq_taps = cfg->cqpsk_eq_taps;
-    }
-    if (cfg && cfg->cqpsk_eq_mu_is_set) {
-        demod.cqpsk_eq_mu = cfg->cqpsk_eq_mu;
-    }
-    if (cfg && cfg->cqpsk_eq_modulus_is_set) {
-        demod.cqpsk_eq_modulus = cfg->cqpsk_eq_modulus;
-    }
-    dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
     demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
 }
 
 static void
 rtl_stream_disable_cqpsk_mode(void) {
     demod.mode_demod = &dsd_fm_demod;
-    demod.cqpsk_eq_enable = 0;
     if (demod.channel_lpf_profile == DSD_CH_LPF_PROFILE_P25_CQPSK) {
         demod.channel_lpf_profile = rtl_stream_fsk_channel_profile_for_current_mode();
     }
@@ -7187,100 +7170,6 @@ rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
         }
     }
     return 0;
-}
-
-extern "C" int
-dsd_rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out) {
-    if (!out) {
-        return -1;
-    }
-
-    *out = rtl_stream_cqpsk_eq_status{};
-    out->enabled = demod.cqpsk_eq_enable ? 1 : 0;
-    out->taps = demod.cqpsk_eq_taps;
-    out->mu = demod.cqpsk_eq_mu;
-    out->modulus = demod.cqpsk_eq_modulus;
-
-    dsd_cqpsk_cma_equalizer_metrics_t m;
-    dsd_cqpsk_cma_equalizer_get_metrics(&demod.cqpsk_eq_state, &m);
-    out->initialized = m.initialized;
-    out->taps = m.taps > 0 ? m.taps : out->taps;
-    out->symbols = m.symbols;
-    out->err_ema = m.err_ema;
-    out->mag2_ema = m.mag2_ema;
-    out->tap_energy = m.tap_energy;
-    out->center_tap_mag = m.center_tap_mag;
-    out->max_side_tap_mag = m.max_side_tap_mag;
-    return 0;
-}
-
-static int
-rtl_stream_cqpsk_eq_clamp_taps(int taps) {
-    taps = std::max(3, std::min(DSD_CQPSK_CMA_EQ_MAX_TAPS, taps));
-    if ((taps & 1) == 0) {
-        taps += (taps < DSD_CQPSK_CMA_EQ_MAX_TAPS) ? 1 : -1;
-    }
-    return taps;
-}
-
-static float
-rtl_stream_cqpsk_eq_clamp_mu(float mu) {
-    return std::max(0.000001f, std::min(0.01f, mu));
-}
-
-static float
-rtl_stream_cqpsk_eq_clamp_modulus(float modulus) {
-    return std::max(0.05f, std::min(4.0f, modulus));
-}
-
-static int
-rtl_stream_cqpsk_eq_should_reset(int desired_enable, int desired_taps) {
-    if (desired_enable && !demod.cqpsk_eq_enable) {
-        return 1;
-    }
-    return (desired_taps != demod.cqpsk_eq_taps) ? 1 : 0;
-}
-
-extern "C" void
-dsd_rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus) {
-    int desired_enable = 1;
-    int desired_taps = DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
-    float desired_mu = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
-    float desired_modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
-
-    dsd_neo_get_cqpsk_eq(&desired_enable, &desired_taps, &desired_mu, &desired_modulus);
-
-    if (enable >= 0) {
-        desired_enable = enable ? 1 : 0;
-    }
-
-    if (taps > 0) {
-        desired_taps = rtl_stream_cqpsk_eq_clamp_taps(taps);
-    }
-
-    if (mu >= 0.0f) {
-        desired_mu = rtl_stream_cqpsk_eq_clamp_mu(mu);
-    }
-
-    if (modulus >= 0.0f) {
-        desired_modulus = rtl_stream_cqpsk_eq_clamp_modulus(modulus);
-    }
-
-    int reset = rtl_stream_cqpsk_eq_should_reset(desired_enable, desired_taps);
-    demod.cqpsk_eq_enable = demod.cqpsk_enable ? desired_enable : 0;
-    demod.cqpsk_eq_taps = desired_taps;
-    demod.cqpsk_eq_mu = desired_mu;
-    demod.cqpsk_eq_modulus = desired_modulus;
-
-    dsd_neo_set_cqpsk_eq(desired_enable, desired_taps, desired_mu, desired_modulus);
-    if (reset) {
-        dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
-    }
-}
-
-extern "C" void
-dsd_rtl_stream_reset_cqpsk_eq(void) {
-    dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
 }
 
 /**

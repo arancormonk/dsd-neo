@@ -3766,14 +3766,6 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_costas)
 add_test(NAME DSP_COSTAS COMMAND dsd-neo_test_dsp_costas)
 
-add_executable(dsd-neo_test_dsp_equalizer dsp/test_dsp_equalizer.cpp)
-target_include_directories(
-    dsd-neo_test_dsp_equalizer
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-dsd_neo_link_dsp_test(dsd-neo_test_dsp_equalizer ${DSD_NEO_TEST_MATH_LIB})
-add_test(NAME DSP_EQUALIZER COMMAND dsd-neo_test_dsp_equalizer)
-
 # DMR utility/CRC property tests
 add_executable(dsd-neo_test_dmr_crc_props protocol/dmr/test_dmr_crc_props.c)
 target_include_directories(

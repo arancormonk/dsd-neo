@@ -15,7 +15,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -411,11 +410,6 @@ demod_init_cqpsk_defaults(struct demod_state* s) {
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
     s->cqpsk_agc_avg = 1.0f;
-    s->cqpsk_eq_enable = 0;
-    s->cqpsk_eq_taps = DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
-    s->cqpsk_eq_mu = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
-    s->cqpsk_eq_modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
-    dsd_cqpsk_cma_equalizer_init(&s->cqpsk_eq_state, s->cqpsk_eq_taps);
     dsd_fsk_modem_config fsk_cfg = {};
     fsk_cfg.sample_rate_hz = s->rate_out;
     fsk_cfg.symbol_rate_hz = s->symbol_rate_hz;
@@ -531,11 +525,6 @@ demod_apply_ted_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* c
 
 static void
 demod_apply_cqpsk_defaults(struct demod_state* demod, const dsd_opts* opts, const dsdneoRuntimeConfig* cfg) {
-    demod->cqpsk_eq_taps = cfg->cqpsk_eq_taps_is_set ? cfg->cqpsk_eq_taps : DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
-    demod->cqpsk_eq_mu = cfg->cqpsk_eq_mu_is_set ? cfg->cqpsk_eq_mu : DSD_CQPSK_CMA_EQ_DEFAULT_MU;
-    demod->cqpsk_eq_modulus = cfg->cqpsk_eq_modulus_is_set ? cfg->cqpsk_eq_modulus : DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
-    dsd_cqpsk_cma_equalizer_init(&demod->cqpsk_eq_state, demod->cqpsk_eq_taps);
-
     demod->cqpsk_enable = (opts->mod_qpsk == 1) ? 1 : 0;
     if (cfg->cqpsk_is_set) {
         demod->cqpsk_enable = (cfg->cqpsk_enable != 0) ? 1 : 0;
@@ -549,7 +538,6 @@ demod_apply_cqpsk_defaults(struct demod_state* demod, const dsd_opts* opts, cons
         demod->cqpsk_diff_prev_j = 0.0f;
         demod->fll_enabled = 0;
     }
-    demod->cqpsk_eq_enable = demod->cqpsk_enable ? (cfg->cqpsk_eq_is_set ? cfg->cqpsk_eq_enable : 1) : 0;
     demod_apply_output_kind(demod, opts);
 }
 

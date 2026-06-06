@@ -38,18 +38,8 @@ Config profiles:
 
 ## DSP Status
 
-The DSP status panel shows RTL DSP loop state when RTL input support is available. In CQPSK mode, the CMA equalizer
-lines report:
-
-- `CMA EQ`: equalizer state (`Off`, `Init`, `Warm`, `Run`), tap count, adaptation step, and adapted symbol count.
-- `CMA Metric`: output magnitude squared (`mag2`), target modulus (`tgt`), constant-modulus error (`err`), largest
-  non-center tap (`side`), and total tap energy (`E`).
-
-For a useful equalizer, `syms` should increase, `mag2` should settle near `tgt`, `err` should settle lower after
-acquisition, and `side` should become non-zero when the equalizer is learning multipath/ISI correction.
-
-The same CMA equalizer can be tuned live from `Menu -> DSP -> CQPSK Equalizer...`: enable/disable, tap count,
-adaptation step (`mu`), target modulus, and reset are available without restarting or setting environment variables.
+The DSP status panel shows RTL DSP loop state when RTL input support is available. CQPSK mode reports FLL,
+carrier/Costas, NCO, and timing-recovery state for the active OP25-style chain.
 
 ## Hotkeys (Main Screen)
 

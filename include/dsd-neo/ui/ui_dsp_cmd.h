@@ -24,11 +24,6 @@ enum UiDspOp {
     UI_DSP_OP_FM_AGC_ATTACK_DELTA = 16, // a: delta (+/-)
     UI_DSP_OP_FM_AGC_DECAY_DELTA = 17,  // a: delta (+/-)
     UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE = 18,
-    UI_DSP_OP_CQPSK_EQ_TOGGLE = 19,
-    UI_DSP_OP_CQPSK_EQ_TAPS_DELTA = 20,    // a: delta in taps (+/-2)
-    UI_DSP_OP_CQPSK_EQ_MU_DELTA = 21,      // a: delta in 0.0001 units
-    UI_DSP_OP_CQPSK_EQ_MODULUS_DELTA = 22, // a: delta in 0.01 units
-    UI_DSP_OP_CQPSK_EQ_RESET = 23,
 };
 
 /**

@@ -32,7 +32,6 @@ bool is_fll_allowed(const void* v);
 bool is_ted_allowed(const void* v);
 bool dsp_agc_any(const void* v);
 bool dsp_ted_any(const void* v);
-bool dsp_cqpsk_eq_any(const void* v);
 int ui_current_mod(const void* v);
 #endif
 
@@ -146,10 +145,6 @@ const char* lbl_ted_bias(const void* v, char* b, size_t n);
 const char* lbl_dsp_panel(const void* v, char* b, size_t n);
 const char* lbl_c4fm_clk(const void* v, char* b, size_t n);
 const char* lbl_c4fm_clk_sync(const void* v, char* b, size_t n);
-const char* lbl_cqpsk_eq(const void* v, char* b, size_t n);
-const char* lbl_cqpsk_eq_taps(const void* v, char* b, size_t n);
-const char* lbl_cqpsk_eq_mu(const void* v, char* b, size_t n);
-const char* lbl_cqpsk_eq_modulus(const void* v, char* b, size_t n);
 const char* lbl_rtl_bias(const void* v, char* b, size_t n);
 const char* lbl_rtl_rtltcp_autotune(const void* v, char* b, size_t n);
 const char* lbl_rtl_auto_ppm(const void* v, char* b, size_t n);

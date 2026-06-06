@@ -82,11 +82,8 @@ double dsd_rtl_stream_get_snr_bias_evm(void);
 /* Tuner autogain */
 int dsd_rtl_stream_get_tuner_autogain(void);
 void dsd_rtl_stream_set_tuner_autogain(int onoff);
-int dsd_rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out);
 int dsd_rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out);
 int dsd_rtl_stream_get_decode_health(rtl_stream_decode_health* out);
-void dsd_rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus);
-void dsd_rtl_stream_reset_cqpsk_eq(void);
 void dsd_rtl_stream_set_channel_squelch(float level);
 void dsd_rtl_stream_toggle_iq_balance(int onoff);
 int dsd_rtl_stream_get_iq_balance(void);
@@ -614,11 +611,6 @@ rtl_stream_get_fll_band_edge_freq_hz(void) {
 }
 
 extern "C" int
-rtl_stream_get_cqpsk_eq_status(rtl_stream_cqpsk_eq_status* out) {
-    return dsd_rtl_stream_get_cqpsk_eq_status(out);
-}
-
-extern "C" int
 rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out) {
     return dsd_rtl_stream_get_fsk_metrics(out);
 }
@@ -626,16 +618,6 @@ rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out) {
 extern "C" int
 rtl_stream_get_decode_health(rtl_stream_decode_health* out) {
     return dsd_rtl_stream_get_decode_health(out);
-}
-
-extern "C" void
-rtl_stream_set_cqpsk_eq(int enable, int taps, float mu, float modulus) {
-    dsd_rtl_stream_set_cqpsk_eq(enable, taps, mu, modulus);
-}
-
-extern "C" void
-rtl_stream_reset_cqpsk_eq(void) {
-    dsd_rtl_stream_reset_cqpsk_eq();
 }
 
 /* Auto-PPM status snapshot */
