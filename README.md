@@ -406,7 +406,7 @@ Quick examples
 
 - Format: `tools/format.sh` (requires `clang-format`; see `.clang-format`).
 - Static analysis:
-  - `tools/clang_tidy.sh` (use `--strict` for extra checks).
+  - `tools/clang_tidy.sh` (promotes broad bugprone/performance/portability findings; targeted TUs supported).
   - `tools/cppcheck.sh` (use `--strict` for broader checks).
   - `tools/iwyu.sh` (include hygiene via include-what-you-use; excludes `src/third_party`).
   - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; excludes `src/third_party`).

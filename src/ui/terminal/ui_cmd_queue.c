@@ -550,14 +550,12 @@ apply_dsp_op_frontend_gain(const UiDspPayload* p) {
     if (!p) {
         return 0;
     }
-    switch (p->op) {
-        case UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE: {
-            int on = rtl_stream_get_tuner_autogain();
-            rtl_stream_set_tuner_autogain(on ? 0 : 1);
-            return 1;
-        }
-        default: return 0;
+    if (p->op == UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE) {
+        int on = rtl_stream_get_tuner_autogain();
+        rtl_stream_set_tuner_autogain(on ? 0 : 1);
+        return 1;
     }
+    return 0;
 }
 
 static void
