@@ -93,7 +93,7 @@ Hamming_10_6_3_TableImpl::decode(int input, int* output) {
     }
 
     // Making use of a table...
-    Hamming_10_6_3_TableImpl_data* table = data();
+    const Hamming_10_6_3_TableImpl_data* table = data();
     if (table == nullptr) {
         *output = 0;
         return 2;
@@ -111,7 +111,7 @@ Hamming_10_6_3_TableImpl::encode(int input) {
     }
 
     // Making use of a table...
-    Hamming_10_6_3_TableImpl_data* table = data();
+    const Hamming_10_6_3_TableImpl_data* table = data();
     if (table == nullptr) {
         return 0;
     }

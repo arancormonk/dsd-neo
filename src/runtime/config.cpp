@@ -15,7 +15,6 @@
 #include <cmath>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/costas.h>
-#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <errno.h>
@@ -147,14 +146,6 @@ config_snapshot_equals_block_b(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(cqpsk_sync_inv);
     CONFIG_EQ_FIELD(cqpsk_sync_neg_is_set);
     CONFIG_EQ_FIELD(cqpsk_sync_neg);
-    CONFIG_EQ_FIELD(cqpsk_eq_is_set);
-    CONFIG_EQ_FIELD(cqpsk_eq_enable);
-    CONFIG_EQ_FIELD(cqpsk_eq_taps_is_set);
-    CONFIG_EQ_FIELD(cqpsk_eq_taps);
-    CONFIG_EQ_FIELD(cqpsk_eq_mu_is_set);
-    CONFIG_EQ_FIELD(cqpsk_eq_mu);
-    CONFIG_EQ_FIELD(cqpsk_eq_modulus_is_set);
-    CONFIG_EQ_FIELD(cqpsk_eq_modulus);
     CONFIG_EQ_FIELD(sync_warmstart_is_set);
     CONFIG_EQ_FIELD(sync_warmstart_enable);
     CONFIG_EQ_FIELD(dmr_hangtime_is_set);
@@ -684,7 +675,7 @@ config_init_cqpsk_toggle(dsdneoRuntimeConfig& c) {
 }
 
 static void
-config_init_cqpsk_sync_and_eq_toggle(dsdneoRuntimeConfig& c) {
+config_init_cqpsk_sync(dsdneoRuntimeConfig& c) {
     const char* cqi = getenv("DSD_NEO_CQPSK_SYNC_INV");
     c.cqpsk_sync_inv_is_set = env_is_set(cqi);
     c.cqpsk_sync_inv = c.cqpsk_sync_inv_is_set ? (env_is_falsey(cqi) ? 0 : 1) : 0;
@@ -692,36 +683,6 @@ config_init_cqpsk_sync_and_eq_toggle(dsdneoRuntimeConfig& c) {
     const char* cqn = getenv("DSD_NEO_CQPSK_SYNC_NEG");
     c.cqpsk_sync_neg_is_set = env_is_set(cqn);
     c.cqpsk_sync_neg = c.cqpsk_sync_neg_is_set ? (env_is_falsey(cqn) ? 0 : 1) : 0;
-
-    const char* cqe = getenv("DSD_NEO_CQPSK_EQ");
-    c.cqpsk_eq_is_set = env_is_set(cqe);
-    c.cqpsk_eq_enable = c.cqpsk_eq_is_set ? (env_is_falsey(cqe) ? 0 : 1) : 0;
-}
-
-static void
-config_init_cqpsk_eq_values(dsdneoRuntimeConfig& c) {
-    const char* cqet = getenv("DSD_NEO_CQPSK_EQ_TAPS");
-    c.cqpsk_eq_taps_is_set = env_parse_int_range(cqet, 3, 15, &c.cqpsk_eq_taps);
-    if (c.cqpsk_eq_taps_is_set && ((c.cqpsk_eq_taps & 1) == 0)) {
-        c.cqpsk_eq_taps += 1;
-        if (c.cqpsk_eq_taps > 15) {
-            c.cqpsk_eq_taps = 15;
-        }
-    }
-
-    const char* cqem = getenv("DSD_NEO_CQPSK_EQ_MU");
-    {
-        double v = 0.0;
-        c.cqpsk_eq_mu_is_set = env_parse_double_range(cqem, 0.000001, 0.01, &v);
-        c.cqpsk_eq_mu = c.cqpsk_eq_mu_is_set ? (float)v : DSD_CQPSK_CMA_EQ_DEFAULT_MU;
-    }
-
-    const char* cqemod = getenv("DSD_NEO_CQPSK_EQ_MODULUS");
-    {
-        double v = 0.0;
-        c.cqpsk_eq_modulus_is_set = env_parse_double_range(cqemod, 0.05, 4.0, &v);
-        c.cqpsk_eq_modulus = c.cqpsk_eq_modulus_is_set ? (float)v : DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
-    }
 }
 
 static void
@@ -738,8 +699,7 @@ static void
 config_init_cqpsk(dsdneoRuntimeConfig& c) {
     /* CQPSK runtime toggles */
     config_init_cqpsk_toggle(c);
-    config_init_cqpsk_sync_and_eq_toggle(c);
-    config_init_cqpsk_eq_values(c);
+    config_init_cqpsk_sync(c);
     config_init_sync_warmstart(c);
 }
 
@@ -1552,86 +1512,4 @@ dsd_neo_get_c4fm_clk_sync(void) {
         return 0;
     }
     return cfg->c4fm_clk_sync_is_set ? (cfg->c4fm_clk_sync ? 1 : 0) : 0;
-}
-
-static int
-clamp_cqpsk_eq_taps(int taps) {
-    if (taps < 3) {
-        taps = 3;
-    }
-    if (taps > 15) {
-        taps = 15;
-    }
-    if ((taps & 1) == 0) {
-        taps += (taps < 15) ? 1 : -1;
-    }
-    return taps;
-}
-
-static float
-clamp_cqpsk_eq_mu(float mu) {
-    if (mu < 0.000001f) {
-        mu = 0.000001f;
-    }
-    if (mu > 0.01f) {
-        mu = 0.01f;
-    }
-    return mu;
-}
-
-static float
-clamp_cqpsk_eq_modulus(float modulus) {
-    if (modulus < 0.05f) {
-        modulus = 0.05f;
-    }
-    if (modulus > 4.0f) {
-        modulus = 4.0f;
-    }
-    return modulus;
-}
-
-extern "C" void
-dsd_neo_set_cqpsk_eq(int enable, int taps, float mu, float modulus) {
-    std::lock_guard<std::mutex> lk(g_config_mu);
-    dsdneoRuntimeConfig next{};
-    const dsdneoRuntimeConfig* cur = g_config_active.load(std::memory_order_acquire);
-    if (cur) {
-        next = *cur;
-    }
-    if (enable >= 0) {
-        next.cqpsk_eq_is_set = 1;
-        next.cqpsk_eq_enable = enable ? 1 : 0;
-    }
-    if (taps > 0) {
-        next.cqpsk_eq_taps_is_set = 1;
-        next.cqpsk_eq_taps = clamp_cqpsk_eq_taps(taps);
-    }
-    if (mu >= 0.0f) {
-        next.cqpsk_eq_mu_is_set = 1;
-        next.cqpsk_eq_mu = clamp_cqpsk_eq_mu(mu);
-    }
-    if (modulus >= 0.0f) {
-        next.cqpsk_eq_modulus_is_set = 1;
-        next.cqpsk_eq_modulus = clamp_cqpsk_eq_modulus(modulus);
-    }
-    publish_config_locked(next);
-}
-
-extern "C" void
-dsd_neo_get_cqpsk_eq(int* enable, int* taps, float* mu, float* modulus) {
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (enable) {
-        *enable = (cfg && cfg->cqpsk_eq_is_set) ? (cfg->cqpsk_eq_enable ? 1 : 0) : 1;
-    }
-    if (taps) {
-        *taps = (cfg && cfg->cqpsk_eq_taps_is_set) ? clamp_cqpsk_eq_taps(cfg->cqpsk_eq_taps)
-                                                   : DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
-    }
-    if (mu) {
-        *mu = (cfg && cfg->cqpsk_eq_mu_is_set) ? clamp_cqpsk_eq_mu(cfg->cqpsk_eq_mu) : DSD_CQPSK_CMA_EQ_DEFAULT_MU;
-    }
-    if (modulus) {
-        *modulus = (cfg && cfg->cqpsk_eq_modulus_is_set) ? clamp_cqpsk_eq_modulus(cfg->cqpsk_eq_modulus)
-                                                         : DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
-    }
 }

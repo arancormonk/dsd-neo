@@ -17,6 +17,9 @@
 #include <dsd-neo/platform/platform.h>
 
 #include <dsd-neo/core/opts_fwd.h>
+#ifdef __cplusplus
+#include <dsd-neo/core/safe_api.h>
+#endif
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
@@ -45,6 +48,10 @@ typedef enum DSD_ATTR_PACKED {
 } dsd_audio_in_type;
 
 struct dsd_opts {
+#ifdef __cplusplus
+    dsd_opts() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
+#endif
+
     // Pointers and wide-aligned members first (minimize padding)
     FILE* mbe_in_f;
     SNDFILE* audio_in_file;

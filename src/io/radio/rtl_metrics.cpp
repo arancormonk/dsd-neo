@@ -16,7 +16,6 @@
 #include <atomic>
 #include <cmath>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -714,9 +713,6 @@ dsd_rtl_stream_reset_costas(void) {
      * Using (1,0) means the first sample's diff output equals raw input. */
     demod.cqpsk_diff_prev_r = 1.0f;
     demod.cqpsk_diff_prev_j = 0.0f;
-    if (demod.cqpsk_enable) {
-        dsd_cqpsk_cma_equalizer_reset(&demod.cqpsk_eq_state, demod.cqpsk_eq_taps);
-    }
 }
 
 /* Smoothed SNR exports (for UI and protocol code). */

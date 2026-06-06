@@ -208,14 +208,6 @@ void act_ted_gain_dn(void* v);
 void act_ted_force_toggle(void* v);
 void act_c4fm_clk_cycle(void* v);
 void act_c4fm_clk_sync_toggle(void* v);
-void act_cqpsk_eq_toggle(void* v);
-void act_cqpsk_eq_taps_up(void* v);
-void act_cqpsk_eq_taps_dn(void* v);
-void act_cqpsk_eq_mu_up(void* v);
-void act_cqpsk_eq_mu_dn(void* v);
-void act_cqpsk_eq_modulus_up(void* v);
-void act_cqpsk_eq_modulus_dn(void* v);
-void act_cqpsk_eq_reset(void* v);
 void act_toggle_dsp_panel(void* v);
 #endif
 

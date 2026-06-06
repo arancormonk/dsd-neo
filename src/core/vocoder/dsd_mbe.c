@@ -1618,7 +1618,7 @@ mbe_post_other_process_audio(const dsd_opts* opts, dsd_state* state, int is_p25p
 }
 
 static int
-mbe_post_other_is_allowed(const dsd_opts* opts, dsd_state* state, int is_p25p2) {
+mbe_post_other_is_allowed(const dsd_opts* opts, const dsd_state* state, int is_p25p2) {
     if (!is_p25p2) {
         return (opts->unmute_encrypted_p25 == 1 || state->dmr_encL == 0);
     }

@@ -41,7 +41,7 @@ typedef CRITICAL_SECTION dsd_mutex_t;
 typedef CONDITION_VARIABLE dsd_cond_t;
 
 /* Thread function signature */
-typedef unsigned int(__stdcall* dsd_thread_fn)(void*);
+typedef unsigned int(__stdcall* dsd_thread_fn)(void* arg);
 #define DSD_THREAD_RETURN_TYPE unsigned int
 #define DSD_THREAD_RETURN      return 0
 
@@ -52,7 +52,7 @@ typedef pthread_mutex_t dsd_mutex_t;
 typedef pthread_cond_t dsd_cond_t;
 
 /* Thread function signature */
-typedef void* (*dsd_thread_fn)(void*);
+typedef void* (*dsd_thread_fn)(void* arg);
 #define DSD_THREAD_RETURN_TYPE void*
 #define DSD_THREAD_RETURN      return NULL
 
@@ -89,7 +89,8 @@ typedef void* (*dsd_thread_fn)(void*);
 #define dsd_thread_create(thread, func, arg)                                                                           \
     (((thread) == NULL || (func) == NULL) ? EINVAL : pthread_create((thread), NULL, (func), (arg)))
 #else
-int dsd_thread_create(dsd_thread_t* thread, dsd_thread_fn func, void* arg);
+int dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func);
+#define dsd_thread_create(thread, func, arg) dsd_thread_create_impl((thread), (arg), (func))
 #endif
 
 /**

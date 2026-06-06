@@ -2264,7 +2264,7 @@ frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wa
 }
 
 static void
-frame_sync_p25_slot_activity(const dsd_opts* opts, dsd_state* state, time_t now, double nowm, double mac_hold,
+frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm, double mac_hold,
                              double ring_hold, double dt, int* left_active, int* right_active) {
     double l_dmac =
         frame_sync_elapsed_seconds(nowm, now, state->p25_p2_last_mac_active_m[0], state->p25_p2_last_mac_active[0]);

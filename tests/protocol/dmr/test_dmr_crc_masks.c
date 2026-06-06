@@ -26,7 +26,7 @@ typedef struct {
     uint8_t bytes[3];
 } rs_12_9_checksum_t;
 
-rs_12_9_checksum_t* rs_12_9_calc_checksum(rs_12_9_codeword_t* codeword);
+rs_12_9_checksum_t* rs_12_9_calc_checksum(const rs_12_9_codeword_t* codeword);
 
 // Forward declaration of LC CRC helper
 uint32_t ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t* CRCComputed,

@@ -17,8 +17,10 @@
 
 #include <dsd-neo/platform/platform.h>
 
+#ifdef __cplusplus
+#include <dsd-neo/core/safe_api.h>
+#endif
 #include <dsd-neo/dsp/costas.h>
-#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/ted.h>
@@ -76,6 +78,10 @@ enum DSD_ATTR_PACKED dsd_demod_output_kind {
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 struct demod_state {
+#ifdef __cplusplus
+    demod_state() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
+#endif
+
     /* Large aligned buffers first to minimize padding */
     alignas(64) float hb_i_buf[MAXIMUM_BUF_LENGTH / 2];
     alignas(64) float hb_q_buf[MAXIMUM_BUF_LENGTH / 2];
@@ -247,14 +253,6 @@ struct demod_state {
      *   out = in * (reference / rms)
      * OP25 uses: rms_agc.rms_agc(alpha=0.45, reference=0.85) */
     float cqpsk_agc_avg; /* running average of mag^2 (d_avg in op25) */
-
-    /* Optional GNU Radio-style CMA equalizer for CQPSK/H-DQPSK multipath/ISI.
-     * Runs at symbol rate after Gardner and before differential phasor decode. */
-    dsd_cqpsk_cma_equalizer_state_t cqpsk_eq_state;
-    int cqpsk_eq_enable;
-    int cqpsk_eq_taps;
-    float cqpsk_eq_mu;
-    float cqpsk_eq_modulus;
 
     /* Generic mode-aware IQ balance (image suppression) */
     int iqbal_enable;        /* 0/1 gate */

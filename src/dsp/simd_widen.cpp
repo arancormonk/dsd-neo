@@ -69,7 +69,7 @@ using widen_rot_phase_fn = uint32_t (*)(const unsigned char*, float*, uint32_t, 
 #if defined(__x86_64__) || defined(_M_X64)
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_sse2(const unsigned char* src, float* dst, uint32_t len,
                                                                 uint32_t phase);
-#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
+#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL) && DSD_NEO_X86_AVX2_RUNTIME_PROBE_SUPPORTED
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_avx2(const unsigned char* src, float* dst, uint32_t len,
                                                                 uint32_t phase);
 #endif
@@ -97,7 +97,7 @@ simd_widen_init_dispatch(void) {
     }
 
 #if defined(__x86_64__) || defined(_M_X64)
-#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
+#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL) && DSD_NEO_X86_AVX2_RUNTIME_PROBE_SUPPORTED
     if (dsd_neo_cpu_has_avx2_with_os_support()) {
         g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_avx2;
     } else

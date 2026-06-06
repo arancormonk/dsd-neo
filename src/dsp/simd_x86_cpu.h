@@ -8,9 +8,15 @@
 
 #if defined(__x86_64__) || defined(_M_X64)
 
+#if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
+#define DSD_NEO_X86_AVX2_RUNTIME_PROBE_SUPPORTED 1
+#else
+#define DSD_NEO_X86_AVX2_RUNTIME_PROBE_SUPPORTED 0
+#endif
+
 #if defined(_MSC_VER)
 #include <intrin.h>
-#else
+#elif defined(__GNUC__) || defined(__clang__)
 #include <cpuid.h>
 
 static inline unsigned long long

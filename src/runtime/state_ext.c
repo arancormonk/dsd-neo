@@ -15,7 +15,7 @@ dsd_state_ext_id_is_valid(dsd_state_ext_id id) {
 }
 
 void*
-dsd_state_ext_get(dsd_state* state, dsd_state_ext_id id) {
+dsd_state_ext_get(const dsd_state* state, dsd_state_ext_id id) {
     if (!state || !dsd_state_ext_id_is_valid(id)) {
         return NULL;
     }

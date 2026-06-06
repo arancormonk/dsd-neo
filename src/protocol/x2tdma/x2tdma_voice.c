@@ -357,7 +357,7 @@ x2tdma_decode_signal_j2(x2tdma_voice_ctx* ctx) {
 }
 
 static void
-x2tdma_decode_signal_j3(x2tdma_voice_ctx* ctx, dsd_state* state) {
+x2tdma_decode_signal_j3(const x2tdma_voice_ctx* ctx, dsd_state* state) {
     int burstd = (1 & ctx->syncdata[1]); // bit 0
 
     state->algid[0] = (1 & (ctx->syncdata[4] >> 1)) + 48; // bit 1

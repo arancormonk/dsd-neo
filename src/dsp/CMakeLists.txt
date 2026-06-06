@@ -7,7 +7,6 @@ target_sources(
         demod_pipeline.cpp
         snr_bias.cpp
         costas.cpp
-        equalizer.cpp
         resampler.cpp
         halfband.cpp
         fll.cpp

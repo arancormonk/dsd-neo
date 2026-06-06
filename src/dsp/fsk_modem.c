@@ -290,8 +290,8 @@ normalize_symbol(dsd_fsk_modem_state* st, float raw_symbol) {
     return clamp_symbol(sym, st->cfg.levels);
 }
 
-static float*
-pending_symbol_data(dsd_fsk_modem_state* st) {
+static const float*
+pending_symbol_data(const dsd_fsk_modem_state* st) {
     return st->pending_heap ? st->pending_heap : st->pending_symbols;
 }
 
@@ -315,7 +315,7 @@ compact_pending_symbols(dsd_fsk_modem_state* st) {
 
     int remaining = st->pending_len - st->pending_pos;
     if (remaining > 0) {
-        float* pending = pending_symbol_data(st);
+        float* pending = st->pending_heap ? st->pending_heap : st->pending_symbols;
         DSD_MEMMOVE(pending, pending + st->pending_pos, (size_t)remaining * sizeof(float));
     }
     st->pending_pos = 0;
@@ -376,7 +376,8 @@ queue_pending_symbol(dsd_fsk_modem_state* st, float symbol) {
     if (!ensure_pending_capacity(st, st->pending_len + 1)) {
         return 0;
     }
-    pending_symbol_data(st)[st->pending_len++] = symbol;
+    float* pending = st->pending_heap ? st->pending_heap : st->pending_symbols;
+    pending[st->pending_len++] = symbol;
     return 1;
 }
 

@@ -1178,7 +1178,7 @@ p25p2_ess_select_slot_crypto(dsd_state* state, int* ttg, int* alg, unsigned long
 }
 
 static int
-p25p2_ess_other_slot_active(dsd_state* state, int other) {
+p25p2_ess_other_slot_active(const dsd_state* state, int other) {
     double mac_hold = p25p2_frame_mac_hold_s(state, 0.75);
     double nowm_hold = dsd_time_now_monotonic_s();
     int other_recent = (state->p25_p2_last_mac_active_m[other] > 0.0)

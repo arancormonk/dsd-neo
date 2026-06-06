@@ -66,7 +66,7 @@ static int s_scan_activity_encrypted = 0;
 static int s_scan_activity_data_call = 0;
 
 static void
-capture_scan_dmr_conventional_activity(const dsd_opts* opts, dsd_state* state, uint32_t target, uint32_t source,
+capture_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                        int is_private, int encrypted, int data_call) {
     (void)opts;
     (void)state;

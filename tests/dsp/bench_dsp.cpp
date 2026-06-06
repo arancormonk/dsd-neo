@@ -25,7 +25,6 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/equalizer.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/halfband.h>
@@ -795,7 +794,7 @@ bench_carrier_loops(const BenchOptions& opts) {
 }
 
 static void
-configure_cqpsk_stage_state(demod_state* s, int sample_rate, int sps, int eq_enable) {
+configure_cqpsk_stage_state(demod_state* s, int sample_rate, int sps) {
     s->cqpsk_enable = 1;
     s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
     s->rate_out = sample_rate;
@@ -807,12 +806,7 @@ configure_cqpsk_stage_state(demod_state* s, int sample_rate, int sps, int eq_ena
     s->cqpsk_diff_prev_r = 1.0f;
     s->cqpsk_diff_prev_j = 0.0f;
     s->cqpsk_agc_avg = 1.0f;
-    s->cqpsk_eq_enable = eq_enable;
-    s->cqpsk_eq_taps = DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
-    s->cqpsk_eq_mu = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
-    s->cqpsk_eq_modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
     ted_init_state(&s->ted_state);
-    dsd_cqpsk_cma_equalizer_init(&s->cqpsk_eq_state, s->cqpsk_eq_taps);
 }
 
 static int
@@ -827,7 +821,7 @@ bench_one_cqpsk_fll_stage(const BenchOptions& opts, const char* name, int sample
         DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return 0;
     }
-    configure_cqpsk_stage_state(state.s, sample_rate, sps, 0);
+    configure_cqpsk_stage_state(state.s, sample_rate, sps);
     state.s->lowpassed = in.data();
     state.s->lp_len = kInLen;
 
@@ -861,7 +855,7 @@ bench_one_cqpsk_gardner_stage(const BenchOptions& opts, const char* name, int sa
         DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return 0;
     }
-    configure_cqpsk_stage_state(state.s, sample_rate, sps, 0);
+    configure_cqpsk_stage_state(state.s, sample_rate, sps);
 
     BenchMeta meta;
     meta.rate_hz = sample_rate;
@@ -883,33 +877,6 @@ bench_one_cqpsk_gardner_stage(const BenchOptions& opts, const char* name, int sa
 }
 
 static int
-bench_one_cqpsk_equalizer_stage(const BenchOptions& opts, const char* name, int taps) {
-    constexpr int kPairs = 4096;
-    constexpr int kInLen = kPairs * 2;
-    std::vector<float> in(kInLen);
-    std::vector<float> work(kInLen);
-    fill_cqpsk_iq(&in, 1);
-
-    dsd_cqpsk_cma_equalizer_state_t eq = {};
-    dsd_cqpsk_cma_equalizer_init(&eq, taps);
-
-    BenchMeta meta;
-    meta.profile = "cqpsk";
-    meta.tap_count = taps;
-    meta.variant = "cma";
-
-    return run_case(
-        opts, name, "pair", (double)kPairs,
-        [&]() -> float {
-            DSD_MEMCPY(work.data(), in.data(), in.size() * sizeof(float));
-            dsd_cqpsk_cma_equalizer_apply(&eq, work.data(), kInLen, taps, DSD_CQPSK_CMA_EQ_DEFAULT_MU,
-                                          DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS);
-            return work[0] + work[kInLen - 1] + eq.err_ema;
-        },
-        &meta);
-}
-
-static int
 bench_cqpsk_stages(const BenchOptions& opts) {
     int ran = 0;
     constexpr int kPairs = 4096;
@@ -919,15 +886,13 @@ bench_cqpsk_stages(const BenchOptions& opts) {
     ran += bench_one_cqpsk_fll_stage(opts, "op25_fll_band_edge_cc_p25p2", 48000, 8);
     ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p1", 24000, 5);
     ran += bench_one_cqpsk_gardner_stage(opts, "op25_gardner_cc_p25p2", 48000, 8);
-    ran += bench_one_cqpsk_equalizer_stage(opts, "cqpsk_cma_equalizer_9tap", 9);
-    ran += bench_one_cqpsk_equalizer_stage(opts, "cqpsk_cma_equalizer_15tap", 15);
 
     {
         std::vector<float> diff_iq(kInLen);
         fill_cqpsk_iq(&diff_iq, 1);
         DemodHolder diff_state;
         if (diff_state) {
-            configure_cqpsk_stage_state(diff_state.s, 24000, 5, 0);
+            configure_cqpsk_stage_state(diff_state.s, 24000, 5);
             diff_state.s->lowpassed = diff_iq.data();
             diff_state.s->lp_len = kInLen;
             ran += run_case(opts, "op25_diff_phasor_cc", "pair", (double)kPairs, [&]() -> float {
@@ -997,7 +962,7 @@ configure_common_c4fm_audio_state(demod_state* s, int sample_rate, int symbol_ra
 }
 
 static void
-configure_common_cqpsk_state(demod_state* s, int sample_rate, int symbol_rate, int sps, int eq_enable) {
+configure_common_cqpsk_state(demod_state* s, int sample_rate, int symbol_rate, int sps) {
     s->rate_in = sample_rate;
     s->rate_out = sample_rate;
     s->lowpassed = s->input_cb_buf;
@@ -1015,10 +980,6 @@ configure_common_cqpsk_state(demod_state* s, int sample_rate, int symbol_rate, i
     s->squelch_env = 1.0f;
     s->squelch_env_attack = 0.125f;
     s->squelch_env_release = 0.03125f;
-    s->cqpsk_eq_enable = eq_enable;
-    s->cqpsk_eq_taps = DSD_CQPSK_CMA_EQ_DEFAULT_TAPS;
-    s->cqpsk_eq_mu = DSD_CQPSK_CMA_EQ_DEFAULT_MU;
-    s->cqpsk_eq_modulus = DSD_CQPSK_CMA_EQ_DEFAULT_MODULUS;
     ted_init_state(&s->ted_state);
 }
 
@@ -1075,8 +1036,7 @@ bench_one_c4fm_audio_full_demod(const BenchOptions& opts, const char* name, int 
 }
 
 static int
-bench_one_cqpsk_full_demod(const BenchOptions& opts, const char* name, int sample_rate, int symbol_rate, int sps,
-                           int eq_enable) {
+bench_one_cqpsk_full_demod(const BenchOptions& opts, const char* name, int sample_rate, int symbol_rate, int sps) {
     const int symbols = 512;
     const int in_len = symbols * sps * 2;
     std::vector<float> in((size_t)in_len);
@@ -1087,7 +1047,7 @@ bench_one_cqpsk_full_demod(const BenchOptions& opts, const char* name, int sampl
         DSD_FPRINTF(stderr, "demod_state allocation failed\n");
         return 0;
     }
-    configure_common_cqpsk_state(state.s, sample_rate, symbol_rate, sps, eq_enable);
+    configure_common_cqpsk_state(state.s, sample_rate, symbol_rate, sps);
 
     return run_case(opts, name, "symbol", (double)symbols, [&]() -> float {
         DSD_MEMCPY(state.s->input_cb_buf, in.data(), in.size() * sizeof(float));
@@ -1117,10 +1077,8 @@ bench_full_demod(const BenchOptions& opts) {
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_48k_lpf_off", 48000, 4800, 0, 0);
     ran += bench_one_fsk_full_demod(opts, "full_demod_fsk_48k_squelched", 48000, 4800, 1, 1);
 
-    ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p1", 24000, 4800, 5, 0);
-    ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p1_eq", 24000, 4800, 5, 1);
-    ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p2", 48000, 6000, 8, 0);
-    ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p2_eq", 48000, 6000, 8, 1);
+    ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p1", 24000, 4800, 5);
+    ran += bench_one_cqpsk_full_demod(opts, "full_demod_cqpsk_p25p2", 48000, 6000, 8);
 
     return ran;
 }

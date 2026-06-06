@@ -15,6 +15,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/worker_pool.h>
 #include <mutex>
+#include <new>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unordered_map>
@@ -26,25 +27,22 @@ namespace {
 
 /* Opaque handle keyed off demod_state* to avoid depending on its layout here */
 struct WorkerCtx {
-    bool enabled;
-    dsd_thread_t threads[2];
-    dsd_mutex_t lock;
-    dsd_cond_t cv;
-    dsd_cond_t done_cv;
-    bool should_exit;
-    int epoch;
-    int completed_in_epoch;
-    int posted_count;
+    bool enabled = false;
+    dsd_thread_t threads[2] = {};
+    dsd_mutex_t lock = {};
+    dsd_cond_t cv = {};
+    dsd_cond_t done_cv = {};
+    bool should_exit = false;
+    int epoch = 0;
+    int completed_in_epoch = 0;
+    int posted_count = 0;
 
-    struct {
-        void (*run)(void*);
-        void* arg;
-    } tasks[2];
+    demod_mt_task tasks[2] = {};
 };
 
 struct WorkerArg {
-    WorkerCtx* ctx;
-    int id;
+    WorkerCtx* ctx = nullptr;
+    int id = 0;
 };
 
 std::unordered_map<const void*, WorkerCtx*> g_ctx_map;
@@ -132,7 +130,7 @@ demod_mt_init(struct demod_state* s) {
     if (ctx) {
         return; // already initialized
     }
-    ctx = static_cast<WorkerCtx*>(calloc(1, sizeof(WorkerCtx)));
+    ctx = new (std::nothrow) WorkerCtx;
     if (!ctx) {
         return;
     }
@@ -150,7 +148,7 @@ demod_mt_init(struct demod_state* s) {
         dsd_mutex_destroy(&ctx->lock);
         dsd_cond_destroy(&ctx->cv);
         dsd_cond_destroy(&ctx->done_cv);
-        free(ctx);
+        delete ctx;
         return;
     }
     for (int i = 0; i < 2; i++) {
@@ -188,7 +186,7 @@ demod_mt_destroy(struct demod_state* s) {
     dsd_mutex_destroy(&ctx->lock);
     // Free leaked WorkerArg array: not tracked; threads have exited so it's safe to free if we had kept pointer.
     // Since we didn't keep it, allow small leak to be reclaimed on process exit. Not critical during normal teardown.
-    free(ctx);
+    delete ctx;
     set_ctx(static_cast<const void*>(s), nullptr);
 }
 
@@ -203,23 +201,21 @@ demod_mt_destroy(struct demod_state* s) {
  * @param a1 Argument for the second task.
  */
 void
-demod_mt_run_two(struct demod_state* s, void (*f0)(void*), void* a0, void (*f1)(void*), void* a1) {
+demod_mt_run_two_impl(struct demod_state* s, demod_mt_task task0, demod_mt_task task1) {
     WorkerCtx* ctx = get_ctx(static_cast<const void*>(s));
     if (!ctx || !ctx->enabled) {
-        if (f0) {
-            f0(a0);
+        if (task0.run) {
+            task0.run(task0.arg);
         }
-        if (f1) {
-            f1(a1);
+        if (task1.run) {
+            task1.run(task1.arg);
         }
         return;
     }
     dsd_mutex_lock(&ctx->lock);
-    ctx->tasks[0].run = f0;
-    ctx->tasks[0].arg = a0;
-    ctx->tasks[1].run = f1;
-    ctx->tasks[1].arg = a1;
-    ctx->posted_count = (f1 != NULL) ? 2 : 1;
+    ctx->tasks[0] = task0;
+    ctx->tasks[1] = task1;
+    ctx->posted_count = (task1.run != NULL) ? 2 : 1;
     ctx->completed_in_epoch = 0;
     ctx->epoch++;
     dsd_cond_broadcast(&ctx->cv);

@@ -98,10 +98,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_CPU_DONGLE",
         "DSD_NEO_CPU_USB",
         "DSD_NEO_CQPSK",
-        "DSD_NEO_CQPSK_EQ",
-        "DSD_NEO_CQPSK_EQ_MODULUS",
-        "DSD_NEO_CQPSK_EQ_MU",
-        "DSD_NEO_CQPSK_EQ_TAPS",
         "DSD_NEO_CQPSK_SYNC_INV",
         "DSD_NEO_CQPSK_SYNC_NEG",
         "DSD_NEO_DEBUG_CQPSK",
@@ -1867,8 +1863,8 @@ static int
 test_dsp_misc_env(void) {
     /*
      * This covers DSP and demodulator environment knobs that interact during RTL
-     * startup: resampling, FLL, Costas, timing recovery, equalizer, clocking,
-     * audio filters, retune handling, squelch, FM AGC, limiter, and channel LPF.
+     * startup: resampling, FLL, Costas, timing recovery, clocking, audio filters,
+     * retune handling, squelch, FM AGC, limiter, and channel LPF.
      * Values are loaded in one config snapshot to catch field overlap in the
      * runtime parser. The invalid-value section later reloads a fresh snapshot so
      * each rejected knob can be checked against its documented default.
@@ -1886,10 +1882,6 @@ test_dsp_misc_env(void) {
     setenv("DSD_NEO_TED", "1", 1);
     setenv("DSD_NEO_TED_GAIN", "0.06", 1);
     setenv("DSD_NEO_TED_FORCE", "1", 1);
-    setenv("DSD_NEO_CQPSK_EQ", "1", 1);
-    setenv("DSD_NEO_CQPSK_EQ_TAPS", "8", 1);
-    setenv("DSD_NEO_CQPSK_EQ_MU", "0.0015", 1);
-    setenv("DSD_NEO_CQPSK_EQ_MODULUS", "0.75", 1);
     setenv("DSD_NEO_C4FM_CLK", "mm", 1);
     setenv("DSD_NEO_C4FM_CLK_SYNC", "1", 1);
     setenv("DSD_NEO_DEEMPH", "75", 1);
@@ -2026,39 +2018,6 @@ test_dsp_misc_env(void) {
         return rc;
     }
     rc = expect_int_eq(cfg->ted_force, 1, 1535, "ted_force");
-    if (rc != 0) {
-        return rc;
-    }
-
-    rc = expect_int_eq(cfg->cqpsk_eq_is_set, 1, 1536, "cqpsk_eq_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->cqpsk_eq_enable, 1, 1537, "cqpsk_eq_enable");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->cqpsk_eq_taps_is_set, 1, 1538, "cqpsk_eq_taps_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->cqpsk_eq_taps, 9, 1539, "cqpsk_eq_taps odd");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->cqpsk_eq_mu_is_set, 1, 1540, "cqpsk_eq_mu_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->cqpsk_eq_mu, 0.0015, 1e-7, 1541, "cqpsk_eq_mu");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->cqpsk_eq_modulus_is_set, 1, 1542, "cqpsk_eq_modulus_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->cqpsk_eq_modulus, 0.75, 1e-6, 1543, "cqpsk_eq_modulus");
     if (rc != 0) {
         return rc;
     }

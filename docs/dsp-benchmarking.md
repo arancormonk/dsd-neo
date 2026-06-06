@@ -62,7 +62,7 @@ The benchmark target includes:
 - Input/output rings and RTL u8 widening/rotation.
 - SIMD FIR kernels, half-band decimators, and generated channel LPF plans.
 - FSK modem acquisition/steady-state cases.
-- CQPSK stage cases for band-edge FLL, Gardner, CMA equalizer, differential phasor, Costas, and full demod chains.
+- CQPSK stage cases for band-edge FLL, Gardner, differential phasor, Costas, and full demod chains.
 - Full demod cases for C4FM audio monitor, FSK symbol output, and CQPSK P25P1/P25P2.
 
 The RTL benchmark target includes:

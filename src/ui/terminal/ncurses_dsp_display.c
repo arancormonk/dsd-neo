@@ -124,25 +124,6 @@ dsp_status_print_front_and_path(const dsp_status_snapshot* snap) {
 }
 
 static void
-dsp_status_print_cqpsk_eq(void) {
-    rtl_stream_cqpsk_eq_status eq;
-    DSD_MEMSET(&eq, 0, sizeof(eq));
-    if (rtl_stream_get_cqpsk_eq_status(&eq) != 0) {
-        return;
-    }
-
-    const char* eq_state = "Off";
-    if (eq.enabled) {
-        eq_state = eq.initialized ? ((eq.symbols >= 500U) ? "Run" : "Warm") : "Init";
-    }
-    ui_print_kv_line("CMA EQ", "[%s] taps:%d mu:%.4g syms:%u", eq_state, eq.taps, eq.mu, eq.symbols);
-    if (eq.enabled) {
-        ui_print_kv_line("CMA Metric", "mag2:%.3f tgt:%.3f err:%.4f side:%.3f E:%.2f", eq.mag2_ema, eq.modulus,
-                         eq.err_ema, eq.max_side_tap_mag, eq.tap_energy);
-    }
-}
-
-static void
 dsp_status_print_cqpsk_metrics(void) {
     double cfo = rtl_stream_get_cfo_hz();
     int clk = rtl_stream_get_carrier_lock();
@@ -159,7 +140,6 @@ dsp_status_print_cqpsk_metrics(void) {
     ui_print_kv_line("Carrier", "NCO=%+0.1f Hz  %s", cfo, clk ? "Locked" : "Acq");
     ui_print_kv_line("Costas/NCO", "ErrS=%d ErrR=%d Conf=%0.2f Fade=%d%% NCO(q15)=%d Fs=%d Hz", e14, cm.err_raw_avg_q14,
                      (double)cm.confidence_avg_q14 / 16384.0, cm.zero_conf_pct, nco_q15, Fs);
-    dsp_status_print_cqpsk_eq();
 }
 
 static void

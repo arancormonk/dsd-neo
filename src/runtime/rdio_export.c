@@ -421,9 +421,11 @@ dsd_rdio_wav_skip_bytes(FILE* fp, uint32_t bytes) {
     if (!fp) {
         return -1;
     }
+#if LONG_MAX < 4294967295LL
     if (bytes > (uint32_t)LONG_MAX) {
         return -1;
     }
+#endif
     return fseek(fp, (long)bytes, SEEK_CUR);
 }
 

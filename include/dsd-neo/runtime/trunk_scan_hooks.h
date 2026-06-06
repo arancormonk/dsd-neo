@@ -26,7 +26,7 @@ typedef struct {
     void* (*p25_ctx)(void);
     void* (*dmr_ctx)(void);
     void (*tick)(dsd_opts* opts, dsd_state* state);
-    void (*dmr_conventional_activity)(const dsd_opts* opts, dsd_state* state, uint32_t target, uint32_t source,
+    void (*dmr_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                       int is_private, int encrypted, int data_call);
 } dsd_trunk_scan_hooks;
 
@@ -35,7 +35,7 @@ void dsd_trunk_scan_hooks_set(dsd_trunk_scan_hooks hooks);
 void* dsd_trunk_scan_hook_p25_ctx(void);
 void* dsd_trunk_scan_hook_dmr_ctx(void);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
-void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, dsd_state* state, uint32_t target,
+void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                    uint32_t source, int is_private, int encrypted, int data_call);
 
 #ifdef __cplusplus

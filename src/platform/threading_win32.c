@@ -12,12 +12,14 @@
 #include <errno.h>
 #include <process.h>
 
+int dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func);
+
 /*============================================================================
  * Thread Functions
  *============================================================================*/
 
 int
-dsd_thread_create(dsd_thread_t* thread, dsd_thread_fn func, void* arg) {
+dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func) {
     if (!thread || !func) {
         return EINVAL;
     }
