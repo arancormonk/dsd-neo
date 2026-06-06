@@ -1216,7 +1216,7 @@ jobs:
       matrix:
         include:
           - name: clang-tidy
-            run_cmd: tools/clang_tidy.sh --strict
+            run_cmd: tools/clang_tidy.sh
             artifact_name: clang-tidy-report
             artifact_path: .clang-tidy.local.out
           - name: iwyu

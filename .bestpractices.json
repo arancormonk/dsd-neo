@@ -188,5 +188,5 @@
   "vulnerability_report_response_justification": "No vulnerability reports are known in the last six months; SECURITY.md documents response expectations.",
   "warnings_fixed_justification": "Required CI and pre-push checks include warnings-as-errors where configured.",
   "warnings_justification": "CI and hooks run compiler warnings, warnings-as-errors, clang-tidy, cppcheck, scan-build, GCC fanalyzer, IWYU, Semgrep, and lizard.",
-  "warnings_strict_justification": "Guardrails include warnings-as-errors, strict clang-tidy, strict cppcheck, strict Semgrep, and static-analysis gates."
+  "warnings_strict_justification": "Guardrails include warnings-as-errors, the default clang-tidy gate, strict cppcheck, strict Semgrep, and static-analysis gates."
 }

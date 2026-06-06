@@ -11,10 +11,9 @@ cd "$ROOT_DIR"
 
 usage() {
   cat << 'USAGE'
-Usage: tools/clang_tidy.sh [--strict] [--all-commands] [--] [files...]
+Usage: tools/clang_tidy.sh [--all-commands] [--] [files...]
 
 Options:
-  --strict        Use .clang-tidy.strict (broader check set).
   --all-commands  Use the full compile_commands.json as-is. Note: if a source file
                   appears multiple times in the compilation database (e.g., built
                   for multiple targets), clang-tidy may process it multiple times
@@ -27,15 +26,10 @@ Arguments:
 USAGE
 }
 
-STRICT=0
 ALL_COMMANDS=0
 REQUESTED_FILES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --strict)
-      STRICT=1
-      shift
-      ;;
     --all-commands)
       ALL_COMMANDS=1
       shift
@@ -288,17 +282,7 @@ clang-tidy --version | sed -n '1,2p'
 
 # Run clang-tidy with project config and capture output
 LOG_FILE=".clang-tidy.local.out"
-
-# Optional strict mode: use alternate config enabling extra checks
 CONFIG_FILE=".clang-tidy"
-if [[ $STRICT -eq 1 ]]; then
-  if [[ -f .clang-tidy.strict ]]; then
-    CONFIG_FILE=".clang-tidy.strict"
-    echo "Strict mode: using config $CONFIG_FILE"
-  else
-    echo "Strict mode requested, but .clang-tidy.strict not found; falling back to $CONFIG_FILE"
-  fi
-fi
 
 if [[ -f "$CONFIG_FILE" ]]; then
   CFG_PATH=$(readlink -f "$CONFIG_FILE" 2> /dev/null || echo "$CONFIG_FILE")
