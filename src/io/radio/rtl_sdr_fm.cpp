@@ -175,87 +175,87 @@ static char udp_control_bindaddr[64] = "127.0.0.1";
 namespace {
 
 struct RtlRetuneProfile {
-    int active;
-    int cqpsk_enable;
-    int symbol_rate_hz;
-    int levels;
-    int channel_profile;
-    int ted_sps;
-    int ted_override;
-    uint32_t request_id;
-    uint32_t target_freq_hz;
+    int active = 0;
+    int cqpsk_enable = 0;
+    int symbol_rate_hz = 0;
+    int levels = 0;
+    int channel_profile = 0;
+    int ted_sps = 0;
+    int ted_override = 0;
+    uint32_t request_id = 0U;
+    uint32_t target_freq_hz = 0U;
 };
 
 struct dongle_state {
-    dsd_thread_t thread;
-    int dev_index;
-    std::atomic<uint32_t> freq;
-    std::atomic<uint32_t> rate;
-    int gain;
-    uint32_t buf_len;
+    dsd_thread_t thread{};
+    int dev_index = 0;
+    std::atomic<uint32_t> freq{0U};
+    std::atomic<uint32_t> rate{0U};
+    int gain = 0;
+    uint32_t buf_len = 0U;
     /* Last PPM value successfully applied to hardware. */
-    std::atomic<int> ppm_error;
-    int offset_tuning;
-    int direct_sampling;
-    std::atomic<int> mute;
-    struct demod_state* demod_target;
+    std::atomic<int> ppm_error{0};
+    int offset_tuning = 0;
+    int direct_sampling = 0;
+    std::atomic<int> mute{0};
+    struct demod_state* demod_target = nullptr;
 };
 
 struct controller_state {
-    dsd_thread_t thread;
-    uint32_t freqs[FREQUENCIES_LIMIT];
-    int freq_len;
-    int freq_now;
-    int edge;
-    int wb_mode;
-    dsd_cond_t hop;
-    dsd_mutex_t hop_m;
+    dsd_thread_t thread{};
+    uint32_t freqs[FREQUENCIES_LIMIT] = {};
+    int freq_len = 0;
+    int freq_now = 0;
+    int edge = 0;
+    int wb_mode = 0;
+    dsd_cond_t hop{};
+    dsd_mutex_t hop_m{};
     /* Marshalled retune request from external threads (UDP/API). */
-    std::atomic<int> manual_retune_pending;
-    uint32_t manual_retune_freq;
-    RtlRetuneProfile manual_retune_profile;
+    std::atomic<int> manual_retune_pending{0};
+    uint32_t manual_retune_freq = 0U;
+    RtlRetuneProfile manual_retune_profile{};
     /* Marshalled PPM correction updates stay on the controller thread so
      * device controls remain serialized with retunes/hops. */
-    std::atomic<int> ppm_change_pending;
-    std::atomic<int> pending_ppm_error;
-    std::atomic<uint32_t> ppm_request_publish_seq;
-    std::atomic<uint32_t> pending_ppm_request_seq;
-    std::atomic<int> ppm_apply_in_progress;
-    std::atomic<int> active_ppm_error;
-    std::atomic<uint32_t> active_ppm_request_seq;
+    std::atomic<int> ppm_change_pending{0};
+    std::atomic<int> pending_ppm_error{0};
+    std::atomic<uint32_t> ppm_request_publish_seq{0U};
+    std::atomic<uint32_t> pending_ppm_request_seq{0U};
+    std::atomic<int> ppm_apply_in_progress{0};
+    std::atomic<int> active_ppm_error{0};
+    std::atomic<uint32_t> active_ppm_request_seq{0U};
     /* Reconcile rejected PPM requests back on the read thread without
      * overwriting a newer request that arrived after the failure. */
-    std::atomic<int> ppm_apply_failure_pending;
-    std::atomic<int> failed_ppm_error;
-    std::atomic<uint32_t> failed_ppm_request_seq;
+    std::atomic<int> ppm_apply_failure_pending{0};
+    std::atomic<int> failed_ppm_error{0};
+    std::atomic<uint32_t> failed_ppm_request_seq{0U};
     /* Cold start gate: demod thread skips CQPSK until controller signals ready.
      * This prevents the race where demod processes samples with uninitialized
      * TED/Costas state before the controller finishes cold start configuration. */
-    std::atomic<int> cold_start_ready;
+    std::atomic<int> cold_start_ready{0};
     /* Retune gate: demod thread skips processing while retune is in progress.
      * This prevents the race where demod processes transient/stale samples
      * during hardware retune before TED/Costas/AGC are reset. Set to 1 at
      * start of retune, cleared to 0 after reset complete. */
-    std::atomic<int> retune_in_progress;
+    std::atomic<int> retune_in_progress{0};
     /* Demod processing gate: the controller waits for the current demod block
      * to finish before mutating shared demodulator state during reconfigure. */
-    std::atomic<int> demod_processing_active;
+    std::atomic<int> demod_processing_active{0};
     /* Retune completion signaling: allows dsd_rtl_stream_tune() to block until
      * the controller thread has finished the hardware retune and DSP reset.
      * This prevents the race where trunking code sets SPS parameters before
      * demod_reset_on_retune() has executed, causing Costas/FLL state corruption. */
-    dsd_cond_t retune_done_cond;
-    dsd_mutex_t retune_done_m;
-    std::atomic<int> retune_done_flag;
+    dsd_cond_t retune_done_cond{};
+    dsd_mutex_t retune_done_m{};
+    std::atomic<int> retune_done_flag{0};
     /* Request ID for matching completion signals to requests (prevents stale wakeups) */
-    std::atomic<uint32_t> retune_request_id;
-    std::atomic<uint32_t> retune_complete_id;
+    std::atomic<uint32_t> retune_request_id{0U};
+    std::atomic<uint32_t> retune_complete_id{0U};
     /* Last center frequency successfully applied by the controller thread. */
-    std::atomic<uint32_t> last_applied_freq_hz;
+    std::atomic<uint32_t> last_applied_freq_hz{0U};
     /* Completed capture reconfigure generation. This lets consumer-side
      * holdoffs reset even when the tuned center frequency remains unchanged
      * (for example, live PPM correction on the active stream). */
-    std::atomic<uint32_t> reconfigure_seq;
+    std::atomic<uint32_t> reconfigure_seq{0U};
 };
 
 } // namespace
@@ -422,35 +422,35 @@ controller_request_input_purge(void) {
 namespace {
 
 struct RtlSdrInternals {
-    struct rtl_device* device;
-    struct dongle_state* dongle;
-    struct demod_state* demod;
-    struct output_state* output;
-    struct controller_state* controller;
-    struct input_ring_state* input_ring;
-    struct udp_control** udp_ctrl_ptr;
-    const dsd_opts* opts; /* snapshot for mode hints (P25p1/2, etc.) */
+    struct rtl_device* device = nullptr;
+    struct dongle_state* dongle = nullptr;
+    struct demod_state* demod = nullptr;
+    struct output_state* output = nullptr;
+    struct controller_state* controller = nullptr;
+    struct input_ring_state* input_ring = nullptr;
+    struct udp_control** udp_ctrl_ptr = nullptr;
+    const dsd_opts* opts = nullptr; /* snapshot for mode hints (P25p1/2, etc.) */
     /* Cooperative shutdown flag for threads launched by this stream */
-    std::atomic<int> should_exit;
-    std::atomic<int> controller_thread_started;
-    std::atomic<int> demod_thread_started;
-    std::atomic<int> async_started;
+    std::atomic<int> should_exit{0};
+    std::atomic<int> controller_thread_started{0};
+    std::atomic<int> demod_thread_started{0};
+    std::atomic<int> async_started{0};
 
     /* Replay EOF State Machine. See "Replay EOF State Machine" section. */
-    std::atomic<int> replay_input_eof;
-    std::atomic<int> replay_input_drained;
-    std::atomic<int> replay_demod_drained;
-    std::atomic<int> replay_output_drained;
-    std::atomic<int> replay_forced_stop;
-    std::atomic<uint64_t> replay_last_submit_gen;
-    std::atomic<uint64_t> replay_last_submit_gen_at_eof;
-    std::atomic<uint64_t> replay_last_consume_gen;
-    dsd_mutex_t replay_eof_m;
-    dsd_cond_t replay_eof_cond;
-    int replay_eof_sync_inited;
+    std::atomic<int> replay_input_eof{0};
+    std::atomic<int> replay_input_drained{0};
+    std::atomic<int> replay_demod_drained{0};
+    std::atomic<int> replay_output_drained{0};
+    std::atomic<int> replay_forced_stop{0};
+    std::atomic<uint64_t> replay_last_submit_gen{0U};
+    std::atomic<uint64_t> replay_last_submit_gen_at_eof{0U};
+    std::atomic<uint64_t> replay_last_consume_gen{0U};
+    dsd_mutex_t replay_eof_m{};
+    dsd_cond_t replay_eof_cond{};
+    int replay_eof_sync_inited = 0;
 
     /* Watermark-based flow control for TCP lag resilience */
-    struct input_ring_watermark watermark;
+    struct input_ring_watermark watermark{};
 };
 
 } // namespace
@@ -1968,24 +1968,24 @@ struct DemodRetuneDiagBlock {
 };
 
 struct DemodAutogainState {
-    int initialized;
-    int blocks;
-    int high;
-    int low;
-    int manual_target;
-    int target_initialized;
-    std::chrono::steady_clock::time_point next_allowed;
-    std::chrono::steady_clock::time_point hold_until;
-    std::chrono::steady_clock::time_point probe_until;
-    uint32_t last_freq;
-    uint32_t last_reconfigure_seq;
-    int probe_ms;
-    int seed_gain_db10;
-    double spec_snr_db;
-    double inband_ratio;
-    int up_step_db10;
-    int up_persist;
-    int spec_pass;
+    int initialized = 0;
+    int blocks = 0;
+    int high = 0;
+    int low = 0;
+    int manual_target = 180;
+    int target_initialized = 0;
+    std::chrono::steady_clock::time_point next_allowed = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point hold_until{};
+    std::chrono::steady_clock::time_point probe_until{};
+    uint32_t last_freq = 0U;
+    uint32_t last_reconfigure_seq = 0U;
+    int probe_ms = 3000;
+    int seed_gain_db10 = 300;
+    double spec_snr_db = 6.0;
+    double inband_ratio = 0.60;
+    int up_step_db10 = 30;
+    int up_persist = 2;
+    int spec_pass = 0;
 };
 
 struct DemodMetricsState {
@@ -2497,7 +2497,7 @@ demod_autogain_maybe_adjust(DemodAutogainState* st, const struct demod_state* d)
 }
 
 static void
-demod_autogain_update(struct demod_state* d, float input_mean_abs, float input_max_abs) {
+demod_autogain_update(const struct demod_state* d, float input_mean_abs, float input_max_abs) {
     DemodAutogainState& st = demod_autogain_state();
     demod_autogain_init_once(&st);
     if (!g_tuner_autogain_on.load(std::memory_order_relaxed)) {
@@ -2943,7 +2943,7 @@ demod_metrics_update_snr(const struct demod_state* d, DemodMetricsState* st) {
 }
 
 static uint64_t
-demod_metrics_process(struct demod_state* d, int perf_on) {
+demod_metrics_process(const struct demod_state* d, int perf_on) {
     DemodMetricsState& st = demod_metrics_state();
     if (!demod_metrics_due_for_block(&st, d)) {
         return 0ULL;
@@ -3766,14 +3766,14 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
  */
 namespace {
 struct ControllerRetuneWork {
-    int manual_pending;
-    uint32_t manual_freq_hz;
-    RtlRetuneProfile manual_profile;
-    int requested_ppm;
-    uint32_t requested_ppm_request_id;
-    int ppm_pending;
-    int current_ppm;
-    int ppm_changed;
+    int manual_pending = 0;
+    uint32_t manual_freq_hz = 0U;
+    RtlRetuneProfile manual_profile{};
+    int requested_ppm = 0;
+    uint32_t requested_ppm_request_id = 0U;
+    int ppm_pending = 0;
+    int current_ppm = 0;
+    int ppm_changed = 0;
 };
 } // namespace
 
@@ -4817,7 +4817,7 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
 }
 
 static int
-stream_open_capture_writer(dsd_opts* opts, RadioSourceKind source_kind) {
+stream_open_capture_writer(const dsd_opts* opts, RadioSourceKind source_kind) {
     if (!opts || !opts->iq_capture_requested || !rtl_device_handle) {
         return 0;
     }
@@ -5795,7 +5795,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
 }
 
 static int
-stream_open_start_io_pipeline(dsd_opts* opts, RadioSourceKind source_kind) {
+stream_open_start_io_pipeline(const dsd_opts* opts, RadioSourceKind source_kind) {
     if (source_kind != RADIO_SOURCE_IQ_REPLAY) {
         (void)rtl_device_reset_buffer(rtl_device_handle);
         if (stream_open_capture_writer(opts, source_kind) != 0) {

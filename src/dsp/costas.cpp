@@ -758,7 +758,7 @@ fll_configure_loop_params(dsd_fll_band_edge_state_t* f, int sps) {
 }
 
 static inline void
-fll_reinit_state(demod_state* d, dsd_fll_band_edge_state_t* f, int sps, int is_first_init) {
+fll_reinit_state(const demod_state* d, dsd_fll_band_edge_state_t* f, int sps, int is_first_init) {
     const float excess_bw = 0.2f;
     const int filter_size = 2 * sps + 1;
     fll_band_edge_design_filter(f, sps, excess_bw, filter_size);

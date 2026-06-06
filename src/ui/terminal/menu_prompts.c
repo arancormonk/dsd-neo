@@ -33,8 +33,8 @@ typedef struct {
     char* buf;
     size_t cap;
     size_t len;
-    size_t cursor;                                     // cursor position within buf [0..len]
-    void (*on_done_str)(void* user, const char* text); // NULL text indicates cancel
+    size_t cursor;                        // cursor position within buf [0..len]
+    ui_prompt_string_done_fn on_done_str; // NULL text indicates cancel
     void* user;
 } UiPrompt;
 
@@ -42,12 +42,12 @@ static UiPrompt g_prompt = {0};
 
 // ---- Typed prompt context structures ----
 typedef struct {
-    void (*cb)(void*, int, int);
+    ui_prompt_int_done_fn cb;
     void* user;
 } PromptIntCtx;
 
 typedef struct {
-    void (*cb)(void*, int, double);
+    ui_prompt_double_done_fn cb;
     void* user;
 } PromptDblCtx;
 
@@ -61,7 +61,7 @@ typedef struct {
     int top;
     int page_rows;
     WINDOW* win;
-    void (*on_done)(void* user, int sel);
+    ui_chooser_done_fn on_done;
     void* user;
 } UiChooser;
 
@@ -265,8 +265,8 @@ ui_prompt_close_all(void) {
 }
 
 void
-ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap,
-                            void (*on_done)(void* user, const char* text), void* user) {
+ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t cap, void* user,
+                                 ui_prompt_string_done_fn on_done) {
     ui_prompt_close_all();
     g_prompt.active = 1;
     g_prompt.title = title;
@@ -351,7 +351,7 @@ ui_prompt_double_finish(void* u, const char* text) {
 }
 
 void
-ui_prompt_open_int_async(const char* title, int initial, void (*cb)(void* user, int ok, int value), void* user) {
+ui_prompt_open_int_async_impl(const char* title, int initial, void* user, ui_prompt_int_done_fn cb) {
     char pre[64];
     DSD_SNPRINTF(pre, sizeof pre, "%d", initial);
     PromptIntCtx* pic = (PromptIntCtx*)calloc(1, sizeof(PromptIntCtx));
@@ -368,8 +368,7 @@ ui_prompt_open_int_async(const char* title, int initial, void (*cb)(void* user, 
 }
 
 void
-ui_prompt_open_double_async(const char* title, double initial, void (*cb)(void* user, int ok, double value),
-                            void* user) {
+ui_prompt_open_double_async_impl(const char* title, double initial, void* user, ui_prompt_double_done_fn cb) {
     char pre[64];
     DSD_SNPRINTF(pre, sizeof pre, "%.6f", initial);
     PromptDblCtx* pdc = (PromptDblCtx*)calloc(1, sizeof(PromptDblCtx));
@@ -1039,7 +1038,7 @@ ui_chooser_finish(int sel) {
 }
 
 void
-ui_chooser_start(const char* title, const char* const* items, int count, void (*on_done)(void*, int), void* user) {
+ui_chooser_start_impl(const char* title, const char* const* items, int count, void* user, ui_chooser_done_fn on_done) {
     if (!items || count <= 0) {
         ui_chooser_close();
         if (on_done) {

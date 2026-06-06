@@ -815,7 +815,7 @@ ui_render_forced_key_status(const dsd_state* state) {
 }
 
 static void
-ui_render_scanner_and_reverse_status(dsd_opts* opts, dsd_state* state) {
+ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->scanner_mode == 1) {
         printw("| Scan Mode: ");
         if (state->lcn_freq_roll != 0) {
@@ -831,7 +831,7 @@ ui_render_scanner_and_reverse_status(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-ui_render_crypto_key_and_scanner_status(dsd_opts* opts, dsd_state* state) {
+ui_render_crypto_key_and_scanner_status(const dsd_opts* opts, const dsd_state* state) {
     ui_render_forced_key_status(state);
     ui_render_scanner_and_reverse_status(opts, state);
 }
@@ -2324,7 +2324,7 @@ ui_render_edacs_channel_label(const dsd_state* state, int lcn) {
 }
 
 static void
-ui_render_edacs_lcn_row(const dsd_opts* opts, dsd_state* state, int lcn) {
+ui_render_edacs_lcn_row(const dsd_opts* opts, const dsd_state* state, int lcn) {
     int a = (edacs_channel_tree[lcn][2] >> state->edacs_a_shift) & state->edacs_a_mask;
     int f = (edacs_channel_tree[lcn][2] >> state->edacs_f_shift) & state->edacs_f_mask;
     int s = edacs_channel_tree[lcn][2] & state->edacs_s_mask;

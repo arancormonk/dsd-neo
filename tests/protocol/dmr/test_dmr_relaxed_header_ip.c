@@ -90,7 +90,7 @@ dsd_degrees_glyph(void) {
 
 // FEC RS(12,9) stubs used by dmr_utils.c
 void
-rs_12_9_calc_syndrome(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome) {
+rs_12_9_calc_syndrome(const rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome) {
     (void)codeword;
     (void)syndrome;
 }

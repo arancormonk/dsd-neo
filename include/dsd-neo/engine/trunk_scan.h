@@ -56,7 +56,7 @@ void dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state);
 void dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state);
 void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
-void dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, dsd_state* state, uint32_t target,
+void dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                      uint32_t source, int is_private, int encrypted, int data_call);
 size_t dsd_engine_trunk_scan_active_index(const dsd_state* state);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);

@@ -336,99 +336,99 @@ rtl_tuner_type_name(int tuner_type) {
 
 // Internal RTL device structure
 struct rtl_device {
-    rtlsdr_dev_t* dev;
-    dsd_thread_t thread;
-    struct input_ring_state* input_ring;
-    struct dsd_iq_capture_writer* iq_capture_writer;
-    std::atomic<uint64_t> capture_mute_pending_bytes;
-    uint64_t replay_initial_center_frequency_hz;
-    uint64_t replay_initial_capture_center_frequency_hz;
-    dsd_iq_replay_source* replay_src;
-    uint64_t replay_float_elements_written;
+    rtlsdr_dev_t* dev = nullptr;
+    dsd_thread_t thread{};
+    struct input_ring_state* input_ring = nullptr;
+    struct dsd_iq_capture_writer* iq_capture_writer = nullptr;
+    std::atomic<uint64_t> capture_mute_pending_bytes{0U};
+    uint64_t replay_initial_center_frequency_hz = 0U;
+    uint64_t replay_initial_capture_center_frequency_hz = 0U;
+    dsd_iq_replay_source* replay_src = nullptr;
+    uint64_t replay_float_elements_written = 0U;
     /* SoapySDR backend */
-    SoapySDR::Device* soapy_dev;
-    SoapySDR::Stream* soapy_stream;
-    uint64_t soapy_overflow_count;
-    uint64_t soapy_timeout_count;
-    uint64_t soapy_read_errors;
-    uint64_t soapy_last_overflow_log_ns;
-    int soapy_profile_id;
-    int soapy_requested_bandwidth_hz;
-    int soapy_named_gain_override;
-    int soapy_named_gain_skip_logged;
-    char soapy_args_string[1024];
-    char soapy_driver_key[64];
-    char soapy_hardware_key[128];
-    char soapy_native_stream_format[16];
-    char soapy_requested_profile[32];
-    char soapy_requested_antenna[64];
-    char soapy_requested_clock[64];
-    char soapy_requested_settings[1024];
-    char soapy_requested_gains[512];
-    char soapy_requested_stream_format[16];
+    SoapySDR::Device* soapy_dev = nullptr;
+    SoapySDR::Stream* soapy_stream = nullptr;
+    uint64_t soapy_overflow_count = 0U;
+    uint64_t soapy_timeout_count = 0U;
+    uint64_t soapy_read_errors = 0U;
+    uint64_t soapy_last_overflow_log_ns = 0U;
+    int soapy_profile_id = 0;
+    int soapy_requested_bandwidth_hz = 0;
+    int soapy_named_gain_override = 0;
+    int soapy_named_gain_skip_logged = 0;
+    char soapy_args_string[1024] = {};
+    char soapy_driver_key[64] = {};
+    char soapy_hardware_key[128] = {};
+    char soapy_native_stream_format[16] = {};
+    char soapy_requested_profile[32] = {};
+    char soapy_requested_antenna[64] = {};
+    char soapy_requested_clock[64] = {};
+    char soapy_requested_settings[1024] = {};
+    char soapy_requested_gains[512] = {};
+    char soapy_requested_stream_format[16] = {};
     /* TCP stats (optional) */
-    uint64_t tcp_bytes_total;
-    uint64_t tcp_bytes_window;
-    uint64_t reserve_full_events;
-    uint64_t stats_last_ns;
+    uint64_t tcp_bytes_total = 0U;
+    uint64_t tcp_bytes_window = 0U;
+    uint64_t reserve_full_events = 0U;
+    uint64_t stats_last_ns = 0U;
     /* TCP reassembly to uniform chunk size */
-    unsigned char* tcp_pending;
-    size_t tcp_pending_len;
-    size_t tcp_pending_cap;
-    dsd_mutex_t soapy_lock;
-    dsd_mutex_t tcp_metrics_lock;
+    unsigned char* tcp_pending = nullptr;
+    size_t tcp_pending_len = 0U;
+    size_t tcp_pending_cap = 0U;
+    dsd_mutex_t soapy_lock{};
+    dsd_mutex_t tcp_metrics_lock{};
     /* TCP connection quality metrics (lag resilience) */
-    struct tcp_quality_metrics tcp_metrics;
-    struct rtl_replay_eof_state replay_eof;
-    dsd_iq_replay_config replay_cfg;
-    int dev_index;
-    uint32_t freq;
-    uint32_t rate;
-    int gain;
-    uint32_t buf_len;
-    int ppm_error;
-    int offset_tuning;
-    int direct_sampling;
-    std::atomic<int> mute;
-    int thread_started;
-    int combine_rotate_enabled;
-    std::atomic<uint32_t> capture_retune_count;
-    std::atomic<int> capture_reconfigure_hold;
+    struct tcp_quality_metrics tcp_metrics{};
+    struct rtl_replay_eof_state replay_eof{};
+    dsd_iq_replay_config replay_cfg{};
+    int dev_index = 0;
+    uint32_t freq = 0U;
+    uint32_t rate = 0U;
+    int gain = 0;
+    uint32_t buf_len = 0U;
+    int ppm_error = 0;
+    int offset_tuning = 0;
+    int direct_sampling = 0;
+    std::atomic<int> mute{0};
+    int thread_started = 0;
+    int combine_rotate_enabled = 0;
+    std::atomic<uint32_t> capture_retune_count{0U};
+    std::atomic<int> capture_reconfigure_hold{0};
     /* Backend selector: 0 = USB (librtlsdr), 1 = rtl_tcp, 2 = SoapySDR */
-    int backend;
-    int replay_fs4_shift_enabled;
-    int replay_combine_rotate_enabled;
-    uint32_t replay_initial_sample_rate_hz;
-    uint32_t replay_initial_freq;
-    uint32_t replay_initial_rate;
-    int replay_has_eof_state;
-    int soapy_lock_inited;
-    int soapy_format; /* SOAPY_FMT_* */
-    uint32_t soapy_mtu_elems;
-    int rot_phase;                    /* persistent j^n phase in [0..3] for capture-side FS/4 rotation */
-    std::atomic<int> mute_byte_phase; /* byte carry while an active mute span is discarded in fragments */
+    int backend = 0;
+    int replay_fs4_shift_enabled = 0;
+    int replay_combine_rotate_enabled = 0;
+    uint32_t replay_initial_sample_rate_hz = 0U;
+    uint32_t replay_initial_freq = 0U;
+    uint32_t replay_initial_rate = 0U;
+    int replay_has_eof_state = 0;
+    int soapy_lock_inited = 0;
+    int soapy_format = 0; /* SOAPY_FMT_* */
+    uint32_t soapy_mtu_elems = 0U;
+    int rot_phase = 0;                   /* persistent j^n phase in [0..3] for capture-side FS/4 rotation */
+    std::atomic<int> mute_byte_phase{0}; /* byte carry while an active mute span is discarded in fragments */
     /* rtl_tcp connection */
-    dsd_socket_t sockfd;
-    int port;
-    std::atomic<int> run;
-    int agc_mode; /* cached for TCP backend */
-    int bias_tee_on;
-    int tcp_autotune; /* adaptive recv/buffering */
-    int stats_enabled;
-    int tcp_metrics_lock_inited;
+    dsd_socket_t sockfd{};
+    int port = 0;
+    std::atomic<int> run{0};
+    int agc_mode = 0; /* cached for TCP backend */
+    int bias_tee_on = 0;
+    int tcp_autotune = 0; /* adaptive recv/buffering */
+    int stats_enabled = 0;
+    int tcp_metrics_lock_inited = 0;
     /* Extra driver state for reconnect replay */
-    int testmode_on;
-    uint32_t rtl_xtal_hz;
-    uint32_t tuner_xtal_hz;
-    int if_gain_count;
-    struct rtl_capture_u8_byte_carry iq_byte_carry; /* one buffered raw byte when a chunk ends mid-I/Q sample */
+    int testmode_on = 0;
+    uint32_t rtl_xtal_hz = 0U;
+    uint32_t tuner_xtal_hz = 0U;
+    int if_gain_count = 0;
+    struct rtl_capture_u8_byte_carry iq_byte_carry{}; /* one buffered raw byte when a chunk ends mid-I/Q sample */
 
     struct {
-        int stage;
-        int gain;
-    } if_gains[16];
+        int stage = 0;
+        int gain = 0;
+    } if_gains[16] = {};
 
-    char host[1024];
+    char host[1024] = {};
 };
 
 static void
@@ -4011,11 +4011,11 @@ rtl_device_cleanup_common_state(struct rtl_device* dev) {
  *
  * @param dev_index Device index to open.
  * @param input_ring Pointer to input ring for USB data.
- * @param combine_rotate_enabled Whether to use combined rotate+widen when offset tuning is disabled.
+ * @param use_combine_rotate Whether to use combined rotate+widen when offset tuning is disabled.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device*
-rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combine_rotate_enabled) {
+rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_combine_rotate) {
     if (!input_ring) {
         return NULL;
     }
@@ -4031,7 +4031,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
     dev->thread_started = 0;
     dev->mute = 0;
     dev->mute_byte_phase = 0;
-    dev->combine_rotate_enabled = combine_rotate_enabled;
+    dev->combine_rotate_enabled = use_combine_rotate;
     dev->backend = RTL_BACKEND_USB;
     dev->soapy_dev = NULL;
     dev->soapy_stream = NULL;
@@ -4075,7 +4075,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combin
 }
 
 struct rtl_device*
-rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring, int combine_rotate_enabled,
+rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring, int use_combine_rotate,
                       int autotune_enabled) {
     if (!input_ring || !host || port <= 0) {
         return NULL;
@@ -4096,7 +4096,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->thread_started = 0;
     dev->mute = 0;
     dev->mute_byte_phase = 0;
-    dev->combine_rotate_enabled = combine_rotate_enabled;
+    dev->combine_rotate_enabled = use_combine_rotate;
     dev->backend = RTL_BACKEND_TCP;
     dev->soapy_dev = NULL;
     dev->soapy_stream = NULL;
@@ -4162,7 +4162,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
 }
 
 static struct rtl_device*
-rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int combine_rotate_enabled) {
+rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int use_combine_rotate) {
     struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
     if (!dev) {
         return NULL;
@@ -4171,7 +4171,7 @@ rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int combine_rot
     dev->dev = NULL;
     dev->dev_index = -1;
     dev->input_ring = input_ring;
-    dev->combine_rotate_enabled = combine_rotate_enabled;
+    dev->combine_rotate_enabled = use_combine_rotate;
     dev->backend = RTL_BACKEND_SOAPY;
     dev->soapy_format = SOAPY_FMT_NONE;
     rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
@@ -4183,11 +4183,11 @@ rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int combine_rot
 }
 
 struct rtl_device*
-rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring, int combine_rotate_enabled) {
+rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring, int use_combine_rotate) {
     if (!input_ring) {
         return NULL;
     }
-    struct rtl_device* dev = rtl_device_alloc_soapy_base(input_ring, combine_rotate_enabled);
+    struct rtl_device* dev = rtl_device_alloc_soapy_base(input_ring, use_combine_rotate);
     if (!dev) {
         return NULL;
     }
@@ -4959,7 +4959,7 @@ rtl_device_get_tuner_gain(struct rtl_device* dev) {
 }
 
 int
-rtl_device_is_auto_gain(struct rtl_device* dev) {
+rtl_device_is_auto_gain(const struct rtl_device* dev) {
     if (!dev) {
         return -1;
     }
@@ -5353,7 +5353,7 @@ rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff) {
 }
 
 int
-rtl_device_get_tcp_autotune(struct rtl_device* dev) {
+rtl_device_get_tcp_autotune(const struct rtl_device* dev) {
     if (!dev) {
         return 0;
     }

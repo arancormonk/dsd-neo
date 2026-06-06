@@ -54,10 +54,10 @@ struct rtl_soapy_config {
  *
  * @param dev_index Device index to open.
  * @param input_ring Pointer to input ring for incoming I/Q data.
- * @param combine_rotate_enabled Whether to use combined rotate+widen when offset tuning is disabled.
+ * @param use_combine_rotate Whether to use combined rotate+widen when offset tuning is disabled.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
-struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring, int combine_rotate_enabled);
+struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_combine_rotate);
 
 /**
  * @brief Create and initialize a remote RTL-SDR stream via rtl_tcp.
@@ -69,23 +69,23 @@ struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* inp
  * @param host Remote hostname or IP (e.g., "127.0.0.1").
  * @param port Remote TCP port (e.g., 1234).
  * @param input_ring Pointer to input ring for incoming I/Q data.
- * @param combine_rotate_enabled Whether to use combined rotate+widen when offset tuning is disabled.
+ * @param use_combine_rotate Whether to use combined rotate+widen when offset tuning is disabled.
  * @param autotune_enabled Enable rtl_tcp adaptive buffering/autotune at startup (1=on, 0=off).
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device* rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring,
-                                         int combine_rotate_enabled, int autotune_enabled);
+                                         int use_combine_rotate, int autotune_enabled);
 
 /**
  * @brief Create and initialize an RX source through SoapySDR.
  *
  * @param soapy_args Opaque Soapy device arguments string (may be empty).
  * @param input_ring Pointer to input ring for incoming I/Q data.
- * @param combine_rotate_enabled Whether to use combined rotate+widen where applicable.
+ * @param use_combine_rotate Whether to use combined rotate+widen where applicable.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device* rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring,
-                                           int combine_rotate_enabled);
+                                           int use_combine_rotate);
 
 /**
  * @brief Apply SoapySDR-specific profile and capability-aware startup options.
@@ -177,7 +177,7 @@ int rtl_device_get_tuner_gain(struct rtl_device* dev);
 /**
  * @brief Return 1 if auto-gain is enabled (requested), 0 if manual.
  */
-int rtl_device_is_auto_gain(struct rtl_device* dev);
+int rtl_device_is_auto_gain(const struct rtl_device* dev);
 
 /**
  * @brief Set frequency correction (PPM error).
@@ -299,7 +299,7 @@ int rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff);
  * @param dev RTL-SDR device handle.
  * @return 1 if autotune is enabled; 0 otherwise.
  */
-int rtl_device_get_tcp_autotune(struct rtl_device* dev);
+int rtl_device_get_tcp_autotune(const struct rtl_device* dev);
 
 /**
  * @brief Attach or detach an optional IQ capture writer.

@@ -123,7 +123,7 @@ dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, long* out
 }
 
 void
-dsd_trunk_cc_candidates_set_cooldown(dsd_state* state, long freq_hz, double until_monotonic_s) {
+dsd_trunk_cc_candidates_set_cooldown(const dsd_state* state, long freq_hz, double until_monotonic_s) {
     if (!state || freq_hz == 0) {
         return;
     }

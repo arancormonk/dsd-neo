@@ -201,7 +201,8 @@ dmr_block_crypto_apply_aes_ofb(dsd_state* state, uint8_t slot, const dmr_block_c
 }
 
 static uint8_t
-dmr_block_crypto_apply_aes_ecb(dsd_state* state, uint8_t slot, const dmr_block_crypto_ctx* ctx) {
+dmr_block_crypto_apply_aes_ecb(const dsd_state* state, uint8_t* slot_payload, uint8_t slot,
+                               const dmr_block_crypto_ctx* ctx) {
     const int cap = (int)(sizeof(state->dmr_pdu_sf[slot]) / sizeof(state->dmr_pdu_sf[slot][0]));
     const int available = (ctx->start < cap) ? (cap - ctx->start) : 0;
     const int reference_blocks = (int)state->data_byte_ctr[slot] / DMR_AES_BLOCK_BYTES;
@@ -211,7 +212,7 @@ dmr_block_crypto_apply_aes_ecb(dsd_state* state, uint8_t slot, const dmr_block_c
         return 0;
     }
 
-    uint8_t* payload = state->dmr_pdu_sf[slot] + ctx->start;
+    uint8_t* payload = slot_payload + ctx->start;
     aes_ecb_decrypt_blocks(payload, ctx->aes_key, payload, (ctx->alg == 5) ? 2 : 0, nblocks);
     return 1;
 }
@@ -274,7 +275,7 @@ dmr_block_crypto_decrypt_payload(dsd_state* state, uint8_t slot, const dmr_block
              * Zero-MI DMR payloads use ECB, so skip unused IV/LFSR work and
              * normalize the AlgID directly.
              */
-            return dmr_block_crypto_apply_aes_ecb(state, slot, ctx);
+            return dmr_block_crypto_apply_aes_ecb(state, state->dmr_pdu_sf[slot], slot, ctx);
         }
         return dmr_block_crypto_apply_aes_ofb(state, slot, ctx);
     }

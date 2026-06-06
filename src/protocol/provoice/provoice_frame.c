@@ -34,9 +34,8 @@ provoice_skip_dibits(dsd_provoice_next_dibit_fn next_dibit, void* user, int coun
 }
 
 int
-dsd_provoice_load_imbe_frame_pair(dsd_provoice_next_dibit_fn next_dibit, void* user,
-                                  char frame1[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS],
-                                  char frame2[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS]) {
+dsd_provoice_load_imbe_frame_pair_impl(void* user, dsd_provoice_imbe_frame frame1, dsd_provoice_imbe_frame frame2,
+                                       dsd_provoice_next_dibit_fn next_dibit) {
     int consumed = 0;
     int i;
     const int* w = provoice_interleave_w;

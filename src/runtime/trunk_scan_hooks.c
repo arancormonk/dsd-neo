@@ -32,8 +32,8 @@ dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, dsd_state* state, uint32_t target, uint32_t source,
-                                              int is_private, int encrypted, int data_call) {
+dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                              uint32_t source, int is_private, int encrypted, int data_call) {
     if (g_trunk_scan_hooks.dmr_conventional_activity) {
         g_trunk_scan_hooks.dmr_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
     }

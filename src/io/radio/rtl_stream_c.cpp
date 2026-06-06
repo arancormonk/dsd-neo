@@ -436,7 +436,8 @@ rtl_stream_request_fsk_reacquire(void) {
  * @param ctx Stream context (unused).
  */
 extern "C" void
-rtl_stream_clear_output(RtlSdrContext* /*ctx*/) {
+rtl_stream_clear_output(RtlSdrContext* ctx) {
+    (void)ctx;
     // Delegate to legacy function to keep behavior identical
     dsd_rtl_stream_clear_output();
 }
@@ -451,7 +452,8 @@ rtl_stream_clear_output(RtlSdrContext* /*ctx*/) {
  * @return Mean power value (approximate RMS squared, normalized).
  */
 extern "C" double
-rtl_stream_return_pwr(const RtlSdrContext* /*ctx*/) {
+rtl_stream_return_pwr(const RtlSdrContext* ctx) {
+    (void)ctx;
     return dsd_rtl_stream_return_pwr();
 }
 
@@ -471,7 +473,8 @@ rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto) {
 }
 
 extern "C" int
-rtl_stream_ted_bias(const RtlSdrContext* /*ctx*/) {
+rtl_stream_ted_bias(const RtlSdrContext* ctx) {
+    (void)ctx;
     return dsd_rtl_stream_ted_bias();
 }
 

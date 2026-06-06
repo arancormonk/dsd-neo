@@ -21,6 +21,13 @@ extern "C" {
 /* Forward declaration to avoid including heavy headers here */
 struct demod_state;
 
+typedef void (*demod_mt_task_fn)(void* arg);
+
+typedef struct demod_mt_task {
+    demod_mt_task_fn run;
+    void* arg;
+} demod_mt_task;
+
 /*
  * Minimal 2-thread worker pool API (env-gated by DSD_NEO_MT)
  * These calls mirror the inlined versions that previously lived in rtl_sdr_fm.cpp
@@ -53,7 +60,15 @@ void demod_mt_destroy(struct demod_state* s);
  * @param f1 Function pointer for the second task (may be NULL).
  * @param a1 Argument for the second task.
  */
-void demod_mt_run_two(struct demod_state* s, void (*f0)(void*), void* a0, void (*f1)(void*), void* a1);
+void demod_mt_run_two_impl(struct demod_state* s, demod_mt_task task0, demod_mt_task task1);
+
+#ifdef __cplusplus
+#define demod_mt_run_two(s, f0, a0, f1, a1)                                                                            \
+    demod_mt_run_two_impl((s), demod_mt_task{(f0), (a0)}, demod_mt_task{(f1), (a1)})
+#else
+#define demod_mt_run_two(s, f0, a0, f1, a1)                                                                            \
+    demod_mt_run_two_impl((s), (demod_mt_task){(f0), (a0)}, (demod_mt_task){(f1), (a1)})
+#endif
 
 #ifdef __cplusplus
 }

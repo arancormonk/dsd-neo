@@ -814,7 +814,7 @@ trunk_scan_save_target_snapshot(dsd_trunk_scan_coord* coord, const dsd_state* st
 }
 
 static dsd_trunk_scan_coord*
-trunk_scan_get(dsd_state* state) {
+trunk_scan_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(dsd_trunk_scan_coord, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
 }
 
@@ -1258,7 +1258,7 @@ dsd_engine_trunk_scan_active_dmr_ctx(void) {
 }
 
 void
-dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, dsd_state* state, uint32_t target,
+dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                 uint32_t source, int is_private, int encrypted, int data_call) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!opts || !state || !coord || coord->count == 0) {

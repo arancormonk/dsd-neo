@@ -18,16 +18,16 @@
 #include <dsd-neo/platform/threading.h>
 
 struct output_state {
-    int rate;
-    float* buffer;
-    size_t capacity;
-    std::atomic<size_t> head;
-    std::atomic<size_t> tail;
+    int rate = 0;
+    float* buffer = nullptr;
+    size_t capacity = 0;
+    std::atomic<size_t> head{0U};
+    std::atomic<size_t> tail{0U};
     dsd_cond_t ready;
     dsd_mutex_t ready_m;
     dsd_cond_t space;
-    std::atomic<uint64_t> write_timeouts; /* producer waited for space */
-    std::atomic<uint64_t> read_timeouts;  /* consumer waited for data */
+    std::atomic<uint64_t> write_timeouts{0U}; /* producer waited for space */
+    std::atomic<uint64_t> read_timeouts{0U};  /* consumer waited for data */
 };
 
 /**

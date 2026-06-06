@@ -513,14 +513,14 @@ typedef struct {
     int iter_idx;
 } p25p2_vpdu_ctx;
 
-static void p25p2_vpdu_emit_json(p25p2_vpdu_ctx* ctx);
+static void p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx);
 static void p25p2_vpdu_lcch_signal_update(p25p2_vpdu_ctx* ctx);
-static int p25p2_vpdu_validate_len_and_warn(p25p2_vpdu_ctx* ctx);
+static int p25p2_vpdu_validate_len_and_warn(const p25p2_vpdu_ctx* ctx);
 static void p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx);
 static int p25p2_vpdu_advance_segment(p25p2_vpdu_ctx* ctx);
 
 static void
-p25p2_vpdu_emit_json(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx) {
     uint8_t mfid = (uint8_t)ctx->mac[2];
     uint8_t opcode = (uint8_t)ctx->mac[1];
     const char* tag = NULL;
@@ -571,7 +571,7 @@ p25p2_vpdu_seen_unknown_len(uint8_t mfid, uint8_t opcode) {
 }
 
 static int
-p25p2_vpdu_validate_len_and_warn(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_validate_len_and_warn(const p25p2_vpdu_ctx* ctx) {
     if (ctx->len_b != 0) {
         return 1;
     }

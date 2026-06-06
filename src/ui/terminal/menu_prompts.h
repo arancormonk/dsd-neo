@@ -14,6 +14,11 @@
 
 #include <stddef.h>
 
+typedef void (*ui_prompt_string_done_fn)(void* user, const char* text);
+typedef void (*ui_prompt_int_done_fn)(void* user, int ok, int value);
+typedef void (*ui_prompt_double_done_fn)(void* user, int ok, double value);
+typedef void (*ui_chooser_done_fn)(void* user, int selected);
+
 // ---- String/Int/Double Prompt API ----
 
 /**
@@ -28,8 +33,10 @@
  * @param on_done  Callback invoked when user completes (text may be NULL on cancel).
  * @param user     User context passed to callback.
  */
-void ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap,
-                                 void (*on_done)(void* user, const char* text), void* user);
+void ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t cap, void* user,
+                                      ui_prompt_string_done_fn on_done);
+#define ui_prompt_open_string_async(title, prefill, cap, on_done, user)                                                \
+    ui_prompt_open_string_async_impl((title), (prefill), (cap), (user), (on_done))
 
 /**
  * @brief Open an integer prompt asynchronously.
@@ -39,7 +46,9 @@ void ui_prompt_open_string_async(const char* title, const char* prefill, size_t 
  * @param cb       Callback invoked with (user, ok, value).
  * @param user     User context passed to callback.
  */
-void ui_prompt_open_int_async(const char* title, int initial, void (*cb)(void* user, int ok, int value), void* user);
+void ui_prompt_open_int_async_impl(const char* title, int initial, void* user, ui_prompt_int_done_fn cb);
+#define ui_prompt_open_int_async(title, initial, cb, user)                                                             \
+    ui_prompt_open_int_async_impl((title), (initial), (user), (cb))
 
 /**
  * @brief Open a double prompt asynchronously.
@@ -49,8 +58,9 @@ void ui_prompt_open_int_async(const char* title, int initial, void (*cb)(void* u
  * @param cb       Callback invoked with (user, ok, value).
  * @param user     User context passed to callback.
  */
-void ui_prompt_open_double_async(const char* title, double initial, void (*cb)(void* user, int ok, double value),
-                                 void* user);
+void ui_prompt_open_double_async_impl(const char* title, double initial, void* user, ui_prompt_double_done_fn cb);
+#define ui_prompt_open_double_async(title, initial, cb, user)                                                          \
+    ui_prompt_open_double_async_impl((title), (initial), (user), (cb))
 
 /**
  * @brief Close all active prompts (forcefully).
@@ -118,7 +128,10 @@ void ui_help_render(void);
  * @param on_done  Callback invoked with selected index (or -1 on cancel).
  * @param user     User context passed to callback.
  */
-void ui_chooser_start(const char* title, const char* const* items, int count, void (*on_done)(void*, int), void* user);
+void ui_chooser_start_impl(const char* title, const char* const* items, int count, void* user,
+                           ui_chooser_done_fn on_done);
+#define ui_chooser_start(title, items, count, on_done, user)                                                           \
+    ui_chooser_start_impl((title), (items), (count), (user), (on_done))
 
 /**
  * @brief Close the chooser overlay.

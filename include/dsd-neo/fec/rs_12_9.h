@@ -42,11 +42,11 @@ typedef struct {
 extern "C" {
 #endif
 
-void rs_12_9_calc_syndrome(rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome);
+void rs_12_9_calc_syndrome(const rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome);
 uint8_t rs_12_9_check_syndrome(const rs_12_9_poly_t* syndrome);
 rs_12_9_correct_errors_result_t rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, const rs_12_9_poly_t* syndrome,
                                                        uint8_t* errors_found);
-rs_12_9_checksum_t* rs_12_9_calc_checksum(rs_12_9_codeword_t* codeword);
+rs_12_9_checksum_t* rs_12_9_calc_checksum(const rs_12_9_codeword_t* codeword);
 
 #ifdef __cplusplus
 }

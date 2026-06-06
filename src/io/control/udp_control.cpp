@@ -21,9 +21,9 @@
 #include <netinet/in.h>
 #endif
 #include <atomic>
+#include <new>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
 #endif
@@ -31,12 +31,12 @@
 #include "dsd-neo/platform/platform.h"
 
 struct udp_control {
-    int port;
-    char bindaddr[64];
-    dsd_socket_t sockfd;
-    dsd_thread_t thread;
-    udp_control_retune_cb cb;
-    std::atomic<int> stop_flag;
+    int port = 0;
+    char bindaddr[64] = {};
+    dsd_socket_t sockfd = DSD_INVALID_SOCKET;
+    dsd_thread_t thread = {};
+    udp_control_retune_cb cb = nullptr;
+    std::atomic<int> stop_flag{0};
 };
 
 /**
@@ -143,7 +143,7 @@ udp_control_start_bound(const char* bindaddr, int udp_port, udp_control_retune_c
 
     (void)dsd_socket_set_recv_timeout(sockfd, 250);
 
-    udp_control* ctrl = static_cast<udp_control*>(malloc(sizeof(udp_control)));
+    udp_control* ctrl = new (std::nothrow) udp_control;
     if (!ctrl) {
         dsd_socket_close(sockfd);
         return NULL;
@@ -157,7 +157,7 @@ udp_control_start_bound(const char* bindaddr, int udp_port, udp_control_retune_c
     int rc = dsd_thread_create(&ctrl->thread, udp_thread_fn, ctrl);
     if (rc != 0) {
         dsd_socket_close(sockfd);
-        free(ctrl);
+        delete ctrl;
         return NULL;
     }
     return ctrl;
@@ -184,5 +184,5 @@ udp_control_stop(udp_control* ctrl) {
         dsd_socket_close(ctrl->sockfd);
         ctrl->sockfd = DSD_INVALID_SOCKET;
     }
-    free(ctrl);
+    delete ctrl;
 }

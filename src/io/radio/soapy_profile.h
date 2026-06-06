@@ -71,7 +71,7 @@ struct SoapyBandwidthChoice {
 };
 
 struct SoapySettingRequest {
-    SoapySettingScope scope;
+    SoapySettingScope scope = SoapySettingScope::Device;
     std::string key;
     std::string value;
 };

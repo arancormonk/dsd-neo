@@ -36,6 +36,8 @@
 
 struct timespec;
 
+int dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func);
+
 static void
 timespec_from_ns(uint64_t ns, struct timespec* ts) {
     if (!ts) {
@@ -50,7 +52,7 @@ timespec_from_ns(uint64_t ns, struct timespec* ts) {
  *============================================================================*/
 
 int
-dsd_thread_create(dsd_thread_t* thread, dsd_thread_fn func, void* arg) {
+dsd_thread_create_impl(dsd_thread_t* thread, void* arg, dsd_thread_fn func) {
     if (!thread || !func) {
         return EINVAL;
     }

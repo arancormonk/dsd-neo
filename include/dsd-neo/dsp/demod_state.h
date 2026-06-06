@@ -17,6 +17,9 @@
 
 #include <dsd-neo/platform/platform.h>
 
+#ifdef __cplusplus
+#include <dsd-neo/core/safe_api.h>
+#endif
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/fsk_modem.h>
@@ -75,6 +78,10 @@ enum DSD_ATTR_PACKED dsd_demod_output_kind {
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 struct demod_state {
+#ifdef __cplusplus
+    demod_state() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
+#endif
+
     /* Large aligned buffers first to minimize padding */
     alignas(64) float hb_i_buf[MAXIMUM_BUF_LENGTH / 2];
     alignas(64) float hb_q_buf[MAXIMUM_BUF_LENGTH / 2];

@@ -24,7 +24,7 @@ extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* o
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_sse2(const float* in, int in_len, float* out, float* hist, const float* taps,
                                         int taps_len);
-#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
+#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL) && DSD_NEO_X86_AVX2_RUNTIME_PROBE_SUPPORTED
 extern "C" void simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                             const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
@@ -316,7 +316,7 @@ simd_fir_init_dispatch() {
 
     /* Perform one-time initialization */
 #if defined(__x86_64__) || defined(_M_X64)
-#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL)
+#if defined(DSD_NEO_DSP_HAVE_AVX2_IMPL) && DSD_NEO_X86_AVX2_RUNTIME_PROBE_SUPPORTED
     if (dsd_neo_cpu_has_avx2_with_os_support()) {
         g_fir_complex_impl = simd_fir_complex_apply_avx2;
         g_hb_decim2_complex_impl = simd_hb_decim2_complex_avx2;

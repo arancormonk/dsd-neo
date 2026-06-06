@@ -63,7 +63,7 @@ typedef void (*dsd_state_ext_cleanup_fn)(void*);
 
 #define DSD_STATE_EXT_GET_AS(type, state, id) ((type*)dsd_state_ext_get((state), (id)))
 
-void* dsd_state_ext_get(dsd_state* state, dsd_state_ext_id id);
+void* dsd_state_ext_get(const dsd_state* state, dsd_state_ext_id id);
 
 const void* dsd_state_ext_get_const(const dsd_state* state, dsd_state_ext_id id);
 

@@ -21,17 +21,17 @@
 
 /* Simple SPSC ring for interleaved I/Q float samples (input path) */
 struct input_ring_state {
-    float* buffer;
-    size_t capacity; /* in float elements */
-    std::atomic<size_t> head;
-    std::atomic<size_t> tail;
+    float* buffer = nullptr;
+    size_t capacity = 0; /* in float elements */
+    std::atomic<size_t> head{0U};
+    std::atomic<size_t> tail{0U};
     dsd_cond_t ready;
     dsd_mutex_t ready_m;
     dsd_cond_t space;
-    std::atomic<int> space_notify_enabled;
-    std::atomic<uint64_t> producer_drops; /* bytes dropped when full */
-    std::atomic<uint64_t> read_timeouts;  /* waits for data */
-    std::atomic<uint64_t> discard_generation;
+    std::atomic<int> space_notify_enabled{0};
+    std::atomic<uint64_t> producer_drops{0U}; /* bytes dropped when full */
+    std::atomic<uint64_t> read_timeouts{0U};  /* waits for data */
+    std::atomic<uint64_t> discard_generation{0U};
 };
 
 /**

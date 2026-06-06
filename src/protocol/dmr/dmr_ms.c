@@ -150,7 +150,7 @@ dmr_ms_decode_embedded_color_code(dsd_state* state, const uint8_t syncdata[48], 
 }
 
 static void
-dmr_ms_dump_dsp_output(const dsd_opts* opts, dsd_state* state) {
+dmr_ms_dump_dsp_output(const dsd_opts* opts, const dsd_state* state) {
     if (opts->use_dsp_output != 1) {
         return;
     }
