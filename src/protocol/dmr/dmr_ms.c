@@ -300,6 +300,25 @@ dmr_ms_decode_bootstrap_voice(dsd_opts* opts, dsd_state* state, dmr_ms_voice_fra
 }
 
 static void
+dmr_ms_dump_bootstrap_debug_burst(const dsd_opts* opts, const dsd_state* state) {
+    if (opts == NULL || state == NULL || opts->dmr_debug_burst == 0) {
+        return;
+    }
+
+    int debug_payload[144];
+    DSD_MEMCPY(debug_payload, state->dmr_stereo_payload, sizeof(debug_payload));
+    for (int i = 48; i < 90; i++) {
+        debug_payload[i] = dmr_ms_apply_inversion(opts, debug_payload[i], 1);
+    }
+
+    char line[192];
+    if (dmr_debug_format_burst_payload(line, sizeof(line), debug_payload, (uint8_t)state->currentslot, 0x10) == 0U) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "%s\n", line);
+}
+
+static void
 dmr_ms_print_bootstrap_sync(const dsd_opts* opts, dsd_state* state, const char timestr[9]) {
     const char* sign = (opts->inverted_dmr == 0) ? "+" : "-";
     if (state->dmr_color_code != 16) {
@@ -345,6 +364,7 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         uint8_t power = dmr_ms_decode_embedded_color_code(state, syncdata, emb_pdu);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr2, 90, 18, 18);
         dmr_ms_fill_ambe_from_stream(opts, state, frames.ambe_fr3, 108, 36, 0);
+        dmr_debug_dump_burst(opts, state, state->currentslot, 0x10);
         dmr_ms_dump_dsp_output(opts, state);
 
         state->dmr_ms_mode = 1;
@@ -389,6 +409,7 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     dmr_ms_prepare_bootstrap_payload(state);
     dmr_ms_collect_bootstrap_cach(opts, state, cachdata);
     dmr_ms_decode_bootstrap_voice(opts, state, &frames);
+    dmr_ms_dump_bootstrap_debug_burst(opts, state);
     dmr_ms_dump_dsp_output(opts, state);
     dmr_ms_print_bootstrap_sync(opts, state, timestr);
 

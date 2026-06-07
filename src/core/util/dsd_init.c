@@ -237,6 +237,7 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     opts->aggressive_framesync = 1;
     /* DMR: strict CRC gating by default (use -F to relax, like other protocols). */
     opts->dmr_crc_relaxed_default = 0;
+    opts->dmr_debug_burst = 0;
     opts->iq_capture_requested = 0;
     opts->iq_replay_requested = 0;
     opts->iq_replay_loop = 0;

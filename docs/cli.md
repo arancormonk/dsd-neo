@@ -7,7 +7,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Help: `dsd-neo -h` | UI/logs: `-N`, `-Z` | List devices: `-O`
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host[:port]] | udp[:bind_addr[:port]] | m17udp[:bind_addr[:port]] | -`
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
-- Record/Logs: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`
+- Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
 - Modes: `-fa | -fs | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
@@ -116,6 +116,43 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--p25-force-release-margin <s>` safety‑net hard margin seconds beyond extra
 - `--p25-p1-err-hold-pct <pct>` P25p1 IMBE error percentage threshold to extend hang
 - `--p25-p1-err-hold-sec <s>` additional seconds to hold when threshold exceeded
+
+## DMR Burst Debugging
+
+`--dmr-debug-burst` emits one console line to stderr for each synced, fully assembled DMR burst. Use it when
+troubleshooting live DMR decode and you need bracketed post-demod no-CACH payload bytes without enabling verbose `-Z`
+payload logging or changing `-Q` OK-DMRlib structured output.
+
+Example:
+
+```sh
+dsd-neo -fs -i rtl:0:450M:26:-2:48:0:2 --dmr-debug-burst
+```
+
+Output format:
+
+```text
+Debug Demod +Sync slot=<1|2> type=0xNN: [AA][BB]...[CC]
+```
+
+Notes:
+
+- The dump is DMR-only and only runs for synced 144-dibit bursts.
+- The byte stream is the 33-byte no-CACH payload range also used by `-Q` DMR output.
+- Voice bursts report `type=0x10`; data bursts use the decoded DMR data burst type.
+- The option writes to stderr only. It does not imply `-Q`, `-Z`, symbol capture, or payload file logging.
+
+Windows console runs:
+
+- A no-argument run still starts the interactive setup when no config is loaded.
+- For a console debug run, pass explicit CLI arguments, for example:
+  `dsd-neo.exe -fs -i tcp --dmr-debug-burst`.
+- To suppress the interactive setup in `cmd.exe`, run `set DSD_NEO_NO_BOOTSTRAP=1` before starting `dsd-neo.exe`.
+- To suppress it in PowerShell, run `$env:DSD_NEO_NO_BOOTSTRAP = "1"` before starting `dsd-neo.exe`.
+- To reuse a saved config, pass `--config "%APPDATA%\dsd-neo\config.ini"` or set
+  `DSD_NEO_CONFIG=%APPDATA%\dsd-neo\config.ini` in `cmd.exe`.
+- In PowerShell, the equivalent config environment variable is
+  `$env:DSD_NEO_CONFIG = "$env:APPDATA\dsd-neo\config.ini"`.
 
 ## Recording & Files
 

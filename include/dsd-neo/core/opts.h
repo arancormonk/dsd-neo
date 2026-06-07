@@ -228,6 +228,7 @@ struct dsd_opts {
     /* DMR: when set, relax CRC gating (ignore final CRC when no irrecoverable errors).
        Off by default; enabled via -F like other protocols. */
     uint8_t dmr_crc_relaxed_default;
+    uint8_t dmr_debug_burst;
     uint8_t call_alert_events;
     int frame_ysf;
     int inverted_ysf;

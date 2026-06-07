@@ -12,11 +12,17 @@
 //Hamming17123, crc7, crc8, crc8ok functions
 //Original Souce - https://github.com/boatbod/op25
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/rs_12_9.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 typedef struct {
     uint8_t syndrome;
@@ -39,6 +45,75 @@ dmr_hamming17123_apply_correction(uint8_t* d, uint8_t syndrome) {
         }
     }
     return false;
+}
+
+static uint8_t
+dmr_debug_payload_nibble(const int payload[144], size_t no_cach_nibble_index) {
+    const size_t dibit_pair_index = 6U + no_cach_nibble_index;
+    const size_t payload_index = dibit_pair_index * 2U;
+    const uint8_t hi = (uint8_t)(payload[payload_index] & 0x03);
+    const uint8_t lo = (uint8_t)(payload[payload_index + 1U] & 0x03);
+    return (uint8_t)((hi << 2U) | lo);
+}
+
+size_t
+dmr_debug_format_burst_payload(char* out, size_t out_size, const int payload[144], uint8_t slot_index,
+                               uint8_t burst_type) {
+    if (out == NULL || out_size == 0U || payload == NULL || slot_index > 1U) {
+        return 0U;
+    }
+
+    int n = DSD_SNPRINTF(out, out_size, "Debug Demod +Sync slot=%u type=0x%02X: ", (unsigned int)slot_index + 1U,
+                         (unsigned int)burst_type);
+    if (n < 0) {
+        out[0] = '\0';
+        return 0U;
+    }
+
+    size_t pos = (size_t)n;
+    if (pos >= out_size) {
+        out[out_size - 1U] = '\0';
+        return pos;
+    }
+
+    for (size_t byte_index = 0; byte_index < 33U; byte_index++) {
+        const uint8_t hi = dmr_debug_payload_nibble(payload, byte_index * 2U);
+        const uint8_t lo = dmr_debug_payload_nibble(payload, (byte_index * 2U) + 1U);
+        const uint8_t byte = (uint8_t)((hi << 4U) | lo);
+        n = DSD_SNPRINTF(out + pos, out_size - pos, "[%02X]", (unsigned int)byte);
+        if (n < 0) {
+            out[pos] = '\0';
+            return pos;
+        }
+        pos += (size_t)n;
+        if (pos >= out_size) {
+            out[out_size - 1U] = '\0';
+            return pos;
+        }
+    }
+
+    return pos;
+}
+
+size_t
+dmr_debug_format_burst(char* out, size_t out_size, const dsd_state* state, uint8_t slot_index, uint8_t burst_type) {
+    if (state == NULL) {
+        return 0U;
+    }
+    return dmr_debug_format_burst_payload(out, out_size, state->dmr_stereo_payload, slot_index, burst_type);
+}
+
+void
+dmr_debug_dump_burst(const dsd_opts* opts, const dsd_state* state, uint8_t slot_index, uint8_t burst_type) {
+    if (opts == NULL || state == NULL || opts->dmr_debug_burst == 0 || slot_index > 1U) {
+        return;
+    }
+
+    char line[192];
+    if (dmr_debug_format_burst(line, sizeof(line), state, slot_index, burst_type) == 0U) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "%s\n", line);
 }
 
 uint16_t

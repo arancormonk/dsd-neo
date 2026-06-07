@@ -3834,6 +3834,14 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_dmr_bit_utils PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_BIT_UTILS COMMAND dsd-neo_test_dmr_bit_utils)
 
+add_executable(dsd-neo_test_dmr_debug_burst protocol/dmr/test_dmr_debug_burst.c)
+target_include_directories(
+    dsd-neo_test_dmr_debug_burst
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_dmr_debug_burst PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_DEBUG_BURST COMMAND dsd-neo_test_dmr_debug_burst)
+
 add_executable(
     dsd-neo_test_dmr_confirmed_crc9
     protocol/dmr/test_dmr_confirmed_crc9.c

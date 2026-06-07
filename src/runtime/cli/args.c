@@ -863,6 +863,10 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             rdio_api_delete_after_upload_cli = 1;                                                                      \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-debug-burst") == 0) {                                                               \
+            opts->dmr_debug_burst = 1;                                                                                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--dmr-baofeng-pc5") == 0) {                                                               \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--dmr-baofeng-pc5 requires a hex key value\n");                                             \
