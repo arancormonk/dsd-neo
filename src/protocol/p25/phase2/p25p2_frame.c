@@ -199,7 +199,8 @@ p25p2_frame_set_enc_lockout_marker(dsd_state* state, int slot, int muted) {
     state->p25_p2_enc_lockout_muted[slot] = (uint8_t)(muted ? 1U : 0U);
 }
 
-static void
+// Reached through 2V/4V voice-frame dispatch; keep visible to analyzer builds.
+static void DSD_ATTR_USED
 p25p2_frame_apply_encrypted_lockout(dsd_opts* opts, dsd_state* state, int slot) {
     if (!opts || !state || slot < 0 || slot > 1) {
         return;

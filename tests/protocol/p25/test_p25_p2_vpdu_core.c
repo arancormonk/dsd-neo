@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -198,7 +199,7 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
 
 static int
 write_full_sccb_cache_fixture(const char* path, long first_freq) {
-    FILE* fp = fopen(path, "w");
+    FILE* fp = dsd_fopen_private(path, "w");
     if (!fp) {
         DSD_FPRINTF(stderr, "failed to write SCCB cache fixture: %s\n", strerror(errno));
         return 0;
