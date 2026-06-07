@@ -407,6 +407,8 @@ void
 dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     dmr_data_sync_ctx ctx;
     dmr_data_sync_init_ctx(&ctx, opts, state);
+    char debug_line[192];
+    debug_line[0] = '\0';
 
     if (dmr_data_collect_cach(&ctx)) {
         dmr_data_collect_first_half(&ctx);
@@ -414,9 +416,15 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
         dmr_data_collect_sync(&ctx);
         if (dmr_data_collect_slot_type_suffix(&ctx)) {
             dmr_data_collect_second_half(&ctx);
+            if (opts->dmr_debug_burst != 0) {
+                (void)dmr_debug_format_burst(debug_line, sizeof(debug_line), state, state->currentslot, ctx.burst);
+            }
             dmr_data_dispatch_burst(&ctx);
         }
     }
 
     dmr_data_finalize(opts, state, ctx.SlotTypeOk, ctx.cach_okay);
+    if (debug_line[0] != '\0') {
+        DSD_FPRINTF(stderr, "%s\n", debug_line);
+    }
 }

@@ -113,6 +113,25 @@ test_vendor_privacy_long_opts_are_removed(void) {
 }
 
 static int
+test_dmr_debug_burst_long_option_is_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-debug-burst";
+    char arg2[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int new_argc = dsd_cli_compact_args(3, argv);
+    if (new_argc != 2) {
+        DSD_FPRINTF(stderr, "expected new_argc=2, got %d\n", new_argc);
+        return 1;
+    }
+    if (argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        DSD_FPRINTF(stderr, "expected argv[1] to be \"-fi\", got \"%s\"\n", argv[1] ? argv[1] : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_rtl_udp_control_consumes_port_and_leaves_short_opts(void) {
     char arg0[] = "dsd-neo";
     char arg1[] = "--rtl-udp-control";
@@ -283,6 +302,7 @@ main(void) {
     rc |= test_config_equals_form_is_removed();
     rc |= test_frame_log_consumes_path_and_leaves_short_opts();
     rc |= test_vendor_privacy_long_opts_are_removed();
+    rc |= test_dmr_debug_burst_long_option_is_removed();
     rc |= test_rtl_udp_control_consumes_port_and_leaves_short_opts();
     rc |= test_rtl_udp_control_missing_port_does_not_consume_next_option();
     rc |= test_rtl_udp_control_bind_consumes_address_and_leaves_short_opts();

@@ -42,6 +42,7 @@ static const char* const k_skip_exact_no_arg[] = {
     "--auto-ppm",          "--rtltcp-autotune",      "--iq-loop",       "--rdio-api-delete-after-upload",
     "--enc-lockout",       "--enc-follow",           "--no-config",     "--print-config",
     "--interactive-setup", "--dump-config-template", "--strict-config", "--list-profiles",
+    "--dmr-debug-burst",
 };
 
 static const char* const k_skip_exact_next_any[] = {

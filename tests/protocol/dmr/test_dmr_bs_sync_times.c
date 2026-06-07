@@ -187,6 +187,14 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
     (void)databurst;
 }
 
+void
+dmr_debug_dump_burst(const dsd_opts* opts, const dsd_state* state, uint8_t slot_index, uint8_t burst_type) {
+    (void)opts;
+    (void)state;
+    (void)slot_index;
+    (void)burst_type;
+}
+
 uint8_t
 dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]) {
     (void)opts;
