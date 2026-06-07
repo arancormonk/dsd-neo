@@ -23,12 +23,12 @@ ui_snr_mod_label(int rf_mod) {
     return "C4FM";
 }
 
+#ifdef USE_RADIO
 static int
 ui_snr_value_is_valid(double snr) {
     return snr > (double)UI_SNR_INVALID_DB;
 }
 
-#ifdef USE_RADIO
 enum {
     UI_SNR_STALE_THRESHOLD_CDB = 5, /* 0.05 dB in centi-dB */
     UI_SNR_STALE_LIMIT = 40

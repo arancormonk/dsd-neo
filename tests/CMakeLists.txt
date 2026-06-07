@@ -945,6 +945,20 @@ target_link_libraries(
 )
 add_test(NAME UI_SNR_READOUT COMMAND dsd-neo_test_ui_snr_readout)
 
+add_executable(
+    dsd-neo_test_ui_snr_readout_no_radio
+    ui/test_ui_snr_readout_no_radio.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snr_readout.c
+)
+target_include_directories(
+    dsd-neo_test_ui_snr_readout_no_radio
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
+)
+add_test(
+    NAME UI_SNR_READOUT_NO_RADIO
+    COMMAND dsd-neo_test_ui_snr_readout_no_radio
+)
+
 if(NOT DSD_HAS_PDCURSES_WIDE_API)
     add_executable(
         dsd-neo_test_ui_snr_meter_pdc_wide_no_api
