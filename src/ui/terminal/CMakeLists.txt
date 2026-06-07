@@ -8,6 +8,7 @@ target_sources(
         dsd_ncurses_printer.c
         ncurses_utils.c
         ncurses_snr.c
+        ui_snr_readout.c
         ncurses_init.c
         ncurses_dsp_display.c
         ncurses_visualizers.c

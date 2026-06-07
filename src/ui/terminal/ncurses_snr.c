@@ -75,6 +75,8 @@ snr_meter_bar_count(double snr_db) {
 }
 
 #ifdef PRETTY_COLORS
+enum { SNR_METER_COLOR_PAIR = 6 };
+
 static short
 snr_quality_color_pair(double snr_db, int mod) {
     const short C_GOOD = 11, C_MOD = 12, C_POOR = 13;
@@ -277,6 +279,7 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
 /* Render a compact ascending signal-bar meter for current SNR. */
 void
 print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
+    (void)mod;
     /* Preserve the current color pair so our temporary colors don't clear it */
 #ifdef PRETTY_COLORS
     attr_t saved_attrs = 0;
@@ -286,9 +289,7 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     const int bars = snr_meter_bar_count(snr_db);
     int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_unicode_supported());
 #ifdef PRETTY_COLORS
-    short cp = snr_quality_color_pair(snr_db, mod);
-#else
-    (void)mod;
+    short cp = SNR_METER_COLOR_PAIR;
 #endif
     for (int i = 0; i < SNR_METER_BARS; i++) {
         if (i > 0) {

@@ -47,13 +47,13 @@
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "ui_snr_readout.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ncurses_snr.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
-#include <math.h>
 #endif
 
 static int
@@ -976,136 +976,6 @@ ui_render_audio_decode_header_fields(dsd_opts* opts, const dsd_state* state) {
     }
 }
 
-#ifdef USE_RADIO
-enum {
-    UI_SNR_INVALID_DB = -50,
-    UI_SNR_STALE_THRESHOLD_CDB = 5, /* 0.05 dB in centi-dB */
-    UI_SNR_STALE_LIMIT = 40
-};
-
-static double
-ui_snr_get_c4fm_value(void) {
-    static double last_c4_snr = -999.0;
-    static int last_c4_stable = 0;
-
-    double snr = rtl_stream_get_snr_c4fm();
-    if (snr <= (double)UI_SNR_INVALID_DB) {
-        double fb = rtl_stream_estimate_snr_c4fm_eye();
-        if (fb > (double)UI_SNR_INVALID_DB) {
-            snr = fb;
-            last_c4_stable = 0;
-        }
-        return snr;
-    }
-
-    int delta_cdb = (int)(fabs(snr - last_c4_snr) * 100.0);
-    if (delta_cdb < UI_SNR_STALE_THRESHOLD_CDB) {
-        if (++last_c4_stable >= UI_SNR_STALE_LIMIT) {
-            double fb = rtl_stream_estimate_snr_c4fm_eye();
-            if (fb > (double)UI_SNR_INVALID_DB) {
-                snr = fb;
-            }
-            last_c4_stable = 0;
-        }
-    } else {
-        last_c4_stable = 0;
-    }
-    last_c4_snr = snr;
-    return snr;
-}
-
-static double
-ui_snr_get_qpsk_value(void) {
-    static double last_qp_snr = -999.0;
-    static int last_qp_stable = 0;
-
-    double snr = rtl_stream_get_snr_cqpsk();
-    if (snr <= (double)UI_SNR_INVALID_DB) {
-        double fb = rtl_stream_estimate_snr_qpsk_const();
-        if (fb > (double)UI_SNR_INVALID_DB) {
-            snr = fb;
-            last_qp_stable = 0;
-        } else {
-            double snr_c = rtl_stream_get_snr_c4fm();
-            double snr_g = rtl_stream_get_snr_gfsk();
-            double snr_fb = (snr_c > snr_g) ? snr_c : snr_g;
-            if (snr_fb > (double)UI_SNR_INVALID_DB) {
-                snr = snr_fb;
-            }
-        }
-        return snr;
-    }
-
-    int delta_cdb = (int)(fabs(snr - last_qp_snr) * 100.0);
-    if (delta_cdb < UI_SNR_STALE_THRESHOLD_CDB) {
-        if (++last_qp_stable >= UI_SNR_STALE_LIMIT) {
-            double fb = rtl_stream_estimate_snr_qpsk_const();
-            if (fb > (double)UI_SNR_INVALID_DB) {
-                snr = fb;
-            }
-            last_qp_stable = 0;
-        }
-    } else {
-        last_qp_stable = 0;
-    }
-    last_qp_snr = snr;
-    return snr;
-}
-
-static double
-ui_snr_get_gfsk_value(void) {
-    static double last_gf_snr = -999.0;
-    static int last_gf_stable = 0;
-
-    double snr = rtl_stream_get_snr_gfsk();
-    if (snr <= (double)UI_SNR_INVALID_DB) {
-        double fb = rtl_stream_estimate_snr_gfsk_eye();
-        if (fb > (double)UI_SNR_INVALID_DB) {
-            snr = fb;
-            last_gf_stable = 0;
-        }
-        return snr;
-    }
-
-    int delta_cdb = (int)(fabs(snr - last_gf_snr) * 100.0);
-    if (delta_cdb < UI_SNR_STALE_THRESHOLD_CDB) {
-        if (++last_gf_stable >= UI_SNR_STALE_LIMIT) {
-            double fb = rtl_stream_estimate_snr_gfsk_eye();
-            if (fb > (double)UI_SNR_INVALID_DB) {
-                snr = fb;
-            }
-            last_gf_stable = 0;
-        }
-    } else {
-        last_gf_stable = 0;
-    }
-    last_gf_snr = snr;
-    return snr;
-}
-
-static const char*
-ui_snr_mod_label(int rf_mod) {
-    if (rf_mod == 1) {
-        return "QPSK";
-    }
-    if (rf_mod == 2) {
-        return "GFSK";
-    }
-    return "C4FM";
-}
-
-static double
-ui_snr_value_for_mod(int rf_mod) {
-    if (rf_mod == 1) {
-        return ui_snr_get_qpsk_value();
-    }
-    if (rf_mod == 2) {
-        return ui_snr_get_gfsk_value();
-    }
-    return ui_snr_get_c4fm_value();
-}
-#endif
-
 static void
 ui_render_demod_snr_line(const dsd_opts* opts, const dsd_state* state) {
     if (opts == NULL || state == NULL) {
@@ -1116,18 +986,18 @@ ui_render_demod_snr_line(const dsd_opts* opts, const dsd_state* state) {
     /* Demod SNR (per modulation) */
 #ifdef USE_RADIO
     {
-        double snr = ui_snr_value_for_mod(state->rf_mod);
-        const char* m = ui_snr_mod_label(state->rf_mod);
-        if (snr > (double)UI_SNR_INVALID_DB) {
+        ui_snr_readout snr = ui_snr_readout_for_mod(state->rf_mod);
+        const char* m = snr.mod_label;
+        if (snr.valid) {
             /* Show current SNR as a compact, colorized meter */
             char snr_value[16];
-            if (DSD_SNPRINTF(snr_value, sizeof(snr_value), "%.1f", snr) < 0) {
+            if (DSD_SNPRINTF(snr_value, sizeof(snr_value), "%.1f", snr.snr_db) < 0) {
                 snr_value[0] = '\0';
             }
             ui_print_snr_db_field(snr_value);
             addch(' ');
             /* Pass current modulation for per-mod color bands */
-            print_snr_meter(opts, snr, state->rf_mod);
+            print_snr_meter(opts, snr.snr_db, state->rf_mod);
             printw(" (%s)", m);
         } else {
             /* Show placeholder so users can see the field even when no estimate */
