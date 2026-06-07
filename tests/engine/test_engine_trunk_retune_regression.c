@@ -297,6 +297,10 @@ main(void) {
     state->p25_cc_freq = 0;
     state->trunk_vc_freq[0] = 852000000;
     state->trunk_vc_freq[1] = 852000000;
+    state->p25_p2_audio_allowed[0] = 1;
+    state->p25_p2_audio_allowed[1] = 1;
+    state->p25_p2_enc_lockout_muted[0] = 1;
+    state->p25_p2_enc_lockout_muted[1] = 1;
     state->last_cc_sync_time = 0;
     state->last_cc_sync_time_m = 0.0;
     DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "left active");
@@ -319,6 +323,10 @@ main(void) {
     assert(opts->p25_is_tuned == 0);
     assert(state->trunk_vc_freq[0] == 0);
     assert(state->trunk_vc_freq[1] == 0);
+    assert(state->p25_p2_audio_allowed[0] == 0);
+    assert(state->p25_p2_audio_allowed[1] == 0);
+    assert(state->p25_p2_enc_lockout_muted[0] == 0);
+    assert(state->p25_p2_enc_lockout_muted[1] == 0);
     assert(strcmp(state->call_string[0], "                     ") == 0);
     assert(strcmp(state->call_string[1], "                     ") == 0);
     assert(state->active_channel[0][0] == '\0');

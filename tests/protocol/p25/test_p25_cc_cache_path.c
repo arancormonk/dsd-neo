@@ -7,12 +7,15 @@
  * Control-channel cache path formatting tests.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
@@ -35,6 +38,30 @@ expect_eq_int(const char* tag, int got, int want) {
         return 1;
     }
     return 0;
+}
+
+static int
+expect_eq_long(const char* tag, long got, long want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+write_cache_fixture(const char* path) {
+    FILE* fp = fopen(path, "w");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "failed to write cache fixture: %s\n", strerror(errno));
+        return 0;
+    }
+    DSD_FPRINTF(fp, "851111111\n");
+    DSD_FPRINTF(fp, "cc 851222222\n");
+    DSD_FPRINTF(fp, "  cc\t851333333\n");
+    DSD_FPRINTF(fp, "notcc 851444444\n");
+    fclose(fp);
+    return 1;
 }
 
 int
@@ -75,6 +102,26 @@ main(void) {
     DSD_SNPRINTF(want2, sizeof want2, "%s/p25_cc_%05lX_%03lX_R%03llu_S%03llu.txt", dir, (unsigned long)st.p2_wacn,
                  (unsigned long)st.p2_sysid, st.p2_rfssid, st.p2_siteid);
     rc |= expect_eq_str("rfss/site path", out, want2);
+
+    if (!write_cache_fixture(out)) {
+        return 101;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    p25_cc_try_load_cache(&opts, &st);
+
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&st);
+    rc |= expect_eq_int("marked cache loaded", st.p25_cc_cache_loaded, 1);
+    rc |= expect_eq_int("loaded marked candidates only", cc ? cc->count : 0, 2);
+    if (cc && cc->count == 2) {
+        rc |= expect_eq_long("loaded cache candidate 0", cc->candidates[0], 851222222L);
+        rc |= expect_eq_long("loaded cache candidate 1", cc->candidates[1], 851333333L);
+        rc |= expect_eq_int("loaded cache candidate 0 flag", (cc->flags[0] & DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) != 0,
+                            1);
+        rc |= expect_eq_int("loaded cache candidate 1 flag", (cc->flags[1] & DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) != 0,
+                            1);
+    }
 
     return rc;
 }

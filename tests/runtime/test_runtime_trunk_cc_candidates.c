@@ -23,6 +23,7 @@ test_add_dedup_rollover(void) {
     assert(cc != NULL);
     assert(cc->count == 1);
     assert(cc->candidates[0] == 100);
+    assert((cc->flags[0] & DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) != 0);
     assert(cc->added == 0);
 
     assert(dsd_trunk_cc_candidates_add(st, 100, 1) == 0);
@@ -32,6 +33,7 @@ test_add_dedup_rollover(void) {
     assert(cc->count == 2);
     assert(cc->candidates[0] == 100);
     assert(cc->candidates[1] == 200);
+    assert((cc->flags[1] & DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) != 0);
     assert(cc->added == 1);
 
     dsd_state* st2 = calloc(1, sizeof(*st2));
@@ -55,6 +57,28 @@ test_add_dedup_rollover(void) {
 
     dsd_state_ext_free_all(st2);
     free(st2);
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
+static void
+test_filtered_iteration(void) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+
+    assert(dsd_trunk_cc_candidates_add_with_flags(st, 300, 0, 0) == 1);
+    long out = 0;
+    assert(dsd_trunk_cc_candidates_next_with_flags(st, 0.0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, &out) == 0);
+
+    out = 0;
+    assert(dsd_trunk_cc_candidates_next(st, 0.0, &out) == 1);
+    assert(out == 300);
+
+    assert(dsd_trunk_cc_candidates_add_with_flags(st, 300, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 0);
+    out = 0;
+    assert(dsd_trunk_cc_candidates_next_with_flags(st, 0.0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, &out) == 1);
+    assert(out == 300);
+
     dsd_state_ext_free_all(st);
     free(st);
 }
@@ -107,6 +131,7 @@ test_next_and_cooldown(void) {
 int
 main(void) {
     test_add_dedup_rollover();
+    test_filtered_iteration();
     test_next_and_cooldown();
     return 0;
 }

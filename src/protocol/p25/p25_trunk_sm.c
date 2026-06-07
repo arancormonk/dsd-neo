@@ -818,6 +818,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
         // Even when encrypted calls are permitted, keep the gate aligned with
         // the current media policy so allow-list/TG-hold blocks are not reopened.
         state->p25_p2_audio_allowed[slot] = allow_audio;
+        state->p25_p2_enc_lockout_muted[slot] = 0;
         return;
     }
 
@@ -830,6 +831,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     // policy; do not reopen slots that the caller already blocked.
     if (can_decrypt) {
         state->p25_p2_audio_allowed[slot] = allow_audio;
+        state->p25_p2_enc_lockout_muted[slot] = 0;
         return;
     }
 
@@ -842,6 +844,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
 
     // Gate audio for this slot
     state->p25_p2_audio_allowed[slot] = 0;
+    state->p25_p2_enc_lockout_muted[slot] = 1;
     p25_p2_audio_ring_reset(state, slot);
 
     // Clear voice activity indicator to prevent audio routing logic from
@@ -935,6 +938,8 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->payload_keyidR = 0;
         state->payload_miP = 0;
         state->payload_miN = 0;
+        state->p25_p2_enc_lockout_muted[0] = 0;
+        state->p25_p2_enc_lockout_muted[1] = 0;
         state->p25_sm_release_count++;
     }
     if (opts) {
@@ -998,7 +1003,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 // Get next CC candidate (with cooldown check)
 static int
 next_cc_candidate(dsd_state* state, long* out_freq, double now_m) {
-    return dsd_trunk_cc_candidates_next(state, now_m, out_freq);
+    return dsd_trunk_cc_candidates_next_with_flags(state, now_m, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, out_freq);
 }
 
 // Get next LCN frequency from user-provided list
@@ -1690,6 +1695,9 @@ p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algi
 
     // Update audio gating in state (single source of truth)
     state->p25_p2_audio_allowed[s] = slot_can_decrypt(state, s, algid) ? 1 : 0;
+    if (state->p25_p2_audio_allowed[s] != 0) {
+        state->p25_p2_enc_lockout_muted[s] = 0;
+    }
 }
 
 /* ============================================================================

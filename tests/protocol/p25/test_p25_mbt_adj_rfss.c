@@ -247,8 +247,9 @@ main(void) {
     }
 
     // Case B: Adjacent Status Broadcast (0x3C)
-    // After Layer 2 enrichment, 0x3C calls p25_nb_add_ex() + p25_cc_add_candidate()
-    // directly instead of p25_sm_on_neighbor_update(). Verify via neighbor table.
+    // After Layer 2 enrichment, 0x3C records adjacent-site metadata via
+    // p25_nb_add_ex() without promoting the frequency to a tuneable current-site
+    // CC candidate. Verify via neighbor table.
     // CHAN-R is the uplink side of the explicit channel and must not become
     // a separate downlink CC candidate.
     {

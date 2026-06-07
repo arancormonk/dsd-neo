@@ -6,7 +6,7 @@
 /*
  * P25 next CC candidate edge cases.
  * - Returns 0 when empty list
- * - Returns 0 when only current CC or zeros present
+ * - Returns 0 when only current CC, zeros, or generic neighbors are present
  */
 
 #include <dsd-neo/core/opts.h>
@@ -82,6 +82,10 @@ main(void) {
     p25_sm_on_neighbor_update(&opts, &st, neigh, 4);
     rc |= expect_eq_int("cc-only", p25_sm_next_cc_candidate(&st, &out), 0);
     rc |= expect_eq_int("cc-only-lcn-count", st.lcn_freq_count, 1);
+
+    long neighbor_only[1] = {852000000};
+    p25_sm_on_neighbor_update(&opts, &st, neighbor_only, 1);
+    rc |= expect_eq_int("neighbor-only", p25_sm_next_cc_candidate(&st, &out), 0);
     return rc;
 }
 

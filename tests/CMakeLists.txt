@@ -2976,6 +2976,24 @@ add_test(
     COMMAND dsd-neo_test_p25_p2_2v_first_frame_gate
 )
 
+# P25 P2 service-option lockout should not release before ESS resolves ALGID
+add_executable(
+    dsd-neo_test_p25_p2_frame_lockout_sm
+    protocol/p25/test_p25_p2_frame_lockout_sm.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_frame_lockout_sm
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_frame_lockout_sm
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_P2_FRAME_LOCKOUT_SM
+    COMMAND dsd-neo_test_p25_p2_frame_lockout_sm
+)
+
 # P25 P2 mid-call ENC flush behavior: ensure per-slot jitter buffer flush
 add_executable(
     dsd-neo_test_p25_p2_midcall_enc_flush

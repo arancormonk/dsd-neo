@@ -343,9 +343,58 @@ dsd_apply_dual_tg_audio_gate(const dsd_opts* opts, const dsd_state* state, int* 
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, *encL, *encR, encL, encR);
 }
 
+static int
+dsd_p25p2_slot_marked_encrypted(const dsd_state* state, int slot) {
+    int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    if (algid == 0x80) {
+        return 0;
+    }
+    if (algid != 0) {
+        return 1;
+    }
+    int svc = (slot == 0) ? state->dmr_so : state->dmr_soR;
+    return (svc & 0x40) != 0;
+}
+
+static int
+dsd_p25p2_slot_has_decrypt_key(const dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+
+    int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    if (algid == 0 || algid == 0x80) {
+        return 0;
+    }
+
+    unsigned long long key = (slot == 0) ? state->R : state->RR;
+    if ((algid == 0xAA || algid == 0x81 || algid == 0x9F) && key != 0ULL) {
+        return 1;
+    }
+    if ((algid == 0x84 || algid == 0x89) && state->aes_key_loaded[slot] == 1) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
+dsd_p25p2_encrypted_lockout_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, int muted) {
+    if (!opts || !state || slot < 0 || slot > 1 || !muted || opts->trunk_tune_enc_calls != 0) {
+        return 0;
+    }
+    if (state->p25_p2_enc_lockout_muted[slot] != 0) {
+        return 1;
+    }
+    return dsd_p25p2_slot_marked_encrypted(state, slot) && !dsd_p25p2_slot_has_decrypt_key(state, slot);
+}
+
 static void
-dsd_duplicate_active_float_quad_to_stereo(float stereo[4][320], int* encL, int* encR) {
+dsd_duplicate_active_float_quad_to_stereo(const dsd_opts* opts, const dsd_state* state, float stereo[4][320], int* encL,
+                                          int* encR) {
     if (!*encL && *encR) {
+        if (dsd_p25p2_encrypted_lockout_slot_muted(opts, state, 1, *encR)) {
+            return;
+        }
         for (int j = 0; j < 4; j++) {
             for (int i = 0; i < 320; i += 2) {
                 stereo[j][i + 1] = stereo[j][i + 0];
@@ -355,6 +404,9 @@ dsd_duplicate_active_float_quad_to_stereo(float stereo[4][320], int* encL, int* 
         return;
     }
     if (*encL && !*encR) {
+        if (dsd_p25p2_encrypted_lockout_slot_muted(opts, state, 0, *encL)) {
+            return;
+        }
         for (int j = 0; j < 4; j++) {
             for (int i = 0; i < 320; i += 2) {
                 stereo[j][i + 0] = stereo[j][i + 1];
@@ -568,8 +620,11 @@ dsd_p25p2_apply_slot_preference_ss18(dsd_opts* opts, const dsd_state* state, uns
 }
 
 static int
-dsd_ss18_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, int encR) {
+dsd_ss18_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, int encL, int encR) {
     if (encR != 0) {
+        return 0;
+    }
+    if (dsd_p25p2_encrypted_lockout_slot_muted(opts, state, 0, encL)) {
         return 0;
     }
     if (opts->slot1_on == 0 && opts->slot2_on == 1) {
@@ -585,8 +640,11 @@ dsd_ss18_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state,
 }
 
 static int
-dsd_ss18_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, int encL) {
+dsd_ss18_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, int encL, int encR) {
     if (encL != 0) {
+        return 0;
+    }
+    if (dsd_p25p2_encrypted_lockout_slot_muted(opts, state, 1, encR)) {
         return 0;
     }
     if (opts->slot1_on == 1 && opts->slot2_on == 0) {
@@ -609,9 +667,9 @@ dsd_p25p2_apply_stereo_output_policy_ss18(const dsd_opts* opts, dsd_state* state
     if (encR) {
         DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
     }
-    if (dsd_ss18_should_copy_right_to_left(opts, state, encR)) {
+    if (dsd_ss18_should_copy_right_to_left(opts, state, encL, encR)) {
         DSD_MEMCPY(state->s_l4, state->s_r4, sizeof(state->s_l4));
-    } else if (dsd_ss18_should_copy_left_to_right(opts, state, encL)) {
+    } else if (dsd_ss18_should_copy_left_to_right(opts, state, encL, encR)) {
         DSD_MEMCPY(state->s_r4, state->s_l4, sizeof(state->s_r4));
     }
 }
@@ -772,7 +830,7 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     dsd_fs4_pop_gain_frames(opts, state, lf, rf, l_ok, r_ok);
     dsd_fs4_mix_interleaved_frames(lf, rf, encL, encR, l_ok, r_ok, stereo);
-    dsd_duplicate_active_float_quad_to_stereo(stereo, &encL, &encR);
+    dsd_duplicate_active_float_quad_to_stereo(opts, state, stereo, &encL, &encR);
 
     if (encL && encR) {
         goto END_FS4;

@@ -633,6 +633,8 @@ struct dsd_state {
     int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
+    // P25p2 per-slot encrypted lockout mute marker for mixer suppression after service bits are cleared.
+    uint8_t p25_p2_enc_lockout_muted[2];
     // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
     // Depth DSD_P25_P2_AUDIO_RING_DEPTH to match drain behavior (~80 ms max at depth=4)
     float p25_p2_audio_ring[2][DSD_P25_P2_AUDIO_RING_DEPTH][160];

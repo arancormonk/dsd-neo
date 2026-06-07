@@ -5,13 +5,13 @@
 
 /*
  * P25 neighbor update spam test: stress p25_sm_on_neighbor_update with
- * many updates and assert CC candidate list remains bounded and
- * iteration via p25_sm_next_cc_candidate stays consistent.
+ * many updates and assert neighbors do not become tuneable CC candidates.
  */
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -108,10 +108,7 @@ main(void) {
             }
         }
         p25_sm_on_neighbor_update(&opts, &st, f, n);
-        // Count should never exceed 16
-        const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&st);
-        const int count = cc ? cc->count : 0;
-        rc |= expect_true("cand<=16", count >= 0 && count <= DSD_TRUNK_CC_CANDIDATES_MAX);
+        rc |= expect_true("neighbor<=max", st.p25_nb_count >= 0 && st.p25_nb_count <= P25_NB_MAX);
     }
 
     // Timing end and guard: ensure this remains snappy
@@ -124,28 +121,19 @@ main(void) {
     rc |= expect_true("neighbor-spam-fast", elapsed_ms < 200.0);
 #endif
 
-    // Next-candidate iteration should cycle through at most count entries and
-    // never return 0 or the current CC.
+    // Generic neighbor updates must not seed the CC hunt list. Only validated
+    // current-site candidates should be tuneable by p25_sm_next_cc_candidate().
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&st);
     const int count = cc ? cc->count : 0;
-    if (count > 0) {
-        int seen_nonzero = 0;
-        long last = -1;
-        for (int i = 0; i < count * 3; i++) {
-            long out = 0;
-            int ok = p25_sm_next_cc_candidate(&st, &out);
-            rc |= expect_true("next->ok", ok == 1);
-            rc |= expect_true("next->nonzero", out != 0);
-            rc |= expect_true("next->neq-cc", out != st.p25_cc_freq);
-            // do a weak monotonicity sanity: not all calls must differ, but should
-            // make progress across multiple calls
-            if (last != out) {
-                seen_nonzero = 1;
-            }
-            last = out;
-        }
-        rc |= expect_true("progress", seen_nonzero);
-    }
+    rc |= expect_true("neighbor-not-candidates", count == 0);
+
+    long out = 0;
+    rc |= expect_true("neighbor-next-empty", p25_sm_next_cc_candidate(&st, &out) == 0);
+
+    (void)p25_cc_add_candidate(&st, 852500000L, 1);
+    out = 0;
+    rc |= expect_true("validated-next-ok", p25_sm_next_cc_candidate(&st, &out) == 1);
+    rc |= expect_true("validated-next-freq", out == 852500000L);
 
     return rc;
 }

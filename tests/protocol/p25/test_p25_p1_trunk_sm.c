@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdbool.h>
@@ -104,21 +105,22 @@ main(int argc, char** argv) {
     rc |= expect_eq("init tune_count", state.p25_sm_tune_count, 0);
     rc |= expect_eq("init release_count", state.p25_sm_release_count, 0);
 
-    // Neighbor update supplies two CC candidates
-    long neigh[3] = {851012500, 851537500, 0};
-    p25_sm_on_neighbor_update(&opts, &state, neigh, 2);
+    // Validated current-site updates supply two CC candidates.
+    long cc_candidates[3] = {851012500, 851537500, 0};
+    (void)p25_cc_add_candidate(&state, cc_candidates[0], 1);
+    (void)p25_cc_add_candidate(&state, cc_candidates[1], 1);
 
     // Iterate candidates (order preserved)
     long cand = 0;
     int ok1 = p25_sm_next_cc_candidate(&state, &cand);
     rc |= expect_eq("cand ok1", ok1, 1);
-    rc |= expect_eq("cand1", cand, neigh[0]);
+    rc |= expect_eq("cand1", cand, cc_candidates[0]);
     ok1 = p25_sm_next_cc_candidate(&state, &cand);
     rc |= expect_eq("cand ok2", ok1, 1);
-    rc |= expect_eq("cand2", cand, neigh[1]);
+    rc |= expect_eq("cand2", cand, cc_candidates[1]);
     ok1 = p25_sm_next_cc_candidate(&state, &cand);
     rc |= expect_eq("cand cycle ok3", ok1, 1);
-    rc |= expect_eq("cand3", cand, neigh[0]);
+    rc |= expect_eq("cand3", cand, cc_candidates[0]);
 
     // Simulate a group grant: enable trunking and a non-zero CC freq
     opts.p25_trunk = 1;

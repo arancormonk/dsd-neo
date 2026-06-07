@@ -10,7 +10,7 @@
 /*
  * Control-channel candidates and neighbor list helpers for P25.
  * Provides small utilities to track announced neighbors, load/persist a
- * per-system candidate list, and expire stale entries.
+ * per-system current-site candidate list, and expire stale entries.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CC_CANDIDATES_H_H
@@ -56,7 +56,7 @@ typedef struct {
 int p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len);
 
 /**
- * @brief Add a control channel candidate (Hz) with deduplication and FIFO rollover.
+ * @brief Add a validated current-site control channel candidate (Hz).
  *
  * @param state Decoder state containing candidate list.
  * @param freq_hz Candidate control channel frequency in Hz.

@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <errno.h>
@@ -135,6 +136,15 @@ expect_eq_long(const char* tag, long got, long want) {
 }
 
 static int
+expect_true(const char* tag, int cond) {
+    if (!cond) {
+        DSD_FPRINTF(stderr, "%s: failed\n", tag);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int current_site, long* out_freqs,
                         int out_cap, int* out_rfss, int* out_site, int* out_lcn_count, long* out_lcn_freqs,
                         int out_lcn_cap) {
@@ -184,6 +194,98 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
     dsd_state_ext_free_all(state);
     free(state);
     return count;
+}
+
+static int
+write_full_sccb_cache_fixture(const char* path, long first_freq) {
+    FILE* fp = fopen(path, "w");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "failed to write SCCB cache fixture: %s\n", strerror(errno));
+        return 0;
+    }
+    for (int i = 0; i < DSD_TRUNK_CC_CANDIDATES_MAX; i++) {
+        DSD_FPRINTF(fp, "cc %ld\n", first_freq + (long)i * 12500L);
+    }
+    fclose(fp);
+    return 1;
+}
+
+static int
+cc_candidates_contains(const dsd_trunk_cc_candidates* cc, long freq) {
+    if (!cc || cc->count <= 0 || cc->count > DSD_TRUNK_CC_CANDIDATES_MAX) {
+        return 0;
+    }
+    for (int i = 0; i < cc->count; i++) {
+        if (cc->candidates[i] == freq) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+run_sccb_full_cache_preservation_case(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_p2_sccb_cache")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    setenv("DSD_NEO_CACHE_DIR", dir, 1);
+    setenv("DSD_NEO_CC_CACHE", "1", 1);
+    dsd_neo_config_init(NULL);
+
+    static dsd_opts opts;
+    dsd_state* state = NULL;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+
+    const int iden = 1;
+    state->p25_iden_fdma[iden].chan_type = 1;
+    state->p25_iden_fdma[iden].chan_spac = 100;
+    state->p25_iden_fdma[iden].base_freq = 851000000 / 5;
+    state->p25_iden_fdma[iden].populated = 1;
+    state->p25_chan_tdma_explicit[iden] = 1;
+    state->p2_wacn = 0xABCDE;
+    state->p2_sysid = 0x123;
+    state->p2_rfssid = 0x02;
+    state->p2_siteid = 0x03;
+
+    char cache_path[1024];
+    if (!p25_cc_build_cache_path(state, cache_path, sizeof(cache_path))) {
+        dsd_state_ext_free_all(state);
+        free(state);
+        return 1;
+    }
+    if (!write_full_sccb_cache_fixture(cache_path, 852000000L)) {
+        dsd_state_ext_free_all(state);
+        free(state);
+        return 1;
+    }
+
+    unsigned long long int MAC[24] = {0};
+    MAC[1] = 0xE9;
+    MAC[2] = 0x02;
+    MAC[3] = 0x03;
+    MAC[4] = 0x10;
+    MAC[5] = 0x0A;
+    MAC[6] = 0x10;
+    MAC[7] = 0x05;
+    MAC[8] = 0x01;
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+
+    const long sccb_freq = 851000000 + 10 * 100 * 125;
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    rc |= expect_eq_long("p2_sccb_cache_loaded", state->p25_cc_cache_loaded, 1);
+    rc |= expect_eq_long("p2_sccb_full_cache_count", cc ? cc->count : 0, DSD_TRUNK_CC_CANDIDATES_MAX);
+    rc |= expect_true("p2_sccb_preserved_after_full_cache_load", cc_candidates_contains(cc, sccb_freq));
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    return rc;
 }
 
 static int
@@ -376,7 +478,11 @@ run_cases(void) {
         rc |= expect_eq_long("p2_sccb_implicit_partial_iden_lcn_ch2", lcn_freqs[1], 851000000 + 5 * 100 * 125);
     }
 
-    // Case 12: extended private voice (0x22) derives source from the SUID tail.
+    // Case 12: a full persisted cache loaded during SCCB handling must not
+    // evict the freshly validated current-site SCCB candidate.
+    rc |= run_sccb_full_cache_preservation_case();
+
+    // Case 13: extended private voice (0x22) derives source from the SUID tail.
     {
         static dsd_opts opts;
         static dsd_state state;
