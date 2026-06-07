@@ -373,6 +373,7 @@ main(void) {
     assert(g_last_setfreq_hz == 853500000);
     assert(g_rtl_tune_calls == 0);
 
+#ifdef USE_RADIO
     /* RTL audio retuned by rigctl has no native RTL controller boundary, so the
      * queued P25 VC demod profile must be applied after SetFreq succeeds. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -405,6 +406,7 @@ main(void) {
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
     assert(g_rtl_ted_sps == 8);
     assert(g_rtl_ted_sps_override == 8);
+#endif
 
     /* If the frequency command itself fails, the decoder must not advance state
      * or reset DSP acquisition state for a channel it did not tune to. */
