@@ -567,6 +567,7 @@ process_dmr_bs_voice_burst(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
         return action;
     }
 
+    dmr_debug_dump_burst(opts, state, ctx->internalslot, 0x10);
     ctx->skipcount = 0;
     DSD_FPRINTF(stderr, "%s ", ctx->timestr);
 
@@ -1006,6 +1007,7 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
         write_dmr_bs_dsp_output(opts, state, ctx.internalslot);
     }
 
+    dmr_debug_dump_burst(opts, state, ctx.internalslot, 0x10);
     process_dmr_bs_bootstrap_voice_if_open(opts, state, &ctx);
     dmrBS(opts, state);
 
