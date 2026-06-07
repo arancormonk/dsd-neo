@@ -926,6 +926,25 @@ target_link_libraries(
 )
 add_test(NAME UI_SNR_METER COMMAND dsd-neo_test_ui_snr_meter)
 
+add_executable(
+    dsd-neo_test_ui_snr_readout
+    ui/test_ui_snr_readout.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snr_readout.c
+)
+target_include_directories(
+    dsd-neo_test_ui_snr_readout
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
+)
+target_compile_definitions(
+    dsd-neo_test_ui_snr_readout
+    PRIVATE DSD_NEO_TEST_HOOKS USE_RADIO
+)
+target_link_libraries(
+    dsd-neo_test_ui_snr_readout
+    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME UI_SNR_READOUT COMMAND dsd-neo_test_ui_snr_readout)
+
 if(NOT DSD_HAS_PDCURSES_WIDE_API)
     add_executable(
         dsd-neo_test_ui_snr_meter_pdc_wide_no_api

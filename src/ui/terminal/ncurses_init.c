@@ -57,10 +57,10 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
         init_pair(8, COLOR_BLACK, COLOR_WHITE);   // Black on White
         init_pair(9, COLOR_RED, COLOR_WHITE);     // Red on White
         init_pair(10, COLOR_BLUE, COLOR_WHITE);   // Blue on White
-        /* Quality bands for SNR sparkline */
-        init_pair(11, COLOR_GREEN, COLOR_BLACK);  // good
-        init_pair(12, COLOR_YELLOW, COLOR_BLACK); // moderate
-        init_pair(13, COLOR_RED, COLOR_BLACK);    // poor
+        /* Quality bands for SNR sparkline and RTL spectrum visualizers */
+        init_pair(11, COLOR_GREEN, COLOR_BLACK);  // good/high
+        init_pair(12, COLOR_YELLOW, COLOR_BLACK); // moderate/mid
+        init_pair(13, COLOR_RED, COLOR_BLACK);    // poor/low
         init_pair(14, COLOR_YELLOW, COLOR_BLACK); // DSP status (explicit yellow)
         /* IDEN color palette (per-bandplan); 8 slots, wrap IDEN nibble modulo 8 */
         init_pair(21, COLOR_YELLOW, COLOR_BLACK);
