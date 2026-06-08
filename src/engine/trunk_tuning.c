@@ -95,6 +95,8 @@ dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
     state->trunk_vc_freq[1] = 0;
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
+    state->p25_p2_enc_lockout_muted[0] = 0;
+    state->p25_p2_enc_lockout_muted[1] = 0;
     state->p25_call_is_packet[0] = 0;
     state->p25_call_is_packet[1] = 0;
     state->p25_p2_active_slot = -1;

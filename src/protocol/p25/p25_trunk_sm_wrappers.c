@@ -50,8 +50,11 @@ p25_sm_on_neighbor_update_default(const dsd_opts* opts, dsd_state* state, const 
         }
         // Track neighbor list for UI
         p25_nb_add(state, f);
-        // Add to candidate list (dedup + FIFO rollover)
-        (void)p25_cc_add_candidate(state, f, 1);
+        /*
+         * Do not promote generic neighbor/RFSS updates to CC hunt candidates.
+         * Current-site secondary CC broadcasts call p25_cc_add_candidate()
+         * directly after site validation.
+         */
     }
 }
 
@@ -71,7 +74,7 @@ p25_sm_next_cc_candidate_default(dsd_state* state, long* out_freq) {
         return 0;
     }
     double nowm = now_monotonic();
-    return dsd_trunk_cc_candidates_next(state, nowm, out_freq);
+    return dsd_trunk_cc_candidates_next_with_flags(state, nowm, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, out_freq);
 }
 
 int

@@ -728,6 +728,8 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->fourv_counter[1] = 0;
     state->voice_counter[0] = 0;
     state->voice_counter[1] = 0;
+    state->p25_p2_enc_lockout_muted[0] = 0;
+    state->p25_p2_enc_lockout_muted[1] = 0;
 
     state->K = 0;
     state->R = 0;

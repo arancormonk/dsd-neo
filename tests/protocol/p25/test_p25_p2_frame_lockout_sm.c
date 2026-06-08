@@ -1,0 +1,232 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * Validate the P25 Phase 2 frame-level service-option encrypted mute does not
+ * force trunk state-machine release before ESS has identified the ALGID.
+ */
+
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
+
+void process_2V(dsd_opts* opts, dsd_state* state);
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+bool SetFreq(int sockfd, long int freq);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+bool SetModulation(int sockfd, int bandwidth);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_socket_t Connect(char* hostname, int portno);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+uint16_t ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len);
+
+static int g_return_to_cc_called = 0;
+
+bool
+SetFreq(int sockfd, long int freq) {
+    (void)sockfd;
+    (void)freq;
+    return false;
+}
+
+bool
+SetModulation(int sockfd, int bandwidth) {
+    (void)sockfd;
+    (void)bandwidth;
+    return false;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+struct RtlSdrContext* g_rtl_ctx = 0;
+
+int
+rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
+    (void)ctx;
+    (void)center_freq_hz;
+    return 0;
+}
+
+dsd_socket_t
+Connect(char* hostname, int portno) {
+    (void)hostname;
+    (void)portno;
+    return DSD_INVALID_SOCKET;
+}
+
+static dsd_trunk_tune_result
+return_to_cc_result(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_return_to_cc_called++;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.return_to_cc_result = return_to_cc_result;
+    dsd_trunk_tuning_hooks_set(hooks);
+}
+
+void
+apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)lc_bits;
+}
+
+void
+apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)lc_bits;
+}
+
+void
+l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, uint8_t* input) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)len;
+    (void)input;
+}
+
+void
+nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+    (void)opts;
+    (void)state;
+    (void)input;
+    (void)src;
+    (void)slot;
+}
+
+void
+LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) {
+    (void)buffer_in;
+    (void)buffer_out;
+    (void)state;
+}
+
+uint16_t
+ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
+    (void)buf;
+    (void)len;
+    return 0;
+}
+
+static int
+expect_eq(const char* tag, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+setup_tuned_tdma(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t** ctx) {
+    DSD_MEMSET(opts, 0, sizeof *opts);
+    DSD_MEMSET(state, 0, sizeof *state);
+    opts->p25_trunk = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    opts->trunk_tune_enc_calls = 0;
+    state->currentslot = 0;
+    state->p25_vc_cqpsk_pref = -1;
+    state->p25_vc_cqpsk_override = -1;
+    state->lasttg = 1234;
+    state->lasttgR = 5678;
+
+    p25_sm_init(opts, state);
+    *ctx = p25_sm_get_ctx();
+    (*ctx)->state = P25_SM_TUNED;
+    (*ctx)->vc_is_tdma = 1;
+    (*ctx)->vc_freq_hz = 851000000;
+    (*ctx)->t_tune_m = 1.0;
+    (*ctx)->t_voice_m = 1.0;
+}
+
+static int
+test_pre_ess_single_slot_stays_tuned(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    state.currentslot = 0;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.dmr_so = 0x40;
+    g_return_to_cc_called = 0;
+
+    process_2V(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_eq("pre-ess single slot: no return", g_return_to_cc_called, 0);
+    rc |= expect_eq("pre-ess single slot: still tuned", ctx->state == P25_SM_TUNED, 1);
+    rc |= expect_eq("pre-ess single slot: voice remains active", ctx->slots[0].voice_active, 1);
+    rc |= expect_eq("pre-ess single slot: gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("pre-ess single slot: marker clear", state.p25_p2_enc_lockout_muted[0], 0);
+    return rc;
+}
+
+static int
+test_pre_ess_opposite_clear_slot_stays_tuned(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    state.currentslot = 1;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.dmr_soR = 0x40;
+    p25_sm_emit_active(&opts, &state, 0);
+    g_return_to_cc_called = 0;
+
+    process_2V(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_eq("opposite clear slot: no return", g_return_to_cc_called, 0);
+    rc |= expect_eq("opposite clear slot: still tuned", ctx->state == P25_SM_TUNED, 1);
+    rc |= expect_eq("opposite clear slot: clear active", ctx->slots[0].voice_active, 1);
+    rc |= expect_eq("opposite clear slot: pending ess active", ctx->slots[1].voice_active, 1);
+    rc |= expect_eq("opposite clear slot: clear gate open", state.p25_p2_audio_allowed[0], 1);
+    rc |= expect_eq("opposite clear slot: locked gate closed", state.p25_p2_audio_allowed[1], 0);
+    rc |= expect_eq("opposite clear slot: marker clear", state.p25_p2_enc_lockout_muted[1], 0);
+    return rc;
+}
+
+int
+main(void) {
+    install_trunk_tuning_hooks();
+
+    int rc = 0;
+    rc |= test_pre_ess_single_slot_stays_tuned();
+    rc |= test_pre_ess_opposite_clear_slot_stays_tuned();
+    return rc;
+}

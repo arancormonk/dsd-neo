@@ -40,6 +40,7 @@
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -1304,6 +1305,12 @@ typedef struct {
     uint16_t string_size;
 } ui_history_render_ctx;
 
+typedef struct {
+    uint8_t slot;
+    uint16_t idx;
+    time_t sort_time;
+} ui_history_item_ref;
+
 static void
 ui_history_render_header(const dsd_state* state, int history_mode) {
     int rows = 0;
@@ -1529,97 +1536,97 @@ ui_history_render_dual_slot_item(const Event_History* item, uint8_t slot, const 
     (void)ui_history_print_detail_line(ctx->history_stop_y, slot, "DSD-neo: ", item->internal_str);
 }
 
-static uint16_t
-ui_history_single_slot_start_index(const dsd_state* state, uint8_t slot, uint16_t skip) {
-    uint16_t idx = 1;
-    while (idx < 255 && skip > 0) {
-        const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
-        if (ui_eh_item_has_content(item)) {
-            skip--;
-        }
-        idx++;
-    }
-    return idx;
-}
-
-static void
-ui_history_advance_dual_indices(const dsd_state* state, uint16_t* idx0, uint16_t* idx1) {
-    while (*idx0 < 255 && !ui_eh_item_has_content(&state->event_history_s[0].Event_History_Items[*idx0])) {
-        (*idx0)++;
-    }
-    while (*idx1 < 255 && !ui_eh_item_has_content(&state->event_history_s[1].Event_History_Items[*idx1])) {
-        (*idx1)++;
-    }
-}
-
 static int
-ui_history_take_latest_dual_item(const dsd_state* state, uint16_t* idx0, uint16_t* idx1, uint8_t* slot, uint16_t* idx) {
-    ui_history_advance_dual_indices(state, idx0, idx1);
-    if (*idx0 >= 255 && *idx1 >= 255) {
-        return 0;
-    }
+ui_history_item_ref_compare(const void* lhs, const void* rhs) {
+    const ui_history_item_ref* a = (const ui_history_item_ref*)lhs;
+    const ui_history_item_ref* b = (const ui_history_item_ref*)rhs;
 
-    time_t t0 = (*idx0 < 255) ? state->event_history_s[0].Event_History_Items[*idx0].event_time : 0;
-    time_t t1 = (*idx1 < 255) ? state->event_history_s[1].Event_History_Items[*idx1].event_time : 0;
-    if (*idx1 < 255 && (*idx0 >= 255 || t1 > t0)) {
-        *slot = 1;
-        *idx = *idx1;
-        (*idx1)++;
-    } else {
-        *slot = 0;
-        *idx = *idx0;
-        (*idx0)++;
+    if (a->sort_time > b->sort_time) {
+        return -1;
     }
-    return 1;
+    if (a->sort_time < b->sort_time) {
+        return 1;
+    }
+    if (a->idx < b->idx) {
+        return -1;
+    }
+    if (a->idx > b->idx) {
+        return 1;
+    }
+    if (a->slot < b->slot) {
+        return -1;
+    }
+    if (a->slot > b->slot) {
+        return 1;
+    }
+    return 0;
 }
 
-static void
-ui_history_skip_dual_items(const dsd_state* state, uint16_t skip, uint16_t* idx0, uint16_t* idx1) {
-    uint8_t slot = 0;
-    uint16_t idx = 0;
-    while (skip > 0 && ui_history_take_latest_dual_item(state, idx0, idx1, &slot, &idx)) {
-        (void)slot;
-        (void)idx;
-        skip--;
+static size_t
+ui_history_collect_slot_items(const dsd_state* state, uint8_t slot, ui_history_item_ref* refs, size_t count,
+                              size_t cap) {
+    if (state == NULL || state->event_history_s == NULL || refs == NULL || count >= cap || slot >= 2) {
+        return count;
     }
-}
 
-static void
-ui_history_render_single_slot(const dsd_state* state, const ui_history_render_ctx* ctx) {
-    uint8_t slot = state->eh_slot;
-    uint16_t idx = ui_history_single_slot_start_index(state, slot, state->eh_index);
-
-    for (int shown = 0; shown < ctx->events_to_show && idx < 255; idx++) {
-        if (!ui_history_has_room_for_line(ctx->history_stop_y)) {
-            break;
-        }
+    for (uint16_t idx = 1; idx < 255 && count < cap; idx++) {
         const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
         if (!ui_eh_item_has_content(item)) {
             continue;
         }
+        refs[count].slot = slot;
+        refs[count].idx = idx;
+        refs[count].sort_time = ui_history_event_sort_time(item->event_string, item->event_time);
+        count++;
+    }
+    return count;
+}
+
+static size_t
+ui_history_collect_sorted_items(const dsd_state* state, uint8_t slot, ui_history_item_ref* refs, size_t cap) {
+    size_t count = 0;
+    if (slot < 2) {
+        count = ui_history_collect_slot_items(state, slot, refs, count, cap);
+    } else {
+        count = ui_history_collect_slot_items(state, 0, refs, count, cap);
+        count = ui_history_collect_slot_items(state, 1, refs, count, cap);
+    }
+
+    if (count > 1) {
+        qsort(refs, count, sizeof(refs[0]), ui_history_item_ref_compare);
+    }
+    return count;
+}
+
+static void
+ui_history_render_item_refs(const dsd_state* state, const ui_history_render_ctx* ctx, const ui_history_item_ref* refs,
+                            size_t count) {
+    size_t pos = state->eh_index;
+    if (pos > count) {
+        pos = count;
+    }
+
+    for (int shown = 0; shown < ctx->events_to_show && pos < count; pos++) {
+        if (!ui_history_has_room_for_line(ctx->history_stop_y)) {
+            break;
+        }
+        const uint8_t slot = refs[pos].slot;
+        const uint16_t idx = refs[pos].idx;
+        const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
         shown++;
-        ui_history_render_single_slot_item(item, ctx);
+        if (state->eh_slot < 2) {
+            ui_history_render_single_slot_item(item, ctx);
+        } else {
+            ui_history_render_dual_slot_item(item, slot, ctx);
+        }
     }
 }
 
 static void
-ui_history_render_dual_slots(const dsd_state* state, const ui_history_render_ctx* ctx) {
-    uint16_t idx0 = 1;
-    uint16_t idx1 = 1;
-    ui_history_skip_dual_items(state, state->eh_index, &idx0, &idx1);
-
-    for (int shown = 0; shown < ctx->events_to_show; shown++) {
-        if (!ui_history_has_room_for_line(ctx->history_stop_y)) {
-            break;
-        }
-        uint8_t slot = 0;
-        uint16_t idx = 0;
-        if (!ui_history_take_latest_dual_item(state, &idx0, &idx1, &slot, &idx)) {
-            break;
-        }
-        const Event_History* item = &state->event_history_s[slot].Event_History_Items[idx];
-        ui_history_render_dual_slot_item(item, slot, ctx);
-    }
+ui_history_render_sorted_slot_items(const dsd_state* state, const ui_history_render_ctx* ctx, uint8_t slot) {
+    ui_history_item_ref refs[508];
+    size_t count = ui_history_collect_sorted_items(state, slot, refs, sizeof(refs) / sizeof(refs[0]));
+    ui_history_render_item_refs(state, ctx, refs, count);
 }
 
 static void
@@ -1634,9 +1641,9 @@ ui_render_event_history_section(const dsd_state* state) {
         ui_history_setup_render_ctx(history_mode, &history_draw_footer, &ctx);
         if (state->event_history_s != NULL) {
             if (state->eh_slot < 2) {
-                ui_history_render_single_slot(state, &ctx);
+                ui_history_render_sorted_slot_items(state, &ctx, state->eh_slot);
             } else {
-                ui_history_render_dual_slots(state, &ctx);
+                ui_history_render_sorted_slot_items(state, &ctx, 2);
             }
         }
     }

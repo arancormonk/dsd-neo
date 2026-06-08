@@ -187,6 +187,15 @@ watchdog_event_should_write_slot(const dsd_state* state) {
 }
 
 static int
+watchdog_event_item_has_content(const Event_History* item) {
+    if (item == NULL) {
+        return 0;
+    }
+    return item->event_string[0] != '\0' || item->text_message[0] != '\0' || item->alias[0] != '\0'
+           || item->gps_s[0] != '\0' || item->internal_str[0] != '\0';
+}
+
+static int
 watchdog_event_is_m17_sync(int synctype) {
     return (synctype == DSD_SYNC_M17_STR_POS || synctype == DSD_SYNC_M17_STR_NEG || synctype == DSD_SYNC_M17_LSF_POS
             || synctype == DSD_SYNC_M17_LSF_NEG);
@@ -320,12 +329,18 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     uint8_t swrite = watchdog_event_should_write_slot(state);
     uint32_t last_source_id = event_struct->Event_History_Items[0].source_id;
     int last_event_is_data = event_struct->Event_History_Items[0].subtype == DSD_EVENT_SUBTYPE_DATA;
+    int last_event_has_content = watchdog_event_item_has_content(&event_struct->Event_History_Items[0]);
     uint32_t source_id = watchdog_event_source_id(opts, state, slot);
 
     //call alert beep when new call detected
     if (last_source_id == 0 && source_id != 0
         && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
         beeper(opts, state, slot, 40, 86, 3);
+    }
+
+    if (last_event_is_data && last_event_has_content) {
+        watchdog_event_handle_source_transition(opts, state, event_struct, slot, swrite, last_event_is_data);
+        return;
     }
 
     if (source_id != last_source_id && last_source_id != 0) {
@@ -672,10 +687,6 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
 static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History_I* event_struct,
                                    const watchdog_event_current_ctx* ctx) {
-    if (ctx->source_id == 0) {
-        return;
-    }
-
     event_struct->Event_History_Items[0].write = 0;
     state->event_history_s[slot].Event_History_Items[0].color_pair = ctx->color_pair;
     if (state->lastsynctype != DSD_SYNC_NONE) {

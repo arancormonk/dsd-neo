@@ -43,6 +43,9 @@ p25p2_xcch_set_slot_audio_allowed(dsd_state* state, int slot, int allow_audio) {
         return;
     }
     state->p25_p2_audio_allowed[slot] = allow_audio;
+    if (allow_audio != 0) {
+        state->p25_p2_enc_lockout_muted[slot] = 0;
+    }
 }
 
 static int
@@ -337,6 +340,7 @@ p25p2_xcch_emit_enc_if_encrypted(dsd_opts* opts, dsd_state* state, int slot) {
 
 static void
 p25p2_xcch_reset_ptt_slot_state(dsd_state* state, int slot) {
+    state->p25_p2_enc_lockout_muted[slot] = 0;
     state->fourv_counter[slot] = 0;
     state->voice_counter[slot] = 0;
     p25p2_xcch_set_slot_drop(state, slot, 256);
@@ -375,6 +379,7 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
 
 static void
 p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear_call_string) {
+    state->p25_p2_enc_lockout_muted[slot] = 0;
     state->fourv_counter[slot] = 0;
     state->voice_counter[slot] = 0;
     p25p2_xcch_set_slot_drop(state, slot, 256);
@@ -427,6 +432,7 @@ p25p2_xcch_reset_ptt_voice_counter_facch(dsd_state* state) {
 
 static void
 p25p2_xcch_reset_idle_slot_facch(dsd_state* state, int slot) {
+    state->p25_p2_enc_lockout_muted[slot] = 0;
     p25p2_xcch_set_slot_algid(state, slot, 0);
     p25p2_xcch_set_slot_keyid(state, slot, 0);
     p25p2_xcch_set_slot_burst(state, slot, 24);
@@ -550,6 +556,7 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     p25_sm_emit_idle(opts, state, slot);
+    state->p25_p2_enc_lockout_muted[slot] = 0;
     p25p2_xcch_blank_slot_call_string(state, slot);
     p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
     state->p25_call_is_packet[slot] = 0;

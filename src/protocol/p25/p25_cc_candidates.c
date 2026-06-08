@@ -33,7 +33,7 @@ p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
     if (freq_hz == state->p25_cc_freq) {
         return 0;
     }
-    return dsd_trunk_cc_candidates_add(state, freq_hz, bump_added);
+    return dsd_trunk_cc_candidates_add_with_flags(state, freq_hz, bump_added, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
 }
 
 int
@@ -65,14 +65,80 @@ p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
     return (n > 0 && (size_t)n < out_len);
 }
 
+static int
+p25_cc_cache_enabled(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    return cfg ? cfg->cc_cache_enable : 1;
+}
+
+static char*
+p25_cc_cache_skip_ws(char* p) {
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    return p;
+}
+
+static const char*
+p25_cc_cache_line_payload(char* line) {
+    char* p = p25_cc_cache_skip_ws(line);
+    if (p[0] != 'c' || p[1] != 'c' || (p[2] != ' ' && p[2] != '\t')) {
+        return NULL;
+    }
+    return p25_cc_cache_skip_ws(p + 2);
+}
+
+static int
+p25_cc_parse_cache_line(char* line, long* out_freq_hz) {
+    char* end = NULL;
+    const char* p = p25_cc_cache_line_payload(line);
+    if (!p) {
+        return 0;
+    }
+
+    long freq_hz = strtol(p, &end, 10);
+    if (end == p || freq_hz <= 0) {
+        return 0;
+    }
+
+    *out_freq_hz = freq_hz;
+    return 1;
+}
+
+static void
+p25_cc_load_cache_lines(FILE* fp, dsd_state* state) {
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        long freq_hz = 0;
+        if (p25_cc_parse_cache_line(line, &freq_hz)) {
+            (void)p25_cc_add_candidate(state, freq_hz, 0);
+        }
+    }
+}
+
+static int
+p25_cc_loaded_candidate_count(const dsd_state* state) {
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    if (!cc || cc->count <= 0 || cc->count > DSD_TRUNK_CC_CANDIDATES_MAX) {
+        return 0;
+    }
+    return cc->count;
+}
+
+static void
+p25_cc_log_cache_load(const dsd_opts* opts, const dsd_state* state) {
+    const int count = p25_cc_loaded_candidate_count(state);
+    if (opts && opts->verbose > 0 && count > 0) {
+        DSD_FPRINTF(stderr, "\n  P25 SM: Loaded %d CC candidates from cache\n", count);
+    }
+}
+
 void
 p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state) {
     if (!state || state->p25_cc_cache_loaded) {
         return;
     }
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int enable = cfg ? cfg->cc_cache_enable : 1;
-    if (!enable) {
+    if (!p25_cc_cache_enabled()) {
         state->p25_cc_cache_loaded = 1;
         return;
     }
@@ -87,23 +153,10 @@ p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    char line[256];
-    while (fgets(line, sizeof(line), fp)) {
-        char* end = NULL;
-        long f = strtol(line, &end, 10);
-        if (end == line) {
-            continue;
-        }
-        (void)p25_cc_add_candidate(state, f, 0);
-    }
+    p25_cc_load_cache_lines(fp, state);
     fclose(fp);
     state->p25_cc_cache_loaded = 1;
-
-    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
-    const int count = (cc && cc->count > 0 && cc->count <= DSD_TRUNK_CC_CANDIDATES_MAX) ? cc->count : 0;
-    if (opts && opts->verbose > 0 && count > 0) {
-        DSD_FPRINTF(stderr, "\n  P25 SM: Loaded %d CC candidates from cache\n", count);
-    }
+    p25_cc_log_cache_load(opts, state);
 }
 
 void
@@ -111,9 +164,7 @@ p25_cc_persist_cache(const dsd_opts* opts, const dsd_state* state) {
     if (!state) {
         return;
     }
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int enable = cfg ? cfg->cc_cache_enable : 1;
-    if (!enable) {
+    if (!p25_cc_cache_enabled()) {
         return;
     }
 
@@ -132,8 +183,8 @@ p25_cc_persist_cache(const dsd_opts* opts, const dsd_state* state) {
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     const int count = (cc && cc->count > 0 && cc->count <= DSD_TRUNK_CC_CANDIDATES_MAX) ? cc->count : 0;
     for (int i = 0; i < count; i++) {
-        if (cc->candidates[i] != 0) {
-            DSD_FPRINTF(fp, "%ld\n", cc->candidates[i]);
+        if (cc->candidates[i] != 0 && (cc->flags[i] & DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) != 0) {
+            DSD_FPRINTF(fp, "cc %ld\n", cc->candidates[i]);
         }
     }
     fclose(fp);

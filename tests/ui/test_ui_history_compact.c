@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <dsd-neo/ui/ui_history.h>
 
@@ -35,6 +36,11 @@ main(void) {
     n = ui_history_compact_event_text(tiny, sizeof tiny, canonical, 1);
     assert(n == 4);
     assert(strcmp(tiny, "02:0") == 0);
+
+    time_t newer = ui_history_event_sort_time("2026-06-07 19:20:15 P25p2 TGT: 00050002;", (time_t)1);
+    time_t older = ui_history_event_sort_time("2026-06-07 19:20:07 P25p1 TGT: 00021001;", (time_t)2000000000);
+    assert(newer > older);
+    assert(ui_history_event_sort_time(noncanonical, (time_t)1234) == (time_t)1234);
 
     printf("UI_HISTORY_COMPACT: OK\n");
     return 0;

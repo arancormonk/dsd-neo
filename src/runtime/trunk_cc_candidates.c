@@ -5,10 +5,63 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static void
+dsd_trunk_cc_candidates_clear(dsd_trunk_cc_candidates* cc) {
+    cc->count = 0;
+    cc->idx = 0;
+    for (int k = 0; k < DSD_TRUNK_CC_CANDIDATES_MAX; k++) {
+        cc->candidates[k] = 0;
+        cc->flags[k] = 0;
+        cc->cool_until[k] = 0.0;
+    }
+}
+
+static int
+dsd_trunk_cc_candidates_has_valid_count(dsd_trunk_cc_candidates* cc) {
+    if (cc->count >= 0 && cc->count <= DSD_TRUNK_CC_CANDIDATES_MAX) {
+        return 1;
+    }
+    dsd_trunk_cc_candidates_clear(cc);
+    return 0;
+}
+
+static void
+dsd_trunk_cc_candidates_drop_oldest(dsd_trunk_cc_candidates* cc) {
+    for (int k = 1; k < DSD_TRUNK_CC_CANDIDATES_MAX; k++) {
+        cc->candidates[k - 1] = cc->candidates[k];
+        cc->flags[k - 1] = cc->flags[k];
+        cc->cool_until[k - 1] = cc->cool_until[k];
+    }
+    if (cc->idx > 0) {
+        cc->idx--;
+    }
+}
+
+static int
+dsd_trunk_cc_candidate_is_allowed(const dsd_trunk_cc_candidates* cc, int idx, long skip_cc_freq, double now_monotonic_s,
+                                  uint8_t required_flags, long* out_freq_hz) {
+    const uint8_t flags = cc->flags[idx];
+    const long freq_hz = cc->candidates[idx];
+
+    if (required_flags != 0 && (uint8_t)(flags & required_flags) != required_flags) {
+        return 0;
+    }
+    if (freq_hz == 0 || freq_hz == skip_cc_freq) {
+        return 0;
+    }
+    if (cc->cool_until[idx] > 0.0 && now_monotonic_s < cc->cool_until[idx]) {
+        return 0;
+    }
+
+    *out_freq_hz = freq_hz;
+    return 1;
+}
 
 dsd_trunk_cc_candidates*
 dsd_trunk_cc_candidates_get(dsd_state* state) {
@@ -44,7 +97,7 @@ dsd_trunk_cc_candidates_peek(const dsd_state* state) {
 }
 
 int
-dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added) {
+dsd_trunk_cc_candidates_add_with_flags(dsd_state* state, long freq_hz, int bump_added, uint8_t flags) {
     if (!state || freq_hz == 0) {
         return 0;
     }
@@ -54,27 +107,27 @@ dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added) {
         return 0;
     }
 
-    if (cc->count < 0 || cc->count > DSD_TRUNK_CC_CANDIDATES_MAX) {
-        cc->count = 0;
-        cc->idx = 0;
+    if (!dsd_trunk_cc_candidates_has_valid_count(cc)) {
+        return 0;
     }
 
     for (int k = 0; k < cc->count; k++) {
         if (cc->candidates[k] == freq_hz) {
+            cc->flags[k] |= flags;
             return 0;
         }
     }
 
     if (cc->count < DSD_TRUNK_CC_CANDIDATES_MAX) {
-        cc->candidates[cc->count++] = freq_hz;
+        cc->candidates[cc->count] = freq_hz;
+        cc->flags[cc->count] = flags;
+        cc->cool_until[cc->count] = 0.0;
+        cc->count++;
     } else {
-        for (int k = 1; k < DSD_TRUNK_CC_CANDIDATES_MAX; k++) {
-            cc->candidates[k - 1] = cc->candidates[k];
-        }
+        dsd_trunk_cc_candidates_drop_oldest(cc);
         cc->candidates[DSD_TRUNK_CC_CANDIDATES_MAX - 1] = freq_hz;
-        if (cc->idx > 0) {
-            cc->idx--;
-        }
+        cc->flags[DSD_TRUNK_CC_CANDIDATES_MAX - 1] = flags;
+        cc->cool_until[DSD_TRUNK_CC_CANDIDATES_MAX - 1] = 0.0;
     }
 
     if (bump_added) {
@@ -84,7 +137,13 @@ dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added) {
 }
 
 int
-dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, long* out_freq_hz) {
+dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added) {
+    return dsd_trunk_cc_candidates_add_with_flags(state, freq_hz, bump_added, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+}
+
+int
+dsd_trunk_cc_candidates_next_with_flags(dsd_state* state, double now_monotonic_s, uint8_t required_flags,
+                                        long* out_freq_hz) {
     if (!state || !out_freq_hz) {
         return 0;
     }
@@ -95,9 +154,7 @@ dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, long* out
         return 0;
     }
 
-    if (cc->count < 0 || cc->count > DSD_TRUNK_CC_CANDIDATES_MAX) {
-        cc->count = 0;
-        cc->idx = 0;
+    if (!dsd_trunk_cc_candidates_has_valid_count(cc)) {
         return 0;
     }
 
@@ -107,19 +164,18 @@ dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, long* out
         if (cc->idx >= cc->count) {
             cc->idx = 0;
         }
-        int idx = cc->idx++;
-        long f = cc->candidates[idx];
-        if (f != 0 && f != skip_cc_freq) {
-            double cool_until = (idx >= 0 && idx < DSD_TRUNK_CC_CANDIDATES_MAX) ? cc->cool_until[idx] : 0.0;
-            if (cool_until > 0.0 && now_monotonic_s < cool_until) {
-                continue;
-            }
-            *out_freq_hz = f;
+        const int idx = cc->idx++;
+        if (dsd_trunk_cc_candidate_is_allowed(cc, idx, skip_cc_freq, now_monotonic_s, required_flags, out_freq_hz)) {
             cc->used++;
             return 1;
         }
     }
     return 0;
+}
+
+int
+dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, long* out_freq_hz) {
+    return dsd_trunk_cc_candidates_next_with_flags(state, now_monotonic_s, 0, out_freq_hz);
 }
 
 void

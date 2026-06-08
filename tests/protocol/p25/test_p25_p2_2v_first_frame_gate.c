@@ -25,6 +25,7 @@ struct RtlSdrContext;
 
 // Expose the P25p2 2V handler under test
 void process_2V(dsd_opts* opts, dsd_state* state);
+void p25p2_test_decode_voice_frame_for_lockout(dsd_opts* opts, dsd_state* state);
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 bool SetFreq(int sockfd, long int freq);
@@ -343,6 +344,13 @@ reset_mbe_calls(void) {
     g_mbe_soft_calls = 0;
 }
 
+static void
+set_ess_algid(dsd_state* st, int slot, uint8_t algid) {
+    for (int i = 0; i < 8; i++) {
+        st->ess_b[slot][i] = (algid >> (7 - i)) & 1;
+    }
+}
+
 int
 main(void) {
     int rc = 0;
@@ -388,6 +396,224 @@ main(void) {
     rc |= expect_eq("slot1 allowed: mbe calls", g_mbe_calls, 2);
     rc |= expect_eq("slot1 allowed: soft mbe calls", g_mbe_soft_calls, 2);
     rc |= expect_eq("slot1 allowed: hard mbe calls", g_mbe_hard_calls, 0);
+
+    // Slot 0: stale allowed gate, encrypted/no key, lockout enabled -> no decode.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 encrypted lockout: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 encrypted lockout: gate closed", st.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("slot0 encrypted lockout: ring flushed", st.p25_p2_audio_ring_count[0], 0);
+
+    // Slot 0: service-option ENC before ESS completion mutes voice but must
+    // not reset ESS_B collection; ALGID may still resolve to a loaded key.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    st.fourv_counter[0] = 2;
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot0 pre-ess lockout: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 pre-ess lockout: gate closed", st.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("slot0 pre-ess lockout: fourv preserved", st.fourv_counter[0], 2);
+    rc |= expect_eq("slot0 pre-ess lockout: marker clear", st.p25_p2_enc_lockout_muted[0], 0);
+
+    // Slot 0: lockout must clear stale crypto metadata so later clear service
+    // options on this slot are not misclassified before the next ESS refresh.
+    reset_state(&opts, &st);
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+    st.dmr_so = 0x40;
+    st.payload_algid = 0x84;
+    st.payload_keyid = 0x1234;
+    st.payload_miP = 0x1122334455667788ULL;
+    set_ess_algid(&st, 0, 0x84);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 stale algid cleanup: encrypted mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 stale algid cleanup: algid cleared", st.payload_algid, 0);
+    rc |= expect_eq("slot0 stale algid cleanup: keyid cleared", st.payload_keyid, 0);
+    rc |= expect_eq("slot0 stale algid cleanup: mi cleared", st.payload_miP == 0ULL, 1);
+    rc |= expect_eq("slot0 stale algid cleanup: marker set", st.p25_p2_enc_lockout_muted[0], 1);
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0;
+    set_ess_algid(&st, 0, 0x80);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 stale algid cleanup: clear mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot0 stale algid cleanup: clear gate open", st.p25_p2_audio_allowed[0], 1);
+    rc |= expect_eq("slot0 stale algid cleanup: marker cleared", st.p25_p2_enc_lockout_muted[0], 0);
+
+    // Slot 0: follow encrypted preserves prior behavior even without a key.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 encrypted follow: mbe calls", g_mbe_calls, 2);
+
+    // Slot 0: encrypted lockout enabled but decryptable audio remains allowed.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    st.aes_key_loaded[0] = 1;
+    set_ess_algid(&st, 0, 0x84);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 encrypted decryptable: mbe calls", g_mbe_calls, 2);
+
+    // Slot 0: keyed encrypted call muted by media policy is not an encrypted lockout.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    opts.trunk_use_allow_list = 1;
+    st.currentslot = 0;
+    st.lasttg = 1234;
+    st.tg_hold = 4321;
+    st.p25_p2_audio_allowed[0] = 0;
+    st.dmr_so = 0x40;
+    st.dmrburstL = 21;
+    st.aes_key_loaded[0] = 1;
+    set_ess_algid(&st, 0, 0x84);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 policy-muted decryptable: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 policy-muted decryptable: gate stays closed", st.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("slot0 policy-muted decryptable: burst preserved", st.dmrburstL, 21);
+
+    // Slot 0: decoded clear ALGID overrides a stale encrypted service bit.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    set_ess_algid(&st, 0, 0x80);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 clear algid overrides svc: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot0 clear algid overrides svc: gate open", st.p25_p2_audio_allowed[0], 1);
+
+    // Slot 1: stale allowed gate, encrypted/no key, lockout enabled -> no decode.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+    st.dmr_soR = 0x40;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot1 encrypted lockout: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot1 encrypted lockout: gate closed", st.p25_p2_audio_allowed[1], 0);
+    rc |= expect_eq("slot1 encrypted lockout: ring flushed", st.p25_p2_audio_ring_count[1], 0);
+
+    // Slot 1: same pre-ESS service-option mute must preserve fragment index.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+    st.dmr_soR = 0x40;
+    st.fourv_counter[1] = 3;
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot1 pre-ess lockout: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot1 pre-ess lockout: gate closed", st.p25_p2_audio_allowed[1], 0);
+    rc |= expect_eq("slot1 pre-ess lockout: fourv preserved", st.fourv_counter[1], 3);
+    rc |= expect_eq("slot1 pre-ess lockout: marker clear", st.p25_p2_enc_lockout_muted[1], 0);
+
+    // Slot 1: same stale-ALGID cleanup as slot 0.
+    reset_state(&opts, &st);
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 1;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+    st.dmr_soR = 0x40;
+    st.payload_algidR = 0x84;
+    st.payload_keyidR = 0x5678;
+    st.payload_miN = 0x8877665544332211ULL;
+    set_ess_algid(&st, 1, 0x84);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot1 stale algid cleanup: encrypted mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot1 stale algid cleanup: algid cleared", st.payload_algidR, 0);
+    rc |= expect_eq("slot1 stale algid cleanup: keyid cleared", st.payload_keyidR, 0);
+    rc |= expect_eq("slot1 stale algid cleanup: mi cleared", st.payload_miN == 0ULL, 1);
+    rc |= expect_eq("slot1 stale algid cleanup: marker set", st.p25_p2_enc_lockout_muted[1], 1);
+    st.p25_p2_audio_allowed[1] = 1;
+    st.dmr_soR = 0;
+    set_ess_algid(&st, 1, 0x80);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot1 stale algid cleanup: clear mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot1 stale algid cleanup: clear gate open", st.p25_p2_audio_allowed[1], 1);
+    rc |= expect_eq("slot1 stale algid cleanup: marker cleared", st.p25_p2_enc_lockout_muted[1], 0);
+
+    // Slot 1: follow encrypted preserves prior behavior even without a key.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    st.currentslot = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+    st.dmr_soR = 0x40;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot1 encrypted follow: mbe calls", g_mbe_calls, 2);
+
+    // Slot 1: encrypted lockout enabled but decryptable audio remains allowed.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+    st.dmr_soR = 0x40;
+    st.aes_key_loaded[1] = 1;
+    set_ess_algid(&st, 1, 0x84);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot1 encrypted decryptable: mbe calls", g_mbe_calls, 2);
+
+    // Slot 1: keyed encrypted call muted by media policy is not an encrypted lockout.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    opts.trunk_use_allow_list = 1;
+    st.currentslot = 1;
+    st.lasttgR = 5678;
+    st.tg_hold = 8765;
+    st.p25_p2_audio_allowed[1] = 0;
+    st.dmr_soR = 0x40;
+    st.dmrburstR = 21;
+    st.aes_key_loaded[1] = 1;
+    set_ess_algid(&st, 1, 0x84);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot1 policy-muted decryptable: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot1 policy-muted decryptable: gate stays closed", st.p25_p2_audio_allowed[1], 0);
+    rc |= expect_eq("slot1 policy-muted decryptable: burst preserved", st.dmrburstR, 21);
+
+    // Slot 1: decoded clear ALGID overrides a stale encrypted service bit.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+    st.dmr_soR = 0x40;
+    set_ess_algid(&st, 1, 0x80);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot1 clear algid overrides svc: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot1 clear algid overrides svc: gate open", st.p25_p2_audio_allowed[1], 1);
 
     return rc;
 }

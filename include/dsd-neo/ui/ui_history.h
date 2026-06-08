@@ -15,6 +15,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_HISTORY_H_
 
 #include <stddef.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,6 +44,15 @@ int ui_history_cycle_mode(void);
  * @return Number of characters written to @p out (excluding NUL).
  */
 size_t ui_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode);
+
+/**
+ * @brief Return the timestamp used for event-history ordering.
+ *
+ * Canonical event strings start with `YYYY-MM-DD HH:MM:SS `. When present,
+ * that displayed timestamp is authoritative so ordering matches what the UI
+ * prints. Noncanonical strings use @p fallback_time.
+ */
+time_t ui_history_event_sort_time(const char* event_text, time_t fallback_time);
 
 #ifdef __cplusplus
 }

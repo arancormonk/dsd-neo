@@ -178,6 +178,25 @@ test_source_less_data_call_does_not_suppress_next_voice_start_alert(void) {
 }
 
 static int
+test_source_less_data_call_is_preserved_in_history(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    watchdog_event_datacall(&opts, &state, 0, 0, "MNIS ARS;", 0);
+    watchdog_event_history(&opts, &state, 0);
+
+    const Event_History* current = &state.event_history_s[0].Event_History_Items[0];
+    const Event_History* stored = &state.event_history_s[0].Event_History_Items[1];
+    int rc = 0;
+    rc |= expect_int("source-less data current should be cleared", current->event_string[0], '\0');
+    rc |= expect_int("source-less data source remains zero", (int)stored->source_id, 0);
+    rc |= expect_has_substr("source-less data should be stored", stored->event_string, "MNIS ARS;");
+    return rc;
+}
+
+static int
 test_voice_end_alert_still_emits_for_voice_history(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -280,6 +299,35 @@ test_p25_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
     return rc;
 }
 
+static int
+test_source_less_current_event_updates_history_metadata(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    state.lastsynctype = DSD_SYNC_P25P2_POS;
+    state.lastsrc = 0U;
+    state.lasttg = 21001U;
+    state.gi[0] = 0;
+    state.nac = 0x006;
+    state.p2_wacn = 0x45564U;
+    state.p2_sysid = 0x006U;
+    state.p2_rfssid = 10U;
+    state.p2_siteid = 10U;
+
+    watchdog_event_current(&opts, &state, 0);
+
+    const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+    int rc = 0;
+    rc |= expect_int("source-less current source remains zero", (int)item->source_id, 0);
+    rc |= expect_int("source-less current target should update", (int)item->target_id, 21001);
+    rc |= expect_int("source-less current event time should update", item->event_time > 0 ? 1 : 0, 1);
+    rc |=
+        expect_has_substr("source-less current string should include source zero", item->event_string, "SRC: 00000000");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -287,10 +335,12 @@ main(void) {
     rc |= test_end_only_data_call_does_not_emit_voice_end_alert();
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();
+    rc |= test_source_less_data_call_is_preserved_in_history();
     rc |= test_voice_end_alert_still_emits_for_voice_history();
     rc |= test_edacs_service_string_appends_past_pointer_size();
     rc |= test_dmr_event_string_keeps_full_prefix_after_sprintf_hardening();
     rc |= test_p25_event_string_keeps_full_prefix_after_sprintf_hardening();
+    rc |= test_source_less_current_event_updates_history_metadata();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");
