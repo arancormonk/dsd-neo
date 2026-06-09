@@ -1508,6 +1508,19 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_pcm_input_staging)
 add_test(NAME DSP_PCM_INPUT_STAGING COMMAND dsd-neo_test_dsp_pcm_input_staging)
 
+add_executable(dsd-neo_test_dsp_wav_input_eof dsp/test_dsp_wav_input_eof.c)
+target_include_directories(
+    dsd-neo_test_dsp_wav_input_eof
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(
+    dsd-neo_test_dsp_wav_input_eof
+    dsd-neo_test_support
+    ${DSD_NEO_TEST_MATH_LIB}
+    ${LIBSNDFILE_LIBRARIES}
+)
+add_test(NAME DSP_WAV_INPUT_EOF COMMAND dsd-neo_test_dsp_wav_input_eof)
+
 add_executable(
     dsd-neo_test_core_dmr_voice_alg_gate
     core/test_core_dmr_voice_alg_gate.c
