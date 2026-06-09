@@ -49,6 +49,22 @@ rules:
       - pattern: posix_spawn(...)
       - pattern: posix_spawnp(...)
 
+  - id: dsd-neo.no-static-array-parameter-bounds
+    languages: [generic]
+    severity: ERROR
+    message: >
+      Do not use C99 array parameter static bounds; MSVC rejects this syntax. Use an ordinary pointer or array
+      declarator for portable project-owned C/C++ declarations.
+    paths:
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /src/third_party/**
+    pattern-regex: '\[\s*static\b'
+
   - id: dsd-neo.no-automatic-full-decoder-state
     languages: [generic]
     severity: ERROR
