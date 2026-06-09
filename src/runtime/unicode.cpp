@@ -29,6 +29,10 @@
 static int g_unicode_cached = 0;
 static int g_unicode_supported = 0;
 static int g_locale_inited = 0;
+#if DSD_PLATFORM_WIN_NATIVE
+static int g_block_glyphs_cached = 0;
+static int g_block_glyphs_supported = 0;
+#endif
 
 static char g_cached_locale[128] = {0};
 #if DSD_PLATFORM_WIN_NATIVE
@@ -68,6 +72,125 @@ str_icontains(const char* haystack, const char* needle) {
     }
     return 0;
 }
+
+#if DSD_PLATFORM_WIN_NATIVE
+static int
+env_nonempty(const char* name) {
+    const char* v = getenv(name);
+    return v && *v;
+}
+
+static int
+wide_ascii_equal_ci(const wchar_t* a, const wchar_t* b) {
+    if (!a || !b) {
+        return 0;
+    }
+    while (*a && *b) {
+        wchar_t ca = *a++;
+        wchar_t cb = *b++;
+        if (ca >= L'A' && ca <= L'Z') {
+            ca = (wchar_t)(ca - L'A' + L'a');
+        }
+        if (cb >= L'A' && cb <= L'Z') {
+            cb = (wchar_t)(cb - L'A' + L'a');
+        }
+        if (ca != cb) {
+            return 0;
+        }
+    }
+    return *a == L'\0' && *b == L'\0';
+}
+
+static int
+windows_console_font_face(wchar_t face[LF_FACESIZE]) {
+    if (!face) {
+        return 0;
+    }
+    face[0] = L'\0';
+
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out == NULL || out == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+
+    CONSOLE_FONT_INFOEX info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.cbSize = sizeof(info);
+    if (!GetCurrentConsoleFontEx(out, FALSE, &info)) {
+        return 0;
+    }
+
+    size_t i = 0;
+    for (; i + 1 < LF_FACESIZE && info.FaceName[i] != L'\0'; i++) {
+        face[i] = info.FaceName[i];
+    }
+    face[i] = L'\0';
+    return face[0] != L'\0';
+}
+
+static int
+windows_font_has_block_glyphs(const wchar_t* face) {
+    if (!face || face[0] == L'\0') {
+        return 0;
+    }
+
+    if (wide_ascii_equal_ci(face, L"Terminal") || wide_ascii_equal_ci(face, L"Raster Fonts")) {
+        return 0;
+    }
+
+    static const wchar_t required[] = {
+        (wchar_t)0x2581, (wchar_t)0x2582, (wchar_t)0x2583, (wchar_t)0x2584,
+        (wchar_t)0x2585, (wchar_t)0x2586, (wchar_t)0x2587, (wchar_t)0x2588,
+    };
+    WORD glyphs[sizeof(required) / sizeof(required[0])];
+    DSD_MEMSET(glyphs, 0, sizeof(glyphs));
+
+    HDC dc = CreateCompatibleDC(NULL);
+    if (!dc) {
+        return 0;
+    }
+
+    HFONT font = CreateFontW(0, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FIXED_PITCH | FF_DONTCARE, face);
+    if (!font) {
+        DeleteDC(dc);
+        return 0;
+    }
+
+    HGDIOBJ old_font = SelectObject(dc, font);
+    DWORD rc = GetGlyphIndicesW(dc, required, (int)(sizeof(required) / sizeof(required[0])), glyphs,
+                                GGI_MARK_NONEXISTING_GLYPHS);
+    int supported = (rc != GDI_ERROR);
+    if (supported) {
+        for (size_t i = 0; i < sizeof(glyphs) / sizeof(glyphs[0]); i++) {
+            if (glyphs[i] == 0xFFFFu) {
+                supported = 0;
+                break;
+            }
+        }
+    }
+
+    if (old_font) {
+        SelectObject(dc, old_font);
+    }
+    DeleteObject(font);
+    DeleteDC(dc);
+    return supported;
+}
+
+static int
+windows_console_block_glyphs_supported(void) {
+    if (env_nonempty("WT_SESSION")) {
+        return 1;
+    }
+
+    wchar_t face[LF_FACESIZE];
+    if (!windows_console_font_face(face)) {
+        return 0;
+    }
+    return windows_font_has_block_glyphs(face);
+}
+#endif
 
 static int
 locale_is_utf8(void) {
@@ -172,6 +295,30 @@ dsd_unicode_supported(void) {
 const char*
 dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
     return dsd_unicode_supported() ? unicode_str : ascii_str;
+}
+
+int
+dsd_unicode_block_glyphs_supported(void) {
+    if (env_truthy("DSD_FORCE_ASCII")) {
+        return 0;
+    }
+    if (env_truthy("DSD_FORCE_UTF8")) {
+        return 1;
+    }
+    if (!dsd_unicode_supported()) {
+        return 0;
+    }
+
+#if DSD_PLATFORM_WIN_NATIVE
+    if (g_block_glyphs_cached) {
+        return g_block_glyphs_supported;
+    }
+    g_block_glyphs_supported = windows_console_block_glyphs_supported() ? 1 : 0;
+    g_block_glyphs_cached = 1;
+    return g_block_glyphs_supported;
+#else
+    return 1;
+#endif
 }
 
 const char*

@@ -10,7 +10,8 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
-int ui_unicode_supported(void); // NOLINT(misc-use-internal-linkage)
+int ui_unicode_supported(void);      // NOLINT(misc-use-internal-linkage)
+int ui_block_glyphs_supported(void); // NOLINT(misc-use-internal-linkage)
 
 #if defined(DSD_NEO_FAST_MATH) || defined(__FAST_MATH__) || defined(_M_FP_FAST)
 #define DSD_NEO_TEST_FAST_MATH 1
@@ -22,6 +23,11 @@ int ui_unicode_supported(void); // NOLINT(misc-use-internal-linkage)
 
 int
 ui_unicode_supported(void) { // NOLINT(misc-use-internal-linkage)
+    return 0;
+}
+
+int
+ui_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 

@@ -76,6 +76,9 @@ target_link_libraries(
         dsd-neo_feature_curl
 )
 target_link_libraries(dsd-neo_runtime PRIVATE dsd-neo_io_iq)
+if(WIN32)
+    target_link_libraries(dsd-neo_runtime PRIVATE gdi32)
+endif()
 
 target_link_libraries(dsd-neo_runtime PRIVATE dsd-neo_warnings)
 
