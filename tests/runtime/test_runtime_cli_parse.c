@@ -2621,6 +2621,11 @@ test_input_source_rtltcp_roundtrip(void) {
 }
 
 static int
+test_input_source_tcp_ipv4_roundtrip(void) {
+    return test_input_source_arg_roundtrip("tcp:192.168.1.50:7355");
+}
+
+static int
 test_iq_capture_long_options_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -4964,6 +4969,7 @@ main(void) {
     rc |= test_input_source_soapy_args_roundtrip();
     rc |= test_input_source_rtl_roundtrip();
     rc |= test_input_source_rtltcp_roundtrip();
+    rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();
     rc |= test_trunk_scan_conflicts_with_legacy_scanner();
     rc |= test_trunk_scan_rejects_global_channel_map();
