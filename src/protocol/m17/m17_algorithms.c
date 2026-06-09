@@ -594,15 +594,8 @@ m17_lich_decode_bits(const uint8_t* encoded_bits, uint8_t* lich_content) {
 }
 
 uint16_t
-m17_lsf_encode_type1_bits(const uint8_t type1_flush_bits[M17_LSF_TYPE1_FLUSH_BITS],
-                          uint8_t randomized_bits[M17_PAYLOAD_BITS], uint16_t* consumed_bits) {
-    if (type1_flush_bits == NULL || randomized_bits == NULL) {
-        if (consumed_bits != NULL) {
-            *consumed_bits = 0U;
-        }
-        return 0U;
-    }
-
+m17_lsf_encode_type1_bits(const uint8_t type1_flush_bits[static M17_LSF_TYPE1_FLUSH_BITS],
+                          uint8_t randomized_bits[static M17_PAYLOAD_BITS], uint16_t* consumed_bits) {
     uint8_t encoded[M17_LSF_TYPE2_BITS];
     uint8_t punctured[M17_PAYLOAD_BITS];
     for (int i = 0; i < M17_LSF_TYPE2_BITS; i++) {

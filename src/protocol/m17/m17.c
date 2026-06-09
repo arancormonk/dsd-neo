@@ -1727,8 +1727,11 @@ m17_attach_lsf_crc(uint8_t* m17_lsf, uint8_t* lsf_packed, uint16_t* crc_cmp) {
 }
 
 static void
-m17_encode_lsf_for_rf(const uint8_t* m17_lsf, uint8_t* m17_lsfs) {
-    (void)m17_lsf_encode_type1_bits(m17_lsf, m17_lsfs, NULL);
+m17_encode_lsf_for_rf(const uint8_t m17_lsf[static M17_LSF_TYPE1_BITS], uint8_t m17_lsfs[static M17_PAYLOAD_BITS]) {
+    uint8_t type1_flush_bits[M17_LSF_TYPE1_FLUSH_BITS];
+    DSD_MEMSET(type1_flush_bits, 0, sizeof(type1_flush_bits));
+    DSD_MEMCPY(type1_flush_bits, m17_lsf, M17_LSF_TYPE1_BITS);
+    (void)m17_lsf_encode_type1_bits(type1_flush_bits, m17_lsfs, NULL);
 }
 
 static float
