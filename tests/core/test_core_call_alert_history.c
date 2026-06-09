@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/platform/sndfile_fwd.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <stdint.h>
@@ -25,12 +26,10 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct sf_private_tag;
-
 static int g_beeper_count;
 static int g_last_beeper_id;
 
-struct sf_private_tag*
+SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
     UNUSED(dir);
     UNUSED(temp_filename);
@@ -40,9 +39,9 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
     return NULL;
 }
 
-struct sf_private_tag*
-close_and_rename_wav_file(struct sf_private_tag* wav_file, const dsd_opts* opts, const char* wav_out_filename,
-                          const char* dir, const Event_History_I* event_struct) {
+SNDFILE*
+close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                          const Event_History_I* event_struct) {
     UNUSED(wav_file);
     UNUSED(opts);
     UNUSED(wav_out_filename);

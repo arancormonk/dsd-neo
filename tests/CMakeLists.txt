@@ -76,6 +76,29 @@ set(_DSD_PUBLIC_HEADER_TEST_DIR
 )
 file(MAKE_DIRECTORY "${_DSD_PUBLIC_HEADER_TEST_DIR}")
 
+set(_DSD_SNDFILE_ALT_TAG_INCLUDE_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/sndfile_alt_tag_include"
+)
+file(MAKE_DIRECTORY "${_DSD_SNDFILE_ALT_TAG_INCLUDE_DIR}")
+file(
+    WRITE "${_DSD_SNDFILE_ALT_TAG_INCLUDE_DIR}/sndfile.h"
+    "#ifndef SNDFILE_H\n"
+    "#define SNDFILE_H\n"
+    "\n"
+    "typedef long long sf_count_t;\n"
+    "typedef struct SNDFILE_tag SNDFILE;\n"
+    "typedef struct SF_INFO {\n"
+    "    sf_count_t frames;\n"
+    "    int samplerate;\n"
+    "    int channels;\n"
+    "    int format;\n"
+    "    int sections;\n"
+    "    int seekable;\n"
+    "} SF_INFO;\n"
+    "\n"
+    "#endif /* SNDFILE_H */\n"
+)
+
 function(
     dsd_neo_add_public_header_smoke_test
     target_name
@@ -1393,6 +1416,34 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_test(
         NAME CORE_CALL_ALERT_HISTORY
         COMMAND dsd-neo_test_core_call_alert_history
+    )
+
+    add_executable(
+        dsd-neo_test_core_call_alert_history_sndfile_alt_tag
+        core/test_core_call_alert_history.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_call_alert_history_sndfile_alt_tag
+        BEFORE
+        PRIVATE
+            ${_DSD_SNDFILE_ALT_TAG_INCLUDE_DIR}
+            ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_core_call_alert_history_sndfile_alt_tag
+        PRIVATE dsd-neo_core
+    )
+    target_link_options(
+        dsd-neo_test_core_call_alert_history_sndfile_alt_tag
+        PRIVATE "LINKER:--wrap=beeper"
+    )
+    set_property(
+        TARGET dsd-neo_test_core_call_alert_history_sndfile_alt_tag
+        PROPERTY EXPORT_COMPILE_COMMANDS OFF
+    )
+    add_test(
+        NAME CORE_CALL_ALERT_HISTORY_SNDFILE_ALT_TAG
+        COMMAND dsd-neo_test_core_call_alert_history_sndfile_alt_tag
     )
 endif()
 
