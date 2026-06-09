@@ -1511,7 +1511,7 @@ add_test(NAME DSP_PCM_INPUT_STAGING COMMAND dsd-neo_test_dsp_pcm_input_staging)
 add_executable(dsd-neo_test_dsp_wav_input_eof dsp/test_dsp_wav_input_eof.c)
 target_include_directories(
     dsd-neo_test_dsp_wav_input_eof
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${LIBSNDFILE_INCLUDE_DIR}
 )
 dsd_neo_link_dsp_test(
     dsd-neo_test_dsp_wav_input_eof

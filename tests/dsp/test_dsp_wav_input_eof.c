@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <sndfile.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -149,11 +150,10 @@ main(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    SF_INFO info;
-    DSD_MEMSET(&info, 0, sizeof(info));
-    opts.audio_in_file = sf_open(wav_path, SFM_READ, &info);
+    opts.audio_in_file_info = (SF_INFO*)calloc(1, sizeof(*opts.audio_in_file_info));
+    assert(opts.audio_in_file_info != NULL);
+    opts.audio_in_file = sf_open(wav_path, SFM_READ, opts.audio_in_file_info);
     assert(opts.audio_in_file != NULL);
-    opts.audio_in_file_info = &info;
     opts.audio_in_type = AUDIO_IN_WAV;
     opts.audio_out_type = 1;
     opts.input_volume_multiplier = 1;
@@ -177,6 +177,8 @@ main(void) {
     assert(g_cleanup_calls == 1);
     assert(opts.audio_in_file == NULL);
 
+    free(opts.audio_in_file_info);
+    opts.audio_in_file_info = NULL;
     remove(wav_path);
     return 0;
 }
