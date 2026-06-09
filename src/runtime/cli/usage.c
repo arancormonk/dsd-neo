@@ -69,8 +69,9 @@ dsd_cli_usage_section_io(void) {
     printf("                soapy for SoapySDR input (default device args)\n");
     printf("                soapy:driver=airspy[,serial=...] for SoapySDR input selection args\n");
     printf("                soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]] for Soapy args + RTL-style tuning\n");
-    printf("                tcp for TCP raw PCM16LE mono audio input (Port 7355)\n");
-    printf("                tcp:192.168.7.5:7355 for custom address and port\n");
+    printf("                tcp for TCP raw PCM16LE mono audio input (connects to localhost:7355)\n");
+    printf("                tcp:192.168.1.50:7355 for a TCP producer listening on another host\n");
+    printf("                When -U is used with tcp:host:port, rigctl connects to the same host.\n");
     printf("                udp for UDP direct audio input (default host 127.0.0.1; default port 7355)\n");
     printf("                udp:0.0.0.0:7355 to bind all interfaces for UDP input\n");
     printf("                m17udp for M17 UDP/IP frame input (default 127.0.0.1:17000)\n");

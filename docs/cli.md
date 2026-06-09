@@ -67,6 +67,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
 - SoapySDR: `-i soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]`
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`; sample rate uses `-s`, default 48000)
+  For a LAN host, use the IPv4 address of the computer running the TCP audio producer, and make sure that producer is
+  listening on that LAN interface, not just on `localhost`.
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355)
 - M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended; use with `-fU`)
 - stdin (raw PCM16LE mono): `-i -` (sample rate uses `-s`)
@@ -76,6 +78,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 TCP/UDP PCM input format notes
 
 - Sample format is signed PCM16LE (little-endian), mono, headerless stream/datagrams.
+- With `-i tcp:<host>:<port> -U <rigctl_port>`, rigctl connects to the same `<host>` as the TCP audio input. For SDR++
+  on another PC, allow inbound TCP for both the audio port, commonly `7355`, and rigctl, commonly `4532`.
 - See `docs/network-audio.md` for practical send/receive examples and UDP output details.
 
 Other input options

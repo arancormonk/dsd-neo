@@ -5089,6 +5089,23 @@ target_link_libraries(
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
 
 add_executable(
+    dsd-neo_test_platform_socket_resolve
+    platform/test_platform_socket_resolve.c
+)
+target_include_directories(
+    dsd-neo_test_platform_socket_resolve
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_socket_resolve
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME PLATFORM_SOCKET_RESOLVE
+    COMMAND dsd-neo_test_platform_socket_resolve
+)
+
+add_executable(
     dsd-neo_test_platform_monotonic_cond
     platform/test_platform_monotonic_cond.c
 )
