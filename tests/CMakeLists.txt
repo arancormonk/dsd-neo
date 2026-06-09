@@ -850,6 +850,23 @@ target_link_libraries(dsd-neo_test_runtime_rings PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_RINGS COMMAND dsd-neo_test_runtime_rings)
 
 add_executable(
+    dsd-neo_test_runtime_unicode_block_glyphs
+    runtime/test_runtime_unicode_block_glyphs.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_unicode_block_glyphs
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_unicode_block_glyphs
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_UNICODE_BLOCK_GLYPHS
+    COMMAND dsd-neo_test_runtime_unicode_block_glyphs
+)
+
+add_executable(
     dsd-neo_test_runtime_input_ring_init
     runtime/test_runtime_input_ring_init.cpp
 )

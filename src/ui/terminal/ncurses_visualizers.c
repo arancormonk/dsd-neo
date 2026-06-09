@@ -158,7 +158,7 @@ constellation_grid_size(int* W, int* H) {
 static constellation_style
 constellation_make_style(const dsd_opts* opts) {
     constellation_style style;
-    style.use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
+    style.use_unicode = (opts && opts->eye_unicode && ui_block_glyphs_supported());
     style.use_dots = 1;
     style.color_enabled = (opts && opts->eye_color && has_colors());
     style.ascii_len = (int)(sizeof(k_density_ascii_palette) - 1);
@@ -541,7 +541,7 @@ eye_effective_unicode_ui(const dsd_opts* opts) {
     static int s_unicode_ready = -1;
     static int s_unicode_warned = 0;
     if (s_unicode_ready < 0) {
-        s_unicode_ready = ui_unicode_supported() ? 1 : 0;
+        s_unicode_ready = ui_block_glyphs_supported() ? 1 : 0;
     }
     int use_unicode_ui = (opts && opts->eye_unicode && s_unicode_ready);
     if (opts && opts->eye_unicode && !s_unicode_ready && !s_unicode_warned) {
@@ -1529,7 +1529,7 @@ print_spectrum_view_rtlsdr(const dsd_opts* opts) {
     float span = 1.0f;
     spectrum_range(col, w, &vmin, &vmax, &span);
 
-    int use_unicode = (opts && opts->eye_unicode && ui_unicode_supported());
+    int use_unicode = (opts && opts->eye_unicode && ui_block_glyphs_supported());
     spectrum_draw_plot(opts, col, w, h, vmin, vmax, span, use_unicode);
     spectrum_print_legend(opts, rate, w, use_unicode, vmax, vmin);
 }

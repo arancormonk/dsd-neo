@@ -40,9 +40,10 @@ enum { SNR_METER_BARS = 5, SNR_METER_WIDTH = (SNR_METER_BARS * 2) - 1 };
 enum { SNR_BLOCK_LEVELS = 8 };
 
 #if defined(DSD_USE_PDCURSES) && !defined(DSD_HAS_PDCURSES_WIDE_API)
-#define SNR_USE_UNICODE(option_enabled, unicode_supported) ((void)(option_enabled), (void)(unicode_supported), 0)
+#define SNR_USE_UNICODE(option_enabled, block_glyphs_supported)                                                        \
+    ((void)(option_enabled), (void)(block_glyphs_supported), 0)
 #else
-#define SNR_USE_UNICODE(option_enabled, unicode_supported) ((option_enabled) && (unicode_supported))
+#define SNR_USE_UNICODE(option_enabled, block_glyphs_supported) ((option_enabled) && (block_glyphs_supported))
 #endif
 
 #if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
@@ -129,8 +130,8 @@ dsd_ncurses_snr_meter_ascii_for_test(double snr_db, char* out, size_t out_size) 
 }
 
 int
-dsd_ncurses_snr_use_unicode_for_test(int option_enabled, int unicode_supported) {
-    return SNR_USE_UNICODE(option_enabled, unicode_supported);
+dsd_ncurses_snr_use_unicode_for_test(int option_enabled, int block_glyphs_supported) {
+    return SNR_USE_UNICODE(option_enabled, block_glyphs_supported);
 }
 #endif
 
@@ -249,8 +250,8 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
 #endif
     /* Make the lowest ASCII level visible (no leading space) */
     static const char ascii8[] = ".:;-=+*#"; /* 8 levels */
-    /* Respect the UI toggle: only use Unicode blocks when enabled and locale supports it */
-    int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_unicode_supported());
+    /* Respect the UI toggle and require renderable block glyphs, not just UTF-8 bytes. */
+    int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_block_glyphs_supported());
     const int levels = SNR_BLOCK_LEVELS;
     const int W = 24;                             /* sparkline width */
     const double clip_lo = -15.0, clip_hi = 30.0; /* dB window (allow negatives) */
@@ -287,7 +288,7 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     attr_get(&saved_attrs, &saved_pair, NULL);
 #endif
     const int bars = snr_meter_bar_count(snr_db);
-    int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_unicode_supported());
+    int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_block_glyphs_supported());
 #ifdef PRETTY_COLORS
     short cp = SNR_METER_COLOR_PAIR;
 #endif

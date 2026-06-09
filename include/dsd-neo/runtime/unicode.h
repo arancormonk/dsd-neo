@@ -31,6 +31,15 @@ void dsd_unicode_init_locale(void);
 /** @brief Convenience helper to pick Unicode or ASCII string based on support. */
 const char* dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str);
 
+/**
+ * @brief Return 1 when dense UI glyphs such as block meters are safe to use.
+ *
+ * This is intentionally stricter than dsd_unicode_supported(): a terminal may
+ * accept UTF-8 or wide-character output while its active console font still
+ * cannot render block glyphs.
+ */
+int dsd_unicode_block_glyphs_supported(void);
+
 /** @brief Degree glyph string with ASCII fallback ("\xC2\xB0" vs " deg"). */
 const char* dsd_degrees_glyph(void);
 

@@ -26,6 +26,11 @@ ui_unicode_supported(void) {
     return dsd_unicode_supported();
 }
 
+int
+ui_block_glyphs_supported(void) {
+    return dsd_unicode_block_glyphs_supported();
+}
+
 /* Quickselect helpers for int arrays (k-th smallest in O(n)) */
 
 void
