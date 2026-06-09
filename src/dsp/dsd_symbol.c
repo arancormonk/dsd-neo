@@ -1123,8 +1123,36 @@ symbol_read_sample_pulse(dsd_opts* opts, float* sample_out) {
     return 1;
 }
 
+static inline void
+symbol_close_audio_in_file(dsd_opts* opts) {
+    if (opts == NULL || opts->audio_in_file == NULL) {
+        return;
+    }
+    sf_close(opts->audio_in_file);
+    opts->audio_in_file = NULL;
+}
+
+static inline int
+symbol_stop_after_shutdown(float* sample_out) {
+    if (exitflag != 1) {
+        return 0;
+    }
+    if (sample_out != NULL) {
+        *sample_out = 0.0f;
+    }
+    return 1;
+}
+
 static inline int
 symbol_read_sample_stdin(dsd_opts* opts, dsd_state* state, float* sample_out) {
+    if (symbol_stop_after_shutdown(sample_out)) {
+        return 0;
+    }
+    if (opts->audio_in_file == NULL) {
+        cleanupAndExit(opts, state);
+        return 0;
+    }
+
     short s = 0;
     sf_count_t result = sf_read_short(opts->audio_in_file, &s, 1);
     s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
@@ -1133,7 +1161,7 @@ symbol_read_sample_stdin(dsd_opts* opts, dsd_state* state, float* sample_out) {
         if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
             return 1;
         }
-        sf_close(opts->audio_in_file);
+        symbol_close_audio_in_file(opts);
         cleanupAndExit(opts, state);
         return 0;
     }
@@ -1146,6 +1174,14 @@ symbol_read_sample_stdin(dsd_opts* opts, dsd_state* state, float* sample_out) {
 
 static inline int
 symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out) {
+    if (symbol_stop_after_shutdown(sample_out)) {
+        return 0;
+    }
+    if (opts->audio_in_file == NULL) {
+        cleanupAndExit(opts, state);
+        return 0;
+    }
+
     short s = 0;
     sf_count_t result = sf_read_short(opts->audio_in_file, &s, 1);
     s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
@@ -1154,7 +1190,7 @@ symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out) {
         if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
             return 1;
         }
-        sf_close(opts->audio_in_file);
+        symbol_close_audio_in_file(opts);
         DSD_FPRINTF(stderr, "\nEnd of %s\n", opts->audio_in_dev);
         if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
             opts->audio_in_type = AUDIO_IN_PULSE;
@@ -1299,6 +1335,9 @@ symbol_read_sample_udp(dsd_opts* opts, dsd_state* state, float* sample_out) {
 
 static int
 symbol_take_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
+    if (symbol_stop_after_shutdown(&work->sample)) {
+        return 0;
+    }
     if (dsd_pcm_input_uses_staged_resampler(opts) && opts->input_upsample_pos < opts->input_upsample_len) {
         work->sample = opts->input_upsample_buf[opts->input_upsample_pos++];
         return 1;
