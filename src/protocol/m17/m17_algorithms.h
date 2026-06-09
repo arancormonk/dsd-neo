@@ -150,8 +150,8 @@ int m17_lich_build_content(const uint8_t* lsf_bits, uint8_t lich_cnt, uint8_t* l
 int m17_lich_parse_content(const uint8_t* lich_content, uint8_t* lich_cnt, uint8_t* reserved);
 void m17_lich_encode_bits(const uint8_t* lich_content, uint8_t* encoded_bits);
 int m17_lich_decode_bits(const uint8_t* encoded_bits, uint8_t* lich_content);
-uint16_t m17_lsf_encode_type1_bits(const uint8_t type1_flush_bits[static M17_LSF_TYPE1_FLUSH_BITS],
-                                   uint8_t randomized_bits[static M17_PAYLOAD_BITS], uint16_t* consumed_bits);
+uint16_t m17_lsf_encode_type1_bits(const uint8_t type1_flush_bits[M17_LSF_TYPE1_FLUSH_BITS],
+                                   uint8_t randomized_bits[M17_PAYLOAD_BITS], uint16_t* consumed_bits);
 void m17_stream_build_type1_bits(uint16_t frame_number, const uint8_t* payload_bits, uint8_t* type1_flush_bits);
 int m17_stream_parse_type1_bits(const uint8_t* type1_bits, uint16_t* frame_number, uint8_t* payload_bits);
 uint16_t m17_stream_next_frame_counter(uint16_t frame_counter);
