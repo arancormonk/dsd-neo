@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/input_level.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -25,6 +26,7 @@ static int g_snr_gfsk_calls = 0;
 static int g_snr_qpsk_const_calls = 0;
 static int g_p25p1_ber_calls = 0;
 static int g_p25p2_err_calls = 0;
+static int g_input_level_calls = 0;
 
 static int g_p25p1_ok_delta = 0;
 static int g_p25p1_err_delta = 0;
@@ -164,6 +166,21 @@ fake_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sac
     g_p25p2_voice_err_delta = voice_err_delta;
 }
 
+static int
+fake_input_level(dsd_input_level_snapshot* out) {
+    g_input_level_calls++;
+    if (out) {
+        out->status = DSD_INPUT_LEVEL_HOT;
+        out->source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
+        out->rms_dbfs = -18.0;
+        out->peak_dbfs = -0.5;
+        out->clip_pct = 0.0;
+        out->sample_count = 4096U;
+        out->updated = 12345;
+    }
+    return -9;
+}
+
 int
 main(void) {
     /*
@@ -187,6 +204,19 @@ main(void) {
     assert(channel_profile == 0);
     assert(dsd_rtl_stream_metrics_hook_stream_generation() == 0U);
     assert(dsd_rtl_stream_metrics_hook_stream_active() == 0);
+    dsd_input_level_snapshot input_level = {
+        .status = DSD_INPUT_LEVEL_CLIPPING,
+        .source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8,
+        .rms_dbfs = -1.0,
+        .peak_dbfs = 0.0,
+        .clip_pct = 50.0,
+        .sample_count = 99U,
+        .updated = 77,
+    };
+    assert(dsd_rtl_stream_metrics_hook_input_level(&input_level) == 0);
+    assert(input_level.status == DSD_INPUT_LEVEL_UNKNOWN);
+    assert(input_level.source == DSD_INPUT_LEVEL_SOURCE_UNKNOWN);
+    assert(input_level.sample_count == 0U);
     assert(dsd_rtl_stream_metrics_hook_set_symbol_profile(2400, 2, 1) == 0);
 
     int cqpsk = -1;
@@ -236,6 +266,7 @@ main(void) {
     g_snr_qpsk_const_calls = 0;
     g_p25p1_ber_calls = 0;
     g_p25p2_err_calls = 0;
+    g_input_level_calls = 0;
     g_set_symbol_rate_hz = 0;
     g_set_symbol_levels = 0;
     g_set_symbol_channel_profile = 0;
@@ -257,6 +288,7 @@ main(void) {
     hooks.snr_qpsk_const_db = fake_snr_qpsk_const_db;
     hooks.p25p1_ber_update = fake_p25p1_ber_update;
     hooks.p25p2_err_update = fake_p25p2_err_update;
+    hooks.input_level = fake_input_level;
     dsd_rtl_stream_metrics_hooks_set(&hooks);
 
     assert(dsd_rtl_stream_metrics_hook_output_rate_hz() == 24000U);
@@ -276,6 +308,13 @@ main(void) {
     assert(g_stream_generation_calls == 1);
     assert(dsd_rtl_stream_metrics_hook_stream_active() == 1);
     assert(g_stream_active_calls == 1);
+    input_level = (dsd_input_level_snapshot){0};
+    assert(dsd_rtl_stream_metrics_hook_input_level(&input_level) == -9);
+    assert(g_input_level_calls == 1);
+    assert(input_level.status == DSD_INPUT_LEVEL_HOT);
+    assert(input_level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
+    assert(input_level.sample_count == 4096U);
+    assert(input_level.updated == 12345);
 
     assert(dsd_rtl_stream_metrics_hook_set_symbol_profile(6000, 4, 5) == 6);
     assert(g_set_symbol_profile_calls == 1);

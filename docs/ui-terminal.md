@@ -41,6 +41,25 @@ Config profiles:
 The DSP status panel shows RTL DSP loop state when RTL input support is available. CQPSK mode reports FLL,
 carrier/Costas, NCO, and timing-recovery state for the active OP25-style chain.
 
+## Input Level Health
+
+The input section shows a persistent advisory line when recent input-level metrics are available:
+
+```text
+| Input Level: OK rms -23.1 dBFS peak -5.4 dBFS clip 0.0%
+| RF Level: CLIP rms -6.0 dBFS peak 0.0 dBFS clip 0.3% lower RF gain or add filtering/attenuation
+```
+
+`Input Level` is used for PCM-like audio inputs. `RF Level` is used for RTL-SDR, rtl_tcp, and SoapySDR receiver
+samples measured before demodulation. The line is advisory only; DSD-neo never changes input volume, RF gain, AGC, or
+filtering automatically.
+
+The low-level threshold is controlled by `--input-level-warn-db` or `DSD_NEO_INPUT_WARN_DB` and defaults to `-40 dBFS`.
+Hot/clipping advisories use fixed v1 thresholds: peak at or above `-1.0 dBFS` is `HOT`, and at least `0.1%` clipped or
+near-rail samples is `CLIP`. Footer messages are rate-limited. RF low-level status remains persistent but does not
+produce repeated low-level footer messages because a quiet channel and too little RF gain are not reliably
+distinguishable from raw receiver samples alone.
+
 ## Hotkeys (Main Screen)
 
 Keys are case-sensitive. Some commands only make sense in specific modes (for example, trunking controls require

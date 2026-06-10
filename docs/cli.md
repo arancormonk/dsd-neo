@@ -85,7 +85,8 @@ TCP/UDP PCM input format notes
 Other input options
 
 - `--input-volume <1..16>` scale non‑RTL input samples (file/UDP/TCP) by an integer factor.
-- `--input-level-warn-db <dB>` warn if input power falls below dBFS (default −40).
+- `--input-level-warn-db <dB>` low input-level advisory threshold in dBFS (default −40). This only affects LOW
+  advisories; DSD-neo never changes gain automatically.
 
 Tip: If paths or names contain spaces, wrap them in single quotes.
 
@@ -103,6 +104,9 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-Z` Log MBE/PDU payloads to the console (verbose)
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `-O` List PulseAudio input sources and output sinks
+- The ncurses input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
+  `--input-level-warn-db`; `HOT` means peak at or above `-1.0 dBFS`; `CLIP` means at least `0.1%` clipped or near-rail
+  samples. These advisories never adjust gain automatically.
 - UI hotkeys and menu navigation: `docs/ui-terminal.md`
 - `-j` P25: force-enable LCW explicit retune (format 0x44; enabled by default)
 - `-^` P25: prefer CC candidates during control channel hunt
@@ -529,7 +533,7 @@ Misc
 - `DSD_NEO_CPU_USB|DSD_NEO_CPU_DONGLE|DSD_NEO_CPU_DEMOD=<cpu>` — per-thread CPU affinity (only used when `DSD_NEO_RT_SCHED=1`)
 - `DSD_NEO_FTZ_DAZ=1` — enable SSE flush‑to‑zero / denormals‑are‑zero
 - `DSD_NEO_INPUT_VOLUME=<1..16>` — scale non‑RTL input samples (env alternative to `--input-volume`)
-- `DSD_NEO_INPUT_WARN_DB=<dB>` — warn if input power falls below dBFS (default −40)
+- `DSD_NEO_INPUT_WARN_DB=<dB>` — low input-level advisory threshold in dBFS (default −40)
 - `DSD_NEO_RIGCTL_RCVTIMEO=<ms>` — rigctl socket receive timeout
 - `DSD_NEO_TCPIN_BACKOFF_MS=<ms>` — TCP input read backoff
 

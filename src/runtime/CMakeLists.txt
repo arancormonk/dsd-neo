@@ -15,6 +15,7 @@ target_sources(
         control_pump.c
         freq_parse.c
         input_spec.c
+        input_level.c
         path_policy.c
         frame_sync_hooks.c
         trunk_scan_hooks.c

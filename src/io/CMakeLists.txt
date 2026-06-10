@@ -49,7 +49,7 @@ if(DSD_HAS_RADIO)
     )
     target_link_libraries(
         dsd-neo_io_radio
-        PRIVATE dsd-neo_io_iq dsd-neo_platform
+        PRIVATE dsd-neo_core dsd-neo_io_iq dsd-neo_platform
     )
     # SoapySDR exports C++-only warning flags; keep it private so they do not leak into C dependents.
     target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_feature_soapy)

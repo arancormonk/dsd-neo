@@ -16,6 +16,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
@@ -37,6 +38,7 @@
 #include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
@@ -46,7 +48,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1928,18 +1929,16 @@ m17_str_apply_monitor_side_state(m17_str_ctx* ctx) {
 
 static void
 m17_str_update_input_power(m17_str_ctx* ctx) {
-    if (ctx->opts->audio_in_type != 3) {
-        ctx->opts->rtl_pwr = raw_pwr(ctx->voice1, ctx->nsam, 1);
-        if (ctx->opts->input_warn_db < 0.0) {
-            const double db = pwr_to_dB(ctx->opts->rtl_pwr);
-            const time_t now = time(NULL);
-            if (db <= ctx->opts->input_warn_db
-                && (ctx->opts->last_input_warn_time == 0
-                    || (int)(now - ctx->opts->last_input_warn_time) >= ctx->opts->input_warn_cooldown_sec)) {
-                LOG_WARNING("Input level low (%.1f dBFS). Consider raising sender gain or use --input-volume.\n", db);
-                ctx->opts->last_input_warn_time = now;
-            }
+    dsd_input_level_snapshot snapshot;
+    if (ctx->opts->audio_in_type == AUDIO_IN_RTL) {
+        if (dsd_rtl_stream_metrics_hook_input_level(&snapshot) == 0 && snapshot.sample_count > 0U) {
+            dsd_input_level_publish(ctx->opts, ctx->state, &snapshot, DSD_INPUT_LEVEL_NOTIFY_RF);
         }
+        return;
+    }
+    if (dsd_input_level_metrics_from_pcm_i16(ctx->voice1, (size_t)ctx->nsam, 1U, DSD_INPUT_LEVEL_SOURCE_PCM, &snapshot)
+        == 0) {
+        dsd_input_level_publish(ctx->opts, ctx->state, &snapshot, DSD_INPUT_LEVEL_NOTIFY_ALL);
     }
 }
 

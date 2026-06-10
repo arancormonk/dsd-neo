@@ -22,8 +22,8 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/dmr_sync.h>
@@ -982,20 +982,15 @@ symbol_convert_analog_block_to_i16(dsd_state* state, unsigned int analog_block) 
 }
 
 static inline void
-symbol_update_unsynced_input_power(dsd_opts* opts, const dsd_state* state, unsigned int analog_block) {
+symbol_update_unsynced_input_power(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         return;
     }
-    opts->rtl_pwr = raw_pwr_f(state->analog_out_f, (int)analog_block, 1);
-    if (opts->input_warn_db < 0.0) {
-        double db = pwr_to_dB(opts->rtl_pwr);
-        time_t now = time(NULL);
-        if (db <= opts->input_warn_db
-            && (opts->last_input_warn_time == 0
-                || (int)(now - opts->last_input_warn_time) >= opts->input_warn_cooldown_sec)) {
-            LOG_WARNING("Input level low (%.1f dBFS). Consider raising sender gain or use --input-volume.\n", db);
-            opts->last_input_warn_time = now;
-        }
+    dsd_input_level_snapshot snapshot;
+    if (dsd_input_level_metrics_from_pcm_f32_i16_scale(state->analog_out_f, analog_block, 1U,
+                                                       DSD_INPUT_LEVEL_SOURCE_PCM, &snapshot)
+        == 0) {
+        dsd_input_level_publish(opts, state, &snapshot, DSD_INPUT_LEVEL_NOTIFY_ALL);
     }
 }
 
@@ -1211,6 +1206,20 @@ symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out) {
 }
 
 #ifdef USE_RADIO
+static inline void
+symbol_maybe_publish_rtl_input_level(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    if ((state->symbolcnt & 0x3FU) != 0) {
+        return;
+    }
+    dsd_input_level_snapshot snapshot;
+    if (dsd_rtl_stream_metrics_hook_input_level(&snapshot) == 0 && snapshot.sample_count > 0U) {
+        dsd_input_level_publish(opts, state, &snapshot, DSD_INPUT_LEVEL_NOTIFY_RF);
+    }
+}
+
 static inline int
 symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
     if (!state->rtl_ctx) {
@@ -1459,6 +1468,7 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
     state->lastsample = work->sample;
     dmr_sample_history_push(state, work->sample);
     state->symbolcnt++;
+    symbol_maybe_publish_rtl_input_level(opts, state);
     return 1;
 }
 
@@ -1669,7 +1679,7 @@ symbol_apply_replay_overrides(dsd_opts* opts, dsd_state* state, float* symbol) {
 }
 
 static inline float
-symbol_commit_symbol(const dsd_opts* opts, dsd_state* state, int have_sync, const symbol_work_ctx* work, float symbol) {
+symbol_commit_symbol(dsd_opts* opts, dsd_state* state, int have_sync, const symbol_work_ctx* work, float symbol) {
 #ifdef USE_RADIO
     if (work->clk_mode && state->rf_mod == 0) {
         maybe_c4fm_clock(opts, state, have_sync, work->clk_mode, work->clk_early, work->clk_mid, work->clk_late);
@@ -1681,6 +1691,9 @@ symbol_commit_symbol(const dsd_opts* opts, dsd_state* state, int have_sync, cons
 #endif
     dmr_sample_history_push(state, symbol);
     state->symbolcnt++;
+#ifdef USE_RADIO
+    symbol_maybe_publish_rtl_input_level(opts, state);
+#endif
     return symbol;
 }
 

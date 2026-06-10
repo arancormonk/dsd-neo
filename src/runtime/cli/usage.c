@@ -83,7 +83,7 @@ dsd_cli_usage_section_io(void) {
     printf("                (Use single quotes '/directory/audio file.wav' when directories/spaces are present)\n");
     printf("  -s <rate>     Sample rate (Hz) for WAV/TCP/UDP inputs (e.g., 48000, 96000)\n");
     printf("      --input-volume <N>  Scale non-RTL input samples by N (integer 1..16).\n");
-    printf("      --input-level-warn-db <dB>  Warn if input power below dBFS (default -40).\n");
+    printf("      --input-level-warn-db <dB>  Low input-level advisory threshold in dBFS (default -40).\n");
     printf("  -o <device>   Audio output device (default is pulse)\n");
     printf("                pulse for pulse audio decoded voice or analog output\n");
     printf("                pulse:1 or pulse:alsa_output.pci-0000_0d_00.3.analog-stereo for pulse audio decoded voice "

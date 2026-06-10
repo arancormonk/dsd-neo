@@ -335,7 +335,6 @@ if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
   mapfile -t cppcheck_sources < <(printf '%s\n' "${cppcheck_sources[@]}" | sort -u)
 fi
 
-overall_rc=0
 missing_tools=()
 
 mark_missing_tool() {
@@ -344,7 +343,8 @@ mark_missing_tool() {
   echo "pre-push: skipping ${reason} (${tool} not found in PATH)." >&2
   missing_tools+=("$tool")
   if [[ "$FAIL_ON_MISSING_TOOLS" == "1" ]]; then
-    overall_rc=1
+    echo "pre-push: failing because DSD_HOOK_FAIL_ON_MISSING_TOOLS=1." >&2
+    exit 1
   fi
 }
 
@@ -357,8 +357,8 @@ run_check() {
   local rc=$?
   set -e
   if [[ $rc -ne 0 ]]; then
-    overall_rc=1
     echo "pre-push: ${label} failed." >&2
+    exit "$rc"
   fi
 }
 
@@ -496,13 +496,6 @@ fi
 if [[ ${#missing_tools[@]} -gt 0 ]]; then
   mapfile -t missing_tools < <(printf '%s\n' "${missing_tools[@]}" | sort -u)
   echo "pre-push: missing tools: ${missing_tools[*]}" >&2
-  if [[ "$FAIL_ON_MISSING_TOOLS" == "1" ]]; then
-    echo "pre-push: failing because DSD_HOOK_FAIL_ON_MISSING_TOOLS=1." >&2
-  fi
-fi
-
-if [[ $overall_rc -ne 0 ]]; then
-  exit 1
 fi
 
 exit 0
