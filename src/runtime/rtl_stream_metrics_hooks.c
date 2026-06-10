@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include "dsd-neo/core/input_level.h"
+
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
@@ -61,6 +63,17 @@ int
 dsd_rtl_stream_metrics_hook_stream_active(void) {
     if (g_rtl_stream_metrics_hooks.stream_active) {
         return g_rtl_stream_metrics_hooks.stream_active() ? 1 : 0;
+    }
+    return 0;
+}
+
+int
+dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out) {
+    if (g_rtl_stream_metrics_hooks.input_level) {
+        return g_rtl_stream_metrics_hooks.input_level(out);
+    }
+    if (out) {
+        *out = (dsd_input_level_snapshot){0};
     }
     return 0;
 }

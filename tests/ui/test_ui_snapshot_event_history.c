@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -38,6 +39,12 @@ assert_render_fields(const dsd_state* snap) {
     assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
     assert(strcmp(lookup.entry.name, "DISPATCH") == 0);
     assert(strcmp(snap->ui_msg, "snapshot ready") == 0);
+    assert(snap->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
+    assert(snap->input_level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
+    assert(snap->input_level.sample_count == 2048U);
+    assert(snap->input_level_last_toast_time == 1234);
+    assert(snap->input_level_last_toast_status == DSD_INPUT_LEVEL_CLIPPING);
+    assert(snap->input_level_last_toast_source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
     assert(snap->rkey_array[7] == 0ULL);
 }
 
@@ -71,6 +78,16 @@ main(void) {
     assert(dsd_tg_policy_make_exact_entry(321U, "A", "DISPATCH", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     assert(dsd_tg_policy_append_exact(state, &entry) == 0);
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "snapshot ready");
+    state->input_level.status = DSD_INPUT_LEVEL_CLIPPING;
+    state->input_level.source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
+    state->input_level.rms_dbfs = -12.5;
+    state->input_level.peak_dbfs = -0.2;
+    state->input_level.clip_pct = 0.5;
+    state->input_level.sample_count = 2048U;
+    state->input_level.updated = 1200;
+    state->input_level_last_toast_time = 1234;
+    state->input_level_last_toast_status = DSD_INPUT_LEVEL_CLIPPING;
+    state->input_level_last_toast_source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
     state->rkey_array[7] = 0x12345678ULL;
     assert(dsd_trunk_cc_candidates_add(state, 851006250L, 1) == 1);
     assert(dsd_trunk_cc_candidates_add(state, 852006250L, 1) == 1);

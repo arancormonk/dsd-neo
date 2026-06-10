@@ -19,6 +19,8 @@
 
 #include <stdint.h>
 
+#include <dsd-neo/core/input_level.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -40,6 +42,7 @@ typedef struct {
     void (*p25p1_ber_update)(int ok_delta, int err_delta);
     void (*p25p2_err_update)(int slot, int facch_ok, int facch_err, int sacch_ok, int sacch_err, int voice_err);
     int (*stream_active)(void);
+    int (*input_level)(dsd_input_level_snapshot* out);
 } dsd_rtl_stream_metrics_hooks;
 
 typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
@@ -58,6 +61,7 @@ int dsd_rtl_stream_metrics_hook_output_kind(void);
 int dsd_rtl_stream_metrics_hook_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
 uint32_t dsd_rtl_stream_metrics_hook_stream_generation(void);
 int dsd_rtl_stream_metrics_hook_stream_active(void);
+int dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out);
 int dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
 int dsd_rtl_stream_metrics_hook_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable);
 int dsd_rtl_stream_metrics_hook_ted_bias(void);

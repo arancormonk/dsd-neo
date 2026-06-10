@@ -16,6 +16,7 @@
 
 #include <dsd-neo/platform/platform.h>
 
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -1110,6 +1111,12 @@ struct dsd_state {
     int dmr_sample_history_size;  /**< Buffer size (DMR_SAMPLE_HISTORY_SIZE) */
     int dmr_sample_history_head;  /**< Write index into circular buffer */
     int dmr_sample_history_count; /**< Symbols written (for underflow check) */
+
+    // Advisory-only input level health for ncurses/status snapshots.
+    dsd_input_level_snapshot input_level;
+    time_t input_level_last_toast_time;
+    dsd_input_level_status input_level_last_toast_status;
+    dsd_input_level_source input_level_last_toast_source;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];

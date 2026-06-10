@@ -15,6 +15,7 @@
 #define DSD_NEO_SRC_IO_RADIO_RTL_STREAM_SHARED_HPP_
 
 #include <atomic>
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/dsp/demod_state.h>
 
 extern demod_state demod;
@@ -41,5 +42,8 @@ extern std::atomic<int> g_auto_ppm_cooldown;
 extern std::atomic<double> g_spec_peak_db;
 extern std::atomic<double> g_spec_snr_db;
 extern std::atomic<double> g_resid_cfo_phase_hz;
+
+void rtl_stream_input_level_publish(const dsd_input_level_snapshot* snapshot);
+void rtl_stream_input_level_reset(void);
 
 #endif /* DSD_NEO_SRC_IO_RADIO_RTL_STREAM_SHARED_HPP_ */

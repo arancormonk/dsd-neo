@@ -16,6 +16,8 @@
  * 2024-03 EDACS-FME display improvements
  *-----------------------------------------------------------------------------*/
 
+#include "dsd-neo/core/input_level.h"
+
 #include <curses.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -384,7 +386,6 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         printw(" Mon: %iX;", opts->rtl_volume_multiplier);
         ui_print_rtl_ppm_field(opts);
         printw(" SQL: %.1f dB;", pwr_to_dB(opts->rtl_squelch_level));
-        printw(" PWR: %.1f dB;", pwr_to_dB(opts->rtl_pwr));
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         ui_print_rtl_auto_ppm_status();
@@ -401,9 +402,29 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
+ui_render_input_level_status(const dsd_state* state) {
+    if (!state || state->input_level.source == DSD_INPUT_LEVEL_SOURCE_UNKNOWN
+        || state->input_level.sample_count == 0U) {
+        return;
+    }
+    const dsd_input_level_snapshot* level = &state->input_level;
+    printw("| %s: %s rms %.1f dBFS peak %.1f dBFS clip %.1f%%", dsd_input_level_display_label(level->source),
+           dsd_input_level_status_label(level->status), level->rms_dbfs, level->peak_dbfs, level->clip_pct);
+    if (level->status == DSD_INPUT_LEVEL_LOW) {
+        printw(" %s", dsd_input_level_source_is_rf(level->source) ? "raise RF gain if signal is present"
+                                                                  : "raise source/input volume");
+    } else if (level->status == DSD_INPUT_LEVEL_HOT || level->status == DSD_INPUT_LEVEL_CLIPPING) {
+        printw(" %s", dsd_input_level_source_is_rf(level->source) ? "lower RF gain or add filtering/attenuation"
+                                                                  : "lower source/input volume");
+    }
+    printw("\n");
+}
+
+static void
 ui_render_input_sources_block(dsd_opts* opts, dsd_state* state) {
     ui_render_basic_input_sources(opts);
     ui_render_rtl_input_source(opts, state);
+    ui_render_input_level_status(state);
 }
 
 static void

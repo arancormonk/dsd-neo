@@ -391,6 +391,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_input_level
+  HEADERS_PUBLIC_CORE_INPUT_LEVEL
+  dsd-neo/core/input_level.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_state_ext
   HEADERS_PUBLIC_CORE_STATE_EXT
   dsd-neo/core/state_ext.h
@@ -945,6 +951,47 @@ target_include_directories(
 add_test(NAME UI_BURST_ACTIVE_CALL COMMAND dsd-neo_test_ui_burst_active_call)
 
 add_executable(
+    dsd-neo_test_ui_dsp_squelch_status
+    ui/test_ui_dsp_squelch_status.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_status_format.c
+)
+target_include_directories(
+    dsd-neo_test_ui_dsp_squelch_status
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
+)
+target_link_libraries(
+    dsd-neo_test_ui_dsp_squelch_status
+    PRIVATE dsd-neo_core ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME UI_DSP_SQUELCH_STATUS COMMAND dsd-neo_test_ui_dsp_squelch_status)
+
+add_executable(
+    dsd-neo_test_ui_dsp_display_radio_compile
+    ui/test_ui_dsp_display_radio_compile.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_display.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_prims.c
+)
+target_compile_definitions(
+    dsd-neo_test_ui_dsp_display_radio_compile
+    PRIVATE USE_RADIO
+)
+target_include_directories(
+    dsd-neo_test_ui_dsp_display_radio_compile
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal
+        ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_ui_dsp_display_radio_compile
+    PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME UI_DSP_DISPLAY_RADIO_COMPILE
+    COMMAND dsd-neo_test_ui_dsp_display_radio_compile
+)
+
+add_executable(
     dsd-neo_test_ui_snr_meter
     ui/test_ui_snr_meter.c
     ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_snr.c
@@ -1471,6 +1518,14 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_state_ext PRIVATE dsd-neo_core)
 add_test(NAME CORE_STATE_EXT COMMAND dsd-neo_test_core_state_ext)
+
+add_executable(dsd-neo_test_core_input_level core/test_core_input_level.c)
+target_include_directories(
+    dsd-neo_test_core_input_level
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_input_level PRIVATE dsd-neo_core)
+add_test(NAME CORE_INPUT_LEVEL COMMAND dsd-neo_test_core_input_level)
 
 add_executable(dsd-neo_test_core_dsd_time core/test_core_dsd_time.c)
 target_include_directories(
@@ -5068,6 +5123,20 @@ target_link_libraries(
     PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support
 )
 add_test(NAME IO_IQ_CAPTURE_WRITER COMMAND dsd-neo_test_io_iq_capture_writer)
+
+add_executable(
+    dsd-neo_test_io_input_level_metrics
+    io/test_io_input_level_metrics.c
+)
+target_include_directories(
+    dsd-neo_test_io_input_level_metrics
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_io_input_level_metrics PRIVATE dsd-neo_core)
+add_test(
+    NAME IO_INPUT_LEVEL_METRICS
+    COMMAND dsd-neo_test_io_input_level_metrics
+)
 
 add_executable(
     dsd-neo_test_io_soapy_profile

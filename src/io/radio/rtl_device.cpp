@@ -12,6 +12,8 @@
  * u8 I/Q samples into normalized float and feeds the `input_ring_state`.
  */
 
+#include "dsd-neo/core/input_level.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
@@ -51,6 +53,7 @@
 #include "rtl_capture_phase.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
+#include "rtl_stream_shared.hpp"
 #include "soapy_profile.h"
 
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
@@ -647,6 +650,7 @@ rtl_reset_capture_state_on_stream_boundary(struct rtl_device* s) {
     }
     rtl_capture_u8_byte_carry_clear(&s->iq_byte_carry);
     s->mute_byte_phase.store((int)carry, std::memory_order_relaxed);
+    rtl_stream_input_level_reset();
 }
 
 static inline void
@@ -853,6 +857,46 @@ rtl_submit_capture_bytes(struct rtl_device* s, const void* data, size_t bytes) {
     }
     (void)dsd_iq_capture_submit(s->iq_capture_writer, data, bytes);
 }
+
+static inline dsd_input_level_source
+rtl_u8_input_level_source(const struct rtl_device* s) {
+    return (s && s->backend == RTL_BACKEND_TCP) ? DSD_INPUT_LEVEL_SOURCE_RTL_TCP_CU8 : DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
+}
+
+static inline void
+rtl_publish_cu8_input_level(const struct rtl_device* s, const uint8_t* samples, size_t count) {
+    dsd_input_level_snapshot snapshot;
+    if (!s || !samples || count == 0U) {
+        return;
+    }
+    if (dsd_input_level_metrics_from_cu8(samples, count, rtl_u8_input_level_source(s), &snapshot) == 0) {
+        rtl_stream_input_level_publish(&snapshot);
+    }
+}
+
+#ifdef USE_SOAPYSDR
+static inline void
+rtl_publish_cs16_input_level(const int16_t* samples, size_t count) {
+    dsd_input_level_snapshot snapshot;
+    if (!samples || count == 0U) {
+        return;
+    }
+    if (dsd_input_level_metrics_from_cs16(samples, count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot) == 0) {
+        rtl_stream_input_level_publish(&snapshot);
+    }
+}
+
+static inline void
+rtl_publish_cf32_input_level(const float* samples, size_t count) {
+    dsd_input_level_snapshot snapshot;
+    if (!samples || count == 0U) {
+        return;
+    }
+    if (dsd_input_level_metrics_from_cf32(samples, count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, &snapshot) == 0) {
+        rtl_stream_input_level_publish(&snapshot);
+    }
+}
+#endif
 
 static inline void
 rtl_copy_event_reason(char* dst, size_t dst_size, const char* reason) {
@@ -2096,6 +2140,7 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
         return;
     }
     rtl_submit_capture_bytes(s, buf, len);
+    rtl_publish_cu8_input_level(s, buf, len);
     /* Convert incoming u8 I/Q and write directly into input ring without extra copy. */
     rtl_write_u8_to_ring(s, buf, len, fs4_shift_active, use_two_pass, combine_rotate_active, 0);
 }
@@ -2866,11 +2911,13 @@ soapy_submit_samples(struct rtl_device* dev, size_t drop_elems, size_t kept_elem
     if (dev->soapy_format == SOAPY_FMT_CF32) {
         const std::complex<float>* src = cf32_buf.data() + drop_elems;
         rtl_submit_capture_bytes(dev, src, kept_elems * sizeof(std::complex<float>));
+        rtl_publish_cf32_input_level(reinterpret_cast<const float*>(src), kept_elems * 2U);
         (void)soapy_write_cf32_to_ring(dev, src, kept_elems, apply_rot);
         return;
     }
     const int16_t* src = cs16_buf.data() + (drop_elems * 2U);
     rtl_submit_capture_bytes(dev, src, kept_elems * 2U * sizeof(int16_t));
+    rtl_publish_cs16_input_level(src, kept_elems * 2U);
     (void)soapy_write_cs16_to_ring(dev, src, kept_elems, apply_rot);
 }
 #endif
@@ -3691,6 +3738,7 @@ static DSD_THREAD_RETURN_TYPE
 
         rtl_tcp_account_input_stats(s, len);
         rtl_submit_capture_bytes(s, st.u8, len);
+        rtl_publish_cu8_input_level(s, st.u8, len);
         rtl_tcp_reassemble_and_submit(s, st.u8, len, &policy);
         rtl_tcp_metrics_update_ring_snapshot(s);
         rtl_tcp_periodic_maintenance(s, &st);

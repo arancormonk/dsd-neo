@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
 
@@ -790,6 +791,19 @@ int rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out);
  * @return 0 on success; negative on invalid input.
  */
 int rtl_stream_get_decode_health(rtl_stream_decode_health* out);
+
+/**
+ * @brief Get recent raw receiver input-level health metrics.
+ *
+ * The snapshot observes backend-native samples before demodulation (CU8 for
+ * RTL/rtl_tcp, CS16 or CF32 for Soapy). When raw receiver metrics are not yet
+ * available, the RTL path may return an invalid/unknown snapshot or a
+ * soft-symbol clipping diagnostic.
+ *
+ * @param out [out] Input-level snapshot. Must not be NULL.
+ * @return 0 on success; negative on invalid input.
+ */
+int rtl_stream_get_input_level(dsd_input_level_snapshot* out);
 
 /**
  * @brief Set or disable the resampler target rate (applied on controller thread).

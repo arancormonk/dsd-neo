@@ -12,6 +12,8 @@
  * and exposes a consumer API for audio samples and tuning.
  */
 
+#include "dsd-neo/core/input_level.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -57,6 +59,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1634,6 +1637,15 @@ static std::atomic<double> g_fsk_metrics_abs_est{0.0};
 static std::atomic<double> g_fsk_metrics_dc_est{0.0};
 static std::atomic<double> g_fsk_metrics_last_symbol{0.0};
 
+static std::atomic<int> g_input_level_valid{0};
+static std::atomic<int> g_input_level_status{DSD_INPUT_LEVEL_UNKNOWN};
+static std::atomic<int> g_input_level_source{DSD_INPUT_LEVEL_SOURCE_UNKNOWN};
+static std::atomic<double> g_input_level_rms_dbfs{-120.0};
+static std::atomic<double> g_input_level_peak_dbfs{-120.0};
+static std::atomic<double> g_input_level_clip_pct{0.0};
+static std::atomic<uint64_t> g_input_level_sample_count{0U};
+static std::atomic<long long> g_input_level_updated{0};
+
 static std::atomic<int> g_decode_health_valid{0};
 static std::atomic<uint32_t> g_decode_health_generation{0};
 static std::atomic<unsigned int> g_decode_p25p1_fec_ok{0};
@@ -1666,6 +1678,35 @@ rtl_fsk_metrics_reset_snapshot(void) {
     g_fsk_metrics_abs_est.store(0.0, std::memory_order_relaxed);
     g_fsk_metrics_dc_est.store(0.0, std::memory_order_relaxed);
     g_fsk_metrics_last_symbol.store(0.0, std::memory_order_relaxed);
+}
+
+void
+rtl_stream_input_level_reset(void) {
+    g_input_level_valid.store(0, std::memory_order_release);
+    g_input_level_status.store(DSD_INPUT_LEVEL_UNKNOWN, std::memory_order_relaxed);
+    g_input_level_source.store(DSD_INPUT_LEVEL_SOURCE_UNKNOWN, std::memory_order_relaxed);
+    g_input_level_rms_dbfs.store(-120.0, std::memory_order_relaxed);
+    g_input_level_peak_dbfs.store(-120.0, std::memory_order_relaxed);
+    g_input_level_clip_pct.store(0.0, std::memory_order_relaxed);
+    g_input_level_sample_count.store(0U, std::memory_order_relaxed);
+    g_input_level_updated.store(0, std::memory_order_relaxed);
+}
+
+void
+rtl_stream_input_level_publish(const dsd_input_level_snapshot* snapshot) {
+    if (!snapshot || snapshot->sample_count == 0U) {
+        rtl_stream_input_level_reset();
+        return;
+    }
+    g_input_level_valid.store(0, std::memory_order_release);
+    g_input_level_status.store((int)snapshot->status, std::memory_order_relaxed);
+    g_input_level_source.store((int)snapshot->source, std::memory_order_relaxed);
+    g_input_level_rms_dbfs.store(snapshot->rms_dbfs, std::memory_order_relaxed);
+    g_input_level_peak_dbfs.store(snapshot->peak_dbfs, std::memory_order_relaxed);
+    g_input_level_clip_pct.store(snapshot->clip_pct, std::memory_order_relaxed);
+    g_input_level_sample_count.store(snapshot->sample_count, std::memory_order_relaxed);
+    g_input_level_updated.store((long long)snapshot->updated, std::memory_order_relaxed);
+    g_input_level_valid.store(1, std::memory_order_release);
 }
 
 static void
@@ -1742,6 +1783,7 @@ snr_ema_reset(void) {
     g_snr_gfsk_src.store(0, std::memory_order_relaxed);
     g_snr_qpsk_acc_reset.store(1, std::memory_order_relaxed);
     rtl_fsk_metrics_reset_snapshot();
+    rtl_stream_input_level_reset();
     rtl_decode_health_reset();
 }
 
@@ -6886,6 +6928,37 @@ dsd_rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out) {
     out->abs_est = (float)g_fsk_metrics_abs_est.load(std::memory_order_relaxed);
     out->dc_est = (float)g_fsk_metrics_dc_est.load(std::memory_order_relaxed);
     out->last_symbol = (float)g_fsk_metrics_last_symbol.load(std::memory_order_relaxed);
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_get_input_level(dsd_input_level_snapshot* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = dsd_input_level_snapshot{};
+    if (!rtl_stream_context_active()) {
+        rtl_stream_input_level_reset();
+        return 0;
+    }
+    if (g_input_level_valid.load(std::memory_order_acquire)) {
+        out->status = (dsd_input_level_status)g_input_level_status.load(std::memory_order_relaxed);
+        out->source = (dsd_input_level_source)g_input_level_source.load(std::memory_order_relaxed);
+        out->rms_dbfs = g_input_level_rms_dbfs.load(std::memory_order_relaxed);
+        out->peak_dbfs = g_input_level_peak_dbfs.load(std::memory_order_relaxed);
+        out->clip_pct = g_input_level_clip_pct.load(std::memory_order_relaxed);
+        out->sample_count = g_input_level_sample_count.load(std::memory_order_relaxed);
+        out->updated = (time_t)g_input_level_updated.load(std::memory_order_relaxed);
+        return 0;
+    }
+
+    rtl_stream_fsk_metrics fsk{};
+    if (dsd_rtl_stream_get_fsk_metrics(&fsk) == 0 && fsk.valid && fsk.clip_pct > 0.0f) {
+        uint64_t symbols = fsk.window_symbols ? (uint64_t)fsk.window_symbols : fsk.symbols_total;
+        if (dsd_input_level_metrics_from_fsk_clip(fsk.clip_pct, symbols, out) == 0) {
+            return 0;
+        }
+    }
     return 0;
 }
 
