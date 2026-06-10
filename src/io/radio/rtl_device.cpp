@@ -874,6 +874,7 @@ rtl_publish_cu8_input_level(const struct rtl_device* s, const uint8_t* samples, 
     }
 }
 
+#ifdef USE_SOAPYSDR
 static inline void
 rtl_publish_cs16_input_level(const int16_t* samples, size_t count) {
     dsd_input_level_snapshot snapshot;
@@ -895,6 +896,7 @@ rtl_publish_cf32_input_level(const float* samples, size_t count) {
         rtl_stream_input_level_publish(&snapshot);
     }
 }
+#endif
 
 static inline void
 rtl_copy_event_reason(char* dst, size_t dst_size, const char* reason) {
