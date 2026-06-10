@@ -951,6 +951,47 @@ target_include_directories(
 add_test(NAME UI_BURST_ACTIVE_CALL COMMAND dsd-neo_test_ui_burst_active_call)
 
 add_executable(
+    dsd-neo_test_ui_dsp_squelch_status
+    ui/test_ui_dsp_squelch_status.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_status_format.c
+)
+target_include_directories(
+    dsd-neo_test_ui_dsp_squelch_status
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
+)
+target_link_libraries(
+    dsd-neo_test_ui_dsp_squelch_status
+    PRIVATE dsd-neo_core ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME UI_DSP_SQUELCH_STATUS COMMAND dsd-neo_test_ui_dsp_squelch_status)
+
+add_executable(
+    dsd-neo_test_ui_dsp_display_radio_compile
+    ui/test_ui_dsp_display_radio_compile.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_display.c
+    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_prims.c
+)
+target_compile_definitions(
+    dsd-neo_test_ui_dsp_display_radio_compile
+    PRIVATE USE_RADIO
+)
+target_include_directories(
+    dsd-neo_test_ui_dsp_display_radio_compile
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal
+        ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_ui_dsp_display_radio_compile
+    PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME UI_DSP_DISPLAY_RADIO_COMPILE
+    COMMAND dsd-neo_test_ui_dsp_display_radio_compile
+)
+
+add_executable(
     dsd-neo_test_ui_snr_meter
     ui/test_ui_snr_meter.c
     ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_snr.c

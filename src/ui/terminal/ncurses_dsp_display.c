@@ -8,9 +8,9 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdarg.h>
@@ -18,8 +18,13 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "ncurses_dsp_status_format.h"
 
 #ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_stream_c.h>
+#endif
+
+#ifdef USE_RADIO
 
 /* Small helpers to align key/value fields to a consistent value column. */
 static inline void
@@ -54,6 +59,20 @@ ui_print_kv_line(const char* label, const char* fmt, ...) {
     va_end(ap);
     addch('\n');
 }
+
+static void
+dsp_status_print_squelch(const dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    char status[64];
+    if (ui_dsp_format_squelch_status(opts->rtl_pwr, opts->rtl_squelch_level, status, sizeof(status)) == 0) {
+        ui_print_kv_line("Squelch", "%s", status);
+    }
+}
+#endif
+
+#ifdef USE_RTLSDR
 
 typedef struct {
     int cq;
@@ -174,24 +193,32 @@ void
 print_dsp_status(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-#ifdef USE_RTLSDR
+#ifdef USE_RADIO
     /* Preserve current color pair so our colored header/HR won't force default */
 #ifdef PRETTY_COLORS
     attr_t saved_attrs = 0;
     short saved_pair = 0;
     attr_get(&saved_attrs, &saved_pair, NULL);
 #endif
+
+#ifdef USE_RTLSDR
     dsp_status_snapshot snap;
     dsp_status_capture(&snap, state);
+#endif
 
     ui_print_header("DSP");
     attron(COLOR_PAIR(14)); /* explicit yellow for DSP items */
+#ifdef USE_RTLSDR
     dsp_status_print_front_and_path(&snap);
+#endif
+    dsp_status_print_squelch(opts);
+#ifdef USE_RTLSDR
     if (snap.cq) {
         dsp_status_print_cqpsk_metrics();
     }
     dsp_status_print_fsk_metrics();
     dsp_status_print_mode_tail(&snap);
+#endif
     attroff(COLOR_PAIR(14));
     attron(COLOR_PAIR(4));
     ui_print_hr();

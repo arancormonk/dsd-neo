@@ -386,7 +386,6 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         printw(" Mon: %iX;", opts->rtl_volume_multiplier);
         ui_print_rtl_ppm_field(opts);
         printw(" SQL: %.1f dB;", pwr_to_dB(opts->rtl_squelch_level));
-        printw(" PWR: %.1f dB;", pwr_to_dB(opts->rtl_pwr));
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         ui_print_rtl_auto_ppm_status();

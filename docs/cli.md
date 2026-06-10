@@ -107,6 +107,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - The ncurses input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
   `--input-level-warn-db`; `HOT` means peak at or above `-1.0 dBFS`; `CLIP` means at least `0.1%` clipped or near-rail
   samples. These advisories never adjust gain automatically.
+- For RTL-family inputs, the optional DSP panel shows post-channel-filter `Squelch` power against the SQL threshold.
+  This is separate from the raw receiver `RF Level` health line.
 - UI hotkeys and menu navigation: `docs/ui-terminal.md`
 - `-j` P25: force-enable LCW explicit retune (format 0x44; enabled by default)
 - `-^` P25: prefer CC candidates during control channel hunt

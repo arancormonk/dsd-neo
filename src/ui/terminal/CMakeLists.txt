@@ -11,6 +11,7 @@ target_sources(
         ui_snr_readout.c
         ncurses_init.c
         ncurses_dsp_display.c
+        ncurses_dsp_status_format.c
         ncurses_visualizers.c
         ncurses_p25_display.c
         ncurses_trunk_display.c
