@@ -49,6 +49,6 @@ The repository intentionally blocks or flags patterns that are easy to reintrodu
 - Keep workflow scripts defensive: pass untrusted context through environment variables or action inputs, not direct expression interpolation in `run:` blocks.
 - Keep vcpkg overlay ports pinned by immutable `REF` and `SHA512`.
 - Keep release helper downloads immutable: build AppImage helper tools from pinned source, pin container images by digest, and verify executable installers by SHA256 before running them.
-- Do not print radio keys, keystreams, API keys, or derived key material in logs, terminal UI, or test diagnostics. Use `DSD_SECRET_REDACTED` for successful secret-load messages.
+- Do not print radio keys, keystreams, API keys, or derived key material in logs, terminal UI, or test diagnostics except for intentional radio key/keystream reveal through the CLI-only `--show-keys` flag. Successful radio key/keystream messages must use the redaction formatter helpers; API keys and derived key material remain non-printable.
 - Keep CI GitHub source dependencies pinned through `tools/ci-dependency-pins.env` and `tools/fetch-pinned-git.sh`.
 - Keep analyzer and linter output actionable. Prefer fixing root causes over widening suppressions.

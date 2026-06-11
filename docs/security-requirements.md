@@ -119,7 +119,8 @@ The project applies the following controls:
   and MSVC targets, with release verification in CI
 - exclusive private sibling temp files for atomic user config, IQ metadata, and
   Rdio sidecar replacement
-- redaction guardrails for key/keystream output paths
+- redaction guardrails for key/keystream output paths, with intentional radio key/keystream reveal limited to the CLI-only
+  `--show-keys` flag and shared redaction formatter helpers
 - sanitizer CI for AddressSanitizer and UndefinedBehaviorSanitizer
 - ThreadSanitizer preset for threading-sensitive local validation
 - libFuzzer smoke targets for selected file, metadata, config, and protocol

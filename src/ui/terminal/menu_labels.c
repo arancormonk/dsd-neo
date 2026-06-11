@@ -25,6 +25,7 @@
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_items.h"
+#include "ui_key_status.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -910,14 +911,8 @@ lbl_key_hytera(const void* v, char* b, size_t n) {
         DSD_SNPRINTF(b, n, "Hytera Privacy (HEX)");
         return b;
     }
-    const char* kind;
-    if (s->K2 == 0ULL && s->K3 == 0ULL && s->K4 == 0ULL) {
-        kind = "40-bit";
-    } else if (s->K3 == 0ULL && s->K4 == 0ULL) {
-        kind = "128-bit";
-    } else {
-        kind = "256-bit";
-    }
+    const unsigned int segment_count = ui_hytera_key_segment_count(s);
+    const char* kind = (segment_count == 1U) ? "40-bit" : ((segment_count == 2U) ? "128-bit" : "256-bit");
     DSD_SNPRINTF(b, n, "Hytera Privacy (HEX) [%s]", kind);
     return b;
 }

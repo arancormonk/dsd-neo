@@ -65,6 +65,7 @@ init_opts_display_and_audio_defaults(dsd_opts* opts) {
     opts->show_p25_iden_plan = 0;         // hide P25 IDEN Plan by default
     opts->show_p25_cc_candidates = 0;     // hide P25 CC Candidates by default
     opts->show_p25_callsign_decode = 0;   // hide P25 callsign decode by default (many false positives)
+    opts->show_keys = 0;                  // redact radio keys/keystreams unless CLI explicitly opts in
     opts->p25_afc_status_gate_enable = 0; // advisory by default; status-derived direction is not always reliable
     opts->show_channels = 0;              // hide Channels section by default
     opts->symboltiming = 0;
@@ -739,6 +740,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->K2 = 0;
     state->K3 = 0;
     state->K4 = 0;
+    state->hytera_key_segments = 0U;
     state->M = 0; // Force key priority over settings from fid/so
 
     state->dmr_stereo = 0; //1, or 0?

@@ -50,6 +50,7 @@
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "ui_key_status.h"
 #include "ui_snr_readout.h"
 
 #ifdef USE_RADIO
@@ -779,60 +780,85 @@ ui_render_trunking_and_edacs_toggles(const dsd_opts* opts, dsd_state* state) {
     ui_render_edacs_mode_toggles(opts, state);
 }
 
-static void
-ui_render_hytera_loaded_key_status(const dsd_state* state) {
-    const char* label = (state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL)
-                            ? "Hytera BP Key Loaded (not forced)"
-                            : "Hytera Key Loaded (not forced)";
-    printw("| %s: %s \n", label, DSD_SECRET_REDACTED);
+static const char*
+ui_format_hytera_key(char* key_text, size_t key_text_size, const dsd_state* state, int show_keys,
+                     unsigned int segment_count) {
+    const unsigned long long segments[4] = {state->K1, state->K2, state->K3, state->K4};
+    if (segment_count == 2U || segment_count == 4U) {
+        return dsd_secret_format_u64_segments(key_text, key_text_size, show_keys, segments, segment_count);
+    }
+    return dsd_secret_format_hex(key_text, key_text_size, show_keys, state->K1 & 0xFFFFFFFFFFULL, 10U, 0);
 }
 
 static void
-ui_render_forced_key_status_dmr(const dsd_state* state) {
+ui_render_hytera_loaded_key_status(const dsd_state* state, int show_keys) {
+    unsigned int segment_count = ui_hytera_key_segment_count(state);
+    if (segment_count == 0U) {
+        return;
+    }
+
+    char key_text[68];
+    const char* label = (segment_count == 1U) ? "Hytera BP Key Loaded (not forced)" : "Hytera Key Loaded (not forced)";
+    printw("| %s: %s \n", label, ui_format_hytera_key(key_text, sizeof key_text, state, show_keys, segment_count));
+}
+
+static void
+ui_render_forced_key_status_dmr(const dsd_state* state, int show_keys) {
     if (state->R != 0) {
-        printw("| Forcing Key Priority -- NXDN Sc Key: %s \n", DSD_SECRET_REDACTED);
+        char key_text[16];
+        printw("| Forcing Key Priority -- NXDN Sc Key: %s \n",
+               dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, state->R, 5U));
     }
     if (state->K != 0) {
-        printw("| Forcing Key Priority -- Moto BP Key: %s \n", DSD_SECRET_REDACTED);
+        char key_text[16];
+        printw("| Forcing Key Priority -- Moto BP Key: %s \n",
+               dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, state->K, 3U));
     }
-    if (state->K1 != 0) {
-        printw("| Forcing Key Priority -- Hytera BP Key: %s \n", DSD_SECRET_REDACTED);
+    unsigned int hytera_segment_count = ui_hytera_key_segment_count(state);
+    if (hytera_segment_count != 0U) {
+        char key_text[68];
+        const char* label = (hytera_segment_count == 1U) ? "Hytera BP Key" : "Hytera Key";
+        printw("| Forcing Key Priority -- %s: %s \n", label,
+               ui_format_hytera_key(key_text, sizeof key_text, state, show_keys, hytera_segment_count));
     }
-    if (state->K != 0 && state->K1 != 0) {
+    if (state->K != 0 && hytera_segment_count != 0U) {
         printw("| Warning! Multiple DMR Key Types Loaded! \n"); //warning may not be required
     }
 }
 
 static void
-ui_render_forced_key_status_rc4(const dsd_state* state) {
+ui_render_forced_key_status_rc4(const dsd_state* state, int show_keys) {
     if (state->R != 0) {
-        printw("| Forcing Key Priority -- RC4 Key: %s \n", DSD_SECRET_REDACTED);
+        char key_text[17];
+        printw("| Forcing Key Priority -- RC4 Key: %s \n",
+               dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->R, 10U, 0));
     }
 }
 
 static void
-ui_render_forced_key_status_tyt(const dsd_state* state) {
-    (void)state;
-    printw("| Forcing Key Priority -- TYT 16-bit Key: %s \n", DSD_SECRET_REDACTED);
+ui_render_forced_key_status_tyt(const dsd_state* state, int show_keys) {
+    char key_text[16];
+    printw("| Forcing Key Priority -- TYT 16-bit Key: %s \n",
+           dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->H, 4U, 0));
 }
 
 static void
-ui_render_forced_key_status(const dsd_state* state) {
+ui_render_forced_key_status(const dsd_state* state, int show_keys) {
     if (state == NULL) {
         return;
     }
 
-    if (state->M != 1 && state->H != 0 && state->tyt_bp == 0) {
-        ui_render_hytera_loaded_key_status(state);
+    if (state->M != 1 && state->tyt_bp == 0 && ui_hytera_key_segment_count(state) != 0U) {
+        ui_render_hytera_loaded_key_status(state, show_keys);
     }
     if (state->M == 1) {
-        ui_render_forced_key_status_dmr(state);
+        ui_render_forced_key_status_dmr(state, show_keys);
     }
     if (state->M == 0x21) {
-        ui_render_forced_key_status_rc4(state);
+        ui_render_forced_key_status_rc4(state, show_keys);
     }
     if (state->M == 0x16) {
-        ui_render_forced_key_status_tyt(state);
+        ui_render_forced_key_status_tyt(state, show_keys);
     }
 }
 
@@ -854,7 +880,7 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
 
 static void
 ui_render_crypto_key_and_scanner_status(const dsd_opts* opts, const dsd_state* state) {
-    ui_render_forced_key_status(state);
+    ui_render_forced_key_status(state, opts->show_keys);
     ui_render_scanner_and_reverse_status(opts, state);
 }
 
@@ -1968,7 +1994,7 @@ ui_render_nxdn_tgt_src_line(const dsd_state* state) {
 }
 
 static void
-ui_render_nxdn_encryption_line(const dsd_state* state) {
+ui_render_nxdn_encryption_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n|");
     if (state->nxdn_cipher_type > 0) {
         printw(" ALG: %d Key ID: %02d ", state->nxdn_cipher_type, state->nxdn_key);
@@ -1989,7 +2015,8 @@ ui_render_nxdn_encryption_line(const dsd_state* state) {
             if (state->R != 0) {
                 attron(COLOR_PAIR(1));
                 printw("Seed: %04llX ", state->payload_miN);
-                printw("Key: %s ", DSD_SECRET_REDACTED);
+                char key_text[16];
+                printw("Key: %s ", dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
                 attron(COLOR_PAIR(3));
             }
             break;
@@ -1999,7 +2026,8 @@ ui_render_nxdn_encryption_line(const dsd_state* state) {
             attron(COLOR_PAIR(2));
             printw("DES1 ");
             if (state->R != 0) {
-                printw("Key: %s ", DSD_SECRET_REDACTED);
+                char key_text[17];
+                printw("Key: %s ", dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 16U, 0));
             }
             attroff(COLOR_PAIR(2));
             attron(COLOR_PAIR(3));
@@ -2010,7 +2038,9 @@ ui_render_nxdn_encryption_line(const dsd_state* state) {
             attron(COLOR_PAIR(2));
             printw("AES-256 ");
             if (state->aes_key_loaded[0] == 1) {
-                printw("KS: %s", DSD_SECRET_REDACTED);
+                char key_text[17];
+                printw("KS: %s",
+                       dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->A4[0], 16U, 0));
             }
             attroff(COLOR_PAIR(2));
             attron(COLOR_PAIR(3));
@@ -2048,12 +2078,12 @@ ui_render_call_info_nxdn(const dsd_opts* opts, const dsd_state* state) {
     ui_render_nxdn_monitor_line(opts, state, idas);
     ui_render_nxdn_site_line(state, idas);
     ui_render_nxdn_tgt_src_line(state);
-    ui_render_nxdn_encryption_line(state);
+    ui_render_nxdn_encryption_line(opts, state);
     ui_render_nxdn_active_channels_and_tg_hold(opts, state);
 }
 
 static void
-ui_render_call_info_dpmr(dsd_state* state) {
+ui_render_call_info_dpmr(const dsd_opts* opts, dsd_state* state) {
     //dPMR
     if (DSD_SYNC_IS_DPMR(lls)) {
         printw("| DCC: [%i] ", state->dpmr_color_code);
@@ -2066,7 +2096,9 @@ ui_render_call_info_dpmr(dsd_state* state) {
             attron(COLOR_PAIR(3));
             if (state->R != 0) {
                 attron(COLOR_PAIR(1));
-                printw("KEY VALUE: [%s] ", DSD_SECRET_REDACTED);
+                char key_text[16];
+                printw("KEY VALUE: [%s] ",
+                       dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
                 attron(COLOR_PAIR(3));
             }
         }
@@ -2584,12 +2616,13 @@ ui_render_slot_p25_dmr_alg_details(const ui_slot_view* slot, int show_p25_vxtra)
 }
 
 static int
-ui_render_slot_named_crypto_rc4_des(const ui_slot_view* slot) {
+ui_render_slot_named_crypto_rc4_des(const ui_slot_view* slot, int show_keys) {
     if (slot->payload_algid == 0xAA || slot->payload_algid == 0x21 || slot->payload_algid == 0x01) {
         attron(COLOR_PAIR(1));
         printw("RC4 ");
         if (slot->rc4_key != 0) {
-            printw("Key: %s ", DSD_SECRET_REDACTED);
+            char key_text[17];
+            printw("Key: %s ", dsd_secret_format_hex(key_text, sizeof key_text, show_keys, slot->rc4_key, 10U, 0));
         }
         attron(COLOR_PAIR(3));
         return 1;
@@ -2598,7 +2631,8 @@ ui_render_slot_named_crypto_rc4_des(const ui_slot_view* slot) {
         attron(COLOR_PAIR(1));
         printw("DES1 ");
         if (slot->rc4_key != 0) {
-            printw("Key: %s ", DSD_SECRET_REDACTED);
+            char key_text[17];
+            printw("Key: %s ", dsd_secret_format_hex(key_text, sizeof key_text, show_keys, slot->rc4_key, 16U, 0));
         }
         attron(COLOR_PAIR(3));
         return 1;
@@ -2607,7 +2641,8 @@ ui_render_slot_named_crypto_rc4_des(const ui_slot_view* slot) {
         attron(COLOR_PAIR(1));
         printw("DES-XL ");
         if (slot->rc4_key != 0) {
-            printw("Key: %s ", DSD_SECRET_REDACTED);
+            char key_text[17];
+            printw("Key: %s ", dsd_secret_format_hex(key_text, sizeof key_text, show_keys, slot->rc4_key, 16U, 0));
         }
         attron(COLOR_PAIR(3));
         return 1;
@@ -2628,12 +2663,13 @@ ui_render_slot_named_crypto_rc4_des(const ui_slot_view* slot) {
 }
 
 static int
-ui_render_slot_named_crypto_aes(const ui_slot_view* slot) {
+ui_render_slot_named_crypto_aes(const ui_slot_view* slot, int show_keys) {
     if (slot->payload_algid == 0x89 || slot->payload_algid == 0x24) {
         attron(COLOR_PAIR(1));
         printw("AES-128 ");
         if (slot->aes_loaded != 0) {
-            printw("KS: %s ", DSD_SECRET_REDACTED);
+            char key_text[17];
+            printw("KS: %s ", dsd_secret_format_hex(key_text, sizeof key_text, show_keys, slot->aes_a2, 16U, 0));
         }
         attron(COLOR_PAIR(3));
         return 1;
@@ -2642,7 +2678,8 @@ ui_render_slot_named_crypto_aes(const ui_slot_view* slot) {
         attron(COLOR_PAIR(1));
         printw("AES-256 ");
         if (slot->aes_loaded != 0) {
-            printw("KS: %s ", DSD_SECRET_REDACTED);
+            char key_text[17];
+            printw("KS: %s ", dsd_secret_format_hex(key_text, sizeof key_text, show_keys, slot->aes_a4, 16U, 0));
         }
         attron(COLOR_PAIR(3));
         return 1;
@@ -2651,12 +2688,13 @@ ui_render_slot_named_crypto_aes(const ui_slot_view* slot) {
 }
 
 static int
-ui_render_slot_named_crypto_vendor(const ui_slot_view* slot) {
+ui_render_slot_named_crypto_vendor(const ui_slot_view* slot, int show_keys) {
     if (slot->payload_algid == 0x02) {
         attron(COLOR_PAIR(1));
         printw("Hytera Enhanced");
         if (slot->rc4_key != 0) {
-            printw(" Key: %s", DSD_SECRET_REDACTED);
+            char key_text[17];
+            printw(" Key: %s", dsd_secret_format_hex(key_text, sizeof key_text, show_keys, slot->rc4_key, 10U, 0));
         }
         attron(COLOR_PAIR(3));
         return 1;
@@ -2671,7 +2709,8 @@ ui_render_slot_named_crypto_vendor(const ui_slot_view* slot) {
         attron(COLOR_PAIR(1));
         printw((slot->payload_algid == 0x36) ? "Kirisun Adv" : "Kirisun Uni");
         if (slot->aes_loaded != 0) {
-            printw(" KS: %s", DSD_SECRET_REDACTED);
+            char key_text[17];
+            printw(" KS: %s", dsd_secret_format_hex(key_text, sizeof key_text, show_keys, slot->aes_a4, 16U, 0));
         }
         attron(COLOR_PAIR(3));
         return 1;
@@ -2680,21 +2719,22 @@ ui_render_slot_named_crypto_vendor(const ui_slot_view* slot) {
 }
 
 static void
-ui_render_slot_named_crypto_details(const ui_slot_view* slot, int show_crypto_status) {
+ui_render_slot_named_crypto_details(const ui_slot_view* slot, int show_crypto_status, int show_keys) {
     if (!show_crypto_status) {
         return;
     }
-    if (ui_render_slot_named_crypto_rc4_des(slot)) {
+    if (ui_render_slot_named_crypto_rc4_des(slot, show_keys)) {
         return;
     }
-    if (ui_render_slot_named_crypto_aes(slot)) {
+    if (ui_render_slot_named_crypto_aes(slot, show_keys)) {
         return;
     }
-    (void)ui_render_slot_named_crypto_vendor(slot);
+    (void)ui_render_slot_named_crypto_vendor(slot, show_keys);
 }
 
 static void
-ui_render_slot_vxtra_line(const dsd_state* state, const ui_slot_view* slot, const ui_slot_render_flags* flags) {
+ui_render_slot_vxtra_line(const dsd_opts* opts, const dsd_state* state, const ui_slot_view* slot,
+                          const ui_slot_render_flags* flags) {
     printw("| V XTRA | ");
 
     if (slot->burst == 16 && slot->payload_algid == 0 && (slot->dmr_so & 0x40)) {
@@ -2706,20 +2746,23 @@ ui_render_slot_vxtra_line(const dsd_state* state, const ui_slot_view* slot, cons
     if (slot->burst == 16 && slot->payload_algid == 0 && state->K > 0 && slot->dmr_fid == 0x10
         && (slot->dmr_so & 0x40)) {
         attron(COLOR_PAIR(1));
-        printw("BP Key: %s ", DSD_SECRET_REDACTED);
+        char key_text[16];
+        printw("BP Key: %s ", dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->K, 3U));
         attroff(COLOR_PAIR(1));
         attron(COLOR_PAIR(3));
     }
     if (slot->burst == 16 && slot->payload_algid == 0 && state->H > 0 && slot->dmr_fid == 0x68
         && (slot->dmr_so & 0x40)) {
         attron(COLOR_PAIR(1));
-        printw("Hytera BP Key: %s ", DSD_SECRET_REDACTED);
+        char key_text[17];
+        printw("Hytera BP Key: %s ",
+               dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->H, 10U, 0));
         attroff(COLOR_PAIR(1));
         attron(COLOR_PAIR(3));
     }
 
     ui_render_slot_p25_dmr_alg_details(slot, flags->show_p25_vxtra);
-    ui_render_slot_named_crypto_details(slot, flags->show_crypto_status);
+    ui_render_slot_named_crypto_details(slot, flags->show_crypto_status, opts->show_keys);
     printw("\n");
 }
 
@@ -2775,10 +2818,10 @@ ui_render_slot_dxtra_line(const dsd_state* state, const ui_slot_view* slot, int 
 }
 
 static void
-ui_render_p25_dmr_slot_block(const dsd_state* state, const ui_slot_view* slot) {
+ui_render_p25_dmr_slot_block(const dsd_opts* opts, const dsd_state* state, const ui_slot_view* slot) {
     ui_slot_render_flags flags = {0};
     ui_render_slot_header_line(state, slot, &flags);
-    ui_render_slot_vxtra_line(state, slot, &flags);
+    ui_render_slot_vxtra_line(opts, state, slot, &flags);
     ui_render_slot_dxtra_line(state, slot, flags.show_ids);
 }
 
@@ -2825,8 +2868,8 @@ ui_render_call_info_p25_dmr(const dsd_opts* opts, dsd_state* state) {
 
     ui_slot_view left = ui_build_slot_view(state, 0);
     ui_slot_view right = ui_build_slot_view(state, 1);
-    ui_render_p25_dmr_slot_block(state, &left);
-    ui_render_p25_dmr_slot_block(state, &right);
+    ui_render_p25_dmr_slot_block(opts, state, &left);
+    ui_render_p25_dmr_slot_block(opts, state, &right);
     ui_render_p25_dmr_active_channels_line(opts, state);
     ui_render_p25_dmr_tuned_freq_line(opts, state);
 }
@@ -2845,7 +2888,7 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
 
     ui_render_call_info_p25_dmr(opts, state);
 
-    ui_render_call_info_dpmr(state);
+    ui_render_call_info_dpmr(opts, state);
 
     ui_render_call_info_edacs(opts, state);
 

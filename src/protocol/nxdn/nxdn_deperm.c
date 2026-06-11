@@ -756,7 +756,8 @@ nxdn_update_sacch2_identity_state(dsd_state* state, const struct nxdn_sacch2_fie
 }
 
 static void
-nxdn_print_sacch2_complete_message(dsd_state* state, const struct nxdn_sacch2_fields* fields, uint8_t crc_sf_check) {
+nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields,
+                                   uint8_t crc_sf_check) {
     const int single_frame_ok = fields->sf_fb && fields->sf_pof && nxdn_sacch2_crc_ok(fields);
     const int multi_frame_ok = fields->sf_num == 0 && crc_sf_check == 0;
     if (!single_frame_ok && !multi_frame_ok) {
@@ -770,7 +771,9 @@ nxdn_print_sacch2_complete_message(dsd_state* state, const struct nxdn_sacch2_fi
         DSD_FPRINTF(stderr, "Scrambler; ");
         state->nxdn_cipher_type = 1;
         if (state->R != 0) {
-            DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
+            char key_text[24];
+            DSD_FPRINTF(stderr, "Key: %s; ",
+                        dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 0U));
         }
     } else if (cipher != 0x00) {
         DSD_FPRINTF(stderr, "Reserved Comms: %d; ", cipher);
@@ -826,7 +829,7 @@ nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* trelli
     const uint8_t crc_sf_check = nxdn_update_sacch2_segment_crc(state, &fields);
     nxdn_store_sacch2_frame(state, trellis_buf, &fields);
     nxdn_update_sacch2_identity_state(state, &fields);
-    nxdn_print_sacch2_complete_message(state, &fields, crc_sf_check);
+    nxdn_print_sacch2_complete_message(opts, state, &fields, crc_sf_check);
     nxdn_print_sacch2_payload(opts, state, &fields, m_data);
     nxdn_reset_sacch2_if_done(state, &fields);
 }

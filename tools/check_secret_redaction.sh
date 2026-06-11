@@ -13,7 +13,7 @@ secret_terms='[Kk]ey|KEY|KS|keystream|Scrambler|Encryption|Privacy|RC4|DES|AES|K
 format_spec='%[#0 +*.0-9-]*(ll|l|z|j)?[Xxdu]'
 output_call='LOG_[A-Z]+|DSD_FPRINTF|\b(f?printf|printw|mvprintw|wprintw)\s*\('
 
-violations=$(
+raw_print_violations=$(
   rg -n \
     -e "(${output_call}).*(${secret_terms}).*${format_spec}" \
     -e "(${output_call}).*${format_spec}.*(${secret_terms})" \
@@ -23,8 +23,20 @@ violations=$(
     true
 )
 
-if [[ -n "$violations" ]]; then
-  echo "Potential secret material is printed without DSD_SECRET_REDACTED:" >&2
-  printf '%s\n' "$violations" >&2
+literal_reveal_violations=$(
+  rg -n -P 'dsd_secret_format_[A-Za-z0-9_]+\s*\(\s*[^,\n]+,\s*[^,\n]+,\s*(1|true)\s*,' \
+    src include apps --glob '!src/third_party/**' ||
+    true
+)
+
+if [[ -n "$raw_print_violations" ]]; then
+  echo "Potential secret material is printed outside redaction formatter helpers:" >&2
+  printf '%s\n' "$raw_print_violations" >&2
+  exit 1
+fi
+
+if [[ -n "$literal_reveal_violations" ]]; then
+  echo "Potential secret material is formatted with an unconditional reveal flag:" >&2
+  printf '%s\n' "$literal_reveal_violations" >&2
   exit 1
 fi

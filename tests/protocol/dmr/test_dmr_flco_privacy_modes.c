@@ -95,6 +95,27 @@ build_regular_flco(uint8_t* bits, uint8_t flco, uint8_t fid, uint8_t so, uint32_
 }
 
 static int
+read_file_to_buffer(const char* path, char* out, size_t out_size) {
+    if (path == NULL || out == NULL || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+
+    FILE* fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return -1;
+    }
+    size_t nread = fread(out, 1, out_size - 1U, fp);
+    if (ferror(fp)) {
+        fclose(fp);
+        return -1;
+    }
+    out[nread] = '\0';
+    fclose(fp);
+    return 0;
+}
+
+static int
 capture_regular_flco(uint8_t type, char* out, size_t out_size) {
     if (out == NULL || out_size == 0U) {
         return -1;
@@ -122,21 +143,55 @@ capture_regular_flco(uint8_t type, char* out, size_t out_size) {
         return -1;
     }
 
-    FILE* fp = fopen(cap.path, "rb");
-    if (fp == NULL) {
-        (void)remove(cap.path);
-        return -1;
-    }
-    size_t nread = fread(out, 1, out_size - 1U, fp);
-    if (ferror(fp)) {
-        fclose(fp);
-        (void)remove(cap.path);
-        return -1;
-    }
-    out[nread] = '\0';
-    fclose(fp);
+    rc = read_file_to_buffer(cap.path, out, out_size);
     (void)remove(cap.path);
-    return 0;
+    return rc;
+}
+
+static int
+capture_hytera_basic_key_output(unsigned int slot, uint8_t segment_count, char* out, size_t out_size) {
+    if (out == NULL || out_size == 0U || slot > 1U) {
+        return -1;
+    }
+    out[0] = '\0';
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.show_keys = 1U;
+    state.currentslot = slot;
+    state.K1 = 0x0123456789ULL;
+    state.K2 = 0xABCDEF0123456789ULL;
+    state.K3 = 0x1111111111111111ULL;
+    state.K4 = 0x2222222222222222ULL;
+    state.hytera_key_segments = segment_count;
+    state.payload_algid = 0U;
+    state.payload_algidR = 0U;
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_hytera_key_output") != 0) {
+        return -1;
+    }
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x68U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    int rc = dsd_test_capture_stderr_end(&cap);
+    if (rc != 0) {
+        (void)remove(cap.path);
+        return -1;
+    }
+
+    rc = read_file_to_buffer(cap.path, out, out_size);
+    (void)remove(cap.path);
+    if (irr != 0U) {
+        return -1;
+    }
+    return rc;
 }
 
 static void
@@ -145,6 +200,35 @@ test_flco_output_uses_real_newlines(void) {
     assert(capture_regular_flco(1U, out, sizeof(out)) == 0);
     assert(strchr(out, '\n') != NULL);
     assert(strstr(out, "\\n") == NULL);
+}
+
+static void
+test_hytera_basic_key_output_uses_segment_count(void) {
+    char out[2048];
+
+    assert(capture_hytera_basic_key_output(0U, 1U, out, sizeof(out)) == 0);
+    assert(strstr(out, "0123456789") != NULL);
+    assert(strstr(out, "0000000123456789") == NULL);
+    assert(strstr(out, "ABCDEF0123456789") == NULL);
+
+    assert(capture_hytera_basic_key_output(1U, 1U, out, sizeof(out)) == 0);
+    assert(strstr(out, "0123456789") != NULL);
+    assert(strstr(out, "0000000123456789") == NULL);
+    assert(strstr(out, "ABCDEF0123456789") == NULL);
+
+    assert(capture_hytera_basic_key_output(0U, 2U, out, sizeof(out)) == 0);
+    assert(strstr(out, "0000000123456789 ABCDEF0123456789") != NULL);
+    assert(strstr(out, "1111111111111111") == NULL);
+
+    assert(capture_hytera_basic_key_output(1U, 2U, out, sizeof(out)) == 0);
+    assert(strstr(out, "0000000123456789 ABCDEF0123456789") != NULL);
+    assert(strstr(out, "1111111111111111") == NULL);
+
+    assert(capture_hytera_basic_key_output(0U, 4U, out, sizeof(out)) == 0);
+    assert(strstr(out, "0000000123456789 ABCDEF0123456789 1111111111111111 2222222222222222") != NULL);
+
+    assert(capture_hytera_basic_key_output(1U, 4U, out, sizeof(out)) == 0);
+    assert(strstr(out, "0000000123456789 ABCDEF0123456789 1111111111111111 2222222222222222") != NULL);
 }
 
 static void
@@ -261,6 +345,7 @@ test_hytera_flco_scan_hook_uses_final_call_type(void) {
 int
 main(void) {
     test_flco_output_uses_real_newlines();
+    test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
     test_hytera_enhanced_flco_uses_secondary_checksum();
     test_flco_scan_hook_reports_encrypted_service_option();

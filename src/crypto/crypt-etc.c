@@ -358,7 +358,7 @@ dmr_parse_static_keystream_spec(const char* input, uint8_t out_bits[882], int* o
 }
 
 void
-ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input) {
+ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input, int show_keys) {
     /*
   SLOT 1 Protected LC  FLCO=0x00 FID=0x20 <--this link appears to indicate scrambler usage from Kenwood on DMR
   DMR PDU Payload [80][20][40][00][00][01][00][00][01] SB: 00000000000 - 000;
@@ -378,7 +378,9 @@ ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input) {
             lfsr = (int)parsed;
         }
     }
-    DSD_FPRINTF(stderr, "DMR Kenwood 15-bit scrambler key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
+    char key_text[16];
+    DSD_FPRINTF(stderr, "DMR Kenwood 15-bit scrambler key loaded with forced application: %s\n",
+                dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, (unsigned long long)lfsr, 5U));
 
     for (int i = 0; i < 882; i++) {
         state->static_ks_bits[0][i] = lfsr & 0x1;
@@ -391,7 +393,7 @@ ken_dmr_scrambler_keystream_creation(dsd_state* state, char* input) {
 }
 
 void
-anytone_bp_keystream_creation(dsd_state* state, char* input) {
+anytone_bp_keystream_creation(dsd_state* state, char* input, int show_keys) {
     uint16_t key = 0;
     uint16_t kperm = 0;
 
@@ -426,12 +428,14 @@ anytone_bp_keystream_creation(dsd_state* state, char* input) {
         state->static_ks_bits[1][i] = (kperm >> (15 - i)) & 1;
     }
 
-    DSD_FPRINTF(stderr, "DMR Anytone Basic 16-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);
+    char key_text[16];
+    DSD_FPRINTF(stderr, "DMR Anytone Basic 16-bit key loaded with forced application: %s\n",
+                dsd_secret_format_hex(key_text, sizeof key_text, show_keys, key, 4U, 1));
     state->any_bp = 1;
 }
 
 void
-straight_mod_xor_keystream_creation(dsd_state* state, const char* input) {
+straight_mod_xor_keystream_creation(dsd_state* state, const char* input, int show_keys) {
     if (state == NULL || input == NULL) {
         return;
     }
@@ -465,7 +469,29 @@ straight_mod_xor_keystream_creation(dsd_state* state, const char* input) {
         state->static_ks_bits[1][i] = parsed_bits[i];
     }
 
-    DSD_FPRINTF(stderr, "AMBE Straight XOR %d-bit keystream loaded: %s", parsed_mod, DSD_SECRET_REDACTED);
+    uint8_t packed_ks[111];
+    DSD_MEMSET(packed_ks, 0, sizeof(packed_ks));
+    int unpack_len = parsed_mod / 8;
+    if ((parsed_mod % 8) != 0) {
+        unpack_len++;
+    }
+    for (int byte_idx = 0; byte_idx < unpack_len; byte_idx++) {
+        uint8_t out = 0U;
+        for (int bit = 0; bit < 8; bit++) {
+            out <<= 1U;
+            int bi = (byte_idx * 8) + bit;
+            if (bi < parsed_mod) {
+                out |= (uint8_t)(parsed_bits[bi] & 1U);
+            }
+        }
+        packed_ks[byte_idx] = out;
+    }
+
+    char ks_text[223];
+    char mod_text[16];
+    (void)DSD_SNPRINTF(mod_text, sizeof mod_text, "%d", parsed_mod);
+    DSD_FPRINTF(stderr, "AMBE Straight XOR %s-bit keystream loaded: %s", mod_text,
+                dsd_secret_format_byte_hex(ks_text, sizeof ks_text, show_keys, packed_ks, (size_t)unpack_len));
     if (parsed_frame_mode == 1) {
         DSD_FPRINTF(stderr, " with Frame Align (offset=%d, step=%d)", parsed_frame_off, parsed_frame_step);
     }

@@ -11,6 +11,7 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 static int
 expect_int(const char* label, int got, int want) {
@@ -43,6 +44,28 @@ expect_char_frame(const char* label, const char got[49], const char want[49]) {
             DSD_FPRINTF(stderr, "%s: bit %d expected %d, got %d\n", label, i, want_bit, got_bit);
             return 1;
         }
+    }
+    return 0;
+}
+
+static int
+expect_file_contains(const char* label, const char* path, const char* needle, int want_contains) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "%s: failed to open capture file\n", label);
+        return 1;
+    }
+
+    char buf[512];
+    size_t n = fread(buf, 1U, sizeof(buf) - 1U, fp);
+    fclose(fp);
+    buf[n] = '\0';
+
+    const int contains = strstr(buf, needle) != NULL;
+    if (contains != want_contains) {
+        DSD_FPRINTF(stderr, "%s: expected contains=%d for \"%s\", got %d in \"%s\"\n", label, want_contains, needle,
+                    contains, buf);
+        return 1;
     }
     return 0;
 }
@@ -136,7 +159,7 @@ test_baofeng_128_key_schedule(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
-    int parse_rc = baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210");
+    int parse_rc = baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210", 0);
 
     int rc = 0;
     rc |= expect_int("baofeng 128 parse", parse_rc, 0);
@@ -157,7 +180,7 @@ test_baofeng_256_key_schedule_uses_ascii_hex(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
     int parse_rc = baofeng_ap_pc5_keystream_creation(
-        &state, "0001020304050607 08090A0B0C0D0E0F 1011121314151617 18191A1B1C1D1E1F");
+        &state, "0001020304050607 08090A0B0C0D0E0F 1011121314151617 18191A1B1C1D1E1F", 0);
 
     int rc = 0;
     rc |= expect_int("baofeng 256 parse", parse_rc, 0);
@@ -178,7 +201,7 @@ test_baofeng_256_key_schedule_preserves_ascii_case(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
     int parse_rc = baofeng_ap_pc5_keystream_creation(
-        &state, "0001020304050607 08090a0b0c0d0e0f 1011121314151617 18191a1b1c1d1e1f");
+        &state, "0001020304050607 08090a0b0c0d0e0f 1011121314151617 18191a1b1c1d1e1f", 0);
 
     int rc = 0;
     rc |= expect_int("baofeng 256 lowercase parse", parse_rc, 0);
@@ -191,7 +214,7 @@ static int
 test_baofeng_rejects_invalid_hex(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
-    int parse_rc = baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEZ FEDCBA9876543210");
+    int parse_rc = baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEZ FEDCBA9876543210", 0);
 
     int rc = 0;
     rc |= expect_int("baofeng invalid parse", parse_rc, -1);
@@ -204,7 +227,7 @@ test_baofeng_apply_skips_silence_and_zero_tail(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
-    (void)baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210");
+    (void)baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210", 0);
 
     int rc = 0;
     char silence[49];
@@ -233,7 +256,7 @@ test_baofeng_apply_decrypts_voice_frame(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
-    (void)baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210");
+    (void)baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210", 0);
 
     char frame[49];
     short expected[49];
@@ -249,6 +272,55 @@ test_baofeng_apply_decrypts_voice_frame(void) {
     return rc;
 }
 
+static int
+test_baofeng_key_log_respects_show_keys(void) {
+    static dsd_state state;
+    int rc = 0;
+
+    dsd_test_capture_stderr cap;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
+    if (dsd_test_capture_stderr_begin(&cap, "pc5_redacted") != 0) {
+        DSD_FPRINTF(stderr, "failed to capture stderr for PC5 redacted log\n");
+        return 1;
+    }
+    rc |= expect_int("baofeng redacted parse",
+                     baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210", 0), 0);
+    rc |= dsd_test_capture_stderr_end(&cap);
+    rc |= expect_file_contains("baofeng redacted marker", cap.path, "[redacted]", 1);
+    rc |= expect_file_contains("baofeng redacted key", cap.path, "0123456789ABCDEFFEDCBA9876543210", 0);
+    (void)remove(cap.path);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
+    if (dsd_test_capture_stderr_begin(&cap, "pc5_revealed") != 0) {
+        DSD_FPRINTF(stderr, "failed to capture stderr for PC5 revealed log\n");
+        return 1;
+    }
+    rc |= expect_int("baofeng revealed parse",
+                     baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210", 1), 0);
+    rc |= dsd_test_capture_stderr_end(&cap);
+    rc |= expect_file_contains("baofeng revealed key", cap.path, "0123456789ABCDEFFEDCBA9876543210", 1);
+    (void)remove(cap.path);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
+    if (dsd_test_capture_stderr_begin(&cap, "pc5_256_revealed") != 0) {
+        DSD_FPRINTF(stderr, "failed to capture stderr for PC5-256 revealed log\n");
+        return 1;
+    }
+    rc |= expect_int("baofeng 256 revealed parse",
+                     baofeng_ap_pc5_keystream_creation(
+                         &state, "0001020304050607 08090A0B0C0D0E0F 1011121314151617 18191A1B1C1D1E1F", 1),
+                     0);
+    rc |= dsd_test_capture_stderr_end(&cap);
+    rc |= expect_file_contains("baofeng 256 revealed key", cap.path,
+                               "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F", 1);
+    (void)remove(cap.path);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -259,5 +331,6 @@ main(void) {
     rc |= test_baofeng_rejects_invalid_hex();
     rc |= test_baofeng_apply_skips_silence_and_zero_tail();
     rc |= test_baofeng_apply_decrypts_voice_frame();
+    rc |= test_baofeng_key_log_respects_show_keys();
     return rc;
 }

@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
@@ -85,7 +86,7 @@ csi_parse_hex_bytes(const char* hex, size_t nhex, uint8_t* out, size_t out_len) 
 }
 
 int
-connect_systems_ee72_key_creation(dsd_state* state, const char* input) {
+connect_systems_ee72_key_creation(dsd_state* state, const char* input, int show_keys) {
     if (!state || !input) {
         return -1;
     }
@@ -106,7 +107,9 @@ connect_systems_ee72_key_creation(dsd_state* state, const char* input) {
 
     DSD_MEMCPY(state->csi_ee_key, key, sizeof(key));
     state->csi_ee = 1;
-    DSD_FPRINTF(stderr, "DMR Connect Systems EE72 72-bit key with forced application\n");
+    char key_text[19];
+    DSD_FPRINTF(stderr, "DMR Connect Systems EE72 72-bit key with forced application: %s\n",
+                dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, key, sizeof(key)));
     return 0;
 }
 

@@ -17,6 +17,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -413,6 +414,31 @@ expect_string(const char* tag, const char* got, const char* want) {
 }
 
 static int
+expect_contains(const char* tag, const char* got, const char* want) {
+    if (strstr(got, want) == NULL) {
+        DSD_FPRINTF(stderr, "%s: expected output to contain '%s', got '%s'\n", tag, want, got);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+read_capture_file(const char* path, char* out, size_t out_size) {
+    if (path == NULL || out == NULL || out_size == 0U) {
+        return 1;
+    }
+    out[0] = '\0';
+    FILE* fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return 1;
+    }
+    size_t nread = fread(out, 1U, out_size - 1U, fp);
+    out[nread] = '\0';
+    (void)fclose(fp);
+    return 0;
+}
+
+static int
 test_sdcall_header_short_is_ignored(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -666,12 +692,14 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     uint8_t first_bits[80];
     uint8_t final_bits[80];
     uint8_t encrypted[16];
+    char output[512];
+    dsd_test_capture_stderr cap;
     static const uint8_t plain[16] = {
         0xABU, 0xCDU, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x66U, 0x77U, 0x88U, 0x99U, 0xAAU, 0x00U, 0x00U, 0x00U, 0x00U,
     };
     static const uint8_t expected_key[32] = {
         0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U, 0x08U, 0x11U, 0x12U, 0x13U, 0x14U, 0x15U, 0x16U, 0x17U, 0x18U,
-        0x21U, 0x22U, 0x23U, 0x24U, 0x25U, 0x26U, 0x27U, 0x28U, 0x31U, 0x32U, 0x33U, 0x34U, 0x35U, 0x36U, 0x37U, 0x38U,
+        0x21U, 0x22U, 0x23U, 0x24U, 0x25U, 0x26U, 0x27U, 0x28U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
     };
     const uint8_t key_id = 0x11U;
     const uint64_t iv = 0x0102030405060708ULL;
@@ -694,14 +722,22 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     reset_datacall_capture();
     reset_crypto_stub_capture();
     g_aes_fill_enabled = 1;
+    opts->show_keys = 1;
     state->keyloader = 0;
     state->K1 = 0x0102030405060708ULL;
     state->K2 = 0x1112131415161718ULL;
     state->K3 = 0x2122232425262728ULL;
-    state->K4 = 0x3132333435363738ULL;
+    state->K4 = 0ULL;
 
     write_data_call_header_fields(header_bits, 0x09U, 3U, key_id, 0x0201U, 0x0302U, 1U, 0U);
     write_bits_u64(header_bits, 88U, iv, 64U);
+    if (dsd_test_capture_stderr_begin(&cap, "dsdneo_nxdn_dcall_aes") != 0) {
+        DSD_FPRINTF(stderr, "capture stderr begin failed\n");
+        free(state->event_history_s);
+        free(state);
+        free(opts);
+        return 1;
+    }
     NXDN_Elements_Content_decode(opts, state, 1U, header_bits, sizeof(header_bits));
     state->data_header_format[0] = 3U;
 
@@ -710,6 +746,15 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     write_data_payload_frame(final_bits, 0x0BU, 0U, 0U, encrypted + 8U, 8U);
     NXDN_Elements_Content_decode(opts, state, 1U, first_bits, sizeof(first_bits));
     NXDN_Elements_Content_decode(opts, state, 1U, final_bits, sizeof(final_bits));
+    if (dsd_test_capture_stderr_end(&cap) != 0 || read_capture_file(cap.path, output, sizeof output) != 0) {
+        DSD_FPRINTF(stderr, "capture stderr read failed\n");
+        (void)remove(cap.path);
+        free(state->event_history_s);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    (void)remove(cap.path);
 
     const uint8_t zero_iv[16] = {0};
     int rc = 0;
@@ -717,6 +762,8 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     rc |= expect_int("dcall-aes-type", g_aes_type, 2);
     rc |= expect_int("dcall-aes-blocks", g_aes_blocks, 1);
     rc |= expect_bytes("dcall-aes-key", g_aes_key, expected_key, sizeof(expected_key));
+    rc |= expect_contains("dcall-aes-reveal-full-key", output,
+                          "Key: 0102030405060708111213141516171821222324252627280000000000000000;");
     rc |= expect_string("dcall-aes-event", state->event_history_s[0].Event_History_Items[0].text_message,
                         "Unknown Data Call Format: ABCD;");
     rc |= expect_string("dcall-aes-watchdog", g_datacall_event, "DATA CALL SRC: 513; TGT: 770;");

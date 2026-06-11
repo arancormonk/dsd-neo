@@ -11,6 +11,7 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 void
 unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
@@ -40,6 +41,28 @@ expect_bytes(const char* label, const uint8_t* got, const uint8_t* want, size_t 
 }
 
 static int
+expect_file_contains(const char* label, const char* path, const char* needle, int want_contains) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "%s: failed to open capture file\n", label);
+        return 1;
+    }
+
+    char buf[512];
+    size_t n = fread(buf, 1U, sizeof(buf) - 1U, fp);
+    fclose(fp);
+    buf[n] = '\0';
+
+    const int contains = strstr(buf, needle) != NULL;
+    if (contains != want_contains) {
+        DSD_FPRINTF(stderr, "%s: expected contains=%d for \"%s\", got %d in \"%s\"\n", label, want_contains, needle,
+                    contains, buf);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_frame_string(const char* label, char frame[4][24], const char* want) {
     size_t pos = 0;
     for (int r = 0; r < 4; r++) {
@@ -61,7 +84,7 @@ test_ee72_key_parse(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    int parse_rc = connect_systems_ee72_key_creation(&state, "0x11 22 33 44 55 66 77 88 99");
+    int parse_rc = connect_systems_ee72_key_creation(&state, "0x11 22 33 44 55 66 77 88 99", 0);
 
     int rc = 0;
     rc |= expect_int("ee72 parse", parse_rc, 0);
@@ -75,7 +98,7 @@ test_ee72_rejects_invalid_length(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    int parse_rc = connect_systems_ee72_key_creation(&state, "1122334455667788");
+    int parse_rc = connect_systems_ee72_key_creation(&state, "1122334455667788", 0);
 
     int rc = 0;
     rc |= expect_int("ee72 invalid parse", parse_rc, -1);
@@ -105,11 +128,42 @@ test_csi72_frame_transform_vector(void) {
     return expect_frame_string("csi72 frame", frame, expect);
 }
 
+static int
+test_ee72_key_log_respects_show_keys(void) {
+    static dsd_state state;
+    int rc = 0;
+
+    dsd_test_capture_stderr cap;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (dsd_test_capture_stderr_begin(&cap, "ee72_redacted") != 0) {
+        DSD_FPRINTF(stderr, "failed to capture stderr for EE72 redacted log\n");
+        return 1;
+    }
+    rc |= expect_int("ee72 redacted parse", connect_systems_ee72_key_creation(&state, "112233445566778899", 0), 0);
+    rc |= dsd_test_capture_stderr_end(&cap);
+    rc |= expect_file_contains("ee72 redacted marker", cap.path, "[redacted]", 1);
+    rc |= expect_file_contains("ee72 redacted key", cap.path, "112233445566778899", 0);
+    (void)remove(cap.path);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (dsd_test_capture_stderr_begin(&cap, "ee72_revealed") != 0) {
+        DSD_FPRINTF(stderr, "failed to capture stderr for EE72 revealed log\n");
+        return 1;
+    }
+    rc |= expect_int("ee72 revealed parse", connect_systems_ee72_key_creation(&state, "112233445566778899", 1), 0);
+    rc |= dsd_test_capture_stderr_end(&cap);
+    rc |= expect_file_contains("ee72 revealed key", cap.path, "112233445566778899", 1);
+    (void)remove(cap.path);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_ee72_key_parse();
     rc |= test_ee72_rejects_invalid_length();
     rc |= test_csi72_frame_transform_vector();
+    rc |= test_ee72_key_log_respects_show_keys();
     return rc;
 }

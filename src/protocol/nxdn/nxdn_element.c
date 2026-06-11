@@ -93,7 +93,7 @@ static void nxdn_element_handle_vcall_iv(dsd_opts* opts, dsd_state* state, const
                                          size_t elements_bits);
 static void nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits);
 static void nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]);
-static int nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32], uint64_t* key_stub);
+static int nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32]);
 static void nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static void nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static void nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
@@ -609,15 +609,12 @@ nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]) {
 }
 
 static int
-nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32], uint64_t* key_stub) {
+nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32]) {
     if (state == NULL || out_key == NULL) {
         return 0;
     }
 
     DSD_MEMSET(out_key, 0, 32U);
-    if (key_stub != NULL) {
-        *key_stub = 0ULL;
-    }
 
     if (state->keyloader == 1) {
         for (int i = 0; i < 8; i++) {
@@ -626,18 +623,12 @@ nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[3
             out_key[i + 16] = (uint8_t)((state->rkey_array[key_id + 0x201] >> (56 - (i * 8))) & 0xFFU);
             out_key[i + 24] = (uint8_t)((state->rkey_array[key_id + 0x301] >> (56 - (i * 8))) & 0xFFU);
         }
-        if (key_stub != NULL) {
-            *key_stub = state->rkey_array[key_id + 0x301];
-        }
     } else {
         for (int i = 0; i < 8; i++) {
             out_key[i + 0] = (uint8_t)((state->K1 >> (56 - (i * 8))) & 0xFFU);
             out_key[i + 8] = (uint8_t)((state->K2 >> (56 - (i * 8))) & 0xFFU);
             out_key[i + 16] = (uint8_t)((state->K3 >> (56 - (i * 8))) & 0xFFU);
             out_key[i + 24] = (uint8_t)((state->K4 >> (56 - (i * 8))) & 0xFFU);
-        }
-        if (key_stub != NULL) {
-            *key_stub = state->K4;
         }
     }
 
@@ -1018,18 +1009,17 @@ nxdn_dcall_prepare(dsd_state* state, const uint8_t* Message, size_t message_bits
 }
 
 static void
-nxdn_dcall_apply_decryption(dsd_state* state, const struct nxdn_dcall_data_context* ctx) {
+nxdn_dcall_apply_decryption(const dsd_opts* opts, dsd_state* state, const struct nxdn_dcall_data_context* ctx) {
     uint8_t ks[NXDN_DCALL_MAX_BITS];
     uint8_t aes_key[32];
     DSD_MEMSET(ks, 0, sizeof(ks));
     DSD_MEMSET(aes_key, 0, sizeof(aes_key));
 
     uint64_t key = 0ULL;
-    uint64_t aes_key_stub = 0ULL;
     int aes_key_loaded = 0;
     if (state->payload_algid != 0) {
         if (state->payload_algid == 3) {
-            aes_key_loaded = nxdn_load_data_aes_key(state, (uint8_t)state->payload_keyid, aes_key, &aes_key_stub);
+            aes_key_loaded = nxdn_load_data_aes_key(state, (uint8_t)state->payload_keyid, aes_key);
         } else if (state->keyloader == 1) {
             key = state->rkey_array[state->payload_keyid];
         } else {
@@ -1043,10 +1033,14 @@ nxdn_dcall_apply_decryption(dsd_state* state, const struct nxdn_dcall_data_conte
     }
 
     if (state->payload_algid == 1 && key != 0ULL) {
-        DSD_FPRINTF(stderr, " Key: %s;", DSD_SECRET_REDACTED);
+        char key_text[16];
+        DSD_FPRINTF(stderr, " Key: %s;",
+                    dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, key, 5U));
         nxdn_pdu_scrambler_keystream_creation(ks, (int)(key & 0x7FFFU), ctx->total_bits);
     } else if (state->payload_algid == 2 && key != 0ULL) {
-        DSD_FPRINTF(stderr, " Key: %s;", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, " Key: %s;",
+                    dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, key, 16U, 0));
         const int nblocks = (ctx->total_bytes + 7) / 8;
         uint8_t ks_bytes[NXDN_DCALL_MAX_BYTES];
         DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
@@ -1056,7 +1050,9 @@ nxdn_dcall_apply_decryption(dsd_state* state, const struct nxdn_dcall_data_conte
         if (state->payload_mi != 0ULL) {
             nxdn_lfsr128_expand_iv_from_mi64((uint64_t)state->payload_mi, state->aes_ivR);
         }
-        DSD_FPRINTF(stderr, " KS: %s;", DSD_SECRET_REDACTED);
+        char key_text[65];
+        DSD_FPRINTF(stderr, " Key: %s;",
+                    dsd_secret_format_byte_hex(key_text, sizeof key_text, opts->show_keys, aes_key, sizeof(aes_key)));
         const int nblocks = (ctx->total_bytes + 15) / 16;
         uint8_t ks_bytes[NXDN_DCALL_MAX_BYTES];
         DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
@@ -1165,7 +1161,7 @@ nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, const uint8_t* Messa
         return 0;
     }
 
-    nxdn_dcall_apply_decryption(state, &ctx);
+    nxdn_dcall_apply_decryption(opts, state, &ctx);
     const int crc_offset_bits = ctx.total_bits - 32;
     const uint32_t crc_ext = (uint32_t)convert_bits_into_output(state->dmr_pdu_sf[0] + crc_offset_bits, 32);
     const uint32_t crc_chk = nxdn_message_crc32(state->dmr_pdu_sf[0], crc_offset_bits);
@@ -1612,11 +1608,14 @@ nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, const struct
 }
 
 static void
-nxdn_vcall_assgn_load_scrambler_key(dsd_state* state, const struct nxdn_vcall_assgn_info* info) {
+nxdn_vcall_assgn_load_scrambler_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info) {
     if (state->rkey_array[info->destination_id] != 0) {
         state->R = state->rkey_array[info->destination_id];
         DSD_FPRINTF(stderr, " %s", KYEL);
-        DSD_FPRINTF(stderr, " Key Loaded: %s", DSD_SECRET_REDACTED);
+        char key_text[24];
+        DSD_FPRINTF(stderr, " Key Loaded: %s",
+                    dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys,
+                                              state->rkey_array[info->destination_id], 0U));
         state->payload_miN = state->R;
     }
     if (state->M == 1) {
@@ -1649,7 +1648,7 @@ nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_
         if (!nxdn_vcall_assgn_setup_tuned_call(opts, state, info, freq)) {
             return;
         }
-        nxdn_vcall_assgn_load_scrambler_key(state, info);
+        nxdn_vcall_assgn_load_scrambler_key(opts, state, info);
     } else if (opts->p25_trunk == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->destination_id, info->source_unit_id, &policy_decision);
     }
@@ -2184,7 +2183,7 @@ nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vc
 }
 
 static void
-nxdn_vcall_print_cipher(const dsd_state* state, const struct nxdn_vcall_info* info) {
+nxdn_vcall_print_cipher(const dsd_opts* opts, const dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->cipher_type != 0U && info->message_type == 0x01U) {
         DSD_FPRINTF(stderr, "\n  %s", KYEL);
         DSD_FPRINTF(stderr, "%s - ", NXDN_Cipher_Type_To_Str(info->cipher_type));
@@ -2193,17 +2192,23 @@ nxdn_vcall_print_cipher(const dsd_state* state, const struct nxdn_vcall_info* in
     }
     if (info->cipher_type == 0x01U && state->R > 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Value: %s", DSD_SECRET_REDACTED);
+        char key_text[16];
+        DSD_FPRINTF(stderr, "Value: %s",
+                    dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
     if (info->cipher_type == 0x02U && state->R > 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Value: %s", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "Value: %s",
+                    dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 16U, 0));
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
     if (info->cipher_type == 0x03U && state->R > 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "KS: %s", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "KS: %s",
+                    dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 16U, 0));
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 }
@@ -2289,7 +2294,7 @@ static void
 nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     nxdn_vcall_print_summary(state, info);
     nxdn_vcall_load_key(opts, state, info);
-    nxdn_vcall_print_cipher(state, info);
+    nxdn_vcall_print_cipher(opts, state, info);
     nxdn_vcall_apply_state(state, info);
     nxdn_vcall_run_enc_lockout(opts, state, info);
 }

@@ -145,7 +145,7 @@ static int
 ui_apply_visibility_toggle(dsd_opts* opts, int cmd_id) {
     for (size_t i = 0; i < (sizeof k_ui_visibility_toggle_specs / sizeof k_ui_visibility_toggle_specs[0]); ++i) {
         if (k_ui_visibility_toggle_specs[i].cmd_id == cmd_id) {
-            int* field = (int*)((char*)opts + k_ui_visibility_toggle_specs[i].opts_offset);
+            uint8_t* field = (uint8_t*)((char*)opts + k_ui_visibility_toggle_specs[i].opts_offset);
             *field = *field ? 0 : 1;
             return 1;
         }
@@ -242,107 +242,120 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-apply_cmd_key_management_block_keys(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    if (!opts || !state || !c) {
+apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+    if (!opts || !state || !c || c->n < (int)(sizeof(uint64_t) * 5)) {
         return 0;
     }
-    switch (c->id) {
-        case UI_CMD_KEY_HYTERA_SET: {
-            if (c->n >= (int)(sizeof(uint64_t) * 5)) {
-                struct {
-                    uint64_t H, K1, K2, K3, K4;
-                } p;
 
-                DSD_MEMCPY(&p, c->data, sizeof p);
-                state->H = p.H;
-                state->K1 = p.K1;
-                state->K2 = p.K2;
-                state->K3 = p.K3;
-                state->K4 = p.K4;
-                ui_cmd_reset_key_mute_state(opts, state);
-                DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Hytera key loaded (%s)",
-                             (state->M == 1) ? "forced" : "not forced");
-                state->ui_msg_expire = time(NULL) + 5;
-            }
-            return 1;
-        }
-        case UI_CMD_KEY_AES_SET: {
-            if (c->n >= (int)(sizeof(uint64_t) * 4)) {
-                struct {
-                    uint64_t K1, K2, K3, K4;
-                } p;
+    struct {
+        uint64_t H, K1, K2, K3, K4;
+    } p;
 
-                DSD_MEMCPY(&p, c->data, sizeof p);
-                state->A1[0] = state->A1[1] = p.K1;
-                state->A2[0] = state->A2[1] = p.K2;
-                state->A3[0] = state->A3[1] = p.K3;
-                state->A4[0] = state->A4[1] = p.K4;
-                state->aes_key_loaded[0] = state->aes_key_loaded[1] =
-                    (p.K1 != 0ULL || p.K2 != 0ULL || p.K3 != 0ULL || p.K4 != 0ULL) ? 1 : 0;
-                state->aes_key_segments[0] = state->aes_key_segments[1] = 4U;
-                state->H = 0ULL;
-                state->K1 = 0ULL;
-                state->K2 = 0ULL;
-                state->K3 = 0ULL;
-                state->K4 = 0ULL;
-                ui_cmd_reset_key_mute_state(opts, state);
-            }
-            return 1;
-        }
-        default: return 0;
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    state->H = p.H;
+    state->K1 = p.K1;
+    state->K2 = p.K2;
+    state->K3 = p.K3;
+    state->K4 = p.K4;
+    if (state->K1 == 0ULL && state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL) {
+        state->hytera_key_segments = 0U;
+    } else if (state->K3 != 0ULL || state->K4 != 0ULL) {
+        state->hytera_key_segments = 4U;
+    } else if (state->K2 != 0ULL) {
+        state->hytera_key_segments = 2U;
+    } else {
+        state->hytera_key_segments = 1U;
     }
+    ui_cmd_reset_key_mute_state(opts, state);
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Hytera key loaded (%s)",
+                 (state->M == 1) ? "forced" : "not forced");
+    state->ui_msg_expire = time(NULL) + 5;
+    return 1;
 }
 
 static int
-apply_cmd_key_management_stream_keys(dsd_state* state, const struct UiCmd* c) {
-    if (!state || !c) {
+apply_cmd_key_aes_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+    if (!opts || !state || !c || c->n < (int)(sizeof(uint64_t) * 4)) {
         return 0;
     }
-    switch (c->id) {
-        case UI_CMD_KEY_TYT_AP_SET: {
-            char s[256];
-            if (ui_cmd_copy_payload_string(c, s, sizeof s)) {
-                tyt_ap_pc4_keystream_creation(state, s);
-            }
-            return 1;
-        }
-        case UI_CMD_KEY_RETEVIS_RC2_SET: {
-            char s[256];
-            if (ui_cmd_copy_payload_string(c, s, sizeof s)) {
-                retevis_rc2_keystream_creation(state, s);
-            }
-            return 1;
-        }
-        case UI_CMD_KEY_TYT_EP_SET: {
-            char s[256];
-            if (ui_cmd_copy_payload_string(c, s, sizeof s)) {
-                tyt_ep_aes_keystream_creation(state, s);
-            }
-            return 1;
-        }
-        case UI_CMD_KEY_KEN_SCR_SET: {
-            char s[128];
-            if (ui_cmd_copy_payload_string(c, s, sizeof s)) {
-                ken_dmr_scrambler_keystream_creation(state, s);
-            }
-            return 1;
-        }
-        case UI_CMD_KEY_ANYTONE_BP_SET: {
-            char s[128];
-            if (ui_cmd_copy_payload_string(c, s, sizeof s)) {
-                anytone_bp_keystream_creation(state, s);
-            }
-            return 1;
-        }
-        case UI_CMD_KEY_XOR_SET: {
-            char s[256];
-            if (ui_cmd_copy_payload_string(c, s, sizeof s)) {
-                straight_mod_xor_keystream_creation(state, s);
-            }
-            return 1;
-        }
-        default: return 0;
+
+    struct {
+        uint64_t K1, K2, K3, K4;
+    } p;
+
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    state->A1[0] = state->A1[1] = p.K1;
+    state->A2[0] = state->A2[1] = p.K2;
+    state->A3[0] = state->A3[1] = p.K3;
+    state->A4[0] = state->A4[1] = p.K4;
+    state->aes_key_loaded[0] = state->aes_key_loaded[1] =
+        (p.K1 != 0ULL || p.K2 != 0ULL || p.K3 != 0ULL || p.K4 != 0ULL) ? 1 : 0;
+    state->aes_key_segments[0] = state->aes_key_segments[1] = 4U;
+    state->H = 0ULL;
+    state->K1 = 0ULL;
+    state->K2 = 0ULL;
+    state->K3 = 0ULL;
+    state->K4 = 0ULL;
+    state->hytera_key_segments = 0U;
+    ui_cmd_reset_key_mute_state(opts, state);
+    return 1;
+}
+
+static int
+apply_cmd_key_management_block_keys(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+    static const struct UiCmdHandlerEntry entries[] = {
+        {UI_CMD_KEY_HYTERA_SET, apply_cmd_key_hytera_set},
+        {UI_CMD_KEY_AES_SET, apply_cmd_key_aes_set},
+    };
+    return ui_cmd_apply_handler_table(entries, sizeof entries / sizeof entries[0], opts, state, c);
+}
+
+typedef void (*UiStreamKeyLoaderFn)(dsd_state* state, const char* input, int show_keys);
+
+struct UiStreamKeyLoaderEntry {
+    int cmd_id;
+    size_t payload_cap;
+    UiStreamKeyLoaderFn fn;
+};
+
+static void
+ui_load_ken_scrambler_key(dsd_state* state, const char* input, int show_keys) {
+    char local[128];
+    DSD_SNPRINTF(local, sizeof local, "%s", input ? input : "");
+    ken_dmr_scrambler_keystream_creation(state, local, show_keys);
+}
+
+static void
+ui_load_anytone_bp_key(dsd_state* state, const char* input, int show_keys) {
+    char local[128];
+    DSD_SNPRINTF(local, sizeof local, "%s", input ? input : "");
+    anytone_bp_keystream_creation(state, local, show_keys);
+}
+
+static int
+apply_cmd_key_management_stream_keys(const dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+    static const struct UiStreamKeyLoaderEntry entries[] = {
+        {UI_CMD_KEY_TYT_AP_SET, 256U, tyt_ap_pc4_keystream_creation},
+        {UI_CMD_KEY_RETEVIS_RC2_SET, 256U, retevis_rc2_keystream_creation},
+        {UI_CMD_KEY_TYT_EP_SET, 256U, tyt_ep_aes_keystream_creation},
+        {UI_CMD_KEY_KEN_SCR_SET, 128U, ui_load_ken_scrambler_key},
+        {UI_CMD_KEY_ANYTONE_BP_SET, 128U, ui_load_anytone_bp_key},
+        {UI_CMD_KEY_XOR_SET, 256U, straight_mod_xor_keystream_creation},
+    };
+    if (!opts || !state || !c) {
+        return 0;
     }
+
+    for (size_t i = 0U; i < sizeof entries / sizeof entries[0]; i++) {
+        if (entries[i].cmd_id == c->id) {
+            char s[256];
+            if (ui_cmd_copy_payload_string(c, s, entries[i].payload_cap)) {
+                entries[i].fn(state, s, opts->show_keys);
+            }
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int
@@ -369,7 +382,7 @@ apply_cmd_key_management(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
     if (apply_cmd_key_management_block_keys(opts, state, c)) {
         return 1;
     }
-    if (apply_cmd_key_management_stream_keys(state, c)) {
+    if (apply_cmd_key_management_stream_keys(opts, state, c)) {
         return 1;
     }
     return apply_cmd_key_management_m17(state, c);

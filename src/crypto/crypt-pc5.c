@@ -4,6 +4,7 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/pc5.h>
@@ -528,7 +529,7 @@ baofeng_pc5_apply_frame49(const dsd_state* state, char ambe_d[49]) {
 }
 
 int
-baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input) {
+baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input, int show_keys) {
     if (!state || !input) {
         return -1;
     }
@@ -554,7 +555,9 @@ baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input) {
         }
         create_keys_pc5(&ctxpc5, reversed, sizeof(reversed));
         ctxpc5.rounds = PC5_NBROUND;
-        DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 128-bit key with forced application\n");
+        char key_text[33];
+        DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 128-bit key with forced application: %s\n",
+                    dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, raw, sizeof(raw)));
         state->baofeng_ap = 1;
         return 0;
     }
@@ -567,7 +570,9 @@ baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input) {
          */
         create_keys_pc5(&ctxpc5, (const unsigned char*)hex, nhex);
         ctxpc5.rounds = PC5_NBROUND;
-        DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 256-bit key with forced application\n");
+        char key_text[65];
+        DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 256-bit key with forced application: %s\n",
+                    dsd_secret_format_string(key_text, sizeof key_text, show_keys, hex));
         state->baofeng_ap = 1;
         return 0;
     }

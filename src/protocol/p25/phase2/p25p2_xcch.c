@@ -310,15 +310,21 @@ p25p2_xcch_log_slot_encryption(dsd_opts* opts, dsd_state* state, int slot) {
     DSD_FPRINTF(stderr, " MPTT");
 
     if (key != 0 && algid == 0xAA) {
-        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
+        char key_text[19];
+        DSD_FPRINTF(stderr, " Key %s", dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, key, 10U, 1));
     }
     if (key != 0 && algid == 0x81) {
-        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
+        char key_text[19];
+        DSD_FPRINTF(stderr, " Key %s", dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, key, 16U, 1));
     }
 
     if ((algid == 0x84 || algid == 0x89) && state->aes_key_loaded[slot] == 1) {
         DSD_FPRINTF(stderr, "\n ");
-        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
+        const unsigned long long segments[4] = {state->A1[slot], state->A2[slot], state->A3[slot], state->A4[slot]};
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key: %s ",
+                    dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments,
+                                                   (algid == 0x84) ? 4U : 2U));
     }
 
     if (algid == 0x84 || algid == 0x89) {

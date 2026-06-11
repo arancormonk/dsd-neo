@@ -349,14 +349,21 @@ static void
 ldu2_apply_unmute_policy(dsd_opts* opts, const dsd_state* state) {
     if (state->R != 0
         && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
-        DSD_FPRINTF(stderr, " Key: %s", DSD_SECRET_REDACTED);
+        const unsigned int key_width = (state->payload_algid == 0xAA) ? 10U : 16U;
+        char key_text[17];
+        DSD_FPRINTF(stderr, " Key: %s",
+                    dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, key_width, 0));
         opts->unmute_encrypted_p25 = 1;
         return;
     }
     if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
+        const unsigned long long segments[4] = {state->A1[0], state->A2[0], state->A3[0], state->A4[0]};
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key: %s ",
+                    dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments,
+                                                   (state->payload_algid == 0x84) ? 4U : 2U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
         opts->unmute_encrypted_p25 = 1;
         return;

@@ -242,6 +242,7 @@ struct dsd_state {
     unsigned long long int K2;
     unsigned long long int K3;
     unsigned long long int K4;
+    uint8_t hytera_key_segments;
     unsigned long long int R;
     unsigned long long int RR;
     unsigned long long int H;

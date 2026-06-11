@@ -1235,14 +1235,22 @@ p25p2_ess_apply_slot0(const dsd_opts* opts, dsd_state* state, unsigned long long
     DSD_FPRINTF(stderr, " ESSB");
 
     if (state->R != 0 && state->payload_algid == 0xAA) {
-        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
+        char key_text[19];
+        DSD_FPRINTF(stderr, " Key %s",
+                    dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 10U, 1));
     }
     if (state->R != 0 && state->payload_algid == 0x81) {
-        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
+        char key_text[19];
+        DSD_FPRINTF(stderr, " Key %s",
+                    dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 16U, 1));
     }
     if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
         DSD_FPRINTF(stderr, "\n ");
-        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
+        const unsigned long long segments[4] = {state->A1[0], state->A2[0], state->A3[0], state->A4[0]};
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key: %s ",
+                    dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments,
+                                                   (state->payload_algid == 0x84) ? 4U : 2U));
     }
 
     if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
@@ -1271,14 +1279,22 @@ p25p2_ess_apply_slot1(const dsd_opts* opts, dsd_state* state, unsigned long long
     DSD_FPRINTF(stderr, " ESSB");
 
     if (state->RR != 0 && state->payload_algidR == 0xAA) {
-        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
+        char key_text[19];
+        DSD_FPRINTF(stderr, " Key %s",
+                    dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->RR, 10U, 1));
     }
     if (state->RR != 0 && state->payload_algidR == 0x81) {
-        DSD_FPRINTF(stderr, " Key %s", DSD_SECRET_REDACTED);
+        char key_text[19];
+        DSD_FPRINTF(stderr, " Key %s",
+                    dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->RR, 16U, 1));
     }
     if ((state->payload_algidR == 0x84 || state->payload_algidR == 0x89) && state->aes_key_loaded[1] == 1) {
         DSD_FPRINTF(stderr, "\n ");
-        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
+        const unsigned long long segments[4] = {state->A1[1], state->A2[1], state->A3[1], state->A4[1]};
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key: %s ",
+                    dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments,
+                                                   (state->payload_algidR == 0x84) ? 4U : 2U));
     }
 
     if (state->payload_algidR == 0x84 || state->payload_algidR == 0x89) {

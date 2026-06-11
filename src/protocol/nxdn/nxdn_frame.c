@@ -466,7 +466,10 @@ nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nx
         DSD_FPRINTF(stderr, "\n Freq: %ld - Freq Hash: %d", freq, limazulu);
     }
     if (state->rkey_array[limazulu] != 0) {
-        DSD_FPRINTF(stderr, " - Key Loaded: %s", DSD_SECRET_REDACTED);
+        char key_text[24];
+        DSD_FPRINTF(
+            stderr, " - Key Loaded: %s",
+            dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->rkey_array[limazulu], 0U));
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 

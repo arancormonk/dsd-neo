@@ -197,6 +197,7 @@ struct dsd_opts {
     uint8_t show_p25_affiliations;       //show P25 Affiliations (RID list) (0=hidden)
     uint8_t show_p25_group_affiliations; //show P25 Group Affiliation (RID↔TG) (0=hidden)
     uint8_t show_p25_callsign_decode;    //show P25 callsign decode from WACN/SysID (0=hidden)
+    uint8_t show_keys;                   //show radio key/keystream material in CLI/status output (0=redacted)
     /** Enable status-symbol-based P25 AFC suppression (0=advisory only [default], 1=enforce). */
     int p25_afc_status_gate_enable;
 

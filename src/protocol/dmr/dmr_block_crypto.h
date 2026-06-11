@@ -23,7 +23,8 @@ typedef struct {
 
 void dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint8_t block_len,
                                dmr_block_crypto_ctx* ctx);
-void dmr_block_crypto_print_info(const dmr_block_crypto_ctx* ctx);
-uint8_t dmr_block_crypto_decrypt_payload(dsd_state* state, uint8_t slot, const dmr_block_crypto_ctx* ctx);
+void dmr_block_crypto_print_info(const dmr_block_crypto_ctx* ctx, int show_keys);
+uint8_t dmr_block_crypto_decrypt_payload(dsd_state* state, uint8_t slot, const dmr_block_crypto_ctx* ctx,
+                                         int show_keys);
 
 #endif /* DSD_NEO_SRC_PROTOCOL_DMR_DMR_BLOCK_CRYPTO_H_ */
