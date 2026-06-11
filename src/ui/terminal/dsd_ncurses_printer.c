@@ -413,7 +413,7 @@ ui_render_input_level_status(const dsd_state* state) {
            dsd_input_level_status_label(level->status), level->rms_dbfs, level->peak_dbfs, level->clip_pct);
     if (level->status == DSD_INPUT_LEVEL_LOW) {
         printw(" %s", dsd_input_level_source_is_rf(level->source) ? "raise RF gain if signal is present"
-                                                                  : "raise source/input volume");
+                                                                  : "raise source/input volume if signal is present");
     } else if (level->status == DSD_INPUT_LEVEL_HOT || level->status == DSD_INPUT_LEVEL_CLIPPING) {
         printw(" %s", dsd_input_level_source_is_rf(level->source) ? "lower RF gain or add filtering/attenuation"
                                                                   : "lower source/input volume");

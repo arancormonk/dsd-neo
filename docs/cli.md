@@ -86,7 +86,8 @@ Other input options
 
 - `--input-volume <1..16>` scale non‑RTL input samples (file/UDP/TCP) by an integer factor.
 - `--input-level-warn-db <dB>` low input-level advisory threshold in dBFS (default −40). This only affects LOW
-  advisories; DSD-neo never changes gain automatically.
+  advisories; DSD-neo never changes gain automatically. TCP input suppresses repeated LOW warnings while the stream is
+  digital silence, but still shows the persistent LOW status and still warns for non-silent low-level audio.
 
 Tip: If paths or names contain spaces, wrap them in single quotes.
 
@@ -106,7 +107,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `-O` List PulseAudio input sources and output sinks
 - The ncurses input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
   `--input-level-warn-db`; `HOT` means peak at or above `-1.0 dBFS`; `CLIP` means at least `0.1%` clipped or near-rail
-  samples. These advisories never adjust gain automatically.
+  samples. TCP digital silence does not produce repeated LOW messages. These advisories never adjust gain automatically.
 - For RTL-family inputs, the optional DSP panel shows post-channel-filter `Squelch` power against the SQL threshold.
   This is separate from the raw receiver `RF Level` health line.
 - UI hotkeys and menu navigation: `docs/ui-terminal.md`
