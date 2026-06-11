@@ -341,7 +341,7 @@ retevis_rc2_apply_frame49(dsd_state* state, char ambe_d[49]) {
 
 /* Key creation for Retevis AP */
 void
-retevis_rc2_keystream_creation(dsd_state* state, const char* input) {
+retevis_rc2_keystream_creation(dsd_state* state, const char* input, int show_keys) {
     if (state == NULL || input == NULL) {
         return;
     }
@@ -360,8 +360,12 @@ retevis_rc2_keystream_creation(dsd_state* state, const char* input) {
     DSD_MEMSET(&rc2_ctx, 0, sizeof(rc2_ctx));
     if (parsed.nhex == 64U) {
         create_keys_rc2(&rc2_ctx, parsed.hex, parsed.nhex);
+        uint8_t key_bytes[32];
+        char key_text[65];
+        DSD_MEMSET(key_bytes, 0, sizeof(key_bytes));
+        (void)dsd_vendor_ap_key_hex_to_bytes(parsed.hex, parsed.nhex, key_bytes, sizeof(key_bytes));
         DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 256-bit key loaded with forced application: %s\n",
-                    DSD_SECRET_REDACTED);
+                    dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, key_bytes, sizeof(key_bytes)));
     } else {
         unsigned char key1[16];
         DSD_MEMSET(key1, 0, sizeof(key1));
@@ -379,8 +383,9 @@ retevis_rc2_keystream_creation(dsd_state* state, const char* input) {
             key2[i] = key1[15 - i];
         }
         create_keys_rc2(&rc2_ctx, key2, 16);
+        char key_text[33];
         DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 128-bit key loaded with forced application: %s\n",
-                    DSD_SECRET_REDACTED);
+                    dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, key1, sizeof(key1)));
     }
 
     // Store context in DSD state

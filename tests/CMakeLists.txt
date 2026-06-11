@@ -579,7 +579,10 @@ target_include_directories(
     dsd-neo_test_pc5_baofeng
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_pc5_baofeng PRIVATE dsd-neo_crypto)
+target_link_libraries(
+    dsd-neo_test_pc5_baofeng
+    PRIVATE dsd-neo_crypto dsd-neo_test_support
+)
 
 add_test(NAME PC5_BAOFENG COMMAND dsd-neo_test_pc5_baofeng)
 
@@ -588,7 +591,10 @@ target_include_directories(
     dsd-neo_test_csi72
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_csi72 PRIVATE dsd-neo_crypto)
+target_link_libraries(
+    dsd-neo_test_csi72
+    PRIVATE dsd-neo_crypto dsd-neo_test_support
+)
 
 add_test(NAME CSI72 COMMAND dsd-neo_test_csi72)
 
@@ -832,7 +838,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_nxdn_element_bounds
-    PRIVATE dsd-neo_proto_nxdn
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_test_support
 )
 add_test(NAME NXDN_ELEMENT_BOUNDS COMMAND dsd-neo_test_nxdn_element_bounds)
 
@@ -1542,6 +1548,20 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_safe_api PRIVATE dsd-neo_safe_api)
 add_test(NAME CORE_SAFE_API COMMAND dsd-neo_test_core_safe_api)
+
+add_executable(
+    dsd-neo_test_core_secret_redaction
+    core/test_core_secret_redaction.c
+)
+target_include_directories(
+    dsd-neo_test_core_secret_redaction
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_secret_redaction
+    PRIVATE dsd-neo_safe_api
+)
+add_test(NAME CORE_SECRET_REDACTION COMMAND dsd-neo_test_core_secret_redaction)
 
 add_executable(dsd-neo_test_core_csv_import core/test_core_csv_import.c)
 target_include_directories(
@@ -4174,7 +4194,10 @@ target_include_directories(
     dsd-neo_test_dmr_block_crypto
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
-target_link_libraries(dsd-neo_test_dmr_block_crypto PRIVATE dsd-neo_crypto)
+target_link_libraries(
+    dsd-neo_test_dmr_block_crypto
+    PRIVATE dsd-neo_crypto dsd-neo_test_support
+)
 add_test(NAME DMR_BLOCK_CRYPTO COMMAND dsd-neo_test_dmr_block_crypto)
 
 # DMR relaxed header acceptance for SAP=4 (IP-based)

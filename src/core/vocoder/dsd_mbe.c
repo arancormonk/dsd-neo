@@ -945,6 +945,8 @@ mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
         if (state->rkey_array[hash] != 0) {
             state->K = state->rkey_array[hash] & 0xFF;                     //doesn't exceed 255
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF; //doesn't exceed 40-bit limit
+            state->K2 = state->K3 = state->K4 = 0ULL;
+            state->hytera_key_segments = 1U;
             opts->dmr_mute_encL = 0;
         }
     }
@@ -957,6 +959,8 @@ mbeslot_right_autoload_keys(dsd_opts* opts, dsd_state* state) {
         if (state->rkey_array[hash] != 0) {
             state->K = state->rkey_array[hash] & 0xFF;
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF;
+            state->K2 = state->K3 = state->K4 = 0ULL;
+            state->hytera_key_segments = 1U;
             opts->dmr_mute_encR = 0;
         }
     }

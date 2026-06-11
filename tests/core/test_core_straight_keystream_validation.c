@@ -147,7 +147,7 @@ main(void) {
     {
         char arg[] = "0x12345";
         const uint16_t expect = anytone_expected_perm(0x2345U);
-        anytone_bp_keystream_creation(st, arg);
+        anytone_bp_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("anytone-enabled", st->any_bp, 1);
         rc |= expect_eq_u8("anytone-truncated-byte0", bits_to_u8(st->static_ks_bits[0], 0), (expect >> 8U) & 0xFFU);
         rc |= expect_eq_u8("anytone-truncated-byte1", bits_to_u8(st->static_ks_bits[0], 8), expect & 0xFFU);
@@ -180,7 +180,7 @@ main(void) {
     DSD_MEMSET(st->static_ks_bits, 0, sizeof(st->static_ks_bits));
     {
         char arg[] = "1";
-        ken_dmr_scrambler_keystream_creation(st, arg);
+        ken_dmr_scrambler_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("kenwood-enabled", st->ken_sc, 1);
         rc |= expect_eq_u8("kenwood-seed-byte0", bits_to_u8(st->static_ks_bits[0], 0), 0x80U);
         rc |= expect_eq_u8("kenwood-slot1-byte0", bits_to_u8(st->static_ks_bits[1], 0), 0x80U);
@@ -213,7 +213,7 @@ main(void) {
     st->straight_mod = 77;
     {
         char arg[] = "0:AA";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("len-zero-disabled", st->straight_ks, 0);
         rc |= expect_eq_int("len-zero-mod", st->straight_mod, 0);
     }
@@ -222,7 +222,7 @@ main(void) {
     st->straight_mod = 55;
     {
         char arg[] = "999:AA";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("len-too-large-disabled", st->straight_ks, 0);
         rc |= expect_eq_int("len-too-large-mod", st->straight_mod, 0);
     }
@@ -231,7 +231,7 @@ main(void) {
     st->straight_mod = 11;
     {
         char arg[] = "49";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("malformed-disabled", st->straight_ks, 0);
         rc |= expect_eq_int("malformed-mod", st->straight_mod, 0);
     }
@@ -240,7 +240,7 @@ main(void) {
     st->straight_mod = 11;
     {
         char arg[] = "49x:F0";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("len-partial-disabled", st->straight_ks, 0);
         rc |= expect_eq_int("len-partial-mod", st->straight_mod, 0);
     }
@@ -248,7 +248,7 @@ main(void) {
     DSD_MEMSET(st->static_ks_bits, 0, sizeof(st->static_ks_bits));
     {
         char arg[] = "49:123456789ABC80";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("valid-enabled", st->straight_ks, 1);
         rc |= expect_eq_int("valid-mod", st->straight_mod, 49);
         rc |= expect_eq_u8("slot0-first-byte", bits_to_u8(st->static_ks_bits[0], 0), 0x12U);
@@ -261,7 +261,7 @@ main(void) {
     // Optional frame alignment parsing: explicit offset + step.
     {
         char arg[] = "8:F0:2:3";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("frame-mode-enabled", st->straight_ks, 1);
         rc |= expect_eq_int("frame-mode-flag", st->straight_frame_mode, 1);
         rc |= expect_eq_int("frame-mode-off", st->straight_frame_off, 2);
@@ -271,7 +271,7 @@ main(void) {
     // Offset-only syntax defaults step to 49 bits per frame (then modulo len).
     {
         char arg[] = "8:F0:2";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("frame-default-step-enabled", st->straight_ks, 1);
         rc |= expect_eq_int("frame-default-step-flag", st->straight_frame_mode, 1);
         rc |= expect_eq_int("frame-default-step-val", st->straight_frame_step, 1); // 49 % 8
@@ -282,7 +282,7 @@ main(void) {
     st->straight_mod = 8;
     {
         char arg[] = "8:F0:bad";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("bad-offset-disabled", st->straight_ks, 0);
         rc |= expect_eq_int("bad-offset-mod", st->straight_mod, 0);
     }
@@ -290,7 +290,7 @@ main(void) {
     st->straight_mod = 8;
     {
         char arg[] = "8:F0:2x:3";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("bad-offset-partial-disabled", st->straight_ks, 0);
         rc |= expect_eq_int("bad-offset-partial-mod", st->straight_mod, 0);
     }
@@ -298,7 +298,7 @@ main(void) {
     st->straight_mod = 8;
     {
         char arg[] = "8:F0:0x10:3";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("bad-offset-hex-disabled", st->straight_ks, 0);
         rc |= expect_eq_int("bad-offset-hex-mod", st->straight_mod, 0);
     }
@@ -306,7 +306,7 @@ main(void) {
     st->straight_mod = 8;
     {
         char arg[] = "8:F0:2:3x";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("bad-step-partial-disabled", st->straight_ks, 0);
         rc |= expect_eq_int("bad-step-partial-mod", st->straight_mod, 0);
     }
@@ -314,7 +314,7 @@ main(void) {
     st->straight_mod = 8;
     {
         char arg[] = "8:F0:1:2:3";
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("extra-fields-disabled", st->straight_ks, 0);
         rc |= expect_eq_int("extra-fields-mod", st->straight_mod, 0);
     }
@@ -328,7 +328,7 @@ main(void) {
         DSD_MEMSET(frame1, 0, sizeof(frame1));
         frame0[24] = 1;
         frame1[24] = 1;
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         straight_mod_xor_apply_frame49(st, 0, frame0);
         straight_mod_xor_apply_frame49(st, 0, frame1);
         rc |= expect_eq_u8("legacy-frame0-byte0", bits_to_u8((const uint8_t*)frame0, 0), 0xF0U);
@@ -359,7 +359,7 @@ main(void) {
         frame1[24] = 1;
         frame2[24] = 1;
         frame_slot1[24] = 1;
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         straight_mod_xor_apply_frame49(st, 0, frame0);
         straight_mod_xor_apply_frame49(st, 0, frame1);
         straight_mod_xor_apply_frame49(st, 0, frame2);
@@ -387,7 +387,7 @@ main(void) {
         char frame0[49];
         DSD_MEMSET(frame0, 0, sizeof(frame0));
         frame0[24] = 1;
-        straight_mod_xor_keystream_creation(st, arg);
+        straight_mod_xor_keystream_creation(st, arg, 0);
         st->static_ks_counter[0] = 1000000000;
         straight_mod_xor_apply_frame49(st, 0, frame0);
 

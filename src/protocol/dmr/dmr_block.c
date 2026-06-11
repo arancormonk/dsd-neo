@@ -988,15 +988,17 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, ui
 }
 
 static void DSD_ATTR_USED
-dmr_block_type1_decrypt_pdu(dsd_state* state, uint8_t slot, int blocks, uint8_t block_len, uint8_t* decrypted_pdu) {
+dmr_block_type1_decrypt_pdu(const dsd_opts* opts, dsd_state* state, uint8_t slot, int blocks, uint8_t block_len,
+                            uint8_t* decrypted_pdu) {
 #ifdef DMR_PDU_DECRYPTION
     dmr_block_crypto_ctx ctx;
 
     dmr_block_crypto_load_ctx(state, slot, blocks, block_len, &ctx);
-    dmr_block_crypto_print_info(&ctx);
+    dmr_block_crypto_print_info(&ctx, opts ? opts->show_keys : 0);
 
-    *decrypted_pdu = dmr_block_crypto_decrypt_payload(state, slot, &ctx);
+    *decrypted_pdu = dmr_block_crypto_decrypt_payload(state, slot, &ctx, opts ? opts->show_keys : 0);
 #else
+    UNUSED(opts);
     UNUSED(state);
     UNUSED(slot);
     UNUSED(blocks);
@@ -1302,7 +1304,7 @@ dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx, int offset) {
     uint8_t decrypted_pdu = enc_check ? 0 : 1;
 
     if (enc_check) {
-        dmr_block_type1_decrypt_pdu(ctx->state, ctx->slot, ctx->blocks, ctx->block_len, &decrypted_pdu);
+        dmr_block_type1_decrypt_pdu(ctx->opts, ctx->state, ctx->slot, ctx->blocks, ctx->block_len, &decrypted_pdu);
     }
     if (enc_check == 1 && decrypted_pdu == 0) {
         dmr_block_type1_handle_encrypted_notice(ctx);

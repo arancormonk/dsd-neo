@@ -142,7 +142,7 @@ test_retevis_128_key_schedule(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
-    retevis_rc2_keystream_creation(&state, input);
+    retevis_rc2_keystream_creation(&state, input, 0);
 
     int rc = 0;
     rc |= expect_int("retevis 128 flag", state.retevis_ap, 1);
@@ -167,7 +167,7 @@ test_retevis_256_key_schedule(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     char input[] = "1122334455667788 99AABBCCDDEEFF11 1122334455667788 99AABBCCDDEEFF11";
-    retevis_rc2_keystream_creation(&state, input);
+    retevis_rc2_keystream_creation(&state, input, 0);
 
     int rc = 0;
     rc |= expect_int("retevis 256 flag", state.retevis_ap, 1);
@@ -192,7 +192,7 @@ test_retevis_256_trailing_zero_chunks_key_schedule(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     char input[] = "1122334455667788 99AABBCCDDEEFF11 0000000000000000 0000000000000000";
-    retevis_rc2_keystream_creation(&state, input);
+    retevis_rc2_keystream_creation(&state, input, 0);
 
     int rc = 0;
     rc |= expect_int("retevis 256 zero chunks flag", state.retevis_ap, 1);
@@ -214,7 +214,7 @@ test_retevis_rejects_malformed_keys(void) {
         return 1;
     }
     char bad_char_input[] = "736B9A9C5645288B 243AD5CB8701EF8Z";
-    retevis_rc2_keystream_creation(&bad_char_state, bad_char_input);
+    retevis_rc2_keystream_creation(&bad_char_state, bad_char_input, 0);
     rc |= expect_int("retevis bad hex disables flag", bad_char_state.retevis_ap, 0);
     rc |= expect_int("retevis bad hex frees context", bad_char_state.rc2_context == NULL, 1);
 
@@ -227,7 +227,7 @@ test_retevis_rejects_malformed_keys(void) {
         return 1;
     }
     char bad_length_input[] = "736B9A9C5645288B";
-    retevis_rc2_keystream_creation(&bad_length_state, bad_length_input);
+    retevis_rc2_keystream_creation(&bad_length_state, bad_length_input, 0);
     rc |= expect_int("retevis bad length disables flag", bad_length_state.retevis_ap, 0);
     rc |= expect_int("retevis bad length frees context", bad_length_state.rc2_context == NULL, 1);
 
@@ -239,7 +239,7 @@ test_retevis_apply_skips_silence_and_zero_tail(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
-    retevis_rc2_keystream_creation(&state, input);
+    retevis_rc2_keystream_creation(&state, input, 0);
 
     int rc = 0;
     char silence[49];
@@ -270,7 +270,7 @@ test_retevis_apply_decrypts_voice_frame(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
-    retevis_rc2_keystream_creation(&state, input);
+    retevis_rc2_keystream_creation(&state, input, 0);
 
     char frame[49];
     uint8_t expected[49];

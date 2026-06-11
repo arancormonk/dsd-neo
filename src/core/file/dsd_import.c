@@ -919,7 +919,18 @@ csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
             field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }
-        LOG_INFO("Key [%03lld] loaded: %s", keynumber, DSD_SECRET_REDACTED);
+        char key_id_text[32];
+        (void)DSD_SNPRINTF(key_id_text, sizeof key_id_text, "%03lld", keynumber);
+        char key_text[16];
+        if (opts->show_keys != 0) {
+            LOG_INFO("Key [%s] [%s]", key_id_text,
+                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->rkey_array[keynumber],
+                                               5U));
+        } else {
+            LOG_INFO("Key [%s] loaded: %s", key_id_text,
+                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->rkey_array[keynumber],
+                                               5U));
+        }
         LOG_INFO("\n");
     }
     fclose(fp);
@@ -944,21 +955,37 @@ csv_key_import_hex_store_value(dsd_state* state, unsigned long long keynumber, u
 }
 
 static void
-csv_key_import_hex_log_offsets(const dsd_state* state, unsigned long long keynumber) {
-    unsigned long long out1 = 0, out2 = 0, out3 = 0;
-    size_t idx1 = 0, idx2 = 0, idx3 = 0;
-    if (csv_rkey_index(keynumber, 0x101ULL, &idx1)) {
-        out1 = state->rkey_array[idx1];
+csv_key_import_hex_log_offsets(const dsd_state* state, unsigned long long keynumber, int show_keys) {
+    static const unsigned long long offsets[] = {0x101ULL, 0x201ULL, 0x301ULL};
+    unsigned long long values[3] = {0ULL, 0ULL, 0ULL};
+    unsigned char loaded[3] = {0U, 0U, 0U};
+    int any_loaded = 0;
+
+    for (size_t i = 0U; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        size_t idx = 0U;
+        if (csv_rkey_index(keynumber, offsets[i], &idx) && state->rkey_array_loaded[idx] != 0U) {
+            values[i] = state->rkey_array[idx];
+            loaded[i] = 1U;
+            any_loaded = 1;
+        }
     }
-    if (csv_rkey_index(keynumber, 0x201ULL, &idx2)) {
-        out2 = state->rkey_array[idx2];
+
+    if (any_loaded == 0) {
+        return;
     }
-    if (csv_rkey_index(keynumber, 0x301ULL, &idx3)) {
-        out3 = state->rkey_array[idx3];
+
+    if (show_keys == 0) {
+        char seg[17];
+        LOG_INFO(" [additional key segments loaded: %s]",
+                 dsd_secret_format_hex(seg, sizeof seg, show_keys, 0ULL, 16U, 0));
+        return;
     }
-    // cppcheck-suppress knownConditionTrueFalse
-    if (out1 != 0 || out2 != 0 || out3 != 0) {
-        LOG_INFO(" [additional key segments loaded: %s]", DSD_SECRET_REDACTED);
+
+    for (size_t i = 0U; i < sizeof(values) / sizeof(values[0]); i++) {
+        if (loaded[i] != 0U) {
+            char seg[17];
+            LOG_INFO(" [%s]", dsd_secret_format_hex(seg, sizeof seg, show_keys, values[i], 16U, 0));
+        }
     }
 }
 
@@ -1105,11 +1132,24 @@ csvKeyImportHex(const dsd_opts* opts, dsd_state* state) //key import for hex key
         unsigned long long keynumber = csv_key_import_hex_parse_row(state, buffer);
         size_t key_index = 0;
         if (csv_rkey_index(keynumber, 0ULL, &key_index)) {
-            LOG_INFO("Key [%04llX] loaded: %s", keynumber, DSD_SECRET_REDACTED);
+            char key_id_text[32];
+            (void)DSD_SNPRINTF(key_id_text, sizeof key_id_text, "%04llX", keynumber);
+            char key_text[17];
+            if (opts->show_keys != 0) {
+                LOG_INFO("Key [%s] [%s]", key_id_text,
+                         dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->rkey_array[key_index],
+                                               16U, 0));
+            } else {
+                LOG_INFO("Key [%s] loaded: %s", key_id_text,
+                         dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->rkey_array[key_index],
+                                               16U, 0));
+            }
             // If longer key is loaded (or clash with the 0x101, 0x201, 0x301 offset), then print the full key listing.
-            csv_key_import_hex_log_offsets(state, keynumber);
+            csv_key_import_hex_log_offsets(state, keynumber, opts->show_keys);
         } else {
-            LOG_INFO("Key [%04llX] [out-of-range]", keynumber);
+            char key_id_text[32];
+            (void)DSD_SNPRINTF(key_id_text, sizeof key_id_text, "%04llX", keynumber);
+            LOG_INFO("Key [%s] [out-of-range]", key_id_text);
         }
 
         LOG_INFO("\n");

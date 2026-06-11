@@ -230,6 +230,9 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
         if (!arg) {
             break;
         }
+        if (strcmp(arg, "--") == 0) {
+            break;
+        }
         if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0
             || strcmp(arg, "--print-config") == 0 || strcmp(arg, "--list-profiles") == 0
             || strcmp(arg, "--dump-config-template") == 0) {
@@ -468,6 +471,12 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
 #define DSD_PARSE_ARGS_PRESCAN_BLOCK()                                                                                 \
     for (int i = 1, arg_advance = 1; i < argc; i += arg_advance) {                                                     \
         arg_advance = 1;                                                                                               \
+        if (argv[i] == NULL) {                                                                                         \
+            break;                                                                                                     \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--") == 0) {                                                                              \
+            break;                                                                                                     \
+        }                                                                                                              \
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {                                                               \
             opts->rtltcp_autotune = 1;                                                                                 \
             dsd_setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);                                                                \
@@ -865,6 +874,10 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         }                                                                                                              \
         if (strcmp(argv[i], "--dmr-debug-burst") == 0) {                                                               \
             opts->dmr_debug_burst = 1;                                                                                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--show-keys") == 0) {                                                                     \
+            opts->show_keys = 1;                                                                                       \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--dmr-baofeng-pc5") == 0) {                                                               \
@@ -1320,14 +1333,14 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
     }                                                                                                                  \
                                                                                                                        \
     if (dmr_baofeng_pc5_cli) {                                                                                         \
-        if (baofeng_ap_pc5_keystream_creation(state, dmr_baofeng_pc5_cli) != 0) {                                      \
+        if (baofeng_ap_pc5_keystream_creation(state, dmr_baofeng_pc5_cli, opts->show_keys) != 0) {                     \
             LOG_ERROR("Invalid --dmr-baofeng-pc5 value\n");                                                            \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
     }                                                                                                                  \
     if (dmr_csi_ee72_cli) {                                                                                            \
-        if (connect_systems_ee72_key_creation(state, dmr_csi_ee72_cli) != 0) {                                         \
+        if (connect_systems_ee72_key_creation(state, dmr_csi_ee72_cli, opts->show_keys) != 0) {                        \
             LOG_ERROR("Invalid --dmr-csi-ee72 value\n");                                                               \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
@@ -1525,7 +1538,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 }                                                                                                      \
                 state->R = key;                                                                                        \
                 state->RR = key;                                                                                       \
-                LOG_NOTICE("RC4/DES encryption key loaded: %s\n", DSD_SECRET_REDACTED);                                \
+                char key_text[32];                                                                                     \
+                LOG_NOTICE("RC4/DES encryption key loaded: %s\n",                                                      \
+                           dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 16U, 0));       \
                 opts->unmute_encrypted_p25 = 0;                                                                        \
                 state->keyloader = 0;                                                                                  \
             }                                                                                                          \
@@ -1548,14 +1563,16 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             state->tyt_bp = 1;                                                                                         \
             DSD_CLI_PARSE_U64_OR_RETURN("-2", optarg, 16, state->H);                                                   \
             state->H = state->H & 0xFFFF;                                                                              \
-            LOG_NOTICE("DMR TYT Basic 16-bit key loaded with forced application: %s\n", DSD_SECRET_REDACTED);          \
+            char key_text[16];                                                                                         \
+            LOG_NOTICE("DMR TYT Basic 16-bit key loaded with forced application: %s\n",                                \
+                       dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->H, 4U, 1));            \
             break;                                                                                                     \
-        case '!': tyt_ap_pc4_keystream_creation(state, optarg); break;                                                 \
-        case '@': retevis_rc2_keystream_creation(state, optarg); break;                                                \
-        case '5': tyt_ep_aes_keystream_creation(state, optarg); break;                                                 \
-        case '9': ken_dmr_scrambler_keystream_creation(state, optarg); break;                                          \
-        case 'A': anytone_bp_keystream_creation(state, optarg); break;                                                 \
-        case 'S': straight_mod_xor_keystream_creation(state, optarg); break;                                           \
+        case '!': tyt_ap_pc4_keystream_creation(state, optarg, opts->show_keys); break;                                \
+        case '@': retevis_rc2_keystream_creation(state, optarg, opts->show_keys); break;                               \
+        case '5': tyt_ep_aes_keystream_creation(state, optarg, opts->show_keys); break;                                \
+        case '9': ken_dmr_scrambler_keystream_creation(state, optarg, opts->show_keys); break;                         \
+        case 'A': anytone_bp_keystream_creation(state, optarg, opts->show_keys); break;                                \
+        case 'S': straight_mod_xor_keystream_creation(state, optarg, opts->show_keys); break;                          \
         case '3':                                                                                                      \
             opts->dmr_le = 0;                                                                                          \
             LOG_NOTICE("DMRA Late Entry Encryption Identifiers Disabled\n");                                           \
@@ -1645,8 +1662,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     state->H = k1 & 0xFFFFFFFFFFULL;                                                                   \
                     state->K1 = state->H;                                                                              \
                     state->K2 = state->K3 = state->K4 = 0ULL;                                                          \
+                    state->hytera_key_segments = (state->K1 != 0ULL) ? 1U : 0U;                                        \
                     state->aes_key_segments[0] = state->aes_key_segments[1] = 0U;                                      \
-                    LOG_NOTICE("Hytera BP key loaded (40-bit)\n");                                                     \
+                    char key_text[32];                                                                                 \
+                    LOG_NOTICE("Hytera BP key loaded (40-bit): %s\n",                                                  \
+                               dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->K1, 10U, 0));  \
                 } else if (nhex == 32) {                                                                               \
                     if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)) {           \
                         LOG_ERROR("-H failed to parse 32-hex key (2x16)\n");                                           \
@@ -1657,6 +1677,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     state->K1 = k1;                                                                                    \
                     state->K2 = k2;                                                                                    \
                     state->K3 = state->K4 = 0ULL;                                                                      \
+                    state->hytera_key_segments = (k1 != 0ULL || k2 != 0ULL) ? 2U : 0U;                                 \
                                                                                                                        \
                     state->A1[0] = state->A1[1] = k1;                                                                  \
                     state->A2[0] = state->A2[1] = k2;                                                                  \
@@ -1670,7 +1691,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                         state->aes_key[i + 0] = (uint8_t)((state->A1[0] >> (56 - (i * 8))) & 0xFF);                    \
                         state->aes_key[i + 8] = (uint8_t)((state->A2[0] >> (56 - (i * 8))) & 0xFF);                    \
                     }                                                                                                  \
-                    LOG_NOTICE("AES-128 / Hytera 128-bit key loaded (2x64)\n");                                        \
+                    const unsigned long long segments[2] = {k1, k2};                                                   \
+                    char key_text[96];                                                                                 \
+                    LOG_NOTICE(                                                                                        \
+                        "AES-128 / Hytera 128-bit key loaded (2x64): %s\n",                                            \
+                        dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments, 2U));     \
                 } else if (nhex == 64) {                                                                               \
                     if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)              \
                         || !cli_parse_hex_u64_n(hex + 32, 16, &k3) || !cli_parse_hex_u64_n(hex + 48, 16, &k4)) {       \
@@ -1683,6 +1708,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     state->K2 = k2;                                                                                    \
                     state->K3 = k3;                                                                                    \
                     state->K4 = k4;                                                                                    \
+                    state->hytera_key_segments = (k1 != 0ULL || k2 != 0ULL || k3 != 0ULL || k4 != 0ULL) ? 4U : 0U;     \
                                                                                                                        \
                     state->A1[0] = state->A1[1] = k1;                                                                  \
                     state->A2[0] = state->A2[1] = k2;                                                                  \
@@ -1699,7 +1725,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                         state->aes_key[i + 16] = (uint8_t)((state->A3[0] >> (56 - (i * 8))) & 0xFF);                   \
                         state->aes_key[i + 24] = (uint8_t)((state->A4[0] >> (56 - (i * 8))) & 0xFF);                   \
                     }                                                                                                  \
-                    LOG_NOTICE("AES-256 / Hytera 256-bit key loaded (4x64)\n");                                        \
+                    const unsigned long long segments[4] = {k1, k2, k3, k4};                                           \
+                    char key_text[96];                                                                                 \
+                    LOG_NOTICE(                                                                                        \
+                        "AES-256 / Hytera 256-bit key loaded (4x64): %s\n",                                            \
+                        dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments, 4U));     \
                 } else {                                                                                               \
                     LOG_ERROR("-H expects 10, 32, or 64 hex characters (spaces allowed)\n");                           \
                     cli_set_exit_rc(out_exit_rc, 1);                                                                   \
@@ -1976,7 +2006,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             }                                                                                                          \
             state->R = (unsigned long long)key;                                                                        \
             state->keyloader = 0;                                                                                      \
-            LOG_NOTICE("NXDN/dPMR scrambler key loaded: %s\n", DSD_SECRET_REDACTED);                                   \
+            char key_text[16];                                                                                         \
+            LOG_NOTICE("NXDN/dPMR scrambler key loaded: %s\n",                                                         \
+                       dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));           \
             break;                                                                                                     \
         }                                                                                                              \
         case 'v': {                                                                                                    \
@@ -2478,7 +2510,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->dmr_mute_encL = 1;                                                                               \
                 opts->dmr_mute_encR = 1;                                                                               \
             }                                                                                                          \
-            LOG_NOTICE("Basic Privacy key loaded (forced priority): %s\n", DSD_SECRET_REDACTED);                       \
+            char key_text[16];                                                                                         \
+            LOG_NOTICE("Basic Privacy key loaded (forced priority): %s\n",                                             \
+                       dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->K, 0U));           \
             break;                                                                                                     \
         }                                                                                                              \
         case 'D': {                                                                                                    \

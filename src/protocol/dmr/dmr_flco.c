@@ -95,6 +95,41 @@ typedef struct {
     int protected_lc;
 } dmr_flco_ctx;
 
+static int
+dmr_flco_show_keys(const dmr_flco_ctx* ctx) {
+    return (ctx != NULL && ctx->opts != NULL) ? ctx->opts->show_keys : 0;
+}
+
+static unsigned int
+dmr_flco_hytera_key_segment_count(const dmr_flco_ctx* ctx) {
+    const dsd_state* state = (ctx != NULL) ? ctx->state : NULL;
+    if (state == NULL || (state->K1 == 0ULL && state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL)) {
+        return 0U;
+    }
+    if (state->hytera_key_segments == 1U || state->hytera_key_segments == 2U || state->hytera_key_segments == 4U) {
+        return state->hytera_key_segments;
+    }
+    if (state->K3 != 0ULL || state->K4 != 0ULL) {
+        return 4U;
+    }
+    if (state->K2 != 0ULL) {
+        return 2U;
+    }
+    return 1U;
+}
+
+static const char*
+dmr_flco_format_hytera_basic_key(char* key_text, size_t key_text_size, const dmr_flco_ctx* ctx,
+                                 unsigned int segment_count) {
+    if (segment_count == 2U || segment_count == 4U) {
+        const unsigned long long segments[4] = {ctx->state->K1, ctx->state->K2, ctx->state->K3, ctx->state->K4};
+        return dsd_secret_format_u64_segments(key_text, key_text_size, dmr_flco_show_keys(ctx), segments,
+                                              segment_count);
+    }
+    return dsd_secret_format_hex(key_text, key_text_size, dmr_flco_show_keys(ctx), ctx->state->K1 & 0xFFFFFFFFFFULL,
+                                 10U, 0);
+}
+
 static void
 dmr_flco_print_type_color(uint8_t type, const char* type1_color, const char* type2_color, const char* type3_color) {
     if (type == 1) {
@@ -405,10 +440,14 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
     DSD_FPRINTF(stderr, " Hytera Enhanced; ");
 
     if (ctx->slot == 0 && ctx->state->R != 0) {
-        DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "Key: %s; ",
+                    dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->R, 10U, 0));
     }
     if (ctx->slot == 1 && ctx->state->RR != 0) {
-        DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "Key: %s; ",
+                    dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->RR, 10U, 0));
     }
 
     for (int i = 0; i < 8; i++) {
@@ -752,13 +791,17 @@ dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
     if (ctx->state->K != 0 && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
+        char key_text[16];
+        DSD_FPRINTF(stderr, "Key %s ",
+                    dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->K, 0U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->state->K != 0 && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
+        char key_text[16];
+        DSD_FPRINTF(stderr, "Key %s ",
+                    dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->K, 0U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
@@ -767,11 +810,13 @@ static void
 dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
     if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
-        if (ctx->state->K2 != 0) {
+        const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
+        if (segment_count >= 2U) {
             DSD_FPRINTF(stderr, "\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key %s ", dmr_flco_format_hytera_basic_key(key_text, sizeof key_text, ctx, segment_count));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
@@ -780,11 +825,13 @@ static void
 dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
     if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
-        if (ctx->state->K2 != 0) {
+        const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
+        if (segment_count >= 2U) {
             DSD_FPRINTF(stderr, "\n ");
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key %s ", dmr_flco_format_hytera_basic_key(key_text, sizeof key_text, ctx, segment_count));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
@@ -793,12 +840,16 @@ static void
 dmr_flco_print_alg21_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && ctx->state->payload_algid == 0x21 && ctx->state->R != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "Key %s ",
+                    dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->R, 10U, 0));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && ctx->state->payload_algidR == 0x21 && ctx->state->RR != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key %s ", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "Key %s ",
+                    dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->RR, 10U, 0));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
@@ -815,12 +866,16 @@ static void
 dmr_flco_print_alg02_keys(const dmr_flco_ctx* ctx) {
     if (ctx->slot == 0 && ctx->state->payload_algid == 0x02 && ctx->state->R != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "Key: %s ",
+                    dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->R, 10U, 0));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && ctx->state->payload_algidR == 0x02 && ctx->state->RR != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "Key: %s ",
+                    dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->RR, 10U, 0));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
@@ -831,14 +886,24 @@ dmr_flco_print_aes_24_25_keys(const dmr_flco_ctx* ctx) {
         && ctx->state->aes_key_loaded[0] == 1) {
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
+        const unsigned long long segments[4] = {ctx->state->A1[0], ctx->state->A2[0], ctx->state->A3[0],
+                                                ctx->state->A4[0]};
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key: %s ",
+                    dsd_secret_format_u64_segments(key_text, sizeof key_text, dmr_flco_show_keys(ctx), segments,
+                                                   (ctx->state->payload_algid == 0x25) ? 4U : 2U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && (ctx->state->payload_algidR == 0x25 || ctx->state->payload_algidR == 0x24)
         && ctx->state->aes_key_loaded[1] == 1) {
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %s ", DSD_SECRET_REDACTED);
+        const unsigned long long segments[4] = {ctx->state->A1[1], ctx->state->A2[1], ctx->state->A3[1],
+                                                ctx->state->A4[1]};
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key: %s ",
+                    dsd_secret_format_u64_segments(key_text, sizeof key_text, dmr_flco_show_keys(ctx), segments,
+                                                   (ctx->state->payload_algidR == 0x25) ? 4U : 2U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }
@@ -849,14 +914,22 @@ dmr_flco_print_aes_36_37_keys(const dmr_flco_ctx* ctx) {
         && ctx->state->aes_key_loaded[0] == 1) {
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %s", DSD_SECRET_REDACTED);
+        const unsigned long long segments[4] = {ctx->state->A1[0], ctx->state->A2[0], ctx->state->A3[0],
+                                                ctx->state->A4[0]};
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key: %s",
+                    dsd_secret_format_u64_segments(key_text, sizeof key_text, dmr_flco_show_keys(ctx), segments, 4U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
     if (ctx->slot == 1 && (ctx->state->payload_algidR == 0x36 || ctx->state->payload_algidR == 0x37)
         && ctx->state->aes_key_loaded[1] == 1) {
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, "Key: %s", DSD_SECRET_REDACTED);
+        const unsigned long long segments[4] = {ctx->state->A1[1], ctx->state->A2[1], ctx->state->A3[1],
+                                                ctx->state->A4[1]};
+        char key_text[68];
+        DSD_FPRINTF(stderr, "Key: %s",
+                    dsd_secret_format_u64_segments(key_text, sizeof key_text, dmr_flco_show_keys(ctx), segments, 4U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
 }

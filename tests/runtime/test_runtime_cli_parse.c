@@ -7,6 +7,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/crypto/pc5.h>
@@ -62,6 +63,49 @@ test_redirect_stdout_to_null(void) {
 #else
     (void)freopen("/dev/null", "w", stdout);
 #endif
+}
+
+static int
+read_file_to_buffer(const char* path, char* out, size_t out_size) {
+    if (path == NULL || out == NULL || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+
+    FILE* fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return -1;
+    }
+    size_t nread = fread(out, 1, out_size - 1U, fp);
+    if (ferror(fp)) {
+        fclose(fp);
+        return -1;
+    }
+    out[nread] = '\0';
+    fclose(fp);
+    return 0;
+}
+
+static int
+parse_args_capture_stderr(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* argc_effective, int* exit_rc,
+                          char* out, size_t out_size) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "runtime_cli_parse") != 0) {
+        return DSD_PARSE_ERROR;
+    }
+
+    int rc = dsd_parse_args(argc, argv, opts, state, argc_effective, exit_rc);
+
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        (void)remove(cap.path);
+        return DSD_PARSE_ERROR;
+    }
+    if (read_file_to_buffer(cap.path, out, out_size) != 0) {
+        (void)remove(cap.path);
+        return DSD_PARSE_ERROR;
+    }
+    (void)remove(cap.path);
+    return rc;
 }
 
 static int
@@ -384,6 +428,68 @@ test_H_zero_key_keeps_dmr_encrypted_audio_muted(void) {
     free(opts);
     free(state);
     return 0;
+}
+
+static int
+expect_H_log_key_material(const char* key_arg, int show_keys, const char* expected, const char* unexpected) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg_show[] = "--show-keys";
+    char arg_h[] = "-H";
+    char key_buf[128];
+    DSD_SNPRINTF(key_buf, sizeof key_buf, "%s", key_arg);
+    key_buf[sizeof key_buf - 1U] = '\0';
+    char* argv_show[] = {arg0, arg_show, arg_h, key_buf, NULL};
+    char* argv_hidden[] = {arg0, arg_h, key_buf, NULL};
+    char** argv = show_keys ? argv_show : argv_hidden;
+    int argc = show_keys ? 4 : 3;
+
+    char output[2048];
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, &exit_rc, output, sizeof(output));
+
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d for -H %s, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, key_buf, rc,
+                    exit_rc);
+        test_rc = 1;
+    }
+    if (expected != NULL && strstr(output, expected) == NULL) {
+        DSD_FPRINTF(stderr, "expected -H log to contain \"%s\", got \"%s\"\n", expected, output);
+        test_rc = 1;
+    }
+    if (unexpected != NULL && strstr(output, unexpected) != NULL) {
+        DSD_FPRINTF(stderr, "expected -H log to hide \"%s\", got \"%s\"\n", unexpected, output);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_H_show_keys_log_reveals_key_material(void) {
+    int rc = 0;
+    rc |= expect_H_log_key_material("0123456789", 1, "0123456789", DSD_SECRET_REDACTED);
+    rc |= expect_H_log_key_material("736B9A9C5645288B 243AD5CB8701EF8A", 1, "736B9A9C5645288B 243AD5CB8701EF8A",
+                                    DSD_SECRET_REDACTED);
+    rc |= expect_H_log_key_material("20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8", 1,
+                                    "E28E9C7836AA2DB8", DSD_SECRET_REDACTED);
+    rc |= expect_H_log_key_material("0123456789", 0, DSD_SECRET_REDACTED, "0123456789");
+    return rc;
 }
 
 static int
@@ -2547,6 +2653,101 @@ test_dmr_debug_burst_long_option_parse(void) {
     }
     if (argc_effective != 1) {
         DSD_FPRINTF(stderr, "expected compacted argc=1, got %d\n", argc_effective);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_show_keys_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--show-keys";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->show_keys != 1U) {
+        DSD_FPRINTF(stderr, "expected show_keys=1, got %u\n", (unsigned int)opts->show_keys);
+        test_rc = 1;
+    }
+    if (argc_effective != 1) {
+        DSD_FPRINTF(stderr, "expected compacted argc=1, got %d\n", argc_effective);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_show_keys_after_option_terminator_remains_positional(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--";
+    char arg2[] = "--show-keys";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (opts->show_keys != 0U) {
+        DSD_FPRINTF(stderr, "expected show_keys to remain redacted, got %u\n", (unsigned int)opts->show_keys);
+        test_rc = 1;
+    }
+    if (argc_effective != 3) {
+        DSD_FPRINTF(stderr, "expected compacted argc=3, got %d\n", argc_effective);
+        test_rc = 1;
+    }
+    if (argv[1] == NULL || strcmp(argv[1], "--") != 0 || argv[2] == NULL || strcmp(argv[2], "--show-keys") != 0) {
+        DSD_FPRINTF(stderr, "expected terminator and positional --show-keys to remain in argv\n");
         test_rc = 1;
     }
 
@@ -4936,6 +5137,7 @@ main(void) {
     rc |= test_numeric_options_reject_trailing_junk();
     rc |= test_H_loads_aes256_key_for_both_slots();
     rc |= test_H_zero_key_keeps_dmr_encrypted_audio_muted();
+    rc |= test_H_show_keys_log_reveals_key_material();
     rc |= test_b_loads_basic_privacy_key_and_unmutes_dmr();
     rc |= test_b_zero_key_keeps_dmr_encrypted_audio_muted();
     rc |= test_b_clamps_to_basic_privacy_table_max();
@@ -4965,6 +5167,8 @@ main(void) {
     rc |= test_rdio_long_options_parse();
     rc |= test_frame_log_long_option_parse();
     rc |= test_dmr_debug_burst_long_option_parse();
+    rc |= test_show_keys_long_option_parse();
+    rc |= test_show_keys_after_option_terminator_remains_positional();
     rc |= test_input_source_soapy_roundtrip();
     rc |= test_input_source_soapy_args_roundtrip();
     rc |= test_input_source_rtl_roundtrip();

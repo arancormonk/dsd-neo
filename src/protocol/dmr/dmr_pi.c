@@ -96,13 +96,16 @@ dmr_pi_hytera_checksum(const uint8_t pi_byte[]) {
 }
 
 static void
-dmr_pi_hytera_print_key(const dsd_state* state) {
+dmr_pi_hytera_print_key(const dsd_state* state, int show_keys) {
     if (state->currentslot == 0 && state->R != 0) {
-        DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "Key: %s; ", dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->R, 10U, 0));
     }
 
     if (state->currentslot == 1 && state->RR != 0) {
-        DSD_FPRINTF(stderr, "Key: %s; ", DSD_SECRET_REDACTED);
+        char key_text[17];
+        DSD_FPRINTF(stderr, "Key: %s; ",
+                    dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->RR, 10U, 0));
     }
 }
 
@@ -127,7 +130,7 @@ dmr_pi_handle_hytera(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[]) 
 
     if (dmr_pi_hytera_checksum(pi_byte) == pi_byte[9]) {
         DSD_FPRINTF(stderr, " Hytera Enhanced; ");
-        dmr_pi_hytera_print_key(state);
+        dmr_pi_hytera_print_key(state, opts->show_keys);
 
         //disable late entry for DMRA (hopefully, there aren't any systems running both DMRA and Hytera Enhanced mixed together)
         opts->dmr_le = 2;

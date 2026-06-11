@@ -254,7 +254,7 @@ dsd_cli_usage_section_decode(void) {
 }
 
 static void
-dsd_cli_usage_section_advanced(void) {
+dsd_cli_usage_section_advanced_decoder_options(void) {
     printf("Advanced Decoder options:\n");
     printf("  -X <hex>      Manually Set P2 Parameters (WACN, SYSID, CC/NAC)\n");
     printf("                 (-X BEE00ABC123)\n");
@@ -275,6 +275,13 @@ dsd_cli_usage_section_advanced(void) {
     printf("  -F            Relax NXDN SACCH/FACCH/CAC/F2U CRC Pass/Fail\n");
     printf("  -F            Relax M17 LSF/PKT CRC Error Checking\n");
     printf("\n");
+    printf("      --show-keys  Reveal radio keys and keystream material in CLI/status output for this run.\n");
+    printf("                   Default output remains redacted.\n");
+    printf("\n");
+}
+
+static void
+dsd_cli_usage_section_advanced_key_options(void) {
     printf("  -b <dec>      Manually Enter Basic Privacy Key (Decimal Value of Key Number)\n");
     printf("                 (NOTE: This used to be the 'K' option!)\n");
     printf("\n");
@@ -353,6 +360,12 @@ dsd_cli_usage_section_advanced(void) {
     printf("  -3            Disable DMR Late Entry Encryption Identifiers (VC6 Single Burst)\n");
     printf("                  Note: Disable this if false positives on Voice ENC occur.\n");
     printf("\n");
+}
+
+static void
+dsd_cli_usage_section_advanced(void) {
+    dsd_cli_usage_section_advanced_decoder_options();
+    dsd_cli_usage_section_advanced_key_options();
 }
 
 static void

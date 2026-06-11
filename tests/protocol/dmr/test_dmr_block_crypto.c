@@ -15,6 +15,7 @@
 #include "dmr_block_crypto.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 static int g_lfsr_calls = 0;
 
@@ -54,6 +55,47 @@ expect_bytes(const char* label, const uint8_t* got, const uint8_t* want, size_t 
     return 0;
 }
 
+static int
+expect_contains(const char* label, const char* got, const char* needle) {
+    if (strstr(got, needle) == NULL) {
+        DSD_FPRINTF(stderr, "%s: expected output to contain \"%s\", got \"%s\"\n", label, needle, got);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+capture_print_info(const dmr_block_crypto_ctx* ctx, int show_keys, char* out, size_t out_size) {
+    dsd_test_capture_stderr cap;
+    if (out == NULL || out_size == 0U) {
+        return 1;
+    }
+    out[0] = '\0';
+    if (dsd_test_capture_stderr_begin(&cap, "dsdneo_dmr_block_crypto") != 0) {
+        DSD_FPRINTF(stderr, "capture stderr begin failed\n");
+        return 1;
+    }
+
+    dmr_block_crypto_print_info(ctx, show_keys);
+
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        DSD_FPRINTF(stderr, "capture stderr end failed\n");
+        return 1;
+    }
+
+    FILE* fp = fopen(cap.path, "rb");
+    if (fp == NULL) {
+        DSD_FPRINTF(stderr, "capture read failed\n");
+        (void)remove(cap.path);
+        return 1;
+    }
+    size_t nread = fread(out, 1U, out_size - 1U, fp);
+    out[nread] = '\0';
+    (void)fclose(fp);
+    (void)remove(cap.path);
+    return 0;
+}
+
 static void
 seed_window(dsd_state* state, uint8_t slot, uint8_t start, uint8_t poc) {
     DSD_MEMSET(state, 0, sizeof(*state));
@@ -88,6 +130,54 @@ xor_stream_into_payload(dsd_state* state, uint8_t slot, int start, const uint8_t
 }
 
 static int
+test_print_info_reveals_full_aes128_key(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    char output[256];
+    const uint8_t slot = 0;
+    const int kid = 0x23;
+    int rc = 0;
+
+    seed_window(&state, slot, 0, 28);
+    state.payload_algid = 4;
+    state.payload_keyid = kid;
+    seed_key_array(&state, kid, 0x0123456789ABCDEFULL, 0ULL, 0xDEADBEEFDEADBEEFULL, 0ULL);
+
+    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    rc |= expect_int("aes128 print key loaded", ctx.aes_key_loaded, 1);
+    if (capture_print_info(&ctx, 1, output, sizeof output) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("aes128 print full key", output, "AES128; Key: 0123456789ABCDEF0000000000000000;");
+    return rc;
+}
+
+static int
+test_print_info_reveals_full_aes256_key_when_first_segment_zero(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    char output[256];
+    const uint8_t slot = 1;
+    const int kid = 0x24;
+    int rc = 0;
+
+    seed_window(&state, slot, 0, 28);
+    state.payload_algidR = 5;
+    state.payload_keyidR = kid;
+    seed_key_array(&state, kid, 0ULL, 0x1112131415161718ULL, 0x2122232425262728ULL, 0x3132333435363738ULL);
+
+    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    rc |= expect_int("aes256 print rkey zero", ctx.rkey == 0ULL, 1);
+    rc |= expect_int("aes256 print key loaded", ctx.aes_key_loaded, 1);
+    if (capture_print_info(&ctx, 1, output, sizeof output) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("aes256 print full key", output,
+                          "AES256; Key: 0000000000000000111213141516171821222324252627283132333435363738;");
+    return rc;
+}
+
+static int
 test_aes128_zero_mi_uses_reference_ecb_block_count(void) {
     static const uint8_t ciphertext[16] = {0x69, 0xC4, 0xE0, 0xD8, 0x6A, 0x7B, 0x04, 0x30,
                                            0xD8, 0xCD, 0xB7, 0x80, 0x70, 0xB4, 0xC5, 0x5A};
@@ -119,7 +209,7 @@ test_aes128_zero_mi_uses_reference_ecb_block_count(void) {
     rc |= expect_int("aes128 ctx start", ctx.start, start);
     rc |= expect_int("aes128 ctx end", ctx.end, 35);
     rc |= expect_int("aes128 key loaded", ctx.aes_key_loaded, 1);
-    rc |= expect_int("aes128 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 1);
+    rc |= expect_int("aes128 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
     rc |= expect_int("aes128 zero-mi skips lfsr", g_lfsr_calls, 0);
     rc |= expect_int("aes128 alg normalized", state.payload_algid, 0x24);
     rc |= expect_u8("aes128 prefix byte 0", state.dmr_pdu_sf[slot][0], 0xE0);
@@ -160,7 +250,7 @@ test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback(void)
     g_lfsr_calls = 0;
     dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
     rc |= expect_int("aes256 manual key loaded", ctx.aes_key_loaded, 1);
-    rc |= expect_int("aes256 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 1);
+    rc |= expect_int("aes256 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
     rc |= expect_int("aes256 zero-mi skips lfsr", g_lfsr_calls, 0);
     rc |= expect_int("aes256 alg normalized", state.payload_algidR, 0x25);
     rc |= expect_bytes("aes256 block 0", state.dmr_pdu_sf[slot] + start, plaintext, sizeof(plaintext));
@@ -195,7 +285,7 @@ test_aes_nonzero_mi_keeps_ofb_path(void) {
     aes_ofb_keystream_output(iv, ctx.aes_key, stream, /*AES-128*/ 0, 3);
 
     rc |= expect_int("aes ofb ctx end", ctx.end, 16);
-    rc |= expect_int("aes ofb decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 1);
+    rc |= expect_int("aes ofb decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
     rc |= expect_int("aes nonzero-mi calls lfsr", g_lfsr_calls, 1);
     rc |= expect_int("aes ofb alg normalized", state.payload_algid, 0x24);
     rc |= expect_bytes("aes ofb skips discard block", state.dmr_pdu_sf[slot], stream + 16, 16);
@@ -226,7 +316,7 @@ test_rc4_decrypts_window_with_key_id_lookup(void) {
     rc4_block_output(256, 9, ctx.end, ctx.rc4_iv, stream);
     xor_stream_into_payload(&state, slot, ctx.start, plaintext, stream, (size_t)ctx.end);
 
-    rc |= expect_int("rc4 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 1);
+    rc |= expect_int("rc4 decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
     rc |= expect_bytes("rc4 plaintext", state.dmr_pdu_sf[slot] + ctx.start, plaintext, (size_t)ctx.end);
     return rc;
 }
@@ -255,7 +345,7 @@ test_des_decrypts_window_with_manual_key_fallback(void) {
     des_multi_keystream_output(ctx.mi, ctx.rkey, stream, 1, (ctx.end / 8) + 1);
     xor_stream_into_payload(&state, slot, ctx.start, plaintext, stream, (size_t)ctx.end);
 
-    rc |= expect_int("des decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 1);
+    rc |= expect_int("des decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
     rc |= expect_bytes("des plaintext", state.dmr_pdu_sf[slot] + ctx.start, plaintext, (size_t)ctx.end);
     return rc;
 }
@@ -282,7 +372,7 @@ test_basic_privacy_decrypts_window(void) {
         state.dmr_pdu_sf[slot][ctx.start + i] = (uint8_t)(plaintext[i] ^ stream[i % 2]);
     }
 
-    rc |= expect_int("bp decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 1);
+    rc |= expect_int("bp decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
     rc |= expect_bytes("bp plaintext", state.dmr_pdu_sf[slot] + ctx.start, plaintext, (size_t)ctx.end);
     return rc;
 }
@@ -301,7 +391,7 @@ test_aes_missing_key_still_normalizes_alg(void) {
 
     dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
     rc |= expect_int("aes missing key not loaded", ctx.aes_key_loaded, 0);
-    rc |= expect_int("aes missing key result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx), 0);
+    rc |= expect_int("aes missing key result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 0);
     rc |= expect_int("aes missing key alg normalized", state.payload_algidR, 0x25);
     return rc;
 }
@@ -312,6 +402,8 @@ main(void) {
     rc |= test_aes128_zero_mi_uses_reference_ecb_block_count();
     rc |= test_aes256_zero_mi_uses_reference_ecb_block_count_and_manual_key_fallback();
     rc |= test_aes_nonzero_mi_keeps_ofb_path();
+    rc |= test_print_info_reveals_full_aes128_key();
+    rc |= test_print_info_reveals_full_aes256_key_when_first_segment_zero();
     rc |= test_rc4_decrypts_window_with_key_id_lookup();
     rc |= test_des_decrypts_window_with_manual_key_fallback();
     rc |= test_basic_privacy_decrypts_window();

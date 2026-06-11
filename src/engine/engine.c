@@ -1790,6 +1790,7 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
     state->K2 = 0;
     state->K3 = 0;
     state->K4 = 0;
+    state->hytera_key_segments = 0U;
     DSD_MEMSET(state->A1, 0, sizeof(state->A1));
     DSD_MEMSET(state->A2, 0, sizeof(state->A2));
     DSD_MEMSET(state->A3, 0, sizeof(state->A3));

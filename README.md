@@ -419,7 +419,7 @@ Quick examples
   - `tools/cmake_format_check.sh` (CMake formatting with gersemi; use `--fix` to rewrite).
   - `tools/gitleaks.sh` (secret scanning with SARIF output for GitHub code scanning).
 - Security guardrails:
-  - `tools/check_secret_redaction.sh` (blocks formatted key/keystream output without `DSD_SECRET_REDACTED`).
+  - `tools/check_secret_redaction.sh` (blocks formatted key/keystream output outside the redaction formatter helpers).
   - `tools/check_workflow_git_pins.sh` (blocks floating public GitHub source checkouts in workflows and CI helper scripts).
   - `tools/check_workflow_download_pins.sh` (blocks mutable release helper downloads and digestless AppImage container refs).
   - `tools/check_release_hardening.sh` (verifies Linux ELF PIE/RELRO/BIND_NOW, macOS Mach-O PIE/@rpath, and hardening compile flags).

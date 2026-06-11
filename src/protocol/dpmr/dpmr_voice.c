@@ -299,7 +299,7 @@ dpmr_print_ids(dsd_state* state, char called_id[8], char calling_id[8]) {
 }
 
 static void DSD_ATTR_USED
-dpmr_print_scrambler_state(const dsd_state* state) {
+dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
     if (state->dPMRVoiceFS2Frame.Version[0] != 3) {
         return;
     }
@@ -308,7 +308,9 @@ dpmr_print_scrambler_state(const dsd_state* state) {
     DSD_FPRINTF(stderr, "%s", KNRM);
     if (state->R != 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, " Key %s ", DSD_SECRET_REDACTED);
+        char key_text[16];
+        DSD_FPRINTF(stderr, " Key %s ",
+                    dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 }
@@ -408,7 +410,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_extract_previous_ids(state, CalledID, CallingID);
     dpmr_update_superframe_part(&ctx, opts, state, CalledID, CallingID);
     dpmr_print_ids(state, CalledID, CallingID);
-    dpmr_print_scrambler_state(state);
+    dpmr_print_scrambler_state(opts, state);
     dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
     DSD_FPRINTF(stderr, "\n");
 

@@ -37,6 +37,7 @@
 #include "menu_callbacks.h"
 #include "menu_internal.h"
 #include "test_support.h"
+#include "ui_key_status.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -584,6 +585,42 @@ test_call_alert_off_selection_survives_ui_command_path(void) {
 }
 
 static int
+test_ui_visibility_toggles_preserve_show_keys(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    const struct VisibilityCommand {
+        int cmd_id;
+        const char* label;
+    } commands[] = {
+        {UI_CMD_UI_SHOW_P25_AFFIL_TOGGLE, "P25 affiliations visibility toggle preserves show_keys"},
+        {UI_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE, "P25 callsign visibility toggle preserves show_keys"},
+        {UI_CMD_P25_GA_TOGGLE, "P25 group affiliation toggle preserves show_keys"},
+        {UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE, "DSP panel visibility toggle preserves show_keys"},
+        {UI_CMD_UI_SHOW_P25_METRICS_TOGGLE, "P25 metrics visibility toggle preserves show_keys"},
+        {UI_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE, "P25 neighbors visibility toggle preserves show_keys"},
+        {UI_CMD_UI_SHOW_P25_IDEN_TOGGLE, "P25 IDEN visibility toggle preserves show_keys"},
+        {UI_CMD_UI_SHOW_P25_CCC_TOGGLE, "P25 CC candidates visibility toggle preserves show_keys"},
+        {UI_CMD_UI_SHOW_CHANNELS_TOGGLE, "channels visibility toggle preserves show_keys"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof commands / sizeof commands[0]; i++) {
+        opts->show_keys = 1U;
+        ui_post_cmd(commands[i].cmd_id, NULL, 0);
+        ui_drain_cmds(opts, state);
+        rc |= expect_int_eq(commands[i].label, (int)opts->show_keys, 1);
+    }
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+static int
 test_ui_aes_key_command_clears_manual_hytera_fields(void) {
     test_runtime runtime;
     if (alloc_test_runtime(&runtime) != 0) {
@@ -633,11 +670,109 @@ test_ui_aes_key_command_clears_manual_hytera_fields(void) {
     rc |= expect_u64_eq("UI AES clears K2", state->K2, 0ULL);
     rc |= expect_u64_eq("UI AES clears K3", state->K3, 0ULL);
     rc |= expect_u64_eq("UI AES clears K4", state->K4, 0ULL);
+    rc |= expect_int_eq("UI AES clears Hytera segment count", (int)state->hytera_key_segments, 0);
     rc |= expect_int_eq("UI AES disables keyloader", state->keyloader, 0);
     rc |= expect_int_eq("UI AES clears slot 0 payload key ID", state->payload_keyid, 0);
     rc |= expect_int_eq("UI AES clears slot 1 payload key ID", state->payload_keyidR, 0);
     rc |= expect_int_eq("UI AES unmutes encrypted left", opts->dmr_mute_encL, 0);
     rc |= expect_int_eq("UI AES unmutes encrypted right", opts->dmr_mute_encR, 0);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+static int
+test_ui_hytera_status_counts_k_fields_only(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_state* state = runtime.state;
+
+    state->H = 0x2345ULL;
+    state->aes_key_segments[0] = 4U;
+    state->aes_key_segments[1] = 2U;
+
+    int rc = 0;
+    rc |=
+        expect_int_eq("UI Hytera status ignores H-only stale AES metadata", (int)ui_hytera_key_segment_count(state), 0);
+
+    state->K1 = 0x0123456789ULL;
+    rc |= expect_int_eq("UI Hytera BP status ignores stale AES metadata", (int)ui_hytera_key_segment_count(state), 1);
+
+    state->hytera_key_segments = 2U;
+    rc |= expect_int_eq("UI Hytera 128-bit status preserves zero K2", (int)ui_hytera_key_segment_count(state), 2);
+    state->hytera_key_segments = 0U;
+
+    state->K2 = 0x1122334455667788ULL;
+    rc |= expect_int_eq("UI Hytera 128-bit status counts K fields", (int)ui_hytera_key_segment_count(state), 2);
+
+    state->K2 = 0ULL;
+    state->K4 = 0x8877665544332211ULL;
+    rc |= expect_int_eq("UI Hytera 256-bit status counts upper K fields", (int)ui_hytera_key_segment_count(state), 4);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+static int
+test_ui_hytera_key_command_preserves_aes_metadata(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    state->A1[0] = 0x20029736A5D91042ULL;
+    state->A2[0] = 0xC923EB0697484433ULL;
+    state->A3[0] = 0x005EFC58A1905195ULL;
+    state->A4[0] = 0xE28E9C7836AA2DB8ULL;
+    state->A1[1] = 0x361097A53A529002ULL;
+    state->A2[1] = 0x3344489706EB23C9ULL;
+    state->A3[1] = 0x955190A158FC5E00ULL;
+    state->A4[1] = 0xB82DAA36789C8EE2ULL;
+    state->aes_key_loaded[0] = 1;
+    state->aes_key_loaded[1] = 1;
+    state->aes_key_segments[0] = 4U;
+    state->aes_key_segments[1] = 4U;
+
+    uint8_t expected_aes_key[32];
+    for (size_t i = 0U; i < sizeof expected_aes_key; i++) {
+        state->aes_key[i] = (uint8_t)(i + 1U);
+        expected_aes_key[i] = state->aes_key[i];
+    }
+
+    struct HyteraKeyPayload {
+        uint64_t H, K1, K2, K3, K4;
+    } p = {
+        0x0123456789ULL, 0x0123456789ULL, 0ULL, 0ULL, 0ULL,
+    };
+
+    ui_post_cmd(UI_CMD_KEY_HYTERA_SET, &p, sizeof p);
+    ui_drain_cmds(opts, state);
+
+    int rc = 0;
+    rc |= expect_u64_eq("UI Hytera command sets H", state->H, p.H);
+    rc |= expect_u64_eq("UI Hytera command sets K1", state->K1, p.K1);
+    rc |= expect_u64_eq("UI Hytera command sets K2", state->K2, p.K2);
+    rc |= expect_u64_eq("UI Hytera command sets K3", state->K3, p.K3);
+    rc |= expect_u64_eq("UI Hytera command sets K4", state->K4, p.K4);
+    rc |= expect_int_eq("UI Hytera command records BP segment count", (int)state->hytera_key_segments, 1);
+    rc |= expect_int_eq("UI Hytera preserves AES loaded slot 0", state->aes_key_loaded[0], 1);
+    rc |= expect_int_eq("UI Hytera preserves AES loaded slot 1", state->aes_key_loaded[1], 1);
+    rc |= expect_int_eq("UI Hytera preserves AES segment count slot 0", (int)state->aes_key_segments[0], 4);
+    rc |= expect_int_eq("UI Hytera preserves AES segment count slot 1", (int)state->aes_key_segments[1], 4);
+    rc |= expect_u64_eq("UI Hytera preserves AES A1 slot 0", state->A1[0], 0x20029736A5D91042ULL);
+    rc |= expect_u64_eq("UI Hytera preserves AES A2 slot 0", state->A2[0], 0xC923EB0697484433ULL);
+    rc |= expect_u64_eq("UI Hytera preserves AES A3 slot 0", state->A3[0], 0x005EFC58A1905195ULL);
+    rc |= expect_u64_eq("UI Hytera preserves AES A4 slot 0", state->A4[0], 0xE28E9C7836AA2DB8ULL);
+    rc |= expect_u64_eq("UI Hytera preserves AES A1 slot 1", state->A1[1], 0x361097A53A529002ULL);
+    rc |= expect_u64_eq("UI Hytera preserves AES A2 slot 1", state->A2[1], 0x3344489706EB23C9ULL);
+    rc |= expect_u64_eq("UI Hytera preserves AES A3 slot 1", state->A3[1], 0x955190A158FC5E00ULL);
+    rc |= expect_u64_eq("UI Hytera preserves AES A4 slot 1", state->A4[1], 0xB82DAA36789C8EE2ULL);
+    rc |= expect_true("UI Hytera preserves AES key bytes",
+                      memcmp(state->aes_key, expected_aes_key, sizeof expected_aes_key) == 0);
 
     free_test_runtime(&runtime);
     return rc;
@@ -1103,7 +1238,10 @@ main(void) {
     rc |= test_ui_profile_menu_no_profiles_does_not_apply_base_config();
     rc |= test_stereo_file_hot_swap_rolls_back_to_live_input();
     rc |= test_call_alert_off_selection_survives_ui_command_path();
+    rc |= test_ui_visibility_toggles_preserve_show_keys();
     rc |= test_ui_aes_key_command_clears_manual_hytera_fields();
+    rc |= test_ui_hytera_status_counts_k_fields_only();
+    rc |= test_ui_hytera_key_command_preserves_aes_metadata();
     rc |= test_return_cc_uses_pulse_rate_not_stale_file_rate();
     rc |= test_file_config_apply_keeps_live_pulse_timing();
     rc |= test_file_config_apply_keeps_live_socket_timing();

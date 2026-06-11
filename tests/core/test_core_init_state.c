@@ -21,6 +21,10 @@ test_init_opts_clears_trunk_scan_targets_csv(void) {
         DSD_FPRINTF(stderr, "initOpts did not clear trunk_scan_targets_csv\n");
         return 20;
     }
+    if (opts.show_keys != 0U) {
+        DSD_FPRINTF(stderr, "initOpts did not default show_keys to redacted\n");
+        return 21;
+    }
     return 0;
 }
 
@@ -72,6 +76,7 @@ main(void) {
     state->K2 = 0x2222222222222222ULL;
     state->K3 = 0x3333333333333333ULL;
     state->K4 = 0x4444444444444444ULL;
+    state->hytera_key_segments = 4U;
     state->M = 0x21;
     state->payload_mi = 0x1111222233334444ULL;
     state->payload_miR = 0x5555666677778888ULL;
@@ -126,7 +131,8 @@ main(void) {
         return 2;
     }
     if (state->K != 0 || state->R != 0ULL || state->RR != 0ULL || state->H != 0ULL || state->K1 != 0ULL
-        || state->K2 != 0ULL || state->K3 != 0ULL || state->K4 != 0ULL || state->M != 0) {
+        || state->K2 != 0ULL || state->K3 != 0ULL || state->K4 != 0ULL || state->hytera_key_segments != 0U
+        || state->M != 0) {
         DSD_FPRINTF(stderr, "initState did not clear manual crypto key fields\n");
         freeState(state);
         free(state);
