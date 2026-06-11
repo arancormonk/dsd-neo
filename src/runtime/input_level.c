@@ -17,8 +17,10 @@ enum {
     DSD_INPUT_LEVEL_TOAST_TTL_SEC = 4,
 };
 
+static const double DSD_INPUT_LEVEL_SILENCE_FLOOR_DBFS = -120.0;
 static const double DSD_INPUT_LEVEL_CLIP_PCT = 0.1;
 static const double DSD_INPUT_LEVEL_HOT_PEAK_DBFS = -1.0;
+static const double DSD_INPUT_LEVEL_SILENCE_EPSILON_DB = 0.1;
 
 static double
 input_level_pwr_to_db(double mean_power) {
@@ -375,6 +377,19 @@ input_level_status_severity(dsd_input_level_status status) {
     }
 }
 
+static int
+input_level_is_digital_silence(const dsd_input_level_snapshot* snapshot) {
+    return snapshot && snapshot->sample_count > 0U
+           && snapshot->rms_dbfs <= DSD_INPUT_LEVEL_SILENCE_FLOOR_DBFS + DSD_INPUT_LEVEL_SILENCE_EPSILON_DB
+           && snapshot->peak_dbfs <= DSD_INPUT_LEVEL_SILENCE_FLOOR_DBFS + DSD_INPUT_LEVEL_SILENCE_EPSILON_DB;
+}
+
+static int
+input_level_should_suppress_idle_tcp_low(const dsd_opts* opts, const dsd_input_level_snapshot* snapshot) {
+    return opts && snapshot && opts->audio_in_type == AUDIO_IN_TCP && snapshot->source == DSD_INPUT_LEVEL_SOURCE_PCM
+           && snapshot->status == DSD_INPUT_LEVEL_LOW && input_level_is_digital_silence(snapshot);
+}
+
 int
 dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, char* out, size_t out_size) {
     if (!snapshot || !out || out_size == 0U) {
@@ -386,7 +401,7 @@ dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, char* 
                                                                         : "lower source/input volume";
     if (snapshot->status == DSD_INPUT_LEVEL_LOW) {
         advice = dsd_input_level_source_is_rf(snapshot->source) ? "raise RF gain if signal is present"
-                                                                : "raise source/input volume";
+                                                                : "raise source/input volume if signal is present";
         DSD_SNPRINTF(out, out_size, "%s %s %.1f dBFS: %s", label, status, snapshot->rms_dbfs, advice);
         return 0;
     }
@@ -450,7 +465,9 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
     }
 
     time_t now = next.updated != 0 ? next.updated : time(NULL);
-    int notify = input_level_should_notify(opts, state, &next, notify_mask, now);
+    int notify = input_level_should_suppress_idle_tcp_low(opts, &next)
+                     ? 0
+                     : input_level_should_notify(opts, state, &next, notify_mask, now);
     state->input_level = next;
     if (!notify) {
         return;
