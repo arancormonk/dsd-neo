@@ -86,7 +86,6 @@ jobs:
           --triplet $env:VCPKG_DEFAULT_TRIPLET
           --overlay-triplets "$env:GITHUB_WORKSPACE\\vcpkg-triplets"
           --x-manifest-root "$env:GITHUB_WORKSPACE"
-          --only-binarycaching
 
       - name: Configure (MSVC Release)
         shell: pwsh
