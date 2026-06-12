@@ -80,6 +80,26 @@ Uninstall from the same build directory:
 cmake --build build/dev-release --target uninstall
 ```
 
+## Linux Bootstrap Script
+
+Linux source installs can use the distro-aware helper:
+
+```sh
+tools/install_linux.sh --yes
+```
+
+It installs build dependencies for apt, dnf, zypper, apk, or pacman systems,
+builds pinned `mbelib-neo`, builds DSD-neo, smoke-tests the CLI, and installs
+through CMake. Docker validation for the supported distro matrix is available
+with:
+
+```sh
+tools/docker_linux_install_matrix.sh --distro ubuntu-26.04
+```
+
+See `docs/linux-installation.md` for options, distro coverage, and derivative
+mapping.
+
 ## Developer Setup
 
 For local development:

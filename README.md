@@ -109,6 +109,9 @@ Requirements
 
 OS package hints
 
+- Linux bootstrap helper:
+  - `tools/install_linux.sh --yes` installs distro build dependencies, builds pinned `mbelib-neo`, builds this checkout, smoke-tests the CLI, and installs through CMake.
+  - See `docs/linux-installation.md` for distro coverage and Docker validation with `tools/docker_linux_install_matrix.sh`.
 - Ubuntu/Debian (apt):
   - `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libssl-dev libsndfile1-dev libpulse-dev libncurses-dev librtlsdr-dev libsoapysdr-dev`
   - Older distro packages may provide unsupported SoapySDR 0.7.x; install or build SoapySDR 0.8.1 or newer when enabling that backend.
