@@ -11,10 +11,11 @@ cd "$ROOT_DIR"
 
 usage() {
   cat << 'USAGE'
-Usage: tools/semgrep.sh [--strict] [--config <config>] [--] [paths...]
+Usage: tools/semgrep.sh [--strict] [--jobs N] [--config <config>] [--] [paths...]
 
 Options:
   --strict          Fail on findings (--error).
+  --jobs N          Semgrep parallelism (default: DSD_SEMGREP_JOBS or 1).
   --config CONFIG   Semgrep config/rule pack (default: p/default; strict also
                     adds p/c, p/security-audit, and semgrep/dsd-neo.yml).
                     May be supplied multiple times.
@@ -23,6 +24,7 @@ Arguments:
   paths...          Optional paths to scan. Default: src include apps tests tools .github/workflows
 
 Environment:
+  DSD_SEMGREP_JOBS       Optional Semgrep parallelism override.
   DSD_SEMGREP_SARIF_OUT  Optional SARIF output path for GitHub code scanning.
 USAGE
 }
@@ -30,6 +32,7 @@ USAGE
 STRICT=0
 CONFIGS=("p/default")
 CUSTOM_CONFIGS=0
+SEMGREP_JOBS="${DSD_SEMGREP_JOBS:-1}"
 TARGETS=()
 
 while [[ $# -gt 0 ]]; do
@@ -37,6 +40,14 @@ while [[ $# -gt 0 ]]; do
     --strict)
       STRICT=1
       shift
+      ;;
+    --jobs)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --jobs" >&2
+        exit 2
+      fi
+      SEMGREP_JOBS="$2"
+      shift 2
       ;;
     --config)
       if [[ $# -lt 2 ]]; then
@@ -70,6 +81,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ ! "$SEMGREP_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid Semgrep jobs value: $SEMGREP_JOBS" >&2
+  exit 2
+fi
 
 if ! command -v semgrep > /dev/null 2>&1; then
   echo "semgrep not found. Install with: pipx install semgrep (or pip install semgrep)." >&2
@@ -106,6 +122,7 @@ fi
 LOG_FILE=".semgrep.local.out"
 
 ARGS=(
+  --jobs "$SEMGREP_JOBS"
   --metrics=off
   --disable-version-check
   --no-git-ignore

@@ -65,9 +65,8 @@ The low-level threshold is controlled by `--input-level-warn-db` or `DSD_NEO_INP
 Hot/clipping advisories use fixed v1 thresholds: peak at or above `-1.0 dBFS` is `HOT`, and at least `0.1%` clipped or
 near-rail samples is `CLIP`. Footer messages are rate-limited. RF low-level status remains persistent but does not
 produce repeated low-level footer messages because a quiet channel and too little RF gain are not reliably
-distinguishable from raw receiver samples alone. TCP PCM input also suppresses repeated low-level footer messages when
-the stream is digital silence; the persistent `Input Level` line still shows `LOW`, and non-silent low-level audio still
-warns.
+distinguishable from raw receiver samples alone. TCP PCM input suppresses repeated LOW/HOT/CLIP footer messages while
+the decoder is idle/searching; the persistent `Input Level` line still shows the current status.
 
 ## Hotkeys (Main Screen)
 
