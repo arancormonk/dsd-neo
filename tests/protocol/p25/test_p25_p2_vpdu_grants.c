@@ -8,9 +8,14 @@
  * Asserts trunking tune side-effects via test shim capture.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -21,6 +26,8 @@
 #endif
 
 #include "p25_test_shim.h"
+
+struct RtlSdrContext;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -212,6 +219,80 @@ main(void) {
         p25_test_invoke_mac_vpdu_channel_cache(mac, 24, &cfg, 0x100A, 0x100B, &freq_t, &freq_r);
         rc |= expect_eq_long("0xD6 CHAN-T cache", freq_t, 851125000);
         rc |= expect_eq_long("0xD6 CHAN-R cache", freq_r, 851137500);
+    }
+
+    // Case E: a grant decoded through MAC VPDU must honor failed-VC retune backoff.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+        state.p25_retune_block_freq = 851125000;
+        state.p25_retune_block_slot = -1;
+        state.p25_retune_block_until = time(NULL) + 60;
+
+        MAC[1] = 0x40; // Group Voice Channel Grant
+        MAC[2] = 0x00; // svc
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A; // channel 0x100A -> blocked 851.125 MHz
+        MAC[5] = 0x12;
+        MAC[6] = 0x34; // group
+        MAC[7] = 0x00;
+        MAC[8] = 0x00;
+        MAC[9] = 0x02; // source
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x40 blocked by backoff", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0x40 blocked vc", state.p25_vc_freq[0], 0);
+    }
+
+    // Case F: compact grant-update paths must also honor failed-VC retune backoff.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+        state.p25_retune_block_freq = 851125000;
+        state.p25_retune_block_slot = -1;
+        state.p25_retune_block_until = time(NULL) + 60;
+
+        MAC[1] = 0x42; // Group Voice Channel Grant Update - Implicit
+        MAC[2] = 0x10;
+        MAC[3] = 0x0A; // channel1 0x100A -> blocked 851.125 MHz
+        MAC[4] = 0x12;
+        MAC[5] = 0x34; // group1
+        MAC[6] = 0x10;
+        MAC[7] = 0x0A; // channel2 same as channel1, so only one candidate is tried
+        MAC[8] = 0x12;
+        MAC[9] = 0x35; // group2
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x42 blocked by backoff", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0x42 blocked vc", state.p25_vc_freq[0], 0);
     }
 
     return rc;

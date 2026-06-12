@@ -840,6 +840,19 @@ init_state_p25_patch_defaults(dsd_state* state) {
 }
 
 static void
+init_state_p25_retune_backoff_defaults(dsd_state* state) {
+    state->p25_retune_block_until = 0;
+    state->p25_retune_block_freq = 0;
+    state->p25_retune_block_slot = -1;
+    state->p25_retune_block_next = 0;
+    DSD_MEMSET(state->p25_retune_block_history_until, 0, sizeof(state->p25_retune_block_history_until));
+    DSD_MEMSET(state->p25_retune_block_history_freq, 0, sizeof(state->p25_retune_block_history_freq));
+    for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
+        state->p25_retune_block_history_slot[i] = -1;
+    }
+}
+
+static void
 init_state_p25_and_trunk_defaults(dsd_state* state) {
     //P2 variables
     state->p2_wacn = 0;
@@ -895,6 +908,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_vc_freq[1] = 0;
 
     init_state_p25_patch_defaults(state);
+    init_state_p25_retune_backoff_defaults(state);
 
     //edacs - may need to make these user configurable instead for stability on non-ea systems
     state->ea_mode = -1; //init on -1, 0 is standard, 1 is ea

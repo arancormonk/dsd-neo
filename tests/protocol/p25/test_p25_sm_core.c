@@ -284,7 +284,84 @@ main(void) {
     p25_sm_tick_ctx(&ctx8, &o8, &s8);
     assert(g_last_tuned_cc == 851000000);
 
-    // 8) A failed VC tune must not advance P25 tuned state or counters.
+    // 8) In no-import operation, legacy LCN fallback must not cycle through
+    // voice/grant-derived frequencies as CC hunt targets.
+    static dsd_opts o8b;
+    static dsd_state s8b;
+    DSD_MEMSET(&o8b, 0, sizeof(o8b));
+    DSD_MEMSET(&s8b, 0, sizeof(s8b));
+    o8b.p25_trunk = 1;
+    o8b.trunk_hangtime = 0.2f;
+    s8b.p25_cc_freq = 851000000;
+    s8b.trunk_lcn_freq[0] = 851000000;
+    s8b.trunk_lcn_freq[1] = 889000000;
+    s8b.lcn_freq_count = 2;
+
+    p25_sm_ctx_t ctx8b;
+    p25_sm_init_ctx(&ctx8b, &o8b, &s8b);
+    ctx8b.state = P25_SM_HUNTING;
+    ctx8b.t_hunt_try_m = 0.0;
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx8b, &o8b, &s8b);
+    assert(g_last_tuned_cc == 851000000);
+
+    ctx8b.state = P25_SM_HUNTING;
+    ctx8b.t_hunt_try_m = dsd_time_now_monotonic_s() - 10.0;
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx8b, &o8b, &s8b);
+    assert(g_last_tuned_cc == 851000000);
+
+    // 9) Trunk-scan per-target channel maps are explicit user LCN lists even
+    // though the live opts->chan_in_file is empty.
+    static dsd_opts o8d;
+    static dsd_state s8d;
+    DSD_MEMSET(&o8d, 0, sizeof(o8d));
+    DSD_MEMSET(&s8d, 0, sizeof(s8d));
+    o8d.p25_trunk = 1;
+    o8d.trunk_scan_enabled = 1;
+    o8d.trunk_hangtime = 0.2f;
+    s8d.p25_cc_freq = 851000000;
+    s8d.trunk_lcn_freq[0] = 851000000;
+    s8d.trunk_lcn_freq[1] = 852000000;
+    s8d.lcn_freq_count = 2;
+    s8d.trunk_chan_map[101] = 852000000;
+    s8d.trunk_chan_map_used[0] = 101;
+    s8d.trunk_chan_map_used_count = 1U;
+
+    p25_sm_ctx_t ctx8d;
+    p25_sm_init_ctx(&ctx8d, &o8d, &s8d);
+    ctx8d.state = P25_SM_HUNTING;
+    ctx8d.t_hunt_try_m = 0.0;
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx8d, &o8d, &s8d);
+    assert(g_last_tuned_cc == 851000000);
+
+    ctx8d.state = P25_SM_HUNTING;
+    ctx8d.t_hunt_try_m = dsd_time_now_monotonic_s() - 10.0;
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx8d, &o8d, &s8d);
+    assert(g_last_tuned_cc == 852000000);
+
+    // 10) A current-site candidate is still eligible in no-import operation.
+    static dsd_opts o8c;
+    static dsd_state s8c;
+    DSD_MEMSET(&o8c, 0, sizeof(o8c));
+    DSD_MEMSET(&s8c, 0, sizeof(s8c));
+    o8c.p25_trunk = 1;
+    o8c.trunk_hangtime = 0.2f;
+    s8c.p25_cc_freq = 851000000;
+    s8c.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    dsd_state_set_trunk_chan_freq(&s8c, 101U, 889000000L);
+    assert(s8c.trunk_chan_map_used_count == 1U);
+    (void)dsd_trunk_cc_candidates_add(&s8c, 852000000, 0);
+
+    p25_sm_ctx_t ctx8c;
+    p25_sm_init_ctx(&ctx8c, &o8c, &s8c);
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx8c, &o8c, &s8c);
+    assert(g_last_tuned_cc == 852000000);
+
+    // 11) A failed VC tune must not advance P25 tuned state or counters.
     install_result_tuning_hooks();
     static dsd_opts o9;
     static dsd_state s9;
@@ -321,7 +398,7 @@ main(void) {
     assert(s9.p25_sm_tune_count == 0);
     assert(ctx9.state == P25_SM_ON_CC);
 
-    // 9) A failed CC retune must not update the tracked CC frequency or sync timestamp.
+    // 12) A failed CC retune must not update the tracked CC frequency or sync timestamp.
     static dsd_opts o10;
     static dsd_state s10;
     DSD_MEMSET(&o10, 0, sizeof(o10));
@@ -346,7 +423,7 @@ main(void) {
     assert(s10.p25_cc_eval_freq == 0);
     assert(ctx10.state == P25_SM_HUNTING);
 
-    // 10) Deferred VC tunes leave state unchanged and can be retried by a later grant.
+    // 13) Deferred VC tunes leave state unchanged and can be retried by a later grant.
     static dsd_opts o11;
     static dsd_state s11;
     DSD_MEMSET(&o11, 0, sizeof(o11));
@@ -377,7 +454,7 @@ main(void) {
     assert(s11.p25_sm_tune_count == 1);
     assert(ctx11.state == P25_SM_TUNED);
 
-    // 11) A forced release must survive deferred return-to-CC and retry even while voice remains active.
+    // 14) A forced release must survive deferred return-to-CC and retry even while voice remains active.
     static dsd_opts o12;
     static dsd_state s12;
     DSD_MEMSET(&o12, 0, sizeof(o12));
@@ -411,6 +488,7 @@ main(void) {
     assert(o12.p25_is_tuned == 0);
     assert(o12.trunk_is_tuned == 0);
     assert(ctx12.state == P25_SM_ON_CC);
+    assert(s12.p25_retune_block_until == 0);
 
     install_trunk_tuning_hooks();
 

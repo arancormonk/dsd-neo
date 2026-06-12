@@ -31,15 +31,49 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-static void do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+static void do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
+                       int arm_failed_vc_backoff_on_accept);
 
 // Serialize release-to-CC operations to avoid duplicate retunes when multiple
 // threads (watchdog tick + decoder) request release concurrently.
 static atomic_int g_p25_sm_release_lock = 0;
 
+#define P25_FAILED_VC_RETUNE_BACKOFF_DEFAULT_S 10.0
+
 static inline double
 now_monotonic(void) {
     return dsd_time_now_monotonic_s();
+}
+
+static int
+p25_retune_backoff_explicitly_disabled(const dsdneoRuntimeConfig* cfg) {
+    return (cfg && cfg->p25_retune_backoff_is_set && cfg->p25_retune_backoff_s <= 0.0) ? 1 : 0;
+}
+
+static double
+p25_failed_vc_retune_backoff_s(const dsd_opts* opts) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (p25_retune_backoff_explicitly_disabled(cfg)) {
+        return 0.0;
+    }
+    if (cfg && cfg->p25_retune_backoff_is_set && cfg->p25_retune_backoff_s > 0.0) {
+        return cfg->p25_retune_backoff_s;
+    }
+    if (opts && opts->p25_retune_backoff_s > 0.0) {
+        return opts->p25_retune_backoff_s;
+    }
+    return P25_FAILED_VC_RETUNE_BACKOFF_DEFAULT_S;
+}
+
+static time_t
+p25_backoff_wall_seconds(double backoff_s) {
+    if (backoff_s <= 0.0) {
+        return 0;
+    }
+    if (backoff_s < 1.0) {
+        return 1;
+    }
+    return (time_t)(backoff_s + 0.999);
 }
 
 static int
@@ -479,7 +513,7 @@ p25_grant_preempt_active_call_if_needed(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
     }
     log_preempt_decision(ctx, opts, state, route, decision, "policy-allow", 1);
     sm_log(opts, state, "grant-preempt-accept");
-    do_release(ctx, opts, state, "grant-preempt");
+    do_release(ctx, opts, state, "grant-preempt", 0);
     return 1;
 }
 
@@ -627,6 +661,74 @@ p25_grant_handle_duplicate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
     return 1;
 }
 
+static int
+p25_retune_block_slot_matches(int blocked_slot, int grant_slot) {
+    return blocked_slot == grant_slot;
+}
+
+static void
+p25_retune_block_clear_history_entry(dsd_state* state, int idx) {
+    if (!state || idx < 0 || idx >= DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH) {
+        return;
+    }
+    state->p25_retune_block_history_until[idx] = 0;
+    state->p25_retune_block_history_freq[idx] = 0;
+    state->p25_retune_block_history_slot[idx] = -1;
+}
+
+static int
+p25_retune_block_log_match(const dsd_opts* opts, dsd_state* state, int channel, long freq, int slot, time_t until) {
+    sm_log(opts, state, "grant-vc-backoff");
+    if (opts && opts->verbose > 1) {
+        DSD_FPRINTF(stderr, "\n[P25 SM] grant-vc-backoff ch=0x%04X freq=%ld slot=%d until=%ld\n", channel & 0xFFFF,
+                    freq, slot, (long)until);
+    }
+    return 1;
+}
+
+static int
+p25_grant_retune_blocked(const dsd_opts* opts, dsd_state* state, long freq, int slot, int channel) {
+    if (!state || freq <= 0) {
+        return 0;
+    }
+
+    time_t now = time(NULL);
+    for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
+        time_t until = state->p25_retune_block_history_until[i];
+        if (until <= 0) {
+            continue;
+        }
+        if (now >= until) {
+            p25_retune_block_clear_history_entry(state, i);
+            continue;
+        }
+        if (state->p25_retune_block_history_freq[i] == freq
+            && p25_retune_block_slot_matches(state->p25_retune_block_history_slot[i], slot)) {
+            state->p25_retune_block_freq = state->p25_retune_block_history_freq[i];
+            state->p25_retune_block_slot = state->p25_retune_block_history_slot[i];
+            state->p25_retune_block_until = until;
+            return p25_retune_block_log_match(opts, state, channel, freq, slot, until);
+        }
+    }
+
+    if (state->p25_retune_block_until <= 0) {
+        return 0;
+    }
+
+    if (now >= state->p25_retune_block_until) {
+        state->p25_retune_block_until = 0;
+        state->p25_retune_block_freq = 0;
+        state->p25_retune_block_slot = -1;
+        return 0;
+    }
+
+    if (state->p25_retune_block_freq != freq || !p25_retune_block_slot_matches(state->p25_retune_block_slot, slot)) {
+        return 0;
+    }
+
+    return p25_retune_block_log_match(opts, state, channel, freq, slot, state->p25_retune_block_until);
+}
+
 /* ============================================================================
  * Event Handlers
  * ============================================================================ */
@@ -658,6 +760,9 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
 
     now_m = now_monotonic();
     slot = channel_slot(state, ev->channel);
+    if (p25_grant_retune_blocked(opts, state, freq, slot, ev->channel)) {
+        return;
+    }
     needs_retune = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz != 0 && ctx->vc_freq_hz != freq) ? 1 : 0;
     target_id = p25_grant_target_id(ev, &decision);
     p25_grant_fill_route(&route, ev, freq, slot, needs_retune, target_id);
@@ -776,7 +881,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
 
         if (can_release) {
             // All active slots terminated - release immediately like P25P1 Call Termination
-            do_release(ctx, opts, state, "call-end");
+            do_release(ctx, opts, state, "call-end", 0);
         }
     }
 }
@@ -872,7 +977,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
                        || (state->p25_p2_audio_ring_count[other] > 0);
 
     if (!other_active) {
-        do_release(ctx, opts, state, "enc-lockout");
+        do_release(ctx, opts, state, "enc-lockout", 0);
     } else {
         sm_log(opts, state, "enc-lockout-slot-only");
     }
@@ -922,6 +1027,60 @@ p25_release_clear_context(p25_sm_ctx_t* ctx) {
 }
 
 static void
+p25_retune_block_remember_failure(dsd_state* state, long freq, int slot, time_t until) {
+    int replace_idx = -1;
+    time_t now = time(NULL);
+    if (!state || freq <= 0 || until <= now) {
+        return;
+    }
+
+    for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
+        if (state->p25_retune_block_history_until[i] > 0 && state->p25_retune_block_history_freq[i] == freq
+            && p25_retune_block_slot_matches(state->p25_retune_block_history_slot[i], slot)) {
+            replace_idx = i;
+            break;
+        }
+        if (replace_idx < 0 && state->p25_retune_block_history_until[i] <= now) {
+            replace_idx = i;
+        }
+    }
+
+    if (replace_idx < 0) {
+        replace_idx = (int)(state->p25_retune_block_next % DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH);
+        state->p25_retune_block_next++;
+    }
+
+    state->p25_retune_block_history_freq[replace_idx] = freq;
+    state->p25_retune_block_history_slot[replace_idx] = slot;
+    state->p25_retune_block_history_until[replace_idx] = until;
+}
+
+static void
+p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
+    if (!ctx || !state || ctx->vc_freq_hz <= 0 || ctx->t_voice_m > 0.0 || ctx->slots[0].voice_active
+        || ctx->slots[1].voice_active) {
+        return;
+    }
+
+    double backoff_s = p25_failed_vc_retune_backoff_s(opts);
+    time_t backoff_wall = p25_backoff_wall_seconds(backoff_s);
+    if (backoff_wall <= 0) {
+        return;
+    }
+
+    time_t until = time(NULL) + backoff_wall;
+    state->p25_retune_block_freq = ctx->vc_freq_hz;
+    state->p25_retune_block_slot = channel_slot(state, ctx->vc_channel);
+    state->p25_retune_block_until = until;
+    p25_retune_block_remember_failure(state, ctx->vc_freq_hz, state->p25_retune_block_slot, until);
+    sm_log(opts, state, "grant-vc-backoff-arm");
+    if (opts && opts->verbose > 1) {
+        DSD_FPRINTF(stderr, "\n[P25 SM] grant-vc-backoff-arm ch=0x%04X freq=%ld slot=%d %.3fs\n",
+                    ctx->vc_channel & 0xFFFF, ctx->vc_freq_hz, state->p25_retune_block_slot, backoff_s);
+    }
+}
+
+static void
 p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
     if (state) {
         (void)dsd_tg_policy_clear_active_call(state, -1);
@@ -949,7 +1108,8 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
+           int arm_failed_vc_backoff_on_accept) {
     double tune_start_m = 0.0;
     int had_force_release = 0;
     if (!ctx) {
@@ -981,6 +1141,10 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     if (!p25_release_return_to_cc_accepted(ctx, opts, state, had_force_release, &tune_start_m)) {
         atomic_store(&g_p25_sm_release_lock, 0);
         return;
+    }
+
+    if (had_force_release || arm_failed_vc_backoff_on_accept) {
+        p25_arm_failed_vc_retune_backoff(ctx, opts, state);
     }
 
     p25_release_clear_context(ctx);
@@ -1050,6 +1214,34 @@ next_lcn_freq(dsd_state* state, long* out_freq) {
     return 0;
 }
 
+static int
+p25_has_user_lcn_list(const dsd_opts* opts, const dsd_state* state) {
+    if (opts && opts->chan_in_file[0] != '\0') {
+        return 1;
+    }
+    if (!opts || !state || opts->trunk_scan_enabled != 1) {
+        return 0;
+    }
+
+    // Trunk-scan seeds entry 0 with the target CC. Additional entries mean a
+    // per-target chan_csv was imported; learned grant caches only populate the
+    // sparse channel map and must not disable current-site CC candidate hunts.
+    return (state->lcn_freq_count > 1) ? 1 : 0;
+}
+
+static int
+next_primary_cc_freq(dsd_state* state, long* out_freq) {
+    if (!state || !out_freq) {
+        return 0;
+    }
+    long cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
+    if (cc <= 0) {
+        return 0;
+    }
+    *out_freq = cc;
+    return 1;
+}
+
 // Try tuning to next CC candidate or LCN freq
 static void
 try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
@@ -1059,8 +1251,11 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     long cand = 0;
     int sps = cc_ted_sps(opts, state);
 
-    // First try discovered CC candidates (if preference enabled)
-    if (opts && opts->p25_prefer_candidates == 1 && next_cc_candidate(state, &cand, now_m)) {
+    const int has_user_lcn_list = p25_has_user_lcn_list(opts, state);
+
+    // In no-import operation, only explicit current-site candidates are eligible
+    // before falling back to the known primary CC.
+    if (((opts && opts->p25_prefer_candidates == 1) || !has_user_lcn_list) && next_cc_candidate(state, &cand, now_m)) {
         dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             sm_log(opts, state,
@@ -1075,8 +1270,8 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         return;
     }
 
-    // Fall back to user-provided LCN list
-    if (next_lcn_freq(state, &cand)) {
+    // Fall back only to an explicit user channel map; otherwise return to the known primary CC.
+    if ((has_user_lcn_list ? next_lcn_freq(state, &cand) : next_primary_cc_freq(state, &cand))) {
         dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             sm_log(opts, state,
@@ -1263,7 +1458,7 @@ p25_sm_tick_handle_forced_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
         return 0;
     }
     if (ctx->state == P25_SM_TUNED) {
-        do_release(ctx, opts, state, "release-forced");
+        do_release(ctx, opts, state, "release-forced", 0);
     } else {
         state->p25_sm_force_release = 0;
     }
@@ -1399,7 +1594,7 @@ p25_sm_tick_tuned_check_hangtime(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     dt_voice = now_m - ctx->t_voice_m;
     effective_hangtime = p25_sm_effective_hangtime(state, hangtime);
     if (dt_voice >= effective_hangtime) {
-        do_release(ctx, opts, state, "hangtime-expired");
+        do_release(ctx, opts, state, "hangtime-expired", 0);
     }
 }
 
@@ -1494,7 +1689,7 @@ p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
     double dt_tune = now_m - ctx->t_tune_m;
     p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, dt_tune);
     if (dt_tune >= grant_timeout) {
-        do_release(ctx, opts, state, "grant-timeout");
+        do_release(ctx, opts, state, "grant-timeout", 1);
     }
 }
 
@@ -1659,7 +1854,7 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
     if (!ctx) {
         ctx = p25_sm_get_ctx();
     }
-    do_release(ctx, opts, state, reason ? reason : "explicit-release");
+    do_release(ctx, opts, state, reason ? reason : "explicit-release", 0);
 }
 
 int
