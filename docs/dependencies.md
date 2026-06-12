@@ -47,8 +47,10 @@ curl `8.19.0`; system-package builds enforce the OpenSSL requirement through
 Windows builds use vcpkg overlays under `vcpkg-ports/` and triplets under
 `vcpkg-triplets/`. AppImage builds use pinned CI source checkouts for compiled
 dependencies that are not suitable from the Ubuntu 20.04 base image, including
-SoapySDR 0.8.1 or newer. Overlay ports and CI source checkouts must use
-immutable source references and hashes as described in
+SoapySDR 0.8.1 or newer. Linux source-install validation uses pinned Docker
+images from `tools/ci-dependency-pins.env` to exercise apt, dnf, zypper, apk,
+and pacman bootstrap paths. Overlay ports, CI source checkouts, and validation
+container images must use immutable source references and hashes as described in
 `docs/supply-chain-guardrails.md`.
 
 ## Tooling Dependencies
