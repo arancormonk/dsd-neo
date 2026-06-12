@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -1710,6 +1711,90 @@ test_channel_map_sequence_advances_on_equal_count_target_switches(void) {
 }
 
 static int
+test_p25_retune_backoff_state_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "retune-backoff snapshot init failed rc=%d active=%zu err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), err);
+        test_rc = 1;
+    }
+
+    const time_t until0 = time(NULL) + 60;
+    state.p25_retune_block_until = until0;
+    state.p25_retune_block_freq = 851125000L;
+    state.p25_retune_block_slot = 1;
+    state.p25_retune_block_next = 5U;
+    state.p25_retune_block_history_until[0] = until0;
+    state.p25_retune_block_history_freq[0] = 851125000L;
+    state.p25_retune_block_history_slot[0] = 1;
+
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_retune_block_until != 0
+        || state.p25_retune_block_freq != 0 || state.p25_retune_block_history_until[0] != 0) {
+        DSD_FPRINTF(stderr, "retune-backoff leaked into target 1 active=%zu until=%ld freq=%ld hist=%ld\n",
+                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until,
+                    state.p25_retune_block_freq, (long)state.p25_retune_block_history_until[0]);
+        test_rc = 1;
+    }
+
+    const time_t until1 = time(NULL) + 90;
+    state.p25_retune_block_until = until1;
+    state.p25_retune_block_freq = 852125000L;
+    state.p25_retune_block_slot = 0;
+    state.p25_retune_block_next = 7U;
+    state.p25_retune_block_history_until[0] = until1;
+    state.p25_retune_block_history_freq[0] = 852125000L;
+    state.p25_retune_block_history_slot[0] = 0;
+
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_retune_block_until != until0
+        || state.p25_retune_block_freq != 851125000L || state.p25_retune_block_slot != 1
+        || state.p25_retune_block_next != 5U || state.p25_retune_block_history_until[0] != until0
+        || state.p25_retune_block_history_freq[0] != 851125000L || state.p25_retune_block_history_slot[0] != 1) {
+        DSD_FPRINTF(stderr, "retune-backoff target 0 restore failed active=%zu until=%ld freq=%ld slot=%d next=%u\n",
+                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until,
+                    state.p25_retune_block_freq, state.p25_retune_block_slot, state.p25_retune_block_next);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_retune_block_until != until1
+        || state.p25_retune_block_freq != 852125000L || state.p25_retune_block_slot != 0
+        || state.p25_retune_block_next != 7U || state.p25_retune_block_history_until[0] != until1
+        || state.p25_retune_block_history_freq[0] != 852125000L || state.p25_retune_block_history_slot[0] != 0) {
+        DSD_FPRINTF(stderr, "retune-backoff target 1 restore failed active=%zu until=%ld freq=%ld slot=%d next=%u\n",
+                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until,
+                    state.p25_retune_block_freq, state.p25_retune_block_slot, state.p25_retune_block_next);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_trunk_targets_reuse_restored_control_channel(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
@@ -2318,6 +2403,7 @@ main(void) {
     rc |= test_p25_targets_pass_cc_sps_to_retune_paths();
     rc |= test_p25_targets_use_rtl_output_rate_for_retune_sps();
     rc |= test_channel_map_sequence_advances_on_equal_count_target_switches();
+    rc |= test_p25_retune_backoff_state_isolated_per_target();
     rc |= test_trunk_targets_reuse_restored_control_channel();
     rc |= test_locked_demod_mode_preserved_when_seeding_targets();
     rc |= test_scan_tick_skips_rotation_when_p25_guard_busy();

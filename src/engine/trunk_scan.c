@@ -64,17 +64,22 @@ typedef struct {
     long int p25_vc_freq[2];
     long int trunk_vc_freq[2];
     time_t p25_patch_last_update[8];
+    time_t p25_retune_block_until;
     long int trunk_lcn_freq[26];
+    long p25_retune_block_freq;
     dsd_trunk_cc_candidates cc_candidates;
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX];
     p25_iden_entry_t p25_iden_fdma[16];
     p25_iden_entry_t p25_iden_tdma[16];
+    time_t p25_retune_block_history_until[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
     time_t p25_aff_last_seen[256];
     time_t p25_ga_last_seen[512];
     long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
     uint32_t trunk_chan_map_used_count;
+    unsigned int p25_retune_block_next;
     unsigned int dmr_color_code;
     int p25_chan_iden;
+    int p25_retune_block_slot;
     int p25_cc_is_tdma;
     int p25_sys_is_tdma;
     int p25_vc_cqpsk_pref;
@@ -117,6 +122,8 @@ typedef struct {
     uint16_t p25_patch_wgid[8][8];
     uint16_t p25_ga_tg[512];
     uint16_t trunk_chan_map_used[DSD_TRUNK_CHAN_MAP_SIZE];
+    long p25_retune_block_history_freq[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
+    int p25_retune_block_history_slot[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_sys_time_valid;
@@ -511,6 +518,10 @@ trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     snapshot->dmr_confidence_color_code = 16;
     snapshot->dmr_confidence_candidate_cc = 16;
     snapshot->dmr_rest_channel = -1;
+    snapshot->p25_retune_block_slot = -1;
+    for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
+        snapshot->p25_retune_block_history_slot[i] = -1;
+    }
     snapshot->p25_cc_is_tdma = 2;
     snapshot->p25_vc_cqpsk_pref = -1;
     snapshot->p25_vc_cqpsk_override = -1;
@@ -575,6 +586,34 @@ trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
 }
 
 static void
+trunk_scan_save_p25_retune_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    snapshot->p25_retune_block_until = state->p25_retune_block_until;
+    snapshot->p25_retune_block_freq = state->p25_retune_block_freq;
+    snapshot->p25_retune_block_slot = state->p25_retune_block_slot;
+    snapshot->p25_retune_block_next = state->p25_retune_block_next;
+    DSD_MEMCPY(snapshot->p25_retune_block_history_until, state->p25_retune_block_history_until,
+               sizeof(snapshot->p25_retune_block_history_until));
+    DSD_MEMCPY(snapshot->p25_retune_block_history_freq, state->p25_retune_block_history_freq,
+               sizeof(snapshot->p25_retune_block_history_freq));
+    DSD_MEMCPY(snapshot->p25_retune_block_history_slot, state->p25_retune_block_history_slot,
+               sizeof(snapshot->p25_retune_block_history_slot));
+}
+
+static void
+trunk_scan_restore_p25_retune_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
+    state->p25_retune_block_until = snapshot->p25_retune_block_until;
+    state->p25_retune_block_freq = snapshot->p25_retune_block_freq;
+    state->p25_retune_block_slot = snapshot->p25_retune_block_slot;
+    state->p25_retune_block_next = snapshot->p25_retune_block_next;
+    DSD_MEMCPY(state->p25_retune_block_history_until, snapshot->p25_retune_block_history_until,
+               sizeof(state->p25_retune_block_history_until));
+    DSD_MEMCPY(state->p25_retune_block_history_freq, snapshot->p25_retune_block_history_freq,
+               sizeof(state->p25_retune_block_history_freq));
+    DSD_MEMCPY(state->p25_retune_block_history_slot, snapshot->p25_retune_block_history_slot,
+               sizeof(state->p25_retune_block_history_slot));
+}
+
+static void
 trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     if (!state || !snapshot) {
         return;
@@ -588,6 +627,7 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     snapshot->trunk_cc_freq = state->trunk_cc_freq;
     DSD_MEMCPY(snapshot->p25_vc_freq, state->p25_vc_freq, sizeof(snapshot->p25_vc_freq));
     DSD_MEMCPY(snapshot->trunk_vc_freq, state->trunk_vc_freq, sizeof(snapshot->trunk_vc_freq));
+    trunk_scan_save_p25_retune_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->trunk_lcn_freq, state->trunk_lcn_freq, sizeof(snapshot->trunk_lcn_freq));
     DSD_MEMCPY(snapshot->trunk_chan_map, state->trunk_chan_map, sizeof(snapshot->trunk_chan_map));
     DSD_MEMCPY(snapshot->trunk_chan_map_used, state->trunk_chan_map_used, sizeof(snapshot->trunk_chan_map_used));
@@ -688,6 +728,7 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->trunk_cc_freq = snapshot->trunk_cc_freq;
     DSD_MEMCPY(state->p25_vc_freq, snapshot->p25_vc_freq, sizeof(state->p25_vc_freq));
     DSD_MEMCPY(state->trunk_vc_freq, snapshot->trunk_vc_freq, sizeof(state->trunk_vc_freq));
+    trunk_scan_restore_p25_retune_snapshot(state, snapshot);
     DSD_MEMCPY(state->trunk_lcn_freq, snapshot->trunk_lcn_freq, sizeof(state->trunk_lcn_freq));
     DSD_MEMCPY(state->trunk_chan_map, snapshot->trunk_chan_map, sizeof(state->trunk_chan_map));
     DSD_MEMCPY(state->trunk_chan_map_used, snapshot->trunk_chan_map_used, sizeof(state->trunk_chan_map_used));

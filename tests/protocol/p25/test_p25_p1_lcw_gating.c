@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -204,6 +205,17 @@ main(void) {
     g_tunes = 0;
     p25_lcw(&opts, &st, lcw, 0);
     rc |= expect_eq_int("clear->tune", g_tunes, 1);
+
+    // Failed-VC backoff must also apply to LCW 0x44 explicit grants.
+    st.p25_retune_block_freq = 851125000;
+    st.p25_retune_block_slot = -1;
+    st.p25_retune_block_until = time(NULL) + 60;
+    g_tunes = 0;
+    p25_lcw(&opts, &st, lcw, 0);
+    rc |= expect_eq_int("clear blocked by backoff", g_tunes, 0);
+    st.p25_retune_block_freq = 0;
+    st.p25_retune_block_slot = -1;
+    st.p25_retune_block_until = 0;
 
     // Packet bit set: tuning disabled by default policy (trunk_tune_data_calls=0)
     set_bits_msb(lcw, 16, 8, (unsigned)(svc | 0x10));
