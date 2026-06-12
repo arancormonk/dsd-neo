@@ -20,6 +20,14 @@ dsd_frame_sync_suppress_p25_alt_sync(const dsd_opts* opts, const dsd_state* stat
 }
 
 int
+dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    return opts->audio_in_type == AUDIO_IN_TCP;
+}
+
+int
 dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return 3;

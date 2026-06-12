@@ -230,7 +230,7 @@ test_rf_low_suppressed_but_clip_notifies(void) {
 }
 
 static void
-test_tcp_silence_low_updates_state_without_toast(void) {
+test_tcp_pcm_idle_levels_update_state_without_toast(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* state = calloc(1, sizeof(*state));
     assert(opts != NULL);
@@ -238,9 +238,75 @@ test_tcp_silence_low_updates_state_without_toast(void) {
     opts->audio_in_type = AUDIO_IN_TCP;
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
+    state->carrier = 0;
 
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
     dsd_input_level_snapshot silent = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.0, 300);
+    dsd_input_level_publish(opts, state, &silent, DSD_INPUT_LEVEL_NOTIFY_ALL);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
+    assert(state->input_level.source == DSD_INPUT_LEVEL_SOURCE_PCM);
+    assert(strcmp(state->ui_msg, "sentinel") == 0);
+    assert(state->input_level_last_toast_time == 0);
+
+    dsd_input_level_snapshot hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.5, 0.0, 310);
+    dsd_input_level_publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_ALL);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_HOT);
+    assert(state->input_level.source == DSD_INPUT_LEVEL_SOURCE_PCM);
+    assert(strcmp(state->ui_msg, "sentinel") == 0);
+    assert(state->input_level_last_toast_time == 0);
+
+    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.2, 320);
+    dsd_input_level_publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_ALL);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
+    assert(state->input_level.source == DSD_INPUT_LEVEL_SOURCE_PCM);
+    assert(strcmp(state->ui_msg, "sentinel") == 0);
+    assert(state->input_level_last_toast_time == 0);
+
+    free(state);
+    free(opts);
+}
+
+static void
+test_tcp_pcm_active_decoder_levels_still_notify(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    opts->audio_in_type = AUDIO_IN_TCP;
+    opts->input_warn_db = -40.0;
+    opts->input_warn_cooldown_sec = 10;
+    state->carrier = 1;
+
+    dsd_input_level_snapshot quiet = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -55.0, -30.0, 0.0, 325);
+    dsd_input_level_publish(opts, state, &quiet, DSD_INPUT_LEVEL_NOTIFY_ALL);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
+    assert(strstr(state->ui_msg, "Input Level LOW") != NULL);
+    assert(strstr(state->ui_msg, "if signal is present") != NULL);
+    assert(state->input_level_last_toast_time == 325);
+
+    dsd_input_level_snapshot hot = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.5, 0.0, 330);
+    dsd_input_level_publish(opts, state, &hot, DSD_INPUT_LEVEL_NOTIFY_ALL);
+    assert(state->input_level.status == DSD_INPUT_LEVEL_HOT);
+    assert(strstr(state->ui_msg, "Input Level HOT") != NULL);
+    assert(state->input_level_last_toast_time == 330);
+
+    free(state);
+    free(opts);
+}
+
+static void
+test_tcp_pcm_silence_suppressed_before_carrier_reset(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    opts->audio_in_type = AUDIO_IN_TCP;
+    opts->input_warn_db = -40.0;
+    opts->input_warn_cooldown_sec = 10;
+    state->carrier = 1;
+
+    DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", "sentinel");
+    dsd_input_level_snapshot silent = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.0, 335);
     dsd_input_level_publish(opts, state, &silent, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
     assert(state->input_level.source == DSD_INPUT_LEVEL_SOURCE_PCM);
@@ -252,41 +318,22 @@ test_tcp_silence_low_updates_state_without_toast(void) {
 }
 
 static void
-test_tcp_low_non_silent_still_notifies(void) {
+test_tcp_pcm_m17_encoder_levels_still_notify(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* state = calloc(1, sizeof(*state));
     assert(opts != NULL);
     assert(state != NULL);
     opts->audio_in_type = AUDIO_IN_TCP;
+    opts->m17encoder = 1;
     opts->input_warn_db = -40.0;
     opts->input_warn_cooldown_sec = 10;
+    state->carrier = 0;
 
-    dsd_input_level_snapshot quiet = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -55.0, -30.0, 0.0, 310);
-    dsd_input_level_publish(opts, state, &quiet, DSD_INPUT_LEVEL_NOTIFY_ALL);
-    assert(state->input_level.status == DSD_INPUT_LEVEL_LOW);
-    assert(strstr(state->ui_msg, "Input Level LOW") != NULL);
-    assert(strstr(state->ui_msg, "if signal is present") != NULL);
-    assert(state->input_level_last_toast_time == 310);
-
-    free(state);
-    free(opts);
-}
-
-static void
-test_tcp_silence_clip_still_notifies(void) {
-    dsd_opts* opts = calloc(1, sizeof(*opts));
-    dsd_state* state = calloc(1, sizeof(*state));
-    assert(opts != NULL);
-    assert(state != NULL);
-    opts->audio_in_type = AUDIO_IN_TCP;
-    opts->input_warn_db = -40.0;
-    opts->input_warn_cooldown_sec = 10;
-
-    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -120.0, -120.0, 0.2, 320);
+    dsd_input_level_snapshot clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.1, 0.2, 340);
     dsd_input_level_publish(opts, state, &clip, DSD_INPUT_LEVEL_NOTIFY_ALL);
     assert(state->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
     assert(strstr(state->ui_msg, "Input Level CLIP") != NULL);
-    assert(state->input_level_last_toast_time == 320);
+    assert(state->input_level_last_toast_time == 340);
 
     free(state);
     free(opts);
@@ -335,9 +382,10 @@ main(void) {
     test_toast_escalation_survives_ok_sample();
     test_toast_cooldown_suppresses_hot_clip_oscillation();
     test_rf_low_suppressed_but_clip_notifies();
-    test_tcp_silence_low_updates_state_without_toast();
-    test_tcp_low_non_silent_still_notifies();
-    test_tcp_silence_clip_still_notifies();
+    test_tcp_pcm_idle_levels_update_state_without_toast();
+    test_tcp_pcm_active_decoder_levels_still_notify();
+    test_tcp_pcm_silence_suppressed_before_carrier_reset();
+    test_tcp_pcm_m17_encoder_levels_still_notify();
     test_non_tcp_silence_low_still_notifies();
     test_advisory_text_selection();
     return 0;

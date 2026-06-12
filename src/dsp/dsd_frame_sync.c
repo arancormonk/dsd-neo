@@ -2228,7 +2228,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
 #ifdef USE_RADIO
     rtl_maybe_update_symbol_profile_with_hint(opts, state, sym_rate, levels_cycle[next_idx]);
 #endif
-    if (opts->verbose > 1) {
+    if (opts->verbose > 1 && !dsd_frame_sync_suppress_tcp_no_signal_console(opts, state)) {
         DSD_FPRINTF(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol, sym_rate,
                     demod_rate);
     }
@@ -2317,7 +2317,8 @@ frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_
         return 0;
     }
 
-    if ((opts->errorbars == 1) && (opts->verbose > 1) && (state->carrier == 1)) {
+    if ((opts->errorbars == 1) && (opts->verbose > 1) && (state->carrier == 1)
+        && !dsd_frame_sync_suppress_tcp_no_signal_console(opts, state)) {
         DSD_FPRINTF(stderr, "Sync: no sync\n");
     }
 

@@ -17,9 +17,9 @@ enum {
     DSD_INPUT_LEVEL_TOAST_TTL_SEC = 4,
 };
 
-static const double DSD_INPUT_LEVEL_SILENCE_FLOOR_DBFS = -120.0;
 static const double DSD_INPUT_LEVEL_CLIP_PCT = 0.1;
 static const double DSD_INPUT_LEVEL_HOT_PEAK_DBFS = -1.0;
+static const double DSD_INPUT_LEVEL_SILENCE_FLOOR_DBFS = -120.0;
 static const double DSD_INPUT_LEVEL_SILENCE_EPSILON_DB = 0.1;
 
 static double
@@ -378,6 +378,11 @@ input_level_status_severity(dsd_input_level_status status) {
 }
 
 static int
+input_level_m17_encoder_active(const dsd_opts* opts) {
+    return opts && (opts->m17encoder == 1 || opts->m17encoderbrt == 1 || opts->m17encoderpkt == 1);
+}
+
+static int
 input_level_is_digital_silence(const dsd_input_level_snapshot* snapshot) {
     return snapshot && snapshot->sample_count > 0U
            && snapshot->rms_dbfs <= DSD_INPUT_LEVEL_SILENCE_FLOOR_DBFS + DSD_INPUT_LEVEL_SILENCE_EPSILON_DB
@@ -385,9 +390,16 @@ input_level_is_digital_silence(const dsd_input_level_snapshot* snapshot) {
 }
 
 static int
-input_level_should_suppress_idle_tcp_low(const dsd_opts* opts, const dsd_input_level_snapshot* snapshot) {
-    return opts && snapshot && opts->audio_in_type == AUDIO_IN_TCP && snapshot->source == DSD_INPUT_LEVEL_SOURCE_PCM
-           && snapshot->status == DSD_INPUT_LEVEL_LOW && input_level_is_digital_silence(snapshot);
+input_level_should_suppress_tcp_pcm_toast(const dsd_opts* opts, const dsd_state* state,
+                                          const dsd_input_level_snapshot* snapshot) {
+    if (!opts || !state || !snapshot || opts->audio_in_type != AUDIO_IN_TCP
+        || snapshot->source != DSD_INPUT_LEVEL_SOURCE_PCM || input_level_m17_encoder_active(opts)
+        || !input_level_status_notifies(snapshot->status)) {
+        return 0;
+    }
+
+    /* state->carrier can lag immediately after sync loss, so digital silence is also an idle signal. */
+    return state->carrier == 0 || (snapshot->status == DSD_INPUT_LEVEL_LOW && input_level_is_digital_silence(snapshot));
 }
 
 int
@@ -465,7 +477,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
     }
 
     time_t now = next.updated != 0 ? next.updated : time(NULL);
-    int notify = input_level_should_suppress_idle_tcp_low(opts, &next)
+    int notify = input_level_should_suppress_tcp_pcm_toast(opts, state, &next)
                      ? 0
                      : input_level_should_notify(opts, state, &next, notify_mask, now);
     state->input_level = next;

@@ -29,6 +29,11 @@ void dsd_frame_sync_reset_mod_state(void);
 int dsd_frame_sync_suppress_p25_alt_sync(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief Return non-zero when TCP no-signal diagnostics should stay off the console.
+ */
+int dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Return the number of no-sync buffer passes to dwell before SPS hunt advances.
  */
 int dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* state);
