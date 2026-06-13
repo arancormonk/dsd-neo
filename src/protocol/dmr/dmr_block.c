@@ -337,12 +337,13 @@ dmr_dheader_handle_response(uint8_t slot, const dmr_dheader_fields* f) {
 
 static void
 dmr_dheader_handle_unconfirmed_or_confirmed(dsd_state* state, uint8_t slot, const dmr_dheader_fields* f) {
+    const char* final_text = f->f ? " (FINAL)" : "";
     if (f->dpf == 2) {
-        DSD_FPRINTF(stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - FSN %d", f->sap, f->sap_string, f->f,
-                    f->bf, f->poc, f->fsn);
+        DSD_FPRINTF(stderr, "\n  SAP %02d [%s] - FINAL %d%s - BLOCKS %02d - PAD %02d - FSN %d", f->sap, f->sap_string,
+                    f->f, final_text, f->bf, f->poc, f->fsn);
     } else {
-        DSD_FPRINTF(stderr, "\n  SAP %02d [%s] - FMF %d - BLOCKS %02d - PAD %02d - S %d - NS %d - FSN %d", f->sap,
-                    f->sap_string, f->f, f->bf, f->poc, f->s, f->ns, f->fsn);
+        DSD_FPRINTF(stderr, "\n  SAP %02d [%s] - FINAL %d%s - BLOCKS %02d - PAD %02d - S %d - NS %d - FSN %d", f->sap,
+                    f->sap_string, f->f, final_text, f->bf, f->poc, f->s, f->ns, f->fsn);
     }
     state->data_header_blocks[slot] = f->bf;
     if (f->dpf == 3) {

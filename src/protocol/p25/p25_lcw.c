@@ -730,6 +730,19 @@ p25_lcw_dispatch_mfid_d8(p25_lcw_ctx* ctx) {
         tait_iso7_embedded_alias_decode(ctx->opts, ctx->state, 0, 8, ctx->bits);
         return 1;
     }
+    if (ctx->lc_format == 0x01) {
+        uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 20);
+        uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[36], 12);
+        uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+        DSD_FPRINTF(stderr, " MFIDD8 (Tait) Subscriber FQ-SUID: %05X.%03X.%d", wacn, sysid, src);
+        if (wacn != 0) {
+            ctx->state->p25_src_nid = wacn;
+        }
+        if (src != 0) {
+            ctx->state->lastsrc = (int)src;
+        }
+        return 1;
+    }
     return 0;
 }
 
