@@ -38,6 +38,12 @@ RADIO_MODE=auto
 CODEC2_MODE=auto
 ASSUME_YES=0
 DRY_RUN=0
+ORIGINAL_LD_LIBRARY_PATH=
+ORIGINAL_LD_LIBRARY_PATH_SET=0
+if [ "${LD_LIBRARY_PATH+x}" = x ]; then
+  ORIGINAL_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
+  ORIGINAL_LD_LIBRARY_PATH_SET=1
+fi
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -420,6 +426,66 @@ refresh_system_linker_cache() {
   fi
 }
 
+installed_binary_path() {
+  if [ -n "$DESTDIR_VALUE" ]; then
+    printf '%s%s/bin/dsd-neo\n' "$DESTDIR_VALUE" "$PREFIX"
+  else
+    printf '%s/bin/dsd-neo\n' "$PREFIX"
+  fi
+}
+
+run_installed_dsd_neo_help() {
+  installed_binary=$1
+  if system_library_prefix "$DEPS_PREFIX"; then
+    if [ "$ORIGINAL_LD_LIBRARY_PATH_SET" -eq 1 ]; then
+      env "LD_LIBRARY_PATH=$ORIGINAL_LD_LIBRARY_PATH" "$installed_binary" -h > /dev/null
+    else
+      env LD_LIBRARY_PATH= "$installed_binary" -h > /dev/null
+    fi
+  else
+    "$installed_binary" -h > /dev/null
+  fi
+}
+
+print_loader_fix_hint() {
+  smoke_output=$1
+  case "$smoke_output" in
+    *libmbe-neo.so.2*)
+      if system_library_prefix "$DEPS_PREFIX"; then
+        echo "Installed dsd-neo could not load libmbe-neo.so.2; run sudo ldconfig and try again." >&2
+      else
+        cat >&2 << EOF
+Installed dsd-neo could not load libmbe-neo.so.2; update this shell before running it:
+  export LD_LIBRARY_PATH="$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+EOF
+      fi
+      ;;
+  esac
+}
+
+validate_installed_dsd_neo() {
+  installed_binary=$(installed_binary_path)
+  if [ "$DRY_RUN" -eq 1 ]; then
+    if system_library_prefix "$DEPS_PREFIX"; then
+      if [ "$ORIGINAL_LD_LIBRARY_PATH_SET" -eq 1 ]; then
+        run env "LD_LIBRARY_PATH=$ORIGINAL_LD_LIBRARY_PATH" "$installed_binary" -h
+      else
+        run env LD_LIBRARY_PATH= "$installed_binary" -h
+      fi
+    else
+      run "$installed_binary" -h
+    fi
+    return 0
+  fi
+
+  if ! smoke_output=$(run_installed_dsd_neo_help "$installed_binary" 2>&1); then
+    printf '%s\n' "$smoke_output" >&2
+    echo "Installed dsd-neo smoke test failed: $installed_binary -h" >&2
+    print_loader_fix_hint "$smoke_output"
+    exit 1
+  fi
+}
+
 build_mbelib_neo() {
   # shellcheck source=tools/ci-dependency-pins.env
   # shellcheck disable=SC1091
@@ -505,6 +571,8 @@ configure_build_install_dsd_neo() {
   else
     run_for_prefix "$PREFIX" cmake --install "$BUILD_DIR" --prefix "$PREFIX"
   fi
+  refresh_system_linker_cache
+  validate_installed_dsd_neo
 }
 
 prompt_for_packages

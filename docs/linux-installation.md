@@ -36,6 +36,25 @@ build-local prefix under `--build-dir` so packaging checks do not install them
 into the live system. Pass `--deps-prefix` explicitly when validating a
 specific dependency prefix.
 
+## Runtime Loader Setup
+
+For `/usr` or `/usr/local` dependency installs, the script refreshes the Linux
+dynamic linker cache with `ldconfig`. If you install `mbelib-neo` manually into
+one of those prefixes and `dsd-neo` reports that `libmbe-neo.so.2` cannot be
+opened, run:
+
+```sh
+sudo ldconfig
+```
+
+For non-system prefixes such as `$HOME/.local`, use environment variables
+instead of `ldconfig`:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/.local/lib:$HOME/.local/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
 Useful options:
 
 - `--radio auto|required|off` controls RTL-SDR and SoapySDR package setup.
@@ -45,13 +64,6 @@ Useful options:
   pinned source fallback there.
 - `--build-dir DIR` chooses the CMake build directory.
 - `--dry-run` prints package, dependency, build, and install commands.
-
-If installing into a non-system prefix, the current shell may need:
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/.local/lib:$HOME/.local/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-```
 
 ## Distro Coverage
 

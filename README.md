@@ -134,6 +134,11 @@ cmake -S mbelib-neo -B mbelib-neo/build -DCMAKE_BUILD_TYPE=Release
 cmake --build mbelib-neo/build -j
 cmake --install mbelib-neo/build --prefix "$HOME/.local"
 
+# Linux: user-prefix installs need this when running installed binaries.
+export LD_LIBRARY_PATH="$HOME/.local/lib:$HOME/.local/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Linux: if you install mbelib-neo to /usr or /usr/local instead, run:
+# sudo ldconfig
+
 # Then configure dsd-neo (point CMake to the install prefix)
 cmake --preset dev-release -DCMAKE_PREFIX_PATH="$HOME/.local"
 ```
@@ -213,6 +218,7 @@ Notes
 - The CLI binary outputs to `build/<preset>/apps/dsd-cli/dsd-neo`.
 - `cmake --install <build_dir>` only works if you configured that build directory. If you're inside the build directory, use `cmake --install .`.
 - If `cmake --install build/dev-release` fails and `build/dev-release/` doesn't exist, you likely did a manual build (install from your actual build dir).
+- On Linux, installed binaries must be able to find `libmbe-neo.so.2`. For `/usr` or `/usr/local` installs, run `sudo ldconfig` after installing `mbelib-neo`; for `$HOME/.local`, export `LD_LIBRARY_PATH` as shown above.
 
 ## Install / Uninstall
 

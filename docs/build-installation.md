@@ -68,6 +68,16 @@ Install with CMake:
 cmake --install build/dev-release --prefix /usr/local
 ```
 
+On Linux, refresh the dynamic linker cache after installing source-built
+dependencies such as `mbelib-neo` into `/usr` or `/usr/local`:
+
+```sh
+sudo ldconfig
+```
+
+For user prefixes such as `$HOME/.local`, set `LD_LIBRARY_PATH` instead; see
+`docs/linux-installation.md`.
+
 On POSIX systems, staged packaging can use `DESTDIR`:
 
 ```sh
