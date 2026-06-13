@@ -762,8 +762,11 @@ mbe_apply_nxdn_cipher1(dsd_state* state, char ambe_d[49]) {
     LFSRN(ambe_temp, ambe_d, state);
 }
 
-static void
-mbe_init_nxdn_cipher23_keystream(dsd_state* state) {
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void dsd_mbe_init_nxdn_cipher23_keystream(dsd_state* state);
+
+void
+dsd_mbe_init_nxdn_cipher23_keystream(dsd_state* state) {
     if (state->nxdn_cipher_type == 0x02 && state->nxdn_new_iv == 1 && state->nxdn_part_of_frame == 0) {
         DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
         DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
@@ -778,14 +781,14 @@ mbe_init_nxdn_cipher23_keystream(dsd_state* state) {
         DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
         aes_ofb_keystream_output(state->aes_iv, state->aes_key, state->ks_octetL, 2, 15);
         state->bit_counterL = 0;
-        unpack_byte_array_into_bit_array(state->ks_octetL + 8, state->ks_bitstreamL, 15 * 8);
+        unpack_byte_array_into_bit_array(state->ks_octetL + 16, state->ks_bitstreamL, 14 * 16);
         state->nxdn_new_iv = 0;
     }
 }
 
 static void
 mbe_apply_nxdn_cipher23(dsd_state* state, char ambe_d[49]) {
-    mbe_init_nxdn_cipher23_keystream(state);
+    dsd_mbe_init_nxdn_cipher23_keystream(state);
 
     //sanity check, don't exceed bit application counter
     if (state->bit_counterL > (1568 - 49)) {

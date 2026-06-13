@@ -843,6 +843,23 @@ target_link_libraries(
 add_test(NAME NXDN_ELEMENT_BOUNDS COMMAND dsd-neo_test_nxdn_element_bounds)
 
 add_executable(
+    dsd-neo_test_nxdn_voice_aes_keystream
+    protocol/nxdn/test_nxdn_voice_aes_keystream.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_voice_aes_keystream
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_voice_aes_keystream
+    PRIVATE dsd-neo_core dsd-neo_crypto
+)
+add_test(
+    NAME NXDN_VOICE_AES_KEYSTREAM
+    COMMAND dsd-neo_test_nxdn_voice_aes_keystream
+)
+
+add_executable(
     dsd-neo_test_nxdn_sync_dispatch
     protocol/nxdn/test_nxdn_sync_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_nxdn.c
@@ -4220,6 +4237,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_dmr_relaxed_header_ip
     PRIVATE MBELIB_NO_HEADERS=1
+)
+target_link_libraries(
+    dsd-neo_test_dmr_relaxed_header_ip
+    PRIVATE dsd-neo_test_support
 )
 add_test(NAME DMR_RELAXED_HEADER_IP COMMAND dsd-neo_test_dmr_relaxed_header_ip)
 

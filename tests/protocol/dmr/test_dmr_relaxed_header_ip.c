@@ -12,11 +12,13 @@
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/unicode.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -33,6 +35,34 @@ extern void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 static unsigned int g_decode_ip_calls;
 static uint16_t g_decode_ip_last_len;
 static uint8_t g_decode_ip_first_byte;
+
+static int
+read_file_to_buffer(const char* path, char* out, size_t out_size) {
+    if (path == NULL || out == NULL || out_size == 0U) {
+        return -1;
+    }
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) {
+        return -1;
+    }
+    size_t n = fread(out, 1U, out_size - 1U, f);
+    int bad = ferror(f);
+    int close_rc = fclose(f);
+    if (bad || close_rc != 0) {
+        return -1;
+    }
+    out[n] = '\0';
+    return 0;
+}
+
+static int
+expect_contains(const char* tag, const char* got, const char* want) {
+    if (strstr(got, want) == NULL) {
+        DSD_FPRINTF(stderr, "%s: expected output to contain '%s', got '%s'\n", tag, want, got);
+        return 1;
+    }
+    return 0;
+}
 
 // Provide local stubs to avoid pulling full core/audio deps during link
 void
@@ -334,12 +364,66 @@ test_crc_valid_type1_pdu_dispatches_in_strict_mode(void) {
     assert(g_decode_ip_first_byte == 0x45U);
 }
 
+static int
+test_data_header_prints_fsn_and_final_flag(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+    char output[2048];
+    dsd_test_capture_stderr cap;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    state.currentslot = 0;
+    opts.aggressive_framesync = 1;
+
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_header_fsn_final") != 0) {
+        return 1;
+    }
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 4, 2U, 4); // DPF=2, unconfirmed delivery
+    set_bits(bits, 8, 4U, 4); // SAP=4, IP based
+    set_bits(bits, 16, 0x000123U, 24);
+    set_bits(bits, 40, 0x000456U, 24);
+    set_bits(bits, 64, 1U, 1); // final-fragment flag
+    set_bits(bits, 65, 3U, 7); // blocks to follow
+    set_bits(bits, 76, 9U, 4); // fragment sequence number
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 4, 3U, 4); // DPF=3, confirmed delivery
+    set_bits(bits, 8, 4U, 4); // SAP=4, IP based
+    set_bits(bits, 16, 0x000123U, 24);
+    set_bits(bits, 40, 0x000456U, 24);
+    set_bits(bits, 64, 1U, 1);  // final-fragment flag
+    set_bits(bits, 65, 4U, 7);  // blocks to follow
+    set_bits(bits, 72, 1U, 1);  // send-sequence flag
+    set_bits(bits, 73, 5U, 3);  // send-sequence number
+    set_bits(bits, 76, 10U, 4); // fragment sequence number
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+
+    if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, output, sizeof(output)) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+    (void)remove(cap.path);
+
+    rc |= expect_contains("unconfirmed-fsn-final", output, "FINAL 1 (FINAL) - BLOCKS 03 - PAD 00 - FSN 9");
+    rc |= expect_contains("confirmed-fsn-final", output, "FINAL 1 (FINAL) - BLOCKS 04 - PAD 00 - S 1 - NS 5 - FSN 10");
+    return rc;
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
     (void)argv;
     test_reset_blocks_restores_integer_defaults();
     test_crc_valid_type1_pdu_dispatches_in_strict_mode();
+    int rc = test_data_header_prints_fsn_and_final_flag();
 
     static dsd_opts opts;
     static dsd_state state;
@@ -445,7 +529,7 @@ main(int argc, char** argv) {
     assert(state.dmr_soR == 0x100);
     assert(state.data_ks_start[1] == 0);
 
-    return 0;
+    return rc;
 }
 
 #if defined(__GNUC__) && !defined(__cplusplus)

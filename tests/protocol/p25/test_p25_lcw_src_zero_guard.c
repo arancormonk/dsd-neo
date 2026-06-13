@@ -330,6 +330,29 @@ main(void) {
         rc |= expect_true("SrcIdExtension_radio_24bit_at_bit48", st.lastsrc == 0x456789);
     }
 
+    /*
+     * Tait MFID 0xD8 format 0x01 uses the same fully-qualified source layout:
+     * WACN[16..35], SYSTEM[36..47], RADIO[48..71].
+     */
+    {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
+        st.lastsrc = 222;
+
+        uint8_t lcw[96];
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x01);
+        set_bits_msb(lcw, 8, 8, 0xD8);
+        set_bits_msb(lcw, 16, 20, 0x54321);
+        set_bits_msb(lcw, 36, 12, 0x987);
+        set_bits_msb(lcw, 48, 24, 0x2468AC);
+
+        p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+
+        rc |= expect_true("TaitD8Fmt01_WACN_20bit", st.p25_src_nid == 0x54321);
+        rc |= expect_true("TaitD8Fmt01_radio_24bit_at_bit48", st.lastsrc == 0x2468AC);
+    }
+
     return rc;
 }
 
