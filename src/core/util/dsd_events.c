@@ -32,7 +32,8 @@
 #include "dsd-neo/runtime/call_alert.h"
 
 enum {
-    DSD_EVENT_SUBTYPE_DATA = 6,
+    DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
+    DSD_EVENT_SUBTYPE_EXPLICIT_DATA = INT8_MAX,
 };
 
 // Safe bounded copy helper that tolerates potential overlap
@@ -196,6 +197,24 @@ watchdog_event_item_has_content(const Event_History* item) {
 }
 
 static int
+watchdog_event_is_dmr_data_sync(int systype) {
+    return systype == DSD_SYNC_DMR_BS_DATA_POS || systype == DSD_SYNC_DMR_BS_DATA_NEG || systype == DSD_SYNC_DMR_MS_DATA
+           || systype == DSD_SYNC_DMR_RC_DATA;
+}
+
+static int
+watchdog_event_is_explicit_data_event(const Event_History* item) {
+    return item != NULL && item->subtype == DSD_EVENT_SUBTYPE_EXPLICIT_DATA;
+}
+
+static int
+watchdog_event_is_data_event(const Event_History* item) {
+    return watchdog_event_is_explicit_data_event(item)
+           || (item != NULL && watchdog_event_is_dmr_data_sync(item->systype)
+               && item->subtype == DSD_EVENT_SUBTYPE_DMR_DATA_BURST);
+}
+
+static int
 watchdog_event_is_m17_sync(int synctype) {
     return (synctype == DSD_SYNC_M17_STR_POS || synctype == DSD_SYNC_M17_STR_NEG || synctype == DSD_SYNC_M17_LSF_POS
             || synctype == DSD_SYNC_M17_LSF_NEG);
@@ -326,10 +345,12 @@ watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_
 void
 watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     Event_History_I* event_struct = &state->event_history_s[slot];
+    const Event_History* last_event = &event_struct->Event_History_Items[0];
     uint8_t swrite = watchdog_event_should_write_slot(state);
-    uint32_t last_source_id = event_struct->Event_History_Items[0].source_id;
-    int last_event_is_data = event_struct->Event_History_Items[0].subtype == DSD_EVENT_SUBTYPE_DATA;
-    int last_event_has_content = watchdog_event_item_has_content(&event_struct->Event_History_Items[0]);
+    uint32_t last_source_id = last_event->source_id;
+    int last_event_forces_history = watchdog_event_is_explicit_data_event(last_event);
+    int last_event_is_data = watchdog_event_is_data_event(last_event);
+    int last_event_has_content = watchdog_event_item_has_content(last_event);
     uint32_t source_id = watchdog_event_source_id(opts, state, slot);
 
     //call alert beep when new call detected
@@ -338,7 +359,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
         beeper(opts, state, slot, 40, 86, 3);
     }
 
-    if (last_event_is_data && last_event_has_content) {
+    if (last_event_forces_history && last_event_has_content) {
         watchdog_event_handle_source_transition(opts, state, event_struct, slot, swrite, last_event_is_data);
         return;
     }
@@ -995,7 +1016,7 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     state->event_history_s[slot].Event_History_Items[0].write = 0;
     state->event_history_s[slot].Event_History_Items[0].color_pair = 4; //default data color //you can change this one
     state->event_history_s[slot].Event_History_Items[0].systype = state->lastsynctype;
-    state->event_history_s[slot].Event_History_Items[0].subtype = DSD_EVENT_SUBTYPE_DATA;
+    state->event_history_s[slot].Event_History_Items[0].subtype = DSD_EVENT_SUBTYPE_EXPLICIT_DATA;
     state->event_history_s[slot].Event_History_Items[0].gi = state->gi[slot];
     state->event_history_s[slot].Event_History_Items[0].enc = 0;
     state->event_history_s[slot].Event_History_Items[0].enc_alg = 0;

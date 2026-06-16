@@ -29,6 +29,10 @@
 static int g_beeper_count;
 static int g_last_beeper_id;
 
+enum {
+    TEST_DMR_DATA_BURST = 6,
+};
+
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
     UNUSED(dir);
@@ -196,6 +200,77 @@ test_source_less_data_call_is_preserved_in_history(void) {
 }
 
 static int
+test_source_less_dmr_data_current_event_is_not_preserved_in_history(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_color_code = 1U;
+
+    state.dmrburstL = TEST_DMR_DATA_BURST;
+    watchdog_event_current(&opts, &state, 0);
+    watchdog_event_history(&opts, &state, 0);
+
+    state.dmrburstR = TEST_DMR_DATA_BURST;
+    watchdog_event_current(&opts, &state, 1);
+    watchdog_event_history(&opts, &state, 1);
+
+    int rc = 0;
+    rc |= expect_int("slot 1 source-less DMR current should remain current",
+                     state.event_history_s[0].Event_History_Items[0].event_string[0] != '\0', 1);
+    rc |= expect_int("slot 1 source-less DMR current should not be stored",
+                     state.event_history_s[0].Event_History_Items[1].event_string[0], '\0');
+    rc |= expect_int("slot 2 source-less DMR current should remain current",
+                     state.event_history_s[1].Event_History_Items[0].event_string[0] != '\0', 1);
+    rc |= expect_int("slot 2 source-less DMR current should not be stored",
+                     state.event_history_s[1].Event_History_Items[1].event_string[0], '\0');
+    return rc;
+}
+
+static int
+test_sourced_dmr_data_current_event_does_not_emit_voice_end_alert(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_color_code = 1U;
+
+    state.lastsrc = 1234;
+    state.lasttg = 5678;
+    state.dmrburstL = TEST_DMR_DATA_BURST;
+    watchdog_event_current(&opts, &state, 0);
+    state.lastsrc = 0;
+    watchdog_event_history(&opts, &state, 0);
+
+    int rc = 0;
+    rc |= expect_int("slot 1 sourced DMR data end should not beep", g_beeper_count, 0);
+    rc |= expect_int("slot 1 sourced DMR data should be stored",
+                     state.event_history_s[0].Event_History_Items[1].event_string[0] != '\0', 1);
+
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_color_code = 1U;
+
+    state.lastsrcR = 2345;
+    state.lasttgR = 6789;
+    state.dmrburstR = TEST_DMR_DATA_BURST;
+    watchdog_event_current(&opts, &state, 1);
+    state.lastsrcR = 0;
+    watchdog_event_history(&opts, &state, 1);
+
+    rc |= expect_int("slot 2 sourced DMR data end should not beep", g_beeper_count, 0);
+    rc |= expect_int("slot 2 sourced DMR data should be stored",
+                     state.event_history_s[1].Event_History_Items[1].event_string[0] != '\0', 1);
+    return rc;
+}
+
+static int
 test_voice_end_alert_still_emits_for_voice_history(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -335,6 +410,8 @@ main(void) {
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();
     rc |= test_source_less_data_call_is_preserved_in_history();
+    rc |= test_source_less_dmr_data_current_event_is_not_preserved_in_history();
+    rc |= test_sourced_dmr_data_current_event_does_not_emit_voice_end_alert();
     rc |= test_voice_end_alert_still_emits_for_voice_history();
     rc |= test_edacs_service_string_appends_past_pointer_size();
     rc |= test_dmr_event_string_keeps_full_prefix_after_sprintf_hardening();
