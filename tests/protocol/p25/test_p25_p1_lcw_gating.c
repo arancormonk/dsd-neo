@@ -229,6 +229,47 @@ main(void) {
     p25_lcw(&opts, &st, lcw, 0);
     rc |= expect_eq_int("enc->no-tune", g_tunes, 0);
 
+    // A 0x44 LCW decoded on a VC must not learn that VC as the control channel.
+    {
+        static dsd_opts vc_opts;
+        static dsd_state vc_st;
+        DSD_MEMSET(&vc_opts, 0, sizeof vc_opts);
+        DSD_MEMSET(&vc_st, 0, sizeof vc_st);
+        vc_opts.p25_trunk = 1;
+        vc_opts.p25_lcw_retune = 0;
+        vc_opts.p25_is_tuned = 1;
+        vc_opts.trunk_is_tuned = 1;
+        vc_opts.audio_in_type = AUDIO_IN_RTL;
+        vc_opts.rtlsdr_center_freq = 852112500U;
+        set_bits_msb(lcw, 16, 8, (unsigned)svc);
+
+        p25_lcw(&vc_opts, &vc_st, lcw, 0);
+        rc |= expect_eq_int("vc-lcw no p25 cc seed", (int)vc_st.p25_cc_freq, 0);
+        rc |= expect_eq_int("vc-lcw no trunk cc seed", (int)vc_st.trunk_cc_freq, 0);
+        rc |= expect_eq_int("vc-lcw no lcn0 seed", (int)vc_st.trunk_lcn_freq[0], 0);
+    }
+
+    // Some unmanaged VC monitoring paths have not set the tuned flags; LCW must
+    // still avoid treating the current tuner frequency as a control channel.
+    {
+        static dsd_opts vc_opts;
+        static dsd_state vc_st;
+        DSD_MEMSET(&vc_opts, 0, sizeof vc_opts);
+        DSD_MEMSET(&vc_st, 0, sizeof vc_st);
+        vc_opts.p25_trunk = 1;
+        vc_opts.p25_lcw_retune = 1;
+        vc_opts.trunk_tune_group_calls = 1;
+        vc_opts.audio_in_type = AUDIO_IN_RTL;
+        vc_opts.rtlsdr_center_freq = 852112500U;
+
+        g_tunes = 0;
+        p25_lcw(&vc_opts, &vc_st, lcw, 0);
+        rc |= expect_eq_int("unmanaged vc-lcw no tune", g_tunes, 0);
+        rc |= expect_eq_int("unmanaged vc-lcw no p25 cc seed", (int)vc_st.p25_cc_freq, 0);
+        rc |= expect_eq_int("unmanaged vc-lcw no trunk cc seed", (int)vc_st.trunk_cc_freq, 0);
+        rc |= expect_eq_int("unmanaged vc-lcw no lcn0 seed", (int)vc_st.trunk_lcn_freq[0], 0);
+    }
+
     return rc;
 }
 

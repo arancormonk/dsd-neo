@@ -83,6 +83,15 @@ p25_print_mbt_payload_hex(const uint8_t* mpdu_byte, int blks) {
     }
 }
 
+static int
+p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
+    if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
+        return 0;
+    }
+    p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
+    return state->p25_cc_freq != 0;
+}
+
 static void DSD_ATTR_USED
 p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
                                 const p25p1_mbt_fields* fields) {
@@ -338,7 +347,7 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
         return;
     }
 
-    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+    if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
         p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
     }
 }
@@ -386,7 +395,7 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
         return;
     }
 
-    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+    if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
         p25_sm_on_indiv_grant(opts, state, channelt, svc, (int)target, (int)source);
     }
 }
@@ -451,7 +460,7 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
         return;
     }
 
-    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+    if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
         p25_sm_on_indiv_grant(opts, state, channel, svc, (int)target, 0);
     }
 
@@ -513,7 +522,7 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
         return;
     }
 
-    if (opts->p25_trunk == 1 && state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq1 != 0) {
+    if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
         p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
     }
 }

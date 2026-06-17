@@ -365,6 +365,14 @@ matrix_age_tuned_timers(matrix_fixture* fixture) {
     fixture->state->p25_last_vc_tune_time_m = now_m - 1.0;
 }
 
+static void
+matrix_stale_cc_timers(matrix_fixture* fixture) {
+    double now_m = dsd_time_now_monotonic_s();
+    fixture->ctx.t_cc_sync_m = now_m - 10.0;
+    fixture->state->last_cc_sync_time = time(NULL) - 10;
+    fixture->state->last_cc_sync_time_m = now_m - 10.0;
+}
+
 static int
 matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const matrix_flow_case* flow,
                    const matrix_return_script* script) {
@@ -390,6 +398,12 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
                         mode->name, flow->name, script->name, "ctx vc state cleared");
     rc |= matrix_expect(g_hooks.return_calls == script->count, mode->name, flow->name, script->name,
                         "return-to-cc call count matches script");
+    const int cc_calls_before_post_return_tick = g_hooks.cc_calls;
+    p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+    rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, flow->name, script->name,
+                        "post-return tick remains ON_CC");
+    rc |= matrix_expect(g_hooks.cc_calls == cc_calls_before_post_return_tick, mode->name, flow->name, script->name,
+                        "post-return tick does not hunt CC");
     return rc;
 }
 
@@ -539,6 +553,7 @@ matrix_run_terminal_case(const matrix_mode_case* mode, const matrix_flow_case* f
     if (rc != 0) {
         return rc;
     }
+    matrix_stale_cc_timers(fixture);
     return matrix_apply_terminal_flow(fixture, mode, flow, script);
 }
 

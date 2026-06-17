@@ -10,6 +10,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <stdbool.h>
@@ -258,7 +259,122 @@ main(void) {
         rc |= expect_eq_long("0x40 blocked vc", state.p25_vc_freq[0], 0);
     }
 
-    // Case F: compact grant-update paths must also honor failed-VC retune backoff.
+    // Case F: first live VPDU grant seeds an unknown CC from the current RTL tuner.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.rtlsdr_center_freq = (uint32_t)cc;
+        state.synctype = DSD_SYNC_P25P2_POS;
+        state.p2_is_lcch = 1;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x40; // Group Voice Channel Grant
+        MAC[2] = 0x00; // svc
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A; // channel 0x100A -> 851.125 MHz
+        MAC[5] = 0x12;
+        MAC[6] = 0x34; // group
+        MAC[7] = 0x00;
+        MAC[8] = 0x00;
+        MAC[9] = 0x02; // source
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x40 seeded CC tuned", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x40 seeded CC", state.p25_cc_freq, cc);
+        rc |= expect_eq_long("0x40 seeded trunk CC", state.trunk_cc_freq, cc);
+        rc |= expect_true("0x40 seeded TDMA CC hint", state.p25_cc_is_tdma == 1);
+        rc |= expect_eq_long("0x40 seeded vc", state.p25_vc_freq[0], 851125000);
+    }
+
+    // Case G: traffic-channel MACs must not learn the current VC tuner frequency as the CC.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.rtlsdr_center_freq = 852000000U;
+        state.synctype = DSD_SYNC_P25P2_POS;
+        state.p2_is_lcch = 0;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x40; // Group Voice Channel Grant carried on FACCH/SACCH traffic MAC
+        MAC[2] = 0x00; // svc
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A; // channel 0x100A -> 851.125 MHz
+        MAC[5] = 0x12;
+        MAC[6] = 0x34; // group
+        MAC[7] = 0x00;
+        MAC[8] = 0x00;
+        MAC[9] = 0x02; // source
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x40 traffic MAC not tuned", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0x40 traffic MAC no p25 CC seed", state.p25_cc_freq, 0);
+        rc |= expect_eq_long("0x40 traffic MAC no trunk CC seed", state.trunk_cc_freq, 0);
+        rc |= expect_eq_long("0x40 traffic MAC no vc", state.p25_vc_freq[0], 0);
+    }
+
+    // Case H: first live VPDU grant can use the generic trunk CC alias when the P25 alias is still unknown.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        state.trunk_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x40; // Group Voice Channel Grant
+        MAC[2] = 0x00; // svc
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A; // channel 0x100A -> 851.125 MHz
+        MAC[5] = 0x12;
+        MAC[6] = 0x34; // group
+        MAC[7] = 0x00;
+        MAC[8] = 0x00;
+        MAC[9] = 0x02; // source
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x40 trunk alias CC tuned", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x40 trunk alias p25 CC", state.p25_cc_freq, cc);
+        rc |= expect_eq_long("0x40 trunk alias trunk CC", state.trunk_cc_freq, cc);
+        rc |= expect_eq_long("0x40 trunk alias vc", state.p25_vc_freq[0], 851125000);
+    }
+
+    // Case I: compact grant-update paths must also honor failed-VC retune backoff.
     {
         static dsd_opts opts;
         static dsd_state state;

@@ -234,6 +234,7 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
     state->last_active_time = time(NULL);
     DSD_FPRINTF(stderr, "\n");
     if (opts->p25_trunk == 1 && freq != 0) {
+        p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         p25_sm_on_group_grant(opts, state, channel, /*svc*/ 0, sg, source);
     }
 }
@@ -256,9 +257,11 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
     state->last_active_time = time(NULL);
     DSD_FPRINTF(stderr, "\n");
     if (opts->p25_trunk == 1 && ch1 != 0 && freq1 != 0) {
+        p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         p25_sm_on_group_grant(opts, state, ch1, /*svc*/ 0, sg1, /*src*/ 0);
     }
     if (opts->p25_trunk == 1 && ch2 != 0 && freq2 != 0) {
+        p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         p25_sm_on_group_grant(opts, state, ch2, /*svc*/ 0, sg2, /*src*/ 0);
     }
 }

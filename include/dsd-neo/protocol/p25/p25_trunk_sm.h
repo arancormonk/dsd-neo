@@ -180,6 +180,22 @@ void p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state);
 void p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
 
 /**
+ * @brief Seed an unknown P25 control-channel frequency from known CC state.
+ *
+ * Control-channel grant decoders call this before gating on state->p25_cc_freq
+ * so the first live grant can establish the CC frequency for return-to-CC
+ * behavior. The generic trunk CC alias is preferred when it is already known.
+ * Otherwise the tuner is sampled only while legacy tune flags indicate the
+ * decoder is parked on the control channel; voice-channel tunes are ignored.
+ * Live P25 Phase 2 sync seeds a TDMA CC modulation hint; live P25 Phase 1 sync
+ * clears any stale TDMA CC hint.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ */
+void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state);
+
+/**
  * @brief Periodic tick for timeout-based transitions.
  *
  * Call at ~1-10 Hz. Handles:

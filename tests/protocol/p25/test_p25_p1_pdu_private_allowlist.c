@@ -156,6 +156,13 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
