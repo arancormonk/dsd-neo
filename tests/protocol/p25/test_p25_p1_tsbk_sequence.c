@@ -204,6 +204,12 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
 }
 
 void
+p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;

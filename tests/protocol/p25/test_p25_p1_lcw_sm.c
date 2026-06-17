@@ -27,6 +27,8 @@
 void p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq);
 void p25_test_invoke_lcw_with_lastsrc(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq,
                                       long lastsrc);
+void p25_test_invoke_lcw_with_tuner(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq,
+                                    long tuner_freq);
 
 // Stubs referenced by LCW path (alias helpers and streaming/rigctl)
 void
@@ -264,6 +266,12 @@ main(void) {
     rc |= expect_eq_int("tg", g_last_tg, tg);
     // source may be 0 unless prior LCW set it
     rc |= expect_eq_int("src default", g_last_src, 0);
+
+    // Subcase C: LCW traffic frames must not infer a CC from live tuner metadata.
+    g_called = 0;
+    g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
+    p25_test_invoke_lcw_with_tuner(lcw, 72, /*enable_retune*/ 1, /*cc*/ 0, /*tuner_freq*/ 851012500);
+    rc |= expect_eq_int("no dispatch from tuner-only lcw", g_called, 0);
 
     // Gating cases are covered in a separate test without overriding
     // p25_sm_on_group_grant so the implementation’s gating logic runs.

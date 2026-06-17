@@ -600,8 +600,14 @@ p25p2_vpdu_channel_is_valid(int channel) {
 }
 
 static int
-p25p2_vpdu_can_tune(const dsd_opts* opts, const dsd_state* state, long int freq) {
-    return state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0;
+p25p2_vpdu_can_tune(const dsd_opts* opts, dsd_state* state, long int freq) {
+    if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
+        return 0;
+    }
+    if (state->trunk_cc_freq > 0 || state->p2_is_lcch == 1 || DSD_SYNC_IS_P25P1(state->synctype)) {
+        p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
+    }
+    return state->p25_cc_freq != 0;
 }
 
 static void
@@ -1066,7 +1072,7 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
 
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
-        if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+        if (p25p2_vpdu_can_tune(opts, state, freq)) {
             /* No SVC bits are carried here; use conservative ENC gating policy facts. */
             const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, sgroup) ? 1 : 0;
             p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0, policy_encrypted,
@@ -1117,7 +1123,7 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
 
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
-        if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+        if (p25p2_vpdu_can_tune(opts, state, freq)) {
             /* No SVC bits are carried here; use conservative ENC gating policy facts. */
             const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, sgroup) ? 1 : 0;
             p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0, policy_encrypted,
@@ -1665,7 +1671,7 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
         }
         state->last_active_time = time(NULL);
 
-        if (state->p25_cc_freq != 0 && opts->p25_is_tuned == 0 && freq != 0) {
+        if (p25p2_vpdu_can_tune(opts, state, freq)) {
             const int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
             p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, /*svc_bits*/ 0, (int)target, /*src*/ 0,
                                    policy_encrypted, /*policy_data*/ 1);

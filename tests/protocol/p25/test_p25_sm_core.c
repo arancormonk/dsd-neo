@@ -9,12 +9,15 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -35,6 +38,7 @@ static dsd_trunk_tune_result g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESUL
 static int g_result_tune_to_freq_calls = 0;
 static int g_result_tune_to_cc_calls = 0;
 static int g_result_return_to_cc_calls = 0;
+static long g_rigctl_current_freq = 0;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -119,6 +123,12 @@ install_result_tuning_hooks(void) {
     hooks.tune_to_cc_result = trunk_tune_to_cc_result;
     hooks.return_to_cc_result = return_to_cc_result;
     dsd_trunk_tuning_hooks_set(hooks);
+}
+
+static long
+fake_get_current_freq_hz(const dsd_opts* opts) {
+    (void)opts;
+    return g_rigctl_current_freq;
 }
 
 static void
@@ -489,6 +499,244 @@ main(void) {
     assert(o12.trunk_is_tuned == 0);
     assert(ctx12.state == P25_SM_ON_CC);
     assert(s12.p25_retune_block_until == 0);
+
+    // 15) Verified CC callers seed an unknown CC from the live tuner before leaving the control channel.
+    static dsd_opts o13;
+    static dsd_state s13;
+    DSD_MEMSET(&o13, 0, sizeof(o13));
+    DSD_MEMSET(&s13, 0, sizeof(s13));
+    o13.p25_trunk = 1;
+    o13.trunk_tune_group_calls = 1;
+    o13.audio_in_type = AUDIO_IN_RTL;
+    o13.rtlsdr_center_freq = 851012500U;
+    s13.synctype = DSD_SYNC_P25P1_POS;
+    s13.p25_cc_is_tdma = 1;
+    s13.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s13.p25_iden_fdma[id9].chan_type = 1;
+    s13.p25_iden_fdma[id9].chan_spac = 100;
+    s13.p25_iden_fdma[id9].trust = 2;
+    s13.p25_iden_fdma[id9].populated = 1;
+    s13.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx13;
+    p25_sm_init_ctx(&ctx13, &o13, &s13);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_seed_cc_from_current_tuner_if_unknown(&o13, &s13);
+    p25_sm_event(&ctx13, &o13, &s13, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(s13.p25_cc_freq == 851012500);
+    assert(s13.trunk_cc_freq == 851012500);
+    assert(s13.trunk_lcn_freq[0] == 851012500);
+    assert(s13.p25_cc_is_tdma == 0);
+    assert(ctx13.state == P25_SM_TUNED);
+
+    static dsd_opts o14;
+    static dsd_state s14;
+    DSD_MEMSET(&o14, 0, sizeof(o14));
+    DSD_MEMSET(&s14, 0, sizeof(s14));
+    o14.p25_trunk = 1;
+    o14.trunk_tune_group_calls = 1;
+    o14.audio_in_type = AUDIO_IN_TCP;
+    o14.use_rigctl = 1;
+    s14.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s14.p25_iden_fdma[id9].chan_type = 1;
+    s14.p25_iden_fdma[id9].chan_spac = 100;
+    s14.p25_iden_fdma[id9].trust = 2;
+    s14.p25_iden_fdma[id9].populated = 1;
+    s14.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx14;
+    p25_sm_init_ctx(&ctx14, &o14, &s14);
+    g_rigctl_current_freq = 851987500;
+    dsd_rigctl_query_hooks hooks = {0};
+    hooks.get_current_freq_hz = fake_get_current_freq_hz;
+    dsd_rigctl_query_hooks_set(hooks);
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_seed_cc_from_current_tuner_if_unknown(&o14, &s14);
+    p25_sm_event(&ctx14, &o14, &s14, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(s14.p25_cc_freq == 851987500);
+    assert(s14.trunk_cc_freq == 851987500);
+    assert(s14.trunk_lcn_freq[0] == 851987500);
+    assert(ctx14.state == P25_SM_TUNED);
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
+    g_rigctl_current_freq = 0;
+
+    static dsd_opts o14b;
+    static dsd_state s14b;
+    DSD_MEMSET(&o14b, 0, sizeof(o14b));
+    DSD_MEMSET(&s14b, 0, sizeof(s14b));
+    o14b.p25_trunk = 1;
+    o14b.trunk_tune_group_calls = 1;
+    o14b.audio_in_type = AUDIO_IN_RTL;
+    o14b.rtlsdr_center_freq = 851012500U;
+    s14b.synctype = DSD_SYNC_P25P2_POS;
+    s14b.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s14b.p25_iden_fdma[id9].chan_type = 1;
+    s14b.p25_iden_fdma[id9].chan_spac = 100;
+    s14b.p25_iden_fdma[id9].trust = 2;
+    s14b.p25_iden_fdma[id9].populated = 1;
+    s14b.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx14b;
+    p25_sm_init_ctx(&ctx14b, &o14b, &s14b);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_seed_cc_from_current_tuner_if_unknown(&o14b, &s14b);
+    p25_sm_event(&ctx14b, &o14b, &s14b, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(s14b.p25_cc_freq == 851012500);
+    assert(s14b.trunk_cc_freq == 851012500);
+    assert(s14b.trunk_lcn_freq[0] == 851012500);
+    assert(s14b.p25_cc_is_tdma == 1);
+    assert(o14b.p25_is_tuned == 0);
+    assert(s14b.p25_sm_tune_count == 0);
+    assert(ctx14b.state == P25_SM_ON_CC);
+    assert(s14b.last_cc_sync_time_m > 0.0);
+    int tune_cc_calls_before_tick = g_result_tune_to_cc_calls;
+    p25_sm_tick_ctx(&ctx14b, &o14b, &s14b);
+    assert(ctx14b.state == P25_SM_ON_CC);
+    assert(g_result_tune_to_cc_calls == tune_cc_calls_before_tick);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    static dsd_opts o14c;
+    static dsd_state s14c;
+    DSD_MEMSET(&o14c, 0, sizeof(o14c));
+    DSD_MEMSET(&s14c, 0, sizeof(s14c));
+    o14c.p25_trunk = 1;
+    o14c.trunk_tune_group_calls = 1;
+    s14c.p25_cc_freq = 851012500;
+    s14c.trunk_cc_freq = 851012500;
+    s14c.nac = 0x123;
+    s14c.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s14c.p25_iden_fdma[id9].chan_type = 1;
+    s14c.p25_iden_fdma[id9].chan_spac = 100;
+    s14c.p25_iden_fdma[id9].trust = 2;
+    s14c.p25_iden_fdma[id9].populated = 1;
+    s14c.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx14c;
+    p25_sm_init_ctx(&ctx14c, &o14c, &s14c);
+    ctx14c.state = P25_SM_IDLE;
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_event(&ctx14c, &o14c, &s14c, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(s14c.p25_cc_freq == 851012500);
+    assert(s14c.trunk_cc_freq == 851012500);
+    assert(o14c.p25_is_tuned == 0);
+    assert(s14c.p25_sm_tune_count == 0);
+    assert(ctx14c.state == P25_SM_ON_CC);
+    assert(ctx14c.expected_cc_nac == 0x123);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    // 16) A generic trunk CC alias is enough to seed the P25-specific alias.
+    static dsd_opts o15;
+    static dsd_state s15;
+    DSD_MEMSET(&o15, 0, sizeof(o15));
+    DSD_MEMSET(&s15, 0, sizeof(s15));
+    o15.p25_trunk = 1;
+    o15.trunk_tune_group_calls = 1;
+    s15.trunk_cc_freq = 851000000;
+    s15.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s15.p25_iden_fdma[id9].chan_type = 1;
+    s15.p25_iden_fdma[id9].chan_spac = 100;
+    s15.p25_iden_fdma[id9].trust = 2;
+    s15.p25_iden_fdma[id9].populated = 1;
+    s15.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx15;
+    p25_sm_init_ctx(&ctx15, &o15, &s15);
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_event(&ctx15, &o15, &s15, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(s15.p25_cc_freq == 851000000);
+    assert(s15.trunk_cc_freq == 851000000);
+    assert(s15.trunk_lcn_freq[0] == 851000000);
+    assert(ctx15.state == P25_SM_TUNED);
+
+    // 17) Never learn the CC from the current tuner while already voice-tuned.
+    static dsd_opts o16;
+    static dsd_state s16;
+    DSD_MEMSET(&o16, 0, sizeof(o16));
+    DSD_MEMSET(&s16, 0, sizeof(s16));
+    o16.p25_trunk = 1;
+    o16.p25_is_tuned = 1;
+    o16.trunk_is_tuned = 1;
+    o16.audio_in_type = AUDIO_IN_RTL;
+    o16.rtlsdr_center_freq = 852112500U;
+    p25_sm_seed_cc_from_current_tuner_if_unknown(&o16, &s16);
+    assert(s16.p25_cc_freq == 0);
+    assert(s16.trunk_cc_freq == 0);
+    assert(s16.trunk_lcn_freq[0] == 0);
+
+    // 18) Unguarded generic grant events must not sample the current tuner as a CC.
+    static dsd_opts o17;
+    static dsd_state s17;
+    DSD_MEMSET(&o17, 0, sizeof(o17));
+    DSD_MEMSET(&s17, 0, sizeof(s17));
+    o17.p25_trunk = 1;
+    o17.trunk_tune_group_calls = 1;
+    o17.audio_in_type = AUDIO_IN_RTL;
+    o17.rtlsdr_center_freq = 852112500U;
+    s17.synctype = DSD_SYNC_P25P2_POS;
+    s17.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s17.p25_iden_fdma[id9].chan_type = 1;
+    s17.p25_iden_fdma[id9].chan_spac = 100;
+    s17.p25_iden_fdma[id9].trust = 2;
+    s17.p25_iden_fdma[id9].populated = 1;
+    s17.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx17;
+    p25_sm_init_ctx(&ctx17, &o17, &s17);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_event(&ctx17, &o17, &s17, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(s17.p25_cc_freq == 0);
+    assert(s17.trunk_cc_freq == 0);
+    assert(s17.trunk_lcn_freq[0] == 0);
+    assert(ctx17.state == P25_SM_IDLE);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    // 19) Return-to-CC after a seeded first grant must refresh stale CC sync metadata.
+    static dsd_opts o18;
+    static dsd_state s18;
+    DSD_MEMSET(&o18, 0, sizeof(o18));
+    DSD_MEMSET(&s18, 0, sizeof(s18));
+    o18.p25_trunk = 1;
+    o18.trunk_tune_group_calls = 1;
+    o18.p25_prefer_candidates = 1;
+    s18.trunk_cc_freq = 851012500;
+    s18.nac = 0x123;
+    s18.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s18.p25_iden_fdma[id9].chan_type = 1;
+    s18.p25_iden_fdma[id9].chan_spac = 100;
+    s18.p25_iden_fdma[id9].trust = 2;
+    s18.p25_iden_fdma[id9].populated = 1;
+    s18.p25_chan_tdma_explicit[id9] = 1;
+    (void)dsd_trunk_cc_candidates_add(&s18, 853000000, 0);
+    p25_sm_ctx_t ctx18;
+    p25_sm_init_ctx(&ctx18, &o18, &s18);
+    assert(ctx18.state == P25_SM_IDLE);
+    g_result_tune_to_freq_calls = 0;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_event(&ctx18, &o18, &s18, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx18.state == P25_SM_TUNED);
+    assert(s18.p25_cc_freq == 851012500);
+    assert(s18.last_cc_sync_time_m > 0.0);
+
+    s18.last_cc_sync_time = time(NULL) - 10;
+    s18.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    ctx18.t_cc_sync_m = s18.last_cc_sync_time_m;
+    const double stale_seed_cc_sync_m = s18.last_cc_sync_time_m;
+    g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    p25_sm_release(&ctx18, &o18, &s18, "seeded-release");
+    assert(g_result_return_to_cc_calls == 1);
+    assert(ctx18.state == P25_SM_ON_CC);
+    assert(o18.p25_is_tuned == 0);
+    assert(s18.last_cc_sync_time_m > stale_seed_cc_sync_m);
+
+    int cc_calls_before_seeded_release_tick = g_result_tune_to_cc_calls;
+    p25_sm_tick_ctx(&ctx18, &o18, &s18);
+    assert(ctx18.state == P25_SM_ON_CC);
+    assert(g_result_tune_to_cc_calls == cc_calls_before_seeded_release_tick);
 
     install_trunk_tuning_hooks();
 

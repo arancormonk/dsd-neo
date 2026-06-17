@@ -247,6 +247,52 @@ p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
     }
 }
 
+static int
+p25_lcw_trunk_cc_ready_for_grant(p25_lcw_ctx* ctx) {
+    if (ctx->opts->p25_trunk != 1) {
+        return 0;
+    }
+    return ctx->state->p25_cc_freq != 0 || ctx->state->trunk_cc_freq > 0;
+}
+
+static int
+p25_lcw_format_44_skip_grant(const p25_lcw_ctx* ctx, uint16_t group) {
+    if (ctx->state->tg_hold != 0 && ctx->state->tg_hold != group) {
+        return 1;
+    }
+    if ((ctx->lc_svcopt & 0x40) && ctx->opts->trunk_tune_enc_calls == 0
+        && !p25_patch_tg_key_is_clear(ctx->state, group)) {
+        return 1;
+    }
+    return 0;
+}
+
+static void
+p25_lcw_warn_format_44_retune_disabled(p25_lcw_ctx* ctx) {
+    if (ctx->state->p25_lcw_retune_disabled_warned != 0) {
+        return;
+    }
+    ctx->state->p25_lcw_retune_disabled_warned = 1;
+    DSD_FPRINTF(stderr,
+                " [WARN: P25 LCW explicit retune is disabled; 0x44 grants may not be followed. Enable with -j or "
+                "menu.] ");
+}
+
+static void
+p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t group) {
+    if (!p25_lcw_trunk_cc_ready_for_grant(ctx)) {
+        return;
+    }
+    if (ctx->opts->p25_lcw_retune == 0) {
+        p25_lcw_warn_format_44_retune_disabled(ctx);
+        return;
+    }
+    if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
+        && !p25_lcw_format_44_skip_grant(ctx, group)) {
+        p25_sm_on_group_grant(ctx->opts, ctx->state, channel, ctx->lc_svcopt, group, (int)ctx->state->lastsrc);
+    }
+}
+
 static void
 p25_lcw_handle_format_44(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel Update %s Explicit", dsd_unicode_or_ascii("–", "-"));
@@ -256,28 +302,7 @@ p25_lcw_handle_format_44(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, "Ch: %04X TG: %d; ", channelt, group1);
     UNUSED(channelr);
 
-    if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0) {
-        if (ctx->opts->trunk_tune_group_calls == 1) {
-            int skip_grant = 0;
-            if (ctx->state->tg_hold != 0 && ctx->state->tg_hold != group1) {
-                skip_grant = 1;
-            }
-            if ((ctx->lc_svcopt & 0x40) && ctx->opts->trunk_tune_enc_calls == 0
-                && !p25_patch_tg_key_is_clear(ctx->state, group1)) {
-                skip_grant = 1;
-            }
-            if (!skip_grant) {
-                p25_sm_on_group_grant(ctx->opts, ctx->state, channelt, ctx->lc_svcopt, group1,
-                                      (int)ctx->state->lastsrc);
-            }
-        }
-    } else if (ctx->opts->p25_lcw_retune == 0 && ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0
-               && ctx->state->p25_lcw_retune_disabled_warned == 0) {
-        ctx->state->p25_lcw_retune_disabled_warned = 1;
-        DSD_FPRINTF(stderr,
-                    " [WARN: P25 LCW explicit retune is disabled; 0x44 grants may not be followed. Enable with -j or "
-                    "menu.] ");
-    }
+    p25_lcw_handle_format_44_trunking(ctx, channelt, group1);
 
     char suf[32];
     p25_format_chan_suffix(ctx->state, channelt, -1, suf, sizeof suf);

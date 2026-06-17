@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
+#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -86,6 +87,69 @@ p25_sm_valid_nac_ull(unsigned long long nac) {
     return nac > 0 && nac != 0xFFFULL && nac <= 0xFFFULL;
 }
 
+static long
+p25_sm_current_tuner_freq_hz(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    if (opts->use_rigctl == 1) {
+        long freq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
+        return (freq > 0) ? freq : 0;
+    }
+    if (opts->audio_in_type == AUDIO_IN_RTL && opts->rtlsdr_center_freq > 0) {
+        return (long)opts->rtlsdr_center_freq;
+    }
+    return 0;
+}
+
+static void
+p25_sm_seed_cc_modulation_from_current_sync(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    if (DSD_SYNC_IS_P25P2(state->synctype)) {
+        state->p25_cc_is_tdma = 1;
+    } else if (DSD_SYNC_IS_P25P1(state->synctype)) {
+        state->p25_cc_is_tdma = 0;
+    }
+}
+
+static void
+p25_sm_seed_cc_from_known_trunk_alias_if_unknown(dsd_state* state) {
+    if (!state || state->p25_cc_freq != 0 || state->trunk_cc_freq <= 0) {
+        return;
+    }
+    state->p25_cc_freq = state->trunk_cc_freq;
+    p25_sm_seed_cc_modulation_from_current_sync(state);
+    if (state->trunk_lcn_freq[0] == 0) {
+        state->trunk_lcn_freq[0] = state->trunk_cc_freq;
+    }
+}
+
+void
+p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state) {
+    if (!state || state->p25_cc_freq != 0) {
+        return;
+    }
+    p25_sm_seed_cc_from_known_trunk_alias_if_unknown(state);
+    if (state->p25_cc_freq != 0) {
+        return;
+    }
+    if (!opts || opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) {
+        return;
+    }
+    long freq = p25_sm_current_tuner_freq_hz(opts);
+    if (freq <= 0) {
+        return;
+    }
+    state->p25_cc_freq = freq;
+    state->trunk_cc_freq = freq;
+    p25_sm_seed_cc_modulation_from_current_sync(state);
+    if (state->trunk_lcn_freq[0] == 0) {
+        state->trunk_lcn_freq[0] = freq;
+    }
+}
+
 static int
 p25_sm_current_cc_nac(const dsd_state* state) {
     if (!state) {
@@ -119,15 +183,21 @@ p25_sm_set_expected_cc_nac(p25_sm_ctx_t* ctx, const dsd_state* state, int replac
 }
 
 static void
-p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, const dsd_state* state, double tune_start_m) {
+p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_state* state, double tune_start_m) {
     if (!ctx) {
         return;
     }
     ctx->t_cc_sync_m = tune_start_m;
-    if (state && state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
-        // CC retune hooks update this as tune metadata before any CC frame decodes.
-        // Absorb that timestamp now so the next watchdog tick does not relatch NAC from it.
-        ctx->t_cc_sync_m = state->last_cc_sync_time_m;
+    if (state) {
+        if (state->last_cc_sync_time_m <= 0.0 || state->last_cc_sync_time_m < tune_start_m) {
+            state->last_cc_sync_time = time(NULL);
+            state->last_cc_sync_time_m = tune_start_m;
+        }
+        if (state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
+            // CC retune hooks update this as tune metadata before any CC frame decodes.
+            // Absorb that timestamp now so the next watchdog tick does not relatch NAC from it.
+            ctx->t_cc_sync_m = state->last_cc_sync_time_m;
+        }
     }
 }
 
@@ -729,6 +799,23 @@ p25_grant_retune_blocked(const dsd_opts* opts, dsd_state* state, long freq, int 
     return p25_retune_block_log_match(opts, state, channel, freq, slot, state->p25_retune_block_until);
 }
 
+static void
+p25_grant_seed_cc_before_vc_tune(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!ctx || !state) {
+        return;
+    }
+    if (state->p25_cc_freq == 0) {
+        p25_sm_seed_cc_from_known_trunk_alias_if_unknown(state);
+    }
+    if (state->p25_cc_freq == 0 || ctx->state != P25_SM_IDLE) {
+        return;
+    }
+
+    p25_sm_start_cc_grace_after_tune(ctx, state, now_m);
+    p25_sm_set_expected_cc_nac(ctx, state, 0);
+    set_state(ctx, opts, state, P25_SM_ON_CC, "grant-cc-seed");
+}
+
 /* ============================================================================
  * Event Handlers
  * ============================================================================ */
@@ -776,6 +863,8 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     if (!p25_grant_preempt_active_call_if_needed(ctx, opts, state, &route, &decision, now_m)) {
         return;
     }
+
+    p25_grant_seed_cc_before_vc_tune(ctx, opts, state, now_m);
 
     if (!p25_grant_try_tune_vc(ev, opts, state, freq, slot, &ted_sps)) {
         return;

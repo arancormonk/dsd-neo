@@ -13,6 +13,8 @@ extern "C" {
 void p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq);
 void p25_test_invoke_lcw_with_lastsrc(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq,
                                       long lastsrc);
+void p25_test_invoke_lcw_with_tuner(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq,
+                                    long tuner_freq);
 
 #ifdef __cplusplus
 }
