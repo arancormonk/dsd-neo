@@ -161,6 +161,8 @@ unset_all_runtime_env(void) {
         "DSD_NEO_RTL_IF_GAINS",
         "DSD_NEO_RTL_OFFSET_TUNING",
         "DSD_NEO_RTL_TESTMODE",
+        "DSD_NEO_RTL_VERIFY",
+        "DSD_NEO_RTL_VERIFY_ATTEMPTS",
         "DSD_NEO_RTL_XTAL_HZ",
         "DSD_NEO_RT_PRIO_DEMOD",
         "DSD_NEO_RT_PRIO_DONGLE",
@@ -1626,6 +1628,71 @@ test_rtl_misc_env(void) {
 }
 
 static int
+test_rtl_verify_env(void) {
+    unsetenv("DSD_NEO_RTL_VERIFY");
+    unsetenv("DSD_NEO_RTL_VERIFY_ATTEMPTS");
+    dsd_neo_config_init(NULL);
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int rc = expect(cfg != NULL, 1380, "cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_is_set, 0, 1381, "rtl_verify_is_set default");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_enable, 1, 1382, "rtl_verify_enable default");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts_is_set, 0, 1383, "rtl_verify_attempts_is_set default");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts, 10, 1384, "rtl_verify_attempts default");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_RTL_VERIFY", "0", 1);
+    setenv("DSD_NEO_RTL_VERIFY_ATTEMPTS", "4", 1);
+    dsd_neo_config_init(NULL);
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->rtl_verify_is_set, 1, 1385, "rtl_verify_is_set disabled");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_enable, 0, 1386, "rtl_verify_enable disabled");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts_is_set, 1, 1387, "rtl_verify_attempts_is_set 4");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts, 4, 1388, "rtl_verify_attempts 4");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_RTL_VERIFY_ATTEMPTS", "11", 1);
+    dsd_neo_config_init(NULL);
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->rtl_verify_attempts_is_set, 0, 1389, "rtl_verify_attempts_is_set 11");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts, 10, 1390, "rtl_verify_attempts invalid defaults");
+    if (rc != 0) {
+        return rc;
+    }
+
+    unsetenv("DSD_NEO_RTL_VERIFY");
+    unsetenv("DSD_NEO_RTL_VERIFY_ATTEMPTS");
+    return 0;
+}
+
+static int
 test_tuner_autogain_env(void) {
     /*
      * Tuner auto-gain has an enable bit plus timing, seed, SNR, ratio, and step
@@ -2505,6 +2572,10 @@ main(void) {
         return rc;
     }
     rc = test_rtl_direct_mode();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_rtl_verify_env();
     if (rc != 0) {
         return rc;
     }

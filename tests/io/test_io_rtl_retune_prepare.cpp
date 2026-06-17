@@ -25,6 +25,18 @@ extern "C" int rtl_device_test_soapy_config_settings_visibility(size_t config_si
 extern "C" void rtl_device_test_replay_dispatch_reset_event_state(int* phase, int* have_carry, uint8_t* carry_byte);
 extern "C" int rtl_device_test_replay_event_boundary_drained(size_t ring_used, uint64_t submitted_gen,
                                                              uint64_t consumed_gen);
+extern "C" int rtl_device_test_usb_apply_retry(int verify_enabled, int attempts, int apply_success_after,
+                                               int verify_success_after, int* out_apply_calls, int* out_verify_calls,
+                                               int* out_used_attempts);
+extern "C" int rtl_device_test_usb_manual_gain_controls(int agc_rc, int gain_mode_rc, int gain_rc, int* out_agc_calls,
+                                                        int* out_gain_mode_calls, int* out_gain_calls,
+                                                        int* out_recorded_agc_rc);
+extern "C" int dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_result);
+extern "C" int
+dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz, uint32_t* out_full_rate_hz,
+                                                     int* out_full_rate_out_hz, uint32_t* out_partial_freq_hz,
+                                                     uint32_t* out_partial_rate_hz, int* out_partial_rate_out_hz);
+extern "C" int dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, int* out_second_result);
 
 static int
 expect_int_eq(const char* label, int got, int want) {
@@ -116,6 +128,38 @@ main(void) {
     failed |= expect_size_eq("deferred tune leaves queued output", used_after, 5U);
     failed |= expect_int_eq("deferred tune leaves cached symbols", cache_pending, 3);
     failed |= expect_generation_eq("deferred tune keeps output generation", generation_before, generation_after);
+    failed |= expect_int_eq("ok completion result keeps tune ok",
+                            dsd_rtl_stream_test_tune_completion_result(RTL_STREAM_TUNE_OK, RTL_STREAM_TUNE_OK),
+                            RTL_STREAM_TUNE_OK);
+    failed |= expect_int_eq("failed completion result maps tune failed",
+                            dsd_rtl_stream_test_tune_completion_result(RTL_STREAM_TUNE_OK, RTL_STREAM_TUNE_FAILED),
+                            RTL_STREAM_TUNE_FAILED);
+    failed |= expect_int_eq("timeout completion result keeps timeout",
+                            dsd_rtl_stream_test_tune_completion_result(RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_FAILED),
+                            RTL_STREAM_TUNE_TIMEOUT);
+    int first_completion_result = -1;
+    int second_completion_result = -1;
+    rc = dsd_rtl_stream_test_retune_completion_result_binding(&first_completion_result, &second_completion_result);
+    failed |= expect_int_eq("retune completion result binding helper rc", rc, 0);
+    failed |= expect_int_eq("first completion keeps failed result", first_completion_result, RTL_STREAM_TUNE_FAILED);
+    failed |= expect_int_eq("second completion keeps ok result", second_completion_result, RTL_STREAM_TUNE_OK);
+
+    uint32_t full_restore_freq_hz = 0U;
+    uint32_t full_restore_rate_hz = 0U;
+    int full_restore_rate_out_hz = 0;
+    uint32_t partial_restore_freq_hz = 0U;
+    uint32_t partial_restore_rate_hz = 0U;
+    int partial_restore_rate_out_hz = 0;
+    rc = dsd_rtl_stream_test_capture_settings_failure_restore(&full_restore_freq_hz, &full_restore_rate_hz,
+                                                              &full_restore_rate_out_hz, &partial_restore_freq_hz,
+                                                              &partial_restore_rate_hz, &partial_restore_rate_out_hz);
+    failed |= expect_int_eq("capture settings restore helper rc", rc, 0);
+    failed |= expect_int_eq("frequency failure restores staged frequency", (int)full_restore_freq_hz, 851000000);
+    failed |= expect_int_eq("frequency failure restores staged rate", (int)full_restore_rate_hz, 960000);
+    failed |= expect_int_eq("frequency failure restores demod rate", full_restore_rate_out_hz, 48000);
+    failed |= expect_int_eq("partial retune keeps applied frequency", (int)partial_restore_freq_hz, 855000000);
+    failed |= expect_int_eq("partial retune restores prior rate", (int)partial_restore_rate_hz, 960000);
+    failed |= expect_int_eq("partial retune restores demod rate", partial_restore_rate_out_hz, 48000);
 
     cache_pending = -1;
     rc = rtl_stream_test_clear_output(7U, 3, &used_after, &cache_pending, &generation_before, &generation_after);
@@ -207,6 +251,51 @@ main(void) {
         "sized Soapy config settings visibility helper",
         rtl_device_test_soapy_config_settings_visibility(RTL_SOAPY_CONFIG_SIZE, "biasT_ctrl=false", &settings_seen), 0);
     failed |= expect_int_eq("sized Soapy config observes appended settings", settings_seen, 1);
+
+    int apply_calls = -1;
+    int verify_calls = -1;
+    int used_attempts = -1;
+    rc = rtl_device_test_usb_apply_retry(1, 10, 1, 1, &apply_calls, &verify_calls, &used_attempts);
+    failed |= expect_int_eq("rtl usb retry first-attempt rc", rc, 0);
+    failed |= expect_int_eq("rtl usb retry first-attempt apply calls", apply_calls, 1);
+    failed |= expect_int_eq("rtl usb retry first-attempt verify calls", verify_calls, 1);
+    failed |= expect_int_eq("rtl usb retry first-attempt used attempts", used_attempts, 1);
+
+    rc = rtl_device_test_usb_apply_retry(1, 10, 3, 1, &apply_calls, &verify_calls, &used_attempts);
+    failed |= expect_int_eq("rtl usb retry apply succeeds late rc", rc, 0);
+    failed |= expect_int_eq("rtl usb retry apply succeeds late apply calls", apply_calls, 3);
+    failed |= expect_int_eq("rtl usb retry apply succeeds late verify calls", verify_calls, 1);
+    failed |= expect_int_eq("rtl usb retry apply succeeds late used attempts", used_attempts, 3);
+
+    rc = rtl_device_test_usb_apply_retry(1, 10, 1, 3, &apply_calls, &verify_calls, &used_attempts);
+    failed |= expect_int_eq("rtl usb retry verify succeeds late rc", rc, 0);
+    failed |= expect_int_eq("rtl usb retry verify succeeds late apply calls", apply_calls, 3);
+    failed |= expect_int_eq("rtl usb retry verify succeeds late verify calls", verify_calls, 3);
+    failed |= expect_int_eq("rtl usb retry verify succeeds late used attempts", used_attempts, 3);
+
+    rc = rtl_device_test_usb_apply_retry(1, 10, 11, 1, &apply_calls, &verify_calls, &used_attempts);
+    failed |= expect_int_eq("rtl usb retry exhausted rc", rc, -1);
+    failed |= expect_int_eq("rtl usb retry exhausted apply calls", apply_calls, 10);
+    failed |= expect_int_eq("rtl usb retry exhausted verify calls", verify_calls, 0);
+    failed |= expect_int_eq("rtl usb retry exhausted used attempts", used_attempts, 10);
+
+    rc = rtl_device_test_usb_apply_retry(0, 10, 1, 10, &apply_calls, &verify_calls, &used_attempts);
+    failed |= expect_int_eq("rtl usb retry disabled rc", rc, 0);
+    failed |= expect_int_eq("rtl usb retry disabled apply calls", apply_calls, 1);
+    failed |= expect_int_eq("rtl usb retry disabled verify calls", verify_calls, 0);
+    failed |= expect_int_eq("rtl usb retry disabled used attempts", used_attempts, 1);
+
+    int agc_calls = -1;
+    int gain_mode_calls = -1;
+    int gain_calls = -1;
+    int recorded_agc_rc = 0;
+    rc =
+        rtl_device_test_usb_manual_gain_controls(-5, 0, 0, &agc_calls, &gain_mode_calls, &gain_calls, &recorded_agc_rc);
+    failed |= expect_int_eq("manual gain ignores AGC failure rc", rc, 0);
+    failed |= expect_int_eq("manual gain AGC call count", agc_calls, 1);
+    failed |= expect_int_eq("manual gain mode still applied", gain_mode_calls, 1);
+    failed |= expect_int_eq("manual gain value still applied", gain_calls, 1);
+    failed |= expect_int_eq("manual gain records AGC failure", recorded_agc_rc, -5);
 
     // Fragmented mute spans are coalesced so capture metadata stays IQ-pair aligned.
     uint64_t pending_mute = 0U;

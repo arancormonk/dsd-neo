@@ -226,6 +226,10 @@ config_snapshot_equals_block_c(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(rtl_testmode_is_set);
     CONFIG_EQ_FIELD(rtl_testmode_enable);
     CONFIG_EQ_FIELD(rtl_if_gains_is_set);
+    CONFIG_EQ_FIELD(rtl_verify_is_set);
+    CONFIG_EQ_FIELD(rtl_verify_enable);
+    CONFIG_EQ_FIELD(rtl_verify_attempts_is_set);
+    CONFIG_EQ_FIELD(rtl_verify_attempts);
     CONFIG_EQ_FIELD(tuner_bw_hz_is_set);
     CONFIG_EQ_FIELD(tuner_bw_hz);
     CONFIG_EQ_FIELD(tuner_autogain_is_set);
@@ -574,6 +578,8 @@ config_init_defaults(dsdneoRuntimeConfig& c) {
 
     c.rtl_agc_enable = 1;
     c.rtl_direct_mode = 0;
+    c.rtl_verify_enable = 1;
+    c.rtl_verify_attempts = 10;
 
     c.tuner_autogain_probe_ms = 3000;
     c.tuner_autogain_seed_db = 30.0;
@@ -937,6 +943,15 @@ config_init_rtl_if_gains_and_tuner_bw(dsdneoRuntimeConfig& c) {
     const char* rig = getenv("DSD_NEO_RTL_IF_GAINS");
     c.rtl_if_gains_is_set = env_is_set(rig);
     env_copy_str(c.rtl_if_gains, sizeof c.rtl_if_gains, rig);
+
+    const char* rv = getenv("DSD_NEO_RTL_VERIFY");
+    c.rtl_verify_is_set = env_is_set(rv);
+    if (c.rtl_verify_is_set) {
+        c.rtl_verify_enable = env_is_falsey(rv) ? 0 : 1;
+    }
+
+    const char* rva = getenv("DSD_NEO_RTL_VERIFY_ATTEMPTS");
+    c.rtl_verify_attempts_is_set = env_parse_int_range(rva, 1, 10, &c.rtl_verify_attempts);
 
     const char* tbw = getenv("DSD_NEO_TUNER_BW_HZ");
     c.tuner_bw_hz_is_set = 0;
