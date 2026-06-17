@@ -386,6 +386,10 @@ typedef struct dsdneoRuntimeConfig {
     int rtl_testmode_is_set;
     int rtl_testmode_enable;
     int rtl_if_gains_is_set;
+    int rtl_verify_is_set;
+    int rtl_verify_enable;
+    int rtl_verify_attempts_is_set;
+    int rtl_verify_attempts;
     int tuner_bw_hz_is_set;
     int tuner_bw_hz; /* 0=auto */
 

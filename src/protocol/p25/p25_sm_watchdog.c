@@ -61,7 +61,7 @@ static DSD_THREAD_RETURN_TYPE
 #endif
     p25_sm_watchdog_thread(void* arg) {
     (void)arg;
-    while (atomic_load(&g_p25_sm_wd_running) && !exitflag) {
+    while (atomic_load(&g_p25_sm_wd_running) && !dsd_exitflag_load()) {
         if (g_opts && g_state) {
             p25_sm_try_tick(g_opts, g_state);
         }
