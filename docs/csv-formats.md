@@ -51,8 +51,9 @@ The header must start with this exact prefix:
 id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
 ```
 
-- Extra columns are allowed after `notes`.
-- Every data row must contain all seven fields, even when optional values are empty.
+- Optional columns are allowed after `notes`; recognized optional columns are matched by header name.
+- Every data row must contain the first seven fields, even when optional values are empty. Missing trailing optional
+  fields are treated as empty.
 - Blank data rows are skipped.
 
 Columns:
@@ -66,6 +67,8 @@ Columns:
 | `dwell_ms` | No | Per-target idle dwell (`250..600000`). Empty uses `--trunk-scan-dwell-ms` or `[trunk_scan] idle_dwell_ms`. |
 | `activity_hold_ms` | No | Per-target conventional DMR activity hold (`250..600000`). Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. |
 | `notes` | No | Ignored. Use for local notes. |
+| `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR accepts `auto`, `gfsk`. |
+| `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
 
 Validation notes:
 
@@ -80,10 +83,10 @@ Validation notes:
 Example:
 
 ```csv
-id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
-county-p25,p25-trunk,851012500,,3000,,primary P25 control channel
-city-dmr,dmr-trunk,452012500,dmr_channels.csv,3000,,DMR Tier III control channel
-plant,dmr-conventional,461112500,,1500,1200,one-frequency DMR
+id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain
+county-p25,p25-trunk,851012500,,3000,,primary P25 control channel,cqpsk,18
+city-dmr,dmr-trunk,452012500,dmr_channels.csv,3000,,DMR Tier III control channel,auto,
+plant,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
 ```
 
 ## Group List CSV (`-G <file>` / `[trunking] group_csv`)

@@ -239,6 +239,36 @@ void rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int c
                                                   int levels, int channel_profile, int ted_sps,
                                                   int persist_ted_override);
 
+typedef struct rtl_stream_retune_gain_profile {
+    int tuner_gain_is_set;
+    int tuner_gain_tenth_db;
+    int tuner_gain_is_auto;
+    int tuner_autogain_is_set;
+    int tuner_autogain_on;
+} rtl_stream_retune_gain_profile;
+
+/**
+ * @brief Queue a symbol/CQPSK/TED profile plus optional tuner gain for a retune target.
+ *
+ * Gain fields are consumed at the same retune boundary as the demodulator
+ * profile. Pass NULL or set tuner_gain_is_set to zero to leave tuner gain
+ * unchanged. When set, tuner_gain_is_auto requests device auto gain; otherwise
+ * tuner_gain_tenth_db is applied as nearest manual gain.
+ *
+ * @param target_freq_hz Intended center frequency in Hz; zero leaves the profile unbound.
+ * @param cqpsk_enable 0/1 to force CQPSK off/on, negative to leave unchanged.
+ * @param symbol_rate_hz Symbol rate in Hz, e.g. 4800 or 6000.
+ * @param levels Number of symbol levels, 2 or 4.
+ * @param channel_profile rtl_stream_channel_profile profile id.
+ * @param ted_sps TED samples-per-symbol to apply; <=0 leaves TED SPS unchanged.
+ * @param persist_ted_override Non-zero keeps ted_sps as an override after retune.
+ * @param gain_profile Optional tuner gain/autogain profile to apply at retune.
+ */
+void rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq_hz, int cqpsk_enable,
+                                                            int symbol_rate_hz, int levels, int channel_profile,
+                                                            int ted_sps, int persist_ted_override,
+                                                            const rtl_stream_retune_gain_profile* gain_profile);
+
 /**
  * @brief Apply and clear the queued retune profile immediately.
  *
@@ -398,6 +428,12 @@ int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* 
 int rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
                                                         uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
                                                         uint32_t* out_coalesced_request_id);
+
+/**
+ * @brief Verify queued retune gain settings are copied onto their scheduled request.
+ */
+int rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_gain_tenth_db, int* out_gain_is_auto,
+                                                int* out_autogain_is_set, int* out_autogain_on);
 
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;

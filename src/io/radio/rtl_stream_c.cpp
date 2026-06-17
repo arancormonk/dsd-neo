@@ -38,6 +38,10 @@ void dsd_rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz,
 void dsd_rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
                                                       int levels, int channel_profile, int ted_sps,
                                                       int persist_ted_override);
+void dsd_rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq_hz, int cqpsk_enable,
+                                                                int symbol_rate_hz, int levels, int channel_profile,
+                                                                int ted_sps, int persist_ted_override,
+                                                                const rtl_stream_retune_gain_profile* gain_profile);
 void dsd_rtl_stream_apply_pending_retune_profile(void);
 void dsd_rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz);
 void dsd_rtl_stream_clear_pending_retune_profile(void);
@@ -112,6 +116,8 @@ int dsd_rtl_stream_test_retune_profile_request_binding(int* out_first_profile, i
 int dsd_rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
                                                             uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
                                                             uint32_t* out_coalesced_request_id);
+int dsd_rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_gain_tenth_db, int* out_gain_is_auto,
+                                                    int* out_autogain_is_set, int* out_autogain_on);
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
 int dsd_rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
 #endif
@@ -307,6 +313,13 @@ rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* 
 }
 
 extern "C" int
+rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_gain_tenth_db, int* out_gain_is_auto,
+                                            int* out_autogain_is_set, int* out_autogain_on) {
+    return dsd_rtl_stream_test_retune_profile_gain_binding(out_gain_is_set, out_gain_tenth_db, out_gain_is_auto,
+                                                           out_autogain_is_set, out_autogain_on);
+}
+
+extern "C" int
 rtl_stream_test_get_replay_state(const RtlSdrContext* ctx, rtl_stream_test_replay_state* out_state) {
     if (!ctx || !ctx->stream || !out_state) {
         return -2;
@@ -409,6 +422,16 @@ rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_
                                              int channel_profile, int ted_sps, int persist_ted_override) {
     dsd_rtl_stream_prepare_retune_profile_for_target(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels,
                                                      channel_profile, ted_sps, persist_ted_override);
+}
+
+extern "C" void
+rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
+                                                       int levels, int channel_profile, int ted_sps,
+                                                       int persist_ted_override,
+                                                       const rtl_stream_retune_gain_profile* gain_profile) {
+    dsd_rtl_stream_prepare_retune_profile_for_target_with_gain(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels,
+                                                               channel_profile, ted_sps, persist_ted_override,
+                                                               gain_profile);
 }
 
 extern "C" void

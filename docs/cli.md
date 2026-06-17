@@ -277,6 +277,8 @@ Notes
     `docs/trunk-scan.md`.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` entries in the target CSV; global `-C` is rejected in this mode.
+  - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
+    active target.
   - Cannot be combined with legacy `-Y` or IQ replay.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
   - Conventional DMR activity hold: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`).
