@@ -3980,7 +3980,25 @@ rtl_usb_verify_manual_gain(void* opaque) {
 struct rtl_usb_auto_gain_apply_ctx {
     rtlsdr_dev_t* dev;
     int agc_want;
+    int agc_rc;
 };
+
+static int
+rtl_usb_apply_auto_gain_controls(void* dev, int agc_want, int* out_agc_rc, rtl_usb_int_control_fn set_gain_mode,
+                                 rtl_usb_int_control_fn set_agc_mode) {
+    if (!dev || !set_gain_mode || !set_agc_mode) {
+        return -1;
+    }
+    int r = set_gain_mode(dev, 0);
+    if (r != 0) {
+        return r;
+    }
+    int agc_rc = set_agc_mode(dev, agc_want);
+    if (agc_rc != 0 && out_agc_rc && *out_agc_rc == 0) {
+        *out_agc_rc = agc_rc;
+    }
+    return 0;
+}
 
 static int
 rtl_usb_apply_auto_gain(void* opaque) {
@@ -3988,11 +4006,8 @@ rtl_usb_apply_auto_gain(void* opaque) {
     if (!ctx || !ctx->dev) {
         return -1;
     }
-    int r = rtlsdr_set_tuner_gain_mode(ctx->dev, 0);
-    if (r != 0) {
-        return r;
-    }
-    return rtlsdr_set_agc_mode(ctx->dev, ctx->agc_want);
+    return rtl_usb_apply_auto_gain_controls(ctx->dev, ctx->agc_want, &ctx->agc_rc, rtl_usb_set_tuner_gain_mode_control,
+                                            rtl_usb_set_agc_mode_control);
 }
 
 struct rtl_usb_int_apply_ctx {
@@ -4105,6 +4120,35 @@ rtl_usb_manual_gain_test_gain(void* opaque, int value) {
     return ctx->gain_rc;
 }
 
+struct rtl_usb_auto_gain_test_ctx {
+    int agc_rc;
+    int gain_mode_rc;
+    int agc_calls;
+    int gain_mode_calls;
+};
+
+static int
+rtl_usb_auto_gain_test_agc(void* opaque, int value) {
+    UNUSED(value);
+    rtl_usb_auto_gain_test_ctx* ctx = static_cast<rtl_usb_auto_gain_test_ctx*>(opaque);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->agc_calls++;
+    return ctx->agc_rc;
+}
+
+static int
+rtl_usb_auto_gain_test_mode(void* opaque, int value) {
+    UNUSED(value);
+    rtl_usb_auto_gain_test_ctx* ctx = static_cast<rtl_usb_auto_gain_test_ctx*>(opaque);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->gain_mode_calls++;
+    return ctx->gain_mode_rc;
+}
+
 } // namespace
 
 extern "C" int
@@ -4145,6 +4189,24 @@ rtl_device_test_usb_manual_gain_controls(int agc_rc, int gain_mode_rc, int gain_
     *out_agc_calls = ctx.agc_calls;
     *out_gain_mode_calls = ctx.gain_mode_calls;
     *out_gain_calls = ctx.gain_calls;
+    *out_recorded_agc_rc = recorded_agc_rc;
+    return rc;
+}
+
+extern "C" int
+rtl_device_test_usb_auto_gain_controls(int agc_rc, int gain_mode_rc, int* out_agc_calls, int* out_gain_mode_calls,
+                                       int* out_recorded_agc_rc) {
+    if (!out_agc_calls || !out_gain_mode_calls || !out_recorded_agc_rc) {
+        return -100;
+    }
+    rtl_usb_auto_gain_test_ctx ctx{};
+    ctx.agc_rc = agc_rc;
+    ctx.gain_mode_rc = gain_mode_rc;
+    int recorded_agc_rc = 0;
+    int rc = rtl_usb_apply_auto_gain_controls(&ctx, 1, &recorded_agc_rc, rtl_usb_auto_gain_test_mode,
+                                              rtl_usb_auto_gain_test_agc);
+    *out_agc_calls = ctx.agc_calls;
+    *out_gain_mode_calls = ctx.gain_mode_calls;
     *out_recorded_agc_rc = recorded_agc_rc;
     return rc;
 }
@@ -4304,16 +4366,20 @@ verbose_auto_gain(rtlsdr_dev_t* dev) {
     /* Original plan: enable RTL digital AGC in auto mode by default.
        Allow override via env DSD_NEO_RTL_AGC=0 to disable. */
     int want = env_agc_want();
-    rtl_usb_auto_gain_apply_ctx ctx{dev, want};
+    rtl_usb_auto_gain_apply_ctx ctx{dev, want, 0};
     int attempts = 0;
     int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_auto_gain, NULL, &ctx, &attempts);
     if (r != 0) {
-        DSD_FPRINTF(stderr, "WARNING: Failed to set automatic tuner gain or %s RTL AGC.\n",
-                    want ? "enable" : "disable");
+        DSD_FPRINTF(stderr, "WARNING: Failed to set automatic tuner gain.\n");
     } else {
         rtl_usb_log_retry_attempts("automatic gain apply", attempts);
         DSD_FPRINTF(stderr, "Tuner gain set to automatic.\n");
-        DSD_FPRINTF(stderr, "RTL AGC %s.\n", want ? "enabled" : "disabled");
+        if (ctx.agc_rc != 0) {
+            DSD_FPRINTF(stderr, "WARNING: Failed to %s RTL AGC for automatic gain (rc=%d); continuing.\n",
+                        want ? "enable" : "disable", ctx.agc_rc);
+        } else {
+            DSD_FPRINTF(stderr, "RTL AGC %s.\n", want ? "enabled" : "disabled");
+        }
     }
     return r;
 }

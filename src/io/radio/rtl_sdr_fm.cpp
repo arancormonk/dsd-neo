@@ -447,6 +447,15 @@ capture_settings_snapshot(void) {
     return snapshot;
 }
 
+static CaptureSettingsSnapshot
+capture_settings_snapshot_for_center(uint32_t center_freq_hz) {
+    CaptureSettingsSnapshot snapshot = capture_settings_snapshot();
+    if (center_freq_hz != 0U && snapshot.dongle_rate_hz != 0U) {
+        snapshot.dongle_frequency_hz = capture_frequency_for_rate((int64_t)center_freq_hz, snapshot.dongle_rate_hz);
+    }
+    return snapshot;
+}
+
 static void
 restore_capture_rate_settings(const CaptureSettingsSnapshot* snapshot) {
     if (!snapshot) {
@@ -979,6 +988,13 @@ load_dongle_ppm_error(void) {
 static inline void
 store_dongle_ppm_error(int ppm_error) {
     dongle.ppm_error.store(ppm_error, std::memory_order_release);
+}
+
+static inline void
+store_dongle_ppm_error_if_applied(int ppm_rc, int ppm_error) {
+    if (ppm_rc == 0) {
+        store_dongle_ppm_error(ppm_error);
+    }
 }
 
 static inline int
@@ -3436,11 +3452,13 @@ optimal_settings(int freq, int rate) {
  * @param center_freq_hz Desired RF center frequency in Hz.
  */
 static int
-program_capture_frequency_and_rate(uint32_t center_freq_hz, int* out_hardware_changed) {
+program_capture_frequency_and_rate(uint32_t center_freq_hz, const CaptureSettingsSnapshot* restore_on_frequency_failure,
+                                   int* out_hardware_changed) {
     if (out_hardware_changed) {
         *out_hardware_changed = 0;
     }
-    CaptureSettingsSnapshot previous = capture_settings_snapshot();
+    CaptureSettingsSnapshot previous =
+        restore_on_frequency_failure ? *restore_on_frequency_failure : capture_settings_snapshot();
     optimal_settings((int)center_freq_hz, demod.rate_in);
     uint32_t capture_freq_hz = load_dongle_frequency();
     uint32_t capture_rate_hz = load_dongle_rate();
@@ -3485,13 +3503,15 @@ program_capture_frequency_and_rate(uint32_t center_freq_hz, int* out_hardware_ch
  * @return Result from the PPM control apply attempt.
  */
 static int
-apply_capture_settings(uint32_t center_freq_hz, int ppm_error, int* out_ppm_rc, int* out_hardware_changed) {
+apply_capture_settings(uint32_t center_freq_hz, int ppm_error,
+                       const CaptureSettingsSnapshot* restore_on_frequency_failure, int* out_ppm_rc,
+                       int* out_hardware_changed) {
     int ppm_rc = apply_ppm_setting(ppm_error);
     if (out_ppm_rc) {
         *out_ppm_rc = ppm_rc;
     }
     controller_arm_retune_mute("program");
-    return program_capture_frequency_and_rate(center_freq_hz, out_hardware_changed);
+    return program_capture_frequency_and_rate(center_freq_hz, restore_on_frequency_failure, out_hardware_changed);
 }
 
 static int
@@ -3648,9 +3668,10 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     }
     uint32_t previous_center_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
     int previous_rate_out_hz = demod.rate_out;
+    CaptureSettingsSnapshot previous_capture = capture_settings_snapshot_for_center(previous_center_freq_hz);
     controller_arm_retune_mute("program");
     int hardware_changed = 0;
-    int rc = program_capture_frequency_and_rate(center_freq_hz, &hardware_changed);
+    int rc = program_capture_frequency_and_rate(center_freq_hz, &previous_capture, &hardware_changed);
     if (rc != 0 && !hardware_changed) {
         rtl_device_end_capture_reconfigure(rtl_device_handle);
         return rc;
@@ -3680,22 +3701,22 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     int prev_ppm = load_dongle_ppm_error();
     uint32_t previous_center_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
     int previous_rate_out_hz = demod.rate_out;
+    CaptureSettingsSnapshot previous_capture = capture_settings_snapshot_for_center(previous_center_freq_hz);
     controller_begin_reconfigure(s);
     int ppm_rc = 0;
     int hardware_changed = 0;
-    int apply_rc = apply_capture_settings(center_freq_hz, ppm_error, &ppm_rc, &hardware_changed);
+    int apply_rc = apply_capture_settings(center_freq_hz, ppm_error, &previous_capture, &ppm_rc, &hardware_changed);
     if (out_ppm_rc) {
         *out_ppm_rc = ppm_rc;
     }
     if (apply_rc != 0 && !hardware_changed) {
+        store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
         rtl_device_end_capture_reconfigure(rtl_device_handle);
         controller_end_reconfigure(s);
         return apply_rc;
     }
     controller_arm_retune_mute("post");
-    if (ppm_rc == 0) {
-        store_dongle_ppm_error(ppm_error);
-    }
+    store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
     DemodRetuneResetReason reset_reason = (ppm_rc == 0 && ppm_error != prev_ppm)
                                               ? DemodRetuneResetReason::PpmCorrection
                                               : DemodRetuneResetReason::FrequencyRetune;
@@ -4043,11 +4064,11 @@ controller_process_manual_retune(struct controller_state* s, const ControllerRet
     if (work->ppm_changed && ppm_rc != 0) {
         note_failed_ppm_request(work->requested_ppm, work->requested_ppm_request_id, work->current_ppm, ppm_rc);
     }
+    controller_clear_active_ppm_request(s, work->ppm_pending);
+    controller_signal_manual_retune_complete(s, retune_rc == 0 ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_FAILED);
     if (retune_rc == 0 || reconfigured) {
         drain_output_on_retune();
     }
-    controller_signal_manual_retune_complete(s, retune_rc == 0 ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_FAILED);
-    controller_clear_active_ppm_request(s, work->ppm_pending);
     if (retune_rc != 0) {
         LOG_NOTICE("Retune failed: %u Hz (rc=%d).\n", target_hz, retune_rc);
     } else if (work->ppm_changed && ppm_rc == 0) {
@@ -7842,10 +7863,10 @@ dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz,
     dongle.offset_tuning = 1;
     controller.edge = 0;
     disable_fs4_shift = 1;
-    store_dongle_frequency(851000000U);
+    store_dongle_frequency(855000000U);
     store_dongle_rate(960000U);
 
-    CaptureSettingsSnapshot before = capture_settings_snapshot();
+    CaptureSettingsSnapshot before = capture_settings_snapshot_for_center(851000000U);
     optimal_settings(855000000, demod.rate_in);
     restore_capture_settings(&before);
     *out_full_freq_hz = load_dongle_frequency();
@@ -7864,6 +7885,19 @@ dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz,
     dongle.offset_tuning = outer_offset_tuning;
     controller.edge = outer_edge;
     disable_fs4_shift = outer_disable_fs4_shift;
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_ppm_store_if_applied(int ppm_rc, int requested_ppm, int* out_ppm_error) {
+    if (!out_ppm_error) {
+        return -1;
+    }
+    int outer_ppm = load_dongle_ppm_error();
+    store_dongle_ppm_error(3);
+    store_dongle_ppm_error_if_applied(ppm_rc, requested_ppm);
+    *out_ppm_error = load_dongle_ppm_error();
+    store_dongle_ppm_error(outer_ppm);
     return 0;
 }
 

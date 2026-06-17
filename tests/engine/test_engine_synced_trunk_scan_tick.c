@@ -66,7 +66,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (g_get_frame_sync_calls <= 3) {
         return DSD_SYNC_P25P1_POS;
     }
-    exitflag = 1;
+    dsd_exitflag_store(1);
     return DSD_SYNC_NONE;
 }
 

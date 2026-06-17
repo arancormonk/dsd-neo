@@ -23,6 +23,24 @@ extern "C" {
 
 extern volatile uint8_t exitflag;
 
+static inline uint8_t
+dsd_exitflag_load(void) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __atomic_load_n(&exitflag, __ATOMIC_ACQUIRE);
+#else
+    return exitflag;
+#endif
+}
+
+static inline void
+dsd_exitflag_store(uint8_t value) {
+#if defined(__GNUC__) || defined(__clang__)
+    __atomic_store_n(&exitflag, value, __ATOMIC_RELEASE);
+#else
+    exitflag = value;
+#endif
+}
+
 #ifdef __cplusplus
 }
 #endif

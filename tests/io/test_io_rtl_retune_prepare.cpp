@@ -31,11 +31,14 @@ extern "C" int rtl_device_test_usb_apply_retry(int verify_enabled, int attempts,
 extern "C" int rtl_device_test_usb_manual_gain_controls(int agc_rc, int gain_mode_rc, int gain_rc, int* out_agc_calls,
                                                         int* out_gain_mode_calls, int* out_gain_calls,
                                                         int* out_recorded_agc_rc);
+extern "C" int rtl_device_test_usb_auto_gain_controls(int agc_rc, int gain_mode_rc, int* out_agc_calls,
+                                                      int* out_gain_mode_calls, int* out_recorded_agc_rc);
 extern "C" int dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_result);
 extern "C" int
 dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz, uint32_t* out_full_rate_hz,
                                                      int* out_full_rate_out_hz, uint32_t* out_partial_freq_hz,
                                                      uint32_t* out_partial_rate_hz, int* out_partial_rate_out_hz);
+extern "C" int dsd_rtl_stream_test_ppm_store_if_applied(int ppm_rc, int requested_ppm, int* out_ppm_error);
 extern "C" int dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, int* out_second_result);
 
 static int
@@ -154,12 +157,20 @@ main(void) {
                                                               &full_restore_rate_out_hz, &partial_restore_freq_hz,
                                                               &partial_restore_rate_hz, &partial_restore_rate_out_hz);
     failed |= expect_int_eq("capture settings restore helper rc", rc, 0);
-    failed |= expect_int_eq("frequency failure restores staged frequency", (int)full_restore_freq_hz, 851000000);
+    failed |= expect_int_eq("frequency failure restores applied frequency", (int)full_restore_freq_hz, 851000000);
     failed |= expect_int_eq("frequency failure restores staged rate", (int)full_restore_rate_hz, 960000);
     failed |= expect_int_eq("frequency failure restores demod rate", full_restore_rate_out_hz, 48000);
     failed |= expect_int_eq("partial retune keeps applied frequency", (int)partial_restore_freq_hz, 855000000);
     failed |= expect_int_eq("partial retune restores prior rate", (int)partial_restore_rate_hz, 960000);
     failed |= expect_int_eq("partial retune restores demod rate", partial_restore_rate_out_hz, 48000);
+
+    int ppm_after_failure = 0;
+    failed |= expect_int_eq("accepted ppm store helper rc",
+                            dsd_rtl_stream_test_ppm_store_if_applied(0, -7, &ppm_after_failure), 0);
+    failed |= expect_int_eq("accepted ppm survives retune failure", ppm_after_failure, -7);
+    failed |= expect_int_eq("failed ppm store helper rc",
+                            dsd_rtl_stream_test_ppm_store_if_applied(-5, 11, &ppm_after_failure), 0);
+    failed |= expect_int_eq("failed ppm keeps previous runtime ppm", ppm_after_failure, 3);
 
     cache_pending = -1;
     rc = rtl_stream_test_clear_output(7U, 3, &used_after, &cache_pending, &generation_before, &generation_after);
@@ -296,6 +307,18 @@ main(void) {
     failed |= expect_int_eq("manual gain mode still applied", gain_mode_calls, 1);
     failed |= expect_int_eq("manual gain value still applied", gain_calls, 1);
     failed |= expect_int_eq("manual gain records AGC failure", recorded_agc_rc, -5);
+
+    rc = rtl_device_test_usb_auto_gain_controls(-6, 0, &agc_calls, &gain_mode_calls, &recorded_agc_rc);
+    failed |= expect_int_eq("auto gain ignores AGC failure rc", rc, 0);
+    failed |= expect_int_eq("auto gain AGC call count", agc_calls, 1);
+    failed |= expect_int_eq("auto gain mode still applied", gain_mode_calls, 1);
+    failed |= expect_int_eq("auto gain records AGC failure", recorded_agc_rc, -6);
+
+    rc = rtl_device_test_usb_auto_gain_controls(0, -7, &agc_calls, &gain_mode_calls, &recorded_agc_rc);
+    failed |= expect_int_eq("auto gain mode failure remains fatal", rc, -7);
+    failed |= expect_int_eq("auto gain mode failure call count", gain_mode_calls, 1);
+    failed |= expect_int_eq("auto gain skips AGC after mode failure", agc_calls, 0);
+    failed |= expect_int_eq("auto gain mode failure records no AGC failure", recorded_agc_rc, 0);
 
     // Fragmented mute spans are coalesced so capture metadata stays IQ-pair aligned.
     uint64_t pending_mute = 0U;
