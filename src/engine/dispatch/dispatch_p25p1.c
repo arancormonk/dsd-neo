@@ -242,7 +242,8 @@ p25p1_close_mbe_out_pair_if_open(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-p25p1_clear_call_termination_gps(dsd_state* state) {
+p25p1_clear_extra_display_text(dsd_state* state) {
+    /* P25p1 PDU summaries reuse the DMR GPS/LRRP display fields in the shared UI. */
     state->dmr_embedded_gps[0][0] = '\0';
     state->dmr_lrrp_gps[0][0] = '\0';
 }
@@ -323,7 +324,6 @@ p25p1_handle_tdulc(dsd_opts* opts, dsd_state* state) {
     state->lastp25type = 0;
     state->err_str[0] = 0;
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " TDULC        ");
-    p25p1_clear_call_termination_gps(state);
     state->numtdulc++;
 
     if ((opts->resume > 0) && (state->numtdulc > opts->resume)) {
@@ -351,7 +351,6 @@ p25p1_handle_tdu(dsd_opts* opts, dsd_state* state) {
     state->lastp25type = 0;
     state->err_str[0] = 0;
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " TDU          ");
-    p25p1_clear_call_termination_gps(state);
     processTDU(opts, state);
 }
 
@@ -413,6 +412,8 @@ p25p1_handle_unknown_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) 
 
 static void DSD_ATTR_USED
 p25p1_dispatch_by_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) {
+    p25p1_clear_extra_display_text(state);
+
     if (strcmp(duid, "00") == 0) {
         p25p1_handle_hdu(opts, state);
     } else if (strcmp(duid, "11") == 0) {
