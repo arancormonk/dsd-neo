@@ -8,6 +8,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -119,6 +120,43 @@ typedef struct {
     int rtl_ted_sps_override;
 } dsd_engine_rtl_profile_snapshot;
 
+static rtl_stream_retune_gain_profile
+dsd_engine_trunk_scan_gain_profile(const dsd_opts* opts, const dsd_state* state) {
+    rtl_stream_retune_gain_profile profile;
+    DSD_MEMSET(&profile, 0, sizeof(profile));
+    if (!opts || !state || opts->trunk_scan_enabled != 1 || dsd_engine_trunk_scan_target_count(state) == 0) {
+        return profile;
+    }
+
+    profile.tuner_gain_is_set = 1;
+    if (opts->rtl_gain_value > 0) {
+        profile.tuner_gain_tenth_db = opts->rtl_gain_value * 10;
+        profile.tuner_gain_is_auto = 0;
+        profile.tuner_autogain_is_set = 1;
+        profile.tuner_autogain_on = 0;
+        return profile;
+    }
+
+    profile.tuner_gain_tenth_db = 0;
+    profile.tuner_gain_is_auto = 1;
+    int saved_autogain = 0;
+    if (dsd_engine_trunk_scan_saved_tuner_autogain(state, &saved_autogain)) {
+        profile.tuner_autogain_is_set = 1;
+        profile.tuner_autogain_on = saved_autogain ? 1 : 0;
+    }
+    return profile;
+}
+
+static void
+dsd_engine_prepare_retune_profile_for_target(const dsd_opts* opts, const dsd_state* state, uint32_t target_freq_hz,
+                                             int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                             int ted_sps, int persist_ted_override) {
+    rtl_stream_retune_gain_profile gain_profile = dsd_engine_trunk_scan_gain_profile(opts, state);
+    rtl_stream_prepare_retune_profile_for_target_with_gain(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels,
+                                                           channel_profile, ted_sps, persist_ted_override,
+                                                           &gain_profile);
+}
+
 static void
 dsd_engine_rtl_profile_snapshot_capture(const dsd_opts* opts, const dsd_state* state,
                                         dsd_engine_rtl_profile_snapshot* snapshot) {
@@ -170,13 +208,17 @@ dsd_engine_prepare_p25_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long
         cfg = dsd_neo_get_config();
     }
 
-    const int want_cqpsk = (state->p25_cc_is_tdma == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    const int default_cqpsk = (state->p25_cc_is_tdma == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    int trunk_scan_cqpsk_request = 0;
+    const int has_trunk_scan_cqpsk_request =
+        dsd_engine_trunk_scan_active_p25_cqpsk_request(state, &trunk_scan_cqpsk_request);
+    const int want_cqpsk = has_trunk_scan_cqpsk_request ? trunk_scan_cqpsk_request : default_cqpsk;
     state->rf_mod = want_cqpsk ? 1 : 0;
-    const int cqpsk_request = (cfg && cfg->cqpsk_is_set) ? -1 : want_cqpsk;
+    const int cqpsk_request = (has_trunk_scan_cqpsk_request || !cfg || !cfg->cqpsk_is_set) ? want_cqpsk : -1;
     const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
     const int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
-    rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, cqpsk_request, sym_rate, 4, profile, ted_sps,
-                                                 0);
+    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, cqpsk_request, sym_rate, 4,
+                                                 profile, ted_sps, 0);
 }
 
 static void
@@ -186,18 +228,19 @@ dsd_engine_prepare_dmr_cc_rtl_chain(const dsd_opts* opts, const dsd_state* state
     if (state->rtl_ctx) {
         retune_ted_sps = dsd_opts_compute_sps_rate(opts, 4800, (int)rtl_stream_output_rate(state->rtl_ctx));
     }
-    rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, 0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5,
-                                                 retune_ted_sps, 0);
+    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, 0, 4800, 4,
+                                                 RTL_STREAM_CHANNEL_PROFILE_12K5, retune_ted_sps, 0);
 }
 
 static void
-dsd_engine_prepare_current_cc_rtl_chain(long int target_freq_hz, int ted_sps) {
+dsd_engine_prepare_current_cc_rtl_chain(const dsd_opts* opts, const dsd_state* state, long int target_freq_hz,
+                                        int ted_sps) {
     if (ted_sps > 0) {
         int symbol_rate_hz = 0;
         int levels = 0;
         int channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
         (void)rtl_stream_get_symbol_profile_full(&symbol_rate_hz, &levels, &channel_profile);
-        rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, -1, symbol_rate_hz, levels,
+        dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, -1, symbol_rate_hz, levels,
                                                      channel_profile, ted_sps, 0);
     } else {
         rtl_stream_clear_pending_retune_profile();
@@ -217,7 +260,7 @@ dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int
         dsd_engine_prepare_dmr_cc_rtl_chain(opts, state, target_freq_hz, ted_sps);
         return;
     }
-    dsd_engine_prepare_current_cc_rtl_chain(target_freq_hz, ted_sps);
+    dsd_engine_prepare_current_cc_rtl_chain(opts, state, target_freq_hz, ted_sps);
 }
 #endif
 
@@ -350,12 +393,16 @@ dsd_engine_prepare_vc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int
         cfg = dsd_neo_get_config();
     }
 
+    int trunk_scan_cqpsk_request = 0;
+    const int has_trunk_scan_cqpsk_request =
+        dsd_engine_trunk_scan_active_p25_cqpsk_request(state, &trunk_scan_cqpsk_request);
+    /* The target request only bypasses the runtime lock; VC modulation still follows the grant/profile state. */
     int want_cqpsk = dsd_engine_resolve_vc_cqpsk(state, state->rf_mod);
-    int cqpsk_request = (cfg && cfg->cqpsk_is_set) ? -1 : want_cqpsk;
+    int cqpsk_request = (has_trunk_scan_cqpsk_request || !cfg || !cfg->cqpsk_is_set) ? want_cqpsk : -1;
     const int sym_rate = (state->p25_p2_active_slot != -1) ? 6000 : 4800;
     const int profile = want_cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
-    rtl_stream_prepare_retune_profile_for_target((uint32_t)target_freq_hz, cqpsk_request, sym_rate, 4, profile, ted_sps,
-                                                 ted_sps > 0 ? 1 : 0);
+    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, cqpsk_request, sym_rate, 4,
+                                                 profile, ted_sps, ted_sps > 0 ? 1 : 0);
 
     /* One-shot override is consumed by this tune attempt. */
     state->p25_vc_cqpsk_override = -1;

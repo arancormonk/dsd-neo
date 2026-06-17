@@ -1,4 +1,4 @@
-id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
-county-p25,p25-trunk,851012500,,3000,,P25 control channel; channels may be learned from control-channel data
-city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel using examples/dmr_t3_chan.csv
-plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR conventional channel
+id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain
+county-p25,p25-trunk,851012500,,3000,,P25 control channel; channels may be learned from control-channel data,auto,
+city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel using examples/dmr_t3_chan.csv,auto,
+plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR conventional channel,gfsk,

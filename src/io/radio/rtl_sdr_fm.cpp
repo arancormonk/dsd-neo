@@ -185,6 +185,11 @@ struct RtlRetuneProfile {
     int channel_profile = 0;
     int ted_sps = 0;
     int ted_override = 0;
+    int tuner_gain_is_set = 0;
+    int tuner_gain_tenth_db = 0;
+    int tuner_gain_is_auto = 0;
+    int tuner_autogain_is_set = 0;
+    int tuner_autogain_on = 0;
     uint32_t request_id = 0U;
     uint32_t target_freq_hz = 0U;
 };
@@ -302,7 +307,8 @@ static int rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile,
                                                   uint32_t target_freq_hz);
 static void rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
                                                     int levels, int channel_profile, int ted_sps,
-                                                    int persist_ted_override);
+                                                    int persist_ted_override,
+                                                    const rtl_stream_retune_gain_profile* gain_profile);
 static void rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center_freq_hz);
 static void rtl_fsk_metrics_reset_snapshot(void);
 static void rtl_decode_health_reset(void);
@@ -7059,6 +7065,18 @@ rtl_stream_clear_retune_profile(RtlRetuneProfile* profile) {
     }
 }
 
+static void
+rtl_stream_copy_retune_gain_profile(RtlRetuneProfile* profile, const rtl_stream_retune_gain_profile* gain_profile) {
+    if (!profile || !gain_profile) {
+        return;
+    }
+    profile->tuner_gain_is_set = gain_profile->tuner_gain_is_set ? 1 : 0;
+    profile->tuner_gain_tenth_db = gain_profile->tuner_gain_tenth_db < 0 ? 0 : gain_profile->tuner_gain_tenth_db;
+    profile->tuner_gain_is_auto = gain_profile->tuner_gain_is_auto ? 1 : 0;
+    profile->tuner_autogain_is_set = gain_profile->tuner_autogain_is_set ? 1 : 0;
+    profile->tuner_autogain_on = gain_profile->tuner_autogain_on ? 1 : 0;
+}
+
 static int
 rtl_stream_retune_profile_matches_target(const RtlRetuneProfile* profile, uint32_t target_freq_hz) {
     if (!profile || !profile->active) {
@@ -7096,7 +7114,8 @@ rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t r
 
 static void
 rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz, int levels,
-                                        int channel_profile, int ted_sps, int persist_ted_override) {
+                                        int channel_profile, int ted_sps, int persist_ted_override,
+                                        const rtl_stream_retune_gain_profile* gain_profile) {
     if (levels != 2 && levels != 4) {
         levels = 4;
     }
@@ -7112,6 +7131,7 @@ rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int cqpsk_enabl
     profile.channel_profile = channel_profile;
     profile.ted_sps = ted_sps;
     profile.ted_override = persist_ted_override ? 1 : 0;
+    rtl_stream_copy_retune_gain_profile(&profile, gain_profile);
     profile.target_freq_hz = target_freq_hz;
 
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
@@ -7122,7 +7142,7 @@ extern "C" void
 dsd_rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                       int ted_sps, int persist_ted_override) {
     rtl_stream_store_pending_retune_profile(0U, cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
-                                            persist_ted_override);
+                                            persist_ted_override, NULL);
 }
 
 extern "C" void
@@ -7130,13 +7150,69 @@ dsd_rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cq
                                                  int levels, int channel_profile, int ted_sps,
                                                  int persist_ted_override) {
     rtl_stream_store_pending_retune_profile(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels, channel_profile,
-                                            ted_sps, persist_ted_override);
+                                            ted_sps, persist_ted_override, NULL);
+}
+
+extern "C" void
+dsd_rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq_hz, int cqpsk_enable,
+                                                           int symbol_rate_hz, int levels, int channel_profile,
+                                                           int ted_sps, int persist_ted_override,
+                                                           const rtl_stream_retune_gain_profile* gain_profile) {
+    rtl_stream_store_pending_retune_profile(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels, channel_profile,
+                                            ted_sps, persist_ted_override, gain_profile);
 }
 
 extern "C" void
 dsd_rtl_stream_clear_pending_retune_profile(void) {
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
     rtl_stream_clear_retune_profile(&g_pending_retune_profile);
+}
+
+static void
+rtl_stream_restore_retune_autogain(const RtlRetuneProfile* profile) {
+    if (profile && profile->tuner_autogain_is_set) {
+        g_tuner_autogain_on.store(profile->tuner_autogain_on ? 1 : 0, std::memory_order_relaxed);
+    }
+}
+
+static int
+rtl_stream_apply_auto_retune_gain(void) {
+    int rc = rtl_device_set_gain(rtl_device_handle, AUTO_GAIN);
+    if (rc == 0) {
+        dongle.gain = AUTO_GAIN;
+    }
+    return rc;
+}
+
+static int
+rtl_stream_apply_manual_retune_gain(int tuner_gain_tenth_db) {
+    int rc = rtl_device_set_gain_nearest(rtl_device_handle, tuner_gain_tenth_db);
+    if (rc == 0) {
+        int applied = rtl_device_get_tuner_gain(rtl_device_handle);
+        dongle.gain = applied >= 0 ? applied : tuner_gain_tenth_db;
+    }
+    return rc;
+}
+
+static void
+rtl_stream_apply_retune_gain_profile(const RtlRetuneProfile* profile) {
+    if (!profile || !profile->active) {
+        return;
+    }
+    int manual_gain = profile->tuner_gain_is_set && !profile->tuner_gain_is_auto;
+    if (manual_gain) {
+        rtl_stream_restore_retune_autogain(profile);
+    }
+    if (profile->tuner_gain_is_set) {
+        int rc = profile->tuner_gain_is_auto ? rtl_stream_apply_auto_retune_gain()
+                                             : rtl_stream_apply_manual_retune_gain(profile->tuner_gain_tenth_db);
+        if (rc != 0) {
+            LOG_WARNING("Retune tuner gain apply failed (rc=%d); continuing retune\n", rc);
+        }
+    }
+    if (!manual_gain) {
+        rtl_stream_restore_retune_autogain(profile);
+    }
 }
 
 static void
@@ -7149,6 +7225,8 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
             return;
         }
     }
+
+    rtl_stream_apply_retune_gain_profile(profile);
 
     int cqpsk = profile->cqpsk_enable;
     if (cqpsk >= 0) {
@@ -7782,6 +7860,48 @@ dsd_rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32
 
     controller_cleanup(&test_controller);
     if (second_request_id != first_request_id) {
+        return -3;
+    }
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_gain_tenth_db, int* out_gain_is_auto,
+                                                int* out_autogain_is_set, int* out_autogain_on) {
+    if (!out_gain_is_set || !out_gain_tenth_db || !out_gain_is_auto || !out_autogain_is_set || !out_autogain_on) {
+        return -1;
+    }
+    *out_gain_is_set = 0;
+    *out_gain_tenth_db = 0;
+    *out_gain_is_auto = 0;
+    *out_autogain_is_set = 0;
+    *out_autogain_on = 0;
+
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    dsd_rtl_stream_clear_pending_retune_profile();
+
+    rtl_stream_retune_gain_profile gain_profile{};
+    gain_profile.tuner_gain_is_set = 1;
+    gain_profile.tuner_gain_tenth_db = 270;
+    gain_profile.tuner_autogain_is_set = 1;
+    dsd_rtl_stream_prepare_retune_profile_for_target_with_gain(
+        855000000U, 1, 6000, 4, RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK, 8, 1, &gain_profile);
+    uint32_t request_id = schedule_manual_retune_on_controller(&test_controller, 855000000U);
+    ControllerRetuneWork work = {};
+    if (!controller_wait_for_retune_work(&test_controller, &work) || !work.manual_pending) {
+        controller_cleanup(&test_controller);
+        return -2;
+    }
+
+    *out_gain_is_set = work.manual_profile.tuner_gain_is_set;
+    *out_gain_tenth_db = work.manual_profile.tuner_gain_tenth_db;
+    *out_gain_is_auto = work.manual_profile.tuner_gain_is_auto;
+    *out_autogain_is_set = work.manual_profile.tuner_autogain_is_set;
+    *out_autogain_on = work.manual_profile.tuner_autogain_on;
+
+    controller_cleanup(&test_controller);
+    if (work.manual_profile.request_id != request_id || work.manual_profile.target_freq_hz != 855000000U) {
         return -3;
     }
     return 0;

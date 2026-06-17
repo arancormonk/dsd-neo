@@ -145,6 +145,16 @@ __wrap_rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int
 }
 
 void
+__wrap_rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq_hz, int cqpsk_enable,
+                                                              int symbol_rate_hz, int levels, int channel_profile,
+                                                              int ted_sps, int persist_ted_override,
+                                                              const rtl_stream_retune_gain_profile* gain_profile) {
+    (void)gain_profile;
+    __wrap_rtl_stream_prepare_retune_profile_for_target(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels,
+                                                        channel_profile, ted_sps, persist_ted_override);
+}
+
+void
 __wrap_rtl_stream_clear_pending_retune_profile(void) {
     g_pending_active = 0;
     g_pending_target_freq_hz = 0;

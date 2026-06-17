@@ -183,6 +183,20 @@ main(void) {
     failed |= expect_int_eq("coalesced no-profile retune returns coalesced request id",
                             (int)coalesced_returned_request_id, 1);
 
+    int gain_is_set = -1;
+    int gain_tenth_db = -1;
+    int gain_is_auto = -1;
+    int autogain_is_set = -1;
+    int autogain_on = -1;
+    rc = rtl_stream_test_retune_profile_gain_binding(&gain_is_set, &gain_tenth_db, &gain_is_auto, &autogain_is_set,
+                                                     &autogain_on);
+    failed |= expect_int_eq("retune gain profile helper rc", rc, 0);
+    failed |= expect_int_eq("retune gain profile keeps gain-is-set", gain_is_set, 1);
+    failed |= expect_int_eq("retune gain profile keeps manual gain", gain_tenth_db, 270);
+    failed |= expect_int_eq("retune gain profile keeps manual mode", gain_is_auto, 0);
+    failed |= expect_int_eq("retune gain profile keeps autogain-is-set", autogain_is_set, 1);
+    failed |= expect_int_eq("retune gain profile keeps autogain off", autogain_on, 0);
+
     int settings_seen = -1;
     failed |= expect_int_eq("legacy Soapy config settings visibility helper",
                             rtl_device_test_soapy_config_settings_visibility(RTL_SOAPY_CONFIG_LEGACY_SIZE,

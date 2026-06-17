@@ -34,6 +34,14 @@ typedef enum {
     DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL = 2,
 } dsd_trunk_scan_target_type;
 
+typedef enum {
+    DSD_TRUNK_SCAN_MODULATION_UNSET = 0,
+    DSD_TRUNK_SCAN_MODULATION_AUTO = 1,
+    DSD_TRUNK_SCAN_MODULATION_C4FM = 2,
+    DSD_TRUNK_SCAN_MODULATION_CQPSK = 3,
+    DSD_TRUNK_SCAN_MODULATION_GFSK = 4,
+} dsd_trunk_scan_modulation;
+
 typedef struct {
     char id[64];
     dsd_trunk_scan_target_type type;
@@ -41,6 +49,9 @@ typedef struct {
     char chan_csv[1024];
     int dwell_ms;
     int activity_hold_ms;
+    dsd_trunk_scan_modulation modulation;
+    int rtl_gain_is_set;
+    int rtl_gain_db;
 } dsd_trunk_scan_target;
 
 typedef struct {
@@ -60,6 +71,8 @@ void dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const
                                                      uint32_t source, int is_private, int encrypted, int data_call);
 size_t dsd_engine_trunk_scan_active_index(const dsd_state* state);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
+int dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on);
+int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
 
 void dsd_engine_trunk_scan_test_set_now(double now_m);
 void dsd_engine_trunk_scan_test_clear_now(void);

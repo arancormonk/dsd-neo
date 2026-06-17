@@ -11,6 +11,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -45,6 +46,11 @@ static unsigned int g_fake_rtl_output_rate_hz = 0;
 static unsigned int
 fake_rtl_output_rate_hz(void) {
     return g_fake_rtl_output_rate_hz;
+}
+
+int
+rtl_stream_get_tuner_autogain(void) {
+    return 1;
 }
 
 static int
@@ -231,16 +237,21 @@ make_temp_dir(char* dir, size_t dir_sz) {
 }
 
 static int
-write_targets_file(const char* dir, const char* body, char* out_path, size_t out_sz) {
+write_targets_file_with_header(const char* dir, const char* header, const char* body, char* out_path, size_t out_sz) {
     if (dsd_test_path_join(out_path, out_sz, dir, "targets.csv") != 0) {
         return -1;
     }
     char content[8192];
-    int n = DSD_SNPRINTF(content, sizeof content, "%s%s", k_header, body);
+    int n = DSD_SNPRINTF(content, sizeof content, "%s%s", header, body);
     if (n < 0 || (size_t)n >= sizeof content) {
         return -1;
     }
     return write_text_file(out_path, content);
+}
+
+static int
+write_targets_file(const char* dir, const char* body, char* out_path, size_t out_sz) {
+    return write_targets_file_with_header(dir, k_header, body, out_path, out_sz);
 }
 
 static void
@@ -366,6 +377,60 @@ test_parser_accepts_quoted_chan_csv_with_comma(void) {
 }
 
 static int
+test_parser_accepts_optional_modulation_and_gain_columns(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain,modulation\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "p25,p25-trunk,851000000,,250,,primary,27,cqpsk\n"
+                                       "dmr,dmr-trunk,452000000,,250,,tier iii,auto,gfsk\n"
+                                       "plain,dmr-conventional,461000000,,250,,legacy row\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    dsd_trunk_scan_target_list list;
+    char err[256] = {0};
+    int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+
+    int test_rc = 0;
+    if (rc != 0 || list.count != 3) {
+        DSD_FPRINTF(stderr, "optional parser rc=%d count=%zu err=%s\n", rc, list.count, err);
+        test_rc = 1;
+    }
+    if (test_rc == 0) {
+        if (list.targets[0].modulation != DSD_TRUNK_SCAN_MODULATION_CQPSK || list.targets[0].rtl_gain_is_set != 1
+            || list.targets[0].rtl_gain_db != 27) {
+            DSD_FPRINTF(stderr, "optional parser P25 fields mismatch mod=%d gain_set=%d gain=%d\n",
+                        list.targets[0].modulation, list.targets[0].rtl_gain_is_set, list.targets[0].rtl_gain_db);
+            test_rc = 1;
+        }
+        if (list.targets[1].modulation != DSD_TRUNK_SCAN_MODULATION_GFSK || list.targets[1].rtl_gain_is_set != 1
+            || list.targets[1].rtl_gain_db != 0) {
+            DSD_FPRINTF(stderr, "optional parser DMR fields mismatch mod=%d gain_set=%d gain=%d\n",
+                        list.targets[1].modulation, list.targets[1].rtl_gain_is_set, list.targets[1].rtl_gain_db);
+            test_rc = 1;
+        }
+        if (list.targets[2].modulation != DSD_TRUNK_SCAN_MODULATION_UNSET || list.targets[2].rtl_gain_is_set != 0) {
+            DSD_FPRINTF(stderr, "optional parser missing fields not treated as empty\n");
+            test_rc = 1;
+        }
+    }
+
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 expect_parser_rejects(const char* name, const char* body) {
     char dir[DSD_TEST_PATH_MAX];
     if (make_temp_dir(dir, sizeof dir) != 0) {
@@ -402,6 +467,36 @@ expect_parser_rejects(const char* name, const char* body) {
 }
 
 static int
+expect_parser_rejects_with_header(const char* name, const char* header, const char* body) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    if (write_targets_file_with_header(dir, header, body, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+    int test_rc = 0;
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "%s should have been rejected\n", name);
+        test_rc = 1;
+    }
+
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_parser_rejects_invalid_inputs(void) {
     int rc = 0;
     rc |= expect_parser_rejects("duplicate-id", "a,p25-trunk,851000000,,,,\n"
@@ -415,6 +510,19 @@ test_parser_rejects_invalid_inputs(void) {
 #endif
     rc |= expect_parser_rejects("invalid-dwell", "a,p25-trunk,851000000,,249,,\n");
     rc |= expect_parser_rejects("conventional-chan-csv", "a,dmr-conventional,461000000,chan.csv,,,\n");
+    rc |= expect_parser_rejects_with_header(
+        "duplicate-modulation-header",
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,modulation\n",
+        "a,p25-trunk,851000000,,,,,auto,c4fm\n");
+    rc |= expect_parser_rejects_with_header(
+        "invalid-modulation", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n",
+        "a,p25-trunk,851000000,,,,,wide\n");
+    rc |= expect_parser_rejects_with_header(
+        "unsupported-modulation", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n",
+        "a,dmr-trunk,452000000,,,,,cqpsk\n");
+    rc |= expect_parser_rejects_with_header("invalid-rtl-gain",
+                                            "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n",
+                                            "a,p25-trunk,851000000,,,,,50\n");
     return rc;
 }
 
@@ -1942,6 +2050,203 @@ test_locked_demod_mode_preserved_when_seeding_targets(void) {
 }
 
 static int
+test_per_target_modulation_overrides_global_lock(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, header,
+                                          "p25,p25-trunk,851000000,,250,,P25 auto,auto\n"
+                                          "dmr,dmr-trunk,452000000,,250,,DMR forced,gfsk\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    opts.mod_c4fm = 0;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || state.rf_mod != 0 || opts.mod_cli_lock != 0) {
+        DSD_FPRINTF(stderr, "target auto modulation did not override global lock rc=%d active=%zu rf_mod=%d lock=%d\n",
+                    rc, dsd_engine_trunk_scan_active_index(&state), state.rf_mod, opts.mod_cli_lock);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rf_mod != 2 || opts.mod_gfsk != 1
+        || opts.mod_cli_lock != 1) {
+        DSD_FPRINTF(stderr, "target GFSK modulation did not apply active=%zu rf_mod=%d gfsk=%d lock=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.rf_mod, opts.mod_gfsk, opts.mod_cli_lock);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.mod_cli_lock != 1 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0) {
+        DSD_FPRINTF(stderr, "shutdown did not restore saved modulation opts lock=%d qpsk=%d gfsk=%d\n",
+                    opts.mod_cli_lock, opts.mod_qpsk, opts.mod_gfsk);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_active_p25_cqpsk_request_tracks_target_modulation(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, header,
+                                          "c4fm,p25-trunk,851000000,,250,,C4FM,c4fm\n"
+                                          "cqpsk,p25-trunk,852000000,,250,,CQPSK,cqpsk\n"
+                                          "auto,p25-trunk,853000000,,250,,Auto,auto\n"
+                                          "dmr,dmr-trunk,454000000,,250,,DMR,gfsk\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_result = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 0;
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    int cqpsk_enable = -1;
+    if (rc != 0 || !dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk_enable) || cqpsk_enable != 0) {
+        DSD_FPRINTF(stderr, "active C4FM target did not request CQPSK off rc=%d active=%zu enable=%d err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), cqpsk_enable, err);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    cqpsk_enable = -1;
+    if (dsd_engine_trunk_scan_active_index(&state) != 1
+        || !dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk_enable) || cqpsk_enable != 1) {
+        DSD_FPRINTF(stderr, "active CQPSK target did not request CQPSK on active=%zu enable=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), cqpsk_enable);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    state.p25_cc_is_tdma = 0;
+    cqpsk_enable = -1;
+    if (dsd_engine_trunk_scan_active_index(&state) != 2
+        || !dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk_enable) || cqpsk_enable != 0) {
+        DSD_FPRINTF(stderr, "active auto P25 target did not request FDMA default active=%zu enable=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), cqpsk_enable);
+        test_rc = 1;
+    }
+    state.p25_cc_is_tdma = 1;
+    cqpsk_enable = -1;
+    if (!dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk_enable) || cqpsk_enable != 1) {
+        DSD_FPRINTF(stderr, "active auto P25 target did not request TDMA default enable=%d\n", cqpsk_enable);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    cqpsk_enable = -1;
+    if (dsd_engine_trunk_scan_active_index(&state) != 3
+        || dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk_enable) || cqpsk_enable != -1) {
+        DSD_FPRINTF(stderr, "active DMR target unexpectedly returned a P25 CQPSK request active=%zu enable=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), cqpsk_enable);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_per_target_rtl_gain_overrides_and_restores_global_default(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n";
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, header,
+                                          "strong,p25-trunk,851000000,,250,,strong,10\n"
+                                          "default,dmr-trunk,452000000,,250,,default\n"
+                                          "auto,dmr-conventional,461000000,,250,,auto,auto\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.rtl_gain_value = 22;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || opts.rtl_gain_value != 10) {
+        DSD_FPRINTF(stderr, "target gain init mismatch rc=%d active=%zu gain=%d err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), opts.rtl_gain_value, err);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || opts.rtl_gain_value != 22) {
+        DSD_FPRINTF(stderr, "empty target did not restore global gain active=%zu gain=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), opts.rtl_gain_value);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 2 || opts.rtl_gain_value != 0) {
+        DSD_FPRINTF(stderr, "auto target did not request autogain active=%zu gain=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), opts.rtl_gain_value);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.rtl_gain_value != 22) {
+        DSD_FPRINTF(stderr, "shutdown did not restore global gain=%d\n", opts.rtl_gain_value);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_scan_tick_skips_rotation_when_p25_guard_busy(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
@@ -2384,6 +2689,7 @@ main(void) {
     int rc = 0;
     rc |= test_parser_valid_mixed_targets_and_relative_chan_csv();
     rc |= test_parser_accepts_quoted_chan_csv_with_comma();
+    rc |= test_parser_accepts_optional_modulation_and_gain_columns();
     rc |= test_parser_rejects_invalid_inputs();
     rc |= test_parser_rejects_too_many_targets();
     rc |= test_coordinator_idle_rotation_and_state_restore();
@@ -2406,6 +2712,9 @@ main(void) {
     rc |= test_p25_retune_backoff_state_isolated_per_target();
     rc |= test_trunk_targets_reuse_restored_control_channel();
     rc |= test_locked_demod_mode_preserved_when_seeding_targets();
+    rc |= test_per_target_modulation_overrides_global_lock();
+    rc |= test_active_p25_cqpsk_request_tracks_target_modulation();
+    rc |= test_per_target_rtl_gain_overrides_and_restores_global_default();
     rc |= test_scan_tick_skips_rotation_when_p25_guard_busy();
     rc |= test_single_target_retune_failure_retries_after_cooldown();
     rc |= test_retune_failure_cooldown();

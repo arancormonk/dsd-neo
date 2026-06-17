@@ -31,10 +31,10 @@ id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
 Example:
 
 ```csv
-id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
-county-p25,p25-trunk,851012500,,3000,,P25 control channel
-city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel
-plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR
+id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain
+county-p25,p25-trunk,851012500,,3000,,P25 control channel,cqpsk,18
+city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel,auto,
+plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
 ```
 
 The repository includes a starter file at `examples/trunk_scan_targets.csv`.
@@ -50,18 +50,24 @@ Column behavior:
 | `dwell_ms` | No | Idle dwell for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
 | `activity_hold_ms` | No | Conventional DMR activity hold for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
 | `notes` | No | Ignored by DSD-neo. Use it for local notes. |
+| `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR accepts `auto`, `gfsk`. |
+| `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
 
 Target list limits and validation:
 
 - Maximum 32 targets.
 - Blank rows are skipped.
 - Every data row must contain the seven fields above.
-- The header may have extra columns after `notes`, but the first seven header names must match the required prefix.
+- The header may have optional columns after `notes`, but the first seven header names must match the required prefix.
+  Recognized optional columns are matched by header name; missing trailing optional data fields are treated as empty.
 - Frequency values must be at least `1`. Normal 64-bit builds accept values up to `4294967295`; 32-bit builds may reject
   values above `LONG_MAX`.
 - Duplicate `id` values are rejected.
 - Duplicate `(type, frequency_hz)` pairs are rejected.
 - `chan_csv` is only valid for `p25-trunk` and `dmr-trunk` targets.
+- `modulation` values are target-type specific: `cqpsk`/`c4fm` are P25-only, and `gfsk` is DMR-only.
+- `rtl_gain` only affects RTL-family inputs opened by DSD-neo. It is ignored when scan retuning is done through rigctl
+  against a non-RTL audio input.
 - The parser is intentionally small. It can handle a quoted `chan_csv` that contains a comma, but it is not a full CSV
   parser and does not support escaped quotes.
 
@@ -159,6 +165,9 @@ At startup DSD-neo:
 During scanning:
 
 - Idle targets rotate after their dwell time.
+- A non-empty target `modulation` value overrides global CLI/config modulation locks for that target only.
+- A target `rtl_gain` value is applied at the retune boundary. Manual per-target gain temporarily suspends supervisory
+  tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
 - P25 and DMR trunk targets stay parked while their trunking state machine is following an active call.
 - Conventional DMR targets stay parked only after allowed activity is decoded. The allow/block list, private-call
   tuning, data-call tuning, and encrypted-call tuning controls all apply to that decision.
@@ -187,6 +196,16 @@ The first line must begin with `id,type,frequency_hz,chan_csv,dwell_ms,activity_
 
 Use decimal Hz only, for example `851012500`. Frequency suffixes such as `851.0125M` are valid in CLI/config tuning
 fields, but not in the target CSV.
+
+`row N has invalid modulation`
+
+Use `auto`, `c4fm`, or `cqpsk` for P25 targets. Use `auto` or `gfsk` for DMR targets. Leave the field empty to keep
+global/default modulation handling.
+
+`row N has invalid rtl_gain`
+
+Leave the field empty to inherit the global/default gain. Use `0` or `auto` for device automatic gain, or an integer
+from `1` to `49` for manual RTL-family gain in dB.
 
 `--trunk-scan cannot be combined with global -C/channel-map config`
 
