@@ -27,6 +27,8 @@
 int dsd_dispatch_matches_p25p1(int synctype);
 void dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
 
+static char g_test_duid[3] = "03";
+
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
@@ -61,8 +63,8 @@ check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, 
         *new_nac = 0x293;
     }
     if (new_duid != NULL) {
-        new_duid[0] = '0';
-        new_duid[1] = '3';
+        new_duid[0] = g_test_duid[0];
+        new_duid[1] = g_test_duid[1];
         new_duid[2] = '\0';
     }
     if (error_count != NULL) {
@@ -198,6 +200,7 @@ test_simple_tdu_dispatch_defaults(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     state.synctype = DSD_SYNC_P25P1_POS;
+    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "03");
     dsd_dispatch_handle_p25p1(&opts, &state);
 
     assert(state.nac == 0x293);
@@ -205,11 +208,59 @@ test_simple_tdu_dispatch_defaults(void) {
     assert(strcmp(state.fsubtype, " TDU          ") == 0);
 }
 
+static const char k_valid_embedded_gps[] = "GPS: 41.12345N 087.12345W (41.12345, -87.12345) Current Fix";
+
+static void
+seed_stale_data_call_display(dsd_state* state) {
+    state->lasttg = 393226;
+    state->lastsrc = 0xFFFFFF;
+    DSD_SNPRINTF(state->dmr_embedded_gps[0], sizeof(state->dmr_embedded_gps[0]), "%s", k_valid_embedded_gps);
+    DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]),
+                 "Data Call: Mobile Radio Statistics; SAP:24; LLID: 393226; ");
+}
+
+static void
+expect_stale_data_call_display_cleared(const char* duid, unsigned int expected_burst, const char* expected_subtype) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    seed_stale_data_call_display(&state);
+
+    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "%s", duid);
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(state.dmrburstL == expected_burst);
+    assert(strcmp(state.dmr_embedded_gps[0], k_valid_embedded_gps) == 0);
+    assert(state.dmr_lrrp_gps[0][0] == '\0');
+    assert(strcmp(state.fsubtype, expected_subtype) == 0);
+}
+
+static void
+test_p25p1_dispatch_clears_stale_data_call_display(void) {
+    static const struct {
+        const char* duid;
+        unsigned int expected_burst;
+        const char* expected_subtype;
+    } cases[] = {
+        {"00", 25, " HDU          "}, {"11", 26, " LDU1         "}, {"22", 27, " LDU2         "},
+        {"33", 28, " TDULC        "}, {"03", 28, " TDU          "}, {"13", 29, " TSBK         "},
+        {"30", 29, " MPDU         "}, {"44", 0, "              "},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        expect_stale_data_call_display_cleared(cases[i].duid, cases[i].expected_burst, cases[i].expected_subtype);
+    }
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
     test_synctype_helpers();
     test_simple_tdu_dispatch_defaults();
+    test_p25p1_dispatch_clears_stale_data_call_display();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }
