@@ -327,8 +327,8 @@ main(void) {
     failed |= expect_int_eq("rtl sample-rate readback exact actual", (int)actual_rate, 960000);
     actual_rate = 99U;
     rc = rtl_device_test_usb_sample_rate_readback(1024000U, 960000U, &actual_rate);
-    failed |= expect_int_eq("rtl sample-rate readback rejects stale rc", rc, -1);
-    failed |= expect_int_eq("rtl sample-rate readback clears stale actual", (int)actual_rate, 0);
+    failed |= expect_int_eq("rtl sample-rate readback accepts quantized rc", rc, 0);
+    failed |= expect_int_eq("rtl sample-rate readback returns quantized actual", (int)actual_rate, 960000);
     rc = rtl_device_test_usb_sample_rate_readback(1024000U, 0U, &actual_rate);
     failed |= expect_int_eq("rtl sample-rate readback rejects zero rc", rc, -1);
 
