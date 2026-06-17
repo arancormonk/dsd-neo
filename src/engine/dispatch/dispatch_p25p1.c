@@ -242,9 +242,8 @@ p25p1_close_mbe_out_pair_if_open(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-p25p1_clear_extra_display_text(dsd_state* state) {
-    /* P25p1 PDU summaries reuse the DMR GPS/LRRP display fields in the shared UI. */
-    state->dmr_embedded_gps[0][0] = '\0';
+p25p1_clear_pdu_summary_display(dsd_state* state) {
+    /* P25p1 PDU summaries reuse the DMR LRRP display field in the shared UI. */
     state->dmr_lrrp_gps[0][0] = '\0';
 }
 
@@ -412,7 +411,7 @@ p25p1_handle_unknown_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) 
 
 static void DSD_ATTR_USED
 p25p1_dispatch_by_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) {
-    p25p1_clear_extra_display_text(state);
+    p25p1_clear_pdu_summary_display(state);
 
     if (strcmp(duid, "00") == 0) {
         p25p1_handle_hdu(opts, state);

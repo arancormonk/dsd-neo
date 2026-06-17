@@ -208,11 +208,13 @@ test_simple_tdu_dispatch_defaults(void) {
     assert(strcmp(state.fsubtype, " TDU          ") == 0);
 }
 
+static const char k_valid_embedded_gps[] = "GPS: 41.12345N 087.12345W (41.12345, -87.12345) Current Fix";
+
 static void
 seed_stale_data_call_display(dsd_state* state) {
     state->lasttg = 393226;
     state->lastsrc = 0xFFFFFF;
-    DSD_SNPRINTF(state->dmr_embedded_gps[0], sizeof(state->dmr_embedded_gps[0]), "stale embedded");
+    DSD_SNPRINTF(state->dmr_embedded_gps[0], sizeof(state->dmr_embedded_gps[0]), "%s", k_valid_embedded_gps);
     DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]),
                  "Data Call: Mobile Radio Statistics; SAP:24; LLID: 393226; ");
 }
@@ -231,7 +233,7 @@ expect_stale_data_call_display_cleared(const char* duid, unsigned int expected_b
     dsd_dispatch_handle_p25p1(&opts, &state);
 
     assert(state.dmrburstL == expected_burst);
-    assert(state.dmr_embedded_gps[0][0] == '\0');
+    assert(strcmp(state.dmr_embedded_gps[0], k_valid_embedded_gps) == 0);
     assert(state.dmr_lrrp_gps[0][0] == '\0');
     assert(strcmp(state.fsubtype, expected_subtype) == 0);
 }
