@@ -3899,6 +3899,14 @@ struct rtl_usb_sample_rate_apply_ctx {
 };
 
 static int
+rtl_usb_sample_rate_readback_matches(uint32_t requested_rate, uint32_t actual_rate) {
+    if (requested_rate == 0U || actual_rate == 0U) {
+        return 0;
+    }
+    return actual_rate == requested_rate;
+}
+
+static int
 rtl_usb_apply_sample_rate(void* opaque) {
     rtl_usb_sample_rate_apply_ctx* ctx = static_cast<rtl_usb_sample_rate_apply_ctx*>(opaque);
     return (ctx && ctx->dev) ? rtlsdr_set_sample_rate(ctx->dev, ctx->requested_rate) : -1;
@@ -3912,6 +3920,9 @@ rtl_usb_verify_sample_rate(void* opaque) {
     }
     uint32_t actual = rtlsdr_get_sample_rate(ctx->dev);
     if (actual == 0U) {
+        return -1;
+    }
+    if (!rtl_usb_sample_rate_readback_matches(ctx->requested_rate, actual)) {
         return -1;
     }
     ctx->actual_rate = actual;
@@ -4171,6 +4182,19 @@ rtl_device_test_usb_apply_retry(int verify_enabled, int attempts, int apply_succ
     *out_verify_calls = ctx.verify_calls;
     *out_used_attempts = used_attempts;
     return rc;
+}
+
+extern "C" int
+rtl_device_test_usb_sample_rate_readback(uint32_t requested_rate, uint32_t actual_rate, uint32_t* out_actual_rate) {
+    if (!out_actual_rate) {
+        return -100;
+    }
+    *out_actual_rate = 0U;
+    if (!rtl_usb_sample_rate_readback_matches(requested_rate, actual_rate)) {
+        return -1;
+    }
+    *out_actual_rate = actual_rate;
+    return 0;
 }
 
 extern "C" int

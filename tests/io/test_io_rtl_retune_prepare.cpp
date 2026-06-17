@@ -28,12 +28,19 @@ extern "C" int rtl_device_test_replay_event_boundary_drained(size_t ring_used, u
 extern "C" int rtl_device_test_usb_apply_retry(int verify_enabled, int attempts, int apply_success_after,
                                                int verify_success_after, int* out_apply_calls, int* out_verify_calls,
                                                int* out_used_attempts);
+extern "C" int rtl_device_test_usb_sample_rate_readback(uint32_t requested_rate, uint32_t actual_rate,
+                                                        uint32_t* out_actual_rate);
 extern "C" int rtl_device_test_usb_manual_gain_controls(int agc_rc, int gain_mode_rc, int gain_rc, int* out_agc_calls,
                                                         int* out_gain_mode_calls, int* out_gain_calls,
                                                         int* out_recorded_agc_rc);
 extern "C" int rtl_device_test_usb_auto_gain_controls(int agc_rc, int gain_mode_rc, int* out_agc_calls,
                                                       int* out_gain_mode_calls, int* out_recorded_agc_rc);
 extern "C" int dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_result);
+extern "C" int dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
+                                                                   uint32_t applied_freq_hz);
+extern "C" int dsd_rtl_stream_test_tune_failure_reconciles_applied(uint32_t requested_freq_hz, uint32_t applied_freq_hz,
+                                                                   long int* out_opts_freq,
+                                                                   uint32_t* out_capture_freq_hz);
 extern "C" int
 dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz, uint32_t* out_full_rate_hz,
                                                      int* out_full_rate_out_hz, uint32_t* out_partial_freq_hz,
@@ -140,6 +147,24 @@ main(void) {
     failed |= expect_int_eq("timeout completion result keeps timeout",
                             dsd_rtl_stream_test_tune_completion_result(RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_FAILED),
                             RTL_STREAM_TUNE_TIMEOUT);
+    failed |= expect_int_eq("committed retune failure reports tune ok",
+                            dsd_rtl_stream_test_manual_retune_completion_result(-5, 1, 855000000U, 855000000U),
+                            RTL_STREAM_TUNE_OK);
+    failed |= expect_int_eq("uncommitted retune failure reports tune failed",
+                            dsd_rtl_stream_test_manual_retune_completion_result(-5, 1, 855000000U, 851000000U),
+                            RTL_STREAM_TUNE_FAILED);
+    failed |= expect_int_eq("failed retune without reconfigure reports tune failed",
+                            dsd_rtl_stream_test_manual_retune_completion_result(-5, 0, 855000000U, 855000000U),
+                            RTL_STREAM_TUNE_FAILED);
+
+    long int reconciled_opts_freq = 0;
+    uint32_t reconciled_capture_freq = 0U;
+    rc = dsd_rtl_stream_test_tune_failure_reconciles_applied(855000000U, 851000000U, &reconciled_opts_freq,
+                                                             &reconciled_capture_freq);
+    failed |= expect_int_eq("failed tune reconcile helper rc", rc, 0);
+    failed |= expect_int_eq("failed tune rolls caller freq back to applied", (int)reconciled_opts_freq, 851000000);
+    failed |= expect_int_eq("failed tune restores applied capture center", (int)reconciled_capture_freq, 851240000);
+
     int first_completion_result = -1;
     int second_completion_result = -1;
     rc = dsd_rtl_stream_test_retune_completion_result_binding(&first_completion_result, &second_completion_result);
@@ -295,6 +320,17 @@ main(void) {
     failed |= expect_int_eq("rtl usb retry disabled apply calls", apply_calls, 1);
     failed |= expect_int_eq("rtl usb retry disabled verify calls", verify_calls, 0);
     failed |= expect_int_eq("rtl usb retry disabled used attempts", used_attempts, 1);
+
+    uint32_t actual_rate = 0U;
+    rc = rtl_device_test_usb_sample_rate_readback(960000U, 960000U, &actual_rate);
+    failed |= expect_int_eq("rtl sample-rate readback exact rc", rc, 0);
+    failed |= expect_int_eq("rtl sample-rate readback exact actual", (int)actual_rate, 960000);
+    actual_rate = 99U;
+    rc = rtl_device_test_usb_sample_rate_readback(1024000U, 960000U, &actual_rate);
+    failed |= expect_int_eq("rtl sample-rate readback rejects stale rc", rc, -1);
+    failed |= expect_int_eq("rtl sample-rate readback clears stale actual", (int)actual_rate, 0);
+    rc = rtl_device_test_usb_sample_rate_readback(1024000U, 0U, &actual_rate);
+    failed |= expect_int_eq("rtl sample-rate readback rejects zero rc", rc, -1);
 
     int agc_calls = -1;
     int gain_mode_calls = -1;

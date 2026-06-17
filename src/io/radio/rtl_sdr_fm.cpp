@@ -3658,6 +3658,26 @@ controller_end_reconfigure(struct controller_state* s) {
 }
 
 static int
+controller_reconfigure_requires_finalize(int apply_rc, int hardware_changed, int ppm_changed) {
+    return apply_rc == 0 || hardware_changed || ppm_changed;
+}
+
+static uint32_t
+controller_reconfigure_finalized_center(uint32_t requested_center_freq_hz, uint32_t previous_center_freq_hz,
+                                        int apply_rc, int hardware_changed) {
+    if (apply_rc != 0 && !hardware_changed && previous_center_freq_hz != 0U) {
+        return previous_center_freq_hz;
+    }
+    return requested_center_freq_hz;
+}
+
+static const RtlRetuneProfile*
+controller_reconfigure_finalized_profile(const RtlRetuneProfile* retune_profile, uint32_t requested_center_freq_hz,
+                                         uint32_t finalized_center_freq_hz) {
+    return (finalized_center_freq_hz == requested_center_freq_hz) ? retune_profile : NULL;
+}
+
+static int
 controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t center_freq_hz,
                                             DemodRetuneResetReason reset_reason, int* out_reconfigured) {
     if (out_reconfigured) {
@@ -3672,14 +3692,17 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     controller_arm_retune_mute("program");
     int hardware_changed = 0;
     int rc = program_capture_frequency_and_rate(center_freq_hz, &previous_capture, &hardware_changed);
-    if (rc != 0 && !hardware_changed) {
+    int ppm_changed = (reset_reason == DemodRetuneResetReason::PpmCorrection);
+    if (!controller_reconfigure_requires_finalize(rc, hardware_changed, ppm_changed)) {
         rtl_device_end_capture_reconfigure(rtl_device_handle);
         return rc;
     }
+    uint32_t finalized_center_freq_hz =
+        controller_reconfigure_finalized_center(center_freq_hz, previous_center_freq_hz, rc, hardware_changed);
     controller_arm_retune_mute("post");
-    rtl_device_record_capture_retune(rtl_device_handle, center_freq_hz, load_dongle_frequency(), load_dongle_rate(),
-                                     retune_reset_reason_name(reset_reason));
-    controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
+    rtl_device_record_capture_retune(rtl_device_handle, finalized_center_freq_hz, load_dongle_frequency(),
+                                     load_dongle_rate(), retune_reset_reason_name(reset_reason));
+    controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, finalized_center_freq_hz, reset_reason,
                                     previous_center_freq_hz, previous_rate_out_hz, NULL);
     controller_arm_retune_mute("post-reset");
     rtl_device_end_capture_reconfigure(rtl_device_handle);
@@ -3709,21 +3732,25 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
     if (out_ppm_rc) {
         *out_ppm_rc = ppm_rc;
     }
-    if (apply_rc != 0 && !hardware_changed) {
+    int ppm_changed = (ppm_rc == 0 && ppm_error != prev_ppm);
+    if (!controller_reconfigure_requires_finalize(apply_rc, hardware_changed, ppm_changed)) {
         store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
         rtl_device_end_capture_reconfigure(rtl_device_handle);
         controller_end_reconfigure(s);
         return apply_rc;
     }
+    uint32_t finalized_center_freq_hz =
+        controller_reconfigure_finalized_center(center_freq_hz, previous_center_freq_hz, apply_rc, hardware_changed);
+    const RtlRetuneProfile* finalized_profile =
+        controller_reconfigure_finalized_profile(retune_profile, center_freq_hz, finalized_center_freq_hz);
     controller_arm_retune_mute("post");
     store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
-    DemodRetuneResetReason reset_reason = (ppm_rc == 0 && ppm_error != prev_ppm)
-                                              ? DemodRetuneResetReason::PpmCorrection
-                                              : DemodRetuneResetReason::FrequencyRetune;
-    rtl_device_record_capture_retune(rtl_device_handle, center_freq_hz, load_dongle_frequency(), load_dongle_rate(),
-                                     retune_reset_reason_name(reset_reason));
-    controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, center_freq_hz, reset_reason,
-                                    previous_center_freq_hz, previous_rate_out_hz, retune_profile);
+    DemodRetuneResetReason reset_reason =
+        ppm_changed ? DemodRetuneResetReason::PpmCorrection : DemodRetuneResetReason::FrequencyRetune;
+    rtl_device_record_capture_retune(rtl_device_handle, finalized_center_freq_hz, load_dongle_frequency(),
+                                     load_dongle_rate(), retune_reset_reason_name(reset_reason));
+    controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, finalized_center_freq_hz, reset_reason,
+                                    previous_center_freq_hz, previous_rate_out_hz, finalized_profile);
     controller_arm_retune_mute("post-reset");
     rtl_device_end_capture_reconfigure(rtl_device_handle);
     controller_end_reconfigure(s);
@@ -4051,6 +4078,18 @@ controller_signal_manual_retune_complete(struct controller_state* s, int result)
 }
 
 static int
+controller_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
+                                           uint32_t applied_freq_hz) {
+    if (retune_rc == 0) {
+        return RTL_STREAM_TUNE_OK;
+    }
+    if (reconfigured && target_hz != 0U && applied_freq_hz == target_hz) {
+        return RTL_STREAM_TUNE_OK;
+    }
+    return RTL_STREAM_TUNE_FAILED;
+}
+
+static int
 controller_process_manual_retune(struct controller_state* s, const ControllerRetuneWork* work) {
     if (!s || !work || !work->manual_pending) {
         return 0;
@@ -4065,11 +4104,16 @@ controller_process_manual_retune(struct controller_state* s, const ControllerRet
         note_failed_ppm_request(work->requested_ppm, work->requested_ppm_request_id, work->current_ppm, ppm_rc);
     }
     controller_clear_active_ppm_request(s, work->ppm_pending);
-    controller_signal_manual_retune_complete(s, retune_rc == 0 ? RTL_STREAM_TUNE_OK : RTL_STREAM_TUNE_FAILED);
+    uint32_t applied_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
+    int completion_result =
+        controller_manual_retune_completion_result(retune_rc, reconfigured, target_hz, applied_freq_hz);
+    controller_signal_manual_retune_complete(s, completion_result);
     if (retune_rc == 0 || reconfigured) {
         drain_output_on_retune();
     }
-    if (retune_rc != 0) {
+    if (retune_rc != 0 && completion_result == RTL_STREAM_TUNE_OK) {
+        LOG_NOTICE("Retune applied with warning: %u Hz (rc=%d).\n", target_hz, retune_rc);
+    } else if (retune_rc != 0) {
         LOG_NOTICE("Retune failed: %u Hz (rc=%d).\n", target_hz, retune_rc);
     } else if (work->ppm_changed && ppm_rc == 0) {
         LOG_INFO("Retune applied: %u Hz (PPM=%d).\n", target_hz, work->requested_ppm);
@@ -7603,15 +7647,36 @@ rtl_stream_tune_result_needs_output_drain(int rc) {
 }
 
 static void
-rtl_stream_tune_reconcile_applied_frequency(dsd_opts* opts, uint32_t requested_freq) {
+rtl_stream_store_capture_frequency_for_center(uint32_t center_freq_hz) {
+    if (center_freq_hz == 0U) {
+        return;
+    }
+    uint32_t capture_rate_hz = load_dongle_rate();
+    uint32_t capture_freq_hz =
+        (capture_rate_hz == 0U) ? center_freq_hz : capture_frequency_for_rate((int64_t)center_freq_hz, capture_rate_hz);
+    store_dongle_frequency(capture_freq_hz);
+}
+
+static void
+rtl_stream_tune_reconcile_applied_frequency(dsd_opts* opts, uint32_t requested_freq, const char* reason) {
     uint32_t applied_freq = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     if (applied_freq == 0 || applied_freq == requested_freq) {
         return;
     }
-    LOG_NOTICE("Retune request %u Hz superseded by %u Hz (coalesced pending tune).\n", requested_freq, applied_freq);
-    store_dongle_frequency(applied_freq);
+    LOG_NOTICE("Retune request %u Hz reconciled to %u Hz (%s).\n", requested_freq, applied_freq,
+               reason ? reason : "applied-state");
+    rtl_stream_store_capture_frequency_for_center(applied_freq);
     if (opts) {
         opts->rtlsdr_center_freq = (long int)applied_freq;
+    }
+}
+
+static void
+rtl_stream_tune_reconcile_result(dsd_opts* opts, uint32_t requested_freq, int rc) {
+    if (rc == RTL_STREAM_TUNE_OK) {
+        rtl_stream_tune_reconcile_applied_frequency(opts, requested_freq, "coalesced pending tune");
+    } else if (rc == RTL_STREAM_TUNE_FAILED) {
+        rtl_stream_tune_reconcile_applied_frequency(opts, requested_freq, "apply failed");
     }
 }
 
@@ -7648,9 +7713,7 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
 
     int rc = rtl_stream_tune_wait_for_completion(my_request_id, requested_freq);
 
-    if (rc == RTL_STREAM_TUNE_OK) {
-        rtl_stream_tune_reconcile_applied_frequency(opts, requested_freq);
-    }
+    rtl_stream_tune_reconcile_result(opts, requested_freq, rc);
     if (rtl_stream_tune_result_needs_output_drain(rc)) {
         /* Honor drain/clear policy for API-triggered tunes and accepted-but-pending timeout paths. */
         drain_output_on_retune();
@@ -7837,6 +7900,59 @@ dsd_rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samp
 extern "C" int
 dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_result) {
     return rtl_stream_tune_apply_completion_result(wait_result, completion_result, 851000000U);
+}
+
+extern "C" int
+dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
+                                                    uint32_t applied_freq_hz) {
+    return controller_manual_retune_completion_result(retune_rc, reconfigured, target_hz, applied_freq_hz);
+}
+
+extern "C" int
+dsd_rtl_stream_test_tune_failure_reconciles_applied(uint32_t requested_freq_hz, uint32_t applied_freq_hz,
+                                                    long int* out_opts_freq, uint32_t* out_capture_freq_hz) {
+    if (!out_opts_freq || !out_capture_freq_hz) {
+        return -1;
+    }
+
+    uint32_t outer_applied_freq_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    CaptureSettingsSnapshot outer = capture_settings_snapshot();
+    int outer_offset_tuning = dongle.offset_tuning;
+    int outer_edge = controller.edge;
+    int outer_disable_fs4_shift = disable_fs4_shift;
+    int outer_rate_in = demod.rate_in;
+
+    dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(*opts)));
+    if (!opts) {
+        restore_capture_settings(&outer);
+        dongle.offset_tuning = outer_offset_tuning;
+        controller.edge = outer_edge;
+        disable_fs4_shift = outer_disable_fs4_shift;
+        demod.rate_in = outer_rate_in;
+        controller.last_applied_freq_hz.store(outer_applied_freq_hz, std::memory_order_release);
+        return -2;
+    }
+    opts->rtlsdr_center_freq = (long int)requested_freq_hz;
+    controller.last_applied_freq_hz.store(applied_freq_hz, std::memory_order_release);
+    dongle.offset_tuning = 0;
+    controller.edge = 0;
+    disable_fs4_shift = 0;
+    demod.rate_in = 48000;
+    store_dongle_rate(960000U);
+    store_dongle_frequency(requested_freq_hz);
+
+    rtl_stream_tune_reconcile_result(opts, requested_freq_hz, RTL_STREAM_TUNE_FAILED);
+    *out_opts_freq = opts->rtlsdr_center_freq;
+    *out_capture_freq_hz = load_dongle_frequency();
+    free(opts);
+
+    restore_capture_settings(&outer);
+    dongle.offset_tuning = outer_offset_tuning;
+    controller.edge = outer_edge;
+    disable_fs4_shift = outer_disable_fs4_shift;
+    demod.rate_in = outer_rate_in;
+    controller.last_applied_freq_hz.store(outer_applied_freq_hz, std::memory_order_release);
+    return 0;
 }
 
 extern "C" int
