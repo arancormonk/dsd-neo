@@ -2790,24 +2790,6 @@ target_link_libraries(
 )
 add_test(NAME P25_P2_AUDIO_ENABLE COMMAND dsd-neo_test_p25_p2_audio_enable)
 
-# P25 P1 heuristics circular history ring semantics
-add_executable(
-    dsd-neo_test_p25_p1_heuristics_ring
-    protocol/p25/test_p25_p1_heuristics_ring.c
-)
-target_include_directories(
-    dsd-neo_test_p25_p1_heuristics_ring
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_p25_p1_heuristics_ring
-    PRIVATE dsd-neo_proto_p25
-)
-add_test(
-    NAME P25_P1_HEURISTICS_RING
-    COMMAND dsd-neo_test_p25_p1_heuristics_ring
-)
-
 # P25 P1 IMBE audio playback dispatch matrix
 add_executable(
     dsd-neo_test_p25_p1_audio_dispatch

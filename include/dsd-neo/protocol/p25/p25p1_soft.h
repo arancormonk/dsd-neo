@@ -20,6 +20,11 @@
 extern "C" {
 #endif
 
+typedef struct {
+    int reliab;
+    int16_t llr[2];
+} P25P1SoftDibit;
+
 /**
  * Soft-decision Hamming(10,6,3) decoder using Chase-II style algorithm.
  *

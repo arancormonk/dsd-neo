@@ -25,7 +25,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -47,17 +46,16 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/dsp/p25p1_heuristics.h"
 
 static void
-build_ldu2_rs_reliability(const AnalogSignal* analog_signal_array, uint8_t data_reliab[16], uint8_t parity_reliab[8]) {
+build_ldu2_rs_reliability(const P25P1SoftDibit* soft_dibits, uint8_t data_reliab[16], uint8_t parity_reliab[8]) {
     for (int i = 0; i < 16; i++) {
-        int analog_index = (15 - i) * (3 + 2);
-        data_reliab[i] = p25p1_hamming_rs_symbol_reliability(analog_signal_array + analog_index);
+        int soft_index = (15 - i) * (3 + 2);
+        data_reliab[i] = p25p1_hamming_rs_symbol_reliability(soft_dibits + soft_index);
     }
     for (int i = 0; i < 8; i++) {
-        int analog_index = (16 * (3 + 2)) + ((7 - i) * (3 + 2));
-        parity_reliab[i] = p25p1_hamming_rs_symbol_reliability(analog_signal_array + analog_index);
+        int soft_index = (16 * (3 + 2)) + ((7 - i) * (3 + 2));
+        parity_reliab[i] = p25p1_hamming_rs_symbol_reliability(soft_dibits + soft_index);
     }
 }
 
@@ -98,8 +96,8 @@ typedef struct {
     int irrecoverable_errors;
     char hex_data[16][6];
     char hex_parity[8][6];
-    AnalogSignal analog_signal_array[16 * (3 + 2) + 8 * (3 + 2)];
-    int analog_signal_index;
+    P25P1SoftDibit soft_dibits[16 * (3 + 2) + 8 * (3 + 2)];
+    int soft_dibit_index;
     int status_count;
 } Ldu2Frame;
 
@@ -132,14 +130,10 @@ ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, cha
 
 static void
 ldu2_read_hex_word_block(dsd_opts* opts, dsd_state* state, char words[][6], int start_index, int word_count,
-                         Ldu2Frame* frame, int sequence_break_word) {
+                         Ldu2Frame* frame) {
     for (int i = 0; i < word_count; i++) {
-        read_and_correct_hex_word(opts, state, &(words[start_index - i][0]), &frame->status_count,
-                                  frame->analog_signal_array, &frame->analog_signal_index);
-    }
-    if (sequence_break_word >= 0) {
-        size_t idx = (size_t)sequence_break_word * ((size_t)3 + 2);
-        frame->analog_signal_array[idx].sequence_broken = 1;
+        read_and_correct_hex_word(opts, state, &(words[start_index - i][0]), &frame->status_count, frame->soft_dibits,
+                                  &frame->soft_dibit_index);
     }
 }
 
@@ -201,10 +195,10 @@ ldu2_maybe_apply_early_unmute(dsd_opts* opts, const dsd_state* state, const char
 static void
 ldu2_read_soft_octet(dsd_opts* opts, dsd_state* state, int* status_count, char bits[8], int16_t llr_bits[8]) {
     for (int i = 0; i <= 6; i += 2) {
-        int16_t llr[2];
-        read_dibit_soft(opts, state, bits + i, status_count, NULL, NULL, NULL, llr);
-        llr_bits[i + 0] = llr[0];
-        llr_bits[i + 1] = llr[1];
+        P25P1SoftDibit soft_dibit;
+        read_dibit_soft(opts, state, bits + i, status_count, &soft_dibit);
+        llr_bits[i + 0] = soft_dibit.llr[0];
+        llr_bits[i + 1] = soft_dibit.llr[1];
     }
 }
 
@@ -244,26 +238,25 @@ ldu2_collect_voice_symbols(dsd_opts* opts, dsd_state* state, Ldu2Frame* frame) {
     static const char trace_prefix[9] = {'0', '1', '2', '3', '4', '5', '6', '7', '8'};
 
     frame->status_count = 21;
-    frame->analog_signal_index = 0;
+    frame->soft_dibit_index = 0;
     state->p25vc = 9;
 
     for (int imbe = 0; imbe < 9; imbe++) {
         ldu2_process_imbe_frame(opts, state, &frame->status_count, trace_prefix[imbe], (imbe == 0));
         if (imbe >= 1 && imbe <= 4) {
             int start = 15 - ((imbe - 1) * 4);
-            int break_word = (imbe - 1) * 4;
-            ldu2_read_hex_word_block(opts, state, frame->hex_data, start, 4, frame, break_word);
+            ldu2_read_hex_word_block(opts, state, frame->hex_data, start, 4, frame);
             if (imbe == 4) {
                 ldu2_maybe_apply_early_unmute(opts, state, (const char (*)[6])frame->hex_data);
             }
             continue;
         }
         if (imbe == 5) {
-            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 7, 4, frame, 16);
+            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 7, 4, frame);
             continue;
         }
         if (imbe == 6) {
-            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 3, 4, frame, 20);
+            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 3, 4, frame);
             continue;
         }
         if (imbe == 7) {
@@ -292,13 +285,13 @@ ldu2_consume_trailing_status(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-ldu2_run_fec_and_heuristics(dsd_state* state, P25Heuristics* heur, char hex_data[16][6], char hex_parity[8][6],
-                            AnalogSignal analog_signal_array[16 * (3 + 2) + 8 * (3 + 2)]) {
+ldu2_run_fec(dsd_state* state, char hex_data[16][6], char hex_parity[8][6],
+             P25P1SoftDibit soft_dibits[16 * (3 + 2) + 8 * (3 + 2)]) {
     int irrecoverable_errors = check_and_fix_reedsolomon_24_16_9((char*)hex_data, (char*)hex_parity);
     if (irrecoverable_errors == 1) {
         uint8_t data_reliab[16];
         uint8_t parity_reliab[8];
-        build_ldu2_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
+        build_ldu2_rs_reliability(soft_dibits, data_reliab, parity_reliab);
         if (p25p1_rs_24_16_9_soft_reliability((char*)hex_data, (char*)hex_parity, data_reliab, parity_reliab) == 0) {
             state->p25_p1_soft_rs_ok++;
             irrecoverable_errors = 0;
@@ -307,7 +300,6 @@ ldu2_run_fec_and_heuristics(dsd_state* state, P25Heuristics* heur, char hex_data
     if (irrecoverable_errors == 1) {
         state->p25_p1_voice_fec_err++;
         state->debug_header_critical_errors++;
-        update_error_stats(heur, 12 * 6 + 12 * 6, 5 * 2);
         return 1;
     }
 
@@ -315,11 +307,6 @@ ldu2_run_fec_and_heuristics(dsd_state* state, P25Heuristics* heur, char hex_data
     state->last_vc_sync_time = time(NULL);
     state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
 
-    char fixed_parity[8 * 6];
-    correct_hamming_dibits((char*)hex_data, 16, analog_signal_array);
-    encode_reedsolomon_24_16_9((char*)hex_data, fixed_parity);
-    correct_hamming_dibits(fixed_parity, 8, analog_signal_array + ((size_t)16) * (3 + 2));
-    contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, 16 * (3 + 2) + 8 * (3 + 2));
     return 0;
 }
 
@@ -584,7 +571,6 @@ ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_error
 void
 processLDU2(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_ldu2++;
-    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
     ldu2_refresh_hold_hysteresis(opts, state);
     p25_status_accum_ensure_started(state);
@@ -593,13 +579,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     Ldu2Frame frame = {0};
     ldu2_collect_voice_symbols(opts, state, &frame);
     ldu2_consume_trailing_status(opts, state);
-    frame.irrecoverable_errors =
-        ldu2_run_fec_and_heuristics(state, heur, frame.hex_data, frame.hex_parity, frame.analog_signal_array);
-
-#ifdef HEURISTICS_DEBUG
-    DSD_FPRINTF(stderr, "(audio errors, header errors, critical header errors) (%i,%i,%i)\n", state->debug_audio_errors,
-                state->debug_header_errors, state->debug_header_critical_errors);
-#endif
+    frame.irrecoverable_errors = ldu2_run_fec(state, frame.hex_data, frame.hex_parity, frame.soft_dibits);
 
     ldu2_decode_post_fec_fields(state, &frame);
     ldu2_print_decode_result(opts, state, &frame);

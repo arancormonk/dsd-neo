@@ -22,7 +22,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/dsp/p25p1_heuristics.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/call_alert.h"
 
@@ -368,9 +367,6 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     //dsp structured file
     opts->dsp_out_file[0] = 0;
     opts->use_dsp_output = 0;
-
-    //Use P25p1 heuristics
-    opts->use_heuristics = 0;
 
     //DMR TIII heuristic LCN fill (opt-in)
     opts->dmr_t3_heuristic_fill = 0;
@@ -1036,9 +1032,6 @@ init_state_string_and_m17_defaults(dsd_state* state) {
 
     //late entry mi fragments
     DSD_MEMSET(state->late_entry_mi_fragment, 0, sizeof(state->late_entry_mi_fragment));
-
-    initialize_p25_heuristics(&state->p25_heuristics);
-    initialize_p25_heuristics(&state->inv_p25_heuristics);
 
     state->dPMRVoiceFS2Frame.CalledIDOk = 0;
     state->dPMRVoiceFS2Frame.CallingIDOk = 0;

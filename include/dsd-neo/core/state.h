@@ -25,7 +25,6 @@
 
 #include <dsd-neo/core/dibit.h>
 
-#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 
@@ -479,12 +478,6 @@ struct dsd_state {
 
     // Last dibit read
     int last_dibit;
-
-    // Heuristics state data for +P25 signals
-    P25Heuristics p25_heuristics;
-
-    // Heuristics state data for -P25 signals
-    P25Heuristics inv_p25_heuristics;
 
     //input sample buffer for monitoring Input
     short input_sample_buffer;  //HERE HERE

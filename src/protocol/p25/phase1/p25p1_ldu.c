@@ -4,7 +4,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
-#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
@@ -217,8 +216,8 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
 
 static int
 has_valid_ldu_read_inputs(const dsd_opts* opts, const dsd_state* state, const char* hex, const int* status_count,
-                          const int* analog_signal_index) {
-    return opts != NULL && state != NULL && hex != NULL && status_count != NULL && analog_signal_index != NULL;
+                          const int* soft_dibit_index) {
+    return opts != NULL && state != NULL && hex != NULL && status_count != NULL && soft_dibit_index != NULL;
 }
 
 static void
@@ -229,34 +228,34 @@ copy_hex_and_parity_bits(char all_bits[10], const char hex[6], const char parity
 
 static void
 build_soft_hamming_inputs(char bits[10], int reliab[10], const char raw_hex[6], const char raw_parity[4],
-                          const AnalogSignal* analog_signal_array, int start_index) {
+                          const P25P1SoftDibit* soft_dibits, int start_index) {
     int idx = 0;
 
     // Data bits: 3 dibits -> 6 bits.
     for (int d = 0; d < 3; d++) {
         bits[idx] = raw_hex[(d * 2) + 0];
-        reliab[idx++] = soft_abs_i16(analog_signal_array[start_index + d].llr[0]);
+        reliab[idx++] = soft_abs_i16(soft_dibits[start_index + d].llr[0]);
         bits[idx] = raw_hex[(d * 2) + 1];
-        reliab[idx++] = soft_abs_i16(analog_signal_array[start_index + d].llr[1]);
+        reliab[idx++] = soft_abs_i16(soft_dibits[start_index + d].llr[1]);
     }
     // Parity bits: 2 dibits -> 4 bits.
     for (int d = 0; d < 2; d++) {
         bits[idx] = raw_parity[(d * 2) + 0];
-        reliab[idx++] = soft_abs_i16(analog_signal_array[start_index + 3 + d].llr[0]);
+        reliab[idx++] = soft_abs_i16(soft_dibits[start_index + 3 + d].llr[0]);
         bits[idx] = raw_parity[(d * 2) + 1];
-        reliab[idx++] = soft_abs_i16(analog_signal_array[start_index + 3 + d].llr[1]);
+        reliab[idx++] = soft_abs_i16(soft_dibits[start_index + 3 + d].llr[1]);
     }
 }
 
 static int
 apply_soft_hamming_fix(dsd_state* state, char hex[6], char parity[4], const char hard_bits[10], const char raw_hex[6],
-                       const char raw_parity[4], int hard_error_count, const AnalogSignal* analog_signal_array,
+                       const char raw_parity[4], int hard_error_count, const P25P1SoftDibit* soft_dibits,
                        int start_index) {
     char bits[10];
     int reliab[10];
     char corrected[10];
 
-    build_soft_hamming_inputs(bits, reliab, raw_hex, raw_parity, analog_signal_array, start_index);
+    build_soft_hamming_inputs(bits, reliab, raw_hex, raw_parity, soft_dibits, start_index);
     int soft_result = hamming_10_6_3_soft(bits, reliab, corrected);
     if (soft_result == 2) {
         return hard_error_count;
@@ -314,21 +313,21 @@ debug_print_fixed_ldu_hamming(const char hex[6], int error_count) {
 #endif
 
 void
-read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* status_count,
-                          AnalogSignal* analog_signal_array, int* analog_signal_index) {
-    if (!has_valid_ldu_read_inputs(opts, state, hex, status_count, analog_signal_index)) {
+read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* status_count, P25P1SoftDibit* soft_dibits,
+                          int* soft_dibit_index) {
+    if (!has_valid_ldu_read_inputs(opts, state, hex, status_count, soft_dibit_index)) {
         return;
     }
 
     char parity[4];
     int error_count;
-    /* Remember where this hex word's analog signals start */
-    int start_index = *analog_signal_index;
+    /* Remember where this hex word's soft dibits start */
+    int start_index = *soft_dibit_index;
 
     // Read the hex word
-    read_word(opts, state, hex, 6, status_count, analog_signal_array, analog_signal_index);
+    read_word(opts, state, hex, 6, status_count, soft_dibits, soft_dibit_index);
     // Read the parity
-    read_hamm_parity(opts, state, parity, status_count, analog_signal_array, analog_signal_index);
+    read_hamm_parity(opts, state, parity, status_count, soft_dibits, soft_dibit_index);
     char raw_hex[6];
     char raw_parity[4];
     DSD_MEMCPY(raw_hex, hex, sizeof(raw_hex));
@@ -344,10 +343,10 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
     char hard_bits[10];
     copy_hex_and_parity_bits(hard_bits, hex, parity);
 
-    if (analog_signal_array != NULL && (error_count == 1 || error_count == 2)) {
+    if (soft_dibits != NULL && (error_count == 1 || error_count == 2)) {
         /* Hard decode failed or corrected a low-confidence bit; try soft decode using reliability info. */
         error_count = apply_soft_hamming_fix(state, hex, parity, hard_bits, raw_hex, raw_parity, hard_error_count,
-                                             analog_signal_array, start_index);
+                                             soft_dibits, start_index);
     }
 
     update_ldu_header_error_counts(state, error_count);
@@ -358,7 +357,7 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
 }
 
 uint8_t
-p25p1_hamming_rs_symbol_reliability(const AnalogSignal* symbol) {
+p25p1_hamming_rs_symbol_reliability(const P25P1SoftDibit* symbol) {
     int16_t llr[6];
 
     if (symbol == NULL) {
@@ -372,60 +371,11 @@ p25p1_hamming_rs_symbol_reliability(const AnalogSignal* symbol) {
 }
 
 void
-correct_hamming_dibits(char* hex_data, int hex_count, AnalogSignal* analog_signal_array) {
-    char parity[4];
-    int i, j;
-    int analog_signal_index;
-
-    analog_signal_index = 0;
-
-    for (i = hex_count - 1; i >= 0; i--) {
-        // Take the next 3 dibits (1 hex word) as they are
-        for (j = 0; j < 6; j += 2) // 3 iterations -> 3 dibits
-        {
-            int dibit = (hex_data[i * 6 + j] << 1) | hex_data[i * 6 + j + 1];
-            // This dibit is the correct value we should have read in the first place
-            analog_signal_array[analog_signal_index].corrected_dibit = dibit;
-
-#ifdef HEURISTICS_DEBUG
-            if (analog_signal_array[analog_signal_index].dibit != dibit) {
-                DSD_FPRINTF(stderr, "LDU word corrected from %i to %i, analog value %i\n",
-                            analog_signal_array[analog_signal_index].dibit, dibit,
-                            analog_signal_array[analog_signal_index].value);
-            }
-#endif
-
-            analog_signal_index++;
-        }
-
-        // The next two dibits are calculated has the hamming parity of the hex word
-        encode_hamming_10_6_3(hex_data + ((size_t)i * 6), parity);
-
-        for (j = 0; j < 4; j += 2) // 2 iterations -> 2 dibits
-        {
-            int dibit = (parity[j] << 1) | parity[j + 1];
-            // Again, this dibit is the correct value we should have read in the first place
-            analog_signal_array[analog_signal_index].corrected_dibit = dibit;
-
-#ifdef HEURISTICS_DEBUG
-            if (analog_signal_array[analog_signal_index].dibit != dibit) {
-                DSD_FPRINTF(stderr, "LDU-HM parity corrected from %i to %i, analog value %i\n",
-                            analog_signal_array[analog_signal_index].dibit, dibit,
-                            analog_signal_array[analog_signal_index].value);
-            }
-#endif
-
-            analog_signal_index++;
-        }
-    }
-}
-
-void
-debug_ldu_header(dsd_state* state) {
+debug_ldu_header(const dsd_state* state) {
 #ifdef TRACE_DSD
     float s = state->debug_sample_index / 48000.0F;
     DSD_FPRINTF(stderr, "Start of LDU at sample %f\n", s);
+#else
+    UNUSED(state);
 #endif
-
-    debug_print_heuristics(&state->p25_heuristics);
 }
