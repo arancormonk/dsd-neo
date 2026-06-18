@@ -865,7 +865,7 @@ dsd_test_compute_cqpsk_reliability(float sym) {
 /**
  * @brief Check if CQPSK demodulation path is active.
  *
- * Returns 1 if the RTL-SDR CQPSK path with TED is active, meaning symbols
+ * Returns 1 if the RTL-SDR CQPSK timing path is active, meaning symbols
  * are pre-scaled phase values suitable for the CQPSK slicer.
  *
  * @param opts Decoder options (checks audio_in_type).
@@ -875,9 +875,10 @@ static inline int DSD_ATTR_USED
 is_cqpsk_active(const dsd_opts* opts) {
 #ifdef USE_RADIO
     if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
-        int cqpsk = 0, fll = 0, ted = 0;
-        dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
-        if (cqpsk && ted) {
+        int cqpsk = 0;
+        int timing = 0;
+        dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk, &timing);
+        if (cqpsk && timing) {
             return 1;
         }
     }

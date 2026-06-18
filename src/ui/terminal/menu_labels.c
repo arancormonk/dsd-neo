@@ -15,7 +15,6 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
-#include <math.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -61,14 +60,6 @@ io_rtl_active(const void* ctx) {
 
 #ifdef USE_RADIO
 static bool
-rtl_symbol_output_active_for_ui(void) {
-    int kind = rtl_stream_get_output_kind();
-    int cq = 0;
-    rtl_stream_dsp_get(&cq, NULL, NULL);
-    return kind == RTL_STREAM_OUTPUT_SYMBOL_FSK || kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK || cq != 0;
-}
-
-static bool
 rtl_fsk_symbol_output_active_for_ui(void) {
     return rtl_stream_get_output_kind() == RTL_STREAM_OUTPUT_SYMBOL_FSK;
 }
@@ -76,8 +67,8 @@ rtl_fsk_symbol_output_active_for_ui(void) {
 bool
 dsp_cq_on(const void* v) {
     UNUSED(v);
-    int cq = 0, f = 0, t = 0;
-    rtl_stream_dsp_get(&cq, &f, &t);
+    int cq = 0;
+    rtl_stream_get_cqpsk_status(&cq, NULL);
     return cq != 0;
 }
 
@@ -107,12 +98,12 @@ ui_current_mod(const void* v) {
 
     // Snap to the active DSP path: CQPSK toggle always means QPSK path
     int cq = 0;
-    rtl_stream_dsp_get(&cq, NULL, NULL);
+    rtl_stream_get_cqpsk_status(&cq, NULL);
     if (cq) {
         mod = 1;
     }
 
-    // Fallback: default to FM/C4FM family (or GFSK when hinted)
+    // Fallback: default to the 4-level FSK family (or GFSK when hinted)
     if (mod < 0) {
         mod = 0;
     }
@@ -125,52 +116,16 @@ is_mod_qpsk(const void* v) {
 }
 
 bool
-is_mod_c4fm(const void* v) {
-    return ui_current_mod(v) == 0;
-}
-
-bool
-is_mod_gfsk(const void* v) {
-    return ui_current_mod(v) == 2;
-}
-
-bool
-is_mod_fm(const void* v) {
-    int m = ui_current_mod(v);
-    return m == 0 || m == 2;
-}
-
-bool
-is_non_symbol_mod_fm(const void* v) {
-    return is_mod_fm(v) && !rtl_symbol_output_active_for_ui();
-}
-
-bool
-is_sample_window_c4fm(const void* v) {
-    return is_mod_c4fm(v) && !rtl_fsk_symbol_output_active_for_ui();
-}
-
-bool
 is_not_qpsk(const void* v) {
     return !is_mod_qpsk(v);
 }
 
 bool
-is_fll_allowed(const void* v) {
-    return !rtl_symbol_output_active_for_ui() && (is_mod_qpsk(v) || is_mod_fm(v));
-}
-
-bool
 is_ted_allowed(const void* v) {
-    return !rtl_fsk_symbol_output_active_for_ui() && (is_mod_qpsk(v) || is_mod_fm(v));
+    return !rtl_fsk_symbol_output_active_for_ui() && is_mod_qpsk(v);
 }
 
 // DSP submenu arrays declared in menu_items.h
-
-bool
-dsp_agc_any(const void* v) {
-    return ui_submenu_has_visible(DSP_AGC_ITEMS, DSP_AGC_ITEMS_LEN, v) ? true : false;
-}
 
 bool
 dsp_ted_any(const void* v) {
@@ -936,27 +891,9 @@ lbl_m17_user_data(const void* v, char* b, size_t n) {
 const char*
 lbl_onoff_cq(const void* v, char* b, size_t n) {
     UNUSED(v);
-    int cq = 0, f = 0, t = 0;
-    rtl_stream_dsp_get(&cq, &f, &t);
+    int cq = 0;
+    rtl_stream_get_cqpsk_status(&cq, NULL);
     DSD_SNPRINTF(b, n, "Toggle CQPSK [%s]", cq ? "Active" : "Inactive");
-    return b;
-}
-
-const char*
-lbl_onoff_fll(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int cq = 0, f = 0, t = 0;
-    rtl_stream_dsp_get(&cq, &f, &t);
-    DSD_SNPRINTF(b, n, "Toggle FLL [%s]", f ? "Active" : "Inactive");
-    return b;
-}
-
-const char*
-lbl_onoff_ted(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int cq = 0, f = 0, t = 0;
-    rtl_stream_dsp_get(&cq, &f, &t);
-    DSD_SNPRINTF(b, n, "Toggle TED [%s]", t ? "Active" : "Inactive");
     return b;
 }
 
@@ -965,60 +902,6 @@ lbl_onoff_iqbal(const void* v, char* b, size_t n) {
     UNUSED(v);
     int on = rtl_stream_get_iq_balance();
     DSD_SNPRINTF(b, n, "Toggle IQ Balance [%s]", on ? "Active" : "Inactive");
-    return b;
-}
-
-const char*
-lbl_fm_agc(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = rtl_stream_get_fm_agc();
-    DSD_SNPRINTF(b, n, "FM AGC [%s]", on ? "On" : "Off");
-    return b;
-}
-
-const char*
-lbl_fm_limiter(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = rtl_stream_get_fm_limiter();
-    DSD_SNPRINTF(b, n, "FM Limiter [%s]", on ? "On" : "Off");
-    return b;
-}
-
-const char*
-lbl_fm_agc_target(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    float tgt = 0.0f;
-    rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
-    DSD_SNPRINTF(b, n, "AGC Target: %.3f (+/-)", tgt);
-    return b;
-}
-
-const char*
-lbl_fm_agc_min(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    float mn = 0.0f;
-    rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
-    DSD_SNPRINTF(b, n, "AGC Min: %.3f (+/-)", mn);
-    return b;
-}
-
-const char*
-lbl_fm_agc_alpha_up(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    float au = 0.0f;
-    rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
-    int pct = (int)lrintf(au * 100.0f);
-    DSD_SNPRINTF(b, n, "AGC Alpha Up: %.3f (~%d%%)", au, pct);
-    return b;
-}
-
-const char*
-lbl_fm_agc_alpha_down(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    float ad = 0.0f;
-    rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
-    int pct = (int)lrintf(ad * 100.0f);
-    DSD_SNPRINTF(b, n, "AGC Alpha Down: %.3f (~%d%%)", ad, pct);
     return b;
 }
 
@@ -1045,23 +928,15 @@ lbl_ted_gain(const void* v, char* b, size_t n) {
     UNUSED(v);
     float g = rtl_stream_get_ted_gain();
     int g_milli = (int)(g * 1000.0f + 0.5f);
-    DSD_SNPRINTF(b, n, "TED Gain: %d (x0.001, +/-)", g_milli);
+    DSD_SNPRINTF(b, n, "CQPSK Timing Gain: %d (x0.001, +/-)", g_milli);
     return b;
 }
 
 const char*
-lbl_ted_force(const void* v, char* b, size_t n) {
+lbl_cqpsk_timing_bias(const void* v, char* b, size_t n) {
     UNUSED(v);
-    int f = rtl_stream_get_ted_force();
-    DSD_SNPRINTF(b, n, "TED Force [%s]", f ? "Active" : "Inactive");
-    return b;
-}
-
-const char*
-lbl_ted_bias(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int eb = rtl_stream_ted_bias(NULL);
-    DSD_SNPRINTF(b, n, "TED Bias (EMA): %d", eb);
+    int eb = rtl_stream_cqpsk_timing_bias(NULL);
+    DSD_SNPRINTF(b, n, "CQPSK Timing Bias (EMA): %d", eb);
     return b;
 }
 
@@ -1069,23 +944,6 @@ const char*
 lbl_dsp_panel(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     DSD_SNPRINTF(b, n, "Show DSP Panel [%s]", (c && c->opts && c->opts->show_dsp_panel) ? "On" : "Off");
-    return b;
-}
-
-const char*
-lbl_c4fm_clk(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int mode = rtl_stream_get_c4fm_clk();
-    const char* s = (mode == 1) ? "EL" : (mode == 2) ? "MM" : "Off";
-    DSD_SNPRINTF(b, n, "C4FM Clock: %s (cycle)", s);
-    return b;
-}
-
-const char*
-lbl_c4fm_clk_sync(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int en = rtl_stream_get_c4fm_clk_sync();
-    DSD_SNPRINTF(b, n, "C4FM Clock While Synced [%s]", en ? "Active" : "Inactive");
     return b;
 }
 

@@ -14,8 +14,8 @@
 unsigned int dsd_rtl_stream_output_rate(void);
 
 static int
-rtl_stream_metrics_ted_bias(void) {
-    return rtl_stream_ted_bias(NULL);
+rtl_stream_metrics_cqpsk_timing_bias(void) {
+    return rtl_stream_cqpsk_timing_bias(NULL);
 }
 #endif
 
@@ -28,8 +28,8 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.symbol_profile = rtl_stream_get_symbol_profile_full;
     hooks.stream_generation = rtl_stream_output_generation;
     hooks.set_symbol_profile = rtl_stream_set_symbol_profile;
-    hooks.dsp_get = rtl_stream_dsp_get;
-    hooks.ted_bias = rtl_stream_metrics_ted_bias;
+    hooks.cqpsk_status = rtl_stream_get_cqpsk_status;
+    hooks.cqpsk_timing_bias = rtl_stream_metrics_cqpsk_timing_bias;
     hooks.snr_bias_evm = rtl_stream_get_snr_bias_evm;
     hooks.snr_c4fm_db = rtl_stream_get_snr_c4fm;
     hooks.snr_c4fm_eye_db = rtl_stream_estimate_snr_c4fm_eye;

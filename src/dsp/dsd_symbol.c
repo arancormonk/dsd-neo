@@ -188,24 +188,6 @@ select_window_gfsk(int* l_edge, int* r_edge, int freeze_window) {
 }
 
 #ifdef USE_RADIO
-/* --- C4FM clock assist (EL / M&M) --- */
-static inline int
-slice_c4fm_level(int x, const dsd_state* s) {
-    /* Map sample to nearest of {-3,-1,1,3} using center/min/max refs. */
-    float c = s->center;
-    float lo = (s->minref + c) / 2.0f;
-    float hi = (s->maxref + c) / 2.0f;
-    if ((float)x >= hi) {
-        return 3;
-    } else if ((float)x >= c) {
-        return 1;
-    } else if ((float)x >= lo) {
-        return -1;
-    } else {
-        return -3;
-    }
-}
-
 static inline void
 clamp_symbol_center_to_margin(int* center, int samples_per_symbol) {
     int min_c = 1;
@@ -216,107 +198,6 @@ clamp_symbol_center_to_margin(int* center, int samples_per_symbol) {
     if (*center > max_c) {
         *center = max_c;
     }
-}
-
-static inline int
-c4fm_clock_allowed(const dsd_opts* opts, const dsd_state* state, int have_sync, int mode) {
-    if (mode <= 0) {
-        return 0;
-    }
-    /* Only on RTL pipeline; synced use is gated by runtime toggle to avoid
-       perturbing steady-state decoders unless explicitly allowed. */
-    if (opts->audio_in_type != AUDIO_IN_RTL) {
-        return 0;
-    }
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int allow_when_synced = (cfg && cfg->c4fm_clk_sync_is_set) ? (cfg->c4fm_clk_sync != 0) : 0;
-    if (have_sync != 0 && !allow_when_synced) {
-        return 0;
-    }
-    if (state->rf_mod != 0) {
-        return 0; /* C4FM only */
-    }
-
-    /* Require valid neighborhood around center */
-    if (state->symbolCenter < 1 || state->symbolCenter + 1 >= state->samplesPerSymbol) {
-        return 0;
-    }
-    return 1;
-}
-
-static inline int
-c4fm_clock_compute_error(dsd_state* state, int mode, int early, int mid, int late, long long* error_out) {
-    long long e = 0;
-    if (mode == 1) { /* Early-Late using energy difference */
-        long long er = (long long)early;
-        long long lr = (long long)late;
-        e = (lr * lr) - (er * er);
-    } else if (mode == 2) { /* M&M using sliced decisions */
-        int a_prev = state->c4fm_clk_prev_dec;
-        int a_k;
-        /* Prefer slicing on mid sample for stability */
-        a_k = slice_c4fm_level(mid, state);
-        if (a_prev == 0) {
-            state->c4fm_clk_prev_dec = a_k;
-            return 0; /* need one step of history */
-        }
-        /* Use data-aided early/late difference to gate direction on symbol polarity */
-        long long diff = (long long)late - (long long)early;
-        e = diff * (long long)a_k;
-        state->c4fm_clk_prev_dec = a_k;
-    } else {
-        return 0;
-    }
-    *error_out = e;
-    return 1;
-}
-
-static inline void
-c4fm_clock_apply_nudge(dsd_state* state, long long e) {
-    /* Convert to sign and apply simple persistence before nudging center */
-    int dir = 0;
-    if (e > 0) {
-        dir = +1; /* sample early → center → right */
-    } else if (e < 0) {
-        dir = -1; /* sample late → center → left */
-    } else {
-        state->c4fm_clk_run_dir = 0;
-        state->c4fm_clk_run_len = 0;
-        return;
-    }
-
-    if (state->c4fm_clk_cooldown > 0) {
-        state->c4fm_clk_cooldown--;
-        return;
-    }
-
-    if (dir == state->c4fm_clk_run_dir) {
-        state->c4fm_clk_run_len++;
-    } else {
-        state->c4fm_clk_run_dir = dir;
-        state->c4fm_clk_run_len = 1;
-    }
-
-    /* Nudge after brief persistence */
-    if (state->c4fm_clk_run_len >= 4) {
-        int c = state->symbolCenter + dir;
-        clamp_symbol_center_to_margin(&c, state->samplesPerSymbol);
-        state->symbolCenter = c;
-        state->c4fm_clk_cooldown = 12; /* short cooldown */
-        state->c4fm_clk_run_len = 0;
-    }
-}
-
-static inline void
-maybe_c4fm_clock(const dsd_opts* opts, dsd_state* state, int have_sync, int mode, int early, int mid, int late) {
-    if (!c4fm_clock_allowed(opts, state, have_sync, mode)) {
-        return;
-    }
-    long long e = 0;
-    if (!c4fm_clock_compute_error(state, mode, early, mid, late, &e)) {
-        return;
-    }
-    c4fm_clock_apply_nudge(state, e);
 }
 #endif
 
@@ -336,38 +217,23 @@ typedef struct {
     int rtl_symbol_levels;
     uint32_t rtl_stream_generation;
     int cqpsk_symbol_rate;
-    int clk_mode;
-    int clk_early;
-    int clk_mid;
-    int clk_late;
 #endif
 } symbol_work_ctx;
 
 static inline void
 symbol_work_ctx_init(symbol_work_ctx* work, const dsd_state* state) {
-    if (!work || !state) {
+    if (!work) {
         return;
     }
-    work->sample = 0.0f;
-    work->sum = 0.0f;
-    work->count = 0;
+    *work = (symbol_work_ctx){0};
     work->symbol_span = 1;
-    work->l_edge_pre = 0;
-    work->r_edge_pre = 0;
-    work->analog_out_cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
 #ifdef USE_RADIO
-    work->rtl_output_kind = 0;
-    work->rtl_symbol_rate_output = 0;
-    work->rtl_channel_profile = 0;
-    work->rtl_symbol_rate_hz = 0;
     work->rtl_symbol_levels = 4;
-    work->rtl_stream_generation = 0;
-    work->cqpsk_symbol_rate = 0;
-    work->clk_mode = 0;
-    work->clk_early = 0;
-    work->clk_mid = 0;
-    work->clk_late = 0;
 #endif
+    if (!state) {
+        return;
+    }
+    work->analog_out_cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
 }
 
 static inline int
@@ -618,12 +484,8 @@ maybe_auto_center_allowed(const dsd_opts* opts, const dsd_state* state, int have
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return 0; // only when using RTL stream/demod pipeline
     }
-    /* If synced, only run when explicitly allowed by runtime config. */
     if (have_sync != 0) {
-        int allow_when_synced = (cfg && cfg->c4fm_clk_sync_is_set) ? (cfg->c4fm_clk_sync != 0) : 0;
-        if (!allow_when_synced) {
-            return 0;
-        }
+        return 0;
     }
     if (state->rf_mod != 0) {
         return 0; // limit to C4FM for now; avoid QPSK
@@ -664,8 +526,8 @@ maybe_auto_center(const dsd_opts* opts, dsd_state* state, int have_sync) {
         cooldown--;
         return;
     }
-    /* Read smoothed TED residual in Q14 units (can be 0 when TED disabled). */
-    int e_ema = dsd_rtl_stream_metrics_hook_ted_bias();
+    /* Read smoothed CQPSK timing residual in Q14 units (0 when unavailable). */
+    int e_ema = dsd_rtl_stream_metrics_hook_cqpsk_timing_bias();
     if (e_ema == 0) {
         return;
     }
@@ -1379,36 +1241,6 @@ symbol_take_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
 
 #ifdef USE_RADIO
 static inline void
-symbol_capture_clock_sample(symbol_work_ctx* work, const dsd_state* state, int i) {
-    if (!work->clk_mode || state->rf_mod != 0) {
-        return;
-    }
-    int c = state->symbolCenter;
-    if (i == c - 1) {
-        work->clk_early = (int)lrintf(work->sample);
-    } else if (i == c) {
-        work->clk_mid = (int)lrintf(work->sample);
-    } else if (i == c + 1) {
-        work->clk_late = (int)lrintf(work->sample);
-    }
-}
-
-static inline void
-symbol_init_clock_mode(const dsd_opts* opts, const dsd_state* state, symbol_work_ctx* work) {
-    if (state->rf_mod != 0) {
-        return;
-    }
-    const dsdneoRuntimeConfig* cfg_clk = dsd_neo_get_config();
-    if (!cfg_clk) {
-        dsd_neo_config_init(opts);
-        cfg_clk = dsd_neo_get_config();
-    }
-    if (cfg_clk && cfg_clk->c4fm_clk_is_set) {
-        work->clk_mode = cfg_clk->c4fm_clk_mode;
-    }
-}
-
-static inline void
 symbol_init_rtl_profile(const dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         work->rtl_symbol_rate_output =
@@ -1502,9 +1334,10 @@ symbol_prepare_span(const dsd_opts* opts, dsd_state* state, symbol_work_ctx* wor
         work->symbol_span = 1;
     }
     if (!work->rtl_symbol_rate_output && opts->audio_in_type == AUDIO_IN_RTL && state->rf_mod == 1) {
-        int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
-        dsd_rtl_stream_metrics_hook_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
-        if (dsp_cqpsk && dsp_ted) {
+        int dsp_cqpsk = 0;
+        int dsp_timing = 0;
+        dsd_rtl_stream_metrics_hook_cqpsk_status(&dsp_cqpsk, &dsp_timing);
+        if (dsp_cqpsk && dsp_timing) {
             work->cqpsk_symbol_rate = 1;
             work->symbol_span = 1;
         }
@@ -1627,9 +1460,6 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
         symbol_update_jitter(opts, state, have_sync, i, work->sample);
         symbol_accumulate_sample(state, work, i, work->sample);
         state->lastsample = work->sample;
-#ifdef USE_RADIO
-        symbol_capture_clock_sample(work, state, i);
-#endif
     }
     return 1;
 }
@@ -1680,14 +1510,10 @@ symbol_apply_replay_overrides(dsd_opts* opts, dsd_state* state, float* symbol) {
 
 static inline float
 symbol_commit_symbol(dsd_opts* opts, dsd_state* state, int have_sync, const symbol_work_ctx* work, float symbol) {
-#ifdef USE_RADIO
-    if (work->clk_mode && state->rf_mod == 0) {
-        maybe_c4fm_clock(opts, state, have_sync, work->clk_mode, work->clk_early, work->clk_mid, work->clk_late);
-    }
-#else
-    (void)opts;
     (void)have_sync;
     (void)work;
+#ifndef USE_RADIO
+    (void)opts;
 #endif
     dmr_sample_history_push(state, symbol);
     state->symbolcnt++;
@@ -1731,7 +1557,6 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
     symbol_work_ctx_init(&work, state);
 
 #ifdef USE_RADIO
-    symbol_init_clock_mode(opts, state, &work);
     symbol_init_rtl_profile(opts, state, &work);
     int fast_status = symbol_try_rtl_symbol_rate_fast_path(opts, state, &work);
     if (fast_status < 0) {

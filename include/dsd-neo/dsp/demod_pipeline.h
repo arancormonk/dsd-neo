@@ -100,8 +100,8 @@ float mean_power(const float* samples, int len, int step);
 
 /**
  * Full demodulation pipeline for one block.
- * Applies decimation via half-band cascade, optional FLL and timing
- * correction, followed by the configured discriminator and post-processing.
+ * Applies decimation via half-band cascade and the configured discriminator or
+ * CQPSK symbol chain.
  *
  * @param d Demodulator state (consumes lowpassed, produces result).
  */

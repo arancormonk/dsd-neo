@@ -5,8 +5,7 @@
 
 /**
  * @file
- * @brief Timing Error Detector (TED) interface: Gardner TED and fractional
- * delay timing correction for symbol synchronization in digital demodulation modes.
+ * @brief OP25-compatible Gardner timing recovery for CQPSK symbol synchronization.
  */
 
 #ifndef DSP_TED_H
@@ -19,8 +18,7 @@ extern "C" {
 /* TED Configuration structure (GNU Radio-style native float) */
 typedef struct {
     int enabled;
-    int force; /* allow forcing TED even for FM/C4FM paths */
-    int sps;   /* nominal samples per symbol. At 48 kHz: P25P1=10, P25P2=8, NXDN=20 */
+    int sps; /* nominal samples per symbol. At 48 kHz: P25P1=10, P25P2=8, NXDN=20 */
     /* OP25-compatible Gardner parameters (from p25_demodulator.py) */
     float gain_mu;    /* mu loop gain, default 0.025 (OP25 default) */
     float gain_omega; /* omega loop gain, default 0.1 * gain_mu^2 */
@@ -96,26 +94,9 @@ void ted_soft_reset(ted_state_t* state);
  *               output length (will be smaller due to decimation).
  * @param y      Work buffer for symbol-rate output (must be at least size N).
  * @note This function decimates to symbol rate and is designed for CQPSK paths.
- *       Do not use for FM/C4FM paths that expect sample-rate data downstream.
+ *       Do not use for non-CQPSK paths that expect sample-rate data downstream.
  */
 void gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, int* N, float* y);
-
-/**
- * @brief Legacy non-decimating Gardner timing correction (Farrow-based).
- *
- * Uses a cubic Farrow (cubic convolution) fractional-delay interpolator around
- * the nominal samples-per-symbol to reduce timing error while keeping the
- * output at (approximately) the input sample rate. Intended for FM/C4FM paths
- * that expect sample-rate complex baseband downstream.
- *
- * @param config TED configuration (uses enabled, force, gain_mu, sps).
- * @param state  TED state (uses mu and e_ema for residual reporting).
- * @param x      Input/output interleaved I/Q buffer (modified in-place).
- * @param N      Pointer to buffer length (must be even; may be reduced slightly).
- * @param y      Work buffer for timing-adjusted I/Q (must be at least size N).
- * @note Skips processing when samples-per-symbol is large unless forced.
- */
-void gardner_timing_adjust_farrow(const ted_config_t* config, ted_state_t* state, float* x, int* N, float* y);
 
 /**
  * @brief Return the current smoothed TED residual (EMA of Gardner error).

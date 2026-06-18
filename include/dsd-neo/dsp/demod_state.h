@@ -21,7 +21,6 @@
 #include <dsd-neo/core/safe_api.h>
 #endif
 #include <dsd-neo/dsp/costas.h>
-#include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
@@ -68,7 +67,7 @@ enum DSD_ATTR_PACKED dsd_demod_output_kind {
  * @brief Aggregate state container for the demodulator processing chain.
  *
  * Holds working buffers, configuration, and module states used by the DSP
- * pipeline (filters, resamplers, FLL/TED, etc.) and by the RTL-SDR front-end
+ * pipeline (filters, resamplers, CQPSK recovery, etc.) and by the RTL-SDR front-end
  * thread.
  *
  * @note Keep this definition synchronized with usages in:
@@ -103,7 +102,6 @@ struct demod_state {
     float* resamp_hist; /* mirrored history window, length = 2*K */
     int (*discriminator)(int, int, int, int);
     void (*mode_demod)(struct demod_state*);
-    double fm_agc_ema_rms;      /* normalized RMS estimator (0..~1.0) */
     float* post_polydecim_taps; /* normalized taps length K */
     float* post_polydecim_hist; /* circular history length K */
     dsd_thread_t mt_threads[2];
@@ -189,20 +187,7 @@ struct demod_state {
     int resamp_taps_per_phase; /* K = ceil(taps_len/L) */
     int resamp_hist_head;      /* next write index into base history window [0..K-1] */
 
-    /* Legacy FM FLL state (for non-CQPSK FM/C4FM paths).
-     * Used by fll_update_error() and fll_mix_and_update() in demod_pipeline.cpp.
-     * For CQPSK paths, use fll_band_edge_state and costas_state instead. */
-    int fll_enabled;
-    float fll_alpha;    /* proportional gain (native float, ~0.002..0.02) */
-    float fll_beta;     /* integral gain (native float, ~0.0002..0.002) */
-    float fll_freq;     /* NCO frequency increment (rad/sample) - FM path only */
-    float fll_phase;    /* NCO phase accumulator (radians) - FM path only */
-    float fll_deadband; /* ignore small phase errors |err| <= deadband (radians) */
-    float fll_slew_max; /* max |delta freq| per update (rad/sample) */
-    float fll_prev_r;
-    float fll_prev_j;
-
-    /* OP25-compatible CQPSK carrier recovery (used instead of legacy FLL above).
+    /* OP25-compatible CQPSK carrier recovery.
      * Signal flow: FLL band-edge (coarse freq) -> Gardner TED -> diff_phasor -> Costas (fine freq)
      * Total CFO for metrics = fll_band_edge_state.freq + costas_state.freq/sps */
     dsd_costas_loop_state_t costas_state;          /* Symbol-rate Costas loop */
@@ -211,7 +196,6 @@ struct demod_state {
 
     /* Timing error detector (Gardner) - native float */
     int ted_enabled;
-    int ted_force;            /* allow forcing TED even for FM/C4FM paths */
     float ted_gain;           /* loop gain, typically 0.01..0.1 */
     int ted_gain_is_set;      /* env/API/UI override; disables automatic mode-specific gain changes */
     float ted_effective_gain; /* loop gain actually used by mode-specific TED */
@@ -224,8 +208,7 @@ struct demod_state {
        Blocks like TED/FLL band-edge require integer SPS and auto-disable. */
     int sps_is_integer; /* 1 = integer SPS, 0 = non-integer (blocks disabled) */
 
-    /* FLL and TED module states */
-    fll_state_t fll_state;
+    /* TED module state */
     ted_state_t ted_state;
 
     /* Minimal 2-thread worker pool bookkeeping */
@@ -260,17 +243,6 @@ struct demod_state {
     float iqbal_alpha_ema_r; /* EMA of alpha real (normalized) */
     float iqbal_alpha_ema_i; /* EMA of alpha imag (normalized) */
     float iqbal_alpha_ema_a; /* EMA smoothing alpha [0.0, 1.0] */
-
-    /* FM envelope AGC (pre-discriminator) */
-    int fm_agc_enable;       /* 0/1 gate; constant-envelope limiter/AGC for FM/C4FM */
-    float fm_agc_gain;       /* smoothed gain applied to I/Q */
-    float fm_agc_target_rms; /* target RMS magnitude for |z| (normalized float) */
-    float fm_agc_min_rms;    /* minimum RMS to engage AGC (avoid boosting noise) */
-    float fm_agc_alpha_up;   /* smoothing when increasing gain (signal got weaker) */
-    float fm_agc_alpha_down; /* smoothing when decreasing gain (signal got stronger) */
-
-    /* Optional constant-envelope limiter for FM/C4FM */
-    int fm_limiter_enable; /* 0/1 gate; per-sample normalize |z| to ~target */
 
     /* Complex DC blocker before discriminator */
     int iq_dc_block_enable; /* 0/1 gate */

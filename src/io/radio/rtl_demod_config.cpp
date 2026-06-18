@@ -15,7 +15,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/ted.h>
@@ -280,14 +279,10 @@ demod_apply_output_kind(struct demod_state* s, const dsd_opts* opts) {
 
     if (s->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
         s->cqpsk_enable = 0;
-        s->fll_enabled = 0;
         s->ted_enabled = 0;
-        s->fm_agc_enable = 0;
-        s->fm_limiter_enable = 0;
     } else if (s->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
         s->cqpsk_enable = 1;
         s->ted_enabled = 1;
-        s->fll_enabled = 0;
     }
     fsk_modem_apply_config(s);
 }
@@ -343,15 +338,6 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->post_polydecim_hist_head = 0;
     s->post_polydecim_taps = NULL;
     s->post_polydecim_hist = NULL;
-    s->fll_enabled = 0;
-    s->fll_alpha = 0.0f;
-    s->fll_beta = 0.0f;
-    s->fll_freq = 0.0f;
-    s->fll_phase = 0.0f;
-    s->fll_deadband = 0.0f;
-    s->fll_slew_max = 0.0f;
-    s->fll_prev_r = 0.0f;
-    s->fll_prev_j = 0.0f;
     s->ted_enabled = 0;
     s->ted_gain = 0.0f;
     s->ted_gain_is_set = 0;
@@ -361,7 +347,6 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->costas_reset_pending = 0;
     s->ted_mu = 0.0f;
     s->sps_is_integer = 1;
-    fll_init_state(&s->fll_state);
     ted_init_state(&s->ted_state);
     s->squelch_running_power = 0;
     s->squelch_decim_phase = 0;
@@ -379,7 +364,6 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->iqbal_alpha_ema_i = 0.0f;
     dsd_cond_init(&s->ready);
     dsd_mutex_init(&s->ready_m);
-    s->fm_agc_ema_rms = 0.0;
 }
 
 static void
@@ -482,16 +466,7 @@ demod_apply_resampler_target_defaults(struct demod_state* demod, const dsdneoRun
 }
 
 static void
-demod_apply_fll_costas_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* cfg) {
-    demod->fll_enabled = cfg->fll_is_set ? (cfg->fll_enable != 0) : 0;
-    demod->fll_alpha = cfg->fll_alpha_is_set ? cfg->fll_alpha : 0.0015f;
-    demod->fll_beta = cfg->fll_beta_is_set ? cfg->fll_beta : 0.00015f;
-    demod->fll_deadband = cfg->fll_deadband_is_set ? cfg->fll_deadband : 0.0086f;
-    demod->fll_slew_max = cfg->fll_slew_is_set ? cfg->fll_slew_max : 0.012f;
-    demod->fll_freq = 0.0f;
-    demod->fll_phase = 0.0f;
-    demod->fll_prev_r = demod->fll_prev_j = 0.0f;
-
+demod_apply_costas_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* cfg) {
     dsd_costas_loop_state_t* cl = &demod->costas_state;
     cl->phase = 0.0f;
     cl->freq = 0.0f;
@@ -514,13 +489,12 @@ demod_apply_fll_costas_defaults(struct demod_state* demod, const dsdneoRuntimeCo
 
 static void
 demod_apply_ted_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* cfg) {
-    demod->ted_enabled = cfg->ted_is_set ? (cfg->ted_enable != 0) : 0;
+    demod->ted_enabled = 0;
     demod->ted_gain = cfg->ted_gain_is_set ? cfg->ted_gain : 0.025f;
     demod->ted_gain_is_set = cfg->ted_gain_is_set ? 1 : 0;
     demod->ted_effective_gain = demod->ted_gain;
     demod->ted_sps = 10;
     demod->ted_mu = 0.0f;
-    demod->ted_force = cfg->ted_force_is_set ? (cfg->ted_force != 0) : 0;
 }
 
 static void
@@ -536,23 +510,12 @@ demod_apply_cqpsk_defaults(struct demod_state* demod, const dsd_opts* opts, cons
         demod->mode_demod = &::qpsk_differential_demod;
         demod->cqpsk_diff_prev_r = 1.0f;
         demod->cqpsk_diff_prev_j = 0.0f;
-        demod->fll_enabled = 0;
     }
     demod_apply_output_kind(demod, opts);
 }
 
 static void
-demod_apply_fm_iq_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* cfg) {
-    demod->fm_agc_enable = cfg->fm_agc_is_set ? (cfg->fm_agc_enable != 0) : 0;
-    demod->fm_agc_target_rms = cfg->fm_agc_target_is_set ? cfg->fm_agc_target_rms : 0.30f;
-    demod->fm_agc_min_rms = cfg->fm_agc_min_is_set ? cfg->fm_agc_min_rms : 0.06f;
-    demod->fm_agc_alpha_up = cfg->fm_agc_alpha_up_is_set ? cfg->fm_agc_alpha_up : 0.25f;
-    demod->fm_agc_alpha_down = cfg->fm_agc_alpha_down_is_set ? cfg->fm_agc_alpha_down : 0.75f;
-    if (demod->fm_agc_gain <= 0.0f) {
-        demod->fm_agc_gain = 1.0f;
-    }
-    demod->fm_agc_ema_rms = (demod->fm_agc_target_rms > 0.0f) ? (double)demod->fm_agc_target_rms : 0.0;
-    demod->fm_limiter_enable = cfg->fm_limiter_is_set ? (cfg->fm_limiter_enable != 0) : 0;
+demod_apply_iq_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* cfg) {
     demod->iq_dc_block_enable = cfg->iq_dc_block_is_set ? (cfg->iq_dc_block_enable != 0) : 0;
     demod->iq_dc_shift = cfg->iq_dc_shift_is_set ? cfg->iq_dc_shift : 11;
     demod->iq_dc_avg_r = demod->iq_dc_avg_i = 0;
@@ -586,10 +549,7 @@ static void
 demod_finalize_runtime_profile(struct demod_state* demod, const dsd_opts* opts) {
     demod->channel_squelch_level = (float)opts->rtl_squelch_level;
     if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
-        demod->fll_enabled = 0;
         demod->ted_enabled = 0;
-        demod->fm_agc_enable = 0;
-        demod->fm_limiter_enable = 0;
     }
     fsk_modem_apply_config(demod);
 }
@@ -632,8 +592,8 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
  * @brief Apply environment/runtime overrides to the demodulator state.
  *
  * Mirrors CLI/env-driven configuration into the demodulator, covering DSP
- * toggles (FS/4 shift, combine-rotate), resampler targets, FLL/TED tuning,
- * CQPSK path enable, AGC knobs, and IQ balance defaults. Early-exits on NULL inputs.
+ * toggles (FS/4 shift, combine-rotate), resampler targets, CQPSK path enable,
+ * CQPSK timing gain, and IQ balance defaults. Early-exits on NULL inputs.
  *
  * @param demod Demodulator state to configure.
  * @param opts  Decoder options used for runtime flags.
@@ -652,10 +612,10 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, const dsd_opts* op
 
     demod_apply_runtime_global_flags(opts, cfg);
     demod_apply_resampler_target_defaults(demod, cfg);
-    demod_apply_fll_costas_defaults(demod, cfg);
+    demod_apply_costas_defaults(demod, cfg);
     demod_apply_ted_defaults(demod, cfg);
     demod_apply_cqpsk_defaults(demod, opts, cfg);
-    demod_apply_fm_iq_defaults(demod, cfg);
+    demod_apply_iq_defaults(demod, cfg);
     demod_apply_channel_lpf_defaults(demod, opts, cfg);
     demod_finalize_runtime_profile(demod, opts);
 }
@@ -678,42 +638,28 @@ rtl_demod_clamp_sps(int sps) {
 }
 
 static void
-rtl_demod_apply_analog_default_tracking(struct demod_state* demod, int env_fll_alpha_set, int env_fll_beta_set) {
-    if (!env_fll_alpha_set) {
-        demod->fll_alpha = 0.0015f;
-    }
-    if (!env_fll_beta_set) {
-        demod->fll_beta = 0.00015f;
-    }
-}
-
-static void
-rtl_demod_log_non_integer_defaults(struct demod_state* demod, int fs_cx, int sym_rate, int sps) {
+rtl_demod_log_non_integer_defaults(const struct demod_state* demod, int fs_cx, int sym_rate, int sps) {
     if (demod->cqpsk_enable) {
         LOG_WARNING("Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
-                    "FLL band-edge will be auto-disabled; CQPSK will continue to run Gardner TED at the "
-                    "rounded SPS. Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
+                    "CQPSK timing will continue at the rounded SPS. Use a DSP bandwidth that results in "
+                    "integer SPS for optimal performance.\n",
                     fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
         return;
     }
     LOG_WARNING("Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
-                "TED and FLL band-edge will be auto-disabled. "
+                "Symbol timing will use the rounded SPS. "
                 "Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
                 fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
-    if (demod->ted_enabled && !demod->ted_force) {
-        demod->ted_enabled = 0;
-        LOG_INFO("TED auto-disabled due to non-integer SPS.\n");
-    }
 }
 
 static void
 rtl_demod_apply_digital_default_tracking(struct demod_state* demod, const dsd_opts* opts,
-                                         const struct output_state* output, int ted_gain_is_set, int env_fll_alpha_set,
-                                         int env_fll_beta_set, int env_fll_deadband_set, int env_fll_slew_set) {
+                                         const struct output_state* output, int ted_gain_is_set) {
     int fs_cx = rtl_demod_resolve_complex_rate(demod, output);
     int sym_rate = opts_symbol_rate_hz(opts);
     if (fs_cx < (sym_rate * 2)) {
-        LOG_WARNING("TED SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", fs_cx, sym_rate);
+        LOG_WARNING("CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", fs_cx,
+                    sym_rate);
     }
     int sps = rtl_demod_clamp_sps((fs_cx + (sym_rate / 2)) / sym_rate);
     demod->ted_sps = sps;
@@ -726,18 +672,6 @@ rtl_demod_apply_digital_default_tracking(struct demod_state* demod, const dsd_op
     if (!ted_gain_is_set) {
         demod->ted_gain = 0.025f;
         demod->ted_effective_gain = demod->ted_gain;
-    }
-    if (!env_fll_alpha_set) {
-        demod->fll_alpha = 0.008f;
-    }
-    if (!env_fll_beta_set) {
-        demod->fll_beta = 0.0008f;
-    }
-    if (!env_fll_deadband_set) {
-        demod->fll_deadband = 0.002f;
-    }
-    if (!env_fll_slew_set) {
-        demod->fll_slew_max = 0.004f;
     }
 }
 
@@ -795,21 +729,21 @@ static void
 rtl_demod_log_non_integer_after_rate_change(const struct demod_state* demod, int fs_cx, int sym_rate) {
     if (demod->cqpsk_enable) {
         LOG_WARNING("Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
-                    "FLL band-edge auto-disabled; CQPSK continues to run Gardner TED at the rounded SPS.\n",
+                    "CQPSK timing continues at the rounded SPS.\n",
                     fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
         return;
     }
     LOG_WARNING("Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
-                "TED and FLL band-edge auto-disabled.\n",
+                "Symbol timing will use the rounded SPS.\n",
                 fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
 }
 
 /**
  * @brief Apply sane defaults for digital vs analog demodulation when unset.
  *
- * Populates TED/FLL defaults, TED SPS, channel/audio filter profiles, and
- * analog deemphasis based on the selected mode when the user has not
- * overridden settings via env/CLI. Relies on @p output for effective rate.
+ * Populates CQPSK timing defaults and SPS based on the selected mode when the
+ * user has not overridden settings via env/CLI. Relies on @p output for
+ * effective rate.
  *
  * @param demod  Demodulator state to update.
  * @param opts   Decoder options (mode flags).
@@ -825,17 +759,10 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, const dsd_opts* op
         return;
     }
 
-    int env_fll_alpha_set = cfg->fll_alpha_is_set;
-    int env_fll_beta_set = cfg->fll_beta_is_set;
     int ted_gain_is_set = (demod->ted_gain_is_set || cfg->ted_gain_is_set) ? 1 : 0;
     if (opts_is_digital_mode(opts)) {
-        int env_fll_deadband_set = cfg->fll_deadband_is_set;
-        int env_fll_slew_set = cfg->fll_slew_is_set;
-        rtl_demod_apply_digital_default_tracking(demod, opts, output, ted_gain_is_set, env_fll_alpha_set,
-                                                 env_fll_beta_set, env_fll_deadband_set, env_fll_slew_set);
-        return;
+        rtl_demod_apply_digital_default_tracking(demod, opts, output, ted_gain_is_set);
     }
-    rtl_demod_apply_analog_default_tracking(demod, env_fll_alpha_set, env_fll_beta_set);
 }
 
 /**
@@ -897,10 +824,10 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
 }
 
 /**
- * @brief Refresh TED SPS after capture/output rate changes.
+ * @brief Refresh CQPSK timing SPS after capture/output rate changes.
  *
- * When TED SPS is not explicitly forced via runtime configuration, recompute
- * the nominal samples-per-symbol from the current output rate and mode.
+ * Recompute the nominal samples-per-symbol from the current output rate and
+ * mode unless an explicit CQPSK timing SPS override is active.
  *
  * @param demod  Demodulator state.
  * @param opts   Decoder options (mode flags).
@@ -927,7 +854,8 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
             sym_rate = 4800;
         }
         if (Fs_cx < (sym_rate * 2)) {
-            LOG_WARNING("TED SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx, sym_rate);
+            LOG_WARNING("CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx,
+                        sym_rate);
         }
         sps = (Fs_cx + (sym_rate / 2)) / sym_rate;
         if ((Fs_cx % sym_rate) == 0) {

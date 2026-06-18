@@ -90,26 +90,23 @@ dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, i
 }
 
 int
-dsd_rtl_stream_metrics_hook_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable) {
-    if (g_rtl_stream_metrics_hooks.dsp_get) {
-        return g_rtl_stream_metrics_hooks.dsp_get(out_cqpsk_enable, out_fll_enable, out_ted_enable);
+dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
+    if (g_rtl_stream_metrics_hooks.cqpsk_status) {
+        return g_rtl_stream_metrics_hooks.cqpsk_status(out_cqpsk_enable, out_cqpsk_timing_active);
     }
     if (out_cqpsk_enable) {
         *out_cqpsk_enable = 0;
     }
-    if (out_fll_enable) {
-        *out_fll_enable = 0;
-    }
-    if (out_ted_enable) {
-        *out_ted_enable = 0;
+    if (out_cqpsk_timing_active) {
+        *out_cqpsk_timing_active = 0;
     }
     return 0;
 }
 
 int
-dsd_rtl_stream_metrics_hook_ted_bias(void) {
-    if (g_rtl_stream_metrics_hooks.ted_bias) {
-        return g_rtl_stream_metrics_hooks.ted_bias();
+dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void) {
+    if (g_rtl_stream_metrics_hooks.cqpsk_timing_bias) {
+        return g_rtl_stream_metrics_hooks.cqpsk_timing_bias();
     }
     return 0;
 }

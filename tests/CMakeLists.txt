@@ -1890,7 +1890,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_engine
             "-Wl,--end-group"
             "-Wl,--wrap=rtl_stream_clear_pending_retune_profile"
-            "-Wl,--wrap=rtl_stream_dsp_get"
+            "-Wl,--wrap=rtl_stream_get_cqpsk_status"
             "-Wl,--wrap=rtl_stream_get_symbol_profile_full"
             "-Wl,--wrap=rtl_stream_get_ted_sps"
             "-Wl,--wrap=rtl_stream_get_ted_sps_override"
@@ -3720,14 +3720,6 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_fsk_modem ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_FSK_MODEM COMMAND dsd-neo_test_dsp_fsk_modem)
 
-add_executable(dsd-neo_test_dsp_fll dsp/test_dsp_fll.cpp)
-target_include_directories(
-    dsd-neo_test_dsp_fll
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-dsd_neo_link_dsp_test(dsd-neo_test_dsp_fll ${DSD_NEO_TEST_MATH_LIB})
-add_test(NAME DSP_FLL COMMAND dsd-neo_test_dsp_fll)
-
 add_executable(dsd-neo_test_dsp_fll_band_edge dsp/test_dsp_fll_band_edge.cpp)
 target_include_directories(
     dsd-neo_test_dsp_fll_band_edge
@@ -3827,14 +3819,6 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_iq_dc_block)
 add_test(NAME DSP_IQ_DC_BLOCK COMMAND dsd-neo_test_dsp_iq_dc_block)
 
-add_executable(dsd-neo_test_dsp_fm_agc_limit dsp/test_dsp_fm_agc_limit.cpp)
-target_include_directories(
-    dsd-neo_test_dsp_fm_agc_limit
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-dsd_neo_link_dsp_test(dsd-neo_test_dsp_fm_agc_limit)
-add_test(NAME DSP_FM_AGC_LIMIT COMMAND dsd-neo_test_dsp_fm_agc_limit)
-
 add_executable(dsd-neo_test_dsp_squelch dsp/test_dsp_squelch.cpp)
 target_include_directories(
     dsd-neo_test_dsp_squelch
@@ -3858,14 +3842,6 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_fm_demod_ref)
 add_test(NAME DSP_FM_DEMOD_REF COMMAND dsd-neo_test_dsp_fm_demod_ref)
-
-add_executable(dsd-neo_test_dsp_fm_limiter dsp/test_dsp_fm_limiter.cpp)
-target_include_directories(
-    dsd-neo_test_dsp_fm_limiter
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-dsd_neo_link_dsp_test(dsd-neo_test_dsp_fm_limiter)
-add_test(NAME DSP_FM_LIMITER COMMAND dsd-neo_test_dsp_fm_limiter)
 
 add_executable(dsd-neo_test_dsp_demod_misc dsp/test_dsp_demod_misc.cpp)
 target_include_directories(

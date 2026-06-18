@@ -99,19 +99,17 @@ depending directly on protocol headers. The runtime provides a small hook table 
 
 - Path: `src/dsp`, `include/dsd-neo/dsp`
 - Target: `dsd-neo_dsp`
-- Responsibilities: demodulation pipeline, cascaded decimation/resampler, filters, FLL/TED, CQPSK helpers
+- Responsibilities: demodulation pipeline, cascaded decimation/resampler, filters, OP25-style CQPSK timing/carrier
+  recovery, CQPSK helpers
   (matched/RRC), and SIMD helpers; exposes runtime-tunable parameters consumed by the UI
 - Build files: `src/dsp/CMakeLists.txt`
 
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
-- Coarse toggles: `rtl_stream_toggle_cqpsk`, `rtl_stream_toggle_fll`, `rtl_stream_toggle_ted`; snapshot via
-  `rtl_stream_dsp_get`.
-- TED: `rtl_stream_set_ted_sps`/`rtl_stream_get_ted_sps`, `rtl_stream_set_ted_gain`/`rtl_stream_get_ted_gain`,
-  `rtl_stream_set_ted_force`/`rtl_stream_get_ted_force`; residual via `rtl_stream_ted_bias`.
-- C4FM helpers: clock assist `rtl_stream_set_c4fm_clk`/`rtl_stream_get_c4fm_clk`, sync assist
-  `rtl_stream_set_c4fm_clk_sync`/`rtl_stream_get_c4fm_clk_sync`.
-- FM/FSK conditioning: FM AGC get/set + params, FM limiter, I/Q DC blocker get/set.
+- CQPSK control/status: `rtl_stream_toggle_cqpsk`, `rtl_stream_get_cqpsk_status`,
+  `rtl_stream_set_ted_sps`/`rtl_stream_get_ted_sps`, `rtl_stream_set_ted_gain`/`rtl_stream_get_ted_gain`,
+  and CQPSK timing residual via `rtl_stream_cqpsk_timing_bias`.
+- FM/FSK conditioning: I/Q DC blocker get/set.
 - Spectral/diagnostics: constellation/eye/spectrum getters, spectrum FFT size set/get, SNR getters/estimates for
   C4FM/CQPSK/GFSK.
 - Front-end assists: tuner autogain get/set, IQ balance toggle/get, resampler target set, auto-PPM query/lock/toggle.

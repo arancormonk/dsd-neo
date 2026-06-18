@@ -45,7 +45,6 @@ test_ted_sps(int sps) {
     ted_config_t cfg;
     DSD_MEMSET(&cfg, 0, sizeof(cfg));
     cfg.enabled = 1;
-    cfg.force = 1; /* ensure it runs regardless of sps */
     cfg.sps = sps;
     cfg.gain_mu = 0.025f;        /* OP25 default */
     cfg.gain_omega = 0.0000625f; /* OP25 default: 0.1 * 0.025^2 */
@@ -124,7 +123,6 @@ test_ted_reinit_on_sps_change(void) {
     ted_config_t cfg;
     DSD_MEMSET(&cfg, 0, sizeof(cfg));
     cfg.enabled = 1;
-    cfg.force = 1;
     cfg.gain_mu = 0.025f;
     cfg.omega_rel = 0.002f;
 

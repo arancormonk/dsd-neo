@@ -35,7 +35,6 @@ main(void) {
 
     s->lowpassed = iq;
     s->lp_len = N * 2;
-    s->fll_enabled = 0;
     s->pre_r = 0;
     s->pre_j = 0;
 

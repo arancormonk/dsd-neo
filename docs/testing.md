@@ -9,7 +9,7 @@ The CTest suite includes focused tests for:
 
 - runtime configuration, CLI parsing, rings, hooks, shutdown, and telemetry
 - platform audio concealment, atomics, files, and timing primitives
-- DSP filters, demodulators, FLL/TED, resamplers, SIMD helpers, and symbol paths
+- DSP filters, demodulators, CQPSK timing/carrier recovery, resamplers, SIMD helpers, and symbol paths
 - IO capture/replay metadata, UDP/TCP metrics, RTL/Soapy controls, and retune
   behavior
 - protocol behavior for DMR, M17, NXDN, P25 Phase 1/2, and trunking state

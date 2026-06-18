@@ -202,7 +202,7 @@ int rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels,
 int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
 
 /**
- * @brief Queue a symbol/CQPSK/TED profile to apply at the next RTL retune boundary.
+ * @brief Queue a symbol/CQPSK timing profile to apply at the next RTL retune boundary.
  *
  * Trunking code may know the destination channel profile before the controller
  * thread has actually programmed the tuner. This helper records that profile
@@ -213,14 +213,14 @@ int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
  * @param symbol_rate_hz Symbol rate in Hz, e.g. 4800 or 6000.
  * @param levels Number of symbol levels, 2 or 4.
  * @param channel_profile rtl_stream_channel_profile profile id.
- * @param ted_sps TED samples-per-symbol to apply; <=0 leaves TED SPS unchanged.
+ * @param ted_sps CQPSK timing samples-per-symbol to apply; <=0 leaves the SPS unchanged.
  * @param persist_ted_override Non-zero keeps ted_sps as an override after retune.
  */
 void rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                        int ted_sps, int persist_ted_override);
 
 /**
- * @brief Queue a symbol/CQPSK/TED profile for a specific RTL retune target.
+ * @brief Queue a symbol/CQPSK timing profile for a specific RTL retune target.
  *
  * This is the preferred trunking helper when the destination frequency is
  * already known. The native RTL controller consumes the profile only for a
@@ -232,7 +232,7 @@ void rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz, int
  * @param symbol_rate_hz Symbol rate in Hz, e.g. 4800 or 6000.
  * @param levels Number of symbol levels, 2 or 4.
  * @param channel_profile rtl_stream_channel_profile profile id.
- * @param ted_sps TED samples-per-symbol to apply; <=0 leaves TED SPS unchanged.
+ * @param ted_sps CQPSK timing samples-per-symbol to apply; <=0 leaves the SPS unchanged.
  * @param persist_ted_override Non-zero keeps ted_sps as an override after retune.
  */
 void rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
@@ -248,7 +248,7 @@ typedef struct rtl_stream_retune_gain_profile {
 } rtl_stream_retune_gain_profile;
 
 /**
- * @brief Queue a symbol/CQPSK/TED profile plus optional tuner gain for a retune target.
+ * @brief Queue a symbol/CQPSK timing profile plus optional tuner gain for a retune target.
  *
  * Gain fields are consumed at the same retune boundary as the demodulator
  * profile. Pass NULL or set tuner_gain_is_set to zero to leave tuner gain
@@ -260,7 +260,7 @@ typedef struct rtl_stream_retune_gain_profile {
  * @param symbol_rate_hz Symbol rate in Hz, e.g. 4800 or 6000.
  * @param levels Number of symbol levels, 2 or 4.
  * @param channel_profile rtl_stream_channel_profile profile id.
- * @param ted_sps TED samples-per-symbol to apply; <=0 leaves TED SPS unchanged.
+ * @param ted_sps CQPSK timing samples-per-symbol to apply; <=0 leaves the SPS unchanged.
  * @param persist_ted_override Non-zero keeps ted_sps as an override after retune.
  * @param gain_profile Optional tuner gain/autogain profile to apply at retune.
  */
@@ -475,7 +475,7 @@ int rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
 #endif
 
 /**
- * @brief Get smoothed TED residual from demod pipeline in Q14 units.
+ * @brief Get smoothed CQPSK timing residual from the demod pipeline in Q14 units.
  *
  * Positive values indicate persistent "sample early" bias (nudge center right),
  * negative values indicate "sample late" bias (nudge center left).
@@ -484,27 +484,27 @@ int rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev);
  * @param ctx Stream context (unused).
  * @return Signed Q14 residual (approximately float residual * 16384).
  */
-int rtl_stream_ted_bias(const RtlSdrContext* ctx);
+int rtl_stream_cqpsk_timing_bias(const RtlSdrContext* ctx);
 
 /**
- * @brief Get the configured Gardner TED samples-per-symbol.
+ * @brief Get the configured CQPSK Gardner timing samples-per-symbol.
  *
  * @return Nominal SPS (>=2); 0 when unavailable.
  */
 int rtl_stream_get_ted_sps(void);
 
 /**
- * @brief Get the pending Gardner TED samples-per-symbol override.
+ * @brief Get the pending CQPSK Gardner timing samples-per-symbol override.
  *
  * @return Override SPS when set; 0 when normal rate-derived SPS is active.
  */
 int rtl_stream_get_ted_sps_override(void);
 
 /**
- * @brief Set the Gardner TED samples-per-symbol.
+ * @brief Set the CQPSK Gardner timing samples-per-symbol.
  *
  * Use when switching between symbol rates (e.g., P25P1 4800 sym/s vs P25P2 6000 sym/s).
- * The TED will reinitialize its internal state (omega bounds, delay line) on SPS change.
+ * CQPSK timing will reinitialize its internal state (omega bounds, delay line) on SPS change.
  * Also sets an override flag that persists the value across rate-change refreshes.
  *
  * @param sps Nominal samples per symbol (clamped to [2, 64]).
@@ -512,7 +512,7 @@ int rtl_stream_get_ted_sps_override(void);
 void rtl_stream_set_ted_sps(int sps);
 
 /**
- * @brief Clear the TED SPS override.
+ * @brief Clear the CQPSK timing SPS override.
  *
  * Call when returning to control channel to allow normal SPS calculation
  * based on opts mode flags. Without clearing, the voice channel SPS would
@@ -521,7 +521,7 @@ void rtl_stream_set_ted_sps(int sps);
 void rtl_stream_clear_ted_sps_override(void);
 
 /**
- * @brief Set the Gardner TED SPS without asserting the override.
+ * @brief Set the CQPSK Gardner timing SPS without asserting the override.
  *
  * Sets ted_sps but leaves ted_sps_override unchanged (typically 0 after
  * clearing). Use when returning to CC or switching protocols where the
@@ -532,32 +532,18 @@ void rtl_stream_clear_ted_sps_override(void);
 void rtl_stream_set_ted_sps_no_override(int sps);
 
 /**
- * @brief Set the Gardner TED loop gain (native float).
+ * @brief Set the CQPSK Gardner timing loop gain (native float).
  *
  * @param gain Loop gain; typical 0.01..0.1, default ~0.05.
  */
 void rtl_stream_set_ted_gain(float gain);
 
 /**
- * @brief Get the current Gardner TED loop gain.
+ * @brief Get the current CQPSK Gardner timing loop gain.
  *
  * @return Native float loop gain.
  */
 float rtl_stream_get_ted_gain(void);
-
-/**
- * @brief Force-enable TED for non-symbol FM/C4FM paths (0/1).
- *
- * @param onoff Non-zero to force enable; zero to follow mode defaults.
- */
-void rtl_stream_set_ted_force(int onoff);
-
-/**
- * @brief Return the TED force flag (0/1).
- *
- * @return 1 when forced on; 0 otherwise.
- */
-int rtl_stream_get_ted_force(void);
 
 /**
  * @brief Capture a snapshot of the eye diagram buffer (timing helper).
@@ -653,27 +639,6 @@ int rtl_stream_get_tuner_autogain(void);
 void rtl_stream_set_tuner_autogain(int onoff);
 
 /**
- * @brief Set the C4FM clock assist mode.
- * @param mode 0=disabled, 1=Early-Late, 2=Mueller-Muller; values outside range clamp to 0.
- */
-void rtl_stream_set_c4fm_clk(int mode);
-/**
- * @brief Get the current C4FM clock assist mode.
- * @return 0 (off), 1 (EL), or 2 (MM).
- */
-int rtl_stream_get_c4fm_clk(void);
-/**
- * @brief Enable/disable C4FM clock assist while synchronized.
- * @param enable Non-zero to enable; zero to disable.
- */
-void rtl_stream_set_c4fm_clk_sync(int enable);
-/**
- * @brief Get C4FM clock-assist-while-sync flag.
- * @return 1 when enabled; 0 when disabled.
- */
-int rtl_stream_get_c4fm_clk_sync(void);
-
-/**
  * @brief Get auto PPM status and last measurements.
  *
  * @param enabled [out] Current enable flag (0/1); may be NULL.
@@ -734,7 +699,6 @@ int rtl_stream_get_iq_balance(void);
  */
 void rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta);
 
-/* Coarse DSP feature toggles and snapshot */
 typedef struct rtl_stream_costas_metrics {
     int err_smooth_avg_q14;
     int err_raw_avg_q14;
@@ -784,26 +748,13 @@ typedef struct rtl_stream_decode_health {
  */
 void rtl_stream_toggle_cqpsk(int onoff);
 /**
- * @brief Toggle non-symbol residual FLL on/off (0=off, nonzero=on).
- *
- * @param onoff Non-zero to enable; zero to disable.
- */
-void rtl_stream_toggle_fll(int onoff);
-/**
- * @brief Toggle non-symbol TED on/off (0=off, nonzero=on).
- *
- * @param onoff Non-zero to enable; zero to disable.
- */
-void rtl_stream_toggle_ted(int onoff);
-/**
- * @brief Get current coarse DSP feature flags; any pointer may be NULL.
+ * @brief Get current CQPSK recovery status; any pointer may be NULL.
  *
  * @param cqpsk_enable [out] CQPSK enable flag.
- * @param fll_enable [out] FLL enable flag.
- * @param ted_enable [out] TED enable flag.
+ * @param cqpsk_timing_active [out] CQPSK Gardner timing active flag.
  * @return 0 on success; negative on error.
  */
-int rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable);
+int rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active);
 
 /**
  * @brief Get recent soft-symbol quality metrics from the RTL FSK symbol modem.
@@ -930,36 +881,6 @@ int rtl_stream_get_demod_rate_hz(void);
 
 /** Return FLL band-edge frequency estimate in Hz (coarse freq offset for CQPSK). */
 double rtl_stream_get_fll_band_edge_freq_hz(void);
-
-/* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
-/** Get non-symbol FM AGC enable state (1 on, 0 off). */
-int rtl_stream_get_fm_agc(void);
-/** Enable/disable non-symbol FM AGC (0 off, nonzero on). */
-void rtl_stream_set_fm_agc(int onoff);
-/**
- * @brief Get FM AGC parameters (any pointer may be NULL).
- *
- * @param target_rms [out] Target RMS magnitude (normalized float).
- * @param min_rms [out] Minimum RMS to engage AGC (normalized float).
- * @param alpha_up [out] Smoothing when gain increases (0..1).
- * @param alpha_down [out] Smoothing when gain decreases (0..1).
- */
-void rtl_stream_get_fm_agc_params(float* target_rms, float* min_rms, float* alpha_up, float* alpha_down);
-
-/**
- * @brief Set FM AGC parameters; pass negative to leave a field unchanged.
- *
- * @param target_rms Target RMS magnitude (normalized); negative to keep existing.
- * @param min_rms Minimum RMS threshold; negative to keep existing.
- * @param alpha_up Smoothing when gain increases (0..1); negative to keep existing.
- * @param alpha_down Smoothing when gain decreases (0..1); negative to keep existing.
- */
-void rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up, float alpha_down);
-
-/** Get non-symbol FM constant-envelope limiter state (1 on, 0 off). */
-int rtl_stream_get_fm_limiter(void);
-/** Enable/disable non-symbol FM constant-envelope limiter (0 off, nonzero on). */
-void rtl_stream_set_fm_limiter(int onoff);
 
 /**
  * @brief Get complex I/Q DC blocker state and shift k.

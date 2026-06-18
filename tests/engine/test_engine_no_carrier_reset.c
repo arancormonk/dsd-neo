@@ -93,15 +93,12 @@ __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
 }
 
 int
-__wrap_rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
+__wrap_rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
     if (cqpsk_enable) {
         *cqpsk_enable = g_rtl_cqpsk_enable;
     }
-    if (fll_enable) {
-        *fll_enable = 0;
-    }
-    if (ted_enable) {
-        *ted_enable = 1;
+    if (cqpsk_timing_active) {
+        *cqpsk_timing_active = g_rtl_cqpsk_enable ? 1 : 0;
     }
     return 0;
 }

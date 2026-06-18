@@ -60,42 +60,9 @@ extern "C" {
  *     enables resampling by default to keep the output rate at ~48 kHz.
  *     Values: "off" or "0" to disable; integer Hz (e.g., 48000) to enable/override.
  *
- * Residual CFO frequency-locked loop (FLL)
- * These are non-symbol/advanced controls outside the RTL-family digital FSK
- * symbol modem. RTL-family digital FSK selects timing and level
- * normalization internally; CQPSK uses its OP25-style symbol chain.
- * - DSD_NEO_FLL
- *     Enable residual carrier frequency correction (RTL demod path).
- *     Values: "1" to enable; "0"/unset/other to disable. Default: disabled.
- * - DSD_NEO_FLL_ALPHA, DSD_NEO_FLL_BETA
- *     Native-float proportional/integral gains (typical: ALPHA 0.001..0.01, BETA 0.0001..0.001).
- *     When unset, mode-specific defaults are selected by the RTL demod config.
- * - DSD_NEO_FLL_DEADBAND
- *     Ignore small phase errors in the FLL loop to avoid audible low-frequency sweeps in analog FM.
- *     Values: native-float threshold (typical 0.001..0.01).
- * - DSD_NEO_FLL_SLEW
- *     Limit per-update NCO frequency change (slew-rate) to prevent rapid ramps.
- *     Values: native-float max freq delta per sample (rad/sample).
- *
- * Gardner timing error detector (TED)
- * - DSD_NEO_TED
- *     Enable lightweight fractional-delay timing correction (RTL demod path). Generally off for analog FM.
- *     Values: 1 enable, else disabled. Default: 0 (disabled).
+ * CQPSK/OP25 Gardner timing recovery
  * - DSD_NEO_TED_GAIN
- *     Native-float loop gain (OP25-style; typical 0.01..0.1).
- * - DSD_NEO_TED_FORCE
- *     Force TED to run even when the pipeline would normally gate it off (e.g., non-integer SPS).
- *     Values: 1 enable, else disabled. Default: 0.
- *
- * C4FM clock assist (sample-window path)
- * - DSD_NEO_C4FM_CLK
- *     Enable a lightweight clock loop on the C4FM (P25p1) symbol path.
- *     Values: "el" for Early-Late, "mm" for Mueller&Mueller, "0"/"off" to disable.
- *     Default: off. When enabled, the loop nudges the integer symbolCenter by ±1
- *     occasionally based on the error sign; it does not perform fractional delay.
- * - DSD_NEO_C4FM_CLK_SYNC
- *     Allow C4FM clock assist to remain active while synchronized (fine-trim).
- *     Values: 1 enable, else disabled. Default: 0 (disabled; assist runs only pre-sync).
+ *     Native-float CQPSK Gardner timing gain override (OP25-style; typical 0.01..0.1).
  *
  * Audio processing
  * These controls apply to monitor/non-symbol discriminator audio, not the
@@ -106,26 +73,6 @@ extern "C" {
  * - DSD_NEO_AUDIO_LPF
  *     Optional one-pole low-pass filter after demod. Approximate cutoff in Hz.
  *     Values: "off" or "0" to disable; integer (e.g., 3000, 5000) to enable. Default: off.
- *
- * FM/C4FM amplitude stabilization (non-symbol pre-discriminator)
- * These controls are bypassed for RTL-family digital FSK symbol output.
- * - DSD_NEO_FM_AGC
- *     Enable a constant-envelope limiter/AGC on complex I/Q before FM discrimination. Helps stabilize
- *     RTL-SDR amplitude bounce (e.g., +/-3 dB) that can raise P25 P1 error rates.
- *     Default: off for all modes. Values: 1 enable, 0 disable.
- * - DSD_NEO_FM_AGC_TARGET
- *     Target RMS amplitude of the complex envelope |z| using normalized float samples (~0..1).
- *     Typical 0.2..0.6. Default: 0.30.
- * - DSD_NEO_FM_AGC_MIN
- *     Minimum RMS to engage AGC (normalized); below this, gain is held to avoid boosting noise.
- *     Default: 0.06.
- * - DSD_NEO_FM_AGC_ALPHA_UP, DSD_NEO_FM_AGC_ALPHA_DOWN
- *     Smoothing factors when the computed block gain increases vs decreases, respectively.
- *     Larger values react faster. Defaults: ALPHA_UP=0.25, ALPHA_DOWN=0.75.
- * - DSD_NEO_FM_LIMITER
- *     Enable constant-envelope limiter that normalizes each complex sample to a near-constant
- *     magnitude around the AGC target. Helpful to clamp fast AM ripple. Default: off (try enabling
- *     for P25 P1 if AGC alone is insufficient).
  *
  * Complex DC offset removal (baseband)
  * - DSD_NEO_IQ_DC_BLOCK
@@ -153,7 +100,7 @@ extern "C" {
  *     Default: 50ms.
  * - DSD_NEO_RETUNE_MUTE_MS
  *     Input sample mute duration around RTL retunes. This drops tuner-settling samples before they can train
- *     CQPSK/TED/FLL state. Values: integer 10..1000. Default: 120ms.
+ *     CQPSK recovery state. Values: integer 10..1000. Default: 120ms.
  *
  * TCP audio input
  * - DSD_NEO_TCPIN_BACKOFF_MS
@@ -429,35 +376,13 @@ typedef struct dsdneoRuntimeConfig {
     int resamp_disable;   /* env explicitly disables */
     int resamp_target_hz; /* >0 when enabled */
 
-    /* Residual CFO FLL - native float parameters (GNU Radio style) */
-    int fll_is_set;
-    int fll_enable;
-    int fll_alpha_is_set;
-    float fll_alpha; /* proportional gain (typ 0.001-0.01) */
-    int fll_beta_is_set;
-    float fll_beta; /* integral gain (typ 0.0001-0.001) */
-    int fll_deadband_is_set;
-    float fll_deadband; /* minimum error magnitude to update (typ 0.001-0.01) */
-    int fll_slew_is_set;
-    float fll_slew_max; /* max per-sample freq change (rad/sample) */
-
     /* CQPSK Costas loop (carrier recovery) */
     int costas_bw_is_set;
     int costas_damping_is_set;
 
-    /* Gardner TED - native float parameters */
-    int ted_is_set;
-    int ted_enable;
+    /* CQPSK Gardner timing recovery */
     int ted_gain_is_set;
-    float ted_gain; /* timing error gain (typ 0.01-0.1) */
-    int ted_force_is_set;
-    int ted_force;
-
-    /* C4FM clock assist */
-    int c4fm_clk_is_set;      /* env seen */
-    int c4fm_clk_mode;        /* 0=off, 1=EL, 2=MM */
-    int c4fm_clk_sync_is_set; /* env seen */
-    int c4fm_clk_sync;        /* 0=pre-sync only, 1=also while synced */
+    float ted_gain; /* CQPSK timing gain (typ 0.01-0.1) */
 
     /* Deemphasis */
     int deemph_is_set;
@@ -499,22 +424,6 @@ typedef struct dsdneoRuntimeConfig {
      * Applies to relevant digital modes (e.g., P25 C4FM/CQPSK, GFSK family). */
     int snr_sql_is_set;
     int snr_sql_db; /* integer dB threshold */
-
-    /* FM/C4FM amplitude AGC */
-    int fm_agc_is_set;
-    int fm_agc_enable;
-    int fm_agc_target_is_set;
-    float fm_agc_target_rms;
-    int fm_agc_min_is_set;
-    float fm_agc_min_rms;
-    int fm_agc_alpha_up_is_set;
-    float fm_agc_alpha_up;
-    int fm_agc_alpha_down_is_set;
-    float fm_agc_alpha_down;
-
-    /* FM constant-envelope limiter */
-    int fm_limiter_is_set;
-    int fm_limiter_enable;
 
     /* Complex DC blocker */
     int iq_dc_block_is_set;
@@ -582,25 +491,6 @@ void dsd_apply_runtime_config_to_opts(const dsdneoRuntimeConfig* cfg, dsd_opts* 
  * @return Pointer to value string (owned by the C library) or NULL if unset.
  */
 const char* dsd_neo_env_get(const char* name);
-
-/* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM) */
-/**
- * @brief Set the C4FM clock-assist mode (0=off, 1=EL, 2=MM). Values outside range clamp to 0.
- *
- * @param mode Clock-assist mode (0..2).
- */
-void dsd_neo_set_c4fm_clk(int mode);
-/** @brief Get the C4FM clock-assist mode (0=off, 1=EL, 2=MM). */
-int dsd_neo_get_c4fm_clk(void);
-/* Toggle C4FM clock assist while synced (0/1) */
-/**
- * @brief Enable or disable C4FM clock assist while synchronized (0/1).
- *
- * @param enable Non-zero to enable; zero to disable.
- */
-void dsd_neo_set_c4fm_clk_sync(int enable);
-/** @brief Return C4FM clock-assist-while-sync flag (0/1). */
-int dsd_neo_get_c4fm_clk_sync(void);
 
 /*
  * User configuration (INI file)

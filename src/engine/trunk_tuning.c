@@ -170,7 +170,7 @@ dsd_engine_rtl_profile_snapshot_capture(const dsd_opts* opts, const dsd_state* s
     snapshot->active = 1;
     snapshot->rf_mod = state->rf_mod;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
-    (void)rtl_stream_dsp_get(&snapshot->rtl_cqpsk_enable, NULL, NULL);
+    (void)rtl_stream_get_cqpsk_status(&snapshot->rtl_cqpsk_enable, NULL);
     (void)rtl_stream_get_symbol_profile_full(&snapshot->rtl_symbol_rate_hz, &snapshot->rtl_symbol_levels,
                                              &snapshot->rtl_channel_profile);
     snapshot->rtl_ted_sps = rtl_stream_get_ted_sps();

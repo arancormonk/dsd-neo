@@ -3,17 +3,21 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/rtl_demod_config.h>
+#include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/ring.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 
 extern demod_state demod;
+extern std::atomic<double> g_snr_qpsk_db;
 
 static int
 expect_sps(const char* label, const dsd_opts& opts, int rate_hz, int override_sps, int want_sps, int want_profile) {
@@ -64,9 +68,8 @@ expect_output_kind(const char* label, const dsd_opts& opts, int want_kind, int w
         rc = 1;
     }
     if (want_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
-        if (demod->cqpsk_enable != 0 || demod->ted_enabled != 0 || demod->fll_enabled != 0 || demod->fm_agc_enable != 0
-            || demod->fm_limiter_enable != 0) {
-            DSD_FPRINTF(stderr, "%s: FSK symbol path left non-symbol controls enabled\n", label);
+        if (demod->cqpsk_enable != 0 || demod->ted_enabled != 0) {
+            DSD_FPRINTF(stderr, "%s: FSK symbol path left CQPSK timing enabled\n", label);
             rc = 1;
         }
     }
@@ -162,9 +165,8 @@ expect_configured_mode(const char* label, const dsd_opts& opts, int rtl_dsp_bw_h
         rc = 1;
     }
     if (want_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
-        if (demod->cqpsk_enable != 0 || demod->ted_enabled != 0 || demod->fll_enabled != 0 || demod->fm_agc_enable != 0
-            || demod->fm_limiter_enable != 0) {
-            DSD_FPRINTF(stderr, "%s: FSK symbol path left non-symbol controls enabled\n", label);
+        if (demod->cqpsk_enable != 0 || demod->ted_enabled != 0) {
+            DSD_FPRINTF(stderr, "%s: FSK symbol path left CQPSK timing enabled\n", label);
             rc = 1;
         }
     }
@@ -184,7 +186,7 @@ expect_configured_mode(const char* label, const dsd_opts& opts, int rtl_dsp_bw_h
 }
 
 static int
-expect_live_symbol_controls_guarded(void) {
+expect_live_symbol_status(void) {
     int rc = 0;
 
     DSD_MEMSET(&demod, 0, sizeof(demod));
@@ -192,71 +194,33 @@ expect_live_symbol_controls_guarded(void) {
     demod.symbol_rate_hz = 4800;
     demod.symbol_levels = 4;
 
-    rtl_stream_toggle_fll(1);
-    rtl_stream_toggle_ted(1);
-    rtl_stream_set_ted_force(1);
-    rtl_stream_set_fm_agc(1);
-    rtl_stream_set_fm_limiter(1);
-
     int cq = -1;
-    int fll = -1;
-    int ted = -1;
-    rtl_stream_dsp_get(&cq, &fll, &ted);
-    if (cq != 0 || fll != 0 || ted != 0 || rtl_stream_get_ted_force() != 0 || rtl_stream_get_fm_agc() != 0
-        || rtl_stream_get_fm_limiter() != 0) {
-        DSD_FPRINTF(stderr, "FSK symbol output did not report guarded non-symbol controls as off\n");
-        rc = 1;
-    }
-    if (demod.fll_enabled != 0 || demod.ted_enabled != 0 || demod.ted_force != 0 || demod.fm_agc_enable != 0
-        || demod.fm_limiter_enable != 0) {
-        DSD_FPRINTF(stderr, "FSK symbol output retained raw non-symbol control state\n");
+    int timing = -1;
+    rtl_stream_get_cqpsk_status(&cq, &timing);
+    if (cq != 0 || timing != 0 || demod.ted_enabled != 0) {
+        DSD_FPRINTF(stderr, "FSK symbol output reported CQPSK timing active\n");
         rc = 1;
     }
 
     DSD_MEMSET(&demod, 0, sizeof(demod));
-    demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
-    demod.cqpsk_enable = 1;
-    demod.fll_enabled = 1;
-    demod.ted_force = 1;
-    demod.fm_agc_enable = 1;
-    demod.fm_limiter_enable = 1;
-
-    rtl_stream_toggle_fll(1);
-    rtl_stream_toggle_ted(0);
-    rtl_stream_set_ted_force(1);
-    rtl_stream_set_fm_agc(1);
-    rtl_stream_set_fm_limiter(1);
+    rtl_stream_toggle_cqpsk(1);
 
     cq = -1;
-    fll = -1;
-    ted = -1;
-    rtl_stream_dsp_get(&cq, &fll, &ted);
-    if (cq != 1 || fll != 0 || ted != 1 || rtl_stream_get_ted_force() != 0 || rtl_stream_get_fm_agc() != 0
-        || rtl_stream_get_fm_limiter() != 0) {
-        DSD_FPRINTF(stderr, "CQPSK symbol output did not guard non-symbol controls or force TED status\n");
-        rc = 1;
-    }
-    if (demod.fll_enabled != 0 || demod.ted_force != 0 || demod.fm_agc_enable != 0 || demod.fm_limiter_enable != 0
-        || demod.ted_enabled != 1) {
-        DSD_FPRINTF(stderr, "CQPSK symbol output retained raw non-symbol control state\n");
+    timing = -1;
+    rtl_stream_get_cqpsk_status(&cq, &timing);
+    if (cq != 1 || timing != 1 || demod.ted_enabled != 1) {
+        DSD_FPRINTF(stderr, "CQPSK symbol output did not force CQPSK timing active\n");
         rc = 1;
     }
 
     DSD_MEMSET(&demod, 0, sizeof(demod));
     demod.output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
-    rtl_stream_toggle_fll(1);
-    rtl_stream_toggle_ted(1);
-    rtl_stream_set_ted_force(1);
-    rtl_stream_set_fm_agc(1);
-    rtl_stream_set_fm_limiter(1);
 
     cq = -1;
-    fll = -1;
-    ted = -1;
-    rtl_stream_dsp_get(&cq, &fll, &ted);
-    if (cq != 0 || fll != 1 || ted != 1 || rtl_stream_get_ted_force() != 1 || rtl_stream_get_fm_agc() != 1
-        || rtl_stream_get_fm_limiter() != 1) {
-        DSD_FPRINTF(stderr, "Audio monitor/non-symbol output did not retain live DSP controls\n");
+    timing = -1;
+    rtl_stream_get_cqpsk_status(&cq, &timing);
+    if (cq != 0 || timing != 0) {
+        DSD_FPRINTF(stderr, "Audio monitor output reported CQPSK timing active\n");
         rc = 1;
     }
 
@@ -315,6 +279,44 @@ expect_cqpsk_toggle_restores_fsk_channel_profile(void) {
     }
 
     return rc;
+}
+
+static int
+expect_rtl_metrics_do_not_nudge_cqpsk_bandedge(void) {
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    demod.cqpsk_enable = 1;
+    demod.rate_out = 48000;
+    demod.ted_sps = 10;
+    demod.fll_band_edge_state.initialized = 1;
+    demod.fll_band_edge_state.min_freq = -1.0f;
+    demod.fll_band_edge_state.max_freq = 1.0f;
+    demod.fll_band_edge_state.freq = 0.12345f;
+    demod.costas_state.initialized = 1;
+    demod.ted_state.lock_count = 32;
+    demod.ted_state.lock_accum = 32.0f;
+
+    const float want = demod.fll_band_edge_state.freq;
+    g_snr_qpsk_db.store(30.0, std::memory_order_relaxed);
+
+    static float iq[2048];
+    const float kTwoPi = 6.28318530717958647692f;
+    const float tone_hz = 1000.0f;
+    const float rate_hz = 48000.0f;
+    for (int n = 0; n < 1024; n++) {
+        float phase = kTwoPi * tone_hz * (float)n / rate_hz;
+        iq[(size_t)(n << 1)] = cosf(phase);
+        iq[(size_t)(n << 1) + 1] = sinf(phase);
+    }
+
+    rtl_metrics_update_spectrum_from_iq(iq, 2048, 48000);
+    g_snr_qpsk_db.store(-100.0, std::memory_order_relaxed);
+
+    if (fabsf(demod.fll_band_edge_state.freq - want) > 1e-7f) {
+        DSD_FPRINTF(stderr, "RTL metrics nudged CQPSK band-edge freq=%f want=%f\n", demod.fll_band_edge_state.freq,
+                    want);
+        return 1;
+    }
+    return 0;
 }
 
 int
@@ -486,8 +488,9 @@ main(void) {
     rc |= expect_output_kind("Soapy analog-only stays monitor/audio path", soapy_analog, DSD_DEMOD_OUTPUT_AUDIO_MONITOR,
                              4800, 4);
 
-    rc |= expect_live_symbol_controls_guarded();
+    rc |= expect_live_symbol_status();
     rc |= expect_cqpsk_toggle_restores_fsk_channel_profile();
+    rc |= expect_rtl_metrics_do_not_nudge_cqpsk_bandedge();
     rc |= expect_steady_state_watermark_disabled("rtl_tcp keeps demod watermark disabled", "rtltcp:127.0.0.1:1234");
     rc |= expect_steady_state_watermark_disabled("rtlsdr keeps demod watermark disabled", "rtl");
     rc |= expect_steady_state_watermark_disabled("soapy keeps demod watermark disabled", "soapy:driver=test");
