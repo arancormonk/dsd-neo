@@ -219,15 +219,12 @@ fake_stream_active(void) {
 }
 
 static int
-fake_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable) {
+fake_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
     if (out_cqpsk_enable) {
         *out_cqpsk_enable = 1;
     }
-    if (out_fll_enable) {
-        *out_fll_enable = 0;
-    }
-    if (out_ted_enable) {
-        *out_ted_enable = 1;
+    if (out_cqpsk_timing_active) {
+        *out_cqpsk_timing_active = 1;
     }
     return 0;
 }
@@ -296,7 +293,7 @@ run_p25p2_sync_case(const char* pattern, int expected_sync, const char* label) {
         .output_kind = fake_output_kind,
         .symbol_profile = fake_symbol_profile,
         .stream_generation = fake_stream_generation,
-        .dsp_get = fake_dsp_get,
+        .cqpsk_status = fake_cqpsk_status,
         .stream_active = fake_stream_active,
     };
     dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);

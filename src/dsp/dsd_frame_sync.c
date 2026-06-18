@@ -1672,9 +1672,10 @@ frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state) {
 #ifdef USE_RADIO
     if (state->rf_mod == 1 && opts->audio_in_type == AUDIO_IN_RTL
         && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
-        int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
-        dsd_rtl_stream_metrics_hook_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
-        if (dsp_cqpsk && dsp_ted) {
+        int dsp_cqpsk = 0;
+        int dsp_timing = 0;
+        dsd_rtl_stream_metrics_hook_cqpsk_status(&dsp_cqpsk, &dsp_timing);
+        if (dsp_cqpsk && dsp_timing) {
             return 1;
         }
     }

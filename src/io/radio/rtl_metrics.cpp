@@ -365,17 +365,14 @@ rtl_metrics_compute_nco_metrics(int out_rate_hz) {
         return nco;
     }
 
-    if (demod.cqpsk_enable) {
-        float fll_freq = demod.fll_band_edge_state.freq;
-        float costas_freq = demod.costas_state.freq;
-        int sps = demod.ted_sps > 0 ? demod.ted_sps : 5;
-        float costas_freq_sample_rate = costas_freq / static_cast<float>(sps);
-        nco.total_freq_rad = fll_freq + costas_freq_sample_rate;
-        demod.fll_freq = nco.total_freq_rad;
-        demod.fll_phase = demod.fll_band_edge_state.phase + demod.costas_state.phase;
-    } else {
-        nco.total_freq_rad = demod.fll_freq;
+    if (!demod.cqpsk_enable) {
+        return nco;
     }
+    float band_edge_freq = demod.fll_band_edge_state.freq;
+    float costas_freq = demod.costas_state.freq;
+    int sps = demod.ted_sps > 0 ? demod.ted_sps : 5;
+    float costas_freq_sample_rate = costas_freq / static_cast<float>(sps);
+    nco.total_freq_rad = band_edge_freq + costas_freq_sample_rate;
     nco.cfo_hz = static_cast<double>(nco.total_freq_rad) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
     return nco;
 }
@@ -383,8 +380,8 @@ rtl_metrics_compute_nco_metrics(int out_rate_hz) {
 static void
 rtl_metrics_store_nco_metrics(const rtl_metrics_nco_metrics& nco, int out_rate_hz) {
     g_cfo_nco_hz.store(nco.cfo_hz, std::memory_order_relaxed);
-    int fll_freq_q15_compat = static_cast<int>(lrint(nco.total_freq_rad * (32768.0 / (2.0 * M_PI))));
-    g_nco_q15.store(fll_freq_q15_compat, std::memory_order_relaxed);
+    int nco_freq_q15 = static_cast<int>(lrint(nco.total_freq_rad * (32768.0 / (2.0 * M_PI))));
+    g_nco_q15.store(nco_freq_q15, std::memory_order_relaxed);
     g_demod_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
     g_costas_err_avg_q14.store(demod.costas_err_avg_q14, std::memory_order_relaxed);
     g_costas_err_raw_avg_q14.store(demod.costas_err_raw_avg_q14, std::memory_order_relaxed);
@@ -392,80 +389,11 @@ rtl_metrics_store_nco_metrics(const rtl_metrics_nco_metrics& nco, int out_rate_h
     g_costas_zero_conf_pct.store(demod.costas_zero_conf_pct, std::memory_order_relaxed);
 }
 
-static int
-rtl_metrics_outer_loop_gate(double df_spec_hz, int out_rate_hz) {
-    if (!(demod.cqpsk_enable && demod.fll_enabled && out_rate_hz > 0)) {
-        return 0;
-    }
-    double snr_qpsk = g_snr_qpsk_db.load(std::memory_order_relaxed);
-    double abs_df = fabs(df_spec_hz);
-    return (snr_qpsk > -3.0 && abs_df > 150.0 && abs_df < 2500.0) ? 1 : 0;
-}
-
-static void
-rtl_metrics_outer_loop_bounds(float* fll_min, float* fll_max) {
-    *fll_min = demod.fll_band_edge_state.min_freq;
-    *fll_max = demod.fll_band_edge_state.max_freq;
-    if (!std::isfinite(*fll_min) || !std::isfinite(*fll_max) || *fll_min >= *fll_max) {
-        *fll_min = -1.0f;
-        *fll_max = 1.0f;
-    }
-}
-
-static float
-rtl_metrics_outer_loop_clamp(float value, float lo, float hi) {
-    if (value > hi) {
-        return hi;
-    }
-    if (value < lo) {
-        return lo;
-    }
-    return value;
-}
-
-static void
-rtl_metrics_outer_loop_update_legacy_integrator(float delta_applied, float fll_min, float fll_max) {
-    float i_new = demod.fll_state.integrator + delta_applied;
-    demod.fll_state.integrator = rtl_metrics_outer_loop_clamp(i_new, fll_min, fll_max);
-}
-
-static rtl_metrics_nco_metrics
-rtl_metrics_apply_cqpsk_outer_loop(const rtl_metrics_nco_metrics& base, double df_spec_hz, int out_rate_hz) {
-    rtl_metrics_nco_metrics nco = base;
-    if (!rtl_metrics_outer_loop_gate(df_spec_hz, out_rate_hz)) {
-        return nco;
-    }
-
-    const double k_outer = 0.05;
-    double delta_rad = k_outer * df_spec_hz * 2.0 * M_PI / static_cast<double>(out_rate_hz);
-    if (fabs(delta_rad) <= 1e-9) {
-        return nco;
-    }
-
-    float fll_min = 0.0f;
-    float fll_max = 0.0f;
-    rtl_metrics_outer_loop_bounds(&fll_min, &fll_max);
-
-    float f_old = demod.fll_band_edge_state.freq;
-    float f_new = rtl_metrics_outer_loop_clamp(f_old + static_cast<float>(delta_rad), fll_min, fll_max);
-    demod.fll_band_edge_state.freq = f_new;
-
-    int sps = demod.ted_sps > 0 ? demod.ted_sps : 5;
-    float costas_freq_sample_rate = demod.costas_state.freq / static_cast<float>(sps);
-    nco.total_freq_rad = f_new + costas_freq_sample_rate;
-    demod.fll_freq = nco.total_freq_rad;
-
-    rtl_metrics_outer_loop_update_legacy_integrator(f_new - f_old, fll_min, fll_max);
-    nco.cfo_hz = static_cast<double>(nco.total_freq_rad) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
-    return nco;
-}
-
 /**
  * @brief Update spectrum, CFO, and SNR exports from an interleaved I/Q block.
  *
  * Copies the most recent samples into a windowed buffer, performs an FFT,
- * smooths the power spectrum, and updates residual CFO and Costas/FLL exports.
- * Also nudges the CQPSK outer loop when appropriate.
+ * smooths the power spectrum, and updates residual CFO and Costas/band-edge exports.
  *
  * @param iq_interleaved Interleaved int16_t I/Q samples.
  * @param len_interleaved Number of int16_t elements in `iq_interleaved`.
@@ -493,7 +421,7 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     g_spec_snr_db.store(peak.spec_snr_db, std::memory_order_relaxed);
     g_resid_cfo_spec_hz.store(peak.df_spec_hz, std::memory_order_relaxed);
 
-    /* NCO CFO from Costas/FLL (native float freq in rad/sample, scaled by Fs/(2π))
+    /* NCO CFO from CQPSK band-edge/Costas recovery (native float freq in rad/sample, scaled by Fs/(2π))
      *
      * For CQPSK (OP25-compatible flow), the total CFO is the sum of:
      *   1. FLL band-edge frequency (coarse, at sample rate) - fll_band_edge_state.freq
@@ -501,39 +429,17 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
      *
      * The Costas operates at symbol rate (Fs/sps), so its frequency must be scaled
      * by (1/sps) to convert to sample-rate equivalent before adding to FLL freq.
-     *
-     * For non-CQPSK modes, we use the legacy fll_freq field.
      */
     rtl_metrics_nco_metrics nco = rtl_metrics_compute_nco_metrics(out_rate_hz);
     rtl_metrics_store_nco_metrics(nco, out_rate_hz);
-    /* Spectrum-assisted CFO correction for CQPSK:
-     * When CQPSK path and FLL are enabled, and we see a reasonably strong
-     * QPSK signal, use the residual CFO estimate from the spectrum to gently
-     * nudge the FLL NCO toward zero residual. This acts as a slow outer loop
-     * around the symbol-domain Costas, improving pull-in when residual
-     * CFO is outside its comfort zone.
-     *
-     * To avoid loop fighting and NCO oscillation when the inner Costas
-     * is already close to lock, we:
-     *   - Ignore very small residuals near DC.
-     *   - Use a conservative outer-loop gain.
-     *
-     * For the OP25-compatible flow, we nudge fll_band_edge_state.freq (the coarse
-     * frequency at sample rate). The legacy fll_freq is updated as a side effect
-     * for backwards compatibility with any code that reads it directly.
-     */
-    rtl_metrics_nco_metrics nudged = rtl_metrics_apply_cqpsk_outer_loop(nco, peak.df_spec_hz, out_rate_hz);
-    if (nudged.total_freq_rad != nco.total_freq_rad || nudged.cfo_hz != nco.cfo_hz) {
-        rtl_metrics_store_nco_metrics(nudged, out_rate_hz);
-    }
 
-    /* Store FLL band-edge freq for UI access after any outer-loop nudge. */
+    /* Store FLL band-edge freq for UI access. */
     g_fll_band_edge_freq_rad.store(static_cast<double>(demod.fll_band_edge_state.freq), std::memory_order_relaxed);
 
     /* CQPSK lock is loop-health based, not an SNR proxy: require the carrier NCO
      * to be stable, the Gardner TED eye metric to be positive, and Costas phase
      * error to be bounded. */
-    int locked = cqpsk_loop_lock_heuristic(nudged.total_freq_rad, out_rate_hz);
+    int locked = cqpsk_loop_lock_heuristic(nco.total_freq_rad, out_rate_hz);
     g_carrier_lock.store(locked, std::memory_order_relaxed);
 }
 

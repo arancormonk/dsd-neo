@@ -389,29 +389,18 @@ apply_cmd_key_management(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
 }
 
 #ifdef USE_RADIO
-static void
-ui_dsp_toggle_triplet_op(int op) {
-    int cq = 0;
-    int f = 0;
-    int t = 0;
-    rtl_stream_dsp_get(&cq, &f, &t);
-    switch (op) {
-        case UI_DSP_OP_TOGGLE_CQ: rtl_stream_toggle_cqpsk(cq ? 0 : 1); return;
-        case UI_DSP_OP_TOGGLE_FLL: rtl_stream_toggle_fll(f ? 0 : 1); return;
-        case UI_DSP_OP_TOGGLE_TED: rtl_stream_toggle_ted(t ? 0 : 1); return;
-        default: return;
-    }
-}
-
 static int
-apply_dsp_op_triplet_toggles(const UiDspPayload* p) {
+apply_dsp_op_cqpsk_toggle(const UiDspPayload* p) {
     if (!p) {
         return 0;
     }
     switch (p->op) {
-        case UI_DSP_OP_TOGGLE_CQ:
-        case UI_DSP_OP_TOGGLE_FLL:
-        case UI_DSP_OP_TOGGLE_TED: ui_dsp_toggle_triplet_op(p->op); return 1;
+        case UI_DSP_OP_TOGGLE_CQ: {
+            int cq = 0;
+            rtl_stream_get_cqpsk_status(&cq, NULL);
+            rtl_stream_toggle_cqpsk(cq ? 0 : 1);
+            return 1;
+        }
         default: return 0;
     }
 }
@@ -459,106 +448,6 @@ apply_dsp_op_iq_and_ted(const UiDspPayload* p) {
 }
 
 static int
-apply_dsp_op_clock_and_fm_basic(const UiDspPayload* p) {
-    if (!p) {
-        return 0;
-    }
-    switch (p->op) {
-        case UI_DSP_OP_C4FM_CLK_CYCLE: {
-            int mode = rtl_stream_get_c4fm_clk();
-            rtl_stream_set_c4fm_clk((mode + 1) % 3);
-            return 1;
-        }
-        case UI_DSP_OP_C4FM_CLK_SYNC_TOGGLE: {
-            int en = rtl_stream_get_c4fm_clk_sync();
-            rtl_stream_set_c4fm_clk_sync(en ? 0 : 1);
-            return 1;
-        }
-        case UI_DSP_OP_FM_AGC_TOGGLE: {
-            int on = rtl_stream_get_fm_agc();
-            rtl_stream_set_fm_agc(on ? 0 : 1);
-            return 1;
-        }
-        case UI_DSP_OP_FM_LIMITER_TOGGLE: {
-            int on = rtl_stream_get_fm_limiter();
-            rtl_stream_set_fm_limiter(on ? 0 : 1);
-            return 1;
-        }
-        default: return 0;
-    }
-}
-
-static int
-apply_dsp_op_fm_agc_delta(const UiDspPayload* p) {
-    if (!p) {
-        return 0;
-    }
-    switch (p->op) {
-        case UI_DSP_OP_FM_AGC_TARGET_DELTA: {
-            float tgt = 0.0f;
-            rtl_stream_get_fm_agc_params(&tgt, NULL, NULL, NULL);
-            float nt = tgt + ((float)p->a * 0.01f);
-            if (nt < 0.05f) {
-                nt = 0.05f;
-            }
-            if (nt > 2.5f) {
-                nt = 2.5f;
-            }
-            rtl_stream_set_fm_agc_params(nt, -1.0f, -1.0f, -1.0f);
-            return 1;
-        }
-        case UI_DSP_OP_FM_AGC_MIN_DELTA: {
-            float mn = 0.0f;
-            rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
-            float nm = mn + ((float)p->a * 0.01f);
-            if (nm < 0.0f) {
-                nm = 0.0f;
-            }
-            if (nm > 1.0f) {
-                nm = 1.0f;
-            }
-            rtl_stream_set_fm_agc_params(-1.0f, nm, -1.0f, -1.0f);
-            return 1;
-        }
-        case UI_DSP_OP_FM_AGC_ATTACK_DELTA: {
-            float au = 0.0f;
-            rtl_stream_get_fm_agc_params(NULL, NULL, &au, NULL);
-            float na = au + ((float)p->a * 0.01f);
-            if (na < 0.0f) {
-                na = 0.0f;
-            }
-            if (na > 1.0f) {
-                na = 1.0f;
-            }
-            rtl_stream_set_fm_agc_params(-1.0f, -1.0f, na, -1.0f);
-            return 1;
-        }
-        case UI_DSP_OP_FM_AGC_DECAY_DELTA: {
-            float ad = 0.0f;
-            rtl_stream_get_fm_agc_params(NULL, NULL, NULL, &ad);
-            float nd = ad + ((float)p->a * 0.01f);
-            if (nd < 0.0f) {
-                nd = 0.0f;
-            }
-            if (nd > 1.0f) {
-                nd = 1.0f;
-            }
-            rtl_stream_set_fm_agc_params(-1.0f, -1.0f, -1.0f, nd);
-            return 1;
-        }
-        default: return 0;
-    }
-}
-
-static int
-apply_dsp_op_clock_and_fm(const UiDspPayload* p) {
-    if (apply_dsp_op_clock_and_fm_basic(p)) {
-        return 1;
-    }
-    return apply_dsp_op_fm_agc_delta(p);
-}
-
-static int
 apply_dsp_op_frontend_gain(const UiDspPayload* p) {
     if (!p) {
         return 0;
@@ -576,13 +465,10 @@ apply_dsp_op(const UiDspPayload* p) {
     if (!p) {
         return;
     }
-    if (apply_dsp_op_triplet_toggles(p)) {
+    if (apply_dsp_op_cqpsk_toggle(p)) {
         return;
     }
     if (apply_dsp_op_iq_and_ted(p)) {
-        return;
-    }
-    if (apply_dsp_op_clock_and_fm(p)) {
         return;
     }
     (void)apply_dsp_op_frontend_gain(p);

@@ -28,7 +28,7 @@ extern "C" {
 void dsd_rtl_stream_clear_output(void);
 double dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_is_active(void);
-int dsd_rtl_stream_ted_bias(void);
+int dsd_rtl_stream_cqpsk_timing_bias(void);
 int dsd_rtl_stream_get_output_kind(void);
 int dsd_rtl_stream_get_symbol_profile(int* out_symbol_rate_hz, int* out_levels);
 int dsd_rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
@@ -57,8 +57,6 @@ void dsd_rtl_stream_clear_ted_sps_override(void);
 void dsd_rtl_stream_set_ted_sps_no_override(int sps);
 void dsd_rtl_stream_set_ted_gain(float g);
 float dsd_rtl_stream_get_ted_gain(void);
-void dsd_rtl_stream_set_ted_force(int onoff);
-int dsd_rtl_stream_get_ted_force(void);
 /* Bias tee control implemented in rtl_sdr_fm.cpp */
 int dsd_rtl_stream_set_bias_tee(int on);
 void dsd_rtl_stream_p25p2_err_update(int slot, int facch_ok_delta, int facch_err_delta, int sacch_ok_delta,
@@ -499,9 +497,9 @@ rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto) {
 }
 
 extern "C" int
-rtl_stream_ted_bias(const RtlSdrContext* ctx) {
+rtl_stream_cqpsk_timing_bias(const RtlSdrContext* ctx) {
     (void)ctx;
-    return dsd_rtl_stream_ted_bias();
+    return dsd_rtl_stream_cqpsk_timing_bias();
 }
 
 extern "C" void
@@ -542,16 +540,6 @@ rtl_stream_set_ted_gain(float gain) {
 extern "C" float
 rtl_stream_get_ted_gain(void) {
     return dsd_rtl_stream_get_ted_gain();
-}
-
-extern "C" void
-rtl_stream_set_ted_force(int onoff) {
-    dsd_rtl_stream_set_ted_force(onoff);
-}
-
-extern "C" int
-rtl_stream_get_ted_force(void) {
-    return dsd_rtl_stream_get_ted_force();
 }
 
 extern "C" void
@@ -702,45 +690,9 @@ rtl_stream_get_snr_bias_evm(void) {
     return dsd_rtl_stream_get_snr_bias_evm();
 }
 
-/* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
-extern "C" int dsd_rtl_stream_get_fm_agc(void);
-extern "C" void dsd_rtl_stream_set_fm_agc(int onoff);
-extern "C" void dsd_rtl_stream_get_fm_agc_params(float* target_rms, float* min_rms, float* alpha_up, float* alpha_down);
-extern "C" void dsd_rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up, float alpha_down);
-extern "C" int dsd_rtl_stream_get_fm_limiter(void);
-extern "C" void dsd_rtl_stream_set_fm_limiter(int onoff);
+/* -------- IQ DC blocker (runtime) -------- */
 extern "C" int dsd_rtl_stream_get_iq_dc(int* out_shift_k);
 extern "C" void dsd_rtl_stream_set_iq_dc(int enable, int shift_k);
-
-extern "C" int
-rtl_stream_get_fm_agc(void) {
-    return dsd_rtl_stream_get_fm_agc();
-}
-
-extern "C" void
-rtl_stream_set_fm_agc(int onoff) {
-    dsd_rtl_stream_set_fm_agc(onoff);
-}
-
-extern "C" void
-rtl_stream_get_fm_agc_params(float* target_rms, float* min_rms, float* alpha_up, float* alpha_down) {
-    dsd_rtl_stream_get_fm_agc_params(target_rms, min_rms, alpha_up, alpha_down);
-}
-
-extern "C" void
-rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up, float alpha_down) {
-    dsd_rtl_stream_set_fm_agc_params(target_rms, min_rms, alpha_up, alpha_down);
-}
-
-extern "C" int
-rtl_stream_get_fm_limiter(void) {
-    return dsd_rtl_stream_get_fm_limiter();
-}
-
-extern "C" void
-rtl_stream_set_fm_limiter(int onoff) {
-    dsd_rtl_stream_set_fm_limiter(onoff);
-}
 
 extern "C" int
 rtl_stream_get_iq_dc(int* out_shift_k) {
@@ -775,39 +727,6 @@ rtl_stream_get_tuner_autogain(void) {
 extern "C" void
 rtl_stream_set_tuner_autogain(int onoff) {
     dsd_rtl_stream_set_tuner_autogain(onoff);
-}
-
-/* C4FM DD equalizer runtime config wrappers (update global runtime config) */
-extern "C" void dsd_neo_set_c4fm_clk(int mode);
-extern "C" int dsd_neo_get_c4fm_clk(void);
-extern "C" void dsd_neo_set_c4fm_clk_sync(int enable);
-extern "C" int dsd_neo_get_c4fm_clk_sync(void);
-
-/* C4FM clock assist mode (0=off, 1=EL, 2=MM) */
-extern "C" void
-rtl_stream_set_c4fm_clk(int mode) {
-    if (mode < 0) {
-        mode = 0;
-    }
-    if (mode > 2) {
-        mode = 0;
-    }
-    dsd_neo_set_c4fm_clk(mode);
-}
-
-extern "C" int
-rtl_stream_get_c4fm_clk(void) {
-    return dsd_neo_get_c4fm_clk();
-}
-
-extern "C" void
-rtl_stream_set_c4fm_clk_sync(int enable) {
-    dsd_neo_set_c4fm_clk_sync(enable ? 1 : 0);
-}
-
-extern "C" int
-rtl_stream_get_c4fm_clk_sync(void) {
-    return dsd_neo_get_c4fm_clk_sync();
 }
 
 /* IQ balance prefilter toggle/get */

@@ -263,28 +263,10 @@ config_snapshot_equals_block_d(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(resamp_is_set);
     CONFIG_EQ_FIELD(resamp_disable);
     CONFIG_EQ_FIELD(resamp_target_hz);
-    CONFIG_EQ_FIELD(fll_is_set);
-    CONFIG_EQ_FIELD(fll_enable);
-    CONFIG_EQ_FIELD(fll_alpha_is_set);
-    CONFIG_EQ_FIELD(fll_alpha);
-    CONFIG_EQ_FIELD(fll_beta_is_set);
-    CONFIG_EQ_FIELD(fll_beta);
-    CONFIG_EQ_FIELD(fll_deadband_is_set);
-    CONFIG_EQ_FIELD(fll_deadband);
-    CONFIG_EQ_FIELD(fll_slew_is_set);
-    CONFIG_EQ_FIELD(fll_slew_max);
     CONFIG_EQ_FIELD(costas_bw_is_set);
     CONFIG_EQ_FIELD(costas_damping_is_set);
-    CONFIG_EQ_FIELD(ted_is_set);
-    CONFIG_EQ_FIELD(ted_enable);
     CONFIG_EQ_FIELD(ted_gain_is_set);
     CONFIG_EQ_FIELD(ted_gain);
-    CONFIG_EQ_FIELD(ted_force_is_set);
-    CONFIG_EQ_FIELD(ted_force);
-    CONFIG_EQ_FIELD(c4fm_clk_is_set);
-    CONFIG_EQ_FIELD(c4fm_clk_mode);
-    CONFIG_EQ_FIELD(c4fm_clk_sync_is_set);
-    CONFIG_EQ_FIELD(c4fm_clk_sync);
     CONFIG_EQ_FIELD(deemph_is_set);
     CONFIG_EQ_FIELD(deemph_mode);
     CONFIG_EQ_FIELD(audio_lpf_is_set);
@@ -308,18 +290,6 @@ config_snapshot_equals_block_d(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(pdu_json_enable);
     CONFIG_EQ_FIELD(snr_sql_is_set);
     CONFIG_EQ_FIELD(snr_sql_db);
-    CONFIG_EQ_FIELD(fm_agc_is_set);
-    CONFIG_EQ_FIELD(fm_agc_enable);
-    CONFIG_EQ_FIELD(fm_agc_target_is_set);
-    CONFIG_EQ_FIELD(fm_agc_target_rms);
-    CONFIG_EQ_FIELD(fm_agc_min_is_set);
-    CONFIG_EQ_FIELD(fm_agc_min_rms);
-    CONFIG_EQ_FIELD(fm_agc_alpha_up_is_set);
-    CONFIG_EQ_FIELD(fm_agc_alpha_up);
-    CONFIG_EQ_FIELD(fm_agc_alpha_down_is_set);
-    CONFIG_EQ_FIELD(fm_agc_alpha_down);
-    CONFIG_EQ_FIELD(fm_limiter_is_set);
-    CONFIG_EQ_FIELD(fm_limiter_enable);
     CONFIG_EQ_FIELD(iq_dc_block_is_set);
     CONFIG_EQ_FIELD(iq_dc_block_enable);
     CONFIG_EQ_FIELD(iq_dc_shift_is_set);
@@ -1076,51 +1046,6 @@ config_init_rotation_and_resamp(dsdneoRuntimeConfig& c) {
 }
 
 static void
-config_init_fll(dsdneoRuntimeConfig& c) {
-    const char* fll = getenv("DSD_NEO_FLL");
-    c.fll_is_set = env_is_set(fll);
-    c.fll_enable = (c.fll_is_set && fll[0] == '1') ? 1 : 0; /* may be overridden by mode later */
-
-    const char* fa = getenv("DSD_NEO_FLL_ALPHA");
-    const char* fb = getenv("DSD_NEO_FLL_BETA");
-    const char* fdb = getenv("DSD_NEO_FLL_DEADBAND");
-    const char* fsl = getenv("DSD_NEO_FLL_SLEW");
-    c.fll_alpha_is_set = env_is_set(fa);
-    c.fll_beta_is_set = env_is_set(fb);
-    c.fll_deadband_is_set = env_is_set(fdb);
-    c.fll_slew_is_set = env_is_set(fsl);
-    /* Native float FLL parameters (GNU Radio style):
-     * alpha: proportional gain (typ 0.001-0.01)
-     * beta: integral gain (typ 0.0001-0.001)
-     * deadband: minimum error threshold (typ 0.001-0.01)
-     * slew_max: max freq change per sample in rad/sample */
-    if (c.fll_alpha_is_set) {
-        double v = 0.0;
-        c.fll_alpha = env_parse_double_strict(fa, &v) ? (float)v : 0.0f;
-    } else {
-        c.fll_alpha = 0.005f;
-    }
-    if (c.fll_beta_is_set) {
-        double v = 0.0;
-        c.fll_beta = env_parse_double_strict(fb, &v) ? (float)v : 0.0f;
-    } else {
-        c.fll_beta = 0.0005f;
-    }
-    if (c.fll_deadband_is_set) {
-        double v = 0.0;
-        c.fll_deadband = env_parse_double_strict(fdb, &v) ? (float)v : 0.0f;
-    } else {
-        c.fll_deadband = 0.003f;
-    }
-    if (c.fll_slew_is_set) {
-        double v = 0.0;
-        c.fll_slew_max = env_parse_double_strict(fsl, &v) ? (float)v : 0.0f;
-    } else {
-        c.fll_slew_max = 0.002f;
-    }
-}
-
-static void
 config_init_costas(dsdneoRuntimeConfig& c) {
     /* CQPSK Costas loop (carrier recovery) using GNU Radio control loop */
     const char* cbw = getenv("DSD_NEO_COSTAS_BW");
@@ -1143,12 +1068,8 @@ config_init_costas(dsdneoRuntimeConfig& c) {
 
 static void
 config_init_ted(dsdneoRuntimeConfig& c) {
-    /* TED - native float Gardner timing gain */
-    const char* ted = getenv("DSD_NEO_TED");
+    /* CQPSK/OP25 Gardner timing gain */
     const char* tg = getenv("DSD_NEO_TED_GAIN");
-    const char* tf = getenv("DSD_NEO_TED_FORCE");
-    c.ted_is_set = env_is_set(ted);
-    c.ted_enable = (c.ted_is_set && ted[0] == '1') ? 1 : 0;
     c.ted_gain_is_set = env_is_set(tg);
     if (c.ted_gain_is_set) {
         double v = 0.0;
@@ -1156,33 +1077,12 @@ config_init_ted(dsdneoRuntimeConfig& c) {
     } else {
         c.ted_gain = 0.05f;
     }
-    c.ted_force_is_set = env_is_set(tf);
-    c.ted_force = (c.ted_force_is_set && tf[0] == '1') ? 1 : 0;
 }
 
 static void
-config_init_fll_costas_ted(dsdneoRuntimeConfig& c) {
-    config_init_fll(c);
+config_init_costas_ted(dsdneoRuntimeConfig& c) {
     config_init_costas(c);
     config_init_ted(c);
-}
-
-static void
-config_init_c4fm(dsdneoRuntimeConfig& c) {
-    /* C4FM clock assist */
-    const char* clk = getenv("DSD_NEO_C4FM_CLK");
-    const char* clk_sync = getenv("DSD_NEO_C4FM_CLK_SYNC");
-    c.c4fm_clk_is_set = env_is_set(clk);
-    c.c4fm_clk_mode = 0;
-    if (c.c4fm_clk_is_set && clk && clk[0] != '\0') {
-        if (dsd_strcasecmp(clk, "el") == 0 || strcmp(clk, "1") == 0) {
-            c.c4fm_clk_mode = 1;
-        } else if (dsd_strcasecmp(clk, "mm") == 0 || strcmp(clk, "2") == 0) {
-            c.c4fm_clk_mode = 2;
-        }
-    }
-    c.c4fm_clk_sync_is_set = env_is_set(clk_sync);
-    c.c4fm_clk_sync = c.c4fm_clk_sync_is_set ? ((clk_sync[0] == '1') ? 1 : 0) : 0;
 }
 
 static void
@@ -1224,8 +1124,7 @@ config_init_audio_lpf(dsdneoRuntimeConfig& c) {
 }
 
 static void
-config_init_c4fm_deemph_audio(dsdneoRuntimeConfig& c) {
-    config_init_c4fm(c);
+config_init_deemph_audio(dsdneoRuntimeConfig& c) {
     config_init_deemph(c);
     config_init_audio_lpf(c);
 }
@@ -1317,65 +1216,6 @@ config_init_tcpin_window_pdu_snr(dsdneoRuntimeConfig& c) {
 }
 
 static void
-config_init_fm_agc_and_limiter(dsdneoRuntimeConfig& c) {
-    /* FM/C4FM amplitude AGC (pre-discriminator) */
-    const char* fm_agc = getenv("DSD_NEO_FM_AGC");
-    c.fm_agc_is_set = env_is_set(fm_agc);
-    if (c.fm_agc_is_set) {
-        int v = 0;
-        c.fm_agc_enable = env_parse_int_strict(fm_agc, &v) ? (v != 0) : 0;
-    } else {
-        c.fm_agc_enable = 0;
-    }
-
-    const char* fm_tgt = getenv("DSD_NEO_FM_AGC_TARGET");
-    c.fm_agc_target_is_set = env_is_set(fm_tgt);
-    if (c.fm_agc_target_is_set) {
-        double v = 0.0;
-        c.fm_agc_target_rms = env_parse_double_strict(fm_tgt, &v) ? (float)v : 0.0f;
-    } else {
-        c.fm_agc_target_rms = 0.30f;
-    }
-
-    const char* fm_min = getenv("DSD_NEO_FM_AGC_MIN");
-    c.fm_agc_min_is_set = env_is_set(fm_min);
-    if (c.fm_agc_min_is_set) {
-        double v = 0.0;
-        c.fm_agc_min_rms = env_parse_double_strict(fm_min, &v) ? (float)v : 0.0f;
-    } else {
-        c.fm_agc_min_rms = 0.06f;
-    }
-
-    const char* fm_au = getenv("DSD_NEO_FM_AGC_ALPHA_UP");
-    c.fm_agc_alpha_up_is_set = env_is_set(fm_au);
-    if (c.fm_agc_alpha_up_is_set) {
-        double v = 0.0;
-        c.fm_agc_alpha_up = env_parse_double_strict(fm_au, &v) ? (float)v : 0.0f;
-    } else {
-        c.fm_agc_alpha_up = 0.25f; /* ~0.25 */
-    }
-
-    const char* fm_ad = getenv("DSD_NEO_FM_AGC_ALPHA_DOWN");
-    c.fm_agc_alpha_down_is_set = env_is_set(fm_ad);
-    if (c.fm_agc_alpha_down_is_set) {
-        double v = 0.0;
-        c.fm_agc_alpha_down = env_parse_double_strict(fm_ad, &v) ? (float)v : 0.0f;
-    } else {
-        c.fm_agc_alpha_down = 0.75f; /* ~0.75 */
-    }
-
-    /* FM constant-envelope limiter */
-    const char* fml = getenv("DSD_NEO_FM_LIMITER");
-    c.fm_limiter_is_set = env_is_set(fml);
-    if (c.fm_limiter_is_set) {
-        int v = 0;
-        c.fm_limiter_enable = env_parse_int_strict(fml, &v) ? (v != 0) : 0;
-    } else {
-        c.fm_limiter_enable = 0;
-    }
-}
-
-static void
 config_init_iq_and_channel_lpf(dsdneoRuntimeConfig& c) {
     /* Complex DC blocker */
     const char* dcb = getenv("DSD_NEO_IQ_DC_BLOCK");
@@ -1433,11 +1273,10 @@ dsd_neo_config_init(const dsd_opts* opts) {
     config_init_tuner_autogain(c);
     config_init_auto_ppm(c);
     config_init_rotation_and_resamp(c);
-    config_init_fll_costas_ted(c);
-    config_init_c4fm_deemph_audio(c);
+    config_init_costas_ted(c);
+    config_init_deemph_audio(c);
     config_init_mt_and_retune(c);
     config_init_tcpin_window_pdu_snr(c);
-    config_init_fm_agc_and_limiter(c);
     config_init_iq_and_channel_lpf(c);
 
     {
@@ -1475,56 +1314,4 @@ dsd_apply_runtime_config_to_opts(const dsdneoRuntimeConfig* cfg, dsd_opts* opts,
 extern "C" const char*
 dsd_neo_env_get(const char* name) {
     return name ? getenv(name) : NULL;
-}
-
-/* Runtime control for C4FM clock assist (0=off, 1=EL, 2=MM). */
-extern "C" void
-dsd_neo_set_c4fm_clk(int mode) {
-    std::lock_guard<std::mutex> lk(g_config_mu);
-    if (mode < 0) {
-        return;
-    }
-    if (mode > 2) {
-        mode = 0;
-    }
-
-    dsdneoRuntimeConfig next{};
-    const dsdneoRuntimeConfig* cur = g_config_active.load(std::memory_order_acquire);
-    if (cur) {
-        next = *cur;
-    }
-    next.c4fm_clk_is_set = 1;
-    next.c4fm_clk_mode = mode;
-    publish_config_locked(next);
-}
-
-extern "C" int
-dsd_neo_get_c4fm_clk(void) {
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (!cfg) {
-        return 0;
-    }
-    return cfg->c4fm_clk_is_set ? cfg->c4fm_clk_mode : 0;
-}
-
-extern "C" void
-dsd_neo_set_c4fm_clk_sync(int enable) {
-    std::lock_guard<std::mutex> lk(g_config_mu);
-    dsdneoRuntimeConfig next{};
-    const dsdneoRuntimeConfig* cur = g_config_active.load(std::memory_order_acquire);
-    if (cur) {
-        next = *cur;
-    }
-    next.c4fm_clk_sync_is_set = 1;
-    next.c4fm_clk_sync = enable ? 1 : 0;
-    publish_config_locked(next);
-}
-
-extern "C" int
-dsd_neo_get_c4fm_clk_sync(void) {
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (!cfg) {
-        return 0;
-    }
-    return cfg->c4fm_clk_sync_is_set ? (cfg->c4fm_clk_sync ? 1 : 0) : 0;
 }

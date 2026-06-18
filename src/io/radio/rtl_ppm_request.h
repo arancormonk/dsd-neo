@@ -86,7 +86,7 @@ rtl_ppm_resolve_rejected_request(int applied_ppm, int requested_ppm, uint32_t re
 
 /* A live PPM correction shifts the RF center without stopping sample flow. If
  * the controller knows the active tuned frequency, force the update through
- * the full reconfigure/reset path so CQPSK/FLL/TED state is realigned before
+ * the full reconfigure/reset path so CQPSK timing/carrier state is realigned before
  * the demod thread consumes post-correction samples. */
 static inline RtlPpmApplyPlan
 rtl_ppm_plan_apply_to_active_stream(uint32_t last_applied_freq_hz, uint32_t fallback_freq_hz, int applied_ppm,

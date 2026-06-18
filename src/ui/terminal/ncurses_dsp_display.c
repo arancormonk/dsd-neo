@@ -76,21 +76,11 @@ dsp_status_print_squelch(const dsd_opts* opts) {
 
 typedef struct {
     int cq;
-    int fll;
-    int ted;
+    int cq_timing;
     int iqb;
     int dc_k;
     int dc_on;
-    int ted_force;
-    int clk_mode;
-    int clk_sync;
-    int agc_on;
-    int lim_on;
     int mod;
-    float agc_tgt;
-    float agc_min;
-    float agc_up;
-    float agc_down;
     const char* modlab;
 } dsp_status_snapshot;
 
@@ -108,15 +98,9 @@ dsp_status_mod_label(int mod) {
 static void
 dsp_status_capture(dsp_status_snapshot* snap, const dsd_state* state) {
     DSD_MEMSET(snap, 0, sizeof(*snap));
-    rtl_stream_dsp_get(&snap->cq, &snap->fll, &snap->ted);
+    rtl_stream_get_cqpsk_status(&snap->cq, &snap->cq_timing);
     snap->iqb = rtl_stream_get_iq_balance();
     snap->dc_on = rtl_stream_get_iq_dc(&snap->dc_k);
-    snap->ted_force = rtl_stream_get_ted_force();
-    snap->clk_mode = rtl_stream_get_c4fm_clk();
-    snap->clk_sync = rtl_stream_get_c4fm_clk_sync();
-    snap->agc_on = rtl_stream_get_fm_agc();
-    rtl_stream_get_fm_agc_params(&snap->agc_tgt, &snap->agc_min, &snap->agc_up, &snap->agc_down);
-    snap->lim_on = rtl_stream_get_fm_limiter();
     snap->mod = state ? state->rf_mod : (snap->cq ? 1 : 0);
     snap->modlab = dsp_status_mod_label(snap->mod);
 }
@@ -125,9 +109,9 @@ static void
 dsp_status_print_ted(const dsp_status_snapshot* snap) {
     int ted_sps = rtl_stream_get_ted_sps();
     float ted_gain = rtl_stream_get_ted_gain();
-    int ted_bias = rtl_stream_ted_bias(NULL);
-    ui_print_kv_line("TED", "[%s] sps:%d g:%.3f bias:%d%s", snap->ted ? "On" : "Off", ted_sps, ted_gain, ted_bias,
-                     snap->ted_force ? " force" : "");
+    int timing_bias = rtl_stream_cqpsk_timing_bias(NULL);
+    ui_print_kv_line("CQPSK Timing", "[%s] sps:%d g:%.3f bias:%d", snap->cq_timing ? "On" : "Off", ted_sps, ted_gain,
+                     timing_bias);
 }
 
 static void
@@ -135,7 +119,6 @@ dsp_status_print_front_and_path(const dsp_status_snapshot* snap) {
     ui_print_kv_line("Front", "IQBal:%s  IQ-DC:%s k:%d", snap->iqb ? "On" : "Off", snap->dc_on ? "On" : "Off",
                      snap->dc_k);
     ui_print_kv_line("Path", "Mod:%s  CQ:%s", snap->modlab, snap->cq ? "On" : "Off");
-    ui_print_kv_line("FLL", "[%s]", snap->fll ? "On" : "Off");
     dsp_status_print_ted(snap);
     if (snap->mod == 1 || snap->cq) {
         ui_print_kv_line("CQPSK Path", "[%s]", snap->cq ? "On" : "Off");
@@ -175,17 +158,6 @@ dsp_status_print_fsk_metrics(void) {
                      (unsigned long long)fm.track_skips);
 }
 
-static void
-dsp_status_print_mode_tail(const dsp_status_snapshot* snap) {
-    if (snap->mod == 0 || snap->clk_mode != 0) {
-        const char* clk = (snap->clk_mode == 1) ? "EL" : (snap->clk_mode == 2) ? "MM" : "Off";
-        ui_print_kv_line("C4FM", "CLK:%s%s", clk, (snap->clk_mode && snap->clk_sync) ? " (sync)" : "");
-    }
-    if (snap->mod != 1 || snap->agc_on || snap->lim_on) {
-        ui_print_kv_line("FM AGC", "[%s] tgt:%.3f min:%.3f up:%.2f dn:%.2f | LIM:%s", snap->agc_on ? "On" : "Off",
-                         snap->agc_tgt, snap->agc_min, snap->agc_up, snap->agc_down, snap->lim_on ? "On" : "Off");
-    }
-}
 #endif
 
 /* Print a compact DSP status summary (which blocks are active). */
@@ -217,7 +189,6 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
         dsp_status_print_cqpsk_metrics();
     }
     dsp_status_print_fsk_metrics();
-    dsp_status_print_mode_tail(&snap);
 #endif
     attroff(COLOR_PAIR(14));
     attron(COLOR_PAIR(4));

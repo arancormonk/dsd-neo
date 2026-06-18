@@ -1317,103 +1317,9 @@ act_toggle_cq(void* v) {
 }
 
 void
-act_toggle_fll(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_FLL};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_toggle_ted(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_TED};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
 act_toggle_iqbal(void* v) {
     UNUSED(v);
     UiDspPayload p = {.op = UI_DSP_OP_TOGGLE_IQBAL};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_toggle_fm_agc(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TOGGLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_toggle_fm_limiter(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_LIMITER_TOGGLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_fm_agc_target_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TARGET_DELTA, .a = +2};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_fm_agc_target_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_TARGET_DELTA, .a = -2};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_fm_agc_min_up(void* v) {
-    UNUSED(v);
-    float mn = 0.0f;
-    rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
-    mn += 0.01f;
-    if (mn > 1.0f) {
-        mn = 1.0f;
-    }
-    rtl_stream_set_fm_agc_params(-1.0f, mn, -1.0f, -1.0f);
-}
-
-void
-act_fm_agc_min_dn(void* v) {
-    UNUSED(v);
-    float mn = 0.0f;
-    rtl_stream_get_fm_agc_params(NULL, &mn, NULL, NULL);
-    mn -= 0.01f;
-    if (mn < 0.0f) {
-        mn = 0.0f;
-    }
-    rtl_stream_set_fm_agc_params(-1.0f, mn, -1.0f, -1.0f);
-}
-
-void
-act_fm_agc_alpha_up_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_ATTACK_DELTA, .a = +5};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_fm_agc_alpha_up_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_ATTACK_DELTA, .a = -5};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_fm_agc_alpha_down_up(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_DECAY_DELTA, .a = +5};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_fm_agc_alpha_down_dn(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_FM_AGC_DECAY_DELTA, .a = -5};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 
@@ -1459,36 +1365,6 @@ act_ted_gain_dn(void* v) {
         g_milli -= 5;
     }
     UiDspPayload p = {.op = UI_DSP_OP_TED_GAIN_SET, .a = g_milli};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_ted_force_toggle(void* v) {
-    UNUSED(v);
-    int f = rtl_stream_get_ted_force();
-    if (!f) {
-        rtl_stream_set_ted_force(1);
-        int cq = 0, fl = 0, t = 0;
-        rtl_stream_dsp_get(&cq, &fl, &t);
-        if (!t) {
-            rtl_stream_toggle_ted(1);
-        }
-    } else {
-        rtl_stream_set_ted_force(0);
-    }
-}
-
-void
-act_c4fm_clk_cycle(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_C4FM_CLK_CYCLE};
-    ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
-}
-
-void
-act_c4fm_clk_sync_toggle(void* v) {
-    UNUSED(v);
-    UiDspPayload p = {.op = UI_DSP_OP_C4FM_CLK_SYNC_TOGGLE};
     ui_post_cmd(UI_CMD_DSP_OP, &p, sizeof p);
 }
 

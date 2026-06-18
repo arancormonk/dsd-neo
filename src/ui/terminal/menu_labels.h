@@ -22,15 +22,8 @@ bool io_rtl_active(const void* ctx);
 #ifdef USE_RADIO
 bool dsp_cq_on(const void* v);
 bool is_mod_qpsk(const void* v);
-bool is_mod_c4fm(const void* v);
-bool is_mod_gfsk(const void* v);
-bool is_mod_fm(const void* v);
-bool is_non_symbol_mod_fm(const void* v);
-bool is_sample_window_c4fm(const void* v);
 bool is_not_qpsk(const void* v);
-bool is_fll_allowed(const void* v);
 bool is_ted_allowed(const void* v);
-bool dsp_agc_any(const void* v);
 bool dsp_ted_any(const void* v);
 int ui_current_mod(const void* v);
 #endif
@@ -128,23 +121,12 @@ const char* lbl_m17_user_data(const void* v, char* b, size_t n);
 // DSP labels (USE_RADIO only)
 #ifdef USE_RADIO
 const char* lbl_onoff_cq(const void* v, char* b, size_t n);
-const char* lbl_onoff_fll(const void* v, char* b, size_t n);
-const char* lbl_onoff_ted(const void* v, char* b, size_t n);
 const char* lbl_onoff_iqbal(const void* v, char* b, size_t n);
-const char* lbl_fm_agc(const void* v, char* b, size_t n);
-const char* lbl_fm_limiter(const void* v, char* b, size_t n);
-const char* lbl_fm_agc_target(const void* v, char* b, size_t n);
-const char* lbl_fm_agc_min(const void* v, char* b, size_t n);
-const char* lbl_fm_agc_alpha_up(const void* v, char* b, size_t n);
-const char* lbl_fm_agc_alpha_down(const void* v, char* b, size_t n);
 const char* lbl_iq_dc(const void* v, char* b, size_t n);
 const char* lbl_iq_dc_k(const void* v, char* b, size_t n);
 const char* lbl_ted_gain(const void* v, char* b, size_t n);
-const char* lbl_ted_force(const void* v, char* b, size_t n);
-const char* lbl_ted_bias(const void* v, char* b, size_t n);
+const char* lbl_cqpsk_timing_bias(const void* v, char* b, size_t n);
 const char* lbl_dsp_panel(const void* v, char* b, size_t n);
-const char* lbl_c4fm_clk(const void* v, char* b, size_t n);
-const char* lbl_c4fm_clk_sync(const void* v, char* b, size_t n);
 const char* lbl_rtl_bias(const void* v, char* b, size_t n);
 const char* lbl_rtl_rtltcp_autotune(const void* v, char* b, size_t n);
 const char* lbl_rtl_auto_ppm(const void* v, char* b, size_t n);

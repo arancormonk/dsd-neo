@@ -56,8 +56,6 @@ extern const size_t DSP_MENU_ITEMS_LEN;
 extern const NcMenuItem RTL_MENU_ITEMS[];
 
 // DSP submenu arrays (needed by menu_labels.c predicates)
-extern const NcMenuItem DSP_AGC_ITEMS[];
-extern const size_t DSP_AGC_ITEMS_LEN;
 extern const NcMenuItem DSP_TED_ITEMS[];
 extern const size_t DSP_TED_ITEMS_LEN;
 #endif

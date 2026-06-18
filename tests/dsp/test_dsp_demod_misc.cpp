@@ -148,14 +148,12 @@ main(void) {
         }
     }
 
-    // dsd_fm_demod: differential phase + FLL offset
+    // dsd_fm_demod: differential phase
     {
         /* Three complex samples rotating +90 deg each step. */
         static float iq[6] = {0.5f, 0.0f, 0.0f, 0.5f, -0.5f, 0.0f};
         s->lowpassed = iq;
         s->lp_len = 6; // 3 complex samples
-        s->fll_enabled = 1;
-        s->fll_freq = 0.003f; // small FLL offset in rad/sample (native float)
         s->pre_r = 0.0f;
         s->pre_j = 0.0f;
         s->fm_demod_history_valid = 0; /* force seeding path */
@@ -165,20 +163,16 @@ main(void) {
             free(s);
             return 1;
         }
-        /* Output is the differential phase of the already-mixed I/Q plus the
-         * FLL's per-sample phase advance added back (see dsd_fm_demod comment):
-         * the sum represents the absolute instantaneous frequency of the
-         * unmixed signal. With the first sample seeded from history the delta
-         * is zero, and subsequent samples are +π/2 per step. */
+        /* With the first sample seeded from history the delta is zero, and
+         * subsequent samples are +pi/2 per step. */
         const float pi_2 = 1.5707963f;
-        const float fll_offset = 0.003f; /* full fll_freq contribution */
-        if (fabsf(s->result[0] - fll_offset) > 0.01f) {
-            DSD_FPRINTF(stderr, "dsd_fm_demod: result[0]=%f want ~%f (fll offset)\n", s->result[0], fll_offset);
+        if (fabsf(s->result[0]) > 0.01f) {
+            DSD_FPRINTF(stderr, "dsd_fm_demod: result[0]=%f want ~0\n", s->result[0]);
             free(s);
             return 1;
         }
         for (int i = 1; i < s->result_len; i++) {
-            float expect = pi_2 + fll_offset;
+            float expect = pi_2;
             if (fabsf(s->result[i] - expect) > 0.01f) {
                 DSD_FPRINTF(stderr, "dsd_fm_demod: result[%d]=%f want ~%f\n", i, s->result[i], expect);
                 free(s);

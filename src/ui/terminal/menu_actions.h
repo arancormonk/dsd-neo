@@ -187,27 +187,12 @@ void switch_to_rtl(void* vctx);
 // ---- DSP actions (USE_RADIO only) ----
 #ifdef USE_RADIO
 void act_toggle_cq(void* v);
-void act_toggle_fll(void* v);
-void act_toggle_ted(void* v);
 void act_toggle_iqbal(void* v);
-void act_toggle_fm_agc(void* v);
-void act_toggle_fm_limiter(void* v);
-void act_fm_agc_target_up(void* v);
-void act_fm_agc_target_dn(void* v);
-void act_fm_agc_min_up(void* v);
-void act_fm_agc_min_dn(void* v);
-void act_fm_agc_alpha_up_up(void* v);
-void act_fm_agc_alpha_up_dn(void* v);
-void act_fm_agc_alpha_down_up(void* v);
-void act_fm_agc_alpha_down_dn(void* v);
 void act_toggle_iq_dc(void* v);
 void act_iq_dc_k_up(void* v);
 void act_iq_dc_k_dn(void* v);
 void act_ted_gain_up(void* v);
 void act_ted_gain_dn(void* v);
-void act_ted_force_toggle(void* v);
-void act_c4fm_clk_cycle(void* v);
-void act_c4fm_clk_sync_toggle(void* v);
 void act_toggle_dsp_panel(void* v);
 #endif
 

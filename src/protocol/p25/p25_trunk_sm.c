@@ -1455,13 +1455,13 @@ p25_sm_handle_vc_sync_event(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* 
     }
     ctx->t_voice_m = now_monotonic();
 #ifdef USE_RADIO
-    /* Learn successful TDMA VC acquisition only for the OP25-style CQPSK+TED
-     * chain. TED can remain enabled as a metric when CQPSK is off, so do not
-     * treat a legacy FM/QPSK sync as a durable preference for P25p2 TDMA. */
+    /* Learn successful TDMA VC acquisition only for the OP25-style CQPSK timing
+     * chain. */
     if (opts && state && ctx->vc_is_tdma && opts->audio_in_type == AUDIO_IN_RTL) {
-        int cqpsk = 0, fll = 0, ted = 0;
-        dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
-        if (cqpsk && ted) {
+        int cqpsk = 0;
+        int timing = 0;
+        dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk, &timing);
+        if (cqpsk && timing) {
             state->p25_vc_cqpsk_pref = 1;
         }
     }
@@ -1710,8 +1710,8 @@ p25_cqpsk_retry_runtime_allowed(p25_sm_ctx_t* ctx, const dsd_opts* opts, long vc
         return 0;
     }
 
-    int cqpsk = 0, fll = 0, ted = 0;
-    dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
+    int cqpsk = 0;
+    dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk, NULL);
     if (!cqpsk) {
         return 1;
     }

@@ -38,7 +38,7 @@ Config profiles:
 
 ## DSP Status
 
-The DSP status panel shows RTL DSP loop state when RTL input support is available. CQPSK mode reports FLL,
+The DSP status panel shows RTL DSP loop state when RTL input support is available. CQPSK mode reports FLL band-edge,
 carrier/Costas, NCO, and timing-recovery state for the active OP25-style chain.
 
 For RTL-family inputs, the optional DSP panel also shows `Squelch`, which compares post-channel-filter power against the

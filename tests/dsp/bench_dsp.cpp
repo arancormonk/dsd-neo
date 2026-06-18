@@ -703,7 +703,6 @@ bench_kernel_demods(const BenchOptions& opts) {
 
     fm_state.s->lowpassed = fm_iq.data();
     fm_state.s->lp_len = kInLen;
-    fm_state.s->fll_enabled = 0;
 
     ran += run_case(opts, "dsd_fm_demod", "pair", (double)kPairs, [&]() -> float {
         dsd_fm_demod(fm_state.s);
@@ -953,11 +952,6 @@ configure_common_c4fm_audio_state(demod_state* s, int sample_rate, int symbol_ra
     s->squelch_env_release = 0.03125f;
     s->iq_dc_block_enable = 1;
     s->iq_dc_shift = 11;
-    s->fm_agc_enable = 1;
-    s->fm_agc_target_rms = 0.30f;
-    s->fm_agc_min_rms = 0.06f;
-    s->fm_agc_alpha_up = 0.25f;
-    s->fm_agc_alpha_down = 0.75f;
     s->output_scale = 1.0f;
 }
 

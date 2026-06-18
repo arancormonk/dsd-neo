@@ -262,11 +262,10 @@ Notes
   raw `X||Y` hex.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`)
 - DMR Tier III Location Area n‑bits: `-D <0–10>`
-- Env (C4FM timing layers):
-  - `DSD_NEO_TED=1` enables Gardner TED in the RTL demod pipeline (timing at complex baseband).
-  - `DSD_NEO_C4FM_CLK=el|mm` enables a lightweight Early–Late or M&M clock assist in the symbol sampler for P25p1 C4FM.
-  - When using RTL input, an internal TED‑bias auto‑centering helper may also gently nudge `symbolCenter` based on the smoothed TED residual.
-  - Together these can all influence C4FM timing; if you are debugging “drifting” symbol centers, consider freezing windows (`DSD_NEO_WINDOW_FREEZE=1`) and disabling `DSD_NEO_C4FM_CLK` while testing.
+- Env (CQPSK timing):
+  - `DSD_NEO_TED_GAIN=<float>` overrides the CQPSK/OP25 Gardner timing loop gain.
+  - When using RTL CQPSK input, the symbol sampler may gently nudge `symbolCenter` based on the smoothed CQPSK Gardner residual.
+  - If you are debugging symbol-center drift, consider freezing windows (`DSD_NEO_WINDOW_FREEZE=1`) while testing.
 
 ## Trunking & Scanning
 
@@ -457,24 +456,12 @@ Resampler
 
 - `DSD_NEO_RESAMP=48000` — target rate (default); `off` or `0` to disable
 
-FLL/TED controls
+CQPSK timing
 
-These are non-symbol/advanced controls outside the RTL-family digital FSK symbol modem. RTL-family FSK digital decode
-selects its own symbol timing and normalization internally. CQPSK uses its OP25-style symbol chain.
+RTL-family FSK digital decode selects its own symbol timing and normalization internally. CQPSK uses the OP25-style
+Gardner/Costas/FLL-band-edge symbol chain.
 
-- `DSD_NEO_FLL=0/1` — disable/enable residual CFO frequency‑locked loop (default 0)
-- `DSD_NEO_FLL_ALPHA=<float>`, `DSD_NEO_FLL_BETA=<float>`, `DSD_NEO_FLL_DEADBAND=<float>`, `DSD_NEO_FLL_SLEW=<float>` — loop parameters (mode defaults when unset: analog-ish ≈ 0.0015/0.00015/0.0086/0.012; digital ≈ 0.008/0.0008/0.002/0.004)
-- `DSD_NEO_TED=0/1` — disable/enable timing error detector (default 0)
-- `DSD_NEO_TED_GAIN=<float>` — TED gain
-- `DSD_NEO_TED_FORCE=1` — force TED
-
-FM/C4FM stabilization
-
-These knobs apply to monitor/non-symbol FM discriminator paths, not RTL-family digital symbol output.
-
-- `DSD_NEO_FM_AGC=1` — enable FM AGC (default off)
-- `DSD_NEO_FM_AGC_TARGET`, `DSD_NEO_FM_AGC_MIN`, `DSD_NEO_FM_AGC_ALPHA_UP`, `DSD_NEO_FM_AGC_ALPHA_DOWN`
-- `DSD_NEO_FM_LIMITER=1` — constant‑envelope limiter
+- `DSD_NEO_TED_GAIN=<float>` — CQPSK/OP25 Gardner timing loop gain override
 - `DSD_NEO_IQ_DC_BLOCK=1` — enable DC blocker
 - `DSD_NEO_IQ_DC_SHIFT=<k>` — DC shift coefficient
 
@@ -523,13 +510,11 @@ Tuner autogain (experimental)
 
 Audio/DSP helpers
 
-`DSD_NEO_DEEMPH`, `DSD_NEO_AUDIO_LPF`, and C4FM clock-assist controls are monitor/non-symbol audio helpers for the RTL
-path and non-RTL sample-window paths; they are not part of RTL-family digital FSK symbol decode.
+`DSD_NEO_DEEMPH` and `DSD_NEO_AUDIO_LPF` are monitor/non-symbol audio helpers for the RTL path and non-RTL sample-window
+paths; they are not part of RTL-family digital FSK symbol decode.
 
 - `DSD_NEO_DEEMPH=off|50|75|nfm` — deemphasis curve
 - `DSD_NEO_AUDIO_LPF=<Hz>|off` — audio low‑pass filter cutoff (or disable)
-- `DSD_NEO_C4FM_CLK=el|mm` — C4FM clock assist mode (Early–Late or M&M)
-- `DSD_NEO_C4FM_CLK_SYNC=1` — enable C4FM clock sync
 - `DSD_NEO_COSTAS_BW=<float>`, `DSD_NEO_COSTAS_DAMPING=<float>` — Costas loop tuning
 - `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (auto-enabled at RTL DSP rates >=20 kHz; mode passbands protect nominal channel edges)
 - `DSD_NEO_WINDOW_FREEZE=1` — freeze symbol‑center window timing for debugging
@@ -583,7 +568,7 @@ DMR Tier III (env helpers for `--calc-lcn`)
 Debug (verbose/developer)
 
 - `DSD_NEO_DEBUG_SYNC=1` — verbose sync detection output
-- `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK/TED/FLL state output
+- `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK Gardner/Costas/FLL-band-edge state output
 - `DSD_NEO_SYNC_WARMSTART=0` — disable sync warm‑start
 
 ## Handy Examples

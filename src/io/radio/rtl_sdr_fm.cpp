@@ -25,7 +25,6 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
-#include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/snr_bias.h>
@@ -78,7 +77,7 @@ extern "C" {
 void dsd_rtl_stream_clear_output(void);
 double dsd_rtl_stream_return_pwr(void);
 unsigned int dsd_rtl_stream_output_rate(void);
-int dsd_rtl_stream_ted_bias(void);
+int dsd_rtl_stream_cqpsk_timing_bias(void);
 int dsd_rtl_stream_set_rtltcp_autotune(int onoff);
 int dsd_rtl_stream_get_rtltcp_autotune(void);
 void dsd_rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz);
@@ -1465,7 +1464,7 @@ dsd_rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto) {
 /**
  * @brief Reset demodulator state on retune/hop to avoid stale "lock"/bias.
  *
- * Clears squelch accumulators, FLL/TED integrators, deemphasis/audio LPF/DC
+ * Clears squelch accumulators, CQPSK timing/carrier integrators, deemphasis/audio LPF/DC
  * state, history buffers for HB/CIC paths, and resampler phase/history.
  * This ensures each new frequency starts from a neutral state.
  *
@@ -1538,12 +1537,6 @@ demod_reset_common_state_for_retune(struct demod_state* s) {
     s->now_lpr = 0;
     s->lp_len = 0;
     DSD_MEMSET(s->input_cb_buf, 0, sizeof(s->input_cb_buf));
-
-    fll_init_state(&s->fll_state);
-    s->fll_freq = 0.0f;
-    s->fll_phase = 0.0f;
-    s->fll_prev_r = 0.0f;
-    s->fll_prev_j = 0.0f;
 
     s->fm_demod_history_valid = 0;
     s->pre_r = 0.0f;
@@ -1637,14 +1630,14 @@ demod_log_post_retune_state(const struct demod_state* s) {
     if (!debug_cqpsk_enabled()) {
         return;
     }
-    float fll_freq_hz = s->fll_band_edge_state.freq * ((float)s->rate_out / 6.28318530717958647692f);
+    float fll_be_freq_hz = s->fll_band_edge_state.freq * ((float)s->rate_out / 6.28318530717958647692f);
     float costas_freq_hz =
         s->costas_state.freq
         * (((float)s->rate_out / (float)(s->ted_sps > 0 ? s->ted_sps : 5)) / 6.28318530717958647692f);
     DSD_FPRINTF(stderr,
-                "[RETUNE] ted_sps=%d override=%d cqpsk=%d fll_freq=%.1fHz fll_phase=%.3f costas_freq=%.1fHz "
+                "[RETUNE] ted_sps=%d override=%d cqpsk=%d fll_be_freq=%.1fHz fll_be_phase=%.3f costas_freq=%.1fHz "
                 "costas_phase=%.3f gardner_omega=%.3f gardner_mu=%.3f\n",
-                s->ted_sps, s->ted_sps_override, s->cqpsk_enable, fll_freq_hz, s->fll_band_edge_state.phase,
+                s->ted_sps, s->ted_sps_override, s->cqpsk_enable, fll_be_freq_hz, s->fll_band_edge_state.phase,
                 costas_freq_hz, s->costas_state.phase, s->ted_state.omega, s->ted_state.mu);
 }
 
@@ -2330,17 +2323,17 @@ demod_log_retune_diag_block(const struct demod_state* d, int got, const DemodRet
     if (!d || !diag || diag->block <= 0) {
         return;
     }
-    float fll_freq_hz = d->fll_band_edge_state.freq * ((float)d->rate_out / 6.28318530717958647692f);
+    float fll_be_freq_hz = d->fll_band_edge_state.freq * ((float)d->rate_out / 6.28318530717958647692f);
     float symbol_rate_hz = (float)d->rate_out / (float)(d->ted_sps > 0 ? d->ted_sps : 5);
     float costas_freq_hz = d->costas_state.freq * (symbol_rate_hz / 6.28318530717958647692f);
     double snr_qpsk = g_snr_qpsk_db.load(std::memory_order_relaxed);
     DSD_FPRINTF(stderr,
                 "[RETUNE-BLOCK] seq=%u block=%d freq=%u reason=%s reconfig=%u ring=%zu got=%d pairs=%d "
-                "mean_abs=%.4f max_abs=%.4f snr=%.1f fll=%.1fHz costas=%.1fHz costas_err=%.4f "
+                "mean_abs=%.4f max_abs=%.4f snr=%.1f fll_be=%.1fHz costas=%.1fHz costas_err=%.4f "
                 "ted_lock=%d ted_err=%.4f ted_mu=%.3f ted_omega=%.3f carrier_lock=%d\n",
                 diag->seq, diag->block, diag->freq_hz, retune_reset_reason_name((DemodRetuneResetReason)diag->reason),
                 diag->reconfigure_seq, diag->ring_used, got, diag->pairs, diag->mean_abs, diag->max_abs, snr_qpsk,
-                fll_freq_hz, costas_freq_hz, d->costas_state.error, d->ted_state.lock_count, d->ted_state.e_ema,
+                fll_be_freq_hz, costas_freq_hz, d->costas_state.error, d->ted_state.lock_count, d->ted_state.e_ema,
                 d->ted_state.mu, d->ted_state.omega, dsd_rtl_stream_get_carrier_lock());
 }
 
@@ -5231,18 +5224,6 @@ extern "C" int dsd_rtl_stream_get_auto_ppm(void);
 /* Option B: Perform a short auto-PPM pre-training window at startup before returning control,
    so trunking/hunt logic begins after a stable PPM lock when possible. */
 
-namespace {
-struct stream_open_persist_state {
-    int use;
-    int cqpsk_enable;
-    int fll_enable;
-    int ted_enable;
-    float ted_gain;
-    int ted_gain_is_set;
-    int ted_force;
-};
-} // namespace
-
 static int
 stream_open_prepare_replay_config(dsd_opts* opts, RadioSourceKind source_kind, dsd_iq_replay_config* replay_cfg,
                                   int* replay_cfg_loaded) {
@@ -5362,21 +5343,6 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
         return -1;
     }
     return 0;
-}
-
-static void
-stream_open_apply_persist_state(const stream_open_persist_state* persist) {
-    if (!persist || !persist->use) {
-        return;
-    }
-    demod.cqpsk_enable = persist->cqpsk_enable ? 1 : 0;
-    demod.fll_enabled = persist->fll_enable ? 1 : 0;
-    demod.ted_enabled = persist->ted_enable ? 1 : 0;
-    if (persist->ted_gain > 0.0f) {
-        demod.ted_gain = persist->ted_gain;
-    }
-    demod.ted_gain_is_set = persist->ted_gain_is_set ? 1 : 0;
-    demod.ted_force = persist->ted_force ? 1 : 0;
 }
 
 static void
@@ -6030,7 +5996,6 @@ static int
 stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind,
                                      const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded) {
     stream_open_reset_auto_ppm_state(opts);
-    stream_open_persist_state persist = {};
 
     rtl_dsp_bw_hz = opts->rtl_dsp_bw_khz * 1000;
     stream_open_warn_low_dsp_bw(opts);
@@ -6038,7 +6003,6 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (stream_open_init_pipeline(opts, rtl_dsp_bw_hz) != 0) {
         return -1;
     }
-    stream_open_apply_persist_state(&persist);
     stream_open_enable_default_autogain(opts);
     setup_initial_freq_and_rate(opts);
     if (!output.rate) {
@@ -6383,7 +6347,7 @@ auto_ppm_maybe_adjust(dsd_opts* opts, const dsd_state* state) {
 
     dsd::io::radio::RtlAutoPpmSignalMetrics metrics = {};
     metrics.cqpsk_enable = demod.cqpsk_enable ? 1 : 0;
-    metrics.tracking_enable = (demod.cqpsk_enable || demod.fll_enabled) ? 1 : 0;
+    metrics.tracking_enable = demod.cqpsk_enable ? 1 : 0;
     metrics.carrier_lock = dsd_rtl_stream_get_carrier_lock();
     metrics.spectrum_valid = (spec_snr_db > -99.0) ? 1 : 0;
     metrics.nco_cfo_hz = dsd_rtl_stream_get_cfo_hz();
@@ -6603,14 +6567,14 @@ dsd_rtl_stream_should_exit(void) {
 }
 
 /**
- * @brief Return smoothed TED residual (EMA of Gardner error) in Q14 units.
+ * @brief Return smoothed CQPSK timing residual (EMA of Gardner error) in Q14 units.
  *
  * `ted_state.e_ema` is a normalized float residual roughly in [-1, +1].
  * Exporting a scaled integer keeps hook/UI APIs stable while preserving sign
  * and sufficient dynamic range for center-nudging deadbands.
  */
 extern "C" int
-dsd_rtl_stream_ted_bias(void) {
+dsd_rtl_stream_cqpsk_timing_bias(void) {
     const float scaled = demod.ted_state.e_ema * 16384.0f; /* Q14 scale */
     if (scaled > (float)INT_MAX) {
         return INT_MAX;
@@ -6827,12 +6791,6 @@ dsd_rtl_stream_get_ted_gain(void) {
 }
 
 static inline int
-rtl_stream_symbol_output_active(void) {
-    return demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK || demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK
-           || demod.cqpsk_enable;
-}
-
-static inline int
 rtl_stream_fsk_symbol_output_active(void) {
     return demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK;
 }
@@ -6843,30 +6801,14 @@ rtl_stream_cqpsk_symbol_output_active(void) {
 }
 
 static void
-rtl_stream_reset_fll_runtime_state(void) {
-    fll_init_state(&demod.fll_state);
-    demod.fll_freq = 0.0f;
-    demod.fll_phase = 0.0f;
-    demod.fll_prev_r = 0.0f;
-    demod.fll_prev_j = 0.0f;
-}
-
-static void
 rtl_stream_reset_ted_runtime_state(void) {
     ted_init_state(&demod.ted_state);
     demod.ted_mu = 0.0f;
 }
 
 static void
-rtl_stream_clear_non_symbol_controls_for_symbol_output(void) {
+rtl_stream_apply_symbol_timing_mode(void) {
     if (rtl_stream_fsk_symbol_output_active()) {
-        demod.fm_agc_enable = 0;
-        demod.fm_limiter_enable = 0;
-        demod.ted_force = 0;
-        if (demod.fll_enabled) {
-            demod.fll_enabled = 0;
-            rtl_stream_reset_fll_runtime_state();
-        }
         if (demod.ted_enabled) {
             demod.ted_enabled = 0;
             rtl_stream_reset_ted_runtime_state();
@@ -6875,114 +6817,8 @@ rtl_stream_clear_non_symbol_controls_for_symbol_output(void) {
     }
 
     if (rtl_stream_cqpsk_symbol_output_active()) {
-        demod.fm_agc_enable = 0;
-        demod.fm_limiter_enable = 0;
-        demod.ted_force = 0;
-        if (demod.fll_enabled) {
-            demod.fll_enabled = 0;
-            rtl_stream_reset_fll_runtime_state();
-        }
         demod.ted_enabled = 1;
     }
-}
-
-extern "C" void
-dsd_rtl_stream_set_ted_force(int onoff) {
-    if (rtl_stream_symbol_output_active()) {
-        demod.ted_force = 0;
-        return;
-    }
-    demod.ted_force = onoff ? 1 : 0;
-}
-
-extern "C" int
-dsd_rtl_stream_get_ted_force(void) {
-    if (rtl_stream_symbol_output_active()) {
-        return 0;
-    }
-    return demod.ted_force ? 1 : 0;
-}
-
-/* -------- FM/C4FM amplitude stabilization + DC blocker (runtime) -------- */
-extern "C" int
-dsd_rtl_stream_get_fm_agc(void) {
-    if (rtl_stream_symbol_output_active()) {
-        return 0;
-    }
-    return demod.fm_agc_enable ? 1 : 0;
-}
-
-extern "C" void
-dsd_rtl_stream_set_fm_agc(int onoff) {
-    if (rtl_stream_symbol_output_active()) {
-        demod.fm_agc_enable = 0;
-        return;
-    }
-    demod.fm_agc_enable = onoff ? 1 : 0;
-}
-
-extern "C" void
-dsd_rtl_stream_get_fm_agc_params(float* target_rms, float* min_rms, float* alpha_up, float* alpha_down) {
-    if (target_rms) {
-        *target_rms = demod.fm_agc_target_rms;
-    }
-    if (min_rms) {
-        *min_rms = demod.fm_agc_min_rms;
-    }
-    if (alpha_up) {
-        *alpha_up = demod.fm_agc_alpha_up;
-    }
-    if (alpha_down) {
-        *alpha_down = demod.fm_agc_alpha_down;
-    }
-}
-
-extern "C" void
-dsd_rtl_stream_set_fm_agc_params(float target_rms, float min_rms, float alpha_up, float alpha_down) {
-    if (target_rms >= 0.0f) {
-        if (target_rms < 0.05f) {
-            target_rms = 0.05f;
-        }
-        if (target_rms > 2.5f) {
-            target_rms = 2.5f;
-        }
-        demod.fm_agc_target_rms = target_rms;
-    }
-    if (min_rms >= 0.0f) {
-        if (min_rms > 1.0f) {
-            min_rms = 1.0f;
-        }
-        demod.fm_agc_min_rms = min_rms;
-    }
-    if (alpha_up >= 0.0f) {
-        if (alpha_up > 1.0f) {
-            alpha_up = 1.0f;
-        }
-        demod.fm_agc_alpha_up = alpha_up;
-    }
-    if (alpha_down >= 0.0f) {
-        if (alpha_down > 1.0f) {
-            alpha_down = 1.0f;
-        }
-        demod.fm_agc_alpha_down = alpha_down;
-    }
-}
-
-extern "C" int
-dsd_rtl_stream_get_fm_limiter(void) {
-    if (rtl_stream_symbol_output_active()) {
-        return 0;
-    }
-    return demod.fm_limiter_enable ? 1 : 0;
-}
-
-extern "C" void
-dsd_rtl_stream_set_fm_limiter(int onoff) {
-    if (rtl_stream_symbol_output_active()) {
-        demod.fm_limiter_enable = 0;
-        return;
-    }
-    demod.fm_limiter_enable = onoff ? 1 : 0;
 }
 
 extern "C" int
@@ -7005,7 +6841,7 @@ iq_dc_clamp_shift_k(int shift_k) {
 }
 
 static void
-iq_dc_precharge_and_retarget_agc(void) {
+iq_dc_precharge(void) {
     if (!demod.lowpassed || demod.lp_len < 2) {
         return;
     }
@@ -7020,24 +6856,6 @@ iq_dc_precharge_and_retarget_agc(void) {
     float meanQ = (pairs > 0) ? (float)(sumQ / (double)pairs) : 0.0f;
     demod.iq_dc_avg_r = meanI;
     demod.iq_dc_avg_i = meanQ;
-
-    double acc = 0.0;
-    for (int n = 0; n < pairs; n++) {
-        double I = (double)demod.lowpassed[(size_t)(n << 1) + 0] - (double)meanI;
-        double Q = (double)demod.lowpassed[(size_t)(n << 1) + 1] - (double)meanQ;
-        acc += I * I + Q * Q;
-    }
-    if (pairs <= 0) {
-        return;
-    }
-    double mean_r2 = acc / (double)pairs;
-    double rms = sqrt(mean_r2);
-    float target = (demod.fm_agc_target_rms > 0.0f) ? demod.fm_agc_target_rms : 0.30f;
-    target = std::max(0.05f, std::min(2.5f, target));
-    double g_raw = (rms > 1e-6) ? ((double)target / rms) : 1.0;
-    g_raw = std::max(0.125, std::min(8.0, g_raw));
-    demod.fm_agc_gain = (float)g_raw;
-    demod.fm_agc_ema_rms = rms;
 }
 
 extern "C" void
@@ -7049,10 +6867,9 @@ dsd_rtl_stream_set_iq_dc(int enable, int shift_k) {
     if (shift_k >= 0) {
         demod.iq_dc_shift = iq_dc_clamp_shift_k(shift_k);
     }
-    /* If enabling now, precharge DC estimate to current block mean and retarget AGC
-       so there is no apparent level drop. */
+    /* If enabling now, precharge DC estimate to the current block mean. */
     if (!was && demod.iq_dc_block_enable) {
-        iq_dc_precharge_and_retarget_agc();
+        iq_dc_precharge();
     }
 }
 
@@ -7264,7 +7081,6 @@ rtl_stream_disable_cqpsk_mode(void) {
     }
 }
 
-/* Coarse DSP feature toggles and snapshot */
 extern "C" void
 rtl_stream_toggle_cqpsk(int onoff) {
     int was = demod.cqpsk_enable ? 1 : 0;
@@ -7274,7 +7090,7 @@ rtl_stream_toggle_cqpsk(int onoff) {
     } else {
         rtl_stream_disable_cqpsk_mode();
     }
-    rtl_stream_clear_non_symbol_controls_for_symbol_output();
+    rtl_stream_apply_symbol_timing_mode();
     /* If the demod family changed, request a Costas reset on the next retune.
      * This keeps loop state consistent when switching between FM and CQPSK paths. */
     if (demod.cqpsk_enable != was) {
@@ -7499,61 +7315,14 @@ dsd_rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) 
     rtl_stream_apply_retune_profile(&profile, target_freq_hz);
 }
 
-extern "C" void
-rtl_stream_toggle_fll(int onoff) {
-    if (rtl_stream_symbol_output_active()) {
-        demod.fll_enabled = 0;
-        rtl_stream_reset_fll_runtime_state();
-        return;
-    }
-    demod.fll_enabled = onoff ? 1 : 0;
-    if (!demod.fll_enabled) {
-        /* Reset FLL state to baseline to avoid carryover */
-        rtl_stream_reset_fll_runtime_state();
-    }
-}
-
-extern "C" void
-rtl_stream_toggle_ted(int onoff) {
-    if (rtl_stream_fsk_symbol_output_active()) {
-        demod.ted_enabled = 0;
-        demod.ted_force = 0;
-        rtl_stream_reset_ted_runtime_state();
-        return;
-    }
-
-    if (rtl_stream_cqpsk_symbol_output_active() || (!onoff && demod.cqpsk_enable)) {
-        /* Prevent disabling TED while CQPSK path is active: the CQPSK
-           Costas/differential stage requires symbol-rate samples from
-           the Gardner TED. Ignore the request when CQPSK is enabled. */
-        demod.ted_enabled = 1;
-        demod.ted_force = 0;
-        return;
-    }
-
-    demod.ted_enabled = onoff ? 1 : 0;
-    if (!demod.ted_enabled) {
-        /* Reset TED state */
-        rtl_stream_reset_ted_runtime_state();
-    }
-}
-
 extern "C" int
-rtl_stream_dsp_get(int* cqpsk_enable, int* fll_enable, int* ted_enable) {
+rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
+    int cqpsk = (demod.cqpsk_enable || rtl_stream_cqpsk_symbol_output_active()) ? 1 : 0;
     if (cqpsk_enable) {
-        *cqpsk_enable = (demod.cqpsk_enable || rtl_stream_cqpsk_symbol_output_active()) ? 1 : 0;
+        *cqpsk_enable = cqpsk;
     }
-    if (fll_enable) {
-        *fll_enable = rtl_stream_symbol_output_active() ? 0 : (demod.fll_enabled ? 1 : 0);
-    }
-    if (ted_enable) {
-        if (rtl_stream_fsk_symbol_output_active()) {
-            *ted_enable = 0;
-        } else if (rtl_stream_cqpsk_symbol_output_active()) {
-            *ted_enable = 1;
-        } else {
-            *ted_enable = demod.ted_enabled ? 1 : 0;
-        }
+    if (cqpsk_timing_active) {
+        *cqpsk_timing_active = cqpsk ? 1 : 0;
     }
     return 0;
 }

@@ -16,8 +16,8 @@ static int g_symbol_profile_calls = 0;
 static int g_stream_generation_calls = 0;
 static int g_stream_active_calls = 0;
 static int g_set_symbol_profile_calls = 0;
-static int g_dsp_get_calls = 0;
-static int g_ted_bias_calls = 0;
+static int g_cqpsk_status_calls = 0;
+static int g_cqpsk_timing_bias_calls = 0;
 static int g_snr_bias_calls = 0;
 static int g_snr_c4fm_calls = 0;
 static int g_snr_c4fm_eye_calls = 0;
@@ -91,23 +91,20 @@ fake_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
 }
 
 static int
-fake_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable) {
-    g_dsp_get_calls++;
+fake_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
+    g_cqpsk_status_calls++;
     if (out_cqpsk_enable) {
         *out_cqpsk_enable = 1;
     }
-    if (out_fll_enable) {
-        *out_fll_enable = 2;
-    }
-    if (out_ted_enable) {
-        *out_ted_enable = 3;
+    if (out_cqpsk_timing_active) {
+        *out_cqpsk_timing_active = 3;
     }
     return -7;
 }
 
 static int
-fake_ted_bias(void) {
-    g_ted_bias_calls++;
+fake_cqpsk_timing_bias(void) {
+    g_cqpsk_timing_bias_calls++;
     return 123;
 }
 
@@ -220,14 +217,12 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_set_symbol_profile(2400, 2, 1) == 0);
 
     int cqpsk = -1;
-    int fll = -1;
-    int ted = -1;
-    assert(dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted) == 0);
+    int timing = -1;
+    assert(dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk, &timing) == 0);
     assert(cqpsk == 0);
-    assert(fll == 0);
-    assert(ted == 0);
+    assert(timing == 0);
 
-    assert(dsd_rtl_stream_metrics_hook_ted_bias() == 0);
+    assert(dsd_rtl_stream_metrics_hook_cqpsk_timing_bias() == 0);
 
     assert(dsd_rtl_stream_metrics_hook_snr_bias_evm() == 2.43);
 
@@ -256,8 +251,8 @@ main(void) {
     g_stream_generation_calls = 0;
     g_stream_active_calls = 0;
     g_set_symbol_profile_calls = 0;
-    g_dsp_get_calls = 0;
-    g_ted_bias_calls = 0;
+    g_cqpsk_status_calls = 0;
+    g_cqpsk_timing_bias_calls = 0;
     g_snr_bias_calls = 0;
     g_snr_c4fm_calls = 0;
     g_snr_c4fm_eye_calls = 0;
@@ -278,8 +273,8 @@ main(void) {
     hooks.stream_generation = fake_stream_generation;
     hooks.stream_active = fake_stream_active;
     hooks.set_symbol_profile = fake_set_symbol_profile;
-    hooks.dsp_get = fake_dsp_get;
-    hooks.ted_bias = fake_ted_bias;
+    hooks.cqpsk_status = fake_cqpsk_status;
+    hooks.cqpsk_timing_bias = fake_cqpsk_timing_bias;
     hooks.snr_bias_evm = fake_snr_bias_evm;
     hooks.snr_c4fm_db = fake_snr_c4fm_db;
     hooks.snr_c4fm_eye_db = fake_snr_c4fm_eye_db;
@@ -323,15 +318,14 @@ main(void) {
     assert(g_set_symbol_channel_profile == 5);
 
     // Out-parameter hooks must report both call counts and returned values.
-    cqpsk = fll = ted = 0;
-    assert(dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted) == -7);
-    assert(g_dsp_get_calls == 1);
+    cqpsk = timing = 0;
+    assert(dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk, &timing) == -7);
+    assert(g_cqpsk_status_calls == 1);
     assert(cqpsk == 1);
-    assert(fll == 2);
-    assert(ted == 3);
+    assert(timing == 3);
 
-    assert(dsd_rtl_stream_metrics_hook_ted_bias() == 123);
-    assert(g_ted_bias_calls == 1);
+    assert(dsd_rtl_stream_metrics_hook_cqpsk_timing_bias() == 123);
+    assert(g_cqpsk_timing_bias_calls == 1);
 
     assert(dsd_rtl_stream_metrics_hook_snr_bias_evm() == 9.87);
     assert(g_snr_bias_calls == 1);

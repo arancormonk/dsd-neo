@@ -145,12 +145,6 @@ reset_sync_tracking_state(dsd_state* state) {
     state->symbol_replay_soft.llr[1] = 0;
     state->symbol_replay_soft_symbol = 0.0f;
 
-    /* Reset C4FM clock assist state to avoid stale nudges across runs */
-    state->c4fm_clk_prev_dec = 0;
-    state->c4fm_clk_run_dir = 0;
-    state->c4fm_clk_run_len = 0;
-    state->c4fm_clk_cooldown = 0;
-
     /* Reset M17 polarity auto-detection: 0=unknown */
     state->m17_polarity = 0;
     state->m17_bert_locked = 0;

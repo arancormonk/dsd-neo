@@ -389,12 +389,6 @@ struct dsd_state {
 
     /* C4FM timing assist (clock loop hinting). Lightweight EL/M&M error drives
        occasional ±1 nudges of symbolCenter; disabled by default. */
-    int c4fm_clk_mode;     /* 0=off, 1=Early-Late, 2=M&M */
-    int c4fm_clk_prev_dec; /* last sliced level for M&M (-3,-1,1,3; 0 if unknown) */
-    int c4fm_clk_run_dir;  /* last run direction (-1,0,+1) */
-    int c4fm_clk_run_len;  /* consecutive runs in same direction */
-    int c4fm_clk_cooldown; /* cooldown countdown to avoid rapid flips */
-
     int rf_mod;
     /* M17 polarity auto-detection: 0=unknown, 1=normal, 2=inverted.
      * Set when preamble detected; overridden if user specifies -xz. */
