@@ -182,7 +182,7 @@ typedef struct dsdneoRuntimeConfig {
     double tuner_autogain_inband_ratio;
     double tuner_autogain_up_step_db;
 
-    /* Auto-PPM (spectrum-based) knobs */
+    /* Auto-PPM (carrier/tracking-based) knobs */
     double auto_ppm_snr_db;
     double auto_ppm_pwr_db;
     double auto_ppm_zerolock_ppm;
@@ -352,7 +352,7 @@ typedef struct dsdneoRuntimeConfig {
     int tuner_autogain_up_persist_is_set;
     int tuner_autogain_up_persist;
 
-    /* Auto-PPM (spectrum-based) knobs */
+    /* Auto-PPM (carrier/tracking-based) knobs */
     int auto_ppm_is_set;
     int auto_ppm_enable;
     int auto_ppm_snr_db_is_set;
