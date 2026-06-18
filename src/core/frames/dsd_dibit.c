@@ -24,7 +24,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/platform/platform.h>
@@ -1016,25 +1015,6 @@ want_cqpsk_p25_slice(const dsd_opts* opts, const dsd_state* state, int is_negati
 }
 
 static int DSD_ATTR_USED
-try_p25p1_heuristic_slice(const dsd_opts* opts, dsd_state* state, float symbol, int is_negative, int* out_dibit) {
-    if (!opts || !state || !out_dibit || opts->use_heuristics != 1) {
-        return 0;
-    }
-
-    if (is_negative) {
-        if (state->synctype != DSD_SYNC_P25P1_NEG) {
-            return 0;
-        }
-        return estimate_symbol(state->rf_mod, &(state->inv_p25_heuristics), state->last_dibit, symbol, out_dibit);
-    }
-
-    if (state->synctype != DSD_SYNC_P25P1_POS) {
-        return 0;
-    }
-    return estimate_symbol(state->rf_mod, &(state->p25_heuristics), state->last_dibit, symbol, out_dibit);
-}
-
-static int DSD_ATTR_USED
 slice_dibit_from_symbol_regions(const dsd_state* state, float symbol, int is_negative) {
     if (symbol > state->center) {
         if (symbol > state->umid) {
@@ -1050,7 +1030,8 @@ slice_dibit_from_symbol_regions(const dsd_state* state, float symbol, int is_neg
 }
 
 static int DSD_ATTR_USED
-select_four_level_dibit(const dsd_opts* opts, dsd_state* state, float symbol, int is_negative, int* used_cqpsk_slice) {
+select_four_level_dibit(const dsd_opts* opts, const dsd_state* state, float symbol, int is_negative,
+                        int* used_cqpsk_slice) {
     if (used_cqpsk_slice) {
         *used_cqpsk_slice = 0;
     }
@@ -1064,12 +1045,10 @@ select_four_level_dibit(const dsd_opts* opts, dsd_state* state, float symbol, in
         debug_log_cqpsk_slice(dibit, symbol, state);
         return dibit;
     }
+#else
+    UNUSED(opts);
 #endif
 
-    int dibit = 0;
-    if (try_p25p1_heuristic_slice(opts, state, symbol, is_negative, &dibit)) {
-        return dibit;
-    }
     return slice_dibit_from_symbol_regions(state, symbol, is_negative);
 }
 

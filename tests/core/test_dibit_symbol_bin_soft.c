@@ -7,7 +7,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdint.h>
@@ -82,16 +81,6 @@ dsd_fsk_symbol_reliability(float symbol, int levels) {
     return 255;
 }
 
-int
-estimate_symbol(int rf_mod, P25Heuristics* heuristics, int previous_dibit, int analog_value, int* dibit) {
-    (void)rf_mod;
-    (void)heuristics;
-    (void)previous_dibit;
-    (void)analog_value;
-    (void)dibit;
-    return 0;
-}
-
 static void
 free_state_buffers(dsd_state* state) {
     free(state->dibit_buf);
@@ -136,7 +125,6 @@ test_symbol_bin_soft_matches_returned_dibit(int dibit) {
     }
 
     opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
-    opts.use_heuristics = 0;
 
     state.synctype = DSD_SYNC_P25P1_NEG;
     state.rf_mod = 0;
@@ -210,7 +198,6 @@ test_soft_symbol_capture_record(void) {
     }
 
     opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
-    opts.use_heuristics = 0;
     opts.symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
     opts.symbol_out_f = f;
     state.synctype = DSD_SYNC_P25P1_NEG;
@@ -262,7 +249,6 @@ test_symbol_replay_soft_metric_overrides_fallback(void) {
     }
 
     opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
-    opts.use_heuristics = 0;
     state.synctype = DSD_SYNC_P25P1_NEG;
     state.rf_mod = 0;
 

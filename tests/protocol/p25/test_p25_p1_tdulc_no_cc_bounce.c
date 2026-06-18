@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -26,7 +27,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/dsp/p25p1_heuristics.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -199,19 +199,6 @@ encode_reedsolomon_24_12_13(char* data, char* parity) {
     (void)parity;
 }
 
-// Analog/sample reader stubs
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-read_dibit_update_analog_data(dsd_opts* opts, dsd_state* state, char* output, unsigned int count, int* status_count,
-                              AnalogSignal* analog_signal_array, int* analog_signal_index) {
-    (void)opts;
-    (void)state;
-    (void)status_count;
-    (void)analog_signal_array;
-    (void)analog_signal_index;
-    DSD_MEMSET(output, 0, count);
-}
-
 int
 getDibit(dsd_opts* opts, dsd_state* state) {
     (void)opts;
@@ -231,43 +218,28 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     return 0;
 }
 
-void
-contribute_to_heuristics(int rf_mod, P25Heuristics* heuristics, AnalogSignal* analog_signal_array, int count) {
-    (void)rf_mod;
-    (void)heuristics;
-    (void)analog_signal_array;
-    (void)count;
-}
-
-void
-update_error_stats(P25Heuristics* heuristics, int bits, int errors) {
-    (void)heuristics;
-    (void)bits;
-    (void)errors;
-}
-
 // TDULC word reader stubs (all zeros)
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int* status_count,
-          AnalogSignal* analog_signal_array, int* analog_signal_index) {
+          P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
     (void)opts;
     (void)state;
     (void)status_count;
-    (void)analog_signal_array;
-    (void)analog_signal_index;
+    (void)soft_dibits;
+    (void)soft_dibit_index;
     DSD_MEMSET(word, 0, length);
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count,
-                    AnalogSignal* analog_signal_array, int* analog_signal_index) {
+read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count, P25P1SoftDibit* soft_dibits,
+                    int* soft_dibit_index) {
     (void)opts;
     (void)state;
     (void)status_count;
-    (void)analog_signal_array;
-    (void)analog_signal_index;
+    (void)soft_dibits;
+    (void)soft_dibit_index;
     DSD_MEMSET(parity, 0, 12);
 }
 

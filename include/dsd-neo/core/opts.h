@@ -302,7 +302,6 @@ struct dsd_opts {
     uint8_t p25_lcw_retune;
     uint8_t p25_prefer_candidates;
     uint8_t use_dsp_output;
-    uint8_t use_heuristics;
     uint8_t dmr_t3_heuristic_fill;
     // IQ capture and replay
     uint8_t iq_capture_requested; /* 1 if --iq-capture was provided */

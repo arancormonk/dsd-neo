@@ -5,7 +5,6 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -215,10 +214,6 @@ reset_misc_runtime_state(dsd_state* state) {
 
     //unsure if these are still used or ever were used,
     // DSD_MEMSET(state->aout_max_buf, 0, sizeof (float) * 200);
-
-    //rest the heurestics, we want to do this on each tune, each RF frequency can deviate quite a bit in strength
-    initialize_p25_heuristics(&state->p25_heuristics);
-    initialize_p25_heuristics(&state->inv_p25_heuristics);
 }
 
 static void

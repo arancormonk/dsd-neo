@@ -65,7 +65,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/dsp/p25p1_heuristics.h"
 #include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
 #include "engine_hooks_install.h"
@@ -1210,14 +1209,6 @@ no_carrier_reset_floating_gain_if_needed(const dsd_opts* opts, dsd_state* state)
 }
 
 static void
-no_carrier_reset_p25_heuristics_if_needed(const dsd_opts* opts, dsd_state* state) {
-    if (opts->frame_p25p1 == 1 && opts->use_heuristics == 1) {
-        initialize_p25_heuristics(&state->p25_heuristics);
-        initialize_p25_heuristics(&state->inv_p25_heuristics);
-    }
-}
-
-static void
 no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
     state->nxdn_last_ran = -1;
     state->nxdn_last_rid = 0;
@@ -1976,7 +1967,6 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 
     no_carrier_rotate_symbol_output_if_needed(opts, state);
     no_carrier_reset_floating_gain_if_needed(opts, state);
-    no_carrier_reset_p25_heuristics_if_needed(opts, state);
 
 //only do it here on the tweaks
 #ifdef LIMAZULUTWEAKS

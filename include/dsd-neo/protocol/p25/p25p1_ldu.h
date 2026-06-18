@@ -13,7 +13,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
-#include <dsd-neo/dsp/p25p1_heuristics.h>
+#include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <stdint.h>
 
 /**
@@ -44,12 +44,12 @@ void p25p1_play_imbe_audio(dsd_opts* opts, dsd_state* state);
  * \param hex Pointer where to store the read hex word. Six bytes, one per bit.
  * \param status_count An index that allows us to skip the status words interleaved every 36 dibit in the data
  * stream.
- * \param analog_singal_array Pointer to a sequence of AnalogSignal elements.
- * \param analog_signal_index The current index in the analog_singal_array. This value is increased on each
+ * \param soft_dibits Pointer to a sequence of P25P1SoftDibit records.
+ * \param soft_dibit_index The current index in the soft_dibits array. This value is increased on each
  * dibit read.
  */
 void read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* status_count,
-                               AnalogSignal* analog_signal_array, int* analog_signal_index);
+                               P25P1SoftDibit* soft_dibits, int* soft_dibit_index);
 
 /**
  * Return the Reed-Solomon symbol reliability for a Hamming-protected 6-bit word.
@@ -57,20 +57,11 @@ void read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int*
  * The input points at the 5 dibits captured for one Hamming(10,6,3) word; only
  * the first 3 dibits carry the RS symbol data bits.
  */
-uint8_t p25p1_hamming_rs_symbol_reliability(const AnalogSignal* symbol);
-
-/**
- * Correct the information in analog_signal_array according with the content of data, which has been
- * error corrected and should be valid.
- * \param Dibits that have already been error corrected and we trust are correct.
- * \count Number of dibits.
- * \param analog_signal_array Pointer to a sequence of AnalogSignal elements, as many as the value of count.
- */
-void correct_hamming_dibits(char* hex_data, int hex_count, AnalogSignal* analog_signal_array);
+uint8_t p25p1_hamming_rs_symbol_reliability(const P25P1SoftDibit* symbol);
 
 /**
  * Logs some debug info.
  */
-void debug_ldu_header(dsd_state* state);
+void debug_ldu_header(const dsd_state* state);
 
 #endif // P25P1_LDU_H_a3c417fcb7804991b0e6d828066bd133
