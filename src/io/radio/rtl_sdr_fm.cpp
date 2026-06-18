@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -52,7 +53,6 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <errno.h>
 #include <limits.h>
-#include <math.h>
 #include <mutex>
 #include <stdint.h>
 #include <stdio.h>
@@ -6309,6 +6309,25 @@ auto_ppm_make_config(const dsd_opts* opts) {
 }
 
 static int
+auto_ppm_fsk_phase_cfo_hz(double* out_cfo_hz) {
+    if (!out_cfo_hz || demod.cqpsk_enable || demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK || demod.rate_out <= 0) {
+        return 0;
+    }
+    if (!g_fsk_metrics_valid.load(std::memory_order_acquire)
+        || !g_fsk_metrics_timing_acquired.load(std::memory_order_relaxed)) {
+        return 0;
+    }
+
+    double dc_rad_per_sample = g_fsk_metrics_dc_est.load(std::memory_order_relaxed);
+    if (!std::isfinite(dc_rad_per_sample)) {
+        return 0;
+    }
+
+    *out_cfo_hz = dsd::io::radio::rtl_auto_ppm_fsk_dc_est_to_cfo_hz(dc_rad_per_sample, demod.rate_out);
+    return 1;
+}
+
+static int
 auto_ppm_should_freeze_retunes(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
@@ -6349,10 +6368,14 @@ auto_ppm_maybe_adjust(dsd_opts* opts, const dsd_state* state) {
     metrics.cqpsk_enable = demod.cqpsk_enable ? 1 : 0;
     metrics.tracking_enable = demod.cqpsk_enable ? 1 : 0;
     metrics.carrier_lock = dsd_rtl_stream_get_carrier_lock();
-    metrics.spectrum_valid = (spec_snr_db > -99.0) ? 1 : 0;
     metrics.nco_cfo_hz = dsd_rtl_stream_get_cfo_hz();
-    metrics.phase_cfo_hz = g_resid_cfo_phase_hz.load(std::memory_order_relaxed);
-    metrics.spectrum_cfo_hz = dsd_rtl_stream_get_residual_cfo_hz();
+    double fsk_phase_cfo_hz = 0.0;
+    if (auto_ppm_fsk_phase_cfo_hz(&fsk_phase_cfo_hz)) {
+        metrics.tracking_enable = 1;
+        metrics.phase_cfo_hz = fsk_phase_cfo_hz;
+    } else {
+        metrics.phase_cfo_hz = g_resid_cfo_phase_hz.load(std::memory_order_relaxed);
+    }
 
     dsd::io::radio::RtlAutoPpmInputs inputs = {};
     inputs.now_ms = now_ms;

@@ -42,9 +42,7 @@ clamp_ppm_step(int step, int limit) {
 
 static inline double
 estimate_snr_db(RtlAutoPpmSource source, const RtlAutoPpmInputs& inputs) {
-    if (source == RtlAutoPpmSource::SpectrumResidual) {
-        return inputs.spec_snr_db;
-    }
+    (void)source;
     return std::max(inputs.gate_snr_db, inputs.spec_snr_db);
 }
 
@@ -95,7 +93,6 @@ rtl_auto_ppm_source_max_step(RtlAutoPpmSource source, const RtlAutoPpmConfig& co
     switch (source) {
         case RtlAutoPpmSource::CarrierTotal: return config.max_step_carrier_ppm;
         case RtlAutoPpmSource::PhaseResidual: return config.max_step_phase_ppm;
-        case RtlAutoPpmSource::SpectrumResidual: return config.max_step_spectrum_ppm;
         case RtlAutoPpmSource::None:
         default: return 0;
     }
@@ -106,9 +103,8 @@ rtl_auto_ppm_source_observation_ms(RtlAutoPpmSource source, const RtlAutoPpmConf
     switch (source) {
         case RtlAutoPpmSource::CarrierTotal: return config.carrier_observation_ms;
         case RtlAutoPpmSource::PhaseResidual: return config.phase_observation_ms;
-        case RtlAutoPpmSource::SpectrumResidual: return config.spectrum_observation_ms;
         case RtlAutoPpmSource::None:
-        default: return config.phase_observation_ms;
+        default: return 0;
     }
 }
 
@@ -443,17 +439,30 @@ rtl_auto_ppm_try_apply_correction(const RtlAutoPpmConfig& config, const RtlAutoP
 RtlAutoPpmEstimate
 rtl_auto_ppm_select_estimate(const RtlAutoPpmSignalMetrics& metrics) {
     /* Tuner PPM is a device-wide calibration. Only CQPSK carrier recovery can
-     * export a stable total CFO; non-CQPSK FLL totals can include transmitter
-     * or channel offset and must not be folded into the dongle calibration. */
+     * export a stable total CFO; non-CQPSK totals can include transmitter or
+     * channel offset and must not be folded into the dongle calibration. */
     if (tracking_estimate_ready(metrics)) {
         return {RtlAutoPpmSource::CarrierTotal, metrics.nco_cfo_hz};
     }
 
-    if (metrics.spectrum_valid && finite_hz(metrics.spectrum_cfo_hz)) {
-        return {RtlAutoPpmSource::SpectrumResidual, metrics.spectrum_cfo_hz};
+    /* For non-CQPSK, tracking_enable means phase_cfo_hz has already been
+     * vetted by a mode-specific tracker such as the FSK modem DC estimator. */
+    if (!metrics.cqpsk_enable && metrics.tracking_enable && finite_hz(metrics.phase_cfo_hz)) {
+        return {RtlAutoPpmSource::PhaseResidual, metrics.phase_cfo_hz};
     }
 
     return {};
+}
+
+double
+rtl_auto_ppm_fsk_dc_est_to_cfo_hz(double dc_rad_per_sample, int sample_rate_hz) {
+    /* FSK dc_est is the discriminator-centering term subtracted inside the
+     * modem (`centered = freq - dc_est`), not the residual that remains after
+     * centering. Hardware tests with RTL-SDR frequency correction show that
+     * positive dc_est must request a negative PPM correction to reduce the
+     * observed symbol DC bias, so keep this conversion opposite the raw
+     * phase-delta sign. */
+    return -dc_rad_per_sample * static_cast<double>(sample_rate_hz) / 6.28318530717958647692;
 }
 
 void

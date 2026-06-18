@@ -7,9 +7,8 @@
  * @file
  * @brief RTL-SDR metrics, spectrum diagnostics, and auto-PPM helpers.
  *
- * Houses spectrum/SNR-based auto-PPM supervision state, spectrum and
- * carrier diagnostics, and the public query/toggle helpers used by
- * the UI and protocol code.
+ * Houses auto-PPM supervision state, spectrum and carrier diagnostics, and the
+ * public query/toggle helpers used by the UI and protocol code.
  */
 
 #include <algorithm>
