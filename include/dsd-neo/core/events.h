@@ -28,6 +28,7 @@ void push_event_history(Event_History_I* event_struct);
 void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string);
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 void watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
+void watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot);
 void watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string,
                              uint8_t slot);
 

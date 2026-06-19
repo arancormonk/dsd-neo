@@ -391,18 +391,13 @@ apply_cmd_key_management(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
 #ifdef USE_RADIO
 static int
 apply_dsp_op_cqpsk_toggle(const UiDspPayload* p) {
-    if (!p) {
+    if (!p || p->op != UI_DSP_OP_TOGGLE_CQ) {
         return 0;
     }
-    switch (p->op) {
-        case UI_DSP_OP_TOGGLE_CQ: {
-            int cq = 0;
-            rtl_stream_get_cqpsk_status(&cq, NULL);
-            rtl_stream_toggle_cqpsk(cq ? 0 : 1);
-            return 1;
-        }
-        default: return 0;
-    }
+    int cq = 0;
+    rtl_stream_get_cqpsk_status(&cq, NULL);
+    rtl_stream_toggle_cqpsk(cq ? 0 : 1);
+    return 1;
 }
 
 static int

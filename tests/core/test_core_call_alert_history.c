@@ -13,6 +13,7 @@
 #include <dsd-neo/platform/sndfile_fwd.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/call_alert.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +29,8 @@
 
 static int g_beeper_count;
 static int g_last_beeper_id;
+static int g_frame_log_count;
+static char g_last_frame_log[512];
 
 enum {
     TEST_DMR_DATA_BURST = 6,
@@ -57,7 +60,11 @@ close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* w
 void
 dsd_frame_logf(dsd_opts* opts, const char* format, ...) {
     UNUSED(opts);
-    UNUSED(format);
+    g_frame_log_count++;
+    va_list ap;
+    va_start(ap, format);
+    (void)DSD_VSNPRINTF(g_last_frame_log, sizeof g_last_frame_log, format, ap);
+    va_end(ap);
 }
 
 const char*
@@ -107,6 +114,8 @@ reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]
     opts->call_alert = 1;
     g_beeper_count = 0;
     g_last_beeper_id = 0;
+    g_frame_log_count = 0;
+    g_last_frame_log[0] = '\0';
 }
 
 static int
@@ -156,6 +165,52 @@ test_data_only_data_call_emits_one_data_alert(void) {
     int rc = 0;
     rc |= expect_int("data-only data call should beep once", g_beeper_count, 1);
     rc |= expect_int("data-only data call should use data tone", g_last_beeper_id, 80);
+    return rc;
+}
+
+static int
+test_data_call_emits_frame_log_record(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    watchdog_event_datacall(&opts, &state, 1234, 5678, "MNIS ARS;", 0);
+
+    int rc = 0;
+    rc |= expect_int("data call should emit one frame log", g_frame_log_count, 1);
+    rc |= expect_has_substr("data call frame log should identify data", g_last_frame_log, "FRAME DATA slot=1");
+    rc |= expect_has_substr("data call frame log should keep source", g_last_frame_log, "src=1234");
+    rc |= expect_has_substr("data call frame log should keep target", g_last_frame_log, "dst=5678");
+    return rc;
+}
+
+static int
+test_status_event_is_not_data_call_or_frame_log(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_DATA;
+
+    watchdog_event_status(&state, "DSD-neo Started and Event History Initialized;", 0);
+
+    const Event_History* current = &state.event_history_s[0].Event_History_Items[0];
+    int rc = 0;
+    rc |= expect_has_substr("status current should include message", current->event_string, "DSD-neo Started");
+    rc |= expect_int("status source remains zero", (int)current->source_id, 0);
+    rc |= expect_int("status target remains zero", (int)current->target_id, 0);
+    rc |= expect_int("status subtype remains neutral", (int)current->subtype, -1);
+    rc |= expect_int("status systype remains neutral", (int)current->systype, -1);
+    rc |= expect_int("status event time should be set", current->event_time > 0 ? 1 : 0, 1);
+    rc |= expect_int("status should not emit frame log", g_frame_log_count, 0);
+    rc |= expect_int("status should not emit data alert", g_beeper_count, 0);
+
+    push_event_history(&state.event_history_s[0]);
+    init_event_history(&state.event_history_s[0], 0, 1);
+    const Event_History* stored = &state.event_history_s[0].Event_History_Items[1];
+    rc |= expect_has_substr("status can be stored in history", stored->event_string, "DSD-neo Started");
+    rc |= expect_int("stored status subtype remains neutral", (int)stored->subtype, -1);
     return rc;
 }
 
@@ -408,6 +463,8 @@ main(void) {
 
     rc |= test_end_only_data_call_does_not_emit_voice_end_alert();
     rc |= test_data_only_data_call_emits_one_data_alert();
+    rc |= test_data_call_emits_frame_log_record();
+    rc |= test_status_event_is_not_data_call_or_frame_log();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();
     rc |= test_source_less_data_call_is_preserved_in_history();
     rc |= test_source_less_dmr_data_current_event_is_not_preserved_in_history();
