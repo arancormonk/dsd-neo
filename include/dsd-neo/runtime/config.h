@@ -611,6 +611,7 @@ typedef struct dsdneoUserConfig {
     int has_logging;
     char event_log[1024];
     char frame_log[1024];
+    char p25_sm_log[1024];
 
     /* [alerts] */
     int has_alerts;

@@ -102,6 +102,7 @@ Path expansion is applied to:
 - `[trunk_scan] targets_csv`
 - `[logging] event_log`
 - `[logging] frame_log`
+- `[logging] p25_sm_log`
 - `[recording] per_call_wav_dir`
 - `[recording] static_wav`
 - `[recording] raw_wav`
@@ -332,6 +333,7 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `event_log` | PATH | Event history log file path | (empty) |
 | `frame_log` | PATH | Frame trace log file path | (empty) |
+| `p25_sm_log` | PATH | P25 state-machine health log file path | (empty) |
 
 **[alerts] section:**
 | Key | Type | Description | Default |

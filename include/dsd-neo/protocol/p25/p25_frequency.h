@@ -24,8 +24,25 @@
 extern "C" {
 #endif
 
+typedef struct {
+    uint16_t channel;
+    int iden;
+    int chan_type;
+    int use_tdma;
+    int denom;
+    int step;
+    int ambiguous;
+    int cached;
+    long base_hz;
+    long spacing_hz;
+    long freq_hz;
+    char source[32];
+    char failure[64];
+} p25_freq_trace_t;
+
 long int process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel);
 long int process_channel_to_freq_with_mode(const dsd_opts* opts, dsd_state* state, int channel, int prefer_tdma);
+long int process_channel_to_freq_trace(const dsd_opts* opts, dsd_state* state, int channel, p25_freq_trace_t* trace);
 long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel);
 long int nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel);
 

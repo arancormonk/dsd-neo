@@ -171,6 +171,7 @@ test_load_and_apply_basic(void) {
                              "[logging]\n"
                              "event_log = \"/tmp/events.log\"\n"
                              "frame_log = \"/tmp/frames.log\"\n"
+                             "p25_sm_log = \"/tmp/p25-sm.log\"\n"
                              "\n"
                              "[alerts]\n"
                              "enabled = true\n"
@@ -278,9 +279,10 @@ test_load_and_apply_basic(void) {
                     opts.trunk_scan_activity_hold_ms);
         rc |= 1;
     }
-    if (strcmp(opts.event_out_file, "/tmp/events.log") != 0 || strcmp(opts.frame_log_file, "/tmp/frames.log") != 0) {
-        DSD_FPRINTF(stderr, "logging paths not applied correctly event=%s frame=%s\n", opts.event_out_file,
-                    opts.frame_log_file);
+    if (strcmp(opts.event_out_file, "/tmp/events.log") != 0 || strcmp(opts.frame_log_file, "/tmp/frames.log") != 0
+        || strcmp(opts.p25_sm_log_file, "/tmp/p25-sm.log") != 0) {
+        DSD_FPRINTF(stderr, "logging paths not applied correctly event=%s frame=%s p25_sm=%s\n", opts.event_out_file,
+                    opts.frame_log_file, opts.p25_sm_log_file);
         rc |= 1;
     }
     if (opts.dmr_stereo_wav != 1 || strcmp(opts.wav_out_dir, "/tmp/wav") != 0) {
@@ -956,12 +958,24 @@ test_apply_logging_retargets_frame_log_file(void) {
     opts.frame_log_write_error_reported = 1;
     DSD_SNPRINTF(opts.frame_log_file, sizeof opts.frame_log_file, "%s", "/tmp/frames-old.log");
     opts.frame_log_file[sizeof opts.frame_log_file - 1] = '\0';
+    FILE* first_p25_handle = tmpfile();
+    if (!first_p25_handle) {
+        DSD_FPRINTF(stderr, "tmpfile failed: %s\n", strerror(errno));
+        return 1;
+    }
+    opts.p25_sm_log_f = first_p25_handle;
+    opts.p25_sm_log_open_error_reported = 1;
+    opts.p25_sm_log_write_error_reported = 1;
+    DSD_SNPRINTF(opts.p25_sm_log_file, sizeof opts.p25_sm_log_file, "%s", "/tmp/p25-sm-old.log");
+    opts.p25_sm_log_file[sizeof opts.p25_sm_log_file - 1] = '\0';
 
     dsdneoUserConfig cfg = {};
     cfg.version = 1;
     cfg.has_logging = 1;
     DSD_SNPRINTF(cfg.frame_log, sizeof cfg.frame_log, "%s", "/tmp/frames-new.log");
     cfg.frame_log[sizeof cfg.frame_log - 1] = '\0';
+    DSD_SNPRINTF(cfg.p25_sm_log, sizeof cfg.p25_sm_log, "%s", "/tmp/p25-sm-new.log");
+    cfg.p25_sm_log[sizeof cfg.p25_sm_log - 1] = '\0';
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
@@ -982,6 +996,22 @@ test_apply_logging_retargets_frame_log_file(void) {
         DSD_FPRINTF(stderr, "frame log write error state should reset after retarget\n");
         rc |= 1;
     }
+    if (opts.p25_sm_log_f != NULL) {
+        DSD_FPRINTF(stderr, "P25 SM log handle should be closed after retarget\n");
+        rc |= 1;
+    }
+    if (strcmp(opts.p25_sm_log_file, "/tmp/p25-sm-new.log") != 0) {
+        DSD_FPRINTF(stderr, "P25 SM log path not updated after retarget: %s\n", opts.p25_sm_log_file);
+        rc |= 1;
+    }
+    if (opts.p25_sm_log_open_error_reported != 0) {
+        DSD_FPRINTF(stderr, "P25 SM log open error state should reset after retarget\n");
+        rc |= 1;
+    }
+    if (opts.p25_sm_log_write_error_reported != 0) {
+        DSD_FPRINTF(stderr, "P25 SM log write error state should reset after retarget\n");
+        rc |= 1;
+    }
 
     FILE* second_handle = tmpfile();
     if (!second_handle) {
@@ -991,7 +1021,16 @@ test_apply_logging_retargets_frame_log_file(void) {
     opts.frame_log_f = second_handle;
     opts.frame_log_open_error_reported = 1;
     opts.frame_log_write_error_reported = 1;
+    FILE* second_p25_handle = tmpfile();
+    if (!second_p25_handle) {
+        DSD_FPRINTF(stderr, "tmpfile failed: %s\n", strerror(errno));
+        return 1;
+    }
+    opts.p25_sm_log_f = second_p25_handle;
+    opts.p25_sm_log_open_error_reported = 1;
+    opts.p25_sm_log_write_error_reported = 1;
     cfg.frame_log[0] = '\0';
+    cfg.p25_sm_log[0] = '\0';
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
@@ -1009,6 +1048,22 @@ test_apply_logging_retargets_frame_log_file(void) {
     }
     if (opts.frame_log_write_error_reported != 0) {
         DSD_FPRINTF(stderr, "frame log write error state should reset when disabling logging path\n");
+        rc |= 1;
+    }
+    if (opts.p25_sm_log_f != NULL) {
+        DSD_FPRINTF(stderr, "P25 SM log handle should be closed when disabling logging path\n");
+        rc |= 1;
+    }
+    if (opts.p25_sm_log_file[0] != '\0') {
+        DSD_FPRINTF(stderr, "P25 SM log path should be cleared when disabling logging path\n");
+        rc |= 1;
+    }
+    if (opts.p25_sm_log_open_error_reported != 0) {
+        DSD_FPRINTF(stderr, "P25 SM log open error state should reset when disabling logging path\n");
+        rc |= 1;
+    }
+    if (opts.p25_sm_log_write_error_reported != 0) {
+        DSD_FPRINTF(stderr, "P25 SM log write error state should reset when disabling logging path\n");
         rc |= 1;
     }
 

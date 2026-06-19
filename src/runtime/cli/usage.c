@@ -35,6 +35,7 @@ dsd_cli_usage_section_intro(void) {
     printf("                 dsd-neo -N 2> console_log.txt\n");
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("      --frame-log <file>    Append one-line timestamped frame trace output\n");
+    printf("      --p25-sm-log <file>   Append P25 state-machine decision diagnostics\n");
     printf("      --symbol-capture-format <fmt>  Symbol capture format (soft|legacy; default soft)\n");
     printf("  -j            Force-enable P25 LCW explicit retune (format 0x44; default is enabled)\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");

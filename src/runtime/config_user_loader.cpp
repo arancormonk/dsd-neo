@@ -499,6 +499,8 @@ apply_logging_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char*
         copy_path_expanded(cfg->event_log, sizeof cfg->event_log, val);
     } else if (strcmp(key_lc, "frame_log") == 0) {
         copy_path_expanded(cfg->frame_log, sizeof cfg->frame_log, val);
+    } else if (strcmp(key_lc, "p25_sm_log") == 0) {
+        copy_path_expanded(cfg->p25_sm_log, sizeof cfg->p25_sm_log, val);
     }
 }
 

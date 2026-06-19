@@ -2311,6 +2311,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     closeSymbolOutFile(opts, state);
     dsd_frame_log_close(opts);
+    dsd_p25_sm_log_close(opts);
     dsd_engine_cleanup_close_radio(opts, state);
     dsd_engine_cleanup_close_net(opts);
     dsd_engine_cleanup_close_mbe(opts, state);

@@ -126,6 +126,16 @@ close_frame_log_handle(dsd_opts* opts) {
     opts->frame_log_f = NULL;
 }
 
+static void
+close_p25_sm_log_handle(dsd_opts* opts) {
+    if (!opts || opts->p25_sm_log_f == NULL) {
+        return;
+    }
+    fflush(opts->p25_sm_log_f);
+    fclose(opts->p25_sm_log_f);
+    opts->p25_sm_log_f = NULL;
+}
+
 namespace {
 
 struct decode_mode_name_map_t {
@@ -860,6 +870,9 @@ render_logging_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->frame_log[0]) {
         DSD_FPRINTF(out, "frame_log = \"%s\"\n", cfg->frame_log);
     }
+    if (cfg->p25_sm_log[0]) {
+        DSD_FPRINTF(out, "p25_sm_log = \"%s\"\n", cfg->p25_sm_log);
+    }
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1198,6 +1211,17 @@ apply_logging_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
     DSD_SNPRINTF(opts->frame_log_file, sizeof opts->frame_log_file, "%s", frame_log_file_next);
     opts->frame_log_file[sizeof opts->frame_log_file - 1] = '\0';
+
+    char p25_sm_log_file_next[sizeof opts->p25_sm_log_file];
+    DSD_SNPRINTF(p25_sm_log_file_next, sizeof p25_sm_log_file_next, "%s", cfg->p25_sm_log);
+    p25_sm_log_file_next[sizeof p25_sm_log_file_next - 1] = '\0';
+    if (strcmp(opts->p25_sm_log_file, p25_sm_log_file_next) != 0) {
+        close_p25_sm_log_handle(opts);
+        opts->p25_sm_log_open_error_reported = 0;
+        opts->p25_sm_log_write_error_reported = 0;
+    }
+    DSD_SNPRINTF(opts->p25_sm_log_file, sizeof opts->p25_sm_log_file, "%s", p25_sm_log_file_next);
+    opts->p25_sm_log_file[sizeof opts->p25_sm_log_file - 1] = '\0';
 }
 
 static void
@@ -1464,6 +1488,8 @@ snapshot_logging_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->event_log[sizeof cfg->event_log - 1] = '\0';
     DSD_SNPRINTF(cfg->frame_log, sizeof cfg->frame_log, "%s", opts->frame_log_file);
     cfg->frame_log[sizeof cfg->frame_log - 1] = '\0';
+    DSD_SNPRINTF(cfg->p25_sm_log, sizeof cfg->p25_sm_log, "%s", opts->p25_sm_log_file);
+    cfg->p25_sm_log[sizeof cfg->p25_sm_log - 1] = '\0';
 }
 
 static void

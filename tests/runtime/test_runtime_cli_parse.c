@@ -2609,6 +2609,52 @@ test_frame_log_long_option_parse(void) {
 }
 
 static int
+test_p25_sm_log_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--p25-sm-log";
+    char arg2[] = "p25-sm.log";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (strcmp(opts->p25_sm_log_file, "p25-sm.log") != 0) {
+        DSD_FPRINTF(stderr, "unexpected p25_sm_log_file=%s\n", opts->p25_sm_log_file);
+        test_rc = 1;
+    }
+    if (opts->payload != 0) {
+        DSD_FPRINTF(stderr, "expected payload to remain off, got %d\n", opts->payload);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_dmr_debug_burst_long_option_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -5166,6 +5212,7 @@ main(void) {
     rc |= test_sdrtrunk_json_forced_dmr_algid_uses_talkgroup_key();
     rc |= test_rdio_long_options_parse();
     rc |= test_frame_log_long_option_parse();
+    rc |= test_p25_sm_log_long_option_parse();
     rc |= test_dmr_debug_burst_long_option_parse();
     rc |= test_show_keys_long_option_parse();
     rc |= test_show_keys_after_option_terminator_remains_positional();

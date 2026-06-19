@@ -27,6 +27,7 @@ target_sources(
         util/synctype.c
         file/dsd_file.c
         file/dsd_import.c
+        file/p25_sm_log.c
         gps/dsd_gps.c
 )
 
