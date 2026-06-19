@@ -82,6 +82,52 @@ test_frame_log_writes_entry(void) {
     return 0;
 }
 
+static int
+test_p25_sm_log_writes_entry(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    initOpts(&opts);
+
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_p25_sm_log");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    DSD_SNPRINTF(opts.p25_sm_log_file, sizeof opts.p25_sm_log_file, "%s", path);
+    opts.p25_sm_log_file[sizeof opts.p25_sm_log_file - 1] = '\0';
+
+    dsd_p25_sm_logf(&opts, "event=test\tvalue=%d\n", 42);
+    dsd_p25_sm_log_close(&opts);
+
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
+        (void)remove(path);
+        return 1;
+    }
+
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof buf - 1, fp);
+    if (n == 0 && ferror(fp)) {
+        DSD_FPRINTF(stderr, "fread(%s) failed: %s\n", path, strerror(errno));
+        fclose(fp);
+        (void)remove(path);
+        return 1;
+    }
+    buf[n] = '\0';
+    fclose(fp);
+    (void)remove(path);
+
+    if (strstr(buf, "event=test value=42") == NULL) {
+        DSD_FPRINTF(stderr, "P25 SM log did not contain expected sanitized payload: %s\n", buf);
+        return 1;
+    }
+    return 0;
+}
+
 #if !defined(_WIN32)
 static int
 test_frame_log_write_error_reported_once(void) {
@@ -204,6 +250,122 @@ out:
     }
     return rc;
 }
+
+static int
+test_p25_sm_log_write_error_reported_once(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    initOpts(&opts);
+
+    const char* sink_path = "/dev/full";
+    FILE* probe = dsd_fopen_private(sink_path, "a");
+    if (!probe) {
+        return 0;
+    }
+    fclose(probe);
+
+    DSD_SNPRINTF(opts.p25_sm_log_file, sizeof opts.p25_sm_log_file, "%s", sink_path);
+    opts.p25_sm_log_file[sizeof opts.p25_sm_log_file - 1] = '\0';
+
+    int rc = 0;
+    int saved_errno = 0;
+    const char* failure = NULL;
+    FILE* capture = NULL;
+    int saved_stderr_fd = -1;
+    int stderr_redirected = 0;
+
+    capture = tmpfile();
+    if (!capture) {
+        failure = "tmpfile failed";
+        saved_errno = errno;
+        rc = 1;
+        goto out;
+    }
+
+    saved_stderr_fd = dup(fileno(stderr));
+    if (saved_stderr_fd < 0) {
+        failure = "dup(stderr) failed";
+        saved_errno = errno;
+        rc = 2;
+        goto out;
+    }
+
+    if (fflush(stderr) != 0) {
+        failure = "fflush(stderr) failed";
+        saved_errno = errno;
+        rc = 3;
+        goto out;
+    }
+
+    if (dup2(fileno(capture), fileno(stderr)) < 0) {
+        failure = "dup2(capture, stderr) failed";
+        saved_errno = errno;
+        rc = 4;
+        goto out;
+    }
+    stderr_redirected = 1;
+
+    dsd_p25_sm_logf(&opts, "event=%d", 1);
+    dsd_p25_sm_logf(&opts, "event=%d", 2);
+
+    if (fflush(stderr) != 0) {
+        failure = "fflush(captured stderr) failed";
+        saved_errno = errno;
+        rc = 5;
+        goto out;
+    }
+
+    if (fseek(capture, 0, SEEK_SET) != 0) {
+        failure = "fseek(captured stderr) failed";
+        saved_errno = errno;
+        rc = 6;
+        goto out;
+    }
+
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof buf - 1, capture);
+    if (n == 0 && ferror(capture)) {
+        failure = "fread(captured stderr) failed";
+        saved_errno = errno;
+        rc = 7;
+        goto out;
+    }
+    buf[n] = '\0';
+
+    if (count_occurrences(buf, "Failed writing P25 SM log file") != 1) {
+        failure = "P25 SM write failure should be reported once";
+        rc = 8;
+        goto out;
+    }
+
+    if (opts.p25_sm_log_write_error_reported != 1) {
+        failure = "P25 SM write error guard should remain set after repeated write failures";
+        rc = 9;
+        goto out;
+    }
+
+out:
+    if (stderr_redirected) {
+        (void)fflush(stderr);
+        (void)dup2(saved_stderr_fd, fileno(stderr));
+    }
+    if (saved_stderr_fd >= 0) {
+        close(saved_stderr_fd);
+    }
+    if (capture) {
+        fclose(capture);
+    }
+    dsd_p25_sm_log_close(&opts);
+
+    if (failure) {
+        if (saved_errno != 0) {
+            DSD_FPRINTF(stderr, "%s: %s\n", failure, strerror(saved_errno));
+        } else {
+            DSD_FPRINTF(stderr, "%s\n", failure);
+        }
+    }
+    return rc;
+}
 #endif
 
 int
@@ -211,8 +373,14 @@ main(void) {
     if (test_frame_log_writes_entry() != 0) {
         return 1;
     }
+    if (test_p25_sm_log_writes_entry() != 0) {
+        return 1;
+    }
 #if !defined(_WIN32)
     if (test_frame_log_write_error_reported_once() != 0) {
+        return 1;
+    }
+    if (test_p25_sm_log_write_error_reported_once() != 0) {
         return 1;
     }
 #endif

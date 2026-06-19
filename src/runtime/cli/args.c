@@ -844,6 +844,10 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             frame_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--p25-sm-log") == 0 && i + 1 < argc) {                                                    \
+            p25_sm_log_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--rdio-mode") == 0 && i + 1 < argc) {                                                     \
             rdio_mode_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
@@ -1260,6 +1264,14 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         dsd_frame_log_close(opts);                                                                                     \
         LOG_NOTICE("Frame log file: %s\n", opts->frame_log_file);                                                      \
     }                                                                                                                  \
+    if (p25_sm_log_cli) {                                                                                              \
+        DSD_SNPRINTF(opts->p25_sm_log_file, sizeof opts->p25_sm_log_file, "%s", p25_sm_log_cli);                       \
+        opts->p25_sm_log_file[sizeof opts->p25_sm_log_file - 1] = '\0';                                                \
+        opts->p25_sm_log_open_error_reported = 0;                                                                      \
+        opts->p25_sm_log_write_error_reported = 0;                                                                     \
+        dsd_p25_sm_log_close(opts);                                                                                    \
+        LOG_NOTICE("P25 SM log file: %s\n", opts->p25_sm_log_file);                                                    \
+    }                                                                                                                  \
                                                                                                                        \
     if (rdio_mode_cli) {                                                                                               \
         int mode = DSD_RDIO_MODE_OFF;                                                                                  \
@@ -1398,6 +1410,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* input_vol_cli = NULL;
     const char* input_warn_db_cli = NULL;
     const char* frame_log_cli = NULL;
+    const char* p25_sm_log_cli = NULL;
     const char* rdio_mode_cli = NULL;
     const char* rdio_system_id_cli = NULL;
     const char* rdio_api_url_cli = NULL;

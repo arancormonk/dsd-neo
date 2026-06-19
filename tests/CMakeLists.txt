@@ -4504,6 +4504,18 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_sm_core PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_CORE COMMAND dsd-neo_test_p25_sm_core)
 
+# P25 SM diagnostic log records
+add_executable(dsd-neo_test_p25_sm_diag_log protocol/p25/test_p25_sm_diag_log.c)
+target_include_directories(
+    dsd-neo_test_p25_sm_diag_log
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_sm_diag_log
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_SM_DIAG_LOG COMMAND dsd-neo_test_p25_sm_diag_log)
+
 # P25 return-to-control-channel stress matrix
 add_executable(
     dsd-neo_test_p25_sm_return_to_cc_matrix
