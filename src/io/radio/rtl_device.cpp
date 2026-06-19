@@ -880,6 +880,17 @@ rtl_publish_cu8_input_level(const struct rtl_device* s, const uint8_t* samples, 
     }
 }
 
+static inline void
+rtl_publish_cf32_input_level_source(const float* samples, size_t count, dsd_input_level_source source) {
+    dsd_input_level_snapshot snapshot;
+    if (!samples || count == 0U) {
+        return;
+    }
+    if (dsd_input_level_metrics_from_cf32(samples, count, source, &snapshot) == 0) {
+        rtl_stream_input_level_publish(&snapshot);
+    }
+}
+
 #ifdef USE_SOAPYSDR
 static inline void
 rtl_publish_cs16_input_level(const int16_t* samples, size_t count) {
@@ -894,15 +905,24 @@ rtl_publish_cs16_input_level(const int16_t* samples, size_t count) {
 
 static inline void
 rtl_publish_cf32_input_level(const float* samples, size_t count) {
-    dsd_input_level_snapshot snapshot;
-    if (!samples || count == 0U) {
-        return;
-    }
-    if (dsd_input_level_metrics_from_cf32(samples, count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, &snapshot) == 0) {
-        rtl_stream_input_level_publish(&snapshot);
-    }
+    rtl_publish_cf32_input_level_source(samples, count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32);
 }
 #endif
+
+static inline void
+rtl_publish_replay_input_level(const struct rtl_device* s, const uint8_t* raw_block, size_t raw_bytes,
+                               const float* f32_block, int f32_count) {
+    if (!s) {
+        return;
+    }
+    if (s->replay_cfg.format == DSD_IQ_FORMAT_CU8) {
+        rtl_publish_cu8_input_level(s, raw_block, raw_bytes);
+        return;
+    }
+    if (s->replay_cfg.format == DSD_IQ_FORMAT_CF32 && f32_count > 0) {
+        rtl_publish_cf32_input_level_source(f32_block, (size_t)f32_count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32);
+    }
+}
 
 static inline void
 rtl_copy_event_reason(char* dst, size_t dst_size, const char* reason) {
@@ -1575,6 +1595,7 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
     if (produced <= 0) {
         return 2;
     }
+    rtl_publish_replay_input_level(s, raw_block, out_bytes, f32_block, produced);
 
     if (replay_enqueue_f32_no_drop(s, f32_block, (size_t)produced, io->complex_written, *io->start_ns, io->realtime)
         != 0) {

@@ -149,6 +149,48 @@ expect_4level_accuracy(const char* name, const float* out, int out_count, const 
 }
 
 static void
+expect_4level_accuracy_best_shift(const char* name, const float* out, int out_count, const float* expected,
+                                  int expected_count, int run_len, int warmup, int max_abs_shift, float min_accuracy) {
+    float best_accuracy = 0.0f;
+    int best_ok = 0;
+    int best_checked = 0;
+    int best_shift = 0;
+    for (int shift = -max_abs_shift; shift <= max_abs_shift; shift++) {
+        int checked = 0;
+        int ok = 0;
+        int limit = out_count < expected_count ? out_count : expected_count;
+        for (int i = warmup; i < limit; i++) {
+            int expected_i = i + shift;
+            if (expected_i < 0 || expected_i >= expected_count) {
+                continue;
+            }
+            int pos = expected_i % run_len;
+            if (pos == 0 || pos >= run_len - 2) {
+                continue;
+            }
+            checked++;
+            if (classify4(out[i]) == (int)expected[expected_i]) {
+                ok++;
+            }
+        }
+        if (checked > 200) {
+            float accuracy = (float)ok / (float)checked;
+            if (accuracy > best_accuracy) {
+                best_accuracy = accuracy;
+                best_ok = ok;
+                best_checked = checked;
+                best_shift = shift;
+            }
+        }
+    }
+    if (best_accuracy < min_accuracy) {
+        DSD_FPRINTF(stderr, "%s: best shifted 4-level accuracy %.3f below %.3f shift=%d (%d/%d)\n", name, best_accuracy,
+                    min_accuracy, best_shift, best_ok, best_checked);
+        assert(0);
+    }
+}
+
+static void
 expect_2level_accuracy(const char* name, const float* out, int out_count, const float* expected, int expected_count,
                        int run_len, int warmup, float min_accuracy) {
     int checked = 0;
@@ -174,18 +216,32 @@ expect_2level_accuracy(const char* name, const float* out, int out_count, const 
 }
 
 static void
-seed_tracking_boundary_window(dsd_fsk_modem_state* modem, int clock_i, int best_phase, float start_phase) {
+seed_tracking_boundary_window_scaled(dsd_fsk_modem_state* modem, int clock_i, int best_phase, int second_phase,
+                                     float start_phase, float best_delta, float second_delta) {
     int target = clock_i * 64;
     assert(target <= DSD_FSK_MODEM_TRACK_MAX_SAMPLES);
     DSD_MEMSET(modem->track_freq, 0, sizeof(modem->track_freq));
     for (int pos = best_phase; pos < target - 1; pos += clock_i) {
         if (pos > 0) {
             modem->track_freq[pos - 1] = -1.0f;
-            modem->track_freq[pos] = 1.0f;
+            modem->track_freq[pos] = -1.0f + best_delta;
+        }
+    }
+    if (second_phase >= 0) {
+        for (int pos = second_phase; pos < target - 1; pos += clock_i) {
+            if (pos > 0) {
+                modem->track_freq[pos - 1] = -1.0f;
+                modem->track_freq[pos] = -1.0f + second_delta;
+            }
         }
     }
     modem->track_len = target - 1;
     modem->track_start_phase = start_phase;
+}
+
+static void
+seed_tracking_boundary_window(dsd_fsk_modem_state* modem, int clock_i, int best_phase, float start_phase) {
+    seed_tracking_boundary_window_scaled(modem, clock_i, best_phase, -1, start_phase, 2.0f, 0.0f);
 }
 
 static void
@@ -623,6 +679,96 @@ test_timing_tracker_skips_low_confidence_windows(void) {
 }
 
 static void
+test_timing_tracker_applies_bounded_soft_correction(void) {
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    modem.timing_acquired = 1;
+    modem.have_prev = 1;
+    modem.prev_i = 1.0f;
+    modem.prev_q = 0.0f;
+    modem.symbol_phase = 5.0f;
+    modem.track_consecutive_skips = 4;
+    seed_tracking_boundary_window_scaled(&modem, 10, 2, 7, 0.0f, 1.05f, 1.0f);
+
+    float iq[] = {1.0f, 0.0f};
+    float out[8];
+    (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
+    assert(modem.track_updates == 1);
+    assert(modem.track_skips == 0);
+    assert(modem.track_consecutive_skips == 0);
+    assert(modem.symbol_phase < 6.0f);
+    assert(modem.symbol_phase > 5.86f);
+}
+
+static void
+test_timing_tracker_reacquires_after_consecutive_skips(void) {
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    modem.timing_acquired = 1;
+    modem.have_prev = 1;
+    modem.prev_i = 1.0f;
+    modem.prev_q = 0.0f;
+    modem.symbol_phase = 4.0f;
+
+    float iq[] = {1.0f, 0.0f};
+    float out[8];
+    for (int i = 0; i < 32; i++) {
+        modem.track_len = 10 * 64 - 1;
+        modem.track_start_phase = 0.0f;
+        DSD_MEMSET(modem.track_freq, 0, sizeof(modem.track_freq));
+        (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
+    }
+
+    assert(modem.track_skips == 32);
+    assert(modem.track_consecutive_skips == 0);
+    assert(modem.timing_acquired == 0);
+    assert(modem.acq_len == 0);
+    assert(modem.symbol_count == 0);
+    assert(modem.pending_len == 0);
+}
+
+static void
+test_timing_tracker_recovers_after_gap(void) {
+    enum { SYMBOLS = 2200, SPS = 10, RUN = 16, GAP_COMPLEX = (33 * 64 * SPS) + 100 };
+
+    static const float levels[] = {-3.0f, 3.0f, -1.0f, 1.0f, 3.0f, -3.0f};
+    float* symbols = (float*)calloc(SYMBOLS, sizeof(float));
+    float* first_iq = (float*)calloc((size_t)SYMBOLS * SPS * 2U, sizeof(float));
+    float* gap_iq = (float*)calloc((size_t)GAP_COMPLEX * 2U, sizeof(float));
+    float* second_iq = (float*)calloc((size_t)SYMBOLS * SPS * 2U, sizeof(float));
+    float* out = (float*)calloc(SYMBOLS + 512, sizeof(float));
+    assert(symbols && first_iq && gap_iq && second_iq && out);
+
+    fill_run_pattern(symbols, SYMBOLS, levels, (int)(sizeof(levels) / sizeof(levels[0])), RUN);
+    synthesize_fsk(first_iq, symbols, SYMBOLS, SPS, 0.025f, 0.001f, 0.002f, 0);
+    synthesize_fsk(second_iq, symbols, SYMBOLS, SPS, 0.025f, -0.001f, 0.002f, 7);
+
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    int produced = dsd_fsk_modem_process(&modem, first_iq, SYMBOLS * SPS * 2, out, SYMBOLS + 512);
+    assert(produced >= SYMBOLS - 24);
+    assert(modem.timing_acquired == 1);
+
+    (void)dsd_fsk_modem_process(&modem, gap_iq, GAP_COMPLEX * 2, out, SYMBOLS + 512);
+    assert(modem.timing_acquired == 0);
+
+    produced = dsd_fsk_modem_process(&modem, second_iq, SYMBOLS * SPS * 2, out, SYMBOLS + 512);
+    assert(produced >= SYMBOLS - 256);
+    assert(modem.timing_acquired == 1);
+    expect_4level_accuracy_best_shift("dmr-gfsk-reacquire-after-gap", out, produced, symbols, SYMBOLS, RUN, 900, 64,
+                                      0.86f);
+
+    free(out);
+    free(second_iq);
+    free(gap_iq);
+    free(first_iq);
+    free(symbols);
+}
+
+static void
 test_reconfigure_resets_state(void) {
     dsd_fsk_modem_state modem;
     dsd_fsk_modem_config cfg = {48000, 4800, 4, 4};
@@ -647,6 +793,7 @@ test_reconfigure_resets_state(void) {
     modem.track_last_score = 0.5f;
     modem.track_updates = 7;
     modem.track_skips = 5;
+    modem.track_consecutive_skips = 3;
 
     dsd_fsk_modem_config next = {48000, 2400, 2, 1};
     dsd_fsk_modem_configure(&modem, &next);
@@ -663,6 +810,7 @@ test_reconfigure_resets_state(void) {
     assert(modem.track_last_score == 0.0f);
     assert(modem.track_updates == 0);
     assert(modem.track_skips == 0);
+    assert(modem.track_consecutive_skips == 0);
     assert(dsd_fsk_modem_get_metrics(&modem, &metrics) == 0);
     assert(metrics.valid == 0);
     assert(metrics.window_symbols == 0U);
@@ -687,6 +835,9 @@ main(void) {
     test_timing_tracker_uses_floor_for_fractional_start_phase();
     test_dmr_gfsk_tracks_fractional_symbol_clock();
     test_timing_tracker_skips_low_confidence_windows();
+    test_timing_tracker_applies_bounded_soft_correction();
+    test_timing_tracker_reacquires_after_consecutive_skips();
+    test_timing_tracker_recovers_after_gap();
     test_reconfigure_resets_state();
     return 0;
 }

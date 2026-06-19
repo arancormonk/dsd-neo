@@ -53,6 +53,7 @@ static int g_rtl_symbol_levels = 4;
 static int g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
 static int g_rtl_ted_sps = 8;
 static int g_rtl_ted_sps_override = 8;
+static int g_rtl_fsk_reacquire_requests = 0;
 static int g_pending_active = 0;
 static uint32_t g_pending_target_freq_hz = 0;
 static int g_pending_cqpsk = -1;
@@ -74,6 +75,7 @@ reset_rtl_profile_fakes(void) {
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
     g_rtl_ted_sps = 8;
     g_rtl_ted_sps_override = 8;
+    g_rtl_fsk_reacquire_requests = 0;
     g_pending_active = 0;
     g_pending_target_freq_hz = 0;
     g_pending_cqpsk = -1;
@@ -196,6 +198,12 @@ __wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
         apply_pending_profile(center_freq_hz);
     }
     return g_rtl_tune_result;
+}
+
+int
+__wrap_rtl_stream_request_fsk_reacquire(void) {
+    g_rtl_fsk_reacquire_requests++;
+    return 1;
 }
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -914,6 +922,42 @@ main(void) {
     rc |= expect_true("rtl-fsk-recovered-sync-clears-gap", state->rtl_fsk_reacquire_gap_start_m == 0.0);
     rc |= expect_true("rtl-fsk-recovered-sync-refreshes-timer",
                       state->rtl_fsk_reacquire_last_sync_m > old_reacquire_sync_m);
+#if defined(DSD_NEO_TEST_RTL_WRAP)
+    g_rtl_fsk_reacquire_requests = 0;
+    double reacquire_now_m = dsd_time_now_monotonic_s();
+    time_t reacquire_now = time(NULL);
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->last_cc_sync_time = reacquire_now - 1;
+    state->last_vc_sync_time = 0;
+    state->last_cc_sync_time_m = reacquire_now_m - 1.0;
+    state->last_vc_sync_time_m = 0.0;
+    state->rtl_fsk_reacquire_last_sync_time = reacquire_now - 1;
+    state->rtl_fsk_reacquire_last_sync_m = reacquire_now_m - 1.0;
+    state->rtl_fsk_reacquire_gap_start_m = reacquire_now_m - 1.0;
+    state->rtl_fsk_reacquire_last_request_m = 0.0;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("rtl-fsk-short-nosync-gap-does-not-reacquire", g_rtl_fsk_reacquire_requests == 0);
+
+    g_rtl_fsk_reacquire_requests = 0;
+    reacquire_now_m = dsd_time_now_monotonic_s();
+    reacquire_now = time(NULL);
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->last_cc_sync_time = reacquire_now - 11;
+    state->last_vc_sync_time = 0;
+    state->last_cc_sync_time_m = reacquire_now_m - 11.0;
+    state->last_vc_sync_time_m = 0.0;
+    state->rtl_fsk_reacquire_last_sync_time = reacquire_now - 11;
+    state->rtl_fsk_reacquire_last_sync_m = reacquire_now_m - 11.0;
+    state->rtl_fsk_reacquire_gap_start_m = reacquire_now_m - 11.0;
+    state->rtl_fsk_reacquire_last_request_m = 0.0;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("rtl-fsk-long-nosync-gap-reacquires-once", g_rtl_fsk_reacquire_requests == 1);
+    rc |= expect_true("rtl-fsk-long-nosync-gap-records-request", state->rtl_fsk_reacquire_last_request_m > 0.0);
+#endif
     dsd_rtl_stream_metrics_hooks_set(NULL);
 #endif
 

@@ -131,6 +131,14 @@ dsd_parse_double_arg(const char* token, double* out) {
 }
 
 #ifdef USE_RADIO
+/*
+ * The RTL FSK modem handles normal timing reacquisition locally. This fallback
+ * clears queued RTL output, so keep it as a last-resort watchdog for sustained
+ * no-sync periods instead of firing inside short DMR call gaps.
+ */
+static const double RTL_FSK_NO_SYNC_REACQUIRE_GAP_S = 10.000;
+static const double RTL_FSK_NO_SYNC_REACQUIRE_COOLDOWN_S = 0.750;
+
 static time_t
 max_time_t(time_t a, time_t b) {
     return (a > b) ? a : b;
@@ -197,9 +205,6 @@ rtl_fsk_reacquire_gap_ready(const dsd_state* state, double nowm, double gap_s, d
 
 static void
 maybe_request_rtl_fsk_reacquire_on_no_sync(const dsd_opts* opts, dsd_state* state, time_t now) {
-    const double gap_s = 0.300;
-    const double cooldown_s = 0.750;
-
     if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return;
     }
@@ -229,7 +234,8 @@ maybe_request_rtl_fsk_reacquire_on_no_sync(const dsd_opts* opts, dsd_state* stat
         state->rtl_fsk_reacquire_gap_start_m = nowm;
         return;
     }
-    if (!rtl_fsk_reacquire_gap_ready(state, nowm, gap_s, cooldown_s)) {
+    if (!rtl_fsk_reacquire_gap_ready(state, nowm, RTL_FSK_NO_SYNC_REACQUIRE_GAP_S,
+                                     RTL_FSK_NO_SYNC_REACQUIRE_COOLDOWN_S)) {
         return;
     }
     if (rtl_stream_request_fsk_reacquire() > 0) {

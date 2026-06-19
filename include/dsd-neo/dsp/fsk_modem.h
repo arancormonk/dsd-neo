@@ -83,6 +83,7 @@ typedef struct dsd_fsk_modem_state {
     float track_last_score;
     uint64_t track_updates;
     uint64_t track_skips;
+    uint64_t track_consecutive_skips;
     float track_freq[DSD_FSK_MODEM_TRACK_MAX_SAMPLES];
     int pending_pos;
     int pending_len;
