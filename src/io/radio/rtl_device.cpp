@@ -909,19 +909,28 @@ rtl_publish_cf32_input_level(const float* samples, size_t count) {
 }
 #endif
 
-static inline void
-rtl_publish_replay_input_level(const struct rtl_device* s, const uint8_t* raw_block, size_t raw_bytes,
-                               const float* f32_block, int f32_count) {
-    if (!s) {
-        return;
+static inline int
+rtl_prepare_replay_input_level_snapshot(const struct rtl_device* s, const uint8_t* raw_block, size_t raw_bytes,
+                                        float* scratch_f32, size_t scratch_cap_f32, dsd_input_level_snapshot* out) {
+    if (!s || !raw_block || raw_bytes == 0U || !out) {
+        return -1;
     }
     if (s->replay_cfg.format == DSD_IQ_FORMAT_CU8) {
-        rtl_publish_cu8_input_level(s, raw_block, raw_bytes);
-        return;
+        return dsd_input_level_metrics_from_cu8(raw_block, raw_bytes, rtl_u8_input_level_source(s), out);
     }
-    if (s->replay_cfg.format == DSD_IQ_FORMAT_CF32 && f32_count > 0) {
-        rtl_publish_cf32_input_level_source(f32_block, (size_t)f32_count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32);
+    if (s->replay_cfg.format == DSD_IQ_FORMAT_CF32) {
+        if (!scratch_f32 || (raw_bytes & 7U) != 0U
+            || strcmp(s->replay_cfg.capture_stage, "post_driver_cf32_pre_ring") != 0) {
+            return -1;
+        }
+        size_t float_count = raw_bytes / sizeof(float);
+        if (float_count == 0U || float_count > scratch_cap_f32) {
+            return -1;
+        }
+        DSD_MEMCPY(scratch_f32, raw_block, float_count * sizeof(float));
+        return dsd_input_level_metrics_from_cf32(scratch_f32, float_count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, out);
     }
+    return -1;
 }
 
 static inline void
@@ -1590,12 +1599,20 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
         return 2;
     }
 
+    dsd_input_level_snapshot input_level;
+    DSD_MEMSET(&input_level, 0, sizeof(input_level));
+    int have_input_level =
+        (rtl_prepare_replay_input_level_snapshot(s, raw_block, out_bytes, f32_block, raw_block_bytes, &input_level)
+         == 0);
+
     int produced = replay_convert_block_to_f32(s, raw_block, out_bytes, f32_block, raw_block_bytes, io->phase,
                                                io->have_carry, io->carry_byte);
     if (produced <= 0) {
         return 2;
     }
-    rtl_publish_replay_input_level(s, raw_block, out_bytes, f32_block, produced);
+    if (have_input_level) {
+        rtl_stream_input_level_publish(&input_level);
+    }
 
     if (replay_enqueue_f32_no_drop(s, f32_block, (size_t)produced, io->complex_written, *io->start_ns, io->realtime)
         != 0) {

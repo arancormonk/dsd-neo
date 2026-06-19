@@ -271,6 +271,108 @@ make_midrange_cu8_replay_fixture(char* out_metadata_path, size_t out_metadata_pa
 }
 
 static int
+make_constant_cu8_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, uint8_t sample,
+                                 int combine_rotate_enabled, size_t payload_bytes) {
+    if (!out_metadata_path || out_metadata_path_size == 0U) {
+        return 1;
+    }
+    if ((payload_bytes & 1U) != 0U) {
+        payload_bytes++;
+    }
+
+    char temp_dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_level_cu8")) {
+        DSD_FPRINTF(stderr, "FAIL: could not create CU8 input-level fixture directory\n");
+        return 1;
+    }
+
+    char data_path[DSD_TEST_PATH_MAX];
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "level_cu8.iq") != 0
+        || dsd_test_path_join(metadata_path, sizeof(metadata_path), temp_dir, "level_cu8.iq.json") != 0) {
+        return 1;
+    }
+
+    dsd_iq_capture_config cfg;
+    fill_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8, "post_mute_pre_widen", 1);
+    cfg.combine_rotate_enabled = combine_rotate_enabled ? 1 : 0;
+
+    dsd_iq_capture_writer* writer = NULL;
+    char err_buf[256] = {0};
+    if (dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf)) != DSD_IQ_OK || !writer) {
+        DSD_FPRINTF(stderr, "FAIL: could not open CU8 input-level IQ capture writer: %s\n",
+                    err_buf[0] ? err_buf : "unknown");
+        return 1;
+    }
+
+    std::vector<uint8_t> payload(payload_bytes, sample);
+    if (dsd_iq_capture_submit(writer, payload.data(), payload.size()) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+
+    dsd_iq_capture_final_stats stats;
+    DSD_MEMSET(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+
+    if (DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s", metadata_path) >= (int)out_metadata_path_size) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
+make_constant_cf32_replay_fixture(char* out_metadata_path, size_t out_metadata_path_size, float i_sample,
+                                  float q_sample, size_t complex_count) {
+    if (!out_metadata_path || out_metadata_path_size == 0U || complex_count == 0U) {
+        return 1;
+    }
+
+    char temp_dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_replay_level_cf32")) {
+        DSD_FPRINTF(stderr, "FAIL: could not create CF32 input-level fixture directory\n");
+        return 1;
+    }
+
+    char data_path[DSD_TEST_PATH_MAX];
+    char metadata_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(data_path, sizeof(data_path), temp_dir, "level_cf32.iq") != 0
+        || dsd_test_path_join(metadata_path, sizeof(metadata_path), temp_dir, "level_cf32.iq.json") != 0) {
+        return 1;
+    }
+
+    dsd_iq_capture_config cfg;
+    fill_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CF32, "post_driver_cf32_pre_ring", 1);
+
+    dsd_iq_capture_writer* writer = NULL;
+    char err_buf[256] = {0};
+    if (dsd_iq_capture_open(&cfg, &writer, err_buf, sizeof(err_buf)) != DSD_IQ_OK || !writer) {
+        DSD_FPRINTF(stderr, "FAIL: could not open CF32 input-level IQ capture writer: %s\n",
+                    err_buf[0] ? err_buf : "unknown");
+        return 1;
+    }
+
+    std::vector<float> payload(complex_count * 2U);
+    for (size_t i = 0; i < complex_count; i++) {
+        payload[i * 2U + 0U] = i_sample;
+        payload[i * 2U + 1U] = q_sample;
+    }
+    if (dsd_iq_capture_submit(writer, payload.data(), payload.size() * sizeof(float)) != DSD_IQ_OK) {
+        dsd_iq_capture_abort(writer);
+        return 1;
+    }
+
+    dsd_iq_capture_final_stats stats;
+    DSD_MEMSET(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+
+    if (DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s", metadata_path) >= (int)out_metadata_path_size) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
 make_eventful_replay_fixture_with_reset_reason(char* out_metadata_path, size_t out_metadata_path_size,
                                                size_t payload_bytes, const char* reset_reason) {
     if (!out_metadata_path || out_metadata_path_size == 0U) {
@@ -554,6 +656,94 @@ test_cu8_replay_publishes_raw_input_level(void) {
         rc |= expect_int_eq("cu8 replay input level source", (int)level.source, (int)DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
         rc |= expect_true("cu8 replay input level has samples", level.sample_count > 0U);
         rc |= expect_true("cu8 replay input level is unclipped", level.clip_pct == 0.0);
+    }
+
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
+static int
+test_cu8_replay_legacy_fs4_level_uses_raw_block(void) {
+    int rc = 0;
+
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_constant_cu8_replay_fixture(metadata_path, sizeof(metadata_path), 96U, 0, 131072U);
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    rc |= start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx);
+    if (rc != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+
+    dsd_input_level_snapshot level;
+    DSD_MEMSET(&level, 0, sizeof(level));
+    int saw_level = 0;
+    uint64_t start_ns = dsd_time_monotonic_ns();
+    while (dsd_time_monotonic_ns() - start_ns < 3000ULL * 1000000ULL) {
+        rc |= expect_int_eq("legacy CU8 replay input level snapshot", rtl_stream_get_input_level(&level), 0);
+        if (rc != 0) {
+            break;
+        }
+        if (level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8 && level.sample_count > 0U) {
+            saw_level = 1;
+            break;
+        }
+        dsd_sleep_ms(1U);
+    }
+
+    rc |= expect_true("legacy CU8 replay raw input level published", saw_level);
+    if (saw_level) {
+        rc |= expect_true("legacy CU8 replay raw DC level remains near zero RMS", level.rms_dbfs < -100.0);
+    }
+
+    stop_and_destroy_stream(ctx);
+    return rc;
+}
+
+static int
+test_cf32_replay_fs4_level_uses_raw_block(void) {
+    int rc = 0;
+
+    char metadata_path[DSD_TEST_PATH_MAX];
+    rc |= make_constant_cf32_replay_fixture(metadata_path, sizeof(metadata_path), 0.5f, 0.5f, 16384U);
+    if (rc != 0) {
+        return 1;
+    }
+
+    std::unique_ptr<dsd_opts> opts;
+    RtlSdrContext* ctx = NULL;
+    rc |= start_replay_stream_with_loop(metadata_path, 1, &opts, &ctx);
+    if (rc != 0) {
+        stop_and_destroy_stream(ctx);
+        return 1;
+    }
+
+    dsd_input_level_snapshot level;
+    DSD_MEMSET(&level, 0, sizeof(level));
+    int saw_level = 0;
+    uint64_t start_ns = dsd_time_monotonic_ns();
+    while (dsd_time_monotonic_ns() - start_ns < 3000ULL * 1000000ULL) {
+        rc |= expect_int_eq("CF32 replay input level snapshot", rtl_stream_get_input_level(&level), 0);
+        if (rc != 0) {
+            break;
+        }
+        if (level.source == DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32 && level.sample_count > 0U) {
+            saw_level = 1;
+            break;
+        }
+        dsd_sleep_ms(1U);
+    }
+
+    rc |= expect_true("CF32 replay raw input level published", saw_level);
+    if (saw_level) {
+        rc |= expect_true("CF32 replay raw DC level remains near zero RMS", level.rms_dbfs < -100.0);
+        rc |= expect_true("CF32 replay raw peak still reflects DC offset",
+                          level.peak_dbfs > -7.0 && level.peak_dbfs < -5.0);
     }
 
     stop_and_destroy_stream(ctx);
@@ -987,6 +1177,8 @@ int
 main(void) {
     int rc = 0;
     rc |= test_cu8_replay_publishes_raw_input_level();
+    rc |= test_cu8_replay_legacy_fs4_level_uses_raw_block();
+    rc |= test_cf32_replay_fs4_level_uses_raw_block();
     rc |= test_replay_eof_partial_block_drains_before_exit();
     rc |= test_replay_output_tail_available_after_demod_drain();
     rc |= test_eventful_replay_applies_scheduled_events();
