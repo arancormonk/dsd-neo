@@ -33,9 +33,12 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/platform.h"
 
 static void do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
                        int arm_failed_vc_backoff_on_accept);
+static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx, const char* event,
+                         const char* format, ...) DSD_ATTR_FORMAT(printf, 5, 6);
 
 // Serialize release-to-CC operations to avoid duplicate retunes when multiple
 // threads (watchdog tick + decoder) request release concurrently.

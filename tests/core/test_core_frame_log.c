@@ -129,6 +129,109 @@ test_p25_sm_log_writes_entry(void) {
 }
 
 #if !defined(_WIN32)
+typedef struct stderr_capture_s {
+    FILE* stream;
+    int saved_fd;
+    int redirected;
+} stderr_capture_t;
+
+static int
+set_failure(const char** failure, int* saved_errno, const char* message, int err) {
+    if (failure) {
+        *failure = message;
+    }
+    if (saved_errno) {
+        *saved_errno = err;
+    }
+    return 1;
+}
+
+static void
+stderr_capture_init(stderr_capture_t* capture) {
+    capture->stream = NULL;
+    capture->saved_fd = -1;
+    capture->redirected = 0;
+}
+
+static int
+stderr_capture_begin(stderr_capture_t* capture, const char** failure, int* saved_errno) {
+    capture->stream = tmpfile();
+    if (!capture->stream) {
+        return set_failure(failure, saved_errno, "tmpfile failed", errno);
+    }
+
+    capture->saved_fd = dup(fileno(stderr));
+    if (capture->saved_fd < 0) {
+        return set_failure(failure, saved_errno, "dup(stderr) failed", errno);
+    }
+
+    if (fflush(stderr) != 0) {
+        return set_failure(failure, saved_errno, "fflush(stderr) failed", errno);
+    }
+
+    if (dup2(fileno(capture->stream), fileno(stderr)) < 0) {
+        return set_failure(failure, saved_errno, "dup2(capture, stderr) failed", errno);
+    }
+    capture->redirected = 1;
+    return 0;
+}
+
+static int
+stderr_capture_read(stderr_capture_t* capture, char* buf, size_t buf_size, const char** failure, int* saved_errno) {
+    if (!buf || buf_size == 0) {
+        return set_failure(failure, saved_errno, "invalid stderr capture buffer", 0);
+    }
+    if (fflush(stderr) != 0) {
+        return set_failure(failure, saved_errno, "fflush(captured stderr) failed", errno);
+    }
+    if (fseek(capture->stream, 0, SEEK_SET) != 0) {
+        return set_failure(failure, saved_errno, "fseek(captured stderr) failed", errno);
+    }
+
+    size_t n = fread(buf, 1, buf_size - 1, capture->stream);
+    if (n == 0 && ferror(capture->stream)) {
+        return set_failure(failure, saved_errno, "fread(captured stderr) failed", errno);
+    }
+    buf[n] = '\0';
+    return 0;
+}
+
+static void
+stderr_capture_end(stderr_capture_t* capture) {
+    if (capture->redirected) {
+        (void)fflush(stderr);
+        (void)dup2(capture->saved_fd, fileno(stderr));
+    }
+    if (capture->saved_fd >= 0) {
+        close(capture->saved_fd);
+    }
+    if (capture->stream) {
+        fclose(capture->stream);
+    }
+}
+
+static void
+print_failure(const char* failure, int saved_errno) {
+    if (!failure) {
+        return;
+    }
+    if (saved_errno != 0) {
+        DSD_FPRINTF(stderr, "%s: %s\n", failure, strerror(saved_errno));
+    } else {
+        DSD_FPRINTF(stderr, "%s\n", failure);
+    }
+}
+
+static int
+dev_full_available(const char* sink_path) {
+    FILE* probe = dsd_fopen_private(sink_path, "a");
+    if (!probe) {
+        return 0;
+    }
+    fclose(probe);
+    return 1;
+}
+
 static int
 test_frame_log_write_error_reported_once(void) {
     static dsd_opts opts;
@@ -136,11 +239,9 @@ test_frame_log_write_error_reported_once(void) {
     initOpts(&opts);
 
     const char* sink_path = "/dev/full";
-    FILE* probe = dsd_fopen_private(sink_path, "a");
-    if (!probe) {
+    if (!dev_full_available(sink_path)) {
         return 0;
     }
-    fclose(probe);
 
     /*
      * /dev/full gives a deterministic write failure while still opening normally.
@@ -153,101 +254,39 @@ test_frame_log_write_error_reported_once(void) {
     int rc = 0;
     int saved_errno = 0;
     const char* failure = NULL;
-    FILE* capture = NULL;
-    int saved_stderr_fd = -1;
-    int stderr_redirected = 0;
-
-    capture = tmpfile();
-    if (!capture) {
-        failure = "tmpfile failed";
-        saved_errno = errno;
+    stderr_capture_t capture;
+    stderr_capture_init(&capture);
+    if (stderr_capture_begin(&capture, &failure, &saved_errno) != 0) {
         rc = 1;
         goto out;
     }
-
-    saved_stderr_fd = dup(fileno(stderr));
-    if (saved_stderr_fd < 0) {
-        failure = "dup(stderr) failed";
-        saved_errno = errno;
-        rc = 2;
-        goto out;
-    }
-
-    if (fflush(stderr) != 0) {
-        failure = "fflush(stderr) failed";
-        saved_errno = errno;
-        rc = 3;
-        goto out;
-    }
-
-    if (dup2(fileno(capture), fileno(stderr)) < 0) {
-        failure = "dup2(capture, stderr) failed";
-        saved_errno = errno;
-        rc = 4;
-        goto out;
-    }
-    stderr_redirected = 1;
 
     // The first write reports the failure and the second write should stay quiet.
     dsd_frame_logf(&opts, "frame=%d", 1);
     dsd_frame_logf(&opts, "frame=%d", 2);
 
-    if (fflush(stderr) != 0) {
-        failure = "fflush(captured stderr) failed";
-        saved_errno = errno;
-        rc = 5;
-        goto out;
-    }
-
-    if (fseek(capture, 0, SEEK_SET) != 0) {
-        failure = "fseek(captured stderr) failed";
-        saved_errno = errno;
-        rc = 6;
-        goto out;
-    }
-
     char buf[4096];
-    size_t n = fread(buf, 1, sizeof buf - 1, capture);
-    if (n == 0 && ferror(capture)) {
-        failure = "fread(captured stderr) failed";
-        saved_errno = errno;
-        rc = 7;
+    if (stderr_capture_read(&capture, buf, sizeof buf, &failure, &saved_errno) != 0) {
+        rc = 1;
         goto out;
     }
-    buf[n] = '\0';
 
     if (count_occurrences(buf, "Failed writing frame log file") != 1) {
         failure = "write failure should be reported once";
-        rc = 8;
+        rc = 1;
         goto out;
     }
 
     if (opts.frame_log_write_error_reported != 1) {
         failure = "write error guard should remain set after repeated write failures";
-        rc = 9;
+        rc = 1;
         goto out;
     }
 
 out:
-    if (stderr_redirected) {
-        (void)fflush(stderr);
-        (void)dup2(saved_stderr_fd, fileno(stderr));
-    }
-    if (saved_stderr_fd >= 0) {
-        close(saved_stderr_fd);
-    }
-    if (capture) {
-        fclose(capture);
-    }
+    stderr_capture_end(&capture);
     dsd_frame_log_close(&opts);
-
-    if (failure) {
-        if (saved_errno != 0) {
-            DSD_FPRINTF(stderr, "%s: %s\n", failure, strerror(saved_errno));
-        } else {
-            DSD_FPRINTF(stderr, "%s\n", failure);
-        }
-    }
+    print_failure(failure, saved_errno);
     return rc;
 }
 
@@ -258,11 +297,9 @@ test_p25_sm_log_write_error_reported_once(void) {
     initOpts(&opts);
 
     const char* sink_path = "/dev/full";
-    FILE* probe = dsd_fopen_private(sink_path, "a");
-    if (!probe) {
+    if (!dev_full_available(sink_path)) {
         return 0;
     }
-    fclose(probe);
 
     DSD_SNPRINTF(opts.p25_sm_log_file, sizeof opts.p25_sm_log_file, "%s", sink_path);
     opts.p25_sm_log_file[sizeof opts.p25_sm_log_file - 1] = '\0';
@@ -270,100 +307,38 @@ test_p25_sm_log_write_error_reported_once(void) {
     int rc = 0;
     int saved_errno = 0;
     const char* failure = NULL;
-    FILE* capture = NULL;
-    int saved_stderr_fd = -1;
-    int stderr_redirected = 0;
-
-    capture = tmpfile();
-    if (!capture) {
-        failure = "tmpfile failed";
-        saved_errno = errno;
+    stderr_capture_t capture;
+    stderr_capture_init(&capture);
+    if (stderr_capture_begin(&capture, &failure, &saved_errno) != 0) {
         rc = 1;
         goto out;
     }
 
-    saved_stderr_fd = dup(fileno(stderr));
-    if (saved_stderr_fd < 0) {
-        failure = "dup(stderr) failed";
-        saved_errno = errno;
-        rc = 2;
-        goto out;
-    }
-
-    if (fflush(stderr) != 0) {
-        failure = "fflush(stderr) failed";
-        saved_errno = errno;
-        rc = 3;
-        goto out;
-    }
-
-    if (dup2(fileno(capture), fileno(stderr)) < 0) {
-        failure = "dup2(capture, stderr) failed";
-        saved_errno = errno;
-        rc = 4;
-        goto out;
-    }
-    stderr_redirected = 1;
-
     dsd_p25_sm_logf(&opts, "event=%d", 1);
     dsd_p25_sm_logf(&opts, "event=%d", 2);
 
-    if (fflush(stderr) != 0) {
-        failure = "fflush(captured stderr) failed";
-        saved_errno = errno;
-        rc = 5;
-        goto out;
-    }
-
-    if (fseek(capture, 0, SEEK_SET) != 0) {
-        failure = "fseek(captured stderr) failed";
-        saved_errno = errno;
-        rc = 6;
-        goto out;
-    }
-
     char buf[4096];
-    size_t n = fread(buf, 1, sizeof buf - 1, capture);
-    if (n == 0 && ferror(capture)) {
-        failure = "fread(captured stderr) failed";
-        saved_errno = errno;
-        rc = 7;
+    if (stderr_capture_read(&capture, buf, sizeof buf, &failure, &saved_errno) != 0) {
+        rc = 1;
         goto out;
     }
-    buf[n] = '\0';
 
     if (count_occurrences(buf, "Failed writing P25 SM log file") != 1) {
         failure = "P25 SM write failure should be reported once";
-        rc = 8;
+        rc = 1;
         goto out;
     }
 
     if (opts.p25_sm_log_write_error_reported != 1) {
         failure = "P25 SM write error guard should remain set after repeated write failures";
-        rc = 9;
+        rc = 1;
         goto out;
     }
 
 out:
-    if (stderr_redirected) {
-        (void)fflush(stderr);
-        (void)dup2(saved_stderr_fd, fileno(stderr));
-    }
-    if (saved_stderr_fd >= 0) {
-        close(saved_stderr_fd);
-    }
-    if (capture) {
-        fclose(capture);
-    }
+    stderr_capture_end(&capture);
     dsd_p25_sm_log_close(&opts);
-
-    if (failure) {
-        if (saved_errno != 0) {
-            DSD_FPRINTF(stderr, "%s: %s\n", failure, strerror(saved_errno));
-        } else {
-            DSD_FPRINTF(stderr, "%s\n", failure);
-        }
-    }
+    print_failure(failure, saved_errno);
     return rc;
 }
 #endif
