@@ -242,10 +242,13 @@ dmr_set_symbol_timing(const dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    int demod_rate = 0;
+    int demod_rate = dsd_opts_current_input_timing_rate(opts);
 #ifdef USE_RADIO
     if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+        int rtl_demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+        if (rtl_demod_rate > 0) {
+            demod_rate = rtl_demod_rate;
+        }
     }
 #endif
 

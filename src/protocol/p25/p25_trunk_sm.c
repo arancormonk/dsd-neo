@@ -395,12 +395,18 @@ channel_slot(const dsd_state* state, int channel) {
     return is_tdma_channel(state, channel) ? ((channel & 1) ? 1 : 0) : -1;
 }
 
-// Compute TED SPS based on actual demodulator output rate (accounts for resampler).
+// Compute TED SPS from the active input timing rate, using live RTL output when available.
 static inline int
 p25_ted_sps_for_bw(const dsd_opts* opts, int sym_rate_hz) {
-    /* Query actual demodulator output rate first (accounts for any active resampler).
-     * Falls back to rtl_dsp_bw_khz if RTL stream is unavailable or returns 0. */
-    int demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+    int demod_rate = dsd_opts_current_input_timing_rate(opts);
+#ifdef USE_RADIO
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
+        int rtl_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+        if (rtl_rate > 0) {
+            demod_rate = rtl_rate;
+        }
+    }
+#endif
     return dsd_opts_compute_sps_rate(opts, sym_rate_hz, demod_rate);
 }
 

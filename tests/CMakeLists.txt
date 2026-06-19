@@ -3893,6 +3893,23 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_rtl_symbol_pipeline ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME RTL_SYMBOL_PIPELINE COMMAND dsd-neo_test_rtl_symbol_pipeline)
 
+add_executable(
+    dsd-neo_test_frame_sync_dmr_wav_rate
+    dsp/test_frame_sync_dmr_wav_rate.c
+)
+target_include_directories(
+    dsd-neo_test_frame_sync_dmr_wav_rate
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_dmr_wav_rate
+  ${DSD_NEO_TEST_MATH_LIB}
+  ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_DMR_WAV_RATE
+    COMMAND dsd-neo_test_frame_sync_dmr_wav_rate
+)
+
 if(DSD_HAS_RADIO)
     add_executable(
         dsd-neo_test_rtl_symbol_cache_generation

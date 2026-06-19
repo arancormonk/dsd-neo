@@ -26,11 +26,14 @@
 #include "dsd-neo/runtime/trunk_tuning_hooks.h"
 
 static int DSD_ATTR_USED
-dsd_engine_rtl_demod_rate(const dsd_state* state) {
-    int demod_rate = 0;
+dsd_engine_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
+    int demod_rate = dsd_opts_current_input_timing_rate(opts);
 #ifdef USE_RADIO
-    if (state && state->rtl_ctx) {
-        demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx) {
+        int rtl_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
+        if (rtl_rate > 0) {
+            demod_rate = rtl_rate;
+        }
     }
 #else
     (void)state;
@@ -52,7 +55,7 @@ dsd_engine_compute_cc_sps(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-    return dsd_opts_compute_sps_rate(opts, sym_rate, dsd_engine_rtl_demod_rate(state));
+    return dsd_opts_compute_sps_rate(opts, sym_rate, dsd_engine_current_demod_rate(opts, state));
 }
 
 static void DSD_ATTR_USED
@@ -61,7 +64,7 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
-    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, dsd_engine_rtl_demod_rate(state));
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, dsd_engine_current_demod_rate(opts, state));
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : ((opts->mod_qpsk == 1) ? 1 : 0);
 }
@@ -347,15 +350,7 @@ dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int fr
 
 static void
 dsd_engine_maybe_reset_p25p2_state(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
-    int p25p2_demod_rate = 0;
-#ifdef USE_RADIO
-    if (state->rtl_ctx) {
-        p25p2_demod_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
-    }
-#else
-    (void)state;
-#endif
-    int p25p2_sps = dsd_opts_compute_sps_rate(opts, 6000, p25p2_demod_rate);
+    int p25p2_sps = dsd_opts_compute_sps_rate(opts, 6000, dsd_engine_current_demod_rate(opts, state));
     if (ted_sps == p25p2_sps) {
         p25_p2_frame_reset();
     }

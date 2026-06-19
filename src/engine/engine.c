@@ -1522,17 +1522,35 @@ no_carrier_enable_p25_cc_slots_if_known(dsd_opts* opts, const dsd_state* state) 
     }
 }
 
+static int
+no_carrier_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
+    int demod_rate = dsd_opts_current_input_timing_rate(opts);
+#ifdef USE_RADIO
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx) {
+        uint32_t rtl_rate = rtl_stream_output_rate(state->rtl_ctx);
+        if (rtl_rate > 0) {
+            demod_rate = (int)rtl_rate;
+        }
+    }
+#else
+    (void)state;
+#endif
+    return demod_rate;
+}
+
 static void
 no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
+    int sym_rate = 0;
     if (state->p25_cc_is_tdma == 0) {
-        state->samplesPerSymbol = 10;
-        state->symbolCenter = 4;
-        no_carrier_enable_p25_cc_slots(opts);
+        sym_rate = 4800;
     } else if (state->p25_cc_is_tdma == 1) {
-        state->samplesPerSymbol = 8;
-        state->symbolCenter = 3;
-        no_carrier_enable_p25_cc_slots(opts);
+        sym_rate = 6000;
+    } else {
+        return;
     }
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, no_carrier_current_demod_rate(opts, state));
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    no_carrier_enable_p25_cc_slots(opts);
 }
 
 static void
