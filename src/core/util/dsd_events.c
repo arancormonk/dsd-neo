@@ -1012,6 +1012,34 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
+watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot) {
+    if (state == NULL || state->event_history_s == NULL || status_string == NULL || slot >= 2) {
+        return;
+    }
+
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    init_event_history(event_struct, 0, 1);
+
+    Event_History* item = &event_struct->Event_History_Items[0];
+    item->write = 0;
+    item->color_pair = 4;
+    item->systype = -1;
+    item->subtype = -1;
+    item->source_id = 0;
+    item->target_id = 0;
+
+    time_t now = time(NULL);
+    item->event_time = now;
+
+    char timestr[9];
+    char datestr[11];
+    getTimeN_buf(now, timestr);
+    getDateN_buf(now, datestr);
+
+    DSD_SNPRINTF(item->event_string, sizeof item->event_string, "%s %s %s", datestr, timestr, status_string);
+}
+
+void
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
     state->event_history_s[slot].Event_History_Items[0].write = 0;
     state->event_history_s[slot].Event_History_Items[0].color_pair = 4; //default data color //you can change this one

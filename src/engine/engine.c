@@ -2071,13 +2071,15 @@ live_scanner_start_trunk_scan_if_needed(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-live_scanner_emit_start_history(dsd_opts* opts, dsd_state* state) {
-    state->event_history_s[0].Event_History_Items[0].color_pair = 4;
-    watchdog_event_datacall(opts, state, 0, 0, "Any decoded voice calls or data calls display here;", 0);
+live_scanner_emit_start_history(dsd_state* state) {
+    if (state == NULL || state->event_history_s == NULL) {
+        return;
+    }
+
+    watchdog_event_status(state, "Any decoded voice calls or data calls display here;", 0);
     push_event_history(&state->event_history_s[0]);
     init_event_history(&state->event_history_s[0], 0, 1);
-    state->event_history_s[0].Event_History_Items[0].color_pair = 4;
-    watchdog_event_datacall(opts, state, 0, 0, "DSD-neo Started and Event History Initialized;", 0);
+    watchdog_event_status(state, "DSD-neo Started and Event History Initialized;", 0);
     push_event_history(&state->event_history_s[0]);
     init_event_history(&state->event_history_s[0], 0, 1);
 }
@@ -2170,7 +2172,7 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
 
-    live_scanner_emit_start_history(opts, state);
+    live_scanner_emit_start_history(state);
     live_scanner_emit_start_log_if_enabled(opts, state);
     if (dsd_frame_log_enabled(opts)) {
         dsd_frame_logf(opts, "DSD-neo frame logging initialized");
