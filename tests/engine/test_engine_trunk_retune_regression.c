@@ -437,6 +437,49 @@ main(void) {
     assert(g_last_setfreq_hz == 853500000);
     assert(g_rtl_tune_calls == 0);
 
+    /* Non-radio P25 return-to-CC timing must follow the active PCM input rate,
+     * not the RTL bandwidth fallback. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 96000;
+    opts->wav_decimator = 48000;
+    opts->use_rigctl = 1;
+    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->p25_cc_freq = 851000000;
+    state->trunk_cc_freq = 851000000;
+    state->p25_cc_is_tdma = 1;
+    state->samplesPerSymbol = 8;
+    state->symbolCenter = 3;
+    g_setfreq_calls = 0;
+    g_last_setfreq_hz = 0;
+    g_setfreq_result = true;
+    assert(dsd_engine_return_to_cc(opts, state) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_setfreq_calls == 1);
+    assert(g_last_setfreq_hz == 851000000);
+    assert(state->samplesPerSymbol == 16);
+    assert(state->symbolCenter == 7);
+    assert(state->rf_mod == 1);
+
+    /* P25P2 reset detection uses the same non-radio timing rate on direct
+     * voice-channel tunes. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 96000;
+    opts->wav_decimator = 48000;
+    opts->use_rigctl = 1;
+    opts->p25_trunk = 1;
+    g_frame_sync_reset_calls = 0;
+    g_p25p2_frame_reset_calls = 0;
+    g_setfreq_result = true;
+    assert(dsd_engine_trunk_tune_to_freq(opts, state, 853600000, 16) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_frame_sync_reset_calls == 1);
+    assert(g_p25p2_frame_reset_calls == 1);
+
 #ifdef USE_RADIO
     /* RTL audio retuned by rigctl has no native RTL controller boundary, so the
      * queued P25 VC demod profile must be applied after SetFreq succeeds. */
