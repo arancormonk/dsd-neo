@@ -994,18 +994,13 @@ store_two_level_dibit(dsd_state* state, float symbol, int high_symbol_return) {
 
 static int DSD_ATTR_USED
 want_cqpsk_p25_slice(const dsd_opts* opts, const dsd_state* state, int is_negative) {
-    int p25p1_sync = is_negative ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
-    int p25p2_sync = is_negative ? DSD_SYNC_P25P2_NEG : DSD_SYNC_P25P2_POS;
+    UNUSED(is_negative);
 #ifdef USE_RADIO
     return is_cqpsk_active(opts) && state->rf_mod == 1
-           && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == p25p1_sync
-               || state->synctype == p25p2_sync || state->lastsynctype == p25p1_sync
-               || state->lastsynctype == p25p2_sync);
+           && (DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype));
 #else
     UNUSED(opts);
     UNUSED(state);
-    UNUSED(p25p1_sync);
-    UNUSED(p25p2_sync);
     return 0;
 #endif
 }

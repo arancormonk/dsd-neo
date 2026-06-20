@@ -9,10 +9,12 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -244,6 +246,7 @@ free_state_buffers(dsd_state* state) {
     free(state->dmr_payload_buf);
     free(state->dmr_reliab_buf);
     free(state->dmr_soft_buf);
+    dsd_symbol_history_free(state);
 }
 
 static int
@@ -260,12 +263,16 @@ init_state_buffers(dsd_state* state) {
     state->dmr_payload_p = state->dmr_payload_buf + 200;
     state->dmr_reliab_p = state->dmr_reliab_buf + 200;
     state->dmr_soft_p = state->dmr_soft_buf + 200;
+    if (dsd_symbol_history_init(state, DSD_SYMBOL_HISTORY_SIZE) != 0) {
+        free_state_buffers(state);
+        return 0;
+    }
     return 1;
 }
 
 static int
 run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int expected_sync, uint8_t expected_map,
-                  const char* label) {
+                  float expected_center, const char* label) {
     static dsd_opts opts;
     static dsd_state state;
     static int fake_rtl_context;
@@ -322,6 +329,10 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
                     dsd_p25_cqpsk_dibit_map_index(expected_map));
         rc = 1;
     }
+    if (fabsf(state.center - expected_center) > 0.001f) {
+        DSD_FPRINTF(stderr, "%s center %.3f, expected %.3f\n", label, state.center, expected_center);
+        rc = 1;
+    }
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -332,12 +343,12 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
 
 static int
 run_p25p2_sync_case(const char* pattern, int expected_sync, uint8_t expected_map, const char* label) {
-    return run_p25_sync_case(pattern, 0, 1, expected_sync, expected_map, label);
+    return run_p25_sync_case(pattern, 0, 1, expected_sync, expected_map, 0.0f, label);
 }
 
 static int
 run_p25p1_sync_case(const char* pattern, int expected_sync, uint8_t expected_map, const char* label) {
-    return run_p25_sync_case(pattern, 1, 0, expected_sync, expected_map, label);
+    return run_p25_sync_case(pattern, 1, 0, expected_sync, expected_map, 0.0f, label);
 }
 
 static int
@@ -388,6 +399,49 @@ test_negative_cqpsk_dibit_polarity(void) {
     return rc;
 }
 
+static int
+test_cqpsk_map_is_p25_scoped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate non-P25 CQPSK state buffers\n");
+        return 1;
+    }
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    state.rf_mod = 1;
+    state.synctype = DSD_SYNC_X2TDMA_DATA_POS;
+    state.lastsynctype = DSD_SYNC_X2TDMA_DATA_POS;
+    state.center = 0.0f;
+    state.p25_cqpsk_dibit_map_idx = DSD_P25_CQPSK_DIBIT_MAP_X2400;
+
+    dsd_rtl_stream_metrics_hooks metrics_hooks = {
+        .output_kind = fake_output_kind,
+        .symbol_profile = fake_symbol_profile,
+        .stream_generation = fake_stream_generation,
+        .cqpsk_status = fake_cqpsk_status,
+        .stream_active = fake_stream_active,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+
+    int got = digitize(&opts, &state, 3.0f);
+    int rc = 0;
+    if (got != 1) {
+        DSD_FPRINTF(stderr, "non-P25 CQPSK dibit returned %d, expected raw threshold dibit 1\n", got);
+        rc = 1;
+    }
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    free_state_buffers(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -428,6 +482,7 @@ main(void) {
     rc |=
         run_p25p1_sync_case(rotated, DSD_SYNC_P25P1_POS, DSD_P25_CQPSK_DIBIT_MAP_X2400, "P25P1 RTL X2400 rotated sync");
     rc |= test_negative_cqpsk_dibit_polarity();
+    rc |= test_cqpsk_map_is_p25_scoped();
     return rc;
 }
 
