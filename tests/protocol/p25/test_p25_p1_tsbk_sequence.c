@@ -45,6 +45,7 @@ static int g_mac_count = 0;
 static int g_mac_group[3] = {0};
 static int g_mac_source[3] = {0};
 static int g_status_count = 0;
+static long g_channel_freq = 0;
 
 static void
 bytes_to_tdibits(const uint8_t bytes[12], uint8_t tdibits[49]) {
@@ -231,7 +232,7 @@ process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel) {
     (void)opts;
     (void)state;
     (void)channel;
-    return 0;
+    return g_channel_freq;
 }
 
 void
@@ -383,6 +384,7 @@ main(void) {
 
     build_network_status_stream();
     reset_decode_counters();
+    g_channel_freq = 0;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.p25_cc_is_tdma = 2;
@@ -394,6 +396,24 @@ main(void) {
     rc |= expect_eq_int("net-sts missing-iden marks p1 cc fdma", state.p25_cc_is_tdma, 0);
     rc |= expect_eq_int("net-sts missing-iden leaves p25 cc empty", (int)state.p25_cc_freq, 0);
     rc |= expect_eq_int("net-sts missing-iden leaves trunk cc empty", (int)state.trunk_cc_freq, 0);
+
+    build_network_status_stream();
+    reset_decode_counters();
+    g_channel_freq = 863812500;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.p25_is_tuned = 1;
+    state.p25_cc_freq = 851000000;
+    state.trunk_cc_freq = 851000000;
+    state.p25_cc_is_tdma = 1;
+
+    processTSBK(&opts, &state);
+
+    rc |= expect_eq_int("net-sts rejected voice preserves p25 cc", (int)state.p25_cc_freq, 851000000);
+    rc |= expect_eq_int("net-sts rejected voice preserves trunk cc", (int)state.trunk_cc_freq, 851000000);
+    rc |= expect_eq_int("net-sts rejected voice preserves tdma cc hint", state.p25_cc_is_tdma, 1);
+    rc |= expect_eq_int("net-sts rejected voice skips wacn", (int)state.p2_wacn, 0);
+    rc |= expect_eq_int("net-sts rejected voice skips sysid", (int)state.p2_sysid, 0);
     return rc;
 }
 

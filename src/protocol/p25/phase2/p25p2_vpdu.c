@@ -3427,11 +3427,18 @@ p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolo
 }
 
 static void
+p25p2_vpdu_note_nsb_system_tdma(dsd_state* state) {
+    if (state) {
+        state->p25_sys_is_tdma = 1; // system carries Phase 2 voice (TDMA present)
+    }
+}
+
+static void
 p25p2_vpdu_accept_nsb_cc(dsd_opts* opts, dsd_state* state, int lwacn, int lsysid, int lcolorcode, int seed_lcn0) {
     const long neigh[1] = {state->p25_cc_freq};
     p25_sm_on_neighbor_update(opts, state, neigh, 1);
-    state->p25_sys_is_tdma = 1; // system carries Phase 2 voice (TDMA present)
-    state->p25_cc_is_tdma = 1;  // TDMA control channel (QPSK, 6000 sym/s)
+    p25p2_vpdu_note_nsb_system_tdma(state);
+    state->p25_cc_is_tdma = 1; // TDMA control channel (QPSK, 6000 sym/s)
 
     // Only update system identity and potentially reset IDEN tables when values
     // are sane (non-zero) and we have a valid frequency mapping.
@@ -3478,6 +3485,7 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "  LRA [%02X] WACN [%05X] SYSID [%03X] NAC [%03X] CHAN-T [%04X]", lra, lwacn, lsysid,
                     lcolorcode, channel);
         long int cc_freq = process_channel_to_freq(opts, state, channel);
+        p25p2_vpdu_note_nsb_system_tdma(state);
         if (p25_cc_update_primary_from_network_status(opts, state, cc_freq)) {
             p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 1);
         } else {
@@ -3523,6 +3531,7 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
                     lsysid, lcolorcode, channelt, channelr);
         long int nf1 = process_channel_to_freq(opts, state, channelt);
         (void)process_channel_to_freq(opts, state, channelr);
+        p25p2_vpdu_note_nsb_system_tdma(state);
         if (p25_cc_update_primary_from_network_status(opts, state, nf1)) {
             p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0);
         } else {

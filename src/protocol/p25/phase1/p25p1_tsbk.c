@@ -391,8 +391,11 @@ tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_
     }
     long int cc_freq = process_channel_to_freq(opts, state, channel);
     int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
-    state->p25_cc_is_tdma = 0;
-    if ((accepted_cc || !p25_cc_update_is_voice_tuned(opts)) && state->p2_hardset == 0) {
+    const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
+    if (cc_metadata_allowed) {
+        state->p25_cc_is_tdma = 0;
+    }
+    if (cc_metadata_allowed && state->p2_hardset == 0) {
         state->p2_wacn = wacn;
         state->p2_sysid = sysid;
     }
