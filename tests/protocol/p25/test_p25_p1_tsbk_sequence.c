@@ -107,6 +107,20 @@ build_group_grant_tsbk(uint8_t out[12], uint8_t lb, uint16_t group, uint32_t sou
 }
 
 static void
+build_network_status_tsbk(uint8_t out[12], uint32_t wacn, uint16_t sysid, uint16_t channel) {
+    DSD_MEMSET(out, 0, 12);
+    out[0] = 0x80U | 0x3BU;
+    out[1] = 0x00;
+    out[3] = (uint8_t)((wacn >> 12) & 0xFFU);
+    out[4] = (uint8_t)((wacn >> 4) & 0xFFU);
+    out[5] = (uint8_t)(((wacn & 0x0FU) << 4) | ((sysid >> 8) & 0x0FU));
+    out[6] = (uint8_t)(sysid & 0xFFU);
+    out[7] = (uint8_t)(channel >> 8);
+    out[8] = (uint8_t)(channel & 0xFFU);
+    append_crc16(out);
+}
+
+static void
 append_tsbk_stream_block(const uint8_t dibits[98], int* skipdibit) {
     int valid_idx = 0;
     for (int i = 0; i < 101; i++) {
@@ -118,6 +132,18 @@ append_tsbk_stream_block(const uint8_t dibits[98], int* skipdibit) {
         }
         (*skipdibit)++;
     }
+}
+
+static void
+reset_decode_counters(void) {
+    g_mac_count = 0;
+    g_mac_group[0] = 0;
+    g_mac_group[1] = 0;
+    g_mac_group[2] = 0;
+    g_mac_source[0] = 0;
+    g_mac_source[1] = 0;
+    g_mac_source[2] = 0;
+    g_status_count = 0;
 }
 
 static void
@@ -135,6 +161,21 @@ build_two_block_stream(void) {
     append_tsbk_stream_block(dibits, &skipdibit);
 
     build_group_grant_tsbk(block, 1, 0x2222, 0x000202);
+    encode_12_to_dibits(block, dibits);
+    append_tsbk_stream_block(dibits, &skipdibit);
+}
+
+static void
+build_network_status_stream(void) {
+    uint8_t block[12];
+    uint8_t dibits[98];
+    int skipdibit = 36 - 14;
+
+    DSD_MEMSET(g_stream, 0, sizeof(g_stream));
+    g_stream_len = 0;
+    g_stream_pos = 0;
+
+    build_network_status_tsbk(block, 0xABCDE, 0x123, 0x8123);
     encode_12_to_dibits(block, dibits);
     append_tsbk_stream_block(dibits, &skipdibit);
 }
@@ -320,6 +361,7 @@ expect_eq_int(const char* tag, int got, int want) {
 int
 main(void) {
     build_two_block_stream();
+    reset_decode_counters();
 
     static dsd_opts opts;
     static dsd_state state;
@@ -338,6 +380,18 @@ main(void) {
     rc |= expect_eq_int("status symbols collected", g_status_count, 6);
     rc |= expect_eq_int("fec ok count", (int)state.p25_p1_fec_ok, 2);
     rc |= expect_eq_int("fec err count", (int)state.p25_p1_fec_err, 0);
+
+    build_network_status_stream();
+    reset_decode_counters();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    processTSBK(&opts, &state);
+
+    rc |= expect_eq_int("net-sts missing-iden stores wacn", (int)state.p2_wacn, 0xABCDE);
+    rc |= expect_eq_int("net-sts missing-iden stores sysid", (int)state.p2_sysid, 0x123);
+    rc |= expect_eq_int("net-sts missing-iden leaves p25 cc empty", (int)state.p25_cc_freq, 0);
+    rc |= expect_eq_int("net-sts missing-iden leaves trunk cc empty", (int)state.trunk_cc_freq, 0);
     return rc;
 }
 

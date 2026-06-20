@@ -390,16 +390,17 @@ tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_
         DSD_FPRINTF(stderr, " [%s]", callsign);
     }
     long int cc_freq = process_channel_to_freq(opts, state, channel);
-    if (p25_cc_update_primary_from_network_status(opts, state, cc_freq)) {
+    int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
+    if ((accepted_cc || !p25_cc_update_is_voice_tuned(opts)) && state->p2_hardset == 0) {
+        state->p2_wacn = wacn;
+        state->p2_sysid = sysid;
+    }
+    if (accepted_cc) {
         const long neigh[1] = {state->p25_cc_freq};
         p25_sm_on_neighbor_update(opts, state, neigh, 1);
         state->p25_cc_is_tdma = 0;
         if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
             state->trunk_lcn_freq[0] = state->p25_cc_freq;
-        }
-        if (state->p2_hardset == 0) {
-            state->p2_wacn = wacn;
-            state->p2_sysid = sysid;
         }
         p25_confirm_idens_for_current_site(state);
     } else if (cc_freq > 0) {

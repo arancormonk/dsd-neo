@@ -22,9 +22,15 @@ p25_cc_update_primary_from_network_status(const dsd_opts* opts, dsd_state* state
         return 0;
     }
 
-    const long known_cc = (state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq;
-    if (p25_cc_update_is_voice_tuned(opts) && known_cc > 0 && known_cc != freq_hz) {
-        return 0;
+    if (p25_cc_update_is_voice_tuned(opts)) {
+        /*
+         * During voice follow, trunk_cc_freq is the selected return alias when
+         * populated. Do not let a stale P25 alias replace it from an NSB.
+         */
+        const long selected_cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+        if (selected_cc > 0 && selected_cc != freq_hz) {
+            return 0;
+        }
     }
 
     state->p25_cc_freq = freq_hz;

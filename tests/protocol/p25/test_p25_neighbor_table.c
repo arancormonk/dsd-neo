@@ -162,6 +162,48 @@ test_nsb_cc_update_accepts_same_freq_while_voice_tuned(void) {
     free(st);
 }
 
+/* A stale P25 alias must not replace the selected trunk return CC. */
+static void
+test_nsb_cc_update_rejects_stale_p25_alias_while_voice_tuned(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    st->p25_cc_freq = 769768750;
+    st->trunk_cc_freq = 769868750;
+
+    assert(!p25_cc_update_primary_from_network_status(opts, st, 769768750));
+    assert(st->p25_cc_freq == 769768750);
+    assert(st->trunk_cc_freq == 769868750);
+
+    free(opts);
+    free(st);
+}
+
+/* An NSB matching the selected trunk return CC can resync a stale P25 alias. */
+static void
+test_nsb_cc_update_accepts_trunk_alias_while_voice_tuned(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    st->p25_cc_freq = 769768750;
+    st->trunk_cc_freq = 769868750;
+
+    assert(p25_cc_update_primary_from_network_status(opts, st, 769868750));
+    assert(st->p25_cc_freq == 769868750);
+    assert(st->trunk_cc_freq == 769868750);
+
+    free(opts);
+    free(st);
+}
+
 /* On the control channel/acquisition path, NSB can still seed or rotate CC. */
 static void
 test_nsb_cc_update_accepts_new_freq_when_not_voice_tuned(void) {
@@ -301,6 +343,8 @@ main(void) {
     test_cc_rotation_accepts_old();
     test_nsb_cc_update_rejects_different_freq_while_voice_tuned();
     test_nsb_cc_update_accepts_same_freq_while_voice_tuned();
+    test_nsb_cc_update_rejects_stale_p25_alias_while_voice_tuned();
+    test_nsb_cc_update_accepts_trunk_alias_while_voice_tuned();
     test_nsb_cc_update_accepts_new_freq_when_not_voice_tuned();
     test_new_entry_fields();
     test_multiple_distinct_entries();
