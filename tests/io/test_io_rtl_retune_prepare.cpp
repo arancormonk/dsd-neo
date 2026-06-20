@@ -167,6 +167,11 @@ main(void) {
                             dsd_rtl_stream_test_manual_retune_completion_result(-5, 0, 855000000U, 855000000U),
                             RTL_STREAM_TUNE_FAILED);
 
+    /*
+     * Failed tune and capture-setting paths reconcile staged frequency/rate state
+     * back to the applied RTL configuration, while accepted PPM changes survive a
+     * later retune failure.
+     */
     long int reconciled_opts_freq = 0;
     uint32_t reconciled_capture_freq = 0U;
     rc = dsd_rtl_stream_test_tune_failure_reconciles_applied(855000000U, 851000000U, &reconciled_opts_freq,
@@ -207,6 +212,11 @@ main(void) {
                             dsd_rtl_stream_test_ppm_store_if_applied(-5, 11, &ppm_after_failure), 0);
     failed |= expect_int_eq("failed ppm keeps previous runtime ppm", ppm_after_failure, 3);
 
+    /*
+     * Clear-output and reacquire helpers coordinate the sample ring, cached
+     * symbol count, FSK modem history, and generation counters used by the
+     * demodulator thread.
+     */
     cache_pending = -1;
     rc = rtl_stream_test_clear_output(7U, 3, &used_after, &cache_pending, &generation_before, &generation_after);
     failed |= expect_int_eq("clear output helper rc", rc, 0);
@@ -277,6 +287,11 @@ main(void) {
     failed |= expect_int_eq("first retune profile keeps request id", (int)first_request_id, 1);
     failed |= expect_int_eq("second retune profile keeps request id", (int)second_request_id, 2);
 
+    /*
+     * Retune requests also preserve profile-specific gain, autogain, and Soapy
+     * settings fields so a coalesced manual retune cannot silently discard user
+     * capture preferences.
+     */
     int coalesced_profile = -1;
     uint32_t coalesced_profile_freq_hz = 0U;
     uint32_t coalesced_manual_freq_hz = 0U;
@@ -321,6 +336,11 @@ main(void) {
         rtl_device_test_soapy_config_settings_visibility(RTL_SOAPY_CONFIG_SIZE, "biasT_ctrl=false", &settings_seen), 0);
     failed |= expect_int_eq("sized Soapy config observes appended settings", settings_seen, 1);
 
+    /*
+     * USB apply/readback checks keep retry behavior explicit: apply failures are
+     * retried, readback failures are retried only when verification is enabled,
+     * and zero readback remains invalid.
+     */
     int apply_calls = -1;
     int verify_calls = -1;
     int used_attempts = -1;
@@ -365,6 +385,10 @@ main(void) {
     rc = rtl_device_test_usb_sample_rate_readback(1024000U, 0U, &actual_rate);
     failed |= expect_int_eq("rtl sample-rate readback rejects zero rc", rc, -1);
 
+    /*
+     * Gain setup intentionally records non-fatal AGC failures while still treating
+     * gain-mode failures as fatal, matching the live-device setup sequence.
+     */
     int agc_calls = -1;
     int gain_mode_calls = -1;
     int gain_calls = -1;

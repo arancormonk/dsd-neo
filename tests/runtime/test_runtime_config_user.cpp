@@ -979,6 +979,10 @@ test_apply_logging_retargets_frame_log_file(void) {
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
+    /*
+     * Retargeting to new frame-log paths must close existing handles, replace the
+     * remembered path strings, and clear sticky open/write error state.
+     */
     int rc = 0;
     if (opts.frame_log_f != NULL) {
         DSD_FPRINTF(stderr, "frame log handle should be closed after retarget\n");
@@ -1034,6 +1038,10 @@ test_apply_logging_retargets_frame_log_file(void) {
 
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
 
+    /*
+     * Clearing configured paths is the disable case: both handles close, paths
+     * become empty, and the same sticky error flags reset for future attempts.
+     */
     if (opts.frame_log_f != NULL) {
         DSD_FPRINTF(stderr, "frame log handle should be closed when disabling logging path\n");
         rc |= 1;
