@@ -455,6 +455,9 @@ symbol_adjust_timing_index(dsd_state* state, int have_sync, int symbol_span, int
     if (symbol_span <= 1 || *i != 0 || have_sync != 0) {
         return;
     }
+    if (state->jitter < 0) {
+        return;
+    }
     if (state->samplesPerSymbol == 20) {
         symbol_adjust_timing_nxdn(state, i);
     } else if (state->rf_mod == 1) {
@@ -1132,6 +1135,28 @@ symbol_rtl_fsk_symbol_rate_hz(const symbol_work_ctx* work) {
     return work->rtl_symbol_rate_hz > 0 ? work->rtl_symbol_rate_hz : 4800;
 }
 
+static inline void
+symbol_reset_rtl_fsk_discriminator_slicer(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+
+    state->center = 0.0f;
+    state->min = -30000.0f;
+    state->max = 30000.0f;
+    state->lmid = -20000.0f;
+    state->umid = 20000.0f;
+    state->minref = -24000.0f;
+    state->maxref = 24000.0f;
+    int minmax_cap = (int)(sizeof(state->minbuf) / sizeof(state->minbuf[0]));
+    for (int i = 0; i < minmax_cap; i++) {
+        state->minbuf[i] = state->min;
+        state->maxbuf[i] = state->max;
+    }
+    state->midx = 0;
+    dsd_state_invalidate_minmax_sums(state);
+}
+
 static inline int
 symbol_reset_rtl_fsk_timing_if_needed(dsd_state* state, int output_rate_hz, int symbol_rate_hz,
                                       const symbol_work_ctx* work) {
@@ -1143,6 +1168,7 @@ symbol_reset_rtl_fsk_timing_if_needed(dsd_state* state, int output_rate_hz, int 
     state->rtl_fsk_sps_den = symbol_rate_hz;
     state->rtl_fsk_sps_accum = 0;
     state->jitter = -1;
+    symbol_reset_rtl_fsk_discriminator_slicer(state);
     return 1;
 }
 

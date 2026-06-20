@@ -41,6 +41,7 @@ static int g_channel_profile_after_bump = -1;
 static int g_cleanup_calls = 0;
 static int g_fail_reads = 0;
 static int g_failed_read_calls = 0;
+static int g_max_read_calls = 0;
 
 dsd_socket_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -139,6 +140,11 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     assert(count >= 4U);
 
     g_read_calls++;
+    if (g_max_read_calls > 0 && g_read_calls > g_max_read_calls) {
+        DSD_FPRINTF(stderr, "RTL symbol cache exceeded read limit: calls=%d limit=%d\n", g_read_calls,
+                    g_max_read_calls);
+        exit(3);
+    }
     if (g_fail_reads) {
         g_failed_read_calls++;
         if (g_failed_read_calls > 4) {
@@ -231,6 +237,7 @@ reset_stream_fixture(void) {
     g_cleanup_calls = 0;
     g_fail_reads = 0;
     g_failed_read_calls = 0;
+    g_max_read_calls = 0;
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
 }
 
@@ -268,6 +275,40 @@ main(void) {
         .stream_generation = fake_stream_generation,
     };
     dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
+
+    reset_stream_fixture();
+    reset_decoder_fixture(&opts, &state, &fake_rtl_context);
+    g_output_kind = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
+    state.rf_mod = 1;
+    assert(getSymbol(&opts, &state, 1) == 1000.0f);
+    assert(state.min == -3.0f);
+    assert(state.max == 3.0f);
+    assert(state.lmid == -2.0f);
+    assert(state.umid == 2.0f);
+
+    g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    g_stream_generation = 2U;
+    g_output_rate_hz = 48000U;
+    g_symbol_rate_hz = 4800;
+    g_symbol_levels = 4;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_read_base = 30000.0f;
+    g_read_base_step = 4.0f;
+    state.rf_mod = 0;
+
+    (void)getSymbol(&opts, &state, 1);
+    assert(state.min == -30000.0f);
+    assert(state.max == 30000.0f);
+    assert(state.lmid == -20000.0f);
+    assert(state.umid == 20000.0f);
+    assert(state.minref == -24000.0f);
+    assert(state.maxref == 24000.0f);
+    assert(state.minbuf[0] == -30000.0f);
+    assert(state.maxbuf[0] == 30000.0f);
+    assert(state.minbuf[1023] == -30000.0f);
+    assert(state.maxbuf[1023] == 30000.0f);
+    assert(state.minmax_sum_window == 0);
+
     reset_stream_fixture();
     reset_decoder_fixture(&opts, &state, &fake_rtl_context);
 
@@ -278,6 +319,10 @@ main(void) {
     assert(getSymbol(&opts, &state, 1) == 1001.0f);
     assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 2);
     assert(g_read_calls == 1);
+    assert(state.min == -3.0f);
+    assert(state.max == 3.0f);
+    assert(state.lmid == -2.0f);
+    assert(state.umid == 2.0f);
 
     g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
     g_read_base = 1250.0f;
@@ -376,6 +421,17 @@ main(void) {
     g_read_base = 5000.0f;
     g_read_base_step = 4.0f;
 
+    g_max_read_calls = 2;
+    assert(getSymbol(&opts, &state, 0) == 5000.0f);
+    assert(state.samplesPerSymbol == 2);
+    assert(state.symbolCenter == dsd_opts_symbol_center(2));
+    assert(state.jitter == -1);
+    assert(g_read_calls == 1);
+    g_max_read_calls = 0;
+
+    g_read_base = 5000.0f;
+    g_read_base_step = 4.0f;
+    g_stream_generation++;
     assert(getSymbol(&opts, &state, 1) == 5000.0f);
     assert(state.samplesPerSymbol == 2);
     assert(state.symbolCenter == dsd_opts_symbol_center(2));
