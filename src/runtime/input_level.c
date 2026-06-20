@@ -71,8 +71,8 @@ dsd_input_level_source_is_rf(dsd_input_level_source source) {
         case DSD_INPUT_LEVEL_SOURCE_RTL_CU8:
         case DSD_INPUT_LEVEL_SOURCE_RTL_TCP_CU8:
         case DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16:
-        case DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32:
-        case DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL: return 1;
+        case DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32: return 1;
+        case DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL:
         case DSD_INPUT_LEVEL_SOURCE_PCM:
         case DSD_INPUT_LEVEL_SOURCE_UNKNOWN:
         default: return 0;
@@ -135,12 +135,12 @@ dsd_input_level_classify(dsd_input_level_snapshot* snapshot, double low_warn_db)
         }
         return;
     }
-    if (snapshot->clip_pct >= DSD_INPUT_LEVEL_CLIP_PCT) {
-        snapshot->status = DSD_INPUT_LEVEL_CLIPPING;
-        return;
-    }
     if (snapshot->source == DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL) {
         snapshot->status = DSD_INPUT_LEVEL_UNKNOWN;
+        return;
+    }
+    if (snapshot->clip_pct >= DSD_INPUT_LEVEL_CLIP_PCT) {
+        snapshot->status = DSD_INPUT_LEVEL_CLIPPING;
         return;
     }
     if (snapshot->peak_dbfs >= DSD_INPUT_LEVEL_HOT_PEAK_DBFS) {

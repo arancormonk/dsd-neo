@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -31,20 +32,6 @@ reset_demod(demod_state* s) {
     s->channel_lpf_enable = 0;
 }
 
-static int
-classify4(float sym) {
-    if (sym < -2.0f) {
-        return -3;
-    }
-    if (sym < 0.0f) {
-        return -1;
-    }
-    if (sym < 2.0f) {
-        return 1;
-    }
-    return 3;
-}
-
 static void
 synthesize_fsk_iq(float* out_iq, const float* symbols, int symbol_count, int sps, float deviation_per_level) {
     float phase = 0.19f;
@@ -64,51 +51,71 @@ synthesize_fsk_iq(float* out_iq, const float* symbols, int symbol_count, int sps
 }
 
 static int
-check_fsk_symbol_output_contract(demod_state* s) {
-    enum : unsigned short { SYMBOLS = 512, SPS = 10 };
+check_fsk_discriminator_output_contract(demod_state* s) {
+    enum : unsigned short { SYMBOLS = 256, SPS = 10 };
 
-    static const float levels[] = {-3.0f, -1.0f, 1.0f, 3.0f, 1.0f, -1.0f};
+    static const float levels[] = {-3.0f, -1.0f, 1.0f, 3.0f};
     float expected[SYMBOLS];
 
     reset_demod(s);
-    s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+    s->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     s->symbol_rate_hz = 4800;
     s->symbol_levels = 4;
     s->lp_len = SYMBOLS * SPS * 2;
 
     for (int i = 0; i < SYMBOLS; i++) {
-        expected[i] = levels[i % (int)(sizeof(levels) / sizeof(levels[0]))];
+        expected[i] = levels[(i / 8) & 3];
     }
-    synthesize_fsk_iq(s->input_cb_buf, expected, SYMBOLS, SPS, 0.028f);
+    synthesize_fsk_iq(s->input_cb_buf, expected, SYMBOLS, SPS, 0.026f);
 
     dsd_fsk_modem_config cfg = {};
     cfg.sample_rate_hz = s->rate_out;
     cfg.symbol_rate_hz = s->symbol_rate_hz;
     cfg.levels = s->symbol_levels;
-    cfg.channel_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
+    cfg.channel_profile = DSD_CH_LPF_PROFILE_12K5;
     dsd_fsk_modem_init(&s->fsk_modem_state, &cfg);
 
     full_demod(s);
 
-    if (s->result_len < SYMBOLS - 2 || s->result_len > SYMBOLS + 2) {
-        DSD_FPRINTF(stderr, "FSK symbol path result_len=%d, expected about %d symbols\n", s->result_len, SYMBOLS);
+    if (s->result_len != SYMBOLS * SPS) {
+        DSD_FPRINTF(stderr, "FSK discriminator result_len=%d, expected %d samples\n", s->result_len, SYMBOLS * SPS);
+        return 1;
+    }
+    if (s->result[0] != 0.0f) {
+        DSD_FPRINTF(stderr, "FSK discriminator first sample %.3f, expected 0\n", s->result[0]);
         return 1;
     }
 
     int checked = 0;
     int ok = 0;
-    const int limit = (s->result_len < SYMBOLS) ? s->result_len : SYMBOLS;
-    for (int i = 80; i < limit; i++) {
-        checked++;
-        if (classify4(s->result[i]) == (int)expected[i]) {
-            ok++;
+    float peak = 0.0f;
+    double mean = 0.0;
+    const int stable_start = SPS * 32;
+    for (int i = stable_start; i < s->result_len; i++) {
+        int sym = i / SPS;
+        if (sym >= SYMBOLS) {
+            sym = SYMBOLS - 1;
+        }
+        float sample = s->result[i];
+        mean += (double)sample;
+        peak = std::max(peak, std::fabs(sample));
+        if (std::fabs(expected[sym]) >= 2.0f) {
+            checked++;
+            if ((sample > 0.0f) == (expected[sym] > 0.0f)) {
+                ok++;
+            }
+        }
+        if (sample < -32768.0f || sample > 32767.0f) {
+            DSD_FPRINTF(stderr, "FSK discriminator sample[%d]=%.1f outside PCM range\n", i, sample);
+            return 1;
         }
     }
-    if (checked < 200 || ((double)ok / (double)checked) < 0.95) {
-        DSD_FPRINTF(stderr, "FSK symbol path accuracy %.3f (%d/%d)\n", checked ? (double)ok / (double)checked : 0.0, ok,
-                    checked);
+    mean /= (double)(s->result_len - stable_start);
+    if (checked < 1000 || ok < (checked * 95) / 100 || peak < 25000.0f || std::fabs(mean) > 1500.0) {
+        DSD_FPRINTF(stderr, "FSK discriminator sign=%d/%d peak=%.1f mean=%.1f\n", ok, checked, peak, mean);
         return 1;
     }
+
     return 0;
 }
 
@@ -209,7 +216,7 @@ main(void) {
     }
 
     int rc = 0;
-    rc |= check_fsk_symbol_output_contract(s);
+    rc |= check_fsk_discriminator_output_contract(s);
     rc |= check_cqpsk_symbol_output_contract(s);
     rc |= check_cqpsk_phase_extractor_accuracy(s);
 

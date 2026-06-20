@@ -7,6 +7,7 @@
 #error "DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS must be enabled for this test."
 #endif
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <dsd-neo/io/rtl_device.h>
@@ -79,6 +80,15 @@ static int
 expect_generation_changed(const char* label, uint32_t before, uint32_t after) {
     if (before == after) {
         DSD_FPRINTF(stderr, "FAIL: %s before=%u after=%u\n", label, before, after);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_double_near(const char* label, double got, double want, double tolerance) {
+    if (std::fabs(got - want) > tolerance) {
+        DSD_FPRINTF(stderr, "FAIL: %s got=%.9f want=%.9f tolerance=%.9f\n", label, got, want, tolerance);
         return 1;
     }
     return 0;
@@ -204,17 +214,40 @@ main(void) {
     failed |= expect_size_eq("clear output clears queued ring", used_after, 0U);
     failed |= expect_int_eq("clear output resets cached symbols", cache_pending, 0);
 
+    int have_prev_after_clear = -1;
+    int reset_consumed = -1;
+    int have_prev_after_consume = -1;
+    rc = rtl_stream_test_clear_output_fsk_reset(7U, &have_prev_after_clear, &reset_consumed, &have_prev_after_consume);
+    failed |= expect_int_eq("clear output fsk reset helper rc", rc, 0);
+    failed |= expect_int_eq("clear output leaves fsk modem for demod thread", have_prev_after_clear, 1);
+    failed |= expect_int_eq("clear output fsk reset consumed", reset_consumed, 1);
+    failed |= expect_int_eq("clear output fsk reset clears modem history", have_prev_after_consume, 0);
+
+    double fsk_cfo_hz = 0.0;
+    int fsk_cfo_after_generation_bump = -1;
+    int fsk_cfo_after_reset = -1;
+    const double fsk_dc_rad_per_sample = 0.0125;
+    rc = rtl_stream_test_fsk_cfo_snapshot(fsk_dc_rad_per_sample, 48000, &fsk_cfo_hz, &fsk_cfo_after_generation_bump,
+                                          &fsk_cfo_after_reset);
+    failed |= expect_int_eq("fsk cfo snapshot helper rc", rc, 0);
+    failed |= expect_double_near(
+        "fsk cfo snapshot conversion", fsk_cfo_hz,
+        -static_cast<double>(static_cast<float>(fsk_dc_rad_per_sample)) * 48000.0 / 6.28318530717958647692, 1e-6);
+    failed |= expect_int_eq("fsk cfo snapshot generation bump invalidates estimate", fsk_cfo_after_generation_bump, 0);
+    failed |= expect_int_eq("fsk cfo snapshot reset invalidates estimate", fsk_cfo_after_reset, 0);
+
     int request_rc = -1;
     int consumed = -1;
     cache_pending = -1;
-    rc = rtl_stream_test_fsk_reacquire(RTL_STREAM_OUTPUT_SYMBOL_FSK, 9U, 4, &used_after, &cache_pending,
+    rc = rtl_stream_test_fsk_reacquire(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, 9U, 4, &used_after, &cache_pending,
                                        &generation_before, &generation_after, &request_rc, &consumed);
-    failed |= expect_int_eq("fsk reacquire helper rc", rc, 0);
-    failed |= expect_int_eq("fsk reacquire request queued", request_rc, 1);
-    failed |= expect_int_eq("fsk reacquire consumed", consumed, 1);
-    failed |= expect_generation_changed("fsk reacquire bumps generation", generation_before, generation_after);
-    failed |= expect_size_eq("fsk reacquire clears queued ring", used_after, 0U);
-    failed |= expect_int_eq("fsk reacquire resets cached symbols", cache_pending, 0);
+    failed |= expect_int_eq("fsk discriminator reacquire helper rc", rc, 0);
+    failed |= expect_int_eq("fsk discriminator reacquire request queued", request_rc, 1);
+    failed |= expect_int_eq("fsk discriminator reacquire consumed", consumed, 1);
+    failed |=
+        expect_generation_changed("fsk discriminator reacquire bumps generation", generation_before, generation_after);
+    failed |= expect_size_eq("fsk discriminator reacquire clears queued ring", used_after, 0U);
+    failed |= expect_int_eq("fsk discriminator reacquire resets cached symbols", cache_pending, 0);
 
     request_rc = -1;
     consumed = -1;

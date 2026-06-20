@@ -450,8 +450,9 @@ version = 1
   gain, PPM correction, bandwidth, squelch, monitor gain, and auto-PPM.
   Omitted values use sensible defaults. To switch the input to RTL at
   startup, set at least `rtl_freq` (and optionally `rtl_device`).
-  Digital RTL decode runs in the symbol domain: the decoder receives one
-  normalized FSK or CQPSK symbol per decision, not discriminator audio.
+  Digital RTL decode uses direct DSP output: FSK feeds centered discriminator
+  samples into the sample-domain symbolizer, while CQPSK feeds symbol-rate
+  samples.
   `rtl_volume` affects only the separate monitor/non-symbol audio path.
 
 - **RTL-TCP (`source = "rtltcp"`)**: Uses `rtltcp_host`/`rtltcp_port`
@@ -465,8 +466,8 @@ version = 1
     `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
   - Reuses existing `rtl_*` tuning keys (`rtl_freq`, `rtl_gain`, `rtl_ppm`, `rtl_bw_khz`, `rtl_sql`, `rtl_volume`)
     so trunking and retune behavior remains unchanged.
-  - Digital decode uses the same normalized symbol-domain stream as RTL USB, RTL-TCP, and IQ replay.
-  - `rtl_volume` remains a monitor/non-symbol gain key; it does not scale RTL-family digital symbols.
+  - Digital decode uses the same FSK discriminator and CQPSK symbol contracts as RTL USB, RTL-TCP, and IQ replay.
+  - `rtl_volume` remains a monitor/direct-output gain key; it does not scale RTL-family digital decode samples.
   - `rtl_device` and `rtltcp_*` endpoint keys are not used in Soapy mode.
   - Set `rtl_freq` explicitly for predictable startup frequency with non-RTL radios.
   - If frequency resolves to `0`, radio startup fails with `Please specify a frequency.`

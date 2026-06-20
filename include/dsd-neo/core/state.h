@@ -374,9 +374,8 @@ struct dsd_state {
     unsigned int symbol_replay_soft_records;
     unsigned int symbol_capture_soft_records;
 
-    /* RTL DSP symbol-output cache. The RTL demod thread already produces
-       symbol-rate floats in blocks; this lets legacy getSymbol() consume them
-       without one ring read per dibit. */
+    /* RTL DSP direct-output cache. The RTL demod thread produces direct FSK/CQPSK
+       blocks; this lets getSymbol() consume them without one ring read per sample. */
     float rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP];
     int rtl_symbol_cache_pos;
     int rtl_symbol_cache_len;
@@ -386,6 +385,9 @@ struct dsd_state {
     int rtl_symbol_cache_levels;
     uint32_t rtl_symbol_cache_generation;
     int rtl_symbol_cache_published_pending;
+    int rtl_fsk_sps_num;
+    int rtl_fsk_sps_den;
+    int rtl_fsk_sps_accum;
 
     /* C4FM timing assist (clock loop hinting). Lightweight EL/M&M error drives
        occasional ±1 nudges of symbolCenter; disabled by default. */

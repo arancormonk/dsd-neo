@@ -86,7 +86,6 @@ double dsd_rtl_stream_get_snr_bias_evm(void);
 /* Tuner autogain */
 int dsd_rtl_stream_get_tuner_autogain(void);
 void dsd_rtl_stream_set_tuner_autogain(int onoff);
-int dsd_rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out);
 int dsd_rtl_stream_get_decode_health(rtl_stream_decode_health* out);
 int dsd_rtl_stream_get_input_level(dsd_input_level_snapshot* out);
 void dsd_rtl_stream_set_channel_squelch(float level);
@@ -104,6 +103,16 @@ int dsd_rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_
 int dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                      int* out_cache_pending_after, uint32_t* out_generation_before,
                                      uint32_t* out_generation_after);
+int dsd_rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear,
+                                               int* out_consumed_reset, int* out_have_prev_after_consume);
+int dsd_rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int active_rtl_digital,
+                                                  size_t queued_samples, int cached_symbols,
+                                                  rtl_stream_test_cqpsk_toggle_result* out_result);
+int dsd_rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
+                                         int* out_after_generation_bump_available, int* out_after_reset_available);
+int dsd_rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps);
+int dsd_rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
+                                                             unsigned int* out_rate_hz, int* out_resamp_enabled);
 int dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols,
                                       size_t* out_used_after, int* out_cache_pending_after,
                                       uint32_t* out_generation_before, uint32_t* out_generation_after,
@@ -282,6 +291,40 @@ rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* 
                              uint32_t* out_generation_after) {
     return dsd_rtl_stream_test_clear_output(queued_samples, cached_symbols, out_used_after, out_cache_pending_after,
                                             out_generation_before, out_generation_after);
+}
+
+extern "C" int
+rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear, int* out_consumed_reset,
+                                       int* out_have_prev_after_consume) {
+    return dsd_rtl_stream_test_clear_output_fsk_reset(queued_samples, out_have_prev_after_clear, out_consumed_reset,
+                                                      out_have_prev_after_consume);
+}
+
+extern "C" int
+rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int active_rtl_digital,
+                                          size_t queued_samples, int cached_symbols,
+                                          rtl_stream_test_cqpsk_toggle_result* out_result) {
+    return dsd_rtl_stream_test_cqpsk_toggle_output_clear(start_cqpsk, target_cqpsk, active_rtl_digital, queued_samples,
+                                                         cached_symbols, out_result);
+}
+
+extern "C" int
+rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
+                                 int* out_after_generation_bump_available, int* out_after_reset_available) {
+    return dsd_rtl_stream_test_fsk_cfo_snapshot(dc_rad_per_sample, rate_out_hz, out_cfo_hz,
+                                                out_after_generation_bump_available, out_after_reset_available);
+}
+
+extern "C" int
+rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps) {
+    return dsd_rtl_stream_test_fsk_snr_sps(rate_out_hz, symbol_rate_hz, stale_ted_sps);
+}
+
+extern "C" int
+rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
+                                                     unsigned int* out_rate_hz, int* out_resamp_enabled) {
+    return dsd_rtl_stream_test_direct_output_rate_after_open_update(output_kind, rate_out_hz, resamp_target_hz,
+                                                                    out_rate_hz, out_resamp_enabled);
 }
 
 extern "C" int
@@ -625,11 +668,6 @@ extern "C" double dsd_rtl_stream_get_fll_band_edge_freq_hz(void);
 extern "C" double
 rtl_stream_get_fll_band_edge_freq_hz(void) {
     return dsd_rtl_stream_get_fll_band_edge_freq_hz();
-}
-
-extern "C" int
-rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out) {
-    return dsd_rtl_stream_get_fsk_metrics(out);
 }
 
 extern "C" int

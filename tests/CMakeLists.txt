@@ -1897,6 +1897,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_output_rate"
             "-Wl,--wrap=rtl_stream_prepare_retune_profile_for_target"
             "-Wl,--wrap=rtl_stream_prepare_retune_profile_for_target_with_gain"
+            "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             ${LIBS}
             dsd-neo_feature_radio
@@ -3859,6 +3860,14 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_snr_bias ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_SNR_BIAS COMMAND dsd-neo_test_dsp_snr_bias)
 
+add_executable(dsd-neo_test_dsp_snr_estimator dsp/test_dsp_snr_estimator.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_snr_estimator
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_snr_estimator ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_SNR_ESTIMATOR COMMAND dsd-neo_test_dsp_snr_estimator)
+
 # Post-demod audio polyphase decimator (M>2) smoke test
 add_executable(
     dsd-neo_test_dsp_audio_polydecim
@@ -4841,6 +4850,28 @@ target_link_libraries(
     PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DIBIT_SYMBOL_BIN_SOFT COMMAND dsd-neo_test_dibit_symbol_bin_soft)
+
+add_executable(
+    dsd-neo_test_dibit_rtl_fsk_reliability
+    core/test_dibit_rtl_fsk_reliability.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+)
+target_compile_definitions(
+    dsd-neo_test_dibit_rtl_fsk_reliability
+    PRIVATE USE_RADIO
+)
+target_include_directories(
+    dsd-neo_test_dibit_rtl_fsk_reliability
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dibit_rtl_fsk_reliability
+    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DIBIT_RTL_FSK_RELIABILITY
+    COMMAND dsd-neo_test_dibit_rtl_fsk_reliability
+)
 
 # Sync hamming/remap helper unit test
 add_executable(dsd-neo_test_dsp_sync_hamming dsp/test_dsp_sync_hamming.c)

@@ -6,6 +6,7 @@ target_sources(
     PRIVATE
         demod_pipeline.cpp
         snr_bias.cpp
+        snr_estimator.cpp
         costas.cpp
         resampler.cpp
         halfband.cpp

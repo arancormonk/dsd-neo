@@ -371,6 +371,14 @@ test_advisory_text_selection(void) {
     dsd_input_level_classify(&rf_clip, -40.0);
     assert(dsd_input_level_format_advisory(&rf_clip, msg, sizeof(msg)) == 0);
     assert(strstr(msg, "lower RF gain or add filtering/attenuation") != NULL);
+
+    dsd_input_level_snapshot fsk_clip = snapshot_for(DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL, -120.0, -120.0, 12.5, 1);
+    dsd_input_level_classify(&fsk_clip, -40.0);
+    assert(fsk_clip.status == DSD_INPUT_LEVEL_UNKNOWN);
+    assert(dsd_input_level_format_advisory(&fsk_clip, msg, sizeof(msg)) == 0);
+    assert(strstr(msg, "Input Level UNKNOWN") != NULL);
+    assert(strstr(msg, "RF Level") == NULL);
+    assert(strstr(msg, "lower RF gain") == NULL);
 }
 
 int

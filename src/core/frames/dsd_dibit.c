@@ -25,7 +25,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol.h>
-#include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
@@ -45,7 +44,7 @@
 #endif
 
 #ifdef USE_RADIO
-#define DSD_RTL_OUTPUT_KIND_SYMBOL_FSK 1
+#define DSD_RTL_OUTPUT_KIND_FSK_DISCRIMINATOR 1
 #endif
 
 static void DSD_ATTR_USED
@@ -438,13 +437,13 @@ apply_cqpsk_snr_weight(int rel) {
 #endif
 
 static int DSD_ATTR_USED
-fsk_soft_metric_available(int* out_levels) {
+rtl_fsk_discriminator_metric_context(int* out_levels) {
 #ifdef USE_RADIO
     int symbol_rate_hz = 0;
     int levels = 0;
     int channel_profile = 0;
     if (dsd_rtl_stream_metrics_hook_stream_active()
-        && dsd_rtl_stream_metrics_hook_output_kind() == DSD_RTL_OUTPUT_KIND_SYMBOL_FSK
+        && dsd_rtl_stream_metrics_hook_output_kind() == DSD_RTL_OUTPUT_KIND_FSK_DISCRIMINATOR
         && dsd_rtl_stream_metrics_hook_symbol_profile(&symbol_rate_hz, &levels, &channel_profile) == 0) {
         (void)symbol_rate_hz;
         (void)channel_profile;
@@ -510,9 +509,9 @@ c4fm_reliability_from_thresholds(const dsd_state* st, float sym) {
 
 #ifdef USE_RADIO
 static int
-apply_c4fm_snr_weight(int rel, int rtl_fsk_soft, int rtl_fsk_levels) {
+apply_c4fm_snr_weight(int rel, int rtl_fsk_context, int rtl_fsk_levels) {
     double snr_db = -100.0;
-    if (rtl_fsk_soft && rtl_fsk_levels == 2) {
+    if (rtl_fsk_context && rtl_fsk_levels == 2) {
         snr_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
         if (snr_db < -50.0) {
             snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
@@ -566,13 +565,10 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
     int rel = c4fm_reliability_from_thresholds(st, sym);
 #ifdef USE_RADIO
     int rtl_fsk_levels = 4;
-    int rtl_fsk_soft = fsk_soft_metric_available(&rtl_fsk_levels);
-    if (rtl_fsk_soft) {
-        rel = (int)dsd_fsk_symbol_reliability(sym, rtl_fsk_levels);
-    }
+    int rtl_fsk_context = rtl_fsk_discriminator_metric_context(&rtl_fsk_levels);
 #endif
 #ifdef USE_RADIO
-    rel = apply_c4fm_snr_weight(rel, rtl_fsk_soft, rtl_fsk_levels);
+    rel = apply_c4fm_snr_weight(rel, rtl_fsk_context, rtl_fsk_levels);
 #endif
     return (uint8_t)rel;
 }

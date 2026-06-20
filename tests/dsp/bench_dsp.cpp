@@ -625,8 +625,8 @@ bench_fir(const BenchOptions& opts) {
 }
 
 static int
-bench_one_fsk_modem_variant(const BenchOptions& opts, const char* name, int sample_rate, int symbol_rate, int levels,
-                            int reset_each_call) {
+bench_one_fsk_discriminator_variant(const BenchOptions& opts, const char* name, int sample_rate, int symbol_rate,
+                                    int levels, int reset_each_call) {
     const int sps = sample_rate / symbol_rate;
     constexpr int kPairs = 4096;
     constexpr int kInLen = kPairs * 2;
@@ -643,7 +643,8 @@ bench_one_fsk_modem_variant(const BenchOptions& opts, const char* name, int samp
     dsd_fsk_modem_init(&fsk_state, &fsk_cfg);
 
     if (!reset_each_call) {
-        (void)dsd_fsk_modem_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
+        (void)dsd_fsk_modem_discriminator_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(),
+                                                  (int)fsk_out.size());
     }
 
     BenchMeta meta;
@@ -657,7 +658,8 @@ bench_one_fsk_modem_variant(const BenchOptions& opts, const char* name, int samp
             if (reset_each_call) {
                 dsd_fsk_modem_reset(&fsk_state);
             }
-            int got = dsd_fsk_modem_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
+            int got = dsd_fsk_modem_discriminator_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(),
+                                                          (int)fsk_out.size());
             return fsk_out[0] + fsk_out[(got > 0) ? got - 1 : 0] + (float)got;
         },
         &meta);
@@ -669,14 +671,14 @@ bench_one_fsk_modem_variant(const BenchOptions& opts, const char* name, int samp
 static int
 bench_fsk_modem_variants(const BenchOptions& opts) {
     int ran = 0;
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_24k_acq", 24000, 4800, 4, 1);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_24k_steady", 24000, 4800, 4, 0);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_48k_acq", 48000, 4800, 4, 1);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_48k_steady", 48000, 4800, 4, 0);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_24k_acq", 24000, 2400, 2, 1);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_24k_steady", 24000, 2400, 2, 0);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_48k_acq", 48000, 2400, 2, 1);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_48k_steady", 48000, 2400, 2, 0);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_4lvl_24k_reset", 24000, 4800, 4, 1);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_4lvl_24k_steady", 24000, 4800, 4, 0);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_4lvl_48k_reset", 48000, 4800, 4, 1);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_4lvl_48k_steady", 48000, 4800, 4, 0);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_2lvl_24k_reset", 24000, 2400, 2, 1);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_2lvl_24k_steady", 24000, 2400, 2, 0);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_2lvl_48k_reset", 48000, 2400, 2, 1);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_2lvl_48k_steady", 48000, 2400, 2, 0);
     return ran;
 }
 
@@ -726,8 +728,9 @@ bench_kernel_demods(const BenchOptions& opts) {
     fsk_cfg.levels = 4;
     fsk_cfg.channel_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
     dsd_fsk_modem_init(&fsk_state, &fsk_cfg);
-    ran += run_case(opts, "dsd_fsk_modem_process", "pair", (double)kPairs, [&]() -> float {
-        int got = dsd_fsk_modem_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
+    ran += run_case(opts, "dsd_fsk_modem_discriminator_process", "pair", (double)kPairs, [&]() -> float {
+        int got =
+            dsd_fsk_modem_discriminator_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
         return fsk_out[0] + fsk_out[(got > 0) ? got - 1 : 0] + (float)got;
     });
     dsd_fsk_modem_release(&fsk_state);
@@ -911,7 +914,7 @@ configure_common_fsk_state(demod_state* s, int sample_rate, int symbol_rate, int
     s->rate_out2 = 0;
     s->lowpassed = s->input_cb_buf;
     s->mode_demod = &dsd_fm_demod;
-    s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+    s->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     s->symbol_rate_hz = symbol_rate;
     s->symbol_levels = 4;
     s->ted_sps = sample_rate / symbol_rate;

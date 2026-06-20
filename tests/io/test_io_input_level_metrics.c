@@ -84,10 +84,23 @@ test_cf32_metrics(void) {
     assert(fabs(snapshot.clip_pct - 0.1) < 1e-9);
 }
 
+static void
+test_fsk_symbol_clip_metric_is_not_rf_clipping(void) {
+    dsd_input_level_snapshot snapshot;
+    assert(dsd_input_level_metrics_from_fsk_clip(12.5f, 256U, &snapshot) == 0);
+    classify(&snapshot);
+    assert(snapshot.source == DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL);
+    assert(snapshot.status == DSD_INPUT_LEVEL_UNKNOWN);
+    assert(dsd_input_level_source_is_rf(snapshot.source) == 0);
+    assert(snapshot.sample_count == 256U);
+    assert(fabs(snapshot.clip_pct - 12.5) < 1e-6);
+}
+
 int
 main(void) {
     test_cu8_metrics();
     test_cs16_metrics();
     test_cf32_metrics();
+    test_fsk_symbol_clip_metric_is_not_rf_clipping();
     return 0;
 }
