@@ -1637,6 +1637,9 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
     state->max = 15000;
     state->min = -15000;
     state->center = 0;
+    state->rtl_fsk_sps_num = 0;
+    state->rtl_fsk_sps_den = 0;
+    state->rtl_fsk_sps_accum = 0;
     state->m17_polarity = 0;
     state->err_str[0] = '\0';
     state->err_strR[0] = '\0';

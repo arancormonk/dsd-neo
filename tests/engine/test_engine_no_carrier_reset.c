@@ -274,12 +274,17 @@ main(void) {
     if (state->dmr_reliab_buf != NULL) {
         state->dmr_reliab_p = state->dmr_reliab_buf + 321;
     }
+    state->rtl_fsk_sps_num = 48000;
+    state->rtl_fsk_sps_den = 4800;
+    state->rtl_fsk_sps_accum = 2400;
 
     noCarrier(opts, state);
 
     rc |= expect_true("dmr-payload-pointer-buffer", state->dmr_payload_p == state->dmr_payload_buf + 200);
     rc |= expect_true("dmr-payload-pointer-not-dibit", state->dmr_payload_p != state->dibit_buf + 200);
     rc |= expect_true("dibit-pointer-reset", state->dibit_buf_p == state->dibit_buf + 200);
+    rc |= expect_true("rtl-fsk-sps-cache-reset",
+                      state->rtl_fsk_sps_num == 0 && state->rtl_fsk_sps_den == 0 && state->rtl_fsk_sps_accum == 0);
 
     for (int i = 0; i < 200; i++) {
         if (state->dmr_payload_buf[i] != 0) {
