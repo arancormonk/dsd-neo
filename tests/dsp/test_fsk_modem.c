@@ -938,6 +938,7 @@ test_local_reacquire_preserves_pending_symbols(void) {
     expect_4level_accuracy_best_shift("local-reacquire-preserves-pending", out, total, symbols, SYMBOLS, RUN, 160, 64,
                                       0.88f);
 
+    dsd_fsk_modem_release(&modem);
     free(out);
     free(iq);
     free(symbols);
