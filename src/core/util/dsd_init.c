@@ -6,6 +6,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -557,6 +558,7 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
     state->symbol_capture_soft_records = 0;
     state->rf_mod = 0;
     state->lastsynctype = DSD_SYNC_NONE;
+    state->p25_cqpsk_dibit_map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     state->lastp25type = 0;
     state->offset = 0;
     state->carrier = 0;

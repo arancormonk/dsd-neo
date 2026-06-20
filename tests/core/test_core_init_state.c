@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,6 +77,7 @@ main(void) {
     state->rtl_fsk_sps_num = 24000;
     state->rtl_fsk_sps_den = 9600;
     state->rtl_fsk_sps_accum = 4800;
+    state->p25_cqpsk_dibit_map_idx = DSD_P25_CQPSK_DIBIT_MAP_N1200;
     state->ess_b[0][95] = 1;
     state->ess_b_llr[1][95] = 123;
     state->fourv_counter[0] = 2;
@@ -257,8 +259,8 @@ main(void) {
         || state->rtl_symbol_cache_channel_profile != 0 || state->rtl_symbol_cache_symbol_rate_hz != 0
         || state->rtl_symbol_cache_levels != 0 || state->rtl_symbol_cache_generation != 0U
         || state->rtl_symbol_cache_published_pending != 0 || state->rtl_fsk_sps_num != 0 || state->rtl_fsk_sps_den != 0
-        || state->rtl_fsk_sps_accum != 0 || state->rtl_symbol_cache[0] != 0.0f
-        || state->rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP - 1] != 0.0f) {
+        || state->rtl_fsk_sps_accum != 0 || state->p25_cqpsk_dibit_map_idx != DSD_P25_CQPSK_DIBIT_MAP_IDENTITY
+        || state->rtl_symbol_cache[0] != 0.0f || state->rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP - 1] != 0.0f) {
         DSD_FPRINTF(stderr, "initState did not clear RTL symbol cache state\n");
         freeState(state);
         free(state);
