@@ -412,6 +412,11 @@ typedef enum {
 } frame_sync_p25_center_mode_t;
 
 #ifdef USE_RADIO
+typedef struct {
+    float center;
+    float gain;
+} frame_sync_p25_cqpsk_raw_fit_t;
+
 static int
 frame_sync_cqpsk_raw_level_unit(uint8_t raw_dibit) {
     static const int units[4] = {1, 3, -1, -3};
@@ -435,7 +440,7 @@ frame_sync_accumulate_p25_cqpsk_raw_sync(const dsd_state* state, const char* raw
 }
 
 static dsd_warm_start_result_t
-frame_sync_fit_p25_cqpsk_raw_center(const float sum[4], const int count[4], float* out_center) {
+frame_sync_fit_p25_cqpsk_raw_levels(const float sum[4], const int count[4], frame_sync_p25_cqpsk_raw_fit_t* out_fit) {
     float sum_x = 0.0f;
     float sum_y = 0.0f;
     float sum_xx = 0.0f;
@@ -465,19 +470,24 @@ frame_sync_fit_p25_cqpsk_raw_center(const float sum[4], const int count[4], floa
     if (fabsf(gain) * 2.0f < DSD_WARM_START_MIN_SPAN) {
         return DSD_WARM_START_DEGENERATE;
     }
-    *out_center = (sum_y - (gain * sum_x)) / (float)n;
+    if (!out_fit) {
+        return DSD_WARM_START_NULL_STATE;
+    }
+    out_fit->center = (sum_y - (gain * sum_x)) / (float)n;
+    out_fit->gain = gain;
     return DSD_WARM_START_OK;
 }
 
 static dsd_warm_start_result_t
-frame_sync_warm_start_p25_cqpsk_center_from_raw_sync(frame_sync_match_ctx* ctx, const char* raw_window, int sync_len) {
+frame_sync_fit_p25_cqpsk_raw_sync(const frame_sync_match_ctx* ctx, const char* raw_window, int sync_len,
+                                  frame_sync_p25_cqpsk_raw_fit_t* out_fit) {
     if (!dsd_sync_warm_start_enabled()) {
         return DSD_WARM_START_DISABLED;
     }
     if (!ctx || !ctx->state || !raw_window) {
         return DSD_WARM_START_NULL_STATE;
     }
-    dsd_state* state = ctx->state;
+    const dsd_state* state = ctx->state;
     if (sync_len <= 1 || strlen(raw_window) < (size_t)sync_len) {
         return DSD_WARM_START_DEGENERATE;
     }
@@ -491,13 +501,50 @@ frame_sync_warm_start_p25_cqpsk_center_from_raw_sync(frame_sync_match_ctx* ctx, 
     if (result != DSD_WARM_START_OK) {
         return result;
     }
-    float center = 0.0f;
-    result = frame_sync_fit_p25_cqpsk_raw_center(sum, count, &center);
-    if (result != DSD_WARM_START_OK) {
-        return result;
+    return frame_sync_fit_p25_cqpsk_raw_levels(sum, count, out_fit);
+}
+
+static void
+frame_sync_seed_p25_cqpsk_level_windows(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
     }
-    state->center = center;
-    return DSD_WARM_START_OK;
+
+    int minmax_count = dsd_state_minmax_window_size(opts->msize);
+    for (int i = 0; i < minmax_count; i++) {
+        state->minbuf[i] = state->min;
+        state->maxbuf[i] = state->max;
+    }
+    dsd_state_invalidate_minmax_sums(state);
+
+    int symbol_count = opts->ssize;
+    if (symbol_count < 0) {
+        symbol_count = 0;
+    }
+    if (symbol_count > (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]))) {
+        symbol_count = (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]));
+    }
+    for (int i = 0; i < symbol_count; i++) {
+        state->sbuf[i] = (i & 1) ? state->max : state->min;
+    }
+}
+
+static void
+frame_sync_apply_p25_cqpsk_raw_fit(frame_sync_match_ctx* ctx, const frame_sync_p25_cqpsk_raw_fit_t* fit) {
+    if (!ctx || !ctx->state || !fit) {
+        return;
+    }
+
+    dsd_state* state = ctx->state;
+    float half_span = fabsf(fit->gain) * 3.0f;
+    state->center = fit->center;
+    state->min = fit->center - half_span;
+    state->max = fit->center + half_span;
+    state->umid = state->center + (state->max - state->center) * DSD_WARM_START_MID_FRACTION;
+    state->lmid = state->center + (state->min - state->center) * DSD_WARM_START_MID_FRACTION;
+    state->maxref = state->max * 0.80f;
+    state->minref = state->min * 0.80f;
+    frame_sync_seed_p25_cqpsk_level_windows(ctx->opts, state);
 }
 
 static int
@@ -634,25 +681,31 @@ frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
     uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     if (frame_sync_cqpsk_4level_enabled(opts, state)
         && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest, P25P1_SYNC, &map_idx)) {
-        dsd_warm_start_result_t center_result =
-            frame_sync_warm_start_p25_cqpsk_center_from_raw_sync(ctx, ctx->synctest, 24);
+        frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
+        dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, ctx->synctest, 24, &fit);
         if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
             return DSD_SYNC_NONE;
         }
         frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
         frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_POS, "+P25p1", FRAME_SYNC_P25_CENTER_SKIP);
+        if (center_result == DSD_WARM_START_OK) {
+            frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
+        }
         return DSD_SYNC_P25P1_POS;
     }
 
     if (frame_sync_cqpsk_4level_enabled(opts, state)
         && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest, INV_P25P1_SYNC, &map_idx)) {
-        dsd_warm_start_result_t center_result =
-            frame_sync_warm_start_p25_cqpsk_center_from_raw_sync(ctx, ctx->synctest, 24);
+        frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
+        dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, ctx->synctest, 24, &fit);
         if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
             return DSD_SYNC_NONE;
         }
         frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
         frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_NEG, "-P25p1 ", FRAME_SYNC_P25_CENTER_SKIP);
+        if (center_result == DSD_WARM_START_OK) {
+            frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
+        }
         return DSD_SYNC_P25P1_NEG;
     }
 #endif
@@ -770,25 +823,31 @@ frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
     uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     if (frame_sync_cqpsk_4level_enabled(opts, state)
         && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest20, P25P2_SYNC, &map_idx)) {
-        dsd_warm_start_result_t center_result =
-            frame_sync_warm_start_p25_cqpsk_center_from_raw_sync(ctx, ctx->synctest20, 20);
+        frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
+        dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, ctx->synctest20, 20, &fit);
         if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
             return DSD_SYNC_NONE;
         }
         frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
         frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_POS, 0, "+P25p2", 1, FRAME_SYNC_P25_CENTER_SKIP);
+        if (center_result == DSD_WARM_START_OK) {
+            frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
+        }
         return DSD_SYNC_P25P2_POS;
     }
 
     if (frame_sync_cqpsk_4level_enabled(opts, state)
         && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest20, INV_P25P2_SYNC, &map_idx)) {
-        dsd_warm_start_result_t center_result =
-            frame_sync_warm_start_p25_cqpsk_center_from_raw_sync(ctx, ctx->synctest20, 20);
+        frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
+        dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, ctx->synctest20, 20, &fit);
         if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
             return DSD_SYNC_NONE;
         }
         frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
         frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_NEG, 1, "-P25p2", 0, FRAME_SYNC_P25_CENTER_SKIP);
+        if (center_result == DSD_WARM_START_OK) {
+            frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
+        }
         return DSD_SYNC_P25P2_NEG;
     }
 #endif

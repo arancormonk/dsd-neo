@@ -219,6 +219,77 @@ llr_matches_bit(int16_t llr, int bit) {
     return bit ? (llr > 0) : (llr < 0);
 }
 
+static void
+test_symbol_window_extrema_avg2(const float* samples, int count, float* out_min, float* out_max) {
+    if (!samples || !out_min || !out_max || count < 2) {
+        if (out_min) {
+            *out_min = 0.0f;
+        }
+        if (out_max) {
+            *out_max = 0.0f;
+        }
+        return;
+    }
+
+    float min1 = samples[0];
+    float min2 = samples[1];
+    if (min2 < min1) {
+        float tmp = min1;
+        min1 = min2;
+        min2 = tmp;
+    }
+
+    float max1 = samples[0];
+    float max2 = samples[1];
+    if (max2 > max1) {
+        float tmp = max1;
+        max1 = max2;
+        max2 = tmp;
+    }
+
+    for (int i = 2; i < count; i++) {
+        float v = samples[i];
+        if (v < min1) {
+            min2 = min1;
+            min1 = v;
+        } else if (v < min2) {
+            min2 = v;
+        }
+
+        if (v > max1) {
+            max2 = max1;
+            max1 = v;
+        } else if (v > max2) {
+            max2 = v;
+        }
+    }
+
+    *out_min = (min1 + min2) * 0.5f;
+    *out_max = (max1 + max2) * 0.5f;
+}
+
+static void
+simulate_payload_threshold_update(const dsd_opts* opts, dsd_state* state, float payload_symbol) {
+    int cap = opts->ssize;
+    if (cap < 0) {
+        cap = 0;
+    }
+    if (cap > (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]))) {
+        cap = (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]));
+    }
+    if (cap > 0) {
+        state->sbuf[state->sidx] = payload_symbol;
+    }
+
+    float lmin = 0.0f;
+    float lmax = 0.0f;
+    test_symbol_window_extrema_avg2(state->sbuf, cap, &lmin, &lmax);
+    dsd_state_push_minmax_window(state, opts->msize, lmin, lmax);
+    state->center = (state->max + state->min) / 2.0f;
+    state->umid = (((state->max) - state->center) * 5.0f / 8.0f) + state->center;
+    state->lmid = (((state->min) - state->center) * 5.0f / 8.0f) + state->center;
+}
+
 static uint32_t
 fake_stream_generation(void) {
     return 1U;
@@ -296,6 +367,7 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
     opts.mod_qpsk = 1;
     opts.p25_trunk = 1;
     opts.msize = 1;
+    opts.ssize = 36;
 
     state.rf_mod = 1;
     state.p25_p2_active_slot = 1;
@@ -331,6 +403,16 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
     }
     if (fabsf(state.center - expected_center) > 0.001f) {
         DSD_FPRINTF(stderr, "%s center %.3f, expected %.3f\n", label, state.center, expected_center);
+        rc = 1;
+    }
+    float scanner_center = (state.max + state.min) / 2.0f;
+    if (fabsf(scanner_center - expected_center) > 0.001f) {
+        DSD_FPRINTF(stderr, "%s scanner center %.3f, expected %.3f\n", label, scanner_center, expected_center);
+        rc = 1;
+    }
+    simulate_payload_threshold_update(&opts, &state, symbol_level_for_dibit('1'));
+    if (fabsf(state.center - expected_center) > 0.001f) {
+        DSD_FPRINTF(stderr, "%s payload update center %.3f, expected %.3f\n", label, state.center, expected_center);
         rc = 1;
     }
 
