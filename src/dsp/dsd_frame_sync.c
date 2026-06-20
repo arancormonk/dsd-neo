@@ -26,6 +26,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -384,6 +385,8 @@ typedef struct {
     char* synctest48;
 } frame_sync_match_ctx;
 
+static int frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state);
+
 static inline void
 frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
     dsd_state* state = ctx->state;
@@ -399,6 +402,52 @@ frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
     ctx->state->last_cc_sync_time_m = ctx->nowm;
 }
 
+static void
+frame_sync_set_p25_cqpsk_dibit_map(frame_sync_match_ctx* ctx, uint8_t map_idx) {
+    if (!ctx || !ctx->state) {
+        return;
+    }
+    ctx->state->p25_cqpsk_dibit_map_idx = dsd_p25_cqpsk_dibit_map_index(map_idx);
+}
+
+static int
+frame_sync_cqpsk_window_matches_map(const char* raw_window, const char* expected, uint8_t map_idx) {
+    if (!raw_window || !expected) {
+        return 0;
+    }
+
+    size_t expected_len = strlen(expected);
+    for (size_t i = 0; i < expected_len; i++) {
+        if (raw_window[i] < '0' || raw_window[i] > '3') {
+            return 0;
+        }
+        uint8_t raw_dibit = (uint8_t)(raw_window[i] - '0');
+        uint8_t corrected = dsd_p25_cqpsk_correct_dibit(map_idx, raw_dibit);
+        if ((char)('0' + corrected) != expected[i]) {
+            return 0;
+        }
+    }
+    return raw_window[expected_len] == '\0';
+}
+
+static int
+frame_sync_find_rotated_p25_cqpsk_map(const char* raw_window, const char* expected, uint8_t* out_map_idx) {
+    static const uint8_t rotation_maps[] = {
+        DSD_P25_CQPSK_DIBIT_MAP_X2400,
+        DSD_P25_CQPSK_DIBIT_MAP_N1200,
+        DSD_P25_CQPSK_DIBIT_MAP_P1200,
+    };
+    for (size_t i = 0; i < sizeof(rotation_maps) / sizeof(rotation_maps[0]); i++) {
+        if (frame_sync_cqpsk_window_matches_map(raw_window, expected, rotation_maps[i])) {
+            if (out_map_idx) {
+                *out_map_idx = rotation_maps[i];
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static inline void
 frame_sync_maybe_force_dmr_gfsk(const dsd_opts* opts, dsd_state* state) {
     if (!opts->mod_cli_lock || opts->mod_gfsk) {
@@ -406,51 +455,97 @@ frame_sync_maybe_force_dmr_gfsk(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
-static int
-frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
+static void
+frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* label, int force_center_warm_start) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_p25p1 != 1) {
+    frame_sync_set_basic_lock(ctx);
+    state->dmrburstR = 17;
+    state->payload_algidR = 0;
+    state->dmr_stereo = 1;
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
+    if (opts->errorbars == 1) {
+        printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    }
+    state->lastsynctype = synctype;
+    frame_sync_note_cc_sync(ctx);
+    if (force_center_warm_start || state->rf_mod == 1) {
+        dsd_sync_warm_start_center_outer_only(opts, state, 24);
+    } else if (state->rf_mod == 0) {
+        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
+    }
+}
+
+static void
+frame_sync_report_p25p2_params(dsd_opts* opts, dsd_state* state) {
+    if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
+        printFrameInfo(opts, state);
+    } else {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " P2 Missing Parameters            ");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+}
+
+static void
+frame_sync_accept_p25p2(frame_sync_match_ctx* ctx, int synctype, int inverted, const char* label,
+                        int set_last_before_info, int force_center_warm_start) {
+    dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    frame_sync_set_basic_lock(ctx);
+    opts->inverted_p2 = inverted;
+    if (set_last_before_info) {
+        state->lastsynctype = synctype;
+    }
+    if (opts->errorbars == 1) {
+        printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    }
+    frame_sync_report_p25p2_params(opts, state);
+    if (!set_last_before_info) {
+        state->lastsynctype = synctype;
+    }
+    p25p2_note_sync_activity(opts, state);
+    if (force_center_warm_start || state->rf_mod == 1) {
+        dsd_sync_warm_start_center_outer_only(opts, state, 20);
+    }
+}
+
+static int
+frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
+    if (ctx->opts->frame_p25p1 != 1) {
         return DSD_SYNC_NONE;
     }
 
     if (strcmp(ctx->synctest, P25P1_SYNC) == 0) {
-        frame_sync_set_basic_lock(ctx);
-        state->dmrburstR = 17;
-        state->payload_algidR = 0;
-        state->dmr_stereo = 1;
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "+P25p1", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        state->lastsynctype = DSD_SYNC_P25P1_POS;
-        frame_sync_note_cc_sync(ctx);
-        if (state->rf_mod == 0) {
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-        } else if (state->rf_mod == 1) {
-            dsd_sync_warm_start_center_outer_only(opts, state, 24);
-        }
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
+        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_POS, "+P25p1", 0);
         return DSD_SYNC_P25P1_POS;
     }
 
     if (strcmp(ctx->synctest, INV_P25P1_SYNC) == 0) {
-        frame_sync_set_basic_lock(ctx);
-        state->dmrburstR = 17;
-        state->payload_algidR = 0;
-        state->dmr_stereo = 1;
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "-P25p1 ", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        state->lastsynctype = DSD_SYNC_P25P1_NEG;
-        frame_sync_note_cc_sync(ctx);
-        if (state->rf_mod == 0) {
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-        } else if (state->rf_mod == 1) {
-            dsd_sync_warm_start_center_outer_only(opts, state, 24);
-        }
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
+        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_NEG, "-P25p1 ", 0);
         return DSD_SYNC_P25P1_NEG;
     }
+
+#ifdef USE_RADIO
+    const dsd_opts* opts = ctx->opts;
+    const dsd_state* state = ctx->state;
+    uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
+    if (frame_sync_cqpsk_4level_enabled(opts, state)
+        && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest, P25P1_SYNC, &map_idx)) {
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
+        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_POS, "+P25p1", 1);
+        return DSD_SYNC_P25P1_POS;
+    }
+
+    if (frame_sync_cqpsk_4level_enabled(opts, state)
+        && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest, INV_P25P1_SYNC, &map_idx)) {
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
+        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_NEG, "-P25p1 ", 1);
+        return DSD_SYNC_P25P1_NEG;
+    }
+#endif
 
     return DSD_SYNC_NONE;
 }
@@ -542,54 +637,41 @@ frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
-    dsd_opts* opts = ctx->opts;
-    dsd_state* state = ctx->state;
     dsd_strncpy_s(ctx->synctest20, 21, (ctx->synctest_p - 19), 20);
-    if (opts->frame_p25p2 != 1) {
+    if (ctx->opts->frame_p25p2 != 1) {
         return DSD_SYNC_NONE;
     }
 
     if (strcmp(ctx->synctest20, P25P2_SYNC) == 0) {
-        frame_sync_set_basic_lock(ctx);
-        opts->inverted_p2 = 0;
-        state->lastsynctype = DSD_SYNC_P25P2_POS;
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "+P25p2", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
-            printFrameInfo(opts, state);
-        } else {
-            DSD_FPRINTF(stderr, "%s", KRED);
-            DSD_FPRINTF(stderr, " P2 Missing Parameters            ");
-            DSD_FPRINTF(stderr, "%s", KNRM);
-        }
-        p25p2_note_sync_activity(opts, state);
-        if (state->rf_mod == 1) {
-            dsd_sync_warm_start_center_outer_only(opts, state, 20);
-        }
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
+        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_POS, 0, "+P25p2", 1, 0);
         return DSD_SYNC_P25P2_POS;
     }
 
     if (strcmp(ctx->synctest20, INV_P25P2_SYNC) == 0) {
-        frame_sync_set_basic_lock(ctx);
-        opts->inverted_p2 = 1;
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "-P25p2", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
-            printFrameInfo(opts, state);
-        } else {
-            DSD_FPRINTF(stderr, "%s", KRED);
-            DSD_FPRINTF(stderr, " P2 Missing Parameters            ");
-            DSD_FPRINTF(stderr, "%s", KNRM);
-        }
-        state->lastsynctype = DSD_SYNC_P25P2_NEG;
-        p25p2_note_sync_activity(opts, state);
-        if (state->rf_mod == 1) {
-            dsd_sync_warm_start_center_outer_only(opts, state, 20);
-        }
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
+        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_NEG, 1, "-P25p2", 0, 0);
         return DSD_SYNC_P25P2_NEG;
     }
+
+#ifdef USE_RADIO
+    const dsd_opts* opts = ctx->opts;
+    const dsd_state* state = ctx->state;
+    uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
+    if (frame_sync_cqpsk_4level_enabled(opts, state)
+        && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest20, P25P2_SYNC, &map_idx)) {
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
+        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_POS, 0, "+P25p2", 1, 1);
+        return DSD_SYNC_P25P2_POS;
+    }
+
+    if (frame_sync_cqpsk_4level_enabled(opts, state)
+        && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest20, INV_P25P2_SYNC, &map_idx)) {
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
+        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_NEG, 1, "-P25p2", 0, 1);
+        return DSD_SYNC_P25P2_NEG;
+    }
+#endif
 
     return DSD_SYNC_NONE;
 }

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -28,6 +29,7 @@
 
 static size_t g_symbol_index;
 static const char* g_sync_pattern = P25P2_SYNC;
+static int g_symbol_rate_hz = 6000;
 
 dsd_socket_t
 Connect(char* hostname, int portno) { // NOLINT(misc-use-internal-linkage)
@@ -197,7 +199,7 @@ fake_output_kind(void) {
 static int
 fake_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
     if (out_symbol_rate_hz) {
-        *out_symbol_rate_hz = 6000;
+        *out_symbol_rate_hz = g_symbol_rate_hz;
     }
     if (out_levels) {
         *out_levels = 4;
@@ -206,6 +208,23 @@ fake_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_p
         *out_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
     }
     return 0;
+}
+
+static int
+build_raw_pattern_for_map(const char* corrected_pattern, uint8_t map_idx, char* out, size_t out_cap) {
+    size_t len = strlen(corrected_pattern);
+    if (!out || out_cap <= len) {
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (corrected_pattern[i] < '0' || corrected_pattern[i] > '3') {
+            return 0;
+        }
+        uint8_t corrected = (uint8_t)(corrected_pattern[i] - '0');
+        out[i] = (char)('0' + dsd_p25_cqpsk_raw_dibit_for_corrected(map_idx, corrected));
+    }
+    out[len] = '\0';
+    return 1;
 }
 
 static uint32_t
@@ -255,13 +274,15 @@ init_state_buffers(dsd_state* state) {
 }
 
 static int
-run_p25p2_sync_case(const char* pattern, int expected_sync, const char* label) {
+run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int expected_sync, uint8_t expected_map,
+                  const char* label) {
     static dsd_opts opts;
     static dsd_state state;
     static int fake_rtl_context;
 
     g_symbol_index = 0U;
     g_sync_pattern = pattern;
+    g_symbol_rate_hz = frame_p25p2 ? 6000 : 4800;
     dsd_frame_sync_reset_mod_state();
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -272,7 +293,8 @@ run_p25p2_sync_case(const char* pattern, int expected_sync, const char* label) {
     }
 
     opts.audio_in_type = AUDIO_IN_RTL;
-    opts.frame_p25p2 = 1;
+    opts.frame_p25p1 = frame_p25p1;
+    opts.frame_p25p2 = frame_p25p2;
     opts.mod_cli_lock = 1;
     opts.mod_qpsk = 1;
     opts.p25_trunk = 1;
@@ -305,6 +327,11 @@ run_p25p2_sync_case(const char* pattern, int expected_sync, const char* label) {
         DSD_FPRINTF(stderr, "%s returned %d, expected %d\n", label, sync, expected_sync);
         rc = 1;
     }
+    if (state.p25_cqpsk_dibit_map_idx != dsd_p25_cqpsk_dibit_map_index(expected_map)) {
+        DSD_FPRINTF(stderr, "%s selected map %u, expected %u\n", label, state.p25_cqpsk_dibit_map_idx,
+                    dsd_p25_cqpsk_dibit_map_index(expected_map));
+        rc = 1;
+    }
 
     dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -313,11 +340,49 @@ run_p25p2_sync_case(const char* pattern, int expected_sync, const char* label) {
     return rc;
 }
 
+static int
+run_p25p2_sync_case(const char* pattern, int expected_sync, uint8_t expected_map, const char* label) {
+    return run_p25_sync_case(pattern, 0, 1, expected_sync, expected_map, label);
+}
+
+static int
+run_p25p1_sync_case(const char* pattern, int expected_sync, uint8_t expected_map, const char* label) {
+    return run_p25_sync_case(pattern, 1, 0, expected_sync, expected_map, label);
+}
+
 int
 main(void) {
     int rc = 0;
-    rc |= run_p25p2_sync_case(P25P2_SYNC, DSD_SYNC_P25P2_POS, "P25P2 RTL positive sync");
-    rc |= run_p25p2_sync_case(INV_P25P2_SYNC, DSD_SYNC_P25P2_NEG, "P25P2 RTL inverted sync");
+    char rotated[32];
+
+    rc |= run_p25p2_sync_case(P25P2_SYNC, DSD_SYNC_P25P2_POS, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY,
+                              "P25P2 RTL positive sync");
+    rc |= run_p25p2_sync_case(INV_P25P2_SYNC, DSD_SYNC_P25P2_NEG, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY,
+                              "P25P2 RTL inverted sync");
+
+    if (!build_raw_pattern_for_map(P25P2_SYNC, DSD_P25_CQPSK_DIBIT_MAP_X2400, rotated, sizeof(rotated))) {
+        return 1;
+    }
+    rc |=
+        run_p25p2_sync_case(rotated, DSD_SYNC_P25P2_POS, DSD_P25_CQPSK_DIBIT_MAP_X2400, "P25P2 RTL X2400 rotated sync");
+
+    if (!build_raw_pattern_for_map(P25P2_SYNC, DSD_P25_CQPSK_DIBIT_MAP_N1200, rotated, sizeof(rotated))) {
+        return 1;
+    }
+    rc |=
+        run_p25p2_sync_case(rotated, DSD_SYNC_P25P2_POS, DSD_P25_CQPSK_DIBIT_MAP_N1200, "P25P2 RTL N1200 rotated sync");
+
+    if (!build_raw_pattern_for_map(P25P2_SYNC, DSD_P25_CQPSK_DIBIT_MAP_P1200, rotated, sizeof(rotated))) {
+        return 1;
+    }
+    rc |=
+        run_p25p2_sync_case(rotated, DSD_SYNC_P25P2_POS, DSD_P25_CQPSK_DIBIT_MAP_P1200, "P25P2 RTL P1200 rotated sync");
+
+    if (!build_raw_pattern_for_map(P25P1_SYNC, DSD_P25_CQPSK_DIBIT_MAP_X2400, rotated, sizeof(rotated))) {
+        return 1;
+    }
+    rc |=
+        run_p25p1_sync_case(rotated, DSD_SYNC_P25P1_POS, DSD_P25_CQPSK_DIBIT_MAP_X2400, "P25P1 RTL X2400 rotated sync");
     return rc;
 }
 

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -674,7 +675,8 @@ build_cqpsk_dibit_ideals(const dsd_state* state, float ideal[4]) {
     const float base_ideal[4] = {1.0f, 3.0f, -1.0f, -3.0f};
 
     for (int dibit = 0; dibit < 4; dibit++) {
-        int base = inv ? invert_dibit(dibit) : dibit;
+        int mapped = dsd_p25_cqpsk_raw_dibit_for_corrected(state->p25_cqpsk_dibit_map_idx, (uint8_t)dibit);
+        int base = inv ? invert_dibit(mapped) : mapped;
         if (base < 0 || base >= 4) {
             base = 0;
         }
@@ -1036,6 +1038,7 @@ select_four_level_dibit(const dsd_opts* opts, const dsd_state* state, float symb
 #ifdef USE_RADIO
     if (want_cqpsk_p25_slice(opts, state, is_negative)) {
         int dibit = cqpsk_slice_aligned(symbol - state->center);
+        dibit = dsd_p25_cqpsk_correct_dibit(state->p25_cqpsk_dibit_map_idx, (uint8_t)dibit);
         if (used_cqpsk_slice) {
             *used_cqpsk_slice = 1;
         }

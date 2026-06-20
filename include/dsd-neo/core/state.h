@@ -474,6 +474,7 @@ struct dsd_state {
 
     // Last dibit read
     int last_dibit;
+    uint8_t p25_cqpsk_dibit_map_idx; // OP25-compatible CQPSK orientation map
 
     //input sample buffer for monitoring Input
     short input_sample_buffer;  //HERE HERE
