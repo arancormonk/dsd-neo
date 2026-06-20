@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "../p25_cc_update.h"
 #include "../p25_extended_function.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -3409,6 +3410,49 @@ BLOCK_END:
 }
 
 static void
+p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolorcode) {
+    if (!state || state->p2_hardset != 0) {
+        return;
+    }
+    if (lwacn == 0 && lsysid == 0) {
+        return;
+    }
+    if ((state->p2_wacn != 0 || state->p2_sysid != 0)
+        && (state->p2_wacn != (unsigned long long)lwacn || state->p2_sysid != (unsigned long long)lsysid)) {
+        p25_reset_iden_tables(state);
+    }
+    state->p2_wacn = lwacn;
+    state->p2_sysid = lsysid;
+    state->p2_cc = lcolorcode;
+}
+
+static void
+p25p2_vpdu_accept_nsb_cc(dsd_opts* opts, dsd_state* state, int lwacn, int lsysid, int lcolorcode, int seed_lcn0) {
+    const long neigh[1] = {state->p25_cc_freq};
+    p25_sm_on_neighbor_update(opts, state, neigh, 1);
+    state->p25_sys_is_tdma = 1; // system carries Phase 2 voice (TDMA present)
+    state->p25_cc_is_tdma = 1;  // TDMA control channel (QPSK, 6000 sym/s)
+
+    // Only update system identity and potentially reset IDEN tables when values
+    // are sane (non-zero) and we have a valid frequency mapping.
+    p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
+
+    if (seed_lcn0 && (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq)) {
+        state->trunk_lcn_freq[0] = state->p25_cc_freq;
+    }
+    p25_confirm_idens_for_current_site(state);
+}
+
+static void
+p25p2_vpdu_log_rejected_nsb_cc(const char* label, long freq, int channel) {
+    if (freq > 0) {
+        DSD_FPRINTF(stderr, "\n  %s: ignoring CC update while voice-tuned (freq=%ld)", label, freq);
+    } else {
+        DSD_FPRINTF(stderr, "\n  %s: ignoring invalid channel->freq (CHAN-T=%04X)", label, channel);
+    }
+}
+
+static void
 p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
     dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
@@ -3434,39 +3478,10 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "  LRA [%02X] WACN [%05X] SYSID [%03X] NAC [%03X] CHAN-T [%04X]", lra, lwacn, lsysid,
                     lcolorcode, channel);
         long int cc_freq = process_channel_to_freq(opts, state, channel);
-        if (cc_freq > 0) {
-            state->p25_cc_freq = cc_freq;
-            const long neigh_a[1] = {state->p25_cc_freq};
-            p25_sm_on_neighbor_update(opts, state, neigh_a, 1);
-            state->p25_sys_is_tdma = 1; // system carries Phase 2 voice (TDMA present)
-            state->p25_cc_is_tdma = 1;  // TDMA control channel (QPSK, 6000 sym/s)
-
-            // Only update system identity and potentially reset IDEN tables when
-            // values are sane (non-zero) and we have a valid frequency mapping.
-            if (state->p2_hardset == 0) { // prevent bogus data from wiping tables
-                if ((lwacn != 0 || lsysid != 0)
-                    && ((state->p2_wacn != 0 || state->p2_sysid != 0)
-                        && (state->p2_wacn != (unsigned long long)lwacn
-                            || state->p2_sysid != (unsigned long long)lsysid))) {
-                    p25_reset_iden_tables(state);
-                }
-                if (lwacn != 0 || lsysid != 0) {
-                    state->p2_wacn = lwacn;
-                    state->p2_sysid = lsysid;
-                    state->p2_cc = lcolorcode;
-                }
-            }
-
-            //place the cc freq into the list at index 0 if 0 is empty, or not the same,
-            //so we can hunt for rotating CCs without user LCN list
-            if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
-                state->trunk_lcn_freq[0] = state->p25_cc_freq;
-            }
-            // Confirm any IDENs now that CC identity is known
-            p25_confirm_idens_for_current_site(state);
+        if (p25_cc_update_primary_from_network_status(opts, state, cc_freq)) {
+            p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 1);
         } else {
-            // Invalid/unknown channel mapping: ignore to avoid wiping IDEN tables from bogus frames
-            DSD_FPRINTF(stderr, "\n  P25 NSB: ignoring invalid channel->freq (CHAN-T=%04X)", channel);
+            p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
         }
     }
 
@@ -3508,28 +3523,10 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
                     lsysid, lcolorcode, channelt, channelr);
         long int nf1 = process_channel_to_freq(opts, state, channelt);
         (void)process_channel_to_freq(opts, state, channelr);
-        if (nf1 > 0) {
-            state->p25_cc_freq = nf1;
-            const long neigh_b[1] = {nf1};
-            p25_sm_on_neighbor_update(opts, state, neigh_b, 1);
-            state->p25_sys_is_tdma = 1;   // system carries Phase 2 voice (TDMA present)
-            state->p25_cc_is_tdma = 1;    // TDMA control channel (QPSK, 6000 sym/s)
-            if (state->p2_hardset == 0) { // prevent bogus data from wiping tables
-                if ((lwacn != 0 || lsysid != 0)
-                    && ((state->p2_wacn != 0 || state->p2_sysid != 0)
-                        && (state->p2_wacn != (unsigned long long)lwacn
-                            || state->p2_sysid != (unsigned long long)lsysid))) {
-                    p25_reset_iden_tables(state);
-                }
-                if (lwacn != 0 || lsysid != 0) {
-                    state->p2_wacn = lwacn;
-                    state->p2_sysid = lsysid;
-                    state->p2_cc = lcolorcode;
-                }
-            }
-            p25_confirm_idens_for_current_site(state);
+        if (p25_cc_update_primary_from_network_status(opts, state, nf1)) {
+            p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0);
         } else {
-            DSD_FPRINTF(stderr, "\n  P25 NSB-EXT: ignoring invalid channel->freq (CHAN-T=%04X)", channelt);
+            p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
         }
     }
 

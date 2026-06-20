@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include "../p25_cc_update.h"
 #include "../p25_mfid90_utils.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -388,18 +389,24 @@ tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_
         p25_wacn_sysid_to_callsign((uint32_t)wacn, (uint16_t)sysid, callsign);
         DSD_FPRINTF(stderr, " [%s]", callsign);
     }
-    state->p25_cc_freq = process_channel_to_freq(opts, state, channel);
-    const long neigh[1] = {state->p25_cc_freq};
-    p25_sm_on_neighbor_update(opts, state, neigh, 1);
-    state->p25_cc_is_tdma = 0;
-    if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
-        state->trunk_lcn_freq[0] = state->p25_cc_freq;
+    long int cc_freq = process_channel_to_freq(opts, state, channel);
+    if (p25_cc_update_primary_from_network_status(opts, state, cc_freq)) {
+        const long neigh[1] = {state->p25_cc_freq};
+        p25_sm_on_neighbor_update(opts, state, neigh, 1);
+        state->p25_cc_is_tdma = 0;
+        if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
+            state->trunk_lcn_freq[0] = state->p25_cc_freq;
+        }
+        if (state->p2_hardset == 0) {
+            state->p2_wacn = wacn;
+            state->p2_sysid = sysid;
+        }
+        p25_confirm_idens_for_current_site(state);
+    } else if (cc_freq > 0) {
+        DSD_FPRINTF(stderr, "\n  P25 TSBK NET_STS: ignoring CC update while voice-tuned (freq=%ld)", cc_freq);
+    } else {
+        DSD_FPRINTF(stderr, "\n  P25 TSBK NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channel);
     }
-    if (state->p2_hardset == 0) {
-        state->p2_wacn = wacn;
-        state->p2_sysid = sysid;
-    }
-    p25_confirm_idens_for_current_site(state);
 }
 
 static void
