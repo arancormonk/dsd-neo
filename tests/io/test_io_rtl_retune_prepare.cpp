@@ -224,13 +224,16 @@ main(void) {
     failed |= expect_int_eq("clear output fsk reset clears modem history", have_prev_after_consume, 0);
 
     double fsk_cfo_hz = 0.0;
+    int fsk_cfo_after_generation_bump = -1;
     int fsk_cfo_after_reset = -1;
     const double fsk_dc_rad_per_sample = 0.0125;
-    rc = rtl_stream_test_fsk_cfo_snapshot(fsk_dc_rad_per_sample, 48000, &fsk_cfo_hz, &fsk_cfo_after_reset);
+    rc = rtl_stream_test_fsk_cfo_snapshot(fsk_dc_rad_per_sample, 48000, &fsk_cfo_hz, &fsk_cfo_after_generation_bump,
+                                          &fsk_cfo_after_reset);
     failed |= expect_int_eq("fsk cfo snapshot helper rc", rc, 0);
     failed |= expect_double_near(
         "fsk cfo snapshot conversion", fsk_cfo_hz,
         -static_cast<double>(static_cast<float>(fsk_dc_rad_per_sample)) * 48000.0 / 6.28318530717958647692, 1e-6);
+    failed |= expect_int_eq("fsk cfo snapshot generation bump invalidates estimate", fsk_cfo_after_generation_bump, 0);
     failed |= expect_int_eq("fsk cfo snapshot reset invalidates estimate", fsk_cfo_after_reset, 0);
 
     int request_rc = -1;

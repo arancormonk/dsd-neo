@@ -1132,16 +1132,18 @@ symbol_rtl_fsk_symbol_rate_hz(const symbol_work_ctx* work) {
     return work->rtl_symbol_rate_hz > 0 ? work->rtl_symbol_rate_hz : 4800;
 }
 
-static inline void
+static inline int
 symbol_reset_rtl_fsk_timing_if_needed(dsd_state* state, int output_rate_hz, int symbol_rate_hz,
                                       const symbol_work_ctx* work) {
     if (state->rtl_fsk_sps_num == output_rate_hz && state->rtl_fsk_sps_den == symbol_rate_hz
         && !work->rtl_profile_changed) {
-        return;
+        return 0;
     }
     state->rtl_fsk_sps_num = output_rate_hz;
     state->rtl_fsk_sps_den = symbol_rate_hz;
     state->rtl_fsk_sps_accum = 0;
+    state->jitter = -1;
+    return 1;
 }
 
 static inline int
@@ -1184,11 +1186,10 @@ symbol_apply_rtl_fsk_discriminator_timing(const dsd_opts* opts, dsd_state* state
     }
     int output_rate_hz = symbol_rtl_fsk_output_rate_hz(opts);
     int symbol_rate_hz = symbol_rtl_fsk_symbol_rate_hz(work);
-    symbol_reset_rtl_fsk_timing_if_needed(state, output_rate_hz, symbol_rate_hz, work);
+    (void)symbol_reset_rtl_fsk_timing_if_needed(state, output_rate_hz, symbol_rate_hz, work);
 
     state->samplesPerSymbol = symbol_rtl_fsk_next_sps(state, output_rate_hz, symbol_rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-    state->jitter = -1;
 }
 
 static inline int

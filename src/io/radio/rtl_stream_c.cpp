@@ -106,7 +106,10 @@ int dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, 
 int dsd_rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear,
                                                int* out_consumed_reset, int* out_have_prev_after_consume);
 int dsd_rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
-                                         int* out_after_reset_available);
+                                         int* out_after_generation_bump_available, int* out_after_reset_available);
+int dsd_rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps);
+int dsd_rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
+                                                             unsigned int* out_rate_hz, int* out_resamp_enabled);
 int dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols,
                                       size_t* out_used_after, int* out_cache_pending_after,
                                       uint32_t* out_generation_before, uint32_t* out_generation_after,
@@ -296,8 +299,21 @@ rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev
 
 extern "C" int
 rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
-                                 int* out_after_reset_available) {
-    return dsd_rtl_stream_test_fsk_cfo_snapshot(dc_rad_per_sample, rate_out_hz, out_cfo_hz, out_after_reset_available);
+                                 int* out_after_generation_bump_available, int* out_after_reset_available) {
+    return dsd_rtl_stream_test_fsk_cfo_snapshot(dc_rad_per_sample, rate_out_hz, out_cfo_hz,
+                                                out_after_generation_bump_available, out_after_reset_available);
+}
+
+extern "C" int
+rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps) {
+    return dsd_rtl_stream_test_fsk_snr_sps(rate_out_hz, symbol_rate_hz, stale_ted_sps);
+}
+
+extern "C" int
+rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
+                                                     unsigned int* out_rate_hz, int* out_resamp_enabled) {
+    return dsd_rtl_stream_test_direct_output_rate_after_open_update(output_kind, rate_out_hz, resamp_target_hz,
+                                                                    out_rate_hz, out_resamp_enabled);
 }
 
 extern "C" int

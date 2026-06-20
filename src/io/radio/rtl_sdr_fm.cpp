@@ -2907,9 +2907,20 @@ demod_snr_output_samples_per_symbol(const struct demod_state* d) {
     if (!d) {
         return 0;
     }
-    int sps = d->ted_sps;
-    if (sps <= 0 && d->rate_out > 0 && d->symbol_rate_hz > 0) {
+    int sps = 0;
+    if (d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR && d->rate_out > 0 && d->symbol_rate_hz > 0) {
         sps = (d->rate_out + (d->symbol_rate_hz / 2)) / d->symbol_rate_hz;
+    } else {
+        sps = d->ted_sps;
+        if (sps <= 0 && d->rate_out > 0 && d->symbol_rate_hz > 0) {
+            sps = (d->rate_out + (d->symbol_rate_hz / 2)) / d->symbol_rate_hz;
+        }
+    }
+    if (sps < 1) {
+        return 0;
+    }
+    if (sps > 64) {
+        return 64;
     }
     return sps;
 }
@@ -3560,6 +3571,7 @@ rtl_stream_bump_output_generation(void) {
         next = g_rtl_output_generation.fetch_add(1, std::memory_order_acq_rel) + 1U;
     }
     rtl_decode_health_reset();
+    rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     return next;
 }
 
@@ -5838,6 +5850,15 @@ stream_open_apply_controller_settings(RadioSourceKind source_kind, const dsd_opt
 
 static void
 stream_open_configure_resampler_chain(void) {
+    const bool direct_symbol_output =
+        (demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || demod.output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    if (direct_symbol_output) {
+        demod.resamp_enabled = 0;
+        demod.resamp_L = 1;
+        demod.resamp_M = 1;
+        demod.resamp_phase = 0;
+        return;
+    }
     if (demod.resamp_target_hz <= 0) {
         demod.resamp_enabled = 0;
         return;
@@ -5873,7 +5894,9 @@ stream_open_configure_resampler_chain(void) {
 
 static void
 stream_open_update_output_rates(void) {
-    if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
+    const bool direct_symbol_output =
+        (demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || demod.output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    if (!direct_symbol_output && demod.resamp_enabled && demod.resamp_target_hz > 0) {
         output.rate = demod.resamp_target_hz;
         LOG_INFO("Output rate set to %d Hz via resampler.\n", output.rate);
     } else {
@@ -6734,15 +6757,28 @@ dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
     if (levels != 2 && levels != 4) {
         return -1;
     }
-    int changed = (demod.symbol_rate_hz != symbol_rate_hz || demod.symbol_levels != levels);
+    int next_channel_profile = demod.channel_lpf_profile;
+    if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_P25_CQPSK) {
+        next_channel_profile = channel_profile;
+    }
+    int changed = (demod.symbol_rate_hz != symbol_rate_hz || demod.symbol_levels != levels
+                   || demod.channel_lpf_profile != next_channel_profile);
     demod.symbol_rate_hz = symbol_rate_hz;
     demod.symbol_levels = levels;
-    if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_P25_CQPSK) {
-        demod.channel_lpf_profile = channel_profile;
+    demod.channel_lpf_profile = next_channel_profile;
+    if (demod.output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR && demod.rate_out > 0) {
+        int sps = (demod.rate_out + (symbol_rate_hz / 2)) / symbol_rate_hz;
+        if (sps < 1) {
+            sps = 1;
+        } else if (sps > 64) {
+            sps = 64;
+        }
+        demod.ted_sps = sps;
     }
     rtl_stream_queue_fsk_modem_config(demod.symbol_rate_hz, demod.symbol_levels, demod.channel_lpf_profile);
     if (changed) {
         demod.costas_reset_pending = 1;
+        rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     }
     return 0;
 }
@@ -7947,8 +7983,8 @@ dsd_rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_
 
 extern "C" int
 dsd_rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
-                                     int* out_after_reset_available) {
-    if (!out_cfo_hz || !out_after_reset_available) {
+                                     int* out_after_generation_bump_available, int* out_after_reset_available) {
+    if (!out_cfo_hz || !out_after_generation_bump_available || !out_after_reset_available) {
         return -1;
     }
 
@@ -7966,6 +8002,10 @@ dsd_rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, 
     rtl_stream_publish_fsk_phase_cfo_snapshot(&demod);
 
     int available_before = auto_ppm_fsk_phase_cfo_hz(out_cfo_hz);
+    double after_generation_bump_cfo_hz = 0.0;
+    (void)rtl_stream_bump_output_generation();
+    *out_after_generation_bump_available = auto_ppm_fsk_phase_cfo_hz(&after_generation_bump_cfo_hz);
+    rtl_stream_publish_fsk_phase_cfo_snapshot(&demod);
     rtl_stream_queue_fsk_modem_reset();
     (void)rtl_stream_consume_fsk_modem_reset_pending(&demod);
     double after_reset_cfo_hz = 0.0;
@@ -7978,6 +8018,61 @@ dsd_rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, 
     g_fsk_modem_reset_pending.store(prev_reset_pending, std::memory_order_release);
     rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     return available_before ? 0 : -2;
+}
+
+extern "C" int
+dsd_rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps) {
+    static demod_state d;
+    DSD_MEMSET(&d, 0, sizeof(d));
+    d.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    d.rate_out = rate_out_hz;
+    d.symbol_rate_hz = symbol_rate_hz;
+    d.ted_sps = stale_ted_sps;
+    return demod_snr_output_samples_per_symbol(&d);
+}
+
+extern "C" int
+dsd_rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
+                                                         unsigned int* out_rate_hz, int* out_resamp_enabled) {
+    if (!out_rate_hz || !out_resamp_enabled) {
+        return -1;
+    }
+    if (output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        return -2;
+    }
+
+    int prev_output_kind = demod.output_kind;
+    int prev_rate_out = demod.rate_out;
+    int prev_resamp_target_hz = demod.resamp_target_hz;
+    int prev_resamp_enabled = demod.resamp_enabled;
+    int prev_resamp_l = demod.resamp_L;
+    int prev_resamp_m = demod.resamp_M;
+    int prev_resamp_phase = demod.resamp_phase;
+    unsigned int prev_output_rate = output.rate;
+
+    demod.output_kind = output_kind;
+    demod.rate_out = rate_out_hz;
+    demod.resamp_target_hz = resamp_target_hz;
+    demod.resamp_enabled = 0;
+    demod.resamp_L = 1;
+    demod.resamp_M = 1;
+    demod.resamp_phase = 0;
+    output.rate = 0U;
+
+    stream_open_configure_resampler_chain();
+    stream_open_update_output_rates();
+    *out_rate_hz = output.rate;
+    *out_resamp_enabled = demod.resamp_enabled;
+
+    demod.output_kind = prev_output_kind;
+    demod.rate_out = prev_rate_out;
+    demod.resamp_target_hz = prev_resamp_target_hz;
+    demod.resamp_enabled = prev_resamp_enabled;
+    demod.resamp_L = prev_resamp_l;
+    demod.resamp_M = prev_resamp_m;
+    demod.resamp_phase = prev_resamp_phase;
+    output.rate = prev_output_rate;
+    return 0;
 }
 
 static void

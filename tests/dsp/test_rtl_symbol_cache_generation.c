@@ -395,6 +395,30 @@ main(void) {
     g_symbol_rate_hz = 4800;
     g_symbol_levels = 4;
     g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_read_base = 7000.0f;
+    g_read_base_step = 4.0f;
+
+    assert(getSymbol(&opts, &state, 1) == 7004.0f);
+    assert(state.samplesPerSymbol == 10);
+    assert(state.symbolCenter == dsd_opts_symbol_center(10));
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 2);
+    state.jitter = state.symbolCenter;
+    float shifted_symbol = getSymbol(&opts, &state, 0);
+    if (fabsf(shifted_symbol - 7015.0f) >= 0.01f) {
+        DSD_FPRINTF(stderr, "FSK discriminator jitter-adjusted symbol %.4f\n", shifted_symbol);
+    }
+    assert(fabsf(shifted_symbol - 7015.0f) < 0.01f);
+    assert(state.jitter == -1);
+    assert(g_read_calls == 6);
+    assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 3);
+
+    reset_stream_fixture();
+    reset_decoder_fixture(&opts, &state, &fake_rtl_context);
+    g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    g_output_rate_hz = 48000U;
+    g_symbol_rate_hz = 4800;
+    g_symbol_levels = 4;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
     g_read_base = 4000.0f;
     g_read_base_step = 100.0f;
     g_bump_generation_during_read = 1;

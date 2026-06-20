@@ -25,6 +25,15 @@ is_fsk_output_kind(int kind) {
 }
 
 static int
+expect_int_eq(const char* label, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got=%d want=%d\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_sps(const char* label, const dsd_opts& opts, int rate_hz, int override_sps, int want_sps, int want_profile) {
     static demod_state demod;
     output_state output;
@@ -322,6 +331,37 @@ expect_rtl_metrics_do_not_nudge_cqpsk_bandedge(void) {
     return 0;
 }
 
+static int
+expect_fsk_snr_sps_uses_active_profile(void) {
+    int rc = 0;
+
+    rc |= expect_int_eq("FSK SNR ignores stale TED SPS for ProVoice", rtl_stream_test_fsk_snr_sps(24000, 9600, 10), 3);
+    rc |= expect_int_eq("FSK SNR ignores stale low TED SPS for 4.8k", rtl_stream_test_fsk_snr_sps(48000, 4800, 2), 10);
+    return rc;
+}
+
+static int
+expect_direct_output_open_rate_uses_demod_rate(void) {
+    int rc = 0;
+    unsigned int output_rate_hz = 0U;
+    int resamp_enabled = -1;
+
+    int helper_rc = rtl_stream_test_direct_output_rate_after_open_update(DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 24000,
+                                                                         48000, &output_rate_hz, &resamp_enabled);
+    rc |= expect_int_eq("FSK direct output rate helper rc", helper_rc, 0);
+    rc |= expect_int_eq("FSK direct output publishes demod rate", (int)output_rate_hz, 24000);
+    rc |= expect_int_eq("FSK direct output disables resampler", resamp_enabled, 0);
+
+    output_rate_hz = 0U;
+    resamp_enabled = -1;
+    helper_rc = rtl_stream_test_direct_output_rate_after_open_update(DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 24000, 48000,
+                                                                     &output_rate_hz, &resamp_enabled);
+    rc |= expect_int_eq("CQPSK direct output rate helper rc", helper_rc, 0);
+    rc |= expect_int_eq("CQPSK direct output publishes demod rate", (int)output_rate_hz, 24000);
+    rc |= expect_int_eq("CQPSK direct output disables resampler", resamp_enabled, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -496,6 +536,8 @@ main(void) {
     rc |= expect_live_symbol_status();
     rc |= expect_cqpsk_toggle_restores_fsk_channel_profile();
     rc |= expect_rtl_metrics_do_not_nudge_cqpsk_bandedge();
+    rc |= expect_fsk_snr_sps_uses_active_profile();
+    rc |= expect_direct_output_open_rate_uses_demod_rate();
     rc |= expect_steady_state_watermark_disabled("rtl_tcp keeps demod watermark disabled", "rtltcp:127.0.0.1:1234");
     rc |= expect_steady_state_watermark_disabled("rtlsdr keeps demod watermark disabled", "rtl");
     rc |= expect_steady_state_watermark_disabled("soapy keeps demod watermark disabled", "soapy:driver=test");
