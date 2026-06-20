@@ -533,7 +533,9 @@ struct RtlSdrInternals {
 } // namespace
 
 static struct RtlSdrInternals* g_stream = NULL;
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 static struct RtlSdrInternals g_cqpsk_toggle_test_stream;
+#endif
 static float g_monitor_fm_prev_r = 0.0f;
 static float g_monitor_fm_prev_j = 0.0f;
 static int g_monitor_fm_have_prev = 0;
