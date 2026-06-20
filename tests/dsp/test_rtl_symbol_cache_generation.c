@@ -276,6 +276,11 @@ main(void) {
     };
     dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
 
+    /*
+     * Symbol-path setup covers the direct CQPSK output path first, then the
+     * discriminator path that seeds min/max state from the active channel
+     * profile.
+     */
     reset_stream_fixture();
     reset_decoder_fixture(&opts, &state, &fake_rtl_context);
     g_output_kind = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
@@ -309,6 +314,11 @@ main(void) {
     assert(state.maxbuf[1023] == 30000.0f);
     assert(state.minmax_sum_window == 0);
 
+    /*
+     * Cached CQPSK symbols should be reused until the generation or channel
+     * profile changes. Mid-read generation bumps must refresh cached metadata
+     * without losing the samples returned by the read hook.
+     */
     reset_stream_fixture();
     reset_decoder_fixture(&opts, &state, &fake_rtl_context);
 
@@ -376,6 +386,11 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_symbol_cache_pending() == 0);
     assert(g_cleanup_calls == 0);
 
+    /*
+     * FSK discriminator tests cover nominal sample-per-symbol choices, fractional
+     * accumulation for high-rate modes, jitter adjustment, and output-kind changes
+     * that happen while a read is in flight.
+     */
     reset_stream_fixture();
     reset_decoder_fixture(&opts, &state, &fake_rtl_context);
     g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
@@ -491,6 +506,10 @@ main(void) {
     assert(getSymbol(&opts, &state, 1) == 4100.0f);
     assert(g_cleanup_calls == 0);
 
+    /*
+     * Read failures should surface as the existing empty-symbol path, trigger
+     * the legacy cleanup hook once, and leave global hooks reset for later tests.
+     */
     reset_stream_fixture();
     reset_decoder_fixture(&opts, &state, &fake_rtl_context);
     g_fail_reads = 1;

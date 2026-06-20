@@ -349,7 +349,18 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
     static int fake_rtl_context;
 
     g_symbol_index = 0U;
-    g_sync_pattern = pattern;
+    if (!pattern) {
+        DSD_FPRINTF(stderr, "%s sync pattern is null\n", label ? label : "P25 sync");
+        return 1;
+    }
+    const size_t pattern_len = strlen(pattern);
+    char* sync_pattern_copy = (char*)malloc(pattern_len + 1U);
+    if (!sync_pattern_copy) {
+        DSD_FPRINTF(stderr, "%s sync pattern copy allocation failed\n", label ? label : "P25 sync");
+        return 1;
+    }
+    DSD_MEMCPY(sync_pattern_copy, pattern, pattern_len + 1U);
+    g_sync_pattern = sync_pattern_copy;
     g_symbol_rate_hz = frame_p25p2 ? 6000 : 4800;
     dsd_frame_sync_reset_mod_state();
 
@@ -357,6 +368,8 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
     DSD_MEMSET(&state, 0, sizeof(state));
     if (!init_state_buffers(&state)) {
         DSD_FPRINTF(stderr, "failed to allocate frame-sync state buffers\n");
+        g_sync_pattern = P25P2_SYNC;
+        free(sync_pattern_copy);
         return 1;
     }
 
@@ -420,6 +433,8 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     free_state_buffers(&state);
+    g_sync_pattern = P25P2_SYNC;
+    free(sync_pattern_copy);
     return rc;
 }
 
