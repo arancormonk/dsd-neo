@@ -105,6 +105,9 @@ int dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, 
                                      uint32_t* out_generation_after);
 int dsd_rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear,
                                                int* out_consumed_reset, int* out_have_prev_after_consume);
+int dsd_rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int active_rtl_digital,
+                                                  size_t queued_samples, int cached_symbols,
+                                                  rtl_stream_test_cqpsk_toggle_result* out_result);
 int dsd_rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
                                          int* out_after_generation_bump_available, int* out_after_reset_available);
 int dsd_rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps);
@@ -295,6 +298,14 @@ rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev
                                        int* out_have_prev_after_consume) {
     return dsd_rtl_stream_test_clear_output_fsk_reset(queued_samples, out_have_prev_after_clear, out_consumed_reset,
                                                       out_have_prev_after_consume);
+}
+
+extern "C" int
+rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int active_rtl_digital,
+                                          size_t queued_samples, int cached_symbols,
+                                          rtl_stream_test_cqpsk_toggle_result* out_result) {
+    return dsd_rtl_stream_test_cqpsk_toggle_output_clear(start_cqpsk, target_cqpsk, active_rtl_digital, queued_samples,
+                                                         cached_symbols, out_result);
 }
 
 extern "C" int

@@ -409,6 +409,21 @@ int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size
                                  uint32_t* out_generation_after);
 int rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear,
                                            int* out_consumed_reset, int* out_have_prev_after_consume);
+
+typedef struct rtl_stream_test_cqpsk_toggle_result {
+    size_t used_after;
+    int cache_pending_after;
+    uint32_t generation_before;
+    uint32_t generation_after;
+    int output_kind_after;
+    int fsk_reset_pending_after_toggle;
+    int reset_consumed;
+    int have_prev_after_consume;
+} rtl_stream_test_cqpsk_toggle_result;
+
+int rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int active_rtl_digital,
+                                              size_t queued_samples, int cached_symbols,
+                                              rtl_stream_test_cqpsk_toggle_result* out_result);
 int rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
                                      int* out_after_generation_bump_available, int* out_after_reset_available);
 int rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps);

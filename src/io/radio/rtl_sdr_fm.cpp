@@ -319,6 +319,7 @@ static int controller_apply_replay_settings(struct controller_state* s, const ds
                                             const dsd_iq_replay_config* cfg);
 static const int kRetuneDiagBlocks = 20;
 static uint32_t rtl_stream_bump_output_generation(void);
+static void rtl_stream_signal_output_waiters(struct output_state* outp);
 static void rtl_stream_clear_retune_profile(RtlRetuneProfile* profile);
 static int rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id,
                                                   uint32_t target_freq_hz);
@@ -7164,10 +7165,52 @@ rtl_stream_disable_cqpsk_mode(void) {
     }
 }
 
+static void
+rtl_stream_clear_output_for_demod_family_switch(void) {
+    struct output_state* outp = &output;
+    if (g_stream && g_stream->output) {
+        outp = g_stream->output;
+    }
+    rtl_stream_clear_output_ring(outp, 1);
+    if (demod.output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        rtl_stream_queue_fsk_modem_reset();
+    }
+}
+
+static int
+rtl_stream_enter_demod_family_switch_gate(void) {
+    if (!g_stream) {
+        return 0;
+    }
+    int expected = 0;
+    if (!controller.retune_in_progress.compare_exchange_strong(expected, 1, std::memory_order_acq_rel,
+                                                               std::memory_order_acquire)) {
+        controller_wait_for_demod_idle(&controller);
+        return 0;
+    }
+    rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
+    controller_wait_for_demod_idle(&controller);
+    return 1;
+}
+
+static void
+rtl_stream_leave_demod_family_switch_gate(int gate_armed) {
+    if (!gate_armed) {
+        return;
+    }
+    controller.retune_in_progress.store(0, std::memory_order_release);
+    if (input_ring.buffer && input_ring.capacity > 0U) {
+        safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
+    }
+}
+
 extern "C" void
 rtl_stream_toggle_cqpsk(int onoff) {
     int was = demod.cqpsk_enable ? 1 : 0;
-    demod.cqpsk_enable = onoff ? 1 : 0;
+    int next = onoff ? 1 : 0;
+    int changed = (next != was) ? 1 : 0;
+    int gate_armed = changed ? rtl_stream_enter_demod_family_switch_gate() : 0;
+    demod.cqpsk_enable = next;
     if (demod.cqpsk_enable) {
         rtl_stream_enable_cqpsk_mode();
     } else {
@@ -7178,7 +7221,9 @@ rtl_stream_toggle_cqpsk(int onoff) {
      * This keeps loop state consistent when switching between FM and CQPSK paths. */
     if (demod.cqpsk_enable != was) {
         demod.costas_reset_pending = 1;
+        rtl_stream_clear_output_for_demod_family_switch();
     }
+    rtl_stream_leave_demod_family_switch_gate(gate_armed);
 }
 
 static int
@@ -7977,6 +8022,156 @@ dsd_rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_
     demod.fsk_modem_state = prev_modem;
     g_fsk_modem_reset_pending.store(prev_reset_pending, std::memory_order_release);
     fsk_reacquire_test_reset_output_state();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
+namespace {
+struct CqpskToggleTestSnapshot {
+    int cqpsk;
+    int output_kind;
+    int symbol_rate_hz;
+    int symbol_levels;
+    int ted_enabled;
+    int channel_lpf_profile;
+    int costas_reset_pending;
+    void (*mode_demod)(struct demod_state*);
+    float cqpsk_diff_prev_r;
+    float cqpsk_diff_prev_j;
+    dsd_fsk_modem_state modem;
+    struct RtlSdrInternals* stream;
+    int retune_in_progress;
+    int reset_pending;
+    int cache_pending;
+    size_t output_head;
+    size_t output_tail;
+};
+} // namespace
+
+static void
+cqpsk_toggle_test_save(CqpskToggleTestSnapshot* s) {
+    s->cqpsk = demod.cqpsk_enable;
+    s->output_kind = demod.output_kind;
+    s->symbol_rate_hz = demod.symbol_rate_hz;
+    s->symbol_levels = demod.symbol_levels;
+    s->ted_enabled = demod.ted_enabled;
+    s->channel_lpf_profile = demod.channel_lpf_profile;
+    s->costas_reset_pending = demod.costas_reset_pending;
+    s->mode_demod = demod.mode_demod;
+    s->cqpsk_diff_prev_r = demod.cqpsk_diff_prev_r;
+    s->cqpsk_diff_prev_j = demod.cqpsk_diff_prev_j;
+    s->modem = demod.fsk_modem_state;
+    s->stream = g_stream;
+    s->retune_in_progress = controller.retune_in_progress.exchange(0, std::memory_order_acq_rel);
+    s->reset_pending = g_fsk_modem_reset_pending.exchange(0, std::memory_order_acq_rel);
+    s->cache_pending = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
+    s->output_head = output.head.load(std::memory_order_acquire);
+    s->output_tail = output.tail.load(std::memory_order_acquire);
+}
+
+static void
+cqpsk_toggle_test_restore(const CqpskToggleTestSnapshot* s, int initialized_output) {
+    demod.cqpsk_enable = s->cqpsk;
+    demod.output_kind = s->output_kind;
+    demod.symbol_rate_hz = s->symbol_rate_hz;
+    demod.symbol_levels = s->symbol_levels;
+    demod.ted_enabled = s->ted_enabled;
+    demod.channel_lpf_profile = s->channel_lpf_profile;
+    demod.costas_reset_pending = s->costas_reset_pending;
+    demod.mode_demod = s->mode_demod;
+    demod.cqpsk_diff_prev_r = s->cqpsk_diff_prev_r;
+    demod.cqpsk_diff_prev_j = s->cqpsk_diff_prev_j;
+    demod.fsk_modem_state = s->modem;
+    g_stream = s->stream;
+    controller.retune_in_progress.store(s->retune_in_progress, std::memory_order_release);
+    g_fsk_modem_reset_pending.store(s->reset_pending, std::memory_order_release);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(s->cache_pending);
+    if (initialized_output) {
+        ring_clear(&output);
+    } else {
+        output.head.store(s->output_head, std::memory_order_release);
+        output.tail.store(s->output_tail, std::memory_order_release);
+    }
+}
+
+static void
+cqpsk_toggle_test_configure_stream(int active_rtl_digital, RtlSdrInternals* test_stream) {
+    static dsd_opts test_opts;
+    DSD_MEMSET(&test_opts, 0, sizeof(test_opts));
+    if (!active_rtl_digital) {
+        g_stream = NULL;
+        return;
+    }
+    test_opts.frame_p25p1 = 1;
+    test_stream->output = &output;
+    test_stream->opts = &test_opts;
+    g_stream = test_stream;
+}
+
+static void
+cqpsk_toggle_test_configure_demod(int start_cqpsk) {
+    demod.cqpsk_enable = start_cqpsk ? 1 : 0;
+    demod.output_kind = start_cqpsk ? DSD_DEMOD_OUTPUT_SYMBOL_CQPSK : DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod.symbol_rate_hz = 4800;
+    demod.symbol_levels = 4;
+    demod.ted_enabled = start_cqpsk ? 1 : 0;
+    demod.channel_lpf_profile = start_cqpsk ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_P25_C4FM;
+    demod.costas_reset_pending = 0;
+    demod.mode_demod = start_cqpsk ? &qpsk_differential_demod : &dsd_fm_demod;
+    demod.cqpsk_diff_prev_r = start_cqpsk ? 0.25f : 1.0f;
+    demod.cqpsk_diff_prev_j = start_cqpsk ? -0.25f : 0.0f;
+    demod.fsk_modem_state.have_prev = 1;
+}
+
+static void
+cqpsk_toggle_test_seed_output(size_t queued_samples, int cached_symbols) {
+    ring_clear(&output);
+    output.tail.store(0, std::memory_order_release);
+    output.head.store(queued_samples, std::memory_order_release);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
+}
+
+static void
+cqpsk_toggle_test_collect(rtl_stream_test_cqpsk_toggle_result* out_result) {
+    out_result->generation_after = dsd_rtl_stream_output_generation();
+    out_result->used_after = ring_used(&output);
+    out_result->cache_pending_after = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
+    out_result->output_kind_after = demod.output_kind;
+    out_result->fsk_reset_pending_after_toggle = g_fsk_modem_reset_pending.load(std::memory_order_acquire);
+    out_result->reset_consumed = rtl_stream_consume_fsk_modem_reset_pending(&demod);
+    out_result->have_prev_after_consume = demod.fsk_modem_state.have_prev;
+}
+
+extern "C" int
+dsd_rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int active_rtl_digital,
+                                              size_t queued_samples, int cached_symbols,
+                                              rtl_stream_test_cqpsk_toggle_result* out_result) {
+    if (!out_result || cached_symbols < 0) {
+        return -1;
+    }
+    *out_result = {};
+
+    int initialized_output = 0;
+    int prepare_rc = fsk_reacquire_test_prepare_output_ring(queued_samples, &initialized_output);
+    if (prepare_rc != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return prepare_rc;
+    }
+
+    CqpskToggleTestSnapshot snapshot = {};
+    cqpsk_toggle_test_save(&snapshot);
+    RtlSdrInternals test_stream = {};
+    cqpsk_toggle_test_configure_stream(active_rtl_digital, &test_stream);
+    cqpsk_toggle_test_configure_demod(start_cqpsk);
+    cqpsk_toggle_test_seed_output(queued_samples, cached_symbols);
+
+    out_result->generation_before = dsd_rtl_stream_output_generation();
+    rtl_stream_toggle_cqpsk(target_cqpsk ? 1 : 0);
+    cqpsk_toggle_test_collect(out_result);
+
+    cqpsk_toggle_test_restore(&snapshot, initialized_output);
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return 0;
 }

@@ -13,6 +13,7 @@
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/ring.h>
+#include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 
@@ -28,6 +29,33 @@ static int
 expect_int_eq(const char* label, int got, int want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got=%d want=%d\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_size_eq(const char* label, size_t got, size_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got=%zu want=%zu\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_generation_eq(const char* label, uint32_t before, uint32_t after) {
+    if (before != after) {
+        DSD_FPRINTF(stderr, "%s: before=%u after=%u\n", label, before, after);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_generation_changed(const char* label, uint32_t before, uint32_t after) {
+    if (before == after) {
+        DSD_FPRINTF(stderr, "%s: before=%u after=%u\n", label, before, after);
         return 1;
     }
     return 0;
@@ -237,6 +265,52 @@ expect_live_symbol_status(void) {
     }
 
     return rc;
+}
+
+static int
+expect_cqpsk_toggle_clears_output_contract_backlog(void) {
+    int failed = 0;
+    rtl_stream_test_cqpsk_toggle_result result = {};
+
+    int rc = rtl_stream_test_cqpsk_toggle_output_clear(0, 1, 1, 11U, 5, &result);
+    failed |= expect_int_eq("FSK to CQPSK output clear helper rc", rc, 0);
+    failed |= expect_generation_changed("FSK to CQPSK bumps output generation", result.generation_before,
+                                        result.generation_after);
+    failed |= expect_size_eq("FSK to CQPSK clears queued output", result.used_after, 0U);
+    failed |= expect_int_eq("FSK to CQPSK clears cached symbols", result.cache_pending_after, 0);
+    failed |=
+        expect_int_eq("FSK to CQPSK selects CQPSK symbols", result.output_kind_after, RTL_STREAM_OUTPUT_SYMBOL_CQPSK);
+    failed |= expect_int_eq("FSK to CQPSK does not queue FSK reset", result.fsk_reset_pending_after_toggle, 0);
+    failed |= expect_int_eq("FSK to CQPSK reset not consumed", result.reset_consumed, 0);
+    failed |= expect_int_eq("FSK to CQPSK leaves FSK modem history untouched", result.have_prev_after_consume, 1);
+
+    result = {};
+    rc = rtl_stream_test_cqpsk_toggle_output_clear(1, 0, 1, 13U, 6, &result);
+    failed |= expect_int_eq("CQPSK to FSK output clear helper rc", rc, 0);
+    failed |= expect_generation_changed("CQPSK to FSK bumps output generation", result.generation_before,
+                                        result.generation_after);
+    failed |= expect_size_eq("CQPSK to FSK clears queued output", result.used_after, 0U);
+    failed |= expect_int_eq("CQPSK to FSK clears cached symbols", result.cache_pending_after, 0);
+    failed |= expect_int_eq("CQPSK to FSK selects FSK discriminator", result.output_kind_after,
+                            RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
+    failed |= expect_int_eq("CQPSK to FSK queues FSK reset", result.fsk_reset_pending_after_toggle, 1);
+    failed |= expect_int_eq("CQPSK to FSK reset consumed", result.reset_consumed, 1);
+    failed |= expect_int_eq("CQPSK to FSK clears FSK modem history", result.have_prev_after_consume, 0);
+
+    result = {};
+    rc = rtl_stream_test_cqpsk_toggle_output_clear(0, 0, 1, 7U, 3, &result);
+    failed |= expect_int_eq("FSK no-op CQPSK toggle helper rc", rc, 0);
+    failed |= expect_generation_eq("FSK no-op CQPSK toggle keeps output generation", result.generation_before,
+                                   result.generation_after);
+    failed |= expect_size_eq("FSK no-op CQPSK toggle leaves queued output", result.used_after, 7U);
+    failed |= expect_int_eq("FSK no-op CQPSK toggle leaves cached symbols", result.cache_pending_after, 3);
+    failed |= expect_int_eq("FSK no-op CQPSK toggle keeps FSK discriminator", result.output_kind_after,
+                            RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR);
+    failed |= expect_int_eq("FSK no-op CQPSK toggle leaves reset unqueued", result.fsk_reset_pending_after_toggle, 0);
+    failed |= expect_int_eq("FSK no-op CQPSK toggle reset not consumed", result.reset_consumed, 0);
+    failed |= expect_int_eq("FSK no-op CQPSK toggle keeps FSK modem history", result.have_prev_after_consume, 1);
+
+    return failed;
 }
 
 static int
@@ -534,6 +608,7 @@ main(void) {
                              4800, 4);
 
     rc |= expect_live_symbol_status();
+    rc |= expect_cqpsk_toggle_clears_output_contract_backlog();
     rc |= expect_cqpsk_toggle_restores_fsk_channel_profile();
     rc |= expect_rtl_metrics_do_not_nudge_cqpsk_bandedge();
     rc |= expect_fsk_snr_sps_uses_active_profile();
