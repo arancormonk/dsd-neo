@@ -13,12 +13,7 @@
 
 #define DSD_FSK_TRACK_SYMBOLS              64
 #define DSD_FSK_TRACK_MIN_SCORE            1.0e-4f
-#define DSD_FSK_TRACK_MIN_RATIO            1.10f
 #define DSD_FSK_TRACK_SOFT_MIN_RATIO       1.02f
-#define DSD_FSK_TRACK_SOFT_MIN_CONFIDENCE  0.25f
-#define DSD_FSK_TRACK_GAIN                 0.125f
-#define DSD_FSK_TRACK_MAX_CORRECTION       0.25f
-#define DSD_FSK_TRACK_SOFT_MAX_CORRECTION  0.125f
 #define DSD_FSK_TRACK_REACQUIRE_SKIPS      32ULL
 #define DSD_FSK_TRACK_SIGNAL_LOSS_FRACTION 0.20f
 #define DSD_FSK_METRICS_WINDOW             256U
@@ -480,7 +475,6 @@ typedef struct {
     float best_score;
     float ratio;
     float err;
-    float confidence;
     float mean_abs;
     int accept;
 } dsd_fsk_track_eval;
@@ -518,19 +512,6 @@ track_mean_abs_freq(const float* freq, int n) {
     return (float)(sum / (double)n);
 }
 
-static float
-track_correction_confidence(float ratio) {
-    if (ratio >= DSD_FSK_TRACK_MIN_RATIO) {
-        return 1.0f;
-    }
-    if (ratio <= DSD_FSK_TRACK_SOFT_MIN_RATIO) {
-        return DSD_FSK_TRACK_SOFT_MIN_CONFIDENCE;
-    }
-    float span = DSD_FSK_TRACK_MIN_RATIO - DSD_FSK_TRACK_SOFT_MIN_RATIO;
-    float scaled = (ratio - DSD_FSK_TRACK_SOFT_MIN_RATIO) / span;
-    return DSD_FSK_TRACK_SOFT_MIN_CONFIDENCE + scaled * (1.0f - DSD_FSK_TRACK_SOFT_MIN_CONFIDENCE);
-}
-
 static int
 track_timing_ready(const dsd_fsk_modem_state* st, const float* phase_io, int clock_i) {
     if (!st || !phase_io || clock_i < 4 || clock_i > 32 || !st->timing_acquired) {
@@ -564,16 +545,10 @@ track_compute_eval(const dsd_fsk_modem_state* st, int clock_i) {
     eval.expected_phase = (clock_i - start_phase) % clock_i;
     eval.ratio = track_score_ratio(eval.best_score, second_score);
     eval.err = wrap_timing_error((float)(eval.best_phase - eval.expected_phase), clock_i);
-    eval.confidence = track_correction_confidence(eval.ratio);
     eval.mean_abs = track_mean_abs_freq(st->track_freq, st->track_len);
     eval.accept = (eval.best_score >= DSD_FSK_TRACK_MIN_SCORE && eval.ratio >= DSD_FSK_TRACK_SOFT_MIN_RATIO
                    && fabsf(eval.err) <= 2.0f);
     return eval;
-}
-
-static int
-track_eval_is_hard_accept(const dsd_fsk_track_eval* eval) {
-    return eval && eval->accept && eval->ratio >= DSD_FSK_TRACK_MIN_RATIO;
 }
 
 static int
@@ -620,45 +595,14 @@ track_update_signal_ref(dsd_fsk_modem_state* st, float mean_abs) {
     st->track_signal_ref += 0.05f * (mean_abs - st->track_signal_ref);
 }
 
-static float
-track_gain_correction(float err, float confidence, float ratio) {
-    float correction = err * DSD_FSK_TRACK_GAIN * confidence;
-    float max_correction =
-        (ratio >= DSD_FSK_TRACK_MIN_RATIO) ? DSD_FSK_TRACK_MAX_CORRECTION : DSD_FSK_TRACK_SOFT_MAX_CORRECTION;
-    if (correction > max_correction) {
-        correction = max_correction;
-    } else if (correction < -max_correction) {
-        correction = -max_correction;
-    }
-    return correction;
-}
-
-static float
-track_apply_correction(const dsd_fsk_modem_state* st, float* phase_io, float correction) {
-    float corrected_phase = *phase_io - correction;
-    if (corrected_phase < 0.0f) {
-        correction = *phase_io;
-        corrected_phase = 0.0f;
-    } else if (corrected_phase >= st->symbol_clock) {
-        float phase_limit = st->symbol_clock - 1.0e-4f;
-        if (phase_limit < 0.0f) {
-            phase_limit = 0.0f;
-        }
-        correction = *phase_io - phase_limit;
-        corrected_phase = phase_limit;
-    }
-    *phase_io = corrected_phase;
-    return correction;
-}
-
 static void
-track_log_accept(const dsd_fsk_modem_state* st, int clock_i, const dsd_fsk_track_eval* eval, float correction) {
+track_log_accept(const dsd_fsk_modem_state* st, int clock_i, const dsd_fsk_track_eval* eval) {
     if (debug_fsk_acq_enabled()) {
         DSD_FPRINTF(stderr,
-                    "[FSKTRACK] clock=%d best=%d expect=%d err=%.3f corr=%.3f score=%.5f ratio=%.3f conf=%.3f "
+                    "[FSKTRACK] clock=%d best=%d expect=%d err=%.3f score=%.5f ratio=%.3f "
                     "mean=%.5f updates=%llu\n",
-                    clock_i, eval->best_phase, eval->expected_phase, eval->err, correction, eval->best_score,
-                    eval->ratio, eval->confidence, eval->mean_abs, (unsigned long long)st->track_updates);
+                    clock_i, eval->best_phase, eval->expected_phase, eval->err, eval->best_score, eval->ratio,
+                    eval->mean_abs, (unsigned long long)st->track_updates);
     }
 }
 
@@ -753,28 +697,17 @@ maybe_track_symbol_timing(dsd_fsk_modem_state* st, float centered, int clock_i, 
     if (!signal_loss) {
         track_update_signal_ref(st, eval.mean_abs);
     }
-    if (eval.accept) {
-        float correction = track_gain_correction(eval.err, eval.confidence, eval.ratio);
-        correction = track_apply_correction(st, phase_io, correction);
-        st->track_last_error = eval.err;
-        st->track_last_score = eval.best_score;
-        st->track_updates++;
-        if (track_eval_is_hard_accept(&eval) || !signal_loss) {
-            st->track_consecutive_skips = 0;
-        } else {
-            st->track_consecutive_skips++;
-        }
-        track_log_accept(st, clock_i, &eval, correction);
-    } else {
-        st->track_last_error = 0.0f;
-        st->track_last_score = eval.best_score;
+    st->track_last_error = eval.accept ? eval.err : 0.0f;
+    st->track_last_score = eval.best_score;
+    if (signal_loss) {
         st->track_skips++;
-        if (signal_loss) {
-            st->track_consecutive_skips++;
-        } else {
-            st->track_consecutive_skips = 0;
-        }
+        st->track_consecutive_skips++;
         track_log_skip(st, clock_i, &eval);
+    } else {
+        st->track_consecutive_skips = 0;
+        if (eval.accept) {
+            track_log_accept(st, clock_i, &eval);
+        }
     }
     if (signal_loss && st->track_consecutive_skips >= DSD_FSK_TRACK_REACQUIRE_SKIPS) {
         track_log_reacquire(st, clock_i, &eval);

@@ -569,7 +569,7 @@ test_nxdn48_2400_at_48000(void) {
 }
 
 static void
-test_timing_tracker_clamps_phase_underflow(void) {
+test_timing_tracker_does_not_nudge_wrapped_phase(void) {
     dsd_fsk_modem_state modem;
     dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
     dsd_fsk_modem_init(&modem, &cfg);
@@ -585,13 +585,14 @@ test_timing_tracker_clamps_phase_underflow(void) {
     float iq[] = {1.0f, 0.0f};
     float out[8];
     (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
-    assert(modem.track_updates > 0);
+    assert(modem.track_updates == 0);
+    assert(modem.track_skips == 0);
     assert(modem.symbol_phase >= 0.0f);
     assert(modem.symbol_phase < 1.0f);
 }
 
 static void
-test_timing_tracker_clamps_phase_overflow(void) {
+test_timing_tracker_does_not_nudge_high_phase(void) {
     dsd_fsk_modem_state modem;
     dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
     dsd_fsk_modem_init(&modem, &cfg);
@@ -605,7 +606,8 @@ test_timing_tracker_clamps_phase_overflow(void) {
     float iq[] = {1.0f, 0.0f};
     float out[8];
     (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
-    assert(modem.track_updates > 0);
+    assert(modem.track_updates == 0);
+    assert(modem.track_skips == 0);
     assert(modem.symbol_phase > 9.0f);
     assert(modem.symbol_phase < 10.0f);
 }
@@ -625,13 +627,13 @@ test_timing_tracker_uses_floor_for_fractional_start_phase(void) {
     float iq[] = {1.0f, 0.0f};
     float out[8];
     (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
-    assert(modem.track_updates > 0);
+    assert(modem.track_updates == 0);
     assert(fabsf(modem.track_last_error) < 1.0e-6f);
     assert(fabsf(modem.symbol_phase - 1.6f) < 1.0e-4f);
 }
 
 static void
-test_dmr_gfsk_tracks_fractional_symbol_clock(void) {
+test_dmr_gfsk_handles_fractional_symbol_clock_without_phase_nudges(void) {
     enum { SYMBOLS = 4200, RUN = 17 };
 
     const float actual_sps = 10.005f;
@@ -651,8 +653,8 @@ test_dmr_gfsk_tracks_fractional_symbol_clock(void) {
     dsd_fsk_modem_init(&modem, &cfg);
     int produced = dsd_fsk_modem_process(&modem, iq, sample_count * 2, out, SYMBOLS + 512);
     assert(produced >= SYMBOLS - 24);
-    assert(modem.track_updates > 0);
-    expect_4level_accuracy("dmr-gfsk-fractional-clock-tracking", out, produced, symbols, SYMBOLS, RUN, 900, 0.88f);
+    assert(modem.track_updates == 0);
+    expect_4level_accuracy("dmr-gfsk-fractional-clock-no-nudge", out, produced, symbols, SYMBOLS, RUN, 900, 0.88f);
 
     free(out);
     free(iq);
@@ -690,7 +692,7 @@ test_timing_tracker_skips_low_confidence_windows(void) {
 }
 
 static void
-test_timing_tracker_applies_bounded_soft_correction(void) {
+test_timing_tracker_accepts_without_phase_nudge(void) {
     dsd_fsk_modem_state modem;
     dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
     dsd_fsk_modem_init(&modem, &cfg);
@@ -705,11 +707,11 @@ test_timing_tracker_applies_bounded_soft_correction(void) {
     float iq[] = {1.0f, 0.0f};
     float out[8];
     (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
-    assert(modem.track_updates == 1);
+    assert(modem.track_updates == 0);
     assert(modem.track_skips == 0);
     assert(modem.track_consecutive_skips == 0);
-    assert(modem.symbol_phase < 6.0f);
-    assert(modem.symbol_phase > 5.86f);
+    assert(fabsf(modem.track_last_error - 2.0f) < 1.0e-6f);
+    assert(fabsf(modem.symbol_phase - 6.0f) < 1.0e-4f);
 }
 
 static void
@@ -731,8 +733,8 @@ test_timing_tracker_soft_accepts_do_not_mask_signal_loss(void) {
         (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
     }
 
-    assert(modem.track_updates == 32);
-    assert(modem.track_skips == 0);
+    assert(modem.track_updates == 0);
+    assert(modem.track_skips == 32);
     assert(modem.track_consecutive_skips == 0);
     assert(modem.timing_acquired == 0);
 }
@@ -758,7 +760,7 @@ test_timing_tracker_preserves_low_transition_signal(void) {
         assert(modem.timing_acquired == 1);
     }
 
-    assert(modem.track_skips == 40);
+    assert(modem.track_skips == 0);
     assert(modem.track_consecutive_skips == 0);
 }
 
@@ -1008,12 +1010,12 @@ main(void) {
     test_acquisition_preserves_backlog_with_small_output();
     test_binary_fsk_4800();
     test_nxdn48_2400_at_48000();
-    test_timing_tracker_clamps_phase_underflow();
-    test_timing_tracker_clamps_phase_overflow();
+    test_timing_tracker_does_not_nudge_wrapped_phase();
+    test_timing_tracker_does_not_nudge_high_phase();
     test_timing_tracker_uses_floor_for_fractional_start_phase();
-    test_dmr_gfsk_tracks_fractional_symbol_clock();
+    test_dmr_gfsk_handles_fractional_symbol_clock_without_phase_nudges();
     test_timing_tracker_skips_low_confidence_windows();
-    test_timing_tracker_applies_bounded_soft_correction();
+    test_timing_tracker_accepts_without_phase_nudge();
     test_timing_tracker_soft_accepts_do_not_mask_signal_loss();
     test_timing_tracker_preserves_low_transition_signal();
     test_timing_tracker_reacquires_after_consecutive_skips();
