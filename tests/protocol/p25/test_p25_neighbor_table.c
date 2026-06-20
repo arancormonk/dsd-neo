@@ -7,11 +7,14 @@
  * CC rotation, LRU eviction, and input guards for p25_nb_add_ex(). */
 
 #include <assert.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+#include "../../../src/protocol/p25/p25_cc_update.h"
 #include "dsd-neo/core/state_fwd.h"
 
 /* --- Metadata preservation ------------------------------------------------ */
@@ -117,6 +120,106 @@ test_cc_rotation_accepts_old(void) {
     assert(st->p25_nb_entries[0].freq == 852312500);
     assert(st->p25_nb_entries[0].sysid == 0x100);
 
+    free(st);
+}
+
+/* Network Status Broadcasts seen on a VC must not clobber the return CC. */
+static void
+test_nsb_cc_update_rejects_different_freq_while_voice_tuned(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    opts->p25_is_tuned = 1;
+    st->p25_cc_freq = 769768750;
+    st->trunk_cc_freq = 769768750;
+
+    assert(!p25_cc_update_primary_from_network_status(opts, st, 863812500));
+    assert(st->p25_cc_freq == 769768750);
+    assert(st->trunk_cc_freq == 769768750);
+
+    free(opts);
+    free(st);
+}
+
+/* A matching NSB CC can refresh aliases even while voice-tuned. */
+static void
+test_nsb_cc_update_accepts_same_freq_while_voice_tuned(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    opts->trunk_is_tuned = 1;
+    st->p25_cc_freq = 769768750;
+
+    assert(p25_cc_update_primary_from_network_status(opts, st, 769768750));
+    assert(st->p25_cc_freq == 769768750);
+    assert(st->trunk_cc_freq == 769768750);
+
+    free(opts);
+    free(st);
+}
+
+/* A stale P25 alias must not replace the selected trunk return CC. */
+static void
+test_nsb_cc_update_rejects_stale_p25_alias_while_voice_tuned(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    st->p25_cc_freq = 769768750;
+    st->trunk_cc_freq = 769868750;
+
+    assert(!p25_cc_update_primary_from_network_status(opts, st, 769768750));
+    assert(st->p25_cc_freq == 769768750);
+    assert(st->trunk_cc_freq == 769868750);
+
+    free(opts);
+    free(st);
+}
+
+/* An NSB matching the selected trunk return CC can resync a stale P25 alias. */
+static void
+test_nsb_cc_update_accepts_trunk_alias_while_voice_tuned(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    st->p25_cc_freq = 769768750;
+    st->trunk_cc_freq = 769868750;
+
+    assert(p25_cc_update_primary_from_network_status(opts, st, 769868750));
+    assert(st->p25_cc_freq == 769868750);
+    assert(st->trunk_cc_freq == 769868750);
+
+    free(opts);
+    free(st);
+}
+
+/* On the control channel/acquisition path, NSB can still seed or rotate CC. */
+static void
+test_nsb_cc_update_accepts_new_freq_when_not_voice_tuned(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    st->p25_cc_freq = 769768750;
+    st->trunk_cc_freq = 769768750;
+
+    assert(p25_cc_update_primary_from_network_status(opts, st, 770018750));
+    assert(st->p25_cc_freq == 770018750);
+    assert(st->trunk_cc_freq == 770018750);
+
+    free(opts);
     free(st);
 }
 
@@ -238,6 +341,11 @@ main(void) {
     test_same_frequency_distinct_sites_remain_separate();
     test_self_entry_rejected();
     test_cc_rotation_accepts_old();
+    test_nsb_cc_update_rejects_different_freq_while_voice_tuned();
+    test_nsb_cc_update_accepts_same_freq_while_voice_tuned();
+    test_nsb_cc_update_rejects_stale_p25_alias_while_voice_tuned();
+    test_nsb_cc_update_accepts_trunk_alias_while_voice_tuned();
+    test_nsb_cc_update_accepts_new_freq_when_not_voice_tuned();
     test_new_entry_fields();
     test_multiple_distinct_entries();
     test_lru_eviction();

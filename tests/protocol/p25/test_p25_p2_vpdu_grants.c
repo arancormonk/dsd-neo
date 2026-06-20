@@ -411,6 +411,46 @@ main(void) {
         rc |= expect_eq_long("0x42 blocked vc", state.p25_vc_freq[0], 0);
     }
 
+    // Case J: rejected P2 NSBs still prove the system carries TDMA voice without changing return CC metadata.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_is_tuned = 1;
+        state.p25_cc_freq = cc;
+        state.trunk_cc_freq = cc;
+        state.p25_cc_is_tdma = 0;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+
+        MAC[1] = 0x7B; // Network Status Broadcast - Abbreviated
+        MAC[2] = 0x01; // LRA
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1; // WACN 0xABCDE, SYSID high nibble 0x1
+        MAC[6] = 0x23; // SYSID low byte
+        MAC[7] = 0x10;
+        MAC[8] = 0x0A; // channel 0x100A -> 851.125 MHz, rejected while selected CC is 851 MHz
+        MAC[9] = 0x00; // sysclass
+        MAC[10] = 0x00;
+        MAC[11] = 0x55; // NAC
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("p2 rejected nsb sets system tdma hint", state.p25_sys_is_tdma == 1);
+        rc |= expect_true("p2 rejected nsb preserves cc modulation", state.p25_cc_is_tdma == 0);
+        rc |= expect_eq_long("p2 rejected nsb preserves p25 cc", state.p25_cc_freq, cc);
+        rc |= expect_eq_long("p2 rejected nsb preserves trunk cc", state.trunk_cc_freq, cc);
+        rc |= expect_true("p2 rejected nsb skips wacn", state.p2_wacn == 0);
+        rc |= expect_true("p2 rejected nsb skips sysid", state.p2_sysid == 0);
+    }
+
     return rc;
 }
 

@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include "../p25_cc_update.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -176,8 +177,7 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
     long int cr_freq = process_channel_to_freq(opts, state, channelr);
     UNUSED(cr_freq);
 
-    if (ct_freq > 0) {
-        state->p25_cc_freq = ct_freq;
+    if (p25_cc_update_primary_from_network_status(opts, state, ct_freq)) {
         state->p25_cc_is_tdma = 0;
 
         if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
@@ -198,6 +198,8 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
         const long neigh[1] = {ct_freq};
         p25_sm_on_neighbor_update(opts, state, neigh, 1);
         p25_confirm_idens_for_current_site(state);
+    } else if (ct_freq > 0) {
+        DSD_FPRINTF(stderr, "\n  P25 MBT NET_STS: ignoring CC update while voice-tuned (freq=%ld)", ct_freq);
     } else {
         DSD_FPRINTF(stderr, "\n  P25 MBT NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channelt);
     }
