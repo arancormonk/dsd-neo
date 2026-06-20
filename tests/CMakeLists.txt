@@ -3940,6 +3940,7 @@ if(DSD_HAS_RADIO)
     add_executable(
         dsd-neo_test_frame_sync_p25p2_rtl
         dsp/test_frame_sync_p25p2_rtl.c
+        ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
     )
     target_include_directories(
         dsd-neo_test_frame_sync_p25p2_rtl

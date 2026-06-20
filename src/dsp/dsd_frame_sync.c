@@ -410,6 +410,7 @@ frame_sync_set_p25_cqpsk_dibit_map(frame_sync_match_ctx* ctx, uint8_t map_idx) {
     ctx->state->p25_cqpsk_dibit_map_idx = dsd_p25_cqpsk_dibit_map_index(map_idx);
 }
 
+#ifdef USE_RADIO
 static int
 frame_sync_cqpsk_window_matches_map(const char* raw_window, const char* expected, uint8_t map_idx) {
     if (!raw_window || !expected) {
@@ -447,6 +448,7 @@ frame_sync_find_rotated_p25_cqpsk_map(const char* raw_window, const char* expect
     }
     return 0;
 }
+#endif
 
 static inline void
 frame_sync_maybe_force_dmr_gfsk(const dsd_opts* opts, dsd_state* state) {

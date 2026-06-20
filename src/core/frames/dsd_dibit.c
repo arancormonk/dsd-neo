@@ -663,7 +663,7 @@ build_standard_dibit_ideals(const dsd_state* state, int inverted, float ideal[4]
 }
 
 static void DSD_ATTR_USED
-build_cqpsk_dibit_ideals(const dsd_state* state, float ideal[4]) {
+build_cqpsk_dibit_ideals(const dsd_state* state, int inverted, float ideal[4]) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
         dsd_neo_config_init(NULL);
@@ -675,19 +675,16 @@ build_cqpsk_dibit_ideals(const dsd_state* state, float ideal[4]) {
     const float base_ideal[4] = {1.0f, 3.0f, -1.0f, -3.0f};
 
     for (int dibit = 0; dibit < 4; dibit++) {
-        int mapped = dsd_p25_cqpsk_raw_dibit_for_corrected(state->p25_cqpsk_dibit_map_idx, (uint8_t)dibit);
+        int corrected = inverted ? invert_dibit(dibit) : dibit;
+        if (corrected < 0 || corrected >= 4) {
+            corrected = dibit;
+        }
+        int mapped = dsd_p25_cqpsk_raw_dibit_for_corrected(state->p25_cqpsk_dibit_map_idx, (uint8_t)corrected);
         int base = inv ? invert_dibit(mapped) : mapped;
         if (base < 0 || base >= 4) {
             base = 0;
         }
-        float level = 1.0f;
-        switch (base) {
-            case 0: level = base_ideal[0]; break;
-            case 1: level = base_ideal[1]; break;
-            case 2: level = base_ideal[2]; break;
-            case 3: level = base_ideal[3]; break;
-            default: level = base_ideal[0]; break;
-        }
+        float level = base_ideal[base];
         if (negate) {
             level = -level;
         }
@@ -705,7 +702,7 @@ compute_dibit_soft_metric(const dsd_state* state, float symbol, int dibit, int i
 
     float ideal[4];
     if (cqpsk_aligned) {
-        build_cqpsk_dibit_ideals(state, ideal);
+        build_cqpsk_dibit_ideals(state, inverted, ideal);
     } else {
         build_standard_dibit_ideals(state, inverted, ideal);
     }
@@ -1039,6 +1036,12 @@ select_four_level_dibit(const dsd_opts* opts, const dsd_state* state, float symb
     if (want_cqpsk_p25_slice(opts, state, is_negative)) {
         int dibit = cqpsk_slice_aligned(symbol - state->center);
         dibit = dsd_p25_cqpsk_correct_dibit(state->p25_cqpsk_dibit_map_idx, (uint8_t)dibit);
+        if (is_negative) {
+            dibit = invert_dibit(dibit);
+            if (dibit < 0) {
+                dibit = 0;
+            }
+        }
         if (used_cqpsk_slice) {
             *used_cqpsk_slice = 1;
         }
@@ -1088,7 +1091,7 @@ digitize(const dsd_opts* opts, dsd_state* state, float symbol) {
     int stored_dibit = is_negative ? invert_dibit(dibit) : dibit;
 
     dsd_dibit_soft_t soft;
-    compute_dibit_soft_metric(state, symbol, dibit, is_negative && !used_cqpsk_slice, used_cqpsk_slice, &soft);
+    compute_dibit_soft_metric(state, symbol, dibit, is_negative, used_cqpsk_slice, &soft);
     state->last_dibit = dibit;
     store_dibit_with_soft(state, stored_dibit, &soft);
     return dibit;

@@ -90,21 +90,6 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) { /
     (void)slot;
 }
 
-void
-write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol) {
-    (void)opts;
-    (void)state;
-    (void)dibit;
-    (void)symbol;
-}
-
-uint8_t
-dmr_compute_reliability(const dsd_state* st, float sym) {
-    (void)st;
-    (void)sym;
-    return 255;
-}
-
 double
 raw_pwr_f(const float* samples, int len, int step) { // NOLINT(misc-use-internal-linkage)
     (void)samples;
@@ -225,6 +210,11 @@ build_raw_pattern_for_map(const char* corrected_pattern, uint8_t map_idx, char* 
     }
     out[len] = '\0';
     return 1;
+}
+
+static int
+llr_matches_bit(int16_t llr, int bit) {
+    return bit ? (llr > 0) : (llr < 0);
 }
 
 static uint32_t
@@ -350,6 +340,54 @@ run_p25p1_sync_case(const char* pattern, int expected_sync, uint8_t expected_map
     return run_p25_sync_case(pattern, 1, 0, expected_sync, expected_map, label);
 }
 
+static int
+test_negative_cqpsk_dibit_polarity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    if (!init_state_buffers(&state)) {
+        DSD_FPRINTF(stderr, "failed to allocate CQPSK dibit state buffers\n");
+        return 1;
+    }
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_p25p2 = 1;
+    state.rf_mod = 1;
+    state.synctype = DSD_SYNC_P25P2_NEG;
+    state.center = 0.0f;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.p25_cqpsk_dibit_map_idx = DSD_P25_CQPSK_DIBIT_MAP_X2400;
+
+    dsd_rtl_stream_metrics_hooks metrics_hooks = {
+        .output_kind = fake_output_kind,
+        .symbol_profile = fake_symbol_profile,
+        .stream_generation = fake_stream_generation,
+        .cqpsk_status = fake_cqpsk_status,
+        .stream_active = fake_stream_active,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+
+    int got = digitize(&opts, &state, 1.0f);
+    const dsd_dibit_soft_t soft = state.dmr_soft_p[-1];
+    int rc = 0;
+    if (got != 1) {
+        DSD_FPRINTF(stderr, "negative CQPSK rotated dibit returned %d, expected 1\n", got);
+        rc = 1;
+    }
+    if (!llr_matches_bit(soft.llr[0], 0) || !llr_matches_bit(soft.llr[1], 1)) {
+        DSD_FPRINTF(stderr, "negative CQPSK rotated soft signs mismatch (%d,%d)\n", soft.llr[0], soft.llr[1]);
+        rc = 1;
+    }
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    free_state_buffers(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -365,6 +403,12 @@ main(void) {
     }
     rc |=
         run_p25p2_sync_case(rotated, DSD_SYNC_P25P2_POS, DSD_P25_CQPSK_DIBIT_MAP_X2400, "P25P2 RTL X2400 rotated sync");
+
+    if (!build_raw_pattern_for_map(INV_P25P2_SYNC, DSD_P25_CQPSK_DIBIT_MAP_X2400, rotated, sizeof(rotated))) {
+        return 1;
+    }
+    rc |= run_p25p2_sync_case(rotated, DSD_SYNC_P25P2_NEG, DSD_P25_CQPSK_DIBIT_MAP_X2400,
+                              "P25P2 RTL X2400 rotated inverted sync");
 
     if (!build_raw_pattern_for_map(P25P2_SYNC, DSD_P25_CQPSK_DIBIT_MAP_N1200, rotated, sizeof(rotated))) {
         return 1;
@@ -383,6 +427,7 @@ main(void) {
     }
     rc |=
         run_p25p1_sync_case(rotated, DSD_SYNC_P25P1_POS, DSD_P25_CQPSK_DIBIT_MAP_X2400, "P25P1 RTL X2400 rotated sync");
+    rc |= test_negative_cqpsk_dibit_polarity();
     return rc;
 }
 
