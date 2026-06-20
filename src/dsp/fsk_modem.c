@@ -597,6 +597,15 @@ track_eval_has_signal_loss(const dsd_fsk_modem_state* st, const dsd_fsk_track_ev
 }
 
 static void
+clear_signal_level_reference(dsd_fsk_modem_state* st) {
+    if (!st) {
+        return;
+    }
+    st->track_signal_ref = 0.0f;
+    st->abs_est = 0.0f;
+}
+
+static void
 track_update_signal_ref(dsd_fsk_modem_state* st, float mean_abs) {
     if (!st || mean_abs < DSD_FSK_TRACK_MIN_SCORE) {
         return;
@@ -684,7 +693,7 @@ reset_symbol_timing_for_reacquisition(dsd_fsk_modem_state* st, float* phase_io) 
     st->track_consecutive_skips = 0;
     st->track_last_error = 0.0f;
     st->track_last_score = 0.0f;
-    clear_pending_symbols(st);
+    clear_signal_level_reference(st);
     clear_tracking_window(st);
     st->timing_acquired = modem_should_acquire_timing(&st->cfg, st->symbol_clock) ? 0 : 1;
     reset_soft_metrics(st);
@@ -1035,6 +1044,7 @@ dsd_fsk_modem_zero_symbols(dsd_fsk_modem_state* st, int input_complex_samples, f
     st->track_last_error = 0.0f;
     st->track_last_score = 0.0f;
     st->track_consecutive_skips = 0;
+    clear_signal_level_reference(st);
     st->prev_i = 0.0f;
     st->prev_q = 0.0f;
     st->have_prev = 0;

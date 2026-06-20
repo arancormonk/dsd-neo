@@ -862,6 +862,88 @@ test_timing_tracker_recovers_after_gap(void) {
 }
 
 static void
+test_timing_tracker_recovers_lower_deviation_after_gap(void) {
+    enum { SYMBOLS = 2400, SPS = 10, RUN = 16, GAP_COMPLEX = (33 * 64 * SPS) + 100 };
+
+    static const float levels[] = {-3.0f, 3.0f, -1.0f, 1.0f, 3.0f, -3.0f};
+    float* symbols = (float*)calloc(SYMBOLS, sizeof(float));
+    float* first_iq = (float*)calloc((size_t)SYMBOLS * SPS * 2U, sizeof(float));
+    float* gap_iq = (float*)calloc((size_t)GAP_COMPLEX * 2U, sizeof(float));
+    float* second_iq = (float*)calloc((size_t)SYMBOLS * SPS * 2U, sizeof(float));
+    float* out = (float*)calloc(SYMBOLS + 512, sizeof(float));
+    assert(symbols && first_iq && gap_iq && second_iq && out);
+
+    fill_run_pattern(symbols, SYMBOLS, levels, (int)(sizeof(levels) / sizeof(levels[0])), RUN);
+    synthesize_fsk(first_iq, symbols, SYMBOLS, SPS, 0.030f, 0.001f, 0.002f, 0);
+    synthesize_fsk(second_iq, symbols, SYMBOLS, SPS, 0.004f, -0.0005f, 0.0005f, 5);
+
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    int produced = dsd_fsk_modem_process(&modem, first_iq, SYMBOLS * SPS * 2, out, SYMBOLS + 512);
+    assert(produced >= SYMBOLS - 24);
+    assert(modem.timing_acquired == 1);
+    assert(modem.track_signal_ref > 0.0f);
+    assert(modem.abs_est > 0.0f);
+
+    (void)dsd_fsk_modem_process(&modem, gap_iq, GAP_COMPLEX * 2, out, SYMBOLS + 512);
+    assert(modem.timing_acquired == 0);
+
+    produced = dsd_fsk_modem_process(&modem, second_iq, SYMBOLS * SPS * 2, out, SYMBOLS + 512);
+    assert(produced >= SYMBOLS - 320);
+    assert(modem.timing_acquired == 1);
+    expect_4level_accuracy_best_shift("dmr-gfsk-reacquire-lower-deviation", out, produced, symbols, SYMBOLS, RUN, 900,
+                                      96, 0.82f);
+
+    free(out);
+    free(second_iq);
+    free(gap_iq);
+    free(first_iq);
+    free(symbols);
+}
+
+static void
+test_local_reacquire_preserves_pending_symbols(void) {
+    enum { SYMBOLS = 2200, SPS = 10, RUN = 16, CHUNK = 7, DRAIN_TARGET = 1200 };
+
+    enum { GAP_COMPLEX = (33 * 64 * SPS) + 100 };
+
+    static const float levels[] = {-3.0f, 3.0f, -1.0f, 1.0f, 3.0f, -3.0f};
+    const int total_complex = (SYMBOLS * SPS) + GAP_COMPLEX;
+    float* symbols = (float*)calloc(SYMBOLS, sizeof(float));
+    float* iq = (float*)calloc((size_t)total_complex * 2U, sizeof(float));
+    float* out = (float*)calloc(SYMBOLS + 512, sizeof(float));
+    float chunk[CHUNK];
+    assert(symbols && iq && out);
+
+    fill_run_pattern(symbols, SYMBOLS, levels, (int)(sizeof(levels) / sizeof(levels[0])), RUN);
+    synthesize_fsk(iq, symbols, SYMBOLS, SPS, 0.025f, 0.001f, 0.002f, 0);
+
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    int total = dsd_fsk_modem_process(&modem, iq, total_complex * 2, out, CHUNK);
+    assert(total == CHUNK);
+    assert(modem.timing_acquired == 0);
+    assert(modem.pending_pos < modem.pending_len);
+
+    while (total < DRAIN_TARGET && modem.pending_pos < modem.pending_len) {
+        int produced = dsd_fsk_modem_process(&modem, NULL, 0, chunk, CHUNK);
+        assert(produced > 0);
+        for (int i = 0; i < produced; i++) {
+            out[total++] = chunk[i];
+        }
+    }
+    assert(total >= DRAIN_TARGET);
+    expect_4level_accuracy_best_shift("local-reacquire-preserves-pending", out, total, symbols, SYMBOLS, RUN, 160, 64,
+                                      0.88f);
+
+    free(out);
+    free(iq);
+    free(symbols);
+}
+
+static void
 test_reconfigure_resets_state(void) {
     dsd_fsk_modem_state modem;
     dsd_fsk_modem_config cfg = {48000, 4800, 4, 4};
@@ -936,6 +1018,8 @@ main(void) {
     test_timing_tracker_reacquires_after_consecutive_skips();
     test_timing_reacquire_waits_through_long_silence();
     test_timing_tracker_recovers_after_gap();
+    test_timing_tracker_recovers_lower_deviation_after_gap();
+    test_local_reacquire_preserves_pending_symbols();
     test_reconfigure_resets_state();
     return 0;
 }
