@@ -29,7 +29,7 @@ extern "C" {
 
 typedef enum DSD_ATTR_PACKED rtl_stream_output_kind {
     RTL_STREAM_OUTPUT_AUDIO_MONITOR = 0,
-    RTL_STREAM_OUTPUT_SYMBOL_FSK = 1,
+    RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR = 1,
     RTL_STREAM_OUTPUT_SYMBOL_CQPSK = 2,
 } rtl_stream_output_kind;
 
@@ -292,11 +292,11 @@ void rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz)
 void rtl_stream_clear_pending_retune_profile(void);
 
 /**
- * @brief Request fresh acquisition for the active RTL FSK symbol modem.
+ * @brief Request fresh acquisition for the active RTL FSK demod path.
  *
  * The request is consumed by the demod thread before the next FSK block so the
  * modem state is not mutated from decoder/control threads. Returns 1 when a
- * request was queued, 0 when FSK symbol output is inactive.
+ * request was queued, 0 when RTL FSK output is inactive.
  */
 int rtl_stream_request_fsk_reacquire(void);
 
@@ -562,8 +562,9 @@ int rtl_stream_eye_get(float* out, int max_samples, int* out_sps);
 /**
  * @brief Get smoothed demod SNR estimate in dB (post-filter, center-of-symbol).
  *
- * Computed on the demod thread for digital modes using I-channel samples near
- * symbol centers and a 4-level clustering heuristic for C4FM/FSK.
+ * Computed on the demod thread for digital modes using the active demodulation
+ * domain: discriminator samples for FSK output, and symbol/constellation-domain
+ * samples for CQPSK.
  * Returns a negative value when unavailable.
  *
  * @return SNR in dB, or negative when unavailable.
@@ -706,29 +707,6 @@ typedef struct rtl_stream_costas_metrics {
     int zero_conf_pct;
 } rtl_stream_costas_metrics;
 
-typedef struct rtl_stream_fsk_metrics {
-    int valid;
-    int levels;
-    int symbol_rate_hz;
-    uint64_t symbols_total;
-    unsigned int window_symbols;
-    unsigned int mean_reliability;
-    unsigned int min_reliability;
-    float rms_error;
-    float evm_snr_db;
-    float low_reliability_pct;
-    float clip_pct;
-    int timing_acquired;
-    float track_last_error;
-    float track_last_score;
-    uint64_t track_updates;
-    uint64_t track_skips;
-    float abs_est;
-    float dc_est;
-    float last_symbol;
-    uint32_t generation;
-} rtl_stream_fsk_metrics;
-
 typedef struct rtl_stream_decode_health {
     int valid;
     uint32_t generation;
@@ -755,18 +733,6 @@ void rtl_stream_toggle_cqpsk(int onoff);
  * @return 0 on success; negative on error.
  */
 int rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active);
-
-/**
- * @brief Get recent soft-symbol quality metrics from the RTL FSK symbol modem.
- *
- * These metrics observe the current FSK symbol stream and do not affect slicer
- * decisions. The snapshot is invalidated on retune, output clear, or squelch
- * zero-symbol generation.
- *
- * @param out [out] FSK metrics snapshot. Must not be NULL.
- * @return 0 on success; negative on invalid input.
- */
-int rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out);
 
 /**
  * @brief Get RTL-path decode-health counters for the current output generation.

@@ -26,7 +26,7 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-static size_t g_symbol_index;
+static size_t g_sample_index;
 static const char* g_sync_pattern = M17_PRE;
 static char g_fill_symbol = '1';
 
@@ -168,10 +168,12 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     }
 
     const size_t pattern_len = strlen(g_sync_pattern);
+    const size_t samples_per_symbol = 10U;
     for (size_t i = 0; i < count; i++) {
-        char dibit = (g_symbol_index < pattern_len) ? g_sync_pattern[g_symbol_index] : g_fill_symbol;
+        size_t symbol_index = g_sample_index / samples_per_symbol;
+        char dibit = (symbol_index < pattern_len) ? g_sync_pattern[symbol_index] : g_fill_symbol;
         out[i] = symbol_level_for_m17(dibit);
-        g_symbol_index++;
+        g_sample_index++;
     }
     *out_got = (int)count;
     return 0;
@@ -185,7 +187,7 @@ fake_rtl_pwr(const void* rtl_ctx) {
 
 static int
 fake_output_kind(void) {
-    return RTL_STREAM_OUTPUT_SYMBOL_FSK;
+    return RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
 }
 
 static int
@@ -303,7 +305,7 @@ init_m17_sync_case(dsd_opts* opts, dsd_state* state, int* fake_rtl_context) {
 
 static int
 run_one_on_state(dsd_opts* opts, dsd_state* state, const char* pattern, int expected_sync, const char* label) {
-    g_symbol_index = 0U;
+    g_sample_index = 0U;
     g_sync_pattern = pattern;
     g_fill_symbol = (expected_sync < 0) ? '3' : '1';
     state->rtl_symbol_cache_pos = 0;

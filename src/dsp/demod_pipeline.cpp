@@ -1148,9 +1148,9 @@ full_demod_run_non_cqpsk_chain(struct demod_state* d) {
     if (d->cqpsk_enable || d->channel_squelched) {
         return;
     }
-    int fsk_symbol_output = (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK);
+    int fsk_direct_output = (d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
     iq_dc_block(d);
-    if (fsk_symbol_output) {
+    if (fsk_direct_output) {
         return;
     }
 }
@@ -1199,15 +1199,19 @@ full_demod_apply_iq_balance(struct demod_state* d) {
 
 static int
 full_demod_handle_fsk_output(struct demod_state* d) {
-    if (d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+    if (d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
     }
     int in_pairs = d->lp_len >> 1;
     if (d->channel_squelched) {
-        d->result_len = dsd_fsk_modem_zero_symbols(&d->fsk_modem_state, in_pairs, d->result, MAXIMUM_BUF_LENGTH);
+        dsd_fsk_modem_reset(&d->fsk_modem_state);
+        d->result_len = in_pairs < MAXIMUM_BUF_LENGTH ? in_pairs : MAXIMUM_BUF_LENGTH;
+        for (int i = 0; i < d->result_len; i++) {
+            d->result[i] = 0.0f;
+        }
     } else {
-        d->result_len =
-            dsd_fsk_modem_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result, MAXIMUM_BUF_LENGTH);
+        d->result_len = dsd_fsk_modem_discriminator_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result,
+                                                            MAXIMUM_BUF_LENGTH);
     }
     return 1;
 }

@@ -38,7 +38,7 @@ expect_true(const char* tag, int cond) {
 #ifdef USE_RADIO
 static int
 fake_rtl_fsk_output_kind(void) {
-    return RTL_STREAM_OUTPUT_SYMBOL_FSK;
+    return RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
 }
 #endif
 

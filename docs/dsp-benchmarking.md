@@ -61,9 +61,9 @@ The benchmark target includes:
 
 - Input/output rings and RTL u8 widening/rotation.
 - SIMD FIR kernels, half-band decimators, and generated channel LPF plans.
-- FSK modem acquisition/steady-state cases.
+- FSK discriminator reset/steady-state cases.
 - CQPSK stage cases for band-edge FLL, Gardner, differential phasor, Costas, and full demod chains.
-- Full demod cases for C4FM audio monitor, FSK symbol output, and CQPSK P25P1/P25P2.
+- Full demod cases for C4FM audio monitor, FSK discriminator output, and CQPSK P25P1/P25P2.
 
 The RTL benchmark target includes:
 
@@ -71,7 +71,7 @@ The RTL benchmark target includes:
 - The legacy two-pass rotate+widen ingest path for comparison against the combined path.
 - CS16 ingest conversion for Soapy-style signed sample input.
 - Post-demod spectrum snapshot updates used by the UI/metrics path.
-- 512-sample symbol-output batch reads.
+- 512-sample direct-output batch reads.
 
 Channel LPF CSV rows include `rate_hz`, `profile`, `tap_count`, and `variant`
 metadata so tap-count and profile changes can be compared directly.

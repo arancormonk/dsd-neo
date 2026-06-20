@@ -86,7 +86,6 @@ double dsd_rtl_stream_get_snr_bias_evm(void);
 /* Tuner autogain */
 int dsd_rtl_stream_get_tuner_autogain(void);
 void dsd_rtl_stream_set_tuner_autogain(int onoff);
-int dsd_rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out);
 int dsd_rtl_stream_get_decode_health(rtl_stream_decode_health* out);
 int dsd_rtl_stream_get_input_level(dsd_input_level_snapshot* out);
 void dsd_rtl_stream_set_channel_squelch(float level);
@@ -625,11 +624,6 @@ extern "C" double dsd_rtl_stream_get_fll_band_edge_freq_hz(void);
 extern "C" double
 rtl_stream_get_fll_band_edge_freq_hz(void) {
     return dsd_rtl_stream_get_fll_band_edge_freq_hz();
-}
-
-extern "C" int
-rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out) {
-    return dsd_rtl_stream_get_fsk_metrics(out);
 }
 
 extern "C" int

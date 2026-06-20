@@ -144,20 +144,6 @@ dsp_status_print_cqpsk_metrics(void) {
                      (double)cm.confidence_avg_q14 / 16384.0, cm.zero_conf_pct, nco_q15, Fs);
 }
 
-static void
-dsp_status_print_fsk_metrics(void) {
-    rtl_stream_fsk_metrics fm;
-    DSD_MEMSET(&fm, 0, sizeof(fm));
-    if (rtl_stream_get_fsk_metrics(&fm) != 0 || !fm.valid) {
-        return;
-    }
-    ui_print_kv_line("FSK Soft", "rel:%u min:%u low:%4.1f%% clip:%4.1f%% err:%.3f snr:%4.1f dB", fm.mean_reliability,
-                     fm.min_reliability, fm.low_reliability_pct, fm.clip_pct, fm.rms_error, fm.evm_snr_db);
-    ui_print_kv_line("FSK Track", "acq:%s e:%.2f score:%.4f upd:%llu skip:%llu", fm.timing_acquired ? "Y" : "N",
-                     fm.track_last_error, fm.track_last_score, (unsigned long long)fm.track_updates,
-                     (unsigned long long)fm.track_skips);
-}
-
 #endif
 
 /* Print a compact DSP status summary (which blocks are active). */
@@ -188,7 +174,6 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     if (snap.cq) {
         dsp_status_print_cqpsk_metrics();
     }
-    dsp_status_print_fsk_metrics();
 #endif
     attroff(COLOR_PAIR(14));
     attron(COLOR_PAIR(4));

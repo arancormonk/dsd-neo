@@ -207,14 +207,15 @@ main(void) {
     int request_rc = -1;
     int consumed = -1;
     cache_pending = -1;
-    rc = rtl_stream_test_fsk_reacquire(RTL_STREAM_OUTPUT_SYMBOL_FSK, 9U, 4, &used_after, &cache_pending,
+    rc = rtl_stream_test_fsk_reacquire(RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, 9U, 4, &used_after, &cache_pending,
                                        &generation_before, &generation_after, &request_rc, &consumed);
-    failed |= expect_int_eq("fsk reacquire helper rc", rc, 0);
-    failed |= expect_int_eq("fsk reacquire request queued", request_rc, 1);
-    failed |= expect_int_eq("fsk reacquire consumed", consumed, 1);
-    failed |= expect_generation_changed("fsk reacquire bumps generation", generation_before, generation_after);
-    failed |= expect_size_eq("fsk reacquire clears queued ring", used_after, 0U);
-    failed |= expect_int_eq("fsk reacquire resets cached symbols", cache_pending, 0);
+    failed |= expect_int_eq("fsk discriminator reacquire helper rc", rc, 0);
+    failed |= expect_int_eq("fsk discriminator reacquire request queued", request_rc, 1);
+    failed |= expect_int_eq("fsk discriminator reacquire consumed", consumed, 1);
+    failed |=
+        expect_generation_changed("fsk discriminator reacquire bumps generation", generation_before, generation_after);
+    failed |= expect_size_eq("fsk discriminator reacquire clears queued ring", used_after, 0U);
+    failed |= expect_int_eq("fsk discriminator reacquire resets cached symbols", cache_pending, 0);
 
     request_rc = -1;
     consumed = -1;

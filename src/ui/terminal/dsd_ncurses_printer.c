@@ -149,10 +149,9 @@ ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
         int symbol_rate_hz = 0;
         int output_kind = rtl_stream_get_output_kind();
-        /* RTL symbol-output paths feed one sliced symbol per sample; report the configured profile rate. */
-        if ((output_kind == RTL_STREAM_OUTPUT_SYMBOL_FSK || output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK
-             || state->samplesPerSymbol <= 1)
-            && rtl_stream_get_symbol_profile(&symbol_rate_hz, NULL) == 0 && symbol_rate_hz > 0) {
+        /* RTL direct symbol paths feed one decoded symbol per sample; report the configured profile rate. */
+        if (output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK && rtl_stream_get_symbol_profile(&symbol_rate_hz, NULL) == 0
+            && symbol_rate_hz > 0) {
             return symbol_rate_hz;
         }
 

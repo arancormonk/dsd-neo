@@ -5,16 +5,14 @@
 
 #include "ui_snr_readout.h"
 
-#include <assert.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+
+#include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
-static rtl_stream_fsk_metrics g_fsk_metrics;
-static int g_fsk_result = 0;
-static int g_fsk_calls = 0;
 static int g_snr_c4fm_calls = 0;
 static int g_snr_c4fm_eye_calls = 0;
 static int g_snr_cqpsk_calls = 0;
@@ -27,15 +25,6 @@ static double g_snr_cqpsk = -100.0;
 static double g_snr_gfsk = -100.0;
 static double g_snr_gfsk_eye = -100.0;
 static double g_snr_qpsk_const = -100.0;
-
-int
-rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out) {
-    g_fsk_calls++;
-    if (out) {
-        *out = g_fsk_metrics;
-    }
-    return g_fsk_result;
-}
 
 double
 rtl_stream_get_snr_c4fm(void) {
@@ -76,9 +65,6 @@ rtl_stream_estimate_snr_qpsk_const(void) {
 static void
 reset_fakes(void) {
     ui_snr_readout_reset_for_test();
-    DSD_MEMSET(&g_fsk_metrics, 0, sizeof(g_fsk_metrics));
-    g_fsk_result = 0;
-    g_fsk_calls = 0;
     g_snr_c4fm_calls = 0;
     g_snr_c4fm_eye_calls = 0;
     g_snr_cqpsk_calls = 0;
@@ -107,73 +93,77 @@ expect_readout(const char* name, int rf_mod, double expected_snr, const char* ex
 }
 
 static void
-test_c4fm_prefers_valid_fsk_soft_snr(void) {
+test_c4fm_uses_direct_snr(void) {
     reset_fakes();
-    g_fsk_metrics.valid = 1;
-    g_fsk_metrics.evm_snr_db = 18.25f;
-    g_snr_c4fm = 4.0;
+    g_snr_c4fm = 18.25;
 
-    expect_readout("c4fm-soft", 0, 18.25, "C4FM");
-    assert(g_fsk_calls == 1);
-    assert(g_snr_c4fm_calls == 0);
+    expect_readout("c4fm-direct", 0, 18.25, "C4FM");
+    assert(g_snr_c4fm_calls == 1);
+    assert(g_snr_c4fm_eye_calls == 0);
 }
 
 static void
-test_gfsk_prefers_valid_fsk_soft_snr(void) {
+test_c4fm_keeps_stable_direct_snr(void) {
     reset_fakes();
-    g_fsk_metrics.valid = 1;
-    g_fsk_metrics.evm_snr_db = 21.5f;
-    g_snr_gfsk = 6.0;
+    g_snr_c4fm = 18.25;
+    g_snr_c4fm_eye = 4.0;
 
-    expect_readout("gfsk-soft", 2, 21.5, "GFSK");
-    assert(g_fsk_calls == 1);
-    assert(g_snr_gfsk_calls == 0);
+    for (int i = 0; i < 64; i++) {
+        expect_readout("c4fm-stable-direct", 0, 18.25, "C4FM");
+    }
+    assert(g_snr_c4fm_calls == 64);
+    assert(g_snr_c4fm_eye_calls == 0);
 }
 
 static void
-test_gfsk_falls_back_when_fsk_metrics_invalid(void) {
+test_gfsk_uses_direct_snr(void) {
     reset_fakes();
-    g_fsk_metrics.valid = 0;
+    g_snr_gfsk = 21.5;
+
+    expect_readout("gfsk-direct", 2, 21.5, "GFSK");
+    assert(g_snr_gfsk_calls == 1);
+    assert(g_snr_gfsk_eye_calls == 0);
+}
+
+static void
+test_gfsk_falls_back_when_direct_snr_invalid(void) {
+    reset_fakes();
     g_snr_gfsk = -100.0;
     g_snr_gfsk_eye = 7.25;
 
     expect_readout("gfsk-fallback", 2, 7.25, "GFSK");
-    assert(g_fsk_calls == 1);
     assert(g_snr_gfsk_calls == 1);
     assert(g_snr_gfsk_eye_calls == 1);
 }
 
 static void
-test_fsk_soft_snr_at_invalid_threshold_falls_back(void) {
+test_c4fm_snr_at_invalid_threshold_falls_back(void) {
     reset_fakes();
-    g_fsk_metrics.valid = 1;
-    g_fsk_metrics.evm_snr_db = -50.0f;
-    g_snr_c4fm = 5.5;
+    g_snr_c4fm = -50.0;
+    g_snr_c4fm_eye = 5.5;
 
     expect_readout("c4fm-threshold-fallback", 0, 5.5, "C4FM");
-    assert(g_fsk_calls == 1);
     assert(g_snr_c4fm_calls == 1);
+    assert(g_snr_c4fm_eye_calls == 1);
 }
 
 static void
-test_qpsk_ignores_fsk_soft_snr(void) {
+test_qpsk_uses_cqpsk_snr(void) {
     reset_fakes();
-    g_fsk_metrics.valid = 1;
-    g_fsk_metrics.evm_snr_db = 44.0f;
     g_snr_cqpsk = 12.75;
 
-    expect_readout("qpsk-no-fsk", 1, 12.75, "QPSK");
-    assert(g_fsk_calls == 0);
+    expect_readout("qpsk", 1, 12.75, "QPSK");
     assert(g_snr_cqpsk_calls == 1);
 }
 
 int
 main(void) {
-    test_c4fm_prefers_valid_fsk_soft_snr();
-    test_gfsk_prefers_valid_fsk_soft_snr();
-    test_gfsk_falls_back_when_fsk_metrics_invalid();
-    test_fsk_soft_snr_at_invalid_threshold_falls_back();
-    test_qpsk_ignores_fsk_soft_snr();
+    test_c4fm_uses_direct_snr();
+    test_c4fm_keeps_stable_direct_snr();
+    test_gfsk_uses_direct_snr();
+    test_gfsk_falls_back_when_direct_snr_invalid();
+    test_c4fm_snr_at_invalid_threshold_falls_back();
+    test_qpsk_uses_cqpsk_snr();
     printf("UI_SNR_READOUT: OK\n");
     return 0;
 }

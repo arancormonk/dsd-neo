@@ -274,10 +274,10 @@ demod_apply_output_kind(struct demod_state* s, const dsd_opts* opts) {
         s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
         s->symbol_levels = 4;
     } else {
-        s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+        s->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     }
 
-    if (s->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+    if (s->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         s->cqpsk_enable = 0;
         s->ted_enabled = 0;
     } else if (s->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
@@ -548,7 +548,7 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
 static void
 demod_finalize_runtime_profile(struct demod_state* demod, const dsd_opts* opts) {
     demod->channel_squelch_level = (float)opts->rtl_squelch_level;
-    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+    if (demod->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         demod->ted_enabled = 0;
     }
     fsk_modem_apply_config(demod);
@@ -702,7 +702,8 @@ rtl_demod_disable_resampler(struct demod_state* demod, int reset_ratio) {
 
 static int
 rtl_demod_should_skip_resampler(const struct demod_state* demod) {
-    return (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK || demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    return (demod->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR
+            || demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
 }
 
 static void

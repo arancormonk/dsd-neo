@@ -29,6 +29,7 @@
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/snr_bias.h>
+#include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
@@ -313,9 +314,7 @@ static void rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int
                                                     int persist_ted_override,
                                                     const rtl_stream_retune_gain_profile* gain_profile);
 static void rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center_freq_hz);
-static void rtl_fsk_metrics_reset_snapshot(void);
 static void rtl_decode_health_reset(void);
-static void rtl_publish_fsk_metrics_from_demod(const struct demod_state* d);
 static void rtl_stream_signal_output_waiters(struct output_state* outp);
 static void rtl_stream_clear_output_ring(struct output_state* outp, int bump_generation);
 /*
@@ -576,7 +575,7 @@ rtl_monitor_side_tap_active(const struct demod_state* d) {
     if (!d || !g_stream || !g_stream->opts) {
         return 0;
     }
-    if (d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK && d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
+    if (d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR && d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
         return 0;
     }
     return (g_stream->opts->monitor_input_audio == 1 || g_stream->opts->analog_only == 1) ? 1 : 0;
@@ -1614,12 +1613,12 @@ demod_reset_monitor_state(void) {
 
 static void
 demod_reset_histories_for_output_mode(struct demod_state* s) {
-    if (!(s->cqpsk_enable || s->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK)) {
+    if (!(s->cqpsk_enable || s->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR)) {
         return;
     }
     demod_clear_filter_histories(s);
     demod_reset_resampler_state(s);
-    if (s->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+    if (s->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         dsd_fsk_modem_reset(&s->fsk_modem_state);
     }
     demod_reset_monitor_state();
@@ -1678,27 +1677,6 @@ static std::atomic<double> g_snr_ema_gfsk{-100.0};
 /* QPSK accumulator reset flag (actual buffer is in demod loop) */
 static std::atomic<int> g_snr_qpsk_acc_reset{0};
 
-static std::atomic<int> g_fsk_metrics_valid{0};
-static std::atomic<uint32_t> g_fsk_metrics_generation{0};
-static std::atomic<int> g_fsk_metrics_levels{0};
-static std::atomic<int> g_fsk_metrics_symbol_rate_hz{0};
-static std::atomic<uint64_t> g_fsk_metrics_symbols_total{0};
-static std::atomic<unsigned int> g_fsk_metrics_window_symbols{0};
-static std::atomic<unsigned int> g_fsk_metrics_mean_reliability{0};
-static std::atomic<unsigned int> g_fsk_metrics_min_reliability{0};
-static std::atomic<double> g_fsk_metrics_rms_error{0.0};
-static std::atomic<double> g_fsk_metrics_evm_snr_db{-100.0};
-static std::atomic<double> g_fsk_metrics_low_reliability_pct{0.0};
-static std::atomic<double> g_fsk_metrics_clip_pct{0.0};
-static std::atomic<int> g_fsk_metrics_timing_acquired{0};
-static std::atomic<double> g_fsk_metrics_track_last_error{0.0};
-static std::atomic<double> g_fsk_metrics_track_last_score{0.0};
-static std::atomic<uint64_t> g_fsk_metrics_track_updates{0};
-static std::atomic<uint64_t> g_fsk_metrics_track_skips{0};
-static std::atomic<double> g_fsk_metrics_abs_est{0.0};
-static std::atomic<double> g_fsk_metrics_dc_est{0.0};
-static std::atomic<double> g_fsk_metrics_last_symbol{0.0};
-
 static std::atomic<int> g_input_level_valid{0};
 static std::atomic<int> g_input_level_status{DSD_INPUT_LEVEL_UNKNOWN};
 static std::atomic<int> g_input_level_source{DSD_INPUT_LEVEL_SOURCE_UNKNOWN};
@@ -1717,30 +1695,6 @@ static std::atomic<unsigned int> g_decode_p25p2_facch_err{0};
 static std::atomic<unsigned int> g_decode_p25p2_sacch_ok{0};
 static std::atomic<unsigned int> g_decode_p25p2_sacch_err{0};
 static std::atomic<unsigned int> g_decode_p25p2_voice_err{0};
-
-static void
-rtl_fsk_metrics_reset_snapshot(void) {
-    g_fsk_metrics_valid.store(0, std::memory_order_release);
-    g_fsk_metrics_generation.store(g_rtl_output_generation.load(std::memory_order_acquire), std::memory_order_release);
-    g_fsk_metrics_levels.store(0, std::memory_order_relaxed);
-    g_fsk_metrics_symbol_rate_hz.store(0, std::memory_order_relaxed);
-    g_fsk_metrics_symbols_total.store(0, std::memory_order_relaxed);
-    g_fsk_metrics_window_symbols.store(0, std::memory_order_relaxed);
-    g_fsk_metrics_mean_reliability.store(0, std::memory_order_relaxed);
-    g_fsk_metrics_min_reliability.store(0, std::memory_order_relaxed);
-    g_fsk_metrics_rms_error.store(0.0, std::memory_order_relaxed);
-    g_fsk_metrics_evm_snr_db.store(-100.0, std::memory_order_relaxed);
-    g_fsk_metrics_low_reliability_pct.store(0.0, std::memory_order_relaxed);
-    g_fsk_metrics_clip_pct.store(0.0, std::memory_order_relaxed);
-    g_fsk_metrics_timing_acquired.store(0, std::memory_order_relaxed);
-    g_fsk_metrics_track_last_error.store(0.0, std::memory_order_relaxed);
-    g_fsk_metrics_track_last_score.store(0.0, std::memory_order_relaxed);
-    g_fsk_metrics_track_updates.store(0, std::memory_order_relaxed);
-    g_fsk_metrics_track_skips.store(0, std::memory_order_relaxed);
-    g_fsk_metrics_abs_est.store(0.0, std::memory_order_relaxed);
-    g_fsk_metrics_dc_est.store(0.0, std::memory_order_relaxed);
-    g_fsk_metrics_last_symbol.store(0.0, std::memory_order_relaxed);
-}
 
 void
 rtl_stream_input_level_reset(void) {
@@ -1800,39 +1754,6 @@ rtl_decode_health_prepare_update(void) {
 }
 
 static void
-rtl_publish_fsk_metrics_from_demod(const struct demod_state* d) {
-    dsd_fsk_modem_metrics m = {};
-    if (!d || d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK || dsd_fsk_modem_get_metrics(&d->fsk_modem_state, &m) != 0
-        || !m.valid) {
-        rtl_fsk_metrics_reset_snapshot();
-        return;
-    }
-
-    uint32_t gen = g_rtl_output_generation.load(std::memory_order_acquire);
-    g_fsk_metrics_valid.store(0, std::memory_order_release);
-    g_fsk_metrics_generation.store(gen, std::memory_order_relaxed);
-    g_fsk_metrics_levels.store(m.levels, std::memory_order_relaxed);
-    g_fsk_metrics_symbol_rate_hz.store(m.symbol_rate_hz, std::memory_order_relaxed);
-    g_fsk_metrics_symbols_total.store(m.symbols_total, std::memory_order_relaxed);
-    g_fsk_metrics_window_symbols.store(m.window_symbols, std::memory_order_relaxed);
-    g_fsk_metrics_mean_reliability.store(m.mean_reliability, std::memory_order_relaxed);
-    g_fsk_metrics_min_reliability.store(m.min_reliability, std::memory_order_relaxed);
-    g_fsk_metrics_rms_error.store((double)m.rms_error, std::memory_order_relaxed);
-    g_fsk_metrics_evm_snr_db.store((double)m.evm_snr_db, std::memory_order_relaxed);
-    g_fsk_metrics_low_reliability_pct.store((double)m.low_reliability_pct, std::memory_order_relaxed);
-    g_fsk_metrics_clip_pct.store((double)m.clip_pct, std::memory_order_relaxed);
-    g_fsk_metrics_timing_acquired.store(m.timing_acquired, std::memory_order_relaxed);
-    g_fsk_metrics_track_last_error.store((double)m.track_last_error, std::memory_order_relaxed);
-    g_fsk_metrics_track_last_score.store((double)m.track_last_score, std::memory_order_relaxed);
-    g_fsk_metrics_track_updates.store(m.track_updates, std::memory_order_relaxed);
-    g_fsk_metrics_track_skips.store(m.track_skips, std::memory_order_relaxed);
-    g_fsk_metrics_abs_est.store((double)m.abs_est, std::memory_order_relaxed);
-    g_fsk_metrics_dc_est.store((double)m.dc_est, std::memory_order_relaxed);
-    g_fsk_metrics_last_symbol.store((double)m.last_symbol, std::memory_order_relaxed);
-    g_fsk_metrics_valid.store(1, std::memory_order_release);
-}
-
-static void
 snr_ema_reset(void) {
     g_snr_ema_c4fm.store(-100.0, std::memory_order_relaxed);
     g_snr_ema_qpsk.store(-100.0, std::memory_order_relaxed);
@@ -1844,7 +1765,6 @@ snr_ema_reset(void) {
     g_snr_qpsk_src.store(0, std::memory_order_relaxed);
     g_snr_gfsk_src.store(0, std::memory_order_relaxed);
     g_snr_qpsk_acc_reset.store(1, std::memory_order_relaxed);
-    rtl_fsk_metrics_reset_snapshot();
     rtl_stream_input_level_reset();
     rtl_decode_health_reset();
 }
@@ -2639,9 +2559,9 @@ demod_metrics_due_for_block(DemodMetricsState* st, const struct demod_state* d) 
     if (!st || !d) {
         return 0;
     }
-    const int rtl_symbol_output =
-        (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK);
-    return (!rtl_symbol_output || ((++st->dsp_metrics_block & 1U) == 0U)) ? 1 : 0;
+    const int rtl_direct_output =
+        (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    return (!rtl_direct_output || ((++st->dsp_metrics_block & 1U) == 0U)) ? 1 : 0;
 }
 
 static void
@@ -2724,6 +2644,39 @@ demod_snr_qpsk_publish(const struct demod_state* d, double ratio, DemodSnrUpdate
     g_snr_qpsk_src.store(1, std::memory_order_relaxed);
     g_snr_qpsk_last_ms.store(demod_now_ms(), std::memory_order_relaxed);
     flags->qpsk_updated = true;
+}
+
+static int
+demod_snr_valid(double snr_db) {
+    return std::isfinite(snr_db) && snr_db > -50.0;
+}
+
+static void
+demod_snr_publish_c4fm_direct(double snr, DemodSnrUpdateFlags* flags) {
+    if (!flags || !demod_snr_valid(snr)) {
+        return;
+    }
+    double ema = g_snr_ema_c4fm.load(std::memory_order_relaxed);
+    ema = (ema < -50.0) ? snr : (0.5 * ema + 0.5 * snr);
+    g_snr_ema_c4fm.store(ema, std::memory_order_relaxed);
+    g_snr_c4fm_db.store(ema, std::memory_order_relaxed);
+    g_snr_c4fm_src.store(1, std::memory_order_relaxed);
+    g_snr_c4fm_last_ms.store(demod_now_ms(), std::memory_order_relaxed);
+    flags->c4fm_updated = true;
+}
+
+static void
+demod_snr_publish_gfsk_direct(double snr, DemodSnrUpdateFlags* flags) {
+    if (!flags || !demod_snr_valid(snr)) {
+        return;
+    }
+    double ema = g_snr_ema_gfsk.load(std::memory_order_relaxed);
+    ema = (ema < -50.0) ? snr : (0.5 * ema + 0.5 * snr);
+    g_snr_ema_gfsk.store(ema, std::memory_order_relaxed);
+    g_snr_gfsk_db.store(ema, std::memory_order_relaxed);
+    g_snr_gfsk_src.store(1, std::memory_order_relaxed);
+    g_snr_gfsk_last_ms.store(demod_now_ms(), std::memory_order_relaxed);
+    flags->gfsk_updated = true;
 }
 
 static void
@@ -2860,13 +2813,7 @@ demod_snr_update_c4fm_direct(const struct demod_state* d, const float* vals, int
     }
     double bias = dsd_snr_bias_c4fm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
     double snr = 10.0 * log10(sig_var / noise_var) - bias;
-    double ema = g_snr_ema_c4fm.load(std::memory_order_relaxed);
-    ema = (ema < -50.0) ? snr : (0.5 * ema + 0.5 * snr);
-    g_snr_ema_c4fm.store(ema, std::memory_order_relaxed);
-    g_snr_c4fm_db.store(ema, std::memory_order_relaxed);
-    g_snr_c4fm_src.store(1, std::memory_order_relaxed);
-    g_snr_c4fm_last_ms.store(demod_now_ms(), std::memory_order_relaxed);
-    flags->c4fm_updated = true;
+    demod_snr_publish_c4fm_direct(snr, flags);
 }
 
 static void
@@ -2914,13 +2861,7 @@ demod_snr_update_gfsk_direct(const struct demod_state* d, const float* vals, int
     }
     double bias = dsd_snr_bias_evm_db(d->rate_out, d->ted_sps, d->channel_lpf_profile);
     double snr = 10.0 * log10(sig_var / noise_var) - bias;
-    double ema = g_snr_ema_gfsk.load(std::memory_order_relaxed);
-    ema = (ema < -50.0) ? snr : (0.5 * ema + 0.5 * snr);
-    g_snr_ema_gfsk.store(ema, std::memory_order_relaxed);
-    g_snr_gfsk_db.store(ema, std::memory_order_relaxed);
-    g_snr_gfsk_src.store(1, std::memory_order_relaxed);
-    g_snr_gfsk_last_ms.store(demod_now_ms(), std::memory_order_relaxed);
-    flags->gfsk_updated = true;
+    demod_snr_publish_gfsk_direct(snr, flags);
 }
 
 static void
@@ -2945,6 +2886,46 @@ demod_snr_update_fsk_direct(const struct demod_state* d, const float* iq, int pa
     }
     demod_snr_update_c4fm_direct(d, vals, m, q1, q2, q3, flags);
     demod_snr_update_gfsk_direct(d, vals, m, q2, flags);
+}
+
+static int
+demod_snr_output_samples_per_symbol(const struct demod_state* d) {
+    if (!d) {
+        return 0;
+    }
+    int sps = d->ted_sps;
+    if (sps <= 0 && d->rate_out > 0 && d->symbol_rate_hz > 0) {
+        sps = (d->rate_out + (d->symbol_rate_hz / 2)) / d->symbol_rate_hz;
+    }
+    return sps;
+}
+
+static void
+demod_snr_update_fsk_discriminator_direct(const struct demod_state* d, DemodSnrUpdateFlags* flags) {
+    if (!d || !flags || d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR || d->result_len <= 64) {
+        return;
+    }
+
+    int sps = demod_snr_output_samples_per_symbol(d);
+    int win = sps / 10;
+    if (win < 1) {
+        win = 1;
+    }
+
+    double c4fm_bias = dsd_snr_bias_c4fm_db(d->rate_out, sps, d->channel_lpf_profile);
+    double c4fm_snr = dsd_snr_estimate_c4fm_real_db(d->result, d->result_len, sps, win, c4fm_bias);
+    if (demod_snr_valid(c4fm_snr)) {
+        demod_snr_publish_c4fm_direct(c4fm_snr, flags);
+        if (d->symbol_levels != 2) {
+            demod_snr_publish_gfsk_direct(c4fm_snr, flags);
+        }
+    }
+
+    if (d->symbol_levels == 2) {
+        double gfsk_bias = dsd_snr_bias_evm_db(d->rate_out, sps, d->channel_lpf_profile);
+        double gfsk_snr = dsd_snr_estimate_gfsk_real_db(d->result, d->result_len, sps, win, gfsk_bias);
+        demod_snr_publish_gfsk_direct(gfsk_snr, flags);
+    }
 }
 
 static void
@@ -3026,7 +3007,9 @@ demod_metrics_update_snr(const struct demod_state* d, DemodMetricsState* st) {
     const float* iq = d->lowpassed;
     const int n_iq = d->lp_len;
     const int sps = d->ted_sps;
-    if (iq && n_iq >= 4 && sps >= 2) {
+    if (d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        demod_snr_update_fsk_discriminator_direct(d, &flags);
+    } else if (iq && n_iq >= 4 && sps >= 2) {
         const int pairs = n_iq / 2;
         const int mid = sps / 2;
         int win = sps / 10;
@@ -3184,7 +3167,7 @@ demod_write_output_block(struct demod_state* d, struct output_state* o) {
     if (!d || !o) {
         return 0U;
     }
-    if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+    if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         if (d->result_len > 0) {
             return demod_write_output_samples_interruptible(o, d->result, (size_t)d->result_len);
         }
@@ -3340,7 +3323,6 @@ static DSD_THREAD_RETURN_TYPE
         uint64_t perf_full_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
         (void)rtl_stream_consume_fsk_reacquire_pending(d);
         full_demod(d);
-        rtl_publish_fsk_metrics_from_demod(d);
         uint64_t perf_full_demod_ns = perf_on ? (rtl_perf_now_ns() - perf_full_start_ns) : 0ULL;
         rtl_monitor_side_tap_process(d);
         demod_log_retune_diag_block(d, span.got, &retune_diag);
@@ -3558,7 +3540,6 @@ rtl_stream_bump_output_generation(void) {
     if (next == 0U) {
         next = g_rtl_output_generation.fetch_add(1, std::memory_order_acq_rel) + 1U;
     }
-    rtl_fsk_metrics_reset_snapshot();
     rtl_decode_health_reset();
     return next;
 }
@@ -3566,7 +3547,7 @@ rtl_stream_bump_output_generation(void) {
 static int
 rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d) {
     int pending = g_fsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
-    if (!pending || !d || d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+    if (!pending || !d || d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
     }
     dsd_rtl_stream_clear_output();
@@ -6310,15 +6291,11 @@ auto_ppm_make_config(const dsd_opts* opts) {
 
 static int
 auto_ppm_fsk_phase_cfo_hz(double* out_cfo_hz) {
-    if (!out_cfo_hz || demod.cqpsk_enable || demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK || demod.rate_out <= 0) {
+    if (!out_cfo_hz || demod.cqpsk_enable || demod.output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR
+        || demod.rate_out <= 0 || !demod.fsk_modem_state.have_prev) {
         return 0;
     }
-    if (!g_fsk_metrics_valid.load(std::memory_order_acquire)
-        || !g_fsk_metrics_timing_acquired.load(std::memory_order_relaxed)) {
-        return 0;
-    }
-
-    double dc_rad_per_sample = g_fsk_metrics_dc_est.load(std::memory_order_relaxed);
+    double dc_rad_per_sample = (double)demod.fsk_modem_state.dc_est;
     if (!std::isfinite(dc_rad_per_sample)) {
         return 0;
     }
@@ -6673,7 +6650,6 @@ dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
     cfg.channel_profile = demod.channel_lpf_profile;
     dsd_fsk_modem_configure(&demod.fsk_modem_state, &cfg);
     if (changed) {
-        rtl_fsk_metrics_reset_snapshot();
         demod.costas_reset_pending = 1;
     }
     return 0;
@@ -6681,7 +6657,7 @@ dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
 
 extern "C" int
 dsd_rtl_stream_request_fsk_reacquire(void) {
-    if (demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+    if (demod.output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
     }
     g_fsk_reacquire_pending.store(1, std::memory_order_release);
@@ -6814,8 +6790,8 @@ dsd_rtl_stream_get_ted_gain(void) {
 }
 
 static inline int
-rtl_stream_fsk_symbol_output_active(void) {
-    return demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+rtl_stream_fsk_direct_output_active(void) {
+    return demod.output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
 }
 
 static inline int
@@ -6831,7 +6807,7 @@ rtl_stream_reset_ted_runtime_state(void) {
 
 static void
 rtl_stream_apply_symbol_timing_mode(void) {
-    if (rtl_stream_fsk_symbol_output_active()) {
+    if (rtl_stream_fsk_direct_output_active()) {
         if (demod.ted_enabled) {
             demod.ted_enabled = 0;
             rtl_stream_reset_ted_runtime_state();
@@ -6975,44 +6951,6 @@ rtl_stream_p25p1_ber_update(int fec_ok_delta, int fec_err_delta) {
 }
 
 extern "C" int
-dsd_rtl_stream_get_fsk_metrics(rtl_stream_fsk_metrics* out) {
-    if (!out) {
-        return -1;
-    }
-    *out = rtl_stream_fsk_metrics{};
-    uint32_t current_generation = g_rtl_output_generation.load(std::memory_order_acquire);
-    uint32_t snapshot_generation = g_fsk_metrics_generation.load(std::memory_order_acquire);
-    out->generation = current_generation;
-    if (!rtl_stream_context_active()) {
-        rtl_fsk_metrics_reset_snapshot();
-        return 0;
-    }
-    if (!g_fsk_metrics_valid.load(std::memory_order_acquire) || snapshot_generation != current_generation) {
-        return 0;
-    }
-    out->valid = 1;
-    out->levels = g_fsk_metrics_levels.load(std::memory_order_relaxed);
-    out->symbol_rate_hz = g_fsk_metrics_symbol_rate_hz.load(std::memory_order_relaxed);
-    out->symbols_total = g_fsk_metrics_symbols_total.load(std::memory_order_relaxed);
-    out->window_symbols = g_fsk_metrics_window_symbols.load(std::memory_order_relaxed);
-    out->mean_reliability = g_fsk_metrics_mean_reliability.load(std::memory_order_relaxed);
-    out->min_reliability = g_fsk_metrics_min_reliability.load(std::memory_order_relaxed);
-    out->rms_error = (float)g_fsk_metrics_rms_error.load(std::memory_order_relaxed);
-    out->evm_snr_db = (float)g_fsk_metrics_evm_snr_db.load(std::memory_order_relaxed);
-    out->low_reliability_pct = (float)g_fsk_metrics_low_reliability_pct.load(std::memory_order_relaxed);
-    out->clip_pct = (float)g_fsk_metrics_clip_pct.load(std::memory_order_relaxed);
-    out->timing_acquired = g_fsk_metrics_timing_acquired.load(std::memory_order_relaxed);
-    out->track_last_error = (float)g_fsk_metrics_track_last_error.load(std::memory_order_relaxed);
-    out->track_last_score = (float)g_fsk_metrics_track_last_score.load(std::memory_order_relaxed);
-    out->track_updates = g_fsk_metrics_track_updates.load(std::memory_order_relaxed);
-    out->track_skips = g_fsk_metrics_track_skips.load(std::memory_order_relaxed);
-    out->abs_est = (float)g_fsk_metrics_abs_est.load(std::memory_order_relaxed);
-    out->dc_est = (float)g_fsk_metrics_dc_est.load(std::memory_order_relaxed);
-    out->last_symbol = (float)g_fsk_metrics_last_symbol.load(std::memory_order_relaxed);
-    return 0;
-}
-
-extern "C" int
 dsd_rtl_stream_get_input_level(dsd_input_level_snapshot* out) {
     if (!out) {
         return -1;
@@ -7031,14 +6969,6 @@ dsd_rtl_stream_get_input_level(dsd_input_level_snapshot* out) {
         out->sample_count = g_input_level_sample_count.load(std::memory_order_relaxed);
         out->updated = (time_t)g_input_level_updated.load(std::memory_order_relaxed);
         return 0;
-    }
-
-    rtl_stream_fsk_metrics fsk{};
-    if (dsd_rtl_stream_get_fsk_metrics(&fsk) == 0 && fsk.valid && fsk.clip_pct > 0.0f) {
-        uint64_t symbols = fsk.window_symbols ? (uint64_t)fsk.window_symbols : fsk.symbols_total;
-        if (dsd_input_level_metrics_from_fsk_clip(fsk.clip_pct, symbols, out) == 0) {
-            return 0;
-        }
     }
     return 0;
 }
@@ -7098,7 +7028,7 @@ rtl_stream_disable_cqpsk_mode(void) {
         demod.channel_lpf_profile = rtl_stream_fsk_channel_profile_for_current_mode();
     }
     if (g_stream && opts_is_digital_mode(g_stream->opts) && radio_source_is_rtl_family(g_stream->opts)) {
-        demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+        demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     } else {
         demod.output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
     }
@@ -7935,15 +7865,9 @@ dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int ca
     }
 
     int prev_output_kind = demod.output_kind;
-    if (demod.fsk_modem_state.pending_heap) {
-        fsk_reacquire_test_cleanup_output_ring(initialized_output);
-        return -4;
-    }
     dsd_fsk_modem_state prev_modem = demod.fsk_modem_state;
     demod.output_kind = output_kind;
     demod.fsk_modem_state.have_prev = 1;
-    demod.fsk_modem_state.timing_acquired = 1;
-    demod.fsk_modem_state.track_len = 9;
     g_fsk_reacquire_pending.store(0, std::memory_order_release);
 
     ring_clear(&output);
@@ -8210,6 +8134,9 @@ dsd_rtl_stream_clear_output(void) {
         outp = g_stream->output;
     }
     rtl_stream_clear_output_ring(outp, 1);
+    if (demod.output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        dsd_fsk_modem_reset(&demod.fsk_modem_state);
+    }
 }
 
 extern "C" int

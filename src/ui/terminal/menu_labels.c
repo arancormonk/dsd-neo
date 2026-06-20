@@ -61,7 +61,8 @@ io_rtl_active(const void* ctx) {
 #ifdef USE_RADIO
 static bool
 rtl_fsk_symbol_output_active_for_ui(void) {
-    return rtl_stream_get_output_kind() == RTL_STREAM_OUTPUT_SYMBOL_FSK;
+    int output_kind = rtl_stream_get_output_kind();
+    return output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
 }
 
 bool

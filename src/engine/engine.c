@@ -155,7 +155,7 @@ rtl_fsk_reacquire_output_is_fsk(void) {
     if (output_kind == 0) {
         output_kind = rtl_stream_get_output_kind();
     }
-    return output_kind == RTL_STREAM_OUTPUT_SYMBOL_FSK;
+    return output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
 }
 
 static void

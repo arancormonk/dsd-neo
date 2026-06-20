@@ -45,7 +45,7 @@
 #endif
 
 #ifdef USE_RADIO
-#define DSD_RTL_OUTPUT_KIND_SYMBOL_FSK 1
+#define DSD_RTL_OUTPUT_KIND_FSK_DISCRIMINATOR 1
 #endif
 
 static void DSD_ATTR_USED
@@ -444,7 +444,7 @@ fsk_soft_metric_available(int* out_levels) {
     int levels = 0;
     int channel_profile = 0;
     if (dsd_rtl_stream_metrics_hook_stream_active()
-        && dsd_rtl_stream_metrics_hook_output_kind() == DSD_RTL_OUTPUT_KIND_SYMBOL_FSK
+        && dsd_rtl_stream_metrics_hook_output_kind() == DSD_RTL_OUTPUT_KIND_FSK_DISCRIMINATOR
         && dsd_rtl_stream_metrics_hook_symbol_profile(&symbol_rate_hz, &levels, &channel_profile) == 0) {
         (void)symbol_rate_hz;
         (void)channel_profile;
