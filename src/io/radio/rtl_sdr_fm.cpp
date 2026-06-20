@@ -533,6 +533,7 @@ struct RtlSdrInternals {
 } // namespace
 
 static struct RtlSdrInternals* g_stream = NULL;
+static struct RtlSdrInternals g_cqpsk_toggle_test_stream;
 static float g_monitor_fm_prev_r = 0.0f;
 static float g_monitor_fm_prev_j = 0.0f;
 static int g_monitor_fm_have_prev = 0;
@@ -8096,7 +8097,7 @@ cqpsk_toggle_test_restore(const CqpskToggleTestSnapshot* s, int initialized_outp
 }
 
 static void
-cqpsk_toggle_test_configure_stream(int active_rtl_digital, RtlSdrInternals* test_stream) {
+cqpsk_toggle_test_configure_stream(int active_rtl_digital) {
     static dsd_opts test_opts;
     DSD_MEMSET(&test_opts, 0, sizeof(test_opts));
     if (!active_rtl_digital) {
@@ -8104,9 +8105,13 @@ cqpsk_toggle_test_configure_stream(int active_rtl_digital, RtlSdrInternals* test
         return;
     }
     test_opts.frame_p25p1 = 1;
-    test_stream->output = &output;
-    test_stream->opts = &test_opts;
-    g_stream = test_stream;
+    g_cqpsk_toggle_test_stream.output = &output;
+    g_cqpsk_toggle_test_stream.opts = &test_opts;
+    g_cqpsk_toggle_test_stream.should_exit.store(0, std::memory_order_release);
+    g_cqpsk_toggle_test_stream.async_started.store(0, std::memory_order_release);
+    g_cqpsk_toggle_test_stream.demod_thread_started.store(0, std::memory_order_release);
+    g_cqpsk_toggle_test_stream.controller_thread_started.store(0, std::memory_order_release);
+    g_stream = &g_cqpsk_toggle_test_stream;
 }
 
 static void
@@ -8162,8 +8167,7 @@ dsd_rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk,
 
     CqpskToggleTestSnapshot snapshot = {};
     cqpsk_toggle_test_save(&snapshot);
-    RtlSdrInternals test_stream = {};
-    cqpsk_toggle_test_configure_stream(active_rtl_digital, &test_stream);
+    cqpsk_toggle_test_configure_stream(active_rtl_digital);
     cqpsk_toggle_test_configure_demod(start_cqpsk);
     cqpsk_toggle_test_seed_output(queued_samples, cached_symbols);
 
