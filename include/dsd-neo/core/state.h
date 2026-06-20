@@ -385,6 +385,9 @@ struct dsd_state {
     int rtl_symbol_cache_levels;
     uint32_t rtl_symbol_cache_generation;
     int rtl_symbol_cache_published_pending;
+    int rtl_fsk_sps_num;
+    int rtl_fsk_sps_den;
+    int rtl_fsk_sps_accum;
 
     /* C4FM timing assist (clock loop hinting). Lightweight EL/M&M error drives
        occasional ±1 nudges of symbolCenter; disabled by default. */

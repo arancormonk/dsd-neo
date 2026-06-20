@@ -407,6 +407,10 @@ int rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samp
 int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                  int* out_cache_pending_after, uint32_t* out_generation_before,
                                  uint32_t* out_generation_after);
+int rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear,
+                                           int* out_consumed_reset, int* out_have_prev_after_consume);
+int rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
+                                     int* out_after_reset_available);
 
 /**
  * @brief Seed output/cache state, request FSK reacquire, and consume pending reset.

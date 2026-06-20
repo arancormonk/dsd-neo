@@ -4851,6 +4851,28 @@ target_link_libraries(
 )
 add_test(NAME DIBIT_SYMBOL_BIN_SOFT COMMAND dsd-neo_test_dibit_symbol_bin_soft)
 
+add_executable(
+    dsd-neo_test_dibit_rtl_fsk_reliability
+    core/test_dibit_rtl_fsk_reliability.c
+    ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+)
+target_compile_definitions(
+    dsd-neo_test_dibit_rtl_fsk_reliability
+    PRIVATE USE_RADIO
+)
+target_include_directories(
+    dsd-neo_test_dibit_rtl_fsk_reliability
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dibit_rtl_fsk_reliability
+    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME DIBIT_RTL_FSK_RELIABILITY
+    COMMAND dsd-neo_test_dibit_rtl_fsk_reliability
+)
+
 # Sync hamming/remap helper unit test
 add_executable(dsd-neo_test_dsp_sync_hamming dsp/test_dsp_sync_hamming.c)
 target_include_directories(

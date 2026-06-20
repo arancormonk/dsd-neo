@@ -34,6 +34,7 @@ static float g_read_base = 1000.0f;
 static float g_read_base_step = 0.0f;
 static int g_read_calls = 0;
 static int g_bump_generation_during_read = 0;
+static int g_output_kind_after_bump = -1;
 static int g_symbol_rate_hz_after_bump = 0;
 static int g_symbol_levels_after_bump = 0;
 static int g_channel_profile_after_bump = -1;
@@ -150,6 +151,10 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
     float read_base = g_read_base;
     if (g_bump_generation_during_read) {
         g_stream_generation++;
+        if (g_output_kind_after_bump >= 0) {
+            g_output_kind = g_output_kind_after_bump;
+            g_output_kind_after_bump = -1;
+        }
         if (g_symbol_rate_hz_after_bump > 0) {
             g_symbol_rate_hz = g_symbol_rate_hz_after_bump;
             g_symbol_rate_hz_after_bump = 0;
@@ -219,6 +224,7 @@ reset_stream_fixture(void) {
     g_read_base_step = 0.0f;
     g_read_calls = 0;
     g_bump_generation_during_read = 0;
+    g_output_kind_after_bump = -1;
     g_symbol_rate_hz_after_bump = 0;
     g_symbol_levels_after_bump = 0;
     g_channel_profile_after_bump = -1;
@@ -360,6 +366,53 @@ main(void) {
     assert(state.rtl_symbol_cache_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
     assert(state.rtl_symbol_cache_levels == 2);
 
+    reset_stream_fixture();
+    reset_decoder_fixture(&opts, &state, &fake_rtl_context);
+    g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    g_output_rate_hz = 24000U;
+    g_symbol_rate_hz = 9600;
+    g_symbol_levels = 2;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
+    g_read_base = 5000.0f;
+    g_read_base_step = 4.0f;
+
+    assert(getSymbol(&opts, &state, 1) == 5000.0f);
+    assert(state.samplesPerSymbol == 2);
+    assert(state.symbolCenter == dsd_opts_symbol_center(2));
+    assert(state.rtl_fsk_sps_accum == 4800);
+    assert(getSymbol(&opts, &state, 1) == 5003.0f);
+    assert(state.samplesPerSymbol == 3);
+    assert(state.symbolCenter == dsd_opts_symbol_center(3));
+    assert(state.rtl_fsk_sps_accum == 0);
+    assert(getSymbol(&opts, &state, 1) == 5005.0f);
+    assert(state.samplesPerSymbol == 2);
+    assert(state.rtl_fsk_sps_accum == 4800);
+
+    reset_stream_fixture();
+    reset_decoder_fixture(&opts, &state, &fake_rtl_context);
+    g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    g_output_rate_hz = 48000U;
+    g_symbol_rate_hz = 4800;
+    g_symbol_levels = 4;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_read_base = 4000.0f;
+    g_read_base_step = 100.0f;
+    g_bump_generation_during_read = 1;
+    g_output_kind_after_bump = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
+    g_symbol_rate_hz_after_bump = 4800;
+    g_symbol_levels_after_bump = 4;
+    g_channel_profile_after_bump = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+
+    assert(getSymbol(&opts, &state, 1) == 0.0f);
+    assert(g_cleanup_calls == 0);
+    assert(g_stream_generation == 2U);
+    assert(g_output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK);
+    state.rf_mod = 1;
+    assert(getSymbol(&opts, &state, 1) == 4100.0f);
+    assert(g_cleanup_calls == 0);
+
+    reset_stream_fixture();
+    reset_decoder_fixture(&opts, &state, &fake_rtl_context);
     g_fail_reads = 1;
     g_failed_read_calls = 0;
     assert(getSymbol(&opts, &state, 1) == 0.0f);

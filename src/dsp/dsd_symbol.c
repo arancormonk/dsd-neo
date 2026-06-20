@@ -1120,18 +1120,73 @@ symbol_refresh_rtl_profile(dsd_state* state, symbol_work_ctx* work) {
     return work->rtl_direct_output;
 }
 
+static inline int
+symbol_rtl_fsk_output_rate_hz(const dsd_opts* opts) {
+    unsigned int output_rate = dsd_rtl_stream_metrics_hook_output_rate_hz();
+    int output_rate_hz = output_rate > 0U ? (int)output_rate : dsd_opts_current_input_timing_rate(opts);
+    return output_rate_hz > 0 ? output_rate_hz : 48000;
+}
+
+static inline int
+symbol_rtl_fsk_symbol_rate_hz(const symbol_work_ctx* work) {
+    return work->rtl_symbol_rate_hz > 0 ? work->rtl_symbol_rate_hz : 4800;
+}
+
+static inline void
+symbol_reset_rtl_fsk_timing_if_needed(dsd_state* state, int output_rate_hz, int symbol_rate_hz,
+                                      const symbol_work_ctx* work) {
+    if (state->rtl_fsk_sps_num == output_rate_hz && state->rtl_fsk_sps_den == symbol_rate_hz
+        && !work->rtl_profile_changed) {
+        return;
+    }
+    state->rtl_fsk_sps_num = output_rate_hz;
+    state->rtl_fsk_sps_den = symbol_rate_hz;
+    state->rtl_fsk_sps_accum = 0;
+}
+
+static inline int
+symbol_rtl_fsk_whole_sps(int output_rate_hz, int symbol_rate_hz, int* rem_out) {
+    int whole = output_rate_hz / symbol_rate_hz;
+    int rem = output_rate_hz % symbol_rate_hz;
+    if (whole < 2) {
+        whole = 2;
+        rem = 0;
+    }
+    if (whole > 64) {
+        whole = 64;
+        rem = 0;
+    }
+    *rem_out = rem;
+    return whole;
+}
+
+static inline int
+symbol_rtl_fsk_next_sps(dsd_state* state, int output_rate_hz, int symbol_rate_hz) {
+    int rem = 0;
+    int sps = symbol_rtl_fsk_whole_sps(output_rate_hz, symbol_rate_hz, &rem);
+    if (rem <= 0 || state->rtl_fsk_sps_den <= 0) {
+        return sps;
+    }
+
+    int accum = state->rtl_fsk_sps_accum + rem;
+    if (accum >= state->rtl_fsk_sps_den) {
+        sps++;
+        accum -= state->rtl_fsk_sps_den;
+    }
+    state->rtl_fsk_sps_accum = accum;
+    return sps > 64 ? 64 : sps;
+}
+
 static inline void
 symbol_apply_rtl_fsk_discriminator_timing(const dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work) {
     if (!opts || !state || !work) {
         return;
     }
-    unsigned int output_rate = dsd_rtl_stream_metrics_hook_output_rate_hz();
-    int output_rate_hz = output_rate > 0U ? (int)output_rate : dsd_opts_current_input_timing_rate(opts);
-    int symbol_rate_hz = work->rtl_symbol_rate_hz > 0 ? work->rtl_symbol_rate_hz : 4800;
-    if (output_rate_hz <= 0) {
-        output_rate_hz = 48000;
-    }
-    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, symbol_rate_hz, output_rate_hz);
+    int output_rate_hz = symbol_rtl_fsk_output_rate_hz(opts);
+    int symbol_rate_hz = symbol_rtl_fsk_symbol_rate_hz(work);
+    symbol_reset_rtl_fsk_timing_if_needed(state, output_rate_hz, symbol_rate_hz, work);
+
+    state->samplesPerSymbol = symbol_rtl_fsk_next_sps(state, output_rate_hz, symbol_rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->jitter = -1;
 }
@@ -1151,7 +1206,6 @@ symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_ou
         }
         symbol_refresh_rtl_profile(state, work);
         if (!work->rtl_fsk_discriminator_output) {
-            cleanupAndExit(opts, state);
             return 0;
         }
         if (work->rtl_profile_changed || state->samplesPerSymbol <= 1) {
@@ -1379,9 +1433,7 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
 
 static inline void
 symbol_prepare_rtl_fsk_discriminator_span(const dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work) {
-    if (work->rtl_profile_changed || state->samplesPerSymbol <= 1) {
-        symbol_apply_rtl_fsk_discriminator_timing(opts, state, work);
-    }
+    symbol_apply_rtl_fsk_discriminator_timing(opts, state, work);
 }
 
 static inline void

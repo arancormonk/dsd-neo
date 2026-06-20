@@ -290,6 +290,13 @@ static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static std::atomic<uint32_t> g_rtl_output_generation{1};
 static std::atomic<int> g_fsk_reacquire_pending{0};
+static std::atomic<int> g_fsk_modem_reset_pending{0};
+static std::atomic<int> g_fsk_modem_config_pending{0};
+static std::atomic<int> g_fsk_modem_config_symbol_rate_hz{4800};
+static std::atomic<int> g_fsk_modem_config_levels{4};
+static std::atomic<int> g_fsk_modem_config_channel_profile{DSD_CH_LPF_PROFILE_WIDE};
+static std::atomic<int> g_fsk_phase_cfo_valid{0};
+static std::atomic<double> g_fsk_phase_cfo_hz{0.0};
 static std::mutex g_pending_retune_profile_mutex;
 static RtlRetuneProfile g_pending_retune_profile;
 static std::atomic<uint32_t> g_replay_event_retune_count{0};
@@ -302,6 +309,12 @@ static std::atomic<uint32_t> g_replay_loop_restart_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
 
 static int rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d);
+static int rtl_stream_consume_fsk_modem_config_pending(struct demod_state* d);
+static int rtl_stream_consume_fsk_modem_reset_pending(struct demod_state* d);
+static void rtl_stream_invalidate_fsk_phase_cfo_snapshot(void);
+static void rtl_stream_publish_fsk_phase_cfo_snapshot(const struct demod_state* d);
+static void rtl_stream_queue_fsk_modem_config(int symbol_rate_hz, int levels, int channel_profile);
+static void rtl_stream_queue_fsk_modem_reset(void);
 static int controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opts,
                                             const dsd_iq_replay_config* cfg);
 static const int kRetuneDiagBlocks = 20;
@@ -1620,6 +1633,7 @@ demod_reset_histories_for_output_mode(struct demod_state* s) {
     demod_reset_resampler_state(s);
     if (s->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         dsd_fsk_modem_reset(&s->fsk_modem_state);
+        rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     }
     demod_reset_monitor_state();
 }
@@ -3321,8 +3335,13 @@ static DSD_THREAD_RETURN_TYPE
         }
         int perf_on = rtl_perf_enabled();
         uint64_t perf_full_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
-        (void)rtl_stream_consume_fsk_reacquire_pending(d);
+        (void)rtl_stream_consume_fsk_modem_config_pending(d);
+        int consumed_fsk_reacquire = rtl_stream_consume_fsk_reacquire_pending(d);
+        if (!consumed_fsk_reacquire) {
+            (void)rtl_stream_consume_fsk_modem_reset_pending(d);
+        }
         full_demod(d);
+        rtl_stream_publish_fsk_phase_cfo_snapshot(d);
         uint64_t perf_full_demod_ns = perf_on ? (rtl_perf_now_ns() - perf_full_start_ns) : 0ULL;
         rtl_monitor_side_tap_process(d);
         demod_log_retune_diag_block(d, span.got, &retune_diag);
@@ -3544,14 +3563,93 @@ rtl_stream_bump_output_generation(void) {
     return next;
 }
 
+static void
+rtl_stream_invalidate_fsk_phase_cfo_snapshot(void) {
+    g_fsk_phase_cfo_valid.store(0, std::memory_order_release);
+}
+
+static void
+rtl_stream_publish_fsk_phase_cfo_snapshot(const struct demod_state* d) {
+    if (!d || d->cqpsk_enable || d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR || d->rate_out <= 0
+        || !d->fsk_modem_state.have_prev) {
+        rtl_stream_invalidate_fsk_phase_cfo_snapshot();
+        return;
+    }
+
+    double dc_rad_per_sample = (double)d->fsk_modem_state.dc_est;
+    if (!std::isfinite(dc_rad_per_sample)) {
+        rtl_stream_invalidate_fsk_phase_cfo_snapshot();
+        return;
+    }
+
+    double cfo_hz = dsd::io::radio::rtl_auto_ppm_fsk_dc_est_to_cfo_hz(dc_rad_per_sample, d->rate_out);
+    if (!std::isfinite(cfo_hz)) {
+        rtl_stream_invalidate_fsk_phase_cfo_snapshot();
+        return;
+    }
+
+    g_fsk_phase_cfo_hz.store(cfo_hz, std::memory_order_relaxed);
+    g_fsk_phase_cfo_valid.store(1, std::memory_order_release);
+}
+
+static void
+rtl_stream_queue_fsk_modem_config(int symbol_rate_hz, int levels, int channel_profile) {
+    g_fsk_modem_config_symbol_rate_hz.store(symbol_rate_hz, std::memory_order_relaxed);
+    g_fsk_modem_config_levels.store(levels, std::memory_order_relaxed);
+    g_fsk_modem_config_channel_profile.store(channel_profile, std::memory_order_relaxed);
+    g_fsk_modem_config_pending.store(1, std::memory_order_release);
+}
+
+static void
+rtl_stream_queue_fsk_modem_reset(void) {
+    g_fsk_modem_reset_pending.store(1, std::memory_order_release);
+}
+
+static void
+rtl_stream_reset_fsk_modem_on_demod_thread(struct demod_state* d) {
+    if (!d) {
+        return;
+    }
+    dsd_fsk_modem_reset(&d->fsk_modem_state);
+    rtl_stream_invalidate_fsk_phase_cfo_snapshot();
+}
+
+static int
+rtl_stream_consume_fsk_modem_config_pending(struct demod_state* d) {
+    int pending = g_fsk_modem_config_pending.exchange(0, std::memory_order_acq_rel);
+    if (!pending || !d) {
+        return 0;
+    }
+
+    dsd_fsk_modem_config cfg = {};
+    cfg.sample_rate_hz = d->rate_out > 0 ? d->rate_out : d->rate_in;
+    cfg.symbol_rate_hz = g_fsk_modem_config_symbol_rate_hz.load(std::memory_order_relaxed);
+    cfg.levels = g_fsk_modem_config_levels.load(std::memory_order_relaxed);
+    cfg.channel_profile = g_fsk_modem_config_channel_profile.load(std::memory_order_relaxed);
+    dsd_fsk_modem_configure(&d->fsk_modem_state, &cfg);
+    rtl_stream_invalidate_fsk_phase_cfo_snapshot();
+    return 1;
+}
+
+static int
+rtl_stream_consume_fsk_modem_reset_pending(struct demod_state* d) {
+    int pending = g_fsk_modem_reset_pending.exchange(0, std::memory_order_acq_rel);
+    if (!pending || !d || d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        return 0;
+    }
+    rtl_stream_reset_fsk_modem_on_demod_thread(d);
+    return 1;
+}
+
 static int
 rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d) {
     int pending = g_fsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
     if (!pending || !d || d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
     }
-    dsd_rtl_stream_clear_output();
-    dsd_fsk_modem_reset(&d->fsk_modem_state);
+    rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
+    g_fsk_modem_reset_pending.store(0, std::memory_order_release);
+    rtl_stream_reset_fsk_modem_on_demod_thread(d);
     if (debug_sync_enabled()) {
         DSD_FPRINTF(stderr, "[FSKREACQ] consumed output_generation=%u\n",
                     g_rtl_output_generation.load(std::memory_order_acquire));
@@ -6291,16 +6389,15 @@ auto_ppm_make_config(const dsd_opts* opts) {
 
 static int
 auto_ppm_fsk_phase_cfo_hz(double* out_cfo_hz) {
-    if (!out_cfo_hz || demod.cqpsk_enable || demod.output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR
-        || demod.rate_out <= 0 || !demod.fsk_modem_state.have_prev) {
+    if (!out_cfo_hz || !g_fsk_phase_cfo_valid.load(std::memory_order_acquire)) {
         return 0;
     }
-    double dc_rad_per_sample = (double)demod.fsk_modem_state.dc_est;
-    if (!std::isfinite(dc_rad_per_sample)) {
+    double cfo_hz = g_fsk_phase_cfo_hz.load(std::memory_order_relaxed);
+    if (!std::isfinite(cfo_hz)) {
         return 0;
     }
 
-    *out_cfo_hz = dsd::io::radio::rtl_auto_ppm_fsk_dc_est_to_cfo_hz(dc_rad_per_sample, demod.rate_out);
+    *out_cfo_hz = cfo_hz;
     return 1;
 }
 
@@ -6643,12 +6740,7 @@ dsd_rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
     if (channel_profile >= DSD_CH_LPF_PROFILE_WIDE && channel_profile <= DSD_CH_LPF_PROFILE_P25_CQPSK) {
         demod.channel_lpf_profile = channel_profile;
     }
-    dsd_fsk_modem_config cfg = {};
-    cfg.sample_rate_hz = demod.rate_out > 0 ? demod.rate_out : demod.rate_in;
-    cfg.symbol_rate_hz = demod.symbol_rate_hz;
-    cfg.levels = demod.symbol_levels;
-    cfg.channel_profile = demod.channel_lpf_profile;
-    dsd_fsk_modem_configure(&demod.fsk_modem_state, &cfg);
+    rtl_stream_queue_fsk_modem_config(demod.symbol_rate_hz, demod.symbol_levels, demod.channel_lpf_profile);
     if (changed) {
         demod.costas_reset_pending = 1;
     }
@@ -7013,6 +7105,7 @@ dsd_rtl_stream_get_iq_balance(void) {
 static void
 rtl_stream_enable_cqpsk_mode(void) {
     demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     demod.symbol_levels = 4;
     demod.ted_enabled = 1;
     demod.mode_demod = &qpsk_differential_demod;
@@ -7031,6 +7124,7 @@ rtl_stream_disable_cqpsk_mode(void) {
         demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     } else {
         demod.output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+        rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     }
 }
 
@@ -7761,6 +7855,10 @@ dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, int*
     return (first_found && second_found) ? 0 : -2;
 }
 
+static void fsk_reacquire_test_cleanup_output_ring(int initialized_output);
+static int fsk_reacquire_test_prepare_output_ring(size_t queued_samples, int* initialized_output);
+static void fsk_reacquire_test_reset_output_state(void);
+
 extern "C" int
 dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                  int* out_cache_pending_after, uint32_t* out_generation_before,
@@ -7793,6 +7891,7 @@ dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size
     output.head.store(queued_samples);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
+    int prev_reset_pending = g_fsk_modem_reset_pending.exchange(0, std::memory_order_acq_rel);
 
     *out_generation_before = dsd_rtl_stream_output_generation();
     dsd_rtl_stream_clear_output();
@@ -7802,10 +7901,83 @@ dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size
 
     ring_clear(&output);
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    g_fsk_modem_reset_pending.store(prev_reset_pending, std::memory_order_release);
     if (initialized_output) {
         output_cleanup(&output);
     }
     return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear,
+                                           int* out_consumed_reset, int* out_have_prev_after_consume) {
+    if (!out_have_prev_after_clear || !out_consumed_reset || !out_have_prev_after_consume) {
+        return -1;
+    }
+
+    int initialized_output = 0;
+    int prepare_rc = fsk_reacquire_test_prepare_output_ring(queued_samples, &initialized_output);
+    if (prepare_rc != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return prepare_rc;
+    }
+
+    int prev_output_kind = demod.output_kind;
+    dsd_fsk_modem_state prev_modem = demod.fsk_modem_state;
+    int prev_reset_pending = g_fsk_modem_reset_pending.exchange(0, std::memory_order_acq_rel);
+    demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod.fsk_modem_state.have_prev = 1;
+
+    ring_clear(&output);
+    output.tail.store(0);
+    output.head.store(queued_samples);
+
+    dsd_rtl_stream_clear_output();
+    *out_have_prev_after_clear = demod.fsk_modem_state.have_prev;
+    *out_consumed_reset = rtl_stream_consume_fsk_modem_reset_pending(&demod);
+    *out_have_prev_after_consume = demod.fsk_modem_state.have_prev;
+
+    demod.output_kind = prev_output_kind;
+    demod.fsk_modem_state = prev_modem;
+    g_fsk_modem_reset_pending.store(prev_reset_pending, std::memory_order_release);
+    fsk_reacquire_test_reset_output_state();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
+                                     int* out_after_reset_available) {
+    if (!out_cfo_hz || !out_after_reset_available) {
+        return -1;
+    }
+
+    int prev_cqpsk = demod.cqpsk_enable;
+    int prev_output_kind = demod.output_kind;
+    int prev_rate_out = demod.rate_out;
+    dsd_fsk_modem_state prev_modem = demod.fsk_modem_state;
+    int prev_reset_pending = g_fsk_modem_reset_pending.exchange(0, std::memory_order_acq_rel);
+
+    demod.cqpsk_enable = 0;
+    demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod.rate_out = rate_out_hz;
+    demod.fsk_modem_state.have_prev = 1;
+    demod.fsk_modem_state.dc_est = (float)dc_rad_per_sample;
+    rtl_stream_publish_fsk_phase_cfo_snapshot(&demod);
+
+    int available_before = auto_ppm_fsk_phase_cfo_hz(out_cfo_hz);
+    rtl_stream_queue_fsk_modem_reset();
+    (void)rtl_stream_consume_fsk_modem_reset_pending(&demod);
+    double after_reset_cfo_hz = 0.0;
+    *out_after_reset_available = auto_ppm_fsk_phase_cfo_hz(&after_reset_cfo_hz);
+
+    demod.cqpsk_enable = prev_cqpsk;
+    demod.output_kind = prev_output_kind;
+    demod.rate_out = prev_rate_out;
+    demod.fsk_modem_state = prev_modem;
+    g_fsk_modem_reset_pending.store(prev_reset_pending, std::memory_order_release);
+    rtl_stream_invalidate_fsk_phase_cfo_snapshot();
+    return available_before ? 0 : -2;
 }
 
 static void
@@ -7868,7 +8040,8 @@ dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int ca
     dsd_fsk_modem_state prev_modem = demod.fsk_modem_state;
     demod.output_kind = output_kind;
     demod.fsk_modem_state.have_prev = 1;
-    g_fsk_reacquire_pending.store(0, std::memory_order_release);
+    int prev_reacquire_pending = g_fsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
+    int prev_reset_pending = g_fsk_modem_reset_pending.exchange(0, std::memory_order_acq_rel);
 
     ring_clear(&output);
     output.tail.store(0);
@@ -7882,7 +8055,8 @@ dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int ca
         && !fsk_reacquire_test_request_state_valid(queued_samples, cached_symbols, *out_generation_before)) {
         demod.output_kind = prev_output_kind;
         demod.fsk_modem_state = prev_modem;
-        g_fsk_reacquire_pending.store(0, std::memory_order_release);
+        g_fsk_reacquire_pending.store(prev_reacquire_pending, std::memory_order_release);
+        g_fsk_modem_reset_pending.store(prev_reset_pending, std::memory_order_release);
         fsk_reacquire_test_reset_output_state();
         fsk_reacquire_test_cleanup_output_ring(initialized_output);
         return -5;
@@ -7894,7 +8068,8 @@ dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int ca
 
     demod.output_kind = prev_output_kind;
     demod.fsk_modem_state = prev_modem;
-    g_fsk_reacquire_pending.store(0, std::memory_order_release);
+    g_fsk_reacquire_pending.store(prev_reacquire_pending, std::memory_order_release);
+    g_fsk_modem_reset_pending.store(prev_reset_pending, std::memory_order_release);
     fsk_reacquire_test_reset_output_state();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return 0;
@@ -8134,9 +8309,7 @@ dsd_rtl_stream_clear_output(void) {
         outp = g_stream->output;
     }
     rtl_stream_clear_output_ring(outp, 1);
-    if (demod.output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
-        dsd_fsk_modem_reset(&demod.fsk_modem_state);
-    }
+    rtl_stream_queue_fsk_modem_reset();
 }
 
 extern "C" int

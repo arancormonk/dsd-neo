@@ -458,6 +458,9 @@ init_state_core_buffers(dsd_state* state) {
     state->rtl_symbol_cache_levels = 0;
     state->rtl_symbol_cache_generation = 0;
     state->rtl_symbol_cache_published_pending = 0;
+    state->rtl_fsk_sps_num = 0;
+    state->rtl_fsk_sps_den = 0;
+    state->rtl_fsk_sps_accum = 0;
     // Optional RC2 crypto context (allocated on demand by key setup path)
     state->rc2_context = NULL;
 

@@ -73,6 +73,9 @@ main(void) {
     state->rtl_symbol_cache_levels = 4;
     state->rtl_symbol_cache_generation = 42U;
     state->rtl_symbol_cache_published_pending = 2;
+    state->rtl_fsk_sps_num = 24000;
+    state->rtl_fsk_sps_den = 9600;
+    state->rtl_fsk_sps_accum = 4800;
     state->ess_b[0][95] = 1;
     state->ess_b_llr[1][95] = 123;
     state->fourv_counter[0] = 2;
@@ -253,7 +256,8 @@ main(void) {
     if (state->rtl_symbol_cache_pos != 0 || state->rtl_symbol_cache_len != 0 || state->rtl_symbol_cache_output_kind != 0
         || state->rtl_symbol_cache_channel_profile != 0 || state->rtl_symbol_cache_symbol_rate_hz != 0
         || state->rtl_symbol_cache_levels != 0 || state->rtl_symbol_cache_generation != 0U
-        || state->rtl_symbol_cache_published_pending != 0 || state->rtl_symbol_cache[0] != 0.0f
+        || state->rtl_symbol_cache_published_pending != 0 || state->rtl_fsk_sps_num != 0 || state->rtl_fsk_sps_den != 0
+        || state->rtl_fsk_sps_accum != 0 || state->rtl_symbol_cache[0] != 0.0f
         || state->rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP - 1] != 0.0f) {
         DSD_FPRINTF(stderr, "initState did not clear RTL symbol cache state\n");
         freeState(state);

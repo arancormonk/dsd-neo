@@ -103,6 +103,10 @@ int dsd_rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_
 int dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                      int* out_cache_pending_after, uint32_t* out_generation_before,
                                      uint32_t* out_generation_after);
+int dsd_rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear,
+                                               int* out_consumed_reset, int* out_have_prev_after_consume);
+int dsd_rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
+                                         int* out_after_reset_available);
 int dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols,
                                       size_t* out_used_after, int* out_cache_pending_after,
                                       uint32_t* out_generation_before, uint32_t* out_generation_after,
@@ -281,6 +285,19 @@ rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* 
                              uint32_t* out_generation_after) {
     return dsd_rtl_stream_test_clear_output(queued_samples, cached_symbols, out_used_after, out_cache_pending_after,
                                             out_generation_before, out_generation_after);
+}
+
+extern "C" int
+rtl_stream_test_clear_output_fsk_reset(size_t queued_samples, int* out_have_prev_after_clear, int* out_consumed_reset,
+                                       int* out_have_prev_after_consume) {
+    return dsd_rtl_stream_test_clear_output_fsk_reset(queued_samples, out_have_prev_after_clear, out_consumed_reset,
+                                                      out_have_prev_after_consume);
+}
+
+extern "C" int
+rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, double* out_cfo_hz,
+                                 int* out_after_reset_available) {
+    return dsd_rtl_stream_test_fsk_cfo_snapshot(dc_rad_per_sample, rate_out_hz, out_cfo_hz, out_after_reset_available);
 }
 
 extern "C" int
