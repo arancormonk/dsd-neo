@@ -81,6 +81,7 @@ typedef struct dsd_fsk_modem_state {
     float track_start_phase;
     float track_last_error;
     float track_last_score;
+    float track_signal_ref;
     uint64_t track_updates;
     uint64_t track_skips;
     uint64_t track_consecutive_skips;

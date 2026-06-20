@@ -245,6 +245,17 @@ seed_tracking_boundary_window(dsd_fsk_modem_state* modem, int clock_i, int best_
 }
 
 static void
+seed_tracking_constant_window(dsd_fsk_modem_state* modem, int clock_i, float start_phase, float value) {
+    int target = clock_i * 64;
+    assert(target <= DSD_FSK_MODEM_TRACK_MAX_SAMPLES);
+    for (int i = 0; i < target - 1; i++) {
+        modem->track_freq[i] = value;
+    }
+    modem->track_len = target - 1;
+    modem->track_start_phase = start_phase;
+}
+
+static void
 test_p25_c4fm_4800_at_48000(void) {
     enum { SYMBOLS = 1600, SPS = 10, RUN = 12 };
 
@@ -702,6 +713,56 @@ test_timing_tracker_applies_bounded_soft_correction(void) {
 }
 
 static void
+test_timing_tracker_soft_accepts_do_not_mask_signal_loss(void) {
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    modem.timing_acquired = 1;
+    modem.symbol_phase = 5.0f;
+    modem.abs_est = 10.0f;
+
+    float iq[] = {1.0f, 0.0f};
+    float out[8];
+    for (int i = 0; i < 32; i++) {
+        modem.have_prev = 1;
+        modem.prev_i = 1.0f;
+        modem.prev_q = 0.0f;
+        seed_tracking_boundary_window_scaled(&modem, 10, 2, 7, 8.0f, 1.05f, 1.0f);
+        (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
+    }
+
+    assert(modem.track_updates == 32);
+    assert(modem.track_skips == 0);
+    assert(modem.track_consecutive_skips == 0);
+    assert(modem.timing_acquired == 0);
+}
+
+static void
+test_timing_tracker_preserves_low_transition_signal(void) {
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    modem.timing_acquired = 1;
+    modem.symbol_phase = 4.0f;
+    modem.abs_est = 0.05f;
+
+    float iq[] = {cosf(0.05f), sinf(0.05f)};
+    float out[8];
+    for (int i = 0; i < 40; i++) {
+        modem.have_prev = 1;
+        modem.prev_i = 1.0f;
+        modem.prev_q = 0.0f;
+        modem.dc_est = 0.0f;
+        seed_tracking_constant_window(&modem, 10, 0.0f, 0.05f);
+        (void)dsd_fsk_modem_process(&modem, iq, 2, out, 8);
+        assert(modem.timing_acquired == 1);
+    }
+
+    assert(modem.track_skips == 40);
+    assert(modem.track_consecutive_skips == 0);
+}
+
+static void
 test_timing_tracker_reacquires_after_consecutive_skips(void) {
     dsd_fsk_modem_state modem;
     dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
@@ -727,6 +788,38 @@ test_timing_tracker_reacquires_after_consecutive_skips(void) {
     assert(modem.acq_len == 0);
     assert(modem.symbol_count == 0);
     assert(modem.pending_len == 0);
+}
+
+static void
+test_timing_reacquire_waits_through_long_silence(void) {
+    enum { SYMBOLS = 2200, SPS = 10, RUN = 16, GAP_COMPLEX = (33 * 64 * SPS) + DSD_FSK_MODEM_ACQ_MAX_SAMPLES + 500 };
+
+    static const float levels[] = {-3.0f, 3.0f, -1.0f, 1.0f, 3.0f, -3.0f};
+    float* symbols = (float*)calloc(SYMBOLS, sizeof(float));
+    float* first_iq = (float*)calloc((size_t)SYMBOLS * SPS * 2U, sizeof(float));
+    float* gap_iq = (float*)calloc((size_t)GAP_COMPLEX * 2U, sizeof(float));
+    float* out = (float*)calloc(SYMBOLS + 512, sizeof(float));
+    assert(symbols && first_iq && gap_iq && out);
+
+    fill_run_pattern(symbols, SYMBOLS, levels, (int)(sizeof(levels) / sizeof(levels[0])), RUN);
+    synthesize_fsk(first_iq, symbols, SYMBOLS, SPS, 0.025f, 0.001f, 0.002f, 0);
+
+    dsd_fsk_modem_state modem;
+    dsd_fsk_modem_config cfg = {48000, 4800, 4, 2};
+    dsd_fsk_modem_init(&modem, &cfg);
+    int produced = dsd_fsk_modem_process(&modem, first_iq, SYMBOLS * SPS * 2, out, SYMBOLS + 512);
+    assert(produced >= SYMBOLS - 24);
+    assert(modem.timing_acquired == 1);
+
+    (void)dsd_fsk_modem_process(&modem, gap_iq, GAP_COMPLEX * 2, out, SYMBOLS + 512);
+    assert(modem.timing_acquired == 0);
+    assert(modem.acq_len > 0);
+    assert(modem.acq_len < DSD_FSK_MODEM_ACQ_MAX_SAMPLES);
+
+    free(out);
+    free(gap_iq);
+    free(first_iq);
+    free(symbols);
 }
 
 static void
@@ -791,6 +884,7 @@ test_reconfigure_resets_state(void) {
     modem.track_start_phase = 3.0f;
     modem.track_last_error = 2.0f;
     modem.track_last_score = 0.5f;
+    modem.track_signal_ref = 0.25f;
     modem.track_updates = 7;
     modem.track_skips = 5;
     modem.track_consecutive_skips = 3;
@@ -808,6 +902,7 @@ test_reconfigure_resets_state(void) {
     assert(modem.track_start_phase == 0.0f);
     assert(modem.track_last_error == 0.0f);
     assert(modem.track_last_score == 0.0f);
+    assert(modem.track_signal_ref == 0.0f);
     assert(modem.track_updates == 0);
     assert(modem.track_skips == 0);
     assert(modem.track_consecutive_skips == 0);
@@ -836,7 +931,10 @@ main(void) {
     test_dmr_gfsk_tracks_fractional_symbol_clock();
     test_timing_tracker_skips_low_confidence_windows();
     test_timing_tracker_applies_bounded_soft_correction();
+    test_timing_tracker_soft_accepts_do_not_mask_signal_loss();
+    test_timing_tracker_preserves_low_transition_signal();
     test_timing_tracker_reacquires_after_consecutive_skips();
+    test_timing_reacquire_waits_through_long_silence();
     test_timing_tracker_recovers_after_gap();
     test_reconfigure_resets_state();
     return 0;
