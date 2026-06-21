@@ -7,7 +7,9 @@
  * NXDN data-call CRC32 (MSB-first, init all-ones, no final xor) unit checks.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <stdint.h>
@@ -19,6 +21,8 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
+
+static int g_alias_reset_calls;
 
 /*
  * Link stubs:
@@ -101,6 +105,7 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_alias_reset(dsd_state* state) {
     (void)state;
+    g_alias_reset_calls++;
 }
 
 void
@@ -141,6 +146,15 @@ expect_u32(const char* tag, uint32_t got, uint32_t want) {
 }
 
 static int
+expect_int(const char* tag, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_label(const char* tag, uint8_t message_type, const char* want) {
     const char* got = nxdn_message_type_label(message_type);
     if ((got == NULL) != (want == NULL)) {
@@ -152,6 +166,76 @@ expect_label(const char* tag, uint8_t message_type, const char* want) {
         return 1;
     }
     return 0;
+}
+
+static int
+all_sacch_segments_are(uint8_t value, const dsd_state* state) {
+    for (size_t frame = 0U; frame < 4U; frame++) {
+        if (state->nxdn_sacch_frame_segcrc[frame] != value) {
+            return 0;
+        }
+        for (size_t bit = 0U; bit < 18U; bit++) {
+            if (state->nxdn_sacch_frame_segment[frame][bit] != value) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int
+test_message_type_reset_contract(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    g_alias_reset_calls = 0;
+
+    opts.floating_point = 1;
+    opts.audio_gain = 2.5f;
+    state.aout_gain = 9.0f;
+    state.nxdn_last_rid = 1234;
+    state.nxdn_last_tg = 5678;
+    state.nxdn_cipher_type = 1;
+    state.keyloader = 1;
+    state.R = 42;
+    DSD_SNPRINTF(state.nxdn_call_type, sizeof(state.nxdn_call_type), "%s", "voice");
+    DSD_MEMSET(state.nxdn_sacch_frame_segcrc, 0, sizeof(state.nxdn_sacch_frame_segcrc));
+    DSD_MEMSET(state.nxdn_sacch_frame_segment, 0, sizeof(state.nxdn_sacch_frame_segment));
+
+    nxdn_message_type(&opts, &state, 0x08U);
+    rc |= expect_int("tx-rel-alias-reset", g_alias_reset_calls, 1);
+    rc |= expect_int("tx-rel-rid-reset", state.nxdn_last_rid, 0);
+    rc |= expect_int("tx-rel-tg-reset", state.nxdn_last_tg, 0);
+    rc |= expect_int("tx-rel-cipher-reset", state.nxdn_cipher_type, 0);
+    rc |= expect_int("tx-rel-keyloader-r-reset", state.R, 0);
+    rc |= expect_int("tx-rel-call-type-cleared", state.nxdn_call_type[0], '\0');
+    rc |= expect_int("tx-rel-sacch-reset", all_sacch_segments_are(1U, &state), 1);
+    rc |= expect_int("tx-rel-gain-reset", state.aout_gain == opts.audio_gain, 1);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    g_alias_reset_calls = 0;
+    state.aout_gain = 9.0f;
+    state.nxdn_last_rid = 1234;
+    state.nxdn_last_tg = 5678;
+    state.nxdn_cipher_type = 1;
+    state.keyloader = 1;
+    state.R = 42;
+
+    nxdn_message_type(&opts, &state, 0x07U);
+    rc |= expect_int("tx-rel-ex-no-alias-reset", g_alias_reset_calls, 0);
+    rc |= expect_int("tx-rel-ex-rid-kept", state.nxdn_last_rid, 1234);
+    rc |= expect_int("tx-rel-ex-tg-kept", state.nxdn_last_tg, 5678);
+    rc |= expect_int("tx-rel-ex-r-kept", state.R, 42);
+    rc |= expect_int("tx-rel-ex-gain-reset", state.aout_gain == opts.audio_gain, 1);
+
+    state.aout_gain = 7.0f;
+    nxdn_message_type(&opts, &state, 0x10U);
+    rc |= expect_int("idle-gain-kept", state.aout_gain == 7.0f, 1);
+    rc |= expect_int("idle-rid-kept", state.nxdn_last_rid, 1234);
+    return rc;
 }
 
 int
@@ -186,6 +270,7 @@ main(void) {
     rc |= expect_label("label-dcr-tx-rel-silent", 0x88U, "");
     rc |= expect_label("label-dcr-idle-silent", 0x90U, "");
     rc |= expect_label("label-unknown", 0xFEU, NULL);
+    rc |= test_message_type_reset_contract();
 
     return rc;
 }

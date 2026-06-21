@@ -897,6 +897,63 @@ M17dispatchStreamPayload(M17_CODEC2_OPTS_PARAM opts, dsd_state* state, const uin
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_m17_test_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res) {
+    if (state == NULL || res == NULL) {
+        return -1;
+    }
+    if (res->rs != 0U || res->type_reserved_valid == 0U || res->dst_is_valid == 0U || res->src_is_valid == 0U) {
+        return 0;
+    }
+
+    M17decodeLSFFields(state, res);
+    M17logLSFSummary(state, res);
+    M17storeLSFMeta(state, res);
+    M17decodeLSFMeta(state, res);
+    return 1;
+}
+
+int
+dsd_neo_m17_test_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t payload[128],
+                                         uint16_t frame_number, uint8_t processed_payload[128]) {
+    if (opts == NULL || state == NULL || payload == NULL || processed_payload == NULL) {
+        return DSD_NEO_M17_TEST_STREAM_INVALID;
+    }
+
+    uint8_t payload_bytes[M17_SIGNATURE_DIGEST_BYTES];
+    uint8_t trellis_buf[144];
+    DSD_MEMSET(payload_bytes, 0, sizeof(payload_bytes));
+    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
+    DSD_MEMSET(processed_payload, 0, M17_STREAM_PAYLOAD_BITS);
+    m17_bits_to_bytes_msb(payload, payload_bytes, sizeof(payload_bytes));
+
+    if (M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
+        return DSD_NEO_M17_TEST_STREAM_SIGNATURE_CONSUMED;
+    }
+
+    const uint16_t payload_frame_number = (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX);
+    M17updateSignatureDigestIfNeeded(state, payload_bytes, payload_frame_number);
+
+    if (!m17_can_matches_state(state)) {
+        return DSD_NEO_M17_TEST_STREAM_CAN_FILTERED;
+    }
+
+    const int payload_ready = m17_decrypt_stream_payload(state, frame_number, payload, processed_payload);
+    if (payload_ready == 0) {
+        return DSD_NEO_M17_TEST_STREAM_ENCRYPTED_LOCKED;
+    }
+
+    const uint8_t old_payload_decrypted = state->m17_payload_decrypted;
+    state->m17_payload_decrypted = (state->m17_enc != 0U) ? 1U : 0U;
+    M17processStreamPayloadBits((M17_CODEC2_OPTS_PARAM)opts, state, processed_payload, payload_frame_number);
+    const int result = (state->m17_enc != 0U) ? DSD_NEO_M17_TEST_STREAM_ENCRYPTED_DISPATCHED
+                                              : DSD_NEO_M17_TEST_STREAM_CLEAR_DISPATCHED;
+    state->m17_payload_decrypted = old_payload_decrypted;
+    return result;
+}
+#endif
+
 static void
 M17prepareStream(M17_CODEC2_OPTS_PARAM opts, dsd_state* state, const uint8_t* m17_bits) {
 
