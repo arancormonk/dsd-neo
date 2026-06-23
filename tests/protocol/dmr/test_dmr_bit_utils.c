@@ -37,6 +37,18 @@ test_hamming17123_single_bit_correction(void) {
     }
 }
 
+static void
+test_hamming17123_uncorrectable_word_is_rejected(void) {
+    uint8_t word[17];
+    uint8_t expected[17];
+    build_slc17(expected, 0x5A6U);
+    DSD_MEMCPY(word, expected, sizeof(word));
+
+    word[0] ^= 1U;
+    word[2] ^= 1U;
+    assert(Hamming17123(word) == false);
+}
+
 int
 main(void) {
     // Build a 16-bit pattern 0xABCD in MSB-first bit order
@@ -52,6 +64,7 @@ main(void) {
     assert(ConvertBitIntoBytes(bits, 0) == 0ULL);
 
     test_hamming17123_single_bit_correction();
+    test_hamming17123_uncorrectable_word_is_rejected();
 
     printf("DMR bit utils: OK\n");
     return 0;

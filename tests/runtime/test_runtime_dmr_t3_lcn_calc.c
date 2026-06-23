@@ -64,6 +64,17 @@ test_empty_csv_fails(void) {
 }
 
 static void
+test_invalid_signed_numeric_prefixes_are_skipped(void) {
+    char path[DSD_TEST_PATH_MAX];
+
+    clear_dmr_t3_env();
+    dsd_neo_config_init(NULL);
+    write_temp_csv(path, "site,freq\nA,+not-a-number7\nB,-0\nC,0\n");
+    assert(dsd_cli_calc_dmr_t3_lcn_from_csv(path) == 2);
+    remove(path);
+}
+
+static void
 test_single_frequency_uses_default_start_lcn(void) {
     char path[DSD_TEST_PATH_MAX];
 
@@ -82,6 +93,17 @@ test_unsorted_duplicates_infer_step(void) {
     dsd_neo_config_init(NULL);
     write_temp_csv(path, "site,freq\nB,851.025\nA,851.0125\nC,851.025\nD,851.0375\n");
     assert(dsd_cli_calc_dmr_t3_lcn_from_csv(path) == 0);
+    remove(path);
+}
+
+static void
+test_too_small_spacing_without_configured_step_fails(void) {
+    char path[DSD_TEST_PATH_MAX];
+
+    clear_dmr_t3_env();
+    dsd_neo_config_init(NULL);
+    write_temp_csv(path, "site,freq\nA,851000000\nB,851000050\n");
+    assert(dsd_cli_calc_dmr_t3_lcn_from_csv(path) == 3);
     remove(path);
 }
 
@@ -106,8 +128,10 @@ int
 main(void) {
     test_missing_file_fails();
     test_empty_csv_fails();
+    test_invalid_signed_numeric_prefixes_are_skipped();
     test_single_frequency_uses_default_start_lcn();
     test_unsorted_duplicates_infer_step();
+    test_too_small_spacing_without_configured_step_fails();
     test_configured_step_and_anchor_are_accepted();
     printf("RUNTIME_DMR_T3_LCN_CALC: OK\n");
     return 0;

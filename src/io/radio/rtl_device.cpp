@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cinttypes>
 #include <cmath>
 #include <dsd-neo/core/constants.h>
@@ -45,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
 #endif
@@ -77,10 +79,8 @@ enum : unsigned char {
 #include <SoapySDR/Errors.hpp>
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
-#include <cctype>
 #include <complex>
 #include <exception>
-#include <string>
 #include <vector>
 
 namespace SoapySDR {
@@ -1870,6 +1870,37 @@ rtl_device_test_replay_dispatch_reset_event_state(int* phase, int* have_carry, u
     uint64_t complex_written = 0;
     replay_dispatch_event(&dev, &event, phase, have_carry, carry_byte, &complex_written);
 }
+
+extern "C" int
+rtl_device_test_replay_input_level_snapshot(int format, int backend, const char* capture_stage, size_t raw_bytes,
+                                            size_t scratch_cap_f32, int* out_rc, int* out_source, uint64_t* out_count) {
+    if (!out_rc || !out_source || !out_count || raw_bytes > 32U || scratch_cap_f32 > 8U) {
+        return -1;
+    }
+
+    rtl_device dev{};
+    dev.backend = backend;
+    dev.replay_cfg.format = (dsd_iq_sample_format)format;
+    DSD_SNPRINTF(dev.replay_cfg.capture_stage, sizeof(dev.replay_cfg.capture_stage), "%s",
+                 capture_stage ? capture_stage : "");
+
+    uint8_t raw[32] = {};
+    for (size_t i = 0U; i < sizeof(raw); i++) {
+        raw[i] = (i & 1U) ? 136U : 119U;
+    }
+    if (format == DSD_IQ_FORMAT_CF32) {
+        const float samples[] = {0.25f, -0.25f, 0.50f, -0.50f};
+        size_t copy_bytes = raw_bytes < sizeof(samples) ? raw_bytes : sizeof(samples);
+        DSD_MEMCPY(raw, samples, copy_bytes);
+    }
+
+    float scratch[8] = {};
+    dsd_input_level_snapshot snapshot{};
+    *out_rc = rtl_prepare_replay_input_level_snapshot(&dev, raw, raw_bytes, scratch, scratch_cap_f32, &snapshot);
+    *out_source = (*out_rc == 0) ? (int)snapshot.source : -1;
+    *out_count = (*out_rc == 0) ? snapshot.sample_count : 0U;
+    return 0;
+}
 #endif
 
 static void
@@ -2049,6 +2080,70 @@ replay_convert_block_to_f32(const struct rtl_device* s, const uint8_t* raw_block
     }
     return -1;
 }
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+// Internal test hooks use a pointer-shaped C ABI; the request layout is mirrored by the test TU.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+struct rtl_device_test_replay_convert_block_request {
+    int format;
+    const char* capture_stage;
+    int fs4_shift_enabled;
+    int combine_rotate_enabled;
+    const uint8_t* raw_block;
+    size_t raw_bytes;
+    size_t out_cap_f32;
+    int start_phase;
+    int start_have_carry;
+    uint8_t start_carry_byte;
+};
+
+static int
+rtl_device_test_replay_convert_block_request_valid(const rtl_device_test_replay_convert_block_request* request,
+                                                   const float* out_f32, size_t out_f32_count, const int* out_phase,
+                                                   const int* out_have_carry, const uint8_t* out_carry_byte) {
+    return request && request->raw_block && out_f32 && out_phase && out_have_carry && out_carry_byte
+           && request->raw_bytes <= 32U && request->out_cap_f32 <= out_f32_count;
+}
+
+static size_t
+rtl_device_test_replay_convert_copy_count(int rc, size_t out_f32_count, size_t scratch_count) {
+    size_t copy_count = (rc > 0 && (size_t)rc < out_f32_count) ? (size_t)rc : out_f32_count;
+    return (copy_count > scratch_count) ? scratch_count : copy_count;
+}
+
+extern "C" int
+rtl_device_test_replay_convert_block(const rtl_device_test_replay_convert_block_request* request, float* out_f32,
+                                     size_t out_f32_count, int* out_phase, int* out_have_carry,
+                                     uint8_t* out_carry_byte) {
+    if (!rtl_device_test_replay_convert_block_request_valid(request, out_f32, out_f32_count, out_phase, out_have_carry,
+                                                            out_carry_byte)) {
+        return -1;
+    }
+
+    rtl_device dev{};
+    dev.backend = RTL_BACKEND_IQ_REPLAY;
+    dev.replay_cfg.format = (dsd_iq_sample_format)request->format;
+    dev.replay_cfg.fs4_shift_enabled = request->fs4_shift_enabled ? 1 : 0;
+    dev.replay_fs4_shift_enabled = request->fs4_shift_enabled ? 1 : 0;
+    dev.replay_combine_rotate_enabled = request->combine_rotate_enabled ? 1 : 0;
+    DSD_SNPRINTF(dev.replay_cfg.capture_stage, sizeof(dev.replay_cfg.capture_stage), "%s",
+                 request->capture_stage ? request->capture_stage : "");
+
+    float scratch[8] = {};
+    int phase = request->start_phase;
+    int have_carry = request->start_have_carry;
+    uint8_t carry_byte = request->start_carry_byte;
+    int rc = replay_convert_block_to_f32(&dev, request->raw_block, request->raw_bytes, scratch, request->out_cap_f32,
+                                         &phase, &have_carry, &carry_byte);
+    size_t copy_count =
+        rtl_device_test_replay_convert_copy_count(rc, out_f32_count, sizeof(scratch) / sizeof(scratch[0]));
+    DSD_MEMCPY(out_f32, scratch, copy_count * sizeof(float));
+    *out_phase = phase;
+    *out_have_carry = have_carry;
+    *out_carry_byte = carry_byte;
+    return rc;
+}
+#endif
 
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
@@ -2243,6 +2338,19 @@ rtl_soapy_config_field_available(const struct rtl_soapy_config* cfg, size_t conf
     rtl_soapy_config_field_available((cfg), (config_size), offsetof(struct rtl_soapy_config, field),                   \
                                      sizeof(((struct rtl_soapy_config*)0)->field))
 
+static std::string
+soapy_trim_copy(const std::string& value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace((unsigned char)value[start])) {
+        start++;
+    }
+    size_t end = value.size();
+    while (end > start && std::isspace((unsigned char)value[end - 1])) {
+        end--;
+    }
+    return value.substr(start, end - start);
+}
+
 #ifdef USE_SOAPYSDR
 template <typename Fn>
 static int
@@ -2400,19 +2508,6 @@ soapy_log_capability_summary_locked(struct rtl_device* dev) {
         dev->soapy_native_stream_format[0] ? dev->soapy_native_stream_format : "-",
         dsdneo::soapy_join_names(formats, 120).c_str(), dsdneo::soapy_join_names(gains, 120).c_str(),
         dsdneo::soapy_join_names(antennas, 80).c_str(), dsdneo::soapy_join_names(clocks, 80).c_str());
-}
-
-static std::string
-soapy_trim_copy(const std::string& value) {
-    size_t start = 0;
-    while (start < value.size() && isspace((unsigned char)value[start])) {
-        start++;
-    }
-    size_t end = value.size();
-    while (end > start && isspace((unsigned char)value[end - 1])) {
-        end--;
-    }
-    return value.substr(start, end - start);
 }
 
 static int
@@ -3180,6 +3275,35 @@ rtl_tcp_round_up_page(size_t n) {
     return (n + 4095U) & ~((size_t)4095U);
 }
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" int
+rtl_device_test_misc_string_helpers(char* tuner_labels, size_t tuner_labels_size, char* reason_small,
+                                    size_t reason_small_size, char* reason_null, size_t reason_null_size, char* trimmed,
+                                    size_t trimmed_size, size_t* rounded_pages, size_t rounded_pages_len) {
+    if (!tuner_labels || tuner_labels_size == 0U || !reason_small || reason_small_size == 0U || !reason_null
+        || reason_null_size == 0U || !trimmed || trimmed_size == 0U || !rounded_pages || rounded_pages_len < 4U) {
+        return -1;
+    }
+
+    DSD_SNPRINTF(tuner_labels, tuner_labels_size, "%s|%s|%s|%s|%s|%s|%s", rtl_tuner_type_name(RTLSDR_TUNER_E4000),
+                 rtl_tuner_type_name(RTLSDR_TUNER_FC0012), rtl_tuner_type_name(RTLSDR_TUNER_FC0013),
+                 rtl_tuner_type_name(RTLSDR_TUNER_FC2580), rtl_tuner_type_name(RTLSDR_TUNER_R820T),
+                 rtl_tuner_type_name(RTLSDR_TUNER_R828D), rtl_tuner_type_name(-1));
+
+    rtl_copy_event_reason(reason_small, reason_small_size, "capture-reconfigure");
+    rtl_copy_event_reason(reason_null, reason_null_size, NULL);
+
+    std::string t = soapy_trim_copy(" \t gain = 12.5 \n");
+    DSD_SNPRINTF(trimmed, trimmed_size, "%s", t.c_str());
+
+    rounded_pages[0] = rtl_tcp_round_up_page(0U);
+    rounded_pages[1] = rtl_tcp_round_up_page(1U);
+    rounded_pages[2] = rtl_tcp_round_up_page(4096U);
+    rounded_pages[3] = rtl_tcp_round_up_page(4097U);
+    return 0;
+}
+#endif
+
 static size_t
 rtl_tcp_default_bufsz(const struct rtl_device* s) {
     if (!s) {
@@ -3656,6 +3780,53 @@ static inline uint64_t
 rtl_tcp_counter_delta(uint64_t now, uint64_t prev) {
     return (now >= prev) ? (now - prev) : 0ULL;
 }
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" int
+rtl_device_test_tcp_policy_helpers(size_t* bufsz_out, size_t bufsz_count, int* waitall_out, size_t waitall_count,
+                                   uint64_t* delta_out, size_t delta_count, int* agc_out) {
+    if (!bufsz_out || bufsz_count < 8U || !waitall_out || waitall_count < 4U || !delta_out || delta_count < 2U
+        || !agc_out) {
+        return -1;
+    }
+
+    rtl_device dev{};
+    dsdneoRuntimeConfig cfg{};
+
+    bufsz_out[0] = rtl_tcp_default_bufsz(NULL);
+    dev.backend = RTL_BACKEND_TCP;
+    bufsz_out[1] = rtl_tcp_default_bufsz(&dev);
+    dev.backend = RTL_BACKEND_USB;
+    dev.rate = 0U;
+    bufsz_out[2] = rtl_tcp_default_bufsz(&dev);
+    dev.rate = 48000U;
+    bufsz_out[3] = rtl_tcp_default_bufsz(&dev);
+    dev.rate = 960000U;
+    bufsz_out[4] = rtl_tcp_default_bufsz(&dev);
+    dev.rate = 10000000U;
+    bufsz_out[5] = rtl_tcp_default_bufsz(&dev);
+    cfg.tcp_bufsz_is_set = 1;
+    cfg.tcp_bufsz_bytes = 12345;
+    bufsz_out[6] = rtl_tcp_cfg_bufsz(&dev, &cfg);
+    cfg.tcp_bufsz_bytes = 0;
+    bufsz_out[7] = rtl_tcp_cfg_bufsz(&dev, &cfg);
+
+    waitall_out[0] = rtl_tcp_cfg_waitall(NULL, NULL);
+    dev.backend = RTL_BACKEND_TCP;
+    waitall_out[1] = rtl_tcp_cfg_waitall(&dev, NULL);
+    cfg = {};
+    cfg.tcp_waitall_is_set = 1;
+    cfg.tcp_waitall_enable = 1;
+    waitall_out[2] = rtl_tcp_cfg_waitall(&dev, &cfg);
+    cfg.tcp_waitall_enable = 0;
+    waitall_out[3] = rtl_tcp_cfg_waitall(&dev, &cfg);
+
+    delta_out[0] = rtl_tcp_counter_delta(100U, 40U);
+    delta_out[1] = rtl_tcp_counter_delta(40U, 100U);
+    *agc_out = env_agc_want();
+    return 0;
+}
+#endif
 
 static inline void
 rtl_tcp_autotune_on_overflow(struct rtl_tcp_loop_state* st) {
@@ -6174,6 +6345,103 @@ rtl_device_test_usb_reconfigure_discards_samples(size_t input_bytes, size_t* out
 }
 
 extern "C" int
+rtl_device_test_u8_odd_carry_bridge(size_t* out_used, int* out_phase, int* out_carry_valid, uint8_t* out_carry_byte,
+                                    int* out_first_status, int* out_second_status) {
+    if (!out_used || !out_phase || !out_carry_valid || !out_carry_byte || !out_first_status || !out_second_status) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 16U) != 0) {
+        return -2;
+    }
+
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_IQ_REPLAY;
+    dev.replay_fs4_shift_enabled = 1;
+    dev.replay_combine_rotate_enabled = 1;
+    dev.rot_phase = 0;
+
+    unsigned char first[] = {129U};
+    unsigned char second[] = {128U, 126U};
+    *out_first_status = rtl_write_u8_to_ring(&dev, first, sizeof(first), 1, 0, 1, 0);
+    *out_second_status = rtl_write_u8_to_ring(&dev, second, sizeof(second), 1, 0, 1, 0);
+    *out_used = input_ring_used(&ring);
+    *out_phase = dev.rot_phase;
+    *out_carry_valid = dev.iq_byte_carry.valid ? 1 : 0;
+    *out_carry_byte = dev.iq_byte_carry.byte;
+
+    input_ring_destroy(&ring);
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out_drops, uint64_t* out_full_events, int* out_phase,
+                                  int* out_status) {
+    if (!out_used || !out_drops || !out_full_events || !out_phase || !out_status) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 3U) != 0) {
+        return -2;
+    }
+
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_USB;
+    dev.offset_tuning = 0;
+    dev.combine_rotate_enabled = 0;
+    dev.rot_phase = 0;
+
+    unsigned char input[] = {130U, 127U, 129U, 126U, 128U, 125U};
+    *out_status = rtl_write_u8_to_ring(&dev, input, sizeof(input), 1, 1, 0, 1);
+    *out_used = input_ring_used(&ring);
+    *out_drops = ring.producer_drops.load(std::memory_order_acquire);
+    *out_full_events = dev.reserve_full_events;
+    *out_phase = dev.rot_phase;
+
+    input_ring_destroy(&ring);
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_u8_generation_stale_drop(uint64_t* out_drops, int* out_phase, int* out_dev_carry_valid,
+                                         int* out_local_carry_valid, int* out_status) {
+    if (!out_drops || !out_phase || !out_dev_carry_valid || !out_local_carry_valid || !out_status) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 8U) != 0) {
+        return -2;
+    }
+
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_USB;
+    dev.rot_phase = 3;
+    rtl_capture_u8_byte_carry_save(&dev.iq_byte_carry, 200U);
+
+    unsigned char input[] = {120U, 121U, 122U, 123U, 124U};
+    rtl_capture_u8_byte_carry carry = dev.iq_byte_carry;
+    int phase = dev.rot_phase;
+    size_t done = 1U;
+    size_t need = 4U;
+    size_t produced = 2U;
+    *out_status = rtl_handle_u8_ring_generation_stale(&dev, input, done, need, &carry, &phase, 1, produced);
+
+    rtl_u8_finalize_state final_state = {input, sizeof(input), done, need, &carry, &phase, 1, 0, 0, 1};
+    rtl_finalize_u8_ring_write(&dev, &final_state);
+
+    *out_drops = ring.producer_drops.load(std::memory_order_acquire);
+    *out_phase = phase;
+    *out_dev_carry_valid = dev.iq_byte_carry.valid ? 1 : 0;
+    *out_local_carry_valid = carry.valid ? 1 : 0;
+
+    input_ring_destroy(&ring);
+    return 0;
+}
+
+extern "C" int
 rtl_device_test_soapy_config_settings_visibility(size_t config_size, const char* settings, int* out_seen) {
     if (!out_seen) {
         return -1;
@@ -6277,3 +6545,47 @@ rtl_device_get_tcp_quality_snapshot(struct rtl_device* dev, struct tcp_quality_s
     rtl_tcp_metrics_unlock(dev);
     return 0;
 }
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" int
+rtl_device_test_public_capture_policy(int* out_formats, size_t out_formats_len, uint32_t* out_counts,
+                                      size_t out_counts_len) {
+    if (!out_formats || out_formats_len < 8U || !out_counts || out_counts_len < 5U) {
+        return -1;
+    }
+
+    rtl_device dev{};
+
+    out_formats[0] = rtl_device_get_native_sample_format(NULL);
+    dev.backend = RTL_BACKEND_USB;
+    out_formats[1] = rtl_device_get_native_sample_format(&dev);
+    dev.backend = RTL_BACKEND_TCP;
+    out_formats[2] = rtl_device_get_native_sample_format(&dev);
+    dev.backend = RTL_BACKEND_SOAPY;
+    dev.soapy_format = SOAPY_FMT_CF32;
+    out_formats[3] = rtl_device_get_native_sample_format(&dev);
+    dev.soapy_format = SOAPY_FMT_CS16;
+    out_formats[4] = rtl_device_get_native_sample_format(&dev);
+    dev.soapy_format = SOAPY_FMT_NONE;
+    out_formats[5] = rtl_device_get_native_sample_format(&dev);
+    dev.backend = RTL_BACKEND_IQ_REPLAY;
+    dev.replay_cfg.format = DSD_IQ_FORMAT_CS16;
+    out_formats[6] = rtl_device_get_native_sample_format(&dev);
+    dev.backend = 99;
+    out_formats[7] = rtl_device_get_native_sample_format(&dev);
+
+    out_counts[0] = rtl_device_get_capture_retune_count(NULL);
+    out_counts[1] = rtl_device_get_capture_retune_count(&dev);
+    rtl_device_note_capture_retune(&dev);
+    out_counts[2] = rtl_device_get_capture_retune_count(&dev);
+    // Opaque non-null sentinel used only to exercise pointer-presence accounting.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    rtl_device_set_iq_capture_writer(&dev, reinterpret_cast<dsd_iq_capture_writer*>(static_cast<uintptr_t>(1U)));
+    rtl_device_note_capture_retune(&dev);
+    rtl_device_note_capture_retune(&dev);
+    out_counts[3] = rtl_device_get_capture_retune_count(&dev);
+    rtl_device_set_iq_capture_writer(&dev, NULL);
+    out_counts[4] = rtl_device_get_capture_retune_count(&dev);
+    return 0;
+}
+#endif

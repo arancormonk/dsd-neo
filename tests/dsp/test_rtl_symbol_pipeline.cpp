@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
+// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// NOLINTBEGIN(performance-enum-size)
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
@@ -206,6 +209,41 @@ check_cqpsk_phase_extractor_accuracy(demod_state* s) {
     return 0;
 }
 
+static int
+check_cqpsk_squelch_emits_zero_symbols(demod_state* s) {
+    enum : unsigned short { PAIRS = 20, SPS = 7 };
+
+    reset_demod(s);
+    s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    s->cqpsk_enable = 1;
+    s->ted_sps = SPS;
+    s->lp_len = PAIRS * 2;
+    s->mode_demod = &raw_demod;
+    s->channel_squelch_level = 0.001f;
+    for (int i = 0; i < s->lp_len; i++) {
+        s->input_cb_buf[i] = 0.0f;
+    }
+
+    full_demod(s);
+
+    const int expected_symbols = (PAIRS + SPS - 1) / SPS;
+    if (!s->channel_squelched || s->squelch_gate_open) {
+        DSD_FPRINTF(stderr, "CQPSK squelch state squelched=%d gate=%d\n", s->channel_squelched, s->squelch_gate_open);
+        return 1;
+    }
+    if (s->result_len != expected_symbols) {
+        DSD_FPRINTF(stderr, "CQPSK squelch result_len=%d, expected %d\n", s->result_len, expected_symbols);
+        return 1;
+    }
+    for (int i = 0; i < s->result_len; i++) {
+        if (s->result[i] != 0.0f) {
+            DSD_FPRINTF(stderr, "CQPSK squelch result[%d]=%.3f, expected zero\n", i, s->result[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 } // namespace
 
 int
@@ -219,7 +257,10 @@ main(void) {
     rc |= check_fsk_discriminator_output_contract(s);
     rc |= check_cqpsk_symbol_output_contract(s);
     rc |= check_cqpsk_phase_extractor_accuracy(s);
+    rc |= check_cqpsk_squelch_emits_zero_symbols(s);
 
     std::free(s);
     return rc;
 }
+
+// NOLINTEND(performance-enum-size)

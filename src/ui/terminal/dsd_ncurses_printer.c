@@ -626,7 +626,7 @@ ui_render_encoder_and_file_outputs(const dsd_opts* opts, const dsd_state* state)
     ui_render_file_output_status(opts);
 }
 
-static void
+static void DSD_ATTR_UNUSED
 ui_render_trunking_call_filters_pretty(const dsd_opts* opts) {
     printw("| Trunking -");
     if (opts->trunk_tune_group_calls == 0) {

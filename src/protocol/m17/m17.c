@@ -70,6 +70,17 @@ static void M17decodeLSFMeta(dsd_state* state, const struct m17_lsf_result* res)
 static void M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res);
 static int m17_can_matches_state(const dsd_state* state);
 
+static void
+m17_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
+    if (file == NULL || samples == NULL || sample_count <= 0) {
+        return;
+    }
+    sf_count_t written = sf_write_short(file, samples, sample_count);
+    if (written != sample_count) {
+        LOG_WARN("%s: wrote %lld/%lld samples to WAV output", context, (long long)written, (long long)sample_count);
+    }
+}
+
 #ifdef USE_CODEC2
 #define M17_CODEC2_OPTS_PARAM  dsd_opts*
 #define M17_CODEC2_STATE_PARAM dsd_state*
@@ -99,6 +110,13 @@ clip_float_to_short(float v) {
     }
     return (short)lrintf(v);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+short
+dsd_neo_m17_test_clip_float_to_short(float value) {
+    return clip_float_to_short(value);
+}
+#endif
 
 static void
 m17_assign_stream_id(uint8_t sid[2]) {
@@ -145,6 +163,14 @@ M17composeFrameInfo(uint16_t ps, uint16_t dt, uint16_t et, uint16_t es, uint16_t
     return (uint16_t)((ps & 0x1U) | ((dt & 0x3U) << 1) | ((et & 0x3U) << 3) | ((es & 0x3U) << 5) | ((cn & 0xFU) << 7)
                       | ((signature & 0x1U) << 11) | ((reserved & 0xFU) << 12));
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+uint16_t
+dsd_neo_m17_test_compose_frame_info(uint16_t ps, uint16_t dt, uint16_t et, uint16_t es, uint16_t cn, uint16_t signature,
+                                    uint16_t reserved) {
+    return M17composeFrameInfo(ps, dt, et, es, cn, signature, reserved);
+}
+#endif
 
 static void
 M17logDataType(uint8_t dt) {
@@ -205,6 +231,16 @@ M17readIpSource(const uint8_t* ip_frame) {
            + ((unsigned long long int)ip_frame[6] << 24ULL) + ((unsigned long long int)ip_frame[7] << 16ULL)
            + ((unsigned long long int)ip_frame[8] << 8ULL) + ((unsigned long long int)ip_frame[9] << 0ULL);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+unsigned long long
+dsd_neo_m17_test_read_ip_source(const uint8_t ip_frame[10]) {
+    if (ip_frame == NULL) {
+        return 0ULL;
+    }
+    return M17readIpSource(ip_frame);
+}
+#endif
 
 static void
 M17printIpSource(unsigned long long int src) {
@@ -339,16 +375,54 @@ M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res) {
     }
 }
 
+static size_t
+m17_encode_packet_protocol_id(uint32_t identifier, uint8_t out[4]) {
+    if (out == NULL || identifier > M17_PACKET_PROTOCOL_MAX) {
+        return 0U;
+    }
+
+    if (identifier < 0x80U) {
+        out[0] = (uint8_t)identifier;
+        return 1U;
+    }
+    if (identifier < 0x800U) {
+        out[0] = (uint8_t)(0xC0U | ((identifier >> 6U) & 0x1FU));
+        out[1] = (uint8_t)(0x80U | (identifier & 0x3FU));
+        return 2U;
+    }
+    if (identifier < 0x10000U) {
+        out[0] = (uint8_t)(0xE0U | ((identifier >> 12U) & 0x0FU));
+        out[1] = (uint8_t)(0x80U | ((identifier >> 6U) & 0x3FU));
+        out[2] = (uint8_t)(0x80U | (identifier & 0x3FU));
+        return 3U;
+    }
+
+    out[0] = (uint8_t)(0xF0U | ((identifier >> 18U) & 0x07U));
+    out[1] = (uint8_t)(0x80U | ((identifier >> 12U) & 0x3FU));
+    out[2] = (uint8_t)(0x80U | ((identifier >> 6U) & 0x3FU));
+    out[3] = (uint8_t)(0x80U | (identifier & 0x3FU));
+    return 4U;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+size_t
+dsd_neo_m17_test_encode_packet_protocol_id(uint32_t identifier, uint8_t out[4]) {
+    return m17_encode_packet_protocol_id(identifier, out);
+}
+#endif
+
 static void
 M17decodeMetaPayload(dsd_state* state, uint8_t identifier) {
-    uint8_t meta[15];
-    meta[0] = identifier; //add identifier for pkt decoder
-    for (int i = 0; i < 14; i++) {
-        meta[i + 1] = state->m17_meta[i];
+    uint8_t meta[4U + M17_META_BYTES];
+    DSD_MEMSET(meta, 0, sizeof(meta));
+    const size_t protocol_len = m17_encode_packet_protocol_id(identifier, meta);
+    if (protocol_len == 0U) {
+        return;
     }
+    DSD_MEMCPY(meta + protocol_len, state->m17_meta, M17_META_BYTES);
     LOG_INFO("\n ");
     //Note: We don't have opts here, so in the future, if we need it, we will need to pass it here
-    decodeM17PKT(NULL, state, meta, 15); //decode META
+    decodeM17PKT(NULL, state, meta, (int)(protocol_len + M17_META_BYTES)); //decode META
 }
 
 static void
@@ -419,6 +493,16 @@ M17processLICH(dsd_state* state, const dsd_opts* opts, const uint8_t* lich_bits)
 
     return err;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_m17_test_process_lich(dsd_state* state, const dsd_opts* opts, const uint8_t* lich_bits) {
+    if (state == NULL || opts == NULL || lich_bits == NULL) {
+        return -1;
+    }
+    return M17processLICH(state, opts, lich_bits);
+}
+#endif
 
 static void
 m17_unpack_voice_octets(const uint8_t* payload, unsigned char* voice1, unsigned char* voice2) {
@@ -639,7 +723,7 @@ m17_write_static_stereo_wav(const short* mono, int count, SNDFILE* wav_out_f) {
         stereo[((size_t)i * 2) + 0] = mono[i];
         stereo[((size_t)i * 2) + 1] = mono[i];
     }
-    sf_write_short(wav_out_f, stereo, ((sf_count_t)count) * 2);
+    m17_write_wav_short_block(wav_out_f, stereo, ((sf_count_t)count) * 2, "M17 static stereo WAV");
 }
 
 static void
@@ -649,7 +733,7 @@ m17_maybe_write_wav_single(const dsd_opts* opts, const dsd_state* state, const s
     }
 
     if (opts->dmr_stereo_wav == 1) {
-        sf_write_short(opts->wav_out_f, samples, count);
+        m17_write_wav_short_block(opts->wav_out_f, samples, count, "M17 WAV single");
         return;
     }
 
@@ -666,8 +750,8 @@ m17_maybe_write_wav_pair(const dsd_opts* opts, const dsd_state* state, const sho
     }
 
     if (opts->dmr_stereo_wav == 1) {
-        sf_write_short(opts->wav_out_f, first, count);
-        sf_write_short(opts->wav_out_f, second, count);
+        m17_write_wav_short_block(opts->wav_out_f, first, count, "M17 WAV pair first");
+        m17_write_wav_short_block(opts->wav_out_f, second, count, "M17 WAV pair second");
         return;
     }
 
@@ -1252,6 +1336,37 @@ m17_process_bert_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_m17_test_process_bert_payload(const dsd_opts* opts, dsd_state* state, const uint8_t bert_bits[197]) {
+    if (opts == NULL || state == NULL || bert_bits == NULL) {
+        return;
+    }
+    m17_process_bert_payload(opts, state, bert_bits);
+}
+
+void
+dsd_neo_m17_test_unpack_bytes_to_bits(const uint8_t* bytes, int byte_count, uint8_t* out_bits) {
+    m17_unpack_bytes_to_bits(bytes, byte_count, out_bits);
+}
+
+void
+dsd_neo_m17_test_depuncture_p2_hard(const uint8_t punctured[368], uint8_t* depunc, int depunc_bits) {
+    if (punctured == NULL || depunc == NULL || depunc_bits < 0) {
+        return;
+    }
+    m17_depuncture_p2_hard(punctured, depunc, depunc_bits);
+}
+
+void
+dsd_neo_m17_test_decode_bert_payload_bits(const uint8_t m17_bits[368], uint8_t bert_bits[197]) {
+    if (m17_bits == NULL || bert_bits == NULL) {
+        return;
+    }
+    m17_decode_bert_payload_bits(m17_bits, bert_bits);
+}
+#endif
+
 void
 processM17BRT(dsd_opts* opts, dsd_state* state) {
     uint8_t m17_rnd_bits[M17_PAYLOAD_BITS];
@@ -1487,6 +1602,24 @@ m17_load_payload_dibits(const uint8_t* input, uint8_t* output_dibits) {
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_m17_test_apply_frame_prefix_dibits(int type, uint8_t output_dibits[192]) {
+    if (output_dibits == NULL) {
+        return;
+    }
+    m17_apply_frame_prefix_dibits(type, output_dibits);
+}
+
+void
+dsd_neo_m17_test_load_payload_dibits(const uint8_t input[368], uint8_t output_dibits[192]) {
+    if (input == NULL || output_dibits == NULL) {
+        return;
+    }
+    m17_load_payload_dibits(input, output_dibits);
+}
+#endif
+
 static void
 m17_dibits_to_symbols(const uint8_t* output_dibits, int* output_symbols) {
     for (int i = 0; i < M17_FRAME_SYMBOLS; i++) {
@@ -1546,6 +1679,40 @@ m17_maybe_apply_dead_air(int type, uint8_t* output_dibits, short* baseband) {
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_m17_test_dibits_to_symbols(const uint8_t output_dibits[192], int output_symbols[192]) {
+    if (output_dibits == NULL || output_symbols == NULL) {
+        return;
+    }
+    m17_dibits_to_symbols(output_dibits, output_symbols);
+}
+
+void
+dsd_neo_m17_test_upsample_symbols_10x(const int output_symbols[192], int output_up[1920]) {
+    if (output_symbols == NULL || output_up == NULL) {
+        return;
+    }
+    m17_upsample_symbols_10x(output_symbols, output_up);
+}
+
+void
+dsd_neo_m17_test_baseband_no_filter(const int output_up[1920], short baseband[1920]) {
+    if (output_up == NULL || baseband == NULL) {
+        return;
+    }
+    m17_baseband_no_filter(output_up, baseband);
+}
+
+void
+dsd_neo_m17_test_maybe_apply_dead_air(int type, uint8_t output_dibits[192], short baseband[1920]) {
+    if (output_dibits == NULL || baseband == NULL) {
+        return;
+    }
+    m17_maybe_apply_dead_air(type, output_dibits, baseband);
+}
+#endif
+
 static void
 m17_write_symbol_capture_if_enabled(dsd_opts* opts, dsd_state* state, const uint8_t* output_dibits,
                                     const int* output_symbols) {
@@ -1602,7 +1769,7 @@ m17_monitor_baseband_if_enabled(dsd_opts* opts, dsd_state* state, const short* b
 static void
 m17_write_baseband_wav_if_enabled(const dsd_opts* opts, const short* baseband) {
     if (opts->wav_out_raw != NULL) {
-        sf_write_short(opts->wav_out_raw, baseband, (sf_count_t)M17_BASEBAND_SAMPLES);
+        m17_write_wav_short_block(opts->wav_out_raw, baseband, (sf_count_t)M17_BASEBAND_SAMPLES, "M17 raw WAV");
         sf_write_sync(opts->wav_out_raw);
     }
 }
@@ -1614,6 +1781,16 @@ m17_reverse_brt_bits(const uint8_t* m17_b1, uint8_t* m17_b1r) {
         m17_b1r[i + 3] = m17_b1[(M17_BERT_PAYLOAD_BITS - 1) - i];
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_m17_test_reverse_brt_bits(const uint8_t input[197], uint8_t output[208]) {
+    if (input == NULL || output == NULL) {
+        return;
+    }
+    m17_reverse_brt_bits(input, output);
+}
+#endif
 
 static void
 m17_print_brt_sequence(const uint8_t* m17_b1) {
@@ -1762,6 +1939,17 @@ m17_setup_conn_disc_eotx(unsigned long long int src, uint8_t reflector_module, u
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_m17_test_setup_conn_disc_eotx(unsigned long long src, uint8_t reflector_module, uint8_t conn[11],
+                                      uint8_t disc[10], uint8_t eotx[10]) {
+    if (conn == NULL || disc == NULL || eotx == NULL) {
+        return;
+    }
+    m17_setup_conn_disc_eotx(src, reflector_module, conn, disc, eotx);
+}
+#endif
+
 static void
 m17_load_lsf_callsigns(uint8_t* m17_lsf, unsigned long long int dst, unsigned long long int src) {
     for (int i = 0; i < 48; i++) {
@@ -1783,6 +1971,26 @@ m17_attach_lsf_crc(uint8_t* m17_lsf, uint8_t* lsf_packed, uint16_t* crc_cmp) {
         m17_lsf[224 + i] = (*crc_cmp >> (15 - i)) & 1;
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_m17_test_load_lsf_callsigns(uint8_t m17_lsf[240], unsigned long long dst, unsigned long long src) {
+    if (m17_lsf == NULL) {
+        return;
+    }
+    m17_load_lsf_callsigns(m17_lsf, dst, src);
+}
+
+uint16_t
+dsd_neo_m17_test_attach_lsf_crc(uint8_t m17_lsf[240], uint8_t lsf_packed[30]) {
+    if (m17_lsf == NULL || lsf_packed == NULL) {
+        return 0U;
+    }
+    uint16_t crc_cmp = 0U;
+    m17_attach_lsf_crc(m17_lsf, lsf_packed, &crc_cmp);
+    return crc_cmp;
+}
+#endif
 
 static void
 m17_encode_lsf_for_rf(const uint8_t m17_lsf[M17_LSF_TYPE1_BITS], uint8_t m17_lsfs[M17_PAYLOAD_BITS]) {
@@ -2584,6 +2792,16 @@ m17_strlen_limit(const char* text, size_t limit) {
     return len;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+size_t
+dsd_neo_m17_test_strlen_limit(const char* text, size_t limit) {
+    if (text == NULL) {
+        return 0U;
+    }
+    return m17_strlen_limit(text, limit);
+}
+#endif
+
 static void
 m17_pkt_pack_bytes_to_bits(m17_pkt_ctx* ctx) {
     const int padded_bytes = ctx->block * M17_PACKET_CHUNK_BYTES;
@@ -2623,6 +2841,58 @@ m17_pkt_prepare_payload_layout(m17_pkt_ctx* ctx) {
     ctx->lst = last_frame_bytes;
     m17_pkt_pack_bytes_to_bits(ctx);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_m17_test_prepare_pkt_payload(const char* text, uint8_t* packed, uint8_t* full_bits, uint16_t* app_len,
+                                     int* block, uint8_t* lst, uint16_t* crc) {
+    if (!packed || !full_bits || !app_len || !block || !lst || !crc) {
+        return -1;
+    }
+
+    m17_pkt_ctx ctx;
+    m17_pkt_init_defaults(&ctx, NULL, NULL);
+    if (text != NULL) {
+        DSD_SNPRINTF(ctx.text, sizeof(ctx.text), "%s", text);
+    }
+    m17_pkt_prepare_payload_layout(&ctx);
+
+    DSD_MEMCPY(packed, ctx.m17_p1_packed, sizeof(ctx.m17_p1_packed));
+    DSD_MEMCPY(full_bits, ctx.m17_p1_full, sizeof(ctx.m17_p1_full));
+    *app_len = ctx.app_len;
+    *block = ctx.block;
+    *lst = ctx.lst;
+    *crc = ctx.crc_cmp;
+    return 0;
+}
+
+int
+dsd_neo_m17_test_prepare_pkt_from_state(const dsd_state* input_state, uint8_t* lsf_bits, uint8_t* packed,
+                                        uint16_t* app_len, uint16_t* lsf_crc, uint8_t* can, unsigned long long* dst,
+                                        unsigned long long* src) {
+    if (!input_state || !lsf_bits || !packed || !app_len || !lsf_crc || !can || !dst || !src) {
+        return -1;
+    }
+
+    static dsd_state state;
+    state = *input_state;
+    m17_pkt_ctx ctx;
+    m17_pkt_init_defaults(&ctx, NULL, &state);
+    m17_pkt_apply_cli_overrides(&ctx);
+    m17_pkt_prepare_lsf(&ctx);
+    const uint16_t prepared_lsf_crc = ctx.crc_cmp;
+    m17_pkt_prepare_payload_layout(&ctx);
+
+    DSD_MEMCPY(lsf_bits, ctx.m17_lsf, sizeof(ctx.m17_lsf));
+    DSD_MEMCPY(packed, ctx.m17_p1_packed, sizeof(ctx.m17_p1_packed));
+    *app_len = ctx.app_len;
+    *lsf_crc = prepared_lsf_crc;
+    *can = ctx.can;
+    *dst = ctx.dst;
+    *src = ctx.src;
+    return 0;
+}
+#endif
 
 static void
 m17_pkt_print_full_payload(const m17_pkt_ctx* ctx) {
@@ -2930,6 +3200,13 @@ m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol
     return 1;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_m17_test_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol) {
+    return m17_decode_pkt_should_report_encrypted(state, protocol);
+}
+#endif
+
 static void
 m17_decode_pkt_dispatch_payload(dsd_state* state, const uint8_t* input, int len, const uint8_t* payload,
                                 int payload_len, uint32_t protocol) {
@@ -3010,6 +3287,13 @@ m17_pkt_ptr_clamped(int pbc_count) {
     return ptr;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_m17_test_pkt_ptr_clamped(int pbc_count) {
+    return m17_pkt_ptr_clamped(pbc_count);
+}
+#endif
+
 static void
 m17_pkt_log_counter(int pbc_count, uint8_t counter, uint8_t eot) {
     if (eot == 0U) {
@@ -3066,6 +3350,16 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_m17_test_finalize_packet_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end) {
+    if (opts == NULL || state == NULL) {
+        return;
+    }
+    m17_pkt_finalize_eot(opts, state, app_len, end);
+}
+#endif
 
 //WIP PKT decoder - soft symbol enhanced
 void
@@ -3330,6 +3624,16 @@ m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_
         }
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_m17_test_dispatch_ip_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, int len) {
+    if (opts == NULL || state == NULL || ip_frame == NULL) {
+        return;
+    }
+    m17_ip_dispatch_frame(opts, state, ip_frame, len);
+}
+#endif
 
 //Process Received IP Frames
 void

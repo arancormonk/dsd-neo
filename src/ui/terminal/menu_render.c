@@ -158,6 +158,13 @@ ui_menu_item_label(const NcMenuItem* it, const void* ctx, char* out, size_t out_
     return lab;
 }
 
+static int
+ui_menu_item_label_len(const NcMenuItem* it, const void* ctx) {
+    char dyn[128];
+    const char* lab = ui_menu_item_label(it, ctx, dyn, sizeof dyn);
+    return (int)strlen(lab);
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 const char*
 ui_menu_item_label_for_test(const NcMenuItem* it, const void* ctx, char* out, size_t out_size) {
@@ -280,18 +287,7 @@ ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, 
         if (!ui_is_enabled(&items[i], ctx)) {
             continue;
         }
-        const char* lab = items[i].label ? items[i].label : items[i].id;
-        if (items[i].label_fn) {
-            char dyn[128];
-            const char* got = items[i].label_fn(ctx, dyn, sizeof dyn);
-            if (got && *got) {
-                lab = got;
-            }
-        }
-        int L = (int)strlen(lab);
-        if (items[i].submenu && items[i].submenu_len > 0) {
-            L += 2; // " >" suffix
-        }
+        int L = ui_menu_item_label_len(&items[i], ctx);
         if (L > maxlab) {
             maxlab = L;
         }
@@ -345,8 +341,30 @@ ui_overlay_compute_height(int visible_items) {
     return (height < 9) ? 9 : height;
 }
 
-void
-ui_overlay_layout(UiMenuFrame* f, const void* ctx) {
+#ifdef DSD_NEO_TEST_HOOKS
+int
+ui_overlay_cap_then_floor_for_test(int value, int max_value, int min_value) {
+    return ui_overlay_cap_then_floor(value, max_value, min_value);
+}
+
+int
+ui_overlay_center_axis_for_test(int outer, int inner) {
+    return ui_overlay_center_axis(outer, inner);
+}
+
+int
+ui_overlay_compute_width_for_test(const UiMenuFrame* f, int maxlab) {
+    return ui_overlay_compute_width(f, maxlab);
+}
+
+int
+ui_overlay_compute_height_for_test(int visible_items) {
+    return ui_overlay_compute_height(visible_items);
+}
+#endif
+
+static void
+ui_overlay_layout_for_terminal(UiMenuFrame* f, const void* ctx, int term_h, int term_w) {
     if (!f || !f->items || f->n == 0) {
         return;
     }
@@ -354,15 +372,30 @@ ui_overlay_layout(UiMenuFrame* f, const void* ctx) {
     int vis = ui_visible_count_and_maxlab(f->items, f->n, ctx, &maxlab);
     int width = ui_overlay_compute_width(f, maxlab);
     int height = ui_overlay_compute_height(vis);
-    int term_h = 24;
-    int term_w = 80;
-    getmaxyx(stdscr, term_h, term_w);
     width = ui_overlay_cap_then_floor(width, term_w - 2, 10);
     height = ui_overlay_cap_then_floor(height, term_h - 2, 6);
     f->h = height;
     f->w = width;
     f->y = ui_overlay_center_axis(term_h, height);
     f->x = ui_overlay_center_axis(term_w, width);
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+ui_overlay_layout_for_test(UiMenuFrame* f, const void* ctx, int term_h, int term_w) {
+    ui_overlay_layout_for_terminal(f, ctx, term_h, term_w);
+}
+#endif
+
+void
+ui_overlay_layout(UiMenuFrame* f, const void* ctx) {
+    if (!f || !f->items || f->n == 0) {
+        return;
+    }
+    int term_h = 24;
+    int term_w = 80;
+    getmaxyx(stdscr, term_h, term_w);
+    ui_overlay_layout_for_terminal(f, ctx, term_h, term_w);
 }
 
 void

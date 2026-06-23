@@ -12,11 +12,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/resampler.h"
 #include "dsd-neo/platform/file_compat.h"
+#include "dsd-neo/platform/posix_compat.h"
 #include "test_support.h"
 
 static int
@@ -105,6 +107,44 @@ create_temp_raw_pcm_wav_suffix(const char* prefix, const short* samples, size_t 
 }
 
 static int
+create_temp_raw_pcm_no_suffix(const char* prefix, const short* samples, size_t sample_count, char* out_path,
+                              size_t out_path_sz) {
+    if (!prefix || !samples || sample_count == 0 || !out_path || out_path_sz == 0) {
+        DSD_FPRINTF(stderr, "FAIL: invalid raw temp file request\n");
+        return 1;
+    }
+
+    if (DSD_SNPRINTF(out_path, out_path_sz, "/tmp/%s_XXXXXX", prefix) >= (int)out_path_sz) {
+        DSD_FPRINTF(stderr, "FAIL: temp raw path too long for %s\n", prefix);
+        return 1;
+    }
+
+    int fd = dsd_mkstemp(out_path);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    FILE* fp = dsd_fopen_private(out_path, "wb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "FAIL: fopen write failed for %s\n", out_path);
+        (void)remove(out_path);
+        return 1;
+    }
+
+    size_t nwritten = fwrite(samples, sizeof(samples[0]), sample_count, fp);
+    fclose(fp);
+    if (nwritten != sample_count) {
+        DSD_FPRINTF(stderr, "FAIL: fwrite failed for %s\n", out_path);
+        (void)remove(out_path);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int
 create_temp_wav_family_file(const char* prefix, int sample_rate, int format, const short* samples, size_t sample_count,
                             const char* expected_magic, char* out_path, size_t out_path_sz) {
     if (!prefix || !samples || sample_count == 0 || !expected_magic || !out_path || out_path_sz == 0
@@ -168,6 +208,54 @@ create_temp_wav_family_file(const char* prefix, int sample_rate, int format, con
         return 1;
     }
 
+    return 0;
+}
+
+static int
+create_temp_stereo_wav_file(const char* prefix, const short* interleaved_samples, size_t sample_count, char* out_path,
+                            size_t out_path_sz) {
+    if (!prefix || !interleaved_samples || sample_count == 0 || !out_path || out_path_sz == 0) {
+        DSD_FPRINTF(stderr, "FAIL: invalid stereo wav temp file request\n");
+        return 1;
+    }
+
+    char base_path[DSD_TEST_PATH_MAX] = {0};
+    int fd = dsd_test_mkstemp(base_path, sizeof base_path, prefix);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_test_mkstemp failed for %s\n", prefix);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    (void)remove(base_path);
+
+    if (DSD_SNPRINTF(out_path, out_path_sz, "%s.wav", base_path) >= (int)out_path_sz) {
+        DSD_FPRINTF(stderr, "FAIL: temp stereo wav path too long for %s\n", prefix);
+        return 1;
+    }
+
+    SF_INFO info = {0};
+    info.samplerate = 48000;
+    info.channels = 2;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+
+    SNDFILE* sf = sf_open(out_path, SFM_WRITE, &info);
+    if (sf == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: sf_open stereo write failed for %s: %s\n", out_path, sf_strerror(NULL));
+        (void)remove(out_path);
+        return 1;
+    }
+
+    if (sf_write_short(sf, interleaved_samples, (sf_count_t)sample_count) != (sf_count_t)sample_count) {
+        DSD_FPRINTF(stderr, "FAIL: sf_write_short stereo failed for %s\n", out_path);
+        sf_close(sf);
+        (void)remove(out_path);
+        return 1;
+    }
+    if (sf_close(sf) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: sf_close stereo failed for %s\n", out_path);
+        (void)remove(out_path);
+        return 1;
+    }
     return 0;
 }
 
@@ -453,6 +541,65 @@ test_current_input_timing_rate_prefers_active_backend(void) {
 }
 
 static int
+test_open_audio_in_device_extensionless_raw_uses_headless_rate(void) {
+    const short samples[] = {101, -202, 303, -404};
+    char path[DSD_TEST_PATH_MAX] = {0};
+    if (create_temp_raw_pcm_no_suffix("dsdneo_headless_raw", samples, sizeof samples / sizeof samples[0], path,
+                                      sizeof path)
+        != 0) {
+        return 1;
+    }
+
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
+        (void)remove(path);
+        return 1;
+    }
+    dsd_state* state = alloc_state();
+    if (!state) {
+        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
+        free_opts(opts);
+        (void)remove(path);
+        return 1;
+    }
+
+    opts->wav_sample_rate = 24000;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", path);
+    state->use_throttle = 1;
+    state->symbol_replay_next_deadline_ns = 12345;
+
+    int rc = expect_int_eq("extensionless raw input opens", openAudioInDevice(opts, state), 0);
+    rc |= expect_int_eq("extensionless raw input type", opts->audio_in_type, AUDIO_IN_WAV);
+    rc |= expect_true("extensionless raw input file opened", opts->audio_in_file != NULL);
+    rc |= expect_true("extensionless raw input info allocated", opts->audio_in_file_info != NULL);
+    if (opts->audio_in_file_info) {
+        rc |= expect_int_eq("extensionless raw sample rate", opts->audio_in_file_info->samplerate, 24000);
+        rc |= expect_int_eq("extensionless raw channel count", opts->audio_in_file_info->channels, 1);
+        rc |= expect_int_eq("extensionless raw format", opts->audio_in_file_info->format,
+                            SF_FORMAT_RAW | SF_FORMAT_PCM_16 | SF_ENDIAN_LITTLE);
+    }
+    short sample = 0;
+    sf_count_t nread = opts->audio_in_file ? sf_read_short(opts->audio_in_file, &sample, 1) : 0;
+    rc |= expect_int_eq("extensionless raw reads first sample", (int)nread, 1);
+    rc |= expect_int_eq("extensionless raw preserves sample", sample, samples[0]);
+    rc |= expect_int_eq("extensionless raw clears throttle", state->use_throttle, 0);
+    rc |= expect_true("extensionless raw clears replay deadline", state->symbol_replay_next_deadline_ns == 0);
+
+    if (opts->audio_in_file) {
+        sf_close(opts->audio_in_file);
+        opts->audio_in_file = NULL;
+    }
+    free(opts->audio_in_file_info);
+    opts->audio_in_file_info = NULL;
+    free(state);
+    free_opts(opts);
+    (void)remove(path);
+    return rc;
+}
+
+static int
 test_headerless_wav_suffix_falls_back_to_raw_pcm(void) {
     const short samples[] = {1234, -2345, 3456, -4567};
     char path[DSD_TEST_PATH_MAX] = {0};
@@ -564,6 +711,92 @@ test_rf64_wav_suffix_uses_container_metadata(void) {
 }
 
 static int
+test_mono_file_input_rejects_invalid_arguments(void) {
+    SNDFILE* file = (SNDFILE*)0x1;
+    SF_INFO* info = (SF_INFO*)0x1;
+    int active_sample_rate = -1;
+    int opened_as_container = -1;
+
+    int rc = 0;
+    rc |= expect_int_eq(
+        "mono file input rejects null path",
+        dsd_audio_open_mono_file_input(NULL, 24000, &file, &info, &active_sample_rate, &opened_as_container), -1);
+    rc |= expect_int_eq("null path leaves file untouched", file == (SNDFILE*)0x1, 1);
+    rc |= expect_int_eq("null path leaves info untouched", info == (SF_INFO*)0x1, 1);
+    rc |= expect_int_eq(
+        "mono file input rejects empty path",
+        dsd_audio_open_mono_file_input("", 24000, &file, &info, &active_sample_rate, &opened_as_container), -1);
+    rc |= expect_int_eq("mono file input rejects null file output",
+                        dsd_audio_open_mono_file_input("/tmp/no-such-file.raw", 24000, NULL, &info, &active_sample_rate,
+                                                       &opened_as_container),
+                        -1);
+    rc |= expect_int_eq("mono file input rejects null info output",
+                        dsd_audio_open_mono_file_input("/tmp/no-such-file.raw", 24000, &file, NULL, &active_sample_rate,
+                                                       &opened_as_container),
+                        -1);
+    return rc;
+}
+
+static int
+test_headerless_raw_input_defaults_nonpositive_rate_to_48000(void) {
+    const short samples[] = {42, -42};
+    char path[DSD_TEST_PATH_MAX] = {0};
+    if (create_temp_raw_pcm_wav_suffix("dsdneo_raw_default_rate", samples, sizeof samples / sizeof samples[0], path,
+                                       sizeof path)
+        != 0) {
+        return 1;
+    }
+
+    SNDFILE* file = NULL;
+    SF_INFO* info = NULL;
+    int active_sample_rate = 0;
+    int opened_as_container = 1;
+    int rc = dsd_audio_open_mono_file_input(path, 0, &file, &info, &active_sample_rate, &opened_as_container);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: dsd_audio_open_mono_file_input default-rate failed for %s: %s\n", path,
+                    sf_strerror(NULL));
+        (void)remove(path);
+        return 1;
+    }
+
+    rc = 0;
+    rc |= expect_int_eq("default raw input active sample rate", active_sample_rate, 48000);
+    rc |= expect_int_eq("default raw input info sample rate", info->samplerate, 48000);
+    rc |= expect_int_eq("default raw input not container", opened_as_container, 0);
+
+    sf_close(file);
+    free(info);
+    (void)remove(path);
+    return rc;
+}
+
+static int
+test_stereo_wav_container_rejected_by_mono_input_open(void) {
+    const short samples[] = {100, -100, 200, -200};
+    char path[DSD_TEST_PATH_MAX] = {0};
+    if (create_temp_stereo_wav_file("dsdneo_stereo_reject", samples, sizeof samples / sizeof samples[0], path,
+                                    sizeof path)
+        != 0) {
+        return 1;
+    }
+
+    SNDFILE* file = (SNDFILE*)0x1;
+    SF_INFO* info = (SF_INFO*)0x1;
+    int active_sample_rate = 123;
+    int opened_as_container = 123;
+    int rc = dsd_audio_open_mono_file_input(path, 24000, &file, &info, &active_sample_rate, &opened_as_container);
+
+    int expect_rc = 0;
+    expect_rc |= expect_int_eq("stereo wav rejected", rc, -1);
+    expect_rc |= expect_true("stereo reject clears file output", file == NULL);
+    expect_rc |= expect_true("stereo reject frees info output", info == NULL);
+    expect_rc |= expect_int_eq("stereo reject keeps default sample rate", active_sample_rate, 24000);
+    expect_rc |= expect_int_eq("stereo reject keeps opened-as-container false", opened_as_container, 0);
+    (void)remove(path);
+    return expect_rc;
+}
+
+static int
 test_reset_input_upsample_state_clears_staging_only(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
@@ -669,9 +902,13 @@ main(void) {
     rc |= test_linear_upsample_block_ends_on_current_sample();
     rc |= test_source_effective_input_rate_classifier();
     rc |= test_current_input_timing_rate_prefers_active_backend();
+    rc |= test_open_audio_in_device_extensionless_raw_uses_headless_rate();
     rc |= test_headerless_wav_suffix_falls_back_to_raw_pcm();
     rc |= test_rifx_wav_suffix_uses_container_metadata();
     rc |= test_rf64_wav_suffix_uses_container_metadata();
+    rc |= test_mono_file_input_rejects_invalid_arguments();
+    rc |= test_headerless_raw_input_defaults_nonpositive_rate_to_48000();
+    rc |= test_stereo_wav_container_rejected_by_mono_input_open();
     rc |= test_reset_input_upsample_state_clears_staging_only();
     rc |= test_reset_pcm_input_state_clears_resampler_and_staging();
     return rc;

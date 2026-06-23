@@ -65,6 +65,22 @@
 extern dsd_socket_t Connect(char* hostname, int portno);
 extern void cleanupAndExit(dsd_opts* opts, dsd_state* state);
 
+#ifdef DSD_NEO_TEST_HOOKS
+// Test-hook entry points are intentionally externally visible to focused fixtures.
+// NOLINTBEGIN(misc-use-internal-linkage)
+void dsd_symbol_test_select_window(int rf_mod, int synctype, int lastsynctype, int freeze_window, int* l_edge,
+                                   int* r_edge);
+int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, int rf_mod, int jitter,
+                                        int have_sync, int symbol_span, int start_i, int* jitter_after);
+int dsd_symbol_test_is_m17_sync(int lastsynctype);
+unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);
+#ifdef USE_RADIO
+int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
+int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);
+#endif
+// NOLINTEND(misc-use-internal-linkage)
+#endif
+
 static inline short
 float_to_int16_clip(float v) {
     if (v > 32767.0f) {
@@ -74,6 +90,17 @@ float_to_int16_clip(float v) {
         return -32768;
     }
     return (short)lrintf(v);
+}
+
+static inline void
+symbol_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
+    if (file == NULL || samples == NULL || sample_count <= 0) {
+        return;
+    }
+    sf_count_t written = sf_write_short(file, samples, sample_count);
+    if (written != sample_count) {
+        LOG_WARN("%s: wrote %lld/%lld samples to WAV output\n", context, (long long)written, (long long)sample_count);
+    }
 }
 
 static int16_t
@@ -199,6 +226,7 @@ clamp_symbol_center_to_margin(int* center, int samples_per_symbol) {
         *center = max_c;
     }
 }
+
 #endif
 
 typedef struct {
@@ -469,6 +497,49 @@ symbol_adjust_timing_index(dsd_state* state, int have_sync, int symbol_span, int
     }
     state->jitter = -1;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_symbol_test_select_window(int rf_mod, int synctype, int lastsynctype, int freeze_window, int* l_edge, int* r_edge) {
+    if (!l_edge || !r_edge) {
+        return;
+    }
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.rf_mod = rf_mod;
+    state.synctype = synctype;
+    state.lastsynctype = lastsynctype;
+    if (rf_mod == 0) {
+        select_window_c4fm(&state, l_edge, r_edge, freeze_window);
+    } else if (rf_mod == 1) {
+        select_window_qpsk(l_edge, r_edge, freeze_window);
+    } else {
+        select_window_gfsk(l_edge, r_edge, freeze_window);
+    }
+}
+
+int
+dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, int rf_mod, int jitter, int have_sync,
+                                    int symbol_span, int start_i, int* jitter_after) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.samplesPerSymbol = samples_per_symbol;
+    state.symbolCenter = symbol_center;
+    state.rf_mod = rf_mod;
+    state.jitter = jitter;
+    int i = start_i;
+    symbol_adjust_timing_index(&state, have_sync, symbol_span, &i);
+    if (jitter_after) {
+        *jitter_after = state.jitter;
+    }
+    return i;
+}
+
+int
+dsd_symbol_test_is_m17_sync(int lastsynctype) {
+    return symbol_is_m17_sync(lastsynctype);
+}
+#endif
 
 #ifdef USE_RADIO
 /*
@@ -754,6 +825,50 @@ rtl_symbol_cache_clear(dsd_state* state) {
     state->rtl_symbol_cache_generation = 0;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out) {
+    if (!run_dir || !run_len || !dir_out) {
+        return 0;
+    }
+    return maybe_auto_center_step_direction(e_ema, deadband, run_dir, run_len, dir_out);
+}
+
+int
+dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]) {
+    if (!out_values) {
+        return 0;
+    }
+
+    int center = -5;
+    clamp_symbol_center_to_margin(&center, 10);
+    out_values[0] = center;
+    center = 99;
+    clamp_symbol_center_to_margin(&center, 10);
+    out_values[1] = center;
+
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    out_values[2] = rtl_symbol_cache_profile(&state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK_LOCAL, 3, 4800, 4, 0U);
+    out_values[3] = rtl_symbol_cache_profile(&state, RTL_STREAM_OUTPUT_SYMBOL_CQPSK_LOCAL, 3, 4800, 4, 0U);
+    out_values[4] = state.rtl_symbol_cache_output_kind;
+    out_values[5] = state.rtl_symbol_cache_symbol_rate_hz;
+
+    state.rtl_symbol_cache[0] = 1.25f;
+    state.rtl_symbol_cache[1] = -2.5f;
+    state.rtl_symbol_cache_len = 2;
+    state.rtl_symbol_cache_pos = 0;
+    state.rtl_symbol_cache_generation = 0U;
+    float sample = 0.0f;
+    out_values[6] = rtl_symbol_cache_pop(&state, 0U, &sample);
+    out_values[7] = (int)lrintf(sample * 100.0f);
+    out_values[8] = state.rtl_symbol_cache_pos;
+    rtl_symbol_cache_clear(&state);
+    out_values[9] = state.rtl_symbol_cache_len + state.rtl_symbol_cache_output_kind + state.rtl_symbol_cache_levels;
+    return 10;
+}
+#endif
+
 static int
 rtl_symbol_cache_refill(dsd_state* state, int output_kind, int channel_profile, int symbol_rate_hz, int levels,
                         uint32_t* generation, uint32_t expected_generation, float* sample_out) {
@@ -862,6 +977,27 @@ symbol_convert_analog_block_to_i16(dsd_state* state, unsigned int analog_block) 
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+unsigned int
+dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count) {
+    if (!input || !output) {
+        return 0U;
+    }
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    unsigned int cap = (unsigned int)(sizeof(state.analog_out_f) / sizeof(state.analog_out_f[0]));
+    unsigned int n = count < cap ? count : cap;
+    for (unsigned int i = 0; i < n; i++) {
+        state.analog_out_f[i] = input[i];
+    }
+    symbol_convert_analog_block_to_i16(&state, n);
+    for (unsigned int i = 0; i < n; i++) {
+        output[i] = state.analog_out[i];
+    }
+    return n;
+}
+#endif
+
 static inline void
 symbol_update_unsynced_input_power(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
@@ -880,7 +1016,7 @@ symbol_write_unsynced_raw_wav(dsd_opts* opts, dsd_state* state, unsigned int ana
     if (opts->wav_out_raw != NULL && opts->frame_nxdn48 == 0 && opts->frame_nxdn96 == 0 && opts->frame_dpmr == 0
         && opts->frame_m17 == 0) {
         symbol_convert_analog_block_to_i16(state, analog_block);
-        sf_write_short(opts->wav_out_raw, state->analog_out, analog_block);
+        symbol_write_wav_short_block(opts->wav_out_raw, state->analog_out, analog_block, "symbol raw WAV");
         sf_write_sync(opts->wav_out_raw);
     }
 }
@@ -967,7 +1103,7 @@ symbol_process_synced_analog(dsd_opts* opts, dsd_state* state, unsigned int anal
     if ((unsigned int)state->analog_sample_counter == analog_out_cap) {
         if (opts->wav_out_raw != NULL) {
             symbol_convert_analog_block_to_i16(state, analog_out_cap);
-            sf_write_short(opts->wav_out_raw, state->analog_out, analog_out_cap);
+            symbol_write_wav_short_block(opts->wav_out_raw, state->analog_out, analog_out_cap, "symbol raw WAV");
             sf_write_sync(opts->wav_out_raw);
         }
         symbol_reset_analog_buffers(state);

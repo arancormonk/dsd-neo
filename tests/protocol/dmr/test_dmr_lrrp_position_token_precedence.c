@@ -212,6 +212,27 @@ main(void) {
     dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu, 1);
     rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "position precedence");
 
+    // Unknown LRRP message types still carry usable position payloads in the field.
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.currentslot = 0;
+    DSD_MEMSET(pdu, 0, sizeof pdu);
+    i = 0;
+    pdu[i++] = 0x99; // unknown LRRP type
+    pdu[i++] = 9;    // POINT_2D token length
+    pdu[i++] = 0x66; // POINT_2D token id
+    pdu[i++] = (lat_p3d >> 24) & 0xFF;
+    pdu[i++] = (lat_p3d >> 16) & 0xFF;
+    pdu[i++] = (lat_p3d >> 8) & 0xFF;
+    pdu[i++] = (lat_p3d >> 0) & 0xFF;
+    pdu[i++] = (lon_p3d >> 24) & 0xFF;
+    pdu[i++] = (lon_p3d >> 16) & 0xFF;
+    pdu[i++] = (lon_p3d >> 8) & 0xFF;
+    pdu[i++] = (lon_p3d >> 0) & 0xFF;
+
+    expected_from_raw(lat_p3d, lon_p3d, &exp_lat, &exp_lon);
+    dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 321, /*dst*/ 654, pdu, 1);
+    rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "unknown type with point token");
+
     return rc;
 }
 

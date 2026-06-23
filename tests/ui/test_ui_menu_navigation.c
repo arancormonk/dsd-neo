@@ -13,6 +13,7 @@
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -38,6 +39,18 @@ volatile uint8_t exitflag = 0; // NOLINT(misc-use-internal-linkage)
 
 static int g_action_calls = 0;
 static const char* g_last_action = NULL;
+static int g_fixture = 0;
+static int g_prompt_active = 0;
+static int g_prompt_key_calls = 0;
+static int g_prompt_render_calls = 0;
+static int g_help_active = 0;
+static int g_help_key_calls = 0;
+static int g_help_open_calls = 0;
+static int g_help_render_calls = 0;
+static char g_last_help[128];
+static int g_chooser_active = 0;
+static int g_chooser_key_calls = 0;
+static int g_chooser_render_calls = 0;
 
 static void
 capture_action(const char* id) {
@@ -98,6 +111,10 @@ static const NcMenuItem SUB_ITEMS[] = {
     {.id = "sub1", .label = "Sub Item 2", .on_select = act_sub1},
 };
 
+static const NcMenuItem HELP_ONLY_ITEMS[] = {
+    {.id = "help0", .label = "Help Only", .help = "leaf help text"},
+};
+
 static const NcMenuItem ROOT_ITEMS[] = {
     {.id = "root0", .label = "Root 0", .on_select = act_root0},
     {.id = "root1", .label = "Root 1", .is_enabled = item_disabled, .on_select = act_root0},
@@ -112,6 +129,21 @@ static void
 reset_capture(void) {
     g_action_calls = 0;
     g_last_action = NULL;
+}
+
+static void
+reset_modal_capture(void) {
+    g_prompt_active = 0;
+    g_prompt_key_calls = 0;
+    g_prompt_render_calls = 0;
+    g_help_active = 0;
+    g_help_key_calls = 0;
+    g_help_open_calls = 0;
+    g_help_render_calls = 0;
+    g_last_help[0] = '\0';
+    g_chooser_active = 0;
+    g_chooser_key_calls = 0;
+    g_chooser_render_calls = 0;
 }
 
 static void
@@ -135,61 +167,75 @@ void
 ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) { // NOLINT(misc-use-internal-linkage)
     (void)ctx;
     if (out_items) {
-        *out_items = ROOT_ITEMS;
+        *out_items = (g_fixture == 1) ? NULL : ((g_fixture == 2) ? HELP_ONLY_ITEMS : ROOT_ITEMS);
     }
     if (out_n) {
-        *out_n = sizeof ROOT_ITEMS / sizeof ROOT_ITEMS[0];
+        if (g_fixture == 1) {
+            *out_n = 0;
+        } else if (g_fixture == 2) {
+            *out_n = sizeof HELP_ONLY_ITEMS / sizeof HELP_ONLY_ITEMS[0];
+        } else {
+            *out_n = sizeof ROOT_ITEMS / sizeof ROOT_ITEMS[0];
+        }
     }
 }
 
 int
 ui_prompt_active(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
+    return g_prompt_active;
 }
 
 int
 ui_prompt_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
-    return 0;
+    g_prompt_key_calls++;
+    return 1;
 }
 
 void
 ui_prompt_render(void) { // NOLINT(misc-use-internal-linkage)
+    g_prompt_render_calls++;
 }
 
 int
 ui_help_active(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
+    return g_help_active;
 }
 
 int
 ui_help_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
-    return 0;
+    g_help_key_calls++;
+    return 1;
 }
 
 void
 ui_help_open(const char* help) { // NOLINT(misc-use-internal-linkage)
-    (void)help;
+    g_help_active = 1;
+    g_help_open_calls++;
+    DSD_SNPRINTF(g_last_help, sizeof g_last_help, "%s", help ? help : "");
 }
 
 void
 ui_help_render(void) { // NOLINT(misc-use-internal-linkage)
+    g_help_render_calls++;
 }
 
 int
 ui_chooser_active(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
+    return g_chooser_active;
 }
 
 int
 ui_chooser_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
-    return 0;
+    g_chooser_key_calls++;
+    return 1;
 }
 
 void
 ui_chooser_render(void) { // NOLINT(misc-use-internal-linkage)
+    g_chooser_render_calls++;
 }
 
 int
@@ -324,6 +370,11 @@ main(void) {
     dsd_opts* opts = (dsd_opts*)&opts_token;
     dsd_state* state = (dsd_state*)&state_token;
 
+    g_fixture = 1;
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 0);
+
+    g_fixture = 0;
     reset_capture();
     ui_menu_open_async(opts, state);
     assert(ui_menu_is_open() == 1);
@@ -401,6 +452,39 @@ main(void) {
     assert(ui_menu_handle_key(KEY_END, opts, state) == 1);
     assert(ui_menu_handle_key('\r', opts, state) == 1);
     assert_last_action("root6");
+
+    assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    g_fixture = 2;
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+    assert(ui_menu_handle_key(KEY_RIGHT, opts, state) == 1);
+    assert(g_action_calls == 0);
+    assert(g_help_open_calls == 1);
+    assert(strcmp(g_last_help, "leaf help text") == 0);
+    assert(g_help_active == 1);
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(g_help_key_calls == 1);
+    ui_menu_tick(opts, state);
+    assert(g_help_render_calls == 1);
+    g_help_active = 0;
+
+    g_prompt_active = 1;
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(g_prompt_key_calls == 1);
+    ui_menu_tick(opts, state);
+    assert(g_prompt_render_calls == 1);
+    g_prompt_active = 0;
+
+    g_chooser_active = 1;
+    assert(ui_menu_handle_key(KEY_UP, opts, state) == 1);
+    assert(g_chooser_key_calls == 1);
+    ui_menu_tick(opts, state);
+    assert(g_chooser_render_calls == 1);
+    g_chooser_active = 0;
 
     assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
     assert(ui_menu_is_open() == 0);

@@ -1236,34 +1236,41 @@ ui_chooser_fit_height(int desired_height, int screen_height) {
 }
 
 static int
-ui_chooser_compute_window_rect(const char* title, const char* footer, int max_item, int* h, int* w, int* wy, int* wx) {
+ui_chooser_compute_window_rect_for_terminal(const char* title, const char* footer, int max_item, int count,
+                                            int screen_h, int screen_w, int* h, int* w, int* wy, int* wx) {
     if (!title || !footer || !h || !w || !wy || !wx) {
         return 0;
     }
     int local_w = ui_chooser_initial_width(title, footer, max_item);
-    int local_h = g_chooser.count + 5;
+    int local_h = count + 5;
     if (local_h < 7) {
         local_h = 7;
     }
 
-    int scr_h = 0, scr_w = 0;
-    getmaxyx(stdscr, scr_h, scr_w);
-    if (scr_h < 4 || scr_w < 8) {
+    if (screen_h < 4 || screen_w < 8) {
         return 0;
     }
-    local_w = ui_chooser_fit_width(local_w, scr_w);
-    local_h = ui_chooser_fit_height(local_h, scr_h);
+    local_w = ui_chooser_fit_width(local_w, screen_w);
+    local_h = ui_chooser_fit_height(local_h, screen_h);
     if (local_w <= 0 || local_h <= 0) {
         return 0;
     }
 
-    int local_wy = ui_center_axis(scr_h, local_h);
-    int local_wx = ui_center_axis(scr_w, local_w);
+    int local_wy = ui_center_axis(screen_h, local_h);
+    int local_wx = ui_center_axis(screen_w, local_w);
     *h = local_h;
     *w = local_w;
     *wy = local_wy;
     *wx = local_wx;
     return 1;
+}
+
+static int
+ui_chooser_compute_window_rect(const char* title, const char* footer, int max_item, int* h, int* w, int* wy, int* wx) {
+    int scr_h = 0, scr_w = 0;
+    getmaxyx(stdscr, scr_h, scr_w);
+    return ui_chooser_compute_window_rect_for_terminal(title, footer, max_item, g_chooser.count, scr_h, scr_w, h, w, wy,
+                                                       wx);
 }
 
 static void
@@ -1379,6 +1386,98 @@ ui_chooser_test_snapshot(void) {
     snapshot.sel = g_chooser.sel;
     snapshot.top = g_chooser.top;
     snapshot.page_rows = g_chooser.page_rows;
+    return snapshot;
+}
+
+void
+ui_help_test_set_metrics(int line_count, int page_rows, int scroll) {
+    if (line_count < 0) {
+        line_count = 0;
+    }
+    if (page_rows < 0) {
+        page_rows = 0;
+    }
+    g_help.line_count = line_count;
+    g_help.page_rows = page_rows;
+    g_help.scroll = scroll;
+    ui_help_clamp_scroll(ui_help_max_scroll());
+}
+
+UiHelpTestSnapshot
+ui_help_test_snapshot(void) {
+    UiHelpTestSnapshot snapshot;
+    snapshot.active = g_help.active;
+    snapshot.scroll = g_help.scroll;
+    snapshot.line_count = g_help.line_count;
+    snapshot.page_rows = g_help.page_rows;
+    return snapshot;
+}
+
+int
+ui_help_wrap_line_for_test(const char* text, int width, int index, char* out, size_t out_size) {
+    char lines[UI_HELP_MAX_LINES][UI_HELP_MAX_LINE_CHARS];
+    int count = ui_help_wrap_text(text, width, lines, UI_HELP_MAX_LINES);
+    if (out && out_size > 0) {
+        out[0] = '\0';
+        if (index >= 0 && index < count && index < UI_HELP_MAX_LINES) {
+            DSD_SNPRINTF(out, out_size, "%s", lines[index]);
+        }
+    }
+    return count;
+}
+
+int
+ui_chooser_max_item_width_for_test(const char* const* items, int count) {
+    const char* const* saved_items = g_chooser.items;
+    int saved_count = g_chooser.count;
+    g_chooser.items = items;
+    g_chooser.count = count;
+    int max_item = ui_chooser_max_item_width();
+    g_chooser.items = saved_items;
+    g_chooser.count = saved_count;
+    return max_item;
+}
+
+int
+ui_chooser_layout_for_test(const char* title, const char* footer, int max_item, int count, int screen_h, int screen_w,
+                           int* h, int* w, int* wy, int* wx) {
+    return ui_chooser_compute_window_rect_for_terminal(title, footer, max_item, count, screen_h, screen_w, h, w, wy,
+                                                       wx);
+}
+
+int
+ui_prompt_center_axis_for_test(int screen_extent, int window_extent) {
+    return ui_center_axis(screen_extent, window_extent);
+}
+
+int
+ui_prompt_fit_width_for_test(int desired_width, int screen_width) {
+    return ui_prompt_fit_width(desired_width, screen_width);
+}
+
+int
+ui_prompt_fit_height_for_test(int desired_height, int screen_height) {
+    return ui_prompt_fit_height(desired_height, screen_height);
+}
+
+void
+ui_prompt_rows_for_test(int height, int* title_y, int* input_y, int* footer_y) {
+    ui_prompt_compute_row_positions(height, title_y, input_y, footer_y);
+}
+
+void
+ui_prompt_field_geometry_for_test(int width, int* field_col, int* field_right, int* field_width) {
+    ui_prompt_compute_field_geometry(width, field_col, field_right, field_width);
+}
+
+UiPromptViewTestSnapshot
+ui_prompt_view_for_test(const char* text, size_t cursor, int field_col, int field_right, int field_width) {
+    UiPromptViewState view = ui_prompt_compute_view_state(text, cursor, field_width);
+    UiPromptViewTestSnapshot snapshot;
+    snapshot.start = view.start;
+    snapshot.cursor = view.cursor;
+    snapshot.show_left_ellipsis = view.show_left_ellipsis;
+    snapshot.cursor_x = ui_prompt_compute_cursor_x(field_col, field_right, &view);
     return snapshot;
 }
 #endif

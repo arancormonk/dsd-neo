@@ -181,6 +181,11 @@ int ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* c
 
 #ifdef DSD_NEO_TEST_HOOKS
 const char* ui_menu_item_label_for_test(const NcMenuItem* it, const void* ctx, char* out, size_t out_size);
+int ui_overlay_cap_then_floor_for_test(int value, int max_value, int min_value);
+int ui_overlay_center_axis_for_test(int outer, int inner);
+int ui_overlay_compute_width_for_test(const UiMenuFrame* f, int maxlab);
+int ui_overlay_compute_height_for_test(int visible_items);
+void ui_overlay_layout_for_test(UiMenuFrame* f, const void* ctx, int term_h, int term_w);
 #endif
 
 // Chooser helpers are declared in menu_prompts.h

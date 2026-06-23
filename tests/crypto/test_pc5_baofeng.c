@@ -169,6 +169,28 @@ test_baofeng_128_key_schedule(void) {
 }
 
 static int
+test_baofeng_128_lowercase_key_schedule(void) {
+    PC5Context expected;
+    DSD_MEMSET(&expected, 0, sizeof(expected));
+    unsigned char key[16];
+    DSD_MEMSET(key, 0, sizeof(key));
+    build_pc5_128_key(0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL, key);
+    create_keys_pc5(&expected, key, sizeof(key));
+    expected.rounds = PC5_NBROUND;
+
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
+    int parse_rc = baofeng_ap_pc5_keystream_creation(&state, "0123456789abcdef fedcba9876543210", 0);
+
+    int rc = 0;
+    rc |= expect_int("baofeng 128 lowercase parse", parse_rc, 0);
+    rc |= expect_int("baofeng 128 lowercase flag", state.baofeng_ap, 1);
+    rc |= expect_pc5_schedule("baofeng 128 lowercase", &ctxpc5, &expected);
+    return rc;
+}
+
+static int
 test_baofeng_256_key_schedule_uses_ascii_hex(void) {
     PC5Context expected;
     DSD_MEMSET(&expected, 0, sizeof(expected));
@@ -219,6 +241,99 @@ test_baofeng_rejects_invalid_hex(void) {
     int rc = 0;
     rc |= expect_int("baofeng invalid parse", parse_rc, -1);
     rc |= expect_int("baofeng invalid flag", state.baofeng_ap, 0);
+    return rc;
+}
+
+static int
+test_baofeng_rejects_null_empty_and_bad_length(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.baofeng_ap = 1;
+
+    int rc = 0;
+    rc |= expect_int("baofeng null state", baofeng_ap_pc5_keystream_creation(NULL, "0123456789ABCDEF", 0), -1);
+    rc |= expect_int("baofeng null input", baofeng_ap_pc5_keystream_creation(&state, NULL, 0), -1);
+    rc |= expect_int("baofeng null input preserves flag", state.baofeng_ap, 1);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_int("baofeng empty input", baofeng_ap_pc5_keystream_creation(&state, "", 0), -1);
+    rc |= expect_int("baofeng empty flag", state.baofeng_ap, 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_int("baofeng bad length", baofeng_ap_pc5_keystream_creation(&state, "0123456789ABCDEF", 0), -1);
+    rc |= expect_int("baofeng bad length flag", state.baofeng_ap, 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_int("baofeng overlong input",
+                     baofeng_ap_pc5_keystream_creation(
+                         &state, "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEFF0", 0),
+                     -1);
+    rc |= expect_int("baofeng overlong flag", state.baofeng_ap, 0);
+    return rc;
+}
+
+static int
+test_baofeng_apply_inactive_and_null_guards(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    char frame[49];
+    char original[49];
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((i * 5 + 1) & 1);
+        original[i] = frame[i];
+    }
+
+    int rc = 0;
+    rc |= expect_int("baofeng apply null state", baofeng_pc5_apply_frame49(NULL, frame), 0);
+    rc |= expect_char_frame("baofeng null state preserves frame", frame, original);
+    rc |= expect_int("baofeng apply inactive", baofeng_pc5_apply_frame49(&state, frame), 0);
+    rc |= expect_char_frame("baofeng inactive preserves frame", frame, original);
+    state.baofeng_ap = 1;
+    rc |= expect_int("baofeng apply null frame", baofeng_pc5_apply_frame49(&state, NULL), 0);
+    return rc;
+}
+
+static int
+test_pc5_encrypt_decrypt_roundtrip_and_round_guards(void) {
+    unsigned char key[16];
+    DSD_MEMSET(key, 0, sizeof(key));
+    build_pc5_128_key(0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL, key);
+
+    PC5Context ctx;
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    create_keys_pc5(&ctx, key, sizeof(key));
+    ctx.rounds = PC5_NBROUND;
+    for (int i = 0; i < 6; i++) {
+        ctx.convert[i] = (uint8_t)((i * 3 + 1) & 0x0F);
+    }
+    uint8_t plain[6];
+    DSD_MEMCPY(plain, ctx.convert, sizeof(plain));
+
+    pc5encrypt(&ctx);
+    int rc = 0;
+    if (memcmp(ctx.convert, plain, sizeof(plain)) == 0) {
+        DSD_FPRINTF(stderr, "pc5 encrypt did not change block\n");
+        rc = 1;
+    }
+    pc5decrypt(&ctx);
+    if (memcmp(ctx.convert, plain, sizeof(plain)) != 0) {
+        DSD_FPRINTF(stderr, "pc5 decrypt did not restore encrypted block\n");
+        rc = 1;
+    }
+
+    DSD_MEMCPY(ctx.convert, plain, sizeof(plain));
+    ctx.rounds = 0;
+    pc5encrypt(&ctx);
+    rc |= expect_int("pc5 encrypt zero-round no-op", memcmp(ctx.convert, plain, sizeof(plain)), 0);
+    pc5decrypt(&ctx);
+    rc |= expect_int("pc5 decrypt zero-round no-op", memcmp(ctx.convert, plain, sizeof(plain)), 0);
+
+    ctx.rounds = 255U;
+    pc5encrypt(&ctx);
+    rc |= expect_int("pc5 encrypt high-round no-op", memcmp(ctx.convert, plain, sizeof(plain)), 0);
+    pc5decrypt(&ctx);
+    rc |= expect_int("pc5 decrypt high-round no-op", memcmp(ctx.convert, plain, sizeof(plain)), 0);
     return rc;
 }
 
@@ -325,10 +440,14 @@ int
 main(void) {
     int rc = 0;
     rc |= test_pc5_decrypt_frame_vector();
+    rc |= test_pc5_encrypt_decrypt_roundtrip_and_round_guards();
     rc |= test_baofeng_128_key_schedule();
+    rc |= test_baofeng_128_lowercase_key_schedule();
     rc |= test_baofeng_256_key_schedule_uses_ascii_hex();
     rc |= test_baofeng_256_key_schedule_preserves_ascii_case();
     rc |= test_baofeng_rejects_invalid_hex();
+    rc |= test_baofeng_rejects_null_empty_and_bad_length();
+    rc |= test_baofeng_apply_inactive_and_null_guards();
     rc |= test_baofeng_apply_skips_silence_and_zero_tail();
     rc |= test_baofeng_apply_decrypts_voice_frame();
     rc |= test_baofeng_key_log_respects_show_keys();

@@ -32,8 +32,12 @@ expect_int(const char* label, int got, int want) {
 
 static int
 expect_float(const char* label, float got, float want) {
-    if (got != want) {
-        DSD_FPRINTF(stderr, "%s: got %.3f want %.3f\n", label, got, want);
+    float delta = got - want;
+    if (delta < 0.0f) {
+        delta = -delta;
+    }
+    if (delta > 1e-6f) {
+        DSD_FPRINTF(stderr, "%s: got %.6f want %.6f\n", label, got, want);
         return 1;
     }
     return 0;

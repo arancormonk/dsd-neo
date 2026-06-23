@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
+// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// NOLINTBEGIN(bugprone-multi-level-implicit-pointer-conversion,clang-analyzer-optin.core.EnumCastOutOfRange)
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
@@ -329,6 +332,145 @@ test_profile_trunk_scan_inherits_base_targets_csv(void) {
 
     dsd_user_config_diags_free(&diags);
     (void)remove(path);
+    return result;
+}
+
+static int
+validate_config_stream_contents(const char* contents, dsdcfg_diagnostics_t* diags) {
+    FILE* tmp = tmpfile();
+    if (!tmp) {
+        DSD_FPRINTF(stderr, "FAIL: tmpfile() failed for config validation stream\n");
+        return -1;
+    }
+
+    size_t len = strlen(contents);
+    if (len > 0U && fwrite(contents, 1U, len, tmp) != len) {
+        DSD_FPRINTF(stderr, "FAIL: fwrite() failed for config validation stream\n");
+        fclose(tmp);
+        return -1;
+    }
+    if (fflush(tmp) != 0 || fseek(tmp, 0L, SEEK_SET) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: stream setup failed for config validation stream\n");
+        fclose(tmp);
+        return -1;
+    }
+
+    int rc = dsd_user_config_validate_stream(tmp, diags);
+    fclose(tmp);
+    return rc;
+}
+
+static int
+has_global_diag_message(const dsdcfg_diagnostics_t* diags, const char* message) {
+    if (!diags || !message) {
+        return 0;
+    }
+    for (int i = 0; i < diags->count; i++) {
+        if (diags->items[i].level == DSDCFG_DIAG_ERROR && diags->items[i].section[0] == '\0'
+            && diags->items[i].key[0] == '\0' && strstr(diags->items[i].message, message)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+test_validate_stream_rejects_null_stream(void) {
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+
+    int rc = dsd_user_config_validate_stream(NULL, &diags);
+
+    int result = 0;
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "FAIL: null config validation stream should return error\n");
+        result = 1;
+    }
+    if (!has_global_diag_message(&diags, "No config stream provided")) {
+        DSD_FPRINTF(stderr, "FAIL: missing null stream validation diagnostic\n");
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
+    return result;
+}
+
+static int
+test_validate_stream_runs_composed_trunk_scan_checks(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[trunk_scan]\n"
+                             "enabled = true\n";
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+
+    int rc = validate_config_stream_contents(ini, &diags);
+
+    int result = 0;
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "FAIL: stream trunk_scan without targets_csv should cause error\n");
+        result = 1;
+    }
+    if (!has_trunk_scan_required_diag(&diags, "trunk_scan", "targets_csv")) {
+        DSD_FPRINTF(stderr, "FAIL: missing stream trunk_scan targets_csv diagnostic\n");
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
+    return result;
+}
+
+static int
+test_validate_stream_runs_profile_composed_checks(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[profile.scan]\n"
+                             "trunk_scan.enabled = true\n";
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+
+    int rc = validate_config_stream_contents(ini, &diags);
+
+    int result = 0;
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "FAIL: stream profile trunk_scan without targets_csv should cause error\n");
+        result = 1;
+    }
+    if (!has_trunk_scan_required_diag(&diags, "profile.scan", "trunk_scan.targets_csv")) {
+        DSD_FPRINTF(stderr, "FAIL: missing stream profile trunk_scan targets_csv diagnostic\n");
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
+    return result;
+}
+
+static int
+test_validate_stream_accepts_profile_inherited_targets_csv(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[trunk_scan]\n"
+                             "enabled = false\n"
+                             "targets_csv = \"/tmp/base-targets.csv\"\n"
+                             "\n"
+                             "[profile.scan]\n"
+                             "trunk_scan.enabled = true\n";
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+
+    int rc = validate_config_stream_contents(ini, &diags);
+
+    int result = 0;
+    if (rc != 0 || diags.error_count > 0) {
+        DSD_FPRINTF(stderr, "FAIL: stream profile trunk_scan should inherit base targets_csv (rc=%d errors=%d)\n", rc,
+                    diags.error_count);
+        result = 1;
+    }
+
+    dsd_user_config_diags_free(&diags);
     return result;
 }
 
@@ -890,10 +1032,176 @@ test_profile_valid_values(void) {
     return result;
 }
 
+static int
+test_schema_accessors_and_type_names(void) {
+    int result = 0;
+    int count = dsdcfg_schema_count();
+    if (count <= 0) {
+        DSD_FPRINTF(stderr, "FAIL: schema count should be positive\n");
+        return 1;
+    }
+
+    if (dsdcfg_schema_get(-1) != NULL || dsdcfg_schema_get(count) != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: schema_get accepted out-of-range index\n");
+        result = 1;
+    }
+
+    const dsdcfg_schema_entry_t* source = dsdcfg_schema_find("INPUT", "SOURCE");
+    if (!source || strcmp(source->section, "input") != 0 || strcmp(source->key, "source") != 0
+        || source->type != DSDCFG_TYPE_ENUM || !source->allowed || !strstr(source->allowed, "rtltcp")) {
+        DSD_FPRINTF(stderr, "FAIL: schema_find failed for case-insensitive input.source\n");
+        result = 1;
+    }
+    if (dsdcfg_schema_find(NULL, "source") != NULL || dsdcfg_schema_find("input", NULL) != NULL
+        || dsdcfg_schema_find("input", "missing") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: schema_find accepted null or unknown key\n");
+        result = 1;
+    }
+
+    const char* desc = dsd_config_key_description("recording", "rdio_mode");
+    if (!desc || !strstr(desc, "rdio-scanner")) {
+        DSD_FPRINTF(stderr, "FAIL: description lookup failed for recording.rdio_mode\n");
+        result = 1;
+    }
+    if (dsd_config_key_description("recording", "missing") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: description lookup accepted unknown key\n");
+        result = 1;
+    }
+    if (!dsd_config_key_is_deprecated("input", "pulse_input") || dsd_config_key_is_deprecated("input", "source")
+        || dsd_config_key_is_deprecated("input", "missing")) {
+        DSD_FPRINTF(stderr, "FAIL: deprecated-key lookup mismatch\n");
+        result = 1;
+    }
+
+    if (strcmp(dsdcfg_type_name(DSDCFG_TYPE_STRING), "string") != 0
+        || strcmp(dsdcfg_type_name(DSDCFG_TYPE_INT), "int") != 0
+        || strcmp(dsdcfg_type_name(DSDCFG_TYPE_BOOL), "bool") != 0
+        || strcmp(dsdcfg_type_name(DSDCFG_TYPE_ENUM), "enum") != 0
+        || strcmp(dsdcfg_type_name(DSDCFG_TYPE_PATH), "path") != 0
+        || strcmp(dsdcfg_type_name(DSDCFG_TYPE_FREQ), "freq") != 0
+        || strcmp(dsdcfg_type_name((dsdcfg_type_t)99), "unknown") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: type-name mapping mismatch\n");
+        result = 1;
+    }
+
+    const char* sections[16];
+    DSD_MEMSET(sections, 0, sizeof(sections));
+    int section_count = dsdcfg_schema_sections(sections, 16);
+    if (section_count < 8 || !sections[0] || strcmp(sections[0], "input") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: schema_sections did not return expected section list\n");
+        result = 1;
+    }
+    if (dsdcfg_schema_sections(NULL, 16) != 0 || dsdcfg_schema_sections(sections, 0) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: schema_sections accepted invalid output arguments\n");
+        result = 1;
+    }
+    const char* one_section[1] = {NULL};
+    if (dsdcfg_schema_sections(one_section, 1) != 1 || !one_section[0] || strcmp(one_section[0], "input") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: schema_sections did not honor max_sections\n");
+        result = 1;
+    }
+
+    return result;
+}
+
+static int
+test_diagnostics_direct_api_and_print_formats(void) {
+    dsdcfg_diags_init(NULL);
+    dsdcfg_diags_add(NULL, DSDCFG_DIAG_ERROR, 1, "input", "source", "ignored");
+    dsdcfg_diags_free(NULL);
+    dsdcfg_diags_print(NULL, stderr, NULL);
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    dsdcfg_diags_init(&diags);
+    if (diags.items != NULL || diags.count != 0 || diags.capacity != 0 || diags.error_count != 0
+        || diags.warning_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: diagnostics init did not clear structure\n");
+        return 1;
+    }
+
+    dsdcfg_diags_add(&diags, DSDCFG_DIAG_WARNING, 7, "input", "pulse_input", "deprecated alias");
+    dsdcfg_diags_add(&diags, DSDCFG_DIAG_ERROR, 9, "mode", "decode", "invalid mode");
+    dsdcfg_diags_add(&diags, DSDCFG_DIAG_INFO, 3, "trunking", NULL, "section info");
+    dsdcfg_diags_add(&diags, DSDCFG_DIAG_INFO, 0, NULL, NULL, "global info");
+    if (diags.count != 4 || diags.warning_count != 1 || diags.error_count != 1) {
+        DSD_FPRINTF(stderr, "FAIL: diagnostics counts mismatch\n");
+        dsdcfg_diags_free(&diags);
+        return 1;
+    }
+
+    int result = 0;
+    if (strcmp(diags.items[0].section, "input") != 0 || strcmp(diags.items[0].key, "pulse_input") != 0
+        || strcmp(diags.items[0].message, "deprecated alias") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: diagnostic field storage mismatch\n");
+        result = 1;
+    }
+
+    FILE* tmp = tmpfile();
+    if (!tmp) {
+        DSD_FPRINTF(stderr, "FAIL: tmpfile() failed\n");
+        dsdcfg_diags_free(&diags);
+        return 1;
+    }
+
+    dsdcfg_diags_print(&diags, tmp, "config.ini");
+    if (fseek(tmp, 0, SEEK_SET) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: fseek() failed for diagnostics output\n");
+        fclose(tmp);
+        dsdcfg_diags_free(&diags);
+        return 1;
+    }
+    char output[2048];
+    size_t n = fread(output, 1, sizeof(output) - 1U, tmp);
+    output[n] = '\0';
+    fclose(tmp);
+
+    if (!strstr(output, "config.ini:7: warning [input] pulse_input: deprecated alias")
+        || !strstr(output, "config.ini:9: error [mode] decode: invalid mode")
+        || !strstr(output, "config.ini:3: info [trunking]: section info") || !strstr(output, "info: global info")
+        || !strstr(output, "Summary: 1 error(s), 1 warning(s)")) {
+        DSD_FPRINTF(stderr, "FAIL: diagnostics path print output mismatch\n%s\n", output);
+        result = 1;
+    }
+
+    tmp = tmpfile();
+    if (!tmp) {
+        DSD_FPRINTF(stderr, "FAIL: tmpfile() failed for no-path diagnostics output\n");
+        dsdcfg_diags_free(&diags);
+        return 1;
+    }
+    dsdcfg_diags_print(&diags, tmp, NULL);
+    if (fseek(tmp, 0, SEEK_SET) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: fseek() failed for no-path diagnostics output\n");
+        fclose(tmp);
+        dsdcfg_diags_free(&diags);
+        return 1;
+    }
+    n = fread(output, 1, sizeof(output) - 1U, tmp);
+    output[n] = '\0';
+    fclose(tmp);
+    if (!strstr(output, "line 7: warning [input] pulse_input: deprecated alias")) {
+        DSD_FPRINTF(stderr, "FAIL: diagnostics no-path line format mismatch\n%s\n", output);
+        result = 1;
+    }
+
+    dsdcfg_diags_print(&diags, NULL, NULL);
+    dsdcfg_diags_free(&diags);
+    if (diags.items != NULL || diags.count != 0 || diags.capacity != 0 || diags.error_count != 0
+        || diags.warning_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: diagnostics free did not clear structure\n");
+        result = 1;
+    }
+
+    return result;
+}
+
 int
 main(void) {
     int rc = 0;
 
+    rc |= test_schema_accessors_and_type_names();
+    rc |= test_diagnostics_direct_api_and_print_formats();
     rc |= test_valid_config();
     rc |= test_trunk_scan_enabled_requires_targets_csv();
     rc |= test_trunk_scan_rejects_global_channel_map();
@@ -901,6 +1209,10 @@ main(void) {
     rc |= test_profile_trunk_scan_rejects_inherited_channel_map();
     rc |= test_profile_trunk_scan_enabled_requires_targets_csv();
     rc |= test_profile_trunk_scan_inherits_base_targets_csv();
+    rc |= test_validate_stream_rejects_null_stream();
+    rc |= test_validate_stream_runs_composed_trunk_scan_checks();
+    rc |= test_validate_stream_runs_profile_composed_checks();
+    rc |= test_validate_stream_accepts_profile_inherited_targets_csv();
     rc |= test_unknown_key_warning();
     rc |= test_unknown_section_warning();
     rc |= test_invalid_enum_error();
@@ -923,3 +1235,5 @@ main(void) {
 
     return rc;
 }
+
+// NOLINTEND(bugprone-multi-level-implicit-pointer-conversion,clang-analyzer-optin.core.EnumCastOutOfRange)

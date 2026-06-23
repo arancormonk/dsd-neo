@@ -44,6 +44,14 @@ static void ConvertAirInterfaceID(uint32_t AI_ID, char ID[8]);
 #ifdef DSD_NEO_TEST_HOOKS
 void dsd_test_dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
                                      char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]);
+void dsd_test_dpmr_deinterleave_6x12(const uint8_t* input, uint8_t* output);
+uint8_t dsd_test_dpmr_crc7(const uint8_t* input, uint32_t bit_length);
+void dsd_test_dpmr_convert_air_interface_id(uint32_t ai_id, char id[8]);
+uint8_t dsd_test_dpmr_extract_cch_crc(const uint8_t cch_bits[48]);
+void dsd_test_dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, uint32_t frame0, uint32_t frame1,
+                                          uint32_t id_value, bool crc0_ok, bool crc1_ok, bool hamming0_ok,
+                                          bool hamming1_ok);
+void dsd_test_dpmr_print_ids(dsd_state* state, const char called_id[8], const char calling_id[8]);
 #endif
 
 typedef struct {
@@ -363,6 +371,62 @@ void
 dsd_test_dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
                                 char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
     dpmr_play_voice_frames(opts, state, ambe_fr);
+}
+
+void
+dsd_test_dpmr_deinterleave_6x12(const uint8_t* input, uint8_t* output) {
+    DeInterleave6x12DPmrBit(input, output);
+}
+
+uint8_t
+dsd_test_dpmr_crc7(const uint8_t* input, uint32_t bit_length) {
+    return CRC7BitdPMR(input, bit_length);
+}
+
+void
+dsd_test_dpmr_convert_air_interface_id(uint32_t ai_id, char id[8]) {
+    ConvertAirInterfaceID(ai_id, id);
+}
+
+uint8_t
+dsd_test_dpmr_extract_cch_crc(const uint8_t cch_bits[48]) {
+    return dpmr_extract_cch_crc(cch_bits);
+}
+
+void
+dsd_test_dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, uint32_t frame0, uint32_t frame1,
+                                     uint32_t id_value, bool crc0_ok, bool crc1_ok, bool hamming0_ok,
+                                     bool hamming1_ok) {
+    dpmr_voice_ctx_t ctx;
+    char called_id[8] = {0};
+    char calling_id[8] = {0};
+    uint32_t first_half = (id_value >> 12U) & 0xFFFU;
+    uint32_t second_half = id_value & 0xFFFU;
+
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    dpmr_extract_previous_ids(state, called_id, calling_id);
+    ctx.CCH_FrameNumber[0] = frame0;
+    ctx.CCH_FrameNumber[1] = frame1;
+    ctx.CrcOk[0] = crc0_ok ? 1U : 0U;
+    ctx.CrcOk[1] = crc1_ok ? 1U : 0U;
+    ctx.HammingCorrectable[0][0] = hamming0_ok;
+    ctx.HammingCorrectable[0][1] = hamming0_ok;
+    ctx.HammingCorrectable[1][0] = hamming1_ok;
+    ctx.HammingCorrectable[1][1] = hamming1_ok;
+    for (uint32_t i = 0; i < 12U; i++) {
+        ctx.CCHDataHammingCorrected[0][2U + i] = (uint8_t)((first_half >> (11U - i)) & 1U);
+        ctx.CCHDataHammingCorrected[1][2U + i] = (uint8_t)((second_half >> (11U - i)) & 1U);
+    }
+    dpmr_update_superframe_part(&ctx, opts, state, called_id, calling_id);
+}
+
+void
+dsd_test_dpmr_print_ids(dsd_state* state, const char called_id[8], const char calling_id[8]) {
+    char called_copy[8] = {0};
+    char calling_copy[8] = {0};
+    dsd_strncpy_s(called_copy, sizeof(called_copy), called_id, sizeof(called_copy) - 1U);
+    dsd_strncpy_s(calling_copy, sizeof(calling_copy), calling_id, sizeof(calling_copy) - 1U);
+    dpmr_print_ids(state, called_copy, calling_copy);
 }
 #endif
 

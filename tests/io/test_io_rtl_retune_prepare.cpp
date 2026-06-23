@@ -10,6 +10,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <dsd-neo/core/input_level.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include "dsd-neo/core/safe_api.h"
@@ -36,6 +39,44 @@ extern "C" int rtl_device_test_usb_manual_gain_controls(int agc_rc, int gain_mod
                                                         int* out_recorded_agc_rc);
 extern "C" int rtl_device_test_usb_auto_gain_controls(int agc_rc, int gain_mode_rc, int* out_agc_calls,
                                                       int* out_gain_mode_calls, int* out_recorded_agc_rc);
+extern "C" int rtl_device_test_u8_odd_carry_bridge(size_t* out_used, int* out_phase, int* out_carry_valid,
+                                                   uint8_t* out_carry_byte, int* out_first_status,
+                                                   int* out_second_status);
+extern "C" int rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out_drops, uint64_t* out_full_events,
+                                                 int* out_phase, int* out_status);
+extern "C" int rtl_device_test_u8_generation_stale_drop(uint64_t* out_drops, int* out_phase, int* out_dev_carry_valid,
+                                                        int* out_local_carry_valid, int* out_status);
+extern "C" int rtl_device_test_replay_input_level_snapshot(int format, int backend, const char* capture_stage,
+                                                           size_t raw_bytes, size_t scratch_cap_f32, int* out_rc,
+                                                           int* out_source, uint64_t* out_count);
+
+// Mirrors the internal RTL replay-conversion test hook request layout.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+struct rtl_device_test_replay_convert_block_request {
+    int format;
+    const char* capture_stage;
+    int fs4_shift_enabled;
+    int combine_rotate_enabled;
+    const uint8_t* raw_block;
+    size_t raw_bytes;
+    size_t out_cap_f32;
+    int start_phase;
+    int start_have_carry;
+    uint8_t start_carry_byte;
+};
+
+extern "C" int rtl_device_test_replay_convert_block(const rtl_device_test_replay_convert_block_request* request,
+                                                    float* out_f32, size_t out_f32_count, int* out_phase,
+                                                    int* out_have_carry, uint8_t* out_carry_byte);
+extern "C" int rtl_device_test_public_capture_policy(int* out_formats, size_t out_formats_len, uint32_t* out_counts,
+                                                     size_t out_counts_len);
+extern "C" int rtl_device_test_misc_string_helpers(char* tuner_labels, size_t tuner_labels_size, char* reason_small,
+                                                   size_t reason_small_size, char* reason_null, size_t reason_null_size,
+                                                   char* trimmed, size_t trimmed_size, size_t* rounded_pages,
+                                                   size_t rounded_pages_len);
+extern "C" int rtl_device_test_tcp_policy_helpers(size_t* bufsz_out, size_t bufsz_count, int* waitall_out,
+                                                  size_t waitall_count, uint64_t* delta_out, size_t delta_count,
+                                                  int* agc_out);
 extern "C" int dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_result);
 extern "C" int dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
                                                                    uint32_t applied_freq_hz);
@@ -65,6 +106,18 @@ expect_size_eq(const char* label, size_t got, size_t want) {
         return 1;
     }
     return 0;
+}
+
+static int
+call_replay_convert_block(int format, const char* capture_stage, int fs4_shift_enabled, int combine_rotate_enabled,
+                          const uint8_t* raw_block, size_t raw_bytes, size_t out_cap_f32, int start_phase,
+                          int start_have_carry, uint8_t start_carry_byte, float* out_f32, size_t out_f32_count,
+                          int* out_phase, int* out_have_carry, uint8_t* out_carry_byte) {
+    rtl_device_test_replay_convert_block_request request{
+        format,    capture_stage, fs4_shift_enabled, combine_rotate_enabled, raw_block,
+        raw_bytes, out_cap_f32,   start_phase,       start_have_carry,       start_carry_byte};
+    return rtl_device_test_replay_convert_block(&request, out_f32, out_f32_count, out_phase, out_have_carry,
+                                                out_carry_byte);
 }
 
 static int
@@ -450,6 +503,24 @@ main(void) {
                             rtl_device_test_begin_capture_reconfigure_without_writer(&hold), 0);
     failed |= expect_int_eq("begin reconfigure without writer activates hold", hold, 1);
 
+    int native_formats[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    uint32_t capture_counts[5] = {99U, 99U, 99U, 99U, 99U};
+    rc = rtl_device_test_public_capture_policy(native_formats, 8U, capture_counts, 5U);
+    failed |= expect_int_eq("public capture policy helper rc", rc, 0);
+    failed |= expect_int_eq("native format null", native_formats[0], DSD_IQ_FORMAT_UNKNOWN);
+    failed |= expect_int_eq("native format usb", native_formats[1], DSD_IQ_FORMAT_CU8);
+    failed |= expect_int_eq("native format tcp", native_formats[2], DSD_IQ_FORMAT_CU8);
+    failed |= expect_int_eq("native format Soapy CF32", native_formats[3], DSD_IQ_FORMAT_CF32);
+    failed |= expect_int_eq("native format Soapy CS16", native_formats[4], DSD_IQ_FORMAT_CS16);
+    failed |= expect_int_eq("native format Soapy none", native_formats[5], DSD_IQ_FORMAT_UNKNOWN);
+    failed |= expect_int_eq("native format replay", native_formats[6], DSD_IQ_FORMAT_CS16);
+    failed |= expect_int_eq("native format unknown backend", native_formats[7], DSD_IQ_FORMAT_UNKNOWN);
+    failed |= expect_int_eq("capture count null", (int)capture_counts[0], 0);
+    failed |= expect_int_eq("capture count starts zero", (int)capture_counts[1], 0);
+    failed |= expect_int_eq("capture count ignores missing writer", (int)capture_counts[2], 0);
+    failed |= expect_int_eq("capture count increments with writer", (int)capture_counts[3], 2);
+    failed |= expect_int_eq("capture count detach resets", (int)capture_counts[4], 0);
+
     size_t held_ring_used = 99U;
     failed |= expect_int_eq("usb reconfigure discard helper",
                             rtl_device_test_usb_reconfigure_discards_samples(16U, &held_ring_used), 0);
@@ -469,6 +540,221 @@ main(void) {
                             rtl_device_test_replay_event_boundary_drained(0U, 3U, 2U), 0);
     failed |=
         expect_int_eq("reset event boundary drained", rtl_device_test_replay_event_boundary_drained(0U, 3U, 3U), 1);
+
+    /*
+     * Replay input-level snapshots preserve source identity for USB/TCP CU8 and
+     * accept CF32 only from the post-driver capture stage with aligned input and
+     * sufficient scratch space.
+     */
+    const int rtl_test_backend_usb = 0;
+    const int rtl_test_backend_tcp = 1;
+    int input_level_rc = -99;
+    int input_level_source = -99;
+    uint64_t input_level_count = 0U;
+    rc = rtl_device_test_replay_input_level_snapshot(DSD_IQ_FORMAT_CU8, rtl_test_backend_usb, "", 8U, 0U,
+                                                     &input_level_rc, &input_level_source, &input_level_count);
+    failed |= expect_int_eq("replay CU8 USB snapshot helper rc", rc, 0);
+    failed |= expect_int_eq("replay CU8 USB snapshot rc", input_level_rc, 0);
+    failed |= expect_int_eq("replay CU8 USB source", input_level_source, DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
+    failed |= expect_size_eq("replay CU8 USB sample count", (size_t)input_level_count, 8U);
+
+    rc = rtl_device_test_replay_input_level_snapshot(DSD_IQ_FORMAT_CU8, rtl_test_backend_tcp, "", 8U, 0U,
+                                                     &input_level_rc, &input_level_source, &input_level_count);
+    failed |= expect_int_eq("replay CU8 TCP snapshot helper rc", rc, 0);
+    failed |= expect_int_eq("replay CU8 TCP snapshot rc", input_level_rc, 0);
+    failed |= expect_int_eq("replay CU8 TCP source", input_level_source, DSD_INPUT_LEVEL_SOURCE_RTL_TCP_CU8);
+
+    rc = rtl_device_test_replay_input_level_snapshot(DSD_IQ_FORMAT_CF32, rtl_test_backend_usb,
+                                                     "post_driver_cf32_pre_ring", 16U, 4U, &input_level_rc,
+                                                     &input_level_source, &input_level_count);
+    failed |= expect_int_eq("replay CF32 snapshot helper rc", rc, 0);
+    failed |= expect_int_eq("replay CF32 snapshot rc", input_level_rc, 0);
+    failed |= expect_int_eq("replay CF32 source", input_level_source, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32);
+    failed |= expect_size_eq("replay CF32 sample count", (size_t)input_level_count, 4U);
+
+    rc = rtl_device_test_replay_input_level_snapshot(DSD_IQ_FORMAT_CF32, rtl_test_backend_usb, "pre_ring", 16U, 4U,
+                                                     &input_level_rc, &input_level_source, &input_level_count);
+    failed |= expect_int_eq("replay CF32 rejects wrong stage helper rc", rc, 0);
+    failed |= expect_int_eq("replay CF32 rejects wrong stage", input_level_rc, -1);
+    failed |= expect_int_eq("replay CF32 wrong stage clears source", input_level_source, -1);
+    failed |= expect_size_eq("replay CF32 wrong stage clears count", (size_t)input_level_count, 0U);
+
+    rc = rtl_device_test_replay_input_level_snapshot(DSD_IQ_FORMAT_CF32, rtl_test_backend_usb,
+                                                     "post_driver_cf32_pre_ring", 10U, 4U, &input_level_rc,
+                                                     &input_level_source, &input_level_count);
+    failed |= expect_int_eq("replay CF32 rejects misaligned helper rc", rc, 0);
+    failed |= expect_int_eq("replay CF32 rejects misaligned bytes", input_level_rc, -1);
+
+    rc = rtl_device_test_replay_input_level_snapshot(DSD_IQ_FORMAT_CF32, rtl_test_backend_usb,
+                                                     "post_driver_cf32_pre_ring", 16U, 3U, &input_level_rc,
+                                                     &input_level_source, &input_level_count);
+    failed |= expect_int_eq("replay CF32 rejects small scratch helper rc", rc, 0);
+    failed |= expect_int_eq("replay CF32 rejects small scratch", input_level_rc, -1);
+
+    /*
+     * Replay sample conversion is stateful across chunks: CU8 preserves odd
+     * carry bytes, while CF32 post-driver blocks optionally apply J/4 rotation.
+     */
+    float converted[8] = {};
+    int convert_phase = -1;
+    int convert_have_carry = -1;
+    uint8_t convert_carry_byte = 0U;
+    const uint8_t cu8_with_carry[] = {128U, 130U, 132U};
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CU8, "", 0, 0, cu8_with_carry, sizeof(cu8_with_carry), 8U, 2, 1, 126U,
+                                   converted, sizeof(converted) / sizeof(converted[0]), &convert_phase,
+                                   &convert_have_carry, &convert_carry_byte);
+    failed |= expect_int_eq("replay CU8 carry conversion count", rc, 4);
+    failed |= expect_double_near("replay CU8 carried I sample", converted[0], (126.0 - 127.5) / 127.5, 1e-6);
+    failed |= expect_double_near("replay CU8 carried Q sample", converted[1], (128.0 - 127.5) / 127.5, 1e-6);
+    failed |= expect_double_near("replay CU8 aligned I sample", converted[2], (130.0 - 127.5) / 127.5, 1e-6);
+    failed |= expect_double_near("replay CU8 aligned Q sample", converted[3], (132.0 - 127.5) / 127.5, 1e-6);
+    failed |= expect_int_eq("replay CU8 no-rotate preserves phase", convert_phase, 2);
+    failed |= expect_int_eq("replay CU8 carry consumed", convert_have_carry, 0);
+    failed |= expect_int_eq("replay CU8 consumed carry byte unchanged", (int)convert_carry_byte, 126);
+
+    const uint8_t cu8_odd_tail[] = {127U, 128U, 129U};
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CU8, "", 0, 0, cu8_odd_tail, sizeof(cu8_odd_tail), 8U, 0, 0, 0U,
+                                   converted, sizeof(converted) / sizeof(converted[0]), &convert_phase,
+                                   &convert_have_carry, &convert_carry_byte);
+    failed |= expect_int_eq("replay CU8 odd tail conversion count", rc, 2);
+    failed |= expect_int_eq("replay CU8 odd tail retained", convert_have_carry, 1);
+    failed |= expect_int_eq("replay CU8 odd tail byte", (int)convert_carry_byte, 129);
+
+    float cf32_samples[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    uint8_t cf32_raw[sizeof(cf32_samples)] = {};
+    DSD_MEMCPY(cf32_raw, cf32_samples, sizeof(cf32_samples));
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CF32, "post_driver_cf32_pre_ring", 1, 0, cf32_raw, sizeof(cf32_raw),
+                                   8U, 1, 0, 0U, converted, sizeof(converted) / sizeof(converted[0]), &convert_phase,
+                                   &convert_have_carry, &convert_carry_byte);
+    failed |= expect_int_eq("replay CF32 rotated conversion count", rc, 4);
+    failed |= expect_double_near("replay CF32 phase1 rotated I", converted[0], -2.0, 1e-6);
+    failed |= expect_double_near("replay CF32 phase1 rotated Q", converted[1], 1.0, 1e-6);
+    failed |= expect_double_near("replay CF32 phase2 rotated I", converted[2], -3.0, 1e-6);
+    failed |= expect_double_near("replay CF32 phase2 rotated Q", converted[3], -4.0, 1e-6);
+    failed |= expect_int_eq("replay CF32 rotation advances phase", convert_phase, 3);
+    failed |= expect_int_eq("replay CF32 leaves carry clear", convert_have_carry, 0);
+
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CF32, "pre_ring", 1, 0, cf32_raw, sizeof(cf32_raw), 8U, 1, 0, 0U,
+                                   converted, sizeof(converted) / sizeof(converted[0]), &convert_phase,
+                                   &convert_have_carry, &convert_carry_byte);
+    failed |= expect_int_eq("replay CF32 rejects wrong stage conversion", rc, -1);
+
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CS16, "", 0, 0, cu8_odd_tail, sizeof(cu8_odd_tail), 8U, 0, 0, 0U,
+                                   converted, sizeof(converted) / sizeof(converted[0]), &convert_phase,
+                                   &convert_have_carry, &convert_carry_byte);
+    failed |= expect_int_eq("replay converter rejects unsupported format", rc, -1);
+
+    /*
+     * CU8 callback chunking must preserve odd trailing bytes between callbacks,
+     * and full-ring drops must keep both drop accounting and FS/4 phase aligned.
+     */
+    size_t u8_used = 0U;
+    int u8_phase = -1;
+    int u8_carry_valid = -1;
+    uint8_t u8_carry_byte = 0U;
+    int first_status = -1;
+    int second_status = -1;
+    rc = rtl_device_test_u8_odd_carry_bridge(&u8_used, &u8_phase, &u8_carry_valid, &u8_carry_byte, &first_status,
+                                             &second_status);
+    failed |= expect_int_eq("u8 odd-carry helper rc", rc, 0);
+    failed |= expect_int_eq("u8 odd-carry first chunk accepted", first_status, 0);
+    failed |= expect_int_eq("u8 odd-carry second chunk accepted", second_status, 0);
+    failed |= expect_size_eq("u8 odd-carry bridges one IQ pair", u8_used, 2U);
+    failed |= expect_int_eq("u8 odd-carry advances one FS/4 pair", u8_phase, 1);
+    failed |= expect_int_eq("u8 odd-carry retains final byte", u8_carry_valid, 1);
+    failed |= expect_int_eq("u8 odd-carry byte preserved", (int)u8_carry_byte, 126);
+
+    uint64_t u8_drops = 0U;
+    uint64_t full_events = 0U;
+    int full_status = -1;
+    rc = rtl_device_test_u8_full_ring_drop(&u8_used, &u8_drops, &full_events, &u8_phase, &full_status);
+    failed |= expect_int_eq("u8 full-ring helper rc", rc, 0);
+    failed |= expect_int_eq("u8 full-ring reports exhaustion", full_status, 1);
+    failed |= expect_size_eq("u8 full-ring keeps one pair", u8_used, 2U);
+    failed |= expect_size_eq("u8 full-ring drops aligned remainder", (size_t)u8_drops, 4U);
+    failed |= expect_size_eq("u8 full-ring counts reserve exhaustion", (size_t)full_events, 1U);
+    failed |= expect_int_eq("u8 full-ring advances phase over committed and dropped pairs", u8_phase, 3);
+
+    int stale_dev_carry_valid = -1;
+    int stale_local_carry_valid = -1;
+    rc = rtl_device_test_u8_generation_stale_drop(&u8_drops, &u8_phase, &stale_dev_carry_valid,
+                                                  &stale_local_carry_valid, &full_status);
+    failed |= expect_int_eq("u8 stale-generation helper rc", rc, 0);
+    failed |= expect_int_eq("u8 stale-generation reports stale", full_status, 1);
+    failed |= expect_size_eq("u8 stale-generation drops produced and aligned remainder", (size_t)u8_drops, 6U);
+    failed |= expect_int_eq("u8 stale-generation advances phase over aligned remainder", u8_phase, 1);
+    failed |= expect_int_eq("u8 stale-generation clears device carry", stale_dev_carry_valid, 0);
+    failed |= expect_int_eq("u8 stale-generation clears local carry", stale_local_carry_valid, 0);
+
+    /*
+     * Miscellaneous RTL helper contracts are pure formatting/alignment rules:
+     * tuner-type labels stay stable, capture event reasons are bounded, Soapy
+     * setting text is trimmed, and rtl_tcp buffers are page-aligned upward.
+     */
+    char tuner_labels[96] = {};
+    char reason_small[8] = {};
+    char reason_null[4] = {'x', 'x', 'x', '\0'};
+    char trimmed[32] = {};
+    size_t rounded_pages[4] = {};
+    rc = rtl_device_test_misc_string_helpers(tuner_labels, sizeof(tuner_labels), reason_small, sizeof(reason_small),
+                                             reason_null, sizeof(reason_null), trimmed, sizeof(trimmed), rounded_pages,
+                                             sizeof(rounded_pages) / sizeof(rounded_pages[0]));
+    failed |= expect_int_eq("rtl misc string helper rc", rc, 0);
+    if (std::strcmp(tuner_labels, "E4000|FC0012|FC0013|FC2580|R820T|R828D|unknown") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: tuner labels got='%s'\n", tuner_labels);
+        failed = 1;
+    }
+    if (std::strcmp(reason_small, "capture") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: truncated reason got='%s'\n", reason_small);
+        failed = 1;
+    }
+    if (std::strcmp(reason_null, "") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: null reason got='%s'\n", reason_null);
+        failed = 1;
+    }
+    if (std::strcmp(trimmed, "gain = 12.5") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: trimmed setting got='%s'\n", trimmed);
+        failed = 1;
+    }
+    failed |= expect_size_eq("round zero page", rounded_pages[0], 0U);
+    failed |= expect_size_eq("round one page", rounded_pages[1], 4096U);
+    failed |= expect_size_eq("round exact page", rounded_pages[2], 4096U);
+    failed |= expect_size_eq("round next page", rounded_pages[3], 8192U);
+    failed |= expect_int_eq("rtl misc helper rejects short arrays",
+                            rtl_device_test_misc_string_helpers(tuner_labels, sizeof(tuner_labels), reason_small,
+                                                                sizeof(reason_small), reason_null, sizeof(reason_null),
+                                                                trimmed, sizeof(trimmed), rounded_pages, 3U),
+                            -1);
+
+    size_t tcp_bufsz[8] = {};
+    int tcp_waitall[4] = {};
+    uint64_t tcp_deltas[2] = {};
+    int agc_want = -1;
+    rc = rtl_device_test_tcp_policy_helpers(tcp_bufsz, sizeof(tcp_bufsz) / sizeof(tcp_bufsz[0]), tcp_waitall,
+                                            sizeof(tcp_waitall) / sizeof(tcp_waitall[0]), tcp_deltas,
+                                            sizeof(tcp_deltas) / sizeof(tcp_deltas[0]), &agc_want);
+    failed |= expect_int_eq("rtl tcp policy helper rc", rc, 0);
+    failed |= expect_size_eq("rtl tcp null default buffer", tcp_bufsz[0], 65536U);
+    failed |= expect_size_eq("rtl tcp backend default buffer", tcp_bufsz[1], 16384U);
+    failed |= expect_size_eq("rtl usb zero-rate default buffer", tcp_bufsz[2], 65536U);
+    failed |= expect_size_eq("rtl low-rate minimum buffer", tcp_bufsz[3], 16384U);
+    failed |= expect_size_eq("rtl rate-scaled buffer", tcp_bufsz[4], 38400U);
+    failed |= expect_size_eq("rtl high-rate capped buffer", tcp_bufsz[5], 262144U);
+    failed |= expect_size_eq("rtl config buffer override", tcp_bufsz[6], 12345U);
+    failed |= expect_size_eq("rtl invalid config buffer falls back", tcp_bufsz[7], 262144U);
+    failed |= expect_int_eq("rtl null waitall default", tcp_waitall[0], 1);
+    failed |= expect_int_eq("rtl tcp waitall default", tcp_waitall[1], 0);
+    failed |= expect_int_eq("rtl waitall explicit enable", tcp_waitall[2], 1);
+    failed |= expect_int_eq("rtl waitall explicit disable", tcp_waitall[3], 0);
+    failed |= expect_size_eq("rtl counter delta monotonic", (size_t)tcp_deltas[0], 60U);
+    failed |= expect_size_eq("rtl counter delta clamps wrap/reorder", (size_t)tcp_deltas[1], 0U);
+    failed |= expect_int_eq("rtl default agc config", agc_want, 1);
+
+    failed |= expect_int_eq("rtl tcp policy helper rejects short buffers",
+                            rtl_device_test_tcp_policy_helpers(tcp_bufsz, 7U, tcp_waitall,
+                                                               sizeof(tcp_waitall) / sizeof(tcp_waitall[0]), tcp_deltas,
+                                                               sizeof(tcp_deltas) / sizeof(tcp_deltas[0]), &agc_want),
+                            -1);
 
     return failed ? 1 : 0;
 }

@@ -212,8 +212,12 @@ static int
 test_extended_function_command_abbreviated(void) {
     int rc = 0;
 
+    rc |= expect_str_has("extfn label check", p25_extended_function_class0_operand_label(0x00), "Radio Check");
     rc |= expect_str_has("extfn label inhibit", p25_extended_function_class0_operand_label(0x7F), "Radio Inhibit");
     rc |= expect_str_has("extfn label detach", p25_extended_function_class0_operand_label(0x7D), "Radio Detach");
+    rc |= expect_str_has("extfn label uninhibit", p25_extended_function_class0_operand_label(0x7E), "Radio Uninhibit");
+    rc |= expect_str_has("extfn label reserved", p25_extended_function_class0_operand_label(0x01), "Reserved");
+    rc |= expect_str_has("extfn ack masks label", p25_extended_function_class0_operand_label(0x80), "Radio Check");
     rc |= expect_eq("extfn ack bit", p25_extended_function_operand_is_ack(0xFF), 1);
     rc |= expect_eq("extfn no ack bit", p25_extended_function_operand_is_ack(0x7F), 0);
 

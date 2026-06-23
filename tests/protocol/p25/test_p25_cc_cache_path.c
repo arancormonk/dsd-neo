@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
+// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// NOLINTBEGIN(readability-suspicious-call-argument)
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
@@ -65,6 +68,30 @@ write_cache_fixture(const char* path) {
     return 1;
 }
 
+static int
+read_file_text(const char* path, char* out, size_t out_len) {
+    FILE* fp = dsd_fopen_existing_regular_file(path, "r");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "failed to read cache file: %s\n", strerror(errno));
+        return 0;
+    }
+    size_t n = fread(out, 1, out_len - 1U, fp);
+    out[n] = '\0';
+    fclose(fp);
+    return 1;
+}
+
+static int
+expect_contains(const char* tag, const char* haystack, const char* needle, int want) {
+    int found = strstr(haystack ? haystack : "", needle ? needle : "") != NULL;
+    if (found != want) {
+        DSD_FPRINTF(stderr, "%s: substring '%s' found=%d want=%d in '%s'\n", tag, needle ? needle : "(null)", found,
+                    want, haystack ? haystack : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -83,12 +110,17 @@ main(void) {
     char out[1024];
     int ok = p25_cc_build_cache_path(&st, out, sizeof out);
     rc |= expect_eq_int("no identity", ok, 0);
+    rc |= expect_eq_int("null state path", p25_cc_build_cache_path(NULL, out, sizeof out), 0);
+    rc |= expect_eq_int("null out path", p25_cc_build_cache_path(&st, NULL, sizeof out), 0);
+    rc |= expect_eq_int("zero out path", p25_cc_build_cache_path(&st, out, 0), 0);
 
     // With WACN/SYSID only
     st.p2_wacn = 0xABCDEULL;
     st.p2_sysid = 0x123ULL;
     ok = p25_cc_build_cache_path(&st, out, sizeof out);
     rc |= expect_eq_int("iden only ok", ok, 1);
+    char tiny[8];
+    rc |= expect_eq_int("path too small", p25_cc_build_cache_path(&st, tiny, sizeof tiny), 0);
     char want1[1024];
     DSD_SNPRINTF(want1, sizeof want1, "%s/p25_cc_%05lX_%03lX.txt", dir, (unsigned long)st.p2_wacn,
                  (unsigned long)st.p2_sysid);
@@ -110,6 +142,7 @@ main(void) {
 
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof opts);
+    p25_cc_try_load_cache(&opts, NULL);
     p25_cc_try_load_cache(&opts, &st);
 
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&st);
@@ -124,5 +157,38 @@ main(void) {
                             1);
     }
 
+    p25_cc_try_load_cache(&opts, &st);
+    rc |= expect_eq_int("already loaded preserves count", cc ? cc->count : 0, 2);
+
+    static dsd_state missing;
+    DSD_MEMSET(&missing, 0, sizeof missing);
+    missing.p2_wacn = 0xABCDEULL;
+    missing.p2_sysid = 0x124ULL;
+    missing.p2_rfssid = 8ULL;
+    missing.p2_siteid = 12ULL;
+    p25_cc_try_load_cache(&opts, &missing);
+    rc |= expect_eq_int("missing cache marked loaded", missing.p25_cc_cache_loaded, 1);
+    rc |= expect_eq_int("missing cache count", dsd_trunk_cc_candidates_peek(&missing) != NULL, 0);
+
+    rc |= expect_eq_int("add null candidate", p25_cc_add_candidate(NULL, 852111111L, 1), 0);
+    rc |= expect_eq_int("add zero candidate", p25_cc_add_candidate(&st, 0, 1), 0);
+    st.p25_cc_freq = 852222222L;
+    rc |= expect_eq_int("add current cc candidate", p25_cc_add_candidate(&st, 852222222L, 1), 0);
+    rc |= expect_eq_int("add current-site candidate", p25_cc_add_candidate(&st, 852555555L, 1), 1);
+    rc |= expect_eq_int("add generic candidate", dsd_trunk_cc_candidates_add_with_flags(&st, 852666666L, 1, 0), 1);
+
+    p25_cc_persist_cache(&opts, NULL);
+    p25_cc_persist_cache(&opts, &st);
+    char persisted[512];
+    if (!read_file_text(out, persisted, sizeof persisted)) {
+        return 102;
+    }
+    rc |= expect_contains("persisted candidate 0", persisted, "cc 851222222\n", 1);
+    rc |= expect_contains("persisted candidate 1", persisted, "cc 851333333\n", 1);
+    rc |= expect_contains("persisted added current-site", persisted, "cc 852555555\n", 1);
+    rc |= expect_contains("persisted excludes generic", persisted, "852666666", 0);
+
     return rc;
 }
+
+// NOLINTEND(readability-suspicious-call-argument)

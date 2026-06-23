@@ -14,6 +14,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
@@ -62,10 +64,17 @@ test_history_basic_ops(void) {
     dsd_symbol_history_push(&state, 3.0f);
     check_int("count after push", 3, dsd_symbol_history_count(&state));
 
+    rc = dsd_symbol_history_init(&state, 2);
+    check_int("reinit return", 0, rc);
+    check_int("reinit count", 0, dsd_symbol_history_count(&state));
+    check_int("reinit size", 2, state.dmr_sample_history_size);
+
+    dsd_symbol_history_push(&state, 4.0f);
+    dsd_symbol_history_push(&state, 5.0f);
+
     /* Get symbols back */
-    check_float("get_back(0)", 3.0f, dsd_symbol_history_get_back(&state, 0), FLOAT_TOL);
-    check_float("get_back(1)", 2.0f, dsd_symbol_history_get_back(&state, 1), FLOAT_TOL);
-    check_float("get_back(2)", 1.0f, dsd_symbol_history_get_back(&state, 2), FLOAT_TOL);
+    check_float("get_back(0)", 5.0f, dsd_symbol_history_get_back(&state, 0), FLOAT_TOL);
+    check_float("get_back(1)", 4.0f, dsd_symbol_history_get_back(&state, 1), FLOAT_TOL);
 
     /* Reset and verify empty */
     dsd_symbol_history_reset(&state);
@@ -76,6 +85,26 @@ test_history_basic_ops(void) {
     check_int("count after free", 0, state.dmr_sample_history_count);
 
     printf("test_history_basic_ops: passed\n\n");
+}
+
+static void
+test_history_guards(void) {
+    printf("=== test_history_guards ===\n");
+
+    static struct dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    check_int("init null state", -1, dsd_symbol_history_init(NULL, 8));
+    check_int("init zero symbols", -1, dsd_symbol_history_init(&state, 0));
+
+    dsd_symbol_history_reset(NULL);
+    dsd_symbol_history_reset(&state);
+    dsd_symbol_history_free(NULL);
+
+    check_int("guard size unchanged", 0, state.dmr_sample_history_size);
+    check_int("guard count unchanged", 0, state.dmr_sample_history_count);
+
+    printf("test_history_guards: passed\n\n");
 }
 
 /**
@@ -274,6 +303,68 @@ test_center_only_large_bias(void) {
     printf("test_center_only_large_bias: passed\n\n");
 }
 
+static void
+test_center_only_failure_modes(void) {
+    printf("=== test_center_only_failure_modes ===\n");
+
+    static struct dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    static struct dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&opts, NULL, 24);
+    check_int("center null state", DSD_WARM_START_NULL_STATE, result);
+
+    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 1);
+    check_int("center invalid length", DSD_WARM_START_DEGENERATE, result);
+
+    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 4);
+    check_int("center no history", DSD_WARM_START_NO_HISTORY, result);
+
+    dsd_symbol_history_init(&state, 8);
+    dsd_symbol_history_push(&state, -3.0f);
+    dsd_symbol_history_push(&state, -3.0f);
+    dsd_symbol_history_push(&state, 3.0f);
+    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 3);
+    check_int("center singleton high cluster", DSD_WARM_START_DEGENERATE, result);
+
+    dsd_symbol_history_reset(&state);
+    dsd_symbol_history_push(&state, -0.2f);
+    dsd_symbol_history_push(&state, -0.2f);
+    dsd_symbol_history_push(&state, 0.2f);
+    dsd_symbol_history_push(&state, 0.2f);
+    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 4);
+    check_int("center small span", DSD_WARM_START_DEGENERATE, result);
+
+    dsd_symbol_history_free(&state);
+    printf("test_center_only_failure_modes: passed\n\n");
+}
+
+static void
+test_center_only_large_sync_uses_heap_sorted_copy(void) {
+    printf("=== test_center_only_large_sync_uses_heap_sorted_copy ===\n");
+
+    static struct dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    static struct dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    dsd_symbol_history_init(&state, 80);
+    for (int i = 0; i < 35; i++) {
+        dsd_symbol_history_push(&state, -2.0f);
+        dsd_symbol_history_push(&state, 4.0f);
+    }
+
+    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&opts, &state, 70);
+    check_int("center large sync result", DSD_WARM_START_OK, result);
+    check_float("center large sync", 1.0f, state.center, FLOAT_TOL);
+
+    dsd_symbol_history_free(&state);
+    printf("test_center_only_large_sync_uses_heap_sorted_copy: passed\n\n");
+}
+
 /**
  * @brief Test warm-start returns appropriate error when history is insufficient.
  */
@@ -458,22 +549,82 @@ test_buffer_prefill(void) {
     printf("test_buffer_prefill: passed\n\n");
 }
 
+static void
+test_warm_start_prefill_clamps_to_internal_buffer(void) {
+    printf("=== test_warm_start_prefill_clamps_to_internal_buffer ===\n");
+
+    static struct dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    static struct dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.msize = 2048;
+
+    dsd_symbol_history_init(&state, 64);
+    for (int i = 0; i < 24; i++) {
+        dsd_symbol_history_push(&state, (i % 2 == 0) ? 3.0f : -3.0f);
+    }
+
+    dsd_warm_start_result_t result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 24);
+    check_int("prefill clamp result", DSD_WARM_START_OK, result);
+    check_float("maxbuf last clamped", 3.0f, state.maxbuf[1023], FLOAT_TOL);
+    check_float("minbuf last clamped", -3.0f, state.minbuf[1023], FLOAT_TOL);
+
+    dsd_symbol_history_free(&state);
+    printf("test_warm_start_prefill_clamps_to_internal_buffer: passed\n\n");
+}
+
+static void
+test_warm_start_disabled_env(void) {
+    printf("=== test_warm_start_disabled_env ===\n");
+
+    static struct dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    static struct dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    dsd_symbol_history_init(&state, 4);
+    dsd_symbol_history_push(&state, -3.0f);
+    dsd_symbol_history_push(&state, -3.0f);
+    dsd_symbol_history_push(&state, 3.0f);
+    dsd_symbol_history_push(&state, 3.0f);
+
+    (void)dsd_setenv("DSD_NEO_SYNC_WARMSTART", "0", 1);
+    dsd_neo_config_init(NULL);
+
+    dsd_warm_start_result_t result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 4);
+    check_int("thresholds disabled", DSD_WARM_START_DISABLED, result);
+    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 4);
+    check_int("center disabled", DSD_WARM_START_DISABLED, result);
+
+    (void)dsd_unsetenv("DSD_NEO_SYNC_WARMSTART");
+    dsd_neo_config_init(NULL);
+    dsd_symbol_history_free(&state);
+    printf("test_warm_start_disabled_env: passed\n\n");
+}
+
 int
 main(void) {
     printf("Generic Sync Calibration Module Tests\n");
     printf("======================================\n\n");
 
     test_history_basic_ops();
+    test_history_guards();
     test_history_wraparound();
     test_warm_start_ideal();
     test_warm_start_dc_offset();
     test_center_only_warm_start();
     test_center_only_large_bias();
+    test_center_only_failure_modes();
+    test_center_only_large_sync_uses_heap_sorted_copy();
     test_warm_start_insufficient_history();
     test_warm_start_degenerate();
     test_warm_start_various_sync_lengths();
     test_null_handling();
     test_buffer_prefill();
+    test_warm_start_prefill_clamps_to_internal_buffer();
+    test_warm_start_disabled_env();
 
     printf("======================================\n");
     printf("Tests: %d, Failures: %d\n", g_test_count, g_fail_count);

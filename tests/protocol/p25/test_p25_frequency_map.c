@@ -7,10 +7,19 @@
  * P25 channel→frequency mapping tests (FDMA/TDMA + overrides).
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+struct RtlSdrContext;
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -20,10 +29,6 @@
 // Use shim to avoid pulling in external deps like mbelib.
 int p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
                            long* out_freq);
-
-// Stubs to satisfy linked objects from p25 proto lib
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -105,9 +110,27 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) { // NOLINT(
 }
 
 static int
+expect_eq_int(const char* tag, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_eq_str(const char* tag, const char* got, const char* want) {
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -144,6 +167,99 @@ main(void) {
         long f = 0;
         p25_test_frequency_for(1, /*type*/ 1, /*tdma*/ 0, 851000000 / 5, 100, 0x1005, 762000000, &f);
         rc |= expect_eq_long("map override", f, 762000000);
+    }
+
+    // Public trace and guard behavior.
+    {
+        p25_freq_trace_t trace;
+        DSD_MEMSET(&trace, 0xA5, sizeof(trace));
+        rc |= expect_eq_long("trace missing state", process_channel_to_freq_trace(NULL, NULL, 0x1000, &trace), 0);
+        rc |= expect_eq_str("trace missing state source", trace.source, "invalid-state");
+        rc |= expect_eq_str("trace missing state failure", trace.failure, "missing-state");
+
+        static dsd_state st;
+        DSD_MEMSET(&st, 0, sizeof(st));
+        rc |= expect_eq_long("trace sentinel channel", process_channel_to_freq_trace(NULL, &st, 0xFFFF, &trace), 0);
+        rc |= expect_eq_str("trace sentinel source", trace.source, "invalid-channel");
+        rc |= expect_eq_str("trace sentinel failure", trace.failure, "sentinel-channel");
+
+        rc |= expect_eq_long("trace missing iden", process_channel_to_freq_trace(NULL, &st, 0x1001, &trace), 0);
+        rc |= expect_eq_str("trace missing iden source", trace.source, "missing-iden-fdma");
+        rc |= expect_eq_str("trace missing iden failure", trace.failure, "missing-iden-params");
+
+        dsd_state_set_trunk_chan_freq(&st, 0x1001U, 765432100L);
+        p25_invalidate_chan_map_for_iden(NULL, 1);
+        p25_invalidate_chan_map_for_iden(&st, -1);
+        p25_invalidate_chan_map_for_iden(&st, 16);
+        rc |= expect_eq_long("invalid iden did not clear map", st.trunk_chan_map[0x1001], 765432100L);
+        p25_invalidate_chan_map_for_iden(&st, 1);
+        rc |= expect_eq_long("valid iden clears map", st.trunk_chan_map[0x1001], 0);
+
+        st.p25_chan_tdma_explicit[3] = 2;
+        st.p25_iden_fdma[3].populated = 1;
+        st.p25_iden_tdma[3].populated = 1;
+        p25_reset_iden_tables(NULL);
+        p25_reset_iden_tables(&st);
+        rc |= expect_eq_int("reset explicit tdma", st.p25_chan_tdma_explicit[3], 0);
+        rc |= expect_eq_int("reset fdma populated", st.p25_iden_fdma[3].populated, 0);
+        rc |= expect_eq_int("reset tdma populated", st.p25_iden_tdma[3].populated, 0);
+
+        static dsd_opts opts;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.verbose = 2;
+        st.p25_iden_fdma[1].populated = 1;
+        st.p25_iden_fdma[1].chan_type = 1;
+        st.p25_iden_fdma[1].base_freq = 851000000 / 5;
+        st.p25_iden_fdma[1].chan_spac = 100;
+        rc |= expect_eq_long("verbose computed p25", process_channel_to_freq(&opts, &st, 0x1002),
+                             851000000 + 2 * 100 * 125);
+    }
+
+    // NXDN channel mapping uses the same module and should cover DFA/cache/no-map paths.
+    {
+        static dsd_state ns;
+        static dsd_opts opts;
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+
+        dsd_state_set_trunk_chan_freq(&ns, 10U, 123456789L);
+        rc |= expect_eq_long("nxdn cache verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 123456789L);
+        rc |= expect_eq_long("nxdn cache quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 123456789L);
+        rc |= expect_eq_long("nxdn quiet null state", nxdn_channel_to_frequency_quiet(NULL, 10U), 0);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        rc |= expect_eq_long("nxdn no rcn verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 0);
+        rc |= expect_eq_long("nxdn no rcn quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 0);
+
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 1;
+        ns.nxdn_step = 2;
+        rc |= expect_eq_long("nxdn dfa base1 step2 verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 100012500L);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 2;
+        ns.nxdn_step = 3;
+        rc |= expect_eq_long("nxdn dfa base2 step3 quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 330031250L);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 3;
+        ns.nxdn_step = 2;
+        rc |= expect_eq_long("nxdn dfa base3 quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 400012500L);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 4;
+        ns.nxdn_step = 3;
+        rc |= expect_eq_long("nxdn dfa base4 quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 750031250L);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 99;
+        ns.nxdn_step = 99;
+        rc |= expect_eq_long("nxdn dfa unknown verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 0);
+        rc |= expect_eq_long("nxdn dfa unknown quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 0);
     }
 
     return rc;

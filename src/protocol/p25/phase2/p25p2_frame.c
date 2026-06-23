@@ -63,6 +63,7 @@ static int p25p2_ess_other_slot_active(const dsd_state* state, int other);
 static int p25p2_ess_have_decrypt_key(int alg, unsigned long long int key, int aes_loaded);
 static void p25p2_ess_release_or_defer_cc(dsd_opts* opts, dsd_state* state);
 static void p25p2_ess_clear_call_banner(dsd_state* state, int slot);
+static void process_P2_DUID(dsd_opts* opts, dsd_state* state);
 
 #if defined(DSD_NEO_P25P2_TEST_STUB)
 static int
@@ -93,6 +94,10 @@ p25p2_frame_test_stub_can_decrypt(const dsd_state* state, int slot, int alg) {
 }
 
 void p25p2_test_decode_voice_frame_for_lockout(dsd_opts* opts, dsd_state* state);
+void p25p2_test_teardown_call(dsd_opts* opts, dsd_state* state);
+void p25p2_test_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
+void p25p2_test_process_isch(dsd_opts* opts, dsd_state* state, int framing_index);
+void p25p2_test_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 #endif
 
 static int
@@ -281,6 +286,13 @@ p25_p2_teardown_call(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
     DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
 }
+
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+void
+p25p2_test_teardown_call(dsd_opts* opts, dsd_state* state) {
+    p25_p2_teardown_call(opts, state);
+}
+#endif
 
 //DUID Look Up Table from OP25
 static const int16_t duid_lookup[256] =
@@ -879,6 +891,20 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+void
+p25p2_test_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
+    ts_counter = timeslot_index;
+    process_FACCHc(opts, state);
+}
+
+void
+p25p2_test_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
+    ts_counter = timeslot_index;
+    process_SACCHc(opts, state);
+}
+#endif
+
 static void
 process_ISCH(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
@@ -919,6 +945,14 @@ process_ISCH(dsd_opts* opts, dsd_state* state) {
 
     isch_decoded = -1; //reset to bad value after running
 }
+
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+void
+p25p2_test_process_isch(dsd_opts* opts, dsd_state* state, int framing_index) {
+    framing_counter = framing_index;
+    process_ISCH(opts, state);
+}
+#endif
 
 static void DSD_ATTR_USED
 p25p2_emit_active_if_allowed(dsd_opts* opts, dsd_state* state) {
@@ -1797,6 +1831,13 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
 END:
     voice = 0;
 }
+
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+void
+p25p2_test_process_p2_duid(dsd_opts* opts, dsd_state* state) {
+    process_P2_DUID(opts, state);
+}
+#endif
 
 void
 processP2(dsd_opts* opts, dsd_state* state) {

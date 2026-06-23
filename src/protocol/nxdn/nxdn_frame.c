@@ -407,18 +407,6 @@ nxdn_unpack_payload_fields(nxdn_frame_ctx* ctx) {
 }
 
 static void
-nxdn_collect_payload_and_unpack(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
-    for (int i = 0; i < 174; i++) {
-        uint8_t rel = 255;
-        ctx->dbuf[i + 8] = (uint8_t)getDibitWithReliability(opts, state, &rel);
-        ctx->dbuf_reliab[i + 8] = rel;
-    }
-
-    nxdn_descramble_with_seed(ctx->dbuf, 182, state->nxdn_pn95_seed);
-    nxdn_unpack_payload_fields(ctx);
-}
-
-static void
 nxdn_print_rf_channel_type(const nxdn_frame_ctx* ctx) {
     if (ctx->sacch2 != 0) {
         return;
@@ -689,7 +677,14 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_mark_carrier_sync_active(state);
     nxdn_print_sync_banner(opts, state, &ctx);
 
-    nxdn_collect_payload_and_unpack(opts, state, &ctx);
+    for (int i = 0; i < 174; i++) {
+        uint8_t rel = 255;
+        ctx.dbuf[i + 8] = (uint8_t)getDibitWithReliability(opts, state, &rel);
+        ctx.dbuf_reliab[i + 8] = rel;
+    }
+
+    nxdn_descramble_with_seed(ctx.dbuf, 182, state->nxdn_pn95_seed);
+    nxdn_unpack_payload_fields(&ctx);
 
     ctx.lich_rf = (ctx.lich >> 5) & 0x3;
     ctx.direction = (ctx.lich % 2 == 0) ? 0 : 1;

@@ -5,9 +5,11 @@
 
 /* Unit tests: audio_lpf_filter and dc_block_filter behavior. */
 
+#include <cmath>
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/sps_filters.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -19,6 +21,62 @@ monotonic_nondecreasing(const float* x, int n) {
         }
     }
     return 1;
+}
+
+typedef float (*sps_filter_fn)(float sample, int samples_per_symbol);
+
+static int
+expect_sps_filter_response(const char* name, sps_filter_fn filter, int base_sps, int redesign_sps) {
+    init_rrc_filter_memory();
+    if (filter(123.0f, 1) != 123.0f) {
+        DSD_FPRINTF(stderr, "%s: sps<=1 bypass failed\n", name);
+        return 1;
+    }
+
+    float base_sum = 0.0f;
+    float base_abs = 0.0f;
+    for (int i = 0; i < 160; i++) {
+        float y = filter(i == 0 ? 1.0f : 0.0f, base_sps);
+        if (!std::isfinite(y)) {
+            DSD_FPRINTF(stderr, "%s: non-finite base response at %d\n", name, i);
+            return 1;
+        }
+        base_sum += y;
+        base_abs += std::fabs(y);
+    }
+    if (!(base_abs > 0.01f && base_sum > 0.80f && base_sum < 1.20f)) {
+        DSD_FPRINTF(stderr, "%s: unexpected base response sum=%f abs=%f\n", name, base_sum, base_abs);
+        return 1;
+    }
+
+    init_rrc_filter_memory();
+    float redesign_sum = 0.0f;
+    float redesign_abs = 0.0f;
+    for (int i = 0; i < 220; i++) {
+        float y = filter(i == 0 ? 1.0f : 0.0f, redesign_sps);
+        if (!std::isfinite(y)) {
+            DSD_FPRINTF(stderr, "%s: non-finite redesign response at %d\n", name, i);
+            return 1;
+        }
+        redesign_sum += y;
+        redesign_abs += std::fabs(y);
+    }
+    if (!(redesign_abs > 0.01f && redesign_sum > 0.80f && redesign_sum < 1.20f)) {
+        DSD_FPRINTF(stderr, "%s: unexpected redesign response sum=%f abs=%f\n", name, redesign_sum, redesign_abs);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_sps_filter_wrappers(void) {
+    int rc = 0;
+    rc |= expect_sps_filter_response("dmr", dmr_filter, 10, 8);
+    rc |= expect_sps_filter_response("nxdn", nxdn_filter, 20, 10);
+    rc |= expect_sps_filter_response("dpmr", dpmr_filter, 20, 12);
+    rc |= expect_sps_filter_response("m17", m17_filter, 10, 8);
+    rc |= expect_sps_filter_response("p25", p25_filter, 10, 8);
+    return rc;
 }
 
 int
@@ -77,6 +135,11 @@ main(void) {
             free(s);
             return 1;
         }
+    }
+
+    if (test_sps_filter_wrappers() != 0) {
+        free(s);
+        return 1;
     }
 
     free(s);

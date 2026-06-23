@@ -217,6 +217,41 @@ test_jitter_variance_is_ewma_smoothed(void) {
     return rc;
 }
 
+/**
+ * @brief A later window with no inter-recv deltas decays the EWMA value.
+ *
+ * This covers the sparse-reader case where the previous published jitter
+ * value remains useful, but absence of interval samples should move it toward
+ * zero instead of leaving stale variance indefinitely.
+ */
+static int
+test_jitter_ewma_decays_without_interval_samples(void) {
+    int rc = 0;
+    struct tcp_quality_metrics m;
+    tcp_metrics_init(&m, 48000);
+
+    uint64_t base_ns = m.window_start_ns;
+
+    tcp_metrics_record_recv(&m, 1000, base_ns + 0ULL);
+    tcp_metrics_record_recv(&m, 1000, base_ns + 50000000ULL);
+    tcp_metrics_record_recv(&m, 1000, base_ns + 200000000ULL);
+    tcp_metrics_record_recv(&m, 1000, base_ns + 250000000ULL);
+    tcp_metrics_record_recv(&m, 1000, base_ns + 500000000ULL);
+    tcp_metrics_record_recv(&m, 0, base_ns + 1000000000ULL);
+
+    struct tcp_quality_snapshot first = tcp_metrics_get_snapshot(&m);
+    rc |= expect_true("seed jitter variance is nonzero", first.jitter_variance_us2 > 0.0f);
+
+    m.last_recv_ns = 0;
+    tcp_metrics_record_recv(&m, 0, base_ns + 2000000000ULL);
+
+    struct tcp_quality_snapshot second = tcp_metrics_get_snapshot(&m);
+    rc |= expect_float_approx("empty interval window decays jitter ewma", second.jitter_variance_us2,
+                              first.jitter_variance_us2 * 0.8f, first.jitter_variance_us2 * 0.01f);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -225,5 +260,6 @@ main(void) {
     rc |= test_single_delta();
     rc |= test_no_recv_events();
     rc |= test_jitter_variance_is_ewma_smoothed();
+    rc |= test_jitter_ewma_decays_without_interval_samples();
     return rc ? 1 : 0;
 }

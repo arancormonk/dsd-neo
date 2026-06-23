@@ -92,6 +92,17 @@ dsd_audio_default_sample_rate_hz(int configured_sample_rate_hz) {
     return (configured_sample_rate_hz > 0) ? configured_sample_rate_hz : 48000;
 }
 
+static void
+dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
+    if (file == NULL || samples == NULL || sample_count <= 0) {
+        return;
+    }
+    sf_count_t written = sf_write_short(file, samples, sample_count);
+    if (written != sample_count) {
+        LOG_WARN("%s: wrote %lld/%lld samples to WAV output\n", context, (long long)written, (long long)sample_count);
+    }
+}
+
 static int
 dsd_audio_try_open_mono_wav_container(const char* path, SF_INFO* info, SNDFILE** out_file, int* out_sample_rate_hz) {
     if (!dsd_audio_path_is_wav_container(path) || !dsd_audio_file_has_wav_family_header(path)) {
@@ -694,7 +705,7 @@ writeSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
         state->audio_out_temp_buf_p++;
     }
 
-    sf_write_short(opts->wav_out_f, aout_buf, 160);
+    dsd_audio_write_wav_short_block(opts->wav_out_f, aout_buf, 160, "writeSynthesizedVoice");
 }
 
 void
@@ -717,7 +728,7 @@ writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
         state->audio_out_temp_buf_pR++;
     }
 
-    sf_write_short(opts->wav_out_fR, aout_buf, 160);
+    dsd_audio_write_wav_short_block(opts->wav_out_fR, aout_buf, 160, "writeSynthesizedVoiceR");
 }
 
 //short Mono to Stereo version for new static .wav files in stereo format for TDMA
@@ -747,7 +758,7 @@ writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
         ss[(n * 2) + 1] = aout_buf[n];
     }
 
-    sf_write_short(opts->wav_out_f, ss, 320);
+    dsd_audio_write_wav_short_block(opts->wav_out_f, ss, 320, "writeSynthesizedVoiceMS");
 }
 
 void

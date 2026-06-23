@@ -1105,10 +1105,8 @@ parse_raw_user_string(const char* input, uint8_t* output, size_t out_cap) {
         return 0;
     }
 
-    // If odd number of nibbles, we will logically pad one nibble (shift last)
-    int shift = 0;
+    // If odd number of nibbles, logically pad the missing low nibble with zero.
     if (in_len & 1U) {
-        shift = 1;
         in_len++; // treat as if one extra nibble was provided
     }
 
@@ -1140,11 +1138,6 @@ parse_raw_user_string(const char* input, uint8_t* output, size_t out_cap) {
         // Parse two nibbles into a byte
         output[i] = hex_pair_to_u8_or_zero(octet_char);
         k += 2;
-    }
-
-    // If we had an odd input nibble count, left shift the last written octet
-    if (shift && want_octets > 0) {
-        output[want_octets - 1] <<= 4;
     }
 
     return (uint16_t)want_octets;

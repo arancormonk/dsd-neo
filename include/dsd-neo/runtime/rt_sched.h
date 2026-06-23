@@ -30,6 +30,13 @@ extern "C" {
  */
 void maybe_set_thread_realtime_and_affinity(const char* role);
 
+#ifdef DSD_NEO_TEST_HOOKS
+#include <dsd-neo/runtime/config.h>
+const char* dsd_neo_rt_sched_test_role_or_default(const char* role);
+int dsd_neo_rt_sched_test_resolve_role_rt_priority(const dsdneoRuntimeConfig* cfg, const char* role);
+int dsd_neo_rt_sched_test_resolve_role_cpu_affinity(const dsdneoRuntimeConfig* cfg, const char* role);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

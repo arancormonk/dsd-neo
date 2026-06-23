@@ -37,6 +37,9 @@ static int g_channel = -1;
 static int g_svc = -1;
 static int g_tg = -1;
 static int g_src = -1;
+static int g_rs_hard_result = 0;
+static int g_rs_soft_result = 1;
+static int g_rs_soft_called = 0;
 
 static void
 sm_noop_init(dsd_opts* opts, dsd_state* state) {
@@ -196,7 +199,7 @@ int
 check_and_fix_reedsolomon_24_12_13(char* data, char* parity) {
     (void)data;
     (void)parity;
-    return 0; // no irrecoverable errors
+    return g_rs_hard_result;
 }
 
 int
@@ -214,6 +217,18 @@ void
 encode_reedsolomon_24_12_13(char* data, char* parity) {
     (void)data;
     (void)parity;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25p1_rs_24_12_13_soft_reliability(char* data, const char* parity, const uint8_t* data_reliab,
+                                   const uint8_t* parity_reliab) {
+    (void)data;
+    (void)parity;
+    (void)data_reliab;
+    (void)parity_reliab;
+    g_rs_soft_called++;
+    return g_rs_soft_result;
 }
 
 int
@@ -415,6 +430,7 @@ main(void) {
     opts.p25_is_tuned = 0;
     opts.floating_point = 1;
     opts.audio_gain = 3.5F;
+    opts.payload = 0;
     state.p25_cc_freq = 851000000;
     state.tg_hold = 0;
     int lastsrc = 0x00ABCDEF;
@@ -434,6 +450,9 @@ main(void) {
     DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "left active");
     DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "right active");
     g_called = 0;
+    g_rs_hard_result = 0;
+    g_rs_soft_result = 1;
+    g_rs_soft_called = 0;
     processTDULC(&opts, &state);
     rc |= expect_eq_int("grant called", g_called, 1);
     rc |= expect_eq_int("grant channel", g_channel, 0x100A);
@@ -472,6 +491,34 @@ main(void) {
     g_called = 0;
     processTDULC(&opts, &state);
     rc |= expect_eq_int("unsupported format", g_called, 0);
+
+    // Case 5: Hard Reed-Solomon failure recovered by soft reliability still dispatches LCW.
+    build_lcw_words(0x44, 0x00, 0x00, 0x3456, 0x100A, 0x0000);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.p25_lcw_retune = 1;
+    opts.trunk_tune_enc_calls = 1;
+    opts.payload = 1;
+    state.p25_cc_freq = 851000000;
+    state.lastsrc = (unsigned long long)lastsrc;
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_chan_iden = 1;
+    state.p25_iden_fdma[1].chan_type = 1;
+    state.p25_iden_fdma[1].chan_spac = 100;
+    state.p25_iden_fdma[1].base_freq = 851000000 / 5;
+    state.p25_iden_fdma[1].trust = 2;
+    state.p25_iden_fdma[1].populated = 1;
+    state.p25_chan_tdma_explicit[1] = 1;
+    g_called = 0;
+    g_rs_hard_result = 1;
+    g_rs_soft_result = 0;
+    g_rs_soft_called = 0;
+    processTDULC(&opts, &state);
+    rc |= expect_eq_int("soft rs called", g_rs_soft_called, 1);
+    rc |= expect_eq_int("soft rs recovered", (int)state.p25_p1_soft_rs_ok, 1);
+    rc |= expect_eq_int("soft rs fec ok", (int)state.p25_p1_voice_fec_ok, 1);
+    rc |= expect_eq_int("soft rs fec err", (int)state.p25_p1_voice_fec_err, 0);
+    rc |= expect_eq_int("soft rs dispatch", g_called, 1);
+    rc |= expect_eq_int("soft rs grant tg", g_tg, 0x3456);
 
     return rc;
 }

@@ -221,6 +221,19 @@ rtl_levels_for_symbol_rate(const dsd_opts* opts, int sym_rate_hz, int preferred_
     return 4;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_rtl_profile_for_symbol_rate(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz,
+                                                int preferred_levels) {
+    return rtl_profile_for_symbol_rate(opts, state, sym_rate_hz, preferred_levels);
+}
+
+int
+dsd_frame_sync_test_rtl_levels_for_symbol_rate(const dsd_opts* opts, int sym_rate_hz, int preferred_levels) {
+    return rtl_levels_for_symbol_rate(opts, sym_rate_hz, preferred_levels);
+}
+#endif
+
 static void
 rtl_maybe_update_symbol_profile_with_hint(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz,
                                           int preferred_levels) {
@@ -2260,7 +2273,7 @@ frame_sync_update_qpsk_hamming(const dsd_opts* opts, const char* synctest, const
 }
 
 static int
-frame_sync_best_ham_for_patterns(const char* symbols, const char* patterns[], int pattern_count, int pattern_len,
+frame_sync_best_ham_for_patterns(const char* symbols, const char* const patterns[], int pattern_count, int pattern_len,
                                  int best_start) {
     int best = best_start;
     for (int p = 0; p < pattern_count; p++) {
@@ -2286,6 +2299,30 @@ frame_sync_best_nxdn_scaled_ham(frame_sync_runtime_ctx* rt, int best_start) {
     }
     return best;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_hamming_distance_pattern(const char* symbols, const char* pattern, int len) {
+    return frame_sync_hamming_distance_pattern(symbols, pattern, len);
+}
+
+int
+dsd_frame_sync_test_best_ham_for_patterns(const char* symbols, const char* const patterns[], int pattern_count,
+                                          int pattern_len, int best_start) {
+    return frame_sync_best_ham_for_patterns(symbols, patterns, pattern_count, pattern_len, best_start);
+}
+
+int
+dsd_frame_sync_test_best_nxdn_scaled_ham(const char* symbols10, int best_start) {
+    frame_sync_runtime_ctx rt;
+    DSD_MEMSET(&rt, 0, sizeof(rt));
+    if (symbols10) {
+        DSD_STRNCPY(rt.synctest_buf, symbols10, 10);
+    }
+    rt.synctest_p = rt.synctest_buf + 9;
+    return frame_sync_best_nxdn_scaled_ham(&rt, best_start);
+}
+#endif
 
 static void
 frame_sync_update_gfsk_hamming(const dsd_opts* opts, frame_sync_runtime_ctx* rt) {
@@ -2466,6 +2503,14 @@ frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state, con
     return next_idx;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state, const int* sym_rate_cycle,
+                                        const int* levels_cycle, int cycle_count) {
+    return frame_sync_sps_hunt_next_index(opts, state, sym_rate_cycle, levels_cycle, cycle_count);
+}
+#endif
+
 static void
 frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx, const int* sym_rate_cycle,
                                   const int* levels_cycle) {
@@ -2499,6 +2544,14 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
     }
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx,
+                                           const int* sym_rate_cycle, const int* levels_cycle) {
+    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, sym_rate_cycle, levels_cycle);
+}
+#endif
+
 static void
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     if (!(state->carrier == 0 && !opts->mod_cli_lock)) {
@@ -2528,6 +2581,13 @@ frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wa
     return 1e9;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+double
+dsd_frame_sync_test_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp) {
+    return frame_sync_elapsed_seconds(nowm, now, mono_stamp, wall_stamp);
+}
+#endif
+
 static void
 frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm, double mac_hold,
                              double ring_hold, double dt, int* left_active, int* right_active) {
@@ -2546,6 +2606,15 @@ frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_
     *left_active = left_has_audio || (l_dmac <= mac_hold);
     *right_active = right_has_audio || (r_dmac <= mac_hold);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm,
+                                      double mac_hold, double ring_hold, double dt, int* left_active,
+                                      int* right_active) {
+    frame_sync_p25_slot_activity(opts, state, now, nowm, mac_hold, ring_hold, dt, left_active, right_active);
+}
+#endif
 
 static void
 frame_sync_no_sync_try_p25_release(dsd_opts* opts, dsd_state* state, time_t now) {

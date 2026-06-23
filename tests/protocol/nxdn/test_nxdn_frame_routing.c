@@ -34,6 +34,9 @@ static int g_sacch2_calls;
 static int g_pich_tch_calls;
 static int g_voice_calls;
 static int g_last_voice;
+static uint8_t g_dibit_stream[182];
+static uint8_t g_dibit_reliab_stream[182];
+static size_t g_dibit_stream_pos;
 static uint8_t g_last_sacch_bit;
 static uint8_t g_last_sacch_reliab;
 static uint8_t g_last_facch_bit;
@@ -77,6 +80,9 @@ reset_state(void) {
     g_pich_tch_calls = 0;
     g_voice_calls = 0;
     g_last_voice = 0;
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
+    g_dibit_stream_pos = 0U;
     g_last_sacch_bit = 0;
     g_last_sacch_reliab = 0;
     g_last_facch_bit = 0;
@@ -121,10 +127,17 @@ int
 getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
     (void)opts;
     (void)state;
-    if (out_reliability != NULL) {
-        *out_reliability = 255U;
+    uint8_t dibit = 0U;
+    uint8_t reliab = 255U;
+    if (g_dibit_stream_pos < (sizeof(g_dibit_stream) / sizeof(g_dibit_stream[0]))) {
+        dibit = g_dibit_stream[g_dibit_stream_pos];
+        reliab = g_dibit_reliab_stream[g_dibit_stream_pos];
+        g_dibit_stream_pos++;
     }
-    return 0;
+    if (out_reliability != NULL) {
+        *out_reliability = reliab;
+    }
+    return dibit;
 }
 
 uint64_t
@@ -255,6 +268,32 @@ route(uint8_t lich, const uint8_t bits[364], const uint8_t reliab[364]) {
     return dsd_neo_nxdn_test_route_decoded_lich(&g_opts, &g_state, lich, bits, reliab);
 }
 
+static uint8_t
+encoded_lich_full(uint8_t lich) {
+    uint8_t full = (uint8_t)(lich << 1U);
+    uint8_t parity = (uint8_t)(((full >> 7U) + (full >> 6U) + (full >> 5U) + (full >> 4U)) & 1U);
+    if (lich == 0x08U || lich == 0x4AU || lich == 0x48U || lich == 0x46U) {
+        parity = (uint8_t)(((full >> 7U) + (full >> 6U) + (full >> 5U) + (full >> 4U) + (full >> 3U) + (full >> 2U)
+                            + (full >> 1U))
+                           & 1U);
+    }
+    return (uint8_t)(full | parity);
+}
+
+static void
+prepare_frame_stream(uint8_t lich, int force_bad_parity) {
+    const uint8_t full = (uint8_t)(encoded_lich_full(lich) ^ (force_bad_parity ? 1U : 0U));
+    for (size_t i = 0U; i < (sizeof(g_dibit_stream) / sizeof(g_dibit_stream[0])); i++) {
+        if (i < 8U) {
+            g_dibit_stream[i] = (uint8_t)((((full >> (7U - i)) & 1U) << 1U) | 1U);
+        } else {
+            g_dibit_stream[i] = (uint8_t)((((i * 3U) + 1U) & 0x3U));
+        }
+        g_dibit_reliab_stream[i] = (uint8_t)(240U - (i % 120U));
+    }
+    g_dibit_stream_pos = 0U;
+}
+
 static int
 test_control_channel_routes_and_reliability(void) {
     int rc = 0;
@@ -320,6 +359,14 @@ test_bad_frame_and_filter_gates(void) {
     fill_soft_bits(bits, reliab);
 
     reset_state();
+    rc |= expect_int("route null opts", dsd_neo_nxdn_test_route_decoded_lich(NULL, &g_state, 0x01U, bits, reliab), -1);
+    rc |= expect_int("route null state", dsd_neo_nxdn_test_route_decoded_lich(&g_opts, NULL, 0x01U, bits, reliab), -1);
+    rc |=
+        expect_int("route null bits", dsd_neo_nxdn_test_route_decoded_lich(&g_opts, &g_state, 0x01U, NULL, reliab), -1);
+    rc |=
+        expect_int("route null reliab", dsd_neo_nxdn_test_route_decoded_lich(&g_opts, &g_state, 0x01U, bits, NULL), -1);
+
+    reset_state();
     g_state.carrier = 1;
     g_state.synctype = 99;
     g_state.lastsynctype = 99;
@@ -333,6 +380,41 @@ test_bad_frame_and_filter_gates(void) {
     g_opts.p25_trunk = 1;
     rc |= expect_int("inbound trunk lich rejected", route(0x38U, bits, reliab), 0);
     rc |= expect_int("inbound trunk marks sync none", g_state.lastsynctype, DSD_SYNC_NONE);
+
+    return rc;
+}
+
+static int
+test_public_frame_entry_lich_collection(void) {
+    int rc = 0;
+
+    reset_state();
+    g_opts.frame_nxdn48 = 1;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    prepare_frame_stream(0x01U, 0);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("frame consumed dibits", (int)g_dibit_stream_pos, 182);
+    rc |= expect_int("frame cac route", g_cac_calls, 1);
+    rc |= expect_int("frame carrier active", g_state.carrier, 1);
+    rc |= expect_int("frame cc mono timestamp", g_state.last_cc_sync_time_m == 42.0, 1);
+    rc |= expect_int("frame cac reliability", g_last_cac_reliab, g_dibit_reliab_stream[8]);
+
+    reset_state();
+    g_opts.frame_nxdn48 = 1;
+    prepare_frame_stream(0x08U, 0);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("frame special parity accepted", g_sacch2_calls, 1);
+    rc |= expect_int("frame special pich", g_pich_tch_calls, 1);
+
+    reset_state();
+    g_state.carrier = 1;
+    g_state.synctype = DSD_SYNC_NXDN_POS;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    prepare_frame_stream(0x01U, 1);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("frame parity consumed lich only", (int)g_dibit_stream_pos, 8);
+    rc |= expect_int("frame parity rejects sync", g_state.lastsynctype, DSD_SYNC_NONE);
+    rc |= expect_int("frame parity clears carrier", g_state.carrier, 0);
 
     return rc;
 }
@@ -370,6 +452,21 @@ test_lfsr_and_scanner_state(void) {
     rc |= expect_u64("post voice facch2 bit counter", (unsigned long long)g_state.bit_counterL, 98ULL);
 
     reset_state();
+    DSD_SNPRINTF(g_opts.mbe_out_dir, sizeof(g_opts.mbe_out_dir), "%s", "mbe");
+    rc |= expect_int("voice opens mbe file route", route(0x32U, bits, reliab), 1);
+    rc |= expect_int("voice opened mbe file", g_opts.mbe_out_f == stdout, 1);
+    g_opts.frame_nxdn48 = 1;
+    rc |= expect_int("nxdn48 data closes mbe file route", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("nxdn48 data closed mbe file", g_opts.mbe_out_f == NULL, 1);
+
+    reset_state();
+    g_opts.mbe_out_f = stdout;
+    g_opts.frame_nxdn96 = 1;
+    g_state.last_vc_sync_time = 0;
+    rc |= expect_int("nxdn96 stale data closes mbe file route", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("nxdn96 stale data closed mbe file", g_opts.mbe_out_f == NULL, 1);
+
+    reset_state();
     g_opts.scanner_mode = 1;
     rc |= expect_int("scanner accepted", route(0x01U, bits, reliab), 1);
     rc |= expect_int("scanner extends cc sync", g_state.last_cc_sync_time > 0, 1);
@@ -384,6 +481,7 @@ main(void) {
 
     rc |= test_control_channel_routes_and_reliability();
     rc |= test_bad_frame_and_filter_gates();
+    rc |= test_public_frame_entry_lich_collection();
     rc |= test_lfsr_and_scanner_state();
 
     if (rc == 0) {

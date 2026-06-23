@@ -82,6 +82,10 @@ extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_neon(const unsigned c
 
 static uint32_t widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* dst, uint32_t len,
                                                               uint32_t phase);
+#ifdef DSD_NEO_TEST_HOOKS
+extern "C" uint32_t dsd_test_widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* dst,
+                                                                           uint32_t len, uint32_t phase);
+#endif
 
 static widen_rot_phase_fn g_widen_rot_phase_impl = widen_rotate90_u8_to_f32_bias127_phase_scalar;
 static std::atomic<int> g_widen_init_done{0};
@@ -155,6 +159,14 @@ widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* d
 
     return cur_phase;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+extern "C" uint32_t
+dsd_test_widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* dst, uint32_t len,
+                                                       uint32_t phase) {
+    return widen_rotate90_u8_to_f32_bias127_phase_scalar(src, dst, len, phase);
+}
+#endif
 
 uint32_t
 widen_rotate90_u8_to_f32_bias127_phase(const unsigned char* src, float* dst, uint32_t len, uint32_t phase) {

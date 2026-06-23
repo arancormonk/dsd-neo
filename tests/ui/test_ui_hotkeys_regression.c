@@ -45,6 +45,7 @@ static int g_history_cycle_calls = 0;
 static int g_menu_open = 0;
 static int g_menu_handle_key_calls = 0;
 static int g_menu_last_key = ERR;
+static int g_menu_open_async_calls = 0;
 
 int
 ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT(misc-use-internal-linkage)
@@ -105,6 +106,7 @@ void
 ui_menu_open_async(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
+    g_menu_open_async_calls++;
 }
 
 WINDOW* stdscr = NULL;
@@ -129,11 +131,26 @@ cap_reset(void) {
     g_menu_open = 0;
     g_menu_handle_key_calls = 0;
     g_menu_last_key = ERR;
+    g_menu_open_async_calls = 0;
 }
 
 static uint32_t
 cap_u32(void) {
     uint32_t v = 0;
+    DSD_MEMCPY(&v, g_cap.data, sizeof(v));
+    return v;
+}
+
+static int32_t
+cap_i32(void) {
+    int32_t v = 0;
+    DSD_MEMCPY(&v, g_cap.data, sizeof(v));
+    return v;
+}
+
+static float
+cap_f32(void) {
+    float v = 0.0f;
     DSD_MEMCPY(&v, g_cap.data, sizeof(v));
     return v;
 }
@@ -149,6 +166,13 @@ main(void) {
         return 1;
     }
 
+    /* Null inputs are treated as consumed and do not enqueue commands. */
+    cap_reset();
+    assert(ncurses_input_handler(NULL, state, DSD_KEY_MUTE_LOWER) == 1);
+    assert(g_cap.calls == 0);
+    assert(ncurses_input_handler(opts, NULL, DSD_KEY_MUTE_LOWER) == 1);
+    assert(g_cap.calls == 0);
+
     /* Open menu overlay should receive keys before hotkeys and keep input consumed. */
     cap_reset();
     g_menu_open = 1;
@@ -157,6 +181,19 @@ main(void) {
     assert(g_menu_last_key == DSD_KEY_HISTORY);
     assert(g_history_cycle_calls == 0);
     assert(g_cap.calls == 0);
+
+    /* Open menu overlay should ignore no-key polls without dispatching. */
+    cap_reset();
+    g_menu_open = 1;
+    assert(ncurses_input_handler(opts, state, -1) == 1);
+    assert(g_menu_handle_key_calls == 0);
+    assert(g_cap.calls == 0);
+
+    /* Escape drains pending bytes and consumes the key without queueing. */
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, DSD_KEY_ESC) == 1);
+    assert(g_cap.calls == 0);
+    assert(g_history_cycle_calls == 0);
 
     /* 'h' must cycle immediately in UI thread (no command queue dependency). */
     cap_reset();
@@ -171,6 +208,29 @@ main(void) {
     assert(g_cap.calls == 0);
     assert(g_history_cycle_calls == 2);
     assert(g_redraw_calls == 2);
+
+    /* Delta hotkeys should post signed/floating payloads immediately. */
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, DSD_KEY_GAIN_PLUS) == 1);
+    assert(g_cap.id == UI_CMD_GAIN_DELTA);
+    assert(g_cap.n == sizeof(int32_t));
+    assert(cap_i32() == 1);
+
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, DSD_KEY_AGAIN_MINUS) == 1);
+    assert(g_cap.id == UI_CMD_AGAIN_DELTA);
+    assert(cap_i32() == -1);
+
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, DSD_KEY_CONST_GATE_DEC) == 1);
+    assert(g_cap.id == UI_CMD_CONST_GATE_DELTA);
+    assert(g_cap.n == sizeof(float));
+    assert(cap_f32() < -0.019f && cap_f32() > -0.021f);
+
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, DSD_KEY_PPM_DOWN) == 1);
+    assert(g_cap.id == UI_CMD_PPM_DELTA);
+    assert(cap_i32() == -1);
 
     /* 'k' should set hold from slot-1 TG when no hold is active. */
     cap_reset();
@@ -244,6 +304,50 @@ main(void) {
     assert(g_cap.calls == 1);
     assert(g_cap.id == UI_CMD_TRUNK_ENC_TOGGLE);
     assert(g_cap.n == 0);
+
+    /* Enter opens the menu only when the M17 encoder is not active. */
+    cap_reset();
+    opts->m17encoder = 0;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_ENTER) == 1);
+    assert(g_menu_open_async_calls == 1);
+    assert(g_cap.calls == 0);
+
+    cap_reset();
+    opts->m17encoder = 1;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_ENTER) == 1);
+    assert(g_menu_open_async_calls == 0);
+    assert(g_cap.calls == 0);
+
+    /* Event-history toggle key is repurposed for M17 TX while encoder mode is active. */
+    cap_reset();
+    opts->m17encoder = 0;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_EH_TOGGLE) == 1);
+    assert(g_cap.id == UI_CMD_EH_TOGGLE_SLOT);
+    assert(g_cap.n == 0);
+
+    cap_reset();
+    opts->m17encoder = 1;
+    assert(ncurses_input_handler(opts, state, DSD_KEY_EH_TOGGLE) == 1);
+    assert(g_cap.id == UI_CMD_M17_TX_TOGGLE);
+    assert(g_cap.n == 0);
+
+    /* Slot lockout hotkeys should carry the exact slot index. */
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, '!') == 1);
+    assert(g_cap.id == UI_CMD_LOCKOUT_SLOT);
+    assert(g_cap.n == sizeof(uint8_t));
+    assert(g_cap.data[0] == 0U);
+
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, '@') == 1);
+    assert(g_cap.id == UI_CMD_LOCKOUT_SLOT);
+    assert(g_cap.n == sizeof(uint8_t));
+    assert(g_cap.data[0] == 1U);
+
+    /* Unknown keys are still consumed but do not enqueue command work. */
+    cap_reset();
+    assert(ncurses_input_handler(opts, state, '~') == 1);
+    assert(g_cap.calls == 0);
 
     printf("UI_HOTKEYS_REGRESSION: OK\n");
     free(state);

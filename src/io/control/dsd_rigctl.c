@@ -62,6 +62,13 @@ static bool DSD_ATTR_UNUSED_FN GetSquelchLevel(dsd_socket_t sockfd, double* dB);
 static bool DSD_ATTR_UNUSED_FN SetSquelchLevel(dsd_socket_t sockfd, double dB);
 static bool DSD_ATTR_UNUSED_FN GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp);
 static void DSD_ATTR_UNUSED_FN rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency);
+#if defined(DSD_NEO_TEST_HOOKS)
+bool dsd_rigctl_test_get_signal_level(dsd_socket_t sockfd, double* dB);
+bool dsd_rigctl_test_get_squelch_level(dsd_socket_t sockfd, double* dB);
+bool dsd_rigctl_test_set_squelch_level(dsd_socket_t sockfd, double dB);
+bool dsd_rigctl_test_get_signal_level_ex(dsd_socket_t sockfd, double* dB, int n_samp);
+void dsd_rigctl_test_rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency);
+#endif
 
 static bool
 parse_double_strict(const char* input, double* out) {
@@ -401,6 +408,28 @@ GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp) {
     return true;
 }
 
+#if defined(DSD_NEO_TEST_HOOKS)
+bool
+dsd_rigctl_test_get_signal_level(dsd_socket_t sockfd, double* dB) {
+    return GetSignalLevel(sockfd, dB);
+}
+
+bool
+dsd_rigctl_test_get_squelch_level(dsd_socket_t sockfd, double* dB) {
+    return GetSquelchLevel(sockfd, dB);
+}
+
+bool
+dsd_rigctl_test_set_squelch_level(dsd_socket_t sockfd, double dB) {
+    return SetSquelchLevel(sockfd, dB);
+}
+
+bool
+dsd_rigctl_test_get_signal_level_ex(dsd_socket_t sockfd, double* dB, int n_samp) {
+    return GetSignalLevelEx(sockfd, dB, n_samp);
+}
+#endif
+
 //going to leave this function available, even if completely switched over to rtl_dev_tune now, may be useful in the future
 /**
  * @brief Tune RTL devices via legacy UDP command flow.
@@ -446,6 +475,13 @@ rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
     dsd_socket_close(handle); //close socket after sending.
     s_last_udp_freq = frequency;
 }
+
+#if defined(DSD_NEO_TEST_HOOKS)
+void
+dsd_rigctl_test_rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
+    rtl_udp_tune(opts, state, frequency);
+}
+#endif
 
 /**
  * @brief Set tuner frequency via io/control API (simple tune without trunking bookkeeping).

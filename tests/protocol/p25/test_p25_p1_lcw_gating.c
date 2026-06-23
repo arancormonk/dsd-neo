@@ -206,6 +206,32 @@ main(void) {
     p25_lcw(&opts, &st, lcw, 0);
     rc |= expect_eq_int("clear->tune", g_tunes, 1);
 
+    // Trunking disabled: a decoded 0x44 grant may update display state, but it
+    // must not be treated as a trunking grant.
+    opts.p25_trunk = 0;
+    g_tunes = 0;
+    p25_lcw(&opts, &st, lcw, 0);
+    rc |= expect_eq_int("no trunk->no-tune", g_tunes, 0);
+    opts.p25_trunk = 1;
+
+    // Retune disabled should warn only once and never dispatch a grant.
+    opts.p25_lcw_retune = 0;
+    st.p25_lcw_retune_disabled_warned = 0;
+    g_tunes = 0;
+    p25_lcw(&opts, &st, lcw, 0);
+    rc |= expect_eq_int("retune disabled no tune", g_tunes, 0);
+    rc |= expect_eq_int("retune disabled warned", st.p25_lcw_retune_disabled_warned, 1);
+    p25_lcw(&opts, &st, lcw, 0);
+    rc |= expect_eq_int("retune disabled warned once", st.p25_lcw_retune_disabled_warned, 1);
+    opts.p25_lcw_retune = 1;
+
+    // TG hold mismatch suppresses an otherwise tunable group grant.
+    st.tg_hold = tg + 1;
+    g_tunes = 0;
+    p25_lcw(&opts, &st, lcw, 0);
+    rc |= expect_eq_int("tg hold mismatch no tune", g_tunes, 0);
+    st.tg_hold = 0;
+
     // Failed-VC backoff must also apply to LCW 0x44 explicit grants.
     st.p25_retune_block_freq = 851125000;
     st.p25_retune_block_slot = -1;

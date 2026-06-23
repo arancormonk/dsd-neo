@@ -23,6 +23,15 @@
 #include "dsd-neo/dsp/resampler.h"
 
 static int
+expect_int(const char* label, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 get_bound_port(dsd_socket_t sock) {
     struct sockaddr_in sa;
 #if DSD_PLATFORM_WIN_NATIVE
@@ -59,6 +68,37 @@ send_pcm16le(dsd_socket_t sock, const char* host, int port, const int16_t* sampl
     }
     int n = dsd_socket_sendto(sock, buf, nsamp * 2, 0, (struct sockaddr*)&dst, (int)sizeof(dst));
     return (n == (int)(nsamp * 2)) ? 0 : -1;
+}
+
+static dsd_socket_t
+bind_loopback_ephemeral(int* out_port) {
+    if (!out_port) {
+        return DSD_INVALID_SOCKET;
+    }
+    *out_port = -1;
+
+    dsd_socket_t sock = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == DSD_INVALID_SOCKET) {
+        return DSD_INVALID_SOCKET;
+    }
+
+    struct sockaddr_in addr;
+    DSD_MEMSET(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = 0;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (dsd_socket_bind(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        dsd_socket_close(sock);
+        return DSD_INVALID_SOCKET;
+    }
+
+    int port = get_bound_port(sock);
+    if (port <= 0) {
+        dsd_socket_close(sock);
+        return DSD_INVALID_SOCKET;
+    }
+    *out_port = port;
+    return sock;
 }
 
 typedef struct reader_state {
@@ -137,6 +177,72 @@ input_stage_was_reset(const dsd_opts* opts) {
     return 1;
 }
 
+static int
+test_startup_contracts(void) {
+    int rc = 0;
+    int16_t sample = 0;
+    dsd_socket_t reserved = DSD_INVALID_SOCKET;
+
+    udp_input_stop(NULL);
+    rc |= expect_int("read rejects null opts", udp_input_read_sample(NULL, &sample), 0);
+
+    static dsd_opts invalid;
+    DSD_MEMSET(&invalid, 0, sizeof(invalid));
+    invalid.wav_sample_rate = 48000;
+    rc |= expect_int("read rejects missing context", udp_input_read_sample(&invalid, &sample), 0);
+    rc |= expect_int("read rejects null sample output", udp_input_read_sample(&invalid, NULL), 0);
+    rc |= expect_int("start rejects null opts", udp_input_start(NULL, "127.0.0.1", 0, 48000), -1);
+    rc |= expect_int("start rejects invalid bind address", udp_input_start(&invalid, "not-a-numeric-address", 0, 48000),
+                     -1);
+
+    int reserved_port = -1;
+    reserved = bind_loopback_ephemeral(&reserved_port);
+    if (reserved == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "failed to reserve loopback UDP port for bind-failure contract\n");
+        return 1;
+    }
+    rc |= expect_int("start rejects already-bound UDP port",
+                     udp_input_start(&invalid, "127.0.0.1", reserved_port, 48000), -1);
+    dsd_socket_close(reserved);
+    reserved = DSD_INVALID_SOCKET;
+
+    static dsd_opts any;
+    DSD_MEMSET(&any, 0, sizeof(any));
+    any.wav_sample_rate = 48000;
+    if (udp_input_start(&any, "0.0.0.0", 0, 96000) != 0) {
+        DSD_FPRINTF(stderr, "start on INADDR_ANY failed\n");
+        rc = 1;
+    } else {
+        void* first_ctx = any.udp_in_ctx;
+        dsd_socket_t first_sock = any.udp_in_sockfd;
+        rc |= expect_int("already-started start is no-op", udp_input_start(&any, "127.0.0.1", 0, 48000), 0);
+        if (any.udp_in_ctx != first_ctx || any.udp_in_sockfd != first_sock) {
+            DSD_FPRINTF(stderr, "already-started start replaced UDP input context\n");
+            rc = 1;
+        }
+        rc |= expect_int("read rejects null output on active context", udp_input_read_sample(&any, NULL), 0);
+        exitflag = 1;
+        rc |= expect_int("read exits when shutdown flag is set", udp_input_read_sample(&any, &sample), 0);
+        exitflag = 0;
+        udp_input_stop(&any);
+    }
+
+    static dsd_opts loopback_default;
+    DSD_MEMSET(&loopback_default, 0, sizeof(loopback_default));
+    loopback_default.wav_sample_rate = 48000;
+    if (udp_input_start(&loopback_default, "", 0, 48000) != 0) {
+        DSD_FPRINTF(stderr, "start with empty bind address failed\n");
+        rc = 1;
+    } else {
+        udp_input_stop(&loopback_default);
+    }
+
+    if (reserved != DSD_INVALID_SOCKET) {
+        dsd_socket_close(reserved);
+    }
+    return rc;
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -151,6 +257,10 @@ main(void) {
     dsd_thread_t th = (dsd_thread_t)0;
     int th_started = 0;
     int rs_inited = 0;
+
+    if (test_startup_contracts() != 0) {
+        goto cleanup;
+    }
 
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));

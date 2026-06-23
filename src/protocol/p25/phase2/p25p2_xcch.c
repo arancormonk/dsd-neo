@@ -385,6 +385,9 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
 
 static void
 p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear_call_string) {
+    if (slot < 0 || slot >= 2) {
+        return;
+    }
     state->p25_p2_enc_lockout_muted[slot] = 0;
     state->fourv_counter[slot] = 0;
     state->voice_counter[slot] = 0;

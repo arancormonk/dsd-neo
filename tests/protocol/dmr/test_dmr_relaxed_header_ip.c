@@ -35,6 +35,24 @@ extern void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
 static unsigned int g_decode_ip_calls;
 static uint16_t g_decode_ip_last_len;
 static uint8_t g_decode_ip_first_byte;
+static unsigned int g_sd_pdu_calls;
+static uint16_t g_sd_pdu_last_len;
+static uint8_t g_sd_pdu_first_byte;
+static unsigned int g_udp_comp_calls;
+static uint16_t g_udp_comp_last_len;
+static uint8_t g_udp_comp_first_byte;
+static unsigned int g_datacall_calls;
+static uint32_t g_datacall_last_src;
+static uint32_t g_datacall_last_dst;
+static uint8_t g_datacall_last_slot;
+static char g_datacall_last_text[256];
+static unsigned int g_lip_calls;
+static unsigned int g_nmea_calls;
+static uint32_t g_nmea_last_src;
+static int g_nmea_last_type;
+static unsigned int g_utf8_calls;
+static uint16_t g_utf8_last_len;
+static uint8_t g_utf8_first_byte;
 
 static int
 read_file_to_buffer(const char* path, char* out, size_t out_size) {
@@ -83,10 +101,11 @@ void
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)data_string;
-    (void)slot;
+    g_datacall_calls++;
+    g_datacall_last_src = src;
+    g_datacall_last_dst = dst;
+    g_datacall_last_slot = slot;
+    DSD_SNPRINTF(g_datacall_last_text, sizeof(g_datacall_last_text), "%s", data_string ? data_string : "");
 }
 
 void
@@ -95,6 +114,7 @@ lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
     (void)state;
     (void)input;
+    g_lip_calls++;
 }
 
 void
@@ -103,8 +123,9 @@ nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
     (void)opts;
     (void)state;
     (void)input;
-    (void)src;
-    (void)type;
+    g_nmea_calls++;
+    g_nmea_last_src = src;
+    g_nmea_last_type = type;
 }
 
 // Stubs to avoid linking runtime/core
@@ -204,8 +225,9 @@ void
 dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     (void)opts;
     (void)state;
-    (void)len;
-    (void)DMR_PDU;
+    g_sd_pdu_calls++;
+    g_sd_pdu_last_len = len;
+    g_sd_pdu_first_byte = DMR_PDU ? DMR_PDU[0] : 0U;
 }
 
 void
@@ -213,8 +235,9 @@ void
 dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU) {
     (void)opts;
     (void)state;
-    (void)len;
-    (void)DMR_PDU;
+    g_udp_comp_calls++;
+    g_udp_comp_last_len = len;
+    g_udp_comp_first_byte = DMR_PDU ? DMR_PDU[0] : 0U;
 }
 
 void
@@ -247,8 +270,9 @@ void
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     (void)state;
     (void)wr;
-    (void)len;
-    (void)input;
+    g_utf8_calls++;
+    g_utf8_last_len = len;
+    g_utf8_first_byte = input ? input[0] : 0U;
 }
 
 void
@@ -266,6 +290,139 @@ set_bits(uint8_t* bits, int start, uint32_t value, int nbits) {
         int bit = (int)((value >> (nbits - 1 - i)) & 1U);
         bits[start + i] = (uint8_t)bit;
     }
+}
+
+static void
+set_byte_bits(uint8_t* bytes, size_t start, uint32_t value, size_t nbits) {
+    for (size_t i = 0; i < nbits; i++) {
+        size_t bit_index = start + i;
+        size_t byte_index = bit_index / 8U;
+        uint8_t mask = (uint8_t)(1U << (7U - (bit_index % 8U)));
+        if (((value >> (nbits - 1U - i)) & 1U) != 0U) {
+            bytes[byte_index] |= mask;
+        } else {
+            bytes[byte_index] &= (uint8_t)~mask;
+        }
+    }
+}
+
+static void
+pack_bits_to_bytes(const uint8_t* bits, uint8_t* bytes, size_t nbits) {
+    DSD_MEMSET(bytes, 0, (nbits + 7U) / 8U);
+    for (size_t i = 0; i < nbits; i++) {
+        if (bits[i] != 0U) {
+            bytes[i / 8U] |= (uint8_t)(1U << (7U - (i % 8U)));
+        }
+    }
+}
+
+static void
+append_type2_crc16(uint8_t* block, size_t block_len) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    for (size_t i = 0; i < block_len; i++) {
+        for (size_t bit = 0; bit < 8U; bit++) {
+            bits[(i * 8U) + bit] = (uint8_t)((block[i] >> (7U - bit)) & 1U);
+        }
+    }
+    uint32_t crc = ComputeCrcCCITT16d(bits, (uint16_t)((block_len * 8U) - 16U));
+    block[block_len - 2U] = (uint8_t)((crc >> 8U) & 0xFFU);
+    block[block_len - 1U] = (uint8_t)(crc & 0xFFU);
+}
+
+static void
+build_udt_header(uint8_t dheader[12], uint8_t bits[196], uint8_t udt_format, uint32_t target, uint32_t source) {
+    DSD_MEMSET(dheader, 0, 12);
+    DSD_MEMSET(bits, 0, 196);
+    set_bits(bits, 4, 0U, 4); // DPF=0 UDT
+    set_bits(bits, 8, 0U, 4); // SAP=0 UDT
+    set_bits(bits, 12, udt_format, 4);
+    set_bits(bits, 16, target & 0x00FFFFFFU, 24);
+    set_bits(bits, 40, source & 0x00FFFFFFU, 24);
+    set_bits(bits, 70, 0U, 2); // encoded UAB 0 -> one appended block
+    pack_bits_to_bytes(bits, dheader, 96);
+}
+
+static void
+build_udt_iso7_block(uint8_t block[12], const char* text) {
+    DSD_MEMSET(block, 0, 12);
+    for (size_t i = 0; text[i] != '\0' && i < 11U; i++) {
+        set_byte_bits(block, i * 7U, (uint8_t)text[i] & 0x7FU, 7U);
+    }
+    append_type2_crc16(block, 12);
+}
+
+static void
+build_udt_iso8_block(uint8_t block[12], const char* text) {
+    DSD_MEMSET(block, 0, 12);
+    for (size_t i = 0; text[i] != '\0' && i < 10U; i++) {
+        set_byte_bits(block, i * 8U, (uint8_t)text[i], 8U);
+    }
+    append_type2_crc16(block, 12);
+}
+
+static void
+build_udt_bcd_block(uint8_t block[12], const uint8_t* digits, size_t count) {
+    DSD_MEMSET(block, 0, 12);
+    for (size_t i = 0; i < count && i < 20U; i++) {
+        set_byte_bits(block, i * 4U, digits[i] & 0x0FU, 4U);
+    }
+    append_type2_crc16(block, 12);
+}
+
+static void
+build_udt_utf16_block(uint8_t block[12], const uint16_t* chars, size_t count) {
+    DSD_MEMSET(block, 0, 12);
+    for (size_t i = 0; i < count && i < 5U; i++) {
+        set_byte_bits(block, i * 16U, chars[i], 16U);
+    }
+    append_type2_crc16(block, 12);
+}
+
+static void
+build_udt_mixed_utf16_block(uint8_t block[12], uint32_t address, const uint16_t* chars, size_t count) {
+    DSD_MEMSET(block, 0, 12);
+    set_byte_bits(block, 8U, address & 0x00FFFFFFU, 24U);
+    for (size_t i = 0; i < count && i < 3U; i++) {
+        set_byte_bits(block, 32U + (i * 16U), chars[i], 16U);
+    }
+    append_type2_crc16(block, 12);
+}
+
+static void
+build_udt_ip4_block(uint8_t block[12], uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+    DSD_MEMSET(block, 0, 12);
+    set_byte_bits(block, 0U, a, 8U);
+    set_byte_bits(block, 8U, b, 8U);
+    set_byte_bits(block, 16U, c, 8U);
+    set_byte_bits(block, 24U, d, 8U);
+    append_type2_crc16(block, 12);
+}
+
+static void
+build_udt_flag_block(uint8_t block[12], uint8_t encrypted) {
+    DSD_MEMSET(block, 0, 12);
+    set_byte_bits(block, 0U, encrypted & 1U, 1U);
+    append_type2_crc16(block, 12);
+}
+
+static void
+build_udt_binary_block(uint8_t block[12], const uint8_t* bytes, size_t count) {
+    DSD_MEMSET(block, 0, 12);
+    size_t copy = count < 10U ? count : 10U;
+    if (copy > 0U) {
+        DSD_MEMCPY(block, bytes, copy);
+    }
+    append_type2_crc16(block, 12);
+}
+
+static void
+build_udt_appended_addressing_block(uint8_t block[12], uint8_t res, uint8_t ok, uint32_t address) {
+    DSD_MEMSET(block, 0, 12);
+    set_byte_bits(block, 0U, res & 0x7FU, 7U);
+    set_byte_bits(block, 7U, ok & 1U, 1U);
+    set_byte_bits(block, 8U, address & 0x00FFFFFFU, 24U);
+    append_type2_crc16(block, 12);
 }
 
 static void
@@ -307,6 +464,31 @@ append_type1_crc32(uint8_t* bytes, size_t count) {
 }
 
 static void
+reset_datacall_spy(void) {
+    g_decode_ip_calls = 0;
+    g_decode_ip_last_len = 0;
+    g_decode_ip_first_byte = 0;
+    g_sd_pdu_calls = 0;
+    g_sd_pdu_last_len = 0;
+    g_sd_pdu_first_byte = 0;
+    g_udp_comp_calls = 0;
+    g_udp_comp_last_len = 0;
+    g_udp_comp_first_byte = 0;
+    g_datacall_calls = 0;
+    g_datacall_last_src = 0;
+    g_datacall_last_dst = 0;
+    g_datacall_last_slot = 0;
+    DSD_MEMSET(g_datacall_last_text, 0, sizeof(g_datacall_last_text));
+    g_lip_calls = 0;
+    g_nmea_calls = 0;
+    g_nmea_last_src = 0;
+    g_nmea_last_type = 0;
+    g_utf8_calls = 0;
+    g_utf8_last_len = 0;
+    g_utf8_first_byte = 0;
+}
+
+static void
 test_reset_blocks_restores_integer_defaults(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -332,6 +514,179 @@ test_reset_blocks_restores_integer_defaults(void) {
     assert(state.data_header_format[1] == 7);
     assert(state.data_dbsn_have[0] == 0);
     assert(state.data_dbsn_expected[0] == 0);
+}
+
+static void
+test_udt_iso7_single_block_dispatches_text_event(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t dheader[12];
+    uint8_t bits[196];
+    uint8_t block[12];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    state.event_history_s = history;
+    state.currentslot = 0;
+    opts.aggressive_framesync = 1;
+    build_udt_header(dheader, bits, 0x03U, 0x000111U, 0x000222U);
+    build_udt_iso7_block(block, "HELLO");
+    reset_datacall_spy();
+
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.data_header_format[0] == 0);
+    assert(state.data_header_blocks[0] == 1);
+    assert(state.data_header_valid[0] == 1);
+    assert(state.data_block_counter[0] == 1);
+    state.data_block_crc_valid[0][0] = 1;
+
+    dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0x0BU, 3U);
+
+    assert(g_datacall_calls == 1U);
+    assert(g_datacall_last_src == 0x000222U);
+    assert(g_datacall_last_dst == 0x000111U);
+    assert(g_datacall_last_slot == 0U);
+    assert(strstr(g_datacall_last_text, "ISO7 Text") != NULL);
+    assert(strstr(state.event_history_s[0].Event_History_Items[0].text_message, "HELLO") != NULL);
+    assert(state.lastsrc == 0);
+    assert(state.lasttg == 0);
+    assert(state.data_header_valid[0] == 0);
+    assert(state.data_header_format[0] == 7);
+}
+
+static void
+run_udt_single_block_on_slot(uint8_t format, const uint8_t block[12], uint8_t slot, dsd_state* state_out) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t dheader[12];
+    uint8_t bits[196];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    state.event_history_s = history;
+    state.currentslot = slot & 1U;
+    opts.aggressive_framesync = 1;
+    build_udt_header(dheader, bits, format, 0x000111U, 0x000222U);
+    reset_datacall_spy();
+
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.data_header_valid[state.currentslot] == 1);
+    assert(state.data_block_counter[state.currentslot] == 1);
+    state.data_block_crc_valid[state.currentslot][0] = 1;
+
+    uint8_t mutable_block[12];
+    DSD_MEMCPY(mutable_block, block, sizeof(mutable_block));
+    dmr_block_assembler(&opts, &state, mutable_block, (uint8_t)sizeof(mutable_block), 0x0BU, 3U);
+
+    if (state_out != NULL) {
+        DSD_MEMCPY(state_out, &state, sizeof(*state_out));
+    }
+}
+
+static void
+run_udt_single_block(uint8_t format, const uint8_t block[12], dsd_state* state_out) {
+    run_udt_single_block_on_slot(format, block, 0U, state_out);
+}
+
+static void
+test_udt_text_and_dispatch_formats(void) {
+    uint8_t block[12];
+    uint8_t bcd[] = {1, 2, 10, 11, 15, 12};
+    uint16_t utf16_chars[] = {'O', 'K', 0x263A};
+    uint16_t mixed_chars[] = {'G', 'O'};
+    static dsd_state state_copy;
+
+    build_udt_iso8_block(block, "WORLD");
+    run_udt_single_block(0x04U, block, &state_copy);
+    assert(g_datacall_calls == 1U);
+    assert(strstr(g_datacall_last_text, "ISO8 Text") != NULL);
+    assert(strstr(state_copy.event_history_s[0].Event_History_Items[0].text_message, "WORLD") != NULL);
+
+    build_udt_bcd_block(block, bcd, sizeof(bcd));
+    run_udt_single_block(0x02U, block, &state_copy);
+    assert(g_datacall_calls == 1U);
+    assert(strstr(g_datacall_last_text, "Dialer Digits") != NULL);
+    assert(strstr(state_copy.event_history_s[0].Event_History_Items[0].text_message, "12*# ") != NULL);
+
+    build_udt_utf16_block(block, utf16_chars, sizeof(utf16_chars) / sizeof(utf16_chars[0]));
+    run_udt_single_block(0x07U, block, &state_copy);
+    assert(g_datacall_calls == 1U);
+    assert(strstr(g_datacall_last_text, "UTF16 Text") != NULL);
+    assert(strstr(state_copy.event_history_s[0].Event_History_Items[0].text_message, "OK") != NULL);
+
+    build_udt_mixed_utf16_block(block, 0x00ABCDEFU, mixed_chars, sizeof(mixed_chars) / sizeof(mixed_chars[0]));
+    run_udt_single_block(0x0AU, block, &state_copy);
+    assert(g_datacall_calls == 1U);
+    assert(strstr(g_datacall_last_text, "Mixed Add/Text") != NULL);
+    assert(strstr(state_copy.event_history_s[0].Event_History_Items[0].text_message, "Address: 11259375;GO") != NULL);
+
+    build_udt_ip4_block(block, 192U, 168U, 1U, 55U);
+    run_udt_single_block(0x06U, block, &state_copy);
+    assert(g_datacall_calls == 1U);
+    assert(strstr(g_datacall_last_text, "IP4") != NULL);
+
+    build_udt_flag_block(block, 0U);
+    run_udt_single_block(0x05U, block, NULL);
+    assert(g_nmea_calls == 1U);
+    assert(g_nmea_last_src == 0x000222U);
+    assert(g_nmea_last_type == 1);
+    assert(strstr(g_datacall_last_text, "NMEA") != NULL);
+
+    build_udt_flag_block(block, 0U);
+    run_udt_single_block(0x0BU, block, NULL);
+    assert(g_lip_calls == 1U);
+    assert(strstr(g_datacall_last_text, "LIP") != NULL);
+}
+
+static void
+test_udt_binary_addressing_reserved_and_slot1_paths(void) {
+    uint8_t block[12];
+    static dsd_state state_copy;
+    const uint8_t binary_payload[] = {'B', 'I', 'N', 0x00};
+
+    build_udt_binary_block(block, binary_payload, sizeof(binary_payload));
+    run_udt_single_block(0x00U, block, NULL);
+    assert(g_datacall_calls == 1U);
+    assert(g_utf8_calls == 1U);
+    assert(g_utf8_last_len == 10U);
+    assert(g_utf8_first_byte == 'B');
+    assert(strstr(g_datacall_last_text, "Binary Data") != NULL);
+
+    build_udt_appended_addressing_block(block, 3U, 1U, 0x00C0FFEEU);
+    run_udt_single_block(0x01U, block, NULL);
+    assert(g_datacall_calls == 1U);
+    assert(g_utf8_calls == 0U);
+    assert(g_nmea_calls == 0U);
+    assert(g_lip_calls == 0U);
+    assert(strstr(g_datacall_last_text, "Appended Addressing") != NULL);
+
+    build_udt_flag_block(block, 1U);
+    run_udt_single_block(0x05U, block, NULL);
+    assert(g_datacall_calls == 1U);
+    assert(g_nmea_calls == 0U);
+    assert(strstr(g_datacall_last_text, "NMEA") != NULL);
+
+    build_udt_flag_block(block, 0U);
+    run_udt_single_block(0x08U, block, NULL);
+    assert(g_datacall_calls == 1U);
+    assert(strstr(g_datacall_last_text, "MFID Specific") != NULL);
+
+    build_udt_flag_block(block, 0U);
+    run_udt_single_block(0x0CU, block, NULL);
+    assert(g_datacall_calls == 1U);
+    assert(strstr(g_datacall_last_text, "Reserved") != NULL);
+
+    build_udt_iso8_block(block, "SLOT1");
+    run_udt_single_block_on_slot(0x04U, block, 1U, &state_copy);
+    assert(g_datacall_calls == 1U);
+    assert(g_datacall_last_slot == 1U);
+    assert(state_copy.lastsrcR == 0);
+    assert(state_copy.lasttgR == 0);
+    assert(strstr(state_copy.event_history_s[1].Event_History_Items[0].text_message, "SLOT1") != NULL);
 }
 
 static void
@@ -362,6 +717,107 @@ test_crc_valid_type1_pdu_dispatches_in_strict_mode(void) {
     assert(g_decode_ip_calls == 1U);
     assert(g_decode_ip_last_len == 20U);
     assert(g_decode_ip_first_byte == 0x45U);
+}
+
+static void
+run_type1_pdu_for_sap(uint8_t sap, const uint8_t block[12]) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.aggressive_framesync = 1;
+    state.currentslot = 0;
+    state.data_header_valid[0] = 1;
+    state.data_header_blocks[0] = 1;
+    state.data_header_format[0] = 2;
+    state.data_header_sap[0] = sap;
+    state.data_block_counter[0] = 1;
+    reset_datacall_spy();
+
+    uint8_t mutable_block[12];
+    DSD_MEMCPY(mutable_block, block, sizeof(mutable_block));
+    dmr_block_assembler(&opts, &state, mutable_block, (uint8_t)sizeof(mutable_block), 0, 1);
+}
+
+static void
+test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps(void) {
+    uint8_t block[12] = {0x83, 0x10, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0, 0, 0, 0};
+    append_type1_crc32(block, sizeof(block));
+
+    run_type1_pdu_for_sap(10U, block);
+    assert(g_sd_pdu_calls == 1U);
+    assert(g_sd_pdu_last_len == 20U);
+    assert(g_sd_pdu_first_byte == 0x83U);
+    assert(g_decode_ip_calls == 0U);
+    assert(g_udp_comp_calls == 0U);
+
+    run_type1_pdu_for_sap(2U, block);
+    assert(g_udp_comp_calls == 1U);
+    assert(g_udp_comp_last_len == 20U);
+    assert(g_udp_comp_first_byte == 0x83U);
+    assert(g_decode_ip_calls == 0U);
+    assert(g_sd_pdu_calls == 0U);
+
+    run_type1_pdu_for_sap(3U, block);
+    assert(g_udp_comp_calls == 1U);
+    assert(g_udp_comp_last_len == 20U);
+    assert(g_udp_comp_first_byte == 0x83U);
+    assert(g_decode_ip_calls == 0U);
+    assert(g_sd_pdu_calls == 0U);
+}
+
+static void
+test_type1_encrypted_notice_reports_missing_key(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t block[12] = {0x45, 0x00, 0x00, 0x14, 0x12, 0x34, 0x00, 0x00, 0, 0, 0, 0};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    append_type1_crc32(block, sizeof(block));
+    opts.aggressive_framesync = 1;
+    state.currentslot = 0;
+    state.data_header_valid[0] = 1;
+    state.data_header_blocks[0] = 1;
+    state.data_header_format[0] = 2;
+    state.data_header_sap[0] = 4;
+    state.data_block_counter[0] = 1;
+    state.dmr_lrrp_source[0] = 0x1234U;
+    state.dmr_lrrp_target[0] = 0x5678U;
+    state.dmr_so = 0x100;
+    state.payload_algid = 4;
+    state.payload_keyid = 0x42;
+    reset_datacall_spy();
+
+    dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 1);
+
+    assert(g_decode_ip_calls == 0U);
+    assert(g_datacall_calls == 1U);
+    assert(g_datacall_last_src == 0x1234U);
+    assert(g_datacall_last_dst == 0x5678U);
+    assert(strstr(g_datacall_last_text, "ENC PDU") != NULL);
+    assert(strstr(state.dmr_lrrp_gps[0], "ENC PDU") != NULL);
+}
+
+static void
+test_type2_rejects_out_of_bounds_aggregate_length(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t block[12] = {0x80, 0x01, 0x02, 0x03};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.data_header_valid[0] = 1;
+    state.data_block_counter[0] = 9;
+    state.data_block_crc_valid[0][0] = 1;
+
+    dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 2);
+
+    assert(state.data_block_counter[0] == 4);
+    assert(state.data_block_crc_valid[0][0] == 0);
+    assert(state.data_header_valid[0] == 1);
 }
 
 static int
@@ -417,13 +873,171 @@ test_data_header_prints_fsn_and_final_flag(void) {
     return rc;
 }
 
+static void
+test_irrecoverable_header_resets_data_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    state.currentslot = 1;
+    state.data_header_valid[1] = 1;
+    state.data_p_head[1] = 1;
+    state.data_conf_data[1] = 1;
+    state.data_block_counter[1] = 9;
+    state.data_header_blocks[1] = 9;
+    state.data_header_format[1] = 2;
+    DSD_SNPRINTF(state.dmr_lrrp_gps[1], sizeof(state.dmr_lrrp_gps[1]), "%s", "stale gps");
+
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/0, /*IrrecoverableErrors=*/1);
+
+    assert(state.data_header_valid[1] == 0);
+    assert(state.data_p_head[1] == 0);
+    assert(state.data_conf_data[1] == 0);
+    assert(state.data_block_counter[1] == 1);
+    assert(state.data_header_blocks[1] == 1);
+    assert(state.data_header_format[1] == 7);
+    assert(strcmp(state.dmr_lrrp_gps[1], "") == 0);
+}
+
+static int
+test_response_header_reports_nack_reason(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+    char output[2048];
+    dsd_test_capture_stderr cap;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    state.currentslot = 0;
+    opts.aggressive_framesync = 1;
+    set_bits(bits, 4, 1U, 4); // DPF=1, response packet
+    set_bits(bits, 8, 4U, 4); // SAP=4, IP based
+    set_bits(bits, 16, 0x000123U, 24);
+    set_bits(bits, 40, 0x000456U, 24);
+    set_bits(bits, 72, 1U, 2); // NACK class
+    set_bits(bits, 74, 3U, 3); // memory full
+
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_header_response_nack") != 0) {
+        return 1;
+    }
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, output, sizeof(output)) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+    (void)remove(cap.path);
+
+    assert(state.data_header_format[0] == 1);
+    assert(state.data_header_valid[0] == 1);
+    assert(strcmp(state.dmr_lrrp_gps[0], "") == 0);
+    return expect_contains("response-nack", output, "NACK - Memory Full");
+}
+
+static void
+test_short_data_defined_sets_blocks_and_confirmed_flag(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    state.currentslot = 0;
+    opts.aggressive_framesync = 1;
+    set_bits(bits, 1, 1U, 1);  // response requested
+    set_bits(bits, 2, 1U, 2);  // S_AB high bits
+    set_bits(bits, 4, 13U, 4); // DPF=13, short data defined
+    set_bits(bits, 8, 10U, 4); // SAP=short data
+    set_bits(bits, 12, 1U, 4); // S_AB low bits: total blocks 5
+    set_bits(bits, 16, 0x010203U, 24);
+    set_bits(bits, 40, 0x040506U, 24);
+    set_bits(bits, 64, 18U, 6); // DD format UTF-8
+    set_bits(bits, 72, 7U, 8);  // pad bits
+
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+
+    assert(state.data_header_format[0] == 13);
+    assert(state.data_header_sap[0] == 10);
+    assert(state.data_header_blocks[0] == 5);
+    assert(state.data_conf_data[0] == 1);
+    assert(strstr(state.dmr_lrrp_gps[0], "Short DT") != NULL);
+    assert(strstr(state.dmr_lrrp_gps[0], "- RSP REQ") != NULL);
+}
+
+static void
+test_motorola_encryption_header_updates_payload_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    state.currentslot = 0;
+    state.data_ks_start[0] = 3;
+    set_bits(bits, 0, 2U, 4);            // p_sap != 1
+    set_bits(bits, 4, 15U, 4);           // DPF=15, proprietary
+    set_bits(bits, 8, 0x10U, 8);         // Motorola MFID
+    set_bits(bits, 17, 4U, 3);           // AES128
+    set_bits(bits, 20, 1U, 4);           // encrypted
+    set_bits(bits, 24, 0x42U, 8);        // key id
+    set_bits(bits, 48, 0x11223344U, 32); // MI(32)
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.dmr_so == 0x100);
+    assert(state.payload_algid == 4);
+    assert(state.payload_keyid == 0x42);
+    assert((uint32_t)state.payload_mi == 0x11223344U);
+    assert(state.data_ks_start[0] == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    state.currentslot = 1;
+    state.data_ks_start[1] = 3;
+    set_bits(bits, 0, 2U, 4);
+    set_bits(bits, 4, 15U, 4);
+    set_bits(bits, 8, 0x10U, 8);
+    set_bits(bits, 17, 5U, 3); // AES256
+    set_bits(bits, 20, 1U, 4);
+    set_bits(bits, 24, 0x24U, 8);
+    set_bits(bits, 48, 0x55667788U, 32);
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.dmr_soR == 0x100);
+    assert(state.payload_algidR == 5);
+    assert(state.payload_keyidR == 0x24);
+    assert((uint32_t)state.payload_miR == 0x55667788U);
+    assert(state.data_ks_start[1] == 0);
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
     (void)argv;
     test_reset_blocks_restores_integer_defaults();
+    test_udt_iso7_single_block_dispatches_text_event();
+    test_udt_text_and_dispatch_formats();
+    test_udt_binary_addressing_reserved_and_slot1_paths();
     test_crc_valid_type1_pdu_dispatches_in_strict_mode();
+    test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps();
+    test_type1_encrypted_notice_reports_missing_key();
+    test_type2_rejects_out_of_bounds_aggregate_length();
     int rc = test_data_header_prints_fsn_and_final_flag();
+    test_irrecoverable_header_resets_data_state();
+    rc |= test_response_header_reports_nack_reason();
+    test_short_data_defined_sets_blocks_and_confirmed_flag();
+    test_motorola_encryption_header_updates_payload_state();
 
     static dsd_opts opts;
     static dsd_state state;
