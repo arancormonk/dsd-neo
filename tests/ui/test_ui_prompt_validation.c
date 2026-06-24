@@ -303,7 +303,8 @@ static void
 test_chooser_edge_paths(void) {
     assert(ui_chooser_handle_key('x') == 0);
 
-    int selected = -2;
+    static int selected;
+    selected = -2;
     ui_chooser_start("Empty", NULL, 0, capture_chooser_selected, &selected);
     assert(selected == -1);
     assert(ui_chooser_active() == 0);
@@ -317,7 +318,8 @@ test_chooser_edge_paths(void) {
     assert(selected == 0);
     assert(ui_chooser_active() == 0);
 
-    ChooserCapture capture = {0, -2, -2};
+    static ChooserCapture capture;
+    capture = (ChooserCapture){0, -2, -2};
     ui_chooser_start("First", CHOOSER_ONE, 3, capture_chooser_reentry, &capture);
     assert(ui_chooser_active() == 1);
     assert(ui_chooser_handle_key(KEY_DOWN) == 1);
@@ -337,7 +339,8 @@ test_chooser_edge_paths(void) {
 
 static void
 test_chooser_page_navigation_clamps_selection(void) {
-    int selected = -2;
+    static int selected;
+    selected = -2;
     ui_chooser_start("Many", CHOOSER_MANY, 6, capture_chooser_selected, &selected);
     ui_chooser_test_set_page_rows(3);
     UiChooserTestSnapshot snapshot = ui_chooser_test_snapshot();
@@ -376,7 +379,8 @@ test_chooser_page_navigation_clamps_selection(void) {
 
 static void
 test_chooser_up_down_wraparound(void) {
-    int selected = -2;
+    static int selected;
+    selected = -2;
     ui_chooser_start("Wrap", CHOOSER_ONE, 3, capture_chooser_selected, &selected);
     ui_chooser_test_set_page_rows(2);
 

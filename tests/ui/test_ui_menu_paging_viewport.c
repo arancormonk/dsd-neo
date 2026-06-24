@@ -221,8 +221,8 @@ resize_term(int lines, int columns) {
 
 int
 main(void) {
-    unsigned char opts_token = 0;
-    unsigned char state_token = 0;
+    static unsigned char opts_token;
+    static unsigned char state_token;
     dsd_opts* opts = (dsd_opts*)&opts_token;
     dsd_state* state = (dsd_state*)&state_token;
 
