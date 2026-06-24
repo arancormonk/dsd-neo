@@ -867,7 +867,7 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
     }
     int row_count = 0;
 
-    long int chan_number = 0;
+    long int chan_number;
 
     while (fgets(buffer, BSIZE, fp)) {
         int field_count = 0;

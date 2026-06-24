@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <pulse/channelmap.h>
 #include <pulse/def.h>
+#include <pulse/error.h>
 #include <pulse/introspect.h>
 #include <pulse/operation.h>
 #include <pulse/sample.h>

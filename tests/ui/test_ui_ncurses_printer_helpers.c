@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include "dsd-neo/platform/platform.h"
 
 int ncurses_last_synctype;
 WINDOW* stdscr;
@@ -47,6 +48,8 @@ reset_printw_capture(void) {
     DSD_MEMSET(g_printw_capture, 0, sizeof(g_printw_capture));
     g_printw_capture_len = 0U;
 }
+
+static void append_printw_capture(const char* fmt, va_list ap) DSD_ATTR_FORMAT(printf, 1, 0);
 
 static void
 append_printw_capture(const char* fmt, va_list ap) {

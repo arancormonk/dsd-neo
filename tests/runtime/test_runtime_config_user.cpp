@@ -23,6 +23,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/runtime/call_alert.h"
+#include "dsd-neo/runtime/config_schema.h"
 #include "test_support.h"
 
 static int

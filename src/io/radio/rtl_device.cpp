@@ -82,7 +82,6 @@ enum : unsigned char {
 #include <SoapySDR/Types.hpp>
 #include <complex>
 #include <exception>
-#include <vector>
 
 namespace SoapySDR {
 class Stream;

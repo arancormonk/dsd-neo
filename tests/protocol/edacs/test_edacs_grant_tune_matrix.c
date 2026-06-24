@@ -30,7 +30,6 @@
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #endif
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -1154,7 +1153,7 @@ edacs_run_analog_loop_helper_cases(void) {
     DSD_MEMSET(analog3, 0, sizeof(analog3));
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.input_volume_multiplier = 2;
-    opts.tcp_in_ctx = (tcp_input_ctx*)(void*)&tcp_ctx_token;
+    opts.tcp_in_ctx = (tcp_input_ctx*)&tcp_ctx_token;
     edacs_install_net_audio_hooks();
 
     rc |= edacs_expect(dsd_neo_edacs_test_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 1,
@@ -1185,7 +1184,7 @@ edacs_run_analog_loop_helper_cases(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_volume_multiplier = 2;
-    state.rtl_ctx = (struct RtlSdrContext*)(void*)&tcp_ctx_token;
+    state.rtl_ctx = (struct RtlSdrContext*)&tcp_ctx_token;
     edacs_install_rtl_stream_hooks();
     pwr = -1.0;
     rc |= edacs_expect(dsd_neo_edacs_test_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 1,
@@ -1286,7 +1285,7 @@ edacs_run_analog_loop_helper_cases(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.audio_in_type = AUDIO_IN_TCP;
-    opts.tcp_in_ctx = (tcp_input_ctx*)(void*)&tcp_ctx_token;
+    opts.tcp_in_ctx = (tcp_input_ctx*)&tcp_ctx_token;
     g_tcp_fail_at = 5;
     edacs_install_net_audio_hooks();
     pwr = 123.0;
@@ -1303,7 +1302,7 @@ edacs_run_analog_loop_helper_cases(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_volume_multiplier = 1;
-    state.rtl_ctx = (struct RtlSdrContext*)(void*)&tcp_ctx_token;
+    state.rtl_ctx = (struct RtlSdrContext*)&tcp_ctx_token;
     g_rtl_fail_at = 3;
     edacs_install_rtl_stream_hooks();
     rc |= edacs_expect(dsd_neo_edacs_test_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 0,
