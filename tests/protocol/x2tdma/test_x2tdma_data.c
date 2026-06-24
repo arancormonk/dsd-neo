@@ -75,7 +75,7 @@ static void
 test_data_sync_marks_slot_and_maps_bursttype(void) {
     static dsd_opts opts;
     static dsd_state state;
-    int dibits[90];
+    static int dibits[90];
 
     reset_fixture(&opts, &state, dibits);
     opts.errorbars = 0;
@@ -95,7 +95,7 @@ static void
 test_inverted_mobile_data_marks_slot_one(void) {
     static dsd_opts opts;
     static dsd_state state;
-    int dibits[90];
+    static int dibits[90];
 
     reset_fixture(&opts, &state, dibits);
     opts.inverted_x2tdma = 1;
@@ -115,7 +115,7 @@ static void
 test_unknown_burst_without_data_sync_uses_blank_subtype(void) {
     static dsd_opts opts;
     static dsd_state state;
-    int dibits[90];
+    static int dibits[90];
 
     reset_fixture(&opts, &state, dibits);
     set_slot_from_cach(dibits, 0, opts.inverted_x2tdma);

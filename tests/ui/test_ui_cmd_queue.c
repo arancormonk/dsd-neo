@@ -10,6 +10,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
 #include <stdint.h>
@@ -68,7 +69,7 @@ expect_contains(const char* tag, const char* haystack, const char* needle) {
 
 static int
 write_file_bytes(const char* path, const void* data, size_t n) {
-    FILE* f = fopen(path, "wb");
+    FILE* f = dsd_fopen_private(path, "wb");
     if (!f) {
         DSD_FPRINTF(stderr, "failed to create %s\n", path);
         return 1;

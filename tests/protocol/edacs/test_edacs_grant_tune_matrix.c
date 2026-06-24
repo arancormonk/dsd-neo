@@ -1143,7 +1143,8 @@ edacs_run_analog_loop_helper_cases(void) {
     static short analog2[960];
     static short analog3[960];
     double pwr = -1.0;
-    int tcp_ctx_token = 0xEAA5;
+    static int tcp_ctx_token;
+    tcp_ctx_token = 0xEAA5;
 
     edacs_reset_audio_hook_state();
     DSD_MEMSET(&opts, 0, sizeof(opts));
