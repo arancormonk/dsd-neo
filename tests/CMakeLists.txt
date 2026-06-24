@@ -2926,7 +2926,6 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/ui/terminal
         ${CURSES_INCLUDE_DIRS}
 )
-target_compile_definitions(dsd-neo_test_runtime_config_apply PRIVATE USE_RADIO)
 set(_DSD_RUNTIME_CONFIG_APPLY_LIBS
     dsd-neo_ui_terminal
     dsd-neo_engine
