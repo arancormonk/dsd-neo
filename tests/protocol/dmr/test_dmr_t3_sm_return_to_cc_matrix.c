@@ -722,8 +722,9 @@ dmr_run_data_sync_and_stale_slot_case(void) {
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
     rc |= dmr_expect(g_ctx.slots[0].last_active_m > 0.0 && g_ctx.slots[1].last_active_m == 0.0, grant.name, flow,
                      script, "invalid data slot normalized to slot zero");
-    rc |= dmr_expect(g_ctx.t_voice_m > 0.0 && g_state.last_vc_sync_time_m == g_ctx.t_voice_m, grant.name, flow, script,
-                     "data sync arms hangtime timestamp");
+    rc |= dmr_expect(g_ctx.t_voice_m > 0.0, grant.name, flow, script, "data sync arms hangtime timestamp");
+    rc |= dmr_expect_close(g_state.last_vc_sync_time_m, g_ctx.t_voice_m, 1.0e-9, grant.name, flow, script,
+                           "data sync records matching voice sync time");
 
     double stale_m = dsd_time_now_monotonic_s() - 1.0;
     g_ctx.t_tune_m = 0.0;
@@ -737,7 +738,8 @@ dmr_run_data_sync_and_stale_slot_case(void) {
     double before = g_ctx.t_voice_m;
     ev = dmr_sm_ev_data_sync(0);
     dmr_sm_event(&g_ctx, NULL, &g_state, &ev);
-    rc |= dmr_expect(g_ctx.t_voice_m == before, grant.name, flow, script, "data sync without opts is ignored");
+    rc |= dmr_expect_close(g_ctx.t_voice_m, before, 1.0e-9, grant.name, flow, script,
+                           "data sync without opts is ignored");
     return rc;
 }
 

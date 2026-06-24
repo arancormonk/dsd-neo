@@ -346,7 +346,7 @@ build_udt_header(uint8_t dheader[12], uint8_t bits[196], uint8_t udt_format, uin
 static void
 build_udt_iso7_block(uint8_t block[12], const char* text) {
     DSD_MEMSET(block, 0, 12);
-    for (size_t i = 0; text[i] != '\0' && i < 11U; i++) {
+    for (size_t i = 0; i < 11U && text[i] != '\0'; i++) {
         set_byte_bits(block, i * 7U, (uint8_t)text[i] & 0x7FU, 7U);
     }
     append_type2_crc16(block, 12);
@@ -355,7 +355,7 @@ build_udt_iso7_block(uint8_t block[12], const char* text) {
 static void
 build_udt_iso8_block(uint8_t block[12], const char* text) {
     DSD_MEMSET(block, 0, 12);
-    for (size_t i = 0; text[i] != '\0' && i < 10U; i++) {
+    for (size_t i = 0; i < 10U && text[i] != '\0'; i++) {
         set_byte_bits(block, i * 8U, (uint8_t)text[i], 8U);
     }
     append_type2_crc16(block, 12);

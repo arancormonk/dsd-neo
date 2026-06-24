@@ -376,7 +376,8 @@ test_path_and_file_callbacks(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     cb_event_log_set(&ctx, "");
@@ -444,7 +445,8 @@ test_config_callbacks_apply_and_report_failures(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     cb_config_load(&ctx, "");
@@ -511,7 +513,8 @@ test_typed_callbacks_clamp_and_cancel(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     cb_setmod_bw(&ctx, 0, 1234);
@@ -553,7 +556,8 @@ test_key_callbacks_validate_and_pack(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
     static const char tyt_ap_value[] = "fixture-tyt-ap";
     static const char retevis_rc2_value[] = "fixture-retevis-rc2";
     static const char tyt_ep_value[] = "fixture-tyt-ep";
@@ -672,7 +676,8 @@ test_network_and_io_callbacks_pack_payloads(void) {
     DSD_MEMSET(&state, 0, sizeof state);
     opts.udp_portno = 4567;
     opts.tcp_portno = 3456;
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     UdpOutCtx* uo = (UdpOutCtx*)calloc(1, sizeof *uo);
@@ -756,7 +761,8 @@ test_gain_rtl_and_env_callbacks(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     cb_gain_dig(&ctx, 1, 70.0);
@@ -881,7 +887,8 @@ test_env_editor_and_protocol_callbacks(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     EnvEditCtx* bad = (EnvEditCtx*)calloc(1, sizeof *bad);

@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/ui/menu_services.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -315,7 +316,7 @@ expect_ull(const char* tag, unsigned long long got, unsigned long long want) {
 
 static int
 expect_double(const char* tag, double got, double want) {
-    if (got != want) {
+    if (fabs(got - want) > 1.0e-9) {
         DSD_FPRINTF(stderr, "%s: got %.3f want %.3f\n", tag, got, want);
         return 1;
     }

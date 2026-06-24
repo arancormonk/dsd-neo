@@ -54,8 +54,8 @@ capture_stderr_end(capture_stderr* capture, char* out, size_t out_size) {
         return;
     }
     int restore_rc = dsd_dup2(capture->saved_fd, dsd_fileno(stderr));
-    assert(restore_rc >= 0);
     if (restore_rc < 0) {
+        assert(restore_rc >= 0);
         fclose(capture->file);
         capture->file = nullptr;
         return;

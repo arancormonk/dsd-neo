@@ -271,6 +271,7 @@ ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t 
     g_prompt.active = 1;
     g_prompt.title = title;
     g_prompt.on_done_str = on_done;
+    // codeql[cpp/stack-address-escape] Prompt callers must keep user context alive until completion/cancel.
     g_prompt.user = user;
     if (cap < 2) {
         cap = 2;
@@ -363,6 +364,7 @@ ui_prompt_open_int_async_impl(const char* title, int initial, void* user, ui_pro
         return;
     }
     pic->cb = cb;
+    // codeql[cpp/stack-address-escape] Typed prompt wrappers preserve the caller's prompt context.
     pic->user = user;
     ui_prompt_open_string_async(title, pre, 64, ui_prompt_int_finish, pic);
 }
@@ -380,6 +382,7 @@ ui_prompt_open_double_async_impl(const char* title, double initial, void* user, 
         return;
     }
     pdc->cb = cb;
+    // codeql[cpp/stack-address-escape] Typed prompt wrappers preserve the caller's prompt context.
     pdc->user = user;
     ui_prompt_open_string_async(title, pre, 64, ui_prompt_double_finish, pdc);
 }
@@ -1054,6 +1057,7 @@ ui_chooser_start_impl(const char* title, const char* const* items, int count, vo
     g_chooser.top = 0;
     g_chooser.page_rows = 0;
     g_chooser.on_done = on_done;
+    // codeql[cpp/stack-address-escape] Chooser callers must keep user context alive until completion/cancel.
     g_chooser.user = user;
     if (g_chooser.win) {
         delwin(g_chooser.win);

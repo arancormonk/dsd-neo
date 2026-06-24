@@ -457,6 +457,7 @@ act_p2_params(void* v) {
     if (!pc) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     pc->c = c;
     pc->step = 0;
     pc->w = pc->s = pc->n = 0ULL;
@@ -573,6 +574,7 @@ act_env_editor(void* v) {
     if (!ec) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     ec->c = (UiCtx*)v;
     ui_prompt_open_string_async("Enter DSD_NEO_* variable name", "DSD_NEO_", 128, cb_env_edit_name, ec);
 }
@@ -630,6 +632,7 @@ act_prompt_p25_num(void* v, const char* env_name, const char* title, double defv
     if (!pc) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     pc->c = c;
     pc->name = env_name;
     ui_prompt_open_double_async(title, defv, cb_set_p25_num, pc);
@@ -863,6 +866,7 @@ io_set_pulse_device_common(void* vctx, int is_input, const char* chooser_title, 
         ui_statusf("Out of memory");
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives chooser completion.
     pctx->c = c;
     pctx->labels = labels;
     pctx->names = names;
@@ -888,6 +892,7 @@ io_set_udp_out(void* vctx) {
     if (!u) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     u->c = c;
     const char* src = c->opts->udp_hostname[0] ? c->opts->udp_hostname : "127.0.0.1";
     DSD_SNPRINTF(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, src);
@@ -901,6 +906,7 @@ io_tcp_direct_link(void* vctx) {
     if (!u) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     u->c = c;
     const char* defh = c->opts->tcp_hostname[0] ? c->opts->tcp_hostname : "localhost";
     DSD_SNPRINTF(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, defh);
@@ -975,6 +981,7 @@ io_rigctl_config(void* vctx) {
     if (!u) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     u->c = c;
     const char* defh = c->opts->rigctlhostname[0] ? c->opts->rigctlhostname : "localhost";
     DSD_SNPRINTF(u->host, sizeof u->host, "%.*s", (int)sizeof(u->host) - 1, defh);
@@ -1040,6 +1047,7 @@ switch_to_udp(void* vctx) {
     if (!u) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     u->c = c;
     const char* defa = c->opts->udp_in_bindaddr[0] ? c->opts->udp_in_bindaddr : "127.0.0.1";
     DSD_SNPRINTF(u->addr, sizeof u->addr, "%.*s", (int)sizeof(u->addr) - 1, defa);
@@ -1080,6 +1088,7 @@ key_hytera(void* v) {
     if (!hc) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     hc->c = c;
     hc->step = 0;
     ui_prompt_open_string_async("Hytera Privacy Key 1 (HEX)", NULL, 128, cb_hytera_step, hc);
@@ -1110,6 +1119,7 @@ key_aes(void* v) {
     if (!ac) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     ac->c = c;
     ac->step = 0;
     ui_prompt_open_string_async("AES Segment 1 (HEX) or 0", NULL, 128, cb_aes_step, ac);
@@ -1154,6 +1164,7 @@ act_m17_user_data(void* v) {
     if (!mc) {
         return;
     }
+    // codeql[cpp/stack-address-escape] Menu UiCtx is owned by the active menu and outlives this prompt chain.
     mc->c = c;
     ui_prompt_open_string_async("Enter M17 User Data (CAN,DST,SRC)", pre, 128, cb_m17_user_data, mc);
 }
