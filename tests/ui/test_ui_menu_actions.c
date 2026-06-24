@@ -707,7 +707,8 @@ test_simple_commands_and_prompts(void) {
     opts.slot_preference = 1;
     opts.slot1_on = 1;
     state.tg_hold = 1234;
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     act_toggle_invert(NULL);
@@ -757,7 +758,8 @@ test_config_profile_and_env_actions(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     DSD_SNPRINTF(state.config_autosave_path, sizeof state.config_autosave_path, "/tmp/current.toml");
@@ -818,7 +820,8 @@ test_io_actions_and_choosers(void) {
     DSD_SNPRINTF(opts.rigctlhostname, sizeof opts.rigctlhostname, "rig.local");
     DSD_SNPRINTF(opts.pa_output_idx, sizeof opts.pa_output_idx, "pulse0");
     opts.input_volume_multiplier = 16;
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     io_select_call_alert_events(&ctx);
@@ -893,7 +896,8 @@ test_key_lrrp_and_display_actions(void) {
     DSD_MEMSET(&state, 0, sizeof state);
     DSD_SNPRINTF(state.m17dat, sizeof state.m17dat, "1,N0CALL,N1CALL");
     state.p2_wacn = 0xABCDE;
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     key_basic(&ctx);
@@ -977,7 +981,8 @@ test_additional_prompt_and_toggle_actions(void) {
     DSD_SNPRINTF(opts.wav_out_file_raw, sizeof opts.wav_out_file_raw, "raw.wav");
     opts.trunk_hangtime = 2.75;
     opts.input_warn_db = -37.5;
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     act_toggle_payload(NULL);
@@ -1369,7 +1374,8 @@ test_config_and_pulse_failure_variants(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    UiCtx ctx = make_ctx(&opts, &state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
 
     reset_capture();
     act_config_load(&ctx);

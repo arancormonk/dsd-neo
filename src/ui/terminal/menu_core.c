@@ -37,6 +37,14 @@
 static int g_overlay_open = 0;
 static UiMenuFrame g_stack[8];
 static int g_depth = 0;
+static UiCtx g_ctx;
+
+static UiCtx*
+ui_menu_stable_ctx(dsd_opts* opts, dsd_state* state) {
+    g_ctx.opts = opts;
+    g_ctx.state = state;
+    return &g_ctx;
+}
 
 static int
 ui_frame_items_rows(const UiMenuFrame* f) {
@@ -354,10 +362,10 @@ ui_menu_is_activate_key(int ch) {
 
 void
 ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
+    UiCtx* ctx = ui_menu_stable_ctx(opts, state);
     const NcMenuItem* items = NULL;
     size_t n = 0;
-    ui_menu_get_main_items(&items, &n, &ctx);
+    ui_menu_get_main_items(&items, &n, ctx);
     if (!items || n == 0) {
         return;
     }
@@ -375,10 +383,10 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(g_stack, 0, sizeof(g_stack));
     g_stack[0].items = items;
     g_stack[0].n = n;
-    g_stack[0].hi = ui_first_enabled_idx(items, n, &ctx);
+    g_stack[0].hi = ui_first_enabled_idx(items, n, ctx);
     g_stack[0].top = 0;
     g_stack[0].title = "Main Menu";
-    ui_overlay_layout(&g_stack[0], &ctx);
+    ui_overlay_layout(&g_stack[0], ctx);
 }
 
 int
@@ -388,7 +396,7 @@ ui_menu_is_open(void) {
 
 int
 ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
+    UiCtx* ctx = ui_menu_stable_ctx(opts, state);
     if (!g_overlay_open || g_depth <= 0) {
         return 0;
     }
@@ -401,36 +409,36 @@ ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state) {
         ui_overlay_close_all();
         return 1;
     }
-    if (ui_menu_handle_resize(f, &ctx, ch)) {
+    if (ui_menu_handle_resize(f, ctx, ch)) {
         return 1;
     }
     if (ch == ERR) {
         return 0;
     }
-    if (ui_menu_handle_arrow_keys(f, &ctx, ch)) {
+    if (ui_menu_handle_arrow_keys(f, ctx, ch)) {
         return 1;
     }
-    if (ui_menu_handle_edge_keys(f, &ctx, ch)) {
+    if (ui_menu_handle_edge_keys(f, ctx, ch)) {
         return 1;
     }
-    if (ui_menu_handle_page_keys(f, &ctx, ch)) {
+    if (ui_menu_handle_page_keys(f, ctx, ch)) {
         return 1;
     }
-    if (ui_menu_handle_help_key(f, &ctx, ch)) {
+    if (ui_menu_handle_help_key(f, ctx, ch)) {
         return 1;
     }
     if (ui_menu_handle_back_key(ch)) {
         return 1;
     }
     if (ui_menu_is_activate_key(ch)) {
-        return ui_menu_activate_current(&ctx);
+        return ui_menu_activate_current(ctx);
     }
     return 0;
 }
 
 void
 ui_menu_tick(dsd_opts* opts, dsd_state* state) {
-    UiCtx ctx = {opts, state};
+    const UiCtx* ctx = ui_menu_stable_ctx(opts, state);
     if (!g_overlay_open || g_depth <= 0) {
         return;
     }
@@ -450,12 +458,12 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     UiMenuFrame* f = &g_stack[g_depth - 1];
-    if (f->items && f->n > 0 && !ui_is_enabled(&f->items[f->hi], &ctx)) {
-        f->hi = ui_next_enabled(f->items, f->n, &ctx, f->hi, +1);
+    if (f->items && f->n > 0 && !ui_is_enabled(&f->items[f->hi], ctx)) {
+        f->hi = ui_next_enabled(f->items, f->n, ctx, f->hi, +1);
     }
     // Ensure window exists with up-to-date geometry
-    ui_overlay_layout(f, &ctx);
-    ui_frame_keep_highlight_visible(f, &ctx);
+    ui_overlay_layout(f, ctx);
+    ui_frame_keep_highlight_visible(f, ctx);
     ui_overlay_recreate_if_needed(f);
     ui_overlay_ensure_window(f);
     if (!f->win) {
@@ -463,5 +471,5 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
     }
     char breadcrumb[256];
     ui_overlay_breadcrumb(breadcrumb, sizeof breadcrumb);
-    ui_draw_menu(f->win, f->items, f->n, f->hi, &f->top, breadcrumb, &ctx);
+    ui_draw_menu(f->win, f->items, f->n, f->hi, &f->top, breadcrumb, ctx);
 }
