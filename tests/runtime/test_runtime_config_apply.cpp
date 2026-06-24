@@ -21,15 +21,21 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#ifdef USE_RADIO
 #include <dsd-neo/core/power.h>
+#endif
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
+#endif
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
+#ifdef USE_RADIO
 #include <dsd-neo/ui/ui_dsp_cmd.h>
+#endif
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -92,6 +98,7 @@ expect_float_ne(const char* label, float lhs, float rhs) {
     return 0;
 }
 
+#ifdef USE_RADIO
 static int
 expect_float_near(const char* label, float got, float want, float tolerance) {
     if (fabsf(got - want) > tolerance) {
@@ -100,6 +107,7 @@ expect_float_near(const char* label, float got, float want, float tolerance) {
     }
     return 0;
 }
+#endif
 
 static uint16_t
 static_bits_to_u16(const uint8_t bits[882]) {
@@ -1236,6 +1244,7 @@ test_ui_legacy_toggle_commands_dispatch_through_queue(void) {
     return rc;
 }
 
+#ifdef USE_RADIO
 static int
 test_ui_dsp_op_commands_dispatch_through_queue(void) {
     test_runtime runtime;
@@ -1312,6 +1321,7 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     free_test_runtime(&runtime);
     return rc;
 }
+#endif
 
 static int
 test_ui_legacy_slot_and_display_commands_update_state(void) {
@@ -1393,12 +1403,18 @@ test_ui_legacy_slot_and_display_commands_update_state(void) {
     rc |= expect_int_eq("FSK histogram toggled on", opts->fsk_hist_view, 1);
     rc |= expect_int_eq("spectrum view toggled on", opts->spectrum_view, 1);
 
+#ifdef USE_RADIO
     (void)rtl_stream_spectrum_set_size(128);
+#endif
     int32_t spectrum_delta = 70;
     ui_post_cmd(UI_CMD_SPEC_SIZE_DELTA, &spectrum_delta, sizeof spectrum_delta);
     applied = ui_drain_cmds(opts, state);
     rc |= expect_int_eq("spectrum size command drains", applied, 1);
+#ifdef USE_RADIO
     rc |= expect_int_eq("spectrum size delta rounds to next power of two", rtl_stream_spectrum_get_size(), 256);
+#else
+    rc |= expect_int_eq("spectrum size command keeps spectrum enabled without radio", opts->spectrum_view, 1);
+#endif
 
     ui_post_cmd(UI_CMD_EYE_UNICODE_TOGGLE, NULL, 0);
     ui_post_cmd(UI_CMD_EYE_COLOR_TOGGLE, NULL, 0);
@@ -1407,7 +1423,9 @@ test_ui_legacy_slot_and_display_commands_update_state(void) {
     rc |= expect_int_eq("eye unicode toggled on", opts->eye_unicode, 1);
     rc |= expect_int_eq("eye color toggled on", opts->eye_color, 1);
 
+#ifdef USE_RADIO
     (void)rtl_stream_spectrum_set_size(64);
+#endif
     free_test_runtime(&runtime);
     return rc;
 }
@@ -2528,7 +2546,9 @@ main(void) {
     rc |= test_ui_m17_user_data_command_truncates_to_state_buffer();
     rc |= test_ui_runtime_toggle_commands_dispatch_through_queue();
     rc |= test_ui_legacy_toggle_commands_dispatch_through_queue();
+#ifdef USE_RADIO
     rc |= test_ui_dsp_op_commands_dispatch_through_queue();
+#endif
     rc |= test_ui_legacy_slot_and_display_commands_update_state();
     rc |= test_ui_legacy_protocol_reset_and_mode_toggles();
     rc |= test_ui_replay_and_stop_playback_manage_symbol_state();
