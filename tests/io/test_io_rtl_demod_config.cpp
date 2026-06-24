@@ -696,12 +696,7 @@ expect_direct_output_open_rate_uses_demod_rate(void) {
 }
 
 static int
-expect_private_policy_matrices(void) {
-    static constexpr int kRadioSourceRtlUsb = 0;
-    static constexpr int kRadioSourceRtlTcp = 1;
-    static constexpr int kRadioSourceSoapy = 2;
-    static constexpr int kRadioSourceIqReplay = 3;
-
+expect_parse_compatibility_matrix(void) {
     int rc = 0;
 
     int int_ok[10] = {};
@@ -764,6 +759,17 @@ expect_private_policy_matrices(void) {
     rc |= expect_int_eq("parse double rejects suffix", double_ok[5], 0);
     rc |= expect_int_eq("parse double rejects alpha", double_ok[6], 0);
     rc |= expect_int_eq("parse double rejects ERANGE", double_ok[7], 0);
+    return rc;
+}
+
+static int
+expect_source_policy_matrix(void) {
+    static constexpr int kRadioSourceRtlUsb = 0;
+    static constexpr int kRadioSourceRtlTcp = 1;
+    static constexpr int kRadioSourceSoapy = 2;
+    static constexpr int kRadioSourceIqReplay = 3;
+
+    int rc = 0;
 
     int kinds[8] = {};
     int rtltcp[8] = {};
@@ -843,6 +849,12 @@ expect_private_policy_matrices(void) {
     rc |= expect_int_eq("perf source names stable",
                         std::strcmp(names, "rtl|rtl|rtltcp|rtltcp|soapy|soapy|iq_replay|rtl"), 0);
     rc |= expect_int_eq("soapy args extraction stable", std::strcmp(soapy_args, "|||driver=rtlsdr"), 0);
+    return rc;
+}
+
+static int
+expect_mode_policy_matrix(void) {
+    int rc = 0;
 
     int mode_policy[32] = {};
     rc |= expect_int_eq("mode policy rejects null output", rtl_stream_test_mode_policy_matrix(NULL, 32U), -1);
@@ -865,6 +877,12 @@ expect_private_policy_matrices(void) {
         rc |= expect_int_eq("12.5k/CQPSK bandwidth mode detected", mode_policy[i], 1);
     }
     rc |= expect_int_eq("NXDN48 is not a 12.5k/CQPSK bandwidth mode", mode_policy[29], 0);
+    return rc;
+}
+
+static int
+expect_fsk_profile_policy_matrix(void) {
+    int rc = 0;
 
     int profiles[21] = {};
     rc |= expect_int_eq("FSK profile rejects null output", rtl_stream_test_fsk_profile_policy_matrix(NULL, 21U), -1);
@@ -893,6 +911,17 @@ expect_private_policy_matrices(void) {
     rc |= expect_int_eq("current mode opts profile wins", profiles[18], DSD_CH_LPF_PROFILE_PROVOICE);
     rc |= expect_int_eq("current mode two-level fallback", profiles[19], DSD_CH_LPF_PROFILE_6K25);
     rc |= expect_int_eq("current mode default fallback", profiles[20], DSD_CH_LPF_PROFILE_12K5);
+    return rc;
+}
+
+static int
+expect_private_policy_matrices(void) {
+    int rc = 0;
+
+    rc |= expect_parse_compatibility_matrix();
+    rc |= expect_source_policy_matrix();
+    rc |= expect_mode_policy_matrix();
+    rc |= expect_fsk_profile_policy_matrix();
     return rc;
 }
 

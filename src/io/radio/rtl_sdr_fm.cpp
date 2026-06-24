@@ -8405,7 +8405,8 @@ rtl_stream_test_source_policy_matrix(int* out_kind, int* out_rtltcp, int* out_so
         "rtl:0"};
 
     struct RtlSdrInternals* prev_stream = g_stream;
-    struct RtlSdrInternals test_stream = {};
+    static RtlSdrInternals test_stream;
+    DSD_MEMSET(&test_stream, 0, sizeof(test_stream));
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     test_stream.opts = &opts;
@@ -8527,7 +8528,8 @@ rtl_stream_test_fsk_profile_policy_matrix(int* out_profiles, size_t count) {
     out_profiles[17] = rtl_stream_fsk_profile_for_symbol_rate(1200, 4);
 
     struct RtlSdrInternals* prev_stream = g_stream;
-    struct RtlSdrInternals test_stream = {};
+    static RtlSdrInternals test_stream;
+    DSD_MEMSET(&test_stream, 0, sizeof(test_stream));
     int prev_symbol_rate = demod.symbol_rate_hz;
     int prev_symbol_levels = demod.symbol_levels;
 
