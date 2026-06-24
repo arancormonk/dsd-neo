@@ -69,9 +69,30 @@ main(void) {
     dibits_to_llr(dibits, bit_llr, 200);
 
     p25_12_candidate_t list[P25_12_MAX_CANDIDATES];
+    if (p25_12_soft_llr_list(dibits, NULL, list, P25_12_MAX_CANDIDATES) != 0
+        || p25_12_soft_llr_list(dibits, bit_llr, NULL, P25_12_MAX_CANDIDATES) != 0
+        || p25_12_soft_llr_list(dibits, bit_llr, list, 0) != 0) {
+        DSD_FPRINTF(stderr, "P25 1/2 list guard failed\n");
+        return 1;
+    }
+
     int list_count = p25_12_soft_llr_list(dibits, bit_llr, list, P25_12_MAX_CANDIDATES);
     if (list_count <= 0 || memcmp(list[0].bytes, payload, sizeof(payload)) != 0) {
         DSD_FPRINTF(stderr, "clean P25 1/2 list decode failed count=%d\n", list_count);
+        return 1;
+    }
+
+    uint8_t best[12] = {0};
+    int metric = p25_12_soft_llr(dibits, bit_llr, best);
+    if (metric != 0 || memcmp(best, payload, sizeof(payload)) != 0) {
+        DSD_FPRINTF(stderr, "clean P25 1/2 single decode failed metric=%d\n", metric);
+        return 1;
+    }
+
+    DSD_MEMSET(list, 0, sizeof(list));
+    list_count = p25_12_soft_llr_list(dibits, bit_llr, list, P25_12_MAX_CANDIDATES + 3);
+    if (list_count != P25_12_MAX_CANDIDATES || memcmp(list[0].bytes, payload, sizeof(payload)) != 0) {
+        DSD_FPRINTF(stderr, "clamped P25 1/2 list decode failed count=%d\n", list_count);
         return 1;
     }
 
@@ -92,6 +113,13 @@ main(void) {
     }
     if (!found_original) {
         DSD_FPRINTF(stderr, "noisy P25 1/2 list decode did not include original count=%d\n", list_count);
+        return 2;
+    }
+
+    DSD_MEMSET(best, 0, sizeof(best));
+    (void)p25_12_soft_llr(noisy_dibits, bit_llr, best);
+    if (memcmp(best, list[0].bytes, sizeof(best)) != 0) {
+        DSD_FPRINTF(stderr, "noisy P25 1/2 single/list best mismatch\n");
         return 2;
     }
 

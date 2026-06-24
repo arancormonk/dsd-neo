@@ -324,6 +324,34 @@ main(void) {
         rc |= expect_eq_long("ambtc_0x3e_sysid_unchanged", sid, 0);
     }
 
+    {
+        uint8_t mbt[48];
+        DSD_MEMSET(mbt, 0, sizeof(mbt));
+        long cc = 111, w = 222;
+        int sid = 333;
+        int sh = p25_test_decode_mbt_with_iden(mbt, (int)sizeof(mbt), /*iden*/ -1, type, tdma, base5, spac125, &cc, &w,
+                                               &sid);
+        rc |= expect_eq_long("invalid iden rejected", sh, -2);
+        rc |= expect_eq_long("invalid iden preserves cc", cc, 111);
+        rc |= expect_eq_long("invalid iden preserves wacn", w, 222);
+        rc |= expect_eq_long("invalid iden preserves sysid", sid, 333);
+    }
+
+    {
+        uint8_t mbt[48];
+        DSD_MEMSET(mbt, 0, sizeof(mbt));
+        long cc = 444;
+        int nb_count = 555;
+        long nb_freqs[P25_NB_MAX];
+        DSD_MEMSET(nb_freqs, 0x7F, sizeof(nb_freqs));
+        p25_test_iden_config bad_cfg = {/*iden*/ 16, type, tdma, base5, spac125};
+        p25_test_mbt_outputs outputs = {&cc, NULL, NULL, &nb_count, nb_freqs};
+        int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &bad_cfg, &outputs);
+        rc |= expect_eq_long("invalid nb iden rejected", sh, -2);
+        rc |= expect_eq_long("invalid nb iden preserves cc", cc, 444);
+        rc |= expect_eq_long("invalid nb iden preserves count", nb_count, 555);
+    }
+
     return rc;
 }
 

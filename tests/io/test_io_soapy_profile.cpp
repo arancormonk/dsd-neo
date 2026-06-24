@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
+// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange)
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
@@ -17,6 +20,7 @@ using dsdneo::SoapyProfileSelection;
 using dsdneo::SoapyRange;
 using dsdneo::SoapySettingScope;
 using dsdneo::SoapySettingValueType;
+using dsdneo::SoapyStreamFormat;
 
 static_assert(offsetof(struct rtl_soapy_config, profile) < offsetof(struct rtl_soapy_config, antenna),
               "rtl_soapy_config legacy field order changed");
@@ -60,6 +64,15 @@ expect_string(const char* label, const std::string& got, const char* want) {
 }
 
 static int
+expect_cstr(const char* label, const char* got, const char* want) {
+    if (std::string(got ? got : "") != want) {
+        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", label, got ? got : "(null)", want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_scope(const char* label, SoapySettingScope got, SoapySettingScope want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got scope=%d want=%d\n", label, (int)got, (int)want);
@@ -96,8 +109,23 @@ test_profile_selection(void) {
     rc |= expect_profile("airspy driver", {"", "airspy", "", ""}, SoapyProfileId::Airspy);
     rc |= expect_profile("sdrplay args", {"", "", "", "driver=sdrplay,serial=123"}, SoapyProfileId::Sdrplay);
     rc |= expect_profile("hackrf hardware", {"", "", "HackRF One", ""}, SoapyProfileId::Hackrf);
+    rc |= expect_profile("lime driver", {"", "lime", "", ""}, SoapyProfileId::Lime);
+    rc |= expect_profile("pluto hardware", {"", "", "AD9363", ""}, SoapyProfileId::Pluto);
+    rc |= expect_profile("rtlsdr args", {"", "", "", "driver=rtl_sdr"}, SoapyProfileId::Rtlsdr);
+    rc |= expect_profile("uhd hardware", {"", "", "USRP B200", ""}, SoapyProfileId::Uhd);
     rc |= expect_profile("requested overrides auto", {"generic", "airspy", "", ""}, SoapyProfileId::Generic);
+    rc |= expect_profile("requested alias rtl", {"rtl", "", "", ""}, SoapyProfileId::Rtlsdr);
+    rc |= expect_profile("requested alias usrp", {"usrp", "", "", ""}, SoapyProfileId::Uhd);
+    rc |= expect_profile("requested alias sdr-play", {"sdr-play", "", "", ""}, SoapyProfileId::Sdrplay);
     rc |= expect_profile("unknown falls back generic", {"", "custom", "unknown", ""}, SoapyProfileId::Generic);
+
+    SoapyProfileId parsed = SoapyProfileId::Generic;
+    rc |= expect_true("empty profile parses auto", dsdneo::soapy_profile_parse_name("", &parsed));
+    rc |= expect_true("empty profile returns auto", parsed == SoapyProfileId::Auto);
+    rc |= expect_true("profile parse rejects null out", !dsdneo::soapy_profile_parse_name("airspy", nullptr));
+    rc |= expect_true("profile parse rejects unknown", !dsdneo::soapy_profile_parse_name("mystery", &parsed));
+    rc |= expect_cstr("invalid profile id falls back generic", dsdneo::soapy_profile_by_id((SoapyProfileId)255).name,
+                      "generic");
     return rc;
 }
 
@@ -123,8 +151,21 @@ test_stream_format_selection(void) {
     std::vector<std::string> both = {"CS16", "CF32"};
     rc |= expect_string("native supported wins", dsdneo::soapy_choose_stream_format(both, "", "CS16"), "CS16");
     rc |= expect_string("forced cf32", dsdneo::soapy_choose_stream_format(both, "cf32", "CS16"), "CF32");
+    rc |= expect_string("forced cs16", dsdneo::soapy_choose_stream_format(both, "cs16", "CF32"), "CS16");
     rc |= expect_string("auto cf32 fallback", dsdneo::soapy_choose_stream_format({"CF32"}, "auto", ""), "CF32");
+    rc |= expect_string("auto cs16 fallback", dsdneo::soapy_choose_stream_format({"CS16"}, "auto", ""), "CS16");
     rc |= expect_string("unsupported forced format", dsdneo::soapy_choose_stream_format({"CS16"}, "cf32", ""), "");
+    rc |= expect_string("unknown forced format", dsdneo::soapy_choose_stream_format(both, "cu8", ""), "");
+    rc |= expect_string("no supported formats", dsdneo::soapy_choose_stream_format({}, "", "CS16"), "");
+
+    SoapyStreamFormat format = SoapyStreamFormat::CF32;
+    rc |= expect_true("empty stream format parses auto", dsdneo::soapy_stream_format_parse_name("", &format));
+    rc |= expect_true("empty stream format returns auto", format == SoapyStreamFormat::Auto);
+    rc |= expect_true("stream format rejects null out", !dsdneo::soapy_stream_format_parse_name("CF32", nullptr));
+    rc |= expect_true("stream format rejects unknown", !dsdneo::soapy_stream_format_parse_name("cu8", &format));
+    rc |= expect_cstr("stream format name cf32", dsdneo::soapy_stream_format_name(SoapyStreamFormat::CF32), "CF32");
+    rc |= expect_cstr("stream format name cs16", dsdneo::soapy_stream_format_name(SoapyStreamFormat::CS16), "CS16");
+    rc |= expect_cstr("stream format name default", dsdneo::soapy_stream_format_name((SoapyStreamFormat)255), "auto");
     return rc;
 }
 
@@ -138,11 +179,40 @@ test_range_selection(void) {
     rc |= expect_true("inside supported", supported);
     rc |= expect_double("between ranges", dsdneo::soapy_nearest_in_ranges(1200000.0, ranges, &supported), 1000000.0);
     rc |= expect_double("above ranges", dsdneo::soapy_nearest_in_ranges(4000000.0, ranges, &supported), 3000000.0);
+    rc |= expect_double("empty ranges preserve request", dsdneo::soapy_nearest_in_ranges(123.0, {}, &supported), 123.0);
+    rc |= expect_true("empty ranges unsupported", !supported);
+    rc |= expect_double("invalid ranges preserve request",
+                        dsdneo::soapy_nearest_in_ranges(123.0, {{10.0, 1.0, 1.0}}, &supported), 123.0);
+    rc |= expect_true("invalid ranges unsupported", !supported);
 
     bool adjusted = false;
     rc |= expect_double("listed sample rate",
                         dsdneo::soapy_nearest_sample_rate(768000.0, {1000000.0, 2500000.0}, {}, &adjusted), 1000000.0);
     rc |= expect_true("listed sample rate adjusted", adjusted);
+    rc |= expect_double("nonpositive sample rate preserved",
+                        dsdneo::soapy_nearest_sample_rate(0.0, {1000000.0}, ranges, &adjusted), 0.0);
+    rc |= expect_true("nonpositive sample rate not adjusted", !adjusted);
+    rc |= expect_double("range sample rate", dsdneo::soapy_nearest_sample_rate(1200000.0, {}, ranges, &adjusted),
+                        1000000.0);
+    rc |= expect_true("range sample rate adjusted", adjusted);
+    rc |= expect_double("no rate ranges preserves request", dsdneo::soapy_nearest_sample_rate(123.0, {}, {}, &adjusted),
+                        123.0);
+    rc |= expect_true("no rate ranges not adjusted", !adjusted);
+
+    rc |= expect_true("name list contains exact value", dsdneo::soapy_name_list_contains({"CF32", "CS16"}, "CS16"));
+    rc |= expect_true("name list misses case mismatch", !dsdneo::soapy_name_list_contains({"CF32"}, "cf32"));
+    return rc;
+}
+
+static int
+test_join_and_scope_names(void) {
+    int rc = 0;
+    rc |= expect_string("join empty", dsdneo::soapy_join_names({}, 0), "-");
+    rc |= expect_string("join unlimited", dsdneo::soapy_join_names({"CF32", "CS16"}, 0), "CF32,CS16");
+    rc |= expect_string("join truncated", dsdneo::soapy_join_names({"CF32", "CS16", "CU8"}, 8), "CF32,...");
+    rc |= expect_cstr("device scope name", dsdneo::soapy_setting_scope_name(SoapySettingScope::Device), "device");
+    rc |= expect_cstr("rx0 scope name", dsdneo::soapy_setting_scope_name(SoapySettingScope::Rx0), "rx0");
+    rc |= expect_cstr("default scope name", dsdneo::soapy_setting_scope_name((SoapySettingScope)255), "device");
     return rc;
 }
 
@@ -168,6 +238,10 @@ test_settings_parser_accepts_device_and_rx_scopes(void) {
     rc |= expect_scope("rx0 setting scope", settings[2].scope, SoapySettingScope::Rx0);
     rc |= expect_string("rx0 setting key", settings[2].key, "rfgain_sel");
     rc |= expect_string("rx0 setting value", settings[2].value, "4");
+
+    error = "stale";
+    rc |= expect_true("blank settings parse without outputs", dsdneo::soapy_parse_settings("   ", nullptr, &error));
+    rc |= expect_true("blank settings clears error", error.empty());
     return rc;
 }
 
@@ -247,8 +321,11 @@ main(void) {
     rc |= test_bandwidth_selection();
     rc |= test_stream_format_selection();
     rc |= test_range_selection();
+    rc |= test_join_and_scope_names();
     rc |= test_settings_parser_accepts_device_and_rx_scopes();
     rc |= test_settings_parser_rejects_invalid_items();
     rc |= test_setting_value_validation();
     return rc;
 }
+
+// NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)

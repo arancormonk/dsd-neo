@@ -553,6 +553,69 @@ write_text_file(const char* path, const char* text) {
 }
 
 static int
+test_channel_import_rejects_malformed_rows_without_reusing_previous_channel(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-channel-malformed-XXXXXX";
+    int fd = -1;
+
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    if (write_text_file(tmpl, "channel,freq\n"
+                              "12,851000000\n"
+                              "bad,852000000\n"
+                              "13,badfreq\n"
+                              "14,853000000\n"
+                              "65535,854000000\n")
+        != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", tmpl);
+    if (csvChanImport(opts, state) != 0) {
+        failed = 1;
+    }
+    if (state->trunk_chan_map[12] != 851000000L) {
+        failed = 1;
+    }
+    if (state->trunk_chan_map[13] != 0L) {
+        failed = 1;
+    }
+    if (state->trunk_chan_map[14] != 853000000L) {
+        failed = 1;
+    }
+    if (state->trunk_chan_map_used_count != 2U || state->trunk_chan_map_used[0] != 12U
+        || state->trunk_chan_map_used[1] != 14U) {
+        failed = 1;
+    }
+    if (state->lcn_freq_count != 3 || state->trunk_lcn_freq[0] != 851000000L || state->trunk_lcn_freq[1] != 0L
+        || state->trunk_lcn_freq[2] != 853000000L) {
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+static int
 test_group_import_policy_and_basic_headers(void) {
     int failed = 0;
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -970,6 +1033,9 @@ main(void) {
         return 1;
     }
     if (test_group_import_invalid_ids_and_required_fields() != 0) {
+        return 1;
+    }
+    if (test_channel_import_rejects_malformed_rows_without_reusing_previous_channel() != 0) {
         return 1;
     }
     if (test_group_import_range_after_many_exact_rows() != 0) {

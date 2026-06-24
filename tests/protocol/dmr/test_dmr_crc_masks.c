@@ -13,6 +13,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 #define RS_12_9_DATASIZE     9
@@ -33,6 +34,26 @@ uint32_t ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, 
                                              uint32_t CRCMask);
 
 static void
+build_masked_lc_codeword(rs_12_9_codeword_t* cw, uint32_t mask24, uint32_t* parity_unmasked) {
+    // Build a 12-byte LC codeword with valid RS(12,9) parity, then mask it.
+    DSD_MEMSET(cw, 0, sizeof(*cw));
+
+    // Deterministic 9-byte LC payload
+    for (int i = 0; i < RS_12_9_DATASIZE; i++) {
+        cw->data[i] = (uint8_t)(0x10 + i * 7);
+    }
+
+    rs_12_9_checksum_t* chk = rs_12_9_calc_checksum(cw);
+    // Save unmasked parity for later comparison
+    *parity_unmasked = ((uint32_t)chk->bytes[0] << 16) | ((uint32_t)chk->bytes[1] << 8) | ((uint32_t)chk->bytes[2]);
+
+    // Write masked parity into cw
+    cw->data[9] = (uint8_t)(chk->bytes[0] ^ (uint8_t)(mask24 >> 16));
+    cw->data[10] = (uint8_t)(chk->bytes[1] ^ (uint8_t)(mask24 >> 8));
+    cw->data[11] = (uint8_t)(chk->bytes[2] ^ (uint8_t)(mask24 >> 0));
+}
+
+static void
 append_bits(uint8_t* dst, unsigned start, uint32_t val, unsigned k) {
     // Append k bits of val MSB-first into dst starting at index 'start'
     for (unsigned i = 0; i < k; i++) {
@@ -43,24 +64,9 @@ append_bits(uint8_t* dst, unsigned start, uint32_t val, unsigned k) {
 
 static void
 test_lc_crc24_mask(uint32_t mask24) {
-    // Build a 12-byte LC codeword with valid RS(12,9) parity, then mask it.
     rs_12_9_codeword_t cw;
-    DSD_MEMSET(&cw, 0, sizeof(cw));
-
-    // Deterministic 9-byte LC payload
-    for (int i = 0; i < RS_12_9_DATASIZE; i++) {
-        cw.data[i] = (uint8_t)(0x10 + i * 7);
-    }
-
-    rs_12_9_checksum_t* chk = rs_12_9_calc_checksum(&cw);
-    // Save unmasked parity for later comparison
-    uint32_t parity_unmasked =
-        ((uint32_t)chk->bytes[0] << 16) | ((uint32_t)chk->bytes[1] << 8) | ((uint32_t)chk->bytes[2]);
-
-    // Write masked parity into cw
-    cw.data[9] = (uint8_t)(chk->bytes[0] ^ (uint8_t)(mask24 >> 16));
-    cw.data[10] = (uint8_t)(chk->bytes[1] ^ (uint8_t)(mask24 >> 8));
-    cw.data[11] = (uint8_t)(chk->bytes[2] ^ (uint8_t)(mask24 >> 0));
+    uint32_t parity_unmasked = 0;
+    build_masked_lc_codeword(&cw, mask24, &parity_unmasked);
 
     // Feed into CRC check/correct with the same mask
     uint32_t crc_computed = 0;
@@ -69,12 +75,41 @@ test_lc_crc24_mask(uint32_t mask24) {
     assert(crc_computed == parity_unmasked);
 
     // Ensure output remains masked
+    rs_12_9_checksum_t* chk = rs_12_9_calc_checksum(&cw);
     assert(cw.data[9] == (uint8_t)(chk->bytes[0] ^ (uint8_t)(mask24 >> 16)));
     assert(cw.data[10] == (uint8_t)(chk->bytes[1] ^ (uint8_t)(mask24 >> 8)));
     assert(cw.data[11] == (uint8_t)(chk->bytes[2] ^ (uint8_t)(mask24 >> 0)));
+}
 
-    // Note: Do not assert failure cases here; RS(12,9) correction behavior may
-    // vary with error locations. This test focuses on mask application success.
+static void
+test_lc_crc24_corrects_single_byte_error(void) {
+    rs_12_9_codeword_t cw;
+    rs_12_9_codeword_t expected;
+    uint32_t parity_unmasked = 0;
+    const uint32_t mask24 = 0x969696U;
+    build_masked_lc_codeword(&cw, mask24, &parity_unmasked);
+    DSD_MEMCPY(&expected, &cw, sizeof(expected));
+
+    cw.data[2] ^= 0x55U;
+    uint32_t crc_computed = 0;
+    uint32_t ok = ComputeAndCorrectFullLinkControlCrc(cw.data, &crc_computed, mask24);
+    assert(ok == 1);
+    assert(crc_computed == parity_unmasked);
+    assert(memcmp(cw.data, expected.data, sizeof(cw.data)) == 0);
+}
+
+static void
+test_lc_crc24_rejects_uncorrectable_error(void) {
+    rs_12_9_codeword_t cw;
+    uint32_t parity_unmasked = 0;
+    const uint32_t mask24 = 0x999999U;
+    build_masked_lc_codeword(&cw, mask24, &parity_unmasked);
+
+    cw.data[1] ^= 0x22U;
+    cw.data[7] ^= 0x11U;
+    uint32_t crc_computed = 0;
+    uint32_t ok = ComputeAndCorrectFullLinkControlCrc(cw.data, &crc_computed, mask24);
+    assert(ok == 0);
 }
 
 static void
@@ -113,6 +148,8 @@ main(void) {
     // 24-bit LC masks (VLC/TLC)
     test_lc_crc24_mask(0x969696); // VLC
     test_lc_crc24_mask(0x999999); // TLC
+    test_lc_crc24_corrects_single_byte_error();
+    test_lc_crc24_rejects_uncorrectable_error();
 
     // 16-bit CCITT masks for other PDUs
     test_ccitt16_mask(0x6969); // PI

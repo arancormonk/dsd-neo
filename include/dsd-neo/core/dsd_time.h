@@ -15,7 +15,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_DSD_TIME_H_H
 
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/platform/timing.h>
+#include <dsd-neo/platform/timing.h> // IWYU pragma: keep
 
 #ifdef __cplusplus
 extern "C" {

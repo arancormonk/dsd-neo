@@ -163,6 +163,184 @@ write_pcm16_mono_wav(const char* path, int sample_rate, int duration_s) {
 }
 
 static int
+write_pcm16_mono_wav_with_extra_chunks(const char* path, int sample_rate, int duration_s) {
+    if (!path || sample_rate <= 0 || duration_s <= 0) {
+        return 1;
+    }
+
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
+        return 1;
+    }
+
+    uint32_t sample_count = (uint32_t)sample_rate * (uint32_t)duration_s;
+    uint32_t data_bytes = sample_count * 2U;
+    uint32_t byte_rate = (uint32_t)sample_rate * 2U;
+    uint32_t riff_size = 50U + data_bytes;
+
+    unsigned char header[12];
+    DSD_MEMCPY(header + 0, "RIFF", 4);
+    header[4] = (unsigned char)(riff_size & 0xffU);
+    header[5] = (unsigned char)((riff_size >> 8) & 0xffU);
+    header[6] = (unsigned char)((riff_size >> 16) & 0xffU);
+    header[7] = (unsigned char)((riff_size >> 24) & 0xffU);
+    DSD_MEMCPY(header + 8, "WAVE", 4);
+    if (fwrite(header, 1, sizeof(header), fp) != sizeof(header)) {
+        DSD_FPRINTF(stderr, "fwrite RIFF header failed: %s\n", strerror(errno));
+        fclose(fp);
+        return 1;
+    }
+
+    const unsigned char junk[12] = {'J', 'U', 'N', 'K', 3, 0, 0, 0, 'x', 'y', 'z', 0};
+    if (fwrite(junk, 1, sizeof(junk), fp) != sizeof(junk)) {
+        DSD_FPRINTF(stderr, "fwrite JUNK chunk failed: %s\n", strerror(errno));
+        fclose(fp);
+        return 1;
+    }
+
+    unsigned char fmt[26];
+    DSD_MEMCPY(fmt + 0, "fmt ", 4);
+    fmt[4] = 18;
+    fmt[5] = 0;
+    fmt[6] = 0;
+    fmt[7] = 0;
+    fmt[8] = 1;
+    fmt[9] = 0;
+    fmt[10] = 1;
+    fmt[11] = 0;
+    fmt[12] = (unsigned char)(sample_rate & 0xffU);
+    fmt[13] = (unsigned char)((sample_rate >> 8) & 0xffU);
+    fmt[14] = (unsigned char)((sample_rate >> 16) & 0xffU);
+    fmt[15] = (unsigned char)((sample_rate >> 24) & 0xffU);
+    fmt[16] = (unsigned char)(byte_rate & 0xffU);
+    fmt[17] = (unsigned char)((byte_rate >> 8) & 0xffU);
+    fmt[18] = (unsigned char)((byte_rate >> 16) & 0xffU);
+    fmt[19] = (unsigned char)((byte_rate >> 24) & 0xffU);
+    fmt[20] = 2;
+    fmt[21] = 0;
+    fmt[22] = 16;
+    fmt[23] = 0;
+    fmt[24] = 0;
+    fmt[25] = 0;
+    if (fwrite(fmt, 1, sizeof(fmt), fp) != sizeof(fmt)) {
+        DSD_FPRINTF(stderr, "fwrite extended fmt chunk failed: %s\n", strerror(errno));
+        fclose(fp);
+        return 1;
+    }
+
+    unsigned char data_hdr[8];
+    DSD_MEMCPY(data_hdr + 0, "data", 4);
+    data_hdr[4] = (unsigned char)(data_bytes & 0xffU);
+    data_hdr[5] = (unsigned char)((data_bytes >> 8) & 0xffU);
+    data_hdr[6] = (unsigned char)((data_bytes >> 16) & 0xffU);
+    data_hdr[7] = (unsigned char)((data_bytes >> 24) & 0xffU);
+    if (fwrite(data_hdr, 1, sizeof(data_hdr), fp) != sizeof(data_hdr)) {
+        DSD_FPRINTF(stderr, "fwrite data header failed: %s\n", strerror(errno));
+        fclose(fp);
+        return 1;
+    }
+
+    unsigned char zeros[1024] = {0};
+    uint32_t remaining = data_bytes;
+    while (remaining > 0) {
+        size_t chunk = remaining < sizeof(zeros) ? (size_t)remaining : sizeof(zeros);
+        if (fwrite(zeros, 1, chunk, fp) != chunk) {
+            DSD_FPRINTF(stderr, "fwrite data failed: %s\n", strerror(errno));
+            fclose(fp);
+            return 1;
+        }
+        remaining -= (uint32_t)chunk;
+    }
+
+    if (fclose(fp) != 0) {
+        DSD_FPRINTF(stderr, "fclose failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    return 0;
+}
+
+static int
+write_wav_with_custom_fmt(const char* path, uint32_t sample_rate, uint16_t block_align, uint32_t fmt_size) {
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
+        return 1;
+    }
+
+    unsigned char header[12];
+    DSD_MEMCPY(header + 0, "RIFF", 4);
+    header[4] = 44;
+    header[5] = 0;
+    header[6] = 0;
+    header[7] = 0;
+    DSD_MEMCPY(header + 8, "WAVE", 4);
+    if (fwrite(header, 1, sizeof(header), fp) != sizeof(header)) {
+        DSD_FPRINTF(stderr, "fwrite RIFF header failed: %s\n", strerror(errno));
+        fclose(fp);
+        return 1;
+    }
+
+    unsigned char fmt[24];
+    DSD_MEMSET(fmt, 0, sizeof(fmt));
+    DSD_MEMCPY(fmt + 0, "fmt ", 4);
+    fmt[4] = (unsigned char)(fmt_size & 0xffU);
+    fmt[5] = (unsigned char)((fmt_size >> 8) & 0xffU);
+    fmt[6] = (unsigned char)((fmt_size >> 16) & 0xffU);
+    fmt[7] = (unsigned char)((fmt_size >> 24) & 0xffU);
+    fmt[8] = 1;
+    fmt[10] = 1;
+    fmt[12] = (unsigned char)(sample_rate & 0xffU);
+    fmt[13] = (unsigned char)((sample_rate >> 8) & 0xffU);
+    fmt[14] = (unsigned char)((sample_rate >> 16) & 0xffU);
+    fmt[15] = (unsigned char)((sample_rate >> 24) & 0xffU);
+    fmt[20] = (unsigned char)(block_align & 0xffU);
+    fmt[21] = (unsigned char)((block_align >> 8) & 0xffU);
+    fmt[22] = 16;
+    size_t fmt_payload = fmt_size < 16U ? (size_t)fmt_size : 16U;
+    if (fwrite(fmt, 1, 8U + fmt_payload, fp) != 8U + fmt_payload) {
+        DSD_FPRINTF(stderr, "fwrite custom fmt failed: %s\n", strerror(errno));
+        fclose(fp);
+        return 1;
+    }
+
+    const unsigned char data_hdr[8] = {'d', 'a', 't', 'a', 0x80, 0x3e, 0, 0};
+    if (fwrite(data_hdr, 1, sizeof(data_hdr), fp) != sizeof(data_hdr)) {
+        DSD_FPRINTF(stderr, "fwrite custom data header failed: %s\n", strerror(errno));
+        fclose(fp);
+        return 1;
+    }
+
+    if (fclose(fp) != 0) {
+        DSD_FPRINTF(stderr, "fclose failed: %s\n", strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
+static int
+write_bytes_file(const char* path, const unsigned char* data, size_t len) {
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
+        return 1;
+    }
+
+    if (len > 0 && fwrite(data, 1, len, fp) != len) {
+        DSD_FPRINTF(stderr, "fwrite bytes failed: %s\n", strerror(errno));
+        fclose(fp);
+        return 1;
+    }
+
+    if (fclose(fp) != 0) {
+        DSD_FPRINTF(stderr, "fclose failed: %s\n", strerror(errno));
+        return 1;
+    }
+    return 0;
+}
+
+static int
 read_file(const char* path, char* out, size_t out_size) {
     if (!out || out_size == 0) {
         return 1;
@@ -375,6 +553,19 @@ rdio_test_http_server_start(rdio_test_http_server* server, char* out_api_url, si
 static int
 test_mode_parser(void) {
     int mode = -1;
+    if (dsd_rdio_mode_from_string("off", NULL) == 0) {
+        DSD_FPRINTF(stderr, "mode parser accepted null output\n");
+        return 1;
+    }
+    if (dsd_rdio_mode_from_string(NULL, &mode) != 0 || mode != DSD_RDIO_MODE_OFF) {
+        DSD_FPRINTF(stderr, "mode parser failed for null input\n");
+        return 1;
+    }
+    mode = -1;
+    if (dsd_rdio_mode_from_string("", &mode) != 0 || mode != DSD_RDIO_MODE_OFF) {
+        DSD_FPRINTF(stderr, "mode parser failed for empty input\n");
+        return 1;
+    }
     if (dsd_rdio_mode_from_string("off", &mode) != 0 || mode != DSD_RDIO_MODE_OFF) {
         DSD_FPRINTF(stderr, "mode parser failed for off\n");
         return 1;
@@ -391,8 +582,20 @@ test_mode_parser(void) {
         DSD_FPRINTF(stderr, "mode parser failed for both\n");
         return 1;
     }
+    if (dsd_rdio_mode_from_string("DiRwAtCh", &mode) != 0 || mode != DSD_RDIO_MODE_DIRWATCH) {
+        DSD_FPRINTF(stderr, "mode parser failed for mixed-case dirwatch\n");
+        return 1;
+    }
     if (dsd_rdio_mode_from_string("invalid", &mode) == 0) {
         DSD_FPRINTF(stderr, "mode parser accepted invalid value\n");
+        return 1;
+    }
+    if (strcmp(dsd_rdio_mode_to_string(DSD_RDIO_MODE_OFF), "off") != 0
+        || strcmp(dsd_rdio_mode_to_string(DSD_RDIO_MODE_DIRWATCH), "dirwatch") != 0
+        || strcmp(dsd_rdio_mode_to_string(DSD_RDIO_MODE_API), "api") != 0
+        || strcmp(dsd_rdio_mode_to_string(DSD_RDIO_MODE_BOTH), "both") != 0
+        || strcmp(dsd_rdio_mode_to_string(99), "off") != 0) {
+        DSD_FPRINTF(stderr, "mode to-string mapping failed\n");
         return 1;
     }
     return 0;
@@ -623,6 +826,476 @@ test_duration_uses_wav_samplerate(void) {
     free(hist);
     free(opts);
 
+    return rc;
+}
+
+static int
+test_duration_skips_extra_wav_chunks(void) {
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_wav_chunks")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "chunked.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "chunked.json") != 0) {
+        DSD_FPRINTF(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    if (write_pcm16_mono_wav_with_extra_chunks(wav_path, 8000, 3) != 0) {
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist) {
+        DSD_FPRINTF(stderr, "allocation failed\n");
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_id = 48;
+
+    hist->Event_History_Items[0].event_time = (time_t)1700000100;
+    hist->Event_History_Items[0].target_id = 1202;
+
+    if (dsd_rdio_export_call(opts, hist, wav_path) != 0) {
+        DSD_FPRINTF(stderr, "dsd_rdio_export_call failed for chunked wav\n");
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    char body[4096];
+    if (read_file(json_path, body, sizeof(body)) != 0) {
+        DSD_FPRINTF(stderr, "failed reading sidecar %s\n", json_path);
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    int rc = 0;
+    if (!strstr(body, "\"stop_time\": 1700000103")) {
+        DSD_FPRINTF(stderr, "stop_time should skip extra WAV chunks and use 3-second duration\n%s\n", body);
+        rc = 1;
+    }
+
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir_template);
+    free(hist);
+    free(opts);
+    return rc;
+}
+
+static int
+test_duration_rejects_invalid_wav_format_values(void) {
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_wav_invalid")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    struct {
+        const char* wav_name;
+        const char* json_name;
+        uint32_t sample_rate;
+        uint16_t block_align;
+        uint32_t fmt_size;
+    } cases[] = {
+        {"short_fmt.wav", "short_fmt.json", 8000U, 2U, 15U},
+        {"zero_rate.wav", "zero_rate.json", 0U, 2U, 16U},
+        {"zero_align.wav", "zero_align.json", 8000U, 0U, 16U},
+    };
+
+    static dsd_opts opts;
+    Event_History_I hist;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&hist, 0, sizeof(hist));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts.rdio_system_id = 48;
+    hist.Event_History_Items[0].event_time = (time_t)1700000150;
+    hist.Event_History_Items[0].target_id = 1203;
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char wav_path[DSD_TEST_PATH_MAX] = {0};
+        char json_path[DSD_TEST_PATH_MAX] = {0};
+        if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, cases[i].wav_name) != 0
+            || dsd_test_path_join(json_path, sizeof(json_path), dir_template, cases[i].json_name) != 0) {
+            DSD_FPRINTF(stderr, "path join failed for invalid wav case %zu\n", i);
+            rc = 1;
+            break;
+        }
+        if (write_wav_with_custom_fmt(wav_path, cases[i].sample_rate, cases[i].block_align, cases[i].fmt_size) != 0) {
+            (void)remove(wav_path);
+            rc = 1;
+            break;
+        }
+        if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+            DSD_FPRINTF(stderr, "export failed for invalid wav duration case %zu\n", i);
+            (void)remove(wav_path);
+            rc = 1;
+            break;
+        }
+
+        char body[4096];
+        if (read_file(json_path, body, sizeof(body)) != 0) {
+            DSD_FPRINTF(stderr, "failed reading invalid wav sidecar %s\n", json_path);
+            (void)remove(wav_path);
+            rc = 1;
+            break;
+        }
+        if (!strstr(body, "\"stop_time\": 1700000150")) {
+            DSD_FPRINTF(stderr, "invalid WAV format should produce zero-duration sidecar for case %zu\n%s\n", i, body);
+            rc = 1;
+        }
+        (void)remove(json_path);
+        (void)remove(wav_path);
+        if (rc != 0) {
+            break;
+        }
+    }
+
+    remove_empty_dir(dir_template);
+    return rc;
+}
+
+static int
+test_duration_uses_zero_for_missing_or_truncated_wav(void) {
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_wav_unreadable")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    struct {
+        const char* wav_name;
+        const char* json_name;
+        const unsigned char* bytes;
+        size_t len;
+    } cases[] = {
+        {"missing.wav", "missing.json", NULL, 0U},
+        {"truncated.wav", "truncated.json", (const unsigned char*)"RIFF", 4U},
+    };
+
+    static dsd_opts opts;
+    Event_History_I hist;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&hist, 0, sizeof(hist));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts.rdio_system_id = 48;
+    hist.Event_History_Items[0].event_time = (time_t)1700000160;
+    hist.Event_History_Items[0].target_id = 1204;
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char wav_path[DSD_TEST_PATH_MAX] = {0};
+        char json_path[DSD_TEST_PATH_MAX] = {0};
+        if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, cases[i].wav_name) != 0
+            || dsd_test_path_join(json_path, sizeof(json_path), dir_template, cases[i].json_name) != 0) {
+            DSD_FPRINTF(stderr, "path join failed for unreadable wav case %zu\n", i);
+            rc = 1;
+            break;
+        }
+
+        if (cases[i].bytes && write_bytes_file(wav_path, cases[i].bytes, cases[i].len) != 0) {
+            rc = 1;
+            break;
+        }
+        if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+            DSD_FPRINTF(stderr, "export failed for unreadable wav duration case %zu\n", i);
+            (void)remove(wav_path);
+            rc = 1;
+            break;
+        }
+
+        char body[4096];
+        if (read_file(json_path, body, sizeof(body)) != 0) {
+            DSD_FPRINTF(stderr, "failed reading unreadable wav sidecar %s\n", json_path);
+            (void)remove(wav_path);
+            rc = 1;
+            break;
+        }
+        if (!strstr(body, "\"stop_time\": 1700000160")) {
+            DSD_FPRINTF(stderr, "unreadable WAV should produce zero-duration sidecar for case %zu\n%s\n", i, body);
+            rc = 1;
+        }
+        (void)remove(json_path);
+        (void)remove(wav_path);
+        if (rc != 0) {
+            break;
+        }
+    }
+
+    remove_empty_dir(dir_template);
+    return rc;
+}
+
+static int
+test_export_guards_and_invalid_mode_are_noops(void) {
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_guards")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "call.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "call.json") != 0) {
+        DSD_FPRINTF(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    if (write_dummy_wav(wav_path) != 0) {
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    Event_History_I hist;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&hist, 0, sizeof(hist));
+    opts.rdio_mode = 99;
+    hist.Event_History_Items[0].event_time = (time_t)1700000200;
+    hist.Event_History_Items[0].target_id = 2;
+
+    int rc = 0;
+    if (dsd_rdio_export_call(NULL, &hist, wav_path) == 0) {
+        DSD_FPRINTF(stderr, "export accepted null opts\n");
+        rc = 1;
+    }
+    if (dsd_rdio_export_call(&opts, &hist, NULL) == 0) {
+        DSD_FPRINTF(stderr, "export accepted null wav path\n");
+        rc = 1;
+    }
+    if (dsd_rdio_export_call(&opts, &hist, "") == 0) {
+        DSD_FPRINTF(stderr, "export accepted empty wav path\n");
+        rc = 1;
+    }
+    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+        DSD_FPRINTF(stderr, "invalid rdio mode should be treated as disabled\n");
+        rc = 1;
+    }
+    if (file_exists(json_path)) {
+        DSD_FPRINTF(stderr, "invalid rdio mode should not create sidecar\n");
+        (void)remove(json_path);
+        rc = 1;
+    }
+
+    (void)remove(wav_path);
+    remove_empty_dir(dir_template);
+    return rc;
+}
+
+static int
+test_missing_talkgroup_rejects_sidecar(void) {
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_missing_tg")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "call.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "call.json") != 0) {
+        DSD_FPRINTF(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    if (write_dummy_wav(wav_path) != 0) {
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    Event_History_I hist;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&hist, 0, sizeof(hist));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts.rdio_system_id = 48;
+    hist.Event_History_Items[0].event_time = (time_t)1700000300;
+
+    int rc = 0;
+    if (dsd_rdio_export_call(&opts, &hist, wav_path) == 0) {
+        DSD_FPRINTF(stderr, "export accepted missing talkgroup\n");
+        rc = 1;
+    }
+    if (file_exists(json_path)) {
+        DSD_FPRINTF(stderr, "missing talkgroup should not create sidecar\n");
+        (void)remove(json_path);
+        rc = 1;
+    }
+
+    (void)remove(wav_path);
+    remove_empty_dir(dir_template);
+    return rc;
+}
+
+static int
+test_sidecar_escapes_strings_and_tgt_fallback(void) {
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_escape")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "escape.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "escape.json") != 0) {
+        DSD_FPRINTF(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    if (write_dummy_wav(wav_path) != 0) {
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    Event_History_I hist;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&hist, 0, sizeof(hist));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts.rdio_system_id = -1;
+    hist.Event_History_Items[0].event_time = (time_t)1700000400;
+    hist.Event_History_Items[0].target_id = 44;
+    hist.Event_History_Items[0].source_id = 0;
+    hist.Event_History_Items[0].channel = 12345;
+    DSD_SNPRINTF(hist.Event_History_Items[0].tgt_str, sizeof(hist.Event_History_Items[0].tgt_str), "TG \"A\"\\B\n\t%c",
+                 1);
+    DSD_SNPRINTF(hist.Event_History_Items[0].sysid_string, sizeof(hist.Event_History_Items[0].sysid_string),
+                 "SYS \"Q\"\\R\b\f\r");
+
+    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+        DSD_FPRINTF(stderr, "export failed for escaped string sidecar\n");
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    char body[4096];
+    if (read_file(json_path, body, sizeof(body)) != 0) {
+        DSD_FPRINTF(stderr, "failed reading escaped sidecar %s\n", json_path);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    int rc = 0;
+    if (!strstr(body, "\"talkgroup_tag\": \"TG \\\"A\\\"\\\\B\\n\\t\\u0001\"")) {
+        DSD_FPRINTF(stderr, "sidecar did not escape fallback talkgroup tag\n%s\n", body);
+        rc = 1;
+    }
+    if (!strstr(body, "\"srcList\": []")) {
+        DSD_FPRINTF(stderr, "sidecar should omit zero source from srcList\n%s\n", body);
+        rc = 1;
+    }
+    if (!strstr(body, "\"freq\": 0")) {
+        DSD_FPRINTF(stderr, "sidecar should clamp sub-MHz frequency to zero\n%s\n", body);
+        rc = 1;
+    }
+    if (!strstr(body, "\"system\": 0")) {
+        DSD_FPRINTF(stderr, "sidecar should clamp negative system id to zero\n%s\n", body);
+        rc = 1;
+    }
+    if (!strstr(body, "\"short_name\": \"SYS \\\"Q\\\"\\\\R\\b\\f\\r\"")) {
+        DSD_FPRINTF(stderr, "sidecar did not escape short_name\n%s\n", body);
+        rc = 1;
+    }
+
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir_template);
+    return rc;
+}
+
+static int
+test_sidecar_private_fallback_and_malformed_wav_duration(void) {
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_private")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "private.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "private.json") != 0) {
+        DSD_FPRINTF(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    FILE* fp = dsd_fopen_private(wav_path, "wb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", wav_path, strerror(errno));
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+    if (fwrite("RIFF\012\0\0\0WAVE", 1, 12, fp) != 12U || fclose(fp) != 0) {
+        DSD_FPRINTF(stderr, "failed writing malformed wav fixture\n");
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    Event_History_I hist;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&hist, 0, sizeof(hist));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts.rdio_system_id = 7;
+    hist.Event_History_Items[0].event_time = (time_t)1700000500;
+    hist.Event_History_Items[0].target_id = 77;
+    hist.Event_History_Items[0].gi = 1;
+
+    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+        DSD_FPRINTF(stderr, "export failed for private fallback sidecar\n");
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    char body[4096];
+    if (read_file(json_path, body, sizeof(body)) != 0) {
+        DSD_FPRINTF(stderr, "failed reading private fallback sidecar %s\n", json_path);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    int rc = 0;
+    if (!strstr(body, "\"talkgroup_tag\": \"PRIVATE\"")) {
+        DSD_FPRINTF(stderr, "private call fallback tag missing\n%s\n", body);
+        rc = 1;
+    }
+    if (!strstr(body, "\"stop_time\": 1700000500")) {
+        DSD_FPRINTF(stderr, "malformed wav should produce zero-duration sidecar\n%s\n", body);
+        rc = 1;
+    }
+
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir_template);
     return rc;
 }
 
@@ -919,6 +1592,13 @@ main(void) {
     rc |= test_dirwatch_sidecar_generation();
     rc |= test_mode_off_no_sidecar();
     rc |= test_duration_uses_wav_samplerate();
+    rc |= test_duration_skips_extra_wav_chunks();
+    rc |= test_duration_rejects_invalid_wav_format_values();
+    rc |= test_duration_uses_zero_for_missing_or_truncated_wav();
+    rc |= test_export_guards_and_invalid_mode_are_noops();
+    rc |= test_missing_talkgroup_rejects_sidecar();
+    rc |= test_sidecar_escapes_strings_and_tgt_fallback();
+    rc |= test_sidecar_private_fallback_and_malformed_wav_duration();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
     rc |= test_api_upload_does_not_follow_redirect();

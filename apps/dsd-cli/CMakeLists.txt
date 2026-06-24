@@ -28,6 +28,24 @@ target_compile_definitions(dsd-neo PRIVATE USE_MBELIB_NEO)
 
 target_link_libraries(dsd-neo PRIVATE dsd-neo_warnings)
 
+if(BUILD_TESTING)
+    add_test(
+        NAME CLI_HELP_SMOKE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=help -P
+            ${PROJECT_SOURCE_DIR}/tests/cmake/RunCliSmoke.cmake
+    )
+
+    add_test(
+        NAME CLI_INVALID_OPTION_SMOKE
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=invalid-option -P
+            ${PROJECT_SOURCE_DIR}/tests/cmake/RunCliSmoke.cmake
+    )
+endif()
+
 ## Fast-math now configured globally when enabled
 
 ## LTO/IPO now configured globally for Release when enabled

@@ -31,6 +31,8 @@ snapshot_for(dsd_input_level_source source, double rms_dbfs, double peak_dbfs, d
 
 static void
 test_classifier_thresholds(void) {
+    assert(strcmp(dsd_input_level_status_label(DSD_INPUT_LEVEL_OK), "OK") == 0);
+
     dsd_input_level_snapshot low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -50.0, -20.0, 0.0, 1);
     dsd_input_level_classify(&low, -40.0);
     assert(low.status == DSD_INPUT_LEVEL_LOW);
@@ -46,6 +48,19 @@ test_classifier_thresholds(void) {
     dsd_input_level_snapshot ok = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -25.0, -3.0, 0.0, 1);
     dsd_input_level_classify(&ok, -40.0);
     assert(ok.status == DSD_INPUT_LEVEL_OK);
+
+    dsd_input_level_classify(NULL, -40.0);
+
+    dsd_input_level_snapshot empty = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -20.0, -3.0, 0.0, 1);
+    empty.status = DSD_INPUT_LEVEL_HOT;
+    empty.sample_count = 0U;
+    dsd_input_level_classify(&empty, -40.0);
+    assert(empty.status == DSD_INPUT_LEVEL_UNKNOWN);
+
+    dsd_input_level_snapshot unknown_source = snapshot_for(DSD_INPUT_LEVEL_SOURCE_UNKNOWN, -20.0, -3.0, 0.0, 1);
+    unknown_source.status = DSD_INPUT_LEVEL_HOT;
+    dsd_input_level_classify(&unknown_source, -40.0);
+    assert(unknown_source.status == DSD_INPUT_LEVEL_UNKNOWN);
 }
 
 static void
@@ -362,6 +377,10 @@ test_non_tcp_silence_low_still_notifies(void) {
 static void
 test_advisory_text_selection(void) {
     char msg[128];
+    assert(dsd_input_level_format_advisory(NULL, msg, sizeof(msg)) == -1);
+    assert(dsd_input_level_format_advisory(&(dsd_input_level_snapshot){0}, NULL, sizeof(msg)) == -1);
+    assert(dsd_input_level_format_advisory(&(dsd_input_level_snapshot){0}, msg, 0U) == -1);
+
     dsd_input_level_snapshot pcm_low = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -55.0, -30.0, 0.0, 1);
     dsd_input_level_classify(&pcm_low, -40.0);
     assert(dsd_input_level_format_advisory(&pcm_low, msg, sizeof(msg)) == 0);
@@ -381,6 +400,35 @@ test_advisory_text_selection(void) {
     assert(strstr(msg, "lower RF gain") == NULL);
 }
 
+static void
+test_publish_without_state_and_default_cooldown_paths(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+
+    opts->rtl_pwr = 0.25;
+    dsd_input_level_publish(opts, NULL, NULL, DSD_INPUT_LEVEL_NOTIFY_ALL);
+    assert(opts->rtl_pwr == 0.25);
+
+    dsd_input_level_snapshot saturated = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, 0.0, -3.0, 0.0, 350);
+    dsd_input_level_publish(opts, NULL, &saturated, DSD_INPUT_LEVEL_NOTIFY_ALL);
+    assert(opts->rtl_pwr == 1.0);
+
+    dsd_input_level_snapshot clipped = snapshot_for(DSD_INPUT_LEVEL_SOURCE_PCM, -10.0, -0.1, 0.2, 360);
+    opts->input_warn_cooldown_sec = 0;
+    state->input_level_last_toast_time = 355;
+    state->input_level_last_toast_status = DSD_INPUT_LEVEL_UNKNOWN;
+    state->input_level_last_toast_source = DSD_INPUT_LEVEL_SOURCE_UNKNOWN;
+    dsd_input_level_publish(opts, state, &clipped, DSD_INPUT_LEVEL_NOTIFY_ALL);
+    assert(strstr(state->ui_msg, "Input Level CLIP") != NULL);
+    assert(state->input_level_last_toast_time == 360);
+    assert(opts->last_input_warn_time == 360);
+
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     test_classifier_thresholds();
@@ -396,5 +444,6 @@ main(void) {
     test_tcp_pcm_m17_encoder_levels_still_notify();
     test_non_tcp_silence_low_still_notifies();
     test_advisory_text_selection();
+    test_publish_without_state_and_default_cooldown_paths();
     return 0;
 }

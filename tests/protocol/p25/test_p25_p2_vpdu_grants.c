@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -122,6 +123,15 @@ static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
         DSD_FPRINTF(stderr, "%s: expected true\n", tag);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_contains(const char* tag, const char* text, const char* needle) {
+    if (text == NULL || needle == NULL || strstr(text, needle) == NULL) {
+        DSD_FPRINTF(stderr, "%s: '%s' did not contain '%s'\n", tag, text ? text : "(null)", needle ? needle : "(null)");
         return 1;
     }
     return 0;
@@ -449,6 +459,256 @@ main(void) {
         rc |= expect_eq_long("p2 rejected nsb preserves trunk cc", state.trunk_cc_freq, cc);
         rc |= expect_true("p2 rejected nsb skips wacn", state.p2_wacn == 0);
         rc |= expect_true("p2 rejected nsb skips sysid", state.p2_sysid == 0);
+    }
+
+    // Case K: accepted P2 abbreviated NSB promotes the current CC to TDMA,
+    // stores system identity, seeds LCN0, and confirms matching IDEN provenance.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 1;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_iden_fdma[iden].wacn = 0xABCDE;
+        state.p25_iden_fdma[iden].sysid = 0x123;
+
+        MAC[1] = 0x7B; // Network Status Broadcast - Abbreviated
+        MAC[2] = 0x01; // LRA
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1; // WACN 0xABCDE, SYSID high nibble 0x1
+        MAC[6] = 0x23; // SYSID low byte
+        MAC[7] = 0x10;
+        MAC[8] = 0x0A; // channel 0x100A -> 851.125 MHz
+        MAC[9] = 0x00; // sysclass
+        MAC[10] = 0x00;
+        MAC[11] = 0x55; // NAC
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("p2 accepted nsb marks system tdma", state.p25_sys_is_tdma == 1);
+        rc |= expect_true("p2 accepted nsb marks cc tdma", state.p25_cc_is_tdma == 1);
+        rc |= expect_eq_long("p2 accepted nsb p25 cc", state.p25_cc_freq, 851125000);
+        rc |= expect_eq_long("p2 accepted nsb trunk cc", state.trunk_cc_freq, 851125000);
+        rc |= expect_eq_long("p2 accepted nsb lcn0", state.trunk_lcn_freq[0], 851125000);
+        rc |= expect_eq_long("p2 accepted nsb wacn", (long)state.p2_wacn, 0xABCDE);
+        rc |= expect_eq_long("p2 accepted nsb sysid", (long)state.p2_sysid, 0x123);
+        rc |= expect_eq_long("p2 accepted nsb nac", (long)state.p2_cc, 0x055);
+        rc |= expect_eq_long("p2 accepted nsb confirms iden", state.p25_iden_fdma[iden].trust, 2);
+    }
+
+    // Case L: accepted P2 extended NSB resolves both T/R channels and updates
+    // TDMA CC identity through the same state-machine notification path.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].populated = 1;
+
+        MAC[1] = 0xFB; // Network Status Broadcast - Extended
+        MAC[2] = 0x02; // LRA
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1; // WACN 0xABCDE, SYSID high nibble 0x1
+        MAC[6] = 0x23; // SYSID low byte
+        MAC[7] = 0x10;
+        MAC[8] = 0x0A; // CHAN-T 0x100A
+        MAC[9] = 0x10;
+        MAC[10] = 0x0B; // CHAN-R 0x100B
+        MAC[12] = 0x00;
+        MAC[13] = 0x56; // NAC
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("p2 accepted nsb-ext marks system tdma", state.p25_sys_is_tdma == 1);
+        rc |= expect_true("p2 accepted nsb-ext marks cc tdma", state.p25_cc_is_tdma == 1);
+        rc |= expect_eq_long("p2 accepted nsb-ext p25 cc", state.p25_cc_freq, 851125000);
+        rc |= expect_eq_long("p2 accepted nsb-ext trunk cc", state.trunk_cc_freq, 851125000);
+        rc |= expect_eq_long("p2 accepted nsb-ext chan-t cache", state.trunk_chan_map[0x100A], 851125000);
+        rc |= expect_eq_long("p2 accepted nsb-ext chan-r cache", state.trunk_chan_map[0x100B], 851137500);
+        rc |= expect_eq_long("p2 accepted nsb-ext wacn", (long)state.p2_wacn, 0xABCDE);
+        rc |= expect_eq_long("p2 accepted nsb-ext sysid", (long)state.p2_sysid, 0x123);
+        rc |= expect_eq_long("p2 accepted nsb-ext nac", (long)state.p2_cc, 0x056);
+    }
+
+    // Case M: encrypted explicit multi-grants should publish channel state but
+    // suppress retune when encrypted following is disabled and no clear key is known.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x25; // Group Voice Channel Grant Update Multiple - Explicit
+        MAC[2] = 0x40; // encrypted svc1
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[5] = 0x00;
+        MAC[6] = 0x00;
+        MAC[7] = 0x12;
+        MAC[8] = 0x34;
+        MAC[9] = 0x40; // encrypted svc2
+        MAC[10] = 0x10;
+        MAC[11] = 0x0B;
+        MAC[12] = 0x00;
+        MAC[13] = 0x00;
+        MAC[14] = 0x56;
+        MAC[15] = 0x78;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x25 encrypted multi suppressed tune", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0x25 encrypted multi no vc", state.p25_vc_freq[0], 0);
+        rc |= expect_contains("0x25 encrypted multi active ch group1", state.active_channel[0], "TG: 4660");
+        rc |= expect_contains("0x25 encrypted multi active ch group2", state.active_channel[0], "TG: 22136");
+    }
+
+    // Case N: encrypted implicit triple updates are also blocked before candidate
+    // tuning while still refreshing active-channel state.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x05; // Group Voice Channel Grant Update Multiple - Implicit
+        MAC[2] = 0x40;
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[5] = 0x12;
+        MAC[6] = 0x34;
+        MAC[7] = 0x40;
+        MAC[8] = 0x10;
+        MAC[9] = 0x0B;
+        MAC[10] = 0x56;
+        MAC[11] = 0x78;
+        MAC[12] = 0x40;
+        MAC[13] = 0x10;
+        MAC[14] = 0x0C;
+        MAC[15] = 0x9A;
+        MAC[16] = 0xBC;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x05 encrypted triple suppressed tune", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0x05 encrypted triple no vc", state.p25_vc_freq[0], 0);
+        rc |= expect_contains("0x05 encrypted triple active group1", state.active_channel[0], "TG: 4660");
+        rc |= expect_contains("0x05 encrypted triple active group2", state.active_channel[0], "TG: 22136");
+        rc |= expect_contains("0x05 encrypted triple active group3", state.active_channel[0], "TG: 39612");
+    }
+
+    // Case O: telephone interconnect grants carry service state and tune like
+    // private calls when private-call following is enabled.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_private_calls = 1;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[0] = 0x07; // implicit telephone grant uses the unshifted VPDU layout
+        MAC[1] = 0x48; // Telephone Interconnect Voice Channel Grant - implicit
+        MAC[2] = 0x93; // emergency, packet, priority 3
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[5] = 0x00;
+        MAC[6] = 0x2A; // timer
+        MAC[7] = 0x03;
+        MAC[8] = 0x04;
+        MAC[9] = 0x05; // target
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x48 telephone no unsupported tune", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0x48 telephone no vc", state.p25_vc_freq[0], 0);
+        rc |= expect_contains("0x48 telephone active", state.active_channel[0], "Active Tele Ch: 100A");
+        rc |= expect_contains("0x48 telephone target", state.active_channel[0], "TGT: 197637");
+        rc |= expect_eq_long("0x48 telephone svc", state.dmr_so, 0x93);
+        rc |= expect_eq_long("0x48 telephone emergency", state.p25_call_emergency[0], 1);
+        rc |= expect_eq_long("0x48 telephone packet", state.p25_call_is_packet[0], 1);
+    }
+
+    // Case P: explicit SNDCP data grants update data-channel state in playback
+    // mode, with P25p2 playback mirroring both TDMA slots.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 0;
+        state.lasttg = 0x030405;
+        state.synctype = DSD_SYNC_P25P2_POS;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x54; // SNDCP Data Channel Grant - explicit
+        MAC[2] = 0x22; // DSO
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A; // CHAN-T
+        MAC[5] = 0x10;
+        MAC[6] = 0x0B; // CHAN-R
+        MAC[7] = 0x03;
+        MAC[8] = 0x04;
+        MAC[9] = 0x05; // target
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_contains("0x54 data active", state.active_channel[0], "Active Data Ch: 100A");
+        rc |= expect_contains("0x54 data target", state.active_channel[0], "TGT: 197637");
+        rc |= expect_eq_long("0x54 data vc0", state.p25_vc_freq[0], 851125000);
+        rc |= expect_eq_long("0x54 data vc1", state.p25_vc_freq[1], 851125000);
     }
 
     return rc;

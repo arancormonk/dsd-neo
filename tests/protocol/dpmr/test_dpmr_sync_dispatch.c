@@ -9,29 +9,40 @@
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdio.h>
 #include <string.h>
 
 int dsd_dispatch_matches_dpmr(int synctype);
+void dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state);
+
+static int g_close_calls;
+static int g_open_calls;
+static int g_voice_calls;
 
 void
 closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_close_calls++;
 }
 
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_open_calls++;
 }
 
 void
 processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_voice_calls++;
 }
 
 static void
@@ -67,11 +78,58 @@ test_synctype_helpers(void) {
     assert(!dsd_dispatch_matches_dpmr(DSD_SYNC_NXDN_POS));
 }
 
+static void
+test_dispatch_close_only_syncs(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.mbe_out_f = stdout;
+    state.synctype = DSD_SYNC_DPMR_FS1_POS;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(g_close_calls == 1);
+    assert(g_voice_calls == 0);
+
+    state.synctype = DSD_SYNC_DPMR_FS3_NEG;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(g_close_calls == 2);
+
+    state.synctype = DSD_SYNC_DPMR_FS4_POS;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(g_close_calls == 3);
+}
+
+static void
+test_dispatch_voice_sync_resets_state_and_processes_voice(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.nac = 123;
+    state.lastsrc = 456;
+    state.lasttg = 789;
+
+    dsd_dispatch_handle_dpmr(&opts, &state);
+
+    assert(g_open_calls == 1);
+    assert(g_voice_calls == 1);
+    assert(state.nac == 0);
+    assert(state.lastsrc == 0);
+    assert(state.lasttg == 0);
+    assert(strcmp(state.fsubtype, " VOICE        ") == 0);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
     test_sync_pattern_pairs();
     test_synctype_helpers();
+    test_dispatch_close_only_syncs();
+    test_dispatch_voice_sync_resets_state_and_processes_voice();
     printf("DPMR_SYNC_DISPATCH: OK\n");
     return 0;
 }

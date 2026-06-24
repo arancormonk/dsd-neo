@@ -1236,6 +1236,82 @@ test_relative_data_resolution_info_and_open_validation(void) {
     return rc;
 }
 
+static int
+test_replay_read_partial_eof_and_rewind(void) {
+    int rc = 0;
+    char dir[256];
+    char err[256];
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+
+    char meta[512];
+    char data[512];
+    path_join(meta, sizeof(meta), dir, "read.iq.json");
+    path_join(data, sizeof(data), dir, "read.iq");
+    uint8_t payload[6] = {10, 11, 12, 13, 14, 15};
+    if (write_bytes_file(data, payload, sizeof(payload)) != 0) {
+        return 1;
+    }
+    if (write_valid_metadata(meta, "read.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 1, 48000, 0,
+                             sizeof(payload))
+        != 0) {
+        return 1;
+    }
+
+    dsd_iq_replay_config cfg;
+    dsd_iq_replay_source* src = NULL;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    int prc = dsd_iq_replay_open(meta, &cfg, &src, err, sizeof(err));
+    rc |= expect_int("replay read open", prc, DSD_IQ_OK);
+    rc |= expect_true("replay read source", src != NULL);
+    if (prc != DSD_IQ_OK || src == NULL) {
+        dsd_iq_replay_config_clear(&cfg);
+        return rc;
+    }
+
+    uint8_t buf[8];
+    size_t got = 99U;
+    DSD_MEMSET(buf, 0xA5, sizeof(buf));
+    rc |= expect_int("replay read first chunk", dsd_iq_replay_read(src, buf, 4U, &got), DSD_IQ_OK);
+    rc |= expect_u64("replay read first size", got, 4U);
+    rc |= expect_true("replay read first bytes", memcmp(buf, payload, 4U) == 0);
+
+    DSD_MEMSET(buf, 0xA5, sizeof(buf));
+    got = 99U;
+    rc |= expect_int("replay read short final chunk", dsd_iq_replay_read(src, buf, 4U, &got), DSD_IQ_OK);
+    rc |= expect_u64("replay read final size", got, 2U);
+    rc |= expect_true("replay read final bytes", memcmp(buf, payload + 4U, 2U) == 0);
+    rc |= expect_int("replay read final tail untouched", buf[2], 0xA5);
+
+    DSD_MEMSET(buf, 0x5A, sizeof(buf));
+    got = 99U;
+    rc |= expect_int("replay read eof", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("replay read eof size", got, 0U);
+    rc |= expect_int("replay read eof untouched", buf[0], 0x5A);
+    got = 99U;
+    rc |= expect_int("replay read repeated eof", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("replay read repeated eof size", got, 0U);
+
+    rc |= expect_int("replay rewind", dsd_iq_replay_rewind(src), DSD_IQ_OK);
+    DSD_MEMSET(buf, 0, sizeof(buf));
+    got = 0U;
+    rc |= expect_int("replay read after rewind", dsd_iq_replay_read(src, buf, sizeof(buf), &got), DSD_IQ_OK);
+    rc |= expect_u64("replay read after rewind size", got, sizeof(payload));
+    rc |= expect_true("replay read after rewind bytes", memcmp(buf, payload, sizeof(payload)) == 0);
+
+    got = 99U;
+    rc |= expect_int("replay read zero max", dsd_iq_replay_read(src, buf, 0U, &got), DSD_IQ_OK);
+    rc |= expect_u64("replay read zero max size", got, 0U);
+    rc |=
+        expect_int("replay read null source", dsd_iq_replay_read(NULL, buf, sizeof(buf), &got), DSD_IQ_ERR_INVALID_ARG);
+    rc |= expect_int("replay rewind null", dsd_iq_replay_rewind(NULL), DSD_IQ_ERR_INVALID_ARG);
+
+    dsd_iq_replay_close(src);
+    dsd_iq_replay_config_clear(&cfg);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1249,5 +1325,6 @@ main(void) {
     rc |= test_event_timeline_validation();
     rc |= test_rate_chain_validation();
     rc |= test_relative_data_resolution_info_and_open_validation();
+    rc |= test_replay_read_partial_eof_and_rewind();
     return rc ? 1 : 0;
 }

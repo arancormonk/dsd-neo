@@ -10,7 +10,8 @@ BUILD_DIR="$ROOT_DIR/build/coverage-debug"
 BUILD_PRESET=${BUILD_PRESET:-coverage-debug-clean}
 TEST_PRESET=${TEST_PRESET:-coverage-debug}
 COVERAGE_SCOPE=${COVERAGE_SCOPE:-src}
-LCOV_IGNORE_ERRORS=(--ignore-errors "negative,inconsistent,unused")
+LCOV_BRANCH_ARGS=(--branch-coverage)
+LCOV_IGNORE_ERRORS=(--ignore-errors "negative,inconsistent,unused,mismatch")
 GENHTML_IGNORE_ERRORS=(--ignore-errors inconsistent)
 THIRD_PARTY_EXCLUDES=("${ROOT_DIR}/src/third_party/*")
 
@@ -30,14 +31,15 @@ pushd "$BUILD_DIR" > /dev/null
 # GCC/lcov can emit malformed negative or inconsistent counters for some
 # optimized/generated paths even when CTest passes. Keep the report generation
 # tolerant of those counters while still surfacing lcov warnings on stderr.
-lcov --capture --directory . --output-file coverage.info "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
+lcov "${LCOV_BRANCH_ARGS[@]}" --capture --directory . --output-file coverage.info "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
 
 case "$COVERAGE_SCOPE" in
   src | project)
     REPORT_NAME="coverage.src.info"
     REPORT_DIR="coverage_html"
     REPORT_LABEL="project src/ excluding src/third_party"
-    lcov --extract coverage.info "${ROOT_DIR}/src/*" -o "$REPORT_NAME" "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
+    lcov "${LCOV_BRANCH_ARGS[@]}" --extract coverage.info "${ROOT_DIR}/src/*" -o "$REPORT_NAME" \
+      "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
     ;;
   protocol)
     REPORT_NAME="coverage.protocol.info"
@@ -49,7 +51,8 @@ case "$COVERAGE_SCOPE" in
       EXTRACT_ARGS+=("${ROOT_DIR}/src/protocol/${proto}/*")
     done
     EXTRACT_ARGS+=("${ROOT_DIR}/src/fec/*")
-    lcov --extract coverage.info "${EXTRACT_ARGS[@]}" -o "$REPORT_NAME" "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
+    lcov "${LCOV_BRANCH_ARGS[@]}" --extract coverage.info "${EXTRACT_ARGS[@]}" -o "$REPORT_NAME" \
+      "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
     ;;
   *)
     echo "Unknown COVERAGE_SCOPE: $COVERAGE_SCOPE" >&2
@@ -59,13 +62,15 @@ case "$COVERAGE_SCOPE" in
 esac
 
 FILTERED_REPORT="${REPORT_NAME%.info}.filtered.info"
-lcov --remove "$REPORT_NAME" "${THIRD_PARTY_EXCLUDES[@]}" -o "$FILTERED_REPORT" "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
+lcov "${LCOV_BRANCH_ARGS[@]}" --remove "$REPORT_NAME" "${THIRD_PARTY_EXCLUDES[@]}" -o "$FILTERED_REPORT" \
+  "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
 mv "$FILTERED_REPORT" "$REPORT_NAME"
 
 rm -rf -- "$REPORT_DIR"
-genhtml "$REPORT_NAME" --output-directory "$REPORT_DIR" "${GENHTML_IGNORE_ERRORS[@]}" > /dev/null
+genhtml "${LCOV_BRANCH_ARGS[@]}" "$REPORT_NAME" --output-directory "$REPORT_DIR" "${GENHTML_IGNORE_ERRORS[@]}" \
+  > /dev/null
 printf 'Coverage summary (%s)\n' "$REPORT_LABEL"
-lcov --summary "$REPORT_NAME"
+lcov "${LCOV_BRANCH_ARGS[@]}" --summary "$REPORT_NAME" "${LCOV_IGNORE_ERRORS[@]}"
 popd > /dev/null
 
 echo "Coverage HTML: $BUILD_DIR/$REPORT_DIR/index.html"

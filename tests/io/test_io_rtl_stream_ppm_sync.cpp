@@ -137,6 +137,58 @@ test_c_api_create_preserves_const_source_snapshot(void) {
     return rc;
 }
 
+static int
+test_c_api_lifecycle_rejects_invalid_inputs(void) {
+    std::unique_ptr<dsd_opts> opts = make_test_opts();
+    RtlSdrContext* ctx = nullptr;
+    float sample = 0.0f;
+    int got = 99;
+
+    int rc = 0;
+    rc |= expect_int_eq("create rejects null opts", rtl_stream_create(nullptr, &ctx), -1);
+    rc |= expect_int_eq("create rejects null out ctx", rtl_stream_create(opts.get(), nullptr), -1);
+    rc |= expect_int_eq("mirrored create rejects null opts", rtl_stream_create_mirrored(nullptr, &ctx), -1);
+    rc |= expect_int_eq("mirrored create rejects null out ctx", rtl_stream_create_mirrored(opts.get(), nullptr), -1);
+    rc |= expect_int_eq("destroy accepts null ctx", rtl_stream_destroy(nullptr), 0);
+    rc |= expect_int_eq("start rejects null ctx", rtl_stream_start(nullptr), -1);
+    rc |= expect_int_eq("stop rejects null ctx", rtl_stream_stop(nullptr), -1);
+    rc |= expect_int_eq("soft stop rejects null ctx", rtl_stream_soft_stop(nullptr), -1);
+    rc |= expect_int_eq("tune rejects null ctx", rtl_stream_tune(nullptr, 851000000U), -1);
+    rc |= expect_int_eq("read rejects null ctx", rtl_stream_read(nullptr, &sample, 1U, &got), -1);
+    rc |= expect_int_eq("monitor read rejects null ctx", rtl_stream_read_monitor(nullptr, &sample, 1U, &got), -1);
+    rc |= expect_int_eq("output rate rejects null ctx", (int)rtl_stream_output_rate(nullptr), 0);
+    rc |= expect_int_eq("monitor rate rejects null ctx", (int)rtl_stream_monitor_rate(nullptr), 0);
+    return rc;
+}
+
+static int
+test_c_api_stopped_context_contracts(void) {
+    std::unique_ptr<dsd_opts> opts = make_test_opts();
+    RtlSdrContext* ctx = nullptr;
+    float sample = 0.0f;
+    int got = 99;
+
+    int rc = 0;
+    rc |= expect_int_eq("stopped context create rc", rtl_stream_create(opts.get(), &ctx), 0);
+    if (!ctx) {
+        DSD_FPRINTF(stderr, "FAIL: stopped context create returned null ctx\n");
+        return 1;
+    }
+
+    rc |= expect_int_eq("stopped context stop is no-op", rtl_stream_stop(ctx), 0);
+    rc |= expect_int_eq("stopped context soft stop is no-op", rtl_stream_soft_stop(ctx), 0);
+    rc |= expect_int_eq("stopped context tune rejected", rtl_stream_tune(ctx, 851000000U), -1);
+    rc |= expect_int_eq("stopped context read rejected", rtl_stream_read(ctx, &sample, 1U, &got), -1);
+    rc |= expect_int_eq("stopped context read rejects null output", rtl_stream_read(ctx, nullptr, 1U, &got), -1);
+    rc |= expect_int_eq("stopped context read rejects null got", rtl_stream_read(ctx, &sample, 1U, nullptr), -1);
+    rc |= expect_int_eq("stopped context monitor read rejects null output",
+                        rtl_stream_read_monitor(ctx, nullptr, 1U, &got), -1);
+    rc |= expect_int_eq("stopped context monitor read rejects null got",
+                        rtl_stream_read_monitor(ctx, &sample, 1U, nullptr), -1);
+    rc |= expect_int_eq("stopped context destroy rc", rtl_stream_destroy(ctx), 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -145,5 +197,7 @@ main(void) {
     rc |= test_adjust_and_getter_use_active_snapshot_when_caller_is_stale();
     rc |= test_c_api_create_mirrored_updates_live_caller_opts();
     rc |= test_c_api_create_preserves_const_source_snapshot();
+    rc |= test_c_api_lifecycle_rejects_invalid_inputs();
+    rc |= test_c_api_stopped_context_contracts();
     return rc ? 1 : 0;
 }

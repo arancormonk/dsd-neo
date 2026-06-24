@@ -165,8 +165,35 @@ typedef struct {
     int page_rows;
 } UiChooserTestSnapshot;
 
+typedef struct {
+    int active;
+    int scroll;
+    int line_count;
+    int page_rows;
+} UiHelpTestSnapshot;
+
+typedef struct {
+    size_t start;
+    size_t cursor;
+    int show_left_ellipsis;
+    int cursor_x;
+} UiPromptViewTestSnapshot;
+
 void ui_chooser_test_set_page_rows(int page_rows);
 UiChooserTestSnapshot ui_chooser_test_snapshot(void);
+void ui_help_test_set_metrics(int line_count, int page_rows, int scroll);
+UiHelpTestSnapshot ui_help_test_snapshot(void);
+int ui_help_wrap_line_for_test(const char* text, int width, int index, char* out, size_t out_size);
+int ui_chooser_max_item_width_for_test(const char* const* items, int count);
+int ui_chooser_layout_for_test(const char* title, const char* footer, int max_item, int count, int screen_h,
+                               int screen_w, int* h, int* w, int* wy, int* wx);
+int ui_prompt_center_axis_for_test(int screen_extent, int window_extent);
+int ui_prompt_fit_width_for_test(int desired_width, int screen_width);
+int ui_prompt_fit_height_for_test(int desired_height, int screen_height);
+void ui_prompt_rows_for_test(int height, int* title_y, int* input_y, int* footer_y);
+void ui_prompt_field_geometry_for_test(int width, int* field_col, int* field_right, int* field_width);
+UiPromptViewTestSnapshot ui_prompt_view_for_test(const char* text, size_t cursor, int field_col, int field_right,
+                                                 int field_width);
 #endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_PROMPTS_H_ */

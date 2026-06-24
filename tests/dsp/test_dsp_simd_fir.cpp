@@ -23,12 +23,23 @@
 #include "dsd-neo/core/safe_api.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
+#if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
+#include "dsp/simd_x86_cpu.h"
+#endif
 extern "C" void simd_fir_complex_apply_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                             const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
                                            const float* taps, int taps_len);
 extern "C" int simd_hb_decim2_real_sse2(const float* in, int in_len, float* out, float* hist, const float* taps,
                                         int taps_len);
+#if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
+extern "C" void simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
+                                            const float* taps, int taps_len);
+extern "C" int simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
+                                           const float* taps, int taps_len);
+extern "C" int simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, const float* taps,
+                                        int taps_len);
+#endif
 #endif
 
 #if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
@@ -432,6 +443,148 @@ test_direct_real_hb_backend(const char* name, real_hb_backend_fn fn) {
     return 0;
 }
 
+static int
+test_direct_backend_tail_mix(const char* name, complex_fir_backend_fn fir_fn, complex_hb_backend_fn hb_complex_fn,
+                             real_hb_backend_fn hb_real_fn) {
+    std::printf("Testing direct backend vector/tail mix (%s)...\n", name);
+
+    int rc = 0;
+
+    {
+        const int taps_len = 15;
+        const int hist_len = taps_len - 1;
+        const int N = 13; /* AVX2 path: 8-sample vector + 4-sample vector + scalar tail */
+        const float taps[taps_len] = {0.010f, -0.025f, 0.040f,  0.060f, -0.015f, 0.080f,  0.120f, 0.450f,
+                                      0.120f, 0.080f,  -0.015f, 0.060f, 0.040f,  -0.025f, 0.010f};
+
+        alignas(64) float in[N * 2];
+        alignas(64) float out_simd[N * 2];
+        alignas(64) float out_ref[N * 2];
+        alignas(64) float hist_i_simd[hist_len];
+        alignas(64) float hist_q_simd[hist_len];
+        alignas(64) float hist_i_ref[hist_len];
+        alignas(64) float hist_q_ref[hist_len];
+
+        for (int i = 0; i < N; i++) {
+            in[i << 1] = -0.9f + 0.11f * (float)i;
+            in[(i << 1) + 1] = 0.7f - 0.07f * (float)i;
+        }
+        for (int i = 0; i < hist_len; i++) {
+            hist_i_simd[i] = hist_i_ref[i] = 0.20f - 0.015f * (float)i;
+            hist_q_simd[i] = hist_q_ref[i] = -0.35f + 0.02f * (float)i;
+        }
+
+        fir_fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, taps_len);
+        fir_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
+        if (!arrays_close(out_simd, out_ref, N * 2, kTolerance)
+            || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
+            || !arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
+            DSD_FPRINTF(stderr, "  FAIL: FIR vector/tail mix mismatch\n");
+            rc = 1;
+        }
+    }
+
+    {
+        const int taps_len = 15;
+        const int hist_len = taps_len - 1;
+        const int N = 11; /* 5 decimated complex outputs: vector quartet + scalar tail */
+        alignas(64) float in[N * 2];
+        alignas(64) float out_simd[N * 2];
+        alignas(64) float out_ref[N * 2];
+        alignas(64) float hist_i_simd[hist_len];
+        alignas(64) float hist_q_simd[hist_len];
+        alignas(64) float hist_i_ref[hist_len];
+        alignas(64) float hist_q_ref[hist_len];
+
+        for (int i = 0; i < N; i++) {
+            in[i << 1] = -0.5f + 0.09f * (float)i;
+            in[(i << 1) + 1] = 0.25f + 0.06f * (float)i;
+        }
+        for (int i = 0; i < hist_len; i++) {
+            hist_i_simd[i] = hist_i_ref[i] = -0.10f + 0.012f * (float)i;
+            hist_q_simd[i] = hist_q_ref[i] = 0.33f - 0.018f * (float)i;
+        }
+
+        int len_simd = hb_complex_fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
+        int len_ref = hb_decim2_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+        if (len_simd != len_ref || !arrays_close(out_simd, out_ref, len_simd, kTolerance)
+            || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
+            || !arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
+            DSD_FPRINTF(stderr, "  FAIL: complex HB vector/tail mix mismatch\n");
+            rc = 1;
+        }
+    }
+
+    {
+        const int taps_len = 15;
+        const int hist_len = taps_len - 1;
+        const int N = 19; /* 9 decimated real outputs: vector octet + scalar tail */
+        alignas(64) float in[N];
+        alignas(64) float out_simd[N];
+        alignas(64) float out_ref[N];
+        alignas(64) float hist_simd[hist_len];
+        alignas(64) float hist_ref[hist_len];
+
+        for (int i = 0; i < N; i++) {
+            in[i] = -0.65f + 0.08f * (float)i;
+        }
+        for (int i = 0; i < hist_len; i++) {
+            hist_simd[i] = hist_ref[i] = 0.18f - 0.011f * (float)i;
+        }
+
+        int len_simd = hb_real_fn(in, N, out_simd, hist_simd, hb_q15_taps, taps_len);
+        int len_ref = hb_decim2_real_scalar_ref(in, N, out_ref, hist_ref, hb_q15_taps, taps_len);
+        if (len_simd != len_ref || !arrays_close(out_simd, out_ref, len_simd, kTolerance)
+            || !arrays_close(hist_simd, hist_ref, hist_len, kTolerance)) {
+            DSD_FPRINTF(stderr, "  FAIL: real HB vector/tail mix mismatch\n");
+            rc = 1;
+        }
+    }
+
+    if (rc == 0) {
+        std::printf("  PASS\n");
+    }
+    return rc;
+}
+
+static int
+test_direct_backend_invalid_guards(const char* name, complex_fir_backend_fn fir_fn, complex_hb_backend_fn hb_complex_fn,
+                                   real_hb_backend_fn hb_real_fn) {
+    std::printf("Testing direct backend invalid guards (%s)...\n", name);
+
+    alignas(64) float in[4] = {1.0f, -1.0f, 2.0f, -2.0f};
+    alignas(64) float out[4] = {10.0f, 11.0f, 12.0f, 13.0f};
+    alignas(64) float hist_i[4] = {20.0f, 21.0f, 22.0f, 23.0f};
+    alignas(64) float hist_q[4] = {-20.0f, -21.0f, -22.0f, -23.0f};
+    alignas(64) float hist_r[4] = {30.0f, 31.0f, 32.0f, 33.0f};
+    const float even_taps[4] = {0.25f, 0.5f, 0.5f, 0.25f};
+    const float short_taps[2] = {0.5f, 0.5f};
+
+    fir_fn(in, 4, out, hist_i, hist_q, even_taps, 4);
+    fir_fn(in, 1, out, hist_i, hist_q, short_taps, 2);
+    int c0 = hb_complex_fn(in, 4, out, hist_i, hist_q, even_taps, 4);
+    int c1 = hb_complex_fn(in, 0, out, hist_i, hist_q, hb_q15_taps, 15);
+    int r0 = hb_real_fn(in, 4, out, hist_r, even_taps, 4);
+    int r1 = hb_real_fn(in, 0, out, hist_r, hb_q15_taps, 15);
+
+    if (c0 != 0 || c1 != 0 || r0 != 0 || r1 != 0) {
+        DSD_FPRINTF(stderr, "  FAIL: invalid guards returned %d/%d/%d/%d\n", c0, c1, r0, r1);
+        return 1;
+    }
+    const float want_out[4] = {10.0f, 11.0f, 12.0f, 13.0f};
+    const float want_hist_i[4] = {20.0f, 21.0f, 22.0f, 23.0f};
+    const float want_hist_q[4] = {-20.0f, -21.0f, -22.0f, -23.0f};
+    const float want_hist_r[4] = {30.0f, 31.0f, 32.0f, 33.0f};
+    if (!arrays_close(out, want_out, 4, 0.0f) || !arrays_close(hist_i, want_hist_i, 4, 0.0f)
+        || !arrays_close(hist_q, want_hist_q, 4, 0.0f) || !arrays_close(hist_r, want_hist_r, 4, 0.0f)) {
+        DSD_FPRINTF(stderr, "  FAIL: invalid guards mutated buffers\n");
+        return 1;
+    }
+
+    std::printf("  PASS\n");
+    return 0;
+}
+
 /* Test 63-tap symmetric FIR (channel LPF style) */
 static int
 test_complex_fir_63tap() {
@@ -812,6 +965,120 @@ test_zero_output_history_updates() {
     return 0;
 }
 
+static int
+test_public_scalar_fallback_edges() {
+    std::printf("Testing public scalar fallback edges...\n");
+
+    const int taps_len = 5;
+    const int hist_len = taps_len - 1;
+    const float sparse_taps[taps_len] = {0.25f, 0.0f, 0.50f, 0.0f, 0.25f};
+
+    // Complex FIR fallback should match scalar output and both I/Q histories.
+    {
+        alignas(64) float in[8] = {1.0f, -1.0f, 2.0f, -2.0f, 3.0f, -3.0f, 4.0f, -4.0f};
+        alignas(64) float out_simd[8];
+        alignas(64) float out_ref[8];
+        alignas(64) float hist_i_simd[hist_len];
+        alignas(64) float hist_q_simd[hist_len];
+        alignas(64) float hist_i_ref[hist_len];
+        alignas(64) float hist_q_ref[hist_len];
+
+        for (int i = 0; i < hist_len; i++) {
+            hist_i_simd[i] = hist_i_ref[i] = -2.0f + (float)i;
+            hist_q_simd[i] = hist_q_ref[i] = 2.0f - (float)i;
+        }
+
+        simd_fir_complex_apply(in, 8, out_simd, hist_i_simd, hist_q_simd, sparse_taps, taps_len);
+        fir_complex_scalar_ref(in, 8, out_ref, hist_i_ref, hist_q_ref, sparse_taps, taps_len);
+
+        if (!arrays_close(out_simd, out_ref, 8, kTolerance)
+            || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
+            || !arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
+            DSD_FPRINTF(stderr, "  FAIL: Scalar complex FIR fallback mismatch\n");
+            return 1;
+        }
+    }
+
+    // Complex halfband decimation fallback validates both returned length and history.
+    {
+        alignas(64) float in[8] = {1.0f, -1.0f, 2.0f, -2.0f, 3.0f, -3.0f, 4.0f, -4.0f};
+        alignas(64) float out_simd[4];
+        alignas(64) float out_ref[4];
+        alignas(64) float hist_i_simd[hist_len];
+        alignas(64) float hist_q_simd[hist_len];
+        alignas(64) float hist_i_ref[hist_len];
+        alignas(64) float hist_q_ref[hist_len];
+
+        for (int i = 0; i < hist_len; i++) {
+            hist_i_simd[i] = hist_i_ref[i] = 10.0f + (float)i;
+            hist_q_simd[i] = hist_q_ref[i] = -10.0f - (float)i;
+        }
+
+        int len_simd = simd_hb_decim2_complex(in, 8, out_simd, hist_i_simd, hist_q_simd, sparse_taps, taps_len);
+        int len_ref = hb_decim2_complex_scalar_ref(in, 8, out_ref, hist_i_ref, hist_q_ref, sparse_taps, taps_len);
+
+        if (len_simd != len_ref || !arrays_close(out_simd, out_ref, len_simd, kTolerance)
+            || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
+            || !arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
+            DSD_FPRINTF(stderr, "  FAIL: Scalar complex HB fallback mismatch\n");
+            return 1;
+        }
+    }
+
+    // Real halfband fallback should preserve scalar equivalence on output and carry history.
+    {
+        alignas(64) float in[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+        alignas(64) float out_simd[2];
+        alignas(64) float out_ref[2];
+        alignas(64) float hist_simd[hist_len];
+        alignas(64) float hist_ref[hist_len];
+
+        for (int i = 0; i < hist_len; i++) {
+            hist_simd[i] = hist_ref[i] = -4.0f + (float)i;
+        }
+
+        int len_simd = simd_hb_decim2_real(in, 4, out_simd, hist_simd, sparse_taps, taps_len);
+        int len_ref = hb_decim2_real_scalar_ref(in, 4, out_ref, hist_ref, sparse_taps, taps_len);
+
+        if (len_simd != len_ref || !arrays_close(out_simd, out_ref, len_simd, kTolerance)
+            || !arrays_close(hist_simd, hist_ref, hist_len, kTolerance)) {
+            DSD_FPRINTF(stderr, "  FAIL: Scalar real HB fallback mismatch\n");
+            return 1;
+        }
+    }
+
+    // Guard paths for invalid lengths must leave sentinels intact and emit zero output length.
+    {
+        alignas(64) float in_complex[2] = {1.0f, -1.0f};
+        alignas(64) float out_complex[2] = {11.0f, 12.0f};
+        alignas(64) float hist_i[14] = {};
+        alignas(64) float hist_q[14] = {};
+        simd_fir_complex_apply(in_complex, 1, out_complex, hist_i, hist_q, hb_q15_taps, 15);
+        if (out_complex[0] != 11.0f || out_complex[1] != 12.0f) {
+            DSD_FPRINTF(stderr, "  FAIL: Invalid complex FIR guard mutated output\n");
+            return 1;
+        }
+
+        int len = simd_hb_decim2_complex(in_complex, 1, out_complex, hist_i, hist_q, hb_q15_taps, 15);
+        if (len != 0) {
+            DSD_FPRINTF(stderr, "  FAIL: Complex HB guard returned %d\n", len);
+            return 1;
+        }
+
+        alignas(64) float in_real[1] = {1.0f};
+        alignas(64) float out_real[1] = {13.0f};
+        alignas(64) float hist_real[14] = {};
+        len = simd_hb_decim2_real(in_real, 1, out_real, hist_real, sparse_taps, 2);
+        if (len != 0 || out_real[0] != 13.0f) {
+            DSD_FPRINTF(stderr, "  FAIL: Real HB invalid-tap guard mutated output\n");
+            return 1;
+        }
+    }
+
+    std::printf("  PASS\n");
+    return 0;
+}
+
 int
 main(void) {
     std::printf("SIMD FIR implementation: %s\n\n", simd_fir_get_impl_name());
@@ -840,11 +1107,25 @@ main(void) {
     /* Regressions for history handling on short/zero-output blocks */
     failures += test_complex_short_block_history();
     failures += test_zero_output_history_updates();
+    failures += test_public_scalar_fallback_edges();
 
 #if defined(__x86_64__) || defined(_M_X64)
     failures += test_direct_complex_fir_backend("sse2", simd_fir_complex_apply_sse2);
     failures += test_direct_complex_hb_backend("sse2", simd_hb_decim2_complex_sse2);
     failures += test_direct_real_hb_backend("sse2", simd_hb_decim2_real_sse2);
+#if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
+    if (dsd_neo_cpu_has_avx2_with_os_support()) {
+        failures += test_direct_complex_fir_backend("avx2", simd_fir_complex_apply_avx2);
+        failures += test_direct_complex_hb_backend("avx2", simd_hb_decim2_complex_avx2);
+        failures += test_direct_real_hb_backend("avx2", simd_hb_decim2_real_avx2);
+        failures += test_direct_backend_tail_mix("avx2", simd_fir_complex_apply_avx2, simd_hb_decim2_complex_avx2,
+                                                 simd_hb_decim2_real_avx2);
+        failures += test_direct_backend_invalid_guards("avx2", simd_fir_complex_apply_avx2, simd_hb_decim2_complex_avx2,
+                                                       simd_hb_decim2_real_avx2);
+    } else {
+        std::printf("Skipping direct AVX2 backend tests: CPU/OS AVX2+FMA support unavailable\n");
+    }
+#endif
 #endif
 
 #if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)

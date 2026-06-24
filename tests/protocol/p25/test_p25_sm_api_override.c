@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdio.h>
@@ -205,12 +206,35 @@ main(void) {
     DSD_MEMSET(&guarded_opts, 0, sizeof(guarded_opts));
     DSD_MEMSET(&guarded_state, 0, sizeof(guarded_state));
     g_tick_calls = 0;
+    p25_sm_try_tick(NULL, &guarded_state);
+    p25_sm_try_tick(&guarded_opts, NULL);
+    rc |= expect_eq_int("try_tick_null_guards", g_tick_calls, 0);
     p25_sm_try_tick(&guarded_opts, &guarded_state);
     rc |= expect_eq_int("try_tick_disabled", g_tick_calls, 0);
 
     guarded_opts.p25_trunk = 1;
+    rc |= expect_eq_int("tick_guard_enter", p25_sm_tick_guard_try_enter(), 1);
+    p25_sm_try_tick(&guarded_opts, &guarded_state);
+    rc |= expect_eq_int("try_tick_guarded", g_tick_calls, 0);
+    p25_sm_tick_guard_leave();
+
     p25_sm_try_tick(&guarded_opts, &guarded_state);
     rc |= expect_eq_int("try_tick_enabled", g_tick_calls, 1);
+    rc |= expect_eq_int("in_tick_idle", p25_sm_in_tick(), 0);
+
+    p25_sm_watchdog_start(NULL, &guarded_state);
+    p25_sm_watchdog_start(&guarded_opts, NULL);
+    rc |= expect_eq_int("watchdog_start_null_guards", g_tick_calls, 1);
+
+    guarded_opts.use_ncurses_terminal = 1;
+    p25_sm_watchdog_start(&guarded_opts, &guarded_state);
+    dsd_sleep_ms(60U);
+    p25_sm_watchdog_stop();
+    rc |= expect_eq_int("watchdog_stop_idle", p25_sm_in_tick(), 0);
+    if (g_tick_calls < 2) {
+        DSD_FPRINTF(stderr, "watchdog thread did not tick: calls=%d\n", g_tick_calls);
+        rc |= 1;
+    }
 
     return rc;
 }

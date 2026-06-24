@@ -285,15 +285,22 @@ typedef union v4sf_union {
 
 #define assertv4(v, f0, f1, f2, f3) assert(v.f[0] == (f0) && v.f[1] == (f1) && v.f[2] == (f2) && v.f[3] == (f3))
 
+static void
+pffft_copy4(float dst[4], const float src[4]) {
+    for (int i = 0; i < 4; i++) {
+        dst[i] = src[i];
+    }
+}
+
 /* detect bugs with the vector support macros */
 void
 validate_pffft_simd(void) {
     float f[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
     v4sf_union a0, a1, a2, a3, t, u;
-    memcpy(a0.f, f, 4 * sizeof(float));
-    memcpy(a1.f, f + 4, 4 * sizeof(float));
-    memcpy(a2.f, f + 8, 4 * sizeof(float));
-    memcpy(a3.f, f + 12, 4 * sizeof(float));
+    pffft_copy4(a0.f, f);
+    pffft_copy4(a1.f, f + 4);
+    pffft_copy4(a2.f, f + 8);
+    pffft_copy4(a3.f, f + 12);
 
     t = a0;
     u = a1;

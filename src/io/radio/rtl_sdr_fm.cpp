@@ -8276,6 +8276,285 @@ dsd_rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int ra
     return 0;
 }
 
+extern "C" int
+rtl_stream_test_parse_compat_matrix(int* out_int_ok, int* out_int_values, size_t int_count, int* out_double_ok,
+                                    double* out_double_values, size_t double_count) {
+    if (!out_int_ok || !out_int_values || int_count < 10U || !out_double_ok || !out_double_values
+        || double_count < 8U) {
+        return -1;
+    }
+
+    int iv = -999;
+    out_int_ok[0] = parse_int_atoi_compat(NULL, &iv);
+    out_int_values[0] = iv;
+    out_int_ok[1] = parse_int_atoi_compat("", &iv);
+    out_int_values[1] = iv;
+    out_int_ok[2] = parse_int_atoi_compat("7", NULL);
+    out_int_values[2] = iv;
+    out_int_ok[3] = parse_int_atoi_compat("42", &iv);
+    out_int_values[3] = iv;
+    out_int_ok[4] = parse_int_atoi_compat("-17", &iv);
+    out_int_values[4] = iv;
+    out_int_ok[5] = parse_int_atoi_compat("abc", &iv);
+    out_int_values[5] = iv;
+    out_int_ok[6] = parse_int_atoi_compat("12x", &iv);
+    out_int_values[6] = iv;
+    out_int_ok[7] = parse_int_atoi_compat("999999999999999999999999", &iv);
+    out_int_values[7] = iv;
+    out_int_ok[8] = parse_int_atoi_compat("2147483648", &iv);
+    out_int_values[8] = iv;
+    out_int_ok[9] = parse_int_atoi_compat("-2147483649", &iv);
+    out_int_values[9] = iv;
+
+    double dv = -999.0;
+    out_double_ok[0] = parse_double_atof_compat(NULL, &dv);
+    out_double_values[0] = dv;
+    out_double_ok[1] = parse_double_atof_compat("", &dv);
+    out_double_values[1] = dv;
+    out_double_ok[2] = parse_double_atof_compat("1.5", NULL);
+    out_double_values[2] = dv;
+    out_double_ok[3] = parse_double_atof_compat("3.25", &dv);
+    out_double_values[3] = dv;
+    out_double_ok[4] = parse_double_atof_compat("-2.5", &dv);
+    out_double_values[4] = dv;
+    out_double_ok[5] = parse_double_atof_compat("nanx", &dv);
+    out_double_values[5] = dv;
+    out_double_ok[6] = parse_double_atof_compat("abc", &dv);
+    out_double_values[6] = dv;
+    out_double_ok[7] = parse_double_atof_compat("1e9999", &dv);
+    out_double_values[7] = dv;
+    return 0;
+}
+
+namespace {
+struct RtlSourcePolicyMatrixOut {
+    int* kind;
+    int* rtltcp;
+    int* soapy;
+    int* replay;
+    int* family;
+    char* names;
+    size_t names_size;
+};
+} // namespace
+
+static int
+rtl_test_source_policy_args_valid(const RtlSourcePolicyMatrixOut* out, size_t count, const char* soapy_args,
+                                  size_t args_size) {
+    return out && out->kind && out->rtltcp && out->soapy && out->replay && out->family && count >= 8U && out->names
+           && out->names_size != 0U && soapy_args && args_size != 0U;
+}
+
+static void
+rtl_test_append_source_name(const RtlSourcePolicyMatrixOut* out) {
+    size_t used = strlen(out->names);
+    if (used + 1U < out->names_size) {
+        DSD_SNPRINTF(out->names + used, out->names_size - used, "%s%s", (used == 0U) ? "" : "|",
+                     rtl_perf_source_name());
+    }
+}
+
+static void
+rtl_test_source_policy_case(const RtlSourcePolicyMatrixOut* out, size_t index, const char* spec, dsd_opts* opts) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    if (spec) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", spec);
+    }
+
+    const dsd_opts* detected_opts = spec ? opts : NULL;
+    const RadioSourceKind kind = detect_radio_source(detected_opts);
+    out->kind[index] = (int)kind;
+    out->rtltcp[index] = radio_source_is_rtltcp(detected_opts);
+    out->soapy[index] = radio_source_is_soapy(detected_opts);
+    out->replay[index] = radio_source_is_iq_replay(detected_opts);
+    out->family[index] = radio_source_is_rtl_family(detected_opts);
+    rtl_test_append_source_name(out);
+}
+
+static void
+rtl_test_write_soapy_args(char* out_soapy_args, size_t args_size) {
+    const char* args_null = radio_source_soapy_args(NULL);
+
+    static dsd_opts soapy_no_colon;
+    DSD_MEMSET(&soapy_no_colon, 0, sizeof(soapy_no_colon));
+    DSD_SNPRINTF(soapy_no_colon.audio_in_dev, sizeof(soapy_no_colon.audio_in_dev), "%s", "soapy");
+    const char* args_no_colon = radio_source_soapy_args(&soapy_no_colon);
+    static dsd_opts soapy_empty;
+    DSD_MEMSET(&soapy_empty, 0, sizeof(soapy_empty));
+    DSD_SNPRINTF(soapy_empty.audio_in_dev, sizeof(soapy_empty.audio_in_dev), "%s", "soapy:");
+    const char* args_empty = radio_source_soapy_args(&soapy_empty);
+    static dsd_opts soapy_args;
+    DSD_MEMSET(&soapy_args, 0, sizeof(soapy_args));
+    DSD_SNPRINTF(soapy_args.audio_in_dev, sizeof(soapy_args.audio_in_dev), "%s", "soapy:driver=rtlsdr");
+    const char* args_value = radio_source_soapy_args(&soapy_args);
+    DSD_SNPRINTF(out_soapy_args, args_size, "%s|%s|%s|%s", args_null ? args_null : "",
+                 args_no_colon ? args_no_colon : "", args_empty ? args_empty : "", args_value ? args_value : "");
+}
+
+extern "C" int
+rtl_stream_test_source_policy_matrix(int* out_kind, int* out_rtltcp, int* out_soapy, int* out_replay, int* out_family,
+                                     size_t count, char* out_names, size_t names_size, char* out_soapy_args,
+                                     size_t args_size) {
+    RtlSourcePolicyMatrixOut out = {out_kind, out_rtltcp, out_soapy, out_replay, out_family, out_names, names_size};
+    if (!rtl_test_source_policy_args_valid(&out, count, out_soapy_args, args_size)) {
+        return -1;
+    }
+
+    const char* specs[] = {
+        NULL,   "", "rtltcp", "rtltcp:127.0.0.1:1234", "soapy", "soapy:driver=rtlsdr", "iqreplay:/tmp/capture.iq.json",
+        "rtl:0"};
+
+    struct RtlSdrInternals* prev_stream = g_stream;
+    static RtlSdrInternals test_stream;
+    DSD_MEMSET(&test_stream, 0, sizeof(test_stream));
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    test_stream.opts = &opts;
+    g_stream = &test_stream;
+
+    out_names[0] = '\0';
+    for (size_t i = 0U; i < sizeof specs / sizeof specs[0]; i++) {
+        rtl_test_source_policy_case(&out, i, specs[i], &opts);
+    }
+    rtl_test_write_soapy_args(out_soapy_args, args_size);
+
+    g_stream = prev_stream;
+    return 0;
+}
+
+static void
+rtl_test_set_single_mode(dsd_opts* opts, int index) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    switch (index) {
+        case 0: opts->frame_p25p1 = 1; break;
+        case 1: opts->frame_p25p2 = 1; break;
+        case 2: opts->frame_provoice = 1; break;
+        case 3: opts->frame_dmr = 1; break;
+        case 4: opts->frame_nxdn48 = 1; break;
+        case 5: opts->frame_nxdn96 = 1; break;
+        case 6: opts->frame_x2tdma = 1; break;
+        case 7: opts->frame_ysf = 1; break;
+        case 8: opts->frame_dstar = 1; break;
+        case 9: opts->frame_dpmr = 1; break;
+        case 10: opts->frame_m17 = 1; break;
+        case 11: opts->mod_qpsk = 1; break;
+        default: break;
+    }
+}
+
+extern "C" int
+rtl_stream_test_mode_policy_matrix(int* out_values, size_t count) {
+    if (!out_values || count < 32U) {
+        return -1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    size_t o = 0U;
+    out_values[o++] = opts_is_digital_mode(NULL);
+    for (int i = 0; i <= 10; i++) {
+        rtl_test_set_single_mode(&opts, i);
+        out_values[o++] = opts_is_digital_mode(&opts);
+    }
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    out_values[o++] = opts_is_digital_mode(&opts);
+
+    out_values[o++] = opts_has_4800_wide_four_level_mode(NULL);
+    const int wide_modes[] = {3, 5, 7, 10};
+    for (size_t i = 0U; i < sizeof(wide_modes) / sizeof(wide_modes[0]); i++) {
+        rtl_test_set_single_mode(&opts, wide_modes[i]);
+        out_values[o++] = opts_has_4800_wide_four_level_mode(&opts);
+    }
+    rtl_test_set_single_mode(&opts, 0);
+    out_values[o++] = opts_has_4800_wide_four_level_mode(&opts);
+
+    out_values[o++] = opts_has_12k5_or_cqpsk_bw_mode(NULL);
+    const int bw_modes[] = {0, 1, 2, 3, 5, 6, 7, 10, 11};
+    for (size_t i = 0U; i < sizeof(bw_modes) / sizeof(bw_modes[0]); i++) {
+        rtl_test_set_single_mode(&opts, bw_modes[i]);
+        out_values[o++] = opts_has_12k5_or_cqpsk_bw_mode(&opts);
+    }
+    rtl_test_set_single_mode(&opts, 4);
+    out_values[o++] = opts_has_12k5_or_cqpsk_bw_mode(&opts);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_fsk_profile_policy_matrix(int* out_profiles, size_t count) {
+    if (!out_profiles || count < 21U) {
+        return -1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    out_profiles[0] = rtl_stream_fsk_profile_for_opts_by_sym_rate(NULL, 4800);
+    out_profiles[1] = rtl_stream_fsk_profile_for_opts_by_frame(NULL);
+    opts.frame_provoice = 1;
+    out_profiles[2] = rtl_stream_fsk_profile_for_opts_by_sym_rate(&opts, 9600);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_nxdn48 = 1;
+    out_profiles[3] = rtl_stream_fsk_profile_for_opts_by_sym_rate(&opts, 2400);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_dpmr = 1;
+    out_profiles[4] = rtl_stream_fsk_profile_for_opts_by_sym_rate(&opts, 2400);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_x2tdma = 1;
+    out_profiles[5] = rtl_stream_fsk_profile_for_opts_by_sym_rate(&opts, 6000);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_dmr = 1;
+    out_profiles[6] = rtl_stream_fsk_profile_for_opts_by_frame(&opts);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_p25p1 = 1;
+    out_profiles[7] = rtl_stream_fsk_profile_for_opts_by_frame(&opts);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_p25p2 = 1;
+    out_profiles[8] = rtl_stream_fsk_profile_for_opts_by_frame(&opts);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_dstar = 1;
+    out_profiles[9] = rtl_stream_fsk_profile_for_opts_by_frame(&opts);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_x2tdma = 1;
+    out_profiles[10] = rtl_stream_fsk_profile_for_opts_by_frame(&opts);
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_provoice = 1;
+    out_profiles[11] = rtl_stream_fsk_profile_for_opts_by_frame(&opts);
+
+    out_profiles[12] = rtl_stream_fsk_profile_for_symbol_rate(2400, 4);
+    out_profiles[13] = rtl_stream_fsk_profile_for_symbol_rate(9600, 4);
+    out_profiles[14] = rtl_stream_fsk_profile_for_symbol_rate(6000, 4);
+    out_profiles[15] = rtl_stream_fsk_profile_for_symbol_rate(4800, 2);
+    out_profiles[16] = rtl_stream_fsk_profile_for_symbol_rate(4800, 4);
+    out_profiles[17] = rtl_stream_fsk_profile_for_symbol_rate(1200, 4);
+
+    struct RtlSdrInternals* prev_stream = g_stream;
+    static RtlSdrInternals test_stream;
+    DSD_MEMSET(&test_stream, 0, sizeof(test_stream));
+    int prev_symbol_rate = demod.symbol_rate_hz;
+    int prev_symbol_levels = demod.symbol_levels;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_provoice = 1;
+    test_stream.opts = &opts;
+    g_stream = &test_stream;
+    demod.symbol_rate_hz = 9600;
+    demod.symbol_levels = 4;
+    out_profiles[18] = rtl_stream_fsk_channel_profile_for_current_mode();
+
+    g_stream = NULL;
+    demod.symbol_rate_hz = 4800;
+    demod.symbol_levels = 2;
+    out_profiles[19] = rtl_stream_fsk_channel_profile_for_current_mode();
+    demod.symbol_rate_hz = 0;
+    demod.symbol_levels = 0;
+    out_profiles[20] = rtl_stream_fsk_channel_profile_for_current_mode();
+
+    demod.symbol_rate_hz = prev_symbol_rate;
+    demod.symbol_levels = prev_symbol_levels;
+    g_stream = prev_stream;
+    return 0;
+}
+
 static void
 fsk_reacquire_test_cleanup_output_ring(int initialized_output) {
     if (initialized_output) {

@@ -28,6 +28,29 @@ int dsd_dispatch_matches_p25p1(int synctype);
 void dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
 
 static char g_test_duid[3] = "03";
+static int g_check_result = NID_OK;
+static int g_new_nac = 0x293;
+static int g_error_count;
+static int g_last_observed_nac;
+static int g_open_mbe_calls;
+static int g_close_mbe_calls;
+static int g_close_mbe_r_calls;
+static int g_resume_calls;
+static int g_status_classify_calls;
+
+static void
+reset_stub_state(void) {
+    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "03");
+    g_check_result = NID_OK;
+    g_new_nac = 0x293;
+    g_error_count = 0;
+    g_last_observed_nac = -1;
+    g_open_mbe_calls = 0;
+    g_close_mbe_calls = 0;
+    g_close_mbe_r_calls = 0;
+    g_resume_calls = 0;
+    g_status_classify_calls = 0;
+}
 
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
@@ -56,11 +79,11 @@ check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, 
                                  char* new_duid, unsigned char parity, uint8_t parity_reliab, int* error_count) {
     (void)bch_code;
     (void)reliab63;
-    (void)observed_nac;
     (void)parity;
     (void)parity_reliab;
+    g_last_observed_nac = observed_nac;
     if (new_nac != NULL) {
-        *new_nac = 0x293;
+        *new_nac = g_new_nac;
     }
     if (new_duid != NULL) {
         new_duid[0] = g_test_duid[0];
@@ -68,9 +91,9 @@ check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, 
         new_duid[2] = '\0';
     }
     if (error_count != NULL) {
-        *error_count = 0;
+        *error_count = g_error_count;
     }
-    return NID_OK;
+    return g_check_result;
 }
 
 void
@@ -82,18 +105,21 @@ printFrameInfo(dsd_opts* opts, dsd_state* state) {
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
+    ++g_open_mbe_calls;
     opts->mbe_out_f = stdout;
 }
 
 void
 closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
+    ++g_close_mbe_calls;
     opts->mbe_out_f = NULL;
 }
 
 void
 closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)state;
+    ++g_close_mbe_r_calls;
     opts->mbe_out_fR = NULL;
 }
 
@@ -101,6 +127,7 @@ void
 resumeScan(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    ++g_resume_calls;
 }
 
 void
@@ -125,6 +152,7 @@ void
 p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
     (void)state;
     (void)opts;
+    ++g_status_classify_calls;
 }
 
 void
@@ -198,6 +226,7 @@ test_simple_tdu_dispatch_defaults(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
 
     state.synctype = DSD_SYNC_P25P1_POS;
     DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "03");
@@ -225,6 +254,7 @@ expect_stale_data_call_display_cleared(const char* duid, unsigned int expected_b
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
 
     state.synctype = DSD_SYNC_P25P1_POS;
     seed_stale_data_call_display(&state);
@@ -255,12 +285,130 @@ test_p25p1_dispatch_clears_stale_data_call_display(void) {
     }
 }
 
+static void
+expect_observed_nac(const char* label, unsigned long long p2_cc, int p2_hardset, int nac, int expected_observed_nac) {
+    (void)label;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p2_cc = p2_cc;
+    state.p2_hardset = p2_hardset;
+    state.nac = nac;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_last_observed_nac == expected_observed_nac);
+}
+
+static void
+test_p25p1_observed_nac_priority(void) {
+    expect_observed_nac("hardset-p2-cc", 0x123ULL, 1, 0x234, 0x123);
+    expect_observed_nac("decoded-nac", 0x123ULL, 0, 0x234, 0x234);
+    expect_observed_nac("fallback-p2-cc", 0x456ULL, 0, 0, 0x456);
+    expect_observed_nac("invalid-values", 0xFFFULL, 0, 0xFFF, 0);
+}
+
+static void
+test_p25p1_nid_correction_and_failure_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    g_check_result = NID_PARITY_OVERRIDE;
+    g_error_count = 3;
+    g_new_nac = 0x321;
+    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "03");
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(state.nid_corrections_total == 3U);
+    assert(state.nid_parity_overrides == 1U);
+    assert(state.nac == 0x321);
+    assert(state.p2_cc == 0x321ULL);
+    assert(state.debug_header_errors == 2U);
+    assert(state.nid_failures_total == 0U);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "11");
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(state.nid_failures_total == 1U);
+    assert(state.debug_header_critical_errors == 1U);
+    assert(state.lastp25type == 0);
+    assert(strcmp(state.fsubtype, "              ") == 0);
+    assert(g_status_classify_calls == 1);
+}
+
+static void
+test_p25p1_mbe_output_and_resume_side_effects(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
+    opts.mbe_out_f = (FILE*)0x1;
+    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "00");
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_close_mbe_calls == 1);
+    assert(g_open_mbe_calls == 1);
+    assert(opts.mbe_out_f == stdout);
+    assert(state.lastp25type == 2);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
+    opts.mbe_out_f = (FILE*)0x1;
+    opts.mbe_out_fR = (FILE*)0x2;
+    opts.resume = 1;
+    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "13");
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_close_mbe_calls == 1);
+    assert(g_close_mbe_r_calls == 1);
+    assert(g_resume_calls == 1);
+    assert(opts.mbe_out_f == NULL);
+    assert(opts.mbe_out_fR == NULL);
+    assert(state.lastp25type == 3);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    opts.resume = 1;
+    state.numtdulc = 1;
+    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "33");
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_resume_calls == 1);
+    assert(state.numtdulc == 2);
+    assert(state.lastp25type == 0);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
     test_synctype_helpers();
     test_simple_tdu_dispatch_defaults();
     test_p25p1_dispatch_clears_stale_data_call_display();
+    test_p25p1_observed_nac_priority();
+    test_p25p1_nid_correction_and_failure_state();
+    test_p25p1_mbe_output_and_resume_side_effects();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }

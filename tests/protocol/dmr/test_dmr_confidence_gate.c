@@ -38,8 +38,10 @@ test_idle_data_can_lock_color_code(void) {
 
     assert(dmr_confidence_note_data_burst(&state, 3, 9) == DMR_CONFIDENCE_PENDING);
     assert(dmr_confidence_note_data_burst(&state, 3, 9) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_note_data_burst(&state, 3, 1) == DMR_CONFIDENCE_LOCKED);
     assert(state.dmr_confidence_locked == 1);
     assert(state.dmr_confidence_color_code == 3);
+    assert(state.dmr_confidence_mismatch_count == 0);
     assert(state.dmr_color_code == 3);
 }
 
@@ -69,6 +71,19 @@ test_voice_requires_voice_sync_before_open(void) {
     assert(dmr_confidence_note_voice_burst(&state, 1, 3) == DMR_CONFIDENCE_LOCKED);
     assert(dmr_confidence_voice_slot_open(&state, 1) == 1);
     assert(dmr_confidence_any_voice_open(&state) == 1);
+
+    dmr_confidence_note_voice_sync(&state, 0);
+    assert(dmr_confidence_note_voice_burst(&state, 0, 3) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_voice_burst(&state, 0, 3) == DMR_CONFIDENCE_LOCKED);
+    assert(dmr_confidence_voice_slot_open(&state, 0) == 1);
+
+    dmr_confidence_reset_slot(&state, 1);
+    assert(dmr_confidence_voice_slot_open(&state, 1) == 0);
+    assert(dmr_confidence_voice_slot_open(&state, 0) == 1);
+    assert(dmr_confidence_any_voice_open(&state) == 1);
+
+    dmr_confidence_reset_slot(&state, 7);
+    assert(dmr_confidence_voice_slot_open(&state, 0) == 1);
 }
 
 static void

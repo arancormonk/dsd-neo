@@ -13,12 +13,20 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#ifdef DSD_NEO_TEST_HOOKS
+#include <stdint.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 void nxdn_frame(dsd_opts* opts, dsd_state* state);
+
+#ifdef DSD_NEO_TEST_HOOKS
+int dsd_neo_nxdn_test_route_decoded_lich(dsd_opts* opts, dsd_state* state, uint8_t lich, const uint8_t bits[364],
+                                         const uint8_t reliab[364]);
+#endif
 
 #ifdef __cplusplus
 }

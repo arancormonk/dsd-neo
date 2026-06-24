@@ -28,6 +28,11 @@ void process_2V(dsd_opts* opts, dsd_state* state);
 
 #if defined(DSD_NEO_P25P2_TEST_STUB)
 int p25p2_duid_lookup_soft_test(uint8_t received, const uint8_t reliab8[8]);
+void p25p2_test_teardown_call(dsd_opts* opts, dsd_state* state);
+void p25p2_test_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
+void p25p2_test_process_isch(dsd_opts* opts, dsd_state* state, int framing_index);
+void p25p2_test_process_p2_duid(dsd_opts* opts, dsd_state* state);
+void p25p2_test_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 #endif
 
 #ifdef __cplusplus

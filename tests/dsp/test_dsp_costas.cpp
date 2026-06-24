@@ -18,14 +18,15 @@
  * kicks with adaptive damping for abrupt raw-error jumps.
  */
 
+#include <cmath>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+
 #include "dsd-neo/core/safe_api.h"
 
 static demod_state*
@@ -777,6 +778,255 @@ test_p25p2_tracking_gain_honors_runtime_override_after_lock(void) {
     return expect_p25p2_tracking_gain_after_lock("P25P2 runtime TED gain", 0.031f, 1, 0.031f);
 }
 
+/*
+ * Test: public reset helpers tolerate null pointers and clear documented state.
+ */
+static int
+test_reset_helpers_clear_tracking_state(void) {
+    dsd_costas_reset(NULL);
+    dsd_fll_band_edge_reset(NULL);
+
+    dsd_costas_loop_state_t c;
+    DSD_MEMSET(&c, 0, sizeof(c));
+    c.phase = 0.9f;
+    c.freq = -0.3f;
+    c.error = 0.2f;
+    c.error_smooth = -0.1f;
+    c.alpha = 0.04f;
+    c.initialized = 1;
+
+    dsd_costas_reset(&c);
+    if (c.phase != 0.0f || c.freq != 0.0f || c.error != 0.0f || c.error_smooth != 0.0f || c.initialized != 0
+        || c.alpha != 0.04f) {
+        DSD_FPRINTF(stderr, "RESET: Costas reset left phase=%f freq=%f err=%f smooth=%f init=%d alpha=%f\n", c.phase,
+                    c.freq, c.error, c.error_smooth, c.initialized, c.alpha);
+        return 1;
+    }
+
+    dsd_fll_band_edge_state_t f;
+    DSD_MEMSET(&f, 0, sizeof(f));
+    dsd_fll_band_edge_init(&f, 5);
+    f.phase = 0.7f;
+    f.freq = -0.2f;
+    f.delay_idx = 3;
+    f.delay_r[0] = 1.0f;
+    f.delay_i[0] = -1.0f;
+    const float tap0 = f.taps_upper_r[0];
+    const int n_taps = f.n_taps;
+
+    dsd_fll_band_edge_reset(&f);
+    if (std::fabs(f.phase) > 1e-7f || std::fabs(f.freq) > 1e-7f || f.delay_idx != 0 || std::fabs(f.delay_r[0]) > 1e-7f
+        || std::fabs(f.delay_i[0]) > 1e-7f || std::fabs(f.taps_upper_r[0] - tap0) > 1e-7f || f.n_taps != n_taps
+        || !f.initialized) {
+        DSD_FPRINTF(stderr, "RESET: FLL reset phase=%f freq=%f delay=%d tap0=%f/%f n_taps=%d/%d initialized=%d\n",
+                    f.phase, f.freq, f.delay_idx, f.taps_upper_r[0], tap0, f.n_taps, n_taps, f.initialized);
+        return 1;
+    }
+
+    return 0;
+}
+
+/*
+ * Test: diff phasor guard paths leave state untouched when there is no full
+ * complex sample to process.
+ */
+static int
+test_diff_phasor_short_block_preserves_state(void) {
+    op25_diff_phasor_cc(NULL);
+
+    static float buf[2] = {0.25f, -0.5f};
+    demod_state* s = alloc_state();
+    if (!s) {
+        DSD_FPRINTF(stderr, "alloc failed\n");
+        return 1;
+    }
+    s->lowpassed = buf;
+    s->lp_len = 1;
+    s->cqpsk_diff_prev_r = 0.4f;
+    s->cqpsk_diff_prev_j = -0.7f;
+
+    op25_diff_phasor_cc(s);
+
+    if (buf[0] != 0.25f || buf[1] != -0.5f || s->cqpsk_diff_prev_r != 0.4f || s->cqpsk_diff_prev_j != -0.7f) {
+        DSD_FPRINTF(stderr, "DIFF GUARD: short block changed buf=(%f,%f) prev=(%f,%f)\n", buf[0], buf[1],
+                    s->cqpsk_diff_prev_r, s->cqpsk_diff_prev_j);
+        free(s);
+        return 1;
+    }
+
+    free(s);
+    return 0;
+}
+
+/*
+ * Test: unsafe Costas loop state is clamped before and after a symbol update.
+ */
+static int
+test_costas_clamps_initial_phase_and_frequency(void) {
+    static float buf[4] = {0.7f, 0.0f, 0.0f, -0.7f};
+    demod_state* s = alloc_state();
+    if (!s) {
+        DSD_FPRINTF(stderr, "alloc failed\n");
+        return 1;
+    }
+    s->lowpassed = buf;
+    s->lp_len = 4;
+    s->cqpsk_enable = 1;
+    s->costas_state.initialized = 1;
+    s->costas_state.phase = 10.0f;
+    s->costas_state.freq = 2.0f;
+    s->costas_state.alpha = 0.0f;
+    s->costas_state.beta = 0.0f;
+    s->costas_state.max_freq = 1.0f;
+    s->costas_state.min_freq = -1.0f;
+
+    op25_costas_loop_cc(s);
+
+    if (fabsf(s->costas_state.phase - (float)(M_PI / 2.0)) > 0.001f || s->costas_state.freq != 1.0f
+        || !std::isfinite(buf[0]) || !std::isfinite(buf[1])) {
+        DSD_FPRINTF(stderr, "COSTAS CLAMP: high clamp phase=%f freq=%f out=(%f,%f)\n", s->costas_state.phase,
+                    s->costas_state.freq, buf[0], buf[1]);
+        free(s);
+        return 1;
+    }
+
+    buf[0] = 0.7f;
+    buf[1] = 0.0f;
+    s->lp_len = 2;
+    s->costas_state.phase = -10.0f;
+    s->costas_state.freq = -2.0f;
+
+    op25_costas_loop_cc(s);
+
+    if (fabsf(s->costas_state.phase + (float)(M_PI / 2.0)) > 0.001f || s->costas_state.freq != -1.0f) {
+        DSD_FPRINTF(stderr, "COSTAS CLAMP: low clamp phase=%f freq=%f\n", s->costas_state.phase, s->costas_state.freq);
+        free(s);
+        return 1;
+    }
+
+    free(s);
+    return 0;
+}
+
+/*
+ * Test: non-finite detector magnitudes do not train the loop and are reported
+ * as zero-confidence samples.
+ */
+static int
+test_costas_nonfinite_sample_is_rejected(void) {
+    static float buf[2] = {INFINITY, 0.5f};
+    demod_state* s = alloc_state();
+    if (!s) {
+        DSD_FPRINTF(stderr, "alloc failed\n");
+        return 1;
+    }
+    s->lowpassed = buf;
+    s->lp_len = 2;
+    s->cqpsk_enable = 1;
+    s->costas_state.initialized = 1;
+    s->costas_state.phase = 0.2f;
+    s->costas_state.freq = 0.1f;
+    s->costas_state.alpha = 0.04f;
+    s->costas_state.beta = 0.0002f;
+    s->costas_state.max_freq = 1.0f;
+    s->costas_state.min_freq = -1.0f;
+
+    op25_costas_loop_cc(s);
+
+    if (buf[0] != 0.0f || buf[1] != 0.0f || s->costas_state.error != 0.0f || s->costas_state.error_smooth != 0.0f
+        || s->costas_conf_avg_q14 != 0 || s->costas_zero_conf_pct != 100) {
+        DSD_FPRINTF(stderr, "COSTAS NONFINITE: out=(%f,%f) err=%f smooth=%f conf=%d zero=%d\n", buf[0], buf[1],
+                    s->costas_state.error, s->costas_state.error_smooth, s->costas_conf_avg_q14,
+                    s->costas_zero_conf_pct);
+        free(s);
+        return 1;
+    }
+
+    free(s);
+    return 0;
+}
+
+/*
+ * Test: Gardner refuses SPS values that would overrun the fixed MMSE delay
+ * line and reports no output symbols.
+ */
+static int
+test_gardner_oversized_sps_disables_output(void) {
+    static float buf[32];
+    for (int i = 0; i < 32; i++) {
+        buf[i] = (i & 1) ? -0.2f : 0.6f;
+    }
+
+    demod_state* s = alloc_state();
+    if (!s) {
+        DSD_FPRINTF(stderr, "alloc failed\n");
+        return 1;
+    }
+    s->cqpsk_enable = 1;
+    s->lowpassed = buf;
+    s->lp_len = 32;
+    s->ted_sps = 200;
+
+    op25_gardner_cc(s);
+
+    if (s->lp_len != 0 || s->ted_state.twice_sps != 0 || s->ted_state.omega_mid != 200.0f) {
+        DSD_FPRINTF(stderr, "GARDNER OVERSIZE: lp_len=%d twice_sps=%d omega_mid=%f\n", s->lp_len,
+                    s->ted_state.twice_sps, s->ted_state.omega_mid);
+        free(s);
+        return 1;
+    }
+
+    free(s);
+    return 0;
+}
+
+/*
+ * Test: FLL band-edge block initializes lazily and processes an IQ block in
+ * place while preserving a bounded loop state.
+ */
+static int
+test_fll_band_edge_processes_block(void) {
+    const int pairs = 64;
+    static float buf[pairs * 2];
+    for (int k = 0; k < pairs; k++) {
+        const float phase = 0.11f * (float)k;
+        buf[(size_t)k * 2] = cosf(phase);
+        buf[(size_t)k * 2 + 1] = sinf(phase);
+    }
+
+    demod_state* s = alloc_state();
+    if (!s) {
+        DSD_FPRINTF(stderr, "alloc failed\n");
+        return 1;
+    }
+    s->cqpsk_enable = 1;
+    s->lowpassed = buf;
+    s->lp_len = pairs * 2;
+    s->ted_sps = 5;
+    s->rate_out = 24000;
+
+    op25_fll_band_edge_cc(s);
+
+    dsd_fll_band_edge_state_t* f = &s->fll_band_edge_state;
+    const int expected_delay = pairs % f->n_taps;
+    if (!f->initialized || f->sps != 5 || f->n_taps != 11 || f->delay_idx != expected_delay || !std::isfinite(f->phase)
+        || !std::isfinite(f->freq) || f->freq < f->min_freq || f->freq > f->max_freq) {
+        DSD_FPRINTF(stderr, "FLL PROCESS: initialized=%d sps=%d taps=%d delay=%d/%d phase=%f freq=%f min=%f max=%f\n",
+                    f->initialized, f->sps, f->n_taps, f->delay_idx, expected_delay, f->phase, f->freq, f->min_freq,
+                    f->max_freq);
+        free(s);
+        return 1;
+    }
+    if (f->delay_r[0] == 0.0f && f->delay_i[0] == 0.0f) {
+        DSD_FPRINTF(stderr, "FLL PROCESS: delay line was not populated\n");
+        free(s);
+        return 1;
+    }
+
+    free(s);
+    return 0;
+}
+
 int
 main(void) {
     if (test_basic_passthrough() != 0) {
@@ -816,6 +1066,24 @@ main(void) {
         return 1;
     }
     if (test_p25p2_tracking_gain_honors_runtime_override_after_lock() != 0) {
+        return 1;
+    }
+    if (test_reset_helpers_clear_tracking_state() != 0) {
+        return 1;
+    }
+    if (test_diff_phasor_short_block_preserves_state() != 0) {
+        return 1;
+    }
+    if (test_costas_clamps_initial_phase_and_frequency() != 0) {
+        return 1;
+    }
+    if (test_costas_nonfinite_sample_is_rejected() != 0) {
+        return 1;
+    }
+    if (test_gardner_oversized_sps_disables_output() != 0) {
+        return 1;
+    }
+    if (test_fll_band_edge_processes_block() != 0) {
         return 1;
     }
     return 0;

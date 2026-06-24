@@ -369,15 +369,7 @@ nxdn_print_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_
 }
 
 static void
-nxdn_collect_payload_and_unpack(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
-    for (int i = 0; i < 174; i++) {
-        uint8_t rel = 255;
-        ctx->dbuf[i + 8] = (uint8_t)getDibitWithReliability(opts, state, &rel);
-        ctx->dbuf_reliab[i + 8] = rel;
-    }
-
-    nxdn_descramble_with_seed(ctx->dbuf, 182, state->nxdn_pn95_seed);
-
+nxdn_unpack_payload_fields(nxdn_frame_ctx* ctx) {
     for (size_t i = 0; i < 182; i++) {
         size_t idx = i * 2;
         ctx->nxdn_bit_buffer[idx] = ctx->dbuf[i] >> 1;
@@ -685,7 +677,14 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_mark_carrier_sync_active(state);
     nxdn_print_sync_banner(opts, state, &ctx);
 
-    nxdn_collect_payload_and_unpack(opts, state, &ctx);
+    for (int i = 0; i < 174; i++) {
+        uint8_t rel = 255;
+        ctx.dbuf[i + 8] = (uint8_t)getDibitWithReliability(opts, state, &rel);
+        ctx.dbuf_reliab[i + 8] = rel;
+    }
+
+    nxdn_descramble_with_seed(ctx.dbuf, 182, state->nxdn_pn95_seed);
+    nxdn_unpack_payload_fields(&ctx);
 
     ctx.lich_rf = (ctx.lich >> 5) & 0x3;
     ctx.direction = (ctx.lich % 2 == 0) ? 0 : 1;
@@ -710,3 +709,52 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 END:
     nxdn_finalize_sync_reject(state);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_nxdn_test_route_decoded_lich(dsd_opts* opts, dsd_state* state, uint8_t lich, const uint8_t bits[364],
+                                     const uint8_t reliab[364]) {
+    if (opts == NULL || state == NULL || bits == NULL || reliab == NULL) {
+        return -1;
+    }
+
+    nxdn_frame_ctx ctx;
+    nxdn_frame_ctx_init(&ctx);
+    ctx.lich = lich;
+
+    if (!nxdn_validate_lich_direction(opts, state, &ctx)) {
+        goto END;
+    }
+    if (!nxdn_apply_lich_profile(opts, state, &ctx)) {
+        goto END;
+    }
+
+    nxdn_mark_carrier_sync_active(state);
+
+    for (size_t i = 0U; i < 182U; i++) {
+        const size_t idx = i * 2U;
+        ctx.dbuf[i] = (uint8_t)(((bits[idx] & 1U) << 1) | (bits[idx + 1U] & 1U));
+        ctx.dbuf_reliab[i] = reliab[idx];
+    }
+    nxdn_unpack_payload_fields(&ctx);
+
+    ctx.lich_rf = (ctx.lich >> 5) & 0x3;
+    ctx.direction = (ctx.lich % 2 == 0) ? 0 : 1;
+
+    nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
+    if (opts->scanner_mode == 1) {
+        state->last_cc_sync_time = time(NULL) + 2;
+    }
+
+    nxdn_print_voice_or_data_and_sync_lfsr(state, &ctx);
+    nxdn_update_sacch_mode(state, ctx.lich);
+    nxdn_decode_control_channels(opts, state, &ctx);
+    nxdn_process_voice_and_mbe(opts, state, &ctx);
+    nxdn_handle_post_voice_facch2_lfsr(state, &ctx);
+    return 1;
+
+END:
+    nxdn_finalize_sync_reject(state);
+    return 0;
+}
+#endif

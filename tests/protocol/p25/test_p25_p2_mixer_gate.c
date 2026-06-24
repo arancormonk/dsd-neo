@@ -77,6 +77,38 @@ fill_f32_frame(float frame[160], float value) {
 }
 
 static int
+short_18_blocks_are_clear(short frames[18][160]) {
+    for (int frame = 0; frame < 18; frame++) {
+        for (int i = 0; i < 160; i++) {
+            if (frames[frame][i] != 0) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int
+short_block_is_clear(const short* samples, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (samples[i] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+float_block_is_clear(const float* samples, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (samples[i] < -1.0e-6f || samples[i] > 1.0e-6f) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
 run_fs4_left_active_case_ext(int enc_lockout_enabled, int expect_right_silent, int muted_slot_algid,
                              int muted_slot_aes_loaded, unsigned long long muted_slot_key, int muted_slot_svc,
                              int muted_slot_marker) {
@@ -284,6 +316,329 @@ run_ss18_right_active_case(int enc_lockout_enabled, int expect_left_silent, int 
                                           muted_slot_aes_loaded, muted_slot_key, 0x40, 0);
 }
 
+static int
+run_ss18_partial_flush_case(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    st.s_l4[0][0] = 321;
+    st.s_r4[0][0] = -654;
+    st.voice_counter[0] = 7;
+    st.voice_counter[1] = 8;
+    st.p25_p2_audio_allowed[0] = 0;
+    st.p25_p2_audio_allowed[1] = 0;
+
+    dsd_p25p2_flush_partial_audio(&opts, &st);
+
+    short out[160 * 2] = {0};
+    const size_t expected_bytes = (size_t)160 * 2U * sizeof(out[0]);
+    rc |= expect_eq("partial flush captured calls", g_audio_capture_calls >= 1, 1);
+    int copied = copy_capture_bytes("partial flush captured bytes", out, expected_bytes);
+    rc |= copied;
+    if (copied == 0) {
+        rc |= expect_eq("partial flush left sample", out[0], 321);
+        rc |= expect_eq("partial flush right sample", out[1], -654);
+    }
+    rc |= expect_eq("partial flush allowed left", st.p25_p2_audio_allowed[0], 1);
+    rc |= expect_eq("partial flush allowed right", st.p25_p2_audio_allowed[1], 1);
+    rc |= expect_eq("partial flush voice counter left", st.voice_counter[0], 0);
+    rc |= expect_eq("partial flush voice counter right", st.voice_counter[1], 0);
+    rc |= expect_eq("partial flush clears left frames", short_18_blocks_are_clear(st.s_l4), 1);
+    rc |= expect_eq("partial flush clears right frames", short_18_blocks_are_clear(st.s_r4), 1);
+    return rc;
+}
+
+static int
+run_ss18_partial_flush_guard_case(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.floating_point = 1;
+    opts.pulse_digi_rate_out = 8000;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    st.s_l4[0][0] = 111;
+    st.voice_counter[0] = 3;
+
+    dsd_p25p2_flush_partial_audio(&opts, &st);
+
+    rc |= expect_eq("partial flush fp guard calls", g_audio_capture_calls, 0);
+    rc |= expect_eq("partial flush fp guard preserves sample", st.s_l4[0][0], 111);
+    rc |= expect_eq("partial flush fp guard preserves counter", st.voice_counter[0], 3);
+
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 48000;
+    dsd_p25p2_flush_partial_audio(&opts, &st);
+    rc |= expect_eq("partial flush rate guard calls", g_audio_capture_calls, 0);
+    rc |= expect_eq("partial flush rate guard preserves sample", st.s_l4[0][0], 111);
+    return rc;
+}
+
+static int
+run_short_mono_playback_case(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.slot1_on = 1;
+    st.audio_out_idx = 160;
+    st.audio_out_idx2 = 800000;
+    st.audio_out_buf_p = st.audio_out_buf + 100;
+    st.audio_out_float_buf_p = st.audio_out_float_buf + 100;
+    for (int i = 0; i < 160; i++) {
+        st.s_l[i] = (short)(i + 1);
+    }
+
+    playSynthesizedVoiceMS(&opts, &st);
+
+    short out[160] = {0};
+    rc |= expect_eq("short mono captured calls", g_audio_capture_calls, 1);
+    int copied = copy_capture_bytes("short mono captured bytes", out, sizeof(out));
+    rc |= copied;
+    if (copied == 0) {
+        rc |= expect_eq("short mono first sample", out[0], 1);
+        rc |= expect_eq("short mono last sample", out[159], 160);
+    }
+    rc |= expect_eq("short mono resets idx", st.audio_out_idx, 0);
+    rc |= expect_eq("short mono resets ring span", st.audio_out_idx2, 0);
+    rc |= expect_eq("short mono clears s_l", short_block_is_clear(st.s_l, 160), 1);
+    rc |= expect_true("short mono resets short ptr", st.audio_out_buf_p == st.audio_out_buf + 100);
+    rc |= expect_true("short mono resets float ptr", st.audio_out_float_buf_p == st.audio_out_float_buf + 100);
+    return rc;
+}
+
+static int
+run_float_mono_playback_case(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.slot1_on = 1;
+    opts.audio_gain = 25;
+    st.aout_gain = 49.0f;
+    st.audio_out_idx2 = 800000;
+    st.audio_out_buf_p = st.audio_out_buf + 100;
+    st.audio_out_float_buf_p = st.audio_out_float_buf + 100;
+    fill_f32_frame(st.f_l, 0.25f);
+
+    playSynthesizedVoiceFM(&opts, &st);
+
+    float out[160] = {0.0f};
+    rc |= expect_eq("float mono captured calls", g_audio_capture_calls, 1);
+    int copied = copy_capture_bytes("float mono captured bytes", out, sizeof(out));
+    rc |= copied;
+    if (copied == 0) {
+        rc |= expect_true("float mono audible", out[0] != 0.0f);
+    }
+    rc |= expect_eq("float mono resets ring span", st.audio_out_idx2, 0);
+    rc |= expect_eq("float mono clears f_l", float_block_is_clear(st.f_l, 160), 1);
+    rc |= expect_true("float mono resets short ptr", st.audio_out_buf_p == st.audio_out_buf + 100);
+    rc |= expect_true("float mono resets float ptr", st.audio_out_float_buf_p == st.audio_out_float_buf + 100);
+    return rc;
+}
+
+static int
+run_short_stereo_fdma_playback_case(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.slot1_on = 1;
+    st.audio_out_idx = 160;
+    st.audio_out_idxR = 160;
+    st.audio_out_idx2 = 800000;
+    st.audio_out_idx2R = 800000;
+    st.audio_out_buf_p = st.audio_out_buf + 100;
+    st.audio_out_buf_pR = st.audio_out_bufR + 100;
+    st.audio_out_float_buf_p = st.audio_out_float_buf + 100;
+    st.audio_out_float_buf_pR = st.audio_out_float_bufR + 100;
+    for (int i = 0; i < 160; i++) {
+        st.s_l[i] = (short)(i + 10);
+        st.s_r[i] = (short)(-i - 10);
+    }
+
+    playSynthesizedVoiceSS(&opts, &st);
+
+    short out[160 * 2] = {0};
+    rc |= expect_eq("short stereo fdma calls", g_audio_capture_calls, 1);
+    int copied = copy_capture_bytes("short stereo fdma bytes", out, sizeof(out));
+    rc |= copied;
+    if (copied == 0) {
+        rc |= expect_eq("short stereo fdma left sample", out[0], 10);
+        rc |= expect_eq("short stereo fdma right sample", out[1], 10);
+        rc |= expect_eq("short stereo fdma last left", out[318], 169);
+        rc |= expect_eq("short stereo fdma last right", out[319], 169);
+    }
+    rc |= expect_eq("short stereo fdma clears left", short_block_is_clear(st.s_l, 160), 1);
+    rc |= expect_eq("short stereo fdma clears right", short_block_is_clear(st.s_r, 160), 1);
+    rc |= expect_eq("short stereo fdma resets left idx", st.audio_out_idx, 0);
+    rc |= expect_eq("short stereo fdma resets right idx", st.audio_out_idxR, 0);
+    rc |= expect_eq("short stereo fdma resets left ring", st.audio_out_idx2, 0);
+    rc |= expect_eq("short stereo fdma resets right ring", st.audio_out_idx2R, 0);
+    rc |= expect_true("short stereo fdma resets left short ptr", st.audio_out_buf_p == st.audio_out_buf + 100);
+    rc |= expect_true("short stereo fdma resets right short ptr", st.audio_out_buf_pR == st.audio_out_bufR + 100);
+    return rc;
+}
+
+static int
+run_short_stereo_dmr3_playback_case(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    st.audio_out_idx = 160;
+    st.audio_out_idxR = 160;
+    st.audio_out_idx2 = 800000;
+    st.audio_out_idx2R = 800000;
+    st.audio_out_buf_p = st.audio_out_buf + 100;
+    st.audio_out_buf_pR = st.audio_out_bufR + 100;
+    st.audio_out_float_buf_p = st.audio_out_float_buf + 100;
+    st.audio_out_float_buf_pR = st.audio_out_float_bufR + 100;
+    for (int i = 0; i < 160; i++) {
+        st.s_l4[0][i] = (short)(100 + i);
+        st.s_r4[0][i] = (short)(-100 - i);
+        st.s_l4[1][i] = (short)(200 + i);
+        st.s_r4[1][i] = (short)(-200 - i);
+        st.s_l4[2][i] = (short)(300 + i);
+        st.s_r4[2][i] = (short)(-300 - i);
+    }
+
+    playSynthesizedVoiceSS3(&opts, &st);
+
+    short out[160 * 2] = {0};
+    rc |= expect_eq("short stereo dmr3 calls", g_audio_capture_calls, 3);
+    int copied = copy_capture_bytes("short stereo dmr3 first bytes", out, sizeof(out));
+    rc |= copied;
+    if (copied == 0) {
+        rc |= expect_eq("short stereo dmr3 first left", out[0], 100);
+        rc |= expect_eq("short stereo dmr3 first right", out[1], -100);
+        rc |= expect_eq("short stereo dmr3 last left", out[318], 259);
+        rc |= expect_eq("short stereo dmr3 last right", out[319], -259);
+    }
+    rc |= expect_eq("short stereo dmr3 clears left", short_18_blocks_are_clear(st.s_l4), 1);
+    rc |= expect_eq("short stereo dmr3 clears right", short_18_blocks_are_clear(st.s_r4), 1);
+    rc |= expect_eq("short stereo dmr3 resets left ring", st.audio_out_idx2, 0);
+    rc |= expect_eq("short stereo dmr3 resets right ring", st.audio_out_idx2R, 0);
+    rc |= expect_true("short stereo dmr3 resets left short ptr", st.audio_out_buf_p == st.audio_out_buf + 100);
+    rc |= expect_true("short stereo dmr3 resets right short ptr", st.audio_out_buf_pR == st.audio_out_bufR + 100);
+    return rc;
+}
+
+static int
+run_beeper_float_stereo_case(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 2;
+
+    beeper(&opts, &st, 1, 40, 86, 1);
+
+    float out[160 * 2] = {0.0f};
+    rc |= expect_eq("beeper float stereo calls", g_audio_capture_calls, 2);
+    int copied = copy_capture_bytes("beeper float stereo bytes", out, sizeof(out));
+    rc |= copied;
+    if (copied == 0) {
+        int saw_right_audio = 0;
+        int saw_left_audio = 0;
+        for (int i = 0; i < 160; i++) {
+            if (out[(i * 2) + 0] != 0.0f) {
+                saw_left_audio = 1;
+            }
+            if (out[(i * 2) + 1] != 0.0f) {
+                saw_right_audio = 1;
+            }
+        }
+        rc |= expect_eq("beeper float stereo left silent", saw_left_audio, 0);
+        rc |= expect_eq("beeper float stereo right audible", saw_right_audio, 1);
+    }
+    return rc;
+}
+
+static int
+run_beeper_short_mono_case(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 1;
+
+    beeper(&opts, &st, 0, 40, 86, 1);
+
+    short out[160] = {0};
+    rc |= expect_eq("beeper short mono calls", g_audio_capture_calls, 2);
+    int copied = copy_capture_bytes("beeper short mono bytes", out, sizeof(out));
+    rc |= copied;
+    if (copied == 0) {
+        int saw_audio = 0;
+        for (int i = 0; i < 160; i++) {
+            if (out[i] != 0) {
+                saw_audio = 1;
+            }
+        }
+        rc |= expect_eq("beeper short mono audible", saw_audio, 1);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -373,6 +728,14 @@ main(void) {
                                      /*muted_slot_aes_loaded*/ 1, /*muted_slot_key*/ 0ULL);
     rc |= run_ss18_right_active_case(/*enc_lockout_enabled*/ 1, /*expect_left_silent*/ 0, /*muted_slot_algid*/ 0x81,
                                      /*muted_slot_aes_loaded*/ 0, /*muted_slot_key*/ 1ULL);
+    rc |= run_ss18_partial_flush_case();
+    rc |= run_ss18_partial_flush_guard_case();
+    rc |= run_short_mono_playback_case();
+    rc |= run_float_mono_playback_case();
+    rc |= run_short_stereo_fdma_playback_case();
+    rc |= run_short_stereo_dmr3_playback_case();
+    rc |= run_beeper_float_stereo_case();
+    rc |= run_beeper_short_mono_case();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 
     return rc;

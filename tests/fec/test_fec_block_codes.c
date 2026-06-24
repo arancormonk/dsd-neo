@@ -230,6 +230,7 @@ test_isch_soft_lookup(void) {
         reliab[i] = 220;
     }
 
+    assert(isch_lookup(isch0) == 0);
     assert(isch_lookup_soft(isch0, reliab) == 0);
 
     uint64_t corrupted = isch0;
@@ -238,7 +239,59 @@ test_isch_soft_lookup(void) {
         corrupted ^= 1ULL << (39 - low_bits[i]);
         reliab[low_bits[i]] = 10;
     }
+    assert(isch_lookup(corrupted) == 0);
+    assert(isch_lookup_soft(corrupted, NULL) == 0);
     assert(isch_lookup_soft(corrupted, reliab) == 0);
+
+    uint64_t too_far = isch0;
+    for (int i = 0; i < 8; i++) {
+        too_far ^= 1ULL << (39 - i);
+    }
+    assert(isch_lookup(too_far) == -2);
+    assert(isch_lookup_soft(too_far, reliab) == -2);
+
+    assert(isch_lookup(0x575d57f7ffULL) == -2);
+
+    return 0;
+}
+
+static void
+assert_all_zero_ints(const int* values, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        assert(values[i] == 0);
+    }
+}
+
+static int
+test_rs28_zero_codewords(void) {
+    int ess_payload[96] = {0};
+    int ess_parity[168] = {0};
+    int facch_payload[156] = {0};
+    int facch_parity[114] = {0};
+    int sacch_payload[180] = {0};
+    int sacch_parity[132] = {0};
+    int many_erasures[32];
+    for (int i = 0; i < 32; i++) {
+        many_erasures[i] = i;
+    }
+
+    assert(ez_rs28_ess(ess_payload, ess_parity) == 0);
+    assert_all_zero_ints(ess_payload, sizeof(ess_payload) / sizeof(ess_payload[0]));
+
+    assert(ez_rs28_facch(facch_payload, facch_parity) == 0);
+    assert_all_zero_ints(facch_payload, sizeof(facch_payload) / sizeof(facch_payload[0]));
+
+    assert(ez_rs28_sacch(sacch_payload, sacch_parity) == 0);
+    assert_all_zero_ints(sacch_payload, sizeof(sacch_payload) / sizeof(sacch_payload[0]));
+
+    assert(ez_rs28_ess_soft(ess_payload, ess_parity, many_erasures, 32) == 0);
+    assert_all_zero_ints(ess_payload, sizeof(ess_payload) / sizeof(ess_payload[0]));
+
+    assert(ez_rs28_facch_soft(facch_payload, facch_parity, many_erasures, 32) == 0);
+    assert_all_zero_ints(facch_payload, sizeof(facch_payload) / sizeof(facch_payload[0]));
+
+    assert(ez_rs28_sacch_soft(sacch_payload, sacch_parity, many_erasures, 32) == 0);
+    assert_all_zero_ints(sacch_payload, sizeof(sacch_payload) / sizeof(sacch_payload[0]));
 
     return 0;
 }
@@ -252,6 +305,9 @@ main(void) {
         return 1;
     }
     if (test_isch_soft_lookup() != 0) {
+        return 1;
+    }
+    if (test_rs28_zero_codewords() != 0) {
         return 1;
     }
 

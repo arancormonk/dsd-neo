@@ -25,6 +25,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <time.h>
+
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -44,6 +47,11 @@ extern int ess_a[2][168];
 extern int16_t ess_a_llr[2][168];
 extern void p25_p2_frame_reset(void);
 extern void process_ESS(dsd_opts* opts, dsd_state* state);
+extern void p25p2_test_teardown_call(dsd_opts* opts, dsd_state* state);
+extern void p25p2_test_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
+extern void p25p2_test_process_isch(dsd_opts* opts, dsd_state* state, int framing_index);
+extern void p25p2_test_process_p2_duid(dsd_opts* opts, dsd_state* state);
+extern void p25p2_test_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 
 static int g_ess_hard_rc = 0;
 static int g_ess_soft_min_success = -1;
@@ -51,6 +59,26 @@ static int g_ess_soft_success_rc = 0;
 static int g_ess_soft_calls = 0;
 static int g_ess_soft_last_n = 0;
 static int g_ess_soft_mutate_algid = -1;
+static int g_lfsrp_calls = 0;
+static int g_lfsr128_calls = 0;
+static int g_lfsr128_last_slot = -1;
+static int g_facch_min_success = 0;
+static int g_facch_success_rc = 0;
+static int g_facch_calls = 0;
+static int g_facch_last_erasures = 0;
+static int g_sacch_min_success = 0;
+static int g_sacch_success_rc = 0;
+static int g_sacch_calls = 0;
+static int g_sacch_last_erasures = 0;
+static int g_facch_mac_calls = 0;
+static int g_facch_mac_last_opcode = -1;
+static int g_sacch_mac_calls = 0;
+static int g_sacch_mac_last_opcode = -1;
+static int g_isch_lookup_result = -1;
+static uint8_t g_isch_last_reliab[40] = {0};
+static int g_ss18_calls = 0;
+static int g_ss18_allowed_l = -1;
+static int g_ss18_allowed_r = -1;
 
 bool
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -148,7 +176,9 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    g_ss18_calls++;
+    g_ss18_allowed_l = state ? state->p25_p2_audio_allowed[0] : -1;
+    g_ss18_allowed_r = state ? state->p25_p2_audio_allowed[1] : -1;
 }
 
 void
@@ -200,6 +230,7 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 LFSRP(dsd_state* state) {
     (void)state;
+    g_lfsrp_calls++;
 }
 
 void
@@ -212,7 +243,8 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_lfsr128_slot(dsd_state* state, int slot) {
     (void)state;
-    (void)slot;
+    g_lfsr128_calls++;
+    g_lfsr128_last_slot = slot;
 }
 
 /* RS decoders */
@@ -244,13 +276,15 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 isch_lookup(uint64_t isch) {
     (void)isch;
-    return -1;
+    return g_isch_lookup_result;
 }
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]) {
-    (void)reliab40;
+    if (reliab40) {
+        DSD_MEMCPY(g_isch_last_reliab, reliab40, sizeof(g_isch_last_reliab));
+    }
     return isch_lookup(isch);
 }
 
@@ -260,8 +294,9 @@ ez_rs28_facch_soft(int* payload, int* parity, const int* erasures, int n_erasure
     (void)payload;
     (void)parity;
     (void)erasures;
-    (void)n_erasures;
-    return 0;
+    g_facch_calls++;
+    g_facch_last_erasures = n_erasures;
+    return n_erasures >= g_facch_min_success ? g_facch_success_rc : -1;
 }
 
 int
@@ -270,8 +305,9 @@ ez_rs28_sacch_soft(int* payload, int* parity, const int* erasures, int n_erasure
     (void)payload;
     (void)parity;
     (void)erasures;
-    (void)n_erasures;
-    return 0;
+    g_sacch_calls++;
+    g_sacch_last_erasures = n_erasures;
+    return n_erasures >= g_sacch_min_success ? g_sacch_success_rc : -1;
 }
 
 int
@@ -298,7 +334,8 @@ void
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     (void)opts;
     (void)state;
-    (void)bits;
+    g_sacch_mac_calls++;
+    g_sacch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
 }
 
 void
@@ -306,7 +343,8 @@ void
 process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     (void)opts;
     (void)state;
-    (void)bits;
+    g_facch_mac_calls++;
+    g_facch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
 }
 
 /* Dibit acquisition */
@@ -348,6 +386,89 @@ reset_ess_stubs(void) {
     g_ess_soft_calls = 0;
     g_ess_soft_last_n = 0;
     g_ess_soft_mutate_algid = -1;
+    g_lfsrp_calls = 0;
+    g_lfsr128_calls = 0;
+    g_lfsr128_last_slot = -1;
+}
+
+static void
+reset_xcch_stubs(void) {
+    g_facch_min_success = 0;
+    g_facch_success_rc = 0;
+    g_facch_calls = 0;
+    g_facch_last_erasures = 0;
+    g_sacch_min_success = 0;
+    g_sacch_success_rc = 0;
+    g_sacch_calls = 0;
+    g_sacch_last_erasures = 0;
+    g_facch_mac_calls = 0;
+    g_facch_mac_last_opcode = -1;
+    g_sacch_mac_calls = 0;
+    g_sacch_mac_last_opcode = -1;
+    g_isch_lookup_result = -1;
+    DSD_MEMSET(g_isch_last_reliab, 0, sizeof(g_isch_last_reliab));
+}
+
+static void
+reset_playback_stub(void) {
+    g_ss18_calls = 0;
+    g_ss18_allowed_l = -1;
+    g_ss18_allowed_r = -1;
+}
+
+static void
+set_p2bit(int index, int bit) {
+    p2bit[index] = bit ? 1 : 0;
+}
+
+static void
+seed_xcch_opcode(int timeslot_index, int opcode) {
+    int base = timeslot_index * 360;
+    set_p2bit(base + 2, (opcode >> 2) & 1);
+    set_p2bit(base + 3, (opcode >> 1) & 1);
+    set_p2bit(base + 4, opcode & 1);
+}
+
+static void
+seed_duid_bits(int timeslot_index, uint8_t duid) {
+    static const int duid_offsets[8] = {0, 1, 74, 75, 244, 245, 318, 319};
+    int base = timeslot_index * 360;
+    for (int i = 0; i < 8; i++) {
+        int abs_bit = base + duid_offsets[i];
+        set_p2bit(abs_bit, (duid >> (7 - i)) & 1U);
+        p2llr[abs_bit] = 200;
+    }
+}
+
+static int
+expect_int(const char* tag, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_str(const char* tag, const char* got, const char* want) {
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_s16_clear(const char* tag, short frames[18][160]) {
+    for (int j = 0; j < 18; j++) {
+        for (int i = 0; i < 160; i++) {
+            if (frames[j][i] != 0) {
+                DSD_FPRINTF(stderr, "%s: frame[%d][%d] remained %d\n", tag, j, i, frames[j][i]);
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 static void
@@ -461,6 +582,571 @@ test_ess_des_manual_key_preserves_audio_gate(void) {
     printf("FAIL (alg=0x%02X keyid=0x%04X mi=0x%016llX gate=%d ok=%u)\n", state.payload_algid, state.payload_keyid,
            state.payload_miP, state.p25_p2_audio_allowed[0], state.p25_p2_rs_ess_ok);
     return 1;
+}
+
+static int
+test_ess_aes_slot1_loaded_key_preserves_audio_gate(void) {
+    printf("Test 15: ESS AES slot 1 loaded key preserves audio gate... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    set_p25p2_threshold(64);
+
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 1;
+    state.lasttgR = 5678;
+    state.dmrburstR = 21;
+    state.aes_key_loaded[1] = 1;
+    set_ess_payload_bits(&state, 1, 0x84, 0x1357, 0x0123456789ABCDEFULL);
+
+    process_ESS(&opts, &state);
+
+    if (state.payload_algidR == 0x84 && state.payload_keyidR == 0x1357 && state.payload_miN == 0x0123456789ABCDEFULL
+        && state.p25_p2_audio_allowed[1] == 1 && state.p25_p2_rs_ess_ok == 1 && g_lfsr128_calls == 1
+        && g_lfsr128_last_slot == 1) {
+        printf("PASS\n");
+        return 0;
+    }
+
+    printf("FAIL (alg=0x%02X keyid=0x%04X mi=0x%016llX gate=%d ok=%u lfsr128=%d slot=%d)\n", state.payload_algidR,
+           state.payload_keyidR, state.payload_miN, state.p25_p2_audio_allowed[1], state.p25_p2_rs_ess_ok,
+           g_lfsr128_calls, g_lfsr128_last_slot);
+    return 1;
+}
+
+static int
+test_ess_allow_list_blocks_clear_audio_gate(void) {
+    printf("Test 16: ESS allow-list blocks clear audio gate... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    set_p25p2_threshold(64);
+
+    opts.trunk_use_allow_list = 1;
+    state.lasttg = 1234;
+    state.tg_hold = 9999;
+    state.dmrburstL = 20;
+    set_ess_payload_bits(&state, 0, 0x80, 0x0000, 0x0000000000000000ULL);
+
+    process_ESS(&opts, &state);
+
+    if (state.payload_algid == 0x80 && state.p25_p2_audio_allowed[0] == 0 && state.p25_p2_enc_lockout_muted[0] == 0
+        && state.p25_p2_rs_ess_ok == 1) {
+        printf("PASS\n");
+        return 0;
+    }
+
+    printf("FAIL (alg=0x%02X gate=%d marker=%u ok=%u)\n", state.payload_algid, state.p25_p2_audio_allowed[0],
+           state.p25_p2_enc_lockout_muted[0], state.p25_p2_rs_ess_ok);
+    return 1;
+}
+
+static int
+test_ess_decode_failure_refreshes_existing_crypto_state(void) {
+    printf("Test 17: ESS failure refreshes existing crypto state... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    set_p25p2_threshold(64);
+
+    state.currentslot = 0;
+    state.payload_algid = 0x81;
+    state.payload_keyid = 0x2468;
+    state.payload_miP = 0x1122334455667788ULL;
+    g_ess_hard_rc = -1;
+    g_ess_soft_min_success = -1;
+
+    process_ESS(&opts, &state);
+
+    if (state.p25_p2_rs_ess_err == 1 && state.p25_p2_rs_ess_ok == 0 && g_lfsrp_calls == 1 && g_lfsr128_calls == 0) {
+        printf("PASS\n");
+        return 0;
+    }
+
+    printf("FAIL (err=%u ok=%u lfsrp=%d lfsr128=%d)\n", state.p25_p2_rs_ess_err, state.p25_p2_rs_ess_ok, g_lfsrp_calls,
+           g_lfsr128_calls);
+    return 1;
+}
+
+static int
+test_ess_decode_failure_refreshes_existing_aes_state(void) {
+    printf("Test 18: ESS failure refreshes existing AES state... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    set_p25p2_threshold(64);
+
+    state.currentslot = 1;
+    state.payload_algidR = 0x89;
+    state.payload_keyidR = 0x1357;
+    state.payload_miN = 0x0123456789ABCDEFULL;
+    g_ess_hard_rc = -1;
+    g_ess_soft_min_success = -1;
+
+    process_ESS(&opts, &state);
+
+    if (state.p25_p2_rs_ess_err == 1 && g_lfsrp_calls == 1 && g_lfsr128_calls == 1 && g_lfsr128_last_slot == 1) {
+        printf("PASS\n");
+        return 0;
+    }
+
+    printf("FAIL (err=%u lfsrp=%d lfsr128=%d slot=%d)\n", state.p25_p2_rs_ess_err, g_lfsrp_calls, g_lfsr128_calls,
+           g_lfsr128_last_slot);
+    return 1;
+}
+
+static int
+test_facchc_success_routes_opcode_and_counters(void) {
+    printf("Test 19: FACCHc success routes opcode and counters... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+    reset_xcch_stubs();
+
+    state.currentslot = 1;
+    g_facch_success_rc = 3;
+    seed_xcch_opcode(2, 5);
+
+    p25p2_test_process_facchc(&opts, &state, 2);
+
+    int rc = 0;
+    rc |= expect_int("facch ok", (int)state.p25_p2_rs_facch_ok, 1);
+    rc |= expect_int("facch err", (int)state.p25_p2_rs_facch_err, 0);
+    rc |= expect_int("facch corr", (int)state.p25_p2_rs_facch_corr, 3);
+    rc |= expect_int("facch slot1 opcode", state.dmr_soR, 5);
+    rc |= expect_int("facch mac calls", g_facch_mac_calls, 1);
+    rc |= expect_int("facch mac opcode", g_facch_mac_last_opcode, 5);
+    rc |= expect_int("facch fixed erasures", g_facch_last_erasures, 18);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static int
+test_facchc_failure_preserves_mac_and_counts_error(void) {
+    printf("Test 20: FACCHc failure counts error without MAC dispatch... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+    reset_xcch_stubs();
+
+    state.currentslot = 0;
+    state.dmr_so = 99;
+    g_facch_min_success = 99;
+    seed_xcch_opcode(0, 3);
+
+    p25p2_test_process_facchc(&opts, &state, 0);
+
+    int rc = 0;
+    rc |= expect_int("facch failure ok", (int)state.p25_p2_rs_facch_ok, 0);
+    rc |= expect_int("facch failure err", (int)state.p25_p2_rs_facch_err, 1);
+    rc |= expect_int("facch failure opcode captured", state.dmr_so, 3);
+    rc |= expect_int("facch failure no mac", g_facch_mac_calls, 0);
+    rc |= expect_int("facch failure tried ranked erasures", g_facch_calls > 1, 1);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static int
+test_sacchc_dynamic_erasure_success_maps_inverse_slot(void) {
+    printf("Test 21: SACCHc dynamic erasure success maps inverse slot... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+    reset_xcch_stubs();
+    set_p25p2_threshold(64);
+
+    state.currentslot = 0;
+    g_sacch_min_success = 12;
+    g_sacch_success_rc = 4;
+    seed_xcch_opcode(1, 6);
+
+    p25p2_test_process_sacchc(&opts, &state, 1);
+
+    int rc = 0;
+    rc |= expect_int("sacch ok", (int)state.p25_p2_rs_sacch_ok, 1);
+    rc |= expect_int("sacch err", (int)state.p25_p2_rs_sacch_err, 0);
+    rc |= expect_int("sacch corr", (int)state.p25_p2_rs_sacch_corr, 4);
+    rc |= expect_int("sacch dynamic erasure", (int)state.p25_p2_soft_erasure_ok, 1);
+    rc |= expect_int("sacch inverse opcode", state.dmr_soR, 6);
+    rc |= expect_int("sacch mac calls", g_sacch_mac_calls, 1);
+    rc |= expect_int("sacch mac opcode", g_sacch_mac_last_opcode, 6);
+    rc |= expect_int("sacch erasure depth", g_sacch_last_erasures, 12);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static int
+test_isch_channel_one_location_sets_scramble_offset(void) {
+    printf("Test 22: ISCH channel/location sets scramble offset... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+    reset_xcch_stubs();
+
+    p2bit[320] = 1;
+    g_isch_lookup_result = (1 << 5) | (0 << 3);
+    state.p2_scramble_offset = -1;
+    p25p2_test_process_isch(&opts, &state, 3);
+
+    int rc = 0;
+    rc |= expect_int("isch loc0 channel", state.p2_vch_chan_num, 1);
+    rc |= expect_int("isch loc0 offset", state.p2_scramble_offset, 9);
+
+    g_isch_lookup_result = (1 << 5) | (1 << 3);
+    state.p2_scramble_offset = -1;
+    p25p2_test_process_isch(&opts, &state, 1);
+    rc |= expect_int("isch loc1 offset", state.p2_scramble_offset, 3);
+
+    g_isch_lookup_result = (1 << 5) | (2 << 3);
+    state.p2_scramble_offset = -1;
+    p25p2_test_process_isch(&opts, &state, 2);
+    rc |= expect_int("isch loc2 offset", state.p2_scramble_offset, 6);
+
+    g_isch_lookup_result = -1;
+    state.p2_vch_chan_num = 7;
+    state.p2_scramble_offset = 42;
+    p25p2_test_process_isch(&opts, &state, 0);
+    rc |= expect_int("isch invalid preserves channel", state.p2_vch_chan_num, 7);
+    rc |= expect_int("isch invalid preserves offset", state.p2_scramble_offset, 42);
+
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static int
+test_duid_exact_or_null_soft_metrics_preserve_hard_decision(void) {
+    printf("Test 25: DUID exact/null soft metrics preserve hard decision... ");
+    uint8_t unreliable[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+    int rc = 0;
+    rc |= expect_int("duid exact with unreliable metrics", p25p2_duid_lookup_soft_test(0x17U, unreliable), 1);
+    rc |= expect_int("duid null metrics uses hard table", p25p2_duid_lookup_soft_test(0x17U, NULL), 1);
+
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static int
+test_isch_reliability_clamps_llr_magnitude(void) {
+    printf("Test 26: ISCH reliability clamps LLR magnitude... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+    reset_xcch_stubs();
+
+    p2bit[320] = 1;
+    p2llr[320] = 300;
+    p2llr[321] = -123;
+    g_isch_lookup_result = -1;
+
+    p25p2_test_process_isch(&opts, &state, 0);
+
+    int rc = 0;
+    rc |= expect_int("isch clamp high reliability", g_isch_last_reliab[0], 255);
+    rc |= expect_int("isch abs negative reliability", g_isch_last_reliab[1], 123);
+    rc |= expect_int("isch failed decode preserves channel", state.p2_vch_chan_num, 0);
+
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static void
+seed_teardown_dirty_state(dsd_state* state) {
+    state->p25_p2_audio_allowed[0] = 0;
+    state->p25_p2_audio_allowed[1] = 0;
+    state->p25_p2_enc_lockout_muted[0] = 1;
+    state->p25_p2_enc_lockout_muted[1] = 1;
+    state->p25_p2_audio_ring_count[0] = 2;
+    state->p25_p2_audio_ring_count[1] = 3;
+    state->voice_counter[0] = 7;
+    state->voice_counter[1] = 9;
+    state->p25_p2_last_mac_active[0] = 111;
+    state->p25_p2_last_mac_active[1] = 222;
+    state->p25_p2_last_end_ptt[0] = 333;
+    state->p25_p2_last_end_ptt[1] = 444;
+    state->p25_call_is_packet[0] = 1;
+    state->p25_call_is_packet[1] = 1;
+    state->p25_call_emergency[0] = 1;
+    state->p25_call_emergency[1] = 1;
+    state->p25_call_priority[0] = 5;
+    state->p25_call_priority[1] = 6;
+    state->payload_algid = 0x81;
+    state->payload_keyid = 0x2468;
+    state->payload_miP = 0x1122334455667788ULL;
+    state->payload_algidR = 0x84;
+    state->payload_keyidR = 0x1357;
+    state->payload_miN = 0x0123456789ABCDEFULL;
+    DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "left call");
+    DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "%s", "right call");
+}
+
+static int
+expect_teardown_common_reset(const dsd_state* state) {
+    int rc = 0;
+    rc |= expect_int("teardown gate left", state->p25_p2_audio_allowed[0], 0);
+    rc |= expect_int("teardown gate right", state->p25_p2_audio_allowed[1], 0);
+    rc |= expect_int("teardown marker left", state->p25_p2_enc_lockout_muted[0], 0);
+    rc |= expect_int("teardown marker right", state->p25_p2_enc_lockout_muted[1], 0);
+    rc |= expect_int("teardown ring left", state->p25_p2_audio_ring_count[0], 0);
+    rc |= expect_int("teardown ring right", state->p25_p2_audio_ring_count[1], 0);
+    rc |= expect_int("teardown voice counter left", state->voice_counter[0], 0);
+    rc |= expect_int("teardown voice counter right", state->voice_counter[1], 0);
+    rc |= expect_int("teardown mac active left", (int)state->p25_p2_last_mac_active[0], 0);
+    rc |= expect_int("teardown mac active right", (int)state->p25_p2_last_mac_active[1], 0);
+    rc |= expect_int("teardown end ptt left", (int)state->p25_p2_last_end_ptt[0], 0);
+    rc |= expect_int("teardown end ptt right", (int)state->p25_p2_last_end_ptt[1], 0);
+    rc |= expect_int("teardown packet left", state->p25_call_is_packet[0], 0);
+    rc |= expect_int("teardown packet right", state->p25_call_is_packet[1], 0);
+    rc |= expect_int("teardown emergency left", state->p25_call_emergency[0], 0);
+    rc |= expect_int("teardown emergency right", state->p25_call_emergency[1], 0);
+    rc |= expect_int("teardown priority left", state->p25_call_priority[0], 0);
+    rc |= expect_int("teardown priority right", state->p25_call_priority[1], 0);
+    rc |= expect_int("teardown alg left", state->payload_algid, 0);
+    rc |= expect_int("teardown key left", state->payload_keyid, 0);
+    rc |= expect_int("teardown mi left", state->payload_miP != 0ULL, 0);
+    rc |= expect_int("teardown alg right", state->payload_algidR, 0);
+    rc |= expect_int("teardown key right", state->payload_keyidR, 0);
+    rc |= expect_int("teardown mi right", state->payload_miN != 0ULL, 0);
+    rc |= expect_str("teardown call string left", state->call_string[0], "                     ");
+    rc |= expect_str("teardown call string right", state->call_string[1], "                     ");
+    return rc;
+}
+
+static int
+test_teardown_flushes_partial_int16_audio_and_resets_call_state(void) {
+    printf("Test 23: teardown flushes partial int16 audio and resets call state... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_playback_stub();
+
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    seed_teardown_dirty_state(&state);
+    state.s_l4[2][17] = 123;
+    state.s_r4[4][31] = -234;
+
+    p25p2_test_teardown_call(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("teardown playback calls", g_ss18_calls, 1);
+    rc |= expect_int("teardown playback gate left", g_ss18_allowed_l, 1);
+    rc |= expect_int("teardown playback gate right", g_ss18_allowed_r, 1);
+    rc |= expect_teardown_common_reset(&state);
+    rc |= expect_s16_clear("teardown clear left short audio", state.s_l4);
+    rc |= expect_s16_clear("teardown clear right short audio", state.s_r4);
+
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static int
+test_teardown_without_partial_int16_audio_skips_playback_but_clears_state(void) {
+    printf("Test 24: teardown without partial int16 audio skips playback but clears state... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_playback_stub();
+
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    seed_teardown_dirty_state(&state);
+
+    p25p2_test_teardown_call(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("teardown no-audio playback calls", g_ss18_calls, 0);
+    rc |= expect_int("teardown no-audio playback left unchanged", g_ss18_allowed_l, -1);
+    rc |= expect_int("teardown no-audio playback right unchanged", g_ss18_allowed_r, -1);
+    rc |= expect_teardown_common_reset(&state);
+
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static int
+test_duid_invalid_burst_aborts_and_clears_crypto_state(void) {
+    printf("Test 27: DUID repeated invalid bursts abort and clear crypto state... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+
+    state.currentslot = 0;
+    state.payload_algid = 0x81;
+    state.payload_keyid = 0x2468;
+    state.payload_algidR = 0x84;
+    state.payload_keyidR = 0x1357;
+    state.p2_is_lcch = 1;
+    state.p25_p2_enc_lockout_muted[0] = 1;
+    state.p25_p2_enc_lockout_muted[1] = 1;
+    state.fourv_counter[0] = 3;
+    state.fourv_counter[1] = 4;
+    state.voice_counter[0] = 5;
+    state.voice_counter[1] = 6;
+    seed_duid_bits(0, 0x03U);
+    seed_duid_bits(1, 0x03U);
+
+    p25p2_test_process_p2_duid(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("invalid abort alg left", state.payload_algid, 0);
+    rc |= expect_int("invalid abort key left", state.payload_keyid, 0);
+    rc |= expect_int("invalid abort alg right", state.payload_algidR, 0);
+    rc |= expect_int("invalid abort key right", state.payload_keyidR, 0);
+    rc |= expect_int("invalid abort lcch", state.p2_is_lcch, 0);
+    rc |= expect_int("invalid abort marker left", state.p25_p2_enc_lockout_muted[0], 0);
+    rc |= expect_int("invalid abort marker right", state.p25_p2_enc_lockout_muted[1], 0);
+    rc |= expect_int("invalid abort fourv left", state.fourv_counter[0], 0);
+    rc |= expect_int("invalid abort fourv right", state.fourv_counter[1], 0);
+    rc |= expect_int("invalid abort voice left", state.voice_counter[0], 0);
+    rc |= expect_int("invalid abort voice right", state.voice_counter[1], 0);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static void
+prepare_lcch_release_duids(void) {
+    p25_p2_frame_reset();
+    for (int i = 0; i < 4; i++) {
+        seed_duid_bits(i, 0xD1U);
+        seed_xcch_opcode(i, 0);
+    }
+}
+
+static int
+test_duid_lcch_release_defers_during_vc_grace(void) {
+    printf("Test 28: DUID LCCH release defers during VC grace... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_xcch_stubs();
+    prepare_lcch_release_duids();
+
+    time_t now = time(NULL);
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_hangtime = 1;
+    state.currentslot = 0;
+    state.last_vc_sync_time = now - 10;
+    state.p25_last_vc_tune_time = now;
+    state.p25_cfg_vc_grace_s = 60.0;
+
+    p25p2_test_process_p2_duid(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("grace release force", state.p25_sm_force_release, 0);
+    rc |= expect_int("grace tuned remains", opts.p25_is_tuned, 1);
+    rc |= expect_int("grace lcch seen", state.p2_is_lcch, 1);
+    rc |= expect_int("grace sacch dispatches", g_sacch_mac_calls, 4);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+static int
+test_duid_lcch_release_tears_down_after_vc_grace(void) {
+    printf("Test 29: DUID LCCH release tears down after VC grace... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_xcch_stubs();
+    reset_playback_stub();
+    prepare_lcch_release_duids();
+
+    time_t now = time(NULL);
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_hangtime = 1;
+    state.currentslot = 0;
+    state.last_vc_sync_time = now - 10;
+    state.p25_last_vc_tune_time = now - 10;
+    state.p25_cfg_vc_grace_s = 0.25;
+    seed_teardown_dirty_state(&state);
+    state.last_vc_sync_time = now - 10;
+    state.p25_last_vc_tune_time = now - 10;
+    state.p25_cfg_vc_grace_s = 0.25;
+
+    p25p2_test_process_p2_duid(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("post-grace release force", state.p25_sm_force_release, 1);
+    rc |= expect_teardown_common_reset(&state);
+    rc |= expect_int("post-grace sacch dispatches", g_sacch_mac_calls >= 1, 1);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
 }
 
 int
@@ -633,6 +1319,21 @@ main(void) {
     failures += test_ess_soft_accepts_deep_erasure();
     failures += test_ess_soft_failure_counts_once();
     failures += test_ess_des_manual_key_preserves_audio_gate();
+    failures += test_ess_aes_slot1_loaded_key_preserves_audio_gate();
+    failures += test_ess_allow_list_blocks_clear_audio_gate();
+    failures += test_ess_decode_failure_refreshes_existing_crypto_state();
+    failures += test_ess_decode_failure_refreshes_existing_aes_state();
+    failures += test_facchc_success_routes_opcode_and_counters();
+    failures += test_facchc_failure_preserves_mac_and_counts_error();
+    failures += test_sacchc_dynamic_erasure_success_maps_inverse_slot();
+    failures += test_isch_channel_one_location_sets_scramble_offset();
+    failures += test_duid_exact_or_null_soft_metrics_preserve_hard_decision();
+    failures += test_isch_reliability_clamps_llr_magnitude();
+    failures += test_teardown_flushes_partial_int16_audio_and_resets_call_state();
+    failures += test_teardown_without_partial_int16_audio_skips_playback_but_clears_state();
+    failures += test_duid_invalid_burst_aborts_and_clears_crypto_state();
+    failures += test_duid_lcch_release_defers_during_vc_grace();
+    failures += test_duid_lcch_release_tears_down_after_vc_grace();
 
     printf("\n%d test(s) failed\n", failures);
     return failures > 0 ? 1 : 0;

@@ -147,6 +147,22 @@ main(void) {
         return 8;
     }
 
+    long invalid = 777;
+    int invalid_rc = p25_test_frequency_for(/*iden*/ 16, /*type*/ 0, /*tdma*/ 0, /*base*/ 1000, /*spac*/ 1,
+                                            /*chan16*/ (1 << 12) | 1, /*map_override*/ 0, &invalid);
+    if (invalid_rc != -1) {
+        return 9;
+    }
+    if (expect_eq_long("invalid iden preserves output", invalid, 777)) {
+        return 10;
+    }
+
+    int null_out_rc = p25_test_frequency_for(/*iden*/ 1, /*type*/ 0, /*tdma*/ 0, /*base*/ 1000, /*spac*/ 1,
+                                             /*chan16*/ (1 << 12) | 1, /*map_override*/ 0, NULL);
+    if (null_out_rc != 0) {
+        return 11;
+    }
+
     DSD_FPRINTF(stderr, "P25 IDEN variant checks passed\n");
     return 0;
 }

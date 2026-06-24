@@ -216,6 +216,39 @@ dmr_dburst_keeps_data_p_head(uint8_t databurst) {
     return databurst == 0x06 || databurst == 0x07 || databurst == 0x08 || databurst == 0x0A || databurst == 0x0B;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_dmr_test_dburst_profile(dsd_opts* opts, dsd_state* state, uint8_t databurst, uint8_t slot,
+                                dsd_neo_dmr_test_dburst_profile_result* result) {
+    uint8_t info[196];
+    dmr_data_burst_ctx ctx;
+    DSD_MEMSET(info, 0, sizeof(info));
+    if (opts == NULL || state == NULL || result == NULL || slot >= 2U) {
+        return 0;
+    }
+    DSD_MEMSET(result, 0, sizeof(*result));
+
+    state->currentslot = slot;
+    dmr_dburst_ctx_init(&ctx, opts, state, info, databurst, NULL);
+    dmr_dburst_apply_base_profile(&ctx);
+    dmr_dburst_apply_dynamic_profile(&ctx);
+    if (!dmr_dburst_keeps_data_p_head(ctx.databurst)) {
+        state->data_p_head[ctx.slot] = 0;
+    }
+
+    result->pdu_len = ctx.pdu_len;
+    result->pdu_start = ctx.pdu_start;
+    result->crclen = ctx.crclen;
+    result->crcmask = ctx.crcmask;
+    result->flags = (uint8_t)((ctx.is_bptc ? DMR_DBURST_F_BPTC : 0U) | (ctx.is_trellis ? DMR_DBURST_F_TRELLIS : 0U)
+                              | (ctx.is_emb ? DMR_DBURST_F_EMB : 0U) | (ctx.is_lc ? DMR_DBURST_F_LC : 0U)
+                              | (ctx.is_full ? DMR_DBURST_F_FULL : 0U) | (ctx.is_udt ? 0x80U : 0U));
+    DSD_SNPRINTF(result->subtype, sizeof(result->subtype), "%s", state->fsubtype);
+    result->data_p_head = state->data_p_head[ctx.slot];
+    return 1;
+}
+#endif
+
 static void
 dmr_dburst_print_header_and_dump(dmr_data_burst_ctx* ctx) {
     if (ctx->databurst == 0xEB) {

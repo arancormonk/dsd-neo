@@ -331,6 +331,19 @@ test_tyt_ap_apply_skips_silence_and_zero_tail(void) {
     state.tyt_ap = 1;
 
     int rc = 0;
+    char inactive[49];
+    for (int i = 0; i < 49; i++) {
+        inactive[i] = (char)((i + 1) & 1U);
+    }
+    char inactive_original[49];
+    DSD_MEMCPY(inactive_original, inactive, sizeof(inactive_original));
+    static dsd_state inactive_state;
+    DSD_MEMSET(&inactive_state, 0, sizeof(inactive_state));
+    rc |= expect_int("tyt ap null state", tyt_ap_pc4_apply_frame49(NULL, inactive), 0);
+    rc |= expect_int("tyt ap null frame", tyt_ap_pc4_apply_frame49(&state, NULL), 0);
+    rc |= expect_int("tyt ap inactive state", tyt_ap_pc4_apply_frame49(&inactive_state, inactive), 0);
+    rc |= expect_char_frame("tyt ap inactive frame", inactive, inactive_original);
+
     char silence[49];
     fill_default_silence(silence);
     char original_silence[49];
@@ -387,6 +400,19 @@ test_tyt_ep_apply_skips_silence_and_zero_tail(void) {
     }
 
     int rc = 0;
+    char inactive[49];
+    for (int i = 0; i < 49; i++) {
+        inactive[i] = (char)((i + 1) & 1U);
+    }
+    char inactive_original[49];
+    DSD_MEMCPY(inactive_original, inactive, sizeof(inactive_original));
+    static dsd_state inactive_state;
+    DSD_MEMSET(&inactive_state, 0, sizeof(inactive_state));
+    rc |= expect_int("tyt ep null state", tyt_ep_aes_apply_frame49(NULL, inactive), 0);
+    rc |= expect_int("tyt ep null frame", tyt_ep_aes_apply_frame49(&state, NULL), 0);
+    rc |= expect_int("tyt ep inactive state", tyt_ep_aes_apply_frame49(&inactive_state, inactive), 0);
+    rc |= expect_char_frame("tyt ep inactive frame", inactive, inactive_original);
+
     char silence[49];
     fill_default_silence(silence);
     char original_silence[49];

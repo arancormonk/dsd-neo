@@ -212,6 +212,24 @@ test_high_reliability_no_change() {
     }
 }
 
+static void
+test_table_impl_public_guards() {
+    Hamming_10_6_3_TableImpl hamming;
+    int decoded = 123;
+
+    ASSERT_EQ(hamming.decode(-1, &decoded), 2, "Negative table decode input should fail");
+    ASSERT_EQ(decoded, 0, "Negative table decode input should clear output");
+
+    decoded = 123;
+    ASSERT_EQ(hamming.decode(1024, &decoded), 2, "Out-of-range table decode input should fail");
+    ASSERT_EQ(decoded, 0, "Out-of-range table decode input should clear output");
+
+    ASSERT_EQ(hamming.decode(0, nullptr), 2, "Null table decode output should fail");
+
+    ASSERT_EQ(hamming.encode(-1), 0, "Negative table encode input should clamp to zero");
+    ASSERT_EQ(hamming.encode(64), 0, "Out-of-range table encode input should clamp to zero");
+}
+
 int
 main(void) {
     test_no_error();
@@ -219,6 +237,7 @@ main(void) {
     test_two_errors_with_soft_info();
     test_soft_hard_override_toggle();
     test_high_reliability_no_change();
+    test_table_impl_public_guards();
 
     if (g_fail_count > 0) {
         DSD_FPRINTF(stderr, "FAILED: %d test(s) failed\n", g_fail_count);

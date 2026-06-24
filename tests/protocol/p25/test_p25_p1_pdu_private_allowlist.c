@@ -8,11 +8,13 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -24,6 +26,14 @@
 #endif
 
 struct RtlSdrContext;
+
+static int g_seed_count;
+static int g_group_grant_count;
+static int g_enc_lockout_count;
+static int g_last_group_channel;
+static int g_last_group_svc;
+static int g_last_group_tg;
+static int g_last_group_src;
 
 bool
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -58,6 +68,17 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     return 0;
+}
+
+static void
+reset_calls(void) {
+    g_seed_count = 0;
+    g_group_grant_count = 0;
+    g_enc_lockout_count = 0;
+    g_last_group_channel = 0;
+    g_last_group_svc = 0;
+    g_last_group_tg = 0;
+    g_last_group_src = 0;
 }
 
 static int
@@ -152,6 +173,7 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
     (void)slot;
     (void)tg;
     (void)svc_bits;
+    g_enc_lockout_count++;
 }
 
 void
@@ -159,6 +181,7 @@ void
 p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_seed_count++;
 }
 
 void
@@ -166,10 +189,11 @@ void
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
+    g_group_grant_count++;
+    g_last_group_channel = channel;
+    g_last_group_svc = svc_bits;
+    g_last_group_tg = tg;
+    g_last_group_src = src;
 }
 
 void
@@ -252,6 +276,81 @@ main(void) {
     opts.p25_is_tuned = 0;
     p25_decode_pdu_trunking(&opts, &st, mpdu);
     rc |= expect_true("p1 pdu private known target tunes", st.p25_sm_tune_count == before + 1);
+
+    rc |= expect_true("policy seed group grant", seed_policy_group(&st, 0x1234u, "A", "TG-ALLOW") == 0);
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x17; // ALT MBT
+    mpdu[2] = 0x00;
+    mpdu[7] = 0x00; // Group Voice Channel Grant Update - Extended
+    mpdu[8] = 0x00; // clear voice service
+    mpdu[3] = 0x01;
+    mpdu[4] = 0x02;
+    mpdu[5] = 0x03; // source
+    mpdu[14] = 0x10;
+    mpdu[15] = 0x0A;
+    mpdu[16] = 0x10;
+    mpdu[17] = 0x0A;
+    mpdu[18] = 0x12;
+    mpdu[19] = 0x34; // group
+    opts.p25_trunk = 1;
+    opts.trunk_use_allow_list = 0;
+    opts.trunk_tune_enc_calls = 1;
+    opts.payload = 0;
+    opts.p25_is_tuned = 0;
+    reset_calls();
+    p25_decode_pdu_trunking(&opts, &st, mpdu);
+    rc |= expect_true("p1 pdu group emergency state", st.p25_call_emergency[0] == 0);
+    rc |= expect_true("p1 pdu group priority state", st.p25_call_priority[0] == 0);
+    rc |= expect_true("p1 pdu group active channel", strstr(st.active_channel[0], "TG: 4660") != NULL);
+
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x17;
+    mpdu[2] = 0x00;
+    mpdu[7] = 0x08; // Telephone Interconnect Voice Channel Grant
+    mpdu[3] = 0x01;
+    mpdu[4] = 0x02;
+    mpdu[5] = 0x03; // target
+    mpdu[12] = 0x10;
+    mpdu[13] = 0x0A;
+    mpdu[16] = 0x00;
+    mpdu[17] = 0x20; // timer
+    opts.p25_trunk = 0;
+    opts.trunk_use_allow_list = 0;
+    opts.payload = 0;
+    opts.p25_is_tuned = 0;
+    st.lasttg = 0x010203;
+    st.synctype = DSD_SYNC_P25P1_POS;
+    st.p25_vc_freq[0] = 0;
+    st.p25_vc_freq[1] = 0;
+    reset_calls();
+    p25_decode_pdu_trunking(&opts, &st, mpdu);
+    rc |= expect_true("p1 pdu telephone nontrunk p1 vc freq", st.p25_vc_freq[0] == 851125000);
+    rc |= expect_true("p1 pdu telephone p1 leaves slot 2 freq", st.p25_vc_freq[1] == 0);
+    rc |= expect_true("p1 pdu telephone no trunk tune hook",
+                      g_group_grant_count == 0 && st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("p1 pdu telephone active channel", strstr(st.active_channel[0], "Active Tele Ch: 100A") != NULL);
+
+    rc |= expect_true("policy seed mfid90 sg", seed_policy_group(&st, 0x2222u, "A", "SG-ALLOW") == 0);
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x17;
+    mpdu[2] = 0x90;
+    mpdu[7] = 0x02; // MFID90 Group Regroup Channel Grant - Explicit
+    mpdu[3] = 0x04;
+    mpdu[4] = 0x05;
+    mpdu[5] = 0x06; // source
+    mpdu[12] = 0x10;
+    mpdu[13] = 0x0A;
+    mpdu[14] = 0x10;
+    mpdu[15] = 0x0A;
+    mpdu[16] = 0x22;
+    mpdu[17] = 0x22; // supergroup
+    opts.p25_trunk = 1;
+    opts.trunk_use_allow_list = 0;
+    opts.trunk_tune_enc_calls = 1;
+    opts.p25_is_tuned = 0;
+    reset_calls();
+    p25_decode_pdu_trunking(&opts, &st, mpdu);
+    rc |= expect_true("p1 pdu mfid90 active channel", strstr(st.active_channel[0], "SG: 8738") != NULL);
 
     dsd_state_ext_free_all(&st);
 

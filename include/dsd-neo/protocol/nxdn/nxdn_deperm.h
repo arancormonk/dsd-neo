@@ -47,6 +47,46 @@ void nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], c
 
 void nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]);
 
+#ifdef DSD_NEO_TEST_HOOKS
+void dsd_neo_nxdn_test_depermute_12_5(const uint8_t input[60], const uint8_t reliab[60], uint8_t deperm[60],
+                                      uint8_t deperm_rel[60]);
+void dsd_neo_nxdn_test_depermute_16_9(const uint8_t input[144], const uint8_t reliab[144], uint8_t deperm[144],
+                                      uint8_t deperm_rel[144]);
+void dsd_neo_nxdn_test_depermute_12_25(const uint8_t input[300], const uint8_t reliab[300], uint8_t deperm[300],
+                                       uint8_t deperm_rel[300]);
+void dsd_neo_nxdn_test_depermute_12_29(const uint8_t input[348], const uint8_t reliab[348], uint8_t deperm[348],
+                                       uint8_t deperm_rel[348]);
+void dsd_neo_nxdn_test_depuncture_12_5(const uint8_t deperm[60], const uint8_t deperm_rel[60], uint8_t depunc[72],
+                                       uint8_t depunc_rel[72]);
+void dsd_neo_nxdn_test_depuncture_16_9(const uint8_t deperm[144], const uint8_t deperm_rel[144], uint8_t depunc[192],
+                                       uint8_t depunc_rel[192]);
+void dsd_neo_nxdn_test_depuncture_12_group(const uint8_t* deperm, const uint8_t* deperm_rel, size_t groups,
+                                           uint8_t* depunc, uint8_t* depunc_rel);
+int dsd_neo_nxdn_test_dcr_is_sb0_message_type(uint8_t message_type);
+void dsd_neo_nxdn_test_unpack_bytes_msb(const uint8_t* bytes, size_t byte_count, uint8_t* bits);
+void dsd_neo_nxdn_test_pack_bits_msb(const uint8_t* bits, size_t byte_count, uint8_t* bytes);
+uint16_t dsd_neo_nxdn_test_bits_to_u16(const uint8_t* bits, int len);
+int dsd_neo_nxdn_test_sacch_part_of_frame(uint8_t sf);
+int dsd_neo_nxdn_test_ran_from_trellis(const uint8_t* trellis_buf);
+void dsd_neo_nxdn_test_reset_payload_seed_if_forced(dsd_state* state);
+void dsd_neo_nxdn_test_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
+void dsd_neo_nxdn_test_sacch_state_update(dsd_opts* opts, dsd_state* state, const uint8_t trellis_buf[32],
+                                          const uint8_t m_data[5], uint8_t crc, uint8_t check);
+void dsd_neo_nxdn_test_sacch2_state_update(const dsd_opts* opts, dsd_state* state, const uint8_t trellis_buf[32],
+                                           const uint8_t m_data[5], uint8_t crc, uint8_t check);
+void dsd_neo_nxdn_test_cac_state_update(dsd_opts* opts, dsd_state* state, const uint8_t trellis_buf[176],
+                                        const uint8_t m_data[22], uint16_t crc);
+void dsd_neo_nxdn_test_pich_tch_state_update(const dsd_opts* opts, dsd_state* state, const uint8_t trellis_buf[96],
+                                             const uint8_t m_data[12], uint16_t crc, uint16_t check, uint8_t lich);
+void dsd_neo_nxdn_test_facch2_udch_state_update(dsd_opts* opts, dsd_state* state, const uint8_t trellis_buf[208],
+                                                const uint8_t m_data[26], uint16_t crc, uint16_t check, uint8_t type);
+void dsd_neo_nxdn_test_facch3_udch2_state_update(dsd_opts* opts, dsd_state* state, const uint8_t bits[160],
+                                                 const uint8_t bytes[24], uint16_t crc0, uint16_t check0, uint16_t crc1,
+                                                 uint16_t check1, uint8_t type);
+void dsd_neo_nxdn_test_facch3_udch2_store_block(uint8_t bits[160], uint8_t bytes[24], size_t block,
+                                                const uint8_t trellis_buf[96], const uint8_t m_data[12]);
+#endif
+
 const char* nxdn_message_type_label(uint8_t message_type);
 void nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType);
 

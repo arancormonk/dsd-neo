@@ -128,6 +128,7 @@ main(void) {
     /* --- init with NULL is safe (no crash) --- */
     tcp_metrics_init(NULL, 48000);
     tcp_metrics_reset(NULL, 48000);
+    rc |= expect_int("record recv NULL is no watchdog event", tcp_metrics_record_recv(NULL, 1000, 123456789ULL), 0);
 
     return rc ? 1 : 0;
 }

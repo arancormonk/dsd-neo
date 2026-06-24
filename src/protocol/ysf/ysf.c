@@ -128,7 +128,7 @@ ysf_dch_decode_text(dsd_state* state, const char dch_bytes[20], uint8_t fn, uint
 }
 
 static void
-ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, uint8_t input[]) {
+ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, const uint8_t input[]) {
     //TODO: Per Call WAV files using these strings
     int i;
     char dch_bytes[20];
@@ -186,7 +186,7 @@ ysf_dch_decode2_remarks(const char* label1, char* dst1, const char* label2, char
 }
 
 static void
-ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, uint8_t input[]) {
+ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, const uint8_t input[]) {
     char dch_bytes[20];
     DSD_MEMSET(dch_bytes, 0, sizeof(dch_bytes));
 
@@ -221,6 +221,25 @@ crc16ysf(const uint8_t buf[], int len) {
     crc = crc ^ 0xffff;
     return crc & 0xffff;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_ysf_test_decode_dch(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
+                            const uint8_t input[160]) {
+    ysf_dch_decode(state, bn, bt, fn, ft, cm, input);
+}
+
+void
+dsd_neo_ysf_test_decode_dch2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
+                             const uint8_t input[80]) {
+    ysf_dch_decode2(state, bn, bt, fn, ft, cm, input);
+}
+
+uint16_t
+dsd_neo_ysf_test_crc16(const uint8_t* bits, int len) {
+    return crc16ysf(bits, len);
+}
+#endif
 
 //modified version of nxdn_deperm_facch1 -- this one for V/D Type 2 CC DCH (100 dibit version)
 static int
@@ -279,6 +298,14 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
     return err;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_ysf_test_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
+                           uint8_t cm, uint8_t input[100]) {
+    return ysf_conv_dch2(opts, state, bn, bt, fn, ft, cm, input);
+}
+#endif
+
 //modified version of nxdn_deperm_facch1 -- this one for Full Rate, Type 1 CC, Headers and Terminators DCH (180 dibit version)
 static int
 ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
@@ -335,9 +362,21 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
     return err;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_ysf_test_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
+                          uint8_t cm, uint8_t input[180]) {
+    return ysf_conv_dch(opts, state, bn, bt, fn, ft, cm, input);
+}
+#endif
+
 //modified version of nxdn_deperm_facch1
 static int
-ysf_conv_fich(uint8_t input[], uint8_t dest[32], uint32_t* v_error_out) {
+ysf_conv_fich(const uint8_t input[100], uint8_t dest[32], uint32_t* v_error_out) {
+    if (input == NULL || dest == NULL) {
+        return -1;
+    }
+
     int i, j, err;
     uint8_t trellis_buf[100];
     uint8_t m_data[100];
@@ -398,6 +437,20 @@ ysf_conv_fich(uint8_t input[], uint8_t dest[32], uint32_t* v_error_out) {
     DSD_MEMCPY(dest, fich_bits, 32); //copy minus the crc16
     return err;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_neo_ysf_test_conv_fich(const uint8_t input[100], uint8_t dest[32], uint32_t* v_error_out) {
+    if (input == NULL) {
+        return -1;
+    }
+    uint8_t local_input[100];
+    for (size_t i = 0; i < sizeof(local_input); i++) {
+        local_input[i] = (uint8_t)(input[i] & 0x03U);
+    }
+    return ysf_conv_fich(local_input, dest, v_error_out);
+}
+#endif
 
 static void
 ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop) {
@@ -733,6 +786,13 @@ ysf_build_type2_ambe(const uint8_t vech_bits[104], uint8_t temp[512], char ambe_
         ambe_d[j] = (char)temp[j];
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_ysf_test_build_type2_ambe(const uint8_t vech_bits[104], uint8_t temp[512], char ambe_d[49]) {
+    ysf_build_type2_ambe(vech_bits, temp, ambe_d);
+}
+#endif
 
 static void
 ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {

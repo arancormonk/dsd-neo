@@ -453,11 +453,29 @@ openMbeInFile(dsd_opts* opts, dsd_state* state) {
     //debug
 
     // read cookie
-    cookie[0] = fgetc(opts->mbe_in_f);
-    cookie[1] = fgetc(opts->mbe_in_f);
-    cookie[2] = fgetc(opts->mbe_in_f);
-    cookie[3] = fgetc(opts->mbe_in_f);
+    int cookie_ok = 1;
+    for (size_t i = 0; i < 4U; i++) {
+        int c = fgetc(opts->mbe_in_f);
+        if (c == EOF) {
+            cookie_ok = 0;
+            cookie[i] = '\0';
+        } else {
+            cookie[i] = (char)c;
+        }
+    }
     cookie[4] = 0;
+
+    if (cookie_ok == 0) {
+        if (strncmp(".mbe", ext, 4) == 0) {
+            state->mbe_file_type = 3;
+            return;
+        }
+        state->mbe_file_type = -1;
+        LOG_ERROR("Error - incomplete MBE file header\n");
+        fclose(opts->mbe_in_f);
+        opts->mbe_in_f = NULL;
+        return;
+    }
 
     //ambe+2
     if (strstr(cookie, ".amb") != NULL) {
@@ -1105,10 +1123,8 @@ parse_raw_user_string(const char* input, uint8_t* output, size_t out_cap) {
         return 0;
     }
 
-    // If odd number of nibbles, we will logically pad one nibble (shift last)
-    int shift = 0;
+    // If odd number of nibbles, logically pad the missing low nibble with zero.
     if (in_len & 1U) {
-        shift = 1;
         in_len++; // treat as if one extra nibble was provided
     }
 
@@ -1140,11 +1156,6 @@ parse_raw_user_string(const char* input, uint8_t* output, size_t out_cap) {
         // Parse two nibbles into a byte
         output[i] = hex_pair_to_u8_or_zero(octet_char);
         k += 2;
-    }
-
-    // If we had an odd input nibble count, left shift the last written octet
-    if (shift && want_octets > 0) {
-        output[want_octets - 1] <<= 4;
     }
 
     return (uint16_t)want_octets;

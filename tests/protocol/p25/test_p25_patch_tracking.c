@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
+// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// NOLINTBEGIN(bugprone-misplaced-widening-cast)
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
@@ -81,6 +84,15 @@ expect_true(const char* tag, int cond) {
 }
 
 static int
+expect_eq_int(const char* tag, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 find_idx(const dsd_state* st, uint16_t sgid) {
     for (int i = 0; i < st->p25_patch_count && i < 8; i++) {
         if (st->p25_patch_sgid[i] == sgid) {
@@ -88,6 +100,95 @@ find_idx(const dsd_state* st, uint16_t sgid) {
         }
     }
     return -1;
+}
+
+static int
+test_guard_replacement_and_policy_edges(void) {
+    int rc = 0;
+    static dsd_state st;
+    char out[128];
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    p25_patch_update(NULL, 1, 1, 1);
+    p25_patch_add_wgid(NULL, 1, 1);
+    p25_patch_add_wuid(NULL, 1, 1);
+    p25_patch_remove_wgid(NULL, 1, 1);
+    p25_patch_remove_wuid(NULL, 1, 1);
+    p25_patch_clear_sg(NULL, 1);
+    p25_patch_set_kas(NULL, 1, 0, 0, 0);
+    rc |= expect_eq_int("summary null out", p25_patch_compose_summary(&st, NULL, sizeof out), 0);
+    rc |= expect_eq_int("summary zero cap", p25_patch_compose_summary(&st, out, 0), 0);
+    rc |= expect_eq_int("summary null state", p25_patch_compose_summary(NULL, out, sizeof out), 0);
+    rc |= expect_eq_int("details null out", p25_patch_compose_details(&st, NULL, sizeof out), 0);
+    rc |= expect_eq_int("details zero cap", p25_patch_compose_details(&st, out, 0), 0);
+    rc |= expect_eq_int("details null state", p25_patch_compose_details(NULL, out, sizeof out), 0);
+    rc |= expect_eq_int("tg clear null", p25_patch_tg_key_is_clear(NULL, 123), 0);
+    rc |= expect_eq_int("sg clear null", p25_patch_sg_key_is_clear(NULL, 123), 0);
+
+    st.p25_patch_count = -3;
+    p25_patch_update(&st, 300, 1, 1);
+    rc |= expect_eq_int("negative count recovers", st.p25_patch_count, 1);
+    rc |= expect_eq_int("negative count stores sgid", st.p25_patch_sgid[0], 300);
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.p25_patch_count = 8;
+    for (int i = 0; i < 8; i++) {
+        st.p25_patch_sgid[i] = (uint16_t)(100 + i);
+        st.p25_patch_last_update[i] = (time_t)(1000 + i);
+        st.p25_patch_wgid_count[i] = 1;
+        st.p25_patch_key_valid[i] = 1;
+    }
+    p25_patch_update(&st, 999, 0, 1);
+    rc |= expect_eq_int("full table count", st.p25_patch_count, 8);
+    rc |= expect_eq_int("full table replaces stalest", st.p25_patch_sgid[0], 999);
+    rc |= expect_eq_int("replacement clears wgid count", st.p25_patch_wgid_count[0], 0);
+    rc |= expect_eq_int("replacement clears key valid", st.p25_patch_key_valid[0], 0);
+    rc |= expect_eq_int("replacement stores simulselect", st.p25_patch_is_patch[0], 0);
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    p25_patch_update(&st, 10, 1, 1);
+    p25_patch_add_wgid(&st, 10, 111);
+    p25_patch_set_kas(&st, 10, 0x2222, 0x84, 3);
+    p25_patch_update(&st, 20, 1, 1);
+    p25_patch_add_wgid(&st, 20, 222);
+    int stale = find_idx(&st, 10);
+    if (stale >= 0) {
+        st.p25_patch_last_update[stale] = time(NULL) - 21;
+    }
+    int active = find_idx(&st, 20);
+    if (active >= 0) {
+        st.p25_patch_last_update[active] = time(NULL);
+    }
+    (void)p25_patch_compose_details(&st, out, sizeof out);
+    rc |= expect_eq_int("sweep compacts count", st.p25_patch_count, 1);
+    rc |= expect_eq_int("sweep preserves active sgid", st.p25_patch_sgid[0], 20);
+    rc |= expect_eq_int("sweep preserves active member", st.p25_patch_wgid[0][0], 222);
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    p25_patch_add_wuid(&st, 77, 1001);
+    p25_patch_add_wuid(&st, 77, 1002);
+    p25_patch_remove_wuid(&st, 77, 1001);
+    rc |= expect_eq_int("remove wuid keeps one", st.p25_patch_wuid_count[0], 1);
+    rc |= expect_eq_int("remove wuid swaps tail", (int)st.p25_patch_wuid[0][0], 1002);
+    rc |= expect_eq_int("remove wuid stays active", st.p25_patch_active[0], 1);
+    p25_patch_remove_wuid(&st, 77, 1002);
+    rc |= expect_eq_int("remove final wuid clears count", st.p25_patch_wuid_count[0], 0);
+    rc |= expect_eq_int("remove final wuid deactivates", st.p25_patch_active[0], 0);
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    p25_patch_add_wgid(&st, 69, 0x2345);
+    p25_patch_set_kas(&st, 69, 0, 0x84, 17);
+    rc |= expect_eq_int("clear tg policy active", p25_patch_tg_key_is_clear(&st, 0x2345), 1);
+    rc |= expect_eq_int("clear sg policy active", p25_patch_sg_key_is_clear(&st, 69), 1);
+    st.p25_patch_last_update[0] = time(NULL) - 21;
+    rc |= expect_eq_int("clear tg policy stale", p25_patch_tg_key_is_clear(&st, 0x2345), 0);
+    rc |= expect_eq_int("clear sg policy stale", p25_patch_sg_key_is_clear(&st, 69), 0);
+    st.p25_patch_last_update[0] = time(NULL);
+    p25_patch_set_kas(&st, 69, 0x1234, -1, -1);
+    rc |= expect_eq_int("nonclear tg policy", p25_patch_tg_key_is_clear(&st, 0x2345), 0);
+    rc |= expect_eq_int("nonclear sg policy", p25_patch_sg_key_is_clear(&st, 69), 0);
+
+    return rc;
 }
 
 int
@@ -167,6 +268,7 @@ main(void) {
 
     // SG077[S] still present (simulselect) with U:3
     rc |= expect_true("SG077 remains", strstr(det, "SG077[S]") != NULL);
+    rc |= test_guard_replacement_and_policy_edges();
 
     (void)errno;
     return rc;
@@ -175,3 +277,4 @@ main(void) {
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic pop
 #endif
+// NOLINTEND(bugprone-misplaced-widening-cast)

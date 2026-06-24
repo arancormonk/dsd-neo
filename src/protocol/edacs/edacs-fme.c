@@ -65,10 +65,55 @@
 #include <math.h>
 #endif
 
+static void
+edacs_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
+    if (file == NULL || samples == NULL || sample_count <= 0) {
+        return;
+    }
+    sf_count_t written = sf_write_short(file, samples, sample_count);
+    if (written != sample_count) {
+        LOG_WARN("%s: wrote %lld/%lld samples to WAV output", context, (long long)written, (long long)sample_count);
+    }
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void dsd_neo_edacs_test_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long int msg_1,
                                             unsigned long long int msg_2);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+const char* dsd_neo_edacs_test_lcn_status_string(int lcn);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+short dsd_neo_edacs_test_apply_input_volume(int multiplier, short sample);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unsigned long long int dsd_neo_edacs_test_vote_frames(unsigned long long int fr_1_4, unsigned long long int fr_2_5,
+                                                      unsigned long long int fr_3_6);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int dsd_neo_edacs_test_update_squelch_count(double pwr, double sql, int count);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int dsd_neo_edacs_test_should_release_voice(unsigned long long int sr, int sql_disabled, time_t start_time,
+                                            double no_sql_watchdog_s);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void dsd_neo_edacs_test_update_lcn_count(dsd_state* state, int lcn);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void dsd_neo_edacs_test_build_raw_frames(const int edacs_bit[241], unsigned long long int* fr_1,
+                                         unsigned long long int* fr_2, unsigned long long int* fr_3,
+                                         unsigned long long int* fr_4, unsigned long long int* fr_5,
+                                         unsigned long long int* fr_6);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unsigned long long int dsd_neo_edacs_test_build_symbol_register(const dsd_opts* opts, dsd_state* state,
+                                                                const short analog1[960]);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void dsd_neo_edacs_test_reset_digitize_overflow(dsd_state* state);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int dsd_neo_edacs_test_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2,
+                                              short* analog3, double* pwr);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void dsd_neo_edacs_test_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
+                                          const short* analog3);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int dsd_neo_edacs_test_static_wav_downsample(const short* src, short* out, size_t out_count);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+double dsd_neo_edacs_test_no_sql_watchdog_window(double trunk_hangtime);
 #endif
 
 static void
@@ -375,22 +420,27 @@ edacs_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, 
 }
 
 static void
-edacs_write_static_wav_block(SNDFILE* wav, const short* src) {
-    short ss[320];
-    DSD_MEMSET(ss, 0, sizeof(ss));
+edacs_build_static_wav_block(const short* src, short out[320]) {
     for (int i = 0; i < 160; i++) {
-        ss[((size_t)i * 2) + 0] = src[(size_t)i * 6];
-        ss[((size_t)i * 2) + 1] = src[(size_t)i * 6];
+        out[((size_t)i * 2) + 0] = src[(size_t)i * 6];
+        out[((size_t)i * 2) + 1] = src[(size_t)i * 6];
     }
-    sf_write_short(wav, ss, 320);
 }
 
 static void
-edacs_write_analog_wav(dsd_opts* opts, short* analog1, short* analog2, short* analog3) {
+edacs_write_static_wav_block(SNDFILE* wav, const short* src) {
+    short ss[320];
+    DSD_MEMSET(ss, 0, sizeof(ss));
+    edacs_build_static_wav_block(src, ss);
+    edacs_write_wav_short_block(wav, ss, 320, "edacs static WAV");
+}
+
+static void
+edacs_write_analog_wav(dsd_opts* opts, const short* analog1, const short* analog2, const short* analog3) {
     if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
-        sf_write_short(opts->wav_out_f, analog1, 960);
-        sf_write_short(opts->wav_out_f, analog2, 960);
-        sf_write_short(opts->wav_out_f, analog3, 960);
+        edacs_write_wav_short_block(opts->wav_out_f, analog1, 960, "edacs WAV analog1");
+        edacs_write_wav_short_block(opts->wav_out_f, analog2, 960, "edacs WAV analog2");
+        edacs_write_wav_short_block(opts->wav_out_f, analog3, 960, "edacs WAV analog3");
     } else if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
         edacs_write_static_wav_block(opts->wav_out_f, analog1);
         edacs_write_static_wav_block(opts->wav_out_f, analog2);
@@ -449,6 +499,17 @@ edacs_should_release_voice(unsigned long long int sr, int sql_disabled, time_t s
         return 1;
     }
     return 0;
+}
+
+static double
+edacs_no_sql_watchdog_window(double trunk_hangtime) {
+    double no_sql_watchdog_s = trunk_hangtime * 10.0;
+    if (no_sql_watchdog_s < 20.0) {
+        no_sql_watchdog_s = 20.0;
+    } else if (no_sql_watchdog_s > 60.0) {
+        no_sql_watchdog_s = 60.0;
+    }
+    return no_sql_watchdog_s;
 }
 
 static void
@@ -581,12 +642,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     double pwr = opts->rtl_squelch_level + 1e-3; // small offset for initial loop phase
     double sql = opts->rtl_squelch_level;
     const int sql_disabled = (sql <= 0.0);
-    double no_sql_watchdog_s = opts->trunk_hangtime * 10.0;
-    if (no_sql_watchdog_s < 20.0) {
-        no_sql_watchdog_s = 20.0;
-    } else if (no_sql_watchdog_s > 60.0) {
-        no_sql_watchdog_s = 60.0;
-    }
+    const double no_sql_watchdog_s = edacs_no_sql_watchdog_window(opts->trunk_hangtime);
 
     DSD_FPRINTF(stderr, "\n");
     if (sql_disabled) {
@@ -1986,6 +2042,113 @@ dsd_neo_edacs_test_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigne
                                        unsigned long long int msg_2) {
     edacs_init_afs_layout(state);
     edacs_process_valid_frame(opts, state, msg_1, msg_2);
+}
+
+const char*
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_lcn_status_string(int lcn) {
+    return getLcnStatusString(lcn);
+}
+
+short
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_apply_input_volume(int multiplier, short sample) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.input_volume_multiplier = multiplier;
+    return edacs_apply_input_volume(&opts, sample);
+}
+
+unsigned long long int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_vote_frames(unsigned long long int fr_1_4, unsigned long long int fr_2_5,
+                               unsigned long long int fr_3_6) {
+    return edacsVoteFr(fr_1_4, fr_2_5, fr_3_6);
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_update_squelch_count(double pwr, double sql, int count) {
+    return edacs_update_squelch_count(pwr, sql, count);
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_should_release_voice(unsigned long long int sr, int sql_disabled, time_t start_time,
+                                        double no_sql_watchdog_s) {
+    return edacs_should_release_voice(sr, sql_disabled, start_time, no_sql_watchdog_s);
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_update_lcn_count(dsd_state* state, int lcn) {
+    edacs_update_lcn_count(state, lcn);
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_build_raw_frames(const int edacs_bit[241], unsigned long long int* fr_1,
+                                    unsigned long long int* fr_2, unsigned long long int* fr_3,
+                                    unsigned long long int* fr_4, unsigned long long int* fr_5,
+                                    unsigned long long int* fr_6) {
+    edacs_build_raw_frames(edacs_bit, fr_1, fr_2, fr_3, fr_4, fr_5, fr_6);
+}
+
+unsigned long long int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_build_symbol_register(const dsd_opts* opts, dsd_state* state, const short analog1[960]) {
+    if (opts == NULL || state == NULL || analog1 == NULL) {
+        return 0ULL;
+    }
+    return edacs_build_symbol_register(opts, state, analog1);
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_reset_digitize_overflow(dsd_state* state) {
+    if (state == NULL) {
+        return;
+    }
+    edacs_reset_digitize_overflow(state);
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2,
+                                          short* analog3, double* pwr) {
+    if (opts == NULL || state == NULL || analog1 == NULL || analog2 == NULL || analog3 == NULL || pwr == NULL) {
+        return 0;
+    }
+    return edacs_collect_analog_triplet(opts, state, analog1, analog2, analog3, pwr);
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
+                                     const short* analog3) {
+    if (opts == NULL || state == NULL || analog1 == NULL || analog2 == NULL || analog3 == NULL) {
+        return;
+    }
+    edacs_emit_analog_audio(opts, state, analog1, analog2, analog3);
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_static_wav_downsample(const short* src, short* out, size_t out_count) {
+    if (src == NULL || out == NULL || out_count < 320U) {
+        return -1;
+    }
+    short block[320];
+    DSD_MEMSET(block, 0, sizeof(block));
+    edacs_build_static_wav_block(src, block);
+    DSD_MEMCPY(out, block, sizeof(block));
+    return 0;
+}
+
+double
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_neo_edacs_test_no_sql_watchdog_window(double trunk_hangtime) {
+    return edacs_no_sql_watchdog_window(trunk_hangtime);
 }
 #endif
 

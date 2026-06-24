@@ -40,16 +40,23 @@ const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 // Shim to invoke real decoder
 void p25_test_p1_pdu_data_decode(const unsigned char* input, int len);
 
+static int g_datacall_count;
+static int g_history_count;
+static uint32_t g_datacall_src;
+static uint32_t g_datacall_dst;
+static char g_datacall_text[256];
+
 // Stubs required by linked decoder units
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, uint8_t slot) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)str;
     (void)slot;
+    g_datacall_count++;
+    g_datacall_src = src;
+    g_datacall_dst = dst;
+    DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", str ? str : "");
 }
 
 void
@@ -58,6 +65,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
+    g_history_count++;
 }
 
 void
@@ -225,6 +233,33 @@ expect_u8(const char* label, uint8_t got, uint8_t want) {
 }
 
 static int
+expect_u32(const char* label, uint32_t got, uint32_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got 0x%08X want 0x%08X\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_contains(const char* label, const char* got, const char* needle) {
+    if (got == NULL || strstr(got, needle) == NULL) {
+        DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", label, needle, got ? got : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static void
+reset_watchdog_counters(void) {
+    g_datacall_count = 0;
+    g_history_count = 0;
+    g_datacall_src = 0;
+    g_datacall_dst = 0;
+    g_datacall_text[0] = '\0';
+}
+
+static int
 test_p25_pdu_des_decrypt_vector(void) {
     static const uint8_t expect[] = {0x67, 0xAE, 0x7A, 0x29, 0x61, 0xDF, 0xA3, 0x45};
     static dsd_opts opts;
@@ -312,6 +347,153 @@ test_p25_pdu_missing_keys_stay_encrypted(void) {
     rc |= expect_bytes("P25 PDU DES missing-key unchanged", des_input, expect, sizeof expect);
     rc |= expect_bytes("P25 PDU RC4 missing-key unchanged", rc4_input, expect, sizeof expect);
     rc |= expect_bytes("P25 PDU AES missing-key unchanged", aes_input, expect, sizeof expect);
+    return rc;
+}
+
+static int
+test_p25_pdu_label_helpers(void) {
+    char label[48];
+    int rc = 0;
+
+    label[0] = 'x';
+    p25_decode_sap(0, label, sizeof(label));
+    rc |= expect_contains("SAP user-data label", label, "User Data");
+
+    p25_decode_sap(0xFE, label, sizeof(label));
+    rc |= expect_contains("SAP unknown label", label, "Unknown SAP");
+
+    label[0] = 'x';
+    p25_decode_rsp(0, 0, 0, label, sizeof(label));
+    rc |= expect_contains("RSP ACK label", label, "ACK");
+
+    p25_decode_rsp(1, 4, 0, label, sizeof(label));
+    rc |= expect_contains("RSP NACK undeliverable label", label, "Undeliverable");
+
+    p25_decode_rsp(2, 0, 0, label, sizeof(label));
+    rc |= expect_contains("RSP SACK label", label, "SACK");
+
+    p25_decode_rsp(3, 0, 0, label, sizeof(label));
+    rc |= expect_contains("RSP unknown label", label, "Unknown RSP");
+
+    p25_decode_sap(0, NULL, sizeof(label));
+    p25_decode_rsp(0, 0, 0, NULL, sizeof(label));
+    p25_decode_sap(0, label, 0);
+    p25_decode_rsp(0, 0, 0, label, 0);
+    return rc;
+}
+
+static int
+test_p25_pdu_header_state_updates(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t header[12];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    DSD_MEMSET(header, 0, sizeof(header));
+
+    header[0] = 0x30; // io=1, fmt=16
+    header[1] = 4;    // Packet Data
+    header[3] = 0x12;
+    header[4] = 0x34;
+    header[5] = 0x56;
+    header[6] = 0x82; // FMF plus two blocks
+    header[7] = 0x05; // pad
+    header[8] = 0x21; // NS/FSNF
+    header[9] = 0x07; // offset
+
+    reset_watchdog_counters();
+    p25_decode_pdu_header(&opts, &st, header);
+    int rc = 0;
+    rc |= expect_u32("header lasttg", st.lasttg, 0x123456);
+    rc |= expect_u32("header lastsrc any", st.lastsrc, 0xFFFFFF);
+    rc |= expect_contains("header data-call summary", st.dmr_lrrp_gps[0], "Packet Data");
+    rc |= expect_u32("header non-response no datacall", (uint32_t)g_datacall_count, 0);
+
+    DSD_MEMSET(&st, 0, sizeof(st));
+    DSD_MEMSET(header, 0, sizeof(header));
+    header[0] = 0x03; // response format
+    header[1] = (uint8_t)((1U << 6) | (4U << 3) | 2U);
+    header[3] = 0x00;
+    header[4] = 0x01;
+    header[5] = 0x23;
+    reset_watchdog_counters();
+    p25_decode_pdu_header(&opts, &st, header);
+    rc |= expect_u32("response final lasttg", st.lasttg, 0x000123);
+    rc |= expect_u32("response final lastsrc", st.lastsrc, 0xFFFFFF);
+    rc |= expect_u32("response datacall count", (uint32_t)g_datacall_count, 1);
+    rc |= expect_u32("response history count", (uint32_t)g_history_count, 1);
+    rc |= expect_u32("response datacall src", g_datacall_src, 0xFFFFFF);
+    rc |= expect_contains("response datacall text", g_datacall_text, "Undeliverable");
+
+    DSD_MEMSET(&st, 0, sizeof(st));
+    st.lastsrc = 0x111111;
+    st.lasttg = 0x222222;
+    DSD_MEMSET(header, 0, sizeof(header));
+    header[0] = 0x10;
+    header[1] = 61; // trunking-control SAP is intentionally skipped
+    header[3] = 0xAA;
+    header[4] = 0xBB;
+    header[5] = 0xCC;
+    reset_watchdog_counters();
+    p25_decode_pdu_header(&opts, &st, header);
+    rc |= expect_u32("trunking header preserves src", st.lastsrc, 0x111111);
+    rc |= expect_u32("trunking header preserves tg", st.lasttg, 0x222222);
+    rc |= expect_u32("trunking header no datacall", (uint32_t)g_datacall_count, 0);
+    return rc;
+}
+
+static int
+test_p25_pdu_es_headers_decrypt_and_advance(void) {
+    static const uint8_t des_expect[] = {0x67, 0xAE, 0x7A, 0x29, 0x61, 0xDF, 0xA3, 0x45};
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t es[13 + sizeof(des_expect)];
+    uint8_t es2[12 + 4];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    DSD_MEMSET(es, 0, sizeof(es));
+    DSD_MEMSET(es2, 0, sizeof(es2));
+    st.R = 0x133457799BBCDFF1ULL;
+
+    es[0] = 0x01;
+    es[1] = 0x23;
+    es[2] = 0x45;
+    es[3] = 0x67;
+    es[4] = 0x89;
+    es[5] = 0xAB;
+    es[6] = 0xCD;
+    es[7] = 0xEF;
+    es[9] = 0x81;  // DES
+    es[12] = 0xE0; // aux_res=3, aux_sap=32
+
+    uint8_t sap = 0;
+    int ptr = 0;
+    uint8_t encrypted = p25_decode_es_header(&opts, &st, es, &sap, &ptr, (int)sizeof(es));
+    int rc = 0;
+    rc |= expect_u8("ES header decrypt flag", encrypted, 0);
+    rc |= expect_u8("ES header aux SAP", sap, 32);
+    rc |= expect_u32("ES header ptr", (uint32_t)ptr, 13);
+    rc |= expect_bytes("ES header DES payload", es + 13, des_expect, sizeof(des_expect));
+
+    es2[0] = 0x80; // clear
+    es2[1] = 0x12;
+    es2[2] = 0x34;
+    es2[3] = 0x01;
+    es2[4] = 0x23;
+    es2[5] = 0x45;
+    es2[6] = 0x67;
+    es2[7] = 0x89;
+    es2[8] = 0xAB;
+    es2[9] = 0xCD;
+    es2[10] = 0xEF;
+    es2[12] = 0xCA;
+    es2[13] = 0xFE;
+    ptr = 5;
+    encrypted = p25_decode_es_header_2(&opts, &st, es2, &ptr, (int)sizeof(es2));
+    rc |= expect_u8("ES header 2 clear flag", encrypted, 0);
+    rc |= expect_u32("ES header 2 ptr", (uint32_t)ptr, 17);
+    rc |= expect_u8("ES header 2 payload unchanged 0", es2[12], 0xCA);
+    rc |= expect_u8("ES header 2 payload unchanged 1", es2[13], 0xFE);
     return rc;
 }
 
@@ -418,6 +600,9 @@ main(void) {
     rc |= test_p25_pdu_rc4_decrypt_vector();
     rc |= test_p25_pdu_aes128_decrypt_vector();
     rc |= test_p25_pdu_missing_keys_stay_encrypted();
+    rc |= test_p25_pdu_label_helpers();
+    rc |= test_p25_pdu_header_state_updates();
+    rc |= test_p25_pdu_es_headers_decrypt_and_advance();
     return rc;
 }
 

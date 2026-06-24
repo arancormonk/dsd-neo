@@ -93,6 +93,19 @@ expect_readout(const char* name, int rf_mod, double expected_snr, const char* ex
 }
 
 static void
+expect_invalid_readout(const char* name, int rf_mod, double expected_snr, const char* expected_label) {
+    ui_snr_readout got = ui_snr_readout_for_mod(rf_mod);
+    const char* actual_label = got.mod_label ? got.mod_label : "";
+    if (got.valid || fabs(got.snr_db - expected_snr) > 1e-6 || strcmp(actual_label, expected_label) != 0) {
+        (void)DSD_FPRINTF(stderr, "%s: valid=%d snr=%.6f label=%s\n", name, got.valid, got.snr_db,
+                          actual_label[0] ? actual_label : "(null)");
+    }
+    assert(got.valid == 0);
+    assert(fabs(got.snr_db - expected_snr) <= 1e-6);
+    assert(strcmp(actual_label, expected_label) == 0);
+}
+
+static void
 test_c4fm_uses_direct_snr(void) {
     reset_fakes();
     g_snr_c4fm = 18.25;
@@ -154,6 +167,50 @@ test_qpsk_uses_cqpsk_snr(void) {
 
     expect_readout("qpsk", 1, 12.75, "QPSK");
     assert(g_snr_cqpsk_calls == 1);
+    assert(g_snr_qpsk_const_calls == 0);
+}
+
+static void
+test_qpsk_uses_constellation_fallback(void) {
+    reset_fakes();
+    g_snr_cqpsk = -100.0;
+    g_snr_qpsk_const = 9.5;
+
+    expect_readout("qpsk-constellation-fallback", 1, 9.5, "QPSK");
+    assert(g_snr_cqpsk_calls == 1);
+    assert(g_snr_qpsk_const_calls == 1);
+    assert(g_snr_c4fm_calls == 0);
+    assert(g_snr_gfsk_calls == 0);
+}
+
+static void
+test_qpsk_uses_best_legacy_snr_when_constellation_invalid(void) {
+    reset_fakes();
+    g_snr_cqpsk = -100.0;
+    g_snr_qpsk_const = -100.0;
+    g_snr_c4fm = 4.25;
+    g_snr_gfsk = 6.75;
+
+    expect_readout("qpsk-legacy-best-fallback", 1, 6.75, "QPSK");
+    assert(g_snr_cqpsk_calls == 1);
+    assert(g_snr_qpsk_const_calls == 1);
+    assert(g_snr_c4fm_calls == 1);
+    assert(g_snr_gfsk_calls == 1);
+}
+
+static void
+test_qpsk_reports_invalid_when_all_estimates_stale(void) {
+    reset_fakes();
+    g_snr_cqpsk = -100.0;
+    g_snr_qpsk_const = -50.0;
+    g_snr_c4fm = -50.0;
+    g_snr_gfsk = -100.0;
+
+    expect_invalid_readout("qpsk-all-invalid", 1, -100.0, "QPSK");
+    assert(g_snr_cqpsk_calls == 1);
+    assert(g_snr_qpsk_const_calls == 1);
+    assert(g_snr_c4fm_calls == 1);
+    assert(g_snr_gfsk_calls == 1);
 }
 
 int
@@ -164,6 +221,9 @@ main(void) {
     test_gfsk_falls_back_when_direct_snr_invalid();
     test_c4fm_snr_at_invalid_threshold_falls_back();
     test_qpsk_uses_cqpsk_snr();
+    test_qpsk_uses_constellation_fallback();
+    test_qpsk_uses_best_legacy_snr_when_constellation_invalid();
+    test_qpsk_reports_invalid_when_all_estimates_stale();
     printf("UI_SNR_READOUT: OK\n");
     return 0;
 }

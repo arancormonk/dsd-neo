@@ -51,6 +51,35 @@ test_crc8_append_property(void) {
 }
 
 static void
+test_crc7_crc8_length_guards(void) {
+    uint8_t bits[256];
+    DSD_MEMSET(bits, 1, sizeof(bits));
+
+    assert(crc8(bits, 248U) != 0U);
+    assert(crc8(bits, 249U) == 0U);
+    assert(crc7(bits, 249U) != 0U);
+    assert(crc7(bits, 250U) == 0U);
+}
+
+static void
+test_crc5_sum_mod31_contract(void) {
+    uint8_t zero_bits[72];
+    uint8_t patterned_bits[72];
+    DSD_MEMSET(zero_bits, 0, sizeof(zero_bits));
+    DSD_MEMSET(patterned_bits, 0, sizeof(patterned_bits));
+
+    assert(ComputeCrc5Bit(zero_bits) == 0U);
+
+    for (unsigned byte = 0; byte < 9U; byte++) {
+        uint8_t value = (uint8_t)(byte + 1U);
+        for (unsigned bit = 0; bit < 8U; bit++) {
+            patterned_bits[(byte * 8U) + bit] = (uint8_t)((value >> (7U - bit)) & 1U);
+        }
+    }
+    assert(ComputeCrc5Bit(patterned_bits) == 14U);
+}
+
+static void
 test_crc3_append_property(void) {
     uint8_t bits[16] = {1, 1, 0, 1, 0, 0, 1, 1};
     unsigned L = 8;
@@ -91,6 +120,8 @@ int
 main(void) {
     test_crc7_append_property();
     test_crc8_append_property();
+    test_crc7_crc8_length_guards();
+    test_crc5_sum_mod31_contract();
     test_crc3_append_property();
     test_crc4_append_property();
     test_ccitt_zeros();

@@ -23,6 +23,11 @@ extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_neon(const unsigned c
                                                                 uint32_t phase);
 #endif
 
+#ifdef DSD_NEO_TEST_HOOKS
+extern "C" uint32_t dsd_test_widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* dst,
+                                                                           uint32_t len, uint32_t phase);
+#endif
+
 static int
 arrays_close(const float* a, const float* b, int n, float tol) {
     for (int i = 0; i < n; i++) {
@@ -194,6 +199,44 @@ test_rotate_widen_backend(const char* name, widen_backend_fn fn) {
         return 1;
     }
 
+    for (unsigned int start_phase = 0; start_phase < 4U; start_phase++) {
+        const unsigned char phase_src[4] = {10, 40, 170, 230};
+        float vector_dst[4] = {0};
+        float scalar_dst[2] = {0};
+        float vector_ref[4] = {0};
+        float scalar_ref[2] = {0};
+        unsigned int phase_local_ref = start_phase;
+
+        for (int pair = 0; pair < 2; pair++) {
+            int idx = pair << 1;
+            float in_i = ((float)phase_src[idx + 0] - 127.5f) * inv;
+            float in_q = ((float)phase_src[idx + 1] - 127.5f) * inv;
+            apply_j4_rotation_ref(in_i, in_q, phase_local_ref, &vector_ref[idx + 0], &vector_ref[idx + 1]);
+            phase_local_ref = (phase_local_ref + 1U) & 3U;
+        }
+        if (fn(phase_src, vector_dst, 4U, start_phase) != phase_local_ref
+            || !arrays_close(vector_dst, vector_ref, 4, 1e-6f)) {
+            DSD_FPRINTF(stderr, "%s vector phase %u output: mismatch\n", name, start_phase);
+            return 1;
+        }
+
+        float in_i = ((float)phase_src[0] - 127.5f) * inv;
+        float in_q = ((float)phase_src[1] - 127.5f) * inv;
+        apply_j4_rotation_ref(in_i, in_q, start_phase, &scalar_ref[0], &scalar_ref[1]);
+        if (fn(phase_src, scalar_dst, 2U, start_phase) != ((start_phase + 1U) & 3U)
+            || !arrays_close(scalar_dst, scalar_ref, 2, 1e-6f)) {
+            DSD_FPRINTF(stderr, "%s scalar phase %u output: mismatch\n", name, start_phase);
+            return 1;
+        }
+    }
+
+    float guard[2] = {12.0f, -34.0f};
+    if (fn(NULL, guard, 2U, 5U) != 1U || fn(src, NULL, 2U, 6U) != 2U || fn(src, guard, 1U, 7U) != 3U
+        || guard[0] != 12.0f || guard[1] != -34.0f) {
+        DSD_FPRINTF(stderr, "%s guard: mismatch\n", name);
+        return 1;
+    }
+
     return 0;
 }
 
@@ -220,6 +263,31 @@ main(void) {
     if (!arrays_close(dst, ref, 8, 1e-6f)) {
         DSD_FPRINTF(stderr, "SIMD widen: mismatch\n");
         return 1;
+    }
+
+    {
+        float guard[2] = {12.0f, -34.0f};
+        const float want_guard[2] = {12.0f, -34.0f};
+        widen_u8_to_f32_bias127(NULL, guard, 2);
+        widen_u8_to_f32_bias127(src, guard, 0);
+        if (!arrays_close(guard, want_guard, 2, 0.0f)) {
+            DSD_FPRINTF(stderr, "SIMD widen guard: mismatch\n");
+            return 1;
+        }
+
+        widen_u8_to_f32_bias128_scalar(NULL, guard, 2);
+        widen_u8_to_f32_bias128_scalar(src, guard, 0);
+        if (!arrays_close(guard, want_guard, 2, 0.0f)) {
+            DSD_FPRINTF(stderr, "SIMD bias128 guard: mismatch\n");
+            return 1;
+        }
+
+        unsigned char rotate_guard[2] = {10, 20};
+        if (rotate90_u8_inplace_phase(NULL, 2, 5U) != 1U || rotate90_u8_inplace_phase(rotate_guard, 1, 6U) != 2U
+            || rotate_guard[0] != 10 || rotate_guard[1] != 20) {
+            DSD_FPRINTF(stderr, "Legacy byte rotate guard: mismatch\n");
+            return 1;
+        }
     }
 
     // rotate 90° with pattern per implementation: (I0,Q0),(I1,Q1)->(-Q1, I1),(I2,Q2)->(-I2,-Q2),(I3,Q3)->(Q3,-I3)
@@ -267,6 +335,13 @@ main(void) {
             return 1;
         }
     }
+
+#ifdef DSD_NEO_TEST_HOOKS
+    if (test_rotate_widen_backend("SIMD rotate+widen scalar", dsd_test_widen_rotate90_u8_to_f32_bias127_phase_scalar)
+        != 0) {
+        return 1;
+    }
+#endif
 
     {
         // Legacy byte rotation keeps capture compatibility with bias-128 widening.

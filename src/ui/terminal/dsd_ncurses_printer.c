@@ -343,29 +343,39 @@ ui_print_rtl_ppm_field(const dsd_opts* opts) {
 }
 
 static void
+ui_print_rtl_auto_ppm_status_values(int enabled, int locked, int locked_ppm, double snr_db, double df_hz,
+                                    int step_dir) {
+    if (!enabled) {
+        printw("\n| Auto PPM: Off");
+    } else if (locked) {
+        printw("\n| Auto PPM: Locked (PPM: %d)", locked_ppm);
+    } else {
+        printw("\n| Auto PPM: On; SNR: %.1f dB; df: %.1f Hz; step: %s;", snr_db, df_hz,
+               (step_dir > 0)   ? "+1"
+               : (step_dir < 0) ? "-1"
+                                : "hold");
+    }
+}
+
+static void
 ui_print_rtl_auto_ppm_status(void) {
 #ifndef USE_RADIO
-    printw("\n| Auto PPM: Off");
+    ui_print_rtl_auto_ppm_status_values(0, 0, 0, -100.0, 0.0, 0);
 #else
     /* Show carrier/error-based auto PPM status snapshot */
     int ap_en = 0, ap_dir = 0, ap_locked = 0;
     double ap_snr = -100.0, ap_df = 0.0;
     (void)rtl_stream_auto_ppm_get_status(&ap_en, &ap_snr, &ap_df, NULL, &ap_dir, NULL, &ap_locked);
-    if (!ap_en) {
-        printw("\n| Auto PPM: Off");
-    } else if (ap_locked) {
-        int lppm = 0;
+    if (ap_locked) {
+        int locked_ppm = 0;
         double lsnr = -100.0, ldf = 0.0;
-        (void)rtl_stream_auto_ppm_get_lock(&lppm, &lsnr, &ldf);
+        (void)rtl_stream_auto_ppm_get_lock(&locked_ppm, &lsnr, &ldf);
         (void)lsnr;
         (void)ldf;
-        printw("\n| Auto PPM: Locked (PPM: %d)", lppm);
-    } else {
-        printw("\n| Auto PPM: On; SNR: %.1f dB; df: %.1f Hz; step: %s;", ap_snr, ap_df,
-               (ap_dir > 0)   ? "+1"
-               : (ap_dir < 0) ? "-1"
-                              : "hold");
+        ui_print_rtl_auto_ppm_status_values(ap_en, ap_locked, locked_ppm, ap_snr, ap_df, ap_dir);
+        return;
     }
+    ui_print_rtl_auto_ppm_status_values(ap_en, ap_locked, 0, ap_snr, ap_df, ap_dir);
 #endif
 }
 
@@ -626,7 +636,7 @@ ui_render_encoder_and_file_outputs(const dsd_opts* opts, const dsd_state* state)
     ui_render_file_output_status(opts);
 }
 
-static void
+static void DSD_ATTR_UNUSED
 ui_render_trunking_call_filters_pretty(const dsd_opts* opts) {
     printw("| Trunking -");
     if (opts->trunk_tune_group_calls == 0) {

@@ -69,6 +69,23 @@ resolve_role_cpu_affinity(const dsdneoRuntimeConfig* cfg, const char* role) {
     return -1;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+const char*
+dsd_neo_rt_sched_test_role_or_default(const char* role) {
+    return role_or_default(role);
+}
+
+int
+dsd_neo_rt_sched_test_resolve_role_rt_priority(const dsdneoRuntimeConfig* cfg, const char* role) {
+    return resolve_role_rt_priority(cfg, role);
+}
+
+int
+dsd_neo_rt_sched_test_resolve_role_cpu_affinity(const dsdneoRuntimeConfig* cfg, const char* role) {
+    return resolve_role_cpu_affinity(cfg, role);
+}
+#endif
+
 /**
  * @brief Optionally enable realtime scheduling and set CPU affinity for the current thread.
  *

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
+// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange)
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
@@ -15,7 +18,10 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -147,6 +153,11 @@ dmr_hook_return_to_cc(dsd_opts* opts, dsd_state* state) {
     return dmr_pop_result(g_hooks.return_results, g_hooks.return_count, &g_hooks.return_pos);
 }
 
+static void*
+dmr_hook_scan_ctx(void) {
+    return &g_ctx;
+}
+
 static void
 dmr_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
@@ -167,6 +178,16 @@ dmr_expect(int cond, const char* grant, const char* flow, const char* script, co
     }
     DSD_FPRINTF(stderr, "FAIL grant=%s flow=%s script=%s check=%s\n", grant, flow, script, check);
     return 1;
+}
+
+static int
+dmr_expect_close(double actual, double expected, double tolerance, const char* grant, const char* flow,
+                 const char* script, const char* check) {
+    double delta = actual - expected;
+    if (delta < 0.0) {
+        delta = -delta;
+    }
+    return dmr_expect(delta <= tolerance, grant, flow, script, check);
 }
 
 static void
@@ -190,6 +211,13 @@ dmr_setup_fixture(const dmr_grant_case* grant) {
     g_ctx.hangtime_s = 0.1;
     g_ctx.grant_timeout_s = 0.1;
     g_ctx.cc_grace_s = 0.1;
+}
+
+static void
+dmr_setup_blank_fixture(void) {
+    DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
+    DSD_MEMSET(&g_state, 0, sizeof(g_state));
+    DSD_MEMSET(&g_ctx, 0, sizeof(g_ctx));
 }
 
 static void
@@ -581,6 +609,199 @@ dmr_run_cc_loss_reacquire_case(void) {
     return rc;
 }
 
+static int
+dmr_run_state_name_and_guard_case(void) {
+    const char* grant = "api";
+    const char* flow = "guards";
+    const char* script = "no-op";
+    dmr_setup_blank_fixture();
+
+    int rc = 0;
+    rc |= dmr_expect(dmr_sm_state_name(DMR_SM_IDLE)[0] == 'I', grant, flow, script, "idle state name");
+    rc |= dmr_expect(dmr_sm_state_name(DMR_SM_ON_CC)[0] == 'O', grant, flow, script, "on-cc state name");
+    rc |= dmr_expect(dmr_sm_state_name(DMR_SM_TUNED)[0] == 'T', grant, flow, script, "tuned state name");
+    rc |= dmr_expect(dmr_sm_state_name(DMR_SM_HUNTING)[0] == 'H', grant, flow, script, "hunting state name");
+    rc |= dmr_expect(dmr_sm_state_name((dmr_sm_state_e)99)[0] == '?', grant, flow, script, "unknown state name");
+
+    dmr_sm_init_ctx(NULL, &g_opts, &g_state);
+    dmr_sm_event(NULL, &g_opts, &g_state, &(dmr_sm_event_t){.type = DMR_SM_EV_CC_SYNC});
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, NULL);
+    dmr_sm_tick_ctx(NULL, &g_opts, &g_state);
+    dmr_sm_on_neighbor_update(&g_opts, NULL, (const long[]){851012500L}, 1);
+    dmr_sm_on_neighbor_update(&g_opts, &g_state, NULL, 1);
+    dmr_sm_on_neighbor_update(&g_opts, &g_state, (const long[]){851012500L}, 0);
+    rc |= dmr_expect(g_ctx.initialized == 0 && g_ctx.state == DMR_SM_IDLE, grant, flow, script,
+                     "guard no-ops preserved blank context");
+    return rc;
+}
+
+static int
+dmr_run_auto_init_and_idle_hunting_case(void) {
+    const char* grant = "api";
+    const char* flow = "auto-init";
+    const char* script = "sync";
+    dmr_setup_blank_fixture();
+    dmr_install_hooks();
+
+    int rc = 0;
+    dmr_sm_event_t ev = {.type = DMR_SM_EV_SYNC_LOST};
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    rc |= dmr_expect(g_ctx.initialized == 1 && g_ctx.state == DMR_SM_IDLE, grant, flow, script,
+                     "sync-lost auto-inits idle context");
+
+    dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
+    rc |= dmr_expect(g_ctx.state == DMR_SM_IDLE, grant, flow, script, "idle tick is stable");
+
+    g_ctx.state = DMR_SM_HUNTING;
+    dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
+    rc |= dmr_expect(g_ctx.state == DMR_SM_HUNTING, grant, flow, script, "hunting tick is stable");
+
+    ev = dmr_sm_ev_cc_sync();
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC && g_ctx.t_cc_sync_m > 0.0, grant, flow, script,
+                     "cc sync reacquires from hunting");
+
+    g_ctx.t_cc_sync_m = 0.0;
+    dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC, grant, flow, script, "on-cc tick without timestamp is stable");
+    return rc;
+}
+
+static int
+dmr_run_rejected_grant_contracts(void) {
+    const char* flow = "rejected-grants";
+    const char* script = "no-tune";
+    dmr_grant_case grant = {"explicit-disabled", 852012500L, 0, 0, 0};
+    dmr_reset_hooks();
+    dmr_install_hooks();
+    dmr_setup_fixture(&grant);
+
+    g_opts.trunk_enable = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(grant.freq_hz, 0, 1201, 7201);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+
+    int rc = 0;
+    rc |= dmr_expect(g_hooks.tune_calls == 0, grant.name, flow, script, "disabled trunking did not tune");
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC && g_opts.trunk_is_tuned == 0, grant.name, flow, script,
+                     "disabled trunking stayed on control channel");
+
+    g_opts.trunk_enable = 1;
+    g_state.trunk_cc_freq = 0;
+    ev = dmr_sm_ev_group_grant(grant.freq_hz, 0, 1202, 7202);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    rc |= dmr_expect(g_hooks.tune_calls == 0, grant.name, flow, script, "missing control channel did not tune");
+
+    g_state.trunk_cc_freq = 851012500L;
+    ev = dmr_sm_ev_group_grant(0, 0, 1203, 7203);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    rc |= dmr_expect(g_hooks.tune_calls == 0, grant.name, flow, script, "unresolved grant did not tune");
+    rc |= dmr_expect(g_state.p25_sm_tune_count == 0 && g_ctx.vc_freq_hz == 0, grant.name, flow, script,
+                     "rejected grants preserved voice-channel state");
+    return rc;
+}
+
+static int
+dmr_run_data_sync_and_stale_slot_case(void) {
+    const char* flow = "data-sync";
+    const char* script = "slot-normalize";
+    dmr_grant_case grant = {"explicit-frequency", 852012500L, 0, 0, 0};
+    dmr_reset_hooks();
+    g_hooks.tune_results[0] = DSD_TRUNK_TUNE_RESULT_OK;
+    g_hooks.tune_count = 1;
+    g_hooks.return_results[0] = DSD_TRUNK_TUNE_RESULT_OK;
+    g_hooks.return_count = 1;
+    dmr_install_hooks();
+    dmr_setup_fixture(&grant);
+
+    int rc = dmr_send_initial_grant(&grant, 0, flow, script);
+    if (rc != 0) {
+        return rc;
+    }
+
+    dmr_sm_event_t ev = dmr_sm_ev_data_sync(7);
+    dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
+    rc |= dmr_expect(g_ctx.slots[0].last_active_m > 0.0 && g_ctx.slots[1].last_active_m == 0.0, grant.name, flow,
+                     script, "invalid data slot normalized to slot zero");
+    rc |= dmr_expect(g_ctx.t_voice_m > 0.0 && g_state.last_vc_sync_time_m == g_ctx.t_voice_m, grant.name, flow, script,
+                     "data sync arms hangtime timestamp");
+
+    double stale_m = dsd_time_now_monotonic_s() - 1.0;
+    g_ctx.t_tune_m = 0.0;
+    g_ctx.t_voice_m = 0.0;
+    g_ctx.slots[0].voice_active = 1;
+    g_ctx.slots[0].last_active_m = stale_m;
+    dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
+    rc |= dmr_expect(g_ctx.slots[0].voice_active == 0 && g_ctx.state == DMR_SM_TUNED, grant.name, flow, script,
+                     "stale voice slot clears without grant timeout");
+
+    double before = g_ctx.t_voice_m;
+    ev = dmr_sm_ev_data_sync(0);
+    dmr_sm_event(&g_ctx, NULL, &g_state, &ev);
+    rc |= dmr_expect(g_ctx.t_voice_m == before, grant.name, flow, script, "data sync without opts is ignored");
+    return rc;
+}
+
+static int
+dmr_run_global_emit_and_scan_hook_case(void) {
+    const char* grant = "global";
+    const char* flow = "emit";
+    const char* script = "scan-hook";
+    dmr_setup_blank_fixture();
+    dmr_install_hooks();
+    g_opts.trunk_enable = 1;
+    g_opts.trunk_tune_data_calls = 1;
+    g_state.trunk_cc_freq = 851012500L;
+    dmr_sm_init_ctx(&g_ctx, &g_opts, &g_state);
+
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.dmr_ctx = dmr_hook_scan_ctx;
+    dsd_trunk_scan_hooks_set(hooks);
+
+    int rc = 0;
+    rc |= dmr_expect(dmr_sm_get_ctx() == &g_ctx, grant, flow, script, "scan hook supplies DMR context");
+
+    dmr_sm_event_t ev = dmr_sm_ev_cc_sync();
+    dmr_sm_emit(&g_opts, &g_state, &ev);
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC && g_ctx.t_cc_sync_m > 0.0, grant, flow, script,
+                     "generic emit delivered cc sync");
+
+    dmr_sm_emit_data_sync(&g_opts, &g_state, 1);
+    rc |= dmr_expect(g_ctx.slots[1].last_active_m > 0.0, grant, flow, script, "global data-sync emit delivered slot");
+
+    g_ctx.state = DMR_SM_HUNTING;
+    dmr_sm_emit_cc_sync(&g_opts, &g_state);
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC, grant, flow, script, "global cc-sync emit reacquires");
+
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    return rc;
+}
+
+static int
+dmr_run_config_override_case(void) {
+    const char* grant = "config";
+    const char* flow = "override";
+    const char* script = "env";
+    dmr_setup_blank_fixture();
+    g_opts.trunk_hangtime = 0.25f;
+    g_state.trunk_cc_freq = 851012500L;
+
+    int rc = 0;
+    rc |= dmr_expect(dsd_setenv("DSD_NEO_DMR_HANGTIME", "1.25", 1) == 0, grant, flow, script, "set hangtime env");
+    rc |= dmr_expect(dsd_setenv("DSD_NEO_DMR_GRANT_TIMEOUT", "6.5", 1) == 0, grant, flow, script,
+                     "set grant-timeout env");
+    dsd_neo_config_init(NULL);
+    dmr_sm_init_ctx(&g_ctx, &g_opts, &g_state);
+    rc |= dmr_expect_close(g_ctx.hangtime_s, 1.25, 1e-9, grant, flow, script, "config hangtime overrides opts");
+    rc |= dmr_expect_close(g_ctx.grant_timeout_s, 6.5, 1e-9, grant, flow, script,
+                           "config grant timeout overrides default");
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC, grant, flow, script, "config fixture starts on control channel");
+
+    dsd_unsetenv("DSD_NEO_DMR_HANGTIME");
+    dsd_unsetenv("DSD_NEO_DMR_GRANT_TIMEOUT");
+    dsd_neo_config_init(NULL);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -614,8 +835,15 @@ main(void) {
 
     rc |= dmr_run_untrusted_off_cc_reject_case();
     rc |= dmr_run_cc_loss_reacquire_case();
+    rc |= dmr_run_state_name_and_guard_case();
+    rc |= dmr_run_auto_init_and_idle_hunting_case();
+    rc |= dmr_run_rejected_grant_contracts();
+    rc |= dmr_run_data_sync_and_stale_slot_case();
+    rc |= dmr_run_global_emit_and_scan_hook_case();
+    rc |= dmr_run_config_override_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
     if (rc == 0) {
         printf("DMR_T3_SM_RETURN_TO_CC_MATRIX: OK\n");
     }
@@ -625,3 +853,4 @@ main(void) {
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic pop
 #endif
+// NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)

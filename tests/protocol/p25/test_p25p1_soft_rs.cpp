@@ -150,6 +150,92 @@ test_hdu_soft_rs_mixed_errors_and_erasures(void) {
 }
 
 static int
+test_hdu_golay24_6_wrappers(void) {
+    char hex[6];
+    char parity[12];
+    char expected[6];
+
+    set_symbol(hex, 0, 0x2A);
+    DSD_MEMCPY(expected, hex, sizeof(hex));
+    encode_golay_24_6(hex, parity);
+
+    char data_fix[6];
+    char parity_fix[12];
+    DSD_MEMCPY(data_fix, hex, sizeof(data_fix));
+    DSD_MEMCPY(parity_fix, parity, sizeof(parity_fix));
+    data_fix[0] ^= 1;
+    data_fix[5] ^= 1;
+    parity_fix[3] ^= 1;
+
+    int fixed = 0;
+    if (check_and_fix_golay_24_6(data_fix, parity_fix, &fixed) != 0) {
+        DSD_FPRINTF(stderr, "hdu Golay(24,6) failed to correct three errors\n");
+        return 1;
+    }
+    if (std::memcmp(data_fix, expected, sizeof(data_fix)) != 0 || fixed <= 0) {
+        DSD_FPRINTF(stderr, "hdu Golay(24,6) corrected data mismatch fixed=%d\n", fixed);
+        return 1;
+    }
+
+    DSD_MEMCPY(data_fix, hex, sizeof(data_fix));
+    DSD_MEMCPY(parity_fix, parity, sizeof(parity_fix));
+    data_fix[0] ^= 1;
+    data_fix[1] ^= 1;
+    data_fix[2] ^= 1;
+    parity_fix[0] ^= 1;
+    fixed = 0;
+    if (check_and_fix_golay_24_6(data_fix, parity_fix, &fixed) == 0) {
+        DSD_FPRINTF(stderr, "hdu Golay(24,6) unexpectedly corrected four errors\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_hdu_ranked_reliability_above_threshold(void) {
+    char data[20 * 6];
+    char parity[16 * 6];
+    char expected[20 * 6];
+    uint8_t data_reliab[20];
+    uint8_t parity_reliab[16];
+
+    fill_data(data, 20, 47);
+    encode_reedsolomon_36_20_17(data, parity);
+    DSD_MEMCPY(expected, data, sizeof(data));
+
+    DSD_MEMSET(data_reliab, 200, sizeof(data_reliab));
+    DSD_MEMSET(parity_reliab, 200, sizeof(parity_reliab));
+    for (int i = 0; i < 10; i++) {
+        corrupt_symbol(data, i, 0x11 + i);
+        data_reliab[i] = 100;
+    }
+
+    if (p25p1_rs_36_20_17_soft_reliability(NULL, parity, data_reliab, parity_reliab) != 1
+        || p25p1_rs_36_20_17_soft_reliability(data, NULL, data_reliab, parity_reliab) != 1
+        || p25p1_rs_36_20_17_soft_reliability(data, parity, NULL, parity_reliab) != 1
+        || p25p1_rs_36_20_17_soft_reliability(data, parity, data_reliab, NULL) != 1) {
+        DSD_FPRINTF(stderr, "hdu ranked reliability NULL guard failed\n");
+        return 1;
+    }
+
+    char hard_data[20 * 6];
+    DSD_MEMCPY(hard_data, data, sizeof(data));
+    if (check_and_fix_redsolomon_36_20_17(hard_data, parity) == 0) {
+        DSD_FPRINTF(stderr, "hdu hard RS unexpectedly corrected 10 weak high-confidence errors\n");
+        return 1;
+    }
+    if (p25p1_rs_36_20_17_soft_reliability(data, parity, data_reliab, parity_reliab) != 0) {
+        DSD_FPRINTF(stderr, "hdu ranked reliability soft RS failed\n");
+        return 1;
+    }
+    if (std::memcmp(data, expected, sizeof(data)) != 0) {
+        DSD_FPRINTF(stderr, "hdu ranked reliability data mismatch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_ldu1_soft_rs(void) {
     char data[12 * 6];
     char parity[12 * 6];
@@ -212,6 +298,50 @@ test_ldu1_soft_rs_mixed_errors_and_erasures(void) {
     }
     if (std::memcmp(data, expected, sizeof(data)) != 0) {
         DSD_FPRINTF(stderr, "ldu1 mixed errors+erasures data mismatch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_ldu1_ranked_reliability_above_threshold(void) {
+    char data[12 * 6];
+    char parity[12 * 6];
+    char expected[12 * 6];
+    uint8_t data_reliab[12];
+    uint8_t parity_reliab[12];
+
+    fill_data(data, 12, 37);
+    encode_reedsolomon_24_12_13(data, parity);
+    DSD_MEMCPY(expected, data, sizeof(data));
+
+    DSD_MEMSET(data_reliab, 200, sizeof(data_reliab));
+    DSD_MEMSET(parity_reliab, 200, sizeof(parity_reliab));
+    for (int i = 0; i < 7; i++) {
+        corrupt_symbol(data, i, 0x17 + i);
+        data_reliab[i] = 100;
+    }
+
+    if (p25p1_rs_24_12_13_soft_reliability(NULL, parity, data_reliab, parity_reliab) != 1
+        || p25p1_rs_24_12_13_soft_reliability(data, NULL, data_reliab, parity_reliab) != 1
+        || p25p1_rs_24_12_13_soft_reliability(data, parity, NULL, parity_reliab) != 1
+        || p25p1_rs_24_12_13_soft_reliability(data, parity, data_reliab, NULL) != 1) {
+        DSD_FPRINTF(stderr, "ldu1 ranked reliability NULL guard failed\n");
+        return 1;
+    }
+
+    char hard_data[12 * 6];
+    DSD_MEMCPY(hard_data, data, sizeof(data));
+    if (check_and_fix_reedsolomon_24_12_13(hard_data, parity) == 0) {
+        DSD_FPRINTF(stderr, "ldu1 hard RS unexpectedly corrected 7 weak high-confidence errors\n");
+        return 1;
+    }
+    if (p25p1_rs_24_12_13_soft_reliability(data, parity, data_reliab, parity_reliab) != 0) {
+        DSD_FPRINTF(stderr, "ldu1 ranked reliability soft RS failed\n");
+        return 1;
+    }
+    if (std::memcmp(data, expected, sizeof(data)) != 0) {
+        DSD_FPRINTF(stderr, "ldu1 ranked reliability data mismatch\n");
         return 1;
     }
     return 0;
@@ -320,17 +450,44 @@ test_ldu2_ranked_reliability_above_threshold(void) {
     return 0;
 }
 
+static int
+test_ldu2_ranked_reliability_null_guards(void) {
+    char data[16 * 6];
+    char parity[8 * 6];
+    uint8_t data_reliab[16];
+    uint8_t parity_reliab[8];
+
+    fill_data(data, 16, 17);
+    encode_reedsolomon_24_16_9(data, parity);
+
+    DSD_MEMSET(data_reliab, 200, sizeof(data_reliab));
+    DSD_MEMSET(parity_reliab, 200, sizeof(parity_reliab));
+
+    if (p25p1_rs_24_16_9_soft_reliability(NULL, parity, data_reliab, parity_reliab) != 1
+        || p25p1_rs_24_16_9_soft_reliability(data, NULL, data_reliab, parity_reliab) != 1
+        || p25p1_rs_24_16_9_soft_reliability(data, parity, NULL, parity_reliab) != 1
+        || p25p1_rs_24_16_9_soft_reliability(data, parity, data_reliab, NULL) != 1) {
+        DSD_FPRINTF(stderr, "ldu2 ranked reliability NULL guard failed\n");
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_erasure_mapping();
     rc |= test_hdu_soft_rs();
     rc |= test_hdu_soft_rs_mixed_errors_and_erasures();
+    rc |= test_hdu_golay24_6_wrappers();
+    rc |= test_hdu_ranked_reliability_above_threshold();
     rc |= test_ldu1_soft_rs();
     rc |= test_ldu1_soft_rs_mixed_errors_and_erasures();
+    rc |= test_ldu1_ranked_reliability_above_threshold();
     rc |= test_ldu2_soft_rs();
     rc |= test_ldu2_soft_rs_mixed_errors_and_erasures();
     rc |= test_ldu2_ranked_reliability_above_threshold();
+    rc |= test_ldu2_ranked_reliability_null_guards();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "PASSED: P25P1 soft RS tests passed\n");
     }

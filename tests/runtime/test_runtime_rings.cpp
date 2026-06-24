@@ -14,10 +14,13 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/ring.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
+
+extern "C" volatile uint8_t exitflag;
 
 /* RTL-SDR stream exit shim (when USE_RTLSDR is enabled in runtime) */
 extern "C" int
@@ -206,6 +209,113 @@ test_output_ring_wrap_and_read(void) {
     return 0;
 }
 
+static int
+init_output_ring(struct output_state* o, size_t cap) {
+    DSD_MEMSET(o, 0, sizeof(*o));
+    o->buffer = (float*)calloc(cap, sizeof(float));
+    if (!o->buffer) {
+        return -1;
+    }
+    o->capacity = cap;
+    o->head.store(0);
+    o->tail.store(0);
+    o->write_timeouts.store(0);
+    o->read_timeouts.store(0);
+    dsd_cond_init(&o->ready);
+    dsd_mutex_init(&o->ready_m);
+    dsd_cond_init(&o->space);
+    return 0;
+}
+
+static void
+destroy_output_ring(struct output_state* o) {
+    dsd_cond_destroy(&o->space);
+    dsd_mutex_destroy(&o->ready_m);
+    dsd_cond_destroy(&o->ready);
+    free(o->buffer);
+    o->buffer = NULL;
+}
+
+static int
+test_output_ring_guards_and_single_reads(void) {
+    float out = 99.0f;
+    float data[4] = {10, 20, 30, 40};
+    float batch[4] = {0};
+    struct output_state o;
+    DSD_MEMSET(&o, 0, sizeof(o));
+
+    ring_write(NULL, data, 1);
+    ring_write_no_signal(NULL, data, 1);
+    if (ring_read_one(NULL, &out) != -1 || ring_read_batch(NULL, batch, 1) != -1 || ring_read_batch(&o, batch, 1) != -1
+        || ring_read_batch(&o, batch, 0) != 0) {
+        DSD_FPRINTF(stderr, "output_ring guards: NULL/no-buffer guards failed\n");
+        return 1;
+    }
+
+    if (init_output_ring(&o, 6) != 0) {
+        DSD_FPRINTF(stderr, "output_ring guards: allocation failed\n");
+        return 1;
+    }
+
+    ring_write(&o, data, 1);
+    if (ring_used(&o) != 1 || ring_read_one(&o, &out) != 0 || out != 10.0f || ring_used(&o) != 0) {
+        DSD_FPRINTF(stderr, "output_ring guards: write/read-one simple path failed\n");
+        destroy_output_ring(&o);
+        return 1;
+    }
+
+    o.head.store(5);
+    o.tail.store(3);
+    ring_write_no_signal(&o, data, 1);
+    if (o.head.load() != 0 || o.buffer[5] != 10.0f) {
+        DSD_FPRINTF(stderr, "output_ring guards: no-signal exact-end write failed\n");
+        destroy_output_ring(&o);
+        return 1;
+    }
+
+    ring_clear(&o);
+    o.head.store(4);
+    o.tail.store(2);
+    ring_write(&o, data + 1, 3);
+    if (o.head.load() != 1 || o.buffer[4] != 20.0f || o.buffer[5] != 30.0f || o.buffer[0] != 40.0f) {
+        DSD_FPRINTF(stderr, "output_ring guards: ring_write wrap split failed\n");
+        destroy_output_ring(&o);
+        return 1;
+    }
+
+    ring_clear(&o);
+    ring_write_signal_on_empty_transition(&o, data, 2);
+    if (ring_used(&o) != 2) {
+        DSD_FPRINTF(stderr, "output_ring guards: signal-on-empty write failed\n");
+        destroy_output_ring(&o);
+        return 1;
+    }
+
+    ring_clear(&o);
+    o.tail.store(5);
+    o.head.store(0);
+    o.buffer[5] = 77.0f;
+    out = 0.0f;
+    if (ring_read_one(&o, &out) != 0 || out != 77.0f || o.tail.load() != 0) {
+        DSD_FPRINTF(stderr, "output_ring guards: read-one wrap failed\n");
+        destroy_output_ring(&o);
+        return 1;
+    }
+
+    ring_clear(&o);
+    exitflag = 1;
+    if (ring_read_one(&o, &out) != -1 || ring_read_batch(&o, batch, 2) != -1) {
+        DSD_FPRINTF(stderr, "output_ring guards: empty read exit paths failed\n");
+        exitflag = 0;
+        destroy_output_ring(&o);
+        return 1;
+    }
+    exitflag = 0;
+
+    destroy_output_ring(&o);
+    return 0;
+}
+
 struct OutputWriterArgs { // NOLINT(misc-use-internal-linkage)
     struct output_state* ring;
     const float* data;
@@ -388,6 +498,7 @@ main(void) {
     rc |= test_input_ring_wrap_and_read();
     rc |= test_output_ring_wrap_and_read();
     rc |= test_input_ring_drop_on_full();
+    rc |= test_output_ring_guards_and_single_reads();
     rc |= test_output_ring_blocking_producer_consumer();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "runtime ring tests: OK\n");

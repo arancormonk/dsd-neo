@@ -140,6 +140,45 @@ ui_draw_if_needed(const dsd_opts* osnap, uint64_t* last_draw_ns, uint64_t frame_
     *last_draw_ns = now_ns;
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state) {
+    g_ui_opts = opts;
+    g_ui_state = state;
+    g_ui_curses_cfg_done = 0;
+    atomic_store(&g_ui_dirty, 0);
+    atomic_store(&g_ui_in_context, 0);
+}
+
+const dsd_opts*
+dsd_neo_ui_async_test_opts_snapshot_or_default(void) {
+    return ui_get_opts_snapshot_or_default();
+}
+
+int
+dsd_neo_ui_async_test_curses_is_active(const dsd_opts* opts) {
+    return ui_curses_is_active(opts);
+}
+
+int
+dsd_neo_ui_async_test_read_key_nonblocking(const dsd_opts* opts) {
+    return ui_read_key_nonblocking(opts);
+}
+
+void
+dsd_neo_ui_async_test_process_input_frame(const dsd_opts* opts) {
+    ui_process_input_frame(opts);
+}
+
+void
+dsd_neo_ui_async_test_draw_if_needed(const dsd_opts* opts, uint64_t* last_draw_ns, uint64_t frame_ns) {
+    if (last_draw_ns == NULL) {
+        return;
+    }
+    ui_draw_if_needed(opts, last_draw_ns, frame_ns);
+}
+#endif
+
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
