@@ -1563,6 +1563,16 @@ test_encoder_packet_payload_layout(void) {
     DSD_MEMSET(full_bits, 0xA5, sizeof(full_bits));
     err |= expect_int("packet layout null guard",
                       dsd_neo_m17_test_prepare_pkt_payload("x", NULL, full_bits, &app_len, &block, &lst, &crc), -1);
+    err |= expect_int("packet layout null bits guard",
+                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, NULL, &app_len, &block, &lst, &crc), -1);
+    err |= expect_int("packet layout null app-len guard",
+                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, full_bits, NULL, &block, &lst, &crc), -1);
+    err |= expect_int("packet layout null block guard",
+                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, full_bits, &app_len, NULL, &lst, &crc), -1);
+    err |= expect_int("packet layout null last-count guard",
+                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, full_bits, &app_len, &block, NULL, &crc), -1);
+    err |= expect_int("packet layout null crc guard",
+                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, full_bits, &app_len, &block, &lst, NULL), -1);
 
     err |= expect_int("packet layout short text",
                       dsd_neo_m17_test_prepare_pkt_payload("hi", packed, full_bits, &app_len, &block, &lst, &crc), 0);
@@ -1659,6 +1669,27 @@ test_encoder_packet_state_overrides_prepare_lsf_and_payload(void) {
         "packet state helper null guard",
         dsd_neo_m17_test_prepare_pkt_from_state(NULL, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), -1);
     err |= expect_int(
+        "packet state helper null LSF guard",
+        dsd_neo_m17_test_prepare_pkt_from_state(&state, NULL, packed, &app_len, &lsf_crc, &can, &dst, &src), -1);
+    err |= expect_int(
+        "packet state helper null packet guard",
+        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, NULL, &app_len, &lsf_crc, &can, &dst, &src), -1);
+    err |= expect_int(
+        "packet state helper null app-len guard",
+        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, NULL, &lsf_crc, &can, &dst, &src), -1);
+    err |= expect_int(
+        "packet state helper null LSF CRC guard",
+        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, NULL, &can, &dst, &src), -1);
+    err |= expect_int(
+        "packet state helper null CAN guard",
+        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, NULL, &dst, &src), -1);
+    err |= expect_int(
+        "packet state helper null dst guard",
+        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, NULL, &src), -1);
+    err |= expect_int(
+        "packet state helper null src guard",
+        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, NULL), -1);
+    err |= expect_int(
         "packet default state helper",
         dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), 0);
     err |= expect_u8("packet default CAN", can, 7U);
@@ -1697,6 +1728,87 @@ test_encoder_packet_state_overrides_prepare_lsf_and_payload(void) {
     return err;
 }
 
+static int
+test_m17_hook_argument_guards(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t bits[M17_LICH_BITS];
+    uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
+    uint8_t full_payload_bits[M17_PAYLOAD_BITS];
+    uint8_t processed_bits[M17_STREAM_PAYLOAD_BITS];
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    uint8_t conn[11];
+    uint8_t disc[10];
+    uint8_t eotx[10];
+    uint8_t dibits[M17_FRAME_SYMBOLS];
+    uint8_t reversed[208];
+    uint8_t bert_bits[M17_BERT_PAYLOAD_BITS];
+    int err = 0;
+
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
+    DSD_MEMSET(full_payload_bits, 0, sizeof(full_payload_bits));
+    DSD_MEMSET(processed_bits, 0x5A, sizeof(processed_bits));
+    DSD_MEMSET(lsf_bits, 0xA5, sizeof(lsf_bits));
+    DSD_MEMSET(lsf_packed, 0x5A, sizeof(lsf_packed));
+    DSD_MEMSET(conn, 0x11, sizeof(conn));
+    DSD_MEMSET(disc, 0x22, sizeof(disc));
+    DSD_MEMSET(eotx, 0x33, sizeof(eotx));
+    DSD_MEMSET(dibits, 0x44, sizeof(dibits));
+    DSD_MEMSET(reversed, 0x66, sizeof(reversed));
+    DSD_MEMSET(bert_bits, 0, sizeof(bert_bits));
+
+    err |= expect_int("process LICH rejects null state", dsd_neo_m17_test_process_lich(NULL, opts, bits), -1);
+    err |= expect_int("process LICH rejects null opts", dsd_neo_m17_test_process_lich(state, NULL, bits), -1);
+    err |= expect_int("process LICH rejects null bits", dsd_neo_m17_test_process_lich(state, opts, NULL), -1);
+
+    err |= expect_int("stream dispatch rejects null state",
+                      dsd_neo_m17_test_dispatch_stream_payload(opts, NULL, payload_bits, 0U, processed_bits),
+                      DSD_NEO_M17_TEST_STREAM_INVALID);
+    err |= expect_int("stream dispatch rejects null payload",
+                      dsd_neo_m17_test_dispatch_stream_payload(opts, state, NULL, 0U, processed_bits),
+                      DSD_NEO_M17_TEST_STREAM_INVALID);
+    err |= expect_int("stream dispatch rejects null output",
+                      dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, 0U, NULL),
+                      DSD_NEO_M17_TEST_STREAM_INVALID);
+
+    state->m17_bert_bits = 1234U;
+    dsd_neo_m17_test_process_bert_payload(NULL, state, bert_bits);
+    err |= expect_int("BERT null opts preserves state", (int)state->m17_bert_bits, 1234);
+    dsd_neo_m17_test_process_bert_payload(opts, state, NULL);
+    err |= expect_int("BERT null bits preserves state", (int)state->m17_bert_bits, 1234);
+
+    state->carrier = 1;
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    dsd_neo_m17_test_dispatch_ip_frame(NULL, state, bits, sizeof(bits));
+    err |= expect_int("IP dispatch null opts preserves carrier", state->carrier, 1);
+    dsd_neo_m17_test_dispatch_ip_frame(opts, NULL, bits, sizeof(bits));
+    dsd_neo_m17_test_dispatch_ip_frame(opts, state, NULL, sizeof(bits));
+    err |= expect_int("IP dispatch null frame preserves synctype", state->synctype, DSD_SYNC_M17_STR_POS);
+
+    dsd_neo_m17_test_setup_conn_disc_eotx(0x0123456789ABULL, 'A', NULL, disc, eotx);
+    err |= expect_u8("setup CONN null guard preserves DISC", disc[0], 0x22U);
+    dsd_neo_m17_test_setup_conn_disc_eotx(0x0123456789ABULL, 'A', conn, NULL, eotx);
+    err |= expect_u8("setup DISC null guard preserves CONN", conn[0], 0x11U);
+    dsd_neo_m17_test_setup_conn_disc_eotx(0x0123456789ABULL, 'A', conn, disc, NULL);
+    err |= expect_u8("setup EOTX null guard preserves EOTX", eotx[0], 0x33U);
+
+    err |= expect_int("attach LSF CRC rejects null LSF", dsd_neo_m17_test_attach_lsf_crc(NULL, lsf_packed), 0);
+    err |= expect_int("attach LSF CRC rejects null packed", dsd_neo_m17_test_attach_lsf_crc(lsf_bits, NULL), 0);
+    dsd_neo_m17_test_load_lsf_callsigns(NULL, 1ULL, 2ULL);
+    dsd_neo_m17_test_apply_frame_prefix_dibits(2, NULL);
+    dsd_neo_m17_test_load_payload_dibits(NULL, dibits);
+    err |= expect_u8("payload dibits null input preserves output", dibits[M17_SYNC_SYMBOLS], 0x44U);
+    dsd_neo_m17_test_load_payload_dibits(full_payload_bits, NULL);
+    dsd_neo_m17_test_reverse_brt_bits(NULL, reversed);
+    err |= expect_u8("reverse BRT null input preserves output", reversed[0], 0x66U);
+
+    return err;
+}
+
 int
 main(void) {
     int err = 0;
@@ -1730,6 +1842,7 @@ main(void) {
     err |= test_encoder_packet_payload_layout();
     err |= test_packet_protocol_identifier_utf8_boundaries();
     err |= test_encoder_packet_state_overrides_prepare_lsf_and_payload();
+    err |= test_m17_hook_argument_guards();
 
     if (err == 0) {
         printf("M17_STATE_DISPATCH: OK\n");

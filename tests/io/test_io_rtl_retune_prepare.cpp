@@ -454,6 +454,22 @@ main(void) {
     failed |= expect_int_eq("manual gain value still applied", gain_calls, 1);
     failed |= expect_int_eq("manual gain records AGC failure", recorded_agc_rc, -5);
 
+    rc =
+        rtl_device_test_usb_manual_gain_controls(0, -8, 0, &agc_calls, &gain_mode_calls, &gain_calls, &recorded_agc_rc);
+    failed |= expect_int_eq("manual gain mode failure remains fatal", rc, -8);
+    failed |= expect_int_eq("manual gain mode failure AGC call count", agc_calls, 1);
+    failed |= expect_int_eq("manual gain mode failure call count", gain_mode_calls, 1);
+    failed |= expect_int_eq("manual gain skips value after mode failure", gain_calls, 0);
+    failed |= expect_int_eq("manual gain mode failure records no AGC failure", recorded_agc_rc, 0);
+
+    rc =
+        rtl_device_test_usb_manual_gain_controls(0, 0, -9, &agc_calls, &gain_mode_calls, &gain_calls, &recorded_agc_rc);
+    failed |= expect_int_eq("manual gain value failure remains fatal", rc, -9);
+    failed |= expect_int_eq("manual gain value failure AGC call count", agc_calls, 1);
+    failed |= expect_int_eq("manual gain value failure mode call count", gain_mode_calls, 1);
+    failed |= expect_int_eq("manual gain value failure call count", gain_calls, 1);
+    failed |= expect_int_eq("manual gain value failure records no AGC failure", recorded_agc_rc, 0);
+
     rc = rtl_device_test_usb_auto_gain_controls(-6, 0, &agc_calls, &gain_mode_calls, &recorded_agc_rc);
     failed |= expect_int_eq("auto gain ignores AGC failure rc", rc, 0);
     failed |= expect_int_eq("auto gain AGC call count", agc_calls, 1);

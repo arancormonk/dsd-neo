@@ -321,12 +321,23 @@ test_rtl_symbol_profile_selection(void) {
     assert(dsd_frame_sync_test_rtl_profile_for_symbol_rate(&opts, &state, 4800, 2)
            == DSD_RTL_STREAM_CHANNEL_PROFILE_6K25);
     assert(dsd_frame_sync_test_rtl_levels_for_symbol_rate(&opts, 4800, 0) == 2);
+    assert(dsd_frame_sync_test_rtl_levels_for_symbol_rate(&opts, 4800, 4) == 4);
 
     reset(&opts, &state);
     opts.frame_provoice = 1;
     assert(dsd_frame_sync_test_rtl_profile_for_symbol_rate(&opts, &state, 9600, 0)
            == DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE);
     assert(dsd_frame_sync_test_rtl_levels_for_symbol_rate(&opts, 9600, 0) == 2);
+    assert(dsd_frame_sync_test_rtl_profile_for_symbol_rate(&opts, &state, 4800, 0)
+           == DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE);
+    assert(dsd_frame_sync_test_rtl_levels_for_symbol_rate(&opts, 4800, 0) == 2);
+
+    reset(&opts, &state);
+    opts.frame_dstar = 1;
+    opts.frame_dmr = 1;
+    assert(dsd_frame_sync_test_rtl_profile_for_symbol_rate(&opts, &state, 4800, 0)
+           == DSD_RTL_STREAM_CHANNEL_PROFILE_12K5);
+    assert(dsd_frame_sync_test_rtl_levels_for_symbol_rate(&opts, 4800, 0) == 4);
 
     reset(&opts, &state);
     opts.frame_p25p2 = 1;

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/rtl_demod_config.h>
@@ -694,6 +695,207 @@ expect_direct_output_open_rate_uses_demod_rate(void) {
     return rc;
 }
 
+static int
+expect_private_policy_matrices(void) {
+    static constexpr int kRadioSourceRtlUsb = 0;
+    static constexpr int kRadioSourceRtlTcp = 1;
+    static constexpr int kRadioSourceSoapy = 2;
+    static constexpr int kRadioSourceIqReplay = 3;
+
+    int rc = 0;
+
+    int int_ok[10] = {};
+    int int_values[10] = {};
+    int double_ok[8] = {};
+    double double_values[8] = {};
+    rc |= expect_int_eq("parse compatibility rejects null int status",
+                        rtl_stream_test_parse_compat_matrix(NULL, int_values,
+                                                            sizeof(int_values) / sizeof(int_values[0]), double_ok,
+                                                            double_values, sizeof(double_ok) / sizeof(double_ok[0])),
+                        -1);
+    rc |= expect_int_eq("parse compatibility rejects null int values",
+                        rtl_stream_test_parse_compat_matrix(int_ok, NULL, sizeof(int_values) / sizeof(int_values[0]),
+                                                            double_ok, double_values,
+                                                            sizeof(double_ok) / sizeof(double_ok[0])),
+                        -1);
+    rc |= expect_int_eq("parse compatibility rejects short int arrays",
+                        rtl_stream_test_parse_compat_matrix(int_ok, int_values, 9U, double_ok, double_values,
+                                                            sizeof(double_ok) / sizeof(double_ok[0])),
+                        -1);
+    rc |= expect_int_eq("parse compatibility rejects null double status",
+                        rtl_stream_test_parse_compat_matrix(int_ok, int_values,
+                                                            sizeof(int_values) / sizeof(int_values[0]), NULL,
+                                                            double_values, sizeof(double_ok) / sizeof(double_ok[0])),
+                        -1);
+    rc |= expect_int_eq("parse compatibility rejects null double values",
+                        rtl_stream_test_parse_compat_matrix(int_ok, int_values,
+                                                            sizeof(int_values) / sizeof(int_values[0]), double_ok, NULL,
+                                                            sizeof(double_ok) / sizeof(double_ok[0])),
+                        -1);
+    rc |=
+        expect_int_eq("parse compatibility rejects short double arrays",
+                      rtl_stream_test_parse_compat_matrix(
+                          int_ok, int_values, sizeof(int_values) / sizeof(int_values[0]), double_ok, double_values, 7U),
+                      -1);
+    rc |= expect_int_eq("parse compatibility matrix helper",
+                        rtl_stream_test_parse_compat_matrix(int_ok, int_values, sizeof(int_ok) / sizeof(int_ok[0]),
+                                                            double_ok, double_values,
+                                                            sizeof(double_ok) / sizeof(double_ok[0])),
+                        0);
+    rc |= expect_int_eq("parse int rejects null text", int_ok[0], 0);
+    rc |= expect_int_eq("parse int rejects empty text", int_ok[1], 0);
+    rc |= expect_int_eq("parse int rejects null output", int_ok[2], 0);
+    rc |= expect_int_eq("parse int accepts positive", int_ok[3], 1);
+    rc |= expect_int_eq("parse int positive value", int_values[3], 42);
+    rc |= expect_int_eq("parse int accepts negative", int_ok[4], 1);
+    rc |= expect_int_eq("parse int negative value", int_values[4], -17);
+    rc |= expect_int_eq("parse int rejects alpha", int_ok[5], 0);
+    rc |= expect_int_eq("parse int rejects suffix", int_ok[6], 0);
+    rc |= expect_int_eq("parse int rejects ERANGE", int_ok[7], 0);
+    rc |= expect_int_eq("parse int rejects high overflow", int_ok[8], 0);
+    rc |= expect_int_eq("parse int rejects low overflow", int_ok[9], 0);
+    rc |= expect_int_eq("parse double rejects null text", double_ok[0], 0);
+    rc |= expect_int_eq("parse double rejects empty text", double_ok[1], 0);
+    rc |= expect_int_eq("parse double rejects null output", double_ok[2], 0);
+    rc |= expect_int_eq("parse double accepts positive", double_ok[3], 1);
+    rc |= expect_double_near("parse double positive value", double_values[3], 3.25, 1e-12);
+    rc |= expect_int_eq("parse double accepts negative", double_ok[4], 1);
+    rc |= expect_double_near("parse double negative value", double_values[4], -2.5, 1e-12);
+    rc |= expect_int_eq("parse double rejects suffix", double_ok[5], 0);
+    rc |= expect_int_eq("parse double rejects alpha", double_ok[6], 0);
+    rc |= expect_int_eq("parse double rejects ERANGE", double_ok[7], 0);
+
+    int kinds[8] = {};
+    int rtltcp[8] = {};
+    int soapy[8] = {};
+    int replay[8] = {};
+    int family[8] = {};
+    char names[96] = {};
+    char soapy_args[64] = {};
+    rc |= expect_int_eq("source policy rejects null kind",
+                        rtl_stream_test_source_policy_matrix(NULL, rtltcp, soapy, replay, family,
+                                                             sizeof(kinds) / sizeof(kinds[0]), names, sizeof(names),
+                                                             soapy_args, sizeof(soapy_args)),
+                        -1);
+    rc |= expect_int_eq("source policy rejects null rtltcp",
+                        rtl_stream_test_source_policy_matrix(kinds, NULL, soapy, replay, family,
+                                                             sizeof(kinds) / sizeof(kinds[0]), names, sizeof(names),
+                                                             soapy_args, sizeof(soapy_args)),
+                        -1);
+    rc |= expect_int_eq("source policy rejects null soapy",
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, NULL, replay, family,
+                                                             sizeof(kinds) / sizeof(kinds[0]), names, sizeof(names),
+                                                             soapy_args, sizeof(soapy_args)),
+                        -1);
+    rc |= expect_int_eq("source policy rejects null replay",
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, NULL, family,
+                                                             sizeof(kinds) / sizeof(kinds[0]), names, sizeof(names),
+                                                             soapy_args, sizeof(soapy_args)),
+                        -1);
+    rc |= expect_int_eq("source policy rejects null family",
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, replay, NULL,
+                                                             sizeof(kinds) / sizeof(kinds[0]), names, sizeof(names),
+                                                             soapy_args, sizeof(soapy_args)),
+                        -1);
+    rc |= expect_int_eq("source policy rejects short arrays",
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, replay, family, 7U, names,
+                                                             sizeof(names), soapy_args, sizeof(soapy_args)),
+                        -1);
+    rc |= expect_int_eq("source policy rejects null names",
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, replay, family,
+                                                             sizeof(kinds) / sizeof(kinds[0]), NULL, sizeof(names),
+                                                             soapy_args, sizeof(soapy_args)),
+                        -1);
+    rc |= expect_int_eq("source policy rejects empty names",
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, replay, family,
+                                                             sizeof(kinds) / sizeof(kinds[0]), names, 0U, soapy_args,
+                                                             sizeof(soapy_args)),
+                        -1);
+    rc |= expect_int_eq("source policy rejects null Soapy args",
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, replay, family,
+                                                             sizeof(kinds) / sizeof(kinds[0]), names, sizeof(names),
+                                                             NULL, sizeof(soapy_args)),
+                        -1);
+    rc |= expect_int_eq("source policy rejects empty Soapy args",
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, replay, family,
+                                                             sizeof(kinds) / sizeof(kinds[0]), names, sizeof(names),
+                                                             soapy_args, 0U),
+                        -1);
+    rc |= expect_int_eq("source policy matrix helper",
+                        rtl_stream_test_source_policy_matrix(kinds, rtltcp, soapy, replay, family,
+                                                             sizeof(kinds) / sizeof(kinds[0]), names, sizeof(names),
+                                                             soapy_args, sizeof(soapy_args)),
+                        0);
+    rc |= expect_int_eq("null source defaults RTL USB", kinds[0], kRadioSourceRtlUsb);
+    rc |= expect_int_eq("empty source defaults RTL USB", kinds[1], kRadioSourceRtlUsb);
+    rc |= expect_int_eq("rtltcp bare source", kinds[2], kRadioSourceRtlTcp);
+    rc |= expect_int_eq("rtltcp arg source", kinds[3], kRadioSourceRtlTcp);
+    rc |= expect_int_eq("soapy bare source", kinds[4], kRadioSourceSoapy);
+    rc |= expect_int_eq("soapy arg source", kinds[5], kRadioSourceSoapy);
+    rc |= expect_int_eq("iq replay source", kinds[6], kRadioSourceIqReplay);
+    rc |= expect_int_eq("rtl spec source", kinds[7], kRadioSourceRtlUsb);
+    rc |= expect_int_eq("rtltcp predicate only matches rtltcp", rtltcp[2] + rtltcp[3], 2);
+    rc |= expect_int_eq("soapy predicate only matches soapy", soapy[4] + soapy[5], 2);
+    rc |= expect_int_eq("replay predicate only matches replay", replay[6], 1);
+    for (size_t i = 0U; i < sizeof(family) / sizeof(family[0]); i++) {
+        rc |= expect_int_eq("radio-family predicate covers known source", family[i], 1);
+    }
+    rc |= expect_int_eq("perf source names stable",
+                        std::strcmp(names, "rtl|rtl|rtltcp|rtltcp|soapy|soapy|iq_replay|rtl"), 0);
+    rc |= expect_int_eq("soapy args extraction stable", std::strcmp(soapy_args, "|||driver=rtlsdr"), 0);
+
+    int mode_policy[32] = {};
+    rc |= expect_int_eq("mode policy rejects null output", rtl_stream_test_mode_policy_matrix(NULL, 32U), -1);
+    rc |= expect_int_eq("mode policy rejects short output", rtl_stream_test_mode_policy_matrix(mode_policy, 31U), -1);
+    rc |=
+        expect_int_eq("mode policy matrix helper",
+                      rtl_stream_test_mode_policy_matrix(mode_policy, sizeof(mode_policy) / sizeof(mode_policy[0])), 0);
+    rc |= expect_int_eq("null opts are not digital", mode_policy[0], 0);
+    for (int i = 1; i <= 11; i++) {
+        rc |= expect_int_eq("digital protocol mode detected", mode_policy[i], 1);
+    }
+    rc |= expect_int_eq("empty opts are not digital", mode_policy[12], 0);
+    rc |= expect_int_eq("null opts have no wide four-level mode", mode_policy[13], 0);
+    for (int i = 14; i <= 17; i++) {
+        rc |= expect_int_eq("wide four-level protocol mode detected", mode_policy[i], 1);
+    }
+    rc |= expect_int_eq("P25P1 is not wide four-level FSK", mode_policy[18], 0);
+    rc |= expect_int_eq("null opts have no 12.5k/CQPSK mode", mode_policy[19], 0);
+    for (int i = 20; i <= 28; i++) {
+        rc |= expect_int_eq("12.5k/CQPSK bandwidth mode detected", mode_policy[i], 1);
+    }
+    rc |= expect_int_eq("NXDN48 is not a 12.5k/CQPSK bandwidth mode", mode_policy[29], 0);
+
+    int profiles[21] = {};
+    rc |= expect_int_eq("FSK profile rejects null output", rtl_stream_test_fsk_profile_policy_matrix(NULL, 21U), -1);
+    rc |=
+        expect_int_eq("FSK profile rejects short output", rtl_stream_test_fsk_profile_policy_matrix(profiles, 20U), -1);
+    rc |= expect_int_eq("FSK profile policy matrix helper",
+                        rtl_stream_test_fsk_profile_policy_matrix(profiles, sizeof(profiles) / sizeof(profiles[0])), 0);
+    rc |= expect_int_eq("null sym-rate opts reject", profiles[0], -1);
+    rc |= expect_int_eq("null frame opts reject", profiles[1], -1);
+    rc |= expect_int_eq("ProVoice sym-rate profile", profiles[2], DSD_CH_LPF_PROFILE_PROVOICE);
+    rc |= expect_int_eq("NXDN48 sym-rate profile", profiles[3], DSD_CH_LPF_PROFILE_6K25);
+    rc |= expect_int_eq("dPMR sym-rate profile", profiles[4], DSD_CH_LPF_PROFILE_6K25);
+    rc |= expect_int_eq("X2-TDMA sym-rate profile", profiles[5], DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_int_eq("DMR frame profile", profiles[6], DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_int_eq("P25P1 frame profile", profiles[7], DSD_CH_LPF_PROFILE_P25_C4FM);
+    rc |= expect_int_eq("P25P2 frame profile", profiles[8], DSD_CH_LPF_PROFILE_P25_C4FM);
+    rc |= expect_int_eq("D-STAR frame profile", profiles[9], DSD_CH_LPF_PROFILE_6K25);
+    rc |= expect_int_eq("X2-TDMA frame profile", profiles[10], DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_int_eq("ProVoice frame profile", profiles[11], DSD_CH_LPF_PROFILE_PROVOICE);
+    rc |= expect_int_eq("2400 symbol-rate fallback profile", profiles[12], DSD_CH_LPF_PROFILE_6K25);
+    rc |= expect_int_eq("9600 symbol-rate fallback profile", profiles[13], DSD_CH_LPF_PROFILE_PROVOICE);
+    rc |= expect_int_eq("6000 symbol-rate fallback profile", profiles[14], DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_int_eq("4800 two-level fallback profile", profiles[15], DSD_CH_LPF_PROFILE_6K25);
+    rc |= expect_int_eq("4800 four-level fallback profile", profiles[16], DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_int_eq("wide fallback profile", profiles[17], DSD_CH_LPF_PROFILE_WIDE);
+    rc |= expect_int_eq("current mode opts profile wins", profiles[18], DSD_CH_LPF_PROFILE_PROVOICE);
+    rc |= expect_int_eq("current mode two-level fallback", profiles[19], DSD_CH_LPF_PROFILE_6K25);
+    rc |= expect_int_eq("current mode default fallback", profiles[20], DSD_CH_LPF_PROFILE_12K5);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -873,6 +1075,7 @@ main(void) {
     rc |= expect_public_control_wrapper_contracts();
     rc |= expect_fsk_snr_sps_uses_active_profile();
     rc |= expect_direct_output_open_rate_uses_demod_rate();
+    rc |= expect_private_policy_matrices();
     rc |= expect_steady_state_watermark_disabled("rtl_tcp keeps demod watermark disabled", "rtltcp:127.0.0.1:1234");
     rc |= expect_steady_state_watermark_disabled("rtlsdr keeps demod watermark disabled", "rtl");
     rc |= expect_steady_state_watermark_disabled("soapy keeps demod watermark disabled", "soapy:driver=test");
