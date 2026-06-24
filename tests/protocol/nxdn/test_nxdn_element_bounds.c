@@ -1261,6 +1261,38 @@ test_arib_vcall_uses_shifted_fields(void) {
 }
 
 static int
+test_bad_crc_encrypted_vcall_records_metadata(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1357U, 0x2468U, 3U, 0x09U);
+    NXDN_Elements_Content_decode(opts, state, 0U, bits, sizeof(bits));
+
+    int rc = 0;
+    rc |= expect_int("bad-crc-vcall-type", state->NxdnElementsContent.MessageType, 0x01);
+    rc |= expect_int("bad-crc-vcall-crc", state->NxdnElementsContent.VCallCrcIsGood, 0);
+    rc |= expect_int("bad-crc-vcall-src", state->NxdnElementsContent.SourceUnitID, 0x1357);
+    rc |= expect_int("bad-crc-vcall-dst", state->NxdnElementsContent.DestinationID, 0x2468);
+    rc |= expect_int("bad-crc-vcall-cipher", state->NxdnElementsContent.CipherType, 3);
+    rc |= expect_int("bad-crc-vcall-key", state->NxdnElementsContent.KeyID, 0x09);
+    rc |= expect_int("bad-crc-vcall-last-rid", state->nxdn_last_rid, 0x1357);
+    rc |= expect_int("bad-crc-vcall-last-tg", state->nxdn_last_tg, 0x2468);
+    rc |= expect_int("bad-crc-vcall-cipher-state", state->nxdn_cipher_type, 3);
+    rc |= expect_int("bad-crc-vcall-lockout", state->dmr_encL, 1);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
 test_vcall_des_keyloader_and_iv_signal(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -1528,6 +1560,7 @@ main(void) {
     rc |= test_sdcall_des_data_decrypts_and_resets();
     rc |= test_dcall_aes_data_decrypts_with_manual_key_and_iv();
     rc |= test_arib_vcall_uses_shifted_fields();
+    rc |= test_bad_crc_encrypted_vcall_records_metadata();
     rc |= test_vcall_des_keyloader_and_iv_signal();
     rc |= test_vcall_aes_keyloader_and_iv_signal();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();

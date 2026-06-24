@@ -11,8 +11,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#ifdef USE_RADIO
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#endif
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdio.h>
@@ -737,6 +742,56 @@ main(void) {
     p25_sm_tick_ctx(&ctx18, &o18, &s18);
     assert(ctx18.state == P25_SM_ON_CC);
     assert(g_result_tune_to_cc_calls == cc_calls_before_seeded_release_tick);
+
+#ifdef USE_RADIO
+    // 20) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
+    static dsd_opts o19;
+    static dsd_state s19;
+    DSD_MEMSET(&o19, 0, sizeof(o19));
+    DSD_MEMSET(&s19, 0, sizeof(s19));
+    o19.p25_trunk = 1;
+    o19.trunk_tune_group_calls = 1;
+    o19.audio_in_type = AUDIO_IN_RTL;
+    o19.trunk_hangtime = 5.0f;
+    o19.p25_grant_voice_to_s = 5.0;
+    s19.p25_cc_freq = 851000000;
+    s19.trunk_cc_freq = 851000000;
+    s19.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s19.p25_iden_fdma[id9].chan_type = 1;
+    s19.p25_iden_fdma[id9].chan_spac = 100;
+    s19.p25_iden_fdma[id9].trust = 2;
+    s19.p25_iden_fdma[id9].populated = 1;
+    s19.p25_chan_tdma_explicit[id9] = 2;
+    s19.p25_vc_cqpsk_pref = -1;
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init(&o19);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+
+    p25_sm_ctx_t ctx19;
+    p25_sm_init_ctx(&ctx19, &o19, &s19);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_event(&ctx19, &o19, &s19, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19.state == P25_SM_TUNED);
+    assert(ctx19.vc_is_tdma == 1);
+    assert(o19.p25_is_tuned == 1);
+    const int tuned_sps = s19.samplesPerSymbol;
+    const int tuned_center = s19.symbolCenter;
+
+    s19.p25_vc_cqpsk_override = 0;
+    ctx19.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    int calls_before_cqpsk_retry = g_result_tune_to_freq_calls;
+    p25_sm_tick_ctx(&ctx19, &o19, &s19);
+    assert(g_result_tune_to_freq_calls == calls_before_cqpsk_retry + 1);
+    assert(ctx19.vc_cqpsk_retry_done == 0);
+    assert(s19.p25_vc_cqpsk_override == 0);
+    assert(s19.samplesPerSymbol == tuned_sps);
+    assert(s19.symbolCenter == tuned_center);
+    assert(ctx19.state == P25_SM_TUNED);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+#endif
 
     install_trunk_tuning_hooks();
 

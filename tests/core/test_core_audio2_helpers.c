@@ -393,6 +393,10 @@ test_output_helpers_dispatch_to_configured_sinks(void) {
     reset_sink_capture();
     dsd_output_float_block(&opts, &state, float_samples, 2, 2);
     rc |= expect_int("float-output-disabled-audio", g_audio_write_calls, 0);
+    dsd_output_s16_block(&opts, &state, short_samples, 2, 2);
+    rc |= expect_int("s16-output-disabled-audio", g_audio_write_calls, 0);
+    rc |= expect_int("s16-output-disabled-udp", g_udp_blast_calls, 0);
+    rc |= expect_int("s16-output-disabled-fd", g_dsd_write_calls, 0);
 
     opts.audio_out = 1;
     opts.audio_out_type = 0;

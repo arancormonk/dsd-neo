@@ -572,6 +572,18 @@ main(void) {
     failed |= expect_int_eq("replay CF32 source", input_level_source, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32);
     failed |= expect_size_eq("replay CF32 sample count", (size_t)input_level_count, 4U);
 
+    rc = rtl_device_test_replay_input_level_snapshot(DSD_IQ_FORMAT_CS16, rtl_test_backend_usb, "", 8U, 0U,
+                                                     &input_level_rc, &input_level_source, &input_level_count);
+    failed |= expect_int_eq("replay CS16 snapshot helper rc", rc, 0);
+    failed |= expect_int_eq("replay CS16 snapshot rc", input_level_rc, 0);
+    failed |= expect_int_eq("replay CS16 source", input_level_source, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16);
+    failed |= expect_size_eq("replay CS16 sample count", (size_t)input_level_count, 4U);
+
+    rc = rtl_device_test_replay_input_level_snapshot(DSD_IQ_FORMAT_CS16, rtl_test_backend_usb, "", 6U, 0U,
+                                                     &input_level_rc, &input_level_source, &input_level_count);
+    failed |= expect_int_eq("replay CS16 rejects misaligned helper rc", rc, 0);
+    failed |= expect_int_eq("replay CS16 rejects misaligned bytes", input_level_rc, -1);
+
     rc = rtl_device_test_replay_input_level_snapshot(DSD_IQ_FORMAT_CF32, rtl_test_backend_usb, "pre_ring", 16U, 4U,
                                                      &input_level_rc, &input_level_source, &input_level_count);
     failed |= expect_int_eq("replay CF32 rejects wrong stage helper rc", rc, 0);

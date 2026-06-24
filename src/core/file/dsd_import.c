@@ -773,6 +773,8 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
         long int parsed_chan = 0;
         if (parse_dec_long_strict(field, &parsed_chan)) {
             *chan_number = parsed_chan;
+        } else {
+            *chan_number = -1;
         }
         return;
     }
@@ -780,11 +782,13 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
         return;
     }
 
-    if (*chan_number >= 0 && *chan_number < 0xFFFF) {
-        long int freq = 0;
-        if (parse_dec_long_strict(field, &freq)) {
-            dsd_state_set_trunk_chan_freq(state, (uint32_t)*chan_number, freq);
-        }
+    if (*chan_number < 0 || *chan_number >= 0xFFFF) {
+        return;
+    }
+
+    long int freq = 0;
+    if (parse_dec_long_strict(field, &freq)) {
+        dsd_state_set_trunk_chan_freq(state, (uint32_t)*chan_number, freq);
     }
 
     if (state->lcn_freq_count < 0
@@ -792,7 +796,6 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
         return;
     }
 
-    long int freq = 0;
     if (parse_dec_long_strict(field, &freq)) {
         state->trunk_lcn_freq[state->lcn_freq_count] = freq;
     } else {
@@ -868,6 +871,7 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
 
     while (fgets(buffer, BSIZE, fp)) {
         int field_count = 0;
+        chan_number = -1;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels

@@ -484,6 +484,33 @@ main(void) {
         rc |= expect_u32("nmea-invalid-tgt-reset", st.dmr_lrrp_target[0], 0U);
     }
 
+    // NMEA sentence checker: missing checksum delimiter still clears LRRP state without emitting an event.
+    {
+        static const char nmea_missing_star[] = "$GPRMC,TEST\r\n";
+        uint8_t bits[8 * (int)(sizeof(nmea_missing_star) - 1)];
+        int len_bytes = nmea_len_bits(nmea_missing_star);
+        nmea_ascii_to_bits(bits, (int)sizeof(bits), nmea_missing_star);
+        st.dmr_lrrp_source[0] = 555U;
+        st.dmr_lrrp_target[0] = 666U;
+        reset_watchdog_capture();
+        if (st.event_history_s != NULL) {
+            DSD_MEMSET(st.event_history_s[0].Event_History_Items[0].text_message, 0,
+                       sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+        }
+        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
+        rc |= expect_u8("nmea-missing-star", ok, 0U);
+        rc |= expect_i("nmea-missing-star-watchdog", g_watchdog_calls, 0);
+        if (st.event_history_s != NULL) {
+            rc |= expect_i("nmea-missing-star-text-empty", st.event_history_s[0].Event_History_Items[0].text_message[0],
+                           0);
+        } else {
+            DSD_FPRINTF(stderr, "%s\n", "nmea-missing-star-text-empty: event_history_s is NULL");
+            rc |= 1;
+        }
+        rc |= expect_u32("nmea-missing-star-src-reset", st.dmr_lrrp_source[0], 0U);
+        rc |= expect_u32("nmea-missing-star-tgt-reset", st.dmr_lrrp_target[0], 0U);
+    }
+
     // NMEA checker should still validate even if event history is unavailable.
     {
         static const char nmea_ok[] = "$GPRMC,TEST*71\r\n";

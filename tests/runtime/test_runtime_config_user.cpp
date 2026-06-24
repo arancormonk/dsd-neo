@@ -181,6 +181,85 @@ test_decode_mode_aliases_and_guards(void) {
 }
 
 static int
+test_unknown_section_warnings_do_not_mutate_loaded_config(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"pulse\"\n"
+                             "\n"
+                             "[unexpected]\n"
+                             "source = \"rtl\"\n"
+                             "rtl_device = 9\n"
+                             "rtl_freq = \"851.0125M\"\n"
+                             "\n"
+                             "[mode]\n"
+                             "decode = \"nxdn48\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    int validate_rc = dsd_user_config_validate(path, &diags);
+
+    int rc = 0;
+    if (validate_rc != 0 || diags.error_count != 0 || diags.warning_count == 0) {
+        DSD_FPRINTF(stderr, "expected unknown section to validate with warning only, rc=%d errors=%d warnings=%d\n",
+                    validate_rc, diags.error_count, diags.warning_count);
+        rc |= 1;
+    }
+    int found_unknown_section = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (diags.items[i].level == DSDCFG_DIAG_WARNING && strcmp(diags.items[i].section, "unexpected") == 0
+            && strstr(diags.items[i].message, "Unknown section")) {
+            found_unknown_section = 1;
+            break;
+        }
+    }
+    if (!found_unknown_section) {
+        DSD_FPRINTF(stderr, "missing unknown-section warning diagnostic\n");
+        rc |= 1;
+    }
+    dsd_user_config_diags_free(&diags);
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for warning-only config %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    if (!cfg.has_input || cfg.input_source != DSDCFG_INPUT_PULSE) {
+        DSD_FPRINTF(stderr, "unknown section mutated input source=%d has_input=%d\n", (int)cfg.input_source,
+                    cfg.has_input);
+        rc |= 1;
+    }
+    if (cfg.rtl_device == 9 || cfg.rtl_freq[0] != '\0') {
+        DSD_FPRINTF(stderr, "unknown section leaked RTL fields device=%d freq=%s\n", cfg.rtl_device, cfg.rtl_freq);
+        rc |= 1;
+    }
+    if (!cfg.has_mode || cfg.decode_mode != DSDCFG_MODE_NXDN48) {
+        DSD_FPRINTF(stderr, "known mode section after unknown section did not load, mode=%d has=%d\n",
+                    (int)cfg.decode_mode, cfg.has_mode);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.audio_in_type == AUDIO_IN_RTL || strncmp(opts.audio_in_dev, "rtl:", 4) == 0) {
+        DSD_FPRINTF(stderr, "unknown section applied RTL input to live opts: type=%d dev=%s\n", opts.audio_in_type,
+                    opts.audio_in_dev);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
 test_render_input_variants_and_save_atomic(void) {
     dsdneoUserConfig cfg;
     DSD_MEMSET(&cfg, 0, sizeof cfg);
@@ -1422,6 +1501,7 @@ main(void) {
     int rc = 0;
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_decode_mode_aliases_and_guards();
+    rc |= test_unknown_section_warnings_do_not_mutate_loaded_config();
     rc |= test_render_input_variants_and_save_atomic();
     rc |= test_load_and_apply_basic();
     rc |= test_load_and_apply_alerts_empty_event_mask();

@@ -708,6 +708,67 @@ test_facch3_udch2_crc_state_update(void) {
     return rc;
 }
 
+static int
+test_facch3_udch2_split_block_storage_and_crc_gate(void) {
+    uint8_t bits[160];
+    uint8_t bytes[24];
+    uint8_t trellis0[96];
+    uint8_t trellis1[96];
+    uint8_t m_data0[12];
+    uint8_t m_data1[12];
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(bits, 0xA5, sizeof(bits));
+    DSD_MEMSET(bytes, 0x5A, sizeof(bytes));
+    for (size_t i = 0U; i < sizeof(trellis0); i++) {
+        trellis0[i] = (uint8_t)((i + 1U) & 1U);
+        trellis1[i] = (uint8_t)(i & 1U);
+    }
+    write_bits_msb(trellis0, 2U, 6U, 0x10U);
+    for (size_t i = 0U; i < sizeof(m_data0); i++) {
+        m_data0[i] = (uint8_t)(0x20U + i);
+        m_data1[i] = (uint8_t)(0x80U + i);
+    }
+
+    dsd_neo_nxdn_test_facch3_udch2_store_block(bits, bytes, 1U, trellis1, m_data1);
+    for (size_t i = 0U; i < 80U; i++) {
+        rc |= expect_u8_at("facch3-split-first-half-untouched", i, bits[i], 0xA5U);
+        rc |= expect_u8_at("facch3-split-second-half", i, bits[i + 80U], trellis1[i]);
+    }
+    for (size_t i = 0U; i < 12U; i++) {
+        rc |= expect_u8_at("facch3-split-first-bytes-untouched", i, bytes[i], 0x5AU);
+        rc |= expect_u8_at("facch3-split-second-bytes", i, bytes[i + 12U], m_data1[i]);
+    }
+
+    dsd_neo_nxdn_test_facch3_udch2_store_block(bits, bytes, 0U, trellis0, m_data0);
+    for (size_t i = 0U; i < 80U; i++) {
+        rc |= expect_u8_at("facch3-split-first-half", i, bits[i], trellis0[i]);
+        rc |= expect_u8_at("facch3-split-second-half-preserved", i, bits[i + 80U], trellis1[i]);
+    }
+    for (size_t i = 0U; i < 12U; i++) {
+        rc |= expect_u8_at("facch3-split-first-bytes", i, bytes[i], m_data0[i]);
+        rc |= expect_u8_at("facch3-split-second-bytes-preserved", i, bytes[i + 12U], m_data1[i]);
+    }
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_neo_nxdn_test_facch3_udch2_state_update(&opts, &state, bits, bytes, 0x111U, 0x111U, 0x222U, 0x222U, 1U);
+    rc |= expect_u8_at("facch3-split-good-format", 0U, state.data_header_format[0], 1U);
+    rc |= expect_u8_at("facch3-split-good-message-type", 0U, state.NxdnElementsContent.MessageType, 0x10U);
+    rc |= expect_u8_at("facch3-split-good-crc", 0U, state.NxdnElementsContent.VCallCrcIsGood, 1U);
+
+    state.data_header_format[0] = 9U;
+    state.NxdnElementsContent.MessageType = 0x22U;
+    state.NxdnElementsContent.VCallCrcIsGood = 0U;
+    dsd_neo_nxdn_test_facch3_udch2_state_update(&opts, &state, bits, bytes, 0x111U, 0x111U, 0x222U, 0x223U, 0U);
+    rc |= expect_u8_at("udch2-split-bad-keeps-format", 0U, state.data_header_format[0], 9U);
+    rc |= expect_u8_at("udch2-split-bad-keeps-message-type", 0U, state.NxdnElementsContent.MessageType, 0x22U);
+    rc |= expect_u8_at("udch2-split-bad-keeps-crc", 0U, state.NxdnElementsContent.VCallCrcIsGood, 0U);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -724,6 +785,7 @@ main(void) {
     rc |= test_pich_tch_dcr_csm_alias_state();
     rc |= test_facch2_udch_crc_state_update();
     rc |= test_facch3_udch2_crc_state_update();
+    rc |= test_facch3_udch2_split_block_storage_and_crc_gate();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

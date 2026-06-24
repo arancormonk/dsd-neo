@@ -1132,6 +1132,22 @@ dsd_neo_nxdn_test_facch3_udch2_state_update(dsd_opts* opts, dsd_state* state, co
     message.check[1] = check1;
     nxdn_handle_facch3_udch2_soft(opts, state, &message, type);
 }
+
+void
+dsd_neo_nxdn_test_facch3_udch2_store_block(uint8_t bits[160], uint8_t bytes[24], size_t block,
+                                           const uint8_t trellis_buf[96], const uint8_t m_data[12]) {
+    if (bits == NULL || bytes == NULL || trellis_buf == NULL || m_data == NULL || block > 1U) {
+        return;
+    }
+
+    struct nxdn_facch3_udch2_message message;
+    DSD_MEMSET(&message, 0, sizeof(message));
+    DSD_MEMCPY(message.bits, bits, sizeof(message.bits));
+    DSD_MEMCPY(message.bytes, bytes, sizeof(message.bytes));
+    nxdn_store_facch3_udch2_block(&message, block, trellis_buf, m_data);
+    DSD_MEMCPY(bits, message.bits, sizeof(message.bits));
+    DSD_MEMCPY(bytes, message.bytes, sizeof(message.bytes));
+}
 #endif
 
 struct nxdn_message_label {

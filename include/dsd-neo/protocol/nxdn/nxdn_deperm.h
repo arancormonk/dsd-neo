@@ -83,6 +83,8 @@ void dsd_neo_nxdn_test_facch2_udch_state_update(dsd_opts* opts, dsd_state* state
 void dsd_neo_nxdn_test_facch3_udch2_state_update(dsd_opts* opts, dsd_state* state, const uint8_t bits[160],
                                                  const uint8_t bytes[24], uint16_t crc0, uint16_t check0, uint16_t crc1,
                                                  uint16_t check1, uint8_t type);
+void dsd_neo_nxdn_test_facch3_udch2_store_block(uint8_t bits[160], uint8_t bytes[24], size_t block,
+                                                const uint8_t trellis_buf[96], const uint8_t m_data[12]);
 #endif
 
 const char* nxdn_message_type_label(uint8_t message_type);

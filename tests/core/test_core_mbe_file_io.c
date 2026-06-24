@@ -1225,6 +1225,30 @@ write_cookie_file(char* path, size_t path_size, const char* prefix, const char c
 }
 
 static int
+write_short_cookie_file(char* path, size_t path_size, const char* prefix) {
+    int fd = dsd_test_mkstemp(path, path_size, prefix);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    FILE* f = fdopen(fd, "wb");
+    if (!f) {
+        DSD_FPRINTF(stderr, "fdopen failed: %s\n", strerror(errno));
+        (void)dsd_close(fd);
+        (void)remove(path);
+        return 1;
+    }
+    if (fwrite(".a", 1, 2, f) != 2) {
+        DSD_FPRINTF(stderr, "fwrite(%s) failed\n", path);
+        fclose(f);
+        (void)remove(path);
+        return 1;
+    }
+    fclose(f);
+    return 0;
+}
+
+static int
 test_open_mbe_in_file_classifies_cookies(void) {
     int rc = 0;
 
@@ -1262,6 +1286,34 @@ test_open_mbe_in_file_classifies_cookies(void) {
         (void)remove(path);
     }
 
+    return rc;
+}
+
+static int
+test_open_mbe_in_file_rejects_short_cookie_without_handle(void) {
+    int rc = 0;
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.mbe_file_type = 99;
+
+    if (write_short_cookie_file(path, sizeof path, "mbe_in_short") != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts.mbe_in_file, sizeof opts.mbe_in_file, "%s", path);
+
+    openMbeInFile(&opts, &state);
+    rc |= expect_int("mbe short cookie rejected", state.mbe_file_type, -1);
+    rc |= expect_true("mbe short cookie closes handle", opts.mbe_in_f == NULL);
+
+    if (opts.mbe_in_f) {
+        fclose(opts.mbe_in_f);
+        opts.mbe_in_f = NULL;
+    }
+    (void)remove(path);
     return rc;
 }
 
@@ -1727,6 +1779,7 @@ main(void) {
     rc |= test_open_mbe_out_file_creates_slot_files_and_closes();
     rc |= test_truncated_reads_fail();
     rc |= test_open_mbe_in_file_classifies_cookies();
+    rc |= test_open_mbe_in_file_rejects_short_cookie_without_handle();
     rc |= test_symbol_capture_open_writes_expected_headers();
     rc |= test_symbol_capture_auto_rotation_reopens_and_logs_event();
     rc |= test_wav_output_helpers_create_temp_and_raw_files();

@@ -47,6 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <vector>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
 #endif
@@ -917,6 +918,18 @@ rtl_prepare_replay_input_level_snapshot(const struct rtl_device* s, const uint8_
     }
     if (s->replay_cfg.format == DSD_IQ_FORMAT_CU8) {
         return dsd_input_level_metrics_from_cu8(raw_block, raw_bytes, rtl_u8_input_level_source(s), out);
+    }
+    if (s->replay_cfg.format == DSD_IQ_FORMAT_CS16) {
+        if ((raw_bytes & 3U) != 0U) {
+            return -1;
+        }
+        size_t sample_count = raw_bytes / sizeof(int16_t);
+        if (sample_count == 0U) {
+            return -1;
+        }
+        std::vector<int16_t> samples(sample_count);
+        DSD_MEMCPY(samples.data(), raw_block, sample_count * sizeof(int16_t));
+        return dsd_input_level_metrics_from_cs16(samples.data(), sample_count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, out);
     }
     if (s->replay_cfg.format == DSD_IQ_FORMAT_CF32) {
         if (!scratch_f32 || (raw_bytes & 7U) != 0U
@@ -1890,6 +1903,10 @@ rtl_device_test_replay_input_level_snapshot(int format, int backend, const char*
     }
     if (format == DSD_IQ_FORMAT_CF32) {
         const float samples[] = {0.25f, -0.25f, 0.50f, -0.50f};
+        size_t copy_bytes = raw_bytes < sizeof(samples) ? raw_bytes : sizeof(samples);
+        DSD_MEMCPY(raw, samples, copy_bytes);
+    } else if (format == DSD_IQ_FORMAT_CS16) {
+        const int16_t samples[] = {8192, -8192, 16384, -16384};
         size_t copy_bytes = raw_bytes < sizeof(samples) ? raw_bytes : sizeof(samples);
         DSD_MEMCPY(raw, samples, copy_bytes);
     }

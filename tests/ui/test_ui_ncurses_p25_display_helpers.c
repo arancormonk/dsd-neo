@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,6 +27,37 @@ int ncurses_last_synctype;
 
 static dsd_trunk_cc_candidates g_cc_candidates;
 static dsdneoRuntimeConfig g_runtime_config;
+static char g_printw_capture[4096];
+static size_t g_printw_capture_len;
+
+static void
+reset_printw_capture(void) {
+    DSD_MEMSET(g_printw_capture, 0, sizeof(g_printw_capture));
+    g_printw_capture_len = 0U;
+}
+
+static void
+append_printw_capture(const char* fmt, va_list ap) {
+    if (!fmt || g_printw_capture_len >= sizeof(g_printw_capture) - 1U) {
+        return;
+    }
+    size_t remaining = sizeof(g_printw_capture) - g_printw_capture_len;
+    int wrote = DSD_VSNPRINTF(g_printw_capture + g_printw_capture_len, remaining, fmt, ap);
+    if (wrote <= 0) {
+        return;
+    }
+    if ((size_t)wrote >= remaining) {
+        g_printw_capture_len = sizeof(g_printw_capture) - 1U;
+    } else {
+        g_printw_capture_len += (size_t)wrote;
+    }
+}
+
+static void
+assert_capture_contains(const char* needle) {
+    assert(needle != NULL);
+    assert(strstr(g_printw_capture, needle) != NULL);
+}
 
 uint64_t
 dsd_time_monotonic_ns(void) { // NOLINT(misc-use-internal-linkage)
@@ -78,7 +110,10 @@ ui_iden_color_pair(int iden) { // NOLINT(misc-use-internal-linkage)
 
 int
 printw(const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
-    (void)fmt;
+    va_list ap;
+    va_start(ap, fmt);
+    append_printw_capture(fmt, ap);
+    va_end(ap);
     return 0;
 }
 
@@ -385,6 +420,64 @@ run_iden_summary_helper_cases(void) {
 }
 
 static int
+run_iden_render_cases(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.p25_iden_fdma[5].populated = 1;
+    state.p25_iden_fdma[5].base_freq = 170200000;
+    state.p25_iden_fdma[5].chan_spac = 100;
+    state.p25_iden_fdma[5].chan_type = 1;
+    state.p25_iden_fdma[5].trans_off = -45000000;
+    state.p25_iden_fdma[5].trust = 2;
+    state.p25_iden_fdma[5].wacn = 0xABCDEULL;
+    state.p25_iden_fdma[5].sysid = 0x123ULL;
+    state.p25_iden_fdma[5].rfss = 2ULL;
+    state.p25_iden_fdma[5].site = 7ULL;
+    state.p25_iden_tdma[5].populated = 1;
+    state.p25_iden_tdma[5].base_freq = 170400000;
+    state.p25_iden_tdma[5].chan_spac = 50;
+    state.p25_iden_tdma[5].chan_type = 4;
+    state.p25_iden_tdma[5].trust = 1;
+
+    reset_printw_capture();
+    ui_print_p25_iden_plan(NULL, &state);
+    assert_capture_contains("IDEN 5: FDMA[F/T] type:1 base:851.000000MHz spac:0.012500MHz off:-45000000 trust:ok");
+    assert_capture_contains("W:ABCDE S:123");
+    assert_capture_contains("R:2 I:7");
+    assert_capture_contains("IDEN 5: TDMA[F/T] type:4 base:852.000000MHz spac:0.006250MHz off:0 trust:prov");
+
+    return 0;
+}
+
+static int
+run_p25_frequency_display_cases(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.trunk_cc_freq = 851012500L;
+    state.trunk_vc_freq[0] = 852012500L;
+    reset_printw_capture();
+    assert(ui_print_p25_cc_vc_metric(&state) == 1);
+    assert_capture_contains("| CC/VC: CC:851.012500 MHz VC:852.012500 MHz");
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.p25_cc_freq = 853012500L;
+    DSD_SNPRINTF(state.active_channel[3], sizeof(state.active_channel[3]), "Active Group Ch: 123A TG: 100;");
+    state.trunk_chan_map[0x123A] = 854012500L;
+    reset_printw_capture();
+    assert(ui_print_p25_cc_vc_metric(&state) == 1);
+    assert_capture_contains("| CC/VC: CC:853.012500 MHz VC:854.012500 MHz");
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_printw_capture();
+    assert(ui_print_p25_cc_vc_metric(&state) == 1);
+    assert_capture_contains("| CC/VC: CC:- VC:-");
+
+    return 0;
+}
+
+static int
 run_p2_gate_helper_cases(void) {
     DSD_MEMSET(&g_runtime_config, 0, sizeof(g_runtime_config));
     g_runtime_config.p25_ring_hold_s = 1.25;
@@ -432,6 +525,8 @@ main(void) {
     run_neighbor_helper_cases();
     run_trunk_sm_helper_cases();
     run_iden_summary_helper_cases();
+    run_iden_render_cases();
+    run_p25_frequency_display_cases();
     run_p2_gate_helper_cases();
     printf("UI_NCURSES_P25_DISPLAY_HELPERS: OK\n");
     return 0;

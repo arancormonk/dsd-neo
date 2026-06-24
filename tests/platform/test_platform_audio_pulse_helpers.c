@@ -22,6 +22,27 @@
 #include "dsd-neo/platform/audio_concealment.h"
 #include "dsd-neo/platform/threading.h"
 
+static int g_pa_simple_new_fail;
+static int g_pa_simple_error;
+static int g_pa_simple_read_fail;
+static int g_pa_simple_read_calls;
+static int g_pa_simple_write_fail;
+static int g_pa_simple_write_calls;
+static int g_pa_simple_drain_fail;
+static int g_pa_simple_drain_calls;
+
+static void
+reset_pa_simple_fakes(void) {
+    g_pa_simple_new_fail = 0;
+    g_pa_simple_error = 0;
+    g_pa_simple_read_fail = 0;
+    g_pa_simple_read_calls = 0;
+    g_pa_simple_write_fail = 0;
+    g_pa_simple_write_calls = 0;
+    g_pa_simple_drain_fail = 0;
+    g_pa_simple_drain_calls = 0;
+}
+
 int
 dsd_mutex_init(dsd_mutex_t* mutex) {
     (void)mutex;
@@ -131,6 +152,12 @@ pa_simple_new(const char* server, const char* name, pa_stream_direction_t dir, c
     (void)ss;
     (void)map;
     (void)attr;
+    if (g_pa_simple_new_fail) {
+        if (error != NULL) {
+            *error = g_pa_simple_error;
+        }
+        return NULL;
+    }
     if (error != NULL) {
         *error = 0;
     }
@@ -145,6 +172,13 @@ pa_simple_free(pa_simple* s) {
 int
 pa_simple_read(pa_simple* s, void* data, size_t bytes, int* error) {
     (void)s;
+    g_pa_simple_read_calls++;
+    if (g_pa_simple_read_fail) {
+        if (error != NULL) {
+            *error = g_pa_simple_error;
+        }
+        return -1;
+    }
     if (data != NULL) {
         DSD_MEMSET(data, 0, bytes);
     }
@@ -157,6 +191,13 @@ pa_simple_read(pa_simple* s, void* data, size_t bytes, int* error) {
 int
 pa_simple_drain(pa_simple* s, int* error) {
     (void)s;
+    g_pa_simple_drain_calls++;
+    if (g_pa_simple_drain_fail) {
+        if (error != NULL) {
+            *error = g_pa_simple_error;
+        }
+        return -1;
+    }
     if (error != NULL) {
         *error = 0;
     }
@@ -168,6 +209,13 @@ pa_simple_write(pa_simple* s, const void* data, size_t bytes, int* error) {
     (void)s;
     (void)data;
     (void)bytes;
+    g_pa_simple_write_calls++;
+    if (g_pa_simple_write_fail) {
+        if (error != NULL) {
+            *error = g_pa_simple_error;
+        }
+        return -1;
+    }
     if (error != NULL) {
         *error = 0;
     }
@@ -361,6 +409,132 @@ test_pulse_async_write_policy(void) {
     assert(dsd_mutex_destroy(&stream.mu) == 0);
 }
 
+static dsd_audio_params
+pulse_test_valid_params(void) {
+    dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
+    params.sample_rate = 48000;
+    params.channels = 1;
+    params.bits_per_sample = 16;
+    params.app_name = "dsd-neo-pulse-helper-test";
+    return params;
+}
+
+static void
+test_pulse_simple_error_paths(void) {
+    dsd_audio_params params = pulse_test_valid_params();
+    dsd_audio_stream stream;
+    int16_t samples[4] = {1, 2, 3, 4};
+
+    reset_pa_simple_fakes();
+    g_pa_simple_new_fail = 1;
+    g_pa_simple_error = PA_ERR_CONNECTIONREFUSED;
+    assert(dsd_audio_open_input(&params) == NULL);
+    assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_CONNECTIONREFUSED)) == 0);
+
+    reset_pa_simple_fakes();
+    g_pa_simple_new_fail = 1;
+    g_pa_simple_error = PA_ERR_ACCESS;
+    assert(dsd_audio_open_output(&params) == NULL);
+    assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_ACCESS)) == 0);
+
+    reset_pa_simple_fakes();
+    DSD_MEMSET(&stream, 0, sizeof(stream));
+    stream.handle = (pa_simple*)0x1;
+    stream.is_input = 1;
+    stream.channels = 1;
+    g_pa_simple_read_fail = 1;
+    g_pa_simple_error = PA_ERR_IO;
+    assert(dsd_audio_read(&stream, samples, 4) == -1);
+    assert(g_pa_simple_read_calls == 1);
+    assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_IO)) == 0);
+
+    reset_pa_simple_fakes();
+    DSD_MEMSET(&stream, 0, sizeof(stream));
+    stream.handle = (pa_simple*)0x1;
+    stream.is_input = 0;
+    stream.use_async = 0;
+    stream.channels = 1;
+    g_pa_simple_write_fail = 1;
+    g_pa_simple_error = PA_ERR_INTERNAL;
+    assert(dsd_audio_write(&stream, samples, 4) == -1);
+    assert(g_pa_simple_write_calls == 1);
+    assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_INTERNAL)) == 0);
+
+    reset_pa_simple_fakes();
+    DSD_MEMSET(&stream, 0, sizeof(stream));
+    stream.handle = (pa_simple*)0x1;
+    stream.is_input = 0;
+    stream.use_async = 0;
+    g_pa_simple_drain_fail = 1;
+    g_pa_simple_error = PA_ERR_TIMEOUT;
+    assert(dsd_audio_drain(&stream) == -1);
+    assert(g_pa_simple_drain_calls == 1);
+    assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_TIMEOUT)) == 0);
+}
+
+static void
+test_pulse_async_error_paths(void) {
+    dsd_audio_stream stream;
+    int16_t chunk[4] = {0};
+    int16_t ring[4] = {10, 11, 12, 13};
+
+    reset_pa_simple_fakes();
+    DSD_MEMSET(&stream, 0, sizeof(stream));
+    stream.handle = (pa_simple*)0x1;
+    stream.is_input = 0;
+    stream.use_async = 1;
+    stream.channels = 1;
+    stream.chunk = chunk;
+    stream.chunk_samples = 4;
+    assert(dsd_mutex_init(&stream.mu) == 0);
+    assert(dsd_cond_init(&stream.cv) == 0);
+    g_pa_simple_write_fail = 1;
+    g_pa_simple_error = PA_ERR_CONNECTIONTERMINATED;
+    assert(pulse_output_write_chunk(&stream) == -1);
+    assert(g_pa_simple_write_calls == 1);
+    assert(stream.stop == 1);
+    assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_CONNECTIONTERMINATED)) == 0);
+
+    reset_pa_simple_fakes();
+    DSD_MEMSET(&stream, 0, sizeof(stream));
+    stream.handle = (pa_simple*)0x1;
+    stream.is_input = 0;
+    stream.use_async = 1;
+    stream.channels = 1;
+    stream.drain_requested = 1;
+    g_pa_simple_drain_fail = 1;
+    g_pa_simple_error = PA_ERR_TIMEOUT;
+    assert(pulse_output_handle_drain_locked(&stream) == 0);
+    assert(g_pa_simple_drain_calls == 1);
+    assert(stream.drain_requested == 0);
+    assert(stream.drain_completed == 1);
+    assert(stream.drain_failed == 1);
+    assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_TIMEOUT)) == 0);
+
+    reset_pa_simple_fakes();
+    DSD_MEMSET(&stream, 0, sizeof(stream));
+    stream.handle = (pa_simple*)0x1;
+    stream.is_input = 0;
+    stream.use_async = 1;
+    stream.channels = 1;
+    stream.ring = ring;
+    stream.ring_samples_capacity = 4;
+    stream.ring_samples_count = 2;
+    stream.chunk = chunk;
+    stream.chunk_samples = 2;
+    stream.drain_requested = 1;
+    g_pa_simple_write_fail = 1;
+    g_pa_simple_error = PA_ERR_IO;
+    assert(pulse_output_handle_drain_locked(&stream) == -1);
+    assert(g_pa_simple_write_calls == 1);
+    assert(stream.stop == 1);
+    assert(strcmp(dsd_audio_get_error(), pa_strerror(PA_ERR_IO)) == 0);
+
+    assert(dsd_cond_destroy(&stream.cv) == 0);
+    assert(dsd_mutex_destroy(&stream.mu) == 0);
+}
+
 static void
 test_pulse_enum_callbacks_and_guards(void) {
     dsd_audio_device devices[2];
@@ -408,6 +582,14 @@ test_pulse_enum_callbacks_and_guards(void) {
     assert(devices[0].initialized == 1);
 
     assert(pulse_enum_op_done(NULL) == 1);
+    op = (pa_operation*)0x1;
+    enum_context no_outputs = {NULL, 1, 0};
+    enum_context no_inputs = {NULL, 1, 0};
+    assert(pulse_enum_start_query(NULL, &op, 0, &no_outputs, &ctx) == 0);
+    assert(op == NULL);
+    op = (pa_operation*)0x1;
+    assert(pulse_enum_start_query(NULL, &op, 1, &ctx, &no_inputs) == 0);
+    assert(op == NULL);
     assert(pulse_enum_start_query(NULL, &op, 2, &ctx, &ctx) == -1);
     assert(op == NULL);
     assert(strcmp(dsd_audio_get_error(), "Internal error: unexpected enumeration state") == 0);
@@ -419,6 +601,8 @@ main(void) {
     test_pulse_ring_wrap_read_and_drop();
     test_pulse_output_attr_and_async_buffers();
     test_pulse_async_write_policy();
+    test_pulse_simple_error_paths();
+    test_pulse_async_error_paths();
     test_pulse_enum_callbacks_and_guards();
     return 0;
 }

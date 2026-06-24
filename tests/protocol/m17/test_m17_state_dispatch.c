@@ -626,12 +626,19 @@ test_stream_dispatch_can_filter_and_aes_gates(void) {
     state->m17_str_dt = 1U;
     state->m17_can = 9U;
     state->m17_can_en = 8;
+    state->m17_enc = 2U;
+    state->m17_payload_decrypted = 6U;
+    DSD_MEMSET(processed_bits, 0xA5U, sizeof(processed_bits));
 
     int err = 0;
     err |= expect_int(
         "CAN filter blocks stream",
         dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
         DSD_NEO_M17_TEST_STREAM_CAN_FILTERED);
+    for (size_t i = 0U; i < sizeof(processed_bits); i++) {
+        err |= expect_u8("CAN-filtered stream clears output", processed_bits[i], 0U);
+    }
+    err |= expect_u8("CAN-filtered stream preserves decrypt flag", state->m17_payload_decrypted, 6U);
 
     state->m17_can_en = -1;
     state->m17_enc = 2U;

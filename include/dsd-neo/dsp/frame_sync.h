@@ -67,6 +67,11 @@ int dsd_frame_sync_test_hamming_distance_pattern(const char* symbols, const char
 int dsd_frame_sync_test_best_ham_for_patterns(const char* symbols, const char* const patterns[], int pattern_count,
                                               int pattern_len, int best_start);
 int dsd_frame_sync_test_best_nxdn_scaled_ham(const char* symbols10, int best_start);
+void dsd_frame_sync_test_set_recent_hamming(int ham_c4fm, int ham_qpsk, int ham_gfsk);
+void dsd_frame_sync_test_get_mod_votes(int* out_c4fm, int* out_qpsk, int* out_gfsk);
+void dsd_frame_sync_test_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt);
+void dsd_frame_sync_test_reset_p25_trunk_tick_state(void);
+void dsd_frame_sync_test_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now);
 #ifdef USE_RADIO
 int dsd_frame_sync_test_rtl_profile_for_symbol_rate(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz,
                                                     int preferred_levels);

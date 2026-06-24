@@ -2426,6 +2426,111 @@ test_bootstrap_profile_disables_autosave(void) {
 }
 
 static int
+test_bootstrap_missing_profile_errors_without_applying_config_or_cli(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[input]\n"
+                             "source = \"rtl\"\n"
+                             "rtl_device = 7\n"
+                             "rtl_freq = \"851.0125M\"\n"
+                             "\n"
+                             "[trunking]\n"
+                             "enabled = true\n"
+                             "\n"
+                             "[profile.valid]\n"
+                             "output.ncurses_ui = true\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp profile ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--profile";
+    char arg4[] = "missing";
+    char arg5[] = "-N";
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "runtime_cli_missing_profile") != 0) {
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(6, argv, opts, state, &argc_effective, &exit_rc);
+
+    int capture_failed = dsd_test_capture_stderr_end(&cap);
+    char stderr_buf[2048];
+    stderr_buf[0] = '\0';
+    if (!capture_failed) {
+        capture_failed = read_file_to_buffer(cap.path, stderr_buf, sizeof stderr_buf);
+    }
+    (void)remove(cap.path);
+
+    int test_rc = 0;
+    if (capture_failed) {
+        DSD_FPRINTF(stderr, "failed to capture missing-profile diagnostics\n");
+        test_rc = 1;
+    }
+    if (rc != DSD_BOOTSTRAP_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected missing profile bootstrap error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    if (!strstr(stderr_buf, "Profile 'missing' not found")) {
+        DSD_FPRINTF(stderr, "expected missing profile diagnostic, got:\n%s\n", stderr_buf);
+        test_rc = 1;
+    }
+    if (opts->use_ncurses_terminal != 0) {
+        DSD_FPRINTF(stderr, "missing profile should stop before CLI -N applies, got ncurses=%d\n",
+                    opts->use_ncurses_terminal);
+        test_rc = 1;
+    }
+    if (strncmp(opts->audio_in_dev, "rtl:", 4) == 0 || opts->trunk_enable != 0 || opts->p25_trunk != 0) {
+        DSD_FPRINTF(stderr, "missing profile should not apply config: input=%s trunk=%d p25=%d\n", opts->audio_in_dev,
+                    opts->trunk_enable, opts->p25_trunk);
+        test_rc = 1;
+    }
+    if (state->cli_argc_effective != 0) {
+        DSD_FPRINTF(stderr, "missing profile should stop before recording effective CLI args, got %d\n",
+                    state->cli_argc_effective);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_bootstrap_cli_call_alert_restores_all_config_filtered_events(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -5767,6 +5872,7 @@ main(void) {
     rc |= test_bootstrap_inherited_trunk_scan_preserves_timing_overrides();
     rc |= test_bootstrap_config_one_shots_skip_trunk_scan_runtime_validation();
     rc |= test_bootstrap_profile_disables_autosave();
+    rc |= test_bootstrap_missing_profile_errors_without_applying_config_or_cli();
     rc |= test_bootstrap_cli_call_alert_restores_all_config_filtered_events();
     rc |= test_r_playback_optind_is_first_file_regardless_of_option_order();
     rc |= test_open_mbe_missing_file_leaves_stream_null();

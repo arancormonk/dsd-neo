@@ -784,6 +784,35 @@ test_encrypted_flco_lockout_inserts_policy_and_event_history(void) {
 }
 
 static void
+test_encrypted_flco_allowed_tuning_skips_lockout_policy(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_tg_policy_lookup lookup;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 1;
+    state.currentslot = 0;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 4321U, 8765U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0);
+    assert(dsd_tg_policy_lookup_id(&state, 4321U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(history[0].Event_History_Items[0].internal_str[0] == '\0');
+    dsd_state_ext_free_all(&state);
+}
+
+static void
 test_completed_slco_tier3_site_parameters_update_state(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -901,6 +930,7 @@ main(void) {
     test_cach_completed_fragment_crc_error_reports_voice_payload_context();
     test_cach_fragment_counter_overflow_resets_fragments();
     test_encrypted_flco_lockout_inserts_policy_and_event_history();
+    test_encrypted_flco_allowed_tuning_skips_lockout_policy();
     test_completed_slco_tier3_site_parameters_update_state();
     test_completed_slco_connect_plus_and_xpt_update_site_state();
     test_completed_slco_capacity_plus_hold_returns_to_rest_channel();

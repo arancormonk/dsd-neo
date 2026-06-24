@@ -30,6 +30,7 @@
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_history.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
@@ -38,9 +39,44 @@ int ncurses_last_synctype;
 WINDOW* stdscr;
 unsigned long long int edacs_channel_tree[33][6];
 
+static char g_printw_capture[4096];
+static size_t g_printw_capture_len;
+
+static void
+reset_printw_capture(void) {
+    DSD_MEMSET(g_printw_capture, 0, sizeof(g_printw_capture));
+    g_printw_capture_len = 0U;
+}
+
+static void
+append_printw_capture(const char* fmt, va_list ap) {
+    if (!fmt || g_printw_capture_len >= sizeof(g_printw_capture) - 1U) {
+        return;
+    }
+    size_t remaining = sizeof(g_printw_capture) - g_printw_capture_len;
+    int wrote = DSD_VSNPRINTF(g_printw_capture + g_printw_capture_len, remaining, fmt, ap);
+    if (wrote <= 0) {
+        return;
+    }
+    if ((size_t)wrote >= remaining) {
+        g_printw_capture_len = sizeof(g_printw_capture) - 1U;
+    } else {
+        g_printw_capture_len += (size_t)wrote;
+    }
+}
+
+static void
+assert_capture_contains(const char* needle) {
+    assert(needle != NULL);
+    assert(strstr(g_printw_capture, needle) != NULL);
+}
+
 int
 printw(const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
-    (void)fmt;
+    va_list ap;
+    va_start(ap, fmt);
+    append_printw_capture(fmt, ap);
+    va_end(ap);
     return 0;
 }
 
@@ -356,6 +392,138 @@ test_input_source_helpers(void) {
     assert(ui_audio_in_is_soapy(&opts) == 1);
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
     assert(ui_audio_in_is_soapy(&opts) == 0);
+}
+
+static void
+test_basic_input_source_rendering(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.pulse_digi_rate_in = 48000;
+    opts.pulse_digi_in_channels = 2;
+    opts.input_volume_multiplier = 3;
+    opts.use_rigctl = 1;
+    opts.rigctlportno = 4532;
+    DSD_SNPRINTF(opts.pa_input_idx, sizeof(opts.pa_input_idx), "pulse-device");
+    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "radio.local");
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| Pulse Signal Input:  48 kHz; 2 Ch;");
+    assert_capture_contains(" D: pulse-device;");
+    assert_capture_contains("RIG: radio.local:4532;");
+    assert_capture_contains(" IV: 3X;");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.wav_sample_rate = 48000;
+    opts.tcp_portno = 7355;
+    opts.input_volume_multiplier = 4;
+    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "10.0.0.5");
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| TCP Signal Input: 10.0.0.5:7355; 48 kHz; 1 Ch;");
+    assert_capture_contains(" IV: 4X;");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.wav_sample_rate = 96000;
+    opts.udp_in_portno = 23456;
+    opts.input_volume_multiplier = 5;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| UDP Signal Input: 127.0.0.1:23456; 96 kHz; 1 Ch;");
+    assert_capture_contains("[Waiting]");
+
+    opts.udp_in_packets = 42ULL;
+    opts.udp_in_drops = 3ULL;
+    DSD_SNPRINTF(opts.udp_in_bindaddr, sizeof(opts.udp_in_bindaddr), "0.0.0.0");
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| UDP Signal Input: 0.0.0.0:23456; 96 kHz; 1 Ch;");
+    assert_capture_contains("Pkts:42 Drops:3");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.input_volume_multiplier = 2;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "capture.wav");
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| WAV Audio Input: capture.wav; 48000 kHz;");
+    assert_capture_contains(" IV: 2X;");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| STDIN Standard Input: - Menu Disabled when using STDIN!");
+}
+
+static void
+test_rtl_and_soapy_input_source_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dev_index = 2;
+    opts.rtl_gain_value = 21;
+    opts.rtl_volume_multiplier = 3;
+    opts.rtlsdr_ppm_error = -7;
+    opts.rtl_squelch_level = -37.5f;
+    opts.rtl_dsp_bw_khz = 24;
+    opts.rtlsdr_center_freq = 851012500;
+    opts.rtl_udp_port = 5555;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+    DSD_SNPRINTF(opts.rtl_udp_bindaddr, sizeof(opts.rtl_udp_bindaddr), "127.0.0.1");
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains("| RTL: 2;");
+    assert_capture_contains(" G: 21dB;");
+    assert_capture_contains(" Mon: 3X;");
+    assert_capture_contains(" PPM: -7;");
+    assert_capture_contains(" SQL: -37.5 dB;");
+    assert_capture_contains(" DSP-BW: 24 kHz;");
+    assert_capture_contains(" FRQ: 851012500;");
+    assert_capture_contains("| Auto PPM: Off");
+    assert_capture_contains("| External RTL Tuning on UDP: 127.0.0.1:5555");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_gain_value = 0;
+    opts.rtl_dsp_bw_khz = 12;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy:driver=rtlsdr");
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains("| SoapySDR: driver=rtlsdr;");
+    assert_capture_contains(" G: AGC;");
+    assert_capture_contains(" DSP-BW: 12 kHz;");
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy");
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains("| SoapySDR;");
+}
+
+static void
+test_rtl_auto_ppm_status_rendering(void) {
+    reset_printw_capture();
+    ui_print_rtl_auto_ppm_status_values(0, 0, 0, -100.0, 0.0, 0);
+    assert_capture_contains("| Auto PPM: Off");
+
+    reset_printw_capture();
+    ui_print_rtl_auto_ppm_status_values(1, 0, 0, 18.2, -122.5, 1);
+    assert_capture_contains("| Auto PPM: On; SNR: 18.2 dB; df: -122.5 Hz; step: +1;");
+
+    reset_printw_capture();
+    ui_print_rtl_auto_ppm_status_values(1, 0, 0, 20.0, 0.0, 0);
+    assert_capture_contains("| Auto PPM: On; SNR: 20.0 dB; df: 0.0 Hz; step: hold;");
+
+    reset_printw_capture();
+    ui_print_rtl_auto_ppm_status_values(1, 1, -12, 25.0, 10.0, -1);
+    assert_capture_contains("| Auto PPM: Locked (PPM: -12)");
 }
 
 static void
@@ -684,6 +852,9 @@ test_lock_and_protocol_helpers(void) {
 int
 main(void) {
     test_input_source_helpers();
+    test_basic_input_source_rendering();
+    test_rtl_and_soapy_input_source_rendering();
+    test_rtl_auto_ppm_status_rendering();
     test_demod_symbol_rate_helpers();
     test_input_level_policy();
     test_history_and_sort_helpers();

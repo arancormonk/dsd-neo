@@ -19,9 +19,18 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
+#include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
+#ifdef USE_RADIO
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#endif
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -52,6 +61,12 @@ void dsd_neo_edacs_test_build_raw_frames(const int edacs_bit[241], unsigned long
 unsigned long long int dsd_neo_edacs_test_build_symbol_register(const dsd_opts* opts, dsd_state* state,
                                                                 const short analog1[960]);
 void dsd_neo_edacs_test_reset_digitize_overflow(dsd_state* state);
+int dsd_neo_edacs_test_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2,
+                                              short* analog3, double* pwr);
+void dsd_neo_edacs_test_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
+                                          const short* analog3);
+int dsd_neo_edacs_test_static_wav_downsample(const short* src, short* out, size_t out_count);
+double dsd_neo_edacs_test_no_sql_watchdog_window(double trunk_hangtime);
 
 typedef struct {
     const char* name;
@@ -84,6 +99,19 @@ static int g_skip_dibit_count = 0;
 static long g_last_vc_freq = 0;
 static long g_last_cc_freq = 0;
 static long g_rigctl_current_freq = 0;
+static int g_tcp_read_count = 0;
+static int g_tcp_close_count = 0;
+static int g_tcp_fail_at = -1;
+static int g_udp_read_count = 0;
+static int g_udp_fail_every = 0;
+static int g_udp_blast_count = 0;
+static size_t g_udp_blast_bytes[3];
+static short g_udp_blast_first[3];
+#ifdef USE_RADIO
+static int g_rtl_read_count = 0;
+static int g_rtl_return_pwr_count = 0;
+static int g_rtl_fail_at = -1;
+#endif
 
 void
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -156,6 +184,114 @@ edacs_install_hooks(void) {
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){
         .get_current_freq_hz = edacs_hook_get_current_freq_hz,
     });
+}
+
+static int
+edacs_fake_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out) {
+    (void)ctx;
+    const int index = g_tcp_read_count++;
+    if (out == NULL || (g_tcp_fail_at >= 0 && index == g_tcp_fail_at)) {
+        return 0;
+    }
+    *out = (int16_t)(1000 + index);
+    return 1;
+}
+
+static void
+edacs_fake_tcp_close(tcp_input_ctx* ctx) {
+    (void)ctx;
+    g_tcp_close_count++;
+}
+
+static int
+edacs_fake_udp_read_sample(dsd_opts* opts, int16_t* out) {
+    (void)opts;
+    const int index = g_udp_read_count++;
+    if (out == NULL || (g_udp_fail_every > 0 && (index % g_udp_fail_every) == 0)) {
+        return 0;
+    }
+    *out = (int16_t)(2000 + index);
+    return 1;
+}
+
+static void
+edacs_install_net_audio_hooks(void) {
+    dsd_net_audio_input_hooks hooks = {0};
+    hooks.tcp_read_sample = edacs_fake_tcp_read_sample;
+    hooks.tcp_close = edacs_fake_tcp_close;
+    hooks.udp_read_sample = edacs_fake_udp_read_sample;
+    dsd_net_audio_input_hooks_set(hooks);
+}
+
+static void
+edacs_fake_blast_analog(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
+    (void)opts;
+    (void)state;
+    if (g_udp_blast_count < 3) {
+        g_udp_blast_bytes[g_udp_blast_count] = nsam;
+        g_udp_blast_first[g_udp_blast_count] = data != NULL ? ((const short*)data)[0] : 0;
+    }
+    g_udp_blast_count++;
+}
+
+static void
+edacs_install_udp_output_hooks(void) {
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){
+        .blast_analog = edacs_fake_blast_analog,
+    });
+}
+
+#ifdef USE_RADIO
+static int
+edacs_fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
+    (void)rtl_ctx;
+    const int index = g_rtl_read_count++;
+    if (out_got != NULL) {
+        *out_got = 0;
+    }
+    if (out == NULL || out_got == NULL || count != 1U || (g_rtl_fail_at >= 0 && index == g_rtl_fail_at)) {
+        return -1;
+    }
+    out[0] = 100.0f + (float)index;
+    *out_got = 1;
+    return 0;
+}
+
+static double
+edacs_fake_rtl_return_pwr(const void* rtl_ctx) {
+    (void)rtl_ctx;
+    g_rtl_return_pwr_count++;
+    return 77.25;
+}
+
+static void
+edacs_install_rtl_stream_hooks(void) {
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){
+        .read = edacs_fake_rtl_read,
+        .return_pwr = edacs_fake_rtl_return_pwr,
+    });
+}
+#endif
+
+static void
+edacs_reset_audio_hook_state(void) {
+    g_tcp_read_count = 0;
+    g_tcp_close_count = 0;
+    g_tcp_fail_at = -1;
+    g_udp_read_count = 0;
+    g_udp_fail_every = 0;
+    g_udp_blast_count = 0;
+    DSD_MEMSET(g_udp_blast_bytes, 0, sizeof(g_udp_blast_bytes));
+    DSD_MEMSET(g_udp_blast_first, 0, sizeof(g_udp_blast_first));
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+#ifdef USE_RADIO
+    g_rtl_read_count = 0;
+    g_rtl_return_pwr_count = 0;
+    g_rtl_fail_at = -1;
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+#endif
+    dsd_exitflag_store(0);
 }
 
 static int
@@ -999,6 +1135,187 @@ edacs_run_helper_contract_cases(void) {
     return rc;
 }
 
+static int
+edacs_run_analog_loop_helper_cases(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static short analog1[960];
+    static short analog2[960];
+    static short analog3[960];
+    double pwr = -1.0;
+    int tcp_ctx_token = 0xEAA5;
+
+    edacs_reset_audio_hook_state();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(analog1, 0, sizeof(analog1));
+    DSD_MEMSET(analog2, 0, sizeof(analog2));
+    DSD_MEMSET(analog3, 0, sizeof(analog3));
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.input_volume_multiplier = 2;
+    opts.tcp_in_ctx = (tcp_input_ctx*)(void*)&tcp_ctx_token;
+    edacs_install_net_audio_hooks();
+
+    rc |= edacs_expect(dsd_neo_edacs_test_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 1,
+                       "analog-helpers", "tcp-collect", "TCP triplet collection succeeded");
+    rc |= edacs_expect(g_tcp_read_count == 2880, "analog-helpers", "tcp-collect", "TCP read exactly three blocks");
+    rc |= edacs_expect(g_tcp_close_count == 0, "analog-helpers", "tcp-collect", "TCP success did not close input");
+    rc |= edacs_expect(analog1[0] == 2000 && analog1[959] == 3918 && analog2[0] == 3920 && analog3[959] == 7758,
+                       "analog-helpers", "tcp-collect", "TCP samples preserved block ordering and volume scaling");
+    rc |= edacs_expect(pwr > 0.0, "analog-helpers", "tcp-collect", "TCP collection updated power");
+
+    edacs_reset_audio_hook_state();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_UDP;
+    g_udp_fail_every = 4;
+    edacs_install_net_audio_hooks();
+    pwr = -1.0;
+    rc |= edacs_expect(dsd_neo_edacs_test_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 1,
+                       "analog-helpers", "udp-collect", "UDP triplet collection tolerates dropped samples");
+    rc |= edacs_expect(g_udp_read_count == 2880, "analog-helpers", "udp-collect", "UDP read exactly three blocks");
+    rc |= edacs_expect(analog1[0] == 0 && analog1[1] == 2001 && analog1[4] == 0 && analog2[0] == 0, "analog-helpers",
+                       "udp-collect", "UDP failed reads become zero samples");
+    rc |= edacs_expect(pwr > 0.0, "analog-helpers", "udp-collect", "UDP collection updated power");
+
+#ifdef USE_RADIO
+    edacs_reset_audio_hook_state();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_volume_multiplier = 2;
+    state.rtl_ctx = (struct RtlSdrContext*)(void*)&tcp_ctx_token;
+    edacs_install_rtl_stream_hooks();
+    pwr = -1.0;
+    rc |= edacs_expect(dsd_neo_edacs_test_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 1,
+                       "analog-helpers", "rtl-collect", "RTL triplet collection succeeded");
+    rc |= edacs_expect(g_rtl_read_count == 2880, "analog-helpers", "rtl-collect", "RTL read exactly three blocks");
+    rc |= edacs_expect(g_rtl_return_pwr_count == 1 && pwr == 77.25, "analog-helpers", "rtl-collect",
+                       "RTL collection used squelch power hook");
+    rc |= edacs_expect(analog1[0] == 200 && analog2[0] == 2120 && analog3[959] == 5958, "analog-helpers", "rtl-collect",
+                       "RTL samples preserved block ordering and volume scaling");
+#endif
+
+    static short wav_src[960];
+    static short wav_out[320];
+    for (int i = 0; i < 960; i++) {
+        wav_src[i] = (short)i;
+    }
+    DSD_MEMSET(wav_out, 0, sizeof(wav_out));
+    rc |= edacs_expect(dsd_neo_edacs_test_static_wav_downsample(wav_src, wav_out, 320U) == 0, "analog-helpers",
+                       "static-wav", "static WAV downsample helper accepted full output");
+    rc |= edacs_expect(wav_out[0] == 0 && wav_out[1] == 0 && wav_out[2] == 6 && wav_out[3] == 6 && wav_out[318] == 954
+                           && wav_out[319] == 954,
+                       "analog-helpers", "static-wav", "static WAV helper picked every sixth sample as stereo");
+    wav_out[0] = -123;
+    rc |= edacs_expect(dsd_neo_edacs_test_static_wav_downsample(wav_src, wav_out, 319U) == -1 && wav_out[0] == -123,
+                       "analog-helpers", "static-wav", "short output buffer is rejected without mutation");
+
+    rc |= edacs_expect(dsd_neo_edacs_test_no_sql_watchdog_window(0.5) == 20.0, "analog-helpers", "watchdog",
+                       "No-SQL watchdog clamps low hangtime");
+    rc |= edacs_expect(dsd_neo_edacs_test_no_sql_watchdog_window(4.5) == 45.0, "analog-helpers", "watchdog",
+                       "No-SQL watchdog preserves midrange hangtime");
+    rc |= edacs_expect(dsd_neo_edacs_test_no_sql_watchdog_window(8.0) == 60.0, "analog-helpers", "watchdog",
+                       "No-SQL watchdog clamps high hangtime");
+    rc |= edacs_expect(dsd_neo_edacs_test_should_release_voice(0x0000000000000000ULL, 1, time(NULL) - 5, 20.0) == 0,
+                       "analog-helpers", "watchdog", "No-SQL watchdog does not release before window");
+
+    static short out1[960];
+    static short out2[960];
+    static short out3[960];
+    for (int i = 0; i < 960; i++) {
+        out1[i] = (short)(11 + i);
+        out2[i] = (short)(22 + i);
+        out3[i] = (short)(33 + i);
+    }
+
+    edacs_reset_audio_hook_state();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    edacs_install_udp_output_hooks();
+    dsd_neo_edacs_test_emit_analog_audio(&opts, &state, out1, out2, out3);
+    rc |= edacs_expect(g_udp_blast_count == 3, "analog-helpers", "udp-output", "UDP output emitted three blocks");
+    rc |= edacs_expect(g_udp_blast_bytes[0] == 1920U && g_udp_blast_bytes[1] == 1920U && g_udp_blast_bytes[2] == 1920U,
+                       "analog-helpers", "udp-output", "UDP output emitted 960 short samples per block");
+    rc |= edacs_expect(g_udp_blast_first[0] == 11 && g_udp_blast_first[1] == 22 && g_udp_blast_first[2] == 33,
+                       "analog-helpers", "udp-output", "UDP output preserved block order");
+
+    char raw_path[] = "dsdneo_edacs_raw_XXXXXX";
+    int raw_fd = dsd_mkstemp(raw_path);
+    if (raw_fd < 0) {
+        rc |= edacs_expect(0, "analog-helpers", "raw-output", "created temporary raw output");
+    } else {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.audio_out_type = 1;
+        opts.floating_point = 0;
+        opts.slot1_on = 1;
+        opts.audio_out_fd = raw_fd;
+        dsd_neo_edacs_test_emit_analog_audio(&opts, &state, out1, out2, out3);
+        dsd_stat_t st;
+        DSD_MEMSET(&st, 0, sizeof(st));
+        rc |= edacs_expect(dsd_fstat(raw_fd, &st) == 0 && (long long)st.st_size == 5760LL, "analog-helpers",
+                           "raw-output", "raw fd output wrote three 960-sample blocks");
+        (void)dsd_close(raw_fd);
+        FILE* fp = fopen(raw_path, "rb");
+        if (fp == NULL) {
+            rc |= edacs_expect(0, "analog-helpers", "raw-output", "reopened raw output for verification");
+        } else {
+            short first1 = 0;
+            short first2 = 0;
+            short first3 = 0;
+            rc |= edacs_expect(fread(&first1, sizeof(first1), 1U, fp) == 1U, "analog-helpers", "raw-output",
+                               "read first raw block sample");
+            rc |= edacs_expect(fseek(fp, (long)(960U * sizeof(short)), SEEK_SET) == 0
+                                   && fread(&first2, sizeof(first2), 1U, fp) == 1U,
+                               "analog-helpers", "raw-output", "read second raw block sample");
+            rc |= edacs_expect(fseek(fp, (long)(1920U * sizeof(short)), SEEK_SET) == 0
+                                   && fread(&first3, sizeof(first3), 1U, fp) == 1U,
+                               "analog-helpers", "raw-output", "read third raw block sample");
+            rc |= edacs_expect(first1 == 11 && first2 == 22 && first3 == 33, "analog-helpers", "raw-output",
+                               "raw fd output preserved block order");
+            (void)fclose(fp);
+        }
+        (void)remove(raw_path);
+    }
+
+    edacs_reset_audio_hook_state();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.tcp_in_ctx = (tcp_input_ctx*)(void*)&tcp_ctx_token;
+    g_tcp_fail_at = 5;
+    edacs_install_net_audio_hooks();
+    pwr = 123.0;
+    rc |= edacs_expect(dsd_neo_edacs_test_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 0,
+                       "analog-helpers", "tcp-cleanup", "TCP read failure aborts collection");
+    rc |= edacs_expect(g_tcp_read_count == 6 && g_tcp_close_count == 1 && opts.tcp_in_ctx == NULL, "analog-helpers",
+                       "tcp-cleanup", "TCP read failure closes and clears input context");
+    rc |=
+        edacs_expect(dsd_exitflag_load() == 1, "analog-helpers", "tcp-cleanup", "TCP read failure requested shutdown");
+
+#ifdef USE_RADIO
+    edacs_reset_audio_hook_state();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_volume_multiplier = 1;
+    state.rtl_ctx = (struct RtlSdrContext*)(void*)&tcp_ctx_token;
+    g_rtl_fail_at = 3;
+    edacs_install_rtl_stream_hooks();
+    rc |= edacs_expect(dsd_neo_edacs_test_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 0,
+                       "analog-helpers", "rtl-cleanup", "RTL read failure aborts collection");
+    rc |= edacs_expect(g_rtl_read_count == 4 && dsd_exitflag_load() == 1, "analog-helpers", "rtl-cleanup",
+                       "RTL read failure requested shutdown after bounded reads");
+#endif
+
+    edacs_reset_audio_hook_state();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1078,9 +1395,15 @@ main(void) {
     rc |= edacs_run_standard_state_cases();
     rc |= edacs_run_extended_state_cases();
     rc |= edacs_run_helper_contract_cases();
+    rc |= edacs_run_analog_loop_helper_cases();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
+#ifdef USE_RADIO
+    dsd_rtl_stream_io_hooks_set((dsd_rtl_stream_io_hooks){0});
+#endif
     if (rc == 0) {
         printf("EDACS_GRANT_TUNE_MATRIX: OK\n");
     }

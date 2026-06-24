@@ -453,11 +453,29 @@ openMbeInFile(dsd_opts* opts, dsd_state* state) {
     //debug
 
     // read cookie
-    cookie[0] = fgetc(opts->mbe_in_f);
-    cookie[1] = fgetc(opts->mbe_in_f);
-    cookie[2] = fgetc(opts->mbe_in_f);
-    cookie[3] = fgetc(opts->mbe_in_f);
+    int cookie_ok = 1;
+    for (size_t i = 0; i < 4U; i++) {
+        int c = fgetc(opts->mbe_in_f);
+        if (c == EOF) {
+            cookie_ok = 0;
+            cookie[i] = '\0';
+        } else {
+            cookie[i] = (char)c;
+        }
+    }
     cookie[4] = 0;
+
+    if (cookie_ok == 0) {
+        if (strncmp(".mbe", ext, 4) == 0) {
+            state->mbe_file_type = 3;
+            return;
+        }
+        state->mbe_file_type = -1;
+        LOG_ERROR("Error - incomplete MBE file header\n");
+        fclose(opts->mbe_in_f);
+        opts->mbe_in_f = NULL;
+        return;
+    }
 
     //ambe+2
     if (strstr(cookie, ".amb") != NULL) {

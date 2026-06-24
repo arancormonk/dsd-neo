@@ -10,8 +10,10 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -257,6 +259,58 @@ test_hamming_helpers_find_best_patterns(void) {
 }
 
 #ifdef USE_RADIO
+static double g_snr_c4fm = -100.0;
+static double g_snr_c4fm_eye = -100.0;
+static double g_snr_cqpsk = -100.0;
+static double g_snr_qpsk_const = -100.0;
+static int g_frame_sync_tick_calls = 0;
+
+static double
+fake_snr_c4fm_db(void) {
+    return g_snr_c4fm;
+}
+
+static double
+fake_snr_c4fm_eye_db(void) {
+    return g_snr_c4fm_eye;
+}
+
+static double
+fake_snr_cqpsk_db(void) {
+    return g_snr_cqpsk;
+}
+
+static double
+fake_snr_qpsk_const_db(void) {
+    return g_snr_qpsk_const;
+}
+
+static void
+fake_p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_frame_sync_tick_calls++;
+}
+
+static void
+set_fake_snr(double c4fm, double c4fm_eye, double cqpsk, double qpsk_const) {
+    g_snr_c4fm = c4fm;
+    g_snr_c4fm_eye = c4fm_eye;
+    g_snr_cqpsk = cqpsk;
+    g_snr_qpsk_const = qpsk_const;
+}
+
+static void
+install_fake_snr_hooks(void) {
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .snr_c4fm_db = fake_snr_c4fm_db,
+        .snr_c4fm_eye_db = fake_snr_c4fm_eye_db,
+        .snr_cqpsk_db = fake_snr_cqpsk_db,
+        .snr_qpsk_const_db = fake_snr_qpsk_const_db,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+}
+
 static void
 test_rtl_symbol_profile_selection(void) {
     static dsd_opts opts;
@@ -303,6 +357,123 @@ test_rtl_symbol_profile_selection(void) {
     assert(dsd_frame_sync_test_rtl_levels_for_symbol_rate(NULL, 4800, 0) == 4);
     assert(dsd_frame_sync_test_rtl_levels_for_symbol_rate(NULL, 4800, 2) == 2);
 }
+
+static void
+test_modulation_snr_fallback_votes_and_dwell(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int lastt = 24;
+    int c4fm_votes = -1;
+    int qpsk_votes = -1;
+    int gfsk_votes = -1;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    state.carrier = 1;
+    state.rf_mod = 0;
+    dsd_frame_sync_reset_mod_state();
+    set_fake_snr(-100.0, 4.0, -100.0, 12.0);
+    install_fake_snr_hooks();
+
+    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    dsd_frame_sync_test_get_mod_votes(&c4fm_votes, &qpsk_votes, &gfsk_votes);
+    assert(state.rf_mod == 0);
+    assert(c4fm_votes == 0);
+    assert(qpsk_votes == 1);
+    assert(gfsk_votes == 0);
+
+    lastt = 24;
+    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 1);
+
+    lastt = 24;
+    set_fake_snr(25.0, -100.0, 5.0, -100.0);
+    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 1);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+static void
+test_modulation_cli_lock_prevents_votes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int lastt = 24;
+    int c4fm_votes = -1;
+    int qpsk_votes = -1;
+    int gfsk_votes = -1;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 0;
+    dsd_frame_sync_reset_mod_state();
+    set_fake_snr(-100.0, -100.0, 20.0, -100.0);
+    install_fake_snr_hooks();
+
+    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    dsd_frame_sync_test_get_mod_votes(&c4fm_votes, &qpsk_votes, &gfsk_votes);
+    assert(state.rf_mod == 0);
+    assert(c4fm_votes == 0);
+    assert(qpsk_votes == 0);
+    assert(gfsk_votes == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+static void
+test_hamming_override_can_select_qpsk(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int lastt = 24;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    state.rf_mod = 0;
+    dsd_frame_sync_reset_mod_state();
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_frame_sync_test_set_recent_hamming(10, 1, 24);
+
+    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 0);
+    lastt = 24;
+    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 1);
+}
+
+static void
+test_p25_trunk_tick_recency(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.p25_trunk = 1;
+    state.p25_p2_active_slot = -1;
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    g_frame_sync_tick_calls = 0;
+    dsd_frame_sync_test_reset_p25_trunk_tick_state();
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+        .p25_sm_try_tick = fake_p25_sm_try_tick,
+    });
+
+    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)100);
+    assert(g_frame_sync_tick_calls == 1);
+    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)100);
+    assert(g_frame_sync_tick_calls == 1);
+
+    state.lastsynctype = DSD_SYNC_NONE;
+    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)101);
+    assert(g_frame_sync_tick_calls == 2);
+    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)105);
+    assert(g_frame_sync_tick_calls == 2);
+
+    state.p25_p2_active_slot = 0;
+    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)106);
+    assert(g_frame_sync_tick_calls == 3);
+
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+}
 #endif
 
 int
@@ -314,6 +485,10 @@ main(void) {
     test_hamming_helpers_find_best_patterns();
 #ifdef USE_RADIO
     test_rtl_symbol_profile_selection();
+    test_modulation_snr_fallback_votes_and_dwell();
+    test_modulation_cli_lock_prevents_votes();
+    test_hamming_override_can_select_qpsk();
+    test_p25_trunk_tick_recency();
 #endif
     return 0;
 }

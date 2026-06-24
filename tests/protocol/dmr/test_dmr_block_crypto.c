@@ -396,6 +396,31 @@ test_aes_missing_key_still_normalizes_alg(void) {
     return rc;
 }
 
+static int
+test_malformed_window_decrypt_rejects_without_mutating_payload(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    const uint8_t slot = 0;
+    const uint8_t start = 12U;
+    uint8_t before[sizeof(state.dmr_pdu_sf[slot])];
+    int rc = 0;
+
+    seed_window(&state, slot, start, 32U);
+    state.payload_algid = 1;
+    state.payload_keyid = 0x33;
+    state.payload_mi = 0x01020304ULL;
+    state.rkey_array[0x33] = 0x0123456789ULL;
+    fill_pattern(state.dmr_pdu_sf[slot], sizeof(state.dmr_pdu_sf[slot]), 0x91U);
+    DSD_MEMCPY(before, state.dmr_pdu_sf[slot], sizeof(before));
+
+    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    rc |= expect_int("malformed ctx keeps start", ctx.start, start);
+    rc |= expect_int("malformed ctx empty window", ctx.end, 0);
+    rc |= expect_int("malformed decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 0);
+    rc |= expect_bytes("malformed decrypt preserves payload", state.dmr_pdu_sf[slot], before, sizeof(before));
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -408,5 +433,6 @@ main(void) {
     rc |= test_des_decrypts_window_with_manual_key_fallback();
     rc |= test_basic_privacy_decrypts_window();
     rc |= test_aes_missing_key_still_normalizes_alg();
+    rc |= test_malformed_window_decrypt_rejects_without_mutating_payload();
     return rc;
 }

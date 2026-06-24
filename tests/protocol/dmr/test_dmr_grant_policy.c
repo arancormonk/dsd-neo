@@ -543,6 +543,15 @@ main(void) {
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("invalid zero grant channel does not tune", opts->trunk_is_tuned == 0);
 
+    return_to_cc(opts, st);
+    const uint16_t unmapped_lpcn = 0x0123;
+    DSD_MEMSET(st->active_channel[0], 0, sizeof(st->active_channel[0]));
+    build_grant(bits, bytes, 49U, unmapped_lpcn, 3325U, 4425U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("unmapped logical grant records active channel",
+                      strstr(st->active_channel[0], "Active Group Ch: 0123 (TDMA S1) TG: 3325;") != NULL);
+    rc |= expect_true("unmapped logical grant does not tune", opts->trunk_is_tuned == 0 && st->trunk_vc_freq[0] == 0);
+
     st->trunk_chan_map[lpcn] = freq;
     st->tg_hold = 3330U;
     st->last_vc_sync_time = 123;

@@ -1664,25 +1664,39 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
     return frame_sync_try_provoice_conventional(ctx);
 }
 
+static time_t g_p25_trunk_tick_last_tick = 0;
+static time_t g_p25_trunk_tick_last_p25_seen = 0;
+
 static void
 frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now) {
-    static time_t last_tick = 0;
-    static time_t last_p25_seen = 0;
-    if (now == last_tick) {
+    if (now == g_p25_trunk_tick_last_tick) {
         return;
     }
 
     int p25_by_sync = DSD_SYNC_IS_P25(state->lastsynctype) ? 1 : 0;
     if (p25_by_sync) {
-        last_p25_seen = now;
+        g_p25_trunk_tick_last_p25_seen = now;
     }
-    int p25_recent = (last_p25_seen != 0 && (now - last_p25_seen) <= 3) ? 1 : 0;
+    int p25_recent = (g_p25_trunk_tick_last_p25_seen != 0 && (now - g_p25_trunk_tick_last_p25_seen) <= 3) ? 1 : 0;
     int p25_active = p25_by_sync || p25_recent || (state->p25_p2_active_slot != -1);
     if (opts->p25_trunk == 1 && p25_active) {
         dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
     }
-    last_tick = now;
+    g_p25_trunk_tick_last_tick = now;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_reset_p25_trunk_tick_state(void) {
+    g_p25_trunk_tick_last_tick = 0;
+    g_p25_trunk_tick_last_p25_seen = 0;
+}
+
+void
+dsd_frame_sync_test_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now) {
+    frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
+}
+#endif
 
 static inline void
 frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
@@ -1903,6 +1917,33 @@ frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, 
     frame_sync_update_mod_votes(want_mod);
     frame_sync_apply_mod_switch(state, frame_sync_decide_mod_switch(state, want_mod));
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_set_recent_hamming(int ham_c4fm, int ham_qpsk, int ham_gfsk) {
+    atomic_store(&g_ham_c4fm_recent, ham_c4fm);
+    atomic_store(&g_ham_qpsk_recent, ham_qpsk);
+    atomic_store(&g_ham_gfsk_recent, ham_gfsk);
+}
+
+void
+dsd_frame_sync_test_get_mod_votes(int* out_c4fm, int* out_qpsk, int* out_gfsk) {
+    if (out_c4fm) {
+        *out_c4fm = atomic_load(&g_vote_c4fm);
+    }
+    if (out_qpsk) {
+        *out_qpsk = atomic_load(&g_vote_qpsk);
+    }
+    if (out_gfsk) {
+        *out_gfsk = atomic_load(&g_vote_gfsk);
+    }
+}
+
+void
+dsd_frame_sync_test_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt) {
+    frame_sync_maybe_auto_switch_modulation(opts, state, t_max, lastt);
+}
+#endif
 
 static void
 frame_sync_debug_symbol_stats(const dsd_opts* opts, float symbol) {
