@@ -7,11 +7,13 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <errno.h>
 #include <math.h>
 #include <sndfile.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +25,83 @@
 #include "dsd-neo/core/state_fwd.h"
 
 enum { DSD_AUDIO_TEST_PATH_MAX = 512 };
+
+#ifdef DSD_NEO_TEST_AUDIO_WRAP
+enum {
+    DSD_AUDIO_WRAP_EVENT_DRAIN = 1,
+    DSD_AUDIO_WRAP_EVENT_CLOSE = 2,
+    DSD_AUDIO_WRAP_EVENT_OPEN = 3,
+};
+
+typedef struct audio_wrap_event {
+    dsd_audio_stream* stream;
+    int kind;
+    int async_output;
+} audio_wrap_event;
+
+static uintptr_t g_audio_wrap_existing_streams[4];
+static uintptr_t g_audio_wrap_open_streams[4];
+static audio_wrap_event g_audio_wrap_events[16];
+static int g_audio_wrap_event_count;
+static int g_audio_wrap_open_count;
+
+// GNU ld --wrap requires these exact external symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+dsd_audio_stream* __wrap_dsd_audio_open_output(const dsd_audio_params* params);
+void __wrap_dsd_audio_close(dsd_audio_stream* stream);
+int __wrap_dsd_audio_drain(dsd_audio_stream* stream);
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+static dsd_audio_stream*
+audio_wrap_existing_stream(int index) {
+    return (dsd_audio_stream*)&g_audio_wrap_existing_streams[index];
+}
+
+static void
+audio_wrap_reset(void) {
+    DSD_MEMSET(g_audio_wrap_events, 0, sizeof g_audio_wrap_events);
+    g_audio_wrap_event_count = 0;
+    g_audio_wrap_open_count = 0;
+}
+
+static void
+audio_wrap_record(int kind, dsd_audio_stream* stream, int async_output) {
+    if (g_audio_wrap_event_count >= (int)(sizeof g_audio_wrap_events / sizeof g_audio_wrap_events[0])) {
+        return;
+    }
+    g_audio_wrap_events[g_audio_wrap_event_count].kind = kind;
+    g_audio_wrap_events[g_audio_wrap_event_count].stream = stream;
+    g_audio_wrap_events[g_audio_wrap_event_count].async_output = async_output;
+    g_audio_wrap_event_count++;
+}
+
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+dsd_audio_stream*
+__wrap_dsd_audio_open_output(const dsd_audio_params* params) {
+    int index = g_audio_wrap_open_count;
+    if (index >= (int)(sizeof g_audio_wrap_open_streams / sizeof g_audio_wrap_open_streams[0])) {
+        index = (int)(sizeof g_audio_wrap_open_streams / sizeof g_audio_wrap_open_streams[0]) - 1;
+    }
+    dsd_audio_stream* stream = (dsd_audio_stream*)&g_audio_wrap_open_streams[index];
+    g_audio_wrap_open_count++;
+    audio_wrap_record(DSD_AUDIO_WRAP_EVENT_OPEN, stream, params ? params->async_output : 0);
+    return stream;
+}
+
+void
+__wrap_dsd_audio_close(dsd_audio_stream* stream) {
+    audio_wrap_record(DSD_AUDIO_WRAP_EVENT_CLOSE, stream, 0);
+}
+
+int
+__wrap_dsd_audio_drain(dsd_audio_stream* stream) {
+    audio_wrap_record(DSD_AUDIO_WRAP_EVENT_DRAIN, stream, 0);
+    return 0;
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+#endif
 
 static int
 expect_true(const char* label, int cond) {
@@ -798,6 +877,65 @@ test_drain_audio_output_guards_and_fd_sink(void) {
 }
 
 static int
+test_drain_audio_output_drains_all_local_streams(void) {
+#ifndef DSD_NEO_TEST_AUDIO_WRAP
+    return 0;
+#else
+    static dsd_opts opts = {0};
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.audio_out = 1;
+    opts.audio_out_type = 0;
+    opts.audio_out_stream = audio_wrap_existing_stream(0);
+    opts.audio_out_streamR = audio_wrap_existing_stream(1);
+    opts.audio_raw_out = audio_wrap_existing_stream(2);
+
+    audio_wrap_reset();
+    dsd_drain_audio_output(&opts);
+
+    int rc = expect_int_eq("local drain event count", g_audio_wrap_event_count, 3);
+    rc |= expect_int_eq("primary stream drained", g_audio_wrap_events[0].kind, DSD_AUDIO_WRAP_EVENT_DRAIN);
+    rc |= expect_true("primary drain stream", g_audio_wrap_events[0].stream == opts.audio_out_stream);
+    rc |= expect_int_eq("right stream drained", g_audio_wrap_events[1].kind, DSD_AUDIO_WRAP_EVENT_DRAIN);
+    rc |= expect_true("right drain stream", g_audio_wrap_events[1].stream == opts.audio_out_streamR);
+    rc |= expect_int_eq("raw stream drained", g_audio_wrap_events[2].kind, DSD_AUDIO_WRAP_EVENT_DRAIN);
+    rc |= expect_true("raw drain stream", g_audio_wrap_events[2].stream == opts.audio_raw_out);
+    return rc;
+#endif
+}
+
+static int
+test_reconfigure_drains_sync_output_before_policy_close(void) {
+#ifndef DSD_NEO_TEST_AUDIO_WRAP
+    return 0;
+#else
+    static dsd_opts opts = {0};
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.audio_out = 1;
+    opts.audio_out_type = 0;
+    opts.analog_only = 0;
+    opts.audio_output_async_policy = 0;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.pulse_digi_rate_out = 8000;
+    opts.pulse_digi_out_channels = 1;
+    opts.audio_out_stream = audio_wrap_existing_stream(0);
+
+    audio_wrap_reset();
+    int rc =
+        expect_int_eq("reconfigure sync to async succeeds", dsd_audio_reconfigure_output_for_input_policy(&opts), 0);
+    rc |= expect_int_eq("sync reconfigure event count", g_audio_wrap_event_count, 3);
+    rc |= expect_int_eq("sync stream drained first", g_audio_wrap_events[0].kind, DSD_AUDIO_WRAP_EVENT_DRAIN);
+    rc |= expect_true("sync drain uses old stream", g_audio_wrap_events[0].stream == audio_wrap_existing_stream(0));
+    rc |= expect_int_eq("sync stream closed after drain", g_audio_wrap_events[1].kind, DSD_AUDIO_WRAP_EVENT_CLOSE);
+    rc |= expect_true("sync close uses old stream", g_audio_wrap_events[1].stream == audio_wrap_existing_stream(0));
+    rc |= expect_int_eq("async stream reopened", g_audio_wrap_events[2].kind, DSD_AUDIO_WRAP_EVENT_OPEN);
+    rc |= expect_int_eq("new open is async", g_audio_wrap_events[2].async_output, 1);
+    rc |= expect_int_eq("async policy recorded", opts.audio_output_async_policy, 1);
+    rc |= expect_true("new stream installed", opts.audio_out_stream == g_audio_wrap_events[2].stream);
+    return rc;
+#endif
+}
+
+static int
 test_write_synthesized_voice_clamps_and_writes_left_mono(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
@@ -1034,22 +1172,24 @@ test_open_audio_in_device_symbol_directory_falls_back_to_pulse(void) {
 static int
 test_async_output_policy_keeps_file_replays_synchronous(void) {
     int rc = 0;
-    rc |=
-        expect_int_eq("stdin output is synchronous", dsd_audio_input_type_uses_async_output(AUDIO_IN_STDIN, 0, ""), 0);
-    rc |= expect_int_eq("wav replay output is synchronous", dsd_audio_input_type_uses_async_output(AUDIO_IN_WAV, 0, ""),
+    rc |= expect_int_eq("stdin output is synchronous", dsd_audio_input_type_uses_async_output(AUDIO_IN_STDIN, 0, "", 0),
                         0);
+    rc |= expect_int_eq("wav replay output is synchronous",
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_WAV, 0, "", 0), 0);
     rc |= expect_int_eq("bin symbol replay output is synchronous",
-                        dsd_audio_input_type_uses_async_output(AUDIO_IN_SYMBOL_BIN, 0, ""), 0);
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_SYMBOL_BIN, 0, "", 0), 0);
     rc |= expect_int_eq("float symbol replay output is synchronous",
-                        dsd_audio_input_type_uses_async_output(AUDIO_IN_SYMBOL_FLT, 0, ""), 0);
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_SYMBOL_FLT, 0, "", 0), 0);
     rc |= expect_int_eq("null input output is synchronous",
-                        dsd_audio_input_type_uses_async_output(AUDIO_IN_NULL, 0, ""), 0);
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_NULL, 0, "", 0), 0);
     rc |= expect_int_eq("m17udp null input output may be async",
-                        dsd_audio_input_type_uses_async_output(AUDIO_IN_NULL, 0, "m17udp:127.0.0.1:17000"), 1);
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_NULL, 0, "m17udp:127.0.0.1:17000", 0), 1);
+    rc |= expect_int_eq("m17 ip null input stays async after device mutation",
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_NULL, 0, "pulse", 1), 1);
     rc |= expect_int_eq("pulse input output may be async",
-                        dsd_audio_input_type_uses_async_output(AUDIO_IN_PULSE, 0, ""), 1);
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_PULSE, 0, "", 0), 1);
     rc |= expect_int_eq("playfiles forces synchronous output",
-                        dsd_audio_input_type_uses_async_output(AUDIO_IN_PULSE, 1, ""), 0);
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_PULSE, 1, "", 0), 0);
     return rc;
 }
 
@@ -1074,6 +1214,8 @@ main(void) {
     rc |= test_play_synthesized_voice_fd_writes_pending_pcm_and_resets_index();
     rc |= test_play_synthesized_voice_bad_fd_drops_pending_pcm();
     rc |= test_drain_audio_output_guards_and_fd_sink();
+    rc |= test_drain_audio_output_drains_all_local_streams();
+    rc |= test_reconfigure_drains_sync_output_before_policy_close();
     rc |= test_write_synthesized_voice_clamps_and_writes_left_mono();
     rc |= test_write_synthesized_voice_r_clamps_and_writes_right_mono();
     rc |= test_write_synthesized_voice_ms_duplicates_left_into_stereo_wav();

@@ -9,7 +9,7 @@
 #include <dsd-neo/core/opts.h>
 
 static inline int
-dsd_audio_input_type_uses_async_output(int audio_in_type, int playfiles, const char* audio_in_dev) {
+dsd_audio_input_type_uses_async_output(int audio_in_type, int playfiles, const char* audio_in_dev, int m17decoderip) {
     if (playfiles == 1) {
         return 0;
     }
@@ -19,7 +19,7 @@ dsd_audio_input_type_uses_async_output(int audio_in_type, int playfiles, const c
         case AUDIO_IN_WAV:
         case AUDIO_IN_SYMBOL_BIN:
         case AUDIO_IN_SYMBOL_FLT: return 0;
-        case AUDIO_IN_NULL: return dsd_opts_audio_in_dev_is_m17udp_spec(audio_in_dev) ? 1 : 0;
+        case AUDIO_IN_NULL: return (m17decoderip == 1 || dsd_opts_audio_in_dev_is_m17udp_spec(audio_in_dev)) ? 1 : 0;
         default: break;
     }
 

@@ -267,7 +267,8 @@ dsd_audio_should_use_async_output(const dsd_opts* opts) {
     if (!opts) {
         return 0;
     }
-    return dsd_audio_input_type_uses_async_output(opts->audio_in_type, opts->playfiles, opts->audio_in_dev);
+    return dsd_audio_input_type_uses_async_output(opts->audio_in_type, opts->playfiles, opts->audio_in_dev,
+                                                  opts->m17decoderip);
 }
 
 int
@@ -331,6 +332,9 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
         return 0;
     }
 
+    if (opts->audio_output_async_policy == 0) {
+        dsd_drain_audio_output(opts);
+    }
     closeAudioOutput(opts);
     if (openAudioOutput(opts) != 0) {
         LOG_ERROR("Failed to reconfigure audio output for input policy\n");
@@ -375,6 +379,9 @@ dsd_drain_audio_output(dsd_opts* opts) {
     if (opts->audio_out_type == 0) {
         if (opts->audio_out_stream) {
             (void)dsd_audio_drain(opts->audio_out_stream);
+        }
+        if (opts->audio_out_streamR) {
+            (void)dsd_audio_drain(opts->audio_out_streamR);
         }
         if (opts->audio_raw_out) {
             (void)dsd_audio_drain(opts->audio_raw_out);
