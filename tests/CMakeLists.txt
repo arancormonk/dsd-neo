@@ -2377,6 +2377,19 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(dsd-neo_test_core_audio_gain PRIVATE dsd-neo_core)
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_core_audio_gain
+        PRIVATE DSD_NEO_TEST_AUDIO_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_core_audio_gain
+        PRIVATE
+            "LINKER:--wrap=dsd_audio_open_output"
+            "LINKER:--wrap=dsd_audio_close"
+            "LINKER:--wrap=dsd_audio_drain"
+    )
+endif()
 add_test(NAME CORE_AUDIO_GAIN COMMAND dsd-neo_test_core_audio_gain)
 
 add_executable(

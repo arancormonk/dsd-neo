@@ -1156,6 +1156,20 @@ symbol_stop_after_shutdown(float* sample_out) {
 }
 
 static inline int
+symbol_open_pulse_input_and_reconfigure_output(dsd_opts* opts, dsd_state* state) {
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    if (openAudioInput(opts) != 0) {
+        cleanupAndExit(opts, state);
+        return 0;
+    }
+    if (dsd_audio_reconfigure_output_for_input_policy(opts) != 0) {
+        cleanupAndExit(opts, state);
+        return 0;
+    }
+    return 1;
+}
+
+static inline int
 symbol_read_sample_stdin(dsd_opts* opts, dsd_state* state, float* sample_out) {
     if (symbol_stop_after_shutdown(sample_out)) {
         return 0;
@@ -1205,12 +1219,7 @@ symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out) {
         symbol_close_audio_in_file(opts);
         DSD_FPRINTF(stderr, "\nEnd of %s\n", opts->audio_in_dev);
         if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
-            opts->audio_in_type = AUDIO_IN_PULSE;
-            if (openAudioInput(opts) != 0) {
-                cleanupAndExit(opts, state);
-                return 0;
-            }
-            return 1;
+            return symbol_open_pulse_input_and_reconfigure_output(opts, state);
         }
         cleanupAndExit(opts, state);
         return 0;
@@ -1462,10 +1471,8 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
             dsd_net_audio_input_hook_tcp_close(opts->tcp_in_ctx);
             opts->tcp_in_ctx = NULL;
             dsd_socket_close(opts->tcp_sockfd);
-            opts->audio_in_type = AUDIO_IN_PULSE;
             opts->tcp_sockfd = 0;
-            if (openAudioInput(opts) != 0) {
-                cleanupAndExit(opts, state);
+            if (!symbol_open_pulse_input_and_reconfigure_output(opts, state)) {
                 return 0;
             }
             *sample_out = 0;
@@ -1706,10 +1713,7 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
             return 1;
         }
         if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
-            opts->audio_in_type = AUDIO_IN_PULSE;
-            if (openAudioInput(opts) != 0) {
-                cleanupAndExit(opts, state);
-            }
+            (void)symbol_open_pulse_input_and_reconfigure_output(opts, state);
             *symbol_out = 0.0f;
             return 1;
         }

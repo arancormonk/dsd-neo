@@ -692,7 +692,7 @@ portaudio_init_output_stream_state(dsd_audio_stream* stream, const dsd_audio_par
     stream->is_input = 0;
     stream->channels = params->channels;
     stream->sample_rate = params->sample_rate;
-    stream->use_async = 1;
+    stream->use_async = params->async_output ? 1 : 0;
     stream->thread_started = 0;
     stream->stop = 0;
     stream->drain_requested = 0;
@@ -831,9 +831,12 @@ dsd_audio_open_output(const dsd_audio_params* params) {
 
     portaudio_init_output_stream_state(stream, params);
 
-    int async_sync_inited = portaudio_init_async_sync(stream);
-    if (!async_sync_inited) {
-        stream->use_async = 0;
+    int async_sync_inited = 0;
+    if (stream->use_async) {
+        async_sync_inited = portaudio_init_async_sync(stream);
+        if (!async_sync_inited) {
+            stream->use_async = 0;
+        }
     }
 
     if (stream->use_async) {

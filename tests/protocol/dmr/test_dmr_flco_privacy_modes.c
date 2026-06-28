@@ -284,6 +284,44 @@ capture_regular_flco(uint8_t type, char* out, size_t out_size) {
 }
 
 static int
+capture_ms_direct_flco(char* out, size_t out_size) {
+    if (out == NULL || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.dmr_ms_mode = 1;
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_ms_direct_flco") != 0) {
+        return -1;
+    }
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    int rc = dsd_test_capture_stderr_end(&cap);
+    if (rc != 0) {
+        (void)remove(cap.path);
+        return -1;
+    }
+
+    rc = read_file_to_buffer(cap.path, out, out_size);
+    (void)remove(cap.path);
+    if (irr != 0U) {
+        return -1;
+    }
+    return rc;
+}
+
+static int
 capture_hytera_basic_key_output(unsigned int slot, uint8_t segment_count, char* out, size_t out_size) {
     if (out == NULL || out_size == 0U || slot > 1U) {
         return -1;
@@ -335,6 +373,14 @@ test_flco_output_uses_real_newlines(void) {
     assert(capture_regular_flco(1U, out, sizeof(out)) == 0);
     assert(strchr(out, '\n') != NULL);
     assert(strstr(out, "\\n") == NULL);
+}
+
+static void
+test_ms_direct_flco_reports_internal_slot_one(void) {
+    char out[2048];
+    assert(capture_ms_direct_flco(out, sizeof(out)) == 0);
+    assert(strstr(out, " SLOT 1 ") != NULL);
+    assert(strstr(out, " SLOT ?") == NULL);
 }
 
 static void
@@ -917,6 +963,7 @@ main(void) {
     InitAllFecFunction();
 
     test_flco_output_uses_real_newlines();
+    test_ms_direct_flco_reports_internal_slot_one();
     test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
     test_hytera_enhanced_flco_uses_secondary_checksum();

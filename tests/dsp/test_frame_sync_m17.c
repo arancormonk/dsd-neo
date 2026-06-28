@@ -43,6 +43,12 @@ openAudioInput(dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
     return -1;
 }
 
+int
+dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    return 0;
+}
+
 void
 cleanupAndExit(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;

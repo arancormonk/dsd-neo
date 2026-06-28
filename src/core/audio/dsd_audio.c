@@ -41,6 +41,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/resampler.h"
+#include "dsd_audio_internal.h"
 
 static int
 dsd_audio_path_is_wav_container(const char* path) {
@@ -261,6 +262,15 @@ closeAudioInput(dsd_opts* opts) {
     }
 }
 
+static int
+dsd_audio_should_use_async_output(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return dsd_audio_input_type_uses_async_output(opts->audio_in_type, opts->playfiles, opts->audio_in_dev,
+                                                  opts->m17decoderip);
+}
+
 int
 openAudioOutput(dsd_opts* opts) {
     const char* dev = NULL;
@@ -269,8 +279,10 @@ openAudioOutput(dsd_opts* opts) {
     }
 
     dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
     params.device = dev;
     params.app_name = "DSD-neo";
+    params.async_output = dsd_audio_should_use_async_output(opts);
 
     /* Open raw/analog output stream for ProVoice or analog monitor mode */
     if (opts->frame_provoice == 1 || opts->monitor_input_audio == 1) {
@@ -299,6 +311,35 @@ openAudioOutput(dsd_opts* opts) {
             return -1;
         }
     }
+    opts->audio_output_async_policy = params.async_output ? 1 : 0;
+    return 0;
+}
+
+int
+dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
+    if (!opts) {
+        return -1;
+    }
+    if (opts->audio_out != 1 || opts->audio_out_type != 0) {
+        return 0;
+    }
+    if (!opts->audio_out_stream && !opts->audio_out_streamR && !opts->audio_raw_out) {
+        return 0;
+    }
+
+    int async_policy = dsd_audio_should_use_async_output(opts);
+    if (opts->audio_output_async_policy == async_policy) {
+        return 0;
+    }
+
+    if (opts->audio_output_async_policy == 0) {
+        dsd_drain_audio_output(opts);
+    }
+    closeAudioOutput(opts);
+    if (openAudioOutput(opts) != 0) {
+        LOG_ERROR("Failed to reconfigure audio output for input policy\n");
+        return -1;
+    }
     return 0;
 }
 
@@ -310,6 +351,7 @@ openAudioInput(dsd_opts* opts) {
     }
 
     dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
     params.sample_rate = opts->pulse_digi_rate_in;
     params.channels = opts->pulse_digi_in_channels;
     params.bits_per_sample = 16;
@@ -337,6 +379,9 @@ dsd_drain_audio_output(dsd_opts* opts) {
     if (opts->audio_out_type == 0) {
         if (opts->audio_out_stream) {
             (void)dsd_audio_drain(opts->audio_out_stream);
+        }
+        if (opts->audio_out_streamR) {
+            (void)dsd_audio_drain(opts->audio_out_streamR);
         }
         if (opts->audio_raw_out) {
             (void)dsd_audio_drain(opts->audio_raw_out);
@@ -1104,5 +1149,5 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
     } else {
         DSD_FPRINTF(stderr, "Audio In/Out Device: %s\n", opts->audio_in_dev);
     }
-    return 0;
+    return dsd_audio_reconfigure_output_for_input_policy(opts);
 }

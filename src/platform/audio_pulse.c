@@ -698,9 +698,9 @@ pulse_output_init_attr(const dsd_audio_params* params, pa_buffer_attr* attr) {
 }
 
 static void
-pulse_output_init_async_state(dsd_audio_stream* stream) {
+pulse_output_init_async_state(dsd_audio_stream* stream, int async_output) {
     /* Async output pump: decouple decode thread from Pulse writes. */
-    stream->use_async = 1;
+    stream->use_async = async_output ? 1 : 0;
     stream->thread_started = 0;
     stream->stop = 0;
     stream->drain_requested = 0;
@@ -828,7 +828,7 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     stream->is_input = 0;
     stream->channels = params->channels;
     stream->sample_rate = params->sample_rate;
-    pulse_output_init_async_state(stream);
+    pulse_output_init_async_state(stream, params->async_output);
 
     if (stream->use_async) {
         int async_sync_inited = pulse_output_init_async_sync(stream);

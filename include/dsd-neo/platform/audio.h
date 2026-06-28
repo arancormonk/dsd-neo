@@ -41,6 +41,7 @@ typedef struct dsd_audio_params {
     int bits_per_sample;  /* 16 */
     const char* device;   /* Device name/identifier, or NULL for default */
     const char* app_name; /* Application name for audio server (optional) */
+    int async_output;     /* nonzero enables low-latency async output with overrun drops */
 } dsd_audio_params;
 
 /**
