@@ -83,17 +83,17 @@ p25p2_xcch_tg_from_mac(const unsigned long long int mac[24]) {
 
 static int
 p25p2_xcch_extract_opcode(const int* payload) {
-    return (payload[0] << 2) | (payload[1] << 1) | payload[2];
+    return ((payload[0] & 1) << 2) | ((payload[1] & 1) << 1) | (payload[2] & 1);
 }
 
 static int
 p25p2_xcch_extract_mac_offset(const int* payload) {
-    return (payload[3] << 2) | (payload[4] << 1) | payload[5];
+    return ((payload[3] & 1) << 2) | ((payload[4] & 1) << 1) | (payload[5] & 1);
 }
 
 static int
 p25p2_xcch_extract_res(const int* payload) {
-    return (payload[6] << 1) | payload[7];
+    return ((payload[6] & 1) << 1) | (payload[7] & 1);
 }
 
 static void
@@ -103,14 +103,15 @@ p25p2_xcch_unpack_mac_bits(const int* payload, int full_octets, int tail_start, 
 
     for (int j = 0; j < full_octets; j++) {
         for (int i = 0; i < 8; i++) {
-            byte = (byte << 1) | payload[k++];
+            byte = (byte << 1) | (payload[k++] & 1);
         }
         mac[j] = (unsigned long long int)byte;
         byte = 0;
     }
 
-    mac[full_octets] = (unsigned long long int)((payload[tail_start] << 7) | (payload[tail_start + 1] << 6)
-                                                | (payload[tail_start + 2] << 5) | (payload[tail_start + 3] << 4));
+    mac[full_octets] =
+        (unsigned long long int)(((payload[tail_start] & 1) << 7) | ((payload[tail_start + 1] & 1) << 6)
+                                 | ((payload[tail_start + 2] & 1) << 5) | ((payload[tail_start + 3] & 1) << 4));
 }
 
 static void

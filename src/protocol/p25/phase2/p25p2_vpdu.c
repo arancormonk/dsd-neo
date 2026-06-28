@@ -4099,7 +4099,11 @@ p25p2_vpdu_advance_segment(p25p2_vpdu_ctx* ctx) {
 
 void
 process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int mac[24]) {
-    const unsigned long long int* MAC = mac;
+    unsigned long long int mac_octets[24] = {0};
+    for (int bi = 0; bi < 24; bi++) {
+        mac_octets[bi] = mac[bi] & 0xFFu;
+    }
+    const unsigned long long int* MAC = mac_octets;
     //handle variable content MAC PDUs (Active, Idle, Hangtime, or Signal)
     //use type to specify SACCH or FACCH, so we know if we should invert the currentslot when assigning ids etc
 
@@ -4107,7 +4111,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
     // 2 = Manufacturer Message, 3 Phase 1 OSP/ISP extended/explicit
 
     struct p25p2_mac_result mac_res;
-    if (p25p2_mac_parse(type, mac, &mac_res) != 0) {
+    if (p25p2_mac_parse(type, MAC, &mac_res) != 0) {
         return;
     }
 
@@ -4115,7 +4119,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         .opts = opts,
         .state = state,
         .type = type,
-        .mac = mac,
+        .mac = mac_octets,
         .mac_res = &mac_res,
         .len_a = mac_res.len_a,
         .len_b = mac_res.len_b,

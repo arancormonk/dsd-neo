@@ -583,8 +583,54 @@ main(void) {
         process_MAC_VPDU(&opts, &state, 0, MAC);
         rc |= expect_true("0x25 encrypted multi suppressed tune", opts.p25_is_tuned == 0);
         rc |= expect_eq_long("0x25 encrypted multi no vc", state.p25_vc_freq[0], 0);
+        rc |= expect_contains("0x25 encrypted multi active ch1", state.active_channel[0], "Active Ch: 100A");
+        rc |= expect_contains("0x25 encrypted multi active ch2", state.active_channel[0], "Ch: 100B");
         rc |= expect_contains("0x25 encrypted multi active ch group1", state.active_channel[0], "TG: 4660");
         rc |= expect_contains("0x25 encrypted multi active ch group2", state.active_channel[0], "TG: 22136");
+    }
+
+    // Case M2: MAC words are specified as octets. If high bits leak into a
+    // word, the VPDU decoder must mask them before rendering active channels.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x25; // Group Voice Channel Grant Update Multiple - Explicit
+        MAC[2] = 0x00;
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[5] = 0x00;
+        MAC[6] = 0x00;
+        MAC[7] = 0xCE6387; // group high octet should become 0x87
+        MAC[8] = 0x00;
+        MAC[9] = 0x00;
+        MAC[10] = 0xBF776F; // channel high octet should become 0x6F
+        MAC[11] = 0x10;
+        MAC[12] = 0x00;
+        MAC[13] = 0x00;
+        MAC[14] = 0x00;
+        MAC[15] = 0x3E;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_contains("0x25 octet clamp active ch1", state.active_channel[0], "Active Ch: 100A");
+        rc |= expect_contains("0x25 octet clamp active ch2", state.active_channel[0], "Ch: 6F10");
+        rc |= expect_contains("0x25 octet clamp group1", state.active_channel[0], "TG: 34560");
+        rc |= expect_contains("0x25 octet clamp group2", state.active_channel[0], "TG: 62");
     }
 
     // Case N: encrypted implicit triple updates are also blocked before candidate
