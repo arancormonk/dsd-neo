@@ -1034,18 +1034,22 @@ test_open_audio_in_device_symbol_directory_falls_back_to_pulse(void) {
 static int
 test_async_output_policy_keeps_file_replays_synchronous(void) {
     int rc = 0;
-    rc |= expect_int_eq("stdin output is synchronous", dsd_audio_input_type_uses_async_output(AUDIO_IN_STDIN, 0), 0);
-    rc |= expect_int_eq("wav replay output is synchronous", dsd_audio_input_type_uses_async_output(AUDIO_IN_WAV, 0), 0);
+    rc |=
+        expect_int_eq("stdin output is synchronous", dsd_audio_input_type_uses_async_output(AUDIO_IN_STDIN, 0, ""), 0);
+    rc |= expect_int_eq("wav replay output is synchronous", dsd_audio_input_type_uses_async_output(AUDIO_IN_WAV, 0, ""),
+                        0);
     rc |= expect_int_eq("bin symbol replay output is synchronous",
-                        dsd_audio_input_type_uses_async_output(AUDIO_IN_SYMBOL_BIN, 0), 0);
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_SYMBOL_BIN, 0, ""), 0);
     rc |= expect_int_eq("float symbol replay output is synchronous",
-                        dsd_audio_input_type_uses_async_output(AUDIO_IN_SYMBOL_FLT, 0), 0);
-    rc |=
-        expect_int_eq("null input output is synchronous", dsd_audio_input_type_uses_async_output(AUDIO_IN_NULL, 0), 0);
-    rc |=
-        expect_int_eq("pulse input output may be async", dsd_audio_input_type_uses_async_output(AUDIO_IN_PULSE, 0), 1);
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_SYMBOL_FLT, 0, ""), 0);
+    rc |= expect_int_eq("null input output is synchronous",
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_NULL, 0, ""), 0);
+    rc |= expect_int_eq("m17udp null input output may be async",
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_NULL, 0, "m17udp:127.0.0.1:17000"), 1);
+    rc |= expect_int_eq("pulse input output may be async",
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_PULSE, 0, ""), 1);
     rc |= expect_int_eq("playfiles forces synchronous output",
-                        dsd_audio_input_type_uses_async_output(AUDIO_IN_PULSE, 1), 0);
+                        dsd_audio_input_type_uses_async_output(AUDIO_IN_PULSE, 1, ""), 0);
     return rc;
 }
 

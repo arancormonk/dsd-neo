@@ -118,6 +118,23 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     state->ui_msg_expire = time(NULL) + ttl_s;
 }
 
+static int
+ui_reconfigure_output_for_input_policy(dsd_opts* opts, dsd_state* state) {
+    if (dsd_audio_reconfigure_output_for_input_policy(opts) != 0) {
+        ui_set_toast(state, 4, "Failed: audio output reconfigure");
+        return -1;
+    }
+    return 0;
+}
+
+static void
+ui_set_tcp_audio_connected_toast_if_output_ready(dsd_opts* opts, dsd_state* state, const char* host, int port) {
+    if (ui_reconfigure_output_for_input_policy(opts, state) != 0) {
+        return;
+    }
+    ui_set_toast(state, 3, "TCP audio connected: %s:%d", host, port);
+}
+
 #ifdef USE_RADIO
 static inline int
 ui_rc_is_not_supported(int rc) {
@@ -570,7 +587,9 @@ ui_cmd_handle_symbol_in_open(dsd_opts* opts, dsd_state* state, const struct UiCm
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
             int rc = svc_open_symbol_in(opts, state, path);
             if (rc == 0) {
-                ui_set_toast(state, 3, "Applied: Symbol input -> %s", path);
+                if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+                    ui_set_toast(state, 3, "Applied: Symbol input -> %s", path);
+                }
             } else {
                 ui_set_toast(state, 4, "Failed: Symbol input open -> %s", path);
             }
@@ -583,7 +602,9 @@ static int
 ui_cmd_handle_input_wav_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     if (c->n > 0 && ui_cmd_copy_payload_string(c, opts->audio_in_dev, sizeof opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_WAV;
-        ui_set_toast(state, 3, "Applied: WAV input -> %s", opts->audio_in_dev);
+        if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+            ui_set_toast(state, 3, "Applied: WAV input -> %s", opts->audio_in_dev);
+        }
     }
     return 1;
 }
@@ -592,7 +613,9 @@ static int
 ui_cmd_handle_input_sym_stream_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
     if (c->n > 0 && ui_cmd_copy_payload_string(c, opts->audio_in_dev, sizeof opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
-        ui_set_toast(state, 3, "Applied: Symbol stream input -> %s", opts->audio_in_dev);
+        if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+            ui_set_toast(state, 3, "Applied: Symbol stream input -> %s", opts->audio_in_dev);
+        }
     }
     return 1;
 }
@@ -602,7 +625,9 @@ ui_cmd_handle_input_set_pulse(dsd_opts* opts, dsd_state* state, const struct UiC
     (void)c;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     opts->audio_in_type = AUDIO_IN_PULSE;
-    ui_set_toast(state, 3, "Applied: Input switched to Pulse");
+    if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+        ui_set_toast(state, 3, "Applied: Input switched to Pulse");
+    }
     return 1;
 }
 
@@ -654,7 +679,7 @@ ui_cmd_handle_tcp_connect_audio_cfg(dsd_opts* opts, dsd_state* state, const stru
     if (state && ui_cmd_parse_host_port_payload(c, host, sizeof host, &port)) {
         int rc = svc_tcp_connect_audio(opts, host, port);
         if (rc == 0) {
-            ui_set_toast(state, 3, "TCP audio connected: %s:%d", host, (int)port);
+            ui_set_tcp_audio_connected_toast_if_output_ready(opts, state, host, (int)port);
         } else {
             ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", host, (int)port);
         }
@@ -686,7 +711,9 @@ ui_cmd_handle_udp_input_cfg(dsd_opts* opts, dsd_state* state, const struct UiCmd
         opts->udp_in_portno = port;
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
         opts->audio_in_type = AUDIO_IN_UDP;
-        ui_set_toast(state, 3, "UDP input set: %s:%d", bind[0] ? bind : "127.0.0.1", (int)port);
+        if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+            ui_set_toast(state, 3, "UDP input set: %s:%d", bind[0] ? bind : "127.0.0.1", (int)port);
+        }
     }
     return 1;
 }
@@ -730,7 +757,9 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct Ui
     if (state) {
         int rc = svc_rtl_enable_input(opts, state);
         if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL input enabled");
+            if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+                ui_set_toast(state, 3, "Applied: RTL input enabled");
+            }
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: active radio backend cannot enable RTL input");
         } else {
@@ -1073,7 +1102,9 @@ apply_cmd_io_and_import_pulse_io(dsd_opts* opts, dsd_state* state, const struct 
                 name[n] = '\0';
                 int rc = svc_set_pulse_input(opts, name);
                 if (rc == 0) {
-                    ui_set_toast(state, 3, "Applied: Pulse input -> %s", name);
+                    if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
+                        ui_set_toast(state, 3, "Applied: Pulse input -> %s", name);
+                    }
                 } else {
                     ui_set_toast(state, 4, "Failed: Pulse input -> %s", name);
                 }
@@ -2102,7 +2133,7 @@ apply_cmd_legacy_trunk_controls(dsd_opts* opts, dsd_state* state, const struct U
             int rc = svc_tcp_connect_audio(opts, opts->tcp_hostname, opts->tcp_portno);
             if (rc == 0) {
                 LOG_INFO("TCP Socket Connected Successfully.\n");
-                ui_set_toast(state, 3, "TCP audio connected: %s:%d", opts->tcp_hostname, opts->tcp_portno);
+                ui_set_tcp_audio_connected_toast_if_output_ready(opts, state, opts->tcp_hostname, opts->tcp_portno);
             } else {
                 LOG_ERROR("TCP Socket Connection Error.\n");
                 ui_set_toast(state, 4, "TCP audio connect failed: %s:%d", opts->tcp_hostname, opts->tcp_portno);
@@ -2344,6 +2375,7 @@ ui_cmd_handle_replay_last_legacy(dsd_opts* opts, dsd_state* state, const struct 
             state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
             state->symbol_replay_header_checked = 0;
             state->symbol_replay_has_soft = 0;
+            (void)ui_reconfigure_output_for_input_policy(opts, state);
         }
     }
     return 1;
@@ -2383,7 +2415,6 @@ ui_cmd_handle_wav_stop_legacy(dsd_opts* opts, dsd_state* state, const struct UiC
 
 static int
 ui_cmd_handle_stop_playback_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    (void)state;
     (void)c;
     if (opts->symbolfile != NULL) {
         if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
@@ -2399,9 +2430,12 @@ ui_cmd_handle_stop_playback_legacy(dsd_opts* opts, dsd_state* state, const struc
         opts->audio_in_type = AUDIO_IN_PULSE;
         if (openAudioInput(opts) != 0) {
             LOG_ERROR("UI: failed to open PulseAudio input\n");
+        } else {
+            (void)ui_reconfigure_output_for_input_policy(opts, state);
         }
     } else {
         opts->audio_in_type = AUDIO_IN_STDIN;
+        (void)ui_reconfigure_output_for_input_policy(opts, state);
     }
     return 1;
 }
@@ -2454,6 +2488,7 @@ apply_cmd_legacy_misc_config(dsd_opts* opts, dsd_state* state, const struct UiCm
                 restore_live_pcm_rate_after_staged_file_apply(opts, &cfg, old_wav_sample_rate);
                 apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol,
                                             old_symbol_center, old_jitter);
+                (void)ui_reconfigure_output_for_input_policy(opts, state);
             }
             return 1;
         }

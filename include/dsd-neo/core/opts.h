@@ -98,7 +98,8 @@ struct dsd_opts {
     int rtlsdr_ppm_error;
     dsd_audio_in_type audio_in_type; ///< Audio input source (see dsd_audio_in_type)
     int audio_out_fd;
-    int audio_out_type; // 0 for pulse, 1 for file/stdout, 8 for UDP
+    int audio_out_type;            // 0 for pulse, 1 for file/stdout, 8 for UDP
+    int audio_output_async_policy; // async mode applied to currently open local output streams
     int split;
     int playoffset;
     int playoffsetR;

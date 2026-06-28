@@ -43,6 +43,8 @@ void closeAudioOutput(dsd_opts* opts);
 
 /** @brief Best-effort drain of audio output buffers. Safe no-op when disabled. */
 void dsd_drain_audio_output(dsd_opts* opts);
+/** @brief Reopen local output streams when the active input changes async/sync output policy. */
+int dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 
 /** @brief Write synthesized mono voice samples for slot 1. */
 void writeSynthesizedVoice(dsd_opts* opts, dsd_state* state);
