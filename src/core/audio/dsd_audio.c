@@ -41,6 +41,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/resampler.h"
+#include "dsd_audio_internal.h"
 
 static int
 dsd_audio_path_is_wav_container(const char* path) {
@@ -261,6 +262,14 @@ closeAudioInput(dsd_opts* opts) {
     }
 }
 
+static int
+dsd_audio_should_use_async_output(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return dsd_audio_input_type_uses_async_output(opts->audio_in_type, opts->playfiles);
+}
+
 int
 openAudioOutput(dsd_opts* opts) {
     const char* dev = NULL;
@@ -269,8 +278,10 @@ openAudioOutput(dsd_opts* opts) {
     }
 
     dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
     params.device = dev;
     params.app_name = "DSD-neo";
+    params.async_output = dsd_audio_should_use_async_output(opts);
 
     /* Open raw/analog output stream for ProVoice or analog monitor mode */
     if (opts->frame_provoice == 1 || opts->monitor_input_audio == 1) {
@@ -310,6 +321,7 @@ openAudioInput(dsd_opts* opts) {
     }
 
     dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
     params.sample_rate = opts->pulse_digi_rate_in;
     params.channels = opts->pulse_digi_in_channels;
     params.bits_per_sample = 16;

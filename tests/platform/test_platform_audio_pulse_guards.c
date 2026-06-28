@@ -7,8 +7,12 @@
 #include <dsd-neo/platform/audio.h>
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+_Static_assert(offsetof(dsd_audio_params, async_output) > offsetof(dsd_audio_params, app_name),
+               "async_output must follow existing positional initializer fields");
 
 static dsd_audio_params
 valid_params(void) {
@@ -95,11 +99,24 @@ test_stream_operation_guards(void) {
     dsd_audio_close(NULL);
 }
 
+static void
+test_audio_params_preserves_positional_initializer_prefix(void) {
+    dsd_audio_params params = {48000, 1, 16, "pulse-dev", "dsd-neo-positional-test", 0};
+
+    assert(params.sample_rate == 48000);
+    assert(params.channels == 1);
+    assert(params.bits_per_sample == 16);
+    assert(strcmp(params.device, "pulse-dev") == 0);
+    assert(strcmp(params.app_name, "dsd-neo-positional-test") == 0);
+    assert(params.async_output == 0);
+}
+
 int
 main(void) {
     test_backend_lifecycle_and_error_reset();
     test_open_parameter_guards();
     test_stream_operation_guards();
+    test_audio_params_preserves_positional_initializer_prefix();
     dsd_audio_cleanup();
     return 0;
 }

@@ -327,7 +327,7 @@ test_pulse_output_attr_and_async_buffers(void) {
     DSD_MEMSET(&stream, 0, sizeof(stream));
     stream.sample_rate = 8000;
     stream.channels = 1;
-    pulse_output_init_async_state(&stream);
+    pulse_output_init_async_state(&stream, 1);
     assert(stream.use_async == 1);
     assert(stream.stop == 0);
     assert(stream.drain_requested == 0);
@@ -346,6 +346,10 @@ test_pulse_output_attr_and_async_buffers(void) {
     assert(stream.chunk == NULL);
     assert(stream.ring == NULL);
     assert(stream.ring_samples_capacity == 0);
+
+    DSD_MEMSET(&stream, 0, sizeof(stream));
+    pulse_output_init_async_state(&stream, 0);
+    assert(stream.use_async == 0);
 }
 
 static void
@@ -419,6 +423,27 @@ pulse_test_valid_params(void) {
     params.bits_per_sample = 16;
     params.app_name = "dsd-neo-pulse-helper-test";
     return params;
+}
+
+static void
+test_pulse_sync_output_open_uses_blocking_write(void) {
+    dsd_audio_params params = pulse_test_valid_params();
+    int16_t samples[4] = {1, 2, 3, 4};
+
+    params.async_output = 0;
+    reset_pa_simple_fakes();
+
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    assert(stream->use_async == 0);
+
+    assert(dsd_audio_write(stream, samples, 4) == 4);
+    assert(g_pa_simple_write_calls == 1);
+
+    assert(dsd_audio_drain(stream) == 0);
+    assert(g_pa_simple_drain_calls == 1);
+
+    dsd_audio_close(stream);
 }
 
 static void
@@ -602,6 +627,7 @@ main(void) {
     test_pulse_ring_wrap_read_and_drop();
     test_pulse_output_attr_and_async_buffers();
     test_pulse_async_write_policy();
+    test_pulse_sync_output_open_uses_blocking_write();
     test_pulse_simple_error_paths();
     test_pulse_async_error_paths();
     test_pulse_enum_callbacks_and_guards();

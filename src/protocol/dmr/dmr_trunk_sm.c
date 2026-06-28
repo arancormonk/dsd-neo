@@ -33,9 +33,14 @@ now_monotonic(void) {
 
 static void
 sm_log(const dsd_opts* opts, const char* tag) {
-    if (opts && opts->verbose > 1 && tag) {
+    if (opts && opts->trunk_enable == 1 && opts->verbose > 1 && tag) {
         DSD_FPRINTF(stderr, "\n[DMR SM] %s\n", tag);
     }
+}
+
+static int
+sm_status_log_enabled(const dsd_opts* opts) {
+    return opts && opts->trunk_enable == 1 && opts->verbose > 0;
 }
 
 static long
@@ -57,7 +62,7 @@ lpcn_is_trusted(const dsd_opts* opts, dsd_state* state, int lpcn) {
     uint8_t trust = state->dmr_lcn_trust[lpcn];
     int on_cc = (state->trunk_cc_freq != 0 && opts && opts->trunk_is_tuned == 0);
     if (trust < 2 && !on_cc) {
-        if (opts && opts->verbose > 0) {
+        if (sm_status_log_enabled(opts)) {
             DSD_FPRINTF(stderr, "\n  DMR SM: block tune LPCN=%d (untrusted off-CC)\n", lpcn);
         }
         return 0;
@@ -73,7 +78,7 @@ set_state(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dmr_sm_state_e new_state, con
     dmr_sm_state_e old = ctx->state;
     ctx->state = new_state;
 
-    if (opts && opts->verbose > 0) {
+    if (sm_status_log_enabled(opts)) {
         DSD_FPRINTF(stderr, "\n[DMR SM] %s -> %s (%s)\n", dmr_sm_state_name(old), dmr_sm_state_name(new_state),
                     reason ? reason : "");
     }
@@ -199,7 +204,7 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     state->last_t3_tune_time_m = now_m;
     state->p25_sm_tune_count++;
 
-    if (opts->verbose > 0) {
+    if (sm_status_log_enabled(opts)) {
         DSD_FPRINTF(stderr, "\n  DMR SM: Tune VC freq=%.6lf MHz\n", (double)freq / 1000000.0);
     }
 

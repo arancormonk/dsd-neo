@@ -46,9 +46,7 @@ dmr_slot_is_known(const dsd_state* state) {
     if (!state) {
         return 0;
     }
-    /* In simplex/MS mode there is no CACH-derived slot signaling, so avoid
-     * presenting a hard slot number that can be misread as authoritative. */
-    return state->dmr_ms_mode == 0;
+    return state->currentslot == 0 || state->currentslot == 1;
 }
 
 static inline void
