@@ -19,10 +19,22 @@
 extern "C" {
 #endif
 
+typedef struct dsd_frontend_host_callbacks {
+    void* context;
+    int (*engine_finished)(void* context);
+    void (*request_engine_stop)(void* context);
+} dsd_frontend_host_callbacks;
+
+enum {
+    DSD_FRONTEND_PROVIDER_MAIN_THREAD_UI = 1u << 0,
+};
+
 typedef struct dsd_frontend_provider {
     dsd_frontend_kind kind;
     const char* name;
     int (*prepare)(const dsd_opts* opts, const dsd_state* state, dsd_engine_lifecycle_hooks* out);
+    unsigned int flags;
+    int (*run_main_loop)(const dsd_frontend_host_callbacks* host, void* context);
 } dsd_frontend_provider;
 
 #ifdef __cplusplus

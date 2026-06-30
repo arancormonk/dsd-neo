@@ -371,6 +371,12 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/ui/terminal_provider.h
   C
 )
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_ui_native_provider
+  HEADERS_PUBLIC_UI_NATIVE_PROVIDER
+  dsd-neo/ui/native_provider.h
+  C
+)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands
@@ -1169,11 +1175,17 @@ add_executable(
 )
 target_compile_definitions(
     dsd-neo_test_runtime_cli_frontend_provider
-    PRIVATE DSD_CLI_HAS_TERMINAL_UI=0
+    PRIVATE
+        DSD_CLI_HAS_TERMINAL_UI=0
+        DSD_CLI_HAS_NATIVE_UI=$<BOOL:${DSD_ENABLE_NATIVE_UI}>
 )
 target_include_directories(
     dsd-neo_test_runtime_cli_frontend_provider
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/apps/dsd-cli
+)
+target_link_libraries(
+    dsd-neo_test_runtime_cli_frontend_provider
+    PRIVATE dsd-neo_runtime
 )
 add_test(
     NAME RUNTIME_CLI_FRONTEND_PROVIDER
@@ -2005,6 +2017,19 @@ add_test(
     NAME APP_CONTROL_FRONTEND_STATUS_METRICS
     COMMAND dsd-neo_test_app_control_frontend_status_metrics
 )
+
+if(DSD_ENABLE_NATIVE_UI)
+    add_executable(
+        dsd-neo_test_ui_native_provider
+        ui/test_ui_native_provider.c
+        ${PROJECT_SOURCE_DIR}/src/ui/native/frontend_provider.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_native_provider
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    add_test(NAME UI_NATIVE_PROVIDER COMMAND dsd-neo_test_ui_native_provider)
+endif()
 
 add_executable(
     dsd-neo_test_runtime_freq_parse

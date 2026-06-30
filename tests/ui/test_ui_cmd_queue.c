@@ -4,7 +4,7 @@
  */
 
 /*
- * Deterministic queue-level contracts for UI commands handled in ui_cmd_queue.c.
+ * Deterministic queue-level contracts for app-control commands.
  */
 
 #include <dsd-neo/app_control/commands.h>

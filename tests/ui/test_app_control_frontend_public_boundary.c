@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/ui/native_provider.h>
 
 #if defined(DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H)
 #error "public frontend app-control headers must not include core/opts.h"
@@ -24,5 +25,6 @@ main(void) {
     (void)sizeof(dsd_app_endpoint_payload);
     (void)&dsd_app_frontend_runtime_start;
     (void)&dsd_app_frontend_runtime_stop;
+    (void)&dsd_native_frontend_provider;
     return 0;
 }

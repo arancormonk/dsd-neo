@@ -22,7 +22,6 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <stdio.h>
@@ -60,15 +59,7 @@ main(int argc, char** argv) {
         free(state);
         return exit_rc;
     }
-    dsd_engine_lifecycle_hooks lifecycle_hooks = {0};
-    const dsd_engine_lifecycle_hooks* run_hooks = NULL;
-    if (dsd_cli_frontend_select(opts, state, &lifecycle_hooks, &run_hooks) != 0) {
-        freeState(state);
-        free(opts);
-        free(state);
-        return 1;
-    }
-    int rc = dsd_engine_run_with_lifecycle(opts, state, run_hooks);
+    int rc = dsd_cli_frontend_run(opts, state);
     freeState(state);
     free(opts);
     free(state);

@@ -15,6 +15,13 @@ else()
     target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_TERMINAL_UI=0)
 endif()
 
+if(DSD_ENABLE_NATIVE_UI)
+    target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_NATIVE_UI=1)
+    target_link_libraries(dsd-neo PRIVATE dsd-neo_ui_native)
+else()
+    target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_NATIVE_UI=0)
+endif()
+
 # Target include directories (prefer target-scoped over global)
 target_include_directories(dsd-neo SYSTEM PRIVATE ${_PUBLIC_INCLUDES})
 target_include_directories(dsd-neo PRIVATE "${PROJECT_SOURCE_DIR}/include")

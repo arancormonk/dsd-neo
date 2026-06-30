@@ -28,26 +28,26 @@ typedef enum DSD_ATTR_PACKED {
 } dsd_frontend_kind;
 
 typedef struct dsd_frontend_display_opts {
-    int constellation;        // terminal constellation view (0=off, 1=on)
-    float const_gate_qpsk;    // constellation magnitude gate for QPSK
-    float const_gate_other;   // constellation gate for non-QPSK (FSK)
-    uint8_t const_norm_mode;  // 0=radial (percentile) norm, 1=unit-circle norm
-    uint8_t terminal_compact; // compact terminal layout
-    uint8_t terminal_history; // event history display mode
-    uint8_t eye_view;         // timing/eye diagram for C4FM/FSK (0=off)
-    uint8_t fsk_hist_view;    // 4-level histogram for C4FM/FSK (0=off)
-    uint8_t spectrum_view;    // spectrum analyzer for complex baseband (0=off)
-    uint8_t eye_unicode;      // use Unicode block glyphs in eye diagram (0=ASCII)
-    uint8_t eye_color;        // use colorized density in eye diagram (0=mono)
-    uint8_t show_dsp_panel;   // show compact DSP status panel (0=hidden)
-    uint8_t show_p25_metrics;
-    uint8_t show_p25_neighbors;
-    uint8_t show_p25_iden_plan;
-    uint8_t show_p25_cc_candidates;
-    uint8_t show_channels;
-    uint8_t show_p25_affiliations;
-    uint8_t show_p25_group_affiliations;
-    uint8_t show_p25_callsign_decode;
+    int constellation;                   // common: constellation view (0=off, 1=on)
+    float const_gate_qpsk;               // common: constellation magnitude gate for QPSK
+    float const_gate_other;              // common: constellation gate for non-QPSK (FSK)
+    uint8_t const_norm_mode;             // common: 0=radial percentile norm, 1=unit-circle norm
+    uint8_t terminal_compact;            // terminal-only: compact terminal layout
+    uint8_t terminal_history;            // terminal-only: event history display mode
+    uint8_t eye_view;                    // common: timing/eye diagram for C4FM/FSK (0=off)
+    uint8_t fsk_hist_view;               // common: 4-level histogram for C4FM/FSK (0=off)
+    uint8_t spectrum_view;               // common: spectrum analyzer for complex baseband (0=off)
+    uint8_t eye_unicode;                 // terminal-only: use Unicode block glyphs in eye diagram (0=ASCII)
+    uint8_t eye_color;                   // terminal-only: use colorized density in eye diagram (0=mono)
+    uint8_t show_dsp_panel;              // common: show compact DSP status panel (0=hidden)
+    uint8_t show_p25_metrics;            // common
+    uint8_t show_p25_neighbors;          // common
+    uint8_t show_p25_iden_plan;          // common
+    uint8_t show_p25_cc_candidates;      // common
+    uint8_t show_channels;               // common
+    uint8_t show_p25_affiliations;       // common
+    uint8_t show_p25_group_affiliations; // common
+    uint8_t show_p25_callsign_decode;    // common
 } dsd_frontend_display_opts;
 
 typedef struct dsd_opts dsd_opts;

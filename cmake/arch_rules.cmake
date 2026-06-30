@@ -130,6 +130,14 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         set(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA ON)
     endif()
 
+    set(_ARCH_RULES_NATIVE_UI_AREA OFF)
+    if(
+        _ARCH_RULES_REL MATCHES "^src/ui/native/"
+        OR _ARCH_RULES_REL STREQUAL "include/dsd-neo/ui/native_provider.h"
+    )
+        set(_ARCH_RULES_NATIVE_UI_AREA ON)
+    endif()
+
     file(
         STRINGS "${_ARCH_RULES_ABS}"
         _ARCH_RULES_EXIT_LINES
@@ -227,6 +235,27 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             _ARCH_RULES_HEADER
             "${_ARCH_RULES_LINE}"
         )
+
+        if(_ARCH_RULES_NATIVE_UI_AREA)
+            if(
+                _ARCH_RULES_HEADER MATCHES "^dsd-neo/core/(opts|state)\\.h$"
+                OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/ncurses"
+                OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/menu_"
+                OR _ARCH_RULES_HEADER STREQUAL "dsd-neo/platform/curses_compat.h"
+                OR _ARCH_RULES_HEADER MATCHES "(^|.*/)(curses|ncurses)\\.h$"
+            )
+                message(
+                    SEND_ERROR
+                    "ARCH_RULES: ${_ARCH_RULES_REL}: native UI must use app-control boundary, not '${_ARCH_RULES_HEADER}'"
+                )
+                math(
+                    EXPR
+                    _ARCH_RULES_VIOLATIONS
+                    "${_ARCH_RULES_VIOLATIONS} + 1"
+                )
+                continue()
+            endif()
+        endif()
 
         if(
             _ARCH_RULES_UI_FORBIDDEN_AREA

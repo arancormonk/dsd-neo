@@ -3,7 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* UI → Demod command queue (SPSC, bounded) */
+/* Frontend → decoder app-command queue (bounded).
+ *
+ * Public dsd_app_command_* calls report whether a command was accepted for
+ * queueing. They do not acknowledge operation completion; frontends observe
+ * results through snapshots, logs, and transient UI messages.
+ */
 
 #include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/app_control/commands.h>
@@ -1828,7 +1833,7 @@ dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
         atomic_fetch_add(&g_overflow, 1);
         if (atomic_exchange(&g_overflow_warn_gate, 1) == 0) {
-            LOG_WARNING("ui_cmd_queue: overflow; dropping oldest command(s).\n");
+            LOG_WARNING("app_command_queue: overflow; dropping oldest command(s).\n");
         }
     }
     struct dsd_app_command* c = &g_q[g_tail];
