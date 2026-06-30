@@ -50,7 +50,6 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
-#include <dsd-neo/ui/ui_async.h>
 #include <errno.h>
 #include <limits.h>
 #include <mbelib.h>
@@ -441,13 +440,6 @@ atofs(const char* s) {
         return 0.0;
     }
     return value * factor;
-}
-
-static void
-dsd_engine_start_ui(dsd_opts* opts, dsd_state* state) {
-    if (opts->use_ncurses_terminal == 1) {
-        (void)ui_start(opts, state);
-    }
 }
 
 static void
@@ -2182,7 +2174,20 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-liveScanner(dsd_opts* opts, dsd_state* state) {
+dsd_engine_lifecycle_start_if_needed(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                                     int* lifecycle_started) {
+    if (!hooks || !hooks->start || !lifecycle_started || *lifecycle_started) {
+        return 0;
+    }
+    if (hooks->start(opts, state, hooks->context) != 0) {
+        return -1;
+    }
+    *lifecycle_started = 1;
+    return 0;
+}
+
+static int
+liveScanner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks, int* lifecycle_started) {
     if (!opts || !state) {
         return -1;
     }
@@ -2205,6 +2210,9 @@ liveScanner(dsd_opts* opts, dsd_state* state) {
         dsd_frame_logf(opts, "DSD-neo frame logging initialized");
     }
 
+    if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
+        return -1;
+    }
     p25_sm_watchdog_start(opts, state);
     live_scanner_main_loop(opts, state);
     p25_sm_watchdog_stop();
@@ -2320,9 +2328,6 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     }
 
     exitflag = 1;
-    if (opts->use_ncurses_terminal == 1) {
-        ui_stop();
-    }
 
     nxdn_trunk_diag_log_summary(opts, state);
     dsd_engine_cleanup_codec2(state);
@@ -2449,7 +2454,8 @@ dsd_engine_run_start_rtl_encoder_input_if_needed(dsd_opts* opts, dsd_state* stat
 }
 
 static int
-dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state) {
+dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                            int* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
 
@@ -2460,70 +2466,84 @@ dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state) {
     if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
         return -1;
     }
-    dsd_engine_start_ui(opts, state);
+    if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
+        return -1;
+    }
     encodeM17STR(opts, state);
     return 0;
 }
 
 static int
-dsd_engine_run_mode_m17_brt(dsd_opts* opts, dsd_state* state) {
+dsd_engine_run_mode_m17_brt(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                            int* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
     if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
         return -1;
     }
-    dsd_engine_start_ui(opts, state);
+    if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
+        return -1;
+    }
     encodeM17BRT(opts, state);
     return 0;
 }
 
 static int
-dsd_engine_run_mode_m17_pkt(dsd_opts* opts, dsd_state* state) {
+dsd_engine_run_mode_m17_pkt(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                            int* lifecycle_started) {
     opts->use_cosine_filter = 1;
     opts->pulse_digi_rate_out = 48000;
     if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
         return -1;
     }
-    dsd_engine_start_ui(opts, state);
+    if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
+        return -1;
+    }
     encodeM17PKT(opts, state);
     return 0;
 }
 
 static int
-dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state) {
+dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                                   int* lifecycle_started) {
     opts->pulse_digi_rate_out = 8000;
     if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
         return -1;
     }
-    dsd_engine_start_ui(opts, state);
+    if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
+        return -1;
+    }
     processM17IPF(opts, state);
     return 0;
 }
 
 static int
-dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state) {
+dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                             int* lifecycle_started) {
     if (opts->playfiles == 1) {
+        if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
+            return -1;
+        }
         playMbeFiles(opts, state, state->cli_argc_effective, state->cli_argv);
         return 0;
     }
     if (opts->m17encoder == 1) {
-        return dsd_engine_run_mode_m17_str(opts, state);
+        return dsd_engine_run_mode_m17_str(opts, state, hooks, lifecycle_started);
     }
     if (opts->m17encoderbrt == 1) {
-        return dsd_engine_run_mode_m17_brt(opts, state);
+        return dsd_engine_run_mode_m17_brt(opts, state, hooks, lifecycle_started);
     }
     if (opts->m17encoderpkt == 1) {
-        return dsd_engine_run_mode_m17_pkt(opts, state);
+        return dsd_engine_run_mode_m17_pkt(opts, state, hooks, lifecycle_started);
     }
     if (opts->m17decoderip == 1) {
-        return dsd_engine_run_mode_m17_decoder_ip(opts, state);
+        return dsd_engine_run_mode_m17_decoder_ip(opts, state, hooks, lifecycle_started);
     }
-    dsd_engine_start_ui(opts, state);
-    return liveScanner(opts, state);
+    return liveScanner(opts, state, hooks, lifecycle_started);
 }
 
 int
-dsd_engine_run(dsd_opts* opts, dsd_state* state) {
+dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
     if (!opts || !state) {
         return -1;
     }
@@ -2541,6 +2561,7 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
 
     int rc = 0;
     int early_exit = 0;
+    int lifecycle_started = 0;
     exitflag = 0;
 
     dsd_engine_run_record_start_time_if_debug(state);
@@ -2550,11 +2571,21 @@ dsd_engine_run(dsd_opts* opts, dsd_state* state) {
         rc = 1;
         goto ENGINE_OUT;
     }
-    if (!early_exit && dsd_engine_run_dispatch_mode(opts, state) != 0) {
-        rc = 1;
+    if (!early_exit) {
+        if (dsd_engine_run_dispatch_mode(opts, state, hooks, &lifecycle_started) != 0) {
+            rc = 1;
+        }
     }
 
 ENGINE_OUT:
+    if (lifecycle_started && hooks && hooks->stop) {
+        hooks->stop(opts, state, hooks->context);
+    }
     dsd_engine_cleanup(opts, state);
     return rc;
+}
+
+int
+dsd_engine_run(dsd_opts* opts, dsd_state* state) {
+    return dsd_engine_run_with_lifecycle(opts, state, NULL);
 }

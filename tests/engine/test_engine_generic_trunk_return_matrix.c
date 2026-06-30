@@ -43,17 +43,6 @@ enum {
 
 static int g_return_to_cc_calls = 0;
 
-int
-ui_start(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    return 0;
-}
-
-void
-ui_stop(void) { // NOLINT(misc-use-internal-linkage)
-}
-
 static dsd_trunk_tune_result
 generic_return_to_cc_guard(dsd_opts* opts, dsd_state* state) {
     (void)opts;

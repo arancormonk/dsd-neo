@@ -26,17 +26,6 @@ static int g_get_frame_sync_calls = 0;
 static int g_outer_tick_calls = 0;
 static int g_synced_tick_calls = 0;
 
-int
-ui_start(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    return 0;
-}
-
-void
-ui_stop(void) { // NOLINT(misc-use-internal-linkage)
-}
-
 void
 printFrameInfo(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;

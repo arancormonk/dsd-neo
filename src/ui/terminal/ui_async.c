@@ -4,6 +4,9 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/curses_compat.h>
@@ -13,23 +16,18 @@
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_history.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <dsd-neo/ui/ui_snapshot.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
-#include "telemetry_hooks_impl.h"
 
 // Minimal thread state.
 static dsd_thread_t g_ui_thread;
 static atomic_int g_ui_running = 0;
 static atomic_int g_ui_stop = 0;
-static atomic_int g_ui_dirty = 0; // notifier for redraw requests
 static dsd_opts* g_ui_opts = NULL;
 static dsd_state* g_ui_state = NULL;
 static int g_ui_curses_cfg_done = 0;
@@ -42,12 +40,12 @@ ui_is_thread_context(void) {
 
 static void
 ui_control_pump(dsd_opts* opts, dsd_state* state) {
-    (void)ui_drain_cmds(opts, state);
+    (void)dsd_app_drain_cmds(opts, state);
 }
 
 static const dsd_opts*
 ui_get_opts_snapshot_or_default(void) {
-    const dsd_opts* osnap = ui_get_latest_opts_snapshot();
+    const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
     if (!osnap) {
         osnap = g_ui_opts;
     }
@@ -96,7 +94,7 @@ ui_handle_normal_input(int ch) {
         resize_term(0, 0);
 #endif
         clearok(stdscr, TRUE);
-        ui_terminal_telemetry_request_redraw();
+        dsd_app_request_redraw();
         return;
     }
     if (ch != ERR) {
@@ -118,7 +116,7 @@ ui_process_input_frame(const dsd_opts* osnap) {
 static void
 ui_draw_frame(const dsd_opts* osnap) {
     /* Draw using a state snapshot when available */
-    const dsd_state* snap = ui_get_latest_snapshot();
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
     if (snap) {
         ncursesPrinter((dsd_opts*)osnap, (dsd_state*)snap);
     } else {
@@ -130,7 +128,7 @@ static void
 ui_draw_if_needed(const dsd_opts* osnap, uint64_t* last_draw_ns, uint64_t frame_ns) {
     uint64_t now_ns = dsd_time_monotonic_ns();
     uint64_t dt_ns = now_ns - *last_draw_ns;
-    if (!(atomic_exchange(&g_ui_dirty, 0) || dt_ns >= frame_ns)) {
+    if (!(dsd_app_consume_redraw_requested() || dt_ns >= frame_ns)) {
         return;
     }
     atomic_store(&g_ui_in_context, 1);
@@ -146,7 +144,7 @@ dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state) {
     g_ui_opts = opts;
     g_ui_state = state;
     g_ui_curses_cfg_done = 0;
-    atomic_store(&g_ui_dirty, 0);
+    (void)dsd_app_consume_redraw_requested();
     atomic_store(&g_ui_in_context, 0);
 }
 
@@ -220,7 +218,7 @@ ui_start(dsd_opts* opts, dsd_state* state) {
         return 0; // already running
     }
 
-    ui_terminal_install_telemetry_hooks();
+    dsd_app_install_telemetry_hooks();
     g_ui_opts = opts;
     g_ui_state = state;
     ui_history_set_mode(opts ? opts->ncurses_history : 1);
@@ -248,9 +246,4 @@ ui_stop(void) {
     atomic_store(&g_ui_running, 0);
     g_ui_opts = NULL;
     g_ui_state = NULL;
-}
-
-void
-ui_terminal_telemetry_request_redraw(void) {
-    atomic_store(&g_ui_dirty, 1);
 }

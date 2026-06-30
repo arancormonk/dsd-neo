@@ -11,15 +11,14 @@
 *-----------------------------------------------------------------------------*/
 
 #include <curses.h>
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_cmd.h>
-#include <dsd-neo/ui/ui_history.h>
 #include <stddef.h>
 #include <stdint.h>
 

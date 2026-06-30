@@ -25,11 +25,33 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/ui/ui_async.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static int
+dsd_cli_ui_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)context;
+    if (opts->use_ncurses_terminal != 1) {
+        return 0;
+    }
+    if (ui_start(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "Failed to start ncurses UI\n");
+        return -1;
+    }
+    return 0;
+}
+
+static void
+dsd_cli_ui_stop(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)opts;
+    (void)state;
+    (void)context;
+    ui_stop();
+}
 
 int
 main(int argc, char** argv) {
@@ -59,7 +81,13 @@ main(int argc, char** argv) {
         free(state);
         return exit_rc;
     }
-    int rc = dsd_engine_run(opts, state);
+    dsd_engine_lifecycle_hooks lifecycle_hooks = {
+        .start = dsd_cli_ui_start,
+        .stop = dsd_cli_ui_stop,
+        .context = NULL,
+    };
+    const dsd_engine_lifecycle_hooks* run_hooks = opts->use_ncurses_terminal == 1 ? &lifecycle_hooks : NULL;
+    int rc = dsd_engine_run_with_lifecycle(opts, state, run_hooks);
     freeState(state);
     free(opts);
     free(state);

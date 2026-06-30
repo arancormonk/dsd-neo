@@ -111,6 +111,11 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         set(_ARCH_RULES_IO_FORBIDDEN_AREA ON)
     endif()
 
+    set(_ARCH_RULES_ENGINE_FORBIDDEN_AREA OFF)
+    if(_ARCH_RULES_REL MATCHES "^(src/engine/|include/dsd-neo/engine/)")
+        set(_ARCH_RULES_ENGINE_FORBIDDEN_AREA ON)
+    endif()
+
     file(
         STRINGS "${_ARCH_RULES_ABS}"
         _ARCH_RULES_EXIT_LINES
@@ -160,6 +165,30 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             message(
                 SEND_ERROR
                 "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden UI include '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
+        if(
+            _ARCH_RULES_ENGINE_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden UI include '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
+        if(
+            _ARCH_RULES_ENGINE_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/app_control/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden app-control include '${_ARCH_RULES_HEADER}'"
             )
             math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             continue()

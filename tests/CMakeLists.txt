@@ -367,6 +367,31 @@ dsd_neo_add_public_header_smoke_test(
 )
 
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_commands
+  HEADERS_PUBLIC_APP_CONTROL_COMMANDS
+  dsd-neo/app_control/commands.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_history
+  HEADERS_PUBLIC_APP_CONTROL_HISTORY
+  dsd-neo/app_control/history.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_services
+  HEADERS_PUBLIC_APP_CONTROL_SERVICES
+  dsd-neo/app_control/services.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_snapshot
+  HEADERS_PUBLIC_APP_CONTROL_SNAPSHOT
+  dsd-neo/app_control/snapshot.h
+  C
+)
+
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_cleanup
   HEADERS_PUBLIC_CORE_CLEANUP
   dsd-neo/core/cleanup.h
@@ -1193,10 +1218,10 @@ add_test(NAME UI_ASYNC_LIFECYCLE COMMAND dsd-neo_test_ui_async_lifecycle)
 add_executable(
     dsd-neo_test_ui_cmd_actions
     ui/test_ui_cmd_actions.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/actions/actions_audio.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/actions/actions_radio.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/actions/actions_trunk.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/actions/actions_logging.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_audio.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_trunk.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_logging.c
 )
 target_include_directories(
     dsd-neo_test_ui_cmd_actions
@@ -1207,7 +1232,7 @@ add_test(NAME UI_CMD_ACTIONS COMMAND dsd-neo_test_ui_cmd_actions)
 add_executable(
     dsd-neo_test_ui_menu_services
     ui/test_ui_menu_services.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_services.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
 )
 target_include_directories(
     dsd-neo_test_ui_menu_services
@@ -1327,11 +1352,11 @@ add_test(
 add_executable(
     dsd-neo_test_ui_telemetry_hooks_install
     ui/test_ui_telemetry_hooks_install.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/telemetry_hooks_install.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_hooks_install.c
 )
 target_include_directories(
     dsd-neo_test_ui_telemetry_hooks_install
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
 )
 add_test(
     NAME UI_TELEMETRY_HOOKS_INSTALL
@@ -1442,7 +1467,7 @@ add_test(NAME UI_HOTKEYS_REGRESSION COMMAND dsd-neo_test_ui_hotkeys_regression)
 add_executable(
     dsd-neo_test_ui_tcp_audio_connect
     ui/test_ui_tcp_audio_connect.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/tcp_audio_connect.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/tcp_audio_connect.c
 )
 target_include_directories(
     dsd-neo_test_ui_tcp_audio_connect
@@ -1780,7 +1805,7 @@ add_test(NAME UI_PROMPT_VALIDATION COMMAND dsd-neo_test_ui_prompt_validation)
 add_executable(
     dsd-neo_test_ui_history_state
     ui/test_ui_history_state.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_history.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_history.c
 )
 target_include_directories(
     dsd-neo_test_ui_history_state
@@ -1792,7 +1817,7 @@ add_test(NAME UI_HISTORY_STATE COMMAND dsd-neo_test_ui_history_state)
 add_executable(
     dsd-neo_test_ui_history_compact
     ui/test_ui_history_compact.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_history.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_history.c
 )
 target_include_directories(
     dsd-neo_test_ui_history_compact
@@ -1805,7 +1830,7 @@ add_executable(
     dsd-neo_test_ui_snapshot_event_history
     ui/test_ui_snapshot_event_history.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
@@ -1826,11 +1851,11 @@ add_test(
 add_executable(
     dsd-neo_test_ui_opts_snapshot
     ui/test_ui_opts_snapshot.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_opts_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
 )
 target_include_directories(
     dsd-neo_test_ui_opts_snapshot
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
 )
 target_link_libraries(dsd-neo_test_ui_opts_snapshot PRIVATE dsd-neo_platform)
 add_test(NAME UI_OPTS_SNAPSHOT COMMAND dsd-neo_test_ui_opts_snapshot)
@@ -2940,7 +2965,7 @@ target_include_directories(
         ${CURSES_INCLUDE_DIRS}
 )
 set(_DSD_RUNTIME_CONFIG_APPLY_LIBS
-    dsd-neo_ui_terminal
+    dsd-neo_app_control
     dsd-neo_engine
     ${_DSD_RUNTIME_CLI_PARSE_LIBS}
 )

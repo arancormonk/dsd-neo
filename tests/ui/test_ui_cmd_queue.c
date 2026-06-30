@@ -7,12 +7,11 @@
  * Deterministic queue-level contracts for UI commands handled in ui_cmd_queue.c.
  */
 
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_cmd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

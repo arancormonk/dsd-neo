@@ -16,16 +16,7 @@ target_sources(
         ncurses_p25_display.c
         ncurses_trunk_display.c
         ui_prims.c
-        actions/actions_audio.c
-        actions/actions_radio.c
-        actions/actions_trunk.c
-        actions/actions_logging.c
-        ui_snapshot.c
-        ui_opts_snapshot.c
-        ui_cmd_queue.c
         ui_async.c
-        ui_history.c
-        telemetry_hooks_install.c
         menu_core.c
         menu_env.c
         menu_labels.c
@@ -34,8 +25,6 @@ target_sources(
         menu_items.c
         menu_prompts.c
         menu_render.c
-        menu_services.c
-        tcp_audio_connect.c
         panels/header.c
         panels/footer.c
         menus/menu_defs.c
@@ -53,6 +42,7 @@ target_link_libraries(
     PUBLIC
         dsd-neo_core
         dsd-neo_runtime
+        dsd-neo_app_control
         dsd-neo_feature_radio
         dsd-neo_feature_rtlsdr
 )

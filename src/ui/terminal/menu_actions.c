@@ -9,6 +9,7 @@
  */
 
 #include "menu_actions.h"
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -18,9 +19,6 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_cmd.h>
-#include <dsd-neo/ui/ui_dsp_cmd.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

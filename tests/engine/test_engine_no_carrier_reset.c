@@ -209,17 +209,6 @@ __wrap_rtl_stream_request_fsk_reacquire(void) {
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 #endif
 
-int
-ui_start(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    return 0;
-}
-
-void
-ui_stop(void) { // NOLINT(misc-use-internal-linkage)
-}
-
 static int
 init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
     // dsd_state is multi-megabyte; keep it off the function stack.

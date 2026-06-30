@@ -8,6 +8,9 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -15,10 +18,7 @@
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_history.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <dsd-neo/ui/ui_snapshot.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -28,7 +28,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "telemetry_hooks_impl.h"
 
 WINDOW* stdscr;
 
@@ -55,6 +54,7 @@ static int g_last_ncurses_key = ERR;
 static int g_printer_calls;
 static const dsd_opts* g_printer_opts;
 static const dsd_state* g_printer_state;
+static int g_redraw_requested;
 static uint64_t g_time_ns;
 
 int
@@ -89,14 +89,14 @@ ui_history_set_mode(int mode) {
 }
 
 int
-ui_drain_cmds(dsd_opts* opts, dsd_state* state) {
+dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     return 7;
 }
 
 void
-ui_terminal_install_telemetry_hooks(void) {}
+dsd_app_install_telemetry_hooks(void) {}
 
 int
 ui_menu_is_open(void) {
@@ -125,13 +125,25 @@ ui_commit_frame(void) {
 }
 
 const dsd_opts*
-ui_get_latest_opts_snapshot(void) {
+dsd_app_get_latest_opts_snapshot(void) {
     return g_latest_opts;
 }
 
 const dsd_state*
-ui_get_latest_snapshot(void) {
+dsd_app_get_latest_snapshot(void) {
     return g_latest_state;
+}
+
+void
+dsd_app_request_redraw(void) {
+    g_redraw_requested = 1;
+}
+
+int
+dsd_app_consume_redraw_requested(void) {
+    int requested = g_redraw_requested;
+    g_redraw_requested = 0;
+    return requested;
 }
 
 void
@@ -298,7 +310,7 @@ test_ui_start_stop_idempotency_and_control_pump(void) {
 
     g_control_pump(&opts, &state);
 
-    ui_terminal_telemetry_request_redraw();
+    dsd_app_request_redraw();
     ui_stop();
     rc |= expect_int("stop-join-count", g_join_calls, 1);
     rc |= expect_pump_null("stop-control-pump", g_control_pump);
@@ -328,6 +340,7 @@ reset_frame_counters(void) {
     g_printer_state = NULL;
     g_latest_opts = NULL;
     g_latest_state = NULL;
+    g_redraw_requested = 0;
     g_time_ns = 0U;
 }
 
@@ -409,7 +422,7 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     last_draw_ns = 500U;
     dsd_neo_ui_async_test_draw_if_needed(&opts, &last_draw_ns, 1000U);
     rc |= expect_int("clean frame skipped", g_printer_calls, 0);
-    ui_terminal_telemetry_request_redraw();
+    dsd_app_request_redraw();
     dsd_neo_ui_async_test_draw_if_needed(&opts, &last_draw_ns, 1000U);
     rc |= expect_int("dirty frame draws", g_printer_calls, 1);
     rc |= expect_ptr("draw uses latest state", g_printer_state, &latest_state);
