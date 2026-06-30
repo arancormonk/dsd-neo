@@ -10,11 +10,11 @@
 
 #include "menu_actions.h"
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -1243,7 +1243,7 @@ rtl_set_gain(void* v) {
 void
 rtl_set_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("PPM error (-200..200)", rtl_stream_get_requested_ppm(c->opts), cb_rtl_ppm, c);
+    ui_prompt_open_int_async("PPM error (-200..200)", dsd_app_frontend_requested_ppm(c->opts), cb_rtl_ppm, c);
 }
 
 void
@@ -1345,7 +1345,7 @@ act_iq_dc_k_dn(void* v) {
 void
 act_ted_gain_up(void* v) {
     UNUSED(v);
-    float g = rtl_stream_get_ted_gain();
+    float g = dsd_app_frontend_ted_gain();
     int g_milli = (int)(g * 1000.0f + 0.5f);
     if (g_milli < 500) {
         g_milli += 5;
@@ -1357,7 +1357,7 @@ act_ted_gain_up(void* v) {
 void
 act_ted_gain_dn(void* v) {
     UNUSED(v);
-    float g = rtl_stream_get_ted_gain();
+    float g = dsd_app_frontend_ted_gain();
     int g_milli = (int)(g * 1000.0f + 0.5f);
     if (g_milli > 10) {
         g_milli -= 5;

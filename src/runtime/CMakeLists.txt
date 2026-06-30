@@ -66,6 +66,11 @@ target_include_directories(
     PRIVATE ${_PUBLIC_INCLUDES}
 )
 
+target_compile_definitions(
+    dsd-neo_runtime
+    PRIVATE DSD_RUNTIME_HAS_TERMINAL_UI=$<BOOL:${DSD_ENABLE_TERMINAL_UI}>
+)
+
 # Link platform abstraction library for threading primitives
 target_link_libraries(
     dsd-neo_runtime

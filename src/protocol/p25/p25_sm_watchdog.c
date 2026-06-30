@@ -69,7 +69,7 @@ static DSD_THREAD_RETURN_TYPE
         // otherwise, tick faster under ncurses to reduce perceived wedges.
         int ms = g_p25_sm_wd_ms;
         if (ms <= 0) {
-            ms = (g_opts && g_opts->use_ncurses_terminal == 1) ? 200 : 400; // 200ms UI, 400ms headless
+            ms = dsd_opts_frontend_active(g_opts) ? 200 : 400; // 200ms frontend, 400ms headless
         }
         if (ms < 20) {
             ms = 20; // clamp to sane bounds

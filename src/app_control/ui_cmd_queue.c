@@ -1824,7 +1824,7 @@ apply_cmd_legacy_basic_a(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
                 state->M = 0x21;
             }
             return 1;
-        case UI_CMD_TOGGLE_COMPACT: opts->ncurses_compact = opts->ncurses_compact ? 0 : 1; return 1;
+        case UI_CMD_TOGGLE_COMPACT: opts->terminal_compact = opts->terminal_compact ? 0 : 1; return 1;
         case UI_CMD_HISTORY_CYCLE:
             (void)ui_history_cycle_mode();
             ui_request_redraw();
@@ -2476,12 +2476,20 @@ apply_cmd_legacy_misc_config(dsd_opts* opts, dsd_state* state, const struct UiCm
                 int old_samples_per_symbol = state->samplesPerSymbol;
                 int old_symbol_center = state->symbolCenter;
                 int old_jitter = state->jitter;
+                dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
 
                 DSD_SNPRINTF(old_audio_in_dev, sizeof old_audio_in_dev, "%s", opts->audio_in_dev);
                 DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
 
                 DSD_MEMCPY(&cfg, c->data, sizeof cfg);
                 dsd_apply_user_config_to_opts(&cfg, opts, state);
+                /*
+                 * Frontend lifecycle is owned by startup and ui_start/ui_stop.
+                 * Runtime config/profile loads may carry persisted frontend
+                 * defaults, but flipping this live can strand an active curses
+                 * session before the UI thread has a chance to shut it down.
+                 */
+                opts->frontend_kind = old_frontend_kind;
 #ifdef USE_RADIO
                 apply_cfg_live_rtl_ppm_request(opts, &cfg, old_audio_in_type);
 #endif

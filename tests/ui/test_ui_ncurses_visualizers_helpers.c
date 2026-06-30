@@ -73,8 +73,10 @@ static int test_init_pair(short pair, short f, short b);
 #define init_pair  test_init_pair
 
 #include "../../src/ui/terminal/ncurses_visualizers.c"
+#include "dsd-neo/app_control/frontend.h"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_c.h"
 #include "dsd-neo/ui/ncurses_internal.h"
 #include "dsd-neo/ui/ui_prims.h"
@@ -224,6 +226,36 @@ rtl_stream_spectrum_get(float* out, int max_bins, int* out_rate) { // NOLINT(mis
         *out_rate = 0;
     }
     return 0;
+}
+
+int
+dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
+    (void)opts;
+    (void)state;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->snr_bias_c4fm = rtl_stream_get_snr_bias_c4fm();
+    out->snr_c4fm_db = rtl_stream_get_snr_c4fm();
+    return 0;
+}
+
+int
+dsd_app_frontend_constellation_get(float* out_xy, int max_points) {
+    return rtl_stream_constellation_get(out_xy, max_points);
+}
+
+int
+dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps) {
+    return rtl_stream_eye_get(out, max_samples, out_sps);
+}
+
+int
+dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate) {
+    return rtl_stream_spectrum_get(out_db, max_bins, out_rate);
+}
+
+int
+dsd_app_frontend_spectrum_get_size(void) {
+    return rtl_stream_spectrum_get_size();
 }
 
 static int

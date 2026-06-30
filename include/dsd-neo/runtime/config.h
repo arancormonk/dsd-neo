@@ -581,7 +581,8 @@ typedef struct dsdneoUserConfig {
     int has_output;
     dsdneoUserOutputBackend output_backend;
     char pulse_output[256];
-    int ncurses_ui; /* bool */
+    dsd_frontend_kind frontend_kind;
+    int frontend_kind_is_set;
 
     /* [mode] */
     int has_mode;

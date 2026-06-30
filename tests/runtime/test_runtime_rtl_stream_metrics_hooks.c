@@ -23,6 +23,7 @@ static int g_snr_c4fm_calls = 0;
 static int g_snr_c4fm_eye_calls = 0;
 static int g_snr_cqpsk_calls = 0;
 static int g_snr_gfsk_calls = 0;
+static int g_snr_gfsk_eye_calls = 0;
 static int g_snr_qpsk_const_calls = 0;
 static int g_p25p1_ber_calls = 0;
 static int g_p25p2_err_calls = 0;
@@ -139,6 +140,12 @@ fake_snr_gfsk_db(void) {
 }
 
 static double
+fake_snr_gfsk_eye_db(void) {
+    g_snr_gfsk_eye_calls++;
+    return 43.21;
+}
+
+static double
 fake_snr_qpsk_const_db(void) {
     g_snr_qpsk_const_calls++;
     return 45.67;
@@ -230,6 +237,7 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db() == -100.0);
     assert(dsd_rtl_stream_metrics_hook_snr_cqpsk_db() == -100.0);
     assert(dsd_rtl_stream_metrics_hook_snr_gfsk_db() == -100.0);
+    assert(dsd_rtl_stream_metrics_hook_snr_gfsk_eye_db() == -100.0);
     assert(dsd_rtl_stream_metrics_hook_snr_qpsk_const_db() == -100.0);
 
     dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
@@ -258,6 +266,7 @@ main(void) {
     g_snr_c4fm_eye_calls = 0;
     g_snr_cqpsk_calls = 0;
     g_snr_gfsk_calls = 0;
+    g_snr_gfsk_eye_calls = 0;
     g_snr_qpsk_const_calls = 0;
     g_p25p1_ber_calls = 0;
     g_p25p2_err_calls = 0;
@@ -280,6 +289,7 @@ main(void) {
     hooks.snr_c4fm_eye_db = fake_snr_c4fm_eye_db;
     hooks.snr_cqpsk_db = fake_snr_cqpsk_db;
     hooks.snr_gfsk_db = fake_snr_gfsk_db;
+    hooks.snr_gfsk_eye_db = fake_snr_gfsk_eye_db;
     hooks.snr_qpsk_const_db = fake_snr_qpsk_const_db;
     hooks.p25p1_ber_update = fake_p25p1_ber_update;
     hooks.p25p2_err_update = fake_p25p2_err_update;
@@ -341,6 +351,9 @@ main(void) {
 
     assert(dsd_rtl_stream_metrics_hook_snr_gfsk_db() == 34.56);
     assert(g_snr_gfsk_calls == 1);
+
+    assert(dsd_rtl_stream_metrics_hook_snr_gfsk_eye_db() == 43.21);
+    assert(g_snr_gfsk_eye_calls == 1);
 
     assert(dsd_rtl_stream_metrics_hook_snr_qpsk_const_db() == 45.67);
     assert(g_snr_qpsk_const_calls == 1);

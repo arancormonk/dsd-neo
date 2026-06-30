@@ -1756,7 +1756,7 @@ p25p2_duid_should_abort(dsd_state* state, int err_counter) {
 
 static void
 p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch_status) {
-    if (opts->use_ncurses_terminal == 1) {
+    if (dsd_opts_frontend_active(opts)) {
         ui_publish_both_and_redraw(opts, state);
     }
 

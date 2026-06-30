@@ -9,7 +9,7 @@
  */
 
 #include "menu_labels.h"
-#include <dsd-neo/core/constants.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/tcp_input.h>
@@ -25,12 +25,6 @@
 #include "menu_internal.h"
 #include "menu_items.h"
 #include "ui_key_status.h"
-
-#ifdef USE_RADIO
-#include <dsd-neo/io/rtl_stream_c.h>
-#else
-extern int rtl_stream_get_auto_ppm(void);
-#endif
 
 // ---- Visibility/predicate functions ----
 
@@ -59,18 +53,24 @@ io_rtl_active(const void* ctx) {
 }
 
 #ifdef USE_RADIO
+static dsd_frontend_metrics
+menu_frontend_metrics(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(c ? c->opts : NULL, c ? c->state : NULL, &metrics);
+    return metrics;
+}
+
 static bool
-rtl_fsk_symbol_output_active_for_ui(void) {
-    int output_kind = rtl_stream_get_output_kind();
-    return output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+rtl_fsk_symbol_output_active_for_ui(const void* v) {
+    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+    return metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_FSK_DISCRIMINATOR;
 }
 
 bool
 dsp_cq_on(const void* v) {
-    UNUSED(v);
-    int cq = 0;
-    rtl_stream_get_cqpsk_status(&cq, NULL);
-    return cq != 0;
+    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+    return metrics.cqpsk_enable != 0;
 }
 
 int
@@ -98,9 +98,8 @@ ui_current_mod(const void* v) {
     }
 
     // Snap to the active DSP path: CQPSK toggle always means QPSK path
-    int cq = 0;
-    rtl_stream_get_cqpsk_status(&cq, NULL);
-    if (cq) {
+    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+    if (metrics.cqpsk_enable) {
         mod = 1;
     }
 
@@ -123,7 +122,7 @@ is_not_qpsk(const void* v) {
 
 bool
 is_ted_allowed(const void* v) {
-    return !rtl_fsk_symbol_output_active_for_ui() && is_mod_qpsk(v);
+    return !rtl_fsk_symbol_output_active_for_ui(v) && is_mod_qpsk(v);
 }
 
 // DSP submenu arrays declared in menu_items.h
@@ -891,43 +890,36 @@ lbl_m17_user_data(const void* v, char* b, size_t n) {
 
 const char*
 lbl_onoff_cq(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int cq = 0;
-    rtl_stream_get_cqpsk_status(&cq, NULL);
-    DSD_SNPRINTF(b, n, "Toggle CQPSK [%s]", cq ? "Active" : "Inactive");
+    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+    DSD_SNPRINTF(b, n, "Toggle CQPSK [%s]", metrics.cqpsk_enable ? "Active" : "Inactive");
     return b;
 }
 
 const char*
 lbl_onoff_iqbal(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int on = rtl_stream_get_iq_balance();
-    DSD_SNPRINTF(b, n, "Toggle IQ Balance [%s]", on ? "Active" : "Inactive");
+    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+    DSD_SNPRINTF(b, n, "Toggle IQ Balance [%s]", metrics.iq_balance ? "Active" : "Inactive");
     return b;
 }
 
 const char*
 lbl_iq_dc(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int k = 0;
-    int on = rtl_stream_get_iq_dc(&k);
-    DSD_SNPRINTF(b, n, "IQ DC Block [%s]", on ? "On" : "Off");
+    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+    DSD_SNPRINTF(b, n, "IQ DC Block [%s]", metrics.iq_dc_enabled ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_iq_dc_k(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int k = 0;
-    rtl_stream_get_iq_dc(&k);
-    DSD_SNPRINTF(b, n, "IQ DC Shift k: %d (+/-)", k);
+    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+    DSD_SNPRINTF(b, n, "IQ DC Shift k: %d (+/-)", metrics.iq_dc_shift_k);
     return b;
 }
 
 const char*
 lbl_ted_gain(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    float g = rtl_stream_get_ted_gain();
+    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+    float g = metrics.ted_gain;
     int g_milli = (int)(g * 1000.0f + 0.5f);
     DSD_SNPRINTF(b, n, "CQPSK Timing Gain: %d (x0.001, +/-)", g_milli);
     return b;
@@ -935,9 +927,8 @@ lbl_ted_gain(const void* v, char* b, size_t n) {
 
 const char*
 lbl_cqpsk_timing_bias(const void* v, char* b, size_t n) {
-    UNUSED(v);
-    int eb = rtl_stream_cqpsk_timing_bias(NULL);
-    DSD_SNPRINTF(b, n, "CQPSK Timing Bias (EMA): %d", eb);
+    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+    DSD_SNPRINTF(b, n, "CQPSK Timing Bias (EMA): %d", metrics.cqpsk_timing_bias);
     return b;
 }
 
@@ -964,12 +955,8 @@ lbl_rtl_rtltcp_autotune(const void* v, char* b, size_t n) {
 
 const char*
 lbl_rtl_auto_ppm(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
-    int on = c->opts->rtl_auto_ppm ? 1 : 0;
-    /* If stream active, reflect runtime state */
-    if (c->state && c->state->rtl_ctx) {
-        on = rtl_stream_get_auto_ppm();
-    }
+    const UiCtx* c = (const UiCtx*)v;
+    int on = dsd_app_frontend_auto_ppm_enabled(c ? c->state : NULL, (c && c->opts) ? c->opts->rtl_auto_ppm : 0);
     DSD_SNPRINTF(b, n, "Auto-PPM (Spectrum): %s", on ? "On" : "Off");
     return b;
 }
@@ -977,13 +964,8 @@ lbl_rtl_auto_ppm(const void* v, char* b, size_t n) {
 const char*
 lbl_rtl_tuner_autogain(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    int on = 0;
-    if (c->state && c->state->rtl_ctx) {
-        on = rtl_stream_get_tuner_autogain();
-    } else {
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-        on = (cfg && cfg->tuner_autogain_enable) ? 1 : 0;
-    }
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int on = dsd_app_frontend_tuner_autogain_enabled(c ? c->state : NULL, (cfg && cfg->tuner_autogain_enable) ? 1 : 0);
     DSD_SNPRINTF(b, n, "Tuner Autogain: %s", on ? "On" : "Off");
     return b;
 }

@@ -19,6 +19,7 @@
 #include "dsd-neo/core/input_level.h"
 
 #include <curses.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -54,7 +55,6 @@
 #include "ui_snr_readout.h"
 
 #ifdef USE_RADIO
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ncurses_snr.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
@@ -147,15 +147,16 @@ ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
 
 #ifdef USE_RADIO
     if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        int symbol_rate_hz = 0;
-        int output_kind = rtl_stream_get_output_kind();
+        dsd_frontend_metrics metrics;
+        (void)dsd_app_frontend_get_metrics(opts, state, &metrics);
         /* RTL direct symbol paths feed one decoded symbol per sample; report the configured profile rate. */
-        if ((output_kind == RTL_STREAM_OUTPUT_SYMBOL_CQPSK || output_kind == RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR)
-            && rtl_stream_get_symbol_profile(&symbol_rate_hz, NULL) == 0 && symbol_rate_hz > 0) {
-            return symbol_rate_hz;
+        if ((metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK
+             || metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_FSK_DISCRIMINATOR)
+            && metrics.symbol_rate_hz > 0) {
+            return metrics.symbol_rate_hz;
         }
 
-        sample_rate_hz = (int)rtl_stream_output_rate(state->rtl_ctx);
+        sample_rate_hz = (int)metrics.output_rate_hz;
     }
 #endif
 
@@ -309,16 +310,14 @@ ui_print_rtl_gain_field(dsd_opts* opts) {
 #else
     /* Show applied tuner gain when available (actual driver value),
        otherwise fall back to requested value. */
-    int g10 = 0, is_auto = 1;
-    int have = 0;
-    if (rtl_stream_get_gain(&g10, &is_auto) == 0) {
-        have = 1;
-    }
-    if (have) {
-        if (is_auto) {
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(opts, NULL, &metrics);
+    if (metrics.tuner_gain_valid) {
+        if (metrics.tuner_gain_is_auto) {
             printw(" G: AGC;");
         } else {
-            int gdB = (g10 >= 0) ? (g10 + 5) / 10 : (g10 - 5) / 10;
+            int gdB = (metrics.tuner_gain_tenth_db >= 0) ? (metrics.tuner_gain_tenth_db + 5) / 10
+                                                         : (metrics.tuner_gain_tenth_db - 5) / 10;
             printw(" G: %idB;", gdB);
         }
     } else {
@@ -333,12 +332,7 @@ ui_print_rtl_gain_field(dsd_opts* opts) {
 
 static void
 ui_print_rtl_ppm_field(const dsd_opts* opts) {
-    int requested_ppm = 0;
-#ifdef USE_RADIO
-    requested_ppm = rtl_stream_get_requested_ppm(opts);
-#else
-    requested_ppm = opts->rtlsdr_ppm_error;
-#endif
+    int requested_ppm = dsd_app_frontend_requested_ppm(opts);
     printw(" PPM: %i;", requested_ppm); //Adjust manually now with { and }
 }
 
@@ -363,19 +357,10 @@ ui_print_rtl_auto_ppm_status(void) {
     ui_print_rtl_auto_ppm_status_values(0, 0, 0, -100.0, 0.0, 0);
 #else
     /* Show carrier/error-based auto PPM status snapshot */
-    int ap_en = 0, ap_dir = 0, ap_locked = 0;
-    double ap_snr = -100.0, ap_df = 0.0;
-    (void)rtl_stream_auto_ppm_get_status(&ap_en, &ap_snr, &ap_df, NULL, &ap_dir, NULL, &ap_locked);
-    if (ap_locked) {
-        int locked_ppm = 0;
-        double lsnr = -100.0, ldf = 0.0;
-        (void)rtl_stream_auto_ppm_get_lock(&locked_ppm, &lsnr, &ldf);
-        (void)lsnr;
-        (void)ldf;
-        ui_print_rtl_auto_ppm_status_values(ap_en, ap_locked, locked_ppm, ap_snr, ap_df, ap_dir);
-        return;
-    }
-    ui_print_rtl_auto_ppm_status_values(ap_en, ap_locked, 0, ap_snr, ap_df, ap_dir);
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(NULL, NULL, &metrics);
+    ui_print_rtl_auto_ppm_status_values(metrics.auto_ppm_enabled, metrics.auto_ppm_locked, metrics.auto_ppm_locked_ppm,
+                                        metrics.auto_ppm_snr_db, metrics.auto_ppm_df_hz, metrics.auto_ppm_step_dir);
 #endif
 }
 
@@ -955,7 +940,7 @@ ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
     /* Only show RTL-SDR section and render visualizers when RTL input is active */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         ui_print_header(ui_audio_in_is_soapy(opts) ? "SoapySDR Visual Aids" : "RTL-SDR Visual Aids");
-        int nfft = rtl_stream_spectrum_get_size();
+        int nfft = dsd_app_frontend_spectrum_get_size();
         ui_print_rtl_visual_aids_controls(opts, nfft);
         ui_render_rtl_visual_aid_panels(opts, state);
     }

@@ -54,7 +54,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
         }
 
         //since we are in a long loop, use this to improve response time in ncurses
-        if (opts->use_ncurses_terminal == 1) {
+        if (dsd_opts_frontend_active(opts)) {
             ui_publish_both_and_redraw(opts, state);
         }
 

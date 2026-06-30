@@ -35,6 +35,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.snr_c4fm_eye_db = rtl_stream_estimate_snr_c4fm_eye;
     hooks.snr_cqpsk_db = rtl_stream_get_snr_cqpsk;
     hooks.snr_gfsk_db = rtl_stream_get_snr_gfsk;
+    hooks.snr_gfsk_eye_db = rtl_stream_estimate_snr_gfsk_eye;
     hooks.snr_qpsk_const_db = rtl_stream_estimate_snr_qpsk_const;
     hooks.p25p1_ber_update = rtl_stream_p25p1_ber_update;
     hooks.p25p2_err_update = rtl_stream_p25p2_err_update;

@@ -5,8 +5,10 @@
 
 #include "ui_snr_readout.h"
 
+#include <stddef.h>
+
 #ifdef USE_RADIO
-#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/app_control/frontend.h>
 #endif
 
 enum { UI_SNR_INVALID_DB = -50 };
@@ -30,9 +32,11 @@ ui_snr_value_is_valid(double snr) {
 
 static double
 ui_snr_get_c4fm_value(void) {
-    double snr = rtl_stream_get_snr_c4fm();
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(NULL, NULL, &metrics, DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE);
+    double snr = metrics.snr_c4fm_db;
     if (!ui_snr_value_is_valid(snr)) {
-        double fb = rtl_stream_estimate_snr_c4fm_eye();
+        double fb = metrics.snr_c4fm_eye_db;
         if (ui_snr_value_is_valid(fb)) {
             snr = fb;
         }
@@ -42,14 +46,16 @@ ui_snr_get_c4fm_value(void) {
 
 static double
 ui_snr_get_qpsk_value(void) {
-    double snr = rtl_stream_get_snr_cqpsk();
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(NULL, NULL, &metrics, DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST);
+    double snr = metrics.snr_cqpsk_db;
     if (!ui_snr_value_is_valid(snr)) {
-        double fb = rtl_stream_estimate_snr_qpsk_const();
+        double fb = metrics.snr_qpsk_const_db;
         if (ui_snr_value_is_valid(fb)) {
             snr = fb;
         } else {
-            double snr_c = rtl_stream_get_snr_c4fm();
-            double snr_g = rtl_stream_get_snr_gfsk();
+            double snr_c = metrics.snr_c4fm_db;
+            double snr_g = metrics.snr_gfsk_db;
             double snr_fb = (snr_c > snr_g) ? snr_c : snr_g;
             if (ui_snr_value_is_valid(snr_fb)) {
                 snr = snr_fb;
@@ -61,9 +67,11 @@ ui_snr_get_qpsk_value(void) {
 
 static double
 ui_snr_get_gfsk_value(void) {
-    double snr = rtl_stream_get_snr_gfsk();
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(NULL, NULL, &metrics, DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE);
+    double snr = metrics.snr_gfsk_db;
     if (!ui_snr_value_is_valid(snr)) {
-        double fb = rtl_stream_estimate_snr_gfsk_eye();
+        double fb = metrics.snr_gfsk_eye_db;
         if (ui_snr_value_is_valid(fb)) {
             snr = fb;
         }

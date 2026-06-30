@@ -82,6 +82,7 @@ static const char* const k_skip_exact_next_any[] = {
     "--dmr-force-algid",
     "--m17-signature-public-key",
     "--auto-ppm-snr",
+    "--frontend",
     "--profile",
     "--p25-vc-grace",
     "--p25-min-follow-dwell",
@@ -135,6 +136,7 @@ static const char* const k_skip_prefix[] = {
     "--trunk-scan=",
     "--trunk-scan-dwell-ms=",
     "--trunk-scan-activity-hold-ms=",
+    "--frontend=",
 };
 
 int

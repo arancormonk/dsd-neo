@@ -141,13 +141,13 @@ Examples:
 
 ```bash
 # Use saved config
-dsd-neo --config ~/.config/dsd-neo/config.ini -N
+dsd-neo --config ~/.config/dsd-neo/config.ini --frontend terminal
 
 # One-shot trunking with explicit Soapy args
-dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv -N
+dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv --frontend terminal
 
 # One-shot Soapy args + startup tuning
-dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan.csv -G group.csv -N
+dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan.csv -G group.csv --frontend terminal
 ```
 
 ## Behavior and limits vs RTL/RTL-TCP
@@ -188,5 +188,5 @@ Manual driver-setting check:
 
 ```bash
 SoapySDRUtil --probe="driver=sdrplay"
-dsd-neo --config ~/.config/dsd-neo/config.ini -N
+dsd-neo --config ~/.config/dsd-neo/config.ini --frontend terminal
 ```

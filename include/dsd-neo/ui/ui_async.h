@@ -58,6 +58,8 @@ const dsd_opts* dsd_neo_ui_async_test_opts_snapshot_or_default(void);
 int dsd_neo_ui_async_test_curses_is_active(const dsd_opts* opts);
 int dsd_neo_ui_async_test_read_key_nonblocking(const dsd_opts* opts);
 void dsd_neo_ui_async_test_process_input_frame(const dsd_opts* opts);
+int dsd_neo_ui_async_test_open_curses_if_needed(void);
+void dsd_neo_ui_async_test_close_curses_if_opened(int curses_opened);
 void dsd_neo_ui_async_test_draw_if_needed(const dsd_opts* opts, uint64_t* last_draw_ns, uint64_t frame_ns);
 #endif
 

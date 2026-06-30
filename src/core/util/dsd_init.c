@@ -229,11 +229,11 @@ static void
 init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
     opts->pulse_flush = 1; //set 0 to flush, 1 for flushed
-    opts->use_ncurses_terminal = 0;
-    opts->ncurses_compact = 0;
-    opts->ncurses_history = 1;
+    opts->frontend_kind = DSD_FRONTEND_NONE;
+    opts->terminal_compact = 0;
+    opts->terminal_history = 1;
 #ifdef LIMAZULUTWEAKS
-    opts->ncurses_compact = 1;
+    opts->terminal_compact = 1;
 #endif
     opts->payload = 0;
     opts->inverted_dpmr = 0;

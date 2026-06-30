@@ -1200,20 +1200,24 @@ add_test(
     COMMAND dsd-neo_test_runtime_p25_p2_audio_ring
 )
 
-add_executable(
-    dsd-neo_test_ui_async_lifecycle
-    ui/test_ui_async_lifecycle.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_async.c
-)
-target_compile_definitions(
-    dsd-neo_test_ui_async_lifecycle
-    PRIVATE DSD_NEO_THREADING_NO_INLINE_CREATE DSD_NEO_TEST_HOOKS
-)
-target_include_directories(
-    dsd-neo_test_ui_async_lifecycle
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
-)
-add_test(NAME UI_ASYNC_LIFECYCLE COMMAND dsd-neo_test_ui_async_lifecycle)
+if(DSD_ENABLE_TERMINAL_UI)
+    add_executable(
+        dsd-neo_test_ui_async_lifecycle
+        ui/test_ui_async_lifecycle.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_async.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_async_lifecycle
+        PRIVATE DSD_NEO_THREADING_NO_INLINE_CREATE DSD_NEO_TEST_HOOKS
+    )
+    target_include_directories(
+        dsd-neo_test_ui_async_lifecycle
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    add_test(NAME UI_ASYNC_LIFECYCLE COMMAND dsd-neo_test_ui_async_lifecycle)
+endif()
 
 add_executable(
     dsd-neo_test_ui_cmd_actions
@@ -1241,113 +1245,123 @@ target_include_directories(
 target_compile_definitions(dsd-neo_test_ui_menu_services PRIVATE USE_RADIO)
 add_test(NAME UI_MENU_SERVICES COMMAND dsd-neo_test_ui_menu_services)
 
-add_executable(
-    dsd-neo_test_ui_menu_labels
-    ui/test_ui_menu_labels.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_labels
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-add_test(NAME UI_MENU_LABELS COMMAND dsd-neo_test_ui_menu_labels)
+if(DSD_ENABLE_TERMINAL_UI)
+    add_executable(
+        dsd-neo_test_ui_menu_labels
+        ui/test_ui_menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_labels
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    add_test(NAME UI_MENU_LABELS COMMAND dsd-neo_test_ui_menu_labels)
 
-add_executable(
-    dsd-neo_test_ui_menu_labels_radio
-    ui/test_ui_menu_labels_radio.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_labels_radio
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_compile_definitions(dsd-neo_test_ui_menu_labels_radio PRIVATE USE_RADIO)
-add_test(NAME UI_MENU_LABELS_RADIO COMMAND dsd-neo_test_ui_menu_labels_radio)
+    add_executable(
+        dsd-neo_test_ui_menu_labels_radio
+        ui/test_ui_menu_labels_radio.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_labels_radio
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_menu_labels_radio
+        PRIVATE USE_RADIO
+    )
+    add_test(
+        NAME UI_MENU_LABELS_RADIO
+        COMMAND dsd-neo_test_ui_menu_labels_radio
+    )
 
-add_executable(
-    dsd-neo_test_ui_menu_render_helpers
-    ui/test_ui_menu_render_helpers.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_render.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_render_helpers
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_compile_definitions(
-    dsd-neo_test_ui_menu_render_helpers
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
-target_link_libraries(
-    dsd-neo_test_ui_menu_render_helpers
-    PRIVATE ${CURSES_LIBRARIES}
-)
-add_test(
-    NAME UI_MENU_RENDER_HELPERS
-    COMMAND dsd-neo_test_ui_menu_render_helpers
-)
+    add_executable(
+        dsd-neo_test_ui_menu_render_helpers
+        ui/test_ui_menu_render_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_render.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_render_helpers
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_menu_render_helpers
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_menu_render_helpers
+        PRIVATE ${CURSES_LIBRARIES}
+    )
+    add_test(
+        NAME UI_MENU_RENDER_HELPERS
+        COMMAND dsd-neo_test_ui_menu_render_helpers
+    )
 
-add_executable(
-    dsd-neo_test_ui_menu_defs
-    ui/test_ui_menu_defs.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menus/menu_defs.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_defs
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
-)
-add_test(NAME UI_MENU_DEFS COMMAND dsd-neo_test_ui_menu_defs)
+    add_executable(
+        dsd-neo_test_ui_menu_defs
+        ui/test_ui_menu_defs.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menus/menu_defs.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_defs
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    add_test(NAME UI_MENU_DEFS COMMAND dsd-neo_test_ui_menu_defs)
 
-add_executable(
-    dsd-neo_test_ui_panels_header_footer
-    ui/test_ui_panels_header_footer.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/panels/header.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/panels/footer.c
-)
-target_compile_definitions(
-    dsd-neo_test_ui_panels_header_footer
-    PRIVATE NCURSES_NOMACROS
-)
-target_include_directories(
-    dsd-neo_test_ui_panels_header_footer
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
-)
-target_link_libraries(
-    dsd-neo_test_ui_panels_header_footer
-    PRIVATE ${CURSES_LIBRARIES}
-)
-add_test(
-    NAME UI_PANELS_HEADER_FOOTER
-    COMMAND dsd-neo_test_ui_panels_header_footer
-)
+    add_executable(
+        dsd-neo_test_ui_panels_header_footer
+        ui/test_ui_panels_header_footer.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/panels/header.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/panels/footer.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_panels_header_footer
+        PRIVATE NCURSES_NOMACROS
+    )
+    target_include_directories(
+        dsd-neo_test_ui_panels_header_footer
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_panels_header_footer
+        PRIVATE ${CURSES_LIBRARIES}
+    )
+    add_test(
+        NAME UI_PANELS_HEADER_FOOTER
+        COMMAND dsd-neo_test_ui_panels_header_footer
+    )
 
-add_executable(
-    dsd-neo_test_ui_ncurses_visualizers_helpers
-    ui/test_ui_ncurses_visualizers_helpers.c
-)
-target_include_directories(
-    dsd-neo_test_ui_ncurses_visualizers_helpers
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_link_libraries(
-    dsd-neo_test_ui_ncurses_visualizers_helpers
-    PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
-)
-add_test(
-    NAME UI_NCURSES_VISUALIZERS_HELPERS
-    COMMAND dsd-neo_test_ui_ncurses_visualizers_helpers
-)
+    add_executable(
+        dsd-neo_test_ui_ncurses_visualizers_helpers
+        ui/test_ui_ncurses_visualizers_helpers.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_ncurses_visualizers_helpers
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_ncurses_visualizers_helpers
+        PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME UI_NCURSES_VISUALIZERS_HELPERS
+        COMMAND dsd-neo_test_ui_ncurses_visualizers_helpers
+    )
+endif()
 
 add_executable(
     dsd-neo_test_ui_telemetry_hooks_install
@@ -1363,106 +1377,115 @@ add_test(
     COMMAND dsd-neo_test_ui_telemetry_hooks_install
 )
 
-add_executable(
-    dsd-neo_test_ui_ncurses_trunk_display_helpers
-    ui/test_ui_ncurses_trunk_display_helpers.c
-)
-target_include_directories(
-    dsd-neo_test_ui_ncurses_trunk_display_helpers
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_link_libraries(
-    dsd-neo_test_ui_ncurses_trunk_display_helpers
-    PRIVATE ${CURSES_LIBRARIES}
-)
-add_test(
-    NAME UI_NCURSES_TRUNK_DISPLAY_HELPERS
-    COMMAND dsd-neo_test_ui_ncurses_trunk_display_helpers
-)
+if(DSD_ENABLE_TERMINAL_UI)
+    add_executable(
+        dsd-neo_test_ui_ncurses_trunk_display_helpers
+        ui/test_ui_ncurses_trunk_display_helpers.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_ncurses_trunk_display_helpers
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_ncurses_trunk_display_helpers
+        PRIVATE ${CURSES_LIBRARIES}
+    )
+    add_test(
+        NAME UI_NCURSES_TRUNK_DISPLAY_HELPERS
+        COMMAND dsd-neo_test_ui_ncurses_trunk_display_helpers
+    )
 
-add_executable(
-    dsd-neo_test_ui_ncurses_p25_display_helpers
-    ui/test_ui_ncurses_p25_display_helpers.c
-)
-target_include_directories(
-    dsd-neo_test_ui_ncurses_p25_display_helpers
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_link_libraries(
-    dsd-neo_test_ui_ncurses_p25_display_helpers
-    PRIVATE ${CURSES_LIBRARIES}
-)
-add_test(
-    NAME UI_NCURSES_P25_DISPLAY_HELPERS
-    COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
-)
+    add_executable(
+        dsd-neo_test_ui_ncurses_p25_display_helpers
+        ui/test_ui_ncurses_p25_display_helpers.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_ncurses_p25_display_helpers
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_ncurses_p25_display_helpers
+        PRIVATE ${CURSES_LIBRARIES}
+    )
+    add_test(
+        NAME UI_NCURSES_P25_DISPLAY_HELPERS
+        COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
+    )
 
-add_executable(
-    dsd-neo_test_ui_ncurses_printer_helpers
-    ui/test_ui_ncurses_printer_helpers.c
-)
-target_include_directories(
-    dsd-neo_test_ui_ncurses_printer_helpers
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_compile_options(
-    dsd-neo_test_ui_ncurses_printer_helpers
-    PRIVATE -Wno-unused-function
-)
-target_link_libraries(
-    dsd-neo_test_ui_ncurses_printer_helpers
-    PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
-)
-add_test(
-    NAME UI_NCURSES_PRINTER_HELPERS
-    COMMAND dsd-neo_test_ui_ncurses_printer_helpers
-)
+    add_executable(
+        dsd-neo_test_ui_ncurses_printer_helpers
+        ui/test_ui_ncurses_printer_helpers.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_ncurses_printer_helpers
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_options(
+        dsd-neo_test_ui_ncurses_printer_helpers
+        PRIVATE -Wno-unused-function
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_ncurses_printer_helpers
+        PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME UI_NCURSES_PRINTER_HELPERS
+        COMMAND dsd-neo_test_ui_ncurses_printer_helpers
+    )
 
-add_executable(
-    dsd-neo_test_ui_menu_callbacks
-    ui/test_ui_menu_callbacks.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_callbacks
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
-)
-add_test(NAME UI_MENU_CALLBACKS COMMAND dsd-neo_test_ui_menu_callbacks)
+    add_executable(
+        dsd-neo_test_ui_menu_callbacks
+        ui/test_ui_menu_callbacks.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_callbacks
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    add_test(NAME UI_MENU_CALLBACKS COMMAND dsd-neo_test_ui_menu_callbacks)
 
-add_executable(
-    dsd-neo_test_ui_menu_actions
-    ui/test_ui_menu_actions.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_actions
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
-)
-add_test(NAME UI_MENU_ACTIONS COMMAND dsd-neo_test_ui_menu_actions)
+    add_executable(
+        dsd-neo_test_ui_menu_actions
+        ui/test_ui_menu_actions.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_actions
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    add_test(NAME UI_MENU_ACTIONS COMMAND dsd-neo_test_ui_menu_actions)
 
-add_executable(
-    dsd-neo_test_ui_hotkeys_regression
-    ui/test_ui_hotkeys_regression.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/dsd_ncurses_handler.c
-)
-target_include_directories(
-    dsd-neo_test_ui_hotkeys_regression
-    PRIVATE ${PROJECT_SOURCE_DIR}/tests/ui ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_ui_hotkeys_regression
-    PRIVATE dsd-neo_platform
-)
-add_test(NAME UI_HOTKEYS_REGRESSION COMMAND dsd-neo_test_ui_hotkeys_regression)
+    add_executable(
+        dsd-neo_test_ui_hotkeys_regression
+        ui/test_ui_hotkeys_regression.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/dsd_ncurses_handler.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_hotkeys_regression
+        PRIVATE ${PROJECT_SOURCE_DIR}/tests/ui ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_hotkeys_regression
+        PRIVATE dsd-neo_platform
+    )
+    add_test(
+        NAME UI_HOTKEYS_REGRESSION
+        COMMAND dsd-neo_test_ui_hotkeys_regression
+    )
+endif()
 
 add_executable(
     dsd-neo_test_ui_tcp_audio_connect
@@ -1482,325 +1505,353 @@ target_include_directories(
 )
 add_test(NAME UI_BURST_ACTIVE_CALL COMMAND dsd-neo_test_ui_burst_active_call)
 
-add_executable(
-    dsd-neo_test_ui_ncurses_utils
-    ui/test_ui_ncurses_utils.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_utils.c
-)
-target_include_directories(
-    dsd-neo_test_ui_ncurses_utils
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_ui_ncurses_utils
-    PRIVATE dsd-neo_core dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
-)
-add_test(NAME UI_NCURSES_UTILS COMMAND dsd-neo_test_ui_ncurses_utils)
-
-add_executable(
-    dsd-neo_test_ui_ncurses_init
-    ui/test_ui_ncurses_init.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_init.c
-)
-target_include_directories(
-    dsd-neo_test_ui_ncurses_init
-    PRIVATE ${PROJECT_SOURCE_DIR}/tests/ui ${PROJECT_SOURCE_DIR}/include
-)
-add_test(NAME UI_NCURSES_INIT COMMAND dsd-neo_test_ui_ncurses_init)
-
-add_executable(
-    dsd-neo_test_ui_dsp_squelch_status
-    ui/test_ui_dsp_squelch_status.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_status_format.c
-)
-target_include_directories(
-    dsd-neo_test_ui_dsp_squelch_status
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
-)
-target_link_libraries(
-    dsd-neo_test_ui_dsp_squelch_status
-    PRIVATE dsd-neo_core ${DSD_NEO_TEST_MATH_LIB}
-)
-add_test(NAME UI_DSP_SQUELCH_STATUS COMMAND dsd-neo_test_ui_dsp_squelch_status)
-
-add_executable(
-    dsd-neo_test_ui_dsp_display_radio_compile
-    ui/test_ui_dsp_display_radio_compile.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_display.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_prims.c
-)
-target_compile_definitions(
-    dsd-neo_test_ui_dsp_display_radio_compile
-    PRIVATE USE_RADIO
-)
-target_include_directories(
-    dsd-neo_test_ui_dsp_display_radio_compile
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${_PUBLIC_INCLUDES}
-)
-target_link_libraries(
-    dsd-neo_test_ui_dsp_display_radio_compile
-    PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
-)
-add_test(
-    NAME UI_DSP_DISPLAY_RADIO_COMPILE
-    COMMAND dsd-neo_test_ui_dsp_display_radio_compile
-)
-
-add_executable(
-    dsd-neo_test_ui_prims_status_gamma
-    ui/test_ui_prims_status_gamma.c
-)
-target_include_directories(
-    dsd-neo_test_ui_prims_status_gamma
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
-)
-target_link_libraries(
-    dsd-neo_test_ui_prims_status_gamma
-    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
-)
-add_test(NAME UI_PRIMS_STATUS_GAMMA COMMAND dsd-neo_test_ui_prims_status_gamma)
-
-add_executable(
-    dsd-neo_test_ui_snr_meter
-    ui/test_ui_snr_meter.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_snr.c
-)
-target_include_directories(
-    dsd-neo_test_ui_snr_meter
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
-)
-target_compile_definitions(
-    dsd-neo_test_ui_snr_meter
-    PRIVATE DSD_NEO_TEST_HOOKS PRETTY_COLORS
-)
-if(DSD_ENABLE_FAST_MATH)
-    target_compile_definitions(
-        dsd-neo_test_ui_snr_meter
-        PRIVATE DSD_NEO_FAST_MATH=1
-    )
-endif()
-target_link_libraries(
-    dsd-neo_test_ui_snr_meter
-    PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
-)
-add_test(NAME UI_SNR_METER COMMAND dsd-neo_test_ui_snr_meter)
-
-add_executable(
-    dsd-neo_test_ui_snr_readout
-    ui/test_ui_snr_readout.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snr_readout.c
-)
-target_include_directories(
-    dsd-neo_test_ui_snr_readout
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
-)
-target_compile_definitions(
-    dsd-neo_test_ui_snr_readout
-    PRIVATE DSD_NEO_TEST_HOOKS USE_RADIO
-)
-target_link_libraries(
-    dsd-neo_test_ui_snr_readout
-    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
-)
-add_test(NAME UI_SNR_READOUT COMMAND dsd-neo_test_ui_snr_readout)
-
-add_executable(
-    dsd-neo_test_ui_snr_readout_no_radio
-    ui/test_ui_snr_readout_no_radio.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snr_readout.c
-)
-target_include_directories(
-    dsd-neo_test_ui_snr_readout_no_radio
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
-)
-add_test(
-    NAME UI_SNR_READOUT_NO_RADIO
-    COMMAND dsd-neo_test_ui_snr_readout_no_radio
-)
-
-if(NOT DSD_HAS_PDCURSES_WIDE_API)
+if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
-        dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+        dsd-neo_test_ui_ncurses_utils
+        ui/test_ui_ncurses_utils.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_utils.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_ncurses_utils
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_ncurses_utils
+        PRIVATE dsd-neo_core dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(NAME UI_NCURSES_UTILS COMMAND dsd-neo_test_ui_ncurses_utils)
+
+    add_executable(
+        dsd-neo_test_ui_ncurses_init
+        ui/test_ui_ncurses_init.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_init.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_ncurses_init
+        PRIVATE ${PROJECT_SOURCE_DIR}/tests/ui ${PROJECT_SOURCE_DIR}/include
+    )
+    add_test(NAME UI_NCURSES_INIT COMMAND dsd-neo_test_ui_ncurses_init)
+
+    add_executable(
+        dsd-neo_test_ui_dsp_squelch_status
+        ui/test_ui_dsp_squelch_status.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_status_format.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_dsp_squelch_status
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_dsp_squelch_status
+        PRIVATE dsd-neo_core ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME UI_DSP_SQUELCH_STATUS
+        COMMAND dsd-neo_test_ui_dsp_squelch_status
+    )
+
+    add_executable(
+        dsd-neo_test_ui_dsp_display_radio_compile
+        ui/test_ui_dsp_display_radio_compile.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_dsp_display.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_prims.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_dsp_display_radio_compile
+        PRIVATE USE_RADIO
+    )
+    target_include_directories(
+        dsd-neo_test_ui_dsp_display_radio_compile
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${_PUBLIC_INCLUDES}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_dsp_display_radio_compile
+        PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME UI_DSP_DISPLAY_RADIO_COMPILE
+        COMMAND dsd-neo_test_ui_dsp_display_radio_compile
+    )
+
+    add_executable(
+        dsd-neo_test_ui_prims_status_gamma
+        ui/test_ui_prims_status_gamma.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_prims_status_gamma
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_prims_status_gamma
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME UI_PRIMS_STATUS_GAMMA
+        COMMAND dsd-neo_test_ui_prims_status_gamma
+    )
+
+    add_executable(
+        dsd-neo_test_ui_snr_meter
         ui/test_ui_snr_meter.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_snr.c
     )
     target_include_directories(
-        dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+        dsd-neo_test_ui_snr_meter
         PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
     )
     target_compile_definitions(
-        dsd-neo_test_ui_snr_meter_pdc_wide_no_api
-        PRIVATE DSD_NEO_TEST_HOOKS DSD_USE_PDCURSES PDC_WIDE PRETTY_COLORS
+        dsd-neo_test_ui_snr_meter
+        PRIVATE DSD_NEO_TEST_HOOKS PRETTY_COLORS
     )
     if(DSD_ENABLE_FAST_MATH)
         target_compile_definitions(
-            dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+            dsd-neo_test_ui_snr_meter
             PRIVATE DSD_NEO_FAST_MATH=1
         )
     endif()
     target_link_libraries(
-        dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+        dsd-neo_test_ui_snr_meter
         PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
     )
+    add_test(NAME UI_SNR_METER COMMAND dsd-neo_test_ui_snr_meter)
+
+    add_executable(
+        dsd-neo_test_ui_snr_readout
+        ui/test_ui_snr_readout.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snr_readout.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_snr_readout
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_snr_readout
+        PRIVATE DSD_NEO_TEST_HOOKS USE_RADIO
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_snr_readout
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(NAME UI_SNR_READOUT COMMAND dsd-neo_test_ui_snr_readout)
+
+    add_executable(
+        dsd-neo_test_ui_snr_readout_no_radio
+        ui/test_ui_snr_readout_no_radio.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snr_readout.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_snr_readout_no_radio
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
     add_test(
-        NAME UI_SNR_METER_PDC_WIDE_NO_API
-        COMMAND dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+        NAME UI_SNR_READOUT_NO_RADIO
+        COMMAND dsd-neo_test_ui_snr_readout_no_radio
     )
-endif()
 
-add_executable(
-    dsd-neo_test_ui_menu_navigation
-    ui/test_ui_menu_navigation.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_navigation
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-if(MSVC)
-    target_compile_definitions(
+    if(NOT DSD_HAS_PDCURSES_WIDE_API)
+        add_executable(
+            dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+            ui/test_ui_snr_meter.c
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal/ncurses_snr.c
+        )
+        target_include_directories(
+            dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+            PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+            PRIVATE DSD_NEO_TEST_HOOKS DSD_USE_PDCURSES PDC_WIDE PRETTY_COLORS
+        )
+        if(DSD_ENABLE_FAST_MATH)
+            target_compile_definitions(
+                dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+                PRIVATE DSD_NEO_FAST_MATH=1
+            )
+        endif()
+        target_link_libraries(
+            dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+            PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
+        )
+        add_test(
+            NAME UI_SNR_METER_PDC_WIDE_NO_API
+            COMMAND dsd-neo_test_ui_snr_meter_pdc_wide_no_api
+        )
+    endif()
+
+    add_executable(
         dsd-neo_test_ui_menu_navigation
-        PRIVATE CURSES_LIBRARY
+        ui/test_ui_menu_navigation.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
     )
-endif()
-target_link_libraries(dsd-neo_test_ui_menu_navigation PRIVATE dsd-neo_platform)
-add_test(NAME UI_MENU_NAVIGATION COMMAND dsd-neo_test_ui_menu_navigation)
+    target_include_directories(
+        dsd-neo_test_ui_menu_navigation
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_menu_navigation
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
+    target_link_libraries(
+        dsd-neo_test_ui_menu_navigation
+        PRIVATE dsd-neo_platform
+    )
+    add_test(NAME UI_MENU_NAVIGATION COMMAND dsd-neo_test_ui_menu_navigation)
 
-add_executable(
-    dsd-neo_test_ui_menu_paging_viewport
-    ui/test_ui_menu_paging_viewport.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_paging_viewport
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-if(MSVC)
-    target_compile_definitions(
+    add_executable(
         dsd-neo_test_ui_menu_paging_viewport
-        PRIVATE CURSES_LIBRARY
+        ui/test_ui_menu_paging_viewport.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_paging_viewport
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    if(MSVC)
+        target_compile_definitions(
+            dsd-neo_test_ui_menu_paging_viewport
+            PRIVATE CURSES_LIBRARY
+        )
+    endif()
+    target_link_libraries(
+        dsd-neo_test_ui_menu_paging_viewport
+        PRIVATE dsd-neo_platform
+    )
+    add_test(
+        NAME UI_MENU_PAGING_VIEWPORT
+        COMMAND dsd-neo_test_ui_menu_paging_viewport
+    )
+
+    add_executable(
+        dsd-neo_test_ui_menu_dynamic_label
+        ui/test_ui_menu_dynamic_label.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_render.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_dynamic_label
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_menu_dynamic_label
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_menu_dynamic_label
+        PRIVATE ${CURSES_LIBRARIES}
+    )
+    add_test(
+        NAME UI_MENU_DYNAMIC_LABEL
+        COMMAND dsd-neo_test_ui_menu_dynamic_label
+    )
+
+    add_executable(
+        dsd-neo_test_ui_menu_env
+        ui/test_ui_menu_env.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_env.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_env
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_menu_env
+        PRIVATE dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(NAME UI_MENU_ENV COMMAND dsd-neo_test_ui_menu_env)
+
+    add_executable(
+        dsd-neo_test_ui_chooser_navigation
+        ui/test_ui_chooser_navigation.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_chooser_navigation
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_chooser_navigation
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_chooser_navigation
+        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+    )
+    add_test(
+        NAME UI_CHOOSER_NAVIGATION
+        COMMAND dsd-neo_test_ui_chooser_navigation
+    )
+
+    add_executable(
+        dsd-neo_test_ui_prompt_cursor
+        ui/test_ui_prompt_cursor.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_prompt_cursor
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_prompt_cursor
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_prompt_cursor
+        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+    )
+    add_test(NAME UI_PROMPT_CURSOR COMMAND dsd-neo_test_ui_prompt_cursor)
+
+    add_executable(
+        dsd-neo_test_ui_prompt_validation
+        ui/test_ui_prompt_validation.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_prompt_validation
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_prompt_validation
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_prompt_validation
+        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+    )
+    add_test(
+        NAME UI_PROMPT_VALIDATION
+        COMMAND dsd-neo_test_ui_prompt_validation
     )
 endif()
-target_link_libraries(
-    dsd-neo_test_ui_menu_paging_viewport
-    PRIVATE dsd-neo_platform
-)
-add_test(
-    NAME UI_MENU_PAGING_VIEWPORT
-    COMMAND dsd-neo_test_ui_menu_paging_viewport
-)
-
-add_executable(
-    dsd-neo_test_ui_menu_dynamic_label
-    ui/test_ui_menu_dynamic_label.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_render.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_dynamic_label
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_compile_definitions(
-    dsd-neo_test_ui_menu_dynamic_label
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
-target_link_libraries(
-    dsd-neo_test_ui_menu_dynamic_label
-    PRIVATE ${CURSES_LIBRARIES}
-)
-add_test(NAME UI_MENU_DYNAMIC_LABEL COMMAND dsd-neo_test_ui_menu_dynamic_label)
-
-add_executable(
-    dsd-neo_test_ui_menu_env
-    ui/test_ui_menu_env.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_env.c
-)
-target_include_directories(
-    dsd-neo_test_ui_menu_env
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
-)
-target_link_libraries(
-    dsd-neo_test_ui_menu_env
-    PRIVATE dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
-)
-add_test(NAME UI_MENU_ENV COMMAND dsd-neo_test_ui_menu_env)
-
-add_executable(
-    dsd-neo_test_ui_chooser_navigation
-    ui/test_ui_chooser_navigation.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
-)
-target_include_directories(
-    dsd-neo_test_ui_chooser_navigation
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_compile_definitions(
-    dsd-neo_test_ui_chooser_navigation
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
-target_link_libraries(
-    dsd-neo_test_ui_chooser_navigation
-    PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
-)
-add_test(NAME UI_CHOOSER_NAVIGATION COMMAND dsd-neo_test_ui_chooser_navigation)
-
-add_executable(
-    dsd-neo_test_ui_prompt_cursor
-    ui/test_ui_prompt_cursor.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
-)
-target_include_directories(
-    dsd-neo_test_ui_prompt_cursor
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_compile_definitions(
-    dsd-neo_test_ui_prompt_cursor
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
-target_link_libraries(
-    dsd-neo_test_ui_prompt_cursor
-    PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
-)
-add_test(NAME UI_PROMPT_CURSOR COMMAND dsd-neo_test_ui_prompt_cursor)
-
-add_executable(
-    dsd-neo_test_ui_prompt_validation
-    ui/test_ui_prompt_validation.c
-    ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
-)
-target_include_directories(
-    dsd-neo_test_ui_prompt_validation
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
-)
-target_compile_definitions(
-    dsd-neo_test_ui_prompt_validation
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
-target_link_libraries(
-    dsd-neo_test_ui_prompt_validation
-    PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
-)
-add_test(NAME UI_PROMPT_VALIDATION COMMAND dsd-neo_test_ui_prompt_validation)
 
 add_executable(
     dsd-neo_test_ui_history_state
@@ -1861,6 +1912,25 @@ target_link_libraries(dsd-neo_test_ui_opts_snapshot PRIVATE dsd-neo_platform)
 add_test(NAME UI_OPTS_SNAPSHOT COMMAND dsd-neo_test_ui_opts_snapshot)
 
 add_executable(
+    dsd-neo_test_ui_frontend_status_metrics
+    ui/test_ui_frontend_status_metrics.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/frontend.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_ui_frontend_status_metrics
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_ui_frontend_status_metrics
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME UI_FRONTEND_STATUS_METRICS
+    COMMAND dsd-neo_test_ui_frontend_status_metrics
+)
+
+add_executable(
     dsd-neo_test_runtime_freq_parse
     runtime/test_runtime_freq_parse.c
 )
@@ -1914,7 +1984,9 @@ target_include_directories(
 )
 target_compile_definitions(
     dsd-neo_test_runtime_bootstrap_interactive
-    PRIVATE USE_RTLSDR
+    PRIVATE
+        USE_RTLSDR
+        DSD_RUNTIME_HAS_TERMINAL_UI=$<BOOL:${DSD_ENABLE_TERMINAL_UI}>
 )
 add_test(
     NAME RUNTIME_BOOTSTRAP_INTERACTIVE
@@ -2959,10 +3031,7 @@ set_source_files_properties(
 )
 target_include_directories(
     dsd-neo_test_runtime_config_apply
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/ui/terminal
-        ${CURSES_INCLUDE_DIRS}
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
 )
 set(_DSD_RUNTIME_CONFIG_APPLY_LIBS
     dsd-neo_app_control
@@ -2990,7 +3059,7 @@ add_test(NAME RUNTIME_CONFIG_APPLY COMMAND dsd-neo_test_runtime_config_apply)
 add_executable(dsd-neo_test_ui_cmd_queue ui/test_ui_cmd_queue.c)
 target_include_directories(
     dsd-neo_test_ui_cmd_queue
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(

@@ -31,8 +31,9 @@ dsd_cli_usage_section_intro(void) {
     printf("      --strict-config        Treat --validate-config warnings as errors\n");
     printf("\n");
     printf("Display Options:\n");
-    printf("  -N            Use NCurses Terminal\n");
-    printf("                 dsd-neo -N 2> console_log.txt\n");
+    printf("      --frontend <none|terminal>  Select frontend implementation\n");
+    printf("                 dsd-neo --frontend terminal 2> console_log.txt\n");
+    printf("  -N            Enable terminal frontend (alias for --frontend terminal)\n");
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("      --frame-log <file>    Append one-line timestamped frame trace output\n");
     printf("      --p25-sm-log <file>   Append P25 state-machine decision diagnostics\n");
@@ -112,7 +113,7 @@ dsd_cli_usage_section_io(void) {
            "Switch)\n");
     printf(
         "  -P            Enable Per Call WAV file saving. (Do not use with -w filename.wav single wav file switch)\n");
-    printf("                 (Per Call works with everything now and doesn't require ncurses terminal!)\n");
+    printf("                 (Per Call works with everything now and doesn't require terminal frontend!)\n");
     printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
     printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
     printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");
@@ -159,7 +160,7 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf(" Usage: rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]\n");
     printf("  host: default 127.0.0.1; port: default 1234\n");
     printf("  Remaining fields mirror rtl: string semantics.\n");
-    printf(" Example: dsd-neo -i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2 -N\n");
+    printf(" Example: dsd-neo -i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2 --frontend terminal\n");
     printf("\n");
     printf("SoapySDR options:\n");
     printf(" Usage: soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]\n");
@@ -168,9 +169,9 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("  If omitted, Soapy uses existing/default rtl_* tuning values from config/CLI.\n");
     printf("\n");
     printf("UDP examples:\n");
-    printf(" Example: dsd-neo -i udp -o pulse -N\n");
+    printf(" Example: dsd-neo -i udp -o pulse --frontend terminal\n");
     printf("   Listen for UDP audio on 127.0.0.1:7355 and play to PulseAudio.\n");
-    printf(" Example: dsd-neo -i udp:0.0.0.0:7355 -o pulse -N\n");
+    printf(" Example: dsd-neo -i udp:0.0.0.0:7355 -o pulse --frontend terminal\n");
     printf("   Bind all interfaces; point GQRX/SDR++ UDP audio to this host:port.\n");
     printf("\n");
     printf("Encoder options:\n");
@@ -189,11 +190,13 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("      --iq-replay-rate <mode>  Replay pacing mode (fast|realtime)\n");
     printf("      --iq-loop              Loop I/Q replay at EOF\n");
     printf("      --iq-info <path>       Print metadata/alignment summary and exit\n");
-    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
+    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 --frontend terminal 2> "
+           "m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to pulse audio server, with internal decode/playback and output to 48k/1 "
            "wav file\n");
     printf("\n");
-    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i tcp -o pulse -8 -N 2> m17encoderlog.txt\n");
+    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i tcp -o pulse -8 --frontend terminal 2> "
+           "m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to default tcp input, without internal decode/playback and output to 48k/1 "
            "analog output device\n");
     printf("\n");
@@ -401,8 +404,10 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 May vary based on system stregnth, etc.\n");
     printf("  -t <secs>     Set Trunking or Scan Speed VC/sync loss hangtime in seconds. (default = 2 seconds)\n");
     printf("\n");
-    printf(" Trunking Example TCP: dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N 2> log.txt\n");
-    printf(" Trunking Example RTL: dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N 2> "
+    printf(" Trunking Example TCP: dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal "
+           "2> log.txt\n");
+    printf(" Trunking Example RTL: dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv "
+           "--frontend terminal 2> "
            "log.txt\n");
     printf("\n");
     printf("DMR TIII Tools:\n");

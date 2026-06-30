@@ -481,7 +481,7 @@ test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks(void) {
 
     opts.floating_point = 1;
     opts.pulse_digi_rate_out = 8000;
-    opts.use_ncurses_terminal = 1;
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
     state.currentslot = 1;
     state.dmr_color_code = 16;
@@ -593,7 +593,7 @@ test_bs_voice_gate_closed_skips_decode_but_keeps_loop_hooks(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    opts.use_ncurses_terminal = 1;
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     state.currentslot = 0;
     state.dmr_color_code = 16;
     load_single_burst_stream(0, DMR_BS_VOICE_SYNC);

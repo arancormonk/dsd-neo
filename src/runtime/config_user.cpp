@@ -657,6 +657,15 @@ ini_bool(int value) {
     return value ? "true" : "false";
 }
 
+static const char*
+frontend_kind_to_ini_name(dsd_frontend_kind frontend) {
+    switch (frontend) {
+        case DSD_FRONTEND_TERMINAL: return "terminal";
+        case DSD_FRONTEND_NONE:
+        default: return "none";
+    }
+}
+
 static void
 render_input_source(FILE* out, dsdneoUserInputSource source) {
     switch (source) {
@@ -808,7 +817,9 @@ render_output_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->pulse_output[0]) {
         DSD_FPRINTF(out, "pulse_sink = \"%s\"\n", cfg->pulse_output);
     }
-    DSD_FPRINTF(out, "ncurses_ui = %s\n", ini_bool(cfg->ncurses_ui));
+    if (cfg->frontend_kind_is_set) {
+        DSD_FPRINTF(out, "frontend = \"%s\"\n", frontend_kind_to_ini_name(cfg->frontend_kind));
+    }
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1114,8 +1125,8 @@ apply_output_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
         case DSDCFG_OUTPUT_NULL: DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "null"); break;
         default: break;
     }
-    if (cfg->ncurses_ui) {
-        opts->use_ncurses_terminal = 1;
+    if (cfg->frontend_kind_is_set) {
+        opts->frontend_kind = cfg->frontend_kind;
     }
 }
 
@@ -1430,7 +1441,8 @@ snapshot_output_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     } else {
         cfg->output_backend = DSDCFG_OUTPUT_UNSET;
     }
-    cfg->ncurses_ui = opts->use_ncurses_terminal ? 1 : 0;
+    cfg->frontend_kind = opts->frontend_kind;
+    cfg->frontend_kind_is_set = 1;
 }
 
 static void

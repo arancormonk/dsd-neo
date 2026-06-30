@@ -30,6 +30,7 @@ static int g_snr_c4fm_calls;
 static int g_snr_c4fm_eye_calls;
 static int g_snr_cqpsk_calls;
 static int g_snr_gfsk_calls;
+static int g_snr_gfsk_eye_calls;
 static int g_snr_qpsk_const_calls;
 static int g_p25p1_ber_calls;
 static int g_p25p2_err_calls;
@@ -140,6 +141,12 @@ rtl_stream_get_snr_gfsk(void) {
 }
 
 double
+rtl_stream_estimate_snr_gfsk_eye(void) {
+    ++g_snr_gfsk_eye_calls;
+    return 6.25;
+}
+
+double
 rtl_stream_estimate_snr_qpsk_const(void) {
     ++g_snr_qpsk_const_calls;
     return 6.5;
@@ -222,12 +229,14 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db() == 3.75);
     assert(dsd_rtl_stream_metrics_hook_snr_cqpsk_db() == 4.5);
     assert(dsd_rtl_stream_metrics_hook_snr_gfsk_db() == 5.5);
+    assert(dsd_rtl_stream_metrics_hook_snr_gfsk_eye_db() == 6.25);
     assert(dsd_rtl_stream_metrics_hook_snr_qpsk_const_db() == 6.5);
     assert(g_snr_bias_calls == 1);
     assert(g_snr_c4fm_calls == 1);
     assert(g_snr_c4fm_eye_calls == 1);
     assert(g_snr_cqpsk_calls == 1);
     assert(g_snr_gfsk_calls == 1);
+    assert(g_snr_gfsk_eye_calls == 1);
     assert(g_snr_qpsk_const_calls == 1);
 
     dsd_rtl_stream_metrics_hook_p25p1_ber_update(11, 12);

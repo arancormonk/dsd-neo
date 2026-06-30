@@ -201,10 +201,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Path: `src/ui`, `include/dsd-neo/ui`
 - Target: `dsd-neo_ui_terminal`
 - Responsibilities:
-  - ncurses terminal UI (panels, logging, protocol displays, visualizers)
+  - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
-  - Radio-driven UI controls are gated by `USE_RADIO`; current live visualizer renderers (constellation, eye diagram,
-    spectrum, FSK histogram) are RTL-shim based and gated by `USE_RTLSDR`
+  - Frontend-facing status, control, and DSP/RTL metrics flow through `include/dsd-neo/app_control/frontend.h` and
+    app-control commands; terminal UI code must not include IO/RTL headers directly.
+  - Radio-driven UI controls are gated by `USE_RADIO`; visualizers consume app-control frontend metric APIs.
 
 Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`
 
@@ -272,7 +273,7 @@ Common interface targets:
 
 Optional feature interface targets (compile definitions + include paths; stubbed out when deps are missing):
 
-- `dsd-neo_feature_colors` — `PRETTY_COLORS` when ncurses UI colors are enabled (`COLORS`)
+- `dsd-neo_feature_colors` — `PRETTY_COLORS` when terminal UI colors are enabled (`COLORS`)
 - `dsd-neo_feature_colors_logs` — `PRETTY_COLORS_LOGS` when colored terminal/log output is enabled (`COLORSLOGS`)
 - `dsd-neo_feature_pvc` — `PVCONVENTIONAL` when ProVoice conventional frame sync is enabled (`PVC`)
 - `dsd-neo_feature_lz` — `LIMAZULUTWEAKS` when LimaZulu NXDN tweaks are enabled (`LZ`)
@@ -285,6 +286,6 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 
 External dependencies (resolved via CMake):
 
-- Required: LibSndFile; curses (ncursesw/PDCurses); an audio backend (PulseAudio by default, PortAudio on Windows);
-  MBE vocoder (`mbe-neo` 2.x).
+- Required: LibSndFile; an audio backend (PulseAudio by default, PortAudio on Windows); MBE vocoder (`mbe-neo` 2.x).
+- Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
 - Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl.

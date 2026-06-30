@@ -464,7 +464,7 @@ test_io_and_legacy_state_commands(void) {
     rc |= expect_int("udp input type", opts.audio_in_type, AUDIO_IN_UDP);
     rc |= expect_str("udp bind copied", opts.udp_in_bindaddr, "0.0.0.0");
     rc |= expect_int("udp port copied", opts.udp_in_portno, 7355);
-    rc |= expect_int("compact toggled", opts.ncurses_compact, 1);
+    rc |= expect_int("compact toggled", opts.terminal_compact, 1);
     rc |= expect_int("slot1 disabled", opts.slot1_on, 0);
     rc |= expect_int("slot2 disabled", opts.slot2_on, 0);
     rc |= expect_int("slot preference cycled", opts.slot_preference, 1);

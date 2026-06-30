@@ -58,7 +58,9 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"output", "pulse_sink", "PulseAudio sink device name", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
     {"output", "pulse_output", "PulseAudio output device (alias for pulse_sink)", "", NULL, DSDCFG_TYPE_STRING, 0, 0,
      1}, /* deprecated alias */
-    {"output", "ncurses_ui", "Enable ncurses terminal UI", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"output", "frontend", "Frontend implementation", "none", "none|terminal", DSDCFG_TYPE_ENUM, 0, 0, 0},
+    {"output", "ncurses_ui", "Enable terminal frontend (alias for frontend)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0,
+     1}, /* deprecated alias */
 
     /* [mode] section */
     {"mode", "decode", "Decode mode preset", "auto",

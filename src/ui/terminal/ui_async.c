@@ -54,7 +54,7 @@ ui_get_opts_snapshot_or_default(void) {
 
 static int
 ui_curses_is_active(const dsd_opts* osnap) {
-    return (osnap && osnap->use_ncurses_terminal == 1 && stdscr != NULL);
+    return (dsd_opts_frontend_is_terminal(osnap) && stdscr != NULL);
 }
 
 static void
@@ -113,6 +113,22 @@ ui_process_input_frame(const dsd_opts* osnap) {
     ui_handle_normal_input(ch);
 }
 
+static int
+ui_open_curses_if_needed(void) {
+    if (!dsd_opts_frontend_is_terminal(g_ui_opts)) {
+        return 0;
+    }
+    ncursesOpen(g_ui_opts, g_ui_state);
+    return 1;
+}
+
+static void
+ui_close_curses_if_opened(int curses_opened) {
+    if (curses_opened) {
+        ncursesClose();
+    }
+}
+
 static void
 ui_draw_frame(const dsd_opts* osnap) {
     /* Draw using a state snapshot when available */
@@ -168,6 +184,16 @@ dsd_neo_ui_async_test_process_input_frame(const dsd_opts* opts) {
     ui_process_input_frame(opts);
 }
 
+int
+dsd_neo_ui_async_test_open_curses_if_needed(void) {
+    return ui_open_curses_if_needed();
+}
+
+void
+dsd_neo_ui_async_test_close_curses_if_opened(int curses_opened) {
+    ui_close_curses_if_opened(curses_opened);
+}
+
 void
 dsd_neo_ui_async_test_draw_if_needed(const dsd_opts* opts, uint64_t* last_draw_ns, uint64_t frame_ns) {
     if (last_draw_ns == NULL) {
@@ -187,9 +213,7 @@ static DSD_THREAD_RETURN_TYPE
     const unsigned int sleep_ms = 15; // ~15 ms sleep cadence
 
     // Initialize ncurses lifecycle in UI thread
-    if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {
-        ncursesOpen(g_ui_opts, g_ui_state);
-    }
+    int curses_opened = ui_open_curses_if_needed();
 
     uint64_t last_draw_ns = dsd_time_monotonic_ns();
     const uint64_t frame_ns = 66ULL * 1000ULL * 1000ULL; // ~15 FPS cap
@@ -205,9 +229,7 @@ static DSD_THREAD_RETURN_TYPE
         dsd_sleep_ms(sleep_ms);
     }
 
-    if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {
-        ncursesClose();
-    }
+    ui_close_curses_if_opened(curses_opened);
 
     DSD_THREAD_RETURN;
 }
@@ -221,7 +243,7 @@ ui_start(dsd_opts* opts, dsd_state* state) {
     dsd_app_install_telemetry_hooks();
     g_ui_opts = opts;
     g_ui_state = state;
-    ui_history_set_mode(opts ? opts->ncurses_history : 1);
+    ui_history_set_mode(opts ? opts->terminal_history : 1);
     atomic_store(&g_ui_stop, 0);
 
     if (dsd_thread_create(&g_ui_thread, ui_thread_main, NULL) != 0) {

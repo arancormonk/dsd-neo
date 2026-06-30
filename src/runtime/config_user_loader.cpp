@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "config_user_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/runtime/call_alert.h"
 
@@ -260,6 +261,28 @@ parse_output_backend_value(const char* val, dsdneoUserOutputBackend* out_backend
 }
 
 static int
+parse_frontend_kind_value(const char* val, dsd_frontend_kind* out_frontend) {
+    if (!val || !*val || !out_frontend) {
+        return -1;
+    }
+    if (dsd_strcasecmp(val, "none") == 0) {
+        *out_frontend = DSD_FRONTEND_NONE;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "terminal") == 0) {
+        *out_frontend = DSD_FRONTEND_TERMINAL;
+        return 0;
+    }
+    return -1;
+}
+
+static void
+set_config_frontend_kind(dsdneoUserConfig* cfg, dsd_frontend_kind frontend) {
+    cfg->frontend_kind = frontend;
+    cfg->frontend_kind_is_set = 1;
+}
+
+static int
 parse_demod_path_value(const char* val, dsdneoUserDemodPath* out_path) {
     if (!val || !*val || !out_path) {
         return -1;
@@ -393,10 +416,15 @@ apply_output_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* 
         }
     } else if (strcmp(key_lc, "pulse_sink") == 0 || strcmp(key_lc, "pulse_output") == 0) {
         copy_text_value(cfg->pulse_output, sizeof cfg->pulse_output, val);
+    } else if (strcmp(key_lc, "frontend") == 0) {
+        dsd_frontend_kind frontend = DSD_FRONTEND_NONE;
+        if (parse_frontend_kind_value(val, &frontend) == 0) {
+            set_config_frontend_kind(cfg, frontend);
+        }
     } else if (strcmp(key_lc, "ncurses_ui") == 0) {
-        int b = 0;
-        if (parse_bool(val, &b) == 0) {
-            cfg->ncurses_ui = b;
+        int enabled = 0;
+        if (parse_bool(val, &enabled) == 0) {
+            set_config_frontend_kind(cfg, enabled ? DSD_FRONTEND_TERMINAL : DSD_FRONTEND_NONE);
         }
     }
 }

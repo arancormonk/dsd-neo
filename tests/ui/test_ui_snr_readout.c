@@ -5,20 +5,16 @@
 
 #include "ui_snr_readout.h"
 
-#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/app_control/frontend.h>
 
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
-static int g_snr_c4fm_calls = 0;
-static int g_snr_c4fm_eye_calls = 0;
-static int g_snr_cqpsk_calls = 0;
-static int g_snr_gfsk_calls = 0;
-static int g_snr_gfsk_eye_calls = 0;
-static int g_snr_qpsk_const_calls = 0;
 static double g_snr_c4fm = -100.0;
 static double g_snr_c4fm_eye = -100.0;
 static double g_snr_cqpsk = -100.0;
@@ -26,51 +22,30 @@ static double g_snr_gfsk = -100.0;
 static double g_snr_gfsk_eye = -100.0;
 static double g_snr_qpsk_const = -100.0;
 
-double
-rtl_stream_get_snr_c4fm(void) {
-    g_snr_c4fm_calls++;
-    return g_snr_c4fm;
+int
+dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
+    (void)opts;
+    (void)state;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->snr_c4fm_db = g_snr_c4fm;
+    out->snr_c4fm_eye_db = g_snr_c4fm_eye;
+    out->snr_cqpsk_db = g_snr_cqpsk;
+    out->snr_gfsk_db = g_snr_gfsk;
+    out->snr_gfsk_eye_db = g_snr_gfsk_eye;
+    out->snr_qpsk_const_db = g_snr_qpsk_const;
+    return 0;
 }
 
-double
-rtl_stream_estimate_snr_c4fm_eye(void) {
-    g_snr_c4fm_eye_calls++;
-    return g_snr_c4fm_eye;
-}
-
-double
-rtl_stream_get_snr_cqpsk(void) {
-    g_snr_cqpsk_calls++;
-    return g_snr_cqpsk;
-}
-
-double
-rtl_stream_get_snr_gfsk(void) {
-    g_snr_gfsk_calls++;
-    return g_snr_gfsk;
-}
-
-double
-rtl_stream_estimate_snr_gfsk_eye(void) {
-    g_snr_gfsk_eye_calls++;
-    return g_snr_gfsk_eye;
-}
-
-double
-rtl_stream_estimate_snr_qpsk_const(void) {
-    g_snr_qpsk_const_calls++;
-    return g_snr_qpsk_const;
+int
+dsd_app_frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                                unsigned int snr_fallbacks) {
+    (void)snr_fallbacks;
+    return dsd_app_frontend_get_metrics(opts, state, out);
 }
 
 static void
 reset_fakes(void) {
     ui_snr_readout_reset_for_test();
-    g_snr_c4fm_calls = 0;
-    g_snr_c4fm_eye_calls = 0;
-    g_snr_cqpsk_calls = 0;
-    g_snr_gfsk_calls = 0;
-    g_snr_gfsk_eye_calls = 0;
-    g_snr_qpsk_const_calls = 0;
     g_snr_c4fm = -100.0;
     g_snr_c4fm_eye = -100.0;
     g_snr_cqpsk = -100.0;
@@ -111,8 +86,6 @@ test_c4fm_uses_direct_snr(void) {
     g_snr_c4fm = 18.25;
 
     expect_readout("c4fm-direct", 0, 18.25, "C4FM");
-    assert(g_snr_c4fm_calls == 1);
-    assert(g_snr_c4fm_eye_calls == 0);
 }
 
 static void
@@ -124,8 +97,6 @@ test_c4fm_keeps_stable_direct_snr(void) {
     for (int i = 0; i < 64; i++) {
         expect_readout("c4fm-stable-direct", 0, 18.25, "C4FM");
     }
-    assert(g_snr_c4fm_calls == 64);
-    assert(g_snr_c4fm_eye_calls == 0);
 }
 
 static void
@@ -134,8 +105,6 @@ test_gfsk_uses_direct_snr(void) {
     g_snr_gfsk = 21.5;
 
     expect_readout("gfsk-direct", 2, 21.5, "GFSK");
-    assert(g_snr_gfsk_calls == 1);
-    assert(g_snr_gfsk_eye_calls == 0);
 }
 
 static void
@@ -145,8 +114,6 @@ test_gfsk_falls_back_when_direct_snr_invalid(void) {
     g_snr_gfsk_eye = 7.25;
 
     expect_readout("gfsk-fallback", 2, 7.25, "GFSK");
-    assert(g_snr_gfsk_calls == 1);
-    assert(g_snr_gfsk_eye_calls == 1);
 }
 
 static void
@@ -156,8 +123,6 @@ test_c4fm_snr_at_invalid_threshold_falls_back(void) {
     g_snr_c4fm_eye = 5.5;
 
     expect_readout("c4fm-threshold-fallback", 0, 5.5, "C4FM");
-    assert(g_snr_c4fm_calls == 1);
-    assert(g_snr_c4fm_eye_calls == 1);
 }
 
 static void
@@ -166,8 +131,6 @@ test_qpsk_uses_cqpsk_snr(void) {
     g_snr_cqpsk = 12.75;
 
     expect_readout("qpsk", 1, 12.75, "QPSK");
-    assert(g_snr_cqpsk_calls == 1);
-    assert(g_snr_qpsk_const_calls == 0);
 }
 
 static void
@@ -177,10 +140,6 @@ test_qpsk_uses_constellation_fallback(void) {
     g_snr_qpsk_const = 9.5;
 
     expect_readout("qpsk-constellation-fallback", 1, 9.5, "QPSK");
-    assert(g_snr_cqpsk_calls == 1);
-    assert(g_snr_qpsk_const_calls == 1);
-    assert(g_snr_c4fm_calls == 0);
-    assert(g_snr_gfsk_calls == 0);
 }
 
 static void
@@ -192,10 +151,6 @@ test_qpsk_uses_best_legacy_snr_when_constellation_invalid(void) {
     g_snr_gfsk = 6.75;
 
     expect_readout("qpsk-legacy-best-fallback", 1, 6.75, "QPSK");
-    assert(g_snr_cqpsk_calls == 1);
-    assert(g_snr_qpsk_const_calls == 1);
-    assert(g_snr_c4fm_calls == 1);
-    assert(g_snr_gfsk_calls == 1);
 }
 
 static void
@@ -207,10 +162,6 @@ test_qpsk_reports_invalid_when_all_estimates_stale(void) {
     g_snr_gfsk = -100.0;
 
     expect_invalid_readout("qpsk-all-invalid", 1, -100.0, "QPSK");
-    assert(g_snr_cqpsk_calls == 1);
-    assert(g_snr_qpsk_const_calls == 1);
-    assert(g_snr_c4fm_calls == 1);
-    assert(g_snr_gfsk_calls == 1);
 }
 
 int

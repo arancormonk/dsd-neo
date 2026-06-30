@@ -74,6 +74,7 @@ option(
 )
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
+option(DSD_ENABLE_TERMINAL_UI "Enable ncurses/PDCurses terminal frontend" ON)
 set(DSD_SOAPYSDR_MIN_VERSION "0.8.1")
 option(
     DSD_REQUIRE_RTLSDR
@@ -704,58 +705,68 @@ message(STATUS "Radio pipeline available: ${DSD_HAS_RADIO}")
 # Curses library selection:
 # - Windows: PDCurses
 # - POSIX: ncurses via CMake's FindCurses
-if(WIN32)
-    find_package(PDCurses REQUIRED)
-    set(CURSES_LIBRARIES PDCurses::PDCurses)
-    set(CURSES_INCLUDE_DIRS ${PDCURSES_INCLUDE_DIRS})
-    add_compile_definitions(DSD_USE_PDCURSES)
-    include(CheckCSourceCompiles)
-    set(_CMAKE_REQUIRED_DEFINITIONS_SAVE "${CMAKE_REQUIRED_DEFINITIONS}")
-    set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
-    set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
-    set(CMAKE_REQUIRED_DEFINITIONS -DPDC_WIDE)
-    set(CMAKE_REQUIRED_INCLUDES ${PDCURSES_INCLUDE_DIRS})
-    set(CMAKE_REQUIRED_LIBRARIES PDCurses::PDCurses)
-    unset(DSD_HAS_PDCURSES_WIDE_API CACHE)
-    check_c_source_compiles(
+if(DSD_ENABLE_TERMINAL_UI)
+    if(WIN32)
+        find_package(PDCurses REQUIRED)
+        set(CURSES_LIBRARIES PDCurses::PDCurses)
+        set(CURSES_INCLUDE_DIRS ${PDCURSES_INCLUDE_DIRS})
+        add_compile_definitions(DSD_USE_PDCURSES)
+        include(CheckCSourceCompiles)
+        set(_CMAKE_REQUIRED_DEFINITIONS_SAVE "${CMAKE_REQUIRED_DEFINITIONS}")
+        set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
+        set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
+        set(CMAKE_REQUIRED_DEFINITIONS -DPDC_WIDE)
+        set(CMAKE_REQUIRED_INCLUDES ${PDCURSES_INCLUDE_DIRS})
+        set(CMAKE_REQUIRED_LIBRARIES PDCurses::PDCurses)
+        unset(DSD_HAS_PDCURSES_WIDE_API CACHE)
+        check_c_source_compiles(
+            "
+            #include <wchar.h>
+            #include <curses.h>
+            int main(void) {
+                static const wchar_t glyph[] = {0x2588, 0};
+                return addwstr(glyph);
+            }
         "
-        #include <wchar.h>
-        #include <curses.h>
-        int main(void) {
-            static const wchar_t glyph[] = {0x2588, 0};
-            return addwstr(glyph);
-        }
-    "
-        DSD_HAS_PDCURSES_WIDE_API
-    )
-    set(CMAKE_REQUIRED_DEFINITIONS "${_CMAKE_REQUIRED_DEFINITIONS_SAVE}")
-    set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
-    set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
-    unset(_CMAKE_REQUIRED_DEFINITIONS_SAVE)
-    unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
-    unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
-    if(DSD_HAS_PDCURSES_WIDE_API)
-        add_compile_definitions(DSD_HAS_PDCURSES_WIDE_API=1 PDC_WIDE)
+            DSD_HAS_PDCURSES_WIDE_API
+        )
+        set(CMAKE_REQUIRED_DEFINITIONS "${_CMAKE_REQUIRED_DEFINITIONS_SAVE}")
+        set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
+        set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
+        unset(_CMAKE_REQUIRED_DEFINITIONS_SAVE)
+        unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
+        unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+        if(DSD_HAS_PDCURSES_WIDE_API)
+            add_compile_definitions(DSD_HAS_PDCURSES_WIDE_API=1 PDC_WIDE)
+        endif()
+        message(STATUS "Curses backend: PDCurses")
+        message(
+            STATUS
+            "PDCurses wide-character API: ${DSD_HAS_PDCURSES_WIDE_API}"
+        )
+    else()
+        find_package(Curses REQUIRED)
+        # Some ncurses installs do not provide a top-level curses.h shim in the
+        # include root. Our code includes <curses.h>, so add the ncursesw subdir
+        # when needed.
+        if(CURSES_NEED_WIDE)
+            foreach(_curses_inc IN LISTS CURSES_INCLUDE_DIRS)
+                if(
+                    EXISTS "${_curses_inc}/ncursesw/curses.h"
+                    AND NOT EXISTS "${_curses_inc}/curses.h"
+                )
+                    list(APPEND CURSES_INCLUDE_DIRS "${_curses_inc}/ncursesw")
+                endif()
+            endforeach()
+            list(REMOVE_DUPLICATES CURSES_INCLUDE_DIRS)
+        endif()
+        message(STATUS "Curses backend: ncurses")
     endif()
-    message(STATUS "Curses backend: PDCurses")
-    message(STATUS "PDCurses wide-character API: ${DSD_HAS_PDCURSES_WIDE_API}")
 else()
-    find_package(Curses REQUIRED)
-    # Some ncurses installs do not provide a top-level curses.h shim in the
-    # include root. Our code includes <curses.h>, so add the ncursesw subdir
-    # when needed.
-    if(CURSES_NEED_WIDE)
-        foreach(_curses_inc IN LISTS CURSES_INCLUDE_DIRS)
-            if(
-                EXISTS "${_curses_inc}/ncursesw/curses.h"
-                AND NOT EXISTS "${_curses_inc}/curses.h"
-            )
-                list(APPEND CURSES_INCLUDE_DIRS "${_curses_inc}/ncursesw")
-            endif()
-        endforeach()
-        list(REMOVE_DUPLICATES CURSES_INCLUDE_DIRS)
-    endif()
-    message(STATUS "Curses backend: ncurses")
+    set(CURSES_INCLUDE_DIRS "")
+    set(CURSES_LIBRARIES "")
+    set(DSD_HAS_PDCURSES_WIDE_API OFF)
+    message(STATUS "Terminal UI disabled: curses discovery skipped")
 endif()
 
 find_package(CODEC2)
@@ -784,7 +795,7 @@ endif()
 
 # Aggregate include directories; when using the modern package, we still add
 # the mbelib-neo leaf include directory so #include <mbelib.h> continues to work.
-set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${CURSES_INCLUDE_DIRS})
+set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR})
 if(MBE_INCLUDE_DIR)
     list(APPEND _PUBLIC_INCLUDES ${MBE_INCLUDE_DIR})
 endif()
@@ -802,12 +813,7 @@ else()
     set(AUDIO_LIBS ${PULSEAUDIO_SIMPLE_LIBRARY} ${PULSEAUDIO_LIBRARY})
 endif()
 
-set(LIBS
-    ${MBE_LINK_TARGET}
-    ${LIBSNDFILE_LIBRARIES}
-    ${AUDIO_LIBS}
-    ${CURSES_LIBRARIES}
-)
+set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS})
 
 # -----------------------------------------------------------------------------
 # Optional feature interface targets
