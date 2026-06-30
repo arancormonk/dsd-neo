@@ -25,6 +25,16 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#ifndef DSD_RUNTIME_HAS_TERMINAL_UI
+#define DSD_RUNTIME_HAS_TERMINAL_UI 1
+#endif
+
+#if DSD_RUNTIME_HAS_TERMINAL_UI
+#define EXPECTED_DEFAULT_FRONTEND DSD_FRONTEND_TERMINAL
+#else
+#define EXPECTED_DEFAULT_FRONTEND DSD_FRONTEND_NONE
+#endif
+
 static int g_isatty = 1;
 static int g_config_available = 1;
 static dsdneoRuntimeConfig g_config;
@@ -240,7 +250,7 @@ test_pulse_defaults_apply_decode_and_ncurses(void) {
     rc |= expect_str("pulse-audio-out", opts.audio_out_dev, "pulse:stub-output");
     rc |= expect_int("pulse-decode-mode", g_last_decode_mode, DSDCFG_MODE_DMR);
     rc |= expect_int("pulse-decode-profile", g_last_decode_profile, DSD_DECODE_PRESET_PROFILE_INTERACTIVE);
-    rc |= expect_int("pulse-ncurses-default", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
+    rc |= expect_int("pulse-ncurses-default", opts.frontend_kind, EXPECTED_DEFAULT_FRONTEND);
     return rc;
 }
 
@@ -316,7 +326,7 @@ test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv(void) {
     rc |= expect_int("tcp-channel-import-skipped", g_chan_import_calls, 0);
     rc |= expect_int("tcp-group-import-skipped", g_group_import_calls, 0);
     rc |= expect_str("tcp-no-null-output", opts.audio_out_dev, "");
-    rc |= expect_int("tcp-ncurses-default", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
+    rc |= expect_int("tcp-ncurses-default", opts.frontend_kind, EXPECTED_DEFAULT_FRONTEND);
     return rc;
 }
 
@@ -335,7 +345,7 @@ test_udp_eof_uses_socket_defaults_and_default_pulse_output(void) {
     rc |= expect_int("udp-default-decode-mode", g_last_decode_mode, DSDCFG_MODE_AUTO);
     rc |= expect_int("udp-default-audio-output", g_audio_output_calls, 1);
     rc |= expect_str("udp-default-audio-out", opts.audio_out_dev, "pulse:stub-output");
-    rc |= expect_int("udp-default-ncurses", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
+    rc |= expect_int("udp-default-ncurses", opts.frontend_kind, EXPECTED_DEFAULT_FRONTEND);
     return rc;
 }
 
@@ -441,7 +451,7 @@ test_invalid_prompt_values_use_documented_defaults(void) {
     rc |= expect_str("invalid-default-pulse-input", opts.audio_in_dev, "pulse:stub-input");
     rc |= expect_str("invalid-default-pulse-output", opts.audio_out_dev, "pulse:stub-output");
     rc |= expect_int("invalid-default-decode-mode", g_last_decode_mode, DSDCFG_MODE_AUTO);
-    rc |= expect_int("invalid-default-ncurses", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
+    rc |= expect_int("invalid-default-ncurses", opts.frontend_kind, EXPECTED_DEFAULT_FRONTEND);
     return rc;
 }
 

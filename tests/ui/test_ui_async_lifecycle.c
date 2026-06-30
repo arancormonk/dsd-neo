@@ -47,6 +47,8 @@ static int g_getch_value = ERR;
 static int g_keypad_calls;
 static int g_timeout_calls;
 static int g_escdelay_calls;
+static int g_ncurses_open_calls;
+static int g_ncurses_close_calls;
 static int g_clearok_calls;
 static int g_ncurses_input_calls;
 static int g_last_menu_key = ERR;
@@ -150,10 +152,13 @@ void
 ncursesOpen(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_ncurses_open_calls++;
 }
 
 void
-ncursesClose(void) {}
+ncursesClose(void) {
+    g_ncurses_close_calls++;
+}
 
 void
 ncursesPrinter(dsd_opts* opts, dsd_state* state) {
@@ -320,6 +325,36 @@ test_ui_start_stop_idempotency_and_control_pump(void) {
     return rc;
 }
 
+static int
+test_ui_curses_close_uses_opened_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+
+    g_ncurses_open_calls = 0;
+    g_ncurses_close_calls = 0;
+    dsd_neo_ui_async_test_set_context(&opts, &state);
+
+    int curses_opened = dsd_neo_ui_async_test_open_curses_if_needed();
+    opts.frontend_kind = DSD_FRONTEND_NONE;
+    dsd_neo_ui_async_test_close_curses_if_opened(curses_opened);
+
+    int rc = expect_int("curses-opened", curses_opened, 1);
+    rc |= expect_int("curses-open-count", g_ncurses_open_calls, 1);
+    rc |= expect_int("curses-close-after-frontend-change", g_ncurses_close_calls, 1);
+
+    g_ncurses_open_calls = 0;
+    g_ncurses_close_calls = 0;
+    curses_opened = dsd_neo_ui_async_test_open_curses_if_needed();
+    dsd_neo_ui_async_test_close_curses_if_opened(curses_opened);
+    rc |= expect_int("curses-not-opened-after-disable", curses_opened, 0);
+    rc |= expect_int("curses-no-open-after-disable", g_ncurses_open_calls, 0);
+    rc |= expect_int("curses-no-close-after-disable", g_ncurses_close_calls, 0);
+    return rc;
+}
+
 static void
 reset_frame_counters(void) {
     g_menu_open = 0;
@@ -437,6 +472,7 @@ main(void) {
 
     rc |= test_ui_start_failure_resets_state();
     rc |= test_ui_start_stop_idempotency_and_control_pump();
+    rc |= test_ui_curses_close_uses_opened_state();
     rc |= test_ui_single_frame_snapshot_input_and_draw_helpers();
 
     if (rc == 0) {

@@ -19,6 +19,10 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#ifndef DSD_RUNTIME_HAS_TERMINAL_UI
+#define DSD_RUNTIME_HAS_TERMINAL_UI 1
+#endif
+
 static int
 path_is_regular_file(const char* path) {
     dsd_stat_t st;
@@ -353,6 +357,20 @@ interactive_maybe_configure_output(dsd_opts* opts, int src) {
     }
 }
 
+static void
+interactive_maybe_enable_terminal_frontend(dsd_opts* opts) {
+#if DSD_RUNTIME_HAS_TERMINAL_UI
+    int want_terminal = prompt_yes_no("Enable terminal frontend (--frontend terminal)?", 1);
+    if (want_terminal) {
+        opts->frontend_kind = DSD_FRONTEND_TERMINAL;
+    }
+#else
+    if (opts) {
+        opts->frontend_kind = DSD_FRONTEND_NONE;
+    }
+#endif
+}
+
 void
 dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
     if (!dsd_isatty(DSD_STDIN_FILENO) || !dsd_isatty(DSD_STDOUT_FILENO)) {
@@ -389,11 +407,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
 
     interactive_maybe_configure_trunking(mode, src, opts, state);
     interactive_maybe_configure_output(opts, src);
-
-    int want_terminal = prompt_yes_no("Enable terminal frontend (--frontend terminal)?", 1);
-    if (want_terminal) {
-        opts->frontend_kind = DSD_FRONTEND_TERMINAL;
-    }
+    interactive_maybe_enable_terminal_frontend(opts);
 
     LOG_NOTICE("Interactive setup complete.\n");
 }

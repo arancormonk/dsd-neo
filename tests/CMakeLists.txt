@@ -1984,7 +1984,9 @@ target_include_directories(
 )
 target_compile_definitions(
     dsd-neo_test_runtime_bootstrap_interactive
-    PRIVATE USE_RTLSDR
+    PRIVATE
+        USE_RTLSDR
+        DSD_RUNTIME_HAS_TERMINAL_UI=$<BOOL:${DSD_ENABLE_TERMINAL_UI}>
 )
 add_test(
     NAME RUNTIME_BOOTSTRAP_INTERACTIVE
