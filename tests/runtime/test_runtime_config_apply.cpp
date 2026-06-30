@@ -7,7 +7,7 @@
  */
 
 /*
- * Minimal smoke test for UI_CMD_CONFIG_APPLY runtime behavior.
+ * Minimal smoke test for DSD_APP_CMD_CONFIG_APPLY runtime behavior.
  *
  * This does not spawn the full ncurses UI; it exercises the config apply
  * command handler with a fake dsd_opts/dsd_state to ensure that applying a
@@ -381,11 +381,11 @@ test_basic_pulse_config_apply(void) {
     cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
     cfg.frontend_kind_is_set = 1;
 
-    // Public API: ui_post_cmd() enqueues; ui_drain_cmds() is called from the
+    // Public API: dsd_app_post_cmd() enqueues; dsd_app_drain_cmds() is called from the
     // demod loop to apply pending commands. For the purposes of this test we
     // call both directly.
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("runtime config apply preserves disabled frontend", opts->frontend_kind, DSD_FRONTEND_NONE);
@@ -427,8 +427,8 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
         return 1;
     }
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("output-only config omits frontend", cfg.frontend_kind_is_set, 0);
@@ -437,8 +437,8 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
 
     cfg.frontend_kind = DSD_FRONTEND_NONE;
     cfg.frontend_kind_is_set = 1;
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     rc |= expect_int_eq("explicit frontend none preserves active frontend", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
 
@@ -464,8 +464,8 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
         return rc | 1;
     }
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &legacy_cfg, sizeof legacy_cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &legacy_cfg, sizeof legacy_cfg);
+    dsd_app_drain_cmds(opts, state);
 
     rc |=
         expect_int_eq("legacy ncurses_ui=false preserves active frontend", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
@@ -487,10 +487,10 @@ test_ui_command_queue_applies_fifo(void) {
 
     int32_t first = 5;
     int32_t second = 11;
-    ui_post_cmd(UI_CMD_GAIN_SET, &first, sizeof first);
-    ui_post_cmd(UI_CMD_GAIN_SET, &second, sizeof second);
+    dsd_app_post_cmd(DSD_APP_CMD_GAIN_SET, &first, sizeof first);
+    dsd_app_post_cmd(DSD_APP_CMD_GAIN_SET, &second, sizeof second);
 
-    int applied = ui_drain_cmds(opts, state);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("FIFO drain count", applied, 2);
@@ -512,13 +512,13 @@ test_ui_command_queue_overflow_drops_oldest(void) {
     dsd_state* state = runtime.state;
 
     dsd_exitflag_store(0);
-    ui_post_cmd(UI_CMD_QUIT, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_QUIT, NULL, 0);
     for (int i = 0; i < 127; i++) {
         int32_t gain = i;
-        ui_post_cmd(UI_CMD_GAIN_SET, &gain, sizeof gain);
+        dsd_app_post_cmd(DSD_APP_CMD_GAIN_SET, &gain, sizeof gain);
     }
 
-    int applied = ui_drain_cmds(opts, state);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("overflow keeps bounded queue depth", applied, 127);
@@ -540,7 +540,7 @@ test_ui_command_queue_truncates_oversized_payload_string(void) {
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
 
-    enum { OVERSIZED_PAYLOAD_LEN = UI_CMD_DATA_MAX + 97 };
+    enum { OVERSIZED_PAYLOAD_LEN = DSD_APP_CMD_DATA_MAX + 97 };
 
     char* oversized = (char*)malloc(OVERSIZED_PAYLOAD_LEN);
     if (!oversized) {
@@ -550,8 +550,8 @@ test_ui_command_queue_truncates_oversized_payload_string(void) {
     }
     DSD_MEMSET(oversized, 'x', OVERSIZED_PAYLOAD_LEN);
 
-    ui_post_cmd(UI_CMD_INPUT_WAV_SET, oversized, OVERSIZED_PAYLOAD_LEN);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_INPUT_WAV_SET, oversized, OVERSIZED_PAYLOAD_LEN);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("oversized string command drain count", applied, 1);
@@ -629,7 +629,7 @@ chooser_done_config_profile(void* u, int sel) {
                              pctx->path);
                 pctx->state->config_autosave_path[sizeof pctx->state->config_autosave_path - 1] = '\0';
             }
-            ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+            dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
         }
     }
 
@@ -701,7 +701,7 @@ test_ui_profile_selection_applies_overlay_and_disables_autosave(void) {
     }
 
     chooser_done_config_profile(pctx, 1);
-    ui_drain_cmds(opts, state);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("UI profile load disables autosave", state->config_autosave_enabled, 0);
@@ -741,7 +741,7 @@ test_ui_profile_menu_no_profiles_does_not_apply_base_config(void) {
     DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", path);
 
     act_config_load_profile(&ctx);
-    ui_drain_cmds(opts, state);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("no-profile UI load leaves autosave enabled", state->config_autosave_enabled, 1);
@@ -805,8 +805,8 @@ test_stereo_file_hot_swap_rolls_back_to_live_input(void) {
     cfg.decode_mode = DSDCFG_MODE_P25P2;
     DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", stereo_path);
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     short sample = 0;
     sf_count_t read_count = sf_read_short(opts->audio_in_file, &sample, 1);
@@ -842,8 +842,8 @@ test_call_alert_off_selection_survives_ui_command_path(void) {
     opts->call_alert_events = DSD_CALL_ALERT_EVENT_ALL;
 
     uint8_t events = 0;
-    ui_post_cmd(UI_CMD_CALL_ALERT_EVENTS_SET, &events, sizeof events);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, &events, sizeof events);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("call alert off selection disables master", opts->call_alert, 0);
@@ -858,8 +858,8 @@ test_call_alert_off_selection_survives_ui_command_path(void) {
     rc |= expect_int_eq("call alert snapshot preserves disabled master", snap.call_alert_enabled, 0);
     rc |= expect_int_eq("call alert snapshot preserves empty event mask", snap.call_alert_events, 0);
 
-    ui_post_cmd(UI_CMD_CALL_ALERT_TOGGLE, NULL, 0);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CALL_ALERT_TOGGLE, NULL, 0);
+    dsd_app_drain_cmds(opts, state);
 
     rc |= expect_int_eq("call alert toggle keeps empty selection disabled", opts->call_alert, 0);
     rc |= expect_int_eq("call alert toggle preserves empty event mask", opts->call_alert_events, 0);
@@ -884,22 +884,22 @@ test_ui_visibility_toggles_preserve_show_keys(void) {
         int cmd_id;
         const char* label;
     } commands[] = {
-        {UI_CMD_UI_SHOW_P25_AFFIL_TOGGLE, "P25 affiliations visibility toggle preserves show_keys"},
-        {UI_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE, "P25 callsign visibility toggle preserves show_keys"},
-        {UI_CMD_P25_GA_TOGGLE, "P25 group affiliation toggle preserves show_keys"},
-        {UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE, "DSP panel visibility toggle preserves show_keys"},
-        {UI_CMD_UI_SHOW_P25_METRICS_TOGGLE, "P25 metrics visibility toggle preserves show_keys"},
-        {UI_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE, "P25 neighbors visibility toggle preserves show_keys"},
-        {UI_CMD_UI_SHOW_P25_IDEN_TOGGLE, "P25 IDEN visibility toggle preserves show_keys"},
-        {UI_CMD_UI_SHOW_P25_CCC_TOGGLE, "P25 CC candidates visibility toggle preserves show_keys"},
-        {UI_CMD_UI_SHOW_CHANNELS_TOGGLE, "channels visibility toggle preserves show_keys"},
+        {DSD_APP_CMD_UI_SHOW_P25_AFFIL_TOGGLE, "P25 affiliations visibility toggle preserves show_keys"},
+        {DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE, "P25 callsign visibility toggle preserves show_keys"},
+        {DSD_APP_CMD_P25_GA_TOGGLE, "P25 group affiliation toggle preserves show_keys"},
+        {DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE, "DSP panel visibility toggle preserves show_keys"},
+        {DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE, "P25 metrics visibility toggle preserves show_keys"},
+        {DSD_APP_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE, "P25 neighbors visibility toggle preserves show_keys"},
+        {DSD_APP_CMD_UI_SHOW_P25_IDEN_TOGGLE, "P25 IDEN visibility toggle preserves show_keys"},
+        {DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE, "P25 CC candidates visibility toggle preserves show_keys"},
+        {DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE, "channels visibility toggle preserves show_keys"},
     };
 
     int rc = 0;
     for (size_t i = 0U; i < sizeof commands / sizeof commands[0]; i++) {
         opts->show_keys = 1U;
-        ui_post_cmd(commands[i].cmd_id, NULL, 0);
-        ui_drain_cmds(opts, state);
+        dsd_app_post_cmd(commands[i].cmd_id, NULL, 0);
+        dsd_app_drain_cmds(opts, state);
         rc |= expect_int_eq(commands[i].label, (int)opts->show_keys, 1);
     }
 
@@ -936,8 +936,8 @@ test_ui_aes_key_command_clears_manual_hytera_fields(void) {
         0xE28E9C7836AA2DB8ULL,
     };
 
-    ui_post_cmd(UI_CMD_KEY_AES_SET, &p, sizeof p);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_AES_SET, &p, sizeof p);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_u64_eq("UI AES A1 slot 0", state->A1[0], p.K1);
@@ -988,8 +988,8 @@ test_ui_aes_key_command_handles_zero_and_short_payloads(void) {
     opts->dmr_mute_encR = 1;
 
     uint64_t short_payload[3] = {0x10ULL, 0x20ULL, 0x30ULL};
-    ui_post_cmd(UI_CMD_KEY_AES_SET, short_payload, sizeof short_payload);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_AES_SET, short_payload, sizeof short_payload);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("short AES key command is drained", applied, 1);
@@ -1003,8 +1003,8 @@ test_ui_aes_key_command_handles_zero_and_short_payloads(void) {
         uint64_t K1, K2, K3, K4;
     } zero = {0ULL, 0ULL, 0ULL, 0ULL};
 
-    ui_post_cmd(UI_CMD_KEY_AES_SET, &zero, sizeof zero);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_AES_SET, &zero, sizeof zero);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("zero AES key command is drained", applied, 1);
     rc |= expect_u64_eq("zero AES clears A1 slot 0", state->A1[0], 0ULL);
     rc |= expect_u64_eq("zero AES clears A4 slot 1", state->A4[1], 0ULL);
@@ -1074,8 +1074,8 @@ test_ui_hytera_key_command_records_segment_variants(void) {
     state->keyloader = 1;
     opts->dmr_mute_encL = 1;
     opts->dmr_mute_encR = 1;
-    ui_post_cmd(UI_CMD_KEY_HYTERA_SET, &p, sizeof p);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_HYTERA_SET, &p, sizeof p);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("zero Hytera command is drained", applied, 1);
@@ -1088,16 +1088,16 @@ test_ui_hytera_key_command_records_segment_variants(void) {
     p.K1 = 0x11ULL;
     p.K2 = 0x22ULL;
     state->hytera_key_segments = 0U;
-    ui_post_cmd(UI_CMD_KEY_HYTERA_SET, &p, sizeof p);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_HYTERA_SET, &p, sizeof p);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("two-segment Hytera command is drained", applied, 1);
     rc |= expect_int_eq("two-segment Hytera records segment count", (int)state->hytera_key_segments, 2);
     rc |= expect_u64_eq("two-segment Hytera stores K2", state->K2, p.K2);
 
     p.K3 = 0x33ULL;
     p.K4 = 0ULL;
-    ui_post_cmd(UI_CMD_KEY_HYTERA_SET, &p, sizeof p);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_HYTERA_SET, &p, sizeof p);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("upper-segment Hytera command is drained", applied, 1);
     rc |= expect_int_eq("upper-segment Hytera records four segments", (int)state->hytera_key_segments, 4);
     rc |= expect_u64_eq("upper-segment Hytera stores K3", state->K3, p.K3);
@@ -1140,8 +1140,8 @@ test_ui_hytera_key_command_preserves_aes_metadata(void) {
         0x0123456789ULL, 0x0123456789ULL, 0ULL, 0ULL, 0ULL,
     };
 
-    ui_post_cmd(UI_CMD_KEY_HYTERA_SET, &p, sizeof p);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_HYTERA_SET, &p, sizeof p);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_u64_eq("UI Hytera command sets H", state->H, p.H);
@@ -1186,8 +1186,8 @@ test_ui_basic_key_commands_reset_payload_mute_state(void) {
     opts->dmr_mute_encR = 1;
 
     uint8_t short_key = 0xFEU;
-    ui_post_cmd(UI_CMD_KEY_BASIC_SET, &short_key, sizeof short_key);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_BASIC_SET, &short_key, sizeof short_key);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("short basic key command is drained", applied, 1);
@@ -1197,8 +1197,8 @@ test_ui_basic_key_commands_reset_payload_mute_state(void) {
     rc |= expect_int_eq("short basic key preserves right mute", opts->dmr_mute_encR, 1);
 
     uint32_t basic = 0xA5A55A5AU;
-    ui_post_cmd(UI_CMD_KEY_BASIC_SET, &basic, sizeof basic);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_BASIC_SET, &basic, sizeof basic);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("basic key command is drained", applied, 1);
     rc |= expect_int_eq("basic key command sets K", (int)state->K, (int)basic);
     rc |= expect_int_eq("basic key clears keyloader", state->keyloader, 0);
@@ -1214,8 +1214,8 @@ test_ui_basic_key_commands_reset_payload_mute_state(void) {
     opts->dmr_mute_encR = 1;
 
     uint32_t scrambler = 0x0001C0DEU;
-    ui_post_cmd(UI_CMD_KEY_SCRAMBLER_SET, &scrambler, sizeof scrambler);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_SCRAMBLER_SET, &scrambler, sizeof scrambler);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("scrambler key command is drained", applied, 1);
     rc |= expect_int_eq("scrambler key command sets R", (int)state->R, (int)scrambler);
     rc |= expect_int_eq("scrambler key clears keyloader", state->keyloader, 0);
@@ -1224,8 +1224,8 @@ test_ui_basic_key_commands_reset_payload_mute_state(void) {
 
     DSD_MEMSET(state->static_ks_bits, 0, sizeof state->static_ks_bits);
     state->ken_sc = 0;
-    ui_post_cmd(UI_CMD_KEY_KEN_SCR_SET, "1", sizeof "1");
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_KEN_SCR_SET, "1", sizeof "1");
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("Kenwood stream key command is drained", applied, 1);
     rc |= expect_int_eq("Kenwood stream key enables forced scrambler", state->ken_sc, 1);
     rc |=
@@ -1235,8 +1235,8 @@ test_ui_basic_key_commands_reset_payload_mute_state(void) {
 
     DSD_MEMSET(state->static_ks_bits, 0, sizeof state->static_ks_bits);
     state->any_bp = 0;
-    ui_post_cmd(UI_CMD_KEY_ANYTONE_BP_SET, "2345", sizeof "2345");
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_ANYTONE_BP_SET, "2345", sizeof "2345");
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("Anytone BP stream key command is drained", applied, 1);
     rc |= expect_int_eq("Anytone BP stream key enables forced mode", state->any_bp, 1);
     rc |= expect_int_eq("Anytone BP stream key permutes slot 0 bits", static_bits_to_u16(state->static_ks_bits[0]),
@@ -1251,8 +1251,8 @@ test_ui_basic_key_commands_reset_payload_mute_state(void) {
     opts->dmr_mute_encR = 1;
 
     uint64_t rc4des = 0x0123456789ABCDEFULL;
-    ui_post_cmd(UI_CMD_KEY_RC4DES_SET, &rc4des, sizeof rc4des);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_KEY_RC4DES_SET, &rc4des, sizeof rc4des);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("RC4/DES key command is drained", applied, 1);
     rc |= expect_u64_eq("RC4/DES key command sets R", state->R, rc4des);
     rc |= expect_u64_eq("RC4/DES key command sets RR", state->RR, rc4des);
@@ -1278,8 +1278,8 @@ test_ui_m17_user_data_command_truncates_to_state_buffer(void) {
     char payload[128];
     DSD_MEMSET(payload, 'M', sizeof payload);
 
-    ui_post_cmd(UI_CMD_M17_USER_DATA_SET, payload, sizeof payload);
-    int applied = ui_drain_cmds(runtime.opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_M17_USER_DATA_SET, payload, sizeof payload);
+    int applied = dsd_app_drain_cmds(runtime.opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("M17 user data command is drained", applied, 1);
@@ -1310,13 +1310,13 @@ test_ui_runtime_toggle_commands_dispatch_through_queue(void) {
     opts->inverted_dpmr = 0;
     opts->inverted_m17 = 1;
 
-    ui_post_cmd(UI_CMD_DMR_LE_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_ALL_MUTES_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_INV_X2_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_INV_DMR_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_INV_DPMR_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_INV_M17_TOGGLE, NULL, 0);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_DMR_LE_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_ALL_MUTES_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_INV_X2_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_INV_DMR_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_INV_DPMR_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_INV_M17_TOGGLE, NULL, 0);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("runtime toggle drain count", applied, 6);
@@ -1352,17 +1352,17 @@ test_ui_legacy_toggle_commands_dispatch_through_queue(void) {
     opts->use_hpf_d = 1;
     opts->payload = 0;
 
-    ui_post_cmd(UI_CMD_CRC_RELAX_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_AGGR_SYNC_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_LCW_RETUNE_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_P25_CC_CAND_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_REVERSE_MUTE_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_LPF_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_HPF_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_PBF_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_HPF_D_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_PAYLOAD_TOGGLE, NULL, 0);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CRC_RELAX_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_AGGR_SYNC_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_LCW_RETUNE_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_P25_CC_CAND_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_REVERSE_MUTE_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_LPF_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_HPF_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_PBF_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_HPF_D_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_PAYLOAD_TOGGLE, NULL, 0);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("legacy toggle drain count", applied, 10);
@@ -1392,9 +1392,9 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     int rc = 0;
 
     rtl_stream_toggle_cqpsk(0);
-    UiDspPayload dsp = {.op = UI_DSP_OP_TOGGLE_CQ};
-    ui_post_cmd(UI_CMD_DSP_OP, &dsp, sizeof dsp);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_dsp_payload dsp = {.op = DSD_APP_DSP_OP_TOGGLE_CQ};
+    dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    int applied = dsd_app_drain_cmds(opts, state);
     int cq = 0;
     rtl_stream_get_cqpsk_status(&cq, NULL);
     rc |= expect_int_eq("DSP CQPSK toggle command drains", applied, 1);
@@ -1402,9 +1402,9 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
 
     rtl_stream_toggle_iq_balance(0);
     (void)dsd_unsetenv("DSD_NEO_IQ_BALANCE");
-    dsp.op = UI_DSP_OP_TOGGLE_IQBAL;
-    ui_post_cmd(UI_CMD_DSP_OP, &dsp, sizeof dsp);
-    applied = ui_drain_cmds(opts, state);
+    dsp.op = DSD_APP_DSP_OP_TOGGLE_IQBAL;
+    dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("DSP IQ balance command drains", applied, 1);
     rc |= expect_int_eq("DSP IQ balance toggles on", rtl_stream_get_iq_balance(), 1);
     rc |= expect_true("DSP IQ balance publishes env", strcmp(dsd_neo_env_get("DSD_NEO_IQ_BALANCE"), "1") == 0);
@@ -1414,41 +1414,41 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
     (void)rtl_stream_get_iq_dc(&dc_shift);
     int dc_shift_before_toggle = dc_shift;
     (void)dsd_unsetenv("DSD_NEO_IQ_DC_BLOCK");
-    dsp.op = UI_DSP_OP_IQ_DC_TOGGLE;
-    ui_post_cmd(UI_CMD_DSP_OP, &dsp, sizeof dsp);
-    applied = ui_drain_cmds(opts, state);
+    dsp.op = DSD_APP_DSP_OP_IQ_DC_TOGGLE;
+    dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("DSP IQ DC command drains", applied, 1);
     rc |= expect_int_eq("DSP IQ DC toggles on", rtl_stream_get_iq_dc(&dc_shift), 1);
     rc |= expect_int_eq("DSP IQ DC toggle preserves shift", dc_shift, dc_shift_before_toggle);
     rc |= expect_true("DSP IQ DC publishes env", strcmp(dsd_neo_env_get("DSD_NEO_IQ_DC_BLOCK"), "1") == 0);
 
-    dsp.op = UI_DSP_OP_IQ_DC_K_DELTA;
+    dsp.op = DSD_APP_DSP_OP_IQ_DC_K_DELTA;
     dsp.a = 3;
-    ui_post_cmd(UI_CMD_DSP_OP, &dsp, sizeof dsp);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    applied = dsd_app_drain_cmds(opts, state);
     (void)rtl_stream_get_iq_dc(&dc_shift);
     rc |= expect_int_eq("DSP IQ DC shift command drains", applied, 1);
     rc |= expect_int_eq("DSP IQ DC shift applies delta", dc_shift, dc_shift_before_toggle + 3);
 
     rtl_stream_set_ted_gain(0.1f);
-    dsp.op = UI_DSP_OP_TED_GAIN_SET;
+    dsp.op = DSD_APP_DSP_OP_TED_GAIN_SET;
     dsp.a = 999;
-    ui_post_cmd(UI_CMD_DSP_OP, &dsp, sizeof dsp);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("DSP TED gain command drains", applied, 1);
     rc |= expect_float_near("DSP TED gain command clamps high", rtl_stream_get_ted_gain(), 0.5f, 0.0001f);
 
     rtl_stream_set_tuner_autogain(0);
-    dsp.op = UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE;
-    ui_post_cmd(UI_CMD_DSP_OP, &dsp, sizeof dsp);
-    applied = ui_drain_cmds(opts, state);
+    dsp.op = DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE;
+    dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, &dsp, sizeof dsp);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("DSP tuner autogain command drains", applied, 1);
     rc |= expect_int_eq("DSP tuner autogain toggles on", rtl_stream_get_tuner_autogain(), 1);
 
     rtl_stream_toggle_iq_balance(1);
     uint8_t short_payload[1] = {0U};
-    ui_post_cmd(UI_CMD_DSP_OP, short_payload, sizeof short_payload);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, short_payload, sizeof short_payload);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("short DSP command still drains", applied, 1);
     rc |= expect_int_eq("short DSP command preserves IQ balance", rtl_stream_get_iq_balance(), 1);
 
@@ -1482,10 +1482,10 @@ test_ui_legacy_slot_and_display_commands_update_state(void) {
     opts->slot2_on = 1;
     opts->slot_preference = 0;
 
-    ui_post_cmd(UI_CMD_SLOT1_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_SLOT2_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_SLOT_PREF_CYCLE, NULL, 0);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_SLOT1_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_SLOT2_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_SLOT_PREF_CYCLE, NULL, 0);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("slot command drain count", applied, 3);
@@ -1508,56 +1508,57 @@ test_ui_legacy_slot_and_display_commands_update_state(void) {
                       state->audio_out_float_bufR[0] == 0.0f && state->audio_out_bufR[0] == 0);
 
     opts->audio_in_type = AUDIO_IN_PULSE;
-    opts->constellation = 0;
-    ui_post_cmd(UI_CMD_CONST_TOGGLE, NULL, 0);
-    applied = ui_drain_cmds(opts, state);
+    opts->frontend_display.constellation = 0;
+    dsd_app_post_cmd(DSD_APP_CMD_CONST_TOGGLE, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("non-RTL constellation command drains", applied, 1);
-    rc |= expect_int_eq("non-RTL constellation remains disabled", opts->constellation, 0);
+    rc |= expect_int_eq("non-RTL constellation remains disabled", opts->frontend_display.constellation, 0);
 
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->mod_qpsk = 1;
-    opts->const_gate_qpsk = 0.80f;
-    opts->eye_view = 0;
-    opts->eye_unicode = 0;
-    opts->eye_color = 0;
-    opts->fsk_hist_view = 0;
-    opts->spectrum_view = 0;
+    opts->frontend_display.const_gate_qpsk = 0.80f;
+    opts->frontend_display.eye_view = 0;
+    opts->frontend_display.eye_unicode = 0;
+    opts->frontend_display.eye_color = 0;
+    opts->frontend_display.fsk_hist_view = 0;
+    opts->frontend_display.spectrum_view = 0;
     float delta = 0.25f;
-    ui_post_cmd(UI_CMD_CONST_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_CONST_NORM_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_CONST_GATE_DELTA, &delta, sizeof delta);
-    ui_post_cmd(UI_CMD_EYE_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_FSK_HIST_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_SPECTRUM_TOGGLE, NULL, 0);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONST_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_CONST_NORM_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_CONST_GATE_DELTA, &delta, sizeof delta);
+    dsd_app_post_cmd(DSD_APP_CMD_EYE_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_FSK_HIST_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_SPECTRUM_TOGGLE, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
 
     rc |= expect_int_eq("RTL display command drain count", applied, 6);
-    rc |= expect_int_eq("RTL constellation toggled on", opts->constellation, 1);
-    rc |= expect_int_eq("constellation normalization toggled", opts->const_norm_mode, 1);
-    rc |= expect_true("constellation gate clamps high", fabsf(opts->const_gate_qpsk - 0.90f) <= 1e-6f);
-    rc |= expect_int_eq("eye view toggled on", opts->eye_view, 1);
-    rc |= expect_int_eq("FSK histogram toggled on", opts->fsk_hist_view, 1);
-    rc |= expect_int_eq("spectrum view toggled on", opts->spectrum_view, 1);
+    rc |= expect_int_eq("RTL constellation toggled on", opts->frontend_display.constellation, 1);
+    rc |= expect_int_eq("constellation normalization toggled", opts->frontend_display.const_norm_mode, 1);
+    rc |= expect_true("constellation gate clamps high", fabsf(opts->frontend_display.const_gate_qpsk - 0.90f) <= 1e-6f);
+    rc |= expect_int_eq("eye view toggled on", opts->frontend_display.eye_view, 1);
+    rc |= expect_int_eq("FSK histogram toggled on", opts->frontend_display.fsk_hist_view, 1);
+    rc |= expect_int_eq("spectrum view toggled on", opts->frontend_display.spectrum_view, 1);
 
 #ifdef USE_RADIO
     (void)rtl_stream_spectrum_set_size(128);
 #endif
     int32_t spectrum_delta = 70;
-    ui_post_cmd(UI_CMD_SPEC_SIZE_DELTA, &spectrum_delta, sizeof spectrum_delta);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_SPEC_SIZE_DELTA, &spectrum_delta, sizeof spectrum_delta);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("spectrum size command drains", applied, 1);
 #ifdef USE_RADIO
     rc |= expect_int_eq("spectrum size delta rounds to next power of two", rtl_stream_spectrum_get_size(), 256);
 #else
-    rc |= expect_int_eq("spectrum size command keeps spectrum enabled without radio", opts->spectrum_view, 1);
+    rc |= expect_int_eq("spectrum size command keeps spectrum enabled without radio",
+                        opts->frontend_display.spectrum_view, 1);
 #endif
 
-    ui_post_cmd(UI_CMD_EYE_UNICODE_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_EYE_COLOR_TOGGLE, NULL, 0);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_EYE_UNICODE_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_EYE_COLOR_TOGGLE, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("eye format command drain count", applied, 2);
-    rc |= expect_int_eq("eye unicode toggled on", opts->eye_unicode, 1);
-    rc |= expect_int_eq("eye color toggled on", opts->eye_color, 1);
+    rc |= expect_int_eq("eye unicode toggled on", opts->frontend_display.eye_unicode, 1);
+    rc |= expect_int_eq("eye color toggled on", opts->frontend_display.eye_color, 1);
 
 #ifdef USE_RADIO
     (void)rtl_stream_spectrum_set_size(64);
@@ -1606,11 +1607,11 @@ test_ui_legacy_protocol_reset_and_mode_toggles(void) {
     state->lasttg = 123;
     state->lastsrc = 456;
 
-    ui_post_cmd(UI_CMD_DMR_RESET, NULL, 0);
-    ui_post_cmd(UI_CMD_M17_TX_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_PROVOICE_ESK_TOGGLE, NULL, 0);
-    ui_post_cmd(UI_CMD_PROVOICE_MODE_TOGGLE, NULL, 0);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_DMR_RESET, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_M17_TX_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_PROVOICE_ESK_TOGGLE, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_PROVOICE_MODE_TOGGLE, NULL, 0);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("protocol reset command drain count", applied, 4);
@@ -1673,8 +1674,8 @@ test_ui_replay_and_stop_playback_manage_symbol_state(void) {
     state->symbol_replay_header_checked = 1;
     state->symbol_replay_has_soft = 1;
 
-    ui_post_cmd(UI_CMD_REPLAY_LAST, NULL, 0);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_REPLAY_LAST, NULL, 0);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("replay last command drains", applied, 1);
@@ -1685,8 +1686,8 @@ test_ui_replay_and_stop_playback_manage_symbol_state(void) {
     rc |= expect_int_eq("replay last clears soft flag", state->symbol_replay_has_soft, 0);
 
     opts->audio_out_type = 1;
-    ui_post_cmd(UI_CMD_STOP_PLAYBACK, NULL, 0);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_STOP_PLAYBACK, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("stop playback command drains", applied, 1);
     rc |= expect_true("stop playback closes symbol file", opts->symbolfile == NULL);
     rc |= expect_int_eq("stop playback falls back to stdin without Pulse output", opts->audio_in_type, AUDIO_IN_STDIN);
@@ -1714,8 +1715,8 @@ test_ui_io_command_queue_applies_local_input_and_network_payloads(void) {
     DSD_SNPRINTF(tcp.host, sizeof tcp.host, "%s", "example.invalid");
     tcp.port = 7355;
     reset_tcp_connect_audio_fake();
-    ui_post_cmd(UI_CMD_TCP_CONNECT_AUDIO_CFG, &tcp, sizeof tcp);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, &tcp, sizeof tcp);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("TCP command drain count", applied, 1);
@@ -1730,8 +1731,8 @@ test_ui_io_command_queue_applies_local_input_and_network_payloads(void) {
     DSD_SNPRINTF(tcp_fail.host, sizeof tcp_fail.host, "%s", "fail.invalid");
     tcp_fail.port = 1234;
     g_tcp_connect_audio_result = -1;
-    ui_post_cmd(UI_CMD_TCP_CONNECT_AUDIO_CFG, &tcp_fail, sizeof tcp_fail);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, &tcp_fail, sizeof tcp_fail);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("TCP failure command drain count", applied, 1);
     rc |= expect_int_eq("TCP failure still calls connector", g_tcp_connect_audio_calls, 2);
     rc |=
@@ -1740,8 +1741,8 @@ test_ui_io_command_queue_applies_local_input_and_network_payloads(void) {
 
     struct HostPortPayload udp = {0};
     udp.port = 45000;
-    ui_post_cmd(UI_CMD_UDP_INPUT_CFG, &udp, sizeof udp);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_UDP_INPUT_CFG, &udp, sizeof udp);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("UDP input command drain count", applied, 1);
     rc |= expect_int_eq("UDP input switches input type", opts->audio_in_type, AUDIO_IN_UDP);
     rc |= expect_int_eq("UDP input stores port", opts->udp_in_portno, 45000);
@@ -1750,10 +1751,10 @@ test_ui_io_command_queue_applies_local_input_and_network_payloads(void) {
     rc |= expect_true("UDP input toast uses loopback fallback", strstr(state->ui_msg, "127.0.0.1:45000") != NULL);
 
     const char wav_path[] = "/tmp/dsdneo-input.wav";
-    ui_post_cmd(UI_CMD_INPUT_WAV_SET, wav_path, sizeof wav_path);
-    ui_post_cmd(UI_CMD_INPUT_SYM_STREAM_SET, "capture.sym", sizeof "capture.sym");
-    ui_post_cmd(UI_CMD_INPUT_SET_PULSE, NULL, 0);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_INPUT_WAV_SET, wav_path, sizeof wav_path);
+    dsd_app_post_cmd(DSD_APP_CMD_INPUT_SYM_STREAM_SET, "capture.sym", sizeof "capture.sym");
+    dsd_app_post_cmd(DSD_APP_CMD_INPUT_SET_PULSE, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("local input command drain count", applied, 3);
     rc |= expect_int_eq("Pulse input command wins final type", opts->audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_true("Pulse input command stores logical device", strcmp(opts->audio_in_dev, "pulse") == 0);
@@ -1799,8 +1800,8 @@ test_ui_file_open_commands_report_service_results(void) {
     dsd_state* state = runtime.state;
     int rc = 0;
 
-    ui_post_cmd(UI_CMD_WAV_STATIC_OPEN, static_path, strlen(static_path) + 1);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_WAV_STATIC_OPEN, static_path, strlen(static_path) + 1);
+    int applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("static WAV command drains", applied, 1);
     rc |= expect_true("static WAV opens SNDFILE", opts->wav_out_f != NULL);
     rc |= expect_true("static WAV stores requested path", strcmp(opts->wav_out_file, static_path) == 0);
@@ -1812,8 +1813,8 @@ test_ui_file_open_commands_report_service_results(void) {
         opts->wav_out_f = NULL;
     }
 
-    ui_post_cmd(UI_CMD_WAV_RAW_OPEN, raw_path, strlen(raw_path) + 1);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_WAV_RAW_OPEN, raw_path, strlen(raw_path) + 1);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("raw WAV command drains", applied, 1);
     rc |= expect_true("raw WAV opens SNDFILE", opts->wav_out_raw != NULL);
     rc |= expect_true("raw WAV stores requested path", strcmp(opts->wav_out_file_raw, raw_path) == 0);
@@ -1823,8 +1824,8 @@ test_ui_file_open_commands_report_service_results(void) {
         opts->wav_out_raw = NULL;
     }
 
-    ui_post_cmd(UI_CMD_SYMCAP_OPEN, sym_out_path, strlen(sym_out_path) + 1);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_SYMCAP_OPEN, sym_out_path, strlen(sym_out_path) + 1);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("symbol capture command drains", applied, 1);
     rc |= expect_true("symbol capture opens file", opts->symbol_out_f != NULL);
     rc |= expect_true("symbol capture stores requested path", strcmp(opts->symbol_out_file, sym_out_path) == 0);
@@ -1838,8 +1839,8 @@ test_ui_file_open_commands_report_service_results(void) {
     state->symbol_replay_header_checked = 1;
     state->symbol_replay_has_soft = 1;
     opts->audio_in_type = AUDIO_IN_PULSE;
-    ui_post_cmd(UI_CMD_SYMBOL_IN_OPEN, sym_in_path, strlen(sym_in_path) + 1);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_SYMBOL_IN_OPEN, sym_in_path, strlen(sym_in_path) + 1);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("symbol input command drains", applied, 1);
     rc |= expect_true("symbol input opens file", opts->symbolfile != NULL);
     rc |= expect_int_eq("symbol input switches input type", opts->audio_in_type, AUDIO_IN_SYMBOL_BIN);
@@ -1882,8 +1883,8 @@ test_ui_legacy_file_capture_commands_manage_handles(void) {
     int rc = 0;
 
     DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", wav_dir);
-    ui_post_cmd(UI_CMD_WAV_START, NULL, 0);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_WAV_START, NULL, 0);
+    int applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("legacy WAV start command drains", applied, 1);
     rc |= expect_true("legacy WAV start opens left handle", opts->wav_out_f != NULL);
     rc |= expect_true("legacy WAV start opens right handle", opts->wav_out_fR != NULL);
@@ -1893,8 +1894,8 @@ test_ui_legacy_file_capture_commands_manage_handles(void) {
     rc |= expect_true("legacy WAV start stores right temp under dir",
                       strstr(opts->wav_out_fileR, wav_dir) == opts->wav_out_fileR);
 
-    ui_post_cmd(UI_CMD_WAV_STOP, NULL, 0);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_WAV_STOP, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("legacy WAV stop command drains", applied, 1);
     rc |= expect_true("legacy WAV stop closes left handle", opts->wav_out_f == NULL);
     rc |= expect_true("legacy WAV stop closes right handle", opts->wav_out_fR == NULL);
@@ -1910,8 +1911,8 @@ test_ui_legacy_file_capture_commands_manage_handles(void) {
         opts->symbol_out_f = sym_fp;
         DSD_SNPRINTF(opts->symbol_out_file, sizeof opts->symbol_out_file, "%s", sym_path);
         opts->symbol_out_file_is_auto = 1;
-        ui_post_cmd(UI_CMD_SYMCAP_STOP, NULL, 0);
-        applied = ui_drain_cmds(opts, state);
+        dsd_app_post_cmd(DSD_APP_CMD_SYMCAP_STOP, NULL, 0);
+        applied = dsd_app_drain_cmds(opts, state);
         rc |= expect_int_eq("symbol capture stop command drains", applied, 1);
         rc |= expect_true("symbol capture stop closes handle", opts->symbol_out_f == NULL);
         rc |= expect_true("symbol capture stop stages replay input path", strcmp(opts->audio_in_dev, sym_path) == 0);
@@ -1934,37 +1935,37 @@ test_ui_import_and_dsp_output_commands_report_service_results(void) {
     dsd_state* state = runtime.state;
     int rc = 0;
 
-    ui_post_cmd(UI_CMD_DSP_OUT_SET, "queue-dsp.bin", sizeof "queue-dsp.bin");
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_DSP_OUT_SET, "queue-dsp.bin", sizeof "queue-dsp.bin");
+    int applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("DSP output command drains", applied, 1);
     rc |= expect_int_eq("DSP output enables file sink", opts->use_dsp_output, 1);
     rc |= expect_true("DSP output stores generated path", strstr(opts->dsp_out_file, "DSP/queue-dsp.bin") != NULL);
     rc |= expect_true("DSP output writes success toast", strstr(state->ui_msg, "Applied: DSP output") != NULL);
 
     const char* missing_chan = "./missing-channel-map.csv";
-    ui_post_cmd(UI_CMD_IMPORT_CHANNEL_MAP, missing_chan, strlen(missing_chan) + 1U);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_IMPORT_CHANNEL_MAP, missing_chan, strlen(missing_chan) + 1U);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("channel import command drains", applied, 1);
     rc |= expect_true("channel import records requested path", strcmp(opts->chan_in_file, missing_chan) == 0);
     rc |= expect_true("channel import failure toast", strstr(state->ui_msg, "Failed: Channel map import") != NULL);
 
     const char* missing_group = "./missing-group-list.csv";
-    ui_post_cmd(UI_CMD_IMPORT_GROUP_LIST, missing_group, strlen(missing_group) + 1U);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_IMPORT_GROUP_LIST, missing_group, strlen(missing_group) + 1U);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("group import command drains", applied, 1);
     rc |= expect_true("group import records requested path", strcmp(opts->group_in_file, missing_group) == 0);
     rc |= expect_true("group import failure toast", strstr(state->ui_msg, "Failed: Group list reload") != NULL);
 
     const char* missing_dec = "./missing-keys-dec.csv";
-    ui_post_cmd(UI_CMD_IMPORT_KEYS_DEC, missing_dec, strlen(missing_dec) + 1U);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_IMPORT_KEYS_DEC, missing_dec, strlen(missing_dec) + 1U);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("decimal keys import command drains", applied, 1);
     rc |= expect_true("decimal keys import records requested path", strcmp(opts->key_in_file, missing_dec) == 0);
     rc |= expect_true("decimal keys import failure toast", strstr(state->ui_msg, "Failed: Keys (DEC) import") != NULL);
 
     const char* missing_hex = "./missing-keys-hex.csv";
-    ui_post_cmd(UI_CMD_IMPORT_KEYS_HEX, missing_hex, strlen(missing_hex) + 1U);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_IMPORT_KEYS_HEX, missing_hex, strlen(missing_hex) + 1U);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("hex keys import command drains", applied, 1);
     rc |= expect_true("hex keys import records requested path", strcmp(opts->key_in_file, missing_hex) == 0);
     rc |= expect_true("hex keys import failure toast", strstr(state->ui_msg, "Failed: Keys (HEX) import") != NULL);
@@ -1994,8 +1995,8 @@ test_ui_malformed_payload_commands_drain_without_mutation(void) {
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "sentinel");
     reset_tcp_connect_audio_fake();
 
-    ui_post_cmd(UI_CMD_TCP_CONNECT_AUDIO_CFG, &short_tcp, sizeof short_tcp);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, &short_tcp, sizeof short_tcp);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("short TCP payload command is drained", applied, 1);
@@ -2012,12 +2013,12 @@ test_ui_malformed_payload_commands_drain_without_mutation(void) {
     opts->slot_preference = 1;
     opts->slot1_on = 1;
     opts->slot2_on = 0;
-    ui_post_cmd(UI_CMD_RIGCTL_SET_MOD_BW, &short_scalar, sizeof short_scalar);
-    ui_post_cmd(UI_CMD_TG_HOLD_SET, &short_scalar, sizeof short_scalar);
-    ui_post_cmd(UI_CMD_HANGTIME_SET, &short_scalar, sizeof short_scalar);
-    ui_post_cmd(UI_CMD_SLOT_PREF_SET, &short_scalar, sizeof short_scalar);
-    ui_post_cmd(UI_CMD_SLOTS_ONOFF_SET, &short_scalar, sizeof short_scalar);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_RIGCTL_SET_MOD_BW, &short_scalar, sizeof short_scalar);
+    dsd_app_post_cmd(DSD_APP_CMD_TG_HOLD_SET, &short_scalar, sizeof short_scalar);
+    dsd_app_post_cmd(DSD_APP_CMD_HANGTIME_SET, &short_scalar, sizeof short_scalar);
+    dsd_app_post_cmd(DSD_APP_CMD_SLOT_PREF_SET, &short_scalar, sizeof short_scalar);
+    dsd_app_post_cmd(DSD_APP_CMD_SLOTS_ONOFF_SET, &short_scalar, sizeof short_scalar);
+    applied = dsd_app_drain_cmds(opts, state);
 
     rc |= expect_int_eq("short scalar payload commands are drained", applied, 5);
     rc |= expect_int_eq("short rigctl payload preserves bandwidth", opts->setmod_bw, 12500);
@@ -2036,8 +2037,8 @@ test_ui_malformed_payload_commands_drain_without_mutation(void) {
     state->p2_sysid = 0x222ULL;
     state->p2_cc = 0x333ULL;
     state->p2_hardset = 1;
-    ui_post_cmd(UI_CMD_P25_P2_PARAMS_SET, &short_p2, sizeof short_p2);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_P25_P2_PARAMS_SET, &short_p2, sizeof short_p2);
+    applied = dsd_app_drain_cmds(opts, state);
 
     rc |= expect_int_eq("short P25 P2 params command is drained", applied, 1);
     rc |= expect_u64_eq("short P25 P2 params preserves WACN", state->p2_wacn, 0x11111ULL);
@@ -2064,12 +2065,12 @@ test_ui_runtime_parameter_commands_clamp_and_update_state(void) {
     int32_t slot_pref = 9;
     int32_t slot_mask = 2;
 
-    ui_post_cmd(UI_CMD_RIGCTL_SET_MOD_BW, &mod_bw, sizeof mod_bw);
-    ui_post_cmd(UI_CMD_TG_HOLD_SET, &tg, sizeof tg);
-    ui_post_cmd(UI_CMD_HANGTIME_SET, &hangtime, sizeof hangtime);
-    ui_post_cmd(UI_CMD_SLOT_PREF_SET, &slot_pref, sizeof slot_pref);
-    ui_post_cmd(UI_CMD_SLOTS_ONOFF_SET, &slot_mask, sizeof slot_mask);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_RIGCTL_SET_MOD_BW, &mod_bw, sizeof mod_bw);
+    dsd_app_post_cmd(DSD_APP_CMD_TG_HOLD_SET, &tg, sizeof tg);
+    dsd_app_post_cmd(DSD_APP_CMD_HANGTIME_SET, &hangtime, sizeof hangtime);
+    dsd_app_post_cmd(DSD_APP_CMD_SLOT_PREF_SET, &slot_pref, sizeof slot_pref);
+    dsd_app_post_cmd(DSD_APP_CMD_SLOTS_ONOFF_SET, &slot_mask, sizeof slot_mask);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("runtime parameter drain count", applied, 5);
@@ -2094,9 +2095,9 @@ test_ui_output_lrrp_and_p25_parameter_commands_dispatch_through_queue(void) {
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
 
-    ui_post_cmd(UI_CMD_PULSE_OUT_SET, "speaker", sizeof "speaker");
-    ui_post_cmd(UI_CMD_PULSE_IN_SET, "microphone", sizeof "microphone");
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_PULSE_OUT_SET, "speaker", sizeof "speaker");
+    dsd_app_post_cmd(DSD_APP_CMD_PULSE_IN_SET, "microphone", sizeof "microphone");
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("Pulse I/O command drain count", applied, 2);
@@ -2106,29 +2107,29 @@ test_ui_output_lrrp_and_p25_parameter_commands_dispatch_through_queue(void) {
     rc |= expect_int_eq("Pulse input selects pulse backend", opts->audio_in_type, AUDIO_IN_PULSE);
     rc |= expect_true("Pulse input writes toast", strstr(state->ui_msg, "Pulse input") != NULL);
 
-    ui_post_cmd(UI_CMD_LRRP_SET_HOME, NULL, 0);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_LRRP_SET_HOME, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("LRRP home command drain count", applied, 1);
     rc |= expect_int_eq("LRRP home enables output", opts->lrrp_file_output, 1);
     rc |= expect_true("LRRP home stores expanded filename", strstr(opts->lrrp_out_file, "lrrp.txt") != NULL);
     rc |= expect_true("LRRP home writes toast", strstr(state->ui_msg, "LRRP output") != NULL);
 
-    ui_post_cmd(UI_CMD_LRRP_SET_DSDP, NULL, 0);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_LRRP_SET_DSDP, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("LRRP DSDPlus command drain count", applied, 1);
     rc |= expect_int_eq("LRRP DSDPlus keeps output enabled", opts->lrrp_file_output, 1);
     rc |= expect_true("LRRP DSDPlus stores standard filename", strcmp(opts->lrrp_out_file, "DSDPlus.LRRP") == 0);
 
     const char lrrp_path[] = "custom-lrrp.txt";
-    ui_post_cmd(UI_CMD_LRRP_SET_CUSTOM, lrrp_path, sizeof lrrp_path);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_LRRP_SET_CUSTOM, lrrp_path, sizeof lrrp_path);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("LRRP custom command drain count", applied, 1);
     rc |= expect_int_eq("LRRP custom enables output", opts->lrrp_file_output, 1);
     rc |= expect_true("LRRP custom stores path", strcmp(opts->lrrp_out_file, lrrp_path) == 0);
     rc |= expect_true("LRRP custom writes toast", strstr(state->ui_msg, "LRRP output") != NULL);
 
-    ui_post_cmd(UI_CMD_LRRP_DISABLE, NULL, 0);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_LRRP_DISABLE, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("LRRP disable command drain count", applied, 1);
     rc |= expect_int_eq("LRRP disable clears output flag", opts->lrrp_file_output, 0);
     rc |= expect_true("LRRP disable clears path", opts->lrrp_out_file[0] == '\0');
@@ -2139,8 +2140,8 @@ test_ui_output_lrrp_and_p25_parameter_commands_dispatch_through_queue(void) {
         uint64_t n;
     } p2 = {0x1FFFFFULL, 0x1FFFULL, 0x1FFFULL};
 
-    ui_post_cmd(UI_CMD_P25_P2_PARAMS_SET, &p2, sizeof p2);
-    applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_P25_P2_PARAMS_SET, &p2, sizeof p2);
+    applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("P25 P2 params command drain count", applied, 1);
     rc |= expect_u64_eq("P25 P2 WACN clamps", state->p2_wacn, 0xFFFFFULL);
     rc |= expect_u64_eq("P25 P2 SYSID clamps", state->p2_sysid, 0xFFFULL);
@@ -2170,8 +2171,8 @@ test_return_cc_uses_pulse_rate_not_stale_file_rate(void) {
     state->samplesPerSymbol = 20;
     state->symbolCenter = 9;
 
-    ui_post_cmd(UI_CMD_RETURN_CC, NULL, 0);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_RETURN_CC, NULL, 0);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_true("return CC recomputes FDMA timing from pulse input rate", state->samplesPerSymbol == 10);
@@ -2210,8 +2211,8 @@ test_file_config_apply_keeps_live_pulse_timing(void) {
     cfg.file_sample_rate = 48000;
     DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", wav_path);
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_true("cross-backend apply keeps pulse input live", opts->audio_in_type == AUDIO_IN_PULSE);
@@ -2269,8 +2270,8 @@ test_file_config_apply_keeps_live_socket_timing(void) {
         cfg.file_sample_rate = 96000;
         DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", wav_path);
 
-        ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-        ui_drain_cmds(opts, state);
+        dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+        dsd_app_drain_cmds(opts, state);
 
         dsdneoUserConfig snap = {0};
         dsd_snapshot_opts_to_user_config(opts, state, &snap);
@@ -2324,8 +2325,8 @@ test_tcp_hot_restart_failure_rolls_back_requested_spec_and_retries(void) {
     DSD_SNPRINTF(cfg.tcp_host, sizeof cfg.tcp_host, "%s", "new.example");
     cfg.tcp_port = 1300;
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     dsdneoUserConfig snap = {0};
     dsd_snapshot_opts_to_user_config(opts, state, &snap);
@@ -2348,8 +2349,8 @@ test_tcp_hot_restart_failure_rolls_back_requested_spec_and_retries(void) {
     g_last_tcp_connect_audio_host[0] = '\0';
     g_last_tcp_connect_audio_port = 0;
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     rc |= expect_int_eq("tcp hot restart retries after previous failure", g_tcp_connect_audio_calls, 1);
     rc |= expect_true("tcp hot restart retry keeps targeting requested host",
@@ -2412,8 +2413,8 @@ test_file_hot_swap_rebuilds_filters_when_header_matches_configured_rate(void) {
     cfg.file_sample_rate = 72000;
     DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", new_path);
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_true("file hot swap keeps WAV input active", opts->audio_in_type == AUDIO_IN_WAV);
@@ -2471,8 +2472,8 @@ test_same_path_headerless_wav_reconfig_keeps_requested_raw_rate(void) {
     cfg.file_sample_rate = 48000;
     DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", path);
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("same-path raw wav opens as raw input", opened_as_container, 0);
@@ -2517,8 +2518,8 @@ test_same_value_rtl_ppm_retry_is_republished(void) {
     cfg.rtl_bw_khz = 48;
     cfg.rtl_volume = 2;
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_true("same-value config apply restores live requested ppm", opts->rtlsdr_ppm_error == 5);
@@ -2556,8 +2557,8 @@ test_zero_rtl_ppm_apply_updates_live_request(void) {
     cfg.rtl_bw_khz = 48;
     cfg.rtl_volume = 2;
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = expect_true("zero ppm config apply updates live requested ppm", opts->rtlsdr_ppm_error == 0);
     free_test_runtime(&runtime);
@@ -2590,8 +2591,8 @@ test_omitted_rtl_ppm_apply_preserves_live_request(void) {
     cfg.rtl_bw_khz = 48;
     cfg.rtl_volume = 2;
 
-    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
-    ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_true("omitted ppm preserves live requested ppm", opts->rtlsdr_ppm_error == 9);
@@ -2628,16 +2629,16 @@ test_ui_rtl_setting_commands_stage_without_live_restart(void) {
     double sql_db = -42.0;
     int32_t vol = 8;
     int32_t on = 1;
-    ui_post_cmd(UI_CMD_RTL_SET_DEV, &dev, sizeof dev);
-    ui_post_cmd(UI_CMD_RTL_SET_GAIN, &gain, sizeof gain);
-    ui_post_cmd(UI_CMD_RTL_SET_PPM, &ppm, sizeof ppm);
-    ui_post_cmd(UI_CMD_RTL_SET_BW, &bw, sizeof bw);
-    ui_post_cmd(UI_CMD_RTL_SET_SQL_DB, &sql_db, sizeof sql_db);
-    ui_post_cmd(UI_CMD_RTL_SET_VOL_MULT, &vol, sizeof vol);
-    ui_post_cmd(UI_CMD_RTL_SET_BIAS_TEE, &on, sizeof on);
-    ui_post_cmd(UI_CMD_RTLTCP_SET_AUTOTUNE, &on, sizeof on);
-    ui_post_cmd(UI_CMD_RTL_SET_AUTO_PPM, &on, sizeof on);
-    int applied = ui_drain_cmds(opts, state);
+    dsd_app_post_cmd(DSD_APP_CMD_RTL_SET_DEV, &dev, sizeof dev);
+    dsd_app_post_cmd(DSD_APP_CMD_RTL_SET_GAIN, &gain, sizeof gain);
+    dsd_app_post_cmd(DSD_APP_CMD_RTL_SET_PPM, &ppm, sizeof ppm);
+    dsd_app_post_cmd(DSD_APP_CMD_RTL_SET_BW, &bw, sizeof bw);
+    dsd_app_post_cmd(DSD_APP_CMD_RTL_SET_SQL_DB, &sql_db, sizeof sql_db);
+    dsd_app_post_cmd(DSD_APP_CMD_RTL_SET_VOL_MULT, &vol, sizeof vol);
+    dsd_app_post_cmd(DSD_APP_CMD_RTL_SET_BIAS_TEE, &on, sizeof on);
+    dsd_app_post_cmd(DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, &on, sizeof on);
+    dsd_app_post_cmd(DSD_APP_CMD_RTL_SET_AUTO_PPM, &on, sizeof on);
+    int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
     rc |= expect_int_eq("RTL setting commands drain count", applied, 9);

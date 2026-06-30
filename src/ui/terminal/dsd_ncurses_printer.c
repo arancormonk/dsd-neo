@@ -389,7 +389,7 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         }
         printw("\n");
         /* Show compact DSP status directly above audio sections (optional) */
-        if (opts->show_dsp_panel) {
+        if (opts->frontend_display.show_dsp_panel) {
             print_dsp_status(opts, state);
         }
         /* Signal quality is shown inline above; no duplicate line here. */
@@ -897,20 +897,20 @@ ui_render_input_output_section(dsd_opts* opts, dsd_state* state) {
 static void
 ui_print_rtl_visual_aids_controls(dsd_opts* opts, int nfft) {
     /* Controls/status line: only show controls relevant to active views */
-    printw("| Const View:  %s (%c)", opts->constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
-    if (opts->constellation == 1) {
+    printw("| Const View:  %s (%c)", opts->frontend_display.constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
+    if (opts->frontend_display.constellation == 1) {
         printw("  Gate: %.02f (</>)  Norm: %s (%c)",
-               (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
-               opts->const_norm_mode ? "unit" : "radial", DSD_KEY_CONST_NORM);
+               (opts->mod_qpsk == 1) ? opts->frontend_display.const_gate_qpsk : opts->frontend_display.const_gate_other,
+               opts->frontend_display.const_norm_mode ? "unit" : "radial", DSD_KEY_CONST_NORM);
     }
-    printw("  Eye: %s (%c)", opts->eye_view ? "On" : "Off", DSD_KEY_EYE_VIEW);
-    if (opts->eye_view == 1) {
-        printw("  Uni: %s (%c) Col: %s (%c)", opts->eye_unicode ? "On" : "off", DSD_KEY_EYE_UNICODE,
-               opts->eye_color ? "On" : "Off", DSD_KEY_EYE_COLOR);
+    printw("  Eye: %s (%c)", opts->frontend_display.eye_view ? "On" : "Off", DSD_KEY_EYE_VIEW);
+    if (opts->frontend_display.eye_view == 1) {
+        printw("  Uni: %s (%c) Col: %s (%c)", opts->frontend_display.eye_unicode ? "On" : "off", DSD_KEY_EYE_UNICODE,
+               opts->frontend_display.eye_color ? "On" : "Off", DSD_KEY_EYE_COLOR);
     }
-    printw("  Hist: %s (%c)", opts->fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
-    printw("  Spec: %s (%c)", opts->spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
-    if (opts->spectrum_view == 1) {
+    printw("  Hist: %s (%c)", opts->frontend_display.fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
+    printw("  Spec: %s (%c)", opts->frontend_display.spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
+    if (opts->frontend_display.spectrum_view == 1) {
         printw("  FFT:%d (%c/%c)", nfft, DSD_KEY_SPEC_DEC, DSD_KEY_SPEC_INC);
     }
     addch('\n');
@@ -919,16 +919,16 @@ ui_print_rtl_visual_aids_controls(dsd_opts* opts, int nfft) {
 
 static void
 ui_render_rtl_visual_aid_panels(dsd_opts* opts, dsd_state* state) {
-    if (opts->constellation == 1) {
+    if (opts->frontend_display.constellation == 1) {
         print_constellation_view(opts, state);
     }
-    if (opts->eye_view == 1) {
+    if (opts->frontend_display.eye_view == 1) {
         print_eye_view(opts, state);
     }
-    if (opts->fsk_hist_view == 1) {
+    if (opts->frontend_display.fsk_hist_view == 1) {
         print_fsk_hist_view();
     }
-    if (opts->spectrum_view == 1) {
+    if (opts->frontend_display.spectrum_view == 1) {
         print_spectrum_view(opts);
     }
 }
@@ -1212,22 +1212,22 @@ ui_render_p25_metric_toggles(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
 
-    if (opts->show_p25_metrics == 1) {
+    if (opts->frontend_display.show_p25_metrics == 1) {
         ui_print_header("P25 Metrics");
         (void)ui_print_p25_metrics(opts, state);
         ui_print_hr();
     }
-    if (opts->show_p25_cc_candidates == 1 && opts->p25_trunk == 1) {
+    if (opts->frontend_display.show_p25_cc_candidates == 1 && opts->p25_trunk == 1) {
         ui_print_header("P25 CC Candidates");
         ui_print_p25_cc_candidates(opts, state);
         ui_print_hr();
     }
-    if (opts->show_p25_neighbors == 1) {
+    if (opts->frontend_display.show_p25_neighbors == 1) {
         ui_print_header("P25 Neighbors");
         ui_print_p25_neighbors(opts, state);
         ui_print_hr();
     }
-    if (opts->show_p25_iden_plan == 1) {
+    if (opts->frontend_display.show_p25_iden_plan == 1) {
         ui_print_header("P25 IDEN Plan");
         ui_print_p25_iden_plan(opts, state);
         ui_print_hr();
@@ -1238,7 +1238,7 @@ static void
 ui_render_p25_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
     int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
     int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
-    if (!(opts->show_p25_affiliations == 1 && (is_p25p1 || is_p25p2))) {
+    if (!(opts->frontend_display.show_p25_affiliations == 1 && (is_p25p1 || is_p25p2))) {
         return;
     }
 
@@ -1287,7 +1287,7 @@ static void
 ui_render_p25_group_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
     int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
     int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
-    if (!(opts->show_p25_group_affiliations == 1 && (is_p25p1 || is_p25p2))) {
+    if (!(opts->frontend_display.show_p25_group_affiliations == 1 && (is_p25p1 || is_p25p2))) {
         return;
     }
 
@@ -2493,11 +2493,11 @@ ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
 static void
 ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
     char callsign[7] = {0};
-    if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+    if (opts->frontend_display.show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
         p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
     }
     printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-    if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
+    if (opts->frontend_display.show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
         printw(" [%s]", callsign);
     }
     printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
@@ -2531,11 +2531,11 @@ ui_render_p25p2_parameter_status(const dsd_state* state) {
 static void
 ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
     char callsign[7] = {0};
-    if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+    if (opts->frontend_display.show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
         p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
     }
     printw("P25p2  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-    if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
+    if (opts->frontend_display.show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
         printw(" [%s]", callsign);
     }
     printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
@@ -2892,7 +2892,7 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
 
     // Render learned LCNs just under the Call Info section when trunking (toggle in menu)
-    if (opts->show_channels == 1) {
+    if (opts->frontend_display.show_channels == 1) {
         ui_print_learned_lcns(opts, state);
         // fence bottom only when Channels are shown
         ui_print_hr();
@@ -2914,7 +2914,7 @@ ui_ncurses_printer_impl(dsd_opts* opts, dsd_state* state) {
        context; otherwise publish snapshots and request a redraw. */
     if (!ui_is_thread_context()) {
         // Publish snapshots for the UI thread to consume and request a redraw
-        ui_publish_both_and_redraw(opts, state);
+        dsd_telemetry_publish_both_and_redraw(opts, state);
         return;
     }
     int level = 0;

@@ -332,9 +332,9 @@ test_env_config_display_and_key_labels(void) {
     g_cfg.mt_enable = 1;
     rc |= expect_str("mt on", lbl_mt(NULL, b, sizeof(b)), "Intra-block MT: On");
 
-    opts.show_p25_metrics = 1;
-    opts.show_p25_group_affiliations = 1;
-    opts.show_channels = 1;
+    opts.frontend_display.show_p25_metrics = 1;
+    opts.frontend_display.show_p25_group_affiliations = 1;
+    opts.frontend_display.show_channels = 1;
     rc |= expect_str("show p25 metrics", lbl_ui_p25_metrics(&ctx, b, sizeof(b)), "Show P25 Metrics [On]");
     rc |= expect_str("show p25 affiliations off", lbl_ui_p25_affil(&ctx, b, sizeof(b)), "Show P25 Affiliations [Off]");
     rc |=

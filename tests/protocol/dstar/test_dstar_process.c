@@ -98,7 +98,7 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
 }
 
 void
-ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
+dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
     ui_calls++;

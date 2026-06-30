@@ -250,7 +250,7 @@ dmr_ms_advance_voice_cycle(dsd_opts* opts, dsd_state* state, uint8_t* vc) {
 
     skipDibit(opts, state, 144); // skip to next TDMA channel
     if (dsd_opts_frontend_active(opts)) {
-        ui_publish_both_and_redraw(opts, state);
+        dsd_telemetry_publish_both_and_redraw(opts, state);
     }
 
     watchdog_event_history(opts, state, 0);

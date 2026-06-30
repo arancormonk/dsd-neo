@@ -17,7 +17,6 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
-#include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_cmd.h>
 #include <sndfile.h>
 #include <stdarg.h>
@@ -38,7 +37,7 @@
 typedef struct {
     int id;
     size_t n;
-    uint8_t data[UI_CMD_DATA_MAX];
+    uint8_t data[DSD_APP_CMD_DATA_MAX];
     int calls;
 } CmdCapture;
 
@@ -189,7 +188,7 @@ free_pulse_ctx(PulseSelCtx* pctx) {
 }
 
 int
-ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
+dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     g_cmd.id = cmd_id;
     g_cmd.n = payload_sz;
     if (payload_sz > sizeof(g_cmd.data)) {
@@ -712,7 +711,7 @@ test_simple_commands_and_prompts(void) {
 
     reset_capture();
     act_toggle_invert(NULL);
-    rc |= expect_int("invert command", g_cmd.id, UI_CMD_INVERT_TOGGLE);
+    rc |= expect_int("invert command", g_cmd.id, DSD_APP_CMD_INVERT_TOGGLE);
     act_exit(NULL);
     rc |= expect_int("exit flag", exitflag, 1);
 
@@ -792,7 +791,7 @@ test_config_profile_and_env_actions(void) {
     act_tcp_waitall(&ctx);
     rc |= expect_str("tcp waitall env", g_env_name, "DSD_NEO_TCP_WAITALL");
     rc |= expect_str("tcp waitall value", g_env_value, "0");
-    rc |= expect_int("tcp waitall restart", g_cmd.id, UI_CMD_RTL_RESTART);
+    rc |= expect_int("tcp waitall restart", g_cmd.id, DSD_APP_CMD_RTL_RESTART);
 
     reset_capture();
     act_auto_ppm_zerohz_prompt(&ctx);
@@ -829,20 +828,20 @@ test_io_actions_and_choosers(void) {
     rc |= expect_int("call alert choice count", g_chooser.n, 8);
     assert(g_chooser.on_done != NULL);
     g_chooser.on_done(g_chooser.user, 7);
-    rc |= expect_int("call alert command", g_cmd.id, UI_CMD_CALL_ALERT_EVENTS_SET);
+    rc |= expect_int("call alert command", g_cmd.id, DSD_APP_CMD_CALL_ALERT_EVENTS_SET);
     rc |= expect_int("call alert all mask", g_cmd.data[0], DSD_CALL_ALERT_EVENT_ALL);
 
     reset_capture();
     opts.dmr_stereo_wav = 0;
     opts.wav_out_f = NULL;
     io_enable_per_call_wav(&ctx);
-    rc |= expect_int("per-call wav start command", g_cmd.id, UI_CMD_WAV_START);
+    rc |= expect_int("per-call wav start command", g_cmd.id, DSD_APP_CMD_WAV_START);
     rc |= expect_int("per-call wav flag", opts.dmr_stereo_wav, 1);
 
     reset_capture();
     opts.wav_out_f = (SNDFILE*)0x1;
     io_enable_per_call_wav(&ctx);
-    rc |= expect_int("per-call wav stop command", g_cmd.id, UI_CMD_WAV_STOP);
+    rc |= expect_int("per-call wav stop command", g_cmd.id, DSD_APP_CMD_WAV_STOP);
     rc |= expect_int("per-call wav cleared", opts.dmr_stereo_wav, 0);
 
     reset_capture();
@@ -881,7 +880,7 @@ test_io_actions_and_choosers(void) {
 
     reset_capture();
     switch_out_pulse(&ctx);
-    rc |= expect_int("pulse out command", g_cmd.id, UI_CMD_PULSE_OUT_SET);
+    rc |= expect_int("pulse out command", g_cmd.id, DSD_APP_CMD_PULSE_OUT_SET);
     rc |= expect_str("pulse out payload", (const char*)g_cmd.data, "pulse0");
 
     return rc;
@@ -920,7 +919,7 @@ test_key_lrrp_and_display_actions(void) {
 
     reset_capture();
     lr_home(&ctx);
-    rc |= expect_int("lrrp home command", g_cmd.id, UI_CMD_LRRP_SET_HOME);
+    rc |= expect_int("lrrp home command", g_cmd.id, DSD_APP_CMD_LRRP_SET_HOME);
 
     reset_capture();
     act_m17_user_data(&ctx);
@@ -929,39 +928,39 @@ test_key_lrrp_and_display_actions(void) {
 
     reset_capture();
     act_toggle_ui_p25_neighbors(&ctx);
-    rc |= expect_int("ui neighbors command", g_cmd.id, UI_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE);
+    rc |= expect_int("ui neighbors command", g_cmd.id, DSD_APP_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE);
 
     reset_capture();
     act_toggle_ui_p25_metrics(&ctx);
-    rc |= expect_int("ui metrics command", g_cmd.id, UI_CMD_UI_SHOW_P25_METRICS_TOGGLE);
+    rc |= expect_int("ui metrics command", g_cmd.id, DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE);
 
     reset_capture();
     act_toggle_ui_p25_affil(&ctx);
-    rc |= expect_int("ui affiliation command", g_cmd.id, UI_CMD_UI_SHOW_P25_AFFIL_TOGGLE);
+    rc |= expect_int("ui affiliation command", g_cmd.id, DSD_APP_CMD_UI_SHOW_P25_AFFIL_TOGGLE);
 
     reset_capture();
     act_toggle_ui_p25_ga(&ctx);
-    rc |= expect_int("ui grant activity command", g_cmd.id, UI_CMD_P25_GA_TOGGLE);
+    rc |= expect_int("ui grant activity command", g_cmd.id, DSD_APP_CMD_P25_GA_TOGGLE);
 
     reset_capture();
     act_toggle_ui_p25_iden(&ctx);
-    rc |= expect_int("ui iden command", g_cmd.id, UI_CMD_UI_SHOW_P25_IDEN_TOGGLE);
+    rc |= expect_int("ui iden command", g_cmd.id, DSD_APP_CMD_UI_SHOW_P25_IDEN_TOGGLE);
 
     reset_capture();
     act_toggle_ui_p25_ccc(&ctx);
-    rc |= expect_int("ui ccc command", g_cmd.id, UI_CMD_UI_SHOW_P25_CCC_TOGGLE);
+    rc |= expect_int("ui ccc command", g_cmd.id, DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE);
 
     reset_capture();
     act_toggle_ui_channels(&ctx);
-    rc |= expect_int("ui channels command", g_cmd.id, UI_CMD_UI_SHOW_CHANNELS_TOGGLE);
+    rc |= expect_int("ui channels command", g_cmd.id, DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE);
 
     reset_capture();
     act_toggle_ui_p25_callsign(&ctx);
-    rc |= expect_int("ui callsign command", g_cmd.id, UI_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE);
+    rc |= expect_int("ui callsign command", g_cmd.id, DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE);
 
     reset_capture();
     switch_to_pulse(&ctx);
-    rc |= expect_int("switch pulse command", g_cmd.id, UI_CMD_INPUT_SET_PULSE);
+    rc |= expect_int("switch pulse command", g_cmd.id, DSD_APP_CMD_INPUT_SET_PULSE);
 
     reset_capture();
     switch_to_udp(&ctx);
@@ -986,15 +985,15 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     act_toggle_payload(NULL);
-    rc |= expect_int("payload toggle command", g_cmd.id, UI_CMD_PAYLOAD_TOGGLE);
+    rc |= expect_int("payload toggle command", g_cmd.id, DSD_APP_CMD_PAYLOAD_TOGGLE);
 
     reset_capture();
     act_reset_eh(NULL);
-    rc |= expect_int("event history reset command", g_cmd.id, UI_CMD_EH_RESET);
+    rc |= expect_int("event history reset command", g_cmd.id, DSD_APP_CMD_EH_RESET);
 
     reset_capture();
     act_event_log_disable(NULL);
-    rc |= expect_int("event log disable command", g_cmd.id, UI_CMD_EVENT_LOG_DISABLE);
+    rc |= expect_int("event log disable command", g_cmd.id, DSD_APP_CMD_EVENT_LOG_DISABLE);
 
     reset_capture();
     act_raw_wav(&ctx);
@@ -1056,49 +1055,49 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     act_crc_relax(NULL);
-    rc |= expect_int("crc relax command", g_cmd.id, UI_CMD_CRC_RELAX_TOGGLE);
+    rc |= expect_int("crc relax command", g_cmd.id, DSD_APP_CMD_CRC_RELAX_TOGGLE);
 
     reset_capture();
     act_trunk_toggle(NULL);
-    rc |= expect_int("trunk toggle command", g_cmd.id, UI_CMD_TRUNK_TOGGLE);
+    rc |= expect_int("trunk toggle command", g_cmd.id, DSD_APP_CMD_TRUNK_TOGGLE);
     rc |= expect_str("trunk toggle status", g_status, "Trunking toggle requested...");
 
     reset_capture();
     act_scan_toggle(NULL);
-    rc |= expect_int("scanner toggle command", g_cmd.id, UI_CMD_SCANNER_TOGGLE);
+    rc |= expect_int("scanner toggle command", g_cmd.id, DSD_APP_CMD_SCANNER_TOGGLE);
     rc |= expect_str("scanner toggle status", g_status, "Scanner toggle requested...");
 
     reset_capture();
     act_lcw_toggle(NULL);
-    rc |= expect_int("lcw toggle command", g_cmd.id, UI_CMD_LCW_RETUNE_TOGGLE);
+    rc |= expect_int("lcw toggle command", g_cmd.id, DSD_APP_CMD_LCW_RETUNE_TOGGLE);
 
     reset_capture();
     act_p25_enc_lockout(NULL);
-    rc |= expect_int("p25 enc lockout command", g_cmd.id, UI_CMD_TRUNK_ENC_TOGGLE);
+    rc |= expect_int("p25 enc lockout command", g_cmd.id, DSD_APP_CMD_TRUNK_ENC_TOGGLE);
 
     reset_capture();
     act_allow_toggle(NULL);
-    rc |= expect_int("allow toggle command", g_cmd.id, UI_CMD_TRUNK_WLIST_TOGGLE);
+    rc |= expect_int("allow toggle command", g_cmd.id, DSD_APP_CMD_TRUNK_WLIST_TOGGLE);
 
     reset_capture();
     act_tune_group(NULL);
-    rc |= expect_int("group tuning command", g_cmd.id, UI_CMD_TRUNK_GROUP_TOGGLE);
+    rc |= expect_int("group tuning command", g_cmd.id, DSD_APP_CMD_TRUNK_GROUP_TOGGLE);
 
     reset_capture();
     act_tune_priv(NULL);
-    rc |= expect_int("private tuning command", g_cmd.id, UI_CMD_TRUNK_PRIV_TOGGLE);
+    rc |= expect_int("private tuning command", g_cmd.id, DSD_APP_CMD_TRUNK_PRIV_TOGGLE);
 
     reset_capture();
     act_tune_data(NULL);
-    rc |= expect_int("data tuning command", g_cmd.id, UI_CMD_TRUNK_DATA_TOGGLE);
+    rc |= expect_int("data tuning command", g_cmd.id, DSD_APP_CMD_TRUNK_DATA_TOGGLE);
 
     reset_capture();
     act_rev_mute(NULL);
-    rc |= expect_int("reverse mute command", g_cmd.id, UI_CMD_REVERSE_MUTE_TOGGLE);
+    rc |= expect_int("reverse mute command", g_cmd.id, DSD_APP_CMD_REVERSE_MUTE_TOGGLE);
 
     reset_capture();
     act_dmr_le(NULL);
-    rc |= expect_int("dmr late entry command", g_cmd.id, UI_CMD_DMR_LE_TOGGLE);
+    rc |= expect_int("dmr late entry command", g_cmd.id, DSD_APP_CMD_DMR_LE_TOGGLE);
 
     reset_capture();
     key_scrambler(&ctx);
@@ -1106,7 +1105,7 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     key_force_bp(NULL);
-    rc |= expect_int("force basic privacy command", g_cmd.id, UI_CMD_FORCE_PRIV_TOGGLE);
+    rc |= expect_int("force basic privacy command", g_cmd.id, DSD_APP_CMD_FORCE_PRIV_TOGGLE);
 
     reset_capture();
     key_rc4des(&ctx);
@@ -1115,7 +1114,7 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     lr_dsdp(NULL);
-    rc |= expect_int("lrrp dsdp command", g_cmd.id, UI_CMD_LRRP_SET_DSDP);
+    rc |= expect_int("lrrp dsdp command", g_cmd.id, DSD_APP_CMD_LRRP_SET_DSDP);
 
     reset_capture();
     lr_custom(&ctx);
@@ -1123,7 +1122,7 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     lr_off(NULL);
-    rc |= expect_int("lrrp disable command", g_cmd.id, UI_CMD_LRRP_DISABLE);
+    rc |= expect_int("lrrp disable command", g_cmd.id, DSD_APP_CMD_LRRP_DISABLE);
 
     reset_capture();
     act_set_input_warn(&ctx);
@@ -1268,31 +1267,31 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     inv_x2(NULL);
-    rc |= expect_int("x2 inversion command", g_cmd.id, UI_CMD_INV_X2_TOGGLE);
+    rc |= expect_int("x2 inversion command", g_cmd.id, DSD_APP_CMD_INV_X2_TOGGLE);
 
     reset_capture();
     inv_dmr(NULL);
-    rc |= expect_int("dmr inversion command", g_cmd.id, UI_CMD_INV_DMR_TOGGLE);
+    rc |= expect_int("dmr inversion command", g_cmd.id, DSD_APP_CMD_INV_DMR_TOGGLE);
 
     reset_capture();
     inv_dpmr(NULL);
-    rc |= expect_int("dpmr inversion command", g_cmd.id, UI_CMD_INV_DPMR_TOGGLE);
+    rc |= expect_int("dpmr inversion command", g_cmd.id, DSD_APP_CMD_INV_DPMR_TOGGLE);
 
     reset_capture();
     inv_m17(NULL);
-    rc |= expect_int("m17 inversion command", g_cmd.id, UI_CMD_INV_M17_TOGGLE);
+    rc |= expect_int("m17 inversion command", g_cmd.id, DSD_APP_CMD_INV_M17_TOGGLE);
 
     reset_capture();
     io_replay_last_symbol_bin(NULL);
-    rc |= expect_int("replay last command", g_cmd.id, UI_CMD_REPLAY_LAST);
+    rc |= expect_int("replay last command", g_cmd.id, DSD_APP_CMD_REPLAY_LAST);
 
     reset_capture();
     io_stop_symbol_playback(NULL);
-    rc |= expect_int("stop playback command", g_cmd.id, UI_CMD_STOP_PLAYBACK);
+    rc |= expect_int("stop playback command", g_cmd.id, DSD_APP_CMD_STOP_PLAYBACK);
 
     reset_capture();
     io_stop_symbol_saving(NULL);
-    rc |= expect_int("stop symbol capture command", g_cmd.id, UI_CMD_SYMCAP_STOP);
+    rc |= expect_int("stop symbol capture command", g_cmd.id, DSD_APP_CMD_SYMCAP_STOP);
 
     reset_capture();
     io_save_symbol_capture(&ctx);
@@ -1304,15 +1303,15 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     io_toggle_mute_enc(NULL);
-    rc |= expect_int("all mutes toggle command", g_cmd.id, UI_CMD_ALL_MUTES_TOGGLE);
+    rc |= expect_int("all mutes toggle command", g_cmd.id, DSD_APP_CMD_ALL_MUTES_TOGGLE);
 
     reset_capture();
     io_toggle_call_alert(NULL);
-    rc |= expect_int("call alert toggle command", g_cmd.id, UI_CMD_CALL_ALERT_TOGGLE);
+    rc |= expect_int("call alert toggle command", g_cmd.id, DSD_APP_CMD_CALL_ALERT_TOGGLE);
 
     reset_capture();
     io_toggle_cc_candidates(NULL);
-    rc |= expect_int("cc candidates command", g_cmd.id, UI_CMD_P25_CC_CAND_TOGGLE);
+    rc |= expect_int("cc candidates command", g_cmd.id, DSD_APP_CMD_P25_CC_CAND_TOGGLE);
 
     reset_capture();
     io_set_gain_dig(&ctx);
@@ -1324,11 +1323,11 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     io_toggle_monitor(NULL);
-    rc |= expect_int("input monitor command", g_cmd.id, UI_CMD_INPUT_MONITOR_TOGGLE);
+    rc |= expect_int("input monitor command", g_cmd.id, DSD_APP_CMD_INPUT_MONITOR_TOGGLE);
 
     reset_capture();
     io_toggle_cosine(NULL);
-    rc |= expect_int("cosine filter command", g_cmd.id, UI_CMD_COSINE_FILTER_TOGGLE);
+    rc |= expect_int("cosine filter command", g_cmd.id, DSD_APP_CMD_COSINE_FILTER_TOGGLE);
 
     reset_capture();
     opts.input_volume_multiplier = 0;
@@ -1362,7 +1361,7 @@ test_additional_prompt_and_toggle_actions(void) {
 
     reset_capture();
     switch_out_toggle_mute(NULL);
-    rc |= expect_int("output mute toggle command", g_cmd.id, UI_CMD_TOGGLE_MUTE);
+    rc |= expect_int("output mute toggle command", g_cmd.id, DSD_APP_CMD_TOGGLE_MUTE);
 
     return rc;
 }

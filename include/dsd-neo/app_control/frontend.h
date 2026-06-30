@@ -26,8 +26,7 @@ extern "C" {
 
 typedef struct dsd_frontend_status {
     dsd_frontend_kind frontend_kind;
-    uint8_t terminal_compact;
-    uint8_t terminal_history;
+    dsd_frontend_display_opts frontend_display;
 
     int audio_in_type;
     int audio_out_type;

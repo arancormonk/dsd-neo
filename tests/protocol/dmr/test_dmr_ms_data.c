@@ -185,7 +185,7 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
+dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
     g_ui_calls++;

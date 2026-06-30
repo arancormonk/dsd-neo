@@ -351,7 +351,21 @@ cli_parse_frontend_kind(const char* in, dsd_frontend_kind* out) {
         *out = DSD_FRONTEND_TERMINAL;
         return 1;
     }
+    if (dsd_strcasecmp(in, "native") == 0) {
+        *out = DSD_FRONTEND_NATIVE;
+        return 1;
+    }
     return 0;
+}
+
+static const char*
+cli_frontend_kind_name(dsd_frontend_kind frontend) {
+    switch (frontend) {
+        case DSD_FRONTEND_TERMINAL: return "terminal";
+        case DSD_FRONTEND_NATIVE: return "native";
+        case DSD_FRONTEND_NONE:
+        default: return "none";
+    }
 }
 
 static int
@@ -850,7 +864,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         }                                                                                                              \
         if (strcmp(argv[i], "--frontend") == 0) {                                                                      \
             if (i + 1 >= argc) {                                                                                       \
-                LOG_ERROR("--frontend requires a value (none|terminal)\n");                                            \
+                LOG_ERROR("--frontend requires a value (none|terminal|native)\n");                                     \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
@@ -1245,12 +1259,12 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
     if (frontend_cli) {                                                                                                \
         dsd_frontend_kind frontend = DSD_FRONTEND_NONE;                                                                \
         if (!cli_parse_frontend_kind(frontend_cli, &frontend)) {                                                       \
-            LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal)\n", frontend_cli);                     \
+            LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal|native)\n", frontend_cli);              \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
         opts->frontend_kind = frontend;                                                                                \
-        LOG_NOTICE("Frontend: %s\n", frontend == DSD_FRONTEND_TERMINAL ? "terminal" : "none");                         \
+        LOG_NOTICE("Frontend: %s\n", cli_frontend_kind_name(frontend));                                                \
     }                                                                                                                  \
                                                                                                                        \
     /* Apply input volume and warn threshold */                                                                        \

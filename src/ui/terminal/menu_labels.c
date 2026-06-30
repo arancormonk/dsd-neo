@@ -775,14 +775,16 @@ lbl_p25_p1_err_sec(const void* v, char* b, size_t n) {
 const char*
 lbl_ui_p25_metrics(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 Metrics [%s]", (c && c->opts && c->opts->show_p25_metrics) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 Metrics [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_metrics) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_p25_affil(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 Affiliations [%s]", (c && c->opts && c->opts->show_p25_affiliations) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 Affiliations [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_affiliations) ? "On" : "Off");
     return b;
 }
 
@@ -790,35 +792,38 @@ const char*
 lbl_ui_p25_ga(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     DSD_SNPRINTF(b, n, "Show P25 Group Affiliation [%s]",
-                 (c && c->opts && c->opts->show_p25_group_affiliations) ? "On" : "Off");
+                 (c && c->opts && c->opts->frontend_display.show_p25_group_affiliations) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_p25_neighbors(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 Neighbors [%s]", (c && c->opts && c->opts->show_p25_neighbors) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 Neighbors [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_neighbors) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_p25_iden(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 IDEN Plan [%s]", (c && c->opts && c->opts->show_p25_iden_plan) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 IDEN Plan [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_iden_plan) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_p25_ccc(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 CC Candidates [%s]", (c && c->opts && c->opts->show_p25_cc_candidates) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 CC Candidates [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_cc_candidates) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_channels(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show Channels [%s]", (c && c->opts && c->opts->show_channels) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show Channels [%s]", (c && c->opts && c->opts->frontend_display.show_channels) ? "On" : "Off");
     return b;
 }
 
@@ -826,7 +831,7 @@ const char*
 lbl_ui_p25_callsign(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     DSD_SNPRINTF(b, n, "Show P25 Callsign Decode [%s]",
-                 (c && c->opts && c->opts->show_p25_callsign_decode) ? "On" : "Off");
+                 (c && c->opts && c->opts->frontend_display.show_p25_callsign_decode) ? "On" : "Off");
     return b;
 }
 
@@ -935,7 +940,8 @@ lbl_cqpsk_timing_bias(const void* v, char* b, size_t n) {
 const char*
 lbl_dsp_panel(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show DSP Panel [%s]", (c && c->opts && c->opts->show_dsp_panel) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show DSP Panel [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_dsp_panel) ? "On" : "Off");
     return b;
 }
 

@@ -703,7 +703,7 @@ run_dmr_bs_post_skip(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     }
 
     if (dsd_opts_frontend_active(opts)) {
-        ui_publish_both_and_redraw(opts, state);
+        dsd_telemetry_publish_both_and_redraw(opts, state);
     }
 
     watchdog_event_history(opts, state, 0);

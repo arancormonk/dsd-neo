@@ -51,23 +51,23 @@ init_opts_display_and_audio_defaults(dsd_opts* opts) {
     opts->mbe_in_f = NULL;
     opts->errorbars = 1;
     opts->datascope = 0;
-    opts->constellation = 0;
-    opts->const_gate_qpsk = 0.25f;
-    opts->const_gate_other = 0.05f;
-    opts->const_norm_mode = 0; // default: radial percentile normalization
-    opts->eye_view = 0;
-    opts->fsk_hist_view = 0;
-    opts->eye_unicode = 1;                //default On for clearer rendering
-    opts->eye_color = 1;                  //default On when terminal supports color
-    opts->show_dsp_panel = 0;             // hide compact DSP panel by default
-    opts->show_p25_metrics = 0;           // hide P25 metrics by default
-    opts->show_p25_neighbors = 0;         // hide P25 Neighbors by default
-    opts->show_p25_iden_plan = 0;         // hide P25 IDEN Plan by default
-    opts->show_p25_cc_candidates = 0;     // hide P25 CC Candidates by default
-    opts->show_p25_callsign_decode = 0;   // hide P25 callsign decode by default (many false positives)
-    opts->show_keys = 0;                  // redact radio keys/keystreams unless CLI explicitly opts in
-    opts->p25_afc_status_gate_enable = 0; // advisory by default; status-derived direction is not always reliable
-    opts->show_channels = 0;              // hide Channels section by default
+    opts->frontend_display.constellation = 0;
+    opts->frontend_display.const_gate_qpsk = 0.25f;
+    opts->frontend_display.const_gate_other = 0.05f;
+    opts->frontend_display.const_norm_mode = 0; // default: radial percentile normalization
+    opts->frontend_display.eye_view = 0;
+    opts->frontend_display.fsk_hist_view = 0;
+    opts->frontend_display.eye_unicode = 1;              //default On for clearer rendering
+    opts->frontend_display.eye_color = 1;                //default On when terminal supports color
+    opts->frontend_display.show_dsp_panel = 0;           // hide compact DSP panel by default
+    opts->frontend_display.show_p25_metrics = 0;         // hide P25 metrics by default
+    opts->frontend_display.show_p25_neighbors = 0;       // hide P25 Neighbors by default
+    opts->frontend_display.show_p25_iden_plan = 0;       // hide P25 IDEN Plan by default
+    opts->frontend_display.show_p25_cc_candidates = 0;   // hide P25 CC Candidates by default
+    opts->frontend_display.show_p25_callsign_decode = 0; // hide P25 callsign decode by default (many false positives)
+    opts->show_keys = 0;                                 // redact radio keys/keystreams unless CLI explicitly opts in
+    opts->p25_afc_status_gate_enable = 0;     // advisory by default; status-derived direction is not always reliable
+    opts->frontend_display.show_channels = 0; // hide Channels section by default
     opts->symboltiming = 0;
     opts->verbose = 2;
     opts->p25enc = 0;
@@ -230,10 +230,10 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
     opts->pulse_flush = 1; //set 0 to flush, 1 for flushed
     opts->frontend_kind = DSD_FRONTEND_NONE;
-    opts->terminal_compact = 0;
-    opts->terminal_history = 1;
+    opts->frontend_display.terminal_compact = 0;
+    opts->frontend_display.terminal_history = 1;
 #ifdef LIMAZULUTWEAKS
-    opts->terminal_compact = 1;
+    opts->frontend_display.terminal_compact = 1;
 #endif
     opts->payload = 0;
     opts->inverted_dpmr = 0;

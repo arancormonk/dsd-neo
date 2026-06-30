@@ -661,6 +661,7 @@ static const char*
 frontend_kind_to_ini_name(dsd_frontend_kind frontend) {
     switch (frontend) {
         case DSD_FRONTEND_TERMINAL: return "terminal";
+        case DSD_FRONTEND_NATIVE: return "native";
         case DSD_FRONTEND_NONE:
         default: return "none";
     }

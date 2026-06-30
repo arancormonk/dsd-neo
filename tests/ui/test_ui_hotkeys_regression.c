@@ -48,7 +48,7 @@ static int g_menu_last_key = ERR;
 static int g_menu_open_async_calls = 0;
 
 int
-ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT(misc-use-internal-linkage)
+dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT(misc-use-internal-linkage)
     g_cap.id = cmd_id;
     g_cap.n = payload_sz;
     if (payload_sz > sizeof(g_cap.data)) {
@@ -64,7 +64,7 @@ ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT(misc
 }
 
 void
-ui_request_redraw(void) { // NOLINT(misc-use-internal-linkage)
+dsd_telemetry_request_redraw(void) { // NOLINT(misc-use-internal-linkage)
     g_redraw_calls++;
 }
 
@@ -197,7 +197,7 @@ main(void) {
 
     /* 'h' must cycle immediately in UI thread (no command queue dependency). */
     cap_reset();
-    opts->terminal_history = 1;
+    opts->frontend_display.terminal_history = 1;
     assert(ncurses_input_handler(opts, state, DSD_KEY_HISTORY) == 1);
     assert(ui_history_get_mode() == 2);
     assert(g_cap.calls == 0);
@@ -212,24 +212,24 @@ main(void) {
     /* Delta hotkeys should post signed/floating payloads immediately. */
     cap_reset();
     assert(ncurses_input_handler(opts, state, DSD_KEY_GAIN_PLUS) == 1);
-    assert(g_cap.id == UI_CMD_GAIN_DELTA);
+    assert(g_cap.id == DSD_APP_CMD_GAIN_DELTA);
     assert(g_cap.n == sizeof(int32_t));
     assert(cap_i32() == 1);
 
     cap_reset();
     assert(ncurses_input_handler(opts, state, DSD_KEY_AGAIN_MINUS) == 1);
-    assert(g_cap.id == UI_CMD_AGAIN_DELTA);
+    assert(g_cap.id == DSD_APP_CMD_AGAIN_DELTA);
     assert(cap_i32() == -1);
 
     cap_reset();
     assert(ncurses_input_handler(opts, state, DSD_KEY_CONST_GATE_DEC) == 1);
-    assert(g_cap.id == UI_CMD_CONST_GATE_DELTA);
+    assert(g_cap.id == DSD_APP_CMD_CONST_GATE_DELTA);
     assert(g_cap.n == sizeof(float));
     assert(cap_f32() < -0.019f && cap_f32() > -0.021f);
 
     cap_reset();
     assert(ncurses_input_handler(opts, state, DSD_KEY_PPM_DOWN) == 1);
-    assert(g_cap.id == UI_CMD_PPM_DELTA);
+    assert(g_cap.id == DSD_APP_CMD_PPM_DELTA);
     assert(cap_i32() == -1);
 
     /* 'k' should set hold from slot-1 TG when no hold is active. */
@@ -241,7 +241,7 @@ main(void) {
     opts->frame_provoice = 0;
     assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD1) == 1);
     assert(g_cap.calls == 1);
-    assert(g_cap.id == UI_CMD_TG_HOLD_SET);
+    assert(g_cap.id == DSD_APP_CMD_TG_HOLD_SET);
     assert(g_cap.n == sizeof(uint32_t));
     assert(cap_u32() == 1001U);
 
@@ -250,7 +250,7 @@ main(void) {
     state->tg_hold = 4242;
     state->lasttg = 9999;
     assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD1) == 1);
-    assert(g_cap.id == UI_CMD_TG_HOLD_SET);
+    assert(g_cap.id == DSD_APP_CMD_TG_HOLD_SET);
     assert(cap_u32() == 0U);
 
     /* 'l' should set hold from slot-2 TG when no hold is active. */
@@ -258,7 +258,7 @@ main(void) {
     state->tg_hold = 0;
     state->lasttgR = 2002;
     assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD2) == 1);
-    assert(g_cap.id == UI_CMD_TG_HOLD_SET);
+    assert(g_cap.id == DSD_APP_CMD_TG_HOLD_SET);
     assert(cap_u32() == 2002U);
 
     /* NXDN fallback path for slot-1 hold when DMR/P25 TG is absent. */
@@ -270,7 +270,7 @@ main(void) {
     opts->frame_nxdn96 = 0;
     opts->frame_provoice = 0;
     assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD1) == 1);
-    assert(g_cap.id == UI_CMD_TG_HOLD_SET);
+    assert(g_cap.id == DSD_APP_CMD_TG_HOLD_SET);
     assert(cap_u32() == 3003U);
 
     /* ProVoice fallback path for slot-2 hold when TG is absent. */
@@ -283,26 +283,26 @@ main(void) {
     opts->frame_nxdn96 = 0;
     opts->frame_provoice = 1;
     assert(ncurses_input_handler(opts, state, DSD_KEY_TG_HOLD2) == 1);
-    assert(g_cap.id == UI_CMD_TG_HOLD_SET);
+    assert(g_cap.id == DSD_APP_CMD_TG_HOLD_SET);
     assert(cap_u32() == 4004U);
 
     /* Crypto-affecting legacy hotkeys should post the expected command intents. */
     cap_reset();
     assert(ncurses_input_handler(opts, state, DSD_KEY_FORCE_PRIV) == 1);
     assert(g_cap.calls == 1);
-    assert(g_cap.id == UI_CMD_FORCE_PRIV_TOGGLE);
+    assert(g_cap.id == DSD_APP_CMD_FORCE_PRIV_TOGGLE);
     assert(g_cap.n == 0);
 
     cap_reset();
     assert(ncurses_input_handler(opts, state, '6') == 1);
     assert(g_cap.calls == 1);
-    assert(g_cap.id == UI_CMD_FORCE_RC4_TOGGLE);
+    assert(g_cap.id == DSD_APP_CMD_FORCE_RC4_TOGGLE);
     assert(g_cap.n == 0);
 
     cap_reset();
     assert(ncurses_input_handler(opts, state, DSD_KEY_TRUNK_ENC) == 1);
     assert(g_cap.calls == 1);
-    assert(g_cap.id == UI_CMD_TRUNK_ENC_TOGGLE);
+    assert(g_cap.id == DSD_APP_CMD_TRUNK_ENC_TOGGLE);
     assert(g_cap.n == 0);
 
     /* Enter opens the menu only when the M17 encoder is not active. */
@@ -322,25 +322,25 @@ main(void) {
     cap_reset();
     opts->m17encoder = 0;
     assert(ncurses_input_handler(opts, state, DSD_KEY_EH_TOGGLE) == 1);
-    assert(g_cap.id == UI_CMD_EH_TOGGLE_SLOT);
+    assert(g_cap.id == DSD_APP_CMD_EH_TOGGLE_SLOT);
     assert(g_cap.n == 0);
 
     cap_reset();
     opts->m17encoder = 1;
     assert(ncurses_input_handler(opts, state, DSD_KEY_EH_TOGGLE) == 1);
-    assert(g_cap.id == UI_CMD_M17_TX_TOGGLE);
+    assert(g_cap.id == DSD_APP_CMD_M17_TX_TOGGLE);
     assert(g_cap.n == 0);
 
     /* Slot lockout hotkeys should carry the exact slot index. */
     cap_reset();
     assert(ncurses_input_handler(opts, state, '!') == 1);
-    assert(g_cap.id == UI_CMD_LOCKOUT_SLOT);
+    assert(g_cap.id == DSD_APP_CMD_LOCKOUT_SLOT);
     assert(g_cap.n == sizeof(uint8_t));
     assert(g_cap.data[0] == 0U);
 
     cap_reset();
     assert(ncurses_input_handler(opts, state, '@') == 1);
-    assert(g_cap.id == UI_CMD_LOCKOUT_SLOT);
+    assert(g_cap.id == DSD_APP_CMD_LOCKOUT_SLOT);
     assert(g_cap.n == sizeof(uint8_t));
     assert(g_cap.data[0] == 1U);
 

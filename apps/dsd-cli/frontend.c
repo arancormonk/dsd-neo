@@ -5,7 +5,9 @@
 
 #include "frontend.h"
 
+#include <dsd-neo/app_control/frontend_provider.h>
 #include <dsd-neo/core/opts.h>
+#include <stddef.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -13,36 +15,37 @@
 #include "dsd-neo/engine/engine.h"
 
 #if DSD_CLI_HAS_TERMINAL_UI
-#include <dsd-neo/app_control/snapshot.h>
-#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/terminal_provider.h>
 #endif
 
-#if DSD_CLI_HAS_TERMINAL_UI
-static int
-dsd_cli_terminal_start(dsd_opts* opts, dsd_state* state, void* context) {
-    (void)context;
-    if (!dsd_opts_frontend_is_terminal(opts)) {
-        return 0;
+static const char*
+dsd_cli_frontend_kind_name(dsd_frontend_kind kind) {
+    switch (kind) {
+        case DSD_FRONTEND_NONE: return "none";
+        case DSD_FRONTEND_TERMINAL: return "terminal";
+        case DSD_FRONTEND_NATIVE: return "native";
+        default: return "unknown";
     }
-    if (ui_start(opts, state) != 0) {
-        DSD_FPRINTF(stderr, "Failed to start terminal UI\n");
-        return -1;
-    }
-    return 0;
 }
 
-static void
-dsd_cli_terminal_stop(dsd_opts* opts, dsd_state* state, void* context) {
-    (void)opts;
-    (void)state;
-    (void)context;
-    ui_stop();
+static const dsd_frontend_provider*
+dsd_cli_find_frontend_provider(dsd_frontend_kind kind, const dsd_frontend_provider* const* providers,
+                               size_t provider_count) {
+    if (!providers) {
+        return NULL;
+    }
+    for (size_t i = 0; i < provider_count; i++) {
+        if (providers[i] && providers[i]->kind == kind) {
+            return providers[i];
+        }
+    }
+    return NULL;
 }
-#endif
 
 int
-dsd_cli_frontend_select(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_hooks* hooks_storage,
-                        const dsd_engine_lifecycle_hooks** out_hooks) {
+dsd_cli_frontend_select_from_registry(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_hooks* hooks_storage,
+                                      const dsd_engine_lifecycle_hooks** out_hooks,
+                                      const dsd_frontend_provider* const* providers, size_t provider_count) {
     if (!opts || !hooks_storage || !out_hooks) {
         return -1;
     }
@@ -50,26 +53,30 @@ dsd_cli_frontend_select(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_h
     if (!dsd_opts_frontend_active(opts)) {
         return 0;
     }
-    if (!dsd_opts_frontend_is_terminal(opts)) {
-        DSD_FPRINTF(stderr, "Unsupported frontend kind: %d\n", (int)opts->frontend_kind);
+
+    const dsd_frontend_provider* provider =
+        dsd_cli_find_frontend_provider(opts->frontend_kind, providers, provider_count);
+    if (!provider || !provider->prepare) {
+        DSD_FPRINTF(stderr, "%s frontend provider unavailable\n", dsd_cli_frontend_kind_name(opts->frontend_kind));
         return -1;
     }
-
-#if DSD_CLI_HAS_TERMINAL_UI
-    if (state) {
-        dsd_app_telemetry_publish_opts_snapshot(opts);
-        dsd_app_telemetry_publish_snapshot(state);
+    *hooks_storage = (dsd_engine_lifecycle_hooks){0};
+    if (provider->prepare(opts, state, hooks_storage) != 0) {
+        DSD_FPRINTF(stderr, "Failed to prepare %s frontend provider\n",
+                    provider->name ? provider->name : dsd_cli_frontend_kind_name(opts->frontend_kind));
+        return -1;
     }
-    *hooks_storage = (dsd_engine_lifecycle_hooks){
-        .start = dsd_cli_terminal_start,
-        .stop = dsd_cli_terminal_stop,
-        .context = NULL,
-    };
     *out_hooks = hooks_storage;
     return 0;
-#else
-    (void)state;
-    DSD_FPRINTF(stderr, "Terminal frontend requested, but this build was configured with DSD_ENABLE_TERMINAL_UI=OFF\n");
-    return -1;
+}
+
+int
+dsd_cli_frontend_select(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_hooks* hooks_storage,
+                        const dsd_engine_lifecycle_hooks** out_hooks) {
+    const dsd_frontend_provider* providers[1] = {NULL};
+    size_t provider_count = 0;
+#if DSD_CLI_HAS_TERMINAL_UI
+    providers[provider_count++] = dsd_terminal_frontend_provider();
 #endif
+    return dsd_cli_frontend_select_from_registry(opts, state, hooks_storage, out_hooks, providers, provider_count);
 }

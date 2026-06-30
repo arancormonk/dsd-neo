@@ -20,19 +20,19 @@ extern "C" {
 #endif
 
 /** Common handler signature for UI command actions. */
-typedef int (*UiCmdHandler)(dsd_opts* opts, dsd_state* state, const struct UiCmd* cmd);
+typedef int (*dsd_app_command_handler)(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd);
 
 /** Registry entry mapping command id -> handler function. */
-struct UiCmdReg {
+struct dsd_app_command_reg {
     int id;
-    UiCmdHandler fn;
+    dsd_app_command_handler fn;
 };
 
 /** Per-domain registries (terminated with `{0, NULL}`). */
-extern const struct UiCmdReg ui_actions_audio[];
-extern const struct UiCmdReg ui_actions_radio[];
-extern const struct UiCmdReg ui_actions_trunk[];
-extern const struct UiCmdReg ui_actions_logging[];
+extern const struct dsd_app_command_reg dsd_app_actions_audio[];
+extern const struct dsd_app_command_reg dsd_app_actions_radio[];
+extern const struct dsd_app_command_reg dsd_app_actions_trunk[];
+extern const struct dsd_app_command_reg dsd_app_actions_logging[];
 
 #ifdef __cplusplus
 }

@@ -243,7 +243,7 @@ ui_start(dsd_opts* opts, dsd_state* state) {
     dsd_app_install_telemetry_hooks();
     g_ui_opts = opts;
     g_ui_state = state;
-    ui_history_set_mode(opts ? opts->terminal_history : 1);
+    ui_history_set_mode(opts ? opts->frontend_display.terminal_history : 1);
     atomic_store(&g_ui_stop, 0);
 
     if (dsd_thread_create(&g_ui_thread, ui_thread_main, NULL) != 0) {

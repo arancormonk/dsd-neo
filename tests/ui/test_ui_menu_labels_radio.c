@@ -284,7 +284,7 @@ test_radio_dsp_labels(void) {
     g_rtl_timing_bias = -123;
     rc |= expect_str("timing bias", lbl_cqpsk_timing_bias(&ctx, b, sizeof(b)), "CQPSK Timing Bias (EMA): -123");
 
-    opts.show_dsp_panel = 1;
+    opts.frontend_display.show_dsp_panel = 1;
     opts.rtl_bias_tee = 1;
     opts.rtltcp_autotune = 1;
     rc |= expect_str("dsp panel on", lbl_dsp_panel(&ctx, b, sizeof(b)), "Show DSP Panel [On]");

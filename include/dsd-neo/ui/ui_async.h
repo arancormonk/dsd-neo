@@ -10,7 +10,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_ASYNC_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_ASYNC_H_H
 
-#include <stddef.h>
 #ifdef DSD_NEO_TEST_HOOKS
 #include <stdint.h>
 #endif
@@ -30,19 +29,6 @@ int ui_start(dsd_opts* opts, dsd_state* state);
 
 /** @brief Stop the async UI subsystem and join the UI thread. */
 void ui_stop(void);
-
-/**
- * @brief Post a UI command from the UI thread producer.
- *
- * Truncates payloads to the maximum queue payload size if needed.
- */
-int ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz);
-
-/**
- * @brief Drain queued UI commands on the demod/decoder consumer thread.
- * @return Number of commands applied.
- */
-int ui_drain_cmds(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Returns non-zero when executing in the UI thread context.

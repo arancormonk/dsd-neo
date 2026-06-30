@@ -76,10 +76,10 @@ header rather than UI headers directly.
 
 **Available hooks:**
 
-- `ui_publish_snapshot(state)` — publish demod state for UI rendering
-- `ui_publish_opts_snapshot(opts)` — publish options when they change
-- `ui_request_redraw()` — request UI refresh
-- `ui_publish_both_and_redraw(opts, state)` — convenience combo
+- `dsd_telemetry_publish_snapshot(state)` — publish demod state for frontend rendering
+- `dsd_telemetry_publish_opts_snapshot(opts)` — publish options when they change
+- `dsd_telemetry_request_redraw()` — request frontend refresh
+- `dsd_telemetry_publish_both_and_redraw(opts, state)` — convenience combo
 
 **Hook registration pattern:** Runtime owns a thread-safe hook table (`src/runtime/telemetry_hooks.c`). The terminal
 UI installs its callbacks at startup (`src/ui/terminal/telemetry_hooks_install.c`), and headless/test builds simply run

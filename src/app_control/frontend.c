@@ -36,8 +36,7 @@ dsd_app_frontend_status_from_opts_state(const dsd_opts* opts, const dsd_state* s
     DSD_MEMSET(out, 0, sizeof(*out));
     if (opts) {
         out->frontend_kind = opts->frontend_kind;
-        out->terminal_compact = opts->terminal_compact;
-        out->terminal_history = opts->terminal_history;
+        out->frontend_display = opts->frontend_display;
         out->audio_in_type = opts->audio_in_type;
         out->audio_out_type = opts->audio_out_type;
         out->audio_out = opts->audio_out;

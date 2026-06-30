@@ -173,7 +173,8 @@ ui_is_thread_context(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 void
-ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts,
+                                      const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }

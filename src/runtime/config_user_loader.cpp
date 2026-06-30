@@ -273,6 +273,10 @@ parse_frontend_kind_value(const char* val, dsd_frontend_kind* out_frontend) {
         *out_frontend = DSD_FRONTEND_TERMINAL;
         return 0;
     }
+    if (dsd_strcasecmp(val, "native") == 0) {
+        *out_frontend = DSD_FRONTEND_NATIVE;
+        return 0;
+    }
     return -1;
 }
 

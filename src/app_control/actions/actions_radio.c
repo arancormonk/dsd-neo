@@ -20,7 +20,7 @@
 #endif
 
 static int
-ui_handle_ppm_delta(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_ppm_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     int32_t d = 0;
     if (c->n >= (int)sizeof(int32_t)) {
@@ -35,7 +35,7 @@ ui_handle_ppm_delta(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-ui_handle_invert_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_invert_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     int inv = opts->inverted_dmr ? 0 : 1;
@@ -48,7 +48,7 @@ ui_handle_invert_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
 }
 
 static int
-ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (state->rf_mod == 0) {
         opts->mod_c4fm = 0;
@@ -77,7 +77,7 @@ ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     // P25P2 TDMA: 6000 sym/s - compute SPS from actual demod rate
 #ifdef USE_RADIO
@@ -108,10 +108,10 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
     return 1;
 }
 
-const struct UiCmdReg ui_actions_radio[] = {
-    {UI_CMD_PPM_DELTA, ui_handle_ppm_delta},
-    {UI_CMD_INVERT_TOGGLE, ui_handle_invert_toggle},
-    {UI_CMD_MOD_TOGGLE, ui_handle_mod_toggle},
-    {UI_CMD_MOD_P2_TOGGLE, ui_handle_mod_p2_toggle},
+const struct dsd_app_command_reg dsd_app_actions_radio[] = {
+    {DSD_APP_CMD_PPM_DELTA, ui_handle_ppm_delta},
+    {DSD_APP_CMD_INVERT_TOGGLE, ui_handle_invert_toggle},
+    {DSD_APP_CMD_MOD_TOGGLE, ui_handle_mod_toggle},
+    {DSD_APP_CMD_MOD_P2_TOGGLE, ui_handle_mod_p2_toggle},
     {0, NULL},
 };

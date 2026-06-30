@@ -54,12 +54,12 @@
 #ifdef USE_RADIO
 #endif
 
-#define UI_CMD_Q_CAP 128
+#define DSD_APP_CMD_Q_CAP 128
 
-_Static_assert(sizeof(dsdneoUserConfig) <= sizeof(((struct UiCmd*)0)->data),
-               "UiCmd payload too small for dsdneoUserConfig");
+_Static_assert(sizeof(dsdneoUserConfig) <= sizeof(((struct dsd_app_command*)0)->data),
+               "dsd_app_command payload too small for dsdneoUserConfig");
 
-static struct UiCmd g_q[UI_CMD_Q_CAP];
+static struct dsd_app_command g_q[DSD_APP_CMD_Q_CAP];
 static size_t g_head = 0; // pop index
 static size_t g_tail = 0; // push index
 static dsd_mutex_t g_mu;
@@ -77,10 +77,11 @@ ensure_mu_init(void) {
 
 // Dispatch commands via per-domain registries
 static int
-ui_cmd_dispatch(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    const struct UiCmdReg* regs[] = {ui_actions_audio, ui_actions_radio, ui_actions_trunk, ui_actions_logging, NULL};
+ui_cmd_dispatch(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    const struct dsd_app_command_reg* regs[] = {dsd_app_actions_audio, dsd_app_actions_radio, dsd_app_actions_trunk,
+                                                dsd_app_actions_logging, NULL};
     for (int i = 0; regs[i] != NULL; ++i) {
-        for (const struct UiCmdReg* r = regs[i]; r && r->fn != NULL; ++r) {
+        for (const struct dsd_app_command_reg* r = regs[i]; r && r->fn != NULL; ++r) {
             if (r->id == c->id) {
                 return r->fn(opts, state, c);
             }
@@ -91,7 +92,7 @@ ui_cmd_dispatch(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 
 static inline int
 q_is_full_unlocked(void) {
-    return ((g_tail + 1) % UI_CMD_Q_CAP) == g_head;
+    return ((g_tail + 1) % DSD_APP_CMD_Q_CAP) == g_head;
 }
 
 static inline int
@@ -146,14 +147,14 @@ struct UiVisibilityToggleSpec {
 };
 
 static const struct UiVisibilityToggleSpec k_ui_visibility_toggle_specs[] = {
-    {UI_CMD_UI_SHOW_DSP_PANEL_TOGGLE, offsetof(dsd_opts, show_dsp_panel)},
-    {UI_CMD_UI_SHOW_P25_METRICS_TOGGLE, offsetof(dsd_opts, show_p25_metrics)},
-    {UI_CMD_UI_SHOW_P25_AFFIL_TOGGLE, offsetof(dsd_opts, show_p25_affiliations)},
-    {UI_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE, offsetof(dsd_opts, show_p25_neighbors)},
-    {UI_CMD_UI_SHOW_P25_IDEN_TOGGLE, offsetof(dsd_opts, show_p25_iden_plan)},
-    {UI_CMD_UI_SHOW_P25_CCC_TOGGLE, offsetof(dsd_opts, show_p25_cc_candidates)},
-    {UI_CMD_UI_SHOW_CHANNELS_TOGGLE, offsetof(dsd_opts, show_channels)},
-    {UI_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE, offsetof(dsd_opts, show_p25_callsign_decode)},
+    {DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE, offsetof(dsd_opts, frontend_display.show_dsp_panel)},
+    {DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE, offsetof(dsd_opts, frontend_display.show_p25_metrics)},
+    {DSD_APP_CMD_UI_SHOW_P25_AFFIL_TOGGLE, offsetof(dsd_opts, frontend_display.show_p25_affiliations)},
+    {DSD_APP_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE, offsetof(dsd_opts, frontend_display.show_p25_neighbors)},
+    {DSD_APP_CMD_UI_SHOW_P25_IDEN_TOGGLE, offsetof(dsd_opts, frontend_display.show_p25_iden_plan)},
+    {DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE, offsetof(dsd_opts, frontend_display.show_p25_cc_candidates)},
+    {DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE, offsetof(dsd_opts, frontend_display.show_channels)},
+    {DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE, offsetof(dsd_opts, frontend_display.show_p25_callsign_decode)},
 };
 
 static int
@@ -169,7 +170,7 @@ ui_apply_visibility_toggle(dsd_opts* opts, int cmd_id) {
 }
 
 static int
-apply_cmd_ui_visibility(dsd_opts* opts, const struct UiCmd* c) {
+apply_cmd_ui_visibility(dsd_opts* opts, const struct dsd_app_command* c) {
     if (!opts || !c) {
         return 0;
     }
@@ -177,7 +178,7 @@ apply_cmd_ui_visibility(dsd_opts* opts, const struct UiCmd* c) {
 }
 
 static int
-ui_cmd_copy_payload_string(const struct UiCmd* c, char* out, size_t out_sz) {
+ui_cmd_copy_payload_string(const struct dsd_app_command* c, char* out, size_t out_sz) {
     if (!c || !out || out_sz == 0 || c->n == 0) {
         return 0;
     }
@@ -187,16 +188,16 @@ ui_cmd_copy_payload_string(const struct UiCmd* c, char* out, size_t out_sz) {
     return 1;
 }
 
-typedef int (*UiCmdHandlerFn)(dsd_opts* opts, dsd_state* state, const struct UiCmd* c);
+typedef int (*dsd_app_command_handler_fn)(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c);
 
-struct UiCmdHandlerEntry {
+struct dsd_app_command_handler_entry {
     int cmd_id;
-    UiCmdHandlerFn fn;
+    dsd_app_command_handler_fn fn;
 };
 
 static int
-ui_cmd_apply_handler_table(const struct UiCmdHandlerEntry* entries, size_t count, dsd_opts* opts, dsd_state* state,
-                           const struct UiCmd* c) {
+ui_cmd_apply_handler_table(const struct dsd_app_command_handler_entry* entries, size_t count, dsd_opts* opts,
+                           dsd_state* state, const struct dsd_app_command* c) {
     if (!entries || !c) {
         return 0;
     }
@@ -219,12 +220,12 @@ ui_cmd_reset_key_mute_state(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!opts || !state || !c) {
         return 0;
     }
     switch (c->id) {
-        case UI_CMD_KEY_BASIC_SET: {
+        case DSD_APP_CMD_KEY_BASIC_SET: {
             if (c->n >= (int)sizeof(uint32_t)) {
                 uint32_t v = 0;
                 DSD_MEMCPY(&v, c->data, sizeof v);
@@ -233,7 +234,7 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct Ui
             }
             return 1;
         }
-        case UI_CMD_KEY_SCRAMBLER_SET: {
+        case DSD_APP_CMD_KEY_SCRAMBLER_SET: {
             if (c->n >= (int)sizeof(uint32_t)) {
                 uint32_t v = 0;
                 DSD_MEMCPY(&v, c->data, sizeof v);
@@ -242,7 +243,7 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct Ui
             }
             return 1;
         }
-        case UI_CMD_KEY_RC4DES_SET: {
+        case DSD_APP_CMD_KEY_RC4DES_SET: {
             if (c->n >= (int)sizeof(uint64_t)) {
                 uint64_t v = 0;
                 DSD_MEMCPY(&v, c->data, sizeof v);
@@ -257,7 +258,7 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!opts || !state || !c || c->n < (int)(sizeof(uint64_t) * 5)) {
         return 0;
     }
@@ -289,7 +290,7 @@ apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
 }
 
 static int
-apply_cmd_key_aes_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_key_aes_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!opts || !state || !c || c->n < (int)(sizeof(uint64_t) * 4)) {
         return 0;
     }
@@ -317,10 +318,10 @@ apply_cmd_key_aes_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-apply_cmd_key_management_block_keys(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry entries[] = {
-        {UI_CMD_KEY_HYTERA_SET, apply_cmd_key_hytera_set},
-        {UI_CMD_KEY_AES_SET, apply_cmd_key_aes_set},
+apply_cmd_key_management_block_keys(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry entries[] = {
+        {DSD_APP_CMD_KEY_HYTERA_SET, apply_cmd_key_hytera_set},
+        {DSD_APP_CMD_KEY_AES_SET, apply_cmd_key_aes_set},
     };
     return ui_cmd_apply_handler_table(entries, sizeof entries / sizeof entries[0], opts, state, c);
 }
@@ -348,14 +349,14 @@ ui_load_anytone_bp_key(dsd_state* state, const char* input, int show_keys) {
 }
 
 static int
-apply_cmd_key_management_stream_keys(const dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_key_management_stream_keys(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct UiStreamKeyLoaderEntry entries[] = {
-        {UI_CMD_KEY_TYT_AP_SET, 256U, tyt_ap_pc4_keystream_creation},
-        {UI_CMD_KEY_RETEVIS_RC2_SET, 256U, retevis_rc2_keystream_creation},
-        {UI_CMD_KEY_TYT_EP_SET, 256U, tyt_ep_aes_keystream_creation},
-        {UI_CMD_KEY_KEN_SCR_SET, 128U, ui_load_ken_scrambler_key},
-        {UI_CMD_KEY_ANYTONE_BP_SET, 128U, ui_load_anytone_bp_key},
-        {UI_CMD_KEY_XOR_SET, 256U, straight_mod_xor_keystream_creation},
+        {DSD_APP_CMD_KEY_TYT_AP_SET, 256U, tyt_ap_pc4_keystream_creation},
+        {DSD_APP_CMD_KEY_RETEVIS_RC2_SET, 256U, retevis_rc2_keystream_creation},
+        {DSD_APP_CMD_KEY_TYT_EP_SET, 256U, tyt_ep_aes_keystream_creation},
+        {DSD_APP_CMD_KEY_KEN_SCR_SET, 128U, ui_load_ken_scrambler_key},
+        {DSD_APP_CMD_KEY_ANYTONE_BP_SET, 128U, ui_load_anytone_bp_key},
+        {DSD_APP_CMD_KEY_XOR_SET, 256U, straight_mod_xor_keystream_creation},
     };
     if (!opts || !state || !c) {
         return 0;
@@ -374,8 +375,8 @@ apply_cmd_key_management_stream_keys(const dsd_opts* opts, dsd_state* state, con
 }
 
 static int
-apply_cmd_key_management_m17(dsd_state* state, const struct UiCmd* c) {
-    if (!state || !c || c->id != UI_CMD_M17_USER_DATA_SET) {
+apply_cmd_key_management_m17(dsd_state* state, const struct dsd_app_command* c) {
+    if (!state || !c || c->id != DSD_APP_CMD_M17_USER_DATA_SET) {
         return 0;
     }
     if (c->n > 0) {
@@ -387,7 +388,7 @@ apply_cmd_key_management_m17(dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-apply_cmd_key_management(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_key_management(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!c) {
         return 0;
     }
@@ -405,8 +406,8 @@ apply_cmd_key_management(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
 
 #ifdef USE_RADIO
 static int
-apply_dsp_op_cqpsk_toggle(const UiDspPayload* p) {
-    if (!p || p->op != UI_DSP_OP_TOGGLE_CQ) {
+apply_dsp_op_cqpsk_toggle(const dsd_app_dsp_payload* p) {
+    if (!p || p->op != DSD_APP_DSP_OP_TOGGLE_CQ) {
         return 0;
     }
     int cq = 0;
@@ -416,19 +417,19 @@ apply_dsp_op_cqpsk_toggle(const UiDspPayload* p) {
 }
 
 static int
-apply_dsp_op_iq_and_ted(const UiDspPayload* p) {
+apply_dsp_op_iq_and_ted(const dsd_app_dsp_payload* p) {
     if (!p) {
         return 0;
     }
     switch (p->op) {
-        case UI_DSP_OP_TOGGLE_IQBAL: {
+        case DSD_APP_DSP_OP_TOGGLE_IQBAL: {
             int on = rtl_stream_get_iq_balance();
             int new_on = on ? 0 : 1;
             rtl_stream_toggle_iq_balance(new_on);
             dsd_setenv("DSD_NEO_IQ_BALANCE", new_on ? "1" : "0", 1);
             return 1;
         }
-        case UI_DSP_OP_IQ_DC_TOGGLE: {
+        case DSD_APP_DSP_OP_IQ_DC_TOGGLE: {
             int k = 0;
             int on = rtl_stream_get_iq_dc(&k);
             int new_on = on ? 0 : 1;
@@ -436,13 +437,13 @@ apply_dsp_op_iq_and_ted(const UiDspPayload* p) {
             dsd_setenv("DSD_NEO_IQ_DC_BLOCK", new_on ? "1" : "0", 1);
             return 1;
         }
-        case UI_DSP_OP_IQ_DC_K_DELTA: {
+        case DSD_APP_DSP_OP_IQ_DC_K_DELTA: {
             int k = 0;
             (void)rtl_stream_get_iq_dc(&k);
             rtl_stream_set_iq_dc(-1, k + p->a);
             return 1;
         }
-        case UI_DSP_OP_TED_GAIN_SET: {
+        case DSD_APP_DSP_OP_TED_GAIN_SET: {
             int g_milli = p->a;
             if (g_milli < 10) {
                 g_milli = 10;
@@ -458,11 +459,11 @@ apply_dsp_op_iq_and_ted(const UiDspPayload* p) {
 }
 
 static int
-apply_dsp_op_frontend_gain(const UiDspPayload* p) {
+apply_dsp_op_frontend_gain(const dsd_app_dsp_payload* p) {
     if (!p) {
         return 0;
     }
-    if (p->op == UI_DSP_OP_TUNER_AUTOGAIN_TOGGLE) {
+    if (p->op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE) {
         int on = rtl_stream_get_tuner_autogain();
         rtl_stream_set_tuner_autogain(on ? 0 : 1);
         return 1;
@@ -471,7 +472,7 @@ apply_dsp_op_frontend_gain(const UiDspPayload* p) {
 }
 
 static void
-apply_dsp_op(const UiDspPayload* p) {
+apply_dsp_op(const dsd_app_dsp_payload* p) {
     if (!p) {
         return;
     }
@@ -486,23 +487,23 @@ apply_dsp_op(const UiDspPayload* p) {
 #endif
 
 static int
-apply_cmd_runtime_toggles(dsd_opts* opts, const struct UiCmd* c) {
+apply_cmd_runtime_toggles(dsd_opts* opts, const struct dsd_app_command* c) {
     if (!opts || !c) {
         return 0;
     }
     switch (c->id) {
-        case UI_CMD_DMR_LE_TOGGLE: svc_toggle_dmr_le(opts); return 1;
-        case UI_CMD_ALL_MUTES_TOGGLE: svc_toggle_all_mutes(opts); return 1;
-        case UI_CMD_INV_X2_TOGGLE: svc_toggle_inv_x2(opts); return 1;
-        case UI_CMD_INV_DMR_TOGGLE: svc_toggle_inv_dmr(opts); return 1;
-        case UI_CMD_INV_DPMR_TOGGLE: svc_toggle_inv_dpmr(opts); return 1;
-        case UI_CMD_INV_M17_TOGGLE: svc_toggle_inv_m17(opts); return 1;
+        case DSD_APP_CMD_DMR_LE_TOGGLE: svc_toggle_dmr_le(opts); return 1;
+        case DSD_APP_CMD_ALL_MUTES_TOGGLE: svc_toggle_all_mutes(opts); return 1;
+        case DSD_APP_CMD_INV_X2_TOGGLE: svc_toggle_inv_x2(opts); return 1;
+        case DSD_APP_CMD_INV_DMR_TOGGLE: svc_toggle_inv_dmr(opts); return 1;
+        case DSD_APP_CMD_INV_DPMR_TOGGLE: svc_toggle_inv_dpmr(opts); return 1;
+        case DSD_APP_CMD_INV_M17_TOGGLE: svc_toggle_inv_m17(opts); return 1;
         default: return 0;
     }
 }
 
 static int
-ui_cmd_handle_wav_static_open(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_wav_static_open(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
@@ -518,7 +519,7 @@ ui_cmd_handle_wav_static_open(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-ui_cmd_handle_wav_raw_open(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_wav_raw_open(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
@@ -534,7 +535,7 @@ ui_cmd_handle_wav_raw_open(dsd_opts* opts, dsd_state* state, const struct UiCmd*
 }
 
 static int
-ui_cmd_handle_dsp_out_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_dsp_out_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (c->n > 0) {
         char name[256] = {0};
         if (ui_cmd_copy_payload_string(c, name, sizeof name)) {
@@ -550,11 +551,11 @@ ui_cmd_handle_dsp_out_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* 
 }
 
 static int
-apply_cmd_io_and_import_file_outputs_a(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_WAV_STATIC_OPEN, ui_cmd_handle_wav_static_open},
-        {UI_CMD_WAV_RAW_OPEN, ui_cmd_handle_wav_raw_open},
-        {UI_CMD_DSP_OUT_SET, ui_cmd_handle_dsp_out_set},
+apply_cmd_io_and_import_file_outputs_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_WAV_STATIC_OPEN, ui_cmd_handle_wav_static_open},
+        {DSD_APP_CMD_WAV_RAW_OPEN, ui_cmd_handle_wav_raw_open},
+        {DSD_APP_CMD_DSP_OUT_SET, ui_cmd_handle_dsp_out_set},
     };
     if (!opts || !c) {
         return 0;
@@ -563,7 +564,7 @@ apply_cmd_io_and_import_file_outputs_a(dsd_opts* opts, dsd_state* state, const s
 }
 
 static int
-ui_cmd_handle_symcap_open(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_symcap_open(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
@@ -579,7 +580,7 @@ ui_cmd_handle_symcap_open(dsd_opts* opts, dsd_state* state, const struct UiCmd* 
 }
 
 static int
-ui_cmd_handle_symbol_in_open(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_symbol_in_open(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
@@ -597,7 +598,7 @@ ui_cmd_handle_symbol_in_open(dsd_opts* opts, dsd_state* state, const struct UiCm
 }
 
 static int
-ui_cmd_handle_input_wav_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_input_wav_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (c->n > 0 && ui_cmd_copy_payload_string(c, opts->audio_in_dev, sizeof opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_WAV;
         if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
@@ -608,7 +609,7 @@ ui_cmd_handle_input_wav_set(dsd_opts* opts, dsd_state* state, const struct UiCmd
 }
 
 static int
-ui_cmd_handle_input_sym_stream_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_input_sym_stream_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (c->n > 0 && ui_cmd_copy_payload_string(c, opts->audio_in_dev, sizeof opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_SYMBOL_FLT;
         if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
@@ -619,7 +620,7 @@ ui_cmd_handle_input_sym_stream_set(dsd_opts* opts, dsd_state* state, const struc
 }
 
 static int
-ui_cmd_handle_input_set_pulse(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_input_set_pulse(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     opts->audio_in_type = AUDIO_IN_PULSE;
@@ -630,13 +631,13 @@ ui_cmd_handle_input_set_pulse(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-apply_cmd_io_and_import_file_outputs_b(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_SYMCAP_OPEN, ui_cmd_handle_symcap_open},
-        {UI_CMD_SYMBOL_IN_OPEN, ui_cmd_handle_symbol_in_open},
-        {UI_CMD_INPUT_WAV_SET, ui_cmd_handle_input_wav_set},
-        {UI_CMD_INPUT_SYM_STREAM_SET, ui_cmd_handle_input_sym_stream_set},
-        {UI_CMD_INPUT_SET_PULSE, ui_cmd_handle_input_set_pulse},
+apply_cmd_io_and_import_file_outputs_b(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_SYMCAP_OPEN, ui_cmd_handle_symcap_open},
+        {DSD_APP_CMD_SYMBOL_IN_OPEN, ui_cmd_handle_symbol_in_open},
+        {DSD_APP_CMD_INPUT_WAV_SET, ui_cmd_handle_input_wav_set},
+        {DSD_APP_CMD_INPUT_SYM_STREAM_SET, ui_cmd_handle_input_sym_stream_set},
+        {DSD_APP_CMD_INPUT_SET_PULSE, ui_cmd_handle_input_set_pulse},
     };
     if (!opts || !c) {
         return 0;
@@ -645,7 +646,7 @@ apply_cmd_io_and_import_file_outputs_b(dsd_opts* opts, dsd_state* state, const s
 }
 
 static int
-ui_cmd_parse_host_port_payload(const struct UiCmd* c, char* host, size_t host_sz, int32_t* port) {
+ui_cmd_parse_host_port_payload(const struct dsd_app_command* c, char* host, size_t host_sz, int32_t* port) {
     if (!c || !host || host_sz == 0 || !port || c->n < (int)(256 + sizeof(int32_t))) {
         return 0;
     }
@@ -656,7 +657,7 @@ ui_cmd_parse_host_port_payload(const struct UiCmd* c, char* host, size_t host_sz
 }
 
 static int
-ui_cmd_handle_udp_out_cfg(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_udp_out_cfg(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     char host[256] = {0};
     int32_t port = 0;
     if (state && ui_cmd_parse_host_port_payload(c, host, sizeof host, &port)) {
@@ -671,7 +672,7 @@ ui_cmd_handle_udp_out_cfg(dsd_opts* opts, dsd_state* state, const struct UiCmd* 
 }
 
 static int
-ui_cmd_handle_tcp_connect_audio_cfg(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_tcp_connect_audio_cfg(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     char host[256] = {0};
     int32_t port = 0;
     if (state && ui_cmd_parse_host_port_payload(c, host, sizeof host, &port)) {
@@ -686,7 +687,7 @@ ui_cmd_handle_tcp_connect_audio_cfg(dsd_opts* opts, dsd_state* state, const stru
 }
 
 static int
-ui_cmd_handle_rigctl_connect_cfg(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rigctl_connect_cfg(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     char host[256] = {0};
     int32_t port = 0;
     if (state && ui_cmd_parse_host_port_payload(c, host, sizeof host, &port)) {
@@ -701,7 +702,7 @@ ui_cmd_handle_rigctl_connect_cfg(dsd_opts* opts, dsd_state* state, const struct 
 }
 
 static int
-ui_cmd_handle_udp_input_cfg(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_udp_input_cfg(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     char bind[256] = {0};
     int32_t port = 0;
     if (state && ui_cmd_parse_host_port_payload(c, bind, sizeof bind, &port)) {
@@ -717,12 +718,12 @@ ui_cmd_handle_udp_input_cfg(dsd_opts* opts, dsd_state* state, const struct UiCmd
 }
 
 static int
-apply_cmd_io_and_import_network(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_UDP_OUT_CFG, ui_cmd_handle_udp_out_cfg},
-        {UI_CMD_TCP_CONNECT_AUDIO_CFG, ui_cmd_handle_tcp_connect_audio_cfg},
-        {UI_CMD_RIGCTL_CONNECT_CFG, ui_cmd_handle_rigctl_connect_cfg},
-        {UI_CMD_UDP_INPUT_CFG, ui_cmd_handle_udp_input_cfg},
+apply_cmd_io_and_import_network(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_UDP_OUT_CFG, ui_cmd_handle_udp_out_cfg},
+        {DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, ui_cmd_handle_tcp_connect_audio_cfg},
+        {DSD_APP_CMD_RIGCTL_CONNECT_CFG, ui_cmd_handle_rigctl_connect_cfg},
+        {DSD_APP_CMD_UDP_INPUT_CFG, ui_cmd_handle_udp_input_cfg},
     };
     if (!opts || !c) {
         return 0;
@@ -731,7 +732,7 @@ apply_cmd_io_and_import_network(dsd_opts* opts, dsd_state* state, const struct U
 }
 
 static int
-ui_cmd_parse_i32_payload(const struct UiCmd* c, int32_t* out) {
+ui_cmd_parse_i32_payload(const struct dsd_app_command* c, int32_t* out) {
     if (!c || !out || c->n < (int)sizeof(*out)) {
         return 0;
     }
@@ -740,7 +741,7 @@ ui_cmd_parse_i32_payload(const struct UiCmd* c, int32_t* out) {
 }
 
 static int
-ui_cmd_parse_double_payload(const struct UiCmd* c, double* out) {
+ui_cmd_parse_double_payload(const struct dsd_app_command* c, double* out) {
     if (!c || !out || c->n < (int)sizeof(*out)) {
         return 0;
     }
@@ -750,7 +751,7 @@ ui_cmd_parse_double_payload(const struct UiCmd* c, double* out) {
 
 #ifdef USE_RADIO
 static int
-ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (state) {
         int rc = svc_rtl_enable_input(opts, state);
@@ -768,7 +769,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (state) {
         int rc = svc_rtl_restart(opts, state);
@@ -784,7 +785,7 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct UiCmd* 
 }
 
 static int
-ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
         int rc = svc_rtl_set_dev_index(opts, state, v);
@@ -800,11 +801,11 @@ ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct UiCmd* 
 }
 
 static int
-apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_RTL_ENABLE_INPUT, ui_cmd_handle_rtl_enable_input},
-        {UI_CMD_RTL_RESTART, ui_cmd_handle_rtl_restart},
-        {UI_CMD_RTL_SET_DEV, ui_cmd_handle_rtl_set_dev},
+apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_RTL_ENABLE_INPUT, ui_cmd_handle_rtl_enable_input},
+        {DSD_APP_CMD_RTL_RESTART, ui_cmd_handle_rtl_restart},
+        {DSD_APP_CMD_RTL_SET_DEV, ui_cmd_handle_rtl_set_dev},
     };
     if (!opts || !c) {
         return 0;
@@ -813,7 +814,7 @@ apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
         int rc = svc_rtl_set_freq(opts, state, (uint32_t)v);
@@ -829,7 +830,7 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct UiCmd*
 }
 
 static int
-ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
         int rc = svc_rtl_set_gain(opts, state, v);
@@ -845,7 +846,7 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct UiCmd*
 }
 
 static int
-ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
         int rc = svc_rtl_set_ppm(opts, v);
@@ -861,11 +862,11 @@ ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct UiCmd* 
 }
 
 static int
-apply_cmd_io_and_import_rtl_b(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_RTL_SET_FREQ, ui_cmd_handle_rtl_set_freq},
-        {UI_CMD_RTL_SET_GAIN, ui_cmd_handle_rtl_set_gain},
-        {UI_CMD_RTL_SET_PPM, ui_cmd_handle_rtl_set_ppm},
+apply_cmd_io_and_import_rtl_b(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_RTL_SET_FREQ, ui_cmd_handle_rtl_set_freq},
+        {DSD_APP_CMD_RTL_SET_GAIN, ui_cmd_handle_rtl_set_gain},
+        {DSD_APP_CMD_RTL_SET_PPM, ui_cmd_handle_rtl_set_ppm},
     };
     if (!opts || !c) {
         return 0;
@@ -874,7 +875,7 @@ apply_cmd_io_and_import_rtl_b(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-ui_cmd_handle_rtl_set_bw(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_set_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
         int rc = svc_rtl_set_bandwidth(opts, state, v);
@@ -890,7 +891,7 @@ ui_cmd_handle_rtl_set_bw(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
 }
 
 static int
-ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     double d = 0.0;
     if (state && ui_cmd_parse_double_payload(c, &d)) {
         int rc = svc_rtl_set_sql_db(opts, d);
@@ -906,7 +907,7 @@ ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct UiCm
 }
 
 static int
-ui_cmd_handle_rtl_set_vol_mult(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_set_vol_mult(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
     if (state && ui_cmd_parse_i32_payload(c, &v)) {
         int rc = svc_rtl_set_volume_mult(opts, v);
@@ -922,11 +923,11 @@ ui_cmd_handle_rtl_set_vol_mult(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-apply_cmd_io_and_import_rtl_c(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_RTL_SET_BW, ui_cmd_handle_rtl_set_bw},
-        {UI_CMD_RTL_SET_SQL_DB, ui_cmd_handle_rtl_set_sql_db},
-        {UI_CMD_RTL_SET_VOL_MULT, ui_cmd_handle_rtl_set_vol_mult},
+apply_cmd_io_and_import_rtl_c(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_RTL_SET_BW, ui_cmd_handle_rtl_set_bw},
+        {DSD_APP_CMD_RTL_SET_SQL_DB, ui_cmd_handle_rtl_set_sql_db},
+        {DSD_APP_CMD_RTL_SET_VOL_MULT, ui_cmd_handle_rtl_set_vol_mult},
     };
     if (!opts || !c) {
         return 0;
@@ -935,7 +936,7 @@ apply_cmd_io_and_import_rtl_c(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-ui_cmd_handle_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t on = 0;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
         int rc = svc_rtl_set_bias_tee(opts, state, on);
@@ -951,7 +952,7 @@ ui_cmd_handle_rtl_set_bias_tee(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-ui_cmd_handle_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t on = 0;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
         int rc = svc_rtltcp_set_autotune(opts, state, on);
@@ -967,7 +968,7 @@ ui_cmd_handle_rtltcp_set_autotune(dsd_opts* opts, dsd_state* state, const struct
 }
 
 static int
-ui_cmd_handle_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t on = 0;
     if (state && ui_cmd_parse_i32_payload(c, &on)) {
         int rc = svc_rtl_set_auto_ppm(opts, state, on);
@@ -983,11 +984,11 @@ ui_cmd_handle_rtl_set_auto_ppm(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-apply_cmd_io_and_import_rtl_d(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_RTL_SET_BIAS_TEE, ui_cmd_handle_rtl_set_bias_tee},
-        {UI_CMD_RTLTCP_SET_AUTOTUNE, ui_cmd_handle_rtltcp_set_autotune},
-        {UI_CMD_RTL_SET_AUTO_PPM, ui_cmd_handle_rtl_set_auto_ppm},
+apply_cmd_io_and_import_rtl_d(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_RTL_SET_BIAS_TEE, ui_cmd_handle_rtl_set_bias_tee},
+        {DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, ui_cmd_handle_rtltcp_set_autotune},
+        {DSD_APP_CMD_RTL_SET_AUTO_PPM, ui_cmd_handle_rtl_set_auto_ppm},
     };
     if (!opts || !c) {
         return 0;
@@ -997,7 +998,7 @@ apply_cmd_io_and_import_rtl_d(dsd_opts* opts, dsd_state* state, const struct UiC
 #endif
 
 static int
-ui_cmd_parse_u32_payload(const struct UiCmd* c, uint32_t* out) {
+ui_cmd_parse_u32_payload(const struct dsd_app_command* c, uint32_t* out) {
     if (!c || !out || c->n < (int)sizeof(*out)) {
         return 0;
     }
@@ -1006,7 +1007,7 @@ ui_cmd_parse_u32_payload(const struct UiCmd* c, uint32_t* out) {
 }
 
 static int
-ui_cmd_handle_rigctl_set_mod_bw(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_rigctl_set_mod_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t hz = 0;
     if (state && ui_cmd_parse_i32_payload(c, &hz)) {
         svc_set_rigctl_setmod_bw(opts, hz);
@@ -1016,7 +1017,7 @@ ui_cmd_handle_rigctl_set_mod_bw(dsd_opts* opts, dsd_state* state, const struct U
 }
 
 static int
-ui_cmd_handle_tg_hold_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_tg_hold_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     uint32_t tg = 0;
     (void)opts;
     if (state && ui_cmd_parse_u32_payload(c, &tg)) {
@@ -1027,7 +1028,7 @@ ui_cmd_handle_tg_hold_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* 
 }
 
 static int
-ui_cmd_handle_hangtime_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_hangtime_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     double s = 0.0;
     if (state && ui_cmd_parse_double_payload(c, &s)) {
         svc_set_hangtime(opts, s);
@@ -1037,7 +1038,7 @@ ui_cmd_handle_hangtime_set(dsd_opts* opts, dsd_state* state, const struct UiCmd*
 }
 
 static int
-ui_cmd_handle_slot_pref_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_slot_pref_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t p = 0;
     if (state && ui_cmd_parse_i32_payload(c, &p)) {
         svc_set_slot_pref(opts, p);
@@ -1047,7 +1048,7 @@ ui_cmd_handle_slot_pref_set(dsd_opts* opts, dsd_state* state, const struct UiCmd
 }
 
 static int
-ui_cmd_handle_slots_onoff_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_slots_onoff_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t m = 0;
     if (state && ui_cmd_parse_i32_payload(c, &m)) {
         svc_set_slots_onoff(opts, m);
@@ -1057,13 +1058,13 @@ ui_cmd_handle_slots_onoff_set(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_RIGCTL_SET_MOD_BW, ui_cmd_handle_rigctl_set_mod_bw},
-        {UI_CMD_TG_HOLD_SET, ui_cmd_handle_tg_hold_set},
-        {UI_CMD_HANGTIME_SET, ui_cmd_handle_hangtime_set},
-        {UI_CMD_SLOT_PREF_SET, ui_cmd_handle_slot_pref_set},
-        {UI_CMD_SLOTS_ONOFF_SET, ui_cmd_handle_slots_onoff_set},
+apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_RIGCTL_SET_MOD_BW, ui_cmd_handle_rigctl_set_mod_bw},
+        {DSD_APP_CMD_TG_HOLD_SET, ui_cmd_handle_tg_hold_set},
+        {DSD_APP_CMD_HANGTIME_SET, ui_cmd_handle_hangtime_set},
+        {DSD_APP_CMD_SLOT_PREF_SET, ui_cmd_handle_slot_pref_set},
+        {DSD_APP_CMD_SLOTS_ONOFF_SET, ui_cmd_handle_slots_onoff_set},
     };
     if (!opts || !c) {
         return 0;
@@ -1072,12 +1073,12 @@ apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct
 }
 
 static int
-apply_cmd_io_and_import_pulse_io(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_io_and_import_pulse_io(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!opts || !c) {
         return 0;
     }
     switch (c->id) {
-        case UI_CMD_PULSE_OUT_SET: {
+        case DSD_APP_CMD_PULSE_OUT_SET: {
             if (state && c->n > 0) {
                 char name[256] = {0};
                 size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
@@ -1092,7 +1093,7 @@ apply_cmd_io_and_import_pulse_io(dsd_opts* opts, dsd_state* state, const struct 
             }
             return 1;
         }
-        case UI_CMD_PULSE_IN_SET: {
+        case DSD_APP_CMD_PULSE_IN_SET: {
             if (state && c->n > 0) {
                 char name[256] = {0};
                 size_t n = c->n < sizeof(name) ? c->n : sizeof(name) - 1;
@@ -1114,7 +1115,7 @@ apply_cmd_io_and_import_pulse_io(dsd_opts* opts, dsd_state* state, const struct 
 }
 
 static int
-ui_cmd_handle_lrrp_set_home(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_lrrp_set_home(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (state) {
         int rc = svc_lrrp_set_home(opts);
@@ -1128,7 +1129,7 @@ ui_cmd_handle_lrrp_set_home(dsd_opts* opts, dsd_state* state, const struct UiCmd
 }
 
 static int
-ui_cmd_handle_lrrp_set_dsdp(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_lrrp_set_dsdp(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (state) {
         int rc = svc_lrrp_set_dsdp(opts);
@@ -1142,7 +1143,7 @@ ui_cmd_handle_lrrp_set_dsdp(dsd_opts* opts, dsd_state* state, const struct UiCmd
 }
 
 static int
-ui_cmd_handle_lrrp_set_custom(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_lrrp_set_custom(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
@@ -1158,7 +1159,7 @@ ui_cmd_handle_lrrp_set_custom(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-ui_cmd_handle_lrrp_disable(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_lrrp_disable(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (state) {
         svc_lrrp_disable(opts);
@@ -1168,7 +1169,7 @@ ui_cmd_handle_lrrp_disable(dsd_opts* opts, dsd_state* state, const struct UiCmd*
 }
 
 static int
-ui_cmd_handle_p25_p2_params_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_p25_p2_params_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     struct {
         uint64_t w;
         uint64_t s;
@@ -1186,13 +1187,13 @@ ui_cmd_handle_p25_p2_params_set(dsd_opts* opts, dsd_state* state, const struct U
 }
 
 static int
-apply_cmd_io_and_import_lrrp_and_p2(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_LRRP_SET_HOME, ui_cmd_handle_lrrp_set_home},
-        {UI_CMD_LRRP_SET_DSDP, ui_cmd_handle_lrrp_set_dsdp},
-        {UI_CMD_LRRP_SET_CUSTOM, ui_cmd_handle_lrrp_set_custom},
-        {UI_CMD_LRRP_DISABLE, ui_cmd_handle_lrrp_disable},
-        {UI_CMD_P25_P2_PARAMS_SET, ui_cmd_handle_p25_p2_params_set},
+apply_cmd_io_and_import_lrrp_and_p2(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_LRRP_SET_HOME, ui_cmd_handle_lrrp_set_home},
+        {DSD_APP_CMD_LRRP_SET_DSDP, ui_cmd_handle_lrrp_set_dsdp},
+        {DSD_APP_CMD_LRRP_SET_CUSTOM, ui_cmd_handle_lrrp_set_custom},
+        {DSD_APP_CMD_LRRP_DISABLE, ui_cmd_handle_lrrp_disable},
+        {DSD_APP_CMD_P25_P2_PARAMS_SET, ui_cmd_handle_p25_p2_params_set},
     };
     if (!opts || !c) {
         return 0;
@@ -1201,7 +1202,7 @@ apply_cmd_io_and_import_lrrp_and_p2(dsd_opts* opts, dsd_state* state, const stru
 }
 
 static int
-ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
@@ -1217,7 +1218,7 @@ ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct 
 }
 
 static int
-ui_cmd_handle_import_group_list(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_import_group_list(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
@@ -1233,7 +1234,7 @@ ui_cmd_handle_import_group_list(dsd_opts* opts, dsd_state* state, const struct U
 }
 
 static int
-ui_cmd_handle_import_keys_dec(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_import_keys_dec(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
@@ -1249,7 +1250,7 @@ ui_cmd_handle_import_keys_dec(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-ui_cmd_handle_import_keys_hex(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_import_keys_hex(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
@@ -1265,12 +1266,12 @@ ui_cmd_handle_import_keys_hex(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_IMPORT_CHANNEL_MAP, ui_cmd_handle_import_channel_map},
-        {UI_CMD_IMPORT_GROUP_LIST, ui_cmd_handle_import_group_list},
-        {UI_CMD_IMPORT_KEYS_DEC, ui_cmd_handle_import_keys_dec},
-        {UI_CMD_IMPORT_KEYS_HEX, ui_cmd_handle_import_keys_hex},
+apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_IMPORT_CHANNEL_MAP, ui_cmd_handle_import_channel_map},
+        {DSD_APP_CMD_IMPORT_GROUP_LIST, ui_cmd_handle_import_group_list},
+        {DSD_APP_CMD_IMPORT_KEYS_DEC, ui_cmd_handle_import_keys_dec},
+        {DSD_APP_CMD_IMPORT_KEYS_HEX, ui_cmd_handle_import_keys_hex},
     };
     if (!opts || !c) {
         return 0;
@@ -1279,7 +1280,7 @@ apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct U
 }
 
 static int
-apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!opts || !c) {
         return 0;
     }
@@ -1323,12 +1324,12 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
 
 #ifdef USE_RADIO
 static int
-apply_cmd_dsp(const struct UiCmd* c) {
-    if (!c || c->id != UI_CMD_DSP_OP) {
+apply_cmd_dsp(const struct dsd_app_command* c) {
+    if (!c || c->id != DSD_APP_CMD_DSP_OP) {
         return 0;
     }
-    UiDspPayload p = {0};
-    if (c->n >= (int)sizeof(UiDspPayload)) {
+    dsd_app_dsp_payload p = {0};
+    if (c->n >= (int)sizeof(dsd_app_dsp_payload)) {
         DSD_MEMCPY(&p, c->data, sizeof p);
     }
     apply_dsp_op(&p);
@@ -1778,33 +1779,28 @@ dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     dsd_mutex_lock(&g_mu);
     if (q_is_full_unlocked()) {
         // Drop the oldest command (advance head) and warn once per burst
-        g_head = (g_head + 1) % UI_CMD_Q_CAP;
+        g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
         atomic_fetch_add(&g_overflow, 1);
         if (atomic_exchange(&g_overflow_warn_gate, 1) == 0) {
             LOG_WARNING("ui_cmd_queue: overflow; dropping oldest command(s).\n");
         }
     }
-    struct UiCmd* c = &g_q[g_tail];
+    struct dsd_app_command* c = &g_q[g_tail];
     c->id = cmd_id;
     c->n = payload_sz;
     if (payload_sz && payload) {
         DSD_MEMCPY(c->data, payload, payload_sz);
     }
-    g_tail = (g_tail + 1) % UI_CMD_Q_CAP;
+    g_tail = (g_tail + 1) % DSD_APP_CMD_Q_CAP;
     dsd_mutex_unlock(&g_mu);
     return 0;
 }
 
-int
-ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
-    return dsd_app_post_cmd(cmd_id, payload, payload_sz);
-}
-
 static int
-apply_cmd_legacy_basic_a(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_legacy_basic_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
-        case UI_CMD_QUIT: exitflag = 1; return 1;
-        case UI_CMD_FORCE_PRIV_TOGGLE:
+        case DSD_APP_CMD_QUIT: exitflag = 1; return 1;
+        case DSD_APP_CMD_FORCE_PRIV_TOGGLE:
             if (!state) {
                 return 1;
             }
@@ -1814,7 +1810,7 @@ apply_cmd_legacy_basic_a(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
                 state->M = 1;
             }
             return 1;
-        case UI_CMD_FORCE_RC4_TOGGLE:
+        case DSD_APP_CMD_FORCE_RC4_TOGGLE:
             if (!state) {
                 return 1;
             }
@@ -1824,19 +1820,21 @@ apply_cmd_legacy_basic_a(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
                 state->M = 0x21;
             }
             return 1;
-        case UI_CMD_TOGGLE_COMPACT: opts->terminal_compact = opts->terminal_compact ? 0 : 1; return 1;
-        case UI_CMD_HISTORY_CYCLE:
+        case DSD_APP_CMD_TOGGLE_COMPACT:
+            opts->frontend_display.terminal_compact = opts->frontend_display.terminal_compact ? 0 : 1;
+            return 1;
+        case DSD_APP_CMD_HISTORY_CYCLE:
             (void)ui_history_cycle_mode();
-            ui_request_redraw();
+            dsd_telemetry_request_redraw();
             return 1;
         default: return 0;
     }
 }
 
 static int
-apply_cmd_legacy_slot_controls(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_legacy_slot_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
-        case UI_CMD_SLOT1_TOGGLE:
+        case DSD_APP_CMD_SLOT1_TOGGLE:
             if (!state) {
                 return 1;
             }
@@ -1855,7 +1853,7 @@ apply_cmd_legacy_slot_controls(dsd_opts* opts, dsd_state* state, const struct Ui
                 opts->slot1_on = 1;
             }
             return 1;
-        case UI_CMD_SLOT2_TOGGLE:
+        case DSD_APP_CMD_SLOT2_TOGGLE:
             if (!state) {
                 return 1;
             }
@@ -1872,7 +1870,7 @@ apply_cmd_legacy_slot_controls(dsd_opts* opts, dsd_state* state, const struct Ui
                 opts->slot2_on = 1;
             }
             return 1;
-        case UI_CMD_SLOT_PREF_CYCLE:
+        case DSD_APP_CMD_SLOT_PREF_CYCLE:
             if (opts->slot_preference == 0 || opts->slot_preference == 1) {
                 opts->slot_preference++;
             } else {
@@ -1884,7 +1882,7 @@ apply_cmd_legacy_slot_controls(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-ui_cmd_handle_payload_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_payload_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->payload = opts->payload ? 0 : 1;
@@ -1892,19 +1890,19 @@ ui_cmd_handle_payload_toggle_legacy(dsd_opts* opts, dsd_state* state, const stru
 }
 
 static int
-ui_cmd_handle_p25_ga_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_p25_ga_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
-    opts->show_p25_group_affiliations = opts->show_p25_group_affiliations ? 0 : 1;
+    opts->frontend_display.show_p25_group_affiliations = opts->frontend_display.show_p25_group_affiliations ? 0 : 1;
     if (state) {
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "P25 Group Affiliation: %s",
-                     opts->show_p25_group_affiliations ? "On" : "Off");
+                     opts->frontend_display.show_p25_group_affiliations ? "On" : "Off");
         state->ui_msg_expire = time(NULL) + 3;
     }
     return 1;
 }
 
 static int
-ui_cmd_handle_lpf_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_lpf_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->use_lpf = opts->use_lpf ? 0 : 1;
@@ -1912,7 +1910,7 @@ ui_cmd_handle_lpf_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct U
 }
 
 static int
-ui_cmd_handle_hpf_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_hpf_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->use_hpf = opts->use_hpf ? 0 : 1;
@@ -1920,7 +1918,7 @@ ui_cmd_handle_hpf_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct U
 }
 
 static int
-ui_cmd_handle_pbf_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_pbf_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->use_pbf = opts->use_pbf ? 0 : 1;
@@ -1928,7 +1926,7 @@ ui_cmd_handle_pbf_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct U
 }
 
 static int
-ui_cmd_handle_hpf_d_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_hpf_d_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->use_hpf_d = opts->use_hpf_d ? 0 : 1;
@@ -1936,7 +1934,7 @@ ui_cmd_handle_hpf_d_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct
 }
 
 static int
-ui_cmd_handle_aggr_sync_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_aggr_sync_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->aggressive_framesync = opts->aggressive_framesync ? 0 : 1;
@@ -1944,7 +1942,7 @@ ui_cmd_handle_aggr_sync_toggle_legacy(dsd_opts* opts, dsd_state* state, const st
 }
 
 static int
-ui_cmd_handle_call_alert_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_call_alert_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     uint8_t events = dsd_call_alert_mask_events(opts->call_alert_events);
@@ -1954,7 +1952,7 @@ ui_cmd_handle_call_alert_toggle_legacy(dsd_opts* opts, dsd_state* state, const s
 }
 
 static int
-ui_cmd_handle_call_alert_events_set_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_call_alert_events_set_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     uint8_t events = 0;
     if (c->n >= sizeof events) {
@@ -1967,42 +1965,43 @@ ui_cmd_handle_call_alert_events_set_legacy(dsd_opts* opts, dsd_state* state, con
 }
 
 static int
-apply_cmd_legacy_payload_filters(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_PAYLOAD_TOGGLE, ui_cmd_handle_payload_toggle_legacy},
-        {UI_CMD_P25_GA_TOGGLE, ui_cmd_handle_p25_ga_toggle_legacy},
-        {UI_CMD_LPF_TOGGLE, ui_cmd_handle_lpf_toggle_legacy},
-        {UI_CMD_HPF_TOGGLE, ui_cmd_handle_hpf_toggle_legacy},
-        {UI_CMD_PBF_TOGGLE, ui_cmd_handle_pbf_toggle_legacy},
-        {UI_CMD_HPF_D_TOGGLE, ui_cmd_handle_hpf_d_toggle_legacy},
-        {UI_CMD_AGGR_SYNC_TOGGLE, ui_cmd_handle_aggr_sync_toggle_legacy},
-        {UI_CMD_CALL_ALERT_TOGGLE, ui_cmd_handle_call_alert_toggle_legacy},
-        {UI_CMD_CALL_ALERT_EVENTS_SET, ui_cmd_handle_call_alert_events_set_legacy},
+apply_cmd_legacy_payload_filters(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_PAYLOAD_TOGGLE, ui_cmd_handle_payload_toggle_legacy},
+        {DSD_APP_CMD_P25_GA_TOGGLE, ui_cmd_handle_p25_ga_toggle_legacy},
+        {DSD_APP_CMD_LPF_TOGGLE, ui_cmd_handle_lpf_toggle_legacy},
+        {DSD_APP_CMD_HPF_TOGGLE, ui_cmd_handle_hpf_toggle_legacy},
+        {DSD_APP_CMD_PBF_TOGGLE, ui_cmd_handle_pbf_toggle_legacy},
+        {DSD_APP_CMD_HPF_D_TOGGLE, ui_cmd_handle_hpf_d_toggle_legacy},
+        {DSD_APP_CMD_AGGR_SYNC_TOGGLE, ui_cmd_handle_aggr_sync_toggle_legacy},
+        {DSD_APP_CMD_CALL_ALERT_TOGGLE, ui_cmd_handle_call_alert_toggle_legacy},
+        {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, ui_cmd_handle_call_alert_events_set_legacy},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
 static int
-apply_cmd_legacy_constellation(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_legacy_constellation(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     switch (c->id) {
-        case UI_CMD_CONST_TOGGLE:
+        case DSD_APP_CMD_CONST_TOGGLE:
             if (opts->audio_in_type == AUDIO_IN_RTL) {
-                opts->constellation = opts->constellation ? 0 : 1;
+                opts->frontend_display.constellation = opts->frontend_display.constellation ? 0 : 1;
             }
             return 1;
-        case UI_CMD_CONST_NORM_TOGGLE:
-            if (opts->audio_in_type == AUDIO_IN_RTL && opts->constellation == 1) {
-                opts->const_norm_mode = (opts->const_norm_mode == 0) ? 1 : 0;
+        case DSD_APP_CMD_CONST_NORM_TOGGLE:
+            if (opts->audio_in_type == AUDIO_IN_RTL && opts->frontend_display.constellation == 1) {
+                opts->frontend_display.const_norm_mode = (opts->frontend_display.const_norm_mode == 0) ? 1 : 0;
             }
             return 1;
-        case UI_CMD_CONST_GATE_DELTA:
-            if (opts->audio_in_type == AUDIO_IN_RTL && opts->constellation == 1) {
+        case DSD_APP_CMD_CONST_GATE_DELTA:
+            if (opts->audio_in_type == AUDIO_IN_RTL && opts->frontend_display.constellation == 1) {
                 float d = 0.0f;
                 if (c->n >= (int)sizeof(float)) {
                     DSD_MEMCPY(&d, c->data, sizeof(float));
                 }
-                float* g = (opts->mod_qpsk == 1) ? &opts->const_gate_qpsk : &opts->const_gate_other;
+                float* g = (opts->mod_qpsk == 1) ? &opts->frontend_display.const_gate_qpsk
+                                                 : &opts->frontend_display.const_gate_other;
                 *g += d;
                 if (*g < 0.0f) {
                     *g = 0.0f;
@@ -2017,65 +2016,65 @@ apply_cmd_legacy_constellation(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-ui_cmd_handle_eye_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_eye_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        opts->eye_view = opts->eye_view ? 0 : 1;
+        opts->frontend_display.eye_view = opts->frontend_display.eye_view ? 0 : 1;
     }
     return 1;
 }
 
 static int
-ui_cmd_handle_eye_unicode_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_eye_unicode_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->eye_view == 1) {
-        opts->eye_unicode = opts->eye_unicode ? 0 : 1;
+    if (opts->audio_in_type == AUDIO_IN_RTL && opts->frontend_display.eye_view == 1) {
+        opts->frontend_display.eye_unicode = opts->frontend_display.eye_unicode ? 0 : 1;
     }
     return 1;
 }
 
 static int
-ui_cmd_handle_eye_color_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_eye_color_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->eye_view == 1) {
-        opts->eye_color = opts->eye_color ? 0 : 1;
+    if (opts->audio_in_type == AUDIO_IN_RTL && opts->frontend_display.eye_view == 1) {
+        opts->frontend_display.eye_color = opts->frontend_display.eye_color ? 0 : 1;
     }
     return 1;
 }
 
 static int
-ui_cmd_handle_fsk_hist_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    (void)state;
-    (void)c;
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        opts->fsk_hist_view = opts->fsk_hist_view ? 0 : 1;
-    }
-    return 1;
-}
-
-static int
-ui_cmd_handle_spectrum_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_fsk_hist_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        opts->spectrum_view = opts->spectrum_view ? 0 : 1;
+        opts->frontend_display.fsk_hist_view = opts->frontend_display.fsk_hist_view ? 0 : 1;
     }
     return 1;
 }
 
 static int
-ui_cmd_handle_spec_size_delta_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_spectrum_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)state;
+    (void)c;
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        opts->frontend_display.spectrum_view = opts->frontend_display.spectrum_view ? 0 : 1;
+    }
+    return 1;
+}
+
+static int
+ui_cmd_handle_spec_size_delta_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t d = 0;
     (void)state;
     if (c->n >= (int)sizeof(int32_t)) {
         DSD_MEMCPY(&d, c->data, sizeof(int32_t));
     }
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->spectrum_view == 1) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && opts->frontend_display.spectrum_view == 1) {
         /* Keep legacy toggle state normalized while applying size changes. */
-        opts->spectrum_view = 1;
+        opts->frontend_display.spectrum_view = 1;
 #ifdef USE_RADIO
         int n = rtl_stream_spectrum_get_size();
         int want = n + d;
@@ -2096,22 +2095,22 @@ ui_cmd_handle_spec_size_delta_legacy(dsd_opts* opts, dsd_state* state, const str
 }
 
 static int
-apply_cmd_legacy_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_EYE_TOGGLE, ui_cmd_handle_eye_toggle_legacy},
-        {UI_CMD_EYE_UNICODE_TOGGLE, ui_cmd_handle_eye_unicode_toggle_legacy},
-        {UI_CMD_EYE_COLOR_TOGGLE, ui_cmd_handle_eye_color_toggle_legacy},
-        {UI_CMD_FSK_HIST_TOGGLE, ui_cmd_handle_fsk_hist_toggle_legacy},
-        {UI_CMD_SPECTRUM_TOGGLE, ui_cmd_handle_spectrum_toggle_legacy},
-        {UI_CMD_SPEC_SIZE_DELTA, ui_cmd_handle_spec_size_delta_legacy},
+apply_cmd_legacy_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_EYE_TOGGLE, ui_cmd_handle_eye_toggle_legacy},
+        {DSD_APP_CMD_EYE_UNICODE_TOGGLE, ui_cmd_handle_eye_unicode_toggle_legacy},
+        {DSD_APP_CMD_EYE_COLOR_TOGGLE, ui_cmd_handle_eye_color_toggle_legacy},
+        {DSD_APP_CMD_FSK_HIST_TOGGLE, ui_cmd_handle_fsk_hist_toggle_legacy},
+        {DSD_APP_CMD_SPECTRUM_TOGGLE, ui_cmd_handle_spectrum_toggle_legacy},
+        {DSD_APP_CMD_SPEC_SIZE_DELTA, ui_cmd_handle_spec_size_delta_legacy},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
 static int
-apply_cmd_legacy_trunk_controls(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_legacy_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
-        case UI_CMD_DMR_RESET:
+        case DSD_APP_CMD_DMR_RESET:
             if (!state) {
                 return 1;
             }
@@ -2132,7 +2131,7 @@ apply_cmd_legacy_trunk_controls(dsd_opts* opts, dsd_state* state, const struct U
             state->nxdn_step = 0;
             state->nxdn_bw = 0;
             return 1;
-        case UI_CMD_TCP_CONNECT_AUDIO: {
+        case DSD_APP_CMD_TCP_CONNECT_AUDIO: {
             int rc = svc_tcp_connect_audio(opts, opts->tcp_hostname, opts->tcp_portno);
             if (rc == 0) {
                 LOG_INFO("TCP Socket Connected Successfully.\n");
@@ -2143,7 +2142,7 @@ apply_cmd_legacy_trunk_controls(dsd_opts* opts, dsd_state* state, const struct U
             }
             return 1;
         }
-        case UI_CMD_RIGCTL_CONNECT:
+        case DSD_APP_CMD_RIGCTL_CONNECT:
             DSD_MEMCPY(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
             opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
             opts->use_rigctl = (opts->rigctl_sockfd != 0) ? 1 : 0;
@@ -2153,7 +2152,7 @@ apply_cmd_legacy_trunk_controls(dsd_opts* opts, dsd_state* state, const struct U
                 ui_set_toast(state, 4, "Rigctl connect failed: %s:%d", opts->rigctlhostname, opts->rigctlportno);
             }
             return 1;
-        case UI_CMD_RETURN_CC:
+        case DSD_APP_CMD_RETURN_CC:
             if (!state) {
                 return 1;
             }
@@ -2165,7 +2164,7 @@ apply_cmd_legacy_trunk_controls(dsd_opts* opts, dsd_state* state, const struct U
                 LOG_INFO("User Activated Return to CC\n");
             }
             return 1;
-        case UI_CMD_SIM_NOCAR:
+        case DSD_APP_CMD_SIM_NOCAR:
             if (!state) {
                 return 1;
             }
@@ -2179,11 +2178,11 @@ apply_cmd_legacy_trunk_controls(dsd_opts* opts, dsd_state* state, const struct U
 }
 
 static int
-apply_cmd_legacy_lockout_slot(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_legacy_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state) {
-        return (c && c->id == UI_CMD_LOCKOUT_SLOT) ? 1 : 0;
+        return (c && c->id == DSD_APP_CMD_LOCKOUT_SLOT) ? 1 : 0;
     }
-    if (c->id != UI_CMD_LOCKOUT_SLOT) {
+    if (c->id != DSD_APP_CMD_LOCKOUT_SLOT) {
         return 0;
     }
     uint8_t slot = 0;
@@ -2238,9 +2237,9 @@ apply_cmd_legacy_lockout_slot(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-apply_cmd_legacy_provoice_m17(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_legacy_provoice_m17(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
-        case UI_CMD_M17_TX_TOGGLE:
+        case DSD_APP_CMD_M17_TX_TOGGLE:
             if (!state) {
                 return 1;
             }
@@ -2251,7 +2250,7 @@ apply_cmd_legacy_provoice_m17(dsd_opts* opts, dsd_state* state, const struct UiC
                 }
             }
             return 1;
-        case UI_CMD_PROVOICE_ESK_TOGGLE:
+        case DSD_APP_CMD_PROVOICE_ESK_TOGGLE:
             if (!state) {
                 return 1;
             }
@@ -2259,7 +2258,7 @@ apply_cmd_legacy_provoice_m17(dsd_opts* opts, dsd_state* state, const struct UiC
                 state->esk_mask = (state->esk_mask == 0) ? 0xA0 : 0;
             }
             return 1;
-        case UI_CMD_PROVOICE_MODE_TOGGLE:
+        case DSD_APP_CMD_PROVOICE_MODE_TOGGLE:
             if (!state) {
                 return 1;
             }
@@ -2283,8 +2282,8 @@ apply_cmd_legacy_provoice_m17(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-apply_cmd_legacy_channel_cycle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    if (c->id != UI_CMD_CHANNEL_CYCLE) {
+apply_cmd_legacy_channel_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (c->id != DSD_APP_CMD_CHANNEL_CYCLE) {
         return 0;
     }
     if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
@@ -2321,7 +2320,7 @@ apply_cmd_legacy_channel_cycle(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-ui_cmd_handle_symcap_save_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_symcap_save_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     char timestr[7];
     char datestr[9];
@@ -2344,7 +2343,7 @@ ui_cmd_handle_symcap_save_legacy(dsd_opts* opts, dsd_state* state, const struct 
 }
 
 static int
-ui_cmd_handle_symcap_stop_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_symcap_stop_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (opts->symbol_out_f) {
         closeSymbolOutFile(opts, state);
@@ -2364,7 +2363,7 @@ ui_cmd_handle_symcap_stop_legacy(dsd_opts* opts, dsd_state* state, const struct 
 }
 
 static int
-ui_cmd_handle_replay_last_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_replay_last_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     dsd_stat_t sb;
     (void)c;
     if (dsd_stat_path(opts->audio_in_dev, &sb) != 0) {
@@ -2385,7 +2384,7 @@ ui_cmd_handle_replay_last_legacy(dsd_opts* opts, dsd_state* state, const struct 
 }
 
 static int
-ui_cmd_handle_wav_start_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_wav_start_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     char wav_file_directory[1024] = {0};
     dsd_stat_t st;
     (void)state;
@@ -2404,7 +2403,7 @@ ui_cmd_handle_wav_start_legacy(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-ui_cmd_handle_wav_stop_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_wav_stop_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
                                                 state ? &state->event_history_s[0] : NULL);
@@ -2417,7 +2416,7 @@ ui_cmd_handle_wav_stop_legacy(dsd_opts* opts, dsd_state* state, const struct UiC
 }
 
 static int
-ui_cmd_handle_stop_playback_legacy(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_cmd_handle_stop_playback_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (opts->symbolfile != NULL) {
         if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
@@ -2444,26 +2443,28 @@ ui_cmd_handle_stop_playback_legacy(dsd_opts* opts, dsd_state* state, const struc
 }
 
 static int
-apply_cmd_legacy_capture_playback(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const struct UiCmdHandlerEntry k_handlers[] = {
-        {UI_CMD_SYMCAP_SAVE, ui_cmd_handle_symcap_save_legacy},
-        {UI_CMD_SYMCAP_STOP, ui_cmd_handle_symcap_stop_legacy},
-        {UI_CMD_REPLAY_LAST, ui_cmd_handle_replay_last_legacy},
-        {UI_CMD_WAV_START, ui_cmd_handle_wav_start_legacy},
-        {UI_CMD_WAV_STOP, ui_cmd_handle_wav_stop_legacy},
-        {UI_CMD_STOP_PLAYBACK, ui_cmd_handle_stop_playback_legacy},
+apply_cmd_legacy_capture_playback(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_SYMCAP_SAVE, ui_cmd_handle_symcap_save_legacy},
+        {DSD_APP_CMD_SYMCAP_STOP, ui_cmd_handle_symcap_stop_legacy},
+        {DSD_APP_CMD_REPLAY_LAST, ui_cmd_handle_replay_last_legacy},
+        {DSD_APP_CMD_WAV_START, ui_cmd_handle_wav_start_legacy},
+        {DSD_APP_CMD_WAV_STOP, ui_cmd_handle_wav_stop_legacy},
+        {DSD_APP_CMD_STOP_PLAYBACK, ui_cmd_handle_stop_playback_legacy},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
 static int
-apply_cmd_legacy_misc_config(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+apply_cmd_legacy_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
-        case UI_CMD_CRC_RELAX_TOGGLE: svc_toggle_crc_relax(opts); return 1;
-        case UI_CMD_LCW_RETUNE_TOGGLE: svc_toggle_lcw_retune(opts); return 1;
-        case UI_CMD_P25_CC_CAND_TOGGLE: opts->p25_prefer_candidates = opts->p25_prefer_candidates ? 0 : 1; return 1;
-        case UI_CMD_REVERSE_MUTE_TOGGLE: svc_toggle_reverse_mute(opts); return 1;
-        case UI_CMD_CONFIG_APPLY: {
+        case DSD_APP_CMD_CRC_RELAX_TOGGLE: svc_toggle_crc_relax(opts); return 1;
+        case DSD_APP_CMD_LCW_RETUNE_TOGGLE: svc_toggle_lcw_retune(opts); return 1;
+        case DSD_APP_CMD_P25_CC_CAND_TOGGLE:
+            opts->p25_prefer_candidates = opts->p25_prefer_candidates ? 0 : 1;
+            return 1;
+        case DSD_APP_CMD_REVERSE_MUTE_TOGGLE: svc_toggle_reverse_mute(opts); return 1;
+        case DSD_APP_CMD_CONFIG_APPLY: {
             if (state && c->n >= sizeof(dsdneoUserConfig)) {
                 dsdneoUserConfig cfg;
                 char old_audio_in_dev[sizeof opts->audio_in_dev];
@@ -2508,8 +2509,8 @@ apply_cmd_legacy_misc_config(dsd_opts* opts, dsd_state* state, const struct UiCm
 }
 
 static void
-apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
-    static const UiCmdHandlerFn k_legacy_groups[] = {
+apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const dsd_app_command_handler_fn k_legacy_groups[] = {
         apply_cmd_legacy_basic_a,          apply_cmd_legacy_slot_controls, apply_cmd_legacy_payload_filters,
         apply_cmd_legacy_constellation,    apply_cmd_legacy_eye_spectrum,  apply_cmd_legacy_trunk_controls,
         apply_cmd_legacy_lockout_slot,     apply_cmd_legacy_provoice_m17,  apply_cmd_legacy_channel_cycle,
@@ -2519,7 +2520,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
         return;
     }
     if (!opts) {
-        if (c->id == UI_CMD_QUIT) {
+        if (c->id == DSD_APP_CMD_QUIT) {
             exitflag = 1;
         }
         return;
@@ -2544,16 +2545,16 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
     for (;;) {
-        struct UiCmd cmd;
+        struct dsd_app_command cmd;
         int have = 0;
         dsd_mutex_lock(&g_mu);
         if (!q_is_empty_unlocked()) {
             cmd = g_q[g_head];
-            g_head = (g_head + 1) % UI_CMD_Q_CAP;
+            g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
             have = 1;
         }
         // Reset overflow warning gate when queue has space again
-        if (((g_tail + 1) % UI_CMD_Q_CAP) != g_head) {
+        if (((g_tail + 1) % DSD_APP_CMD_Q_CAP) != g_head) {
             atomic_store(&g_overflow_warn_gate, 0);
         }
         dsd_mutex_unlock(&g_mu);
@@ -2563,16 +2564,11 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         apply_cmd(opts, state, &cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.
-        ui_publish_opts_snapshot(opts);
+        dsd_telemetry_publish_opts_snapshot(opts);
         if (state) {
-            ui_publish_snapshot(state);
+            dsd_telemetry_publish_snapshot(state);
         }
         n_applied++;
     }
     return n_applied;
-}
-
-int
-ui_drain_cmds(dsd_opts* opts, dsd_state* state) {
-    return dsd_app_drain_cmds(opts, state);
 }

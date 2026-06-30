@@ -272,7 +272,7 @@ test_ui_start_failure_resets_state(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.terminal_history = 2;
+    opts.frontend_display.terminal_history = 2;
 
     g_create_calls = 0;
     g_join_calls = 0;
@@ -297,7 +297,7 @@ test_ui_start_stop_idempotency_and_control_pump(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.terminal_history = 1;
+    opts.frontend_display.terminal_history = 1;
 
     g_create_calls = 0;
     g_join_calls = 0;

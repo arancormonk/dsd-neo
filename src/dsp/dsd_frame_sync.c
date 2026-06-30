@@ -302,7 +302,7 @@ frame_sync_publish_ui_throttled(const dsd_opts* opts, const dsd_state* state) {
     }
 
     dsd_atomic_u64_store_relaxed(&g_frame_sync_ui_last_publish_ms, now_ms);
-    ui_publish_both_and_redraw(opts, state);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
 }
 
 static void
