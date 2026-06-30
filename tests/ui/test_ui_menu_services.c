@@ -7,6 +7,7 @@
  * Deterministic contracts for terminal UI menu service helpers.
  */
 
+#include <dsd-neo/app_control/services.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
@@ -26,7 +27,6 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
-#include <dsd-neo/ui/menu_services.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>

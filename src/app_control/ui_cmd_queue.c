@@ -5,6 +5,10 @@
 
 /* UI → Demod command queue (SPSC, bounded) */
 
+#include <dsd-neo/app_control/command_dispatch.h>
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/services.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -32,12 +36,6 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
-#include <dsd-neo/ui/menu_services.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_cmd.h>
-#include <dsd-neo/ui/ui_cmd_dispatch.h>
-#include <dsd-neo/ui/ui_dsp_cmd.h>
-#include <dsd-neo/ui/ui_history.h>
 #include <sndfile.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -1772,7 +1770,7 @@ apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUse
 }
 
 int
-ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
+dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     if (payload_sz > sizeof(g_q[0].data)) {
         payload_sz = sizeof(g_q[0].data);
     }
@@ -1795,6 +1793,11 @@ ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     g_tail = (g_tail + 1) % UI_CMD_Q_CAP;
     dsd_mutex_unlock(&g_mu);
     return 0;
+}
+
+int
+ui_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
+    return dsd_app_post_cmd(cmd_id, payload, payload_sz);
 }
 
 static int
@@ -2529,7 +2532,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 int
-ui_drain_cmds(dsd_opts* opts, dsd_state* state) {
+dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
     ensure_mu_init();
     for (;;) {
@@ -2559,4 +2562,9 @@ ui_drain_cmds(dsd_opts* opts, dsd_state* state) {
         n_applied++;
     }
     return n_applied;
+}
+
+int
+ui_drain_cmds(dsd_opts* opts, dsd_state* state) {
+    return dsd_app_drain_cmds(opts, state);
 }

@@ -17,6 +17,7 @@
  * rollback semantics depend on the helper's success/failure result.
  */
 
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -31,11 +32,6 @@
 #endif
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
-#include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_cmd.h>
-#ifdef USE_RADIO
-#include <dsd-neo/ui/ui_dsp_cmd.h>
-#endif
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -521,6 +517,52 @@ make_test_profile_context(dsd_state* state, const char* path) {
     pctx->labels[0] = pctx->names[0];
     pctx->labels[1] = pctx->names[1];
     return pctx;
+}
+
+void
+chooser_done_config_profile(void* u, int sel) {
+    ProfileSelCtx* pctx = (ProfileSelCtx*)u;
+    if (!pctx) {
+        return;
+    }
+
+    if (sel >= 0 && sel < pctx->n && pctx->names && pctx->names[sel] && pctx->path[0] != '\0') {
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        if (dsd_user_config_load_profile(pctx->path, pctx->names[sel], &cfg) == 0) {
+            if (pctx->state) {
+                pctx->state->config_autosave_enabled = 0;
+                DSD_SNPRINTF(pctx->state->config_autosave_path, sizeof pctx->state->config_autosave_path, "%s",
+                             pctx->path);
+                pctx->state->config_autosave_path[sizeof pctx->state->config_autosave_path - 1] = '\0';
+            }
+            ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+        }
+    }
+
+    free_test_profile_context(pctx);
+}
+
+void
+act_config_load_profile(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->state) {
+        return;
+    }
+
+    const char* path =
+        c->state->config_autosave_path[0] ? c->state->config_autosave_path : dsd_user_config_default_path();
+    if (!path || !*path) {
+        return;
+    }
+
+    const char* names[32];
+    char names_buf[1024];
+    int count =
+        dsd_user_config_list_profiles(path, names, names_buf, sizeof names_buf, (int)(sizeof names / sizeof names[0]));
+    if (count <= 0) {
+        return;
+    }
 }
 
 static int

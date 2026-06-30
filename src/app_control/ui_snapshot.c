@@ -3,13 +3,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
-#include <dsd-neo/ui/ui_snapshot.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -201,7 +201,7 @@ ensure_mu_init(void) {
 }
 
 void
-ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
+dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
     if (!state) {
         return;
     }
@@ -234,7 +234,7 @@ ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
 }
 
 const dsd_state*
-ui_get_latest_snapshot(void) {
+dsd_app_get_latest_snapshot(void) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     if (!g_have) {
@@ -259,4 +259,14 @@ ui_get_latest_snapshot(void) {
     }
     dsd_mutex_unlock(&g_mu);
     return &g_consume;
+}
+
+void
+ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
+    dsd_app_telemetry_publish_snapshot(state);
+}
+
+const dsd_state*
+ui_get_latest_snapshot(void) {
+    return dsd_app_get_latest_snapshot();
 }

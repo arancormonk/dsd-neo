@@ -5,16 +5,16 @@
 
 /* UI command actions — audio domain */
 
+#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/ui/ui_cmd_dispatch.h>
 #include <stdint.h>
 #include <time.h>
+#include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/ui/ui_cmd.h"
 
 static int
 ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {

@@ -3,10 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -29,7 +29,7 @@ ensure_opts_mu_init(void) {
 }
 
 void
-ui_terminal_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
+dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
     if (!opts) {
         return;
     }
@@ -42,7 +42,7 @@ ui_terminal_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
 }
 
 const dsd_opts*
-ui_get_latest_opts_snapshot(void) {
+dsd_app_get_latest_opts_snapshot(void) {
     ensure_opts_mu_init();
     dsd_mutex_lock(&g_opts_mu);
     if (!g_have_opts) {
@@ -55,4 +55,14 @@ ui_get_latest_opts_snapshot(void) {
     }
     dsd_mutex_unlock(&g_opts_mu);
     return &g_consume_opts;
+}
+
+void
+ui_terminal_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
+    dsd_app_telemetry_publish_opts_snapshot(opts);
+}
+
+const dsd_opts*
+ui_get_latest_opts_snapshot(void) {
+    return dsd_app_get_latest_opts_snapshot();
 }

@@ -11,7 +11,6 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
 
 #include "telemetry_hooks_impl.h"
 

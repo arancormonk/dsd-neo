@@ -4,8 +4,8 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/app_control/history.h>
 #include <dsd-neo/platform/atomic_compat.h>
-#include <dsd-neo/ui/ui_history.h>
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/safe_api.h"

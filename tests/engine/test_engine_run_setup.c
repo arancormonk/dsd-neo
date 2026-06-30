@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/engine/engine.h>
 #include <math.h>
 #include <stdio.h>
@@ -20,17 +21,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-int
-ui_start(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    return 0;
-}
-
-void
-ui_stop(void) { // NOLINT(misc-use-internal-linkage)
-}
 
 static int
 expect_true(const char* tag, int cond) {
@@ -80,6 +70,72 @@ free_test_runtime(dsd_opts* opts, dsd_state* state) {
     }
     free(state);
     free(opts);
+}
+
+typedef struct {
+    int start_calls;
+    int stop_calls;
+    int failures;
+} engine_lifecycle_test_ctx;
+
+static int
+test_lifecycle_start(dsd_opts* opts, dsd_state* state, void* context) {
+    engine_lifecycle_test_ctx* ctx = (engine_lifecycle_test_ctx*)context;
+    ctx->start_calls++;
+    if (opts->udp_in_portno != 7355) {
+        DSD_FPRINTF(stderr, "lifecycle start ran before UDP setup\n");
+        ctx->failures++;
+    }
+    if (dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_START_MS) == NULL) {
+        DSD_FPRINTF(stderr, "lifecycle start missing live state extension\n");
+        ctx->failures++;
+    }
+    return 0;
+}
+
+static void
+test_lifecycle_stop(dsd_opts* opts, dsd_state* state, void* context) {
+    engine_lifecycle_test_ctx* ctx = (engine_lifecycle_test_ctx*)context;
+    ctx->stop_calls++;
+    if (opts->udp_in_portno != 7355) {
+        DSD_FPRINTF(stderr, "lifecycle stop saw state before setup completed\n");
+        ctx->failures++;
+    }
+    if (dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_START_MS) == NULL) {
+        DSD_FPRINTF(stderr, "lifecycle stop ran after engine cleanup\n");
+        ctx->failures++;
+    }
+}
+
+static int
+test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
+    state->debug_mode = 1;
+
+    engine_lifecycle_test_ctx ctx = {0};
+    dsd_engine_lifecycle_hooks hooks = {
+        .start = test_lifecycle_start,
+        .stop = test_lifecycle_stop,
+        .context = &ctx,
+    };
+    int rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+
+    int test_rc = 0;
+    test_rc |= expect_true("lifecycle run ok", rc == 0);
+    test_rc |= expect_true("lifecycle start called once", ctx.start_calls == 1);
+    test_rc |= expect_true("lifecycle stop called once", ctx.stop_calls == 1);
+    test_rc |= expect_true("lifecycle ordering checks", ctx.failures == 0);
+    test_rc |= expect_true("cleanup ran after lifecycle stop",
+                           dsd_state_ext_get(state, DSD_STATE_EXT_ENGINE_START_MS) == NULL);
+
+    free_test_runtime(opts, state);
+    return test_rc;
 }
 
 static int
@@ -307,6 +363,7 @@ main(void) {
     rc |= test_rtltcp_invalid_and_partial_tuning_tokens();
     rc |= test_soapy_setup_normalizes_args_and_tuning();
     rc |= test_iq_replay_guard_and_requested_setup();
+    rc |= test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup();
 
     if (rc == 0) {
         printf("ENGINE_RUN_SETUP: OK\n");

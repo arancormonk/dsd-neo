@@ -8,7 +8,7 @@
 #include <string.h>
 #include <time.h>
 
-#include <dsd-neo/ui/ui_history.h>
+#include <dsd-neo/app_control/history.h>
 
 int
 main(void) {
