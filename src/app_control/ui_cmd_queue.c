@@ -1996,10 +1996,10 @@ dsd_app_command_set_u32(int cmd_id, uint32_t value) {
 
 int
 dsd_app_command_set_u64(int cmd_id, uint64_t value) {
-    switch (cmd_id) {
-        case DSD_APP_CMD_KEY_RC4DES_SET: return dsd_app_post_cmd(cmd_id, &value, sizeof value);
-        default: return -1;
+    if (cmd_id != DSD_APP_CMD_KEY_RC4DES_SET) {
+        return -1;
     }
+    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
 }
 
 int
@@ -2014,10 +2014,10 @@ dsd_app_command_set_double(int cmd_id, double value) {
 
 int
 dsd_app_command_set_float(int cmd_id, float value) {
-    switch (cmd_id) {
-        case DSD_APP_CMD_CONST_GATE_DELTA: return dsd_app_post_cmd(cmd_id, &value, sizeof value);
-        default: return -1;
+    if (cmd_id != DSD_APP_CMD_CONST_GATE_DELTA) {
+        return -1;
     }
+    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
 }
 
 int
@@ -2741,56 +2741,90 @@ apply_cmd_legacy_capture_playback(dsd_opts* opts, dsd_state* state, const struct
 }
 
 static int
-apply_cmd_legacy_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    switch (c->id) {
-        case DSD_APP_CMD_CRC_RELAX_TOGGLE: svc_toggle_crc_relax(opts); return 1;
-        case DSD_APP_CMD_LCW_RETUNE_TOGGLE: svc_toggle_lcw_retune(opts); return 1;
-        case DSD_APP_CMD_P25_CC_CAND_TOGGLE:
-            opts->p25_prefer_candidates = opts->p25_prefer_candidates ? 0 : 1;
-            return 1;
-        case DSD_APP_CMD_REVERSE_MUTE_TOGGLE: svc_toggle_reverse_mute(opts); return 1;
-        case DSD_APP_CMD_CONFIG_APPLY: {
-            if (state && c->n >= sizeof(dsdneoUserConfig)) {
-                dsdneoUserConfig cfg;
-                char old_audio_in_dev[sizeof opts->audio_in_dev];
-                char old_audio_out_dev[sizeof opts->audio_out_dev];
-                int old_audio_in_type = opts->audio_in_type;
-                int old_audio_out_type = opts->audio_out_type;
-                int old_wav_sample_rate = opts->wav_sample_rate;
-                int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
-                int old_runtime_input_rate = current_demod_rate(opts, state);
-                int old_samples_per_symbol = state->samplesPerSymbol;
-                int old_symbol_center = state->symbolCenter;
-                int old_jitter = state->jitter;
-                dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
+ui_cmd_handle_crc_relax_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)state;
+    (void)c;
+    svc_toggle_crc_relax(opts);
+    return 1;
+}
 
-                DSD_SNPRINTF(old_audio_in_dev, sizeof old_audio_in_dev, "%s", opts->audio_in_dev);
-                DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
+static int
+ui_cmd_handle_lcw_retune_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)state;
+    (void)c;
+    svc_toggle_lcw_retune(opts);
+    return 1;
+}
 
-                DSD_MEMCPY(&cfg, c->data, sizeof cfg);
-                dsd_apply_user_config_to_opts(&cfg, opts, state);
-                /*
-                 * Frontend lifecycle is owned by startup and ui_start/ui_stop.
-                 * Runtime config/profile loads may carry persisted frontend
-                 * defaults, but flipping this live can strand an active curses
-                 * session before the UI thread has a chance to shut it down.
-                 */
-                opts->frontend_kind = old_frontend_kind;
-#ifdef USE_RADIO
-                apply_cfg_live_rtl_ppm_request(opts, &cfg, old_audio_in_type);
-#endif
-                apply_cfg_runtime_hot_switches(opts, state, &cfg, old_audio_in_dev, old_audio_in_type,
-                                               old_wav_sample_rate, old_effective_input_rate, old_audio_out_dev,
-                                               old_audio_out_type);
-                restore_live_pcm_rate_after_staged_file_apply(opts, &cfg, old_wav_sample_rate);
-                apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol,
-                                            old_symbol_center, old_jitter);
-                (void)ui_reconfigure_output_for_input_policy(opts, state);
-            }
-            return 1;
-        }
-        default: return 0;
+static int
+ui_cmd_handle_p25_cc_cand_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)state;
+    (void)c;
+    opts->p25_prefer_candidates = opts->p25_prefer_candidates ? 0 : 1;
+    return 1;
+}
+
+static int
+ui_cmd_handle_reverse_mute_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)state;
+    (void)c;
+    svc_toggle_reverse_mute(opts);
+    return 1;
+}
+
+static int
+ui_cmd_handle_config_apply_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!state || c->n < sizeof(dsdneoUserConfig)) {
+        return 1;
     }
+
+    dsdneoUserConfig cfg;
+    char old_audio_in_dev[sizeof opts->audio_in_dev];
+    char old_audio_out_dev[sizeof opts->audio_out_dev];
+    int old_audio_in_type = opts->audio_in_type;
+    int old_audio_out_type = opts->audio_out_type;
+    int old_wav_sample_rate = opts->wav_sample_rate;
+    int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
+    int old_runtime_input_rate = current_demod_rate(opts, state);
+    int old_samples_per_symbol = state->samplesPerSymbol;
+    int old_symbol_center = state->symbolCenter;
+    int old_jitter = state->jitter;
+    dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
+
+    DSD_SNPRINTF(old_audio_in_dev, sizeof old_audio_in_dev, "%s", opts->audio_in_dev);
+    DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
+
+    DSD_MEMCPY(&cfg, c->data, sizeof cfg);
+    dsd_apply_user_config_to_opts(&cfg, opts, state);
+    /*
+     * Frontend lifecycle is owned by startup and ui_start/ui_stop.
+     * Runtime config/profile loads may carry persisted frontend defaults,
+     * but flipping this live can strand an active curses session before
+     * the UI thread has a chance to shut it down.
+     */
+    opts->frontend_kind = old_frontend_kind;
+#ifdef USE_RADIO
+    apply_cfg_live_rtl_ppm_request(opts, &cfg, old_audio_in_type);
+#endif
+    apply_cfg_runtime_hot_switches(opts, state, &cfg, old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
+                                   old_effective_input_rate, old_audio_out_dev, old_audio_out_type);
+    restore_live_pcm_rate_after_staged_file_apply(opts, &cfg, old_wav_sample_rate);
+    apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol, old_symbol_center,
+                                old_jitter);
+    (void)ui_reconfigure_output_for_input_policy(opts, state);
+    return 1;
+}
+
+static int
+apply_cmd_legacy_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_CRC_RELAX_TOGGLE, ui_cmd_handle_crc_relax_toggle_legacy},
+        {DSD_APP_CMD_LCW_RETUNE_TOGGLE, ui_cmd_handle_lcw_retune_toggle_legacy},
+        {DSD_APP_CMD_P25_CC_CAND_TOGGLE, ui_cmd_handle_p25_cc_cand_toggle_legacy},
+        {DSD_APP_CMD_REVERSE_MUTE_TOGGLE, ui_cmd_handle_reverse_mute_toggle_legacy},
+        {DSD_APP_CMD_CONFIG_APPLY, ui_cmd_handle_config_apply_legacy},
+    };
+    return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
 static void

@@ -33,7 +33,7 @@ static int mbe_calls;
 static int play_ms_calls;
 static int play_fm_calls;
 static int convert_calls;
-static const uint8_t* convert_base;
+static uintptr_t convert_base_addr;
 static uint32_t convert_lengths[8];
 static size_t convert_offsets[8];
 static char captured_first_frame[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
@@ -45,7 +45,7 @@ reset_counters(void) {
     play_ms_calls = 0;
     play_fm_calls = 0;
     convert_calls = 0;
-    convert_base = NULL;
+    convert_base_addr = 0U;
     DSD_MEMSET(convert_lengths, 0, sizeof(convert_lengths));
     DSD_MEMSET(convert_offsets, 0, sizeof(convert_offsets));
     DSD_MEMSET(captured_first_frame, 0, sizeof(captured_first_frame));
@@ -64,10 +64,11 @@ uint64_t
 ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     assert(BufferIn != NULL);
     assert(convert_calls < (int)(sizeof(convert_lengths) / sizeof(convert_lengths[0])));
-    if (convert_base == NULL) {
-        convert_base = BufferIn;
+    uintptr_t buffer_addr = (uintptr_t)BufferIn;
+    if (convert_base_addr == 0U) {
+        convert_base_addr = buffer_addr;
     }
-    convert_offsets[convert_calls] = (size_t)(BufferIn - convert_base);
+    convert_offsets[convert_calls] = (size_t)(buffer_addr - convert_base_addr);
     convert_lengths[convert_calls] = BitLength;
     convert_calls++;
 
