@@ -301,6 +301,7 @@ small subset is exposed as config keys for convenience (for example
 | `pulse_sink` | STRING | PulseAudio sink device | (empty) |
 | `pulse_output` | STRING | Deprecated alias for `pulse_sink` | (empty) |
 | `frontend` | ENUM | Frontend implementation (`none|terminal`) | `none` |
+| `ncurses_ui` | BOOL | Deprecated alias for `frontend`; `true` maps to `terminal`, `false` maps to `none` | `false` |
 
 **[mode] section:**
 | Key | Type | Description | Default |

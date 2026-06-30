@@ -276,6 +276,12 @@ parse_frontend_kind_value(const char* val, dsd_frontend_kind* out_frontend) {
     return -1;
 }
 
+static void
+set_config_frontend_kind(dsdneoUserConfig* cfg, dsd_frontend_kind frontend) {
+    cfg->frontend_kind = frontend;
+    cfg->frontend_kind_is_set = 1;
+}
+
 static int
 parse_demod_path_value(const char* val, dsdneoUserDemodPath* out_path) {
     if (!val || !*val || !out_path) {
@@ -413,8 +419,12 @@ apply_output_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* 
     } else if (strcmp(key_lc, "frontend") == 0) {
         dsd_frontend_kind frontend = DSD_FRONTEND_NONE;
         if (parse_frontend_kind_value(val, &frontend) == 0) {
-            cfg->frontend_kind = frontend;
-            cfg->frontend_kind_is_set = 1;
+            set_config_frontend_kind(cfg, frontend);
+        }
+    } else if (strcmp(key_lc, "ncurses_ui") == 0) {
+        int enabled = 0;
+        if (parse_bool(val, &enabled) == 0) {
+            set_config_frontend_kind(cfg, enabled ? DSD_FRONTEND_TERMINAL : DSD_FRONTEND_NONE);
         }
     }
 }

@@ -585,6 +585,78 @@ test_load_and_apply_basic(void) {
 }
 
 static int
+test_load_legacy_ncurses_ui_alias(void) {
+    static const char* true_ini = "version = 1\n"
+                                  "\n"
+                                  "[output]\n"
+                                  "ncurses_ui = true\n";
+
+    char true_path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(true_ini, true_path, sizeof true_path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    int validate_rc = dsd_user_config_validate(true_path, &diags);
+
+    int rc = 0;
+    if (validate_rc != 0 || diags.error_count != 0) {
+        DSD_FPRINTF(stderr, "legacy ncurses_ui alias should validate without errors, rc=%d errors=%d warnings=%d\n",
+                    validate_rc, diags.error_count, diags.warning_count);
+        rc |= 1;
+    }
+    int found_deprecated_alias = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (diags.items[i].level == DSDCFG_DIAG_INFO && strcmp(diags.items[i].section, "output") == 0
+            && strcmp(diags.items[i].key, "ncurses_ui") == 0 && strstr(diags.items[i].message, "deprecated")) {
+            found_deprecated_alias = 1;
+            break;
+        }
+    }
+    if (!found_deprecated_alias) {
+        DSD_FPRINTF(stderr, "missing deprecated diagnostic for output.ncurses_ui alias\n");
+        rc |= 1;
+    }
+    dsd_user_config_diags_free(&diags);
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(true_path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for legacy ncurses_ui=true config %s\n", true_path);
+        (void)remove(true_path);
+        return rc | 1;
+    }
+    if (!cfg.has_output || !cfg.frontend_kind_is_set || cfg.frontend_kind != DSD_FRONTEND_TERMINAL) {
+        DSD_FPRINTF(stderr, "legacy ncurses_ui=true did not enable terminal frontend, has=%d set=%d kind=%d\n",
+                    cfg.has_output, cfg.frontend_kind_is_set, (int)cfg.frontend_kind);
+        rc |= 1;
+    }
+    (void)remove(true_path);
+
+    static const char* false_ini = "version = 1\n"
+                                   "\n"
+                                   "[output]\n"
+                                   "ncurses_ui = false\n";
+
+    char false_path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(false_ini, false_path, sizeof false_path) != 0) {
+        return rc | 1;
+    }
+    if (dsd_user_config_load(false_path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for legacy ncurses_ui=false config %s\n", false_path);
+        (void)remove(false_path);
+        return rc | 1;
+    }
+    if (!cfg.has_output || !cfg.frontend_kind_is_set || cfg.frontend_kind != DSD_FRONTEND_NONE) {
+        DSD_FPRINTF(stderr, "legacy ncurses_ui=false did not disable frontend, has=%d set=%d kind=%d\n", cfg.has_output,
+                    cfg.frontend_kind_is_set, (int)cfg.frontend_kind);
+        rc |= 1;
+    }
+    (void)remove(false_path);
+    return rc;
+}
+
+static int
 test_load_and_apply_alerts_empty_event_mask(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -1507,6 +1579,7 @@ main(void) {
     rc |= test_unknown_section_warnings_do_not_mutate_loaded_config();
     rc |= test_render_input_variants_and_save_atomic();
     rc |= test_load_and_apply_basic();
+    rc |= test_load_legacy_ncurses_ui_alias();
     rc |= test_load_and_apply_alerts_empty_event_mask();
     rc |= test_load_and_apply_soapy_input_no_args();
     rc |= test_load_and_apply_soapy_input_with_args();

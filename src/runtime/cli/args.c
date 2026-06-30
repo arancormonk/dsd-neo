@@ -1849,6 +1849,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->payload = 1;                                                                                         \
             LOG_NOTICE("Logging MBE/PDU payloads to console.\n");                                                      \
             break;                                                                                                     \
+        case 'N':                                                                                                      \
+            /* Legacy alias for --frontend terminal */                                                                 \
+            opts->frontend_kind = DSD_FRONTEND_TERMINAL;                                                               \
+            LOG_NOTICE("Frontend: terminal\n");                                                                        \
+            break;                                                                                                     \
         case 'P':                                                                                                      \
             if (opts->static_wav_file == 1) {                                                                          \
                 /* Allow CLI to override config-derived static WAV settings (file not opened yet). */                  \
@@ -2618,7 +2623,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_center = 0;
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
-                       "89:Ek:I:J:Oj^"))
+                       "89:Ek:I:J:Oj^N"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
     }

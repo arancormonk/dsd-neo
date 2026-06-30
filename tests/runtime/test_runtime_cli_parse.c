@@ -236,6 +236,42 @@ test_unknown_option_returns_error_and_does_not_exit(void) {
 }
 
 static int
+test_N_short_option_enables_terminal_frontend(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-N";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = 0;
+
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->frontend_kind != DSD_FRONTEND_TERMINAL) {
+        DSD_FPRINTF(stderr, "expected -N to enable terminal frontend, got frontend_kind=%d\n", opts->frontend_kind);
+        test_rc = 1;
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 expect_numeric_parse_error(const char* option, const char* value) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -5846,6 +5882,7 @@ main(void) {
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
+    rc |= test_N_short_option_enables_terminal_frontend();
     rc |= test_numeric_options_reject_trailing_junk();
     rc |= test_H_loads_aes256_key_for_both_slots();
     rc |= test_H_zero_key_keeps_dmr_encrypted_audio_muted();
