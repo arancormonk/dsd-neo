@@ -12,6 +12,7 @@
 
 #include <curses.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -25,9 +26,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
 
 typedef struct {
     int key;
@@ -167,10 +165,10 @@ ncurses_handle_delta_keys(int c) {
         case DSD_KEY_PPM_DOWN: ncurses_post_delta_i32(UI_CMD_PPM_DELTA, -1); return 1;
 #ifdef USE_RTLSDR
         case DSD_KEY_SPEC_DEC:
-            ncurses_post_delta_i32(UI_CMD_SPEC_SIZE_DELTA, -(rtl_stream_spectrum_get_size() / 2));
+            ncurses_post_delta_i32(UI_CMD_SPEC_SIZE_DELTA, -(dsd_app_frontend_spectrum_get_size() / 2));
             return 1;
         case DSD_KEY_SPEC_INC:
-            ncurses_post_delta_i32(UI_CMD_SPEC_SIZE_DELTA, +(rtl_stream_spectrum_get_size()));
+            ncurses_post_delta_i32(UI_CMD_SPEC_SIZE_DELTA, +(dsd_app_frontend_spectrum_get_size()));
             return 1;
 #endif
         default: return 0;

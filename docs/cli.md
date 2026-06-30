@@ -4,7 +4,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 
 ## Cheatsheet
 
-- Help: `dsd-neo -h` | UI/logs: `-N`, `-Z` | List devices: `-O`
+- Help: `dsd-neo -h` | UI/logs: `--frontend terminal`, `-Z` | List devices: `-O`
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host[:port]] | udp[:bind_addr[:port]] | m17udp[:bind_addr[:port]] | -`
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`
@@ -24,15 +24,15 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 ## Quick Start
 
 - Show help: `dsd-neo -h`
-- PulseAudio in, play out, UI on: `dsd-neo -i pulse -o pulse -N`
-- UDP audio in to PulseAudio out: `dsd-neo -i udp:0.0.0.0:7355 -o pulse -N`
-- Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
-- Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:48:0:2 -T -C connect_plus_chan.csv -G group.csv -N`
-- Follow DMR trunking (SoapySDR): `dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv -N`
-- Scan several P25/DMR targets with one tuner: `dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv -N`
-- Capture RTL I/Q + metadata: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq -N`
+- PulseAudio in, play out, UI on: `dsd-neo -i pulse -o pulse --frontend terminal`
+- UDP audio in to PulseAudio out: `dsd-neo -i udp:0.0.0.0:7355 -o pulse --frontend terminal`
+- Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal`
+- Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:48:0:2 -T -C connect_plus_chan.csv -G group.csv --frontend terminal`
+- Follow DMR trunking (SoapySDR): `dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv --frontend terminal`
+- Scan several P25/DMR targets with one tuner: `dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal`
+- Capture RTL I/Q + metadata: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal`
 - Inspect a capture: `dsd-neo --iq-info p25-control.iq.json`
-- Replay a capture through demod: `dsd-neo --iq-replay p25-control.iq.json -f1 -N`
+- Replay a capture through demod: `dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal`
 - Play saved MBE files: `dsd-neo -r *.mbe`
 - Decode MBE to a WAV (no speaker output): `dsd-neo -o null -w decoded.wav -r call.mbe`
 
@@ -101,12 +101,12 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 ## Display & UI
 
-- `-N` Use the ncurses terminal UI
+- `--frontend terminal` Use the terminal UI
 - `-Z` Log MBE/PDU payloads to the console (verbose)
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
 - `-O` List PulseAudio input sources and output sinks
-- The ncurses input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
+- The terminal input section shows advisory `Input Level`/`RF Level` health when metrics are available. `LOW` uses
   `--input-level-warn-db`; `HOT` means peak at or above `-1.0 dBFS`; `CLIP` means at least `0.1%` clipped or near-rail
   samples. TCP PCM idle/search level advisories are status-only to avoid console spam. These advisories never adjust
   gain automatically.
@@ -392,7 +392,7 @@ M17 `-M` details
 
 Examples
 
-- `dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 -N`
+- `dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 --frontend terminal`
 - `dsd-neo -fP -M M17:9:DSD-NEO:ARANCORMO -6 m17pkt.wav -8`
 
 ## Keys & Privacy (advanced)
@@ -575,16 +575,16 @@ Debug (verbose/developer)
 
 ## Handy Examples
 
-- UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
-- RTL‑TCP in with ncurses UI: `dsd-neo -i rtltcp:127.0.0.1:1234 -N`
-- SoapySDR in with explicit driver args: `dsd-neo -i soapy:driver=sdrplay -N`
+- UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse --frontend terminal`
+- RTL‑TCP in with terminal UI: `dsd-neo -i rtltcp:127.0.0.1:1234 --frontend terminal`
+- SoapySDR in with explicit driver args: `dsd-neo -i soapy:driver=sdrplay --frontend terminal`
 - SoapySDR with SDRplay settings in config: `soapy_settings = "rfnotch_ctrl=true,dabnotch_ctrl=true,biasT_ctrl=false,agc_setpoint=-30,rfgain_sel=4"`
-- SoapySDR args + RTL-style tuning in one input spec: `dsd-neo -i soapy:driver=sdrplay:851.375M:22:-2:24:0:2 -N`
-- Save per‑call WAVs to a folder: `dsd-neo -7 ./calls -P -N`
-- Strictly P25 Phase 1 from TCP audio: `dsd-neo -f1 -i tcp -N`
-- Capture I/Q while decoding RTL input: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq -N`
+- SoapySDR args + RTL-style tuning in one input spec: `dsd-neo -i soapy:driver=sdrplay:851.375M:22:-2:24:0:2 --frontend terminal`
+- Save per‑call WAVs to a folder: `dsd-neo -7 ./calls -P --frontend terminal`
+- Strictly P25 Phase 1 from TCP audio: `dsd-neo -f1 -i tcp --frontend terminal`
+- Capture I/Q while decoding RTL input: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal`
 - Print capture metadata and replayability summary: `dsd-neo --iq-info p25-control.iq.json`
-- Replay capture in realtime loop mode: `dsd-neo --iq-replay p25-control.iq.json --iq-replay-rate realtime --iq-loop -N`
+- Replay capture in realtime loop mode: `dsd-neo --iq-replay p25-control.iq.json --iq-replay-rate realtime --iq-loop --frontend terminal`
 
 ## Manual Validation Checklist
 

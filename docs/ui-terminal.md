@@ -1,13 +1,13 @@
 # Terminal UI (ncurses) Guide
 
-This guide covers the interactive terminal UI enabled with `-N`: how to open the menu overlay and the most useful
+This guide covers the interactive terminal UI enabled with `--frontend terminal`: how to open the menu overlay and the most useful
 hotkeys.
 
 For CLI flags and inputs/outputs, see `docs/cli.md`.
 
 ## Start the UI
 
-- Enable UI: `dsd-neo -N ...`
+- Enable UI: `dsd-neo --frontend terminal ...`
 - Quit: `q`
 - Open the menu overlay: `Enter`
 

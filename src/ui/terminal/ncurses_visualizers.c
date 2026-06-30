@@ -8,6 +8,7 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/ui_prims.h>
@@ -17,7 +18,6 @@
 #ifdef USE_RTLSDR
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <math.h>
 #include <stdint.h>
@@ -964,11 +964,12 @@ eye_estimate_snr_fallback(const float* buf, int n, int sps, int two_sps, int q1,
     double noise_var = eye_snr_noise_var(buf, n, two_sps, c1, c2, win, q1, q2, q3, mu, total);
     double sig_var = eye_snr_signal_var(mu, cnt, total);
     if (noise_var > 1e-9 && sig_var > 1e-9) {
-#ifdef USE_RTLSDR
-        double bias = rtl_stream_get_snr_bias_c4fm();
-#else
-        double bias = 8.0;
-#endif
+        dsd_frontend_metrics metrics;
+        (void)dsd_app_frontend_get_metrics(NULL, NULL, &metrics);
+        double bias = metrics.snr_bias_c4fm;
+        if (bias == 0.0) {
+            bias = 8.0;
+        }
         snr_db = 10.0 * log10(sig_var / noise_var) - bias;
     }
     return snr_db;
@@ -983,7 +984,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     enum { MAXP = 4096 };
 
     float buf[(size_t)MAXP * 2];
-    int n = rtl_stream_constellation_get(buf, MAXP);
+    int n = dsd_app_frontend_constellation_get(buf, MAXP);
     ui_print_header("Constellation");
     if (n <= 0) {
         ui_print_lborder();
@@ -1039,7 +1040,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
 
     static float buf[(size_t)MAXS];
     int sps = 0;
-    int n = rtl_stream_eye_get(buf, MAXS, &sps);
+    int n = dsd_app_frontend_eye_get(buf, MAXS, &sps);
     ui_print_header("Eye Diagram (C4FM/FSK)");
     int use_unicode_ui = eye_effective_unicode_ui(opts);
     if (n <= 0 || sps <= 0) {
@@ -1106,7 +1107,9 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
     }
 #ifdef USE_RTLSDR
     if (is_c4fm) {
-        snr_db = rtl_stream_get_snr_c4fm();
+        dsd_frontend_metrics metrics;
+        (void)dsd_app_frontend_get_metrics(opts, state, &metrics);
+        snr_db = metrics.snr_c4fm_db;
     }
 #endif
     if (is_c4fm && snr_db < -20.0) {
@@ -1261,7 +1264,7 @@ print_fsk_hist_view_rtlsdr(void) {
     static float buf[(size_t)MAXS];
     static int vals[8192];
     int sps = 0;
-    int n = rtl_stream_eye_get(buf, MAXS, &sps);
+    int n = dsd_app_frontend_eye_get(buf, MAXS, &sps);
     UNUSED(sps);
 
     ui_print_header("FSK 4-Level Histogram");
@@ -1323,7 +1326,7 @@ print_fsk_hist_view(void) {
 #ifdef USE_RTLSDR
 static int
 spectrum_nfft_clamped(void) {
-    int nfft = rtl_stream_spectrum_get_size();
+    int nfft = dsd_app_frontend_spectrum_get_size();
     if (nfft < 64) {
         nfft = 64;
     }
@@ -1484,7 +1487,7 @@ spectrum_print_color_legend(int use_unicode) {
 static void
 spectrum_print_legend(const dsd_opts* opts, int rate, int w, int use_unicode, float vmax, float vmin) {
     float span_hz = (float)rate;
-    int nfft2 = rtl_stream_spectrum_get_size();
+    int nfft2 = dsd_app_frontend_spectrum_get_size();
     const char* df = use_unicode ? "\xCE\x94"
                                    "f"
                                  : "df";
@@ -1512,7 +1515,7 @@ print_spectrum_view_rtlsdr(const dsd_opts* opts) {
 
     int rate = 0;
     int nfft = spectrum_nfft_clamped();
-    int n = rtl_stream_spectrum_get(bins_static, nfft, &rate);
+    int n = dsd_app_frontend_spectrum_get(bins_static, nfft, &rate);
     ui_print_header("Spectrum Analyzer");
     if (n <= 0) {
         printw("| (no spectrum yet)\n");

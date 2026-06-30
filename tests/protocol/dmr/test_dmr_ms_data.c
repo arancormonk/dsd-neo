@@ -411,7 +411,7 @@ test_ms_voice_cycle_processes_frames_and_cleans_mode_state(void) {
 
     opts.floating_point = 1;
     opts.pulse_digi_out_channels = 2;
-    opts.use_ncurses_terminal = 1;
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     state.payload_algid = 0x02;
     state.static_ks_counter[0] = 7;
     state.vertex_ks_counter[0] = 8;

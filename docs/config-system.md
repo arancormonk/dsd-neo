@@ -63,7 +63,7 @@ rtl_freq = "851.375M"       # supports K/M/G suffix or raw Hz
 
 [output]
 backend = "pulse"           # pulse / null
-ncurses_ui = true           # map to -N / use_ncurses_terminal
+frontend = "terminal"       # none / terminal
 
 [alerts]
 enabled = false             # map to -a / call alert toggle
@@ -146,7 +146,7 @@ mode.decode = "dmr"
 
 [profile.scanner]
 mode.decode = "auto"
-output.ncurses_ui = true
+output.frontend = terminal
 ```
 
 ### Usage
@@ -162,7 +162,7 @@ dsd-neo --config config.ini --profile p25_trunk
 dsd-neo --config config.ini --list-profiles
 ```
 
-The ncurses Config menu also supports `Load Profile...`, which lists profiles from
+The terminal Config menu also supports `Load Profile...`, which lists profiles from
 the active config path and applies the selected overlay to the running session.
 
 ### Behavior
@@ -300,7 +300,7 @@ small subset is exposed as config keys for convenience (for example
 | `backend` | ENUM | Audio output backend (`pulse|null`) | `pulse` |
 | `pulse_sink` | STRING | PulseAudio sink device | (empty) |
 | `pulse_output` | STRING | Deprecated alias for `pulse_sink` | (empty) |
-| `ncurses_ui` | BOOL | Enable ncurses UI | `false` |
+| `frontend` | ENUM | Frontend implementation (`none|terminal`) | `none` |
 
 **[mode] section:**
 | Key | Type | Description | Default |
@@ -601,7 +601,7 @@ Config/CLI interaction:
 - `--validate-config` reports an error when trunk scan and `[trunking] chan_csv` are both enabled.
 - If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
   file/replay input, trunking mode, or legacy scan mode disable the inherited scan for that run. UI-only flags such as
-  `-N` and trunk-scan timing overrides keep the inherited scan enabled.
+  `--frontend terminal` and trunk-scan timing overrides keep the inherited scan enabled.
 - Explicit profile runs preserve the profile's trunk scan settings and disable autosave for that process, like other
   profile-based runs.
 
@@ -698,9 +698,9 @@ through selecting input, mode, trunking, and UI options.
 
 ---
 
-## ncurses UI Config Menu
+## Terminal UI Config Menu
 
-When running with the ncurses UI (`ncurses_ui = true` or `-N`), the
+When running with the terminal UI (`frontend = "terminal"` or `--frontend terminal`), the
 **Config** menu provides:
 
 - **Save Config (Current)**: Save current settings to the active config path (loaded via `--config` or **Load Config...**).

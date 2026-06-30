@@ -163,7 +163,7 @@ test_profile_multiple_overrides(void) {
                              "\n"
                              "[output]\n"
                              "backend = \"pulse\"\n"
-                             "ncurses_ui = false\n"
+                             "frontend = \"none\"\n"
                              "\n"
                              "[mode]\n"
                              "decode = \"auto\"\n"
@@ -174,7 +174,7 @@ test_profile_multiple_overrides(void) {
                              "[profile.p25_trunk]\n"
                              "mode.decode = \"p25p1\"\n"
                              "trunking.enabled = true\n"
-                             "output.ncurses_ui = true\n";
+                             "output.frontend = terminal\n";
 
     char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
@@ -201,8 +201,8 @@ test_profile_multiple_overrides(void) {
         DSD_FPRINTF(stderr, "FAIL: trunking should be enabled\n");
         result = 1;
     }
-    if (!cfg.ncurses_ui) {
-        DSD_FPRINTF(stderr, "FAIL: ncurses_ui should be enabled\n");
+    if (!cfg.frontend_kind) {
+        DSD_FPRINTF(stderr, "FAIL: frontend should be enabled\n");
         result = 1;
     }
 
@@ -226,7 +226,7 @@ test_profile_bool_aliases(void) {
                              "\n"
                              "[output]\n"
                              "backend = \"pulse\"\n"
-                             "ncurses_ui = false\n"
+                             "frontend = \"none\"\n"
                              "\n"
                              "[trunking]\n"
                              "enabled = true\n"
@@ -237,7 +237,7 @@ test_profile_bool_aliases(void) {
                              "tune_enc_calls = true\n"
                              "\n"
                              "[profile.bool_aliases]\n"
-                             "output.ncurses_ui = on\n"
+                             "output.frontend = terminal\n"
                              "trunking.enabled = off\n"
                              "trunking.allow_list = on\n"
                              "trunking.tune_group_calls = off\n"
@@ -260,8 +260,8 @@ test_profile_bool_aliases(void) {
         DSD_FPRINTF(stderr, "FAIL: load with bool_aliases profile failed (rc=%d)\n", rc);
         result = 1;
     }
-    if (!cfg.ncurses_ui) {
-        DSD_FPRINTF(stderr, "FAIL: expected ncurses_ui on from profile alias\n");
+    if (!cfg.frontend_kind) {
+        DSD_FPRINTF(stderr, "FAIL: expected frontend on from profile alias\n");
         result = 1;
     }
     if (cfg.trunk_enabled) {
@@ -631,7 +631,7 @@ test_include_directive(void) {
                  "version = 1\n"
                  "\n"
                  "[output]\n"
-                 "ncurses_ui = true\n",
+                 "frontend = \"terminal\"\n",
                  included_path);
 
     char main_path[DSD_TEST_PATH_MAX];
@@ -670,8 +670,8 @@ test_include_directive(void) {
     }
 
     /* Values from main file should also be present */
-    if (!cfg.ncurses_ui) {
-        DSD_FPRINTF(stderr, "FAIL: include: ncurses_ui should be true from main config\n");
+    if (!cfg.frontend_kind) {
+        DSD_FPRINTF(stderr, "FAIL: include: frontend should be true from main config\n");
         result = 1;
     }
 

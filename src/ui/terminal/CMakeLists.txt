@@ -34,6 +34,7 @@ target_include_directories(
     dsd-neo_ui_terminal
     PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE ${_PUBLIC_INCLUDES}
+    PRIVATE ${CURSES_INCLUDE_DIRS}
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
@@ -49,7 +50,7 @@ target_link_libraries(
 
 target_link_libraries(
     dsd-neo_ui_terminal
-    PRIVATE dsd-neo_warnings dsd-neo_feature_colors
+    PRIVATE dsd-neo_warnings dsd-neo_feature_colors ${CURSES_LIBRARIES}
 )
 
 install(

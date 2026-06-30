@@ -269,7 +269,7 @@ test_render_input_variants_and_save_atomic(void) {
     cfg.has_output = 1;
     cfg.output_backend = DSDCFG_OUTPUT_PULSE;
     DSD_SNPRINTF(cfg.pulse_output, sizeof cfg.pulse_output, "%s", "speaker");
-    cfg.ncurses_ui = 1;
+    cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
     cfg.has_mode = 1;
     cfg.decode_mode = DSDCFG_MODE_M17;
     cfg.has_demod = 1;
@@ -422,7 +422,7 @@ test_load_and_apply_basic(void) {
                              "\n"
                              "[output]\n"
                              "backend = \"null\"\n"
-                             "ncurses_ui = true\n"
+                             "frontend = \"terminal\"\n"
                              "\n"
                              "[mode]\n"
                              "decode = \"dmr\"\n"
@@ -478,7 +478,7 @@ test_load_and_apply_basic(void) {
         DSD_FPRINTF(stderr, "input section not parsed as RTL\n");
         rc |= 1;
     }
-    if (!cfg.has_output || cfg.output_backend != DSDCFG_OUTPUT_NULL || cfg.ncurses_ui != 1) {
+    if (!cfg.has_output || cfg.output_backend != DSDCFG_OUTPUT_NULL || cfg.frontend_kind != DSD_FRONTEND_TERMINAL) {
         DSD_FPRINTF(stderr, "output section not parsed correctly\n");
         rc |= 1;
     }
@@ -517,8 +517,8 @@ test_load_and_apply_basic(void) {
         DSD_FPRINTF(stderr, "audio_out_dev mismatch: \"%s\"\n", opts.audio_out_dev);
         rc |= 1;
     }
-    if (opts.use_ncurses_terminal != 1) {
-        DSD_FPRINTF(stderr, "use_ncurses_terminal not enabled\n");
+    if (opts.frontend_kind != DSD_FRONTEND_TERMINAL) {
+        DSD_FPRINTF(stderr, "terminal frontend not enabled\n");
         rc |= 1;
     }
     if (!(opts.frame_dmr == 1 && opts.frame_p25p1 == 0 && opts.frame_p25p2 == 0 && opts.frame_ysf == 0)) {
@@ -1100,7 +1100,7 @@ test_snapshot_roundtrip(void) {
                              "\n"
                              "[output]\n"
                              "backend = \"pulse\"\n"
-                             "ncurses_ui = false\n"
+                             "frontend = \"none\"\n"
                              "\n"
                              "[mode]\n"
                              "decode = \"analog\"\n"

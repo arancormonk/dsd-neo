@@ -1218,7 +1218,7 @@ symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out) {
         }
         symbol_close_audio_in_file(opts);
         DSD_FPRINTF(stderr, "\nEnd of %s\n", opts->audio_in_dev);
-        if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
+        if (opts->audio_out_type == 0 && dsd_opts_frontend_active(opts)) {
             return symbol_open_pulse_input_and_reconfigure_output(opts, state);
         }
         cleanupAndExit(opts, state);
@@ -1712,7 +1712,7 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
             *symbol_out = 0.0f;
             return 1;
         }
-        if (opts->audio_out_type == 0 && opts->use_ncurses_terminal == 1) {
+        if (opts->audio_out_type == 0 && dsd_opts_frontend_active(opts)) {
             (void)symbol_open_pulse_input_and_reconfigure_output(opts, state);
             *symbol_out = 0.0f;
             return 1;

@@ -240,7 +240,7 @@ test_pulse_defaults_apply_decode_and_ncurses(void) {
     rc |= expect_str("pulse-audio-out", opts.audio_out_dev, "pulse:stub-output");
     rc |= expect_int("pulse-decode-mode", g_last_decode_mode, DSDCFG_MODE_DMR);
     rc |= expect_int("pulse-decode-profile", g_last_decode_profile, DSD_DECODE_PRESET_PROFILE_INTERACTIVE);
-    rc |= expect_int("pulse-ncurses-default", opts.use_ncurses_terminal, 1);
+    rc |= expect_int("pulse-ncurses-default", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
     return rc;
 }
 
@@ -283,7 +283,7 @@ test_rtltcp_trunking_imports_group_allow_list_and_null_output(void) {
     rc |= expect_int("rtltcp-allow-list", opts.trunk_use_allow_list, 1);
     rc |= expect_str("rtltcp-null-output", opts.audio_out_dev, "null");
     rc |= expect_int("rtltcp-audio-output-chooser", g_audio_output_calls, 0);
-    rc |= expect_int("rtltcp-ncurses-disabled", opts.use_ncurses_terminal, 0);
+    rc |= expect_int("rtltcp-ncurses-disabled", opts.frontend_kind, DSD_FRONTEND_NONE);
     return rc;
 }
 
@@ -316,7 +316,7 @@ test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv(void) {
     rc |= expect_int("tcp-channel-import-skipped", g_chan_import_calls, 0);
     rc |= expect_int("tcp-group-import-skipped", g_group_import_calls, 0);
     rc |= expect_str("tcp-no-null-output", opts.audio_out_dev, "");
-    rc |= expect_int("tcp-ncurses-default", opts.use_ncurses_terminal, 1);
+    rc |= expect_int("tcp-ncurses-default", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
     return rc;
 }
 
@@ -335,7 +335,7 @@ test_udp_eof_uses_socket_defaults_and_default_pulse_output(void) {
     rc |= expect_int("udp-default-decode-mode", g_last_decode_mode, DSDCFG_MODE_AUTO);
     rc |= expect_int("udp-default-audio-output", g_audio_output_calls, 1);
     rc |= expect_str("udp-default-audio-out", opts.audio_out_dev, "pulse:stub-output");
-    rc |= expect_int("udp-default-ncurses", opts.use_ncurses_terminal, 1);
+    rc |= expect_int("udp-default-ncurses", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
     return rc;
 }
 
@@ -366,7 +366,7 @@ test_file_input_applies_clamped_low_sample_rate(void) {
     rc |= expect_int("file-symbol-center", state.symbolCenter, 4);
     rc |= expect_int("file-decode-mode", g_last_decode_mode, DSDCFG_MODE_ANALOG);
     rc |= expect_str("file-output-left-empty", opts.audio_out_dev, "");
-    rc |= expect_int("file-ncurses-disabled", opts.use_ncurses_terminal, 0);
+    rc |= expect_int("file-ncurses-disabled", opts.frontend_kind, DSD_FRONTEND_NONE);
     return rc;
 }
 
@@ -390,7 +390,7 @@ test_empty_file_path_falls_back_to_pulse_devices(void) {
     rc |= expect_str("empty-file-pulse-input", opts.audio_in_dev, "pulse:stub-input");
     rc |= expect_str("empty-file-pulse-output", opts.audio_out_dev, "pulse:stub-output");
     rc |= expect_int("empty-file-decode-mode", g_last_decode_mode, DSDCFG_MODE_DMR);
-    rc |= expect_int("empty-file-ncurses-disabled", opts.use_ncurses_terminal, 0);
+    rc |= expect_int("empty-file-ncurses-disabled", opts.frontend_kind, DSD_FRONTEND_NONE);
     return rc;
 }
 
@@ -420,7 +420,7 @@ test_rtl_input_formats_clamped_radio_options(void) {
     rc |= expect_str("rtl-clamped-audio-in", opts.audio_in_dev, "rtl:255:851.375M:0:200:4:-1000:3");
     rc |= expect_int("rtl-decode-mode", g_last_decode_mode, DSDCFG_MODE_ANALOG);
     rc |= expect_str("rtl-output-left-empty", opts.audio_out_dev, "");
-    rc |= expect_int("rtl-ncurses-disabled", opts.use_ncurses_terminal, 0);
+    rc |= expect_int("rtl-ncurses-disabled", opts.frontend_kind, DSD_FRONTEND_NONE);
     return rc;
 }
 
@@ -441,7 +441,7 @@ test_invalid_prompt_values_use_documented_defaults(void) {
     rc |= expect_str("invalid-default-pulse-input", opts.audio_in_dev, "pulse:stub-input");
     rc |= expect_str("invalid-default-pulse-output", opts.audio_out_dev, "pulse:stub-output");
     rc |= expect_int("invalid-default-decode-mode", g_last_decode_mode, DSDCFG_MODE_AUTO);
-    rc |= expect_int("invalid-default-ncurses", opts.use_ncurses_terminal, 1);
+    rc |= expect_int("invalid-default-ncurses", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
     return rc;
 }
 
@@ -465,7 +465,7 @@ test_rtl_empty_frequency_falls_back_to_pulse_devices(void) {
     rc |= expect_str("rtl-empty-frequency-pulse-input", opts.audio_in_dev, "pulse:stub-input");
     rc |= expect_str("rtl-empty-frequency-pulse-output", opts.audio_out_dev, "pulse:stub-output");
     rc |= expect_int("rtl-empty-frequency-decode-mode", g_last_decode_mode, DSDCFG_MODE_ANALOG);
-    rc |= expect_int("rtl-empty-frequency-ncurses-disabled", opts.use_ncurses_terminal, 0);
+    rc |= expect_int("rtl-empty-frequency-ncurses-disabled", opts.frontend_kind, DSD_FRONTEND_NONE);
     return rc;
 }
 #endif
@@ -507,7 +507,7 @@ test_config_no_bootstrap_skips_wizard(void) {
     rc |= expect_int("no-bootstrap-audio-input", g_audio_input_calls, 0);
     rc |= expect_int("no-bootstrap-audio-output", g_audio_output_calls, 0);
     rc |= expect_int("no-bootstrap-decode-mode", g_last_decode_mode, DSDCFG_MODE_UNSET);
-    rc |= expect_int("no-bootstrap-ncurses", opts.use_ncurses_terminal, 0);
+    rc |= expect_int("no-bootstrap-ncurses", opts.frontend_kind, DSD_FRONTEND_NONE);
     return rc;
 }
 

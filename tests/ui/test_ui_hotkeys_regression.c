@@ -197,7 +197,7 @@ main(void) {
 
     /* 'h' must cycle immediately in UI thread (no command queue dependency). */
     cap_reset();
-    opts->ncurses_history = 1;
+    opts->terminal_history = 1;
     assert(ncurses_input_handler(opts, state, DSD_KEY_HISTORY) == 1);
     assert(ui_history_get_mode() == 2);
     assert(g_cap.calls == 0);

@@ -339,6 +339,22 @@ cli_parse_double_strict(const char* in, double* out) {
 }
 
 static int
+cli_parse_frontend_kind(const char* in, dsd_frontend_kind* out) {
+    if (!in || !*in || !out) {
+        return 0;
+    }
+    if (dsd_strcasecmp(in, "none") == 0) {
+        *out = DSD_FRONTEND_NONE;
+        return 1;
+    }
+    if (dsd_strcasecmp(in, "terminal") == 0) {
+        *out = DSD_FRONTEND_TERMINAL;
+        return 1;
+    }
+    return 0;
+}
+
+static int
 cli_parse_long_option(const char* option_name, const char* in, int base, long* out, int* out_exit_rc) {
     if (cli_parse_long_base(in, base, out)) {
         return 1;
@@ -832,6 +848,19 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             dsd_setenv("DSD_NEO_AUTO_PPM", "1", 1);                                                                    \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--frontend") == 0) {                                                                      \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--frontend requires a value (none|terminal)\n");                                            \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            frontend_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--frontend=", 11) == 0) {                                                                \
+            frontend_cli = argv[i] + 11;                                                                               \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--input-volume") == 0 && i + 1 < argc) {                                                  \
             input_vol_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
             continue;                                                                                                  \
@@ -1213,6 +1242,17 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         opts->rtl_udp_bindaddr[sizeof opts->rtl_udp_bindaddr - 1] = '\0';                                              \
     }                                                                                                                  \
                                                                                                                        \
+    if (frontend_cli) {                                                                                                \
+        dsd_frontend_kind frontend = DSD_FRONTEND_NONE;                                                                \
+        if (!cli_parse_frontend_kind(frontend_cli, &frontend)) {                                                       \
+            LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal)\n", frontend_cli);                     \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        opts->frontend_kind = frontend;                                                                                \
+        LOG_NOTICE("Frontend: %s\n", frontend == DSD_FRONTEND_TERMINAL ? "terminal" : "none");                         \
+    }                                                                                                                  \
+                                                                                                                       \
     /* Apply input volume and warn threshold */                                                                        \
     if (input_vol_cli) {                                                                                               \
         long parsed_mv = 0;                                                                                            \
@@ -1409,6 +1449,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* calc_start_cli = NULL;
     const char* input_vol_cli = NULL;
     const char* input_warn_db_cli = NULL;
+    const char* frontend_cli = NULL;
     const char* frame_log_cli = NULL;
     const char* p25_sm_log_cli = NULL;
     const char* rdio_mode_cli = NULL;
@@ -1856,7 +1897,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             DSD_STRNCPY(opts->audio_in_dev, optarg, 2047);                                                             \
             opts->audio_in_dev[2047] = '\0';                                                                           \
             break;                                                                                                     \
-        case 'N': opts->use_ncurses_terminal = 1; break;                                                               \
         case 'T':                                                                                                      \
             /* Enable trunking features; protocol-agnostic alias kept in sync */                                       \
             opts->p25_trunk = 1;                                                                                       \
@@ -2577,7 +2617,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_sps = 0;
     int cli_manual_timing_center = 0;
     while ((c = getopt(argc, argv,
-                       "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:NQ:WrlZTF@:!:01:2:345:6:7:_:"
+                       "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
                        "89:Ek:I:J:Oj^"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();

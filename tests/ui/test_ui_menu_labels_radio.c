@@ -7,6 +7,7 @@
  * Deterministic contracts for USE_RADIO terminal UI menu labels and predicates.
  */
 
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -148,6 +149,40 @@ rtl_stream_get_auto_ppm(void) {
 int
 rtl_stream_get_tuner_autogain(void) {
     return g_rtl_tuner_autogain;
+}
+
+int
+dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
+    (void)opts;
+    (void)state;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->output_kind = g_rtl_output_kind;
+    out->cqpsk_enable = g_rtl_cqpsk;
+    out->cqpsk_timing_active = g_rtl_cqpsk;
+    out->iq_balance = g_rtl_iq_balance;
+    out->iq_dc_enabled = g_rtl_iq_dc_on;
+    out->iq_dc_shift_k = g_rtl_iq_dc_k;
+    out->ted_gain = g_rtl_ted_gain;
+    out->cqpsk_timing_bias = g_rtl_timing_bias;
+    out->auto_ppm_enabled = g_rtl_auto_ppm;
+    out->tuner_autogain = g_rtl_tuner_autogain;
+    return 0;
+}
+
+int
+dsd_app_frontend_auto_ppm_enabled(const dsd_state* state, int configured) {
+    if (state && state->rtl_ctx) {
+        return g_rtl_auto_ppm;
+    }
+    return configured ? 1 : 0;
+}
+
+int
+dsd_app_frontend_tuner_autogain_enabled(const dsd_state* state, int configured) {
+    if (state && state->rtl_ctx) {
+        return g_rtl_tuner_autogain;
+    }
+    return configured ? 1 : 0;
 }
 
 static int

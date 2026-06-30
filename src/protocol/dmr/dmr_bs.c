@@ -702,7 +702,7 @@ run_dmr_bs_post_skip(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
         return DMR_BS_ACTION_END;
     }
 
-    if (opts->use_ncurses_terminal == 1) {
+    if (dsd_opts_frontend_active(opts)) {
         ui_publish_both_and_redraw(opts, state);
     }
 

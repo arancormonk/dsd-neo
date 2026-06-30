@@ -1861,6 +1861,25 @@ target_link_libraries(dsd-neo_test_ui_opts_snapshot PRIVATE dsd-neo_platform)
 add_test(NAME UI_OPTS_SNAPSHOT COMMAND dsd-neo_test_ui_opts_snapshot)
 
 add_executable(
+    dsd-neo_test_ui_frontend_status_metrics
+    ui/test_ui_frontend_status_metrics.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/frontend.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_ui_frontend_status_metrics
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_ui_frontend_status_metrics
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME UI_FRONTEND_STATUS_METRICS
+    COMMAND dsd-neo_test_ui_frontend_status_metrics
+)
+
+add_executable(
     dsd-neo_test_runtime_freq_parse
     runtime/test_runtime_freq_parse.c
 )

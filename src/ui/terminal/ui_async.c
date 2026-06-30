@@ -54,7 +54,7 @@ ui_get_opts_snapshot_or_default(void) {
 
 static int
 ui_curses_is_active(const dsd_opts* osnap) {
-    return (osnap && osnap->use_ncurses_terminal == 1 && stdscr != NULL);
+    return (dsd_opts_frontend_is_terminal(osnap) && stdscr != NULL);
 }
 
 static void
@@ -187,7 +187,7 @@ static DSD_THREAD_RETURN_TYPE
     const unsigned int sleep_ms = 15; // ~15 ms sleep cadence
 
     // Initialize ncurses lifecycle in UI thread
-    if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {
+    if (dsd_opts_frontend_is_terminal(g_ui_opts)) {
         ncursesOpen(g_ui_opts, g_ui_state);
     }
 
@@ -205,7 +205,7 @@ static DSD_THREAD_RETURN_TYPE
         dsd_sleep_ms(sleep_ms);
     }
 
-    if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {
+    if (dsd_opts_frontend_is_terminal(g_ui_opts)) {
         ncursesClose();
     }
 
@@ -221,7 +221,7 @@ ui_start(dsd_opts* opts, dsd_state* state) {
     dsd_app_install_telemetry_hooks();
     g_ui_opts = opts;
     g_ui_state = state;
-    ui_history_set_mode(opts ? opts->ncurses_history : 1);
+    ui_history_set_mode(opts ? opts->terminal_history : 1);
     atomic_store(&g_ui_stop, 0);
 
     if (dsd_thread_create(&g_ui_thread, ui_thread_main, NULL) != 0) {

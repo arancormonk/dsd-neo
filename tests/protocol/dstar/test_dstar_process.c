@@ -177,7 +177,7 @@ test_voice_process_with_ncurses_refresh(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.use_ncurses_terminal = 1;
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     reset_counters();
 
     processDSTAR(&opts, &state);

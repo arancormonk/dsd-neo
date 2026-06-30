@@ -182,9 +182,9 @@ struct dsd_opts {
     int pulse_digi_in_channels;
     int pulse_digi_out_channels;
     int pulse_flush;
-    uint8_t use_ncurses_terminal;
-    uint8_t ncurses_compact;
-    uint8_t ncurses_history;
+    dsd_frontend_kind frontend_kind;
+    uint8_t terminal_compact;
+    uint8_t terminal_history;
     uint8_t eye_view;                    //ncurses timing/eye diagram for C4FM/FSK (0=off)
     uint8_t fsk_hist_view;               //ncurses 4-level histogram for C4FM/FSK (0=off)
     uint8_t spectrum_view;               //ncurses spectrum analyzer for complex baseband (0=off)
@@ -713,5 +713,15 @@ dsd_opts_compute_sps(const dsd_opts* opts, int sym_rate_hz) {
 static inline int
 dsd_opts_symbol_center(int sps) {
     return (sps - 1) / 2;
+}
+
+static inline int
+dsd_opts_frontend_active(const dsd_opts* opts) {
+    return opts != NULL && opts->frontend_kind != DSD_FRONTEND_NONE;
+}
+
+static inline int
+dsd_opts_frontend_is_terminal(const dsd_opts* opts) {
+    return opts != NULL && opts->frontend_kind == DSD_FRONTEND_TERMINAL;
 }
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H */

@@ -10,7 +10,7 @@ but you still want DSD-neo to own the RTL demod pipeline.
 Start `dsd-neo` with RTL or RTL-TCP input and add `--rtl-udp-control <port>`:
 
 ```bash
-dsd-neo -i rtl:0:851.375M:22:-2:24:0:2 --rtl-udp-control 9911 -N
+dsd-neo -i rtl:0:851.375M:22:-2:24:0:2 --rtl-udp-control 9911 --frontend terminal
 ```
 
 Notes:

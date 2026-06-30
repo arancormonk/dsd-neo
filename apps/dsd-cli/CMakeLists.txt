@@ -1,17 +1,19 @@
 add_executable(dsd-neo)
 
-target_sources(dsd-neo PRIVATE main.c)
+target_sources(dsd-neo PRIVATE main.c frontend.c)
 
 # Link against modular libraries
 target_link_libraries(
     dsd-neo
-    PRIVATE
-        dsd-neo_engine
-        dsd-neo_ui_terminal
-        dsd-neo_feature_rtlsdr
-        dsd-neo_feature_codec2
-        ${LIBS}
+    PRIVATE dsd-neo_engine dsd-neo_feature_rtlsdr dsd-neo_feature_codec2 ${LIBS}
 )
+
+if(DSD_ENABLE_TERMINAL_UI)
+    target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_TERMINAL_UI=1)
+    target_link_libraries(dsd-neo PRIVATE dsd-neo_ui_terminal)
+else()
+    target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_TERMINAL_UI=0)
+endif()
 
 # Target include directories (prefer target-scoped over global)
 target_include_directories(dsd-neo SYSTEM PRIVATE ${_PUBLIC_INCLUDES})

@@ -8,9 +8,9 @@ RTL demodulation path used by live radio input.
 ## Quick Commands
 
 ```bash
-dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq -N
+dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal
 dsd-neo --iq-info p25-control.iq.json
-dsd-neo --iq-replay p25-control.iq.json -f1 -N
+dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal
 ```
 
 ## CLI Flags

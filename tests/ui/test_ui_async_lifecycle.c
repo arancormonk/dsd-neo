@@ -267,7 +267,7 @@ test_ui_start_failure_resets_state(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.ncurses_history = 2;
+    opts.terminal_history = 2;
 
     g_create_calls = 0;
     g_join_calls = 0;
@@ -292,7 +292,7 @@ test_ui_start_stop_idempotency_and_control_pump(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.ncurses_history = 1;
+    opts.terminal_history = 1;
 
     g_create_calls = 0;
     g_join_calls = 0;
@@ -354,8 +354,8 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     DSD_MEMSET(&latest_opts, 0, sizeof(latest_opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&latest_state, 0, sizeof(latest_state));
-    opts.use_ncurses_terminal = 1;
-    latest_opts.use_ncurses_terminal = 1;
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    latest_opts.frontend_kind = DSD_FRONTEND_TERMINAL;
 
     reset_frame_counters();
     dsd_neo_ui_async_test_set_context(&opts, &state);
@@ -368,7 +368,7 @@ test_ui_single_frame_snapshot_input_and_draw_helpers(void) {
     rc |= expect_int("curses inactive without stdscr", dsd_neo_ui_async_test_curses_is_active(&opts), 0);
     stdscr = (WINDOW*)0x1;
     rc |= expect_int("curses active with stdscr", dsd_neo_ui_async_test_curses_is_active(&opts), 1);
-    latest_opts.use_ncurses_terminal = 0;
+    latest_opts.frontend_kind = DSD_FRONTEND_NONE;
     rc |= expect_int("curses inactive when disabled", dsd_neo_ui_async_test_curses_is_active(&latest_opts), 0);
 
     opts.audio_in_type = AUDIO_IN_STDIN;

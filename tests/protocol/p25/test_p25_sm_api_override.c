@@ -226,7 +226,7 @@ main(void) {
     p25_sm_watchdog_start(&guarded_opts, NULL);
     rc |= expect_eq_int("watchdog_start_null_guards", g_tick_calls, 1);
 
-    guarded_opts.use_ncurses_terminal = 1;
+    guarded_opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     p25_sm_watchdog_start(&guarded_opts, &guarded_state);
     dsd_sleep_ms(60U);
     p25_sm_watchdog_stop();

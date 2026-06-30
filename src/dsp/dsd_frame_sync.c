@@ -291,7 +291,7 @@ enum { DSD_FRAME_SYNC_UI_PUBLISH_INTERVAL_MS = 50 };
 
 static void
 frame_sync_publish_ui_throttled(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || opts->use_ncurses_terminal != 1) {
+    if (!dsd_opts_frontend_active(opts)) {
         return;
     }
 

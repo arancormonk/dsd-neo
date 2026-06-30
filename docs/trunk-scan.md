@@ -76,13 +76,13 @@ Target list limits and validation:
 For a mixed P25/DMR scan with an RTL-SDR:
 
 ```sh
-dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv -N
+dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal
 ```
 
 For an external receiver that sends PCM audio over TCP and is tuned through rigctl:
 
 ```sh
-dsd-neo -ft -i tcp -U 4532 --trunk-scan ~/radio/trunk_scan_targets.csv -G ~/radio/group.csv -N
+dsd-neo -ft -i tcp -U 4532 --trunk-scan ~/radio/trunk_scan_targets.csv -G ~/radio/group.csv --frontend terminal
 ```
 
 Optional timing controls:
@@ -92,7 +92,7 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   --trunk-scan ~/radio/trunk_scan_targets.csv \
   --trunk-scan-dwell-ms 5000 \
   --trunk-scan-activity-hold-ms 2000 \
-  -N
+  --frontend terminal
 ```
 
 - `--trunk-scan-dwell-ms <ms>` sets the default idle dwell for targets whose `dwell_ms` column is empty. Default:
@@ -123,7 +123,7 @@ rtl_bw_khz = 48
 decode = "tdma"
 
 [output]
-ncurses_ui = true
+frontend = "terminal"
 
 [trunking]
 group_csv = "~/radio/group.csv"
@@ -234,7 +234,7 @@ rotating across unrelated scan targets.
 Existing single-system trunking commands still work:
 
 ```sh
-dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 -T -C dmr_t3_chan.csv -G group.csv -N
+dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal
 ```
 
 To scan multiple systems with one receiver:

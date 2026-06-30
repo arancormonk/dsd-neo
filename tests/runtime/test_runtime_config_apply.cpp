@@ -367,7 +367,7 @@ test_basic_pulse_config_apply(void) {
     cfg.has_output = 1;
     cfg.output_backend = DSDCFG_OUTPUT_PULSE;
     DSD_SNPRINTF(cfg.pulse_output, sizeof cfg.pulse_output, "%s", "test-sink");
-    cfg.ncurses_ui = 1;
+    cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
 
     // Public API: ui_post_cmd() enqueues; ui_drain_cmds() is called from the
     // demod loop to apply pending commands. For the purposes of this test we
@@ -376,7 +376,7 @@ test_basic_pulse_config_apply(void) {
     ui_drain_cmds(opts, state);
 
     int rc = 0;
-    rc |= expect_true("ncurses flag enabled", opts->use_ncurses_terminal);
+    rc |= expect_int_eq("terminal frontend enabled", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
     rc |= expect_true("pulse input preserved", strncmp(opts->audio_in_dev, "pulse", 5) == 0);
     rc |= expect_true("pulse output preserved", strncmp(opts->audio_out_dev, "pulse", 5) == 0);
     free_test_runtime(&runtime);
@@ -571,7 +571,7 @@ test_ui_profile_selection_applies_overlay_and_disables_autosave(void) {
                              "\n"
                              "[output]\n"
                              "backend = \"null\"\n"
-                             "ncurses_ui = false\n"
+                             "frontend = \"none\"\n"
                              "\n"
                              "[mode]\n"
                              "decode = \"p25p1\"\n"
@@ -581,7 +581,7 @@ test_ui_profile_selection_applies_overlay_and_disables_autosave(void) {
                              "\n"
                              "[profile.beta]\n"
                              "mode.decode = \"dmr\"\n"
-                             "output.ncurses_ui = true\n";
+                             "output.frontend = terminal\n";
 
     char path[DSD_TEST_PATH_MAX] = {0};
     if (create_temp_config_file(ini, path, sizeof path) != 0) {
@@ -614,7 +614,7 @@ test_ui_profile_selection_applies_overlay_and_disables_autosave(void) {
     rc |= expect_true("UI profile load retains config path", strcmp(state->config_autosave_path, path) == 0);
     rc |= expect_true("UI profile overlay applies DMR mode",
                       opts->frame_dmr == 1 && opts->frame_p25p1 == 0 && opts->frame_p25p2 == 0 && opts->frame_ysf == 0);
-    rc |= expect_int_eq("UI profile overlay applies ncurses flag", opts->use_ncurses_terminal, 1);
+    rc |= expect_int_eq("UI profile overlay applies terminal frontend", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
 
     free_test_runtime(&runtime);
     (void)remove(path);
@@ -627,7 +627,7 @@ test_ui_profile_menu_no_profiles_does_not_apply_base_config(void) {
                              "\n"
                              "[output]\n"
                              "backend = \"null\"\n"
-                             "ncurses_ui = true\n";
+                             "frontend = \"terminal\"\n";
 
     char path[DSD_TEST_PATH_MAX] = {0};
     if (create_temp_config_file(ini, path, sizeof path) != 0) {
@@ -652,7 +652,7 @@ test_ui_profile_menu_no_profiles_does_not_apply_base_config(void) {
     int rc = 0;
     rc |= expect_int_eq("no-profile UI load leaves autosave enabled", state->config_autosave_enabled, 1);
     rc |= expect_true("no-profile UI load retains config path", strcmp(state->config_autosave_path, path) == 0);
-    rc |= expect_int_eq("no-profile UI load does not apply base ncurses flag", opts->use_ncurses_terminal, 0);
+    rc |= expect_int_eq("no-profile UI load does not apply base frontend", opts->frontend_kind, DSD_FRONTEND_NONE);
 
     free_test_runtime(&runtime);
     (void)remove(path);

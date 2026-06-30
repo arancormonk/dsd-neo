@@ -1824,7 +1824,7 @@ apply_cmd_legacy_basic_a(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
                 state->M = 0x21;
             }
             return 1;
-        case UI_CMD_TOGGLE_COMPACT: opts->ncurses_compact = opts->ncurses_compact ? 0 : 1; return 1;
+        case UI_CMD_TOGGLE_COMPACT: opts->terminal_compact = opts->terminal_compact ? 0 : 1; return 1;
         case UI_CMD_HISTORY_CYCLE:
             (void)ui_history_cycle_mode();
             ui_request_redraw();

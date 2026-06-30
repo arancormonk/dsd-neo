@@ -116,6 +116,20 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         set(_ARCH_RULES_ENGINE_FORBIDDEN_AREA ON)
     endif()
 
+    set(_ARCH_RULES_FRONTEND_KIND_BACKEND_AREA OFF)
+    if(
+        _ARCH_RULES_REL
+            MATCHES
+            "^(src/dsp/|src/protocol/|src/engine/|include/dsd-neo/dsp/|include/dsd-neo/protocol/|include/dsd-neo/engine/)"
+    )
+        set(_ARCH_RULES_FRONTEND_KIND_BACKEND_AREA ON)
+    endif()
+
+    set(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA OFF)
+    if(_ARCH_RULES_REL MATCHES "^(src/ui/|include/dsd-neo/ui/)")
+        set(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA ON)
+    endif()
+
     file(
         STRINGS "${_ARCH_RULES_ABS}"
         _ARCH_RULES_EXIT_LINES
@@ -138,6 +152,62 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         )
         math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
     endforeach()
+
+    if(_ARCH_RULES_FRONTEND_KIND_BACKEND_AREA)
+        file(
+            STRINGS "${_ARCH_RULES_ABS}"
+            _ARCH_RULES_FRONTEND_KIND_LINES
+            REGEX "((->)|(\\.))frontend_kind"
+        )
+
+        foreach(
+            _ARCH_RULES_FRONTEND_KIND_LINE
+            IN
+            LISTS _ARCH_RULES_FRONTEND_KIND_LINES
+        )
+            if(_ARCH_RULES_FRONTEND_KIND_LINE MATCHES "^[ \t]*(//|/\\*)")
+                continue()
+            endif()
+
+            string(
+                STRIP "${_ARCH_RULES_FRONTEND_KIND_LINE}"
+                _ARCH_RULES_FRONTEND_KIND_LINE_STRIPPED
+            )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: backend code must use frontend predicates, not direct frontend_kind access '${_ARCH_RULES_FRONTEND_KIND_LINE_STRIPPED}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+        endforeach()
+    endif()
+
+    if(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA)
+        file(
+            STRINGS "${_ARCH_RULES_ABS}"
+            _ARCH_RULES_UI_RTL_CALL_LINES
+            REGEX "rtl_stream_"
+        )
+
+        foreach(
+            _ARCH_RULES_UI_RTL_CALL_LINE
+            IN
+            LISTS _ARCH_RULES_UI_RTL_CALL_LINES
+        )
+            if(_ARCH_RULES_UI_RTL_CALL_LINE MATCHES "^[ \t]*(//|/\\*)")
+                continue()
+            endif()
+
+            string(
+                STRIP "${_ARCH_RULES_UI_RTL_CALL_LINE}"
+                _ARCH_RULES_UI_RTL_CALL_LINE_STRIPPED
+            )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: terminal UI must use app-control metrics, not rtl_stream_* directly '${_ARCH_RULES_UI_RTL_CALL_LINE_STRIPPED}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+        endforeach()
+    endif()
 
     file(
         STRINGS "${_ARCH_RULES_ABS}"
@@ -213,6 +283,18 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             message(
                 SEND_ERROR
                 "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden IO include '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
+        if(
+            _ARCH_RULES_UI_RTL_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/io/rtl"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: terminal UI must use app-control metrics, not RTL include '${_ARCH_RULES_HEADER}'"
             )
             math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             continue()

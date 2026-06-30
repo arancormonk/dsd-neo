@@ -7,6 +7,7 @@ target_sources(
         actions/actions_radio.c
         actions/actions_trunk.c
         actions/actions_logging.c
+        frontend.c
         ui_cmd_queue.c
         ui_snapshot.c
         ui_opts_snapshot.c

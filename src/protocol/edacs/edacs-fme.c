@@ -483,7 +483,7 @@ edacs_print_analog_status(const dsd_opts* opts, const dsd_state* state, int afs,
         DSD_FPRINTF(stderr, "Analog Floating Point Output Not Supported");
     }
 
-    if (opts->use_ncurses_terminal == 1) {
+    if (dsd_opts_frontend_active(opts)) {
         ui_publish_both_and_redraw(opts, state);
     }
 }

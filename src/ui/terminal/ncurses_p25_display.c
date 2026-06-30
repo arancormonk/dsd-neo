@@ -8,12 +8,12 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -572,14 +572,15 @@ ui_print_p25_rtl_metrics(int is_p25p1, int is_p25p2) {
     if (!is_p25p1 && !is_p25p2) {
         return 0;
     }
-    rtl_stream_decode_health health;
-    DSD_MEMSET(&health, 0, sizeof(health));
-    if (rtl_stream_get_decode_health(&health) != 0 || !health.valid) {
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(NULL, NULL, &metrics);
+    const dsd_frontend_decode_health* health = &metrics.decode_health;
+    if (!health->valid) {
         return 0;
     }
-    printw("| RTL Health: P1 FEC %u/%u P2 FACCH %u/%u SACCH %u/%u VERR %u\n", health.p25p1_fec_ok, health.p25p1_fec_err,
-           health.p25p2_facch_ok, health.p25p2_facch_err, health.p25p2_sacch_ok, health.p25p2_sacch_err,
-           health.p25p2_voice_err);
+    printw("| RTL Health: P1 FEC %u/%u P2 FACCH %u/%u SACCH %u/%u VERR %u\n", health->p25p1_fec_ok,
+           health->p25p1_fec_err, health->p25p2_facch_ok, health->p25p2_facch_err, health->p25p2_sacch_ok,
+           health->p25p2_sacch_err, health->p25p2_voice_err);
     return 1;
 #else
     UNUSED(is_p25p1);

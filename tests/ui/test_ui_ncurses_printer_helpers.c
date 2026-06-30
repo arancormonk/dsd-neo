@@ -376,10 +376,16 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal
 }
 
 #include "../../src/ui/terminal/dsd_ncurses_printer.c"
+#include "dsd-neo/app_control/frontend.h"
 #include "dsd-neo/core/input_level.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+
+int
+dsd_app_frontend_requested_ppm(const dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
+    return opts ? opts->rtlsdr_ppm_error : 0;
+}
 
 static void
 test_input_source_helpers(void) {

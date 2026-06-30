@@ -390,9 +390,9 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
     interactive_maybe_configure_trunking(mode, src, opts, state);
     interactive_maybe_configure_output(opts, src);
 
-    int want_ncurses = prompt_yes_no("Enable ncurses terminal UI (-N)?", 1);
-    if (want_ncurses) {
-        opts->use_ncurses_terminal = 1;
+    int want_terminal = prompt_yes_no("Enable terminal frontend (--frontend terminal)?", 1);
+    if (want_terminal) {
+        opts->frontend_kind = DSD_FRONTEND_TERMINAL;
     }
 
     LOG_NOTICE("Interactive setup complete.\n");
