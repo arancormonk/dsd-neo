@@ -967,7 +967,7 @@ eye_estimate_snr_fallback(const float* buf, int n, int sps, int two_sps, int q1,
     double sig_var = eye_snr_signal_var(mu, cnt, total);
     if (noise_var > 1e-9 && sig_var > 1e-9) {
         dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(NULL, NULL, &metrics);
+        (void)dsd_app_frontend_get_metrics(&metrics);
         double bias = metrics.snr_bias_c4fm;
         if (bias == 0.0) {
             bias = 8.0;
@@ -1110,7 +1110,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
     if (is_c4fm) {
         dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(opts, state, &metrics);
+        (void)dsd_app_frontend_get_metrics(&metrics);
         snr_db = metrics.snr_c4fm_db;
     }
 #endif

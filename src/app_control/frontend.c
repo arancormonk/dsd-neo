@@ -4,7 +4,6 @@
  */
 
 #include <dsd-neo/app_control/frontend.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -12,6 +11,8 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frontend_internal.h"
+#include "snapshot_internal.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -202,7 +203,7 @@ frontend_metrics_from_radio(const dsd_opts* opts, const dsd_state* state, dsd_fr
 #endif
 
 int
-dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
+dsd_app_frontend_get_metrics_from_opts_state(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
     if (!out) {
         return -1;
     }
@@ -217,14 +218,26 @@ dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_f
 }
 
 int
-dsd_app_frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
-                                                unsigned int snr_fallbacks) {
-    int rc = dsd_app_frontend_get_metrics(opts, state, out);
+dsd_app_frontend_get_metrics_from_opts_state_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state,
+                                                                dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
+    int rc = dsd_app_frontend_get_metrics_from_opts_state(opts, state, out);
     if (rc != 0) {
         return rc;
     }
     frontend_metrics_add_snr_fallbacks(out, snr_fallbacks);
     return 0;
+}
+
+int
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
+    return dsd_app_frontend_get_metrics_from_opts_state(dsd_app_get_latest_opts_snapshot(),
+                                                        dsd_app_get_latest_snapshot(), out);
+}
+
+int
+dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
+    return dsd_app_frontend_get_metrics_from_opts_state_with_snr_fallbacks(
+        dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), out, snr_fallbacks);
 }
 
 int
@@ -286,12 +299,17 @@ dsd_app_frontend_spectrum_set_size(int n) {
 }
 
 int
-dsd_app_frontend_requested_ppm(const dsd_opts* opts) {
+dsd_app_frontend_requested_ppm_from_opts(const dsd_opts* opts) {
 #ifdef USE_RADIO
     return rtl_stream_get_requested_ppm(opts);
 #else
     return opts ? opts->rtlsdr_ppm_error : 0;
 #endif
+}
+
+int
+dsd_app_frontend_requested_ppm(void) {
+    return dsd_app_frontend_requested_ppm_from_opts(dsd_app_get_latest_opts_snapshot());
 }
 
 float
@@ -304,7 +322,7 @@ dsd_app_frontend_ted_gain(void) {
 }
 
 int
-dsd_app_frontend_auto_ppm_enabled(const dsd_state* state, int configured) {
+dsd_app_frontend_auto_ppm_enabled_from_state(const dsd_state* state, int configured) {
 #ifdef USE_RADIO
     if (state && state->rtl_ctx) {
         return rtl_stream_get_auto_ppm();
@@ -316,7 +334,12 @@ dsd_app_frontend_auto_ppm_enabled(const dsd_state* state, int configured) {
 }
 
 int
-dsd_app_frontend_tuner_autogain_enabled(const dsd_state* state, int configured) {
+dsd_app_frontend_auto_ppm_enabled(int configured) {
+    return dsd_app_frontend_auto_ppm_enabled_from_state(dsd_app_get_latest_snapshot(), configured);
+}
+
+int
+dsd_app_frontend_tuner_autogain_enabled_from_state(const dsd_state* state, int configured) {
 #ifdef USE_RADIO
     if (state && state->rtl_ctx) {
         return rtl_stream_get_tuner_autogain();
@@ -325,4 +348,9 @@ dsd_app_frontend_tuner_autogain_enabled(const dsd_state* state, int configured) 
     (void)state;
 #endif
     return configured ? 1 : 0;
+}
+
+int
+dsd_app_frontend_tuner_autogain_enabled(int configured) {
+    return dsd_app_frontend_tuner_autogain_enabled_from_state(dsd_app_get_latest_snapshot(), configured);
 }

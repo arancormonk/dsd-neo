@@ -8,13 +8,14 @@
 #include <string.h>
 
 #include <dsd-neo/app_control/frontend.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
+#include "../../src/app_control/frontend_internal.h"
+#include "../../src/app_control/snapshot_internal.h"
 
 static const dsd_opts* g_latest_opts;
 static const dsd_state* g_latest_state;
@@ -194,7 +195,9 @@ test_metrics_fallback_and_runtime_hooks(void) {
     fill_frontend_inputs(&opts, &state);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
-    assert(dsd_app_frontend_get_metrics(&opts, NULL, &metrics) == 0);
+    g_latest_opts = &opts;
+    g_latest_state = NULL;
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
     assert(metrics.output_rate_hz == 0U);
     assert(metrics.snr_c4fm_db == -100.0);
     assert(metrics.snr_gfsk_eye_db == -100.0);
@@ -204,8 +207,8 @@ test_metrics_fallback_and_runtime_hooks(void) {
     assert(dsd_app_frontend_constellation_get(NULL, 0) == 0);
     assert(dsd_app_frontend_spectrum_get_size() == 0);
     assert(dsd_app_frontend_spectrum_set_size(256) == -1);
-    assert(dsd_app_frontend_auto_ppm_enabled(NULL, 1) == 1);
-    assert(dsd_app_frontend_tuner_autogain_enabled(NULL, 0) == 0);
+    assert(dsd_app_frontend_auto_ppm_enabled(1) == 1);
+    assert(dsd_app_frontend_tuner_autogain_enabled(0) == 0);
 
     dsd_rtl_stream_metrics_hooks hooks = {0};
     hooks.output_kind = hook_output_kind;
@@ -220,7 +223,9 @@ test_metrics_fallback_and_runtime_hooks(void) {
     hooks.snr_qpsk_const_db = hook_snr_qpsk_const;
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     reset_snr_hook_fakes(23.5, 19.25, 17.75);
-    assert(dsd_app_frontend_get_metrics(&opts, &state, &metrics) == 0);
+    g_latest_opts = &opts;
+    g_latest_state = &state;
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
     assert(metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK);
     assert(metrics.output_rate_hz == 48000U);
     assert(metrics.symbol_rate_hz == 4800);
@@ -238,8 +243,7 @@ test_metrics_fallback_and_runtime_hooks(void) {
     assert(g_snr_gfsk_eye_calls == 0);
     assert(g_snr_qpsk_const_calls == 0);
 
-    assert(dsd_app_frontend_get_metrics_with_snr_fallbacks(&opts, &state, &metrics, DSD_FRONTEND_SNR_FALLBACK_ALL)
-           == 0);
+    assert(dsd_app_frontend_get_metrics_with_snr_fallbacks(&metrics, DSD_FRONTEND_SNR_FALLBACK_ALL) == 0);
     assert(metrics.snr_c4fm_db == 23.5);
     assert(metrics.snr_cqpsk_db == 19.25);
     assert(metrics.snr_gfsk_db == 17.75);
@@ -251,8 +255,8 @@ test_metrics_fallback_and_runtime_hooks(void) {
     assert(g_snr_qpsk_const_calls == 0);
 
     reset_snr_hook_fakes(-100.0, -100.0, -100.0);
-    assert(dsd_app_frontend_get_metrics_with_snr_fallbacks(
-               &opts, &state, &metrics, DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE | DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST)
+    assert(dsd_app_frontend_get_metrics_with_snr_fallbacks(&metrics, DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE
+                                                                         | DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST)
            == 0);
     assert(metrics.snr_c4fm_eye_db == 7.25);
     assert(metrics.snr_qpsk_const_db == 9.75);
@@ -262,8 +266,7 @@ test_metrics_fallback_and_runtime_hooks(void) {
     assert(g_snr_qpsk_const_calls == 1);
 
     reset_snr_hook_fakes(-100.0, -100.0, -100.0);
-    assert(dsd_app_frontend_get_metrics_with_snr_fallbacks(&opts, &state, &metrics, DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE)
-           == 0);
+    assert(dsd_app_frontend_get_metrics_with_snr_fallbacks(&metrics, DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE) == 0);
     assert(metrics.snr_c4fm_eye_db == -100.0);
     assert(metrics.snr_gfsk_eye_db == 6.5);
     assert(metrics.snr_qpsk_const_db == -100.0);

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -15,6 +16,8 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frontend_internal.h"
+#include "snapshot_internal.h"
 #include "telemetry_hooks_impl.h"
 
 static dsd_state g_pub;     // latest published by demod thread
@@ -269,4 +272,172 @@ ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
 const dsd_state*
 ui_get_latest_snapshot(void) {
     return dsd_app_get_latest_snapshot();
+}
+
+static void
+frontend_event_history_item_copy(dsd_frontend_event_history_item* dst, const Event_History* src) {
+    if (!dst || !src) {
+        return;
+    }
+    dst->write = src->write;
+    dst->color_pair = src->color_pair;
+    dst->systype = src->systype;
+    dst->subtype = src->subtype;
+    dst->sys_id1 = src->sys_id1;
+    dst->sys_id2 = src->sys_id2;
+    dst->sys_id3 = src->sys_id3;
+    dst->sys_id4 = src->sys_id4;
+    dst->sys_id5 = src->sys_id5;
+    dst->gi = src->gi;
+    dst->enc = src->enc;
+    dst->enc_alg = src->enc_alg;
+    dst->enc_key = src->enc_key;
+    dst->mi = src->mi;
+    dst->svc = src->svc;
+    dst->source_id = src->source_id;
+    dst->target_id = src->target_id;
+    DSD_MEMCPY(dst->src_str, src->src_str, sizeof dst->src_str);
+    DSD_MEMCPY(dst->tgt_str, src->tgt_str, sizeof dst->tgt_str);
+    DSD_MEMCPY(dst->t_name, src->t_name, sizeof dst->t_name);
+    DSD_MEMCPY(dst->s_name, src->s_name, sizeof dst->s_name);
+    DSD_MEMCPY(dst->t_mode, src->t_mode, sizeof dst->t_mode);
+    DSD_MEMCPY(dst->s_mode, src->s_mode, sizeof dst->s_mode);
+    dst->channel = src->channel;
+    dst->event_time = (int64_t)src->event_time;
+    DSD_MEMCPY(dst->pdu, src->pdu, sizeof dst->pdu);
+    DSD_MEMCPY(dst->sysid_string, src->sysid_string, sizeof dst->sysid_string);
+    DSD_MEMCPY(dst->alias, src->alias, sizeof dst->alias);
+    DSD_MEMCPY(dst->gps_s, src->gps_s, sizeof dst->gps_s);
+    DSD_MEMCPY(dst->text_message, src->text_message, sizeof dst->text_message);
+    DSD_MEMCPY(dst->event_string, src->event_string, sizeof dst->event_string);
+    DSD_MEMCPY(dst->internal_str, src->internal_str, sizeof dst->internal_str);
+}
+
+static void
+frontend_snapshot_copy_event_history(dsd_frontend_snapshot* out, const dsd_state* state) {
+    if (!out || !state || !state->event_history_s) {
+        return;
+    }
+    out->event_history_present = 1;
+    for (size_t slot = 0; slot < DSD_FRONTEND_EVENT_HISTORY_SLOTS; slot++) {
+        for (size_t i = 0; i < DSD_FRONTEND_EVENT_HISTORY_ITEMS; i++) {
+            frontend_event_history_item_copy(&out->event_history[slot].items[i],
+                                             &state->event_history_s[slot].Event_History_Items[i]);
+        }
+    }
+}
+
+static void
+frontend_snapshot_copy_trunk_channels(dsd_frontend_snapshot* out, const dsd_state* state) {
+    if (!out || !state) {
+        return;
+    }
+    uint32_t count = state->trunk_chan_map_used_count;
+    if (count > DSD_TRUNK_CHAN_MAP_SIZE) {
+        count = DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+    for (uint32_t i = 0; i < count && out->trunk_channel_count < DSD_FRONTEND_TRUNK_CHANNEL_MAX; i++) {
+        const uint16_t channel = state->trunk_chan_map_used[i];
+        if (!dsd_state_trunk_chan_tracked(channel)) {
+            continue;
+        }
+        const long freq = state->trunk_chan_map[channel];
+        if (freq == 0) {
+            continue;
+        }
+        dsd_frontend_trunk_channel* dst = &out->trunk_channels[out->trunk_channel_count++];
+        dst->channel = channel;
+        dst->freq_hz = freq;
+    }
+    out->trunk_channel_sequence = state->trunk_chan_map_seq;
+}
+
+static void
+frontend_snapshot_copy_cc_candidates(dsd_frontend_snapshot* out, const dsd_state* state) {
+    const dsd_trunk_cc_candidates* cc = state ? dsd_trunk_cc_candidates_peek(state) : NULL;
+    if (!out || !cc) {
+        return;
+    }
+    int count = cc->count;
+    if (count > DSD_FRONTEND_TRUNK_CC_CANDIDATES_MAX) {
+        count = DSD_FRONTEND_TRUNK_CC_CANDIDATES_MAX;
+    }
+    out->trunk_cc_candidates.count = count;
+    out->trunk_cc_candidates.index = cc->idx;
+    out->trunk_cc_candidates.added = cc->added;
+    out->trunk_cc_candidates.used = cc->used;
+    for (int i = 0; i < count; i++) {
+        out->trunk_cc_candidates.candidates[i].freq_hz = cc->candidates[i];
+        out->trunk_cc_candidates.candidates[i].flags = cc->flags[i];
+        out->trunk_cc_candidates.candidates[i].cool_until_monotonic_s = cc->cool_until[i];
+    }
+}
+
+static void
+frontend_snapshot_copy_state_scalars(dsd_frontend_snapshot* out, const dsd_state* state) {
+    if (!out || !state) {
+        return;
+    }
+    out->has_state = 1;
+    DSD_SNPRINTF(out->ui_message.text, sizeof out->ui_message.text, "%s", state->ui_msg);
+    out->ui_message.expire_unix_s = (int64_t)state->ui_msg_expire;
+    out->input_level = state->input_level;
+    out->input_level_last_toast_time = (int64_t)state->input_level_last_toast_time;
+    out->input_level_last_toast_status = state->input_level_last_toast_status;
+    out->input_level_last_toast_source = state->input_level_last_toast_source;
+    out->slots[0].last_tg = (uint32_t)state->lasttg;
+    out->slots[0].last_src = (uint32_t)state->lastsrc;
+    out->slots[0].payload_algid = (uint32_t)state->payload_algid;
+    out->slots[0].payload_keyid = (uint32_t)state->payload_keyid;
+    out->slots[0].audio_allowed = state->p25_p2_audio_allowed[0];
+    DSD_SNPRINTF(out->slots[0].call_string, sizeof out->slots[0].call_string, "%s", state->call_string[0]);
+    out->slots[0].active_call = (out->slots[0].audio_allowed || out->slots[0].call_string[0] != '\0') ? 1 : 0;
+    out->slots[1].last_tg = (uint32_t)state->lasttgR;
+    out->slots[1].last_src = (uint32_t)state->lastsrcR;
+    out->slots[1].payload_algid = (uint32_t)state->payload_algidR;
+    out->slots[1].payload_keyid = (uint32_t)state->payload_keyidR;
+    out->slots[1].audio_allowed = state->p25_p2_audio_allowed[1];
+    DSD_SNPRINTF(out->slots[1].call_string, sizeof out->slots[1].call_string, "%s", state->call_string[1]);
+    out->slots[1].active_call = (out->slots[1].audio_allowed || out->slots[1].call_string[0] != '\0') ? 1 : 0;
+
+    out->p25.p2_wacn = state->p2_wacn;
+    out->p25.p2_sysid = state->p2_sysid;
+    out->p25.p2_cc = state->p2_cc;
+    out->p25.trunk_cc_freq = state->trunk_cc_freq;
+    out->p25.trunk_vc_freq = state->trunk_vc_freq[0];
+    out->p25.p25_cc_freq = state->p25_cc_freq;
+    out->p25.p25_vc_freq = state->p25_vc_freq[0];
+    out->p25.p25_cc_is_tdma = state->p25_cc_is_tdma;
+    out->p25.p25_p2_active_slot = state->p25_p2_active_slot;
+    out->p25.p25_p2_audio_ring_count[0] = state->p25_p2_audio_ring_count[0];
+    out->p25.p25_p2_audio_ring_count[1] = state->p25_p2_audio_ring_count[1];
+    out->p25.p25_p2_audio_allowed[0] = state->p25_p2_audio_allowed[0];
+    out->p25.p25_p2_audio_allowed[1] = state->p25_p2_audio_allowed[1];
+    out->p25.p25_p1_fec_ok = state->p25_p1_fec_ok;
+    out->p25.p25_p1_fec_err = state->p25_p1_fec_err;
+    out->p25.p25_p2_facch_ok = state->p25_p2_rs_facch_ok;
+    out->p25.p25_p2_facch_err = state->p25_p2_rs_facch_err;
+    out->p25.p25_p2_sacch_ok = state->p25_p2_rs_sacch_ok;
+    out->p25.p25_p2_sacch_err = state->p25_p2_rs_sacch_err;
+    out->p25.p25_p2_voice_err = state->p25_p2_voice_err_hist_sum[0] + state->p25_p2_voice_err_hist_sum[1];
+}
+
+int
+dsd_app_frontend_snapshot_get(dsd_frontend_snapshot* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* state = dsd_app_get_latest_snapshot();
+    out->has_options = opts ? 1 : 0;
+    dsd_app_frontend_status_from_opts_state(opts, state, &out->status);
+    (void)dsd_app_frontend_get_metrics_from_opts_state(opts, state, &out->metrics);
+    if (state) {
+        frontend_snapshot_copy_state_scalars(out, state);
+        frontend_snapshot_copy_trunk_channels(out, state);
+        frontend_snapshot_copy_cc_candidates(out, state);
+        frontend_snapshot_copy_event_history(out, state);
+    }
+    return (opts || state) ? 0 : -1;
 }

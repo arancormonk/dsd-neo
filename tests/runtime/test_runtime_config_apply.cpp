@@ -17,6 +17,7 @@
  * rollback semantics depend on the helper's success/failure result.
  */
 
+#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/init.h>
@@ -40,6 +41,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "../../src/app_control/commands_internal.h"
 
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/safe_api.h"
@@ -381,7 +383,7 @@ test_basic_pulse_config_apply(void) {
     cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
     cfg.frontend_kind_is_set = 1;
 
-    // Public API: dsd_app_post_cmd() enqueues; dsd_app_drain_cmds() is called from the
+    // Internal queue API: dsd_app_post_cmd() enqueues; dsd_app_drain_cmds() is called from the
     // demod loop to apply pending commands. For the purposes of this test we
     // call both directly.
     dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
@@ -493,10 +495,10 @@ test_ui_command_queue_applies_fifo(void) {
     int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
-    rc |= expect_int_eq("FIFO drain count", applied, 2);
-    rc |= expect_int_eq("FIFO final digital gain", (int)opts->audio_gain, second);
-    rc |= expect_int_eq("FIFO final left state gain", (int)state->aout_gain, second);
-    rc |= expect_int_eq("FIFO final right state gain", (int)state->aout_gainR, second);
+    rc |= expect_int_eq("coalesced gain drain count", applied, 1);
+    rc |= expect_int_eq("coalesced gain final digital gain", (int)opts->audio_gain, second);
+    rc |= expect_int_eq("coalesced gain final left state gain", (int)state->aout_gain, second);
+    rc |= expect_int_eq("coalesced gain final right state gain", (int)state->aout_gainR, second);
 
     free_test_runtime(&runtime);
     return rc;
@@ -514,8 +516,7 @@ test_ui_command_queue_overflow_drops_oldest(void) {
     dsd_exitflag_store(0);
     dsd_app_post_cmd(DSD_APP_CMD_QUIT, NULL, 0);
     for (int i = 0; i < 127; i++) {
-        int32_t gain = i;
-        dsd_app_post_cmd(DSD_APP_CMD_GAIN_SET, &gain, sizeof gain);
+        dsd_app_post_cmd(DSD_APP_CMD_TOGGLE_MUTE, NULL, 0);
     }
 
     int applied = dsd_app_drain_cmds(opts, state);
@@ -523,8 +524,6 @@ test_ui_command_queue_overflow_drops_oldest(void) {
     int rc = 0;
     rc |= expect_int_eq("overflow keeps bounded queue depth", applied, 127);
     rc |= expect_int_eq("overflow drops oldest quit command", (int)dsd_exitflag_load(), 0);
-    rc |= expect_int_eq("overflow applies newest gain command with clamp", (int)opts->audio_gain, 50);
-    rc |= expect_int_eq("overflow updates gain snapshot", (int)state->aout_gain, 50);
 
     dsd_exitflag_store(0);
     free_test_runtime(&runtime);
@@ -540,7 +539,7 @@ test_ui_command_queue_truncates_oversized_payload_string(void) {
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
 
-    enum { OVERSIZED_PAYLOAD_LEN = DSD_APP_CMD_DATA_MAX + 97 };
+    enum { OVERSIZED_PAYLOAD_LEN = DSD_APP_CMD_DISPATCH_DATA_MAX + 97 };
 
     char* oversized = (char*)malloc(OVERSIZED_PAYLOAD_LEN);
     if (!oversized) {

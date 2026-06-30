@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -61,6 +62,31 @@ dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT
     }
     g_cap.calls++;
     return 0;
+}
+
+int
+dsd_app_command_action(int cmd_id) { // NOLINT(misc-use-internal-linkage)
+    return dsd_app_post_cmd(cmd_id, NULL, 0U);
+}
+
+int
+dsd_app_command_set_i32(int cmd_id, int32_t value) { // NOLINT(misc-use-internal-linkage)
+    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+}
+
+int
+dsd_app_command_set_u8(int cmd_id, uint8_t value) { // NOLINT(misc-use-internal-linkage)
+    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+}
+
+int
+dsd_app_command_set_u32(int cmd_id, uint32_t value) { // NOLINT(misc-use-internal-linkage)
+    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+}
+
+int
+dsd_app_command_set_float(int cmd_id, float value) { // NOLINT(misc-use-internal-linkage)
+    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
 }
 
 void

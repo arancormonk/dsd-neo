@@ -11,9 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_COMMANDS_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_COMMANDS_H_
 
-#include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/state_fwd.h>
-#include <stddef.h>
+#include <dsd-neo/runtime/config.h>
 #include <stdint.h>
 
 /** Command identifiers used by the async UI command queue. */
@@ -214,17 +212,6 @@ enum dsd_app_command_id {
     DSD_APP_CMD_CONFIG_APPLY = 710 // payload: dsdneoUserConfig (see runtime/config.h)
 };
 
-/**
- * @brief Command payload envelope for the UI command queue.
- */
-enum { DSD_APP_CMD_DATA_MAX = 16384 };
-
-struct dsd_app_command {
-    int id;
-    size_t n; // payload length
-    uint8_t data[DSD_APP_CMD_DATA_MAX];
-};
-
 /** DSP control opcodes understood by the decoder/control-pump thread. */
 enum dsd_app_dsp_op {
     DSD_APP_DSP_OP_TOGGLE_CQ = 2,
@@ -246,22 +233,56 @@ typedef struct {
     int d;
 } dsd_app_dsp_payload;
 
+typedef struct {
+    char host[256];
+    int32_t port;
+} dsd_app_endpoint_payload;
+
+typedef struct {
+    char bind[256];
+    int32_t port;
+} dsd_app_udp_input_payload;
+
+typedef struct {
+    uint64_t wacn;
+    uint64_t sysid;
+    uint64_t cc;
+} dsd_app_p25_p2_params_payload;
+
+typedef struct {
+    uint64_t H;
+    uint64_t K1;
+    uint64_t K2;
+    uint64_t K3;
+    uint64_t K4;
+} dsd_app_hytera_key_payload;
+
+typedef struct {
+    uint64_t K1;
+    uint64_t K2;
+    uint64_t K3;
+    uint64_t K4;
+} dsd_app_aes_key_payload;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * @brief Post a frontend command from a producer thread.
- *
- * Truncates payloads to the maximum queue payload size if needed.
- */
-int dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz);
-
-/**
- * @brief Drain queued frontend commands on the decoder/control-pump thread.
- * @return Number of commands applied.
- */
-int dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state);
+int dsd_app_command_action(int cmd_id);
+int dsd_app_command_set_i32(int cmd_id, int32_t value);
+int dsd_app_command_set_u8(int cmd_id, uint8_t value);
+int dsd_app_command_set_u32(int cmd_id, uint32_t value);
+int dsd_app_command_set_u64(int cmd_id, uint64_t value);
+int dsd_app_command_set_double(int cmd_id, double value);
+int dsd_app_command_set_float(int cmd_id, float value);
+int dsd_app_command_set_string(int cmd_id, const char* value);
+int dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port);
+int dsd_app_command_set_udp_input(const char* bind, int32_t port);
+int dsd_app_command_set_p25_p2_params(const dsd_app_p25_p2_params_payload* payload);
+int dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload);
+int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
+int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);
+int dsd_app_command_apply_config(const dsdneoUserConfig* config);
 
 #ifdef __cplusplus
 }

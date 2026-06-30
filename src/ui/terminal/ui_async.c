@@ -4,15 +4,13 @@
  */
 
 #include <curses.h>
-#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
-#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -20,6 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../../app_control/snapshot_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
@@ -36,11 +35,6 @@ static atomic_int g_ui_in_context = 0;
 int
 ui_is_thread_context(void) {
     return atomic_load(&g_ui_in_context);
-}
-
-static void
-ui_control_pump(dsd_opts* opts, dsd_state* state) {
-    (void)dsd_app_drain_cmds(opts, state);
 }
 
 static const dsd_opts*
@@ -240,19 +234,19 @@ ui_start(dsd_opts* opts, dsd_state* state) {
         return 0; // already running
     }
 
-    dsd_app_install_telemetry_hooks();
+    dsd_app_frontend_runtime_start(opts, state);
     g_ui_opts = opts;
     g_ui_state = state;
     ui_history_set_mode(opts ? opts->frontend_display.terminal_history : 1);
     atomic_store(&g_ui_stop, 0);
 
     if (dsd_thread_create(&g_ui_thread, ui_thread_main, NULL) != 0) {
+        dsd_app_frontend_runtime_stop();
         g_ui_opts = NULL;
         g_ui_state = NULL;
         return -1;
     }
 
-    dsd_runtime_set_control_pump(ui_control_pump);
     atomic_store(&g_ui_running, 1);
     return 0;
 }
@@ -262,7 +256,7 @@ ui_stop(void) {
     if (!atomic_load(&g_ui_running)) {
         return;
     }
-    dsd_runtime_set_control_pump(NULL);
+    dsd_app_frontend_runtime_stop();
     atomic_store(&g_ui_stop, 1);
     dsd_thread_join(g_ui_thread);
     atomic_store(&g_ui_running, 0);

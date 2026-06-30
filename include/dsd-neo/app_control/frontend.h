@@ -16,7 +16,6 @@
 
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 #include "dsd-neo/platform/platform.h"
 
@@ -159,11 +158,9 @@ enum {
         DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE | DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE | DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST
 };
 
-void dsd_app_frontend_status_from_opts_state(const dsd_opts* opts, const dsd_state* state, dsd_frontend_status* out);
 int dsd_app_frontend_get_status(dsd_frontend_status* out);
-int dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out);
-int dsd_app_frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state,
-                                                    dsd_frontend_metrics* out, unsigned int snr_fallbacks);
+int dsd_app_frontend_get_metrics(dsd_frontend_metrics* out);
+int dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks);
 
 int dsd_app_frontend_constellation_get(float* out_xy, int max_points);
 int dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps);
@@ -171,10 +168,10 @@ int dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate);
 int dsd_app_frontend_spectrum_get_size(void);
 int dsd_app_frontend_spectrum_set_size(int n);
 
-int dsd_app_frontend_requested_ppm(const dsd_opts* opts);
+int dsd_app_frontend_requested_ppm(void);
 float dsd_app_frontend_ted_gain(void);
-int dsd_app_frontend_auto_ppm_enabled(const dsd_state* state, int configured);
-int dsd_app_frontend_tuner_autogain_enabled(const dsd_state* state, int configured);
+int dsd_app_frontend_auto_ppm_enabled(int configured);
+int dsd_app_frontend_tuner_autogain_enabled(int configured);
 
 #ifdef __cplusplus
 }

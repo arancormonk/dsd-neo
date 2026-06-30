@@ -76,7 +76,6 @@ static int test_init_pair(short pair, short f, short b);
 #include "dsd-neo/app_control/frontend.h"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_c.h"
 #include "dsd-neo/ui/ncurses_internal.h"
 #include "dsd-neo/ui/ui_prims.h"
@@ -229,9 +228,7 @@ rtl_stream_spectrum_get(float* out, int max_bins, int* out_rate) { // NOLINT(mis
 }
 
 int
-dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
-    (void)opts;
-    (void)state;
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->snr_bias_c4fm = rtl_stream_get_snr_bias_c4fm();
     out->snr_c4fm_db = rtl_stream_get_snr_c4fm();

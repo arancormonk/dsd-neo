@@ -391,6 +391,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_frontend_runtime
+  HEADERS_PUBLIC_APP_CONTROL_FRONTEND_RUNTIME
+  dsd-neo/app_control/frontend_runtime.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_history
   HEADERS_PUBLIC_APP_CONTROL_HISTORY
   dsd-neo/app_control/history.h
@@ -1929,7 +1935,10 @@ add_executable(
     dsd-neo_test_app_control_snapshot_event_history
     ui/test_ui_snapshot_event_history.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/frontend.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
@@ -1963,6 +1972,19 @@ target_link_libraries(
 add_test(
     NAME APP_CONTROL_OPTS_SNAPSHOT
     COMMAND dsd-neo_test_app_control_opts_snapshot
+)
+
+add_executable(
+    dsd-neo_test_app_control_frontend_public_boundary
+    ui/test_app_control_frontend_public_boundary.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_frontend_public_boundary
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY
+    COMMAND dsd-neo_test_app_control_frontend_public_boundary
 )
 
 add_executable(

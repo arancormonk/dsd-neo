@@ -55,9 +55,9 @@ io_rtl_active(const void* ctx) {
 #ifdef USE_RADIO
 static dsd_frontend_metrics
 menu_frontend_metrics(const void* v) {
-    const UiCtx* c = (const UiCtx*)v;
+    (void)v;
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(c ? c->opts : NULL, c ? c->state : NULL, &metrics);
+    (void)dsd_app_frontend_get_metrics(&metrics);
     return metrics;
 }
 
@@ -962,16 +962,16 @@ lbl_rtl_rtltcp_autotune(const void* v, char* b, size_t n) {
 const char*
 lbl_rtl_auto_ppm(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    int on = dsd_app_frontend_auto_ppm_enabled(c ? c->state : NULL, (c && c->opts) ? c->opts->rtl_auto_ppm : 0);
+    int on = dsd_app_frontend_auto_ppm_enabled((c && c->opts) ? c->opts->rtl_auto_ppm : 0);
     DSD_SNPRINTF(b, n, "Auto-PPM (Spectrum): %s", on ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_rtl_tuner_autogain(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
+    (void)v;
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = dsd_app_frontend_tuner_autogain_enabled(c ? c->state : NULL, (cfg && cfg->tuner_autogain_enable) ? 1 : 0);
+    int on = dsd_app_frontend_tuner_autogain_enabled((cfg && cfg->tuner_autogain_enable) ? 1 : 0);
     DSD_SNPRINTF(b, n, "Tuner Autogain: %s", on ? "On" : "Off");
     return b;
 }

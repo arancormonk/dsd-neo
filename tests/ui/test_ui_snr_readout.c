@@ -11,9 +11,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 static double g_snr_c4fm = -100.0;
 static double g_snr_c4fm_eye = -100.0;
@@ -23,9 +21,7 @@ static double g_snr_gfsk_eye = -100.0;
 static double g_snr_qpsk_const = -100.0;
 
 int
-dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
-    (void)opts;
-    (void)state;
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->snr_c4fm_db = g_snr_c4fm;
     out->snr_c4fm_eye_db = g_snr_c4fm_eye;
@@ -37,10 +33,9 @@ dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_f
 }
 
 int
-dsd_app_frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
-                                                unsigned int snr_fallbacks) {
+dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
     (void)snr_fallbacks;
-    return dsd_app_frontend_get_metrics(opts, state, out);
+    return dsd_app_frontend_get_metrics(out);
 }
 
 static void

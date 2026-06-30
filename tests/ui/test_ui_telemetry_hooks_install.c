@@ -4,10 +4,12 @@
  */
 
 #include <assert.h>
-#include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
 
+#include "../../src/app_control/commands_internal.h"
+#include "../../src/app_control/snapshot_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "telemetry_hooks_impl.h"
@@ -19,6 +21,18 @@ static int g_opts_snapshot_calls;
 void
 dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks) { // NOLINT(misc-use-internal-linkage)
     g_hooks = hooks;
+}
+
+void
+dsd_runtime_set_control_pump(dsd_control_pump_fn fn) { // NOLINT(misc-use-internal-linkage)
+    (void)fn;
+}
+
+int
+dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+    return 0;
 }
 
 void

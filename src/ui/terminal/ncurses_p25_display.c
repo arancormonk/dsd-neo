@@ -573,7 +573,7 @@ ui_print_p25_rtl_metrics(int is_p25p1, int is_p25p2) {
         return 0;
     }
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(NULL, NULL, &metrics);
+    (void)dsd_app_frontend_get_metrics(&metrics);
     const dsd_frontend_decode_health* health = &metrics.decode_health;
     if (!health->valid) {
         return 0;

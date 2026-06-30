@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -190,6 +191,63 @@ post_p2_params(uint64_t wacn, uint64_t sysid, uint64_t cc) {
 static int
 post_call_alert_events(uint8_t events) {
     return dsd_app_post_cmd(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, &events, sizeof(events));
+}
+
+static int
+test_typed_command_api_wrappers(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+
+    rc |= expect_int("typed action rejects setter", dsd_app_command_action(DSD_APP_CMD_GAIN_SET), -1);
+    rc |= expect_int("typed i32 rejects action", dsd_app_command_set_i32(DSD_APP_CMD_TOGGLE_MUTE, 1), -1);
+    rc |= expect_int("typed string rejects null", dsd_app_command_set_string(DSD_APP_CMD_INPUT_WAV_SET, NULL), -1);
+    rc |= expect_int("typed endpoint rejects action",
+                     dsd_app_command_set_endpoint(DSD_APP_CMD_TOGGLE_MUTE, "127.0.0.1", -1), -1);
+    rc |= expect_int("typed udp input rejects null", dsd_app_command_set_udp_input(NULL, 0), -1);
+    rc |= expect_int("typed p25 payload rejects null", dsd_app_command_set_p25_p2_params(NULL), -1);
+    rc |= expect_int("typed hytera payload rejects null", dsd_app_command_set_hytera_key(NULL), -1);
+    rc |= expect_int("typed aes payload rejects null", dsd_app_command_set_aes_key(NULL), -1);
+    rc |= expect_int("typed dsp payload rejects null", dsd_app_command_dsp_op(NULL), -1);
+    rc |= expect_int("typed config payload rejects null", dsd_app_command_apply_config(NULL), -1);
+
+    dsd_app_p25_p2_params_payload p2 = {0xABCDEU, 0x123U, 0x456U};
+    dsd_app_hytera_key_payload hytera = {0xAU, 1U, 2U, 3U, 4U};
+    dsd_app_aes_key_payload aes = {9U, 10U, 11U, 12U};
+    dsd_app_dsp_payload dsp = {0};
+
+    rc |= expect_int("typed action posts", dsd_app_command_action(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE), 0);
+    rc |= expect_int("typed gain posts", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 5), 0);
+    rc |= expect_int("typed gain coalesces to latest", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 9), 0);
+    rc |= expect_int("typed u8 posts", dsd_app_command_set_u8(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, 3U), 0);
+    rc |= expect_int("typed u32 posts", dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, 2468U), 0);
+    rc |= expect_int("typed u64 posts", dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, 0x55U), 0);
+    rc |= expect_int("typed double posts", dsd_app_command_set_double(DSD_APP_CMD_HANGTIME_SET, 3.5), 0);
+    rc |= expect_int("typed float posts", dsd_app_command_set_float(DSD_APP_CMD_CONST_GATE_DELTA, 1.0f), 0);
+    rc |= expect_int("typed string posts", dsd_app_command_set_string(DSD_APP_CMD_M17_USER_DATA_SET, "0,DST,SRC"), 0);
+    rc |= expect_int("typed endpoint posts",
+                     dsd_app_command_set_endpoint(DSD_APP_CMD_RIGCTL_CONNECT_CFG, "127.0.0.1", -1), 0);
+    rc |= expect_int("typed p25 payload posts", dsd_app_command_set_p25_p2_params(&p2), 0);
+    rc |= expect_int("typed hytera payload posts", dsd_app_command_set_hytera_key(&hytera), 0);
+    rc |= expect_int("typed aes payload posts", dsd_app_command_set_aes_key(&aes), 0);
+    rc |= expect_int("typed dsp payload posts", dsd_app_command_dsp_op(&dsp), 0);
+
+    rc |= expect_int("typed wrappers applied with coalescing", dsd_app_drain_cmds(&opts, &state), 13);
+    rc |= expect_int("typed action toggled channels", opts.frontend_display.show_channels, 1);
+    rc |= expect_int("typed gain applied latest", (int)opts.audio_gain, 9);
+    rc |= expect_u64("typed tg hold set", state.tg_hold, 2468ULL);
+    rc |= expect_u64("typed rc4des key set", state.R, 0x55ULL);
+    rc |= expect_true("typed hangtime set", opts.trunk_hangtime > 3.49 && opts.trunk_hangtime < 3.51);
+    rc |= expect_str("typed m17 payload copied", state.m17dat, "0,DST,SRC");
+    rc |= expect_u64("typed p2 wacn set", state.p2_wacn, 0xABCDEULL);
+    rc |= expect_u64("typed p2 sysid set", state.p2_sysid, 0x123ULL);
+    rc |= expect_u64("typed p2 cc set", state.p2_cc, 0x456ULL);
+    rc |= expect_u64("typed aes key loaded", state.A1[0], 9ULL);
+    rc |= expect_int("typed aes key load flag", state.aes_key_loaded[0], 1);
+
+    freeState(&state);
+    return rc;
 }
 
 static int
@@ -526,6 +584,7 @@ test_io_and_legacy_state_commands(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_typed_command_api_wrappers();
     rc |= test_visibility_and_queue_overflow();
     rc |= test_key_and_runtime_state_commands();
     rc |= test_file_network_and_import_commands();

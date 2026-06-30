@@ -8,9 +8,8 @@
  */
 
 #include <curses.h>
-#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -24,6 +23,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "../../src/app_control/commands_internal.h"
+#include "../../src/app_control/snapshot_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
@@ -99,6 +100,23 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_app_install_telemetry_hooks(void) {}
+
+static void
+test_frontend_control_pump(dsd_opts* opts, dsd_state* state) {
+    (void)dsd_app_drain_cmds(opts, state);
+}
+
+void
+dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* initial_state) {
+    g_latest_opts = initial_opts;
+    g_latest_state = initial_state;
+    dsd_runtime_set_control_pump(test_frontend_control_pump);
+}
+
+void
+dsd_app_frontend_runtime_stop(void) {
+    dsd_runtime_set_control_pump(NULL);
+}
 
 int
 ui_menu_is_open(void) {

@@ -5,7 +5,6 @@
 
 #include <dsd-neo/ui/terminal_provider.h>
 
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/ui/ui_async.h>
@@ -37,10 +36,7 @@ dsd_terminal_frontend_prepare(const dsd_opts* opts, const dsd_state* state, dsd_
     if (!opts || !out) {
         return -1;
     }
-    if (state) {
-        dsd_app_telemetry_publish_opts_snapshot(opts);
-        dsd_app_telemetry_publish_snapshot(state);
-    }
+    (void)state;
     *out = (dsd_engine_lifecycle_hooks){
         .start = dsd_terminal_frontend_start,
         .stop = dsd_terminal_frontend_stop,

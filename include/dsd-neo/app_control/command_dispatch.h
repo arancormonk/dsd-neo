@@ -11,13 +11,25 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_COMMAND_DISPATCH_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_COMMAND_DISPATCH_H_
 
-#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+enum { DSD_APP_CMD_DISPATCH_DATA_MAX = 16384 };
+
+/**
+ * @brief Internal command payload envelope consumed by app-control dispatchers.
+ */
+struct dsd_app_command {
+    int id;
+    size_t n;
+    uint8_t data[DSD_APP_CMD_DISPATCH_DATA_MAX];
+};
 
 /** Common handler signature for UI command actions. */
 typedef int (*dsd_app_command_handler)(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd);

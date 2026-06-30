@@ -383,9 +383,11 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static int g_requested_ppm;
+
 int
-dsd_app_frontend_requested_ppm(const dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
-    return opts ? opts->rtlsdr_ppm_error : 0;
+dsd_app_frontend_requested_ppm(void) { // NOLINT(misc-use-internal-linkage)
+    return g_requested_ppm;
 }
 
 static void
@@ -482,6 +484,7 @@ test_rtl_and_soapy_input_source_rendering(void) {
     opts.rtl_gain_value = 21;
     opts.rtl_volume_multiplier = 3;
     opts.rtlsdr_ppm_error = -7;
+    g_requested_ppm = opts.rtlsdr_ppm_error;
     opts.rtl_squelch_level = -37.5f;
     opts.rtl_dsp_bw_khz = 24;
     opts.rtlsdr_center_freq = 851012500;

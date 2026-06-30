@@ -148,7 +148,7 @@ ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
 #ifdef USE_RADIO
     if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
         dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(opts, state, &metrics);
+        (void)dsd_app_frontend_get_metrics(&metrics);
         /* RTL direct symbol paths feed one decoded symbol per sample; report the configured profile rate. */
         if ((metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK
              || metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_FSK_DISCRIMINATOR)
@@ -311,7 +311,7 @@ ui_print_rtl_gain_field(dsd_opts* opts) {
     /* Show applied tuner gain when available (actual driver value),
        otherwise fall back to requested value. */
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(opts, NULL, &metrics);
+    (void)dsd_app_frontend_get_metrics(&metrics);
     if (metrics.tuner_gain_valid) {
         if (metrics.tuner_gain_is_auto) {
             printw(" G: AGC;");
@@ -332,7 +332,8 @@ ui_print_rtl_gain_field(dsd_opts* opts) {
 
 static void
 ui_print_rtl_ppm_field(const dsd_opts* opts) {
-    int requested_ppm = dsd_app_frontend_requested_ppm(opts);
+    (void)opts;
+    int requested_ppm = dsd_app_frontend_requested_ppm();
     printw(" PPM: %i;", requested_ppm); //Adjust manually now with { and }
 }
 
@@ -358,7 +359,7 @@ ui_print_rtl_auto_ppm_status(void) {
 #else
     /* Show carrier/error-based auto PPM status snapshot */
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(NULL, NULL, &metrics);
+    (void)dsd_app_frontend_get_metrics(&metrics);
     ui_print_rtl_auto_ppm_status_values(metrics.auto_ppm_enabled, metrics.auto_ppm_locked, metrics.auto_ppm_locked_ppm,
                                         metrics.auto_ppm_snr_db, metrics.auto_ppm_df_hz, metrics.auto_ppm_step_dir);
 #endif

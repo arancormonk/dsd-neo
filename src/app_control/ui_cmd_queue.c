@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "commands_internal.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -98,6 +99,43 @@ q_is_full_unlocked(void) {
 static inline int
 q_is_empty_unlocked(void) {
     return g_head == g_tail;
+}
+
+static int
+ui_cmd_is_coalescible_setter(int cmd_id) {
+    switch (cmd_id) {
+        case DSD_APP_CMD_GAIN_SET:
+        case DSD_APP_CMD_AGAIN_SET:
+        case DSD_APP_CMD_INPUT_VOL_SET:
+        case DSD_APP_CMD_RTL_SET_FREQ:
+        case DSD_APP_CMD_RTL_SET_GAIN:
+        case DSD_APP_CMD_RTL_SET_PPM:
+        case DSD_APP_CMD_RTL_SET_BW:
+        case DSD_APP_CMD_RTL_SET_SQL_DB:
+        case DSD_APP_CMD_RTL_SET_VOL_MULT:
+        case DSD_APP_CMD_HANGTIME_SET:
+        case DSD_APP_CMD_SLOT_PREF_SET: return 1;
+        default: return 0;
+    }
+}
+
+static struct dsd_app_command*
+ui_cmd_find_pending_unlocked(int cmd_id) {
+    for (size_t i = g_head; i != g_tail; i = (i + 1U) % DSD_APP_CMD_Q_CAP) {
+        if (g_q[i].id == cmd_id) {
+            return &g_q[i];
+        }
+    }
+    return NULL;
+}
+
+static void
+ui_cmd_store_payload(struct dsd_app_command* c, int cmd_id, const void* payload, size_t payload_sz) {
+    c->id = cmd_id;
+    c->n = payload_sz;
+    if (payload_sz && payload) {
+        DSD_MEMCPY(c->data, payload, payload_sz);
+    }
 }
 
 static void ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 3, 4);
@@ -1777,6 +1815,14 @@ dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
     }
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
+    if (ui_cmd_is_coalescible_setter(cmd_id)) {
+        struct dsd_app_command* pending = ui_cmd_find_pending_unlocked(cmd_id);
+        if (pending) {
+            ui_cmd_store_payload(pending, cmd_id, payload, payload_sz);
+            dsd_mutex_unlock(&g_mu);
+            return 0;
+        }
+    }
     if (q_is_full_unlocked()) {
         // Drop the oldest command (advance head) and warn once per burst
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
@@ -1786,14 +1832,253 @@ dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
         }
     }
     struct dsd_app_command* c = &g_q[g_tail];
-    c->id = cmd_id;
-    c->n = payload_sz;
-    if (payload_sz && payload) {
-        DSD_MEMCPY(c->data, payload, payload_sz);
-    }
+    ui_cmd_store_payload(c, cmd_id, payload, payload_sz);
     g_tail = (g_tail + 1) % DSD_APP_CMD_Q_CAP;
     dsd_mutex_unlock(&g_mu);
     return 0;
+}
+
+static const int k_ui_cmd_action_ids[] = {
+    DSD_APP_CMD_TOGGLE_MUTE,
+    DSD_APP_CMD_TOGGLE_COMPACT,
+    DSD_APP_CMD_HISTORY_CYCLE,
+    DSD_APP_CMD_SLOT1_TOGGLE,
+    DSD_APP_CMD_SLOT2_TOGGLE,
+    DSD_APP_CMD_SLOT_PREF_CYCLE,
+    DSD_APP_CMD_TRUNK_TOGGLE,
+    DSD_APP_CMD_SCANNER_TOGGLE,
+    DSD_APP_CMD_PAYLOAD_TOGGLE,
+    DSD_APP_CMD_P25_GA_TOGGLE,
+    DSD_APP_CMD_LPF_TOGGLE,
+    DSD_APP_CMD_HPF_TOGGLE,
+    DSD_APP_CMD_PBF_TOGGLE,
+    DSD_APP_CMD_HPF_D_TOGGLE,
+    DSD_APP_CMD_AGGR_SYNC_TOGGLE,
+    DSD_APP_CMD_CALL_ALERT_TOGGLE,
+    DSD_APP_CMD_CONST_TOGGLE,
+    DSD_APP_CMD_CONST_NORM_TOGGLE,
+    DSD_APP_CMD_EYE_TOGGLE,
+    DSD_APP_CMD_EYE_UNICODE_TOGGLE,
+    DSD_APP_CMD_EYE_COLOR_TOGGLE,
+    DSD_APP_CMD_FSK_HIST_TOGGLE,
+    DSD_APP_CMD_SPECTRUM_TOGGLE,
+    DSD_APP_CMD_INPUT_VOL_CYCLE,
+    DSD_APP_CMD_EH_NEXT,
+    DSD_APP_CMD_EH_PREV,
+    DSD_APP_CMD_EH_TOGGLE_SLOT,
+    DSD_APP_CMD_INVERT_TOGGLE,
+    DSD_APP_CMD_MOD_TOGGLE,
+    DSD_APP_CMD_DMR_RESET,
+    DSD_APP_CMD_INPUT_MONITOR_TOGGLE,
+    DSD_APP_CMD_COSINE_FILTER_TOGGLE,
+    DSD_APP_CMD_TCP_CONNECT_AUDIO,
+    DSD_APP_CMD_RIGCTL_CONNECT,
+    DSD_APP_CMD_RETURN_CC,
+    DSD_APP_CMD_CHANNEL_CYCLE,
+    DSD_APP_CMD_SYMCAP_SAVE,
+    DSD_APP_CMD_SYMCAP_STOP,
+    DSD_APP_CMD_REPLAY_LAST,
+    DSD_APP_CMD_WAV_START,
+    DSD_APP_CMD_WAV_STOP,
+    DSD_APP_CMD_STOP_PLAYBACK,
+    DSD_APP_CMD_TRUNK_WLIST_TOGGLE,
+    DSD_APP_CMD_TRUNK_PRIV_TOGGLE,
+    DSD_APP_CMD_TRUNK_DATA_TOGGLE,
+    DSD_APP_CMD_TRUNK_ENC_TOGGLE,
+    DSD_APP_CMD_QUIT,
+    DSD_APP_CMD_FORCE_PRIV_TOGGLE,
+    DSD_APP_CMD_FORCE_RC4_TOGGLE,
+    DSD_APP_CMD_TRUNK_GROUP_TOGGLE,
+    DSD_APP_CMD_SIM_NOCAR,
+    DSD_APP_CMD_MOD_P2_TOGGLE,
+    DSD_APP_CMD_M17_TX_TOGGLE,
+    DSD_APP_CMD_PROVOICE_ESK_TOGGLE,
+    DSD_APP_CMD_PROVOICE_MODE_TOGGLE,
+    DSD_APP_CMD_UI_MSG_CLEAR,
+    DSD_APP_CMD_EH_RESET,
+    DSD_APP_CMD_EVENT_LOG_DISABLE,
+    DSD_APP_CMD_CRC_RELAX_TOGGLE,
+    DSD_APP_CMD_LCW_RETUNE_TOGGLE,
+    DSD_APP_CMD_P25_CC_CAND_TOGGLE,
+    DSD_APP_CMD_REVERSE_MUTE_TOGGLE,
+    DSD_APP_CMD_DMR_LE_TOGGLE,
+    DSD_APP_CMD_ALL_MUTES_TOGGLE,
+    DSD_APP_CMD_INV_X2_TOGGLE,
+    DSD_APP_CMD_INV_DMR_TOGGLE,
+    DSD_APP_CMD_INV_DPMR_TOGGLE,
+    DSD_APP_CMD_INV_M17_TOGGLE,
+    DSD_APP_CMD_INPUT_SET_PULSE,
+    DSD_APP_CMD_RTL_ENABLE_INPUT,
+    DSD_APP_CMD_RTL_RESTART,
+    DSD_APP_CMD_LRRP_SET_HOME,
+    DSD_APP_CMD_LRRP_SET_DSDP,
+    DSD_APP_CMD_LRRP_DISABLE,
+    DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_AFFIL_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_IDEN_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE,
+    DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE,
+};
+
+static const int k_ui_cmd_i32_ids[] = {
+    DSD_APP_CMD_GAIN_DELTA,       DSD_APP_CMD_AGAIN_DELTA,
+    DSD_APP_CMD_SPEC_SIZE_DELTA,  DSD_APP_CMD_PPM_DELTA,
+    DSD_APP_CMD_GAIN_SET,         DSD_APP_CMD_AGAIN_SET,
+    DSD_APP_CMD_RTL_SET_DEV,      DSD_APP_CMD_RTL_SET_FREQ,
+    DSD_APP_CMD_RTL_SET_GAIN,     DSD_APP_CMD_RTL_SET_PPM,
+    DSD_APP_CMD_RTL_SET_BW,       DSD_APP_CMD_RTL_SET_VOL_MULT,
+    DSD_APP_CMD_RTL_SET_BIAS_TEE, DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,
+    DSD_APP_CMD_RTL_SET_AUTO_PPM, DSD_APP_CMD_RIGCTL_SET_MOD_BW,
+    DSD_APP_CMD_SLOT_PREF_SET,    DSD_APP_CMD_SLOTS_ONOFF_SET,
+    DSD_APP_CMD_INPUT_VOL_SET,
+};
+
+static const int k_ui_cmd_string_ids[] = {
+    DSD_APP_CMD_EVENT_LOG_SET,     DSD_APP_CMD_WAV_STATIC_OPEN,      DSD_APP_CMD_WAV_RAW_OPEN,
+    DSD_APP_CMD_DSP_OUT_SET,       DSD_APP_CMD_SYMCAP_OPEN,          DSD_APP_CMD_SYMBOL_IN_OPEN,
+    DSD_APP_CMD_INPUT_WAV_SET,     DSD_APP_CMD_INPUT_SYM_STREAM_SET, DSD_APP_CMD_PULSE_OUT_SET,
+    DSD_APP_CMD_PULSE_IN_SET,      DSD_APP_CMD_LRRP_SET_CUSTOM,      DSD_APP_CMD_IMPORT_CHANNEL_MAP,
+    DSD_APP_CMD_IMPORT_GROUP_LIST, DSD_APP_CMD_IMPORT_KEYS_DEC,      DSD_APP_CMD_IMPORT_KEYS_HEX,
+    DSD_APP_CMD_KEY_TYT_AP_SET,    DSD_APP_CMD_KEY_RETEVIS_RC2_SET,  DSD_APP_CMD_KEY_TYT_EP_SET,
+    DSD_APP_CMD_KEY_KEN_SCR_SET,   DSD_APP_CMD_KEY_ANYTONE_BP_SET,   DSD_APP_CMD_KEY_XOR_SET,
+    DSD_APP_CMD_M17_USER_DATA_SET,
+};
+
+static int
+ui_cmd_id_in_list(int cmd_id, const int* ids, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (ids[i] == cmd_id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+ui_cmd_is_action_id(int cmd_id) {
+    return ui_cmd_id_in_list(cmd_id, k_ui_cmd_action_ids, sizeof k_ui_cmd_action_ids / sizeof k_ui_cmd_action_ids[0]);
+}
+
+int
+dsd_app_command_action(int cmd_id) {
+    return ui_cmd_is_action_id(cmd_id) ? dsd_app_post_cmd(cmd_id, NULL, 0U) : -1;
+}
+
+int
+dsd_app_command_set_i32(int cmd_id, int32_t value) {
+    return ui_cmd_id_in_list(cmd_id, k_ui_cmd_i32_ids, sizeof k_ui_cmd_i32_ids / sizeof k_ui_cmd_i32_ids[0])
+               ? dsd_app_post_cmd(cmd_id, &value, sizeof value)
+               : -1;
+}
+
+int
+dsd_app_command_set_u8(int cmd_id, uint8_t value) {
+    switch (cmd_id) {
+        case DSD_APP_CMD_TG_HOLD_TOGGLE:
+        case DSD_APP_CMD_CALL_ALERT_EVENTS_SET:
+        case DSD_APP_CMD_LOCKOUT_SLOT: return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+        default: return -1;
+    }
+}
+
+int
+dsd_app_command_set_u32(int cmd_id, uint32_t value) {
+    switch (cmd_id) {
+        case DSD_APP_CMD_TG_HOLD_SET:
+        case DSD_APP_CMD_KEY_BASIC_SET:
+        case DSD_APP_CMD_KEY_SCRAMBLER_SET: return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+        default: return -1;
+    }
+}
+
+int
+dsd_app_command_set_u64(int cmd_id, uint64_t value) {
+    switch (cmd_id) {
+        case DSD_APP_CMD_KEY_RC4DES_SET: return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+        default: return -1;
+    }
+}
+
+int
+dsd_app_command_set_double(int cmd_id, double value) {
+    switch (cmd_id) {
+        case DSD_APP_CMD_INPUT_WARN_DB_SET:
+        case DSD_APP_CMD_RTL_SET_SQL_DB:
+        case DSD_APP_CMD_HANGTIME_SET: return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+        default: return -1;
+    }
+}
+
+int
+dsd_app_command_set_float(int cmd_id, float value) {
+    switch (cmd_id) {
+        case DSD_APP_CMD_CONST_GATE_DELTA: return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+        default: return -1;
+    }
+}
+
+int
+dsd_app_command_set_string(int cmd_id, const char* value) {
+    if (!value) {
+        return -1;
+    }
+    return ui_cmd_id_in_list(cmd_id, k_ui_cmd_string_ids, sizeof k_ui_cmd_string_ids / sizeof k_ui_cmd_string_ids[0])
+               ? dsd_app_post_cmd(cmd_id, value, strlen(value) + 1U)
+               : -1;
+}
+
+int
+dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port) {
+    if (!host) {
+        return -1;
+    }
+    if (cmd_id != DSD_APP_CMD_UDP_OUT_CFG && cmd_id != DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG
+        && cmd_id != DSD_APP_CMD_RIGCTL_CONNECT_CFG) {
+        return -1;
+    }
+    dsd_app_endpoint_payload payload = {0};
+    DSD_SNPRINTF(payload.host, sizeof payload.host, "%s", host);
+    payload.port = port;
+    return dsd_app_post_cmd(cmd_id, &payload, sizeof payload);
+}
+
+int
+dsd_app_command_set_udp_input(const char* bind, int32_t port) {
+    if (!bind) {
+        return -1;
+    }
+    dsd_app_udp_input_payload payload = {0};
+    DSD_SNPRINTF(payload.bind, sizeof payload.bind, "%s", bind);
+    payload.port = port;
+    return dsd_app_post_cmd(DSD_APP_CMD_UDP_INPUT_CFG, &payload, sizeof payload);
+}
+
+int
+dsd_app_command_set_p25_p2_params(const dsd_app_p25_p2_params_payload* payload) {
+    return payload ? dsd_app_post_cmd(DSD_APP_CMD_P25_P2_PARAMS_SET, payload, sizeof *payload) : -1;
+}
+
+int
+dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload) {
+    return payload ? dsd_app_post_cmd(DSD_APP_CMD_KEY_HYTERA_SET, payload, sizeof *payload) : -1;
+}
+
+int
+dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload) {
+    return payload ? dsd_app_post_cmd(DSD_APP_CMD_KEY_AES_SET, payload, sizeof *payload) : -1;
+}
+
+int
+dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload) {
+    return payload ? dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, payload, sizeof *payload) : -1;
+}
+
+int
+dsd_app_command_apply_config(const dsdneoUserConfig* config) {
+    return config ? dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, config, sizeof *config) : -1;
 }
 
 static int

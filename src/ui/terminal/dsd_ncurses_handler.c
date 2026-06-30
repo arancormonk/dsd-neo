@@ -42,14 +42,12 @@ ncurses_drain_escape_sequence(void) {
 
 static void
 ncurses_post_delta_i32(int cmd, int32_t value) {
-    int32_t delta = value;
-    dsd_app_post_cmd(cmd, &delta, sizeof delta);
+    (void)dsd_app_command_set_i32(cmd, value);
 }
 
 static void
 ncurses_post_delta_f32(int cmd, float value) {
-    float delta = value;
-    dsd_app_post_cmd(cmd, &delta, sizeof delta);
+    (void)dsd_app_command_set_float(cmd, value);
 }
 
 static uint32_t DSD_ATTR_USED
@@ -130,7 +128,7 @@ ncurses_try_post_simple_cmd(int c) {
         if (map[i].key != c) {
             continue;
         }
-        dsd_app_post_cmd(map[i].cmd, NULL, 0);
+        (void)dsd_app_command_action(map[i].cmd);
         return 1;
     }
     return 0;
@@ -181,19 +179,19 @@ ncurses_handle_tg_hold_keys(const dsd_opts* opts, const dsd_state* state, int c)
         return 0;
     }
     uint32_t tg = ncurses_resolve_tg_hold_target(opts, state, c == DSD_KEY_TG_HOLD2);
-    dsd_app_post_cmd(DSD_APP_CMD_TG_HOLD_SET, &tg, sizeof tg);
+    (void)dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, tg);
     return 1;
 }
 
 static int DSD_ATTR_USED
 ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c) {
     if (c == DSD_KEY_EH_TOGGLE) {
-        dsd_app_post_cmd(opts->m17encoder == 1 ? DSD_APP_CMD_M17_TX_TOGGLE : DSD_APP_CMD_EH_TOGGLE_SLOT, NULL, 0);
+        (void)dsd_app_command_action(opts->m17encoder == 1 ? DSD_APP_CMD_M17_TX_TOGGLE : DSD_APP_CMD_EH_TOGGLE_SLOT);
         return 1;
     }
     if (c == '!' || c == '@') {
         uint8_t slot = (uint8_t)((c == '@') ? 1 : 0);
-        dsd_app_post_cmd(DSD_APP_CMD_LOCKOUT_SLOT, &slot, sizeof slot);
+        (void)dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, slot);
         return 1;
     }
     if (c == DSD_KEY_ENTER || c == '\r' || c == KEY_ENTER) {
