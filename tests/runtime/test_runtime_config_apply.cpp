@@ -46,11 +46,21 @@
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/platform/posix_compat.h"
 #include "dsd-neo/runtime/call_alert.h"
-#include "menu_actions.h"
-#include "menu_callbacks.h"
-#include "menu_internal.h"
 #include "test_support.h"
 #include "ui_key_status.h"
+
+typedef struct UiCtx {
+    dsd_opts* opts;
+    dsd_state* state;
+} UiCtx;
+
+typedef struct ProfileSelCtx {
+    dsd_state* state;
+    char path[1024];
+    const char** labels;
+    const char** names;
+    int n;
+} ProfileSelCtx;
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -368,6 +378,7 @@ test_basic_pulse_config_apply(void) {
     cfg.output_backend = DSDCFG_OUTPUT_PULSE;
     DSD_SNPRINTF(cfg.pulse_output, sizeof cfg.pulse_output, "%s", "test-sink");
     cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
+    cfg.frontend_kind_is_set = 1;
 
     // Public API: ui_post_cmd() enqueues; ui_drain_cmds() is called from the
     // demod loop to apply pending commands. For the purposes of this test we
@@ -380,6 +391,58 @@ test_basic_pulse_config_apply(void) {
     rc |= expect_true("pulse input preserved", strncmp(opts->audio_in_dev, "pulse", 5) == 0);
     rc |= expect_true("pulse output preserved", strncmp(opts->audio_out_dev, "pulse", 5) == 0);
     free_test_runtime(&runtime);
+    return rc;
+}
+
+static int
+test_output_config_without_frontend_preserves_active_frontend(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    opts->frontend_kind = DSD_FRONTEND_TERMINAL;
+    DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
+    opts->audio_out_type = 0;
+
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[output]\n"
+                             "backend = \"null\"\n";
+
+    char path[DSD_TEST_PATH_MAX] = {0};
+    if (create_temp_config_file(ini, path, sizeof path) != 0) {
+        free_test_runtime(&runtime);
+        return 1;
+    }
+
+    dsdneoUserConfig cfg = {0};
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not load output-only config %s\n", path);
+        free_test_runtime(&runtime);
+        (void)remove(path);
+        return 1;
+    }
+
+    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    ui_drain_cmds(opts, state);
+
+    int rc = 0;
+    rc |= expect_int_eq("output-only config omits frontend", cfg.frontend_kind_is_set, 0);
+    rc |= expect_int_eq("output-only apply preserves active frontend", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
+    rc |= expect_true("output-only apply still changes backend", strcmp(opts->audio_out_dev, "null") == 0);
+
+    cfg.frontend_kind = DSD_FRONTEND_NONE;
+    cfg.frontend_kind_is_set = 1;
+    ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    ui_drain_cmds(opts, state);
+
+    rc |= expect_int_eq("explicit frontend none disables active frontend", opts->frontend_kind, DSD_FRONTEND_NONE);
+
+    free_test_runtime(&runtime);
+    (void)remove(path);
     return rc;
 }
 
@@ -519,7 +582,7 @@ make_test_profile_context(dsd_state* state, const char* path) {
     return pctx;
 }
 
-void
+static void
 chooser_done_config_profile(void* u, int sel) {
     ProfileSelCtx* pctx = (ProfileSelCtx*)u;
     if (!pctx) {
@@ -543,7 +606,7 @@ chooser_done_config_profile(void* u, int sel) {
     free_test_profile_context(pctx);
 }
 
-void
+static void
 act_config_load_profile(void* v) {
     UiCtx* c = (UiCtx*)v;
     if (!c || !c->state) {
@@ -2571,6 +2634,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_basic_pulse_config_apply();
+    rc |= test_output_config_without_frontend_preserves_active_frontend();
     rc |= test_ui_command_queue_applies_fifo();
     rc |= test_ui_command_queue_overflow_drops_oldest();
     rc |= test_ui_command_queue_truncates_oversized_payload_string();

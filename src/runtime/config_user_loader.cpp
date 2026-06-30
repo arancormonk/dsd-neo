@@ -414,6 +414,7 @@ apply_output_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* 
         dsd_frontend_kind frontend = DSD_FRONTEND_NONE;
         if (parse_frontend_kind_value(val, &frontend) == 0) {
             cfg->frontend_kind = frontend;
+            cfg->frontend_kind_is_set = 1;
         }
     }
 }

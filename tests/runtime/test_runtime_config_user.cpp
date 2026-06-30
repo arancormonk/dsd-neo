@@ -270,6 +270,7 @@ test_render_input_variants_and_save_atomic(void) {
     cfg.output_backend = DSDCFG_OUTPUT_PULSE;
     DSD_SNPRINTF(cfg.pulse_output, sizeof cfg.pulse_output, "%s", "speaker");
     cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
+    cfg.frontend_kind_is_set = 1;
     cfg.has_mode = 1;
     cfg.decode_mode = DSDCFG_MODE_M17;
     cfg.has_demod = 1;
@@ -478,7 +479,8 @@ test_load_and_apply_basic(void) {
         DSD_FPRINTF(stderr, "input section not parsed as RTL\n");
         rc |= 1;
     }
-    if (!cfg.has_output || cfg.output_backend != DSDCFG_OUTPUT_NULL || cfg.frontend_kind != DSD_FRONTEND_TERMINAL) {
+    if (!cfg.has_output || cfg.output_backend != DSDCFG_OUTPUT_NULL || cfg.frontend_kind != DSD_FRONTEND_TERMINAL
+        || !cfg.frontend_kind_is_set) {
         DSD_FPRINTF(stderr, "output section not parsed correctly\n");
         rc |= 1;
     }

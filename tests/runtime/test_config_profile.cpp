@@ -201,7 +201,7 @@ test_profile_multiple_overrides(void) {
         DSD_FPRINTF(stderr, "FAIL: trunking should be enabled\n");
         result = 1;
     }
-    if (!cfg.frontend_kind) {
+    if (!cfg.frontend_kind || !cfg.frontend_kind_is_set) {
         DSD_FPRINTF(stderr, "FAIL: frontend should be enabled\n");
         result = 1;
     }
@@ -260,7 +260,7 @@ test_profile_bool_aliases(void) {
         DSD_FPRINTF(stderr, "FAIL: load with bool_aliases profile failed (rc=%d)\n", rc);
         result = 1;
     }
-    if (!cfg.frontend_kind) {
+    if (!cfg.frontend_kind || !cfg.frontend_kind_is_set) {
         DSD_FPRINTF(stderr, "FAIL: expected frontend on from profile alias\n");
         result = 1;
     }
@@ -670,7 +670,7 @@ test_include_directive(void) {
     }
 
     /* Values from main file should also be present */
-    if (!cfg.frontend_kind) {
+    if (!cfg.frontend_kind || !cfg.frontend_kind_is_set) {
         DSD_FPRINTF(stderr, "FAIL: include: frontend should be true from main config\n");
         result = 1;
     }
