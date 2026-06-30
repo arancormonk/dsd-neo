@@ -368,6 +368,7 @@ test_basic_pulse_config_apply(void) {
     opts->audio_in_type = AUDIO_IN_PULSE;
     DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
     opts->audio_out_type = 0;
+    opts->frontend_kind = DSD_FRONTEND_NONE;
 
     dsdneoUserConfig cfg = {0};
     cfg.version = 1;
@@ -387,7 +388,7 @@ test_basic_pulse_config_apply(void) {
     ui_drain_cmds(opts, state);
 
     int rc = 0;
-    rc |= expect_int_eq("terminal frontend enabled", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
+    rc |= expect_int_eq("runtime config apply preserves disabled frontend", opts->frontend_kind, DSD_FRONTEND_NONE);
     rc |= expect_true("pulse input preserved", strncmp(opts->audio_in_dev, "pulse", 5) == 0);
     rc |= expect_true("pulse output preserved", strncmp(opts->audio_out_dev, "pulse", 5) == 0);
     free_test_runtime(&runtime);
@@ -439,10 +440,39 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
     ui_post_cmd(UI_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     ui_drain_cmds(opts, state);
 
-    rc |= expect_int_eq("explicit frontend none disables active frontend", opts->frontend_kind, DSD_FRONTEND_NONE);
+    rc |= expect_int_eq("explicit frontend none preserves active frontend", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
+
+    static const char* legacy_ini = "version = 1\n"
+                                    "\n"
+                                    "[output]\n"
+                                    "backend = \"null\"\n"
+                                    "ncurses_ui = false\n";
+
+    char legacy_path[DSD_TEST_PATH_MAX] = {0};
+    if (create_temp_config_file(legacy_ini, legacy_path, sizeof legacy_path) != 0) {
+        free_test_runtime(&runtime);
+        (void)remove(path);
+        return rc | 1;
+    }
+
+    dsdneoUserConfig legacy_cfg = {0};
+    if (dsd_user_config_load(legacy_path, &legacy_cfg) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not load legacy ncurses_ui=false config %s\n", legacy_path);
+        free_test_runtime(&runtime);
+        (void)remove(path);
+        (void)remove(legacy_path);
+        return rc | 1;
+    }
+
+    ui_post_cmd(UI_CMD_CONFIG_APPLY, &legacy_cfg, sizeof legacy_cfg);
+    ui_drain_cmds(opts, state);
+
+    rc |=
+        expect_int_eq("legacy ncurses_ui=false preserves active frontend", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
 
     free_test_runtime(&runtime);
     (void)remove(path);
+    (void)remove(legacy_path);
     return rc;
 }
 
@@ -658,6 +688,7 @@ test_ui_profile_selection_applies_overlay_and_disables_autosave(void) {
     }
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
+    opts->frontend_kind = DSD_FRONTEND_NONE;
     state->config_autosave_enabled = 1;
     DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", path);
 
@@ -677,7 +708,7 @@ test_ui_profile_selection_applies_overlay_and_disables_autosave(void) {
     rc |= expect_true("UI profile load retains config path", strcmp(state->config_autosave_path, path) == 0);
     rc |= expect_true("UI profile overlay applies DMR mode",
                       opts->frame_dmr == 1 && opts->frame_p25p1 == 0 && opts->frame_p25p2 == 0 && opts->frame_ysf == 0);
-    rc |= expect_int_eq("UI profile overlay applies terminal frontend", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
+    rc |= expect_int_eq("UI profile overlay preserves runtime frontend", opts->frontend_kind, DSD_FRONTEND_NONE);
 
     free_test_runtime(&runtime);
     (void)remove(path);
