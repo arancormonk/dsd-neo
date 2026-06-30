@@ -625,10 +625,45 @@ bootstrap_apply_runtime_config_after_cli(dsd_opts* opts, dsd_state* state) {
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, state);
 }
 
+static int
+bootstrap_compacted_arg_is_trunking_ui_only(const char* arg) {
+    if (!arg || arg[0] != '-' || arg[1] == '\0' || arg[1] == '-') {
+        return 0;
+    }
+    for (int i = 1; arg[i] != '\0'; i++) {
+        if (arg[i] != 'N') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+bootstrap_effective_cli_has_trunking_override(int argc_effective, char** argv) {
+    if (argc_effective <= 1) {
+        return 0;
+    }
+    if (!argv) {
+        return 1;
+    }
+    for (int i = 1; i < argc_effective; i++) {
+        const char* arg = argv[i];
+        if (!arg) {
+            break;
+        }
+        if (bootstrap_compacted_arg_is_trunking_ui_only(arg)) {
+            continue;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 static void
-bootstrap_apply_trunk_cli_gating(dsd_opts* opts, int argc_effective, int user_cfg_loaded,
+bootstrap_apply_trunk_cli_gating(dsd_opts* opts, int argc_effective, char** argv, int user_cfg_loaded,
                                  int explicit_profile_selected) {
-    if (argc_effective > 1 && user_cfg_loaded && !opts->trunk_cli_seen && !explicit_profile_selected) {
+    if (bootstrap_effective_cli_has_trunking_override(argc_effective, argv) && user_cfg_loaded && !opts->trunk_cli_seen
+        && !explicit_profile_selected) {
         opts->p25_trunk = 0;
         opts->trunk_enable = 0;
     }
@@ -720,7 +755,8 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
         return boot_rc;
     }
     bootstrap_apply_runtime_config_after_cli(opts, state);
-    bootstrap_apply_trunk_cli_gating(opts, argc_effective, user_cfg_loaded, explicit_profile_selected);
+    bootstrap_apply_trunk_cli_gating(opts, state->cli_argc_effective, state->cli_argv, user_cfg_loaded,
+                                     explicit_profile_selected);
 
     boot_rc = bootstrap_handle_post_parse_actions(&args, opts, state, config_env, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
