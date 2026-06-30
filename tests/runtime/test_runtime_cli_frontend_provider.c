@@ -339,7 +339,7 @@ test_main_thread_provider_runs_engine_on_worker(void) {
     opts.frontend_kind = DSD_FRONTEND_NATIVE;
     dsd_exitflag_store(0);
 
-    fake_main_thread_ctx ctx;
+    static fake_main_thread_ctx ctx;
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
     ctx.caller_thread = test_current_thread_id();
     ctx.runner_rc = 0;
@@ -380,7 +380,7 @@ test_main_thread_provider_observes_engine_exit_first(void) {
     opts.frontend_kind = DSD_FRONTEND_NATIVE;
     dsd_exitflag_store(0);
 
-    fake_main_thread_ctx ctx;
+    static fake_main_thread_ctx ctx;
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
     ctx.caller_thread = test_current_thread_id();
     ctx.runner_rc = 7;
