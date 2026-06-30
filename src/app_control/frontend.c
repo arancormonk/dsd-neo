@@ -17,6 +17,8 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
 
+enum { FRONTEND_SNR_INVALID_DB = -50 };
+
 static void
 copy_text(char* dst, size_t dst_size, const char* src) {
     if (!dst || dst_size == 0) {
@@ -106,6 +108,11 @@ frontend_metrics_defaults(dsd_frontend_metrics* out, const dsd_opts* opts) {
     out->tuner_gain_is_auto = 1;
 }
 
+static int
+frontend_snr_value_is_valid(double snr_db) {
+    return snr_db > (double)FRONTEND_SNR_INVALID_DB;
+}
+
 static void
 frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
     out->output_rate_hz = dsd_rtl_stream_metrics_hook_output_rate_hz();
@@ -118,10 +125,22 @@ frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
     out->cqpsk_timing_bias = dsd_rtl_stream_metrics_hook_cqpsk_timing_bias();
     out->snr_bias_evm = dsd_rtl_stream_metrics_hook_snr_bias_evm();
     out->snr_c4fm_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
-    out->snr_c4fm_eye_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
     out->snr_cqpsk_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
     out->snr_gfsk_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
-    out->snr_qpsk_const_db = dsd_rtl_stream_metrics_hook_snr_qpsk_const_db();
+}
+
+static void
+frontend_metrics_add_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
+    if ((snr_fallbacks & DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE) != 0u && !frontend_snr_value_is_valid(out->snr_c4fm_db)) {
+        out->snr_c4fm_eye_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
+    }
+    if ((snr_fallbacks & DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE) != 0u && !frontend_snr_value_is_valid(out->snr_gfsk_db)) {
+        out->snr_gfsk_eye_db = dsd_rtl_stream_metrics_hook_snr_gfsk_eye_db();
+    }
+    if ((snr_fallbacks & DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST) != 0u
+        && !frontend_snr_value_is_valid(out->snr_cqpsk_db)) {
+        out->snr_qpsk_const_db = dsd_rtl_stream_metrics_hook_snr_qpsk_const_db();
+    }
 }
 
 #ifdef USE_RADIO
@@ -141,7 +160,6 @@ frontend_metrics_from_radio(const dsd_opts* opts, const dsd_state* state, dsd_fr
     out->fll_band_edge_freq_hz = rtl_stream_get_fll_band_edge_freq_hz();
     out->spectrum_size = rtl_stream_spectrum_get_size();
     out->snr_bias_c4fm = rtl_stream_get_snr_bias_c4fm();
-    out->snr_gfsk_eye_db = rtl_stream_estimate_snr_gfsk_eye();
     out->requested_ppm = rtl_stream_get_requested_ppm(opts);
     out->tuner_gain_valid = (rtl_stream_get_gain(&out->tuner_gain_tenth_db, &out->tuner_gain_is_auto) == 0) ? 1 : 0;
     out->auto_ppm_enabled = rtl_stream_get_auto_ppm();
@@ -196,6 +214,17 @@ dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_f
 #else
     (void)state;
 #endif
+    return 0;
+}
+
+int
+dsd_app_frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                                unsigned int snr_fallbacks) {
+    int rc = dsd_app_frontend_get_metrics(opts, state, out);
+    if (rc != 0) {
+        return rc;
+    }
+    frontend_metrics_add_snr_fallbacks(out, snr_fallbacks);
     return 0;
 }
 

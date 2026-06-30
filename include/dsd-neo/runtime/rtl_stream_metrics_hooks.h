@@ -38,6 +38,7 @@ typedef struct {
     double (*snr_c4fm_eye_db)(void);
     double (*snr_cqpsk_db)(void);
     double (*snr_gfsk_db)(void);
+    double (*snr_gfsk_eye_db)(void);
     double (*snr_qpsk_const_db)(void);
     void (*p25p1_ber_update)(int ok_delta, int err_delta);
     void (*p25p2_err_update)(int slot, int facch_ok, int facch_err, int sacch_ok, int sacch_err, int voice_err);
@@ -70,6 +71,7 @@ double dsd_rtl_stream_metrics_hook_snr_c4fm_db(void);
 double dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db(void);
 double dsd_rtl_stream_metrics_hook_snr_cqpsk_db(void);
 double dsd_rtl_stream_metrics_hook_snr_gfsk_db(void);
+double dsd_rtl_stream_metrics_hook_snr_gfsk_eye_db(void);
 double dsd_rtl_stream_metrics_hook_snr_qpsk_const_db(void);
 void dsd_rtl_stream_metrics_hook_p25p1_ber_update(int ok_delta, int err_delta);
 void dsd_rtl_stream_metrics_hook_p25p2_err_update(int slot, int facch_ok, int facch_err, int sacch_ok, int sacch_err,

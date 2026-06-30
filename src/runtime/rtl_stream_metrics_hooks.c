@@ -152,6 +152,14 @@ dsd_rtl_stream_metrics_hook_snr_gfsk_db(void) {
 }
 
 double
+dsd_rtl_stream_metrics_hook_snr_gfsk_eye_db(void) {
+    if (g_rtl_stream_metrics_hooks.snr_gfsk_eye_db) {
+        return g_rtl_stream_metrics_hooks.snr_gfsk_eye_db();
+    }
+    return -100.0;
+}
+
+double
 dsd_rtl_stream_metrics_hook_snr_qpsk_const_db(void) {
     if (g_rtl_stream_metrics_hooks.snr_qpsk_const_db) {
         return g_rtl_stream_metrics_hooks.snr_qpsk_const_db();

@@ -152,9 +152,19 @@ typedef struct dsd_frontend_metrics {
     dsd_frontend_decode_health decode_health;
 } dsd_frontend_metrics;
 
+enum {
+    DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE = 1u << 0,
+    DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE = 1u << 1,
+    DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST = 1u << 2,
+    DSD_FRONTEND_SNR_FALLBACK_ALL =
+        DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE | DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE | DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST
+};
+
 void dsd_app_frontend_status_from_opts_state(const dsd_opts* opts, const dsd_state* state, dsd_frontend_status* out);
 int dsd_app_frontend_get_status(dsd_frontend_status* out);
 int dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out);
+int dsd_app_frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state,
+                                                    dsd_frontend_metrics* out, unsigned int snr_fallbacks);
 
 int dsd_app_frontend_constellation_get(float* out_xy, int max_points);
 int dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps);

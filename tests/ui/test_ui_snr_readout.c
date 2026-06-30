@@ -36,6 +36,13 @@ dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_f
     return 0;
 }
 
+int
+dsd_app_frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                                unsigned int snr_fallbacks) {
+    (void)snr_fallbacks;
+    return dsd_app_frontend_get_metrics(opts, state, out);
+}
+
 static void
 reset_fakes(void) {
     ui_snr_readout_reset_for_test();
