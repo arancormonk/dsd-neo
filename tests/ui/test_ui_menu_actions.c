@@ -928,15 +928,15 @@ test_io_actions_and_choosers(void) {
     opts.dmr_stereo_wav = 0;
     opts.wav_out_f = NULL;
     io_enable_per_call_wav(&ctx);
-    rc |= expect_int("per-call wav start command", g_cmd.id, DSD_APP_CMD_WAV_START);
-    rc |= expect_int("per-call wav start leaves flag", opts.dmr_stereo_wav, 0);
+    rc |= expect_int("per-call wav inactive toggle command", g_cmd.id, DSD_APP_CMD_WAV_TOGGLE);
+    rc |= expect_int("per-call wav inactive toggle leaves flag", opts.dmr_stereo_wav, 0);
 
     reset_capture();
     opts.dmr_stereo_wav = 1;
     opts.wav_out_f = (SNDFILE*)0x1;
     io_enable_per_call_wav(&ctx);
-    rc |= expect_int("per-call wav stop command", g_cmd.id, DSD_APP_CMD_WAV_STOP);
-    rc |= expect_int("per-call wav stop leaves flag", opts.dmr_stereo_wav, 1);
+    rc |= expect_int("per-call wav active toggle command", g_cmd.id, DSD_APP_CMD_WAV_TOGGLE);
+    rc |= expect_int("per-call wav active toggle leaves flag", opts.dmr_stereo_wav, 1);
 
     reset_capture();
     g_audio_outputs[0].initialized = 1;

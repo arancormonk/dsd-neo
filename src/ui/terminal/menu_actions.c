@@ -758,17 +758,9 @@ io_toggle_cc_candidates(void* vctx) {
 // cppcheck-suppress-begin constParameterPointer
 void
 io_enable_per_call_wav(void* vctx) {
-    const UiCtx* c = (const UiCtx*)vctx;
-    if (!c || !c->opts) {
-        return;
-    }
-    if (c->opts->dmr_stereo_wav == 1 && c->opts->wav_out_f != NULL) {
-        (void)dsd_app_command_action(DSD_APP_CMD_WAV_STOP);
-        ui_statusf("Per-call WAV stop requested");
-    } else {
-        (void)dsd_app_command_action(DSD_APP_CMD_WAV_START);
-        ui_statusf("Per-call WAV start requested");
-    }
+    UNUSED(vctx);
+    (void)dsd_app_command_action(DSD_APP_CMD_WAV_TOGGLE);
+    ui_statusf("Per-call WAV toggle requested");
 }
 
 // cppcheck-suppress-end constParameterPointer

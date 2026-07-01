@@ -71,6 +71,9 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return -1;
     }
+    if (opts->dmr_stereo_wav == 1 && (opts->wav_out_f != NULL || opts->wav_out_fR != NULL)) {
+        return (opts->wav_out_f != NULL && opts->wav_out_fR != NULL) ? 0 : -1;
+    }
     char wav_file_directory[1024];
     DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
     dsd_stat_t st;

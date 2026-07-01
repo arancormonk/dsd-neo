@@ -88,6 +88,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TRUNK_PRIV_TOGGLE = 211,
     DSD_APP_CMD_TRUNK_DATA_TOGGLE = 212,
     DSD_APP_CMD_TRUNK_ENC_TOGGLE = 213,
+    DSD_APP_CMD_WAV_TOGGLE = 214,
 
     // Additional commands to preserve legacy hotkeys in async mode
     DSD_APP_CMD_QUIT = 300,

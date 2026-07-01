@@ -2106,6 +2106,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_REPLAY_LAST,
     DSD_APP_CMD_WAV_START,
     DSD_APP_CMD_WAV_STOP,
+    DSD_APP_CMD_WAV_TOGGLE,
     DSD_APP_CMD_STOP_PLAYBACK,
     DSD_APP_CMD_TRUNK_WLIST_TOGGLE,
     DSD_APP_CMD_TRUNK_PRIV_TOGGLE,
@@ -2490,6 +2491,7 @@ static const struct ui_cmd_text_rule k_ui_cmd_text_rules[] = {
     {DSD_APP_CMD_INPUT_VOL_SET, "input_volume_set", "Input Volume"},
     {DSD_APP_CMD_WAV_START, "wav_start", "Start Per-Call WAV"},
     {DSD_APP_CMD_WAV_STOP, "wav_stop", "Stop Per-Call WAV"},
+    {DSD_APP_CMD_WAV_TOGGLE, "wav_toggle", "Toggle Per-Call WAV"},
     {DSD_APP_CMD_WAV_STATIC_OPEN, "wav_static_open", "Static WAV Output"},
     {DSD_APP_CMD_WAV_RAW_OPEN, "wav_raw_open", "Raw WAV Output"},
     {DSD_APP_CMD_CONFIG_APPLY, "config_apply", "Apply Config"},
@@ -3408,21 +3410,13 @@ ui_cmd_handle_replay_last_legacy(dsd_opts* opts, dsd_state* state, const struct 
 
 static int
 ui_cmd_handle_wav_start_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    char wav_file_directory[1024] = {0};
-    dsd_stat_t st;
-    (void)state;
     (void)c;
-    DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
-    if (dsd_stat_path(wav_file_directory, &st) == -1) {
-        LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
-        LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
-        dsd_mkdir(wav_file_directory, 0700);
+    if (opts->dmr_stereo_wav == 1 && (opts->wav_out_f != NULL || opts->wav_out_fR != NULL)) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    LOG_NOTICE("Per Call Wav File Enabled to Directory: %s\n", opts->wav_out_dir);
-    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
-    opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
-    opts->dmr_stereo_wav = 1;
-    return 1;
+
+    int rc = svc_enable_per_call_wav(opts, state);
+    return ui_cmd_apply_status_from_service_rc(rc);
 }
 
 static int
@@ -3436,6 +3430,14 @@ ui_cmd_handle_wav_stop_legacy(dsd_opts* opts, dsd_state* state, const struct dsd
     opts->wav_out_fileR[0] = 0;
     opts->dmr_stereo_wav = 0;
     return 1;
+}
+
+static int
+ui_cmd_handle_wav_toggle_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (opts->dmr_stereo_wav == 1 && (opts->wav_out_f != NULL || opts->wav_out_fR != NULL)) {
+        return ui_cmd_handle_wav_stop_legacy(opts, state, c);
+    }
+    return ui_cmd_handle_wav_start_legacy(opts, state, c);
 }
 
 static int
@@ -3473,6 +3475,7 @@ apply_cmd_legacy_capture_playback(dsd_opts* opts, dsd_state* state, const struct
         {DSD_APP_CMD_REPLAY_LAST, ui_cmd_handle_replay_last_legacy},
         {DSD_APP_CMD_WAV_START, ui_cmd_handle_wav_start_legacy},
         {DSD_APP_CMD_WAV_STOP, ui_cmd_handle_wav_stop_legacy},
+        {DSD_APP_CMD_WAV_TOGGLE, ui_cmd_handle_wav_toggle_legacy},
         {DSD_APP_CMD_STOP_PLAYBACK, ui_cmd_handle_stop_playback_legacy},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);

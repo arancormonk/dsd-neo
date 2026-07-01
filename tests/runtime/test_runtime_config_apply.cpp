@@ -32,8 +32,10 @@
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <errno.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -42,6 +44,9 @@
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <dirent.h>
+#endif
 #include "../../src/app_control/commands_internal.h"
 
 #include "dsd-neo/core/dibit.h"
@@ -87,6 +92,31 @@ expect_int_eq(const char* label, int got, int want) {
     }
     return 0;
 }
+
+#if !DSD_PLATFORM_WIN_NATIVE
+static int
+count_directory_entries(const char* path) {
+    DIR* dir = opendir(path);
+    if (!dir) {
+        return -1;
+    }
+
+    int count = 0;
+    errno = 0;
+    const struct dirent* ent = NULL;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        count++;
+    }
+    int saved_errno = errno;
+    if (closedir(dir) != 0 || saved_errno != 0) {
+        return -1;
+    }
+    return count;
+}
+#endif
 
 static int
 expect_u64_eq(const char* label, uint64_t got, uint64_t want) {
@@ -1884,8 +1914,9 @@ test_ui_legacy_file_capture_commands_manage_handles(void) {
 
     DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", wav_dir);
     dsd_app_post_cmd(DSD_APP_CMD_WAV_START, NULL, 0);
+    dsd_app_post_cmd(DSD_APP_CMD_WAV_START, NULL, 0);
     int applied = dsd_app_drain_cmds(opts, state);
-    rc |= expect_int_eq("legacy WAV start command drains", applied, 1);
+    rc |= expect_int_eq("duplicate legacy WAV start commands drain", applied, 2);
     rc |= expect_true("legacy WAV start opens left handle", opts->wav_out_f != NULL);
     rc |= expect_true("legacy WAV start opens right handle", opts->wav_out_fR != NULL);
     rc |= expect_int_eq("legacy WAV start enables stereo WAV", opts->dmr_stereo_wav, 1);
@@ -1893,6 +1924,9 @@ test_ui_legacy_file_capture_commands_manage_handles(void) {
                       strstr(opts->wav_out_file, wav_dir) == opts->wav_out_file);
     rc |= expect_true("legacy WAV start stores right temp under dir",
                       strstr(opts->wav_out_fileR, wav_dir) == opts->wav_out_fileR);
+#if !DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_int_eq("duplicate legacy WAV start creates one temp pair", count_directory_entries(wav_dir), 2);
+#endif
 
     dsd_app_post_cmd(DSD_APP_CMD_WAV_STOP, NULL, 0);
     applied = dsd_app_drain_cmds(opts, state);
@@ -1902,6 +1936,29 @@ test_ui_legacy_file_capture_commands_manage_handles(void) {
     rc |= expect_true("legacy WAV stop clears left filename", opts->wav_out_file[0] == '\0');
     rc |= expect_true("legacy WAV stop clears right filename", opts->wav_out_fileR[0] == '\0');
     rc |= expect_int_eq("legacy WAV stop disables stereo WAV", opts->dmr_stereo_wav, 0);
+#if !DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_int_eq("legacy WAV stop removes duplicate-start temp files", count_directory_entries(wav_dir), 0);
+#endif
+
+    dsd_app_command_token toggle_on = 0;
+    dsd_app_command_token toggle_off = 0;
+    rc |= expect_int_eq("WAV toggle on submits", dsd_app_command_action_tracked(DSD_APP_CMD_WAV_TOGGLE, &toggle_on),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int_eq("WAV toggle off submits", dsd_app_command_action_tracked(DSD_APP_CMD_WAV_TOGGLE, &toggle_off),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    applied = dsd_app_drain_cmds(opts, state);
+    rc |= expect_int_eq("queued WAV toggles drain", applied, 2);
+    dsd_app_command_result toggle_result = {0};
+    rc |= expect_true("WAV toggle on completes", dsd_app_command_result_get(toggle_on, &toggle_result) == 0
+                                                     && toggle_result.status == DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_true("WAV toggle off completes", dsd_app_command_result_get(toggle_off, &toggle_result) == 0
+                                                      && toggle_result.status == DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_true("queued WAV toggles leave left handle closed", opts->wav_out_f == NULL);
+    rc |= expect_true("queued WAV toggles leave right handle closed", opts->wav_out_fR == NULL);
+    rc |= expect_int_eq("queued WAV toggles disable stereo WAV", opts->dmr_stereo_wav, 0);
+#if !DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_int_eq("queued WAV toggles remove temp files", count_directory_entries(wav_dir), 0);
+#endif
 
     FILE* sym_fp = dsd_fopen_private(sym_path, "wb");
     if (!sym_fp) {
