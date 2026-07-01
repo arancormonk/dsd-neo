@@ -7,6 +7,7 @@
  */
 
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
