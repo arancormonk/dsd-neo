@@ -494,8 +494,10 @@ test_p2_trunking_and_slot_controls(void) {
 
     svc_set_slot_pref(&opts, -1);
     rc |= expect_int("slot preference clamps low", opts.slot_preference, 0);
+    svc_set_slot_pref(&opts, 2);
+    rc |= expect_int("slot preference stores auto", opts.slot_preference, 2);
     svc_set_slot_pref(&opts, 42);
-    rc |= expect_int("slot preference clamps high", opts.slot_preference, 1);
+    rc |= expect_int("slot preference clamps high", opts.slot_preference, 2);
     svc_set_slots_onoff(&opts, 1);
     rc |= expect_int("slot mask enables slot1", opts.slot1_on, 1);
     rc |= expect_int("slot mask disables slot2", opts.slot2_on, 0);

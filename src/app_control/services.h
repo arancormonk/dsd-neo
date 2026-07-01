@@ -159,8 +159,8 @@ void svc_toggle_crc_relax(dsd_opts* opts);
 void svc_toggle_lcw_retune(dsd_opts* opts);
 /** @brief Toggle little-endian DMR symbol ordering. */
 void svc_toggle_dmr_le(dsd_opts* opts);
-/** @brief Set slot preference (0 or 1). */
-void svc_set_slot_pref(dsd_opts* opts, int pref01);
+/** @brief Set slot preference (0=slot 1, 1=slot 2, 2=auto). */
+void svc_set_slot_pref(dsd_opts* opts, int pref);
 /** @brief Enable/disable slots using bitmask (bit0=slot1, bit1=slot2). */
 void svc_set_slots_onoff(dsd_opts* opts, int mask);
 

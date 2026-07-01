@@ -156,7 +156,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_RIGCTL_SET_MOD_BW = 500, // payload: int32_t hz
     DSD_APP_CMD_TG_HOLD_SET = 501,       // payload: uint32_t tg
     DSD_APP_CMD_HANGTIME_SET = 502,      // payload: double seconds
-    DSD_APP_CMD_SLOT_PREF_SET = 503,     // payload: int32_t pref01
+    DSD_APP_CMD_SLOT_PREF_SET = 503,     // payload: int32_t pref (0=slot 1, 1=slot 2, 2=auto)
     DSD_APP_CMD_SLOTS_ONOFF_SET = 504,   // payload: int32_t mask
 
     // Pulse audio device selection

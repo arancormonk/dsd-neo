@@ -1023,7 +1023,7 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         int rc = svc_rtl_set_gain(opts, state, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL gain -> %d", (int)v);
+            ui_set_toast(state, 3, "Applied: RTL gain -> %d", opts->rtl_gain_value);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
         } else {
@@ -1244,7 +1244,8 @@ ui_cmd_handle_slot_pref_set(dsd_opts* opts, dsd_state* state, const struct dsd_a
     int32_t p = 0;
     if (state && ui_cmd_parse_i32_payload(c, &p)) {
         svc_set_slot_pref(opts, p);
-        ui_set_toast(state, 3, "Applied: Slot preference -> %d", opts->slot_preference + 1);
+        const char* label = (opts->slot_preference == 0) ? "Slot 1" : (opts->slot_preference == 1) ? "Slot 2" : "Auto";
+        ui_set_toast(state, 3, "Applied: Slot preference -> %s", label);
     }
     return 1;
 }
@@ -2563,7 +2564,7 @@ static const struct ui_cmd_descriptor_rule k_ui_cmd_descriptor_rules[] = {
     UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_INPUT_WARN_DB_SET, -120.0, 0.0, 1.0, "dBFS", "negative dBFS threshold", NULL, 0U,
                            0),
     UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_FREQ, 0.0, 3000000000.0, 1.0, "Hz", "frequency in Hz", NULL, 0U, 0),
-    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_GAIN, 0.0, 50.0, 1.0, NULL, "0 enables AGC, otherwise tuner gain index",
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_GAIN, 0.0, 49.0, 1.0, NULL, "0 enables AGC, otherwise tuner gain index",
                            NULL, 0U, 1),
     UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_PPM, -200.0, 200.0, 1.0, "ppm", NULL, NULL, 0U, 0),
     UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_BW, 0.0, 0.0, 0.0, "kHz", "one of the listed DSP bandwidth values",

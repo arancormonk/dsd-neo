@@ -2134,7 +2134,7 @@ test_ui_runtime_parameter_commands_clamp_and_update_state(void) {
     rc |= expect_int_eq("rigctl bandwidth clamps high", opts->setmod_bw, 25000);
     rc |= expect_int_eq("TG hold updates state", (int)state->tg_hold, (int)tg);
     rc |= expect_true("negative hangtime clamps to zero", fabs(opts->trunk_hangtime) <= 1e-9);
-    rc |= expect_int_eq("slot preference clamps high", opts->slot_preference, 1);
+    rc |= expect_int_eq("slot preference clamps high", opts->slot_preference, 2);
     rc |= expect_int_eq("slot mask clears slot 1", opts->slot1_on, 0);
     rc |= expect_int_eq("slot mask enables slot 2", opts->slot2_on, 1);
     rc |= expect_true("last runtime command writes slot mask toast", strstr(state->ui_msg, "Slot mask -> 2") != NULL);

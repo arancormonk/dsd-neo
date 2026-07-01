@@ -496,17 +496,21 @@ test_tracked_command_results(void) {
     rc |= expect_true("descriptor test buffer large enough", desc_count <= sizeof descs / sizeof descs[0]);
     rc |= expect_int("descriptor full query", dsd_app_command_descriptors_get(descs, desc_count, &desc_count), 0);
     const dsd_app_command_descriptor* gain_desc = NULL;
+    const dsd_app_command_descriptor* rtl_gain_desc = NULL;
     const dsd_app_command_descriptor* ppm_desc = NULL;
     const dsd_app_command_descriptor* freq_desc = NULL;
     const dsd_app_command_descriptor* input_warn_desc = NULL;
     const dsd_app_command_descriptor* hangtime_desc = NULL;
     const dsd_app_command_descriptor* bw_desc = NULL;
+    const dsd_app_command_descriptor* slot_pref_desc = NULL;
     const dsd_app_command_descriptor* config_desc = NULL;
     const dsd_app_command_descriptor* metadata_desc = NULL;
     for (size_t i = 0; i < desc_count; i++) {
         rc |= expect_descriptor_metadata(&descs[i]);
         if (descs[i].command_id == DSD_APP_CMD_GAIN_SET) {
             gain_desc = &descs[i];
+        } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_GAIN) {
+            rtl_gain_desc = &descs[i];
         } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_PPM) {
             ppm_desc = &descs[i];
         } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_FREQ) {
@@ -517,6 +521,8 @@ test_tracked_command_results(void) {
             hangtime_desc = &descs[i];
         } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_BW) {
             bw_desc = &descs[i];
+        } else if (descs[i].command_id == DSD_APP_CMD_SLOT_PREF_SET) {
+            slot_pref_desc = &descs[i];
         } else if (descs[i].command_id == DSD_APP_CMD_CONFIG_APPLY) {
             config_desc = &descs[i];
         } else if (descs[i].command_id == DSD_APP_CMD_CONFIG_METADATA_SET) {
@@ -527,6 +533,13 @@ test_tracked_command_results(void) {
     if (gain_desc) {
         rc |= expect_true("gain descriptor range", gain_desc->min_value == 0.0 && gain_desc->max_value == 50.0);
         rc |= expect_true("gain descriptor step", gain_desc->step_value == 1.0);
+    }
+    rc |= expect_true("rtl gain descriptor present", rtl_gain_desc != NULL);
+    if (rtl_gain_desc) {
+        rc |= expect_true("rtl gain descriptor range",
+                          rtl_gain_desc->min_value == 0.0 && rtl_gain_desc->max_value == 49.0);
+        rc |= expect_true("rtl gain descriptor step", rtl_gain_desc->step_value == 1.0);
+        rc |= expect_int("rtl gain restart hint", rtl_gain_desc->may_require_restart, 1);
     }
     rc |= expect_true("rtl ppm descriptor present", ppm_desc != NULL);
     if (ppm_desc) {
@@ -560,6 +573,18 @@ test_tracked_command_results(void) {
         rc |= expect_true("rtl bandwidth radio availability",
                           (bw_desc->availability_flags & DSD_APP_COMMAND_AVAIL_RADIO) != 0U);
         rc |= expect_int("rtl bandwidth restart hint", bw_desc->may_require_restart, 1);
+    }
+    rc |= expect_true("slot preference descriptor present", slot_pref_desc != NULL);
+    if (slot_pref_desc) {
+        rc |= expect_true("slot preference enum option count", slot_pref_desc->enum_option_count == 3U);
+        if (slot_pref_desc->enum_options && slot_pref_desc->enum_option_count == 3U) {
+            rc |= expect_int("slot preference option slot1", slot_pref_desc->enum_options[0].value, 0);
+            rc |= expect_str("slot preference option slot1 label", slot_pref_desc->enum_options[0].label, "Slot 1");
+            rc |= expect_int("slot preference option slot2", slot_pref_desc->enum_options[1].value, 1);
+            rc |= expect_str("slot preference option slot2 label", slot_pref_desc->enum_options[1].label, "Slot 2");
+            rc |= expect_int("slot preference option auto", slot_pref_desc->enum_options[2].value, 2);
+            rc |= expect_str("slot preference option auto label", slot_pref_desc->enum_options[2].label, "Auto");
+        }
     }
     rc |= expect_true("config descriptor present", config_desc != NULL);
     if (config_desc) {
@@ -692,6 +717,11 @@ test_key_and_runtime_state_commands(void) {
     rc |= expect_u64("p2 wacn set", state.p2_wacn, 0xABCDEULL);
     rc |= expect_u64("p2 sysid set", state.p2_sysid, 0x123ULL);
     rc |= expect_u64("p2 cc set", state.p2_cc, 0x456ULL);
+
+    post_i32(DSD_APP_CMD_SLOT_PREF_SET, 2);
+    rc |= expect_int("slot preference auto drain count", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("slot preference auto set", opts.slot_preference, 2);
+    rc |= expect_true("slot preference auto toast", strstr(state.ui_msg, "Slot preference -> Auto") != NULL);
 
     uint8_t short_payload = 0xFFU;
     state.K = 0x99999999U;

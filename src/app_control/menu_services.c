@@ -561,17 +561,17 @@ svc_toggle_dmr_le(dsd_opts* opts) {
 }
 
 void
-svc_set_slot_pref(dsd_opts* opts, int pref01) {
+svc_set_slot_pref(dsd_opts* opts, int pref) {
     if (!opts) {
         return;
     }
-    if (pref01 < 0) {
-        pref01 = 0;
+    if (pref < 0) {
+        pref = 0;
     }
-    if (pref01 > 1) {
-        pref01 = 1;
+    if (pref > 2) {
+        pref = 2;
     }
-    opts->slot_preference = pref01;
+    opts->slot_preference = pref;
 }
 
 void
