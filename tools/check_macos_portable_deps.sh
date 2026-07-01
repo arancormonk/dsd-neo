@@ -115,6 +115,23 @@ report_error() {
   errors=$((errors + 1))
 }
 
+verify_code_signature() {
+  local file=$1
+  local rel=$2
+
+  case "$(uname -s)" in
+    Darwin)
+      if ! command -v codesign > /dev/null 2>&1; then
+        echo "codesign is required for macOS portable signature checks." >&2
+        exit 2
+      fi
+      if ! codesign --verify --strict --verbose=2 "$file" > /dev/null 2>&1; then
+        report_error "$rel has an invalid code signature"
+      fi
+      ;;
+  esac
+}
+
 macho_files=("$exe")
 while IFS= read -r -d '' lib; do
   macho_files+=("$lib")
@@ -122,6 +139,7 @@ done < <(find "$lib_dir" -maxdepth 1 -type f -name '*.dylib' -print0)
 
 for file in "${macho_files[@]}"; do
   rel=${file#"$stage"/}
+  verify_code_signature "$file" "$rel"
 
   while IFS= read -r rpath; do
     [[ -z "$rpath" ]] && continue
