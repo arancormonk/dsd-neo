@@ -698,6 +698,22 @@ jobs:
           # Emit manifest for auditing
           find "$STAGE/lib" -maxdepth 1 -type f -name '*.dylib' -exec basename {} \; | sort -f > "$STAGE/dylibs-manifest.txt"
 
+      - name: Sign staged Mach-O files
+        shell: bash
+        run: |
+          set -euo pipefail
+          sign_and_verify() {
+            local file="$1"
+            codesign --force --sign - "$file"
+            codesign --verify --strict --verbose=2 "$file"
+          }
+
+          find dist/dsd-neo-macos/lib -maxdepth 1 -type f -name '*.dylib' -print0 |
+            while IFS= read -r -d '' lib; do
+              sign_and_verify "$lib"
+            done
+          sign_and_verify dist/dsd-neo-macos/bin/dsd-neo
+
       - name: Verify staged release hardening
         shell: bash
         run: |
