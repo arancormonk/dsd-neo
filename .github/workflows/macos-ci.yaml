@@ -531,10 +531,72 @@ jobs:
             fi
           done
 
+          list_rpaths() {
+            local file="$1"
+            otool -l "$file" | awk '
+              /cmd LC_RPATH/ { in_rpath = 1; next }
+              in_rpath && /^[[:space:]]*path / { print $2; in_rpath = 0 }
+            '
+          }
+
+          resolve_rpath_dep() {
+            local file="$1"
+            local dep="$2"
+            local suffix="${dep#@rpath/}"
+            local loader_dir exe_dir rpath resolved candidate
+            loader_dir=$(cd "$(dirname "$file")" && pwd)
+            exe_dir=$(cd "$STAGE/bin" && pwd)
+
+            while IFS= read -r rpath; do
+              case "$rpath" in
+                @loader_path) resolved="$loader_dir" ;;
+                @loader_path/*) resolved="$loader_dir/${rpath#@loader_path/}" ;;
+                @executable_path) resolved="$exe_dir" ;;
+                @executable_path/*) resolved="$exe_dir/${rpath#@executable_path/}" ;;
+                *) resolved="$rpath" ;;
+              esac
+              candidate="$resolved/$suffix"
+              if [ -f "$candidate" ]; then
+                printf '%s\n' "$candidate"
+                return 0
+              fi
+            done < <(list_rpaths "$file")
+
+            return 1
+          }
+
+          resolve_dep_path() {
+            local file="$1"
+            local dep="$2"
+            local loader_dir exe_dir rel candidate
+
+            case "$dep" in
+              /usr/lib/*|/System/*) return 1 ;;
+              @rpath/*)
+                resolve_rpath_dep "$file" "$dep"
+                ;;
+              @loader_path/*)
+                loader_dir=$(cd "$(dirname "$file")" && pwd)
+                rel="${dep#@loader_path/}"
+                candidate="$loader_dir/$rel"
+                [ -f "$candidate" ] && printf '%s\n' "$candidate"
+                ;;
+              @executable_path/*)
+                exe_dir=$(cd "$STAGE/bin" && pwd)
+                rel="${dep#@executable_path/}"
+                candidate="$exe_dir/$rel"
+                [ -f "$candidate" ] && printf '%s\n' "$candidate"
+                ;;
+              *)
+                [ -f "$dep" ] && printf '%s\n' "$dep"
+                ;;
+            esac
+          }
+
           # Helper: collect dylib deps of a file and copy non-system libs into $STAGE/lib
           collect_deps() {
             local file="$1"
-            local libs lib base
+            local libs lib base resolved
             libs=$(otool -L "$file" | tail -n +2 | awk '{print $1}')
             for lib in $libs; do
               # Skip system libraries
@@ -544,9 +606,9 @@ jobs:
               base=$(basename "$lib")
               # Prefer copied version if we already staged it
               if [ ! -f "$STAGE/lib/$base" ]; then
-                # Resolve potential symlink
-                if [ -f "$lib" ]; then
-                  cp -f "$lib" "$STAGE/lib/$base" 2>/dev/null || true
+                # Resolve @rpath/@loader_path dependencies and potential symlinks.
+                if resolved=$(resolve_dep_path "$file" "$lib"); then
+                  cp -f "$resolved" "$STAGE/lib/$base"
                 fi
               fi
             done
@@ -572,19 +634,30 @@ jobs:
           # Normalize install names for staged libs and rebasing binary to @rpath
           add_rpath() {
             local bin="$1"
-            # Add rpath if not present
-            if ! otool -l "$bin" | grep -A2 LC_RPATH | grep -q '@executable_path/../lib'; then
-              install_name_tool -add_rpath "@executable_path/../lib" "$bin" || true
+            local rpath="$2"
+            if ! list_rpaths "$bin" | grep -Fxq "$rpath"; then
+              install_name_tool -add_rpath "$rpath" "$bin"
             fi
           }
 
-          add_rpath "$STAGE/bin/dsd-neo"
+          strip_absolute_rpaths() {
+            local bin="$1"
+            local rpath
+            while IFS= read -r rpath; do
+              case "$rpath" in
+                /*) install_name_tool -delete_rpath "$rpath" "$bin" ;;
+              esac
+            done < <(list_rpaths "$bin")
+          }
+
+          add_rpath "$STAGE/bin/dsd-neo" "@executable_path/../lib"
 
           # Set id for staged libs and change references in the main binary
           for lib in "$STAGE"/lib/*.dylib; do
             [ -f "$lib" ] || continue
             base=$(basename "$lib")
-            install_name_tool -id "@rpath/$base" "$lib" || true
+            install_name_tool -id "@rpath/$base" "$lib"
+            add_rpath "$lib" "@loader_path"
           done
 
           # Rewire binary deps to @rpath when we staged the lib
@@ -593,7 +666,10 @@ jobs:
             case "$dep" in /usr/lib/*|/System/*|$STAGE/*) continue;; esac
             base=$(basename "$dep")
             if [ -f "$STAGE/lib/$base" ]; then
-              install_name_tool -change "$dep" "@rpath/$base" "$STAGE/bin/dsd-neo" || true
+              new_dep="@rpath/$base"
+              if [ "$dep" != "$new_dep" ]; then
+                install_name_tool -change "$dep" "$new_dep" "$STAGE/bin/dsd-neo"
+              fi
             fi
           done < <(otool -L "$STAGE/bin/dsd-neo" | tail -n +2)
 
@@ -605,9 +681,18 @@ jobs:
               case "$dep" in /usr/lib/*|/System/*|$STAGE/*) continue;; esac
               base=$(basename "$dep")
               if [ -f "$STAGE/lib/$base" ]; then
-                install_name_tool -change "$dep" "@rpath/$base" "$tgt" || true
+                new_dep="@rpath/$base"
+                if [ "$dep" != "$new_dep" ]; then
+                  install_name_tool -change "$dep" "$new_dep" "$tgt"
+                fi
               fi
             done < <(otool -L "$tgt" | tail -n +2)
+          done
+
+          strip_absolute_rpaths "$STAGE/bin/dsd-neo"
+          for lib in "$STAGE"/lib/*.dylib; do
+            [ -f "$lib" ] || continue
+            strip_absolute_rpaths "$lib"
           done
 
           # Emit manifest for auditing
@@ -622,14 +707,14 @@ jobs:
             while IFS= read -r -d '' lib; do
               tools/check_release_hardening.sh "$lib" build/dev-release
             done
+          tools/check_macos_portable_deps.sh dist/dsd-neo-macos
 
       - name: Smoke test staged binary
         shell: bash
         run: |
           set -euo pipefail
           STAGE="dist/dsd-neo-macos"
-          export DYLD_FALLBACK_LIBRARY_PATH="$STAGE/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
-          "$STAGE/bin/dsd-neo" -h || true
+          "$STAGE/bin/dsd-neo" -h
 
       - name: Create DMG
         id: dmg
@@ -671,7 +756,6 @@ jobs:
           hdiutil attach "$dmg" -nobrowse -noverify -mountpoint "$mnt"
           trap 'hdiutil detach "$mnt" -force || true' EXIT
           # Run help from inside the mounted DMG
-          export DYLD_FALLBACK_LIBRARY_PATH="$mnt/dsd-neo-macos/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
           "$mnt/dsd-neo-macos/bin/dsd-neo" -h || (echo 'Running help from DMG failed' >&2; exit 1)
           hdiutil detach "$mnt" -force
           trap - EXIT
