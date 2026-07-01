@@ -15,6 +15,33 @@ reaching into live `dsd_opts`, live `dsd_state`, or terminal UI helpers.
 - Native UI code must not include terminal-private headers or depend on curses, IO, DSP, protocol, live `dsd_opts`, or
   live `dsd_state` details.
 
+## Boundary Audit Findings
+
+Current audit result: there is no known refactoring gate that must block native UI toolkit selection or initial
+integration. The branch has the required separation points in place:
+
+- Read path: app-control publishes copied frontend state through `dsd_frontend_snapshot`, `dsd_frontend_status`,
+  `dsd_frontend_metrics`, and paged event-history APIs.
+- Write path: frontends submit typed app commands and poll tracked command results instead of mutating decoder state.
+- Runtime path: native providers may own the main thread while the engine runs on a worker thread through
+  `DSD_FRONTEND_PROVIDER_MAIN_THREAD_UI`.
+- Guardrails: `cmake/arch_rules.cmake` rejects native UI includes of backend, terminal, curses, private app-control, and
+  forbidden native UI link dependencies.
+
+Remaining risks to keep visible during native UI work:
+
+- The provider contract still passes forwarded `dsd_opts` and `dsd_state` pointers to `prepare()` and lifecycle hooks.
+  Native UI code may use those pointers only to seed `dsd_app_frontend_runtime_start()`; it must not retain them or read
+  fields from them.
+- The public snapshot APIs are intended for a normal single UI event thread. If a selected toolkit polls frontend state
+  from multiple UI/render threads, add caller-owned copy APIs or locking around the consume buffers before relying on
+  concurrent polling.
+- Terminal UI remains a legacy compatibility frontend and still reads some backend/protocol details directly. It is not
+  the native UI implementation template. New native views should copy missing state into app-control instead of porting
+  terminal helper logic.
+- Backend diagnostics may still write through runtime logging. A native frontend should install a log sink if it needs
+  in-app logs; it should not scrape `stderr` or depend on terminal output.
+
 ## Status
 
 - `status.frontend_kind`: copied from the active `dsd_opts.frontend_kind`.
@@ -87,3 +114,15 @@ reaching into live `dsd_opts`, live `dsd_state`, or terminal UI helpers.
 - Providers may set `DSD_FRONTEND_PROVIDER_MAIN_THREAD_UI` when a frontend needs main-thread UI ownership.
 - No separate native app host library or executable is part of this boundary cleanup; that should be revisited only
   when a selected native UI toolkit requires a separate executable or app bundle.
+
+## Boundary Verification Coverage
+
+Use these focused checks when changing the native frontend boundary or adding toolkit integration:
+
+```sh
+cmake -P cmake/arch_rules.cmake
+cmake --preset dev-debug-native-ui
+cmake --build --preset dev-debug-native-ui -j
+ctest --preset dev-debug-native-ui --output-on-failure \
+  -R '^(ARCH_RULES|HEADERS_PUBLIC_UI_NATIVE_PROVIDER|HEADERS_PUBLIC_RUNTIME_CONTROL_PUMP|RUNTIME_CLI_FRONTEND_PROVIDER|RUNTIME_CONTROL_PUMP|APP_CONTROL_TELEMETRY_HOOKS_INSTALL|APP_CONTROL_SNAPSHOT_EVENT_HISTORY|APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY|APP_CONTROL_FRONTEND_STATUS_METRICS|UI_NATIVE_PROVIDER|RUNTIME_TELEMETRY_HOOKS|APP_COMMAND_QUEUE)$'
+```
