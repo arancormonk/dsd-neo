@@ -3,6 +3,7 @@
  * Focused checks for D-STAR voice/header processing loop boundaries.
  */
 
+#include "dsd-neo/app_control/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 

@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/app_control/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"

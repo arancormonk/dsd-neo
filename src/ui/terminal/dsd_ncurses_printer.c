@@ -1513,8 +1513,16 @@ ui_history_print_event_summary(const Event_History* item, const char* line_prefi
     char compact_string[2000];
     char text_string[2000];
     ui_history_compact_event_text(compact_string, sizeof compact_string, item->event_string, ctx->history_mode);
-    DSD_MEMCPY(text_string, compact_string, (size_t)line_size * sizeof(char));
-    text_string[line_size] = 0;
+    size_t text_size = (size_t)line_size;
+    if (text_size >= sizeof text_string) {
+        text_size = sizeof text_string - 1U;
+    }
+    size_t compact_size = strnlen(compact_string, sizeof compact_string);
+    if (text_size > compact_size) {
+        text_size = compact_size;
+    }
+    DSD_MEMCPY(text_string, compact_string, text_size);
+    text_string[text_size] = '\0';
     printw("%s", line_prefix);
     ui_history_color_pair_for_event(item);
     printw("%s\n", text_string);

@@ -3,6 +3,7 @@
  * Focused coverage for the DMR MS/direct-mode data collector.
  */
 
+#include "dsd-neo/app_control/frontend_types.h"
 #include "dsd-neo/core/safe_api.h"
 
 #include <assert.h>
