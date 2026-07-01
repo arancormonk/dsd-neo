@@ -384,14 +384,18 @@ test_typed_command_api_wrappers(void) {
     rc |= expect_int("typed string posts", dsd_app_command_set_string(DSD_APP_CMD_M17_USER_DATA_SET, "0,DST,SRC"), 0);
     rc |= expect_int("typed endpoint posts",
                      dsd_app_command_set_endpoint(DSD_APP_CMD_RIGCTL_CONNECT_CFG, "127.0.0.1", -1), 0);
+    rc |= expect_int("typed udp input endpoint posts",
+                     dsd_app_command_set_endpoint(DSD_APP_CMD_UDP_INPUT_CFG, "0.0.0.0", 7355), 0);
     rc |= expect_int("typed p25 payload posts", dsd_app_command_set_p25_p2_params(&p2), 0);
     rc |= expect_int("typed hytera payload posts", dsd_app_command_set_hytera_key(&hytera), 0);
     rc |= expect_int("typed aes payload posts", dsd_app_command_set_aes_key(&aes), 0);
     rc |= expect_int("typed dsp payload posts", dsd_app_command_dsp_op(&dsp), 0);
 
-    rc |= expect_int("typed wrappers applied with coalescing", dsd_app_drain_cmds(&opts, &state), 13);
+    rc |= expect_int("typed wrappers applied with coalescing", dsd_app_drain_cmds(&opts, &state), 14);
     rc |= expect_int("typed action toggled channels", opts.frontend_display.show_channels, 1);
     rc |= expect_int("typed gain applied latest", (int)opts.audio_gain, 9);
+    rc |= expect_str("typed udp input bind copied", opts.udp_in_bindaddr, "0.0.0.0");
+    rc |= expect_int("typed udp input port copied", opts.udp_in_portno, 7355);
     rc |= expect_u64("typed tg hold set", state.tg_hold, 2468ULL);
     rc |= expect_u64("typed rc4des key set", state.R, 0x55ULL);
     rc |= expect_true("typed hangtime set", opts.trunk_hangtime > 3.49 && opts.trunk_hangtime < 3.51);
@@ -401,6 +405,30 @@ test_typed_command_api_wrappers(void) {
     rc |= expect_u64("typed p2 cc set", state.p2_cc, 0x456ULL);
     rc |= expect_u64("typed aes key loaded", state.A1[0], 9ULL);
     rc |= expect_int("typed aes key load flag", state.aes_key_loaded[0], 1);
+
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_setter_coalescing_preserves_fifo_boundaries(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+
+    dsd_app_command_token first = 0;
+    dsd_app_command_token second = 0;
+    rc |= expect_int("fifo first gain queued", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 5, &first),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("fifo gain delta queued", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, +1), 0);
+    rc |= expect_int("fifo second gain queued", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 11, &second),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+
+    rc |= expect_int("fifo-separated setters drain independently", dsd_app_drain_cmds(&opts, &state), 3);
+    rc |= expect_int("fifo-separated setters preserve final gain", (int)opts.audio_gain, 11);
+    rc |= expect_command_status("fifo first gain completed", first, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_command_status("fifo second gain completed", second, DSD_APP_COMMAND_RESULT_COMPLETED);
 
     freeState(&state);
     return rc;
@@ -914,6 +942,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_typed_command_api_wrappers();
+    rc |= test_setter_coalescing_preserves_fifo_boundaries();
     rc |= test_tracked_command_results();
     rc |= test_visibility_and_queue_overflow();
     rc |= test_key_and_runtime_state_commands();

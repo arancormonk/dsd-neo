@@ -214,13 +214,12 @@ ui_cmd_is_string_payload_id(int cmd_id) {
 }
 
 static struct dsd_app_command*
-ui_cmd_find_pending_unlocked(int cmd_id) {
-    for (size_t i = g_head; i != g_tail; i = (i + 1U) % DSD_APP_CMD_Q_CAP) {
-        if (g_q[i].id == cmd_id) {
-            return &g_q[i];
-        }
+ui_cmd_find_pending_tail_unlocked(int cmd_id) {
+    if (q_is_empty_unlocked()) {
+        return NULL;
     }
-    return NULL;
+    const size_t tail_idx = (g_tail + DSD_APP_CMD_Q_CAP - 1U) % DSD_APP_CMD_Q_CAP;
+    return g_q[tail_idx].id == cmd_id ? &g_q[tail_idx] : NULL;
 }
 
 static void
@@ -2019,7 +2018,7 @@ ui_cmd_post_tracked(int cmd_id, const void* payload, size_t payload_sz, dsd_app_
         *out_token = token;
     }
     if (ui_cmd_is_coalescible_setter(cmd_id)) {
-        struct dsd_app_command* pending = ui_cmd_find_pending_unlocked(cmd_id);
+        struct dsd_app_command* pending = ui_cmd_find_pending_tail_unlocked(cmd_id);
         if (pending) {
             ui_cmd_store_payload(pending, cmd_id, payload, payload_sz);
             if (pending->token == 0U) {
@@ -2309,14 +2308,23 @@ dsd_app_command_set_endpoint_tracked(int cmd_id, const char* host, int32_t port,
     if (!host) {
         return DSD_APP_COMMAND_SUBMIT_REJECTED;
     }
-    if (cmd_id != DSD_APP_CMD_UDP_OUT_CFG && cmd_id != DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG
-        && cmd_id != DSD_APP_CMD_RIGCTL_CONNECT_CFG) {
-        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    switch (cmd_id) {
+        case DSD_APP_CMD_UDP_OUT_CFG:
+        case DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG:
+        case DSD_APP_CMD_RIGCTL_CONNECT_CFG: {
+            dsd_app_endpoint_payload payload = {0};
+            DSD_SNPRINTF(payload.host, sizeof payload.host, "%s", host);
+            payload.port = port;
+            return ui_cmd_post_tracked(cmd_id, &payload, sizeof payload, out_token);
+        }
+        case DSD_APP_CMD_UDP_INPUT_CFG: {
+            dsd_app_udp_input_payload payload = {0};
+            DSD_SNPRINTF(payload.bind, sizeof payload.bind, "%s", host);
+            payload.port = port;
+            return ui_cmd_post_tracked(cmd_id, &payload, sizeof payload, out_token);
+        }
+        default: return DSD_APP_COMMAND_SUBMIT_REJECTED;
     }
-    dsd_app_endpoint_payload payload = {0};
-    DSD_SNPRINTF(payload.host, sizeof payload.host, "%s", host);
-    payload.port = port;
-    return ui_cmd_post_tracked(cmd_id, &payload, sizeof payload, out_token);
 }
 
 int
@@ -2326,13 +2334,7 @@ dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port) {
 
 int
 dsd_app_command_set_udp_input_tracked(const char* bind, int32_t port, dsd_app_command_token* out_token) {
-    if (!bind) {
-        return DSD_APP_COMMAND_SUBMIT_REJECTED;
-    }
-    dsd_app_udp_input_payload payload = {0};
-    DSD_SNPRINTF(payload.bind, sizeof payload.bind, "%s", bind);
-    payload.port = port;
-    return ui_cmd_post_tracked(DSD_APP_CMD_UDP_INPUT_CFG, &payload, sizeof payload, out_token);
+    return dsd_app_command_set_endpoint_tracked(DSD_APP_CMD_UDP_INPUT_CFG, bind, port, out_token);
 }
 
 int

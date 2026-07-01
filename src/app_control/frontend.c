@@ -93,7 +93,7 @@ frontend_status_copy_recording_opts(dsd_frontend_status* out, const dsd_opts* op
     out->event_log_enabled = opts->event_out_file[0] != '\0' ? 1 : 0;
     copy_text(out->event_log_path, sizeof out->event_log_path, opts->event_out_file);
     out->per_call_wav_enabled = opts->dmr_stereo_wav;
-    out->per_call_wav_active = (opts->wav_out_f || opts->wav_out_fR) ? 1 : 0;
+    out->per_call_wav_active = (opts->dmr_stereo_wav && (opts->wav_out_f || opts->wav_out_fR)) ? 1 : 0;
     out->static_wav_enabled = opts->static_wav_file;
     out->static_wav_active = (opts->static_wav_file && opts->wav_out_f) ? 1 : 0;
     copy_text(out->wav_out_dir, sizeof out->wav_out_dir, opts->wav_out_dir);

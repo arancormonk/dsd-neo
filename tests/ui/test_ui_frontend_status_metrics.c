@@ -154,6 +154,25 @@ test_status_treats_invalid_rigctl_socket_as_disconnected(void) {
 }
 
 static void
+test_status_separates_static_and_per_call_wav_activity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_frontend_status status;
+    fill_frontend_inputs(&opts, &state);
+    opts.dmr_stereo_wav = 0;
+    opts.static_wav_file = 1;
+    opts.wav_out_f = (SNDFILE*)0x1;
+    opts.wav_out_fR = NULL;
+
+    dsd_app_frontend_status_from_opts_state(&opts, &state, &status);
+
+    assert(status.per_call_wav_enabled == 0);
+    assert(status.per_call_wav_active == 0);
+    assert(status.static_wav_enabled == 1);
+    assert(status.static_wav_active == 1);
+}
+
+static void
 test_status_reads_latest_snapshots(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -339,6 +358,7 @@ int
 main(void) {
     test_status_copies_opts_and_state();
     test_status_treats_invalid_rigctl_socket_as_disconnected();
+    test_status_separates_static_and_per_call_wav_activity();
     test_status_reads_latest_snapshots();
     test_metrics_fallback_and_runtime_hooks();
     printf("UI_FRONTEND_STATUS_METRICS: OK\n");
