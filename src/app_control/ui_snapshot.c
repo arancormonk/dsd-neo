@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <ctype.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -399,6 +400,19 @@ frontend_protocol_from_systype(int systype) {
 }
 
 static int
+frontend_text_has_nonspace(const char* text) {
+    if (text == NULL) {
+        return 0;
+    }
+    for (const unsigned char* p = (const unsigned char*)text; *p != '\0'; p++) {
+        if (!isspace(*p)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 frontend_event_has_content(const Event_History* src) {
     return src != NULL
            && (src->source_id != 0U || src->target_id != 0U || src->event_string[0] != '\0'
@@ -629,7 +643,6 @@ frontend_snapshot_copy_active_channels(dsd_frontend_snapshot* out, const dsd_sta
         const uint32_t algid = (i == 0U) ? (uint32_t)state->payload_algid : (uint32_t)state->payload_algidR;
         const uint32_t keyid = (i == 0U) ? (uint32_t)state->payload_keyid : (uint32_t)state->payload_keyidR;
         dst->slot = (uint8_t)i;
-        dst->protocol = DSD_FRONTEND_PROTOCOL_P25;
         dst->target_id = target;
         dst->source_id = source;
         dst->payload_algid = algid;
@@ -642,6 +655,7 @@ frontend_snapshot_copy_active_channels(dsd_frontend_snapshot* out, const dsd_sta
                            ? 1U
                            : 0U;
         if (dst->present) {
+            dst->protocol = frontend_protocol_from_systype(state->lastsynctype);
             out->active_channel_count++;
         }
     }
@@ -734,14 +748,16 @@ frontend_snapshot_copy_state_scalars(dsd_frontend_snapshot* out, const dsd_state
     out->slots[0].payload_keyid = (uint32_t)state->payload_keyid;
     out->slots[0].audio_allowed = state->p25_p2_audio_allowed[0];
     DSD_SNPRINTF(out->slots[0].call_string, sizeof out->slots[0].call_string, "%s", state->call_string[0]);
-    out->slots[0].active_call = (out->slots[0].audio_allowed || out->slots[0].call_string[0] != '\0') ? 1 : 0;
+    out->slots[0].active_call =
+        (out->slots[0].audio_allowed || frontend_text_has_nonspace(out->slots[0].call_string)) ? 1 : 0;
     out->slots[1].last_tg = (uint32_t)state->lasttgR;
     out->slots[1].last_src = (uint32_t)state->lastsrcR;
     out->slots[1].payload_algid = (uint32_t)state->payload_algidR;
     out->slots[1].payload_keyid = (uint32_t)state->payload_keyidR;
     out->slots[1].audio_allowed = state->p25_p2_audio_allowed[1];
     DSD_SNPRINTF(out->slots[1].call_string, sizeof out->slots[1].call_string, "%s", state->call_string[1]);
-    out->slots[1].active_call = (out->slots[1].audio_allowed || out->slots[1].call_string[0] != '\0') ? 1 : 0;
+    out->slots[1].active_call =
+        (out->slots[1].audio_allowed || frontend_text_has_nonspace(out->slots[1].call_string)) ? 1 : 0;
 
     out->p25.p2_wacn = state->p2_wacn;
     out->p25.p2_sysid = state->p2_sysid;

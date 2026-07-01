@@ -9,6 +9,7 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdint.h>
@@ -252,6 +253,37 @@ assert_frontend_history_api(uint64_t sequence) {
     assert(detail.source_id == 456U);
 }
 
+static void
+assert_frontend_snapshot_call_activity_regressions(dsd_state* state) {
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->lasttg = 1122;
+    state->lastsrc = 3344;
+    state->lasttgR = 0;
+    state->lastsrcR = 0;
+    state->p25_vc_freq[0] = 0;
+    state->p25_vc_freq[1] = 0;
+    state->trunk_vc_freq[0] = 0;
+    state->trunk_vc_freq[1] = 0;
+    state->p25_p2_audio_allowed[0] = 0;
+    state->p25_p2_audio_allowed[1] = 0;
+    DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
+    DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "%s", " \t  ");
+
+    ui_terminal_telemetry_publish_snapshot(state);
+
+    dsd_frontend_snapshot* frontend_snap = (dsd_frontend_snapshot*)calloc(1, sizeof(*frontend_snap));
+    assert(frontend_snap != NULL);
+    assert(dsd_app_frontend_snapshot_get(frontend_snap) == 0);
+    assert(frontend_snap->slots[0].active_call == 0);
+    assert(frontend_snap->slots[1].active_call == 0);
+    assert(frontend_snap->active_channel_count == 1U);
+    assert(frontend_snap->active_channels[0].present == 1U);
+    assert(frontend_snap->active_channels[0].protocol == DSD_FRONTEND_PROTOCOL_DMR);
+    assert(frontend_snap->active_channels[1].present == 0U);
+    assert(frontend_snap->active_channels[1].protocol == DSD_FRONTEND_PROTOCOL_UNKNOWN);
+    free(frontend_snap);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -263,6 +295,7 @@ main(void) {
         return 1;
     }
     state->event_history_s = history;
+    state->lastsynctype = DSD_SYNC_P25P2_POS;
     state->lasttg = 321;
     state->lastsrc = 654;
     state->lasttgR = 987;
@@ -398,6 +431,7 @@ main(void) {
     assert_frontend_snapshot_fields(frontend_snap);
     assert_frontend_history_api(frontend_snap->event_history_sequence);
     free(frontend_snap);
+    assert_frontend_snapshot_call_activity_regressions(state);
 
     // Update only non-head rows; this must still refresh the snapshot copy.
     history[0].Event_History_Items[1].source_id = 789U;
