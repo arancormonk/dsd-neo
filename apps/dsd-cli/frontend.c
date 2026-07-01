@@ -6,7 +6,7 @@
 #include "frontend.h"
 
 #include <dsd-neo/app_control/frontend_provider.h>
-#include <dsd-neo/app_control/frontend_types.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>

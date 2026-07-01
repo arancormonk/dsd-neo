@@ -5,11 +5,11 @@
 
 /* UI command actions — logging/history domain */
 
-#include <dsd-neo/app_control/command_dispatch.h>
-#include <dsd-neo/app_control/services.h>
 #include <dsd-neo/core/state.h>
 #include <string.h>
 #include <time.h>
+#include "../command_dispatch.h"
+#include "../services.h"
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"

@@ -10,16 +10,14 @@
  * for queue, coalescing, dispatch, and completion status.
  */
 
-#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/app_control/commands.h>
-#include <dsd-neo/app_control/frontend_types.h>
 #include <dsd-neo/app_control/history.h>
-#include <dsd-neo/app_control/services.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -50,6 +48,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "command_dispatch.h"
 #include "commands_internal.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -57,6 +56,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/call_alert.h"
+#include "services.h"
 
 #ifdef USE_RADIO
 #endif
@@ -2459,6 +2459,11 @@ static const dsd_app_command_enum_option k_call_alert_options[] = {
 
 #define UI_CMD_ARRAY_LEN(array_) (sizeof(array_) / sizeof((array_)[0]))
 
+enum { UI_CMD_DESCRIPTOR_TEXT_MAX = 192 };
+
+static char g_ui_cmd_fallback_names[UI_CMD_DESCRIPTOR_TEXT_MAX][32];
+static char g_ui_cmd_fallback_labels[UI_CMD_DESCRIPTOR_TEXT_MAX][32];
+
 struct ui_cmd_text_rule {
     int command_id;
     const char* name;
@@ -2640,6 +2645,16 @@ ui_cmd_descriptor_emit(dsd_app_command_descriptor* out, size_t max, size_t* coun
         desc.capability_flags = capability_flags;
         desc.payload_size = payload_size;
         ui_cmd_descriptor_apply_metadata(&desc);
+        if (desc.name && strcmp(desc.name, "app_command") == 0 && *count < UI_CMD_DESCRIPTOR_TEXT_MAX) {
+            DSD_SNPRINTF(g_ui_cmd_fallback_names[*count], sizeof g_ui_cmd_fallback_names[*count], "command_%d",
+                         command_id);
+            desc.name = g_ui_cmd_fallback_names[*count];
+        }
+        if (desc.label && strcmp(desc.label, "App Command") == 0 && *count < UI_CMD_DESCRIPTOR_TEXT_MAX) {
+            DSD_SNPRINTF(g_ui_cmd_fallback_labels[*count], sizeof g_ui_cmd_fallback_labels[*count], "Command %d",
+                         command_id);
+            desc.label = g_ui_cmd_fallback_labels[*count];
+        }
         out[*count] = desc;
     }
     (*count)++;

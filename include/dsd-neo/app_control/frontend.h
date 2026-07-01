@@ -14,7 +14,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 
-#include <dsd-neo/app_control/frontend_types.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/input_level.h>
 #include <stdint.h>
 #include "dsd-neo/platform/platform.h"

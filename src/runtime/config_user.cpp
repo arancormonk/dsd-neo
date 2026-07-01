@@ -12,7 +12,7 @@
  */
 
 #include <cmath>
-#include <dsd-neo/app_control/frontend_types.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>

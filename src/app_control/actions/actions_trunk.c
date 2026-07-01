@@ -5,11 +5,11 @@
 
 /* UI command actions — trunking domain */
 
-#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "../command_dispatch.h"
 
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"

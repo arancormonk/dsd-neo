@@ -3,7 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/app_control/services.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -13,6 +12,7 @@
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "services.h"
 
 int
 svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {

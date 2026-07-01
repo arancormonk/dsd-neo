@@ -125,6 +125,15 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         set(_ARCH_RULES_FRONTEND_KIND_BACKEND_AREA ON)
     endif()
 
+    set(_ARCH_RULES_BACKEND_FRONTEND_FORBIDDEN_AREA OFF)
+    if(
+        _ARCH_RULES_REL
+            MATCHES
+            "^(src/core/|src/runtime/|src/dsp/|src/io/|src/protocol/|src/engine/|include/dsd-neo/core/|include/dsd-neo/runtime/|include/dsd-neo/dsp/|include/dsd-neo/io/|include/dsd-neo/protocol/|include/dsd-neo/engine/)"
+    )
+        set(_ARCH_RULES_BACKEND_FRONTEND_FORBIDDEN_AREA ON)
+    endif()
+
     set(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA OFF)
     if(_ARCH_RULES_REL MATCHES "^(src/ui/|include/dsd-neo/ui/)")
         set(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA ON)
@@ -328,6 +337,30 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
                 )
                 continue()
             endif()
+        endif()
+
+        if(
+            _ARCH_RULES_BACKEND_FRONTEND_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: backend code must not include UI header '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
+        if(
+            _ARCH_RULES_BACKEND_FRONTEND_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/app_control/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: backend code must not include app-control header '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
         endif()
 
         if(

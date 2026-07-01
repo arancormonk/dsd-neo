@@ -5,7 +5,7 @@
 
 #include <dsd-neo/ui/terminal_provider.h>
 
-#include <dsd-neo/app_control/frontend_types.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/ui/ui_async.h>

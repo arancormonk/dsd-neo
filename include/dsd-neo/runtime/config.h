@@ -17,7 +17,7 @@
 #include <dsd-neo/platform/platform.h>
 
 /* Include schema types first (before extern "C" for C++ compat) */
-#include <dsd-neo/app_control/frontend_types.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/runtime/config_schema.h>
 
 #ifdef __cplusplus

@@ -28,6 +28,9 @@ enum {
     DSD_FRONTEND_LONG_TEXT = 2000,
     DSD_FRONTEND_TRUNK_CHANNEL_MAX = 1024,
     DSD_FRONTEND_TRUNK_CC_CANDIDATES_MAX = 16,
+    DSD_FRONTEND_P25_NEIGHBOR_MAX = 32,
+    DSD_FRONTEND_P25_IDEN_PLAN_MAX = 32,
+    DSD_FRONTEND_ACTIVE_CHANNEL_MAX = 2,
 };
 
 typedef enum {
@@ -184,6 +187,45 @@ typedef struct dsd_frontend_active_slot_summary {
     char call_string[64];
 } dsd_frontend_active_slot_summary;
 
+typedef struct dsd_frontend_active_channel_summary {
+    uint8_t present;
+    uint8_t slot;
+    dsd_frontend_protocol protocol;
+    uint32_t target_id;
+    uint32_t source_id;
+    uint32_t payload_algid;
+    uint32_t payload_keyid;
+    long p25_vc_freq;
+    long trunk_vc_freq;
+    int audio_allowed;
+} dsd_frontend_active_channel_summary;
+
+typedef struct dsd_frontend_p25_neighbor_summary {
+    uint8_t present;
+    uint16_t sysid;
+    uint8_t rfss;
+    uint8_t site;
+    uint8_t cfva;
+    long freq_hz;
+    int64_t last_seen_unix_s;
+} dsd_frontend_p25_neighbor_summary;
+
+typedef struct dsd_frontend_p25_iden_entry_summary {
+    uint8_t present;
+    uint8_t id;
+    uint8_t tdma;
+    uint8_t trust;
+    uint8_t channel_type;
+    uint8_t bandwidth;
+    long base_freq_hz;
+    int spacing_hz;
+    int transmit_offset;
+    uint64_t wacn;
+    uint64_t sysid;
+    uint64_t rfss;
+    uint64_t site;
+} dsd_frontend_p25_iden_entry_summary;
+
 typedef struct dsd_frontend_p25_display {
     uint64_t p2_wacn;
     uint64_t p2_sysid;
@@ -203,6 +245,11 @@ typedef struct dsd_frontend_p25_display {
     unsigned int p25_p2_sacch_ok;
     unsigned int p25_p2_sacch_err;
     unsigned int p25_p2_voice_err;
+    dsd_frontend_p25_neighbor_summary neighbors[DSD_FRONTEND_P25_NEIGHBOR_MAX];
+    size_t neighbor_count;
+    dsd_frontend_p25_iden_entry_summary iden_plan[DSD_FRONTEND_P25_IDEN_PLAN_MAX];
+    size_t iden_plan_count;
+    size_t iden_plan_confirmed_count;
 } dsd_frontend_p25_display;
 
 typedef struct dsd_frontend_snapshot {
@@ -216,6 +263,8 @@ typedef struct dsd_frontend_snapshot {
     int input_level_last_toast_status;
     int input_level_last_toast_source;
     dsd_frontend_active_slot_summary slots[2];
+    dsd_frontend_active_channel_summary active_channels[DSD_FRONTEND_ACTIVE_CHANNEL_MAX];
+    size_t active_channel_count;
     dsd_frontend_p25_display p25;
     dsd_frontend_trunk_channel trunk_channels[DSD_FRONTEND_TRUNK_CHANNEL_MAX];
     size_t trunk_channel_count;

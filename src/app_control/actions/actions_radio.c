@@ -5,12 +5,12 @@
 
 /* UI command actions — radio domain */
 
-#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <stdint.h>
 #include <string.h>
+#include "../command_dispatch.h"
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"

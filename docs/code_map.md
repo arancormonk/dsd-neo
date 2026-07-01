@@ -211,18 +211,18 @@ Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`
 
 Key public headers:
 
-- Menu core/services: `include/dsd-neo/ui/menu_core.h`, `include/dsd-neo/ui/menu_defs.h`,
-  `include/dsd-neo/ui/menu_services.h`
-- Async/UI plumbing: `include/dsd-neo/ui/ui_async.h`, `include/dsd-neo/ui/ui_cmd.h`,
-  `include/dsd-neo/ui/ui_cmd_dispatch.h`, `include/dsd-neo/ui/ui_dsp_cmd.h`, `include/dsd-neo/ui/ui_snapshot.h`,
-  `include/dsd-neo/ui/ui_opts_snapshot.h`, `include/dsd-neo/ui/ui_prims.h`, `include/dsd-neo/ui/keymap.h`,
-  `include/dsd-neo/ui/panels.h`, `include/dsd-neo/ui/ncurses.h`
+- Provider descriptors: `include/dsd-neo/ui/terminal_provider.h`, `include/dsd-neo/ui/native_provider.h`
+- Safe compatibility wrappers: `include/dsd-neo/ui/ui_cmd.h`, `include/dsd-neo/ui/ui_dsp_cmd.h`,
+  `include/dsd-neo/ui/ui_history.h`, `include/dsd-neo/ui/ui_snapshot.h`,
+  `include/dsd-neo/ui/ui_opts_snapshot.h`
+- Terminal-only headers live under `src/ui/terminal/dsd-neo/ui/` and are private to the terminal target/tests.
+  Native UI code must use copied app-control snapshots and command APIs instead of these headers.
 
 ### Adding Menu Items
 
 - Define a handler:
-  - Prefer a service in `include/dsd-neo/ui/menu_services.h` with implementation in `src/ui/terminal/menu_services.c`
-    for side effects (I/O, mode switches, file ops).
+  - Prefer an app-control service in `src/app_control/services.h` with implementation in `src/app_control/` for side
+    effects (I/O, mode switches, file ops).
   - Menu action handlers live in `src/ui/terminal/menu_actions.c` and should be thin wrappers that call service helpers
     and use `ui_prompt_open_*_async` to gather input.
 - Extend a menu table:
@@ -246,7 +246,7 @@ Key public headers:
 - IO: `<dsd-neo/io/...>`
 - FEC: `<dsd-neo/fec/...>`
 - Crypto: `<dsd-neo/crypto/...>`
-- UI: `<dsd-neo/ui/...>`
+- UI provider/wrapper headers: `<dsd-neo/ui/...>`
 - Protocols: `<dsd-neo/protocol/<name>/...>`
 
 Additional includes of interest:
@@ -256,7 +256,8 @@ Additional includes of interest:
   `<dsd-neo/io/rtl_demod_config.h>`, `<dsd-neo/io/rtl_metrics.h>`, `<dsd-neo/io/control.h>`, `<dsd-neo/io/rigctl.h>`,
   `<dsd-neo/io/m17_udp.h>`, `<dsd-neo/io/udp_audio.h>`, `<dsd-neo/io/udp_control.h>`, `<dsd-neo/io/udp_input.h>`,
   `<dsd-neo/io/tcp_input.h>`
-- UI: `<dsd-neo/ui/menu_core.h>`, `<dsd-neo/ui/menu_defs.h>`, `<dsd-neo/ui/menu_services.h>`
+- UI: provider headers plus safe compatibility wrappers in `include/dsd-neo/ui`; terminal internals are private under
+  `src/ui/terminal/dsd-neo/ui`
 
 ## Build Targets
 

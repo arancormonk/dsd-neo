@@ -10,6 +10,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_SERVICES_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_SERVICES_H_
 
-#include "dsd-neo/app_control/services.h" // IWYU pragma: export
+#include "services.h" // IWYU pragma: export
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_SERVICES_H_ */

@@ -17,13 +17,13 @@
  * rollback semantics depend on the helper's success/failure result.
  */
 
-#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/app_control/commands.h>
-#include <dsd-neo/app_control/frontend_types.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include "command_dispatch.h"
 #ifdef USE_RADIO
 #include <dsd-neo/core/power.h>
 #endif

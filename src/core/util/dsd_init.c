@@ -19,8 +19,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
-#include "dsd-neo/app_control/frontend_types.h"
 #include "dsd-neo/core/dibit.h"
+#include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"

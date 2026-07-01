@@ -9,7 +9,7 @@
 #include <string.h>
 
 #include <dsd-neo/app_control/frontend.h>
-#include <dsd-neo/app_control/frontend_types.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>

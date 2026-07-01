@@ -8,7 +8,7 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
-#include <dsd-neo/app_control/frontend_types.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -146,6 +146,14 @@ expect_descriptor_metadata(const dsd_app_command_descriptor* desc) {
     if (!desc->name || desc->name[0] == '\0' || !desc->label || desc->label[0] == '\0' || !desc->description
         || desc->description[0] == '\0') {
         DSD_FPRINTF(stderr, "descriptor %d missing text metadata\n", desc->command_id);
+        rc = 1;
+    }
+    if (desc->name && strcmp(desc->name, "app_command") == 0) {
+        DSD_FPRINTF(stderr, "descriptor %d uses generic command name\n", desc->command_id);
+        rc = 1;
+    }
+    if (desc->label && strcmp(desc->label, "App Command") == 0) {
+        DSD_FPRINTF(stderr, "descriptor %d uses generic command label\n", desc->command_id);
         rc = 1;
     }
     if ((desc->availability_flags & ~known_availability) != 0U) {

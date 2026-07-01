@@ -7,15 +7,15 @@
  * Deterministic contracts for terminal UI command action registries.
  */
 
-#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/app_control/commands.h>
-#include <dsd-neo/app_control/services.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "command_dispatch.h"
+#include "services.h"
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"

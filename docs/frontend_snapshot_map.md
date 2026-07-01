@@ -38,6 +38,11 @@ reaching into live `dsd_opts`, live `dsd_state`, or terminal UI helpers.
 
 - `p25`: copied from P25 system, control-channel, voice-channel, TDMA active-slot, audio-ring, and FEC/error counters
   in `dsd_state`.
+- `p25.neighbors`: copied P25 adjacent-site summaries with frequency, SysID, RFSS, Site, CFVA, and last-seen time.
+- `p25.iden_plan`: copied FDMA/TDMA IDEN bandplan entries with ID, class, trust, base frequency, channel spacing,
+  channel type, bandwidth, transmit offset, and provenance fields.
+- `active_channels`: copied per-slot active P25 channel summaries with source/target IDs, payload encryption metadata,
+  voice-channel frequencies, and audio gate state. Terminal display strings are not part of this public summary.
 - `trunk_channels`: copied from the tracked trunk channel map and its sequence counter.
 - `trunk_cc_candidates`: copied from the engine trunk CC candidate extension stored in `dsd_state.state_ext`.
 
@@ -66,3 +71,10 @@ reaching into live `dsd_opts`, live `dsd_state`, or terminal UI helpers.
   payload size, value ranges, enum options, units, radio/runtime availability flags, restart hints, and validation
   hints.
 - `dsd_app_command_capabilities_get()` remains as the compatibility view and is derived from the descriptor table.
+
+## Native Host Model
+
+- Native UI v1 is currently hosted through the CLI `--frontend native` provider path.
+- Providers may set `DSD_FRONTEND_PROVIDER_MAIN_THREAD_UI` when a frontend needs main-thread UI ownership.
+- No separate native app host library or executable is part of this boundary cleanup; that should be revisited only
+  when a selected native UI toolkit requires a separate executable or app bundle.

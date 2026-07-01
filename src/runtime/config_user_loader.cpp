@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "config_user_internal.h"
-#include "dsd-neo/app_control/frontend_types.h"
+#include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/runtime/call_alert.h"
 

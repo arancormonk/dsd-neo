@@ -11,6 +11,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -617,6 +618,99 @@ frontend_snapshot_copy_cc_candidates(dsd_frontend_snapshot* out, const dsd_state
 }
 
 static void
+frontend_snapshot_copy_active_channels(dsd_frontend_snapshot* out, const dsd_state* state) {
+    if (!out || !state) {
+        return;
+    }
+    for (size_t i = 0; i < DSD_FRONTEND_ACTIVE_CHANNEL_MAX; i++) {
+        dsd_frontend_active_channel_summary* dst = &out->active_channels[i];
+        const uint32_t target = (i == 0U) ? (uint32_t)state->lasttg : (uint32_t)state->lasttgR;
+        const uint32_t source = (i == 0U) ? (uint32_t)state->lastsrc : (uint32_t)state->lastsrcR;
+        const uint32_t algid = (i == 0U) ? (uint32_t)state->payload_algid : (uint32_t)state->payload_algidR;
+        const uint32_t keyid = (i == 0U) ? (uint32_t)state->payload_keyid : (uint32_t)state->payload_keyidR;
+        dst->slot = (uint8_t)i;
+        dst->protocol = DSD_FRONTEND_PROTOCOL_P25;
+        dst->target_id = target;
+        dst->source_id = source;
+        dst->payload_algid = algid;
+        dst->payload_keyid = keyid;
+        dst->p25_vc_freq = state->p25_vc_freq[i];
+        dst->trunk_vc_freq = state->trunk_vc_freq[i];
+        dst->audio_allowed = state->p25_p2_audio_allowed[i];
+        dst->present = (dst->p25_vc_freq != 0 || dst->trunk_vc_freq != 0 || target != 0U || source != 0U
+                        || dst->audio_allowed != 0)
+                           ? 1U
+                           : 0U;
+        if (dst->present) {
+            out->active_channel_count++;
+        }
+    }
+}
+
+static void
+frontend_snapshot_copy_p25_neighbors(dsd_frontend_snapshot* out, const dsd_state* state) {
+    if (!out || !state) {
+        return;
+    }
+    int count = state->p25_nb_count;
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > DSD_FRONTEND_P25_NEIGHBOR_MAX) {
+        count = DSD_FRONTEND_P25_NEIGHBOR_MAX;
+    }
+    for (int i = 0; i < count; i++) {
+        const p25_nb_entry_t* src = &state->p25_nb_entries[i];
+        if (src->freq == 0) {
+            continue;
+        }
+        dsd_frontend_p25_neighbor_summary* dst = &out->p25.neighbors[out->p25.neighbor_count++];
+        dst->present = 1U;
+        dst->freq_hz = src->freq;
+        dst->sysid = src->sysid;
+        dst->rfss = src->rfss;
+        dst->site = src->site;
+        dst->cfva = src->cfva;
+        dst->last_seen_unix_s = (int64_t)src->last_seen;
+    }
+}
+
+static void
+frontend_snapshot_copy_p25_iden_entry(dsd_frontend_snapshot* out, int id, int tdma, const p25_iden_entry_t* src) {
+    if (!out || !src || !src->populated || out->p25.iden_plan_count >= DSD_FRONTEND_P25_IDEN_PLAN_MAX) {
+        return;
+    }
+    dsd_frontend_p25_iden_entry_summary* dst = &out->p25.iden_plan[out->p25.iden_plan_count++];
+    dst->present = 1U;
+    dst->id = (uint8_t)id;
+    dst->tdma = tdma ? 1U : 0U;
+    dst->trust = src->trust;
+    dst->channel_type = (uint8_t)src->chan_type;
+    dst->bandwidth = src->bw_vu;
+    dst->base_freq_hz = src->base_freq * 5L;
+    dst->spacing_hz = src->chan_spac * 125;
+    dst->transmit_offset = src->trans_off;
+    dst->wacn = src->wacn;
+    dst->sysid = src->sysid;
+    dst->rfss = src->rfss;
+    dst->site = src->site;
+    if (src->trust >= 2U) {
+        out->p25.iden_plan_confirmed_count++;
+    }
+}
+
+static void
+frontend_snapshot_copy_p25_iden_plan(dsd_frontend_snapshot* out, const dsd_state* state) {
+    if (!out || !state) {
+        return;
+    }
+    for (int id = 0; id < 16; id++) {
+        frontend_snapshot_copy_p25_iden_entry(out, id, 0, &state->p25_iden_fdma[id]);
+        frontend_snapshot_copy_p25_iden_entry(out, id, 1, &state->p25_iden_tdma[id]);
+    }
+}
+
+static void
 frontend_snapshot_copy_state_scalars(dsd_frontend_snapshot* out, const dsd_state* state) {
     if (!out || !state) {
         return;
@@ -669,6 +763,9 @@ frontend_snapshot_copy_state_scalars(dsd_frontend_snapshot* out, const dsd_state
     out->p25.p25_p2_sacch_ok = state->p25_p2_rs_sacch_ok;
     out->p25.p25_p2_sacch_err = state->p25_p2_rs_sacch_err;
     out->p25.p25_p2_voice_err = state->p25_p2_voice_err_hist_sum[0] + state->p25_p2_voice_err_hist_sum[1];
+    frontend_snapshot_copy_active_channels(out, state);
+    frontend_snapshot_copy_p25_neighbors(out, state);
+    frontend_snapshot_copy_p25_iden_plan(out, state);
 }
 
 int

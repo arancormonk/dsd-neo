@@ -5,12 +5,12 @@
 
 /* UI command actions — audio domain */
 
-#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 #include <time.h>
+#include "../command_dispatch.h"
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
