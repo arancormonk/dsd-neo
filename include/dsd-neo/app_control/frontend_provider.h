@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_PROVIDER_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_PROVIDER_H_
 
+#include <dsd-neo/app_control/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/engine.h>

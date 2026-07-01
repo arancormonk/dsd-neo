@@ -26,8 +26,10 @@ enum { DSD_APP_CMD_DISPATCH_DATA_MAX = 16384 };
  * @brief Internal command payload envelope consumed by app-control dispatchers.
  */
 struct dsd_app_command {
-    int id;
+    uint64_t token;
     size_t n;
+    int id;
+    uint8_t payload_truncated;
     uint8_t data[DSD_APP_CMD_DISPATCH_DATA_MAX];
 };
 

@@ -19,6 +19,7 @@
 
 #include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_types.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>

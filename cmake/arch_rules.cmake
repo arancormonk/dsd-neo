@@ -239,10 +239,20 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         if(_ARCH_RULES_NATIVE_UI_AREA)
             if(
                 _ARCH_RULES_HEADER MATCHES "^dsd-neo/core/(opts|state)\\.h$"
+                OR (
+                    _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/"
+                    AND NOT _ARCH_RULES_HEADER STREQUAL "dsd-neo/ui/native_provider.h"
+                )
                 OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/ncurses"
                 OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/menu_"
                 OR _ARCH_RULES_HEADER STREQUAL "dsd-neo/platform/curses_compat.h"
                 OR _ARCH_RULES_HEADER MATCHES "(^|.*/)(curses|ncurses)\\.h$"
+                OR _ARCH_RULES_HEADER
+                    MATCHES
+                    "(^|.*/)(dsd_ncurses_|ncurses_|menu_)[^/]*\\.h$"
+                OR _ARCH_RULES_HEADER
+                    MATCHES
+                    "(^|.*/)(commands_internal|frontend_internal|snapshot_internal|telemetry_hooks_impl)\\.h$"
             )
                 message(
                     SEND_ERROR

@@ -14,8 +14,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 
+#include <dsd-neo/app_control/frontend_types.h>
 #include <dsd-neo/core/input_level.h>
-#include <dsd-neo/core/opts_fwd.h>
 #include <stdint.h>
 #include "dsd-neo/platform/platform.h"
 
@@ -25,7 +25,8 @@ extern "C" {
 
 typedef struct dsd_frontend_status {
     dsd_frontend_kind frontend_kind;
-    dsd_frontend_display_opts frontend_display;
+    dsd_frontend_common_display_opts display;
+    dsd_frontend_terminal_display_opts terminal_display;
 
     int audio_in_type;
     int audio_out_type;

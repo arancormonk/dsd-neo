@@ -14,9 +14,9 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
-#include <dsd-neo/platform/platform.h>
-
+#include <dsd-neo/app_control/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/platform.h>
 #ifdef __cplusplus
 #include <dsd-neo/core/safe_api.h>
 #endif

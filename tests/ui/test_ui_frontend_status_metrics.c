@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -80,8 +81,8 @@ test_status_copies_opts_and_state(void) {
     state.config_autosave_path[0] = '\0';
 
     assert(status.frontend_kind == DSD_FRONTEND_TERMINAL);
-    assert(status.frontend_display.terminal_compact == 1);
-    assert(status.frontend_display.terminal_history == 0);
+    assert(status.terminal_display.terminal_compact == 1);
+    assert(status.terminal_display.terminal_history == 0);
     assert(status.audio_in_type == AUDIO_IN_RTL);
     assert(status.audio_out == 1);
     assert(strcmp(status.audio_in_dev, "rtl:0:851.0125M") == 0);

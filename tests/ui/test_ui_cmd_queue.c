@@ -8,10 +8,12 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_types.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/config.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,6 +36,21 @@ static int
 expect_u64(const char* tag, uint64_t got, uint64_t want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %llu want %llu\n", tag, (unsigned long long)got, (unsigned long long)want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_command_status(const char* tag, dsd_app_command_token token, dsd_app_command_result_status want) {
+    dsd_app_command_result result;
+    DSD_MEMSET(&result, 0, sizeof(result));
+    if (dsd_app_command_result_get(token, &result) != 0) {
+        DSD_FPRINTF(stderr, "%s: result for token %llu not found\n", tag, (unsigned long long)token);
+        return 1;
+    }
+    if (result.status != want) {
+        DSD_FPRINTF(stderr, "%s: got status %d want %d (%s)\n", tag, (int)result.status, (int)want, result.message);
         return 1;
     }
     return 0;
@@ -245,6 +262,71 @@ test_typed_command_api_wrappers(void) {
     rc |= expect_u64("typed p2 cc set", state.p2_cc, 0x456ULL);
     rc |= expect_u64("typed aes key loaded", state.A1[0], 9ULL);
     rc |= expect_int("typed aes key load flag", state.aes_key_loaded[0], 1);
+
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_tracked_command_results(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+
+    dsd_app_command_token gain_first = 0;
+    dsd_app_command_token gain_second = 0;
+    rc |= expect_int("tracked gain queued", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 5, &gain_first),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_command_status("tracked gain first queued", gain_first, DSD_APP_COMMAND_RESULT_QUEUED);
+    rc |= expect_int("tracked gain coalesced", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 9, &gain_second),
+                     DSD_APP_COMMAND_SUBMIT_COALESCED);
+    rc |= expect_command_status("tracked gain second coalesced", gain_second, DSD_APP_COMMAND_RESULT_COALESCED);
+    rc |= expect_int("tracked coalesced drain count", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tracked coalesced latest value", (int)opts.audio_gain, 9);
+    rc |= expect_command_status("tracked gain first completed", gain_first, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_command_status("tracked gain second remains coalesced", gain_second, DSD_APP_COMMAND_RESULT_COALESCED);
+
+    uint8_t short_payload = 0xAAU;
+    dsd_app_command_token invalid = 0;
+    rc |= expect_int(
+        "tracked invalid raw queued",
+        dsd_app_command_submit_tracked(DSD_APP_CMD_KEY_AES_SET, &short_payload, sizeof short_payload, &invalid),
+        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tracked invalid drain count", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("tracked invalid payload result", invalid, DSD_APP_COMMAND_RESULT_INVALID_PAYLOAD);
+
+    dsd_app_command_token unsupported = 0;
+    rc |= expect_int("tracked unsupported raw queued", dsd_app_command_submit_tracked(999999, NULL, 0U, &unsupported),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tracked unsupported drain count", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("tracked unsupported result", unsupported, DSD_APP_COMMAND_RESULT_UNSUPPORTED);
+
+    dsd_app_command_token backend_fail = 0;
+    rc |=
+        expect_int("tracked backend failure queued",
+                   dsd_app_command_set_endpoint_tracked(DSD_APP_CMD_RIGCTL_CONNECT_CFG, "127.0.0.1", -1, &backend_fail),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tracked backend failure drain count", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("tracked backend failure result", backend_fail, DSD_APP_COMMAND_RESULT_FAILED);
+
+    dsd_app_command_capability caps[8];
+    size_t cap_count = 0;
+    rc |= expect_int("capability count query", dsd_app_command_capabilities_get(NULL, 0U, &cap_count), 0);
+    rc |= expect_true("capability count nonzero", cap_count > 8U);
+    rc |= expect_int("capability truncated query", dsd_app_command_capabilities_get(caps, 8U, &cap_count), 1);
+
+    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.frontend_kind = DSD_FRONTEND_NATIVE;
+    cfg.frontend_kind_is_set = 1;
+    dsd_app_command_token restart = 0;
+    rc |= expect_int("tracked config restart queued", dsd_app_command_apply_config_tracked(&cfg, &restart),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tracked config restart drain count", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tracked config preserves active frontend", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
+    rc |= expect_command_status("tracked config restart result", restart, DSD_APP_COMMAND_RESULT_RESTART_REQUIRED);
 
     freeState(&state);
     return rc;
@@ -585,6 +667,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_typed_command_api_wrappers();
+    rc |= test_tracked_command_results();
     rc |= test_visibility_and_queue_overflow();
     rc |= test_key_and_runtime_state_commands();
     rc |= test_file_network_and_import_commands();

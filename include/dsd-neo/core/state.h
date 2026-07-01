@@ -36,6 +36,23 @@ enum DSD_ATTR_PACKED {
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
 
+typedef enum DSD_ATTR_PACKED {
+    DSD_EVENT_SEVERITY_UNKNOWN = 0,
+    DSD_EVENT_SEVERITY_DEBUG = 1,
+    DSD_EVENT_SEVERITY_INFO = 2,
+    DSD_EVENT_SEVERITY_WARNING = 3,
+    DSD_EVENT_SEVERITY_ERROR = 4
+} dsd_event_severity;
+
+typedef enum DSD_ATTR_PACKED {
+    DSD_EVENT_CATEGORY_UNKNOWN = 0,
+    DSD_EVENT_CATEGORY_STATUS = 1,
+    DSD_EVENT_CATEGORY_VOICE = 2,
+    DSD_EVENT_CATEGORY_DATA = 3,
+    DSD_EVENT_CATEGORY_CONTROL = 4,
+    DSD_EVENT_CATEGORY_SYSTEM = 5
+} dsd_event_category;
+
 //event history (each item)
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 // The dsd_state structure is intentionally organized by functional groups for clarity
@@ -46,6 +63,8 @@ enum DSD_ATTR_PACKED {
 typedef struct {
     uint8_t write;      // If this event needs to be written to a log file
     uint8_t color_pair; //this value corresponds to which color pair the line should be in ncurses
+    uint8_t severity;   // neutral event severity for non-terminal frontends
+    uint8_t category;   // neutral event category for non-terminal frontends
     int8_t systype;     //indentifier of which decoded system type this is from (P25, DMR, etc)
     int8_t subtype;     //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
     uint32_t sys_id1;   //sys_id1 through 5 will be a hierarchy of system identifiers

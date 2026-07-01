@@ -53,6 +53,8 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
     for (uint8_t i = start; i < stop; i++) {
         event_struct->Event_History_Items[i].write = 0;
         event_struct->Event_History_Items[i].color_pair = 4;
+        event_struct->Event_History_Items[i].severity = DSD_EVENT_SEVERITY_UNKNOWN;
+        event_struct->Event_History_Items[i].category = DSD_EVENT_CATEGORY_UNKNOWN;
         event_struct->Event_History_Items[i].systype = -1;
         event_struct->Event_History_Items[i].subtype = -1;
         event_struct->Event_History_Items[i].sys_id1 = 0;
@@ -94,6 +96,8 @@ push_event_history(Event_History_I* event_struct) {
     for (uint8_t i = 254; i >= 1; i--) {
         event_struct->Event_History_Items[i].write = event_struct->Event_History_Items[i - 1].write;
         event_struct->Event_History_Items[i].color_pair = event_struct->Event_History_Items[i - 1].color_pair;
+        event_struct->Event_History_Items[i].severity = event_struct->Event_History_Items[i - 1].severity;
+        event_struct->Event_History_Items[i].category = event_struct->Event_History_Items[i - 1].category;
         event_struct->Event_History_Items[i].systype = event_struct->Event_History_Items[i - 1].systype;
         event_struct->Event_History_Items[i].subtype = event_struct->Event_History_Items[i - 1].subtype;
         event_struct->Event_History_Items[i].sys_id1 = event_struct->Event_History_Items[i - 1].sys_id1;
@@ -373,7 +377,8 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 //this will hopefully be more useful when dealing with an ongoing event with
 //features that update over time with embedded signalling, etc
 typedef struct {
-    uint8_t color_pair;
+    dsd_event_severity severity;
+    dsd_event_category category;
     uint32_t source_id;
     uint32_t target_id;
     char src_str[200];
@@ -514,7 +519,8 @@ watchdog_event_set_ysf_text_message(dsd_state* state, Event_History_I* event_str
 static void
 watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, watchdog_event_current_ctx* ctx) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
-    ctx->color_pair = 4;
+    ctx->severity = DSD_EVENT_SEVERITY_INFO;
+    ctx->category = DSD_EVENT_CATEGORY_VOICE;
 
     if (slot == 0) {
         ctx->source_id = state->lastsrc;
@@ -709,7 +715,7 @@ static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History_I* event_struct,
                                    const watchdog_event_current_ctx* ctx) {
     event_struct->Event_History_Items[0].write = 0;
-    state->event_history_s[slot].Event_History_Items[0].color_pair = ctx->color_pair;
+    dsd_event_history_item_set_metadata(&event_struct->Event_History_Items[0], ctx->severity, ctx->category);
     if (state->lastsynctype != DSD_SYNC_NONE) {
         event_struct->Event_History_Items[0].systype = state->lastsynctype;
     } else {
@@ -1022,7 +1028,7 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
 
     Event_History* item = &event_struct->Event_History_Items[0];
     item->write = 0;
-    item->color_pair = 4;
+    dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_STATUS);
     item->systype = -1;
     item->subtype = -1;
     item->source_id = 0;
@@ -1042,7 +1048,8 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
 void
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
     state->event_history_s[slot].Event_History_Items[0].write = 0;
-    state->event_history_s[slot].Event_History_Items[0].color_pair = 4; //default data color //you can change this one
+    dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0], DSD_EVENT_SEVERITY_INFO,
+                                        DSD_EVENT_CATEGORY_DATA);
     state->event_history_s[slot].Event_History_Items[0].systype = state->lastsynctype;
     state->event_history_s[slot].Event_History_Items[0].subtype = DSD_EVENT_SUBTYPE_EXPLICIT_DATA;
     state->event_history_s[slot].Event_History_Items[0].gi = state->gi[slot];

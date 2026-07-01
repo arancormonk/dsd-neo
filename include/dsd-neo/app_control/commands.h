@@ -12,6 +12,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_COMMANDS_H_
 
 #include <dsd-neo/runtime/config.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /** Command identifiers used by the async UI command queue. */
@@ -264,9 +265,79 @@ typedef struct {
     uint64_t K4;
 } dsd_app_aes_key_payload;
 
+typedef uint64_t dsd_app_command_token;
+
+typedef enum {
+    DSD_APP_COMMAND_SUBMIT_REJECTED = -1,
+    DSD_APP_COMMAND_SUBMIT_ACCEPTED = 0,
+    DSD_APP_COMMAND_SUBMIT_QUEUED = 1,
+    DSD_APP_COMMAND_SUBMIT_COALESCED = 2
+} dsd_app_command_submit_status;
+
+typedef enum {
+    DSD_APP_COMMAND_RESULT_UNKNOWN = 0,
+    DSD_APP_COMMAND_RESULT_QUEUED = 1,
+    DSD_APP_COMMAND_RESULT_COALESCED = 2,
+    DSD_APP_COMMAND_RESULT_RUNNING = 3,
+    DSD_APP_COMMAND_RESULT_COMPLETED = 4,
+    DSD_APP_COMMAND_RESULT_FAILED = 5,
+    DSD_APP_COMMAND_RESULT_UNSUPPORTED = 6,
+    DSD_APP_COMMAND_RESULT_INVALID_PAYLOAD = 7,
+    DSD_APP_COMMAND_RESULT_RESTART_REQUIRED = 8
+} dsd_app_command_result_status;
+
+typedef struct {
+    dsd_app_command_token token;
+    dsd_app_command_token coalesced_to;
+    int command_id;
+    dsd_app_command_result_status status;
+    int detail_code;
+    char message[128];
+} dsd_app_command_result;
+
+enum {
+    DSD_APP_COMMAND_CAP_ACTION = 1u << 0,
+    DSD_APP_COMMAND_CAP_I32 = 1u << 1,
+    DSD_APP_COMMAND_CAP_U8 = 1u << 2,
+    DSD_APP_COMMAND_CAP_U32 = 1u << 3,
+    DSD_APP_COMMAND_CAP_U64 = 1u << 4,
+    DSD_APP_COMMAND_CAP_DOUBLE = 1u << 5,
+    DSD_APP_COMMAND_CAP_FLOAT = 1u << 6,
+    DSD_APP_COMMAND_CAP_STRING = 1u << 7,
+    DSD_APP_COMMAND_CAP_ENDPOINT = 1u << 8,
+    DSD_APP_COMMAND_CAP_STRUCT = 1u << 9,
+};
+
+typedef struct {
+    int command_id;
+    unsigned int flags;
+    size_t payload_size;
+} dsd_app_command_capability;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+int dsd_app_command_submit_tracked(int cmd_id, const void* payload, size_t payload_sz,
+                                   dsd_app_command_token* out_token);
+int dsd_app_command_action_tracked(int cmd_id, dsd_app_command_token* out_token);
+int dsd_app_command_set_i32_tracked(int cmd_id, int32_t value, dsd_app_command_token* out_token);
+int dsd_app_command_set_u8_tracked(int cmd_id, uint8_t value, dsd_app_command_token* out_token);
+int dsd_app_command_set_u32_tracked(int cmd_id, uint32_t value, dsd_app_command_token* out_token);
+int dsd_app_command_set_u64_tracked(int cmd_id, uint64_t value, dsd_app_command_token* out_token);
+int dsd_app_command_set_double_tracked(int cmd_id, double value, dsd_app_command_token* out_token);
+int dsd_app_command_set_float_tracked(int cmd_id, float value, dsd_app_command_token* out_token);
+int dsd_app_command_set_string_tracked(int cmd_id, const char* value, dsd_app_command_token* out_token);
+int dsd_app_command_set_endpoint_tracked(int cmd_id, const char* host, int32_t port, dsd_app_command_token* out_token);
+int dsd_app_command_set_udp_input_tracked(const char* bind, int32_t port, dsd_app_command_token* out_token);
+int dsd_app_command_set_p25_p2_params_tracked(const dsd_app_p25_p2_params_payload* payload,
+                                              dsd_app_command_token* out_token);
+int dsd_app_command_set_hytera_key_tracked(const dsd_app_hytera_key_payload* payload, dsd_app_command_token* out_token);
+int dsd_app_command_set_aes_key_tracked(const dsd_app_aes_key_payload* payload, dsd_app_command_token* out_token);
+int dsd_app_command_dsp_op_tracked(const dsd_app_dsp_payload* payload, dsd_app_command_token* out_token);
+int dsd_app_command_apply_config_tracked(const dsdneoUserConfig* config, dsd_app_command_token* out_token);
+int dsd_app_command_result_get(dsd_app_command_token token, dsd_app_command_result* out);
+int dsd_app_command_capabilities_get(dsd_app_command_capability* out, size_t max, size_t* out_count);
 
 int dsd_app_command_action(int cmd_id);
 int dsd_app_command_set_i32(int cmd_id, int32_t value);

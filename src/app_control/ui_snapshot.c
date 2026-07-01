@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
@@ -127,6 +128,8 @@ ui_event_history_item_equal(const Event_History* lhs, const Event_History* rhs) 
     const int scalar_checks[] = {
         lhs->write == rhs->write,
         lhs->color_pair == rhs->color_pair,
+        lhs->severity == rhs->severity,
+        lhs->category == rhs->category,
         lhs->systype == rhs->systype,
         lhs->subtype == rhs->subtype,
         lhs->sys_id1 == rhs->sys_id1,
@@ -275,42 +278,226 @@ ui_get_latest_snapshot(void) {
 }
 
 static void
+frontend_copy_text(char* dst, size_t dst_size, const char* src) {
+    if (!dst || dst_size == 0) {
+        return;
+    }
+    DSD_SNPRINTF(dst, dst_size, "%s", src ? src : "");
+    dst[dst_size - 1] = '\0';
+}
+
+static int
+frontend_text_has_prefix(const char* text, const char* prefix) {
+    if (!text || !prefix) {
+        return 0;
+    }
+    const size_t n = strlen(prefix);
+    return strncmp(text, prefix, n) == 0;
+}
+
+static dsd_frontend_event_severity
+frontend_severity_from_core(uint8_t severity) {
+    switch ((dsd_event_severity)severity) {
+        case DSD_EVENT_SEVERITY_DEBUG: return DSD_FRONTEND_EVENT_SEVERITY_DEBUG;
+        case DSD_EVENT_SEVERITY_INFO: return DSD_FRONTEND_EVENT_SEVERITY_INFO;
+        case DSD_EVENT_SEVERITY_WARNING: return DSD_FRONTEND_EVENT_SEVERITY_WARNING;
+        case DSD_EVENT_SEVERITY_ERROR: return DSD_FRONTEND_EVENT_SEVERITY_ERROR;
+        case DSD_EVENT_SEVERITY_UNKNOWN:
+        default: return DSD_FRONTEND_EVENT_SEVERITY_UNKNOWN;
+    }
+}
+
+static dsd_frontend_event_category
+frontend_category_from_core(uint8_t category) {
+    switch ((dsd_event_category)category) {
+        case DSD_EVENT_CATEGORY_STATUS: return DSD_FRONTEND_EVENT_CATEGORY_STATUS;
+        case DSD_EVENT_CATEGORY_VOICE: return DSD_FRONTEND_EVENT_CATEGORY_VOICE;
+        case DSD_EVENT_CATEGORY_DATA: return DSD_FRONTEND_EVENT_CATEGORY_DATA;
+        case DSD_EVENT_CATEGORY_CONTROL: return DSD_FRONTEND_EVENT_CATEGORY_CONTROL;
+        case DSD_EVENT_CATEGORY_SYSTEM: return DSD_FRONTEND_EVENT_CATEGORY_SYSTEM;
+        case DSD_EVENT_CATEGORY_UNKNOWN:
+        default: return DSD_FRONTEND_EVENT_CATEGORY_UNKNOWN;
+    }
+}
+
+static dsd_frontend_event_severity
+frontend_severity_from_text(const char* text) {
+    if (frontend_text_has_prefix(text, "Failed") || frontend_text_has_prefix(text, "Error")
+        || frontend_text_has_prefix(text, "ERR")) {
+        return DSD_FRONTEND_EVENT_SEVERITY_ERROR;
+    }
+    if (frontend_text_has_prefix(text, "Unsupported") || frontend_text_has_prefix(text, "Warning")
+        || frontend_text_has_prefix(text, "WARN")) {
+        return DSD_FRONTEND_EVENT_SEVERITY_WARNING;
+    }
+    return DSD_FRONTEND_EVENT_SEVERITY_INFO;
+}
+
+static dsd_frontend_protocol
+frontend_protocol_from_systype(int systype) {
+    if (DSD_SYNC_IS_P25(systype)) {
+        return DSD_FRONTEND_PROTOCOL_P25;
+    }
+    if (DSD_SYNC_IS_DMR(systype)) {
+        return DSD_FRONTEND_PROTOCOL_DMR;
+    }
+    if (DSD_SYNC_IS_NXDN(systype)) {
+        return DSD_FRONTEND_PROTOCOL_NXDN;
+    }
+    if (DSD_SYNC_IS_YSF(systype)) {
+        return DSD_FRONTEND_PROTOCOL_YSF;
+    }
+    if (DSD_SYNC_IS_M17(systype)) {
+        return DSD_FRONTEND_PROTOCOL_M17;
+    }
+    if (DSD_SYNC_IS_DSTAR(systype)) {
+        return DSD_FRONTEND_PROTOCOL_DSTAR;
+    }
+    if (DSD_SYNC_IS_DPMR(systype)) {
+        return DSD_FRONTEND_PROTOCOL_DPMR;
+    }
+    if (DSD_SYNC_IS_PROVOICE(systype)) {
+        return DSD_FRONTEND_PROTOCOL_PROVOICE;
+    }
+    if (DSD_SYNC_IS_EDACS_ONLY(systype)) {
+        return DSD_FRONTEND_PROTOCOL_EDACS;
+    }
+    if (DSD_SYNC_IS_X2TDMA(systype)) {
+        return DSD_FRONTEND_PROTOCOL_X2TDMA;
+    }
+    if (systype == DSD_SYNC_ANALOG) {
+        return DSD_FRONTEND_PROTOCOL_ANALOG;
+    }
+    if (systype == DSD_SYNC_DIGITAL) {
+        return DSD_FRONTEND_PROTOCOL_DIGITAL;
+    }
+    return DSD_FRONTEND_PROTOCOL_UNKNOWN;
+}
+
+static int
+frontend_event_has_content(const Event_History* src) {
+    return src != NULL
+           && (src->source_id != 0U || src->target_id != 0U || src->event_string[0] != '\0'
+               || src->internal_str[0] != '\0' || src->text_message[0] != '\0' || src->gps_s[0] != '\0'
+               || src->alias[0] != '\0' || src->src_str[0] != '\0' || src->tgt_str[0] != '\0');
+}
+
+static size_t
+frontend_event_pdu_len(const uint8_t* pdu, size_t cap) {
+    if (!pdu) {
+        return 0;
+    }
+    size_t n = cap;
+    while (n > 0U && pdu[n - 1U] == 0U) {
+        n--;
+    }
+    return n;
+}
+
+static int
+frontend_systype_is_data(int8_t systype) {
+    static const int8_t k_data_systypes[] = {
+        DSD_SYNC_DMR_BS_DATA_POS,
+        DSD_SYNC_DMR_BS_DATA_NEG,
+        DSD_SYNC_DMR_MS_DATA,
+        DSD_SYNC_DMR_RC_DATA,
+    };
+    for (size_t i = 0; i < sizeof k_data_systypes / sizeof k_data_systypes[0]; i++) {
+        if (k_data_systypes[i] == systype) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+frontend_event_is_data(const Event_History* src) {
+    return src != NULL
+           && (src->text_message[0] != '\0' || src->gps_s[0] != '\0'
+               || frontend_event_pdu_len(src->pdu, sizeof src->pdu) > 0U || src->subtype == INT8_MAX
+               || frontend_systype_is_data(src->systype));
+}
+
+static int
+frontend_event_is_voice(const Event_History* src) {
+    return src != NULL
+           && (src->source_id != 0U || src->target_id != 0U || src->src_str[0] != '\0' || src->tgt_str[0] != '\0');
+}
+
+static dsd_frontend_event_category
+frontend_category_from_event(const Event_History* src) {
+    if (!src) {
+        return DSD_FRONTEND_EVENT_CATEGORY_UNKNOWN;
+    }
+    if (frontend_event_is_data(src)) {
+        return DSD_FRONTEND_EVENT_CATEGORY_DATA;
+    }
+    if (frontend_event_is_voice(src)) {
+        return DSD_FRONTEND_EVENT_CATEGORY_VOICE;
+    }
+    if (src->internal_str[0] != '\0') {
+        return DSD_FRONTEND_EVENT_CATEGORY_SYSTEM;
+    }
+    if (src->event_string[0] != '\0') {
+        return DSD_FRONTEND_EVENT_CATEGORY_STATUS;
+    }
+    return DSD_FRONTEND_EVENT_CATEGORY_UNKNOWN;
+}
+
+static dsd_frontend_encryption_state
+frontend_encryption_from_event(const Event_History* src) {
+    if (!src) {
+        return DSD_FRONTEND_ENCRYPTION_UNKNOWN;
+    }
+    return src->enc ? DSD_FRONTEND_ENCRYPTION_ENCRYPTED : DSD_FRONTEND_ENCRYPTION_CLEAR;
+}
+
+static void
 frontend_event_history_item_copy(dsd_frontend_event_history_item* dst, const Event_History* src) {
     if (!dst || !src) {
         return;
     }
-    dst->write = src->write;
-    dst->color_pair = src->color_pair;
-    dst->systype = src->systype;
-    dst->subtype = src->subtype;
-    dst->sys_id1 = src->sys_id1;
-    dst->sys_id2 = src->sys_id2;
-    dst->sys_id3 = src->sys_id3;
-    dst->sys_id4 = src->sys_id4;
-    dst->sys_id5 = src->sys_id5;
-    dst->gi = src->gi;
-    dst->enc = src->enc;
-    dst->enc_alg = src->enc_alg;
-    dst->enc_key = src->enc_key;
-    dst->mi = src->mi;
-    dst->svc = src->svc;
+    dst->present = frontend_event_has_content(src) ? 1U : 0U;
+    dst->write_pending = src->write;
+    dst->severity = frontend_severity_from_core(src->severity);
+    if (dst->severity == DSD_FRONTEND_EVENT_SEVERITY_UNKNOWN) {
+        dst->severity = frontend_severity_from_text(src->internal_str[0] ? src->internal_str : src->event_string);
+    }
+    dst->category = frontend_category_from_core(src->category);
+    if (dst->category == DSD_FRONTEND_EVENT_CATEGORY_UNKNOWN) {
+        dst->category = frontend_category_from_event(src);
+    }
+    dst->protocol = frontend_protocol_from_systype(src->systype);
+    dst->subtype = (int16_t)(int)src->subtype;
+    dst->encryption_state = frontend_encryption_from_event(src);
+    dst->encryption_alg_id = src->enc_alg;
+    dst->encryption_key_id = src->enc_key;
+    dst->encryption_message_indicator = src->mi;
+    dst->service_options = src->svc;
+    dst->group_individual = src->gi;
+    dst->system_id[0] = src->sys_id1;
+    dst->system_id[1] = src->sys_id2;
+    dst->system_id[2] = src->sys_id3;
+    dst->system_id[3] = src->sys_id4;
+    dst->system_id[4] = src->sys_id5;
     dst->source_id = src->source_id;
     dst->target_id = src->target_id;
-    DSD_MEMCPY(dst->src_str, src->src_str, sizeof dst->src_str);
-    DSD_MEMCPY(dst->tgt_str, src->tgt_str, sizeof dst->tgt_str);
-    DSD_MEMCPY(dst->t_name, src->t_name, sizeof dst->t_name);
-    DSD_MEMCPY(dst->s_name, src->s_name, sizeof dst->s_name);
-    DSD_MEMCPY(dst->t_mode, src->t_mode, sizeof dst->t_mode);
-    DSD_MEMCPY(dst->s_mode, src->s_mode, sizeof dst->s_mode);
     dst->channel = src->channel;
-    dst->event_time = (int64_t)src->event_time;
+    dst->timestamp_unix_s = (int64_t)src->event_time;
+    frontend_copy_text(dst->source_text, sizeof dst->source_text, src->src_str);
+    frontend_copy_text(dst->target_text, sizeof dst->target_text, src->tgt_str);
+    frontend_copy_text(dst->source_label, sizeof dst->source_label, src->s_name);
+    frontend_copy_text(dst->target_label, sizeof dst->target_label, src->t_name);
+    frontend_copy_text(dst->source_mode, sizeof dst->source_mode, src->s_mode);
+    frontend_copy_text(dst->target_mode, sizeof dst->target_mode, src->t_mode);
+    frontend_copy_text(dst->system_label, sizeof dst->system_label, src->sysid_string);
     DSD_MEMCPY(dst->pdu, src->pdu, sizeof dst->pdu);
-    DSD_MEMCPY(dst->sysid_string, src->sysid_string, sizeof dst->sysid_string);
-    DSD_MEMCPY(dst->alias, src->alias, sizeof dst->alias);
-    DSD_MEMCPY(dst->gps_s, src->gps_s, sizeof dst->gps_s);
-    DSD_MEMCPY(dst->text_message, src->text_message, sizeof dst->text_message);
-    DSD_MEMCPY(dst->event_string, src->event_string, sizeof dst->event_string);
-    DSD_MEMCPY(dst->internal_str, src->internal_str, sizeof dst->internal_str);
+    dst->pdu_len = frontend_event_pdu_len(src->pdu, sizeof src->pdu);
+    frontend_copy_text(dst->summary_text, sizeof dst->summary_text, src->event_string);
+    frontend_copy_text(dst->detail_text, sizeof dst->detail_text, src->internal_str);
+    frontend_copy_text(dst->gps_text, sizeof dst->gps_text, src->gps_s);
+    frontend_copy_text(dst->text_message, sizeof dst->text_message, src->text_message);
+    frontend_copy_text(dst->alias, sizeof dst->alias, src->alias);
 }
 
 static void
@@ -323,6 +510,7 @@ frontend_snapshot_copy_event_history(dsd_frontend_snapshot* out, const dsd_state
         for (size_t i = 0; i < DSD_FRONTEND_EVENT_HISTORY_ITEMS; i++) {
             frontend_event_history_item_copy(&out->event_history[slot].items[i],
                                              &state->event_history_s[slot].Event_History_Items[i]);
+            out->event_history[slot].items[i].slot = (uint8_t)slot;
         }
     }
 }
@@ -379,7 +567,13 @@ frontend_snapshot_copy_state_scalars(dsd_frontend_snapshot* out, const dsd_state
         return;
     }
     out->has_state = 1;
-    DSD_SNPRINTF(out->ui_message.text, sizeof out->ui_message.text, "%s", state->ui_msg);
+    out->ui_message.present = state->ui_msg[0] != '\0' ? 1U : 0U;
+    out->ui_message.severity = frontend_severity_from_text(state->ui_msg);
+    out->ui_message.category = DSD_FRONTEND_EVENT_CATEGORY_STATUS;
+    DSD_SNPRINTF(out->ui_message.source, sizeof out->ui_message.source, "%s", "decoder");
+    out->ui_message.slot = -1;
+    out->ui_message.created_unix_s = 0;
+    frontend_copy_text(out->ui_message.text, sizeof out->ui_message.text, state->ui_msg);
     out->ui_message.expire_unix_s = (int64_t)state->ui_msg_expire;
     out->input_level = state->input_level;
     out->input_level_last_toast_time = (int64_t)state->input_level_last_toast_time;

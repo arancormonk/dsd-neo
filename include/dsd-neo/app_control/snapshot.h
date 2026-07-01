@@ -30,39 +30,78 @@ enum {
     DSD_FRONTEND_TRUNK_CC_CANDIDATES_MAX = 16,
 };
 
+typedef enum {
+    DSD_FRONTEND_EVENT_SEVERITY_UNKNOWN = 0,
+    DSD_FRONTEND_EVENT_SEVERITY_DEBUG = 1,
+    DSD_FRONTEND_EVENT_SEVERITY_INFO = 2,
+    DSD_FRONTEND_EVENT_SEVERITY_WARNING = 3,
+    DSD_FRONTEND_EVENT_SEVERITY_ERROR = 4
+} dsd_frontend_event_severity;
+
+typedef enum {
+    DSD_FRONTEND_EVENT_CATEGORY_UNKNOWN = 0,
+    DSD_FRONTEND_EVENT_CATEGORY_STATUS = 1,
+    DSD_FRONTEND_EVENT_CATEGORY_VOICE = 2,
+    DSD_FRONTEND_EVENT_CATEGORY_DATA = 3,
+    DSD_FRONTEND_EVENT_CATEGORY_CONTROL = 4,
+    DSD_FRONTEND_EVENT_CATEGORY_SYSTEM = 5
+} dsd_frontend_event_category;
+
+typedef enum {
+    DSD_FRONTEND_PROTOCOL_UNKNOWN = 0,
+    DSD_FRONTEND_PROTOCOL_P25 = 1,
+    DSD_FRONTEND_PROTOCOL_DMR = 2,
+    DSD_FRONTEND_PROTOCOL_NXDN = 3,
+    DSD_FRONTEND_PROTOCOL_YSF = 4,
+    DSD_FRONTEND_PROTOCOL_M17 = 5,
+    DSD_FRONTEND_PROTOCOL_DSTAR = 6,
+    DSD_FRONTEND_PROTOCOL_DPMR = 7,
+    DSD_FRONTEND_PROTOCOL_EDACS = 8,
+    DSD_FRONTEND_PROTOCOL_PROVOICE = 9,
+    DSD_FRONTEND_PROTOCOL_X2TDMA = 10,
+    DSD_FRONTEND_PROTOCOL_ANALOG = 11,
+    DSD_FRONTEND_PROTOCOL_DIGITAL = 12
+} dsd_frontend_protocol;
+
+typedef enum {
+    DSD_FRONTEND_ENCRYPTION_UNKNOWN = 0,
+    DSD_FRONTEND_ENCRYPTION_CLEAR = 1,
+    DSD_FRONTEND_ENCRYPTION_ENCRYPTED = 2
+} dsd_frontend_encryption_state;
+
 typedef struct dsd_frontend_event_history_item {
-    uint8_t write;
-    uint8_t color_pair;
-    int8_t systype;
-    int8_t subtype;
-    uint32_t sys_id1;
-    uint32_t sys_id2;
-    uint32_t sys_id3;
-    uint32_t sys_id4;
-    uint32_t sys_id5;
-    int8_t gi;
-    uint8_t enc;
-    uint8_t enc_alg;
-    uint16_t enc_key;
-    uint64_t mi;
-    uint16_t svc;
+    uint8_t present;
+    uint8_t write_pending;
+    uint8_t slot;
+    dsd_frontend_event_severity severity;
+    dsd_frontend_event_category category;
+    dsd_frontend_protocol protocol;
+    int16_t subtype;
+    dsd_frontend_encryption_state encryption_state;
+    uint8_t encryption_alg_id;
+    uint16_t encryption_key_id;
+    uint64_t encryption_message_indicator;
+    uint16_t service_options;
+    int8_t group_individual;
+    uint32_t system_id[5];
     uint32_t source_id;
     uint32_t target_id;
-    char src_str[DSD_FRONTEND_SHORT_TEXT];
-    char tgt_str[DSD_FRONTEND_SHORT_TEXT];
-    char t_name[DSD_FRONTEND_SHORT_TEXT];
-    char s_name[DSD_FRONTEND_SHORT_TEXT];
-    char t_mode[DSD_FRONTEND_SHORT_TEXT];
-    char s_mode[DSD_FRONTEND_SHORT_TEXT];
     uint32_t channel;
-    int64_t event_time;
+    int64_t timestamp_unix_s;
+    char source_text[DSD_FRONTEND_SHORT_TEXT];
+    char target_text[DSD_FRONTEND_SHORT_TEXT];
+    char source_label[DSD_FRONTEND_SHORT_TEXT];
+    char target_label[DSD_FRONTEND_SHORT_TEXT];
+    char source_mode[DSD_FRONTEND_SHORT_TEXT];
+    char target_mode[DSD_FRONTEND_SHORT_TEXT];
+    char system_label[DSD_FRONTEND_SHORT_TEXT];
     uint8_t pdu[DSD_FRONTEND_EVENT_PDU_BYTES];
-    char sysid_string[DSD_FRONTEND_SHORT_TEXT];
-    char alias[DSD_FRONTEND_LONG_TEXT];
-    char gps_s[DSD_FRONTEND_LONG_TEXT];
+    size_t pdu_len;
+    char summary_text[DSD_FRONTEND_LONG_TEXT];
+    char detail_text[DSD_FRONTEND_LONG_TEXT];
+    char gps_text[DSD_FRONTEND_LONG_TEXT];
     char text_message[DSD_FRONTEND_LONG_TEXT];
-    char event_string[DSD_FRONTEND_LONG_TEXT];
-    char internal_str[DSD_FRONTEND_LONG_TEXT];
+    char alias[DSD_FRONTEND_LONG_TEXT];
 } dsd_frontend_event_history_item;
 
 typedef struct dsd_frontend_event_history_slot {
@@ -89,6 +128,12 @@ typedef struct dsd_frontend_trunk_cc_candidates {
 } dsd_frontend_trunk_cc_candidates;
 
 typedef struct dsd_frontend_ui_message {
+    uint8_t present;
+    dsd_frontend_event_severity severity;
+    dsd_frontend_event_category category;
+    char source[64];
+    int8_t slot;
+    int64_t created_unix_s;
     char text[1024];
     int64_t expire_unix_s;
 } dsd_frontend_ui_message;

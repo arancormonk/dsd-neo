@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -70,6 +71,11 @@ assert_frontend_snapshot_fields(const dsd_frontend_snapshot* snap) {
     assert(snap->status.p2_wacn == 0xbee00ULL);
     assert(snap->status.lasttg == 321U);
     assert(strcmp(snap->ui_message.text, "snapshot ready") == 0);
+    assert(snap->ui_message.present == 1);
+    assert(snap->ui_message.severity == DSD_FRONTEND_EVENT_SEVERITY_INFO);
+    assert(snap->ui_message.category == DSD_FRONTEND_EVENT_CATEGORY_STATUS);
+    assert(strcmp(snap->ui_message.source, "decoder") == 0);
+    assert(snap->ui_message.slot == -1);
     assert(snap->ui_message.expire_unix_s == 4321);
     assert(snap->input_level.status == DSD_INPUT_LEVEL_CLIPPING);
     assert(snap->input_level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
@@ -124,10 +130,18 @@ assert_frontend_snapshot_fields(const dsd_frontend_snapshot* snap) {
     assert(snap->trunk_cc_candidates.used == 3U);
 
     assert(snap->event_history_present == 1);
+    assert(snap->event_history[0].items[1].present == 1);
+    assert(snap->event_history[0].items[1].slot == 0U);
+    assert(snap->event_history[0].items[1].severity == DSD_FRONTEND_EVENT_SEVERITY_WARNING);
+    assert(snap->event_history[0].items[1].category == DSD_FRONTEND_EVENT_CATEGORY_CONTROL);
+    assert(snap->event_history[0].items[1].protocol == DSD_FRONTEND_PROTOCOL_P25);
+    assert(snap->event_history[0].items[1].encryption_state == DSD_FRONTEND_ENCRYPTION_ENCRYPTED);
+    assert(snap->event_history[0].items[1].encryption_alg_id == 0x80U);
+    assert(snap->event_history[0].items[1].encryption_key_id == 0x1234U);
     assert(snap->event_history[0].items[1].source_id == 123U);
     assert(snap->event_history[0].items[1].target_id == 321U);
-    assert(strcmp(snap->event_history[0].items[1].src_str, "RADIO-123") == 0);
-    assert(strcmp(snap->event_history[0].items[1].event_string, "voice grant") == 0);
+    assert(strcmp(snap->event_history[0].items[1].source_text, "RADIO-123") == 0);
+    assert(strcmp(snap->event_history[0].items[1].summary_text, "voice grant") == 0);
     assert(snap->event_history[1].items[1].source_id == 456U);
 }
 
@@ -199,6 +213,12 @@ main(void) {
 
     history[0].Event_History_Items[1].source_id = 123U;
     history[0].Event_History_Items[1].target_id = 321U;
+    history[0].Event_History_Items[1].systype = 0;
+    history[0].Event_History_Items[1].enc = 1;
+    history[0].Event_History_Items[1].enc_alg = 0x80U;
+    history[0].Event_History_Items[1].enc_key = 0x1234U;
+    dsd_event_history_item_set_metadata(&history[0].Event_History_Items[1], DSD_EVENT_SEVERITY_WARNING,
+                                        DSD_EVENT_CATEGORY_CONTROL);
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
                  "RADIO-123");
     DSD_SNPRINTF(history[0].Event_History_Items[1].event_string, sizeof history[0].Event_History_Items[1].event_string,

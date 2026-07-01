@@ -10,6 +10,7 @@
  * without touching CLI or environment precedence.
  */
 
+#include <dsd-neo/app_control/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/config.h>

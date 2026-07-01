@@ -1489,6 +1489,19 @@ ui_history_clamp_line_size(const ui_history_render_ctx* ctx, int prefix_len) {
 }
 
 static void
+ui_history_color_pair_for_event(const Event_History* item) {
+    short color_pair = 4;
+    if (item != NULL) {
+        if (item->severity != DSD_EVENT_SEVERITY_UNKNOWN || item->category != DSD_EVENT_CATEGORY_UNKNOWN) {
+            color_pair = 4;
+        } else if (item->color_pair != 0) {
+            color_pair = (short)item->color_pair;
+        }
+    }
+    attron(COLOR_PAIR(color_pair));
+}
+
+static void
 ui_history_print_event_summary(const Event_History* item, const char* line_prefix, int prefix_len,
                                const ui_history_render_ctx* ctx) {
     uint16_t line_size = ui_history_clamp_line_size(ctx, prefix_len);
@@ -1503,7 +1516,7 @@ ui_history_print_event_summary(const Event_History* item, const char* line_prefi
     DSD_MEMCPY(text_string, compact_string, (size_t)line_size * sizeof(char));
     text_string[line_size] = 0;
     printw("%s", line_prefix);
-    attron(COLOR_PAIR(item->color_pair));
+    ui_history_color_pair_for_event(item);
     printw("%s\n", text_string);
     attron(COLOR_PAIR(4));
 }
