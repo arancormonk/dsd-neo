@@ -81,9 +81,9 @@ header rather than UI headers directly.
 - `dsd_telemetry_request_redraw()` — request frontend refresh
 - `dsd_telemetry_publish_both_and_redraw(opts, state)` — convenience combo
 
-**Hook registration pattern:** Runtime owns a thread-safe hook table (`src/runtime/telemetry_hooks.c`). The terminal
-UI installs its callbacks at startup (`src/ui/terminal/telemetry_hooks_install.c`), and headless/test builds simply run
-with the default no-callback state.
+**Hook registration pattern:** Runtime owns a thread-safe hook table (`src/runtime/telemetry_hooks.c`). App-control
+installs frontend callbacks at startup (`src/app_control/telemetry_hooks_install.c`), and headless/test builds simply
+run with the default no-callback state.
 
 **Dependency direction:** DSP/Protocol → Runtime (hooks) ← UI (implementations). This keeps DSP UI-agnostic while
 allowing state propagation.

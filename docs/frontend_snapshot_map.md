@@ -6,6 +6,15 @@
 `dsd_frontend_snapshot`, `dsd_frontend_status`, `dsd_frontend_metrics`, and the paged event-history APIs instead of
 reaching into live `dsd_opts`, live `dsd_state`, or terminal UI helpers.
 
+## Native UI Integration Gate
+
+- Runtime control pumping must remain thread-safe because native frontends can own the main thread while the engine runs
+  on a worker thread.
+- Native UI code must use app-control snapshots, status, metrics, event-history pages, command descriptors, and tracked
+  command results. Missing state should be promoted into app-control instead of read from backend structs.
+- Native UI code must not include terminal-private headers or depend on curses, IO, DSP, protocol, live `dsd_opts`, or
+  live `dsd_state` details.
+
 ## Status
 
 - `status.frontend_kind`: copied from the active `dsd_opts.frontend_kind`.
