@@ -139,6 +139,21 @@ test_status_copies_opts_and_state(void) {
 }
 
 static void
+test_status_treats_invalid_rigctl_socket_as_disconnected(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_frontend_status status;
+    fill_frontend_inputs(&opts, &state);
+    opts.use_rigctl = 1;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+
+    dsd_app_frontend_status_from_opts_state(&opts, &state, &status);
+
+    assert(status.use_rigctl == 1);
+    assert(status.rigctl_connected == 0);
+}
+
+static void
 test_status_reads_latest_snapshots(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -323,6 +338,7 @@ test_metrics_fallback_and_runtime_hooks(void) {
 int
 main(void) {
     test_status_copies_opts_and_state();
+    test_status_treats_invalid_rigctl_socket_as_disconnected();
     test_status_reads_latest_snapshots();
     test_metrics_fallback_and_runtime_hooks();
     printf("UI_FRONTEND_STATUS_METRICS: OK\n");

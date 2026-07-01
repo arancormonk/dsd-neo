@@ -28,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "services.h"
 
@@ -203,7 +204,7 @@ svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
     DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", host);
     opts->rigctlportno = port;
     opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
-    if (opts->rigctl_sockfd != 0) {
+    if (opts->rigctl_sockfd != DSD_INVALID_SOCKET) {
         opts->use_rigctl = 1;
         return 0;
     }

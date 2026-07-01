@@ -12,6 +12,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 #include "frontend_internal.h"
 #include "snapshot_internal.h"
 
@@ -111,7 +112,7 @@ static void
 frontend_status_copy_connection_opts(dsd_frontend_status* out, const dsd_opts* opts) {
     out->tcp_audio_connected = (opts->audio_in_type == AUDIO_IN_TCP && opts->tcp_in_ctx != NULL) ? 1 : 0;
     out->udp_input_active = (opts->audio_in_type == AUDIO_IN_UDP && opts->udp_in_ctx != NULL) ? 1 : 0;
-    out->rigctl_connected = (opts->use_rigctl && opts->rigctl_sockfd != 0) ? 1 : 0;
+    out->rigctl_connected = (opts->use_rigctl && opts->rigctl_sockfd != DSD_INVALID_SOCKET) ? 1 : 0;
     out->rtl_input_active = (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_started) ? 1 : 0;
 }
 

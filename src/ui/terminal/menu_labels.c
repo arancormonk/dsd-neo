@@ -20,6 +20,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "menu_env.h"
 #include "menu_internal.h"
@@ -433,7 +434,7 @@ lbl_tcp(const void* vctx, char* b, size_t n) {
 const char*
 lbl_rigctl(const void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
-    int connected = (c->opts->use_rigctl && c->opts->rigctl_sockfd != 0);
+    int connected = (c->opts->use_rigctl && c->opts->rigctl_sockfd != DSD_INVALID_SOCKET);
     if (c->opts->rigctlhostname[0] != '\0' && c->opts->rigctlportno > 0) {
         int m = (n > 24) ? (int)(n - 24) : 0;
         if (connected) {

@@ -20,6 +20,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_labels.h"
@@ -261,7 +262,7 @@ test_io_and_capture_labels(void) {
     DSD_SNPRINTF(opts.rigctlhostname, sizeof(opts.rigctlhostname), "%s", "rig.local");
     opts.rigctlportno = 4532;
     rc |= expect_str("rigctl active", lbl_rigctl(&ctx, b, sizeof(b)), "Rigctl: rig.local:4532 [Active]");
-    opts.rigctl_sockfd = 0;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
     rc |= expect_str("rigctl inactive", lbl_rigctl(&ctx, b, sizeof(b)), "Rigctl: rig.local:4532 [Inactive]");
 
     opts.symbol_out_f = (FILE*)0x1;

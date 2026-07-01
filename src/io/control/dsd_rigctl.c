@@ -99,7 +99,7 @@ parse_double_strict(const char* input, double* out) {
  *
  * @param hostname Target host (IPv4/hostname).
  * @param portno Target port number.
- * @return Socket FD on success; 0 on resolution/connection failure.
+ * @return Socket FD on success; DSD_INVALID_SOCKET on resolution/connection failure.
  */
 dsd_socket_t
 Connect(char* hostname, int portno) {

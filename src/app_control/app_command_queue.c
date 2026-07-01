@@ -55,6 +55,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "services.h"
 
@@ -3168,7 +3169,7 @@ apply_cmd_legacy_trunk_controls(dsd_opts* opts, dsd_state* state, const struct d
         case DSD_APP_CMD_RIGCTL_CONNECT:
             DSD_MEMCPY(opts->rigctlhostname, opts->tcp_hostname, sizeof(opts->rigctlhostname));
             opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
-            opts->use_rigctl = (opts->rigctl_sockfd != 0) ? 1 : 0;
+            opts->use_rigctl = (opts->rigctl_sockfd != DSD_INVALID_SOCKET) ? 1 : 0;
             if (opts->use_rigctl) {
                 ui_set_toast(state, 3, "Rigctl connected: %s:%d", opts->rigctlhostname, opts->rigctlportno);
             } else {

@@ -199,7 +199,7 @@ dsd_socket_t
 Connect(char* hostname, int portno) {
     (void)hostname;
     (void)portno;
-    return 0;
+    return DSD_INVALID_SOCKET;
 }
 
 int
@@ -646,6 +646,7 @@ test_file_network_and_import_failure_contracts(void) {
     rc |= expect_int("rigctl connect failure", svc_rigctl_connect(&opts, "rig.local", 4532), -1);
     rc |= expect_str("rigctl host stored before connect", opts.rigctlhostname, "rig.local");
     rc |= expect_int("rigctl port stored before connect", opts.rigctlportno, 4532);
+    rc |= expect_int("rigctl socket invalid after connect failure", opts.rigctl_sockfd, DSD_INVALID_SOCKET);
     rc |= expect_int("rigctl disabled after connect failure", opts.use_rigctl, 0);
 
     rc |= expect_int("channel import failure", svc_import_channel_map(&opts, &state, "channels.csv"), -1);
