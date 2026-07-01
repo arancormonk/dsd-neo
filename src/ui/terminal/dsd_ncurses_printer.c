@@ -31,7 +31,6 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -148,7 +147,7 @@ ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
 #ifdef USE_RADIO
     if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
         dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(opts, state, &metrics);
+        (void)dsd_app_frontend_get_metrics(&metrics);
         /* RTL direct symbol paths feed one decoded symbol per sample; report the configured profile rate. */
         if ((metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_SYMBOL_CQPSK
              || metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_FSK_DISCRIMINATOR)
@@ -311,7 +310,7 @@ ui_print_rtl_gain_field(dsd_opts* opts) {
     /* Show applied tuner gain when available (actual driver value),
        otherwise fall back to requested value. */
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(opts, NULL, &metrics);
+    (void)dsd_app_frontend_get_metrics(&metrics);
     if (metrics.tuner_gain_valid) {
         if (metrics.tuner_gain_is_auto) {
             printw(" G: AGC;");
@@ -332,7 +331,8 @@ ui_print_rtl_gain_field(dsd_opts* opts) {
 
 static void
 ui_print_rtl_ppm_field(const dsd_opts* opts) {
-    int requested_ppm = dsd_app_frontend_requested_ppm(opts);
+    (void)opts;
+    int requested_ppm = dsd_app_frontend_requested_ppm();
     printw(" PPM: %i;", requested_ppm); //Adjust manually now with { and }
 }
 
@@ -358,7 +358,7 @@ ui_print_rtl_auto_ppm_status(void) {
 #else
     /* Show carrier/error-based auto PPM status snapshot */
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(NULL, NULL, &metrics);
+    (void)dsd_app_frontend_get_metrics(&metrics);
     ui_print_rtl_auto_ppm_status_values(metrics.auto_ppm_enabled, metrics.auto_ppm_locked, metrics.auto_ppm_locked_ppm,
                                         metrics.auto_ppm_snr_db, metrics.auto_ppm_df_hz, metrics.auto_ppm_step_dir);
 #endif
@@ -389,7 +389,7 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         }
         printw("\n");
         /* Show compact DSP status directly above audio sections (optional) */
-        if (opts->show_dsp_panel) {
+        if (opts->frontend_display.show_dsp_panel) {
             print_dsp_status(opts, state);
         }
         /* Signal quality is shown inline above; no duplicate line here. */
@@ -897,20 +897,20 @@ ui_render_input_output_section(dsd_opts* opts, dsd_state* state) {
 static void
 ui_print_rtl_visual_aids_controls(dsd_opts* opts, int nfft) {
     /* Controls/status line: only show controls relevant to active views */
-    printw("| Const View:  %s (%c)", opts->constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
-    if (opts->constellation == 1) {
+    printw("| Const View:  %s (%c)", opts->frontend_display.constellation ? "On" : "Off", DSD_KEY_CONST_VIEW_UPPER);
+    if (opts->frontend_display.constellation == 1) {
         printw("  Gate: %.02f (</>)  Norm: %s (%c)",
-               (opts->mod_qpsk == 1) ? opts->const_gate_qpsk : opts->const_gate_other,
-               opts->const_norm_mode ? "unit" : "radial", DSD_KEY_CONST_NORM);
+               (opts->mod_qpsk == 1) ? opts->frontend_display.const_gate_qpsk : opts->frontend_display.const_gate_other,
+               opts->frontend_display.const_norm_mode ? "unit" : "radial", DSD_KEY_CONST_NORM);
     }
-    printw("  Eye: %s (%c)", opts->eye_view ? "On" : "Off", DSD_KEY_EYE_VIEW);
-    if (opts->eye_view == 1) {
-        printw("  Uni: %s (%c) Col: %s (%c)", opts->eye_unicode ? "On" : "off", DSD_KEY_EYE_UNICODE,
-               opts->eye_color ? "On" : "Off", DSD_KEY_EYE_COLOR);
+    printw("  Eye: %s (%c)", opts->frontend_display.eye_view ? "On" : "Off", DSD_KEY_EYE_VIEW);
+    if (opts->frontend_display.eye_view == 1) {
+        printw("  Uni: %s (%c) Col: %s (%c)", opts->frontend_display.eye_unicode ? "On" : "off", DSD_KEY_EYE_UNICODE,
+               opts->frontend_display.eye_color ? "On" : "Off", DSD_KEY_EYE_COLOR);
     }
-    printw("  Hist: %s (%c)", opts->fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
-    printw("  Spec: %s (%c)", opts->spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
-    if (opts->spectrum_view == 1) {
+    printw("  Hist: %s (%c)", opts->frontend_display.fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
+    printw("  Spec: %s (%c)", opts->frontend_display.spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
+    if (opts->frontend_display.spectrum_view == 1) {
         printw("  FFT:%d (%c/%c)", nfft, DSD_KEY_SPEC_DEC, DSD_KEY_SPEC_INC);
     }
     addch('\n');
@@ -919,16 +919,16 @@ ui_print_rtl_visual_aids_controls(dsd_opts* opts, int nfft) {
 
 static void
 ui_render_rtl_visual_aid_panels(dsd_opts* opts, dsd_state* state) {
-    if (opts->constellation == 1) {
+    if (opts->frontend_display.constellation == 1) {
         print_constellation_view(opts, state);
     }
-    if (opts->eye_view == 1) {
+    if (opts->frontend_display.eye_view == 1) {
         print_eye_view(opts, state);
     }
-    if (opts->fsk_hist_view == 1) {
+    if (opts->frontend_display.fsk_hist_view == 1) {
         print_fsk_hist_view();
     }
-    if (opts->spectrum_view == 1) {
+    if (opts->frontend_display.spectrum_view == 1) {
         print_spectrum_view(opts);
     }
 }
@@ -1212,22 +1212,22 @@ ui_render_p25_metric_toggles(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
 
-    if (opts->show_p25_metrics == 1) {
+    if (opts->frontend_display.show_p25_metrics == 1) {
         ui_print_header("P25 Metrics");
         (void)ui_print_p25_metrics(opts, state);
         ui_print_hr();
     }
-    if (opts->show_p25_cc_candidates == 1 && opts->p25_trunk == 1) {
+    if (opts->frontend_display.show_p25_cc_candidates == 1 && opts->p25_trunk == 1) {
         ui_print_header("P25 CC Candidates");
         ui_print_p25_cc_candidates(opts, state);
         ui_print_hr();
     }
-    if (opts->show_p25_neighbors == 1) {
+    if (opts->frontend_display.show_p25_neighbors == 1) {
         ui_print_header("P25 Neighbors");
         ui_print_p25_neighbors(opts, state);
         ui_print_hr();
     }
-    if (opts->show_p25_iden_plan == 1) {
+    if (opts->frontend_display.show_p25_iden_plan == 1) {
         ui_print_header("P25 IDEN Plan");
         ui_print_p25_iden_plan(opts, state);
         ui_print_hr();
@@ -1238,7 +1238,7 @@ static void
 ui_render_p25_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
     int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
     int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
-    if (!(opts->show_p25_affiliations == 1 && (is_p25p1 || is_p25p2))) {
+    if (!(opts->frontend_display.show_p25_affiliations == 1 && (is_p25p1 || is_p25p2))) {
         return;
     }
 
@@ -1287,7 +1287,7 @@ static void
 ui_render_p25_group_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
     int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
     int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
-    if (!(opts->show_p25_group_affiliations == 1 && (is_p25p1 || is_p25p2))) {
+    if (!(opts->frontend_display.show_p25_group_affiliations == 1 && (is_p25p1 || is_p25p2))) {
         return;
     }
 
@@ -1488,6 +1488,19 @@ ui_history_clamp_line_size(const ui_history_render_ctx* ctx, int prefix_len) {
 }
 
 static void
+ui_history_color_pair_for_event(const Event_History* item) {
+    short color_pair = 4;
+    if (item != NULL) {
+        if (item->severity != DSD_EVENT_SEVERITY_UNKNOWN || item->category != DSD_EVENT_CATEGORY_UNKNOWN) {
+            color_pair = 4;
+        } else if (item->color_pair != 0) {
+            color_pair = (short)item->color_pair;
+        }
+    }
+    attron(COLOR_PAIR(color_pair));
+}
+
+static void
 ui_history_print_event_summary(const Event_History* item, const char* line_prefix, int prefix_len,
                                const ui_history_render_ctx* ctx) {
     uint16_t line_size = ui_history_clamp_line_size(ctx, prefix_len);
@@ -1498,11 +1511,20 @@ ui_history_print_event_summary(const Event_History* item, const char* line_prefi
 
     char compact_string[2000];
     char text_string[2000];
-    ui_history_compact_event_text(compact_string, sizeof compact_string, item->event_string, ctx->history_mode);
-    DSD_MEMCPY(text_string, compact_string, (size_t)line_size * sizeof(char));
-    text_string[line_size] = 0;
+    dsd_app_frontend_history_compact_event_text(compact_string, sizeof compact_string, item->event_string,
+                                                ctx->history_mode);
+    size_t text_size = (size_t)line_size;
+    if (text_size >= sizeof text_string) {
+        text_size = sizeof text_string - 1U;
+    }
+    size_t compact_size = strnlen(compact_string, sizeof compact_string);
+    if (text_size > compact_size) {
+        text_size = compact_size;
+    }
+    DSD_MEMCPY(text_string, compact_string, text_size);
+    text_string[text_size] = '\0';
     printw("%s", line_prefix);
-    attron(COLOR_PAIR(item->color_pair));
+    ui_history_color_pair_for_event(item);
     printw("%s\n", text_string);
     attron(COLOR_PAIR(4));
 }
@@ -1617,7 +1639,7 @@ ui_history_collect_slot_items(const dsd_state* state, uint8_t slot, ui_history_i
         }
         refs[count].slot = slot;
         refs[count].idx = idx;
-        refs[count].sort_time = ui_history_event_sort_time(item->event_string, item->event_time);
+        refs[count].sort_time = dsd_app_frontend_history_event_sort_time(item->event_string, item->event_time);
         count++;
     }
     return count;
@@ -1672,7 +1694,7 @@ ui_history_render_sorted_slot_items(const dsd_state* state, const ui_history_ren
 
 static void
 ui_render_event_history_section(const dsd_state* state) {
-    const int history_mode = ui_history_get_mode();
+    const int history_mode = dsd_app_frontend_history_get_mode();
     int history_draw_footer = 1;
     attron(COLOR_PAIR(4));
     ui_history_render_header(state, history_mode);
@@ -2493,11 +2515,11 @@ ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
 static void
 ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
     char callsign[7] = {0};
-    if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+    if (opts->frontend_display.show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
         p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
     }
     printw("P25p1  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-    if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
+    if (opts->frontend_display.show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
         printw(" [%s]", callsign);
     }
     printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
@@ -2531,11 +2553,11 @@ ui_render_p25p2_parameter_status(const dsd_state* state) {
 static void
 ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
     char callsign[7] = {0};
-    if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+    if (opts->frontend_display.show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
         p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
     }
     printw("P25p2  - WACN: %05llX SYS: %03llX NAC: %03llX", state->p2_wacn, state->p2_sysid, state->p2_cc);
-    if (opts->show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
+    if (opts->frontend_display.show_p25_callsign_decode && callsign[0] != '\0' && callsign[0] != ' ') {
         printw(" [%s]", callsign);
     }
     printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
@@ -2892,7 +2914,7 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
 
     // Render learned LCNs just under the Call Info section when trunking (toggle in menu)
-    if (opts->show_channels == 1) {
+    if (opts->frontend_display.show_channels == 1) {
         ui_print_learned_lcns(opts, state);
         // fence bottom only when Channels are shown
         ui_print_hr();
@@ -2910,11 +2932,9 @@ ui_ncurses_printer_impl(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return;
     }
-    /* Demod path must not touch ncurses. Allow calls only from the UI thread
-       context; otherwise publish snapshots and request a redraw. */
+    /* Demod path must not touch ncurses. Telemetry is published through
+       runtime/app-control hooks, so non-UI-thread calls are render no-ops. */
     if (!ui_is_thread_context()) {
-        // Publish snapshots for the UI thread to consume and request a redraw
-        ui_publish_both_and_redraw(opts, state);
         return;
     }
     int level = 0;

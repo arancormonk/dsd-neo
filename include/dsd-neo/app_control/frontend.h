@@ -14,9 +14,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/input_level.h>
-#include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 #include "dsd-neo/platform/platform.h"
 
@@ -26,8 +25,8 @@ extern "C" {
 
 typedef struct dsd_frontend_status {
     dsd_frontend_kind frontend_kind;
-    uint8_t terminal_compact;
-    uint8_t terminal_history;
+    dsd_frontend_common_display_opts display;
+    dsd_frontend_terminal_display_opts terminal_display;
 
     int audio_in_type;
     int audio_out_type;
@@ -48,6 +47,33 @@ typedef struct dsd_frontend_status {
 
     int config_autosave_enabled;
     char config_autosave_path[2048];
+
+    int payload_logging;
+    int event_log_enabled;
+    char event_log_path[1024];
+    int per_call_wav_enabled;
+    int per_call_wav_active;
+    int static_wav_enabled;
+    int static_wav_active;
+    char wav_out_dir[512];
+    char wav_out_file[1024];
+    char wav_out_file_raw[1024];
+    int symbol_capture_active;
+    int symbol_playback_active;
+    char symbol_out_file[1024];
+    int tcp_audio_connected;
+    int udp_input_active;
+    int rigctl_connected;
+    int rtl_input_active;
+    int trunk_use_allow_list;
+    int trunk_tune_group_calls;
+    int trunk_tune_private_calls;
+    int trunk_tune_data_calls;
+    int trunk_tune_enc_calls;
+    int p25_lcw_retune;
+    int p25_prefer_candidates;
+    int call_alert;
+    uint8_t call_alert_events;
 
     uint64_t p2_wacn;
     uint64_t p2_sysid;
@@ -160,11 +186,9 @@ enum {
         DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE | DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE | DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST
 };
 
-void dsd_app_frontend_status_from_opts_state(const dsd_opts* opts, const dsd_state* state, dsd_frontend_status* out);
 int dsd_app_frontend_get_status(dsd_frontend_status* out);
-int dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out);
-int dsd_app_frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state,
-                                                    dsd_frontend_metrics* out, unsigned int snr_fallbacks);
+int dsd_app_frontend_get_metrics(dsd_frontend_metrics* out);
+int dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks);
 
 int dsd_app_frontend_constellation_get(float* out_xy, int max_points);
 int dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps);
@@ -172,10 +196,10 @@ int dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate);
 int dsd_app_frontend_spectrum_get_size(void);
 int dsd_app_frontend_spectrum_set_size(int n);
 
-int dsd_app_frontend_requested_ppm(const dsd_opts* opts);
+int dsd_app_frontend_requested_ppm(void);
 float dsd_app_frontend_ted_gain(void);
-int dsd_app_frontend_auto_ppm_enabled(const dsd_state* state, int configured);
-int dsd_app_frontend_tuner_autogain_enabled(const dsd_state* state, int configured);
+int dsd_app_frontend_auto_ppm_enabled(int configured);
+int dsd_app_frontend_tuner_autogain_enabled(int configured);
 
 #ifdef __cplusplus
 }

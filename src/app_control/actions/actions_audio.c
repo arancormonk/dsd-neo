@@ -5,19 +5,19 @@
 
 /* UI command actions — audio domain */
 
-#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 #include <time.h>
+#include "../command_dispatch.h"
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
-ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     opts->audio_out = (opts->audio_out == 0) ? 1 : 0;
     const char* msg = (opts->audio_out == 0) ? "Output: Muted" : "Output: On";
@@ -57,7 +57,7 @@ apply_gain_delta(dsd_opts* opts, dsd_state* state, int d) {
 }
 
 static int
-ui_handle_gain_delta(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_gain_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int delta = 0;
     if (c->n >= (int)sizeof(int32_t)) {
         int32_t d = 0;
@@ -69,7 +69,7 @@ ui_handle_gain_delta(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-ui_handle_again_delta(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_again_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     int32_t d = 0;
     if (c->n >= (int)sizeof(int32_t)) {
@@ -87,7 +87,7 @@ ui_handle_again_delta(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-ui_handle_gain_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_gain_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t g = 0;
     if (c->n >= (int)sizeof(int32_t)) {
         DSD_MEMCPY(&g, c->data, sizeof g);
@@ -110,7 +110,7 @@ ui_handle_gain_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-ui_handle_again_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_again_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     int32_t g = 0;
     if (c->n >= (int)sizeof(int32_t)) {
@@ -127,7 +127,7 @@ ui_handle_again_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-ui_handle_input_warn_db_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_input_warn_db_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     double v = 0.0;
     if (c->n >= (int)sizeof(double)) {
@@ -144,7 +144,7 @@ ui_handle_input_warn_db_set(dsd_opts* opts, dsd_state* state, const struct UiCmd
 }
 
 static int
-ui_handle_input_monitor_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_input_monitor_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->monitor_input_audio = opts->monitor_input_audio ? 0 : 1;
@@ -152,7 +152,7 @@ ui_handle_input_monitor_toggle(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-ui_handle_cosine_filter_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_cosine_filter_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->use_cosine_filter = opts->use_cosine_filter ? 0 : 1;
@@ -160,7 +160,7 @@ ui_handle_cosine_filter_toggle(dsd_opts* opts, dsd_state* state, const struct Ui
 }
 
 static int
-ui_handle_input_vol_cycle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_input_vol_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (opts->rtl_volume_multiplier == 1 || opts->rtl_volume_multiplier == 2) {
@@ -187,7 +187,7 @@ ui_handle_input_vol_cycle(dsd_opts* opts, dsd_state* state, const struct UiCmd* 
 }
 
 static int
-ui_handle_input_vol_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_input_vol_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     if (opts && c->n >= (int)sizeof(int32_t)) {
         int32_t v = 1;
@@ -204,16 +204,16 @@ ui_handle_input_vol_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
 }
 
 // Public registry
-const struct UiCmdReg ui_actions_audio[] = {
-    {UI_CMD_TOGGLE_MUTE, ui_handle_toggle_mute},
-    {UI_CMD_GAIN_DELTA, ui_handle_gain_delta},
-    {UI_CMD_AGAIN_DELTA, ui_handle_again_delta},
-    {UI_CMD_GAIN_SET, ui_handle_gain_set},
-    {UI_CMD_AGAIN_SET, ui_handle_again_set},
-    {UI_CMD_INPUT_WARN_DB_SET, ui_handle_input_warn_db_set},
-    {UI_CMD_INPUT_MONITOR_TOGGLE, ui_handle_input_monitor_toggle},
-    {UI_CMD_COSINE_FILTER_TOGGLE, ui_handle_cosine_filter_toggle},
-    {UI_CMD_INPUT_VOL_CYCLE, ui_handle_input_vol_cycle},
-    {UI_CMD_INPUT_VOL_SET, ui_handle_input_vol_set},
+const struct dsd_app_command_reg dsd_app_actions_audio[] = {
+    {DSD_APP_CMD_TOGGLE_MUTE, ui_handle_toggle_mute},
+    {DSD_APP_CMD_GAIN_DELTA, ui_handle_gain_delta},
+    {DSD_APP_CMD_AGAIN_DELTA, ui_handle_again_delta},
+    {DSD_APP_CMD_GAIN_SET, ui_handle_gain_set},
+    {DSD_APP_CMD_AGAIN_SET, ui_handle_again_set},
+    {DSD_APP_CMD_INPUT_WARN_DB_SET, ui_handle_input_warn_db_set},
+    {DSD_APP_CMD_INPUT_MONITOR_TOGGLE, ui_handle_input_monitor_toggle},
+    {DSD_APP_CMD_COSINE_FILTER_TOGGLE, ui_handle_cosine_filter_toggle},
+    {DSD_APP_CMD_INPUT_VOL_CYCLE, ui_handle_input_vol_cycle},
+    {DSD_APP_CMD_INPUT_VOL_SET, ui_handle_input_vol_set},
     {0, NULL},
 };

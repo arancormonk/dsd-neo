@@ -6,6 +6,7 @@ target_sources(
         dsd_ncurses_handler.c
         dsd_ncurses_menu.c
         dsd_ncurses_printer.c
+        frontend_provider.c
         ncurses_utils.c
         ncurses_snr.c
         ui_snr_readout.c
@@ -33,7 +34,10 @@ target_sources(
 target_include_directories(
     dsd-neo_ui_terminal
     PUBLIC ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
-    PRIVATE ${_PUBLIC_INCLUDES} ${CMAKE_CURRENT_SOURCE_DIR}
+    PRIVATE
+        ${_PUBLIC_INCLUDES}
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${PROJECT_SOURCE_DIR}/src/app_control
 )
 
 target_link_libraries(

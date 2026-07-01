@@ -398,7 +398,7 @@ print_snr_sparkline(const dsd_opts* opts, int mod) {
     /* Make the lowest ASCII level visible (no leading space) */
     static const char ascii8[] = ".:;-=+*#"; /* 8 levels */
     /* Respect the UI toggle and require renderable block glyphs, not just UTF-8 bytes. */
-    int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_block_glyphs_supported());
+    int use_unicode = SNR_USE_UNICODE(opts && opts->frontend_display.eye_unicode, ui_block_glyphs_supported());
     const int levels = SNR_BLOCK_LEVELS;
     const int W = 24;                             /* sparkline width */
     const double clip_lo = -15.0, clip_hi = 30.0; /* dB window (allow negatives) */
@@ -435,7 +435,7 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
     snr_emit_attr_get(&saved_attrs, &saved_pair);
 #endif
     const int bars = snr_meter_bar_count(snr_db);
-    int use_unicode = SNR_USE_UNICODE(opts && opts->eye_unicode, ui_block_glyphs_supported());
+    int use_unicode = SNR_USE_UNICODE(opts && opts->frontend_display.eye_unicode, ui_block_glyphs_supported());
 #ifdef PRETTY_COLORS
     short cp = SNR_METER_COLOR_PAIR;
 #endif

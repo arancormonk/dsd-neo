@@ -1955,7 +1955,7 @@ p25p2_vpdu_iter_block_18(p25p2_vpdu_ctx* ctx) {
             DSD_FPRINTF(stderr, " %02llX", MAC[bi + len_a]);
         }
         // Show computed callsign from current WACN/SysID if available
-        if (opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+        if (opts->frontend_display.show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
             char callsign[7];
             p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
             DSD_FPRINTF(stderr, " [%s]", callsign);

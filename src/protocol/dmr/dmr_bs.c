@@ -670,7 +670,6 @@ handle_dmr_bs_reverse_channel_testing(dsd_opts* opts, dsd_state* state, dmr_bs_c
     beeper(opts, state, ctx->internalslot, 40, 86, 3);
     beeper(opts, state, ctx->internalslot, 80, 86, 3);
 
-    state->event_history_s[0].Event_History_Items[ctx->internalslot].color_pair = 4;
     watchdog_event_datacall(opts, state, 0, 0, "DMR Reverse Channel P/PI Indicator On (FEC Okay);", ctx->internalslot);
     push_event_history(&state->event_history_s[ctx->internalslot]);
     init_event_history(&state->event_history_s[ctx->internalslot], 0, 1);
@@ -703,7 +702,7 @@ run_dmr_bs_post_skip(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     }
 
     if (dsd_opts_frontend_active(opts)) {
-        ui_publish_both_and_redraw(opts, state);
+        dsd_telemetry_publish_both_and_redraw(opts, state);
     }
 
     watchdog_event_history(opts, state, 0);

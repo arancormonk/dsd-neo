@@ -155,8 +155,8 @@ dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PD
         DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
                      sizeof(state->event_history_s[slot].Event_History_Items[0].gps_s), "%s",
                      state->dmr_lrrp_gps[slot]);
-        state->event_history_s[slot].Event_History_Items[0].color_pair =
-            4; //Remus, add this line to a decode to change its line color
+        dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
+                                            DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
     } else {
         if (len >= (127 * 18)) {
             len = 127 * 18; //sanity check of sorts, prevent extra long line print outs in the console
@@ -523,13 +523,15 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
         case 4001:
             DSD_FPRINTF(stderr, "LRRP;");
             dmr_lrrp(opts, state, payload_len, src24, dst24, payload, 1);
-            state->event_history_s[slot].Event_History_Items[0].color_pair = 4;
+            dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
+                                                DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
             return 1;
         case 4004:
             DSD_FPRINTF(stderr, "XCMP;");
             DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "XCMP SRC: %d; DST: %d;", src24,
                          dst24);
-            state->event_history_s[slot].Event_History_Items[0].color_pair = 4;
+            dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
+                                                DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
             return 1;
         case 4005: {
             DSD_FPRINTF(stderr, "ARS;");

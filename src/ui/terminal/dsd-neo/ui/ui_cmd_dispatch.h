@@ -11,6 +11,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_CMD_DISPATCH_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_CMD_DISPATCH_H_
 
-#include "dsd-neo/app_control/command_dispatch.h" // IWYU pragma: export
+#include "command_dispatch.h" // IWYU pragma: export
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_UI_CMD_DISPATCH_H_ */

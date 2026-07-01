@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "dmr_confidence.h"
+#include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -273,7 +274,7 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
+dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
     g_ui_redraw_calls++;

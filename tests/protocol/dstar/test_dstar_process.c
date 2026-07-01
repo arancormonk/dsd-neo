@@ -3,6 +3,7 @@
  * Focused checks for D-STAR voice/header processing loop boundaries.
  */
 
+#include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -98,7 +99,7 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
 }
 
 void
-ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
+dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
     ui_calls++;

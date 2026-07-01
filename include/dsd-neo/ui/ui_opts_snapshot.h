@@ -5,22 +5,11 @@
 
 /**
  * @file
- * @brief Compatibility wrapper for app-control options snapshots.
+ * @brief Compatibility wrapper for app-control frontend snapshots.
  */
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_UI_OPTS_SNAPSHOT_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_UI_UI_OPTS_SNAPSHOT_H_
 
 #include "dsd-neo/app_control/snapshot.h" // IWYU pragma: export
-#include "dsd-neo/core/opts_fwd.h"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-const dsd_opts* ui_get_latest_opts_snapshot(void);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_UI_OPTS_SNAPSHOT_H_ */

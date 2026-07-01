@@ -10,6 +10,7 @@
  * without touching CLI or environment precedence.
  */
 
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/config.h>
@@ -653,6 +654,53 @@ test_load_legacy_ncurses_ui_alias(void) {
         rc |= 1;
     }
     (void)remove(false_path);
+    return rc;
+}
+
+static int
+test_load_apply_and_snapshot_native_frontend(void) {
+    static const char* ini = "version = 1\n"
+                             "\n"
+                             "[output]\n"
+                             "frontend = \"native\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for native frontend config %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    int rc = 0;
+    if (!cfg.has_output || !cfg.frontend_kind_is_set || cfg.frontend_kind != DSD_FRONTEND_NATIVE) {
+        DSD_FPRINTF(stderr, "native frontend config not parsed, has=%d set=%d kind=%d\n", cfg.has_output,
+                    cfg.frontend_kind_is_set, (int)cfg.frontend_kind);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.frontend_kind != DSD_FRONTEND_NATIVE) {
+        DSD_FPRINTF(stderr, "native frontend config not applied, kind=%d\n", (int)opts.frontend_kind);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.frontend_kind_is_set || snap.frontend_kind != DSD_FRONTEND_NATIVE) {
+        DSD_FPRINTF(stderr, "native frontend snapshot mismatch, set=%d kind=%d\n", snap.frontend_kind_is_set,
+                    (int)snap.frontend_kind);
+        rc |= 1;
+    }
+
+    (void)remove(path);
     return rc;
 }
 
@@ -1580,6 +1628,7 @@ main(void) {
     rc |= test_render_input_variants_and_save_atomic();
     rc |= test_load_and_apply_basic();
     rc |= test_load_legacy_ncurses_ui_alias();
+    rc |= test_load_apply_and_snapshot_native_frontend();
     rc |= test_load_and_apply_alerts_empty_event_mask();
     rc |= test_load_and_apply_soapy_input_no_args();
     rc |= test_load_and_apply_soapy_input_with_args();

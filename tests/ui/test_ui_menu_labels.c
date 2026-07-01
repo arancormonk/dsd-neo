@@ -20,6 +20,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_labels.h"
@@ -261,7 +262,7 @@ test_io_and_capture_labels(void) {
     DSD_SNPRINTF(opts.rigctlhostname, sizeof(opts.rigctlhostname), "%s", "rig.local");
     opts.rigctlportno = 4532;
     rc |= expect_str("rigctl active", lbl_rigctl(&ctx, b, sizeof(b)), "Rigctl: rig.local:4532 [Active]");
-    opts.rigctl_sockfd = 0;
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
     rc |= expect_str("rigctl inactive", lbl_rigctl(&ctx, b, sizeof(b)), "Rigctl: rig.local:4532 [Inactive]");
 
     opts.symbol_out_f = (FILE*)0x1;
@@ -332,9 +333,9 @@ test_env_config_display_and_key_labels(void) {
     g_cfg.mt_enable = 1;
     rc |= expect_str("mt on", lbl_mt(NULL, b, sizeof(b)), "Intra-block MT: On");
 
-    opts.show_p25_metrics = 1;
-    opts.show_p25_group_affiliations = 1;
-    opts.show_channels = 1;
+    opts.frontend_display.show_p25_metrics = 1;
+    opts.frontend_display.show_p25_group_affiliations = 1;
+    opts.frontend_display.show_channels = 1;
     rc |= expect_str("show p25 metrics", lbl_ui_p25_metrics(&ctx, b, sizeof(b)), "Show P25 Metrics [On]");
     rc |= expect_str("show p25 affiliations off", lbl_ui_p25_affil(&ctx, b, sizeof(b)), "Show P25 Affiliations [Off]");
     rc |=

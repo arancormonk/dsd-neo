@@ -18,6 +18,21 @@ typedef struct capture_stderr {
     int saved_fd;
 } capture_stderr;
 
+typedef struct log_sink_capture {
+    int calls;
+    dsd_neo_log_level_t level;
+    char message[256];
+} log_sink_capture;
+
+static void
+capture_log_sink_write(dsd_neo_log_level_t level, const char* message, void* context) {
+    auto* capture = static_cast<log_sink_capture*>(context);
+    assert(capture != nullptr);
+    capture->calls++;
+    capture->level = level;
+    std::snprintf(capture->message, sizeof(capture->message), "%s", message ? message : "");
+}
+
 static void
 set_env_flag(const char* name, const char* value) {
     int rc = value != nullptr ? dsd_setenv(name, value, 1) : dsd_unsetenv(name);
@@ -100,6 +115,7 @@ test_log_write_formats_and_preserves_utf8_when_supported(void) {
     capture_stderr_end(&capture, out, sizeof(out));
 
     assert(strcmp(out, "Temp \xC2\xB0 7\n") == 0);
+    dsd_neo_log_sink_reset();
 }
 
 static void
@@ -113,6 +129,7 @@ test_log_write_applies_ascii_fallback_when_unicode_disabled(void) {
     capture_stderr_end(&capture, out, sizeof(out));
 
     assert(strcmp(out, "Glyphs  deg - ? 3\n") == 0);
+    dsd_neo_log_sink_reset();
 }
 
 static void
@@ -126,6 +143,80 @@ test_log_write_ignores_null_format(void) {
     capture_stderr_end(&capture, out, sizeof(out));
 
     assert(out[0] == '\0');
+    dsd_neo_log_sink_reset();
+}
+
+static void
+test_log_sink_receives_message_and_severity_without_stderr_mirror(void) {
+    char out[128];
+    log_sink_capture sink_capture = {};
+    dsd_neo_log_sink sink = {capture_log_sink_write, &sink_capture, 0};
+    set_env_flag("DSD_FORCE_ASCII", nullptr);
+    set_env_flag("DSD_FORCE_UTF8", "1");
+
+    dsd_neo_log_sink_set(&sink);
+    capture_stderr capture = capture_stderr_begin();
+    dsd_neo_log_write(LOG_LEVEL_ERROR, "Sink %d\n", 12);
+    capture_stderr_end(&capture, out, sizeof(out));
+
+    assert(sink_capture.calls == 1);
+    assert(sink_capture.level == LOG_LEVEL_ERROR);
+    assert(strcmp(sink_capture.message, "Sink 12\n") == 0);
+    assert(out[0] == '\0');
+    dsd_neo_log_sink_reset();
+}
+
+static void
+test_log_sink_can_mirror_stderr(void) {
+    char out[128];
+    log_sink_capture sink_capture = {};
+    dsd_neo_log_sink sink = {capture_log_sink_write, &sink_capture, 1};
+    set_env_flag("DSD_FORCE_ASCII", nullptr);
+    set_env_flag("DSD_FORCE_UTF8", "1");
+
+    dsd_neo_log_sink_set(&sink);
+    capture_stderr capture = capture_stderr_begin();
+    dsd_neo_log_write(LOG_LEVEL_WARN, "Mirror %s\n", "on");
+    capture_stderr_end(&capture, out, sizeof(out));
+
+    assert(sink_capture.calls == 1);
+    assert(sink_capture.level == LOG_LEVEL_WARN);
+    assert(strcmp(sink_capture.message, "Mirror on\n") == 0);
+    assert(strcmp(out, "Mirror on\n") == 0);
+    dsd_neo_log_sink_reset();
+}
+
+static void
+test_log_sink_reset_restores_stderr_default(void) {
+    char out[128];
+    log_sink_capture sink_capture = {};
+    dsd_neo_log_sink sink = {capture_log_sink_write, &sink_capture, 0};
+    set_env_flag("DSD_FORCE_ASCII", nullptr);
+    set_env_flag("DSD_FORCE_UTF8", "1");
+
+    dsd_neo_log_sink_set(&sink);
+    dsd_neo_log_sink_reset();
+    capture_stderr capture = capture_stderr_begin();
+    dsd_neo_log_write(LOG_LEVEL_INFO, "Default sink\n");
+    capture_stderr_end(&capture, out, sizeof(out));
+
+    assert(sink_capture.calls == 0);
+    assert(strcmp(out, "Default sink\n") == 0);
+}
+
+static void
+test_log_sink_gets_ascii_fallback_message(void) {
+    log_sink_capture sink_capture = {};
+    dsd_neo_log_sink sink = {capture_log_sink_write, &sink_capture, 0};
+    set_env_flag("DSD_FORCE_ASCII", "1");
+    set_env_flag("DSD_FORCE_UTF8", nullptr);
+
+    dsd_neo_log_sink_set(&sink);
+    dsd_neo_log_write(LOG_LEVEL_INFO, "Glyphs %s\n", "\xC2\xB0 \xE2\x80\x93");
+
+    assert(sink_capture.calls == 1);
+    assert(strcmp(sink_capture.message, "Glyphs  deg -\n") == 0);
+    dsd_neo_log_sink_reset();
 }
 
 int
@@ -133,6 +224,10 @@ main(void) {
     test_log_write_formats_and_preserves_utf8_when_supported();
     test_log_write_applies_ascii_fallback_when_unicode_disabled();
     test_log_write_ignores_null_format();
+    test_log_sink_receives_message_and_severity_without_stderr_mirror();
+    test_log_sink_can_mirror_stderr();
+    test_log_sink_reset_restores_stderr_default();
+    test_log_sink_gets_ascii_fallback_message();
 
     set_env_flag("DSD_FORCE_ASCII", nullptr);
     set_env_flag("DSD_FORCE_UTF8", nullptr);

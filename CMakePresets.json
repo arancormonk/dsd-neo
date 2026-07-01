@@ -25,6 +25,16 @@
       }
     },
     {
+      "name": "dev-debug-native-ui",
+      "inherits": "dev-debug",
+      "displayName": "Dev Debug + Native UI",
+      "description": "Debug build with the native frontend scaffold enabled",
+      "binaryDir": "${sourceDir}/build/dev-debug-native-ui",
+      "cacheVariables": {
+        "DSD_ENABLE_NATIVE_UI": "ON"
+      }
+    },
+    {
       "name": "dev-release",
       "inherits": "warnings-as-errors",
       "displayName": "Dev Release",
@@ -197,6 +207,11 @@
       "configuration": "Debug"
     },
     {
+      "name": "dev-debug-native-ui",
+      "configurePreset": "dev-debug-native-ui",
+      "configuration": "Debug"
+    },
+    {
       "name": "dev-debug-clean",
       "configurePreset": "dev-debug",
       "configuration": "Debug",
@@ -294,6 +309,11 @@
     {
       "name": "dev-debug",
       "configurePreset": "dev-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "dev-debug-native-ui",
+      "configurePreset": "dev-debug-native-ui",
       "configuration": "Debug"
     },
     {

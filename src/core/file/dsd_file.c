@@ -903,12 +903,13 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             openSymbolOutFile(opts, state);
 
             //add a system event to echo in the event history
-            state->event_history_s[0].Event_History_Items[0].color_pair = 4;
             char event_str[2000];
             DSD_MEMSET(event_str, 0, sizeof(event_str));
             DSD_SNPRINTF(event_str, sizeof(event_str), "DSD-neo Dibit Capture File Rotated: %s;",
                          opts->symbol_out_file);
             watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
+            dsd_event_history_item_set_metadata(&state->event_history_s[0].Event_History_Items[0],
+                                                DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_SYSTEM);
             state->lastsrc =
                 0; //this could wipe a call, but usually on TDMA cc's, slot 1 is the control channel, so may never be set when this is run
             watchdog_event_history(opts, state, 0);

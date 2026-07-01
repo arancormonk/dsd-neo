@@ -484,7 +484,7 @@ edacs_print_analog_status(const dsd_opts* opts, const dsd_state* state, int afs,
     }
 
     if (dsd_opts_frontend_active(opts)) {
-        ui_publish_both_and_redraw(opts, state);
+        dsd_telemetry_publish_both_and_redraw(opts, state);
     }
 }
 

@@ -158,9 +158,9 @@ constellation_grid_size(int* W, int* H) {
 static constellation_style
 constellation_make_style(const dsd_opts* opts) {
     constellation_style style;
-    style.use_unicode = (opts && opts->eye_unicode && ui_block_glyphs_supported());
+    style.use_unicode = (opts && opts->frontend_display.eye_unicode && ui_block_glyphs_supported());
     style.use_dots = 1;
-    style.color_enabled = (opts && opts->eye_color && has_colors());
+    style.color_enabled = (opts && opts->frontend_display.eye_color && has_colors());
     style.ascii_len = (int)(sizeof(k_density_ascii_palette) - 1);
     style.block_len = (int)(sizeof(k_density_block_palette) / sizeof(k_density_block_palette[0]));
     style.dot_len = (int)(sizeof(k_constellation_dot_palette) / sizeof(k_constellation_dot_palette[0]));
@@ -239,7 +239,8 @@ static double
 constellation_gate_squared(const dsd_opts* opts) {
     double gate = 0.10;
     if (opts) {
-        gate = (opts->mod_qpsk == 1) ? (double)opts->const_gate_qpsk : (double)opts->const_gate_other;
+        gate = (opts->mod_qpsk == 1) ? (double)opts->frontend_display.const_gate_qpsk
+                                     : (double)opts->frontend_display.const_gate_other;
         if (gate < 0.0) {
             gate = 0.0;
         }
@@ -294,7 +295,7 @@ constellation_accumulate_density(const float* buf, int n, const dsd_opts* opts, 
 
         double nx;
         double ny;
-        if (opts && opts->const_norm_mode == 1) {
+        if (opts && opts->frontend_display.const_norm_mode == 1) {
             if (r <= 1e-9) {
                 continue;
             }
@@ -504,7 +505,8 @@ constellation_print_legend(const dsd_opts* opts, const constellation_style* styl
         printw(" Density: . : - = + * # @  (low -> high)%s\n", style->color_enabled ? "; colored" : "");
     }
     ui_print_lborder();
-    printw(" Norm: %s (toggle with 'n')\n", (opts && opts->const_norm_mode) ? "unit-circle" : "radial (p99)");
+    printw(" Norm: %s (toggle with 'n')\n",
+           (opts && opts->frontend_display.const_norm_mode) ? "unit-circle" : "radial (p99)");
     if (style->color_enabled) {
         ui_print_lborder();
         addch('\n');
@@ -543,8 +545,8 @@ eye_effective_unicode_ui(const dsd_opts* opts) {
     if (s_unicode_ready < 0) {
         s_unicode_ready = ui_block_glyphs_supported() ? 1 : 0;
     }
-    int use_unicode_ui = (opts && opts->eye_unicode && s_unicode_ready);
-    if (opts && opts->eye_unicode && !s_unicode_ready && !s_unicode_warned) {
+    int use_unicode_ui = (opts && opts->frontend_display.eye_unicode && s_unicode_ready);
+    if (opts && opts->frontend_display.eye_unicode && !s_unicode_ready && !s_unicode_warned) {
         printw("| (Unicode block glyphs unsupported; falling back to ASCII)\n");
         s_unicode_warned = 1;
     }
@@ -687,8 +689,8 @@ static eye_style
 eye_make_style(const dsd_opts* opts, int use_unicode_ui) {
     eye_style style;
     style.use_unicode_ui = use_unicode_ui;
-    style.unicode_requested = opts->eye_unicode;
-    style.color_enabled = opts->eye_color && has_colors();
+    style.unicode_requested = opts->frontend_display.eye_unicode;
+    style.color_enabled = opts->frontend_display.eye_color && has_colors();
     style.color_len = (int)(sizeof(k_density_color_seq) / sizeof(k_density_color_seq[0]));
     style.color_base = 21;
     style.guide_h_pair = (short)(style.color_base + 8);
@@ -965,7 +967,7 @@ eye_estimate_snr_fallback(const float* buf, int n, int sps, int two_sps, int q1,
     double sig_var = eye_snr_signal_var(mu, cnt, total);
     if (noise_var > 1e-9 && sig_var > 1e-9) {
         dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(NULL, NULL, &metrics);
+        (void)dsd_app_frontend_get_metrics(&metrics);
         double bias = metrics.snr_bias_c4fm;
         if (bias == 0.0) {
             bias = 8.0;
@@ -1108,7 +1110,7 @@ print_eye_view(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
     if (is_c4fm) {
         dsd_frontend_metrics metrics;
-        (void)dsd_app_frontend_get_metrics(opts, state, &metrics);
+        (void)dsd_app_frontend_get_metrics(&metrics);
         snr_db = metrics.snr_c4fm_db;
     }
 #endif
@@ -1434,7 +1436,7 @@ spectrum_draw_cell(const dsd_opts* opts, int use_unicode, float v, float vmin, f
     int filled = (h - 1 - y) <= col_h;
 #ifdef PRETTY_COLORS
     short cp = spectrum_color_pair_for_level(t);
-    if (opts && opts->eye_color && has_colors()) {
+    if (opts && opts->frontend_display.eye_color && has_colors()) {
         attron(COLOR_PAIR(cp));
     }
 #endif
@@ -1448,7 +1450,7 @@ spectrum_draw_cell(const dsd_opts* opts, int use_unicode, float v, float vmin, f
         addch(' ');
     }
 #ifdef PRETTY_COLORS
-    if (opts && opts->eye_color && has_colors()) {
+    if (opts && opts->frontend_display.eye_color && has_colors()) {
         attroff(COLOR_PAIR(cp));
     }
 #endif
@@ -1495,13 +1497,13 @@ spectrum_print_legend(const dsd_opts* opts, int rate, int w, int use_unicode, fl
     printw(" Span: %.1f kHz  %s(FFT): %.1f Hz  %s(col): %.1f Hz  FFT: %d  Glyphs: %s%s\n", span_hz / 1000.0f, df,
            (rate > 0 && nfft2 > 0) ? (span_hz / (float)nfft2) : 0.0f, df,
            (rate > 0 && w > 0) ? (span_hz / (float)w) : 0.0f, nfft2, use_unicode ? "Unicode" : "ASCII",
-           (opts && opts->eye_color && has_colors()) ? "; colored" : "");
+           (opts && opts->frontend_display.eye_color && has_colors()) ? "; colored" : "");
     ui_print_lborder();
     printw(" Freq: -%.1fk   0   +%.1fk\n", (span_hz * 0.5f) / 1000.0f, (span_hz * 0.5f) / 1000.0f);
     ui_print_lborder();
     printw(" Scale: top=%.1f dB  floor=%.1f dB (relative)\n", vmax, vmin);
 #ifdef PRETTY_COLORS
-    if (opts && opts->eye_color && has_colors()) {
+    if (opts && opts->frontend_display.eye_color && has_colors()) {
         spectrum_print_color_legend(use_unicode);
     }
 #endif
@@ -1532,7 +1534,7 @@ print_spectrum_view_rtlsdr(const dsd_opts* opts) {
     float span = 1.0f;
     spectrum_range(col, w, &vmin, &vmax, &span);
 
-    int use_unicode = (opts && opts->eye_unicode && ui_block_glyphs_supported());
+    int use_unicode = (opts && opts->frontend_display.eye_unicode && ui_block_glyphs_supported());
     spectrum_draw_plot(opts, col, w, h, vmin, vmax, span, use_unicode);
     spectrum_print_legend(opts, rate, w, use_unicode, vmax, vmin);
 }

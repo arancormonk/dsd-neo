@@ -31,7 +31,7 @@ dsd_cli_usage_section_intro(void) {
     printf("      --strict-config        Treat --validate-config warnings as errors\n");
     printf("\n");
     printf("Display Options:\n");
-    printf("      --frontend <none|terminal>  Select frontend implementation\n");
+    printf("      --frontend <none|terminal|native>  Select frontend implementation\n");
     printf("                 dsd-neo --frontend terminal 2> console_log.txt\n");
     printf("  -N            Enable terminal frontend (alias for --frontend terminal)\n");
     printf("  -Z            Log MBE/PDU Payloads to console\n");

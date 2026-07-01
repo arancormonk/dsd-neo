@@ -16,12 +16,45 @@
 #include <cstdio>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/unicode.h>
+#include <mutex>
 #include "dsd-neo/core/safe_api.h"
 
-void
-dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
-    (void)level; /* Currently unused, but available for future runtime gating */
+namespace {
 
+std::mutex g_log_sink_mutex;
+dsd_neo_log_sink g_log_sink = {};
+bool g_log_sink_active = false;
+
+dsd_neo_log_sink
+log_sink_snapshot(bool* active) {
+    std::lock_guard<std::mutex> lock(g_log_sink_mutex);
+    if (active != nullptr) {
+        *active = g_log_sink_active;
+    }
+    return g_log_sink;
+}
+
+} // namespace
+
+extern "C" void
+dsd_neo_log_sink_set(const dsd_neo_log_sink* sink) {
+    std::lock_guard<std::mutex> lock(g_log_sink_mutex);
+    if (sink == nullptr || sink->write == nullptr) {
+        g_log_sink = {};
+        g_log_sink_active = false;
+        return;
+    }
+    g_log_sink = *sink;
+    g_log_sink_active = true;
+}
+
+extern "C" void
+dsd_neo_log_sink_reset(void) {
+    dsd_neo_log_sink_set(nullptr);
+}
+
+extern "C" void
+dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     if (format == nullptr) {
         return;
     }
@@ -33,11 +66,19 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     DSD_VSNPRINTF(buf, sizeof(buf), format, args);
     va_end(args);
 
-    if (dsd_unicode_supported()) {
-        fputs(buf, stderr);
-    } else {
-        char safe[4096];
+    const char* out = buf;
+    char safe[4096];
+    if (!dsd_unicode_supported()) {
         dsd_ascii_fallback(buf, safe, sizeof(safe));
-        fputs(safe, stderr);
+        out = safe;
+    }
+
+    bool sink_active = false;
+    dsd_neo_log_sink sink = log_sink_snapshot(&sink_active);
+    if (sink_active && sink.write != nullptr) {
+        sink.write(level, out, sink.context);
+    }
+    if (!sink_active || sink.mirror_stderr) {
+        fputs(out, stderr);
     }
 }

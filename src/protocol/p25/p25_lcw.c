@@ -660,7 +660,8 @@ p25_lcw_handle_mfid90_opcode_05(p25_lcw_ctx* ctx) {
         uint8_t b = (uint8_t)ConvertBitIntoBytes(&ctx->bits[bi], 8);
         DSD_FPRINTF(stderr, " %02X", b);
     }
-    if (ctx->opts->show_p25_callsign_decode && (ctx->state->p2_wacn != 0 || ctx->state->p2_sysid != 0)) {
+    if (ctx->opts->frontend_display.show_p25_callsign_decode
+        && (ctx->state->p2_wacn != 0 || ctx->state->p2_sysid != 0)) {
         char callsign[7];
         p25_wacn_sysid_to_callsign((uint32_t)ctx->state->p2_wacn, (uint16_t)ctx->state->p2_sysid, callsign);
         DSD_FPRINTF(stderr, " [%s]", callsign);

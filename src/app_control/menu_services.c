@@ -3,7 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/app_control/services.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
@@ -29,7 +28,9 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/call_alert.h"
+#include "services.h"
 
 #ifdef USE_RADIO
 
@@ -70,6 +71,9 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
     (void)state;
     if (!opts) {
         return -1;
+    }
+    if (opts->dmr_stereo_wav == 1 && (opts->wav_out_f != NULL || opts->wav_out_fR != NULL)) {
+        return (opts->wav_out_f != NULL && opts->wav_out_fR != NULL) ? 0 : -1;
     }
     char wav_file_directory[1024];
     DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
@@ -200,7 +204,7 @@ svc_rigctl_connect(dsd_opts* opts, const char* host, int port) {
     DSD_SNPRINTF(opts->rigctlhostname, sizeof opts->rigctlhostname, "%s", host);
     opts->rigctlportno = port;
     opts->rigctl_sockfd = Connect(opts->rigctlhostname, opts->rigctlportno);
-    if (opts->rigctl_sockfd != 0) {
+    if (opts->rigctl_sockfd != DSD_INVALID_SOCKET) {
         opts->use_rigctl = 1;
         return 0;
     }
@@ -557,17 +561,17 @@ svc_toggle_dmr_le(dsd_opts* opts) {
 }
 
 void
-svc_set_slot_pref(dsd_opts* opts, int pref01) {
+svc_set_slot_pref(dsd_opts* opts, int pref) {
     if (!opts) {
         return;
     }
-    if (pref01 < 0) {
-        pref01 = 0;
+    if (pref < 0) {
+        pref = 0;
     }
-    if (pref01 > 1) {
-        pref01 = 1;
+    if (pref > 2) {
+        pref = 2;
     }
-    opts->slot_preference = pref01;
+    opts->slot_preference = pref;
 }
 
 void

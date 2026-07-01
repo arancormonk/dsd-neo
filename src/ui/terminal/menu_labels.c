@@ -20,6 +20,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "menu_env.h"
 #include "menu_internal.h"
@@ -55,9 +56,9 @@ io_rtl_active(const void* ctx) {
 #ifdef USE_RADIO
 static dsd_frontend_metrics
 menu_frontend_metrics(const void* v) {
-    const UiCtx* c = (const UiCtx*)v;
+    (void)v;
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(c ? c->opts : NULL, c ? c->state : NULL, &metrics);
+    (void)dsd_app_frontend_get_metrics(&metrics);
     return metrics;
 }
 
@@ -433,7 +434,7 @@ lbl_tcp(const void* vctx, char* b, size_t n) {
 const char*
 lbl_rigctl(const void* vctx, char* b, size_t n) {
     UiCtx* c = (UiCtx*)vctx;
-    int connected = (c->opts->use_rigctl && c->opts->rigctl_sockfd != 0);
+    int connected = (c->opts->use_rigctl && c->opts->rigctl_sockfd != DSD_INVALID_SOCKET);
     if (c->opts->rigctlhostname[0] != '\0' && c->opts->rigctlportno > 0) {
         int m = (n > 24) ? (int)(n - 24) : 0;
         if (connected) {
@@ -775,14 +776,16 @@ lbl_p25_p1_err_sec(const void* v, char* b, size_t n) {
 const char*
 lbl_ui_p25_metrics(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 Metrics [%s]", (c && c->opts && c->opts->show_p25_metrics) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 Metrics [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_metrics) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_p25_affil(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 Affiliations [%s]", (c && c->opts && c->opts->show_p25_affiliations) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 Affiliations [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_affiliations) ? "On" : "Off");
     return b;
 }
 
@@ -790,35 +793,38 @@ const char*
 lbl_ui_p25_ga(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     DSD_SNPRINTF(b, n, "Show P25 Group Affiliation [%s]",
-                 (c && c->opts && c->opts->show_p25_group_affiliations) ? "On" : "Off");
+                 (c && c->opts && c->opts->frontend_display.show_p25_group_affiliations) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_p25_neighbors(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 Neighbors [%s]", (c && c->opts && c->opts->show_p25_neighbors) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 Neighbors [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_neighbors) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_p25_iden(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 IDEN Plan [%s]", (c && c->opts && c->opts->show_p25_iden_plan) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 IDEN Plan [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_iden_plan) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_p25_ccc(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show P25 CC Candidates [%s]", (c && c->opts && c->opts->show_p25_cc_candidates) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show P25 CC Candidates [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_p25_cc_candidates) ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_ui_channels(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show Channels [%s]", (c && c->opts && c->opts->show_channels) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show Channels [%s]", (c && c->opts && c->opts->frontend_display.show_channels) ? "On" : "Off");
     return b;
 }
 
@@ -826,7 +832,7 @@ const char*
 lbl_ui_p25_callsign(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     DSD_SNPRINTF(b, n, "Show P25 Callsign Decode [%s]",
-                 (c && c->opts && c->opts->show_p25_callsign_decode) ? "On" : "Off");
+                 (c && c->opts && c->opts->frontend_display.show_p25_callsign_decode) ? "On" : "Off");
     return b;
 }
 
@@ -935,7 +941,8 @@ lbl_cqpsk_timing_bias(const void* v, char* b, size_t n) {
 const char*
 lbl_dsp_panel(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Show DSP Panel [%s]", (c && c->opts && c->opts->show_dsp_panel) ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Show DSP Panel [%s]",
+                 (c && c->opts && c->opts->frontend_display.show_dsp_panel) ? "On" : "Off");
     return b;
 }
 
@@ -956,16 +963,16 @@ lbl_rtl_rtltcp_autotune(const void* v, char* b, size_t n) {
 const char*
 lbl_rtl_auto_ppm(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    int on = dsd_app_frontend_auto_ppm_enabled(c ? c->state : NULL, (c && c->opts) ? c->opts->rtl_auto_ppm : 0);
+    int on = dsd_app_frontend_auto_ppm_enabled((c && c->opts) ? c->opts->rtl_auto_ppm : 0);
     DSD_SNPRINTF(b, n, "Auto-PPM (Spectrum): %s", on ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_rtl_tuner_autogain(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
+    (void)v;
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = dsd_app_frontend_tuner_autogain_enabled(c ? c->state : NULL, (cfg && cfg->tuner_autogain_enable) ? 1 : 0);
+    int on = dsd_app_frontend_tuner_autogain_enabled((cfg && cfg->tuner_autogain_enable) ? 1 : 0);
     DSD_SNPRINTF(b, n, "Tuner Autogain: %s", on ? "On" : "Off");
     return b;
 }

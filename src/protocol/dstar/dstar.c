@@ -55,7 +55,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
 
         //since we are in a long loop, use this to improve response time in ncurses
         if (dsd_opts_frontend_active(opts)) {
-            ui_publish_both_and_redraw(opts, state);
+            dsd_telemetry_publish_both_and_redraw(opts, state);
         }
 
         //slot 1

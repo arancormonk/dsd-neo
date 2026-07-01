@@ -14,9 +14,9 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
-#include <dsd-neo/platform/platform.h>
-
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/platform.h>
 #ifdef __cplusplus
 #include <dsd-neo/core/safe_api.h>
 #endif
@@ -78,14 +78,26 @@ struct dsd_opts {
     unsigned long long udp_in_bytes;   // received bytes
     unsigned long long udp_in_drops;   // dropped samples due to ring overflow
     tcp_input_ctx* tcp_in_ctx;         ///< TCP audio input context (cross-platform)
+    double rtl_squelch_level;
+    double input_warn_db;
+    time_t last_input_warn_time;
+    // P25 SM unified follower configuration (CLI-mirrored; env fallback retained)
+    // Values <= 0 mean "unset" and will defer to environment or defaults.
+    double p25_vc_grace_s;             // seconds after tune before eligible for VC->CC return
+    double p25_min_follow_dwell_s;     // minimum seconds to dwell after first voice
+    double p25_grant_voice_to_s;       // max seconds to wait from grant until voice before returning
+    double p25_retune_backoff_s;       // seconds to block immediate retune to same VC after return
+    double p25_force_release_extra_s;  // safety-net extra seconds beyond hangtime
+    double p25_force_release_margin_s; // safety-net hard margin seconds beyond extra
+    double p25_p1_err_hold_pct;        // P25p1 IMBE error average threshold (percent) to extend hang
+    double p25_p1_err_hold_s;          // additional seconds to hold when threshold exceeded
+    uint64_t iq_capture_max_bytes;
+    dsd_resampler_state input_resampler;
 
     // Scalars and smaller integers
     int onesymbol;
     int errorbars;
     int datascope;
-    int constellation;      //ncurses ASCII constellation view (0=off, 1=on)
-    float const_gate_qpsk;  //constellation magnitude gate for QPSK
-    float const_gate_other; //constellation gate for non-QPSK (FSK)
     int symboltiming;
     int verbose;
     int p25enc;
@@ -96,7 +108,6 @@ struct dsd_opts {
     int audio_in_fd;
     uint32_t rtlsdr_center_freq;
     int rtlsdr_ppm_error;
-    dsd_audio_in_type audio_in_type; ///< Audio input source (see dsd_audio_in_type)
     int audio_out_fd;
     int audio_out_type;            // 0 for pulse, 1 for file/stdout, 8 for UDP
     int audio_output_async_policy; // async mode applied to currently open local output streams
@@ -147,7 +158,6 @@ struct dsd_opts {
     int unmute_encrypted_p25;
     int rtl_dev_index;
     int rtl_gain_value;
-    double rtl_squelch_level;
     int rtl_volume_multiplier;
     /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
     int input_volume_multiplier;
@@ -166,12 +176,8 @@ struct dsd_opts {
     /* Carrier/tracking-based RTL auto-PPM SNR threshold in dB; <=0 means default. */
     float rtl_auto_ppm_snr_db;
     int monitor_input_audio;
-    /* Warn when input level is below this dBFS threshold (e.g., -40). */
-    double input_warn_db;
     /* Minimum seconds between repeated low-level warnings. */
     int input_warn_cooldown_sec;
-    /* Last time a low-level input warning was emitted. */
-    time_t last_input_warn_time;
     int analog_only;
     int pulse_raw_rate_in;
     int pulse_raw_rate_out;
@@ -182,37 +188,9 @@ struct dsd_opts {
     int pulse_digi_in_channels;
     int pulse_digi_out_channels;
     int pulse_flush;
-    dsd_frontend_kind frontend_kind;
-    uint8_t terminal_compact;
-    uint8_t terminal_history;
-    uint8_t eye_view;                    //ncurses timing/eye diagram for C4FM/FSK (0=off)
-    uint8_t fsk_hist_view;               //ncurses 4-level histogram for C4FM/FSK (0=off)
-    uint8_t spectrum_view;               //ncurses spectrum analyzer for complex baseband (0=off)
-    uint8_t eye_unicode;                 //use Unicode block glyphs in eye diagram (0=ASCII)
-    uint8_t eye_color;                   //use colorized density in eye diagram (0=mono)
-    uint8_t show_dsp_panel;              //show compact DSP status panel (0=hidden)
-    uint8_t show_p25_metrics;            //show P25 Metrics section (0=hidden)
-    uint8_t show_p25_neighbors;          //show P25 Neighbors (freq list) (0=hidden)
-    uint8_t show_p25_iden_plan;          //show P25 IDEN Plan table (0=hidden)
-    uint8_t show_p25_cc_candidates;      //show P25 CC Candidates (0=hidden)
-    uint8_t show_channels;               //show Channels section (0=hidden)
-    uint8_t show_p25_affiliations;       //show P25 Affiliations (RID list) (0=hidden)
-    uint8_t show_p25_group_affiliations; //show P25 Group Affiliation (RID↔TG) (0=hidden)
-    uint8_t show_p25_callsign_decode;    //show P25 callsign decode from WACN/SysID (0=hidden)
-    uint8_t show_keys;                   //show radio key/keystream material in CLI/status output (0=redacted)
     /** Enable status-symbol-based P25 AFC suppression (0=advisory only [default], 1=enforce). */
     int p25_afc_status_gate_enable;
 
-    // P25 SM unified follower configuration (CLI-mirrored; env fallback retained)
-    // Values <= 0 mean "unset" and will defer to environment or defaults.
-    double p25_vc_grace_s;             // seconds after tune before eligible for VC->CC return
-    double p25_min_follow_dwell_s;     // minimum seconds to dwell after first voice
-    double p25_grant_voice_to_s;       // max seconds to wait from grant until voice before returning
-    double p25_retune_backoff_s;       // seconds to block immediate retune to same VC after return
-    double p25_force_release_extra_s;  // safety-net extra seconds beyond hangtime
-    double p25_force_release_margin_s; // safety-net hard margin seconds beyond extra
-    double p25_p1_err_hold_pct;        // P25p1 IMBE error average threshold (percent) to extend hang
-    double p25_p1_err_hold_s;          // additional seconds to hold when threshold exceeded
     int reset_state;
     int payload;
     int frame_log_open_error_reported;   // guard repeated open error spam
@@ -223,13 +201,6 @@ struct dsd_opts {
     int dPMR_next_part_of_superframe;
     int inverted_dpmr;
     int frame_dpmr;
-    short int mbe_out;  //flag for mbe out, don't attempt fclose more than once
-    short int mbe_outR; //flag for mbe out, don't attempt fclose more than once
-    short int dmr_mono;
-    short int dmr_stereo;
-    short int lrrp_file_output;
-    short int dmr_mute_encL;
-    short int dmr_mute_encR;
     /* DMR: when set, relax CRC gating (ignore final CRC when no irrecoverable errors).
        Off by default; enabled via -F like other protocols. */
     uint8_t dmr_crc_relaxed_default;
@@ -237,7 +208,6 @@ struct dsd_opts {
     uint8_t call_alert_events;
     int frame_ysf;
     int inverted_ysf;
-    short int aggressive_framesync;
     int frame_m17;
     int inverted_m17;
     int call_alert;
@@ -263,8 +233,6 @@ struct dsd_opts {
     int staged_file_sample_rate;
     int wav_interpolator;
     int wav_decimator;
-    dsd_resampler_state input_resampler;
-    float input_upsample_buf[6];
     float input_upsample_prev;
     int input_upsample_len;
     int input_upsample_pos;
@@ -288,8 +256,20 @@ struct dsd_opts {
     int use_pbf;
     int use_hpf_d;
     int floating_point;
+    float input_upsample_buf[6];
+    dsd_frontend_display_opts frontend_display;
+    short int mbe_out;  //flag for mbe out, don't attempt fclose more than once
+    short int mbe_outR; //flag for mbe out, don't attempt fclose more than once
+    short int dmr_mono;
+    short int dmr_stereo;
+    short int lrrp_file_output;
+    short int dmr_mute_encL;
+    short int dmr_mute_encR;
+    short int aggressive_framesync;
     // Small flags and bytes
-    uint8_t const_norm_mode;         //0=radial (percentile) norm, 1=unit-circle norm
+    dsd_audio_in_type audio_in_type; ///< Audio input source (see dsd_audio_in_type)
+    dsd_frontend_kind frontend_kind;
+    uint8_t show_keys;               //show radio key/keystream material in CLI/status output (0=redacted)
     uint8_t symbol_out_file_is_auto; //if the user hit the R key
     uint8_t symbol_capture_format;   //DSD_SYMBOL_CAPTURE_FORMAT_* for new symbol captures
     uint8_t reverse_mute;
@@ -314,7 +294,6 @@ struct dsd_opts {
     uint8_t iq_replay_active;     /* 1 while replay stream is active */
     uint8_t iq_replay_rate_mode;  /* DSD_IQ_REPLAY_RATE_* */
     uint8_t iq_capture_format;    /* DSD_IQ_FORMAT_* */
-    uint64_t iq_capture_max_bytes;
 
     // Strings and paths (large trailing arrays)
     char pa_input_idx[100];

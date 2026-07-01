@@ -19,7 +19,6 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -172,12 +171,6 @@ ui_is_thread_context(void) { // NOLINT(misc-use-internal-linkage)
     return 1;
 }
 
-void
-ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-}
-
 int
 ui_is_locked_from_label(const dsd_state* state, const char* label) { // NOLINT(misc-use-internal-linkage)
     (void)state;
@@ -248,8 +241,8 @@ compute_p25p1_voice_avg_err(const dsd_state* s, double* out_avg) { // NOLINT(mis
 }
 
 size_t
-ui_history_compact_event_text(char* out, size_t out_size, const char* event_text,
-                              int mode) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_history_compact_event_text(char* out, size_t out_size, const char* event_text,
+                                            int mode) { // NOLINT(misc-use-internal-linkage)
     (void)mode;
     if (out_size > 0U) {
         DSD_SNPRINTF(out, out_size, "%s", event_text ? event_text : "");
@@ -258,13 +251,14 @@ ui_history_compact_event_text(char* out, size_t out_size, const char* event_text
 }
 
 time_t
-ui_history_event_sort_time(const char* event_text, time_t fallback_time) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_history_event_sort_time(const char* event_text,
+                                         time_t fallback_time) { // NOLINT(misc-use-internal-linkage)
     (void)event_text;
     return fallback_time;
 }
 
 int
-ui_history_get_mode(void) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_history_get_mode(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
@@ -382,9 +376,11 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
+static int g_requested_ppm;
+
 int
-dsd_app_frontend_requested_ppm(const dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
-    return opts ? opts->rtlsdr_ppm_error : 0;
+dsd_app_frontend_requested_ppm(void) { // NOLINT(misc-use-internal-linkage)
+    return g_requested_ppm;
 }
 
 static void
@@ -481,6 +477,7 @@ test_rtl_and_soapy_input_source_rendering(void) {
     opts.rtl_gain_value = 21;
     opts.rtl_volume_multiplier = 3;
     opts.rtlsdr_ppm_error = -7;
+    g_requested_ppm = opts.rtlsdr_ppm_error;
     opts.rtl_squelch_level = -37.5f;
     opts.rtl_dsp_bw_khz = 24;
     opts.rtlsdr_center_freq = 851012500;

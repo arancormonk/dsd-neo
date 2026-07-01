@@ -5,18 +5,18 @@
 
 /* UI command actions — trunking domain */
 
-#include <dsd-neo/app_control/command_dispatch.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "../command_dispatch.h"
 
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
-ui_handle_trunk_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_trunk_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     if (opts->p25_trunk == 1) {
@@ -30,7 +30,7 @@ ui_handle_trunk_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) 
 }
 
 static int
-ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     opts->scanner_mode = opts->scanner_mode ? 0 : 1;
     opts->p25_trunk = 0;
@@ -40,7 +40,7 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
 }
 
 static int
-ui_handle_trunk_group_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_trunk_group_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     if (opts->p25_trunk == 1) {
@@ -50,7 +50,7 @@ ui_handle_trunk_group_toggle(dsd_opts* opts, dsd_state* state, const struct UiCm
 }
 
 static int
-ui_handle_tg_hold_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_tg_hold_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)opts;
     uint8_t slot = 0;
     if (c->n >= 1) {
@@ -83,7 +83,7 @@ ui_handle_tg_hold_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
 }
 
 static int
-ui_handle_trunk_wlist_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_trunk_wlist_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->trunk_use_allow_list = opts->trunk_use_allow_list ? 0 : 1;
@@ -91,7 +91,7 @@ ui_handle_trunk_wlist_toggle(dsd_opts* opts, dsd_state* state, const struct UiCm
 }
 
 static int
-ui_handle_trunk_priv_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_trunk_priv_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 0 : 1;
@@ -99,7 +99,7 @@ ui_handle_trunk_priv_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd
 }
 
 static int
-ui_handle_trunk_data_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_trunk_data_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->trunk_tune_data_calls = opts->trunk_tune_data_calls ? 0 : 1;
@@ -107,21 +107,21 @@ ui_handle_trunk_data_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd
 }
 
 static int
-ui_handle_trunk_enc_toggle(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_trunk_enc_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
     opts->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 0 : 1;
     return 1;
 }
 
-const struct UiCmdReg ui_actions_trunk[] = {
-    {UI_CMD_TRUNK_TOGGLE, ui_handle_trunk_toggle},
-    {UI_CMD_SCANNER_TOGGLE, ui_handle_scanner_toggle},
-    {UI_CMD_TRUNK_GROUP_TOGGLE, ui_handle_trunk_group_toggle},
-    {UI_CMD_TG_HOLD_TOGGLE, ui_handle_tg_hold_toggle},
-    {UI_CMD_TRUNK_WLIST_TOGGLE, ui_handle_trunk_wlist_toggle},
-    {UI_CMD_TRUNK_PRIV_TOGGLE, ui_handle_trunk_priv_toggle},
-    {UI_CMD_TRUNK_DATA_TOGGLE, ui_handle_trunk_data_toggle},
-    {UI_CMD_TRUNK_ENC_TOGGLE, ui_handle_trunk_enc_toggle},
+const struct dsd_app_command_reg dsd_app_actions_trunk[] = {
+    {DSD_APP_CMD_TRUNK_TOGGLE, ui_handle_trunk_toggle},
+    {DSD_APP_CMD_SCANNER_TOGGLE, ui_handle_scanner_toggle},
+    {DSD_APP_CMD_TRUNK_GROUP_TOGGLE, ui_handle_trunk_group_toggle},
+    {DSD_APP_CMD_TG_HOLD_TOGGLE, ui_handle_tg_hold_toggle},
+    {DSD_APP_CMD_TRUNK_WLIST_TOGGLE, ui_handle_trunk_wlist_toggle},
+    {DSD_APP_CMD_TRUNK_PRIV_TOGGLE, ui_handle_trunk_priv_toggle},
+    {DSD_APP_CMD_TRUNK_DATA_TOGGLE, ui_handle_trunk_data_toggle},
+    {DSD_APP_CMD_TRUNK_ENC_TOGGLE, ui_handle_trunk_enc_toggle},
     {0, NULL},
 };

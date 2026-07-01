@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "config_user_internal.h"
-#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/runtime/call_alert.h"
 
@@ -271,6 +271,10 @@ parse_frontend_kind_value(const char* val, dsd_frontend_kind* out_frontend) {
     }
     if (dsd_strcasecmp(val, "terminal") == 0) {
         *out_frontend = DSD_FRONTEND_TERMINAL;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "native") == 0) {
+        *out_frontend = DSD_FRONTEND_NATIVE;
         return 0;
     }
     return -1;

@@ -48,7 +48,7 @@ dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks) {
 }
 
 void
-ui_publish_snapshot(const dsd_state* state) {
+dsd_telemetry_publish_snapshot(const dsd_state* state) {
     dsd_telemetry_hooks hooks = dsd_telemetry_hooks_snapshot();
     if (!hooks.publish_snapshot) {
         return;
@@ -57,7 +57,7 @@ ui_publish_snapshot(const dsd_state* state) {
 }
 
 void
-ui_publish_opts_snapshot(const dsd_opts* opts) {
+dsd_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
     dsd_telemetry_hooks hooks = dsd_telemetry_hooks_snapshot();
     if (!hooks.publish_opts_snapshot) {
         return;
@@ -66,7 +66,7 @@ ui_publish_opts_snapshot(const dsd_opts* opts) {
 }
 
 void
-ui_request_redraw(void) {
+dsd_telemetry_request_redraw(void) {
     dsd_telemetry_hooks hooks = dsd_telemetry_hooks_snapshot();
     if (!hooks.request_redraw) {
         return;
@@ -75,7 +75,7 @@ ui_request_redraw(void) {
 }
 
 void
-ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
+dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
     dsd_telemetry_hooks hooks = dsd_telemetry_hooks_snapshot();
     if (opts) {
         if (hooks.publish_opts_snapshot) {

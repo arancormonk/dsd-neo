@@ -5,18 +5,18 @@
 
 /* UI command actions — logging/history domain */
 
-#include <dsd-neo/app_control/command_dispatch.h>
-#include <dsd-neo/app_control/services.h>
 #include <dsd-neo/core/state.h>
 #include <string.h>
 #include <time.h>
+#include "../command_dispatch.h"
+#include "../services.h"
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
-ui_handle_eh_next(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_eh_next(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)opts;
     (void)c;
     if (state->eh_index < 254) {
@@ -26,7 +26,7 @@ ui_handle_eh_next(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-ui_handle_eh_prev(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_eh_prev(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)opts;
     (void)c;
     if (state->eh_index > 0) {
@@ -36,7 +36,7 @@ ui_handle_eh_prev(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-ui_handle_eh_toggle_slot(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_eh_toggle_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)opts;
     (void)c;
     if (state->eh_slot == 0) {
@@ -51,7 +51,7 @@ ui_handle_eh_toggle_slot(dsd_opts* opts, dsd_state* state, const struct UiCmd* c
 }
 
 static int
-ui_handle_ui_msg_clear(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_ui_msg_clear(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)opts;
     (void)c;
     if (state) {
@@ -62,7 +62,7 @@ ui_handle_ui_msg_clear(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) 
 }
 
 static int
-ui_handle_eh_reset(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_eh_reset(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (state) {
         svc_reset_event_history(state);
@@ -74,7 +74,7 @@ ui_handle_eh_reset(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
 }
 
 static int
-ui_handle_event_log_disable(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_event_log_disable(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (opts) {
         svc_disable_event_log(opts);
@@ -87,7 +87,7 @@ ui_handle_event_log_disable(dsd_opts* opts, dsd_state* state, const struct UiCmd
 }
 
 static int
-ui_handle_event_log_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c) {
+ui_handle_event_log_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (opts && c->n > 0) {
         char path[1024] = {0};
         size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
@@ -110,13 +110,13 @@ ui_handle_event_log_set(dsd_opts* opts, dsd_state* state, const struct UiCmd* c)
     return 1;
 }
 
-const struct UiCmdReg ui_actions_logging[] = {
-    {UI_CMD_EH_NEXT, ui_handle_eh_next},
-    {UI_CMD_EH_PREV, ui_handle_eh_prev},
-    {UI_CMD_EH_TOGGLE_SLOT, ui_handle_eh_toggle_slot},
-    {UI_CMD_UI_MSG_CLEAR, ui_handle_ui_msg_clear},
-    {UI_CMD_EH_RESET, ui_handle_eh_reset},
-    {UI_CMD_EVENT_LOG_DISABLE, ui_handle_event_log_disable},
-    {UI_CMD_EVENT_LOG_SET, ui_handle_event_log_set},
+const struct dsd_app_command_reg dsd_app_actions_logging[] = {
+    {DSD_APP_CMD_EH_NEXT, ui_handle_eh_next},
+    {DSD_APP_CMD_EH_PREV, ui_handle_eh_prev},
+    {DSD_APP_CMD_EH_TOGGLE_SLOT, ui_handle_eh_toggle_slot},
+    {DSD_APP_CMD_UI_MSG_CLEAR, ui_handle_ui_msg_clear},
+    {DSD_APP_CMD_EH_RESET, ui_handle_eh_reset},
+    {DSD_APP_CMD_EVENT_LOG_DISABLE, ui_handle_event_log_disable},
+    {DSD_APP_CMD_EVENT_LOG_SET, ui_handle_event_log_set},
     {0, NULL},
 };

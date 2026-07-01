@@ -96,7 +96,7 @@ dsp_status_mod_label(int mod) {
 static void
 dsp_status_capture(dsp_status_snapshot* snap, const dsd_state* state) {
     DSD_MEMSET(snap, 0, sizeof(*snap));
-    (void)dsd_app_frontend_get_metrics(NULL, state, &snap->metrics);
+    (void)dsd_app_frontend_get_metrics(&snap->metrics);
     snap->cq = snap->metrics.cqpsk_enable;
     snap->cq_timing = snap->metrics.cqpsk_timing_active;
     snap->iqb = snap->metrics.iq_balance;

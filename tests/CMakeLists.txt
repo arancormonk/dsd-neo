@@ -71,6 +71,11 @@ add_test(
     COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
 )
 
+add_test(
+    NAME UI_NATIVE_BOUNDARY
+    COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
+)
+
 set(_DSD_PUBLIC_HEADER_TEST_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/public_header_smoke"
 )
@@ -360,9 +365,15 @@ dsd_neo_add_public_header_smoke_test(
 )
 
 dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_ui_async
-  HEADERS_PUBLIC_UI_ASYNC
-  dsd-neo/ui/ui_async.h
+  dsd-neo_test_headers_public_ui_terminal_provider
+  HEADERS_PUBLIC_UI_TERMINAL_PROVIDER
+  dsd-neo/ui/terminal_provider.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_ui_native_provider
+  HEADERS_PUBLIC_UI_NATIVE_PROVIDER
+  dsd-neo/ui/native_provider.h
   C
 )
 
@@ -373,21 +384,45 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_frontend
+  HEADERS_PUBLIC_APP_CONTROL_FRONTEND
+  dsd-neo/app_control/frontend.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_frontend_provider
+  HEADERS_PUBLIC_APP_CONTROL_FRONTEND_PROVIDER
+  dsd-neo/app_control/frontend_provider.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_frontend_runtime
+  HEADERS_PUBLIC_APP_CONTROL_FRONTEND_RUNTIME
+  dsd-neo/app_control/frontend_runtime.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_frontend_types
+  HEADERS_PUBLIC_APP_CONTROL_FRONTEND_TYPES
+  dsd-neo/app_control/frontend_types.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_history
   HEADERS_PUBLIC_APP_CONTROL_HISTORY
   dsd-neo/app_control/history.h
   C
 )
 dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_app_control_services
-  HEADERS_PUBLIC_APP_CONTROL_SERVICES
-  dsd-neo/app_control/services.h
-  C
-)
-dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_snapshot
   HEADERS_PUBLIC_APP_CONTROL_SNAPSHOT
   dsd-neo/app_control/snapshot.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_frontend_types
+  HEADERS_PUBLIC_CORE_FRONTEND_TYPES
+  dsd-neo/core/frontend_types.h
   C
 )
 
@@ -1139,6 +1174,30 @@ target_link_libraries(dsd-neo_test_runtime_log PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_LOG COMMAND dsd-neo_test_runtime_log)
 
 add_executable(
+    dsd-neo_test_runtime_cli_frontend_provider
+    runtime/test_runtime_cli_frontend_provider.c
+    ${PROJECT_SOURCE_DIR}/apps/dsd-cli/frontend.c
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_cli_frontend_provider
+    PRIVATE
+        DSD_CLI_HAS_TERMINAL_UI=0
+        DSD_CLI_HAS_NATIVE_UI=$<BOOL:${DSD_ENABLE_NATIVE_UI}>
+)
+target_include_directories(
+    dsd-neo_test_runtime_cli_frontend_provider
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/apps/dsd-cli
+)
+target_link_libraries(
+    dsd-neo_test_runtime_cli_frontend_provider
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_CLI_FRONTEND_PROVIDER
+    COMMAND dsd-neo_test_runtime_cli_frontend_provider
+)
+
+add_executable(
     dsd-neo_test_runtime_input_ring_init
     runtime/test_runtime_input_ring_init.cpp
 )
@@ -1220,7 +1279,7 @@ if(DSD_ENABLE_TERMINAL_UI)
 endif()
 
 add_executable(
-    dsd-neo_test_ui_cmd_actions
+    dsd-neo_test_app_control_actions
     ui/test_ui_cmd_actions.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_audio.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
@@ -1228,10 +1287,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_logging.c
 )
 target_include_directories(
-    dsd-neo_test_ui_cmd_actions
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    dsd-neo_test_app_control_actions
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
 )
-add_test(NAME UI_CMD_ACTIONS COMMAND dsd-neo_test_ui_cmd_actions)
+add_test(NAME APP_CONTROL_ACTIONS COMMAND dsd-neo_test_app_control_actions)
 
 add_executable(
     dsd-neo_test_ui_menu_services
@@ -1240,7 +1299,10 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_ui_menu_services
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal
 )
 target_compile_definitions(dsd-neo_test_ui_menu_services PRIVATE USE_RADIO)
 add_test(NAME UI_MENU_SERVICES COMMAND dsd-neo_test_ui_menu_services)
@@ -1331,7 +1393,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_include_directories(
         dsd-neo_test_ui_panels_header_footer
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     target_link_libraries(
         dsd-neo_test_ui_panels_header_footer
@@ -1364,17 +1429,17 @@ if(DSD_ENABLE_TERMINAL_UI)
 endif()
 
 add_executable(
-    dsd-neo_test_ui_telemetry_hooks_install
+    dsd-neo_test_app_control_telemetry_hooks_install
     ui/test_ui_telemetry_hooks_install.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_hooks_install.c
 )
 target_include_directories(
-    dsd-neo_test_ui_telemetry_hooks_install
+    dsd-neo_test_app_control_telemetry_hooks_install
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
 )
 add_test(
-    NAME UI_TELEMETRY_HOOKS_INSTALL
-    COMMAND dsd-neo_test_ui_telemetry_hooks_install
+    NAME APP_CONTROL_TELEMETRY_HOOKS_INSTALL
+    COMMAND dsd-neo_test_app_control_telemetry_hooks_install
 )
 
 if(DSD_ENABLE_TERMINAL_UI)
@@ -1451,6 +1516,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_callbacks
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/app_control
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
     )
     add_test(NAME UI_MENU_CALLBACKS COMMAND dsd-neo_test_ui_menu_callbacks)
@@ -1464,6 +1530,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_actions
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/app_control
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
     )
     add_test(NAME UI_MENU_ACTIONS COMMAND dsd-neo_test_ui_menu_actions)
@@ -1475,7 +1542,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_include_directories(
         dsd-neo_test_ui_hotkeys_regression
-        PRIVATE ${PROJECT_SOURCE_DIR}/tests/ui ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests/ui
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
     )
     target_link_libraries(
         dsd-neo_test_ui_hotkeys_regression
@@ -1494,14 +1564,17 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_ui_tcp_audio_connect
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${_PUBLIC_INCLUDES}
 )
 add_test(NAME UI_TCP_AUDIO_CONNECT COMMAND dsd-neo_test_ui_tcp_audio_connect)
 
 add_executable(dsd-neo_test_ui_burst_active_call ui/test_ui_burst_active_call.c)
 target_include_directories(
     dsd-neo_test_ui_burst_active_call
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
 )
 add_test(NAME UI_BURST_ACTIVE_CALL COMMAND dsd-neo_test_ui_burst_active_call)
 
@@ -1513,7 +1586,9 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_include_directories(
         dsd-neo_test_ui_ncurses_utils
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
     )
     target_link_libraries(
         dsd-neo_test_ui_ncurses_utils
@@ -1528,7 +1603,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_include_directories(
         dsd-neo_test_ui_ncurses_init
-        PRIVATE ${PROJECT_SOURCE_DIR}/tests/ui ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests/ui
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
     )
     add_test(NAME UI_NCURSES_INIT COMMAND dsd-neo_test_ui_ncurses_init)
 
@@ -1584,7 +1662,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_include_directories(
         dsd-neo_test_ui_prims_status_gamma
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     target_link_libraries(
         dsd-neo_test_ui_prims_status_gamma
@@ -1602,7 +1683,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_include_directories(
         dsd-neo_test_ui_snr_meter
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     target_compile_definitions(
         dsd-neo_test_ui_snr_meter
@@ -1665,7 +1749,10 @@ if(DSD_ENABLE_TERMINAL_UI)
         )
         target_include_directories(
             dsd-neo_test_ui_snr_meter_pdc_wide_no_api
-            PRIVATE ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/terminal
+                ${CURSES_INCLUDE_DIRS}
         )
         target_compile_definitions(
             dsd-neo_test_ui_snr_meter_pdc_wide_no_api
@@ -1854,81 +1941,128 @@ if(DSD_ENABLE_TERMINAL_UI)
 endif()
 
 add_executable(
-    dsd-neo_test_ui_history_state
+    dsd-neo_test_app_control_history_state
     ui/test_ui_history_state.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_history.c
 )
 target_include_directories(
-    dsd-neo_test_ui_history_state
+    dsd-neo_test_app_control_history_state
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_ui_history_state PRIVATE dsd-neo_platform)
-add_test(NAME UI_HISTORY_STATE COMMAND dsd-neo_test_ui_history_state)
+target_link_libraries(
+    dsd-neo_test_app_control_history_state
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME APP_CONTROL_HISTORY_STATE
+    COMMAND dsd-neo_test_app_control_history_state
+)
 
 add_executable(
-    dsd-neo_test_ui_history_compact
+    dsd-neo_test_app_control_history_compact
     ui/test_ui_history_compact.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_history.c
 )
 target_include_directories(
-    dsd-neo_test_ui_history_compact
+    dsd-neo_test_app_control_history_compact
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_ui_history_compact PRIVATE dsd-neo_platform)
-add_test(NAME UI_HISTORY_COMPACT COMMAND dsd-neo_test_ui_history_compact)
+target_link_libraries(
+    dsd-neo_test_app_control_history_compact
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME APP_CONTROL_HISTORY_COMPACT
+    COMMAND dsd-neo_test_app_control_history_compact
+)
 
 add_executable(
-    dsd-neo_test_ui_snapshot_event_history
+    dsd-neo_test_app_control_snapshot_event_history
     ui/test_ui_snapshot_event_history.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/frontend.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
 target_include_directories(
-    dsd-neo_test_ui_snapshot_event_history
+    dsd-neo_test_app_control_snapshot_event_history
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(
-    dsd-neo_test_ui_snapshot_event_history
+    dsd-neo_test_app_control_snapshot_event_history
     PRIVATE dsd-neo_platform
 )
 add_test(
-    NAME UI_SNAPSHOT_EVENT_HISTORY
-    COMMAND dsd-neo_test_ui_snapshot_event_history
+    NAME APP_CONTROL_SNAPSHOT_EVENT_HISTORY
+    COMMAND dsd-neo_test_app_control_snapshot_event_history
 )
 
 add_executable(
-    dsd-neo_test_ui_opts_snapshot
+    dsd-neo_test_app_control_opts_snapshot
     ui/test_ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
 )
 target_include_directories(
-    dsd-neo_test_ui_opts_snapshot
+    dsd-neo_test_app_control_opts_snapshot
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
 )
-target_link_libraries(dsd-neo_test_ui_opts_snapshot PRIVATE dsd-neo_platform)
-add_test(NAME UI_OPTS_SNAPSHOT COMMAND dsd-neo_test_ui_opts_snapshot)
+target_link_libraries(
+    dsd-neo_test_app_control_opts_snapshot
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME APP_CONTROL_OPTS_SNAPSHOT
+    COMMAND dsd-neo_test_app_control_opts_snapshot
+)
 
 add_executable(
-    dsd-neo_test_ui_frontend_status_metrics
+    dsd-neo_test_app_control_frontend_public_boundary
+    ui/test_app_control_frontend_public_boundary.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_frontend_public_boundary
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY
+    COMMAND dsd-neo_test_app_control_frontend_public_boundary
+)
+
+add_executable(
+    dsd-neo_test_app_control_frontend_status_metrics
     ui/test_ui_frontend_status_metrics.c
     ${PROJECT_SOURCE_DIR}/src/app_control/frontend.c
     ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
 )
 target_include_directories(
-    dsd-neo_test_ui_frontend_status_metrics
+    dsd-neo_test_app_control_frontend_status_metrics
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(
-    dsd-neo_test_ui_frontend_status_metrics
+    dsd-neo_test_app_control_frontend_status_metrics
     PRIVATE dsd-neo_platform
 )
 add_test(
-    NAME UI_FRONTEND_STATUS_METRICS
-    COMMAND dsd-neo_test_ui_frontend_status_metrics
+    NAME APP_CONTROL_FRONTEND_STATUS_METRICS
+    COMMAND dsd-neo_test_app_control_frontend_status_metrics
 )
+
+if(DSD_ENABLE_NATIVE_UI)
+    add_executable(
+        dsd-neo_test_ui_native_provider
+        ui/test_ui_native_provider.c
+        ${PROJECT_SOURCE_DIR}/src/ui/native/frontend_provider.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_native_provider
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    add_test(NAME UI_NATIVE_PROVIDER COMMAND dsd-neo_test_ui_native_provider)
+endif()
 
 add_executable(
     dsd-neo_test_runtime_freq_parse
@@ -3031,7 +3165,10 @@ set_source_files_properties(
 )
 target_include_directories(
     dsd-neo_test_runtime_config_apply
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal
 )
 set(_DSD_RUNTIME_CONFIG_APPLY_LIBS
     dsd-neo_app_control
@@ -3056,14 +3193,14 @@ else()
 endif()
 add_test(NAME RUNTIME_CONFIG_APPLY COMMAND dsd-neo_test_runtime_config_apply)
 
-add_executable(dsd-neo_test_ui_cmd_queue ui/test_ui_cmd_queue.c)
+add_executable(dsd-neo_test_app_command_queue ui/test_ui_cmd_queue.c)
 target_include_directories(
-    dsd-neo_test_ui_cmd_queue
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    dsd-neo_test_app_command_queue
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(
-        dsd-neo_test_ui_cmd_queue
+        dsd-neo_test_app_command_queue
         PRIVATE
             "-Wl,--start-group"
             ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
@@ -3073,11 +3210,11 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     )
 else()
     target_link_libraries(
-        dsd-neo_test_ui_cmd_queue
+        dsd-neo_test_app_command_queue
         PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
     )
 endif()
-add_test(NAME UI_CMD_QUEUE COMMAND dsd-neo_test_ui_cmd_queue)
+add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
 
 set(_DSD_BOOTSTRAP_FIXTURE_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/runtime_bootstrap_fixtures"

@@ -7,7 +7,6 @@
  * Deterministic contracts for terminal UI menu service helpers.
  */
 
-#include <dsd-neo/app_control/services.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
@@ -32,6 +31,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "services.h"
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -199,7 +199,7 @@ dsd_socket_t
 Connect(char* hostname, int portno) {
     (void)hostname;
     (void)portno;
-    return 0;
+    return DSD_INVALID_SOCKET;
 }
 
 int
@@ -494,8 +494,10 @@ test_p2_trunking_and_slot_controls(void) {
 
     svc_set_slot_pref(&opts, -1);
     rc |= expect_int("slot preference clamps low", opts.slot_preference, 0);
+    svc_set_slot_pref(&opts, 2);
+    rc |= expect_int("slot preference stores auto", opts.slot_preference, 2);
     svc_set_slot_pref(&opts, 42);
-    rc |= expect_int("slot preference clamps high", opts.slot_preference, 1);
+    rc |= expect_int("slot preference clamps high", opts.slot_preference, 2);
     svc_set_slots_onoff(&opts, 1);
     rc |= expect_int("slot mask enables slot1", opts.slot1_on, 1);
     rc |= expect_int("slot mask disables slot2", opts.slot2_on, 0);
@@ -646,6 +648,7 @@ test_file_network_and_import_failure_contracts(void) {
     rc |= expect_int("rigctl connect failure", svc_rigctl_connect(&opts, "rig.local", 4532), -1);
     rc |= expect_str("rigctl host stored before connect", opts.rigctlhostname, "rig.local");
     rc |= expect_int("rigctl port stored before connect", opts.rigctlportno, 4532);
+    rc |= expect_int("rigctl socket invalid after connect failure", opts.rigctl_sockfd, DSD_INVALID_SOCKET);
     rc |= expect_int("rigctl disabled after connect failure", opts.use_rigctl, 0);
 
     rc |= expect_int("channel import failure", svc_import_channel_map(&opts, &state, "channels.csv"), -1);

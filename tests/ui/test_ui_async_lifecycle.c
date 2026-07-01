@@ -8,9 +8,8 @@
  */
 
 #include <curses.h>
-#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -24,6 +23,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "../../src/app_control/commands_internal.h"
+#include "../../src/app_control/snapshot_internal.h"
+#include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
@@ -86,7 +88,7 @@ dsd_runtime_set_control_pump(dsd_control_pump_fn fn) {
 }
 
 void
-ui_history_set_mode(int mode) {
+dsd_app_frontend_history_set_mode(int mode) {
     g_history_mode = mode;
 }
 
@@ -99,6 +101,23 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_app_install_telemetry_hooks(void) {}
+
+static void
+test_frontend_control_pump(dsd_opts* opts, dsd_state* state) {
+    (void)dsd_app_drain_cmds(opts, state);
+}
+
+void
+dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* initial_state) {
+    g_latest_opts = initial_opts;
+    g_latest_state = initial_state;
+    dsd_runtime_set_control_pump(test_frontend_control_pump);
+}
+
+void
+dsd_app_frontend_runtime_stop(void) {
+    dsd_runtime_set_control_pump(NULL);
+}
 
 int
 ui_menu_is_open(void) {
@@ -272,7 +291,7 @@ test_ui_start_failure_resets_state(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.terminal_history = 2;
+    opts.frontend_display.terminal_history = 2;
 
     g_create_calls = 0;
     g_join_calls = 0;
@@ -297,7 +316,7 @@ test_ui_start_stop_idempotency_and_control_pump(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.terminal_history = 1;
+    opts.frontend_display.terminal_history = 1;
 
     g_create_calls = 0;
     g_join_calls = 0;

@@ -76,7 +76,6 @@ static int test_init_pair(short pair, short f, short b);
 #include "dsd-neo/app_control/frontend.h"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_c.h"
 #include "dsd-neo/ui/ncurses_internal.h"
 #include "dsd-neo/ui/ui_prims.h"
@@ -229,9 +228,7 @@ rtl_stream_spectrum_get(float* out, int max_bins, int* out_rate) { // NOLINT(mis
 }
 
 int
-dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
-    (void)opts;
-    (void)state;
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->snr_bias_c4fm = rtl_stream_get_snr_bias_c4fm();
     out->snr_c4fm_db = rtl_stream_get_snr_c4fm();
@@ -282,10 +279,10 @@ test_density_and_constellation_helpers(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     assert(fabs(constellation_gate_squared(&opts) - 0.0) < 0.0001);
     opts.mod_qpsk = 1;
-    opts.const_gate_qpsk = 2.0f;
+    opts.frontend_display.const_gate_qpsk = 2.0f;
     assert(fabs(constellation_gate_squared(&opts) - 0.81) < 0.0001);
     opts.mod_qpsk = 0;
-    opts.const_gate_other = -1.0f;
+    opts.frontend_display.const_gate_other = -1.0f;
     assert(fabs(constellation_gate_squared(&opts) - 0.0) < 0.0001);
 
     constellation_geom geom = constellation_compute_geometry(9, 7);
@@ -314,12 +311,12 @@ test_density_and_constellation_helpers(void) {
     assert(sum_density(den, 9 * 7) == 0);
 
     const float zero_iq[] = {0.0f, 0.0f, 0.5f, 0.0f};
-    opts.const_norm_mode = 1;
+    opts.frontend_display.const_norm_mode = 1;
     DSD_MEMSET(den, 0, sizeof den);
     dmax = constellation_accumulate_density(zero_iq, 2, &opts, &geom, 16384, 0.0, den);
     assert(dmax == 1);
     assert(sum_density(den, 9 * 7) == 1);
-    opts.const_norm_mode = 0;
+    opts.frontend_display.const_norm_mode = 0;
 
     unsigned short* dynamic_den = NULL;
     assert(constellation_prepare_density_buffer(3, 4, &dynamic_den));
@@ -663,7 +660,7 @@ test_histogram_and_spectrum_helpers(void) {
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof opts);
     g_has_colors = 1;
-    opts.eye_color = 1;
+    opts.frontend_display.eye_color = 1;
     render_reset();
     spectrum_draw_cell(&opts, 0, vmax, vmin, vmax, span, 0, 4);
     assert(strcmp(g_render_out, "#") == 0);

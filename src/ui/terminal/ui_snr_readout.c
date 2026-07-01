@@ -5,8 +5,6 @@
 
 #include "ui_snr_readout.h"
 
-#include <stddef.h>
-
 #ifdef USE_RADIO
 #include <dsd-neo/app_control/frontend.h>
 #endif
@@ -33,7 +31,7 @@ ui_snr_value_is_valid(double snr) {
 static double
 ui_snr_get_c4fm_value(void) {
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(NULL, NULL, &metrics, DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE);
+    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(&metrics, DSD_FRONTEND_SNR_FALLBACK_C4FM_EYE);
     double snr = metrics.snr_c4fm_db;
     if (!ui_snr_value_is_valid(snr)) {
         double fb = metrics.snr_c4fm_eye_db;
@@ -47,7 +45,7 @@ ui_snr_get_c4fm_value(void) {
 static double
 ui_snr_get_qpsk_value(void) {
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(NULL, NULL, &metrics, DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST);
+    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(&metrics, DSD_FRONTEND_SNR_FALLBACK_QPSK_CONST);
     double snr = metrics.snr_cqpsk_db;
     if (!ui_snr_value_is_valid(snr)) {
         double fb = metrics.snr_qpsk_const_db;
@@ -68,7 +66,7 @@ ui_snr_get_qpsk_value(void) {
 static double
 ui_snr_get_gfsk_value(void) {
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(NULL, NULL, &metrics, DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE);
+    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(&metrics, DSD_FRONTEND_SNR_FALLBACK_GFSK_EYE);
     double snr = metrics.snr_gfsk_db;
     if (!ui_snr_value_is_valid(snr)) {
         double fb = metrics.snr_gfsk_eye_db;

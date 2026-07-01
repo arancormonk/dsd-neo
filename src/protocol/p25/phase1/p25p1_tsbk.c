@@ -306,7 +306,8 @@ tsbk_handle_mfid90_base_station_id(const dsd_opts* opts, const dsd_state* state,
     } else {
         DSD_FPRINTF(stderr, " CWID: none");
     }
-    if (opts && state && opts->show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+    if (opts && state && opts->frontend_display.show_p25_callsign_decode
+        && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
         char callsign[7];
         p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
         DSD_FPRINTF(stderr, " Network Callsign: %s", callsign);
@@ -384,7 +385,7 @@ tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Network Status Broadcast TSBK - Abbreviated \n");
     DSD_FPRINTF(stderr, "  WACN [%05lX] SYSID [%03X] NAC [%03llX]", wacn, sysid, state->p2_cc);
-    if (opts->show_p25_callsign_decode) {
+    if (opts->frontend_display.show_p25_callsign_decode) {
         char callsign[7];
         p25_wacn_sysid_to_callsign((uint32_t)wacn, (uint16_t)sysid, callsign);
         DSD_FPRINTF(stderr, " [%s]", callsign);

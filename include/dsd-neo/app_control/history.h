@@ -22,13 +22,13 @@ extern "C" {
 #endif
 
 /** @brief Get current event-history display mode (0=Off, 1=Short, 2=Long). */
-int ui_history_get_mode(void);
+int dsd_app_frontend_history_get_mode(void);
 
 /** @brief Set event-history display mode (normalized to [0,2]). */
-void ui_history_set_mode(int mode);
+void dsd_app_frontend_history_set_mode(int mode);
 
 /** @brief Cycle mode Short->Long->Off (mod 3), returning the new mode. */
-int ui_history_cycle_mode(void);
+int dsd_app_frontend_history_cycle_mode(void);
 
 /**
  * @brief Build display text for event-history lines.
@@ -43,7 +43,7 @@ int ui_history_cycle_mode(void);
  * @param mode Event-history mode (normalized internally).
  * @return Number of characters written to @p out (excluding NUL).
  */
-size_t ui_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode);
+size_t dsd_app_frontend_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode);
 
 /**
  * @brief Return the timestamp used for event-history ordering.
@@ -52,6 +52,21 @@ size_t ui_history_compact_event_text(char* out, size_t out_size, const char* eve
  * that displayed timestamp is authoritative so ordering matches what the UI
  * prints. Noncanonical strings use @p fallback_time.
  */
+time_t dsd_app_frontend_history_event_sort_time(const char* event_text, time_t fallback_time);
+
+/** @brief Compatibility alias for terminal UI callers. */
+int ui_history_get_mode(void);
+
+/** @brief Compatibility alias for terminal UI callers. */
+void ui_history_set_mode(int mode);
+
+/** @brief Compatibility alias for terminal UI callers. */
+int ui_history_cycle_mode(void);
+
+/** @brief Compatibility alias for terminal UI callers. */
+size_t ui_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode);
+
+/** @brief Compatibility alias for terminal UI callers. */
 time_t ui_history_event_sort_time(const char* event_text, time_t fallback_time);
 
 #ifdef __cplusplus

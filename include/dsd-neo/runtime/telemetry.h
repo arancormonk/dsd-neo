@@ -39,21 +39,21 @@ void dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks);
  *
  * Thread-safe. Called from decoder threads to update UI display.
  */
-void ui_publish_snapshot(const dsd_state* state);
+void dsd_telemetry_publish_snapshot(const dsd_state* state);
 
 /**
  * @brief Publish a snapshot of options for the UI.
  *
  * Thread-safe. Called when options change and UI needs to reflect them.
  */
-void ui_publish_opts_snapshot(const dsd_opts* opts);
+void dsd_telemetry_publish_opts_snapshot(const dsd_opts* opts);
 
 /**
  * @brief Request a UI redraw from demod/decoder side.
  *
  * Marks the UI dirty so it redraws on the next refresh cycle.
  */
-void ui_request_redraw(void);
+void dsd_telemetry_request_redraw(void);
 
 /**
  * @brief Publish opts/state snapshots and request a redraw.
@@ -61,7 +61,7 @@ void ui_request_redraw(void);
  * Convenience function combining snapshot publishing with redraw request.
  * Thread-safe.
  */
-void ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state);
+void dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state);
 
 #ifdef __cplusplus
 }

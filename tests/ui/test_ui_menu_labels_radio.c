@@ -42,6 +42,7 @@ static float g_rtl_ted_gain;
 static int g_rtl_timing_bias;
 static int g_rtl_auto_ppm;
 static int g_rtl_tuner_autogain;
+static const dsd_state* g_frontend_state;
 static int g_rtl_output_kind;
 static int g_ted_child_visible;
 
@@ -152,9 +153,7 @@ rtl_stream_get_tuner_autogain(void) {
 }
 
 int
-dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
-    (void)opts;
-    (void)state;
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->output_kind = g_rtl_output_kind;
     out->cqpsk_enable = g_rtl_cqpsk;
@@ -170,16 +169,16 @@ dsd_app_frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_f
 }
 
 int
-dsd_app_frontend_auto_ppm_enabled(const dsd_state* state, int configured) {
-    if (state && state->rtl_ctx) {
+dsd_app_frontend_auto_ppm_enabled(int configured) {
+    if (g_frontend_state && g_frontend_state->rtl_ctx) {
         return g_rtl_auto_ppm;
     }
     return configured ? 1 : 0;
 }
 
 int
-dsd_app_frontend_tuner_autogain_enabled(const dsd_state* state, int configured) {
-    if (state && state->rtl_ctx) {
+dsd_app_frontend_tuner_autogain_enabled(int configured) {
+    if (g_frontend_state && g_frontend_state->rtl_ctx) {
         return g_rtl_tuner_autogain;
     }
     return configured ? 1 : 0;
@@ -225,6 +224,7 @@ reset_fixture(dsd_opts* opts, dsd_state* state, UiCtx* ctx) {
     g_ted_child_visible = 0;
     ctx->opts = opts;
     ctx->state = state;
+    g_frontend_state = state;
 }
 
 static int
@@ -284,7 +284,7 @@ test_radio_dsp_labels(void) {
     g_rtl_timing_bias = -123;
     rc |= expect_str("timing bias", lbl_cqpsk_timing_bias(&ctx, b, sizeof(b)), "CQPSK Timing Bias (EMA): -123");
 
-    opts.show_dsp_panel = 1;
+    opts.frontend_display.show_dsp_panel = 1;
     opts.rtl_bias_tee = 1;
     opts.rtltcp_autotune = 1;
     rc |= expect_str("dsp panel on", lbl_dsp_panel(&ctx, b, sizeof(b)), "Show DSP Panel [On]");
