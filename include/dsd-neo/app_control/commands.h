@@ -142,7 +142,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_RTL_ENABLE_INPUT = 480,
     DSD_APP_CMD_RTL_RESTART = 481,
     DSD_APP_CMD_RTL_SET_DEV = 482,         // payload: int32_t index
-    DSD_APP_CMD_RTL_SET_FREQ = 483,        // payload: int32_t hz
+    DSD_APP_CMD_RTL_SET_FREQ = 483,        // payload: uint32_t hz
     DSD_APP_CMD_RTL_SET_GAIN = 484,        // payload: int32_t gain
     DSD_APP_CMD_RTL_SET_PPM = 485,         // payload: int32_t ppm
     DSD_APP_CMD_RTL_SET_BW = 486,          // payload: int32_t khz

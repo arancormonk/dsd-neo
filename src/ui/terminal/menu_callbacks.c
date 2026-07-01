@@ -923,8 +923,10 @@ cb_rtl_freq(void* u, int ok, int f) {
         return;
     }
     if (ok) {
-        int32_t v = f;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_FREQ, v);
+        int adjusted = 0;
+        f = clamp_int_with_notice("RTL frequency", f, 0, 2147483647, &adjusted);
+        uint32_t v = (uint32_t)f;
+        (void)dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, v);
     }
 }
 

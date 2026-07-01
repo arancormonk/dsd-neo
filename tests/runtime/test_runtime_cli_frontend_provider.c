@@ -261,6 +261,7 @@ typedef struct fake_main_thread_ctx {
     atomic_int runner_started;
     atomic_int runner_allow_finish;
     atomic_int main_loop_saw_engine_done;
+    atomic_int runner_saw_stop_after_reset;
     int runner_rc;
 } fake_main_thread_ctx;
 
@@ -305,6 +306,33 @@ fake_exiting_engine_runner(dsd_opts* opts, dsd_state* state, const dsd_engine_li
 }
 
 static int
+fake_resetting_engine_runner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks, void* context) {
+    fake_main_thread_ctx* ctx = (fake_main_thread_ctx*)context;
+    ctx->runner_thread = test_current_thread_id();
+    atomic_store(&ctx->runner_started, 1);
+    for (int i = 0; i < 1000 && !dsd_exitflag_load(); i++) {
+        dsd_sleep_ms(1);
+    }
+
+    dsd_exitflag_store(0);
+    if (hooks && hooks->start && hooks->start(opts, state, hooks->context) != 0) {
+        return -1;
+    }
+
+    for (int i = 0; i < 1000; i++) {
+        if (dsd_exitflag_load()) {
+            atomic_store(&ctx->runner_saw_stop_after_reset, 1);
+            break;
+        }
+        dsd_sleep_ms(1);
+    }
+    if (hooks && hooks->stop) {
+        hooks->stop(opts, state, hooks->context);
+    }
+    return atomic_load(&ctx->runner_saw_stop_after_reset) ? ctx->runner_rc : -5;
+}
+
+static int
 fake_main_loop_exits_first(const dsd_frontend_host_callbacks* host, void* context) {
     fake_main_thread_ctx* ctx = (fake_main_thread_ctx*)context;
     ctx->main_loop_thread = test_current_thread_id();
@@ -321,6 +349,26 @@ static int
 fake_main_loop_waits_for_engine(const dsd_frontend_host_callbacks* host, void* context) {
     fake_main_thread_ctx* ctx = (fake_main_thread_ctx*)context;
     ctx->main_loop_thread = test_current_thread_id();
+    for (int i = 0; i < 1000; i++) {
+        if (host && host->engine_finished && host->engine_finished(host->context)) {
+            atomic_store(&ctx->main_loop_saw_engine_done, 1);
+            return 0;
+        }
+        dsd_sleep_ms(1);
+    }
+    return -1;
+}
+
+static int
+fake_main_loop_requests_stop_then_waits(const dsd_frontend_host_callbacks* host, void* context) {
+    fake_main_thread_ctx* ctx = (fake_main_thread_ctx*)context;
+    ctx->main_loop_thread = test_current_thread_id();
+    for (int i = 0; i < 1000 && !atomic_load(&ctx->runner_started); i++) {
+        dsd_sleep_ms(1);
+    }
+    if (host && host->request_engine_stop) {
+        host->request_engine_stop(host->context);
+    }
     for (int i = 0; i < 1000; i++) {
         if (host && host->engine_finished && host->engine_finished(host->context)) {
             atomic_store(&ctx->main_loop_saw_engine_done, 1);
@@ -366,6 +414,48 @@ test_main_thread_provider_runs_engine_on_worker(void) {
     }
     if (test_same_thread(ctx.runner_thread, ctx.caller_thread)) {
         DSD_FPRINTF(stderr, "engine runner unexpectedly ran on caller thread\n");
+        failures |= 1;
+    }
+    dsd_exitflag_store(0);
+    return failures;
+}
+
+static int
+test_main_thread_provider_stop_survives_engine_startup_reset(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.frontend_kind = DSD_FRONTEND_NATIVE;
+    dsd_exitflag_store(0);
+
+    static fake_main_thread_ctx ctx;
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    ctx.caller_thread = test_current_thread_id();
+    ctx.runner_rc = 0;
+    g_fake_main_thread_context = &ctx;
+
+    static const dsd_frontend_provider fake_main = {
+        .kind = DSD_FRONTEND_NATIVE,
+        .name = "fake-main",
+        .prepare = fake_main_thread_prepare,
+        .flags = DSD_FRONTEND_PROVIDER_MAIN_THREAD_UI,
+        .run_main_loop = fake_main_loop_requests_stop_then_waits,
+    };
+    const dsd_frontend_provider* providers[] = {&fake_main};
+    int rc = dsd_cli_frontend_run_from_registry(&opts, &state, providers, 1, fake_resetting_engine_runner, &ctx);
+    g_fake_main_thread_context = NULL;
+
+    int failures = 0;
+    failures |= expect_int("startup-reset fake run rc", rc, 0);
+    failures |= expect_int("startup-reset runner saw durable stop", atomic_load(&ctx.runner_saw_stop_after_reset), 1);
+    failures |= expect_int("startup-reset main saw done", atomic_load(&ctx.main_loop_saw_engine_done), 1);
+    if (!test_same_thread(ctx.main_loop_thread, ctx.caller_thread)) {
+        DSD_FPRINTF(stderr, "startup-reset main loop did not run on caller thread\n");
+        failures |= 1;
+    }
+    if (test_same_thread(ctx.runner_thread, ctx.caller_thread)) {
+        DSD_FPRINTF(stderr, "startup-reset runner unexpectedly ran on caller thread\n");
         failures |= 1;
     }
     dsd_exitflag_store(0);
@@ -422,6 +512,7 @@ main(void) {
     rc |= test_fake_provider_is_selected();
     rc |= test_compiled_native_provider_availability();
     rc |= test_main_thread_provider_runs_engine_on_worker();
+    rc |= test_main_thread_provider_stop_survives_engine_startup_reset();
     rc |= test_main_thread_provider_observes_engine_exit_first();
     if (rc == 0) {
         puts("RUNTIME_CLI_FRONTEND_PROVIDER: OK");

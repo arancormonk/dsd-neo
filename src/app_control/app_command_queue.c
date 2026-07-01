@@ -917,6 +917,15 @@ ui_cmd_parse_i32_payload(const struct dsd_app_command* c, int32_t* out) {
 }
 
 static int
+ui_cmd_parse_u32_payload(const struct dsd_app_command* c, uint32_t* out) {
+    if (!c || !out || c->n < (int)sizeof(*out)) {
+        return 0;
+    }
+    DSD_MEMCPY(out, c->data, sizeof *out);
+    return 1;
+}
+
+static int
 ui_cmd_parse_double_payload(const struct dsd_app_command* c, double* out) {
     if (!c || !out || c->n < (int)sizeof(*out)) {
         return 0;
@@ -999,17 +1008,17 @@ apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct dsd
 
 static int
 ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    int32_t v = 0;
+    uint32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
-    if (state && ui_cmd_parse_i32_payload(c, &v)) {
-        int rc = svc_rtl_set_freq(opts, state, (uint32_t)v);
+    if (state && ui_cmd_parse_u32_payload(c, &v)) {
+        int rc = svc_rtl_set_freq(opts, state, v);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL frequency -> %d Hz", (int)v);
+            ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz", v);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
         } else {
-            ui_set_toast(state, 4, "Failed: RTL frequency -> %d Hz", (int)v);
+            ui_set_toast(state, 4, "Failed: RTL frequency -> %u Hz", v);
         }
     }
     return result;
@@ -1198,15 +1207,6 @@ apply_cmd_io_and_import_rtl_d(dsd_opts* opts, dsd_state* state, const struct dsd
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 #endif
-
-static int
-ui_cmd_parse_u32_payload(const struct dsd_app_command* c, uint32_t* out) {
-    if (!c || !out || c->n < (int)sizeof(*out)) {
-        return 0;
-    }
-    DSD_MEMCPY(out, c->data, sizeof *out);
-    return 1;
-}
 
 static int
 ui_cmd_handle_rigctl_set_mod_bw(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
@@ -2152,16 +2152,12 @@ static const int k_ui_cmd_action_ids[] = {
 };
 
 static const int k_ui_cmd_i32_ids[] = {
-    DSD_APP_CMD_GAIN_DELTA,       DSD_APP_CMD_AGAIN_DELTA,
-    DSD_APP_CMD_SPEC_SIZE_DELTA,  DSD_APP_CMD_PPM_DELTA,
-    DSD_APP_CMD_GAIN_SET,         DSD_APP_CMD_AGAIN_SET,
-    DSD_APP_CMD_RTL_SET_DEV,      DSD_APP_CMD_RTL_SET_FREQ,
-    DSD_APP_CMD_RTL_SET_GAIN,     DSD_APP_CMD_RTL_SET_PPM,
-    DSD_APP_CMD_RTL_SET_BW,       DSD_APP_CMD_RTL_SET_VOL_MULT,
-    DSD_APP_CMD_RTL_SET_BIAS_TEE, DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,
-    DSD_APP_CMD_RTL_SET_AUTO_PPM, DSD_APP_CMD_RIGCTL_SET_MOD_BW,
-    DSD_APP_CMD_SLOT_PREF_SET,    DSD_APP_CMD_SLOTS_ONOFF_SET,
-    DSD_APP_CMD_INPUT_VOL_SET,
+    DSD_APP_CMD_GAIN_DELTA,          DSD_APP_CMD_AGAIN_DELTA,      DSD_APP_CMD_SPEC_SIZE_DELTA,
+    DSD_APP_CMD_PPM_DELTA,           DSD_APP_CMD_GAIN_SET,         DSD_APP_CMD_AGAIN_SET,
+    DSD_APP_CMD_RTL_SET_DEV,         DSD_APP_CMD_RTL_SET_GAIN,     DSD_APP_CMD_RTL_SET_PPM,
+    DSD_APP_CMD_RTL_SET_BW,          DSD_APP_CMD_RTL_SET_VOL_MULT, DSD_APP_CMD_RTL_SET_BIAS_TEE,
+    DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, DSD_APP_CMD_RTL_SET_AUTO_PPM, DSD_APP_CMD_RIGCTL_SET_MOD_BW,
+    DSD_APP_CMD_SLOT_PREF_SET,       DSD_APP_CMD_SLOTS_ONOFF_SET,  DSD_APP_CMD_INPUT_VOL_SET,
 };
 
 static const int k_ui_cmd_string_ids[] = {
@@ -2236,6 +2232,7 @@ dsd_app_command_set_u8(int cmd_id, uint8_t value) {
 int
 dsd_app_command_set_u32_tracked(int cmd_id, uint32_t value, dsd_app_command_token* out_token) {
     switch (cmd_id) {
+        case DSD_APP_CMD_RTL_SET_FREQ:
         case DSD_APP_CMD_TG_HOLD_SET:
         case DSD_APP_CMD_KEY_BASIC_SET:
         case DSD_APP_CMD_KEY_SCRAMBLER_SET: return ui_cmd_post_tracked(cmd_id, &value, sizeof value, out_token);
@@ -2687,6 +2684,8 @@ dsd_app_command_descriptors_get(dsd_app_command_descriptor* out, size_t max, siz
                            DSD_APP_COMMAND_CAP_U8, sizeof(uint8_t));
     ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_LOCKOUT_SLOT, DSD_APP_COMMAND_PAYLOAD_U8,
                            DSD_APP_COMMAND_CAP_U8, sizeof(uint8_t));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_RTL_SET_FREQ, DSD_APP_COMMAND_PAYLOAD_U32,
+                           DSD_APP_COMMAND_CAP_U32, sizeof(uint32_t));
     ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_TG_HOLD_SET, DSD_APP_COMMAND_PAYLOAD_U32,
                            DSD_APP_COMMAND_CAP_U32, sizeof(uint32_t));
     ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_KEY_BASIC_SET, DSD_APP_COMMAND_PAYLOAD_U32,
@@ -2772,6 +2771,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},
     {DSD_APP_CMD_LOCKOUT_SLOT, sizeof(uint8_t)},
+    {DSD_APP_CMD_RTL_SET_FREQ, sizeof(uint32_t)},
     {DSD_APP_CMD_TG_HOLD_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_BASIC_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_SCRAMBLER_SET, sizeof(uint32_t)},

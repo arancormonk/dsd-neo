@@ -892,7 +892,7 @@ test_gain_rtl_and_env_callbacks(void) {
     reset_capture();
     cb_rtl_freq(&ctx, 1, 851012500);
     rc |= expect_int("rtl freq command", g_cmd.id, DSD_APP_CMD_RTL_SET_FREQ);
-    rc |= expect_int("rtl freq value", cmd_i32(), 851012500);
+    rc |= expect_int("rtl freq value", (int)cmd_u32(), 851012500);
 
     reset_capture();
     cb_rtl_gain(&ctx, 1, 77);

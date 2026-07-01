@@ -11,6 +11,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -138,12 +139,45 @@ dsd_cli_default_engine_runner(dsd_opts* opts, dsd_state* state, const dsd_engine
 typedef struct dsd_cli_engine_worker {
     dsd_opts* opts;
     dsd_state* state;
-    const dsd_engine_lifecycle_hooks* hooks;
+    const dsd_engine_lifecycle_hooks* original_hooks;
+    dsd_engine_lifecycle_hooks hooks;
     dsd_cli_engine_runner runner;
     void* runner_context;
     atomic_int finished;
+    atomic_int stop_requested;
+    int original_lifecycle_started;
     int rc;
 } dsd_cli_engine_worker;
+
+static void
+dsd_cli_engine_worker_apply_requested_stop(dsd_cli_engine_worker* worker) {
+    if (worker && atomic_load(&worker->stop_requested)) {
+        dsd_request_shutdown(worker->opts, worker->state);
+    }
+}
+
+static int
+dsd_cli_engine_worker_lifecycle_start(dsd_opts* opts, dsd_state* state, void* context) {
+    dsd_cli_engine_worker* worker = (dsd_cli_engine_worker*)context;
+    const dsd_engine_lifecycle_hooks* hooks = worker ? worker->original_hooks : NULL;
+    if (hooks && hooks->start && hooks->start(opts, state, hooks->context) != 0) {
+        return -1;
+    }
+    if (worker && hooks && hooks->start) {
+        worker->original_lifecycle_started = 1;
+    }
+    dsd_cli_engine_worker_apply_requested_stop(worker);
+    return 0;
+}
+
+static void
+dsd_cli_engine_worker_lifecycle_stop(dsd_opts* opts, dsd_state* state, void* context) {
+    dsd_cli_engine_worker* worker = (dsd_cli_engine_worker*)context;
+    const dsd_engine_lifecycle_hooks* hooks = worker ? worker->original_hooks : NULL;
+    if (worker && worker->original_lifecycle_started && hooks && hooks->stop) {
+        hooks->stop(opts, state, hooks->context);
+    }
+}
 
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
@@ -152,7 +186,7 @@ static DSD_THREAD_RETURN_TYPE
     dsd_cli_engine_worker_main(void* arg) {
     dsd_cli_engine_worker* worker = (dsd_cli_engine_worker*)arg;
     if (worker && worker->runner) {
-        worker->rc = worker->runner(worker->opts, worker->state, worker->hooks, worker->runner_context);
+        worker->rc = worker->runner(worker->opts, worker->state, &worker->hooks, worker->runner_context);
         atomic_store(&worker->finished, 1);
     }
     DSD_THREAD_RETURN;
@@ -161,6 +195,7 @@ static DSD_THREAD_RETURN_TYPE
 static int
 dsd_cli_engine_worker_finished(void* context) {
     dsd_cli_engine_worker* worker = (dsd_cli_engine_worker*)context;
+    dsd_cli_engine_worker_apply_requested_stop(worker);
     return worker ? atomic_load(&worker->finished) : 1;
 }
 
@@ -168,7 +203,15 @@ static void
 dsd_cli_engine_worker_request_stop(void* context) {
     dsd_cli_engine_worker* worker = (dsd_cli_engine_worker*)context;
     if (worker) {
-        dsd_request_shutdown(worker->opts, worker->state);
+        atomic_store(&worker->stop_requested, 1);
+        dsd_cli_engine_worker_apply_requested_stop(worker);
+    }
+}
+
+static void
+dsd_cli_engine_worker_wait_until_finished(dsd_cli_engine_worker* worker) {
+    while (!dsd_cli_engine_worker_finished(worker)) {
+        dsd_sleep_ms(10);
     }
 }
 
@@ -183,12 +226,18 @@ dsd_cli_run_main_thread_provider(dsd_opts* opts, dsd_state* state, const dsd_eng
     dsd_cli_engine_worker worker = {
         .opts = opts,
         .state = state,
-        .hooks = hooks,
+        .original_hooks = hooks,
         .runner = runner,
         .runner_context = runner_context,
         .rc = 1,
     };
+    worker.hooks = (dsd_engine_lifecycle_hooks){
+        .start = dsd_cli_engine_worker_lifecycle_start,
+        .stop = dsd_cli_engine_worker_lifecycle_stop,
+        .context = &worker,
+    };
     atomic_store(&worker.finished, 0);
+    atomic_store(&worker.stop_requested, 0);
 
     dsd_thread_t engine_thread;
     if (dsd_thread_create(&engine_thread, dsd_cli_engine_worker_main, &worker) != 0) {
@@ -203,6 +252,7 @@ dsd_cli_run_main_thread_provider(dsd_opts* opts, dsd_state* state, const dsd_eng
     int ui_rc = provider->run_main_loop(&host, hooks ? hooks->context : NULL);
     if (!dsd_cli_engine_worker_finished(&worker)) {
         dsd_cli_engine_worker_request_stop(&worker);
+        dsd_cli_engine_worker_wait_until_finished(&worker);
     }
     (void)dsd_thread_join(engine_thread);
 

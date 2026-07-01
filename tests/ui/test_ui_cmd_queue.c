@@ -358,6 +358,7 @@ test_typed_command_api_wrappers(void) {
 
     rc |= expect_int("typed action rejects setter", dsd_app_command_action(DSD_APP_CMD_GAIN_SET), -1);
     rc |= expect_int("typed i32 rejects action", dsd_app_command_set_i32(DSD_APP_CMD_TOGGLE_MUTE, 1), -1);
+    rc |= expect_int("typed rtl frequency rejects i32", dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_FREQ, 1), -1);
     rc |= expect_int("typed string rejects null", dsd_app_command_set_string(DSD_APP_CMD_INPUT_WAV_SET, NULL), -1);
     rc |= expect_int("typed endpoint rejects action",
                      dsd_app_command_set_endpoint(DSD_APP_CMD_TOGGLE_MUTE, "127.0.0.1", -1), -1);
@@ -378,6 +379,8 @@ test_typed_command_api_wrappers(void) {
     rc |= expect_int("typed gain coalesces to latest", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 9), 0);
     rc |= expect_int("typed u8 posts", dsd_app_command_set_u8(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, 3U), 0);
     rc |= expect_int("typed u32 posts", dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, 2468U), 0);
+    rc |=
+        expect_int("typed rtl frequency u32 posts", dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 3000000000U), 0);
     rc |= expect_int("typed u64 posts", dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, 0x55U), 0);
     rc |= expect_int("typed double posts", dsd_app_command_set_double(DSD_APP_CMD_HANGTIME_SET, 3.5), 0);
     rc |= expect_int("typed float posts", dsd_app_command_set_float(DSD_APP_CMD_CONST_GATE_DELTA, 1.0f), 0);
@@ -391,7 +394,7 @@ test_typed_command_api_wrappers(void) {
     rc |= expect_int("typed aes payload posts", dsd_app_command_set_aes_key(&aes), 0);
     rc |= expect_int("typed dsp payload posts", dsd_app_command_dsp_op(&dsp), 0);
 
-    rc |= expect_int("typed wrappers applied with coalescing", dsd_app_drain_cmds(&opts, &state), 14);
+    rc |= expect_int("typed wrappers applied with coalescing", dsd_app_drain_cmds(&opts, &state), 15);
     rc |= expect_int("typed action toggled channels", opts.frontend_display.show_channels, 1);
     rc |= expect_int("typed gain applied latest", (int)opts.audio_gain, 9);
     rc |= expect_str("typed udp input bind copied", opts.udp_in_bindaddr, "0.0.0.0");
@@ -548,8 +551,10 @@ test_tracked_command_results(void) {
     }
     rc |= expect_true("rtl frequency descriptor present", freq_desc != NULL);
     if (freq_desc) {
+        rc |= expect_int("rtl frequency descriptor payload kind", freq_desc->payload_kind, DSD_APP_COMMAND_PAYLOAD_U32);
         rc |= expect_true("rtl frequency descriptor range",
                           freq_desc->min_value == 0.0 && freq_desc->max_value == 3000000000.0);
+        rc |= expect_true("rtl frequency descriptor range fits u32", freq_desc->max_value <= (double)UINT32_MAX);
         rc |= expect_true("rtl frequency descriptor units",
                           freq_desc->units != NULL && strcmp(freq_desc->units, "Hz") == 0);
     }
