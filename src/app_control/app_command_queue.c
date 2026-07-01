@@ -76,6 +76,9 @@ enum {
     UI_CMD_APPLY_RESTART_REQUIRED = 5,
 };
 
+struct ui_cmd_descriptor_rule;
+struct ui_cmd_text_rule;
+
 static struct dsd_app_command g_q[DSD_APP_CMD_Q_CAP];
 static size_t g_head = 0; // pop index
 static size_t g_tail = 0; // push index
@@ -2392,6 +2395,18 @@ dsd_app_command_apply_config(const dsdneoUserConfig* config) {
 }
 
 int
+dsd_app_command_set_config_metadata_tracked(const dsd_app_config_metadata_payload* payload,
+                                            dsd_app_command_token* out_token) {
+    return payload ? ui_cmd_post_tracked(DSD_APP_CMD_CONFIG_METADATA_SET, payload, sizeof *payload, out_token)
+                   : DSD_APP_COMMAND_SUBMIT_REJECTED;
+}
+
+int
+dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload) {
+    return ui_cmd_legacy_submit_rc(dsd_app_command_set_config_metadata_tracked(payload, NULL));
+}
+
+int
 dsd_app_command_result_get(dsd_app_command_token token, dsd_app_command_result* out) {
     if (token == 0U || !out) {
         return -1;
@@ -2409,67 +2424,317 @@ dsd_app_command_result_get(dsd_app_command_token token, dsd_app_command_result* 
     return -1;
 }
 
+static const dsd_app_command_enum_option k_bool_options[] = {
+    {0, "Off"},
+    {1, "On"},
+};
+
+static const dsd_app_command_enum_option k_slot_preference_options[] = {
+    {0, "Slot 1"},
+    {1, "Slot 2"},
+    {2, "Auto"},
+};
+
+static const dsd_app_command_enum_option k_slot_mask_options[] = {
+    {0, "Off"},
+    {1, "Slot 1"},
+    {2, "Slot 2"},
+    {3, "Both"},
+};
+
+static const dsd_app_command_enum_option k_rtl_bandwidth_options[] = {
+    {4, "4 kHz"}, {6, "6 kHz"}, {8, "8 kHz"}, {12, "12 kHz"}, {16, "16 kHz"}, {24, "24 kHz"}, {48, "48 kHz"},
+};
+
+static const dsd_app_command_enum_option k_input_volume_options[] = {
+    {1, "1x"}, {2, "2x"}, {4, "4x"}, {8, "8x"}, {16, "16x"},
+};
+
+static const dsd_app_command_enum_option k_call_alert_options[] = {
+    {0, "Disabled"},
+    {1, "Voice"},
+    {2, "Data"},
+    {3, "Voice and data"},
+};
+
+#define UI_CMD_ARRAY_LEN(array_) (sizeof(array_) / sizeof((array_)[0]))
+
+struct ui_cmd_text_rule {
+    int command_id;
+    const char* name;
+    const char* label;
+};
+
+static const struct ui_cmd_text_rule k_ui_cmd_text_rules[] = {
+    {DSD_APP_CMD_TOGGLE_MUTE, "toggle_mute", "Mute Output"},
+    {DSD_APP_CMD_TOGGLE_COMPACT, "toggle_compact", "Compact Terminal"},
+    {DSD_APP_CMD_HISTORY_CYCLE, "history_cycle", "Cycle History Mode"},
+    {DSD_APP_CMD_SLOT1_TOGGLE, "slot1_toggle", "Toggle Slot 1"},
+    {DSD_APP_CMD_SLOT2_TOGGLE, "slot2_toggle", "Toggle Slot 2"},
+    {DSD_APP_CMD_SLOT_PREF_CYCLE, "slot_preference_cycle", "Cycle Slot Preference"},
+    {DSD_APP_CMD_GAIN_DELTA, "gain_delta", "Adjust Digital Gain"},
+    {DSD_APP_CMD_AGAIN_DELTA, "analog_gain_delta", "Adjust Analog Gain"},
+    {DSD_APP_CMD_GAIN_SET, "gain_set", "Digital Gain"},
+    {DSD_APP_CMD_AGAIN_SET, "analog_gain_set", "Analog Gain"},
+    {DSD_APP_CMD_INPUT_WARN_DB_SET, "input_warn_db_set", "Input Warning Level"},
+    {DSD_APP_CMD_TRUNK_TOGGLE, "trunk_toggle", "Toggle Trunking"},
+    {DSD_APP_CMD_SCANNER_TOGGLE, "scanner_toggle", "Toggle Scanner"},
+    {DSD_APP_CMD_PAYLOAD_TOGGLE, "payload_toggle", "Toggle Payload Logging"},
+    {DSD_APP_CMD_CALL_ALERT_TOGGLE, "call_alert_toggle", "Toggle Call Alerts"},
+    {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, "call_alert_events_set", "Call Alert Events"},
+    {DSD_APP_CMD_INPUT_VOL_SET, "input_volume_set", "Input Volume"},
+    {DSD_APP_CMD_WAV_START, "wav_start", "Start Per-Call WAV"},
+    {DSD_APP_CMD_WAV_STOP, "wav_stop", "Stop Per-Call WAV"},
+    {DSD_APP_CMD_WAV_STATIC_OPEN, "wav_static_open", "Static WAV Output"},
+    {DSD_APP_CMD_WAV_RAW_OPEN, "wav_raw_open", "Raw WAV Output"},
+    {DSD_APP_CMD_CONFIG_APPLY, "config_apply", "Apply Config"},
+    {DSD_APP_CMD_CONFIG_METADATA_SET, "config_metadata_set", "Config Metadata"},
+    {DSD_APP_CMD_RTL_ENABLE_INPUT, "rtl_enable_input", "Enable RTL Input"},
+    {DSD_APP_CMD_RTL_RESTART, "rtl_restart", "Restart RTL"},
+    {DSD_APP_CMD_RTL_SET_DEV, "rtl_set_device", "RTL Device"},
+    {DSD_APP_CMD_RTL_SET_FREQ, "rtl_set_frequency", "RTL Frequency"},
+    {DSD_APP_CMD_RTL_SET_GAIN, "rtl_set_gain", "RTL Gain"},
+    {DSD_APP_CMD_RTL_SET_PPM, "rtl_set_ppm", "RTL PPM"},
+    {DSD_APP_CMD_RTL_SET_BW, "rtl_set_bandwidth", "RTL DSP Bandwidth"},
+    {DSD_APP_CMD_RTL_SET_SQL_DB, "rtl_set_squelch", "RTL Squelch"},
+    {DSD_APP_CMD_RTL_SET_VOL_MULT, "rtl_set_volume_multiplier", "RTL Monitor Gain"},
+    {DSD_APP_CMD_RTL_SET_BIAS_TEE, "rtl_set_bias_tee", "RTL Bias Tee"},
+    {DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, "rtltcp_set_autotune", "RTL-TCP Autotune"},
+    {DSD_APP_CMD_RTL_SET_AUTO_PPM, "rtl_set_auto_ppm", "RTL Auto PPM"},
+    {DSD_APP_CMD_DSP_OP, "dsp_op", "DSP Operation"},
+};
+
+static const struct ui_cmd_text_rule*
+ui_cmd_text_rule_for_id(int command_id) {
+    for (size_t i = 0; i < UI_CMD_ARRAY_LEN(k_ui_cmd_text_rules); i++) {
+        if (k_ui_cmd_text_rules[i].command_id == command_id) {
+            return &k_ui_cmd_text_rules[i];
+        }
+    }
+    return NULL;
+}
+
+static const char*
+ui_cmd_name_for_id(int command_id) {
+    const struct ui_cmd_text_rule* rule = ui_cmd_text_rule_for_id(command_id);
+    return rule ? rule->name : "app_command";
+}
+
+static const char*
+ui_cmd_label_for_id(int command_id) {
+    const struct ui_cmd_text_rule* rule = ui_cmd_text_rule_for_id(command_id);
+    return rule ? rule->label : "App Command";
+}
+
+static int
+ui_cmd_is_radio_descriptor(int command_id) {
+    return (command_id >= DSD_APP_CMD_RTL_ENABLE_INPUT && command_id <= DSD_APP_CMD_RTL_SET_AUTO_PPM)
+           || command_id == DSD_APP_CMD_DSP_OP || command_id == DSD_APP_CMD_RIGCTL_SET_MOD_BW;
+}
+
+struct ui_cmd_descriptor_rule {
+    double min_value;
+    double max_value;
+    double step_value;
+    const char* units;
+    const char* validation_hint;
+    const dsd_app_command_enum_option* enum_options;
+    size_t enum_option_count;
+    int command_id;
+    int may_require_restart;
+};
+
+#define UI_CMD_DESCRIPTOR_RULE(command_id_, min_, max_, step_, units_, hint_, options_, option_count_, restart_)       \
+    {(min_), (max_), (step_), (units_), (hint_), (options_), (option_count_), (command_id_), (restart_)}
+
+static const struct ui_cmd_descriptor_rule k_ui_cmd_descriptor_rules[] = {
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_GAIN_SET, 0.0, 50.0, 1.0, NULL, "0..50", NULL, 0U, 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_AGAIN_SET, 0.0, 50.0, 1.0, NULL, "0..50", NULL, 0U, 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_INPUT_WARN_DB_SET, -120.0, 0.0, 1.0, "dBFS", "negative dBFS threshold", NULL, 0U,
+                           0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_FREQ, 0.0, 3000000000.0, 1.0, "Hz", "frequency in Hz", NULL, 0U, 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_GAIN, 0.0, 50.0, 1.0, NULL, "0 enables AGC, otherwise tuner gain index",
+                           NULL, 0U, 1),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_PPM, -200.0, 200.0, 1.0, "ppm", NULL, NULL, 0U, 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_BW, 0.0, 0.0, 0.0, "kHz", "one of the listed DSP bandwidth values",
+                           k_rtl_bandwidth_options, UI_CMD_ARRAY_LEN(k_rtl_bandwidth_options), 1),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_SQL_DB, -120.0, 0.0, 1.0, "dB", NULL, NULL, 0U, 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_VOL_MULT, 0.0, 3.0, 1.0, NULL, NULL, NULL, 0U, 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_BIAS_TEE, 0.0, 0.0, 0.0, NULL, NULL, k_bool_options,
+                           UI_CMD_ARRAY_LEN(k_bool_options), 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, 0.0, 0.0, 0.0, NULL, NULL, k_bool_options,
+                           UI_CMD_ARRAY_LEN(k_bool_options), 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_AUTO_PPM, 0.0, 0.0, 0.0, NULL, NULL, k_bool_options,
+                           UI_CMD_ARRAY_LEN(k_bool_options), 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_SET_DEV, 0.0, 255.0, 1.0, NULL, NULL, NULL, 0U, 1),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_ENABLE_INPUT, 0.0, 0.0, 0.0, NULL, NULL, NULL, 0U, 1),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_RTL_RESTART, 0.0, 0.0, 0.0, NULL, NULL, NULL, 0U, 1),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_CONFIG_APPLY, 0.0, 0.0, 0.0, NULL, NULL, NULL, 0U, 1),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_SLOT_PREF_SET, 0.0, 0.0, 0.0, NULL, NULL, k_slot_preference_options,
+                           UI_CMD_ARRAY_LEN(k_slot_preference_options), 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_SLOTS_ONOFF_SET, 0.0, 0.0, 0.0, NULL, NULL, k_slot_mask_options,
+                           UI_CMD_ARRAY_LEN(k_slot_mask_options), 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, 0.0, 0.0, 0.0, NULL, NULL, k_call_alert_options,
+                           UI_CMD_ARRAY_LEN(k_call_alert_options), 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_INPUT_VOL_SET, 1.0, 16.0, 1.0, NULL, NULL, k_input_volume_options,
+                           UI_CMD_ARRAY_LEN(k_input_volume_options), 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_HANGTIME_SET, 0.0, 3600.0, 0.5, "seconds", NULL, NULL, 0U, 0),
+    UI_CMD_DESCRIPTOR_RULE(DSD_APP_CMD_TG_HOLD_SET, 0.0, 16777215.0, 1.0, NULL, NULL, NULL, 0U, 0),
+};
+
+static const struct ui_cmd_descriptor_rule*
+ui_cmd_descriptor_rule_for_id(int command_id) {
+    for (size_t i = 0; i < UI_CMD_ARRAY_LEN(k_ui_cmd_descriptor_rules); i++) {
+        if (k_ui_cmd_descriptor_rules[i].command_id == command_id) {
+            return &k_ui_cmd_descriptor_rules[i];
+        }
+    }
+    return NULL;
+}
+
 static void
-ui_cmd_capability_emit(dsd_app_command_capability* out, size_t max, size_t* count, int command_id, unsigned int flags,
-                       size_t payload_size) {
+ui_cmd_descriptor_apply_rule(dsd_app_command_descriptor* desc, const struct ui_cmd_descriptor_rule* rule) {
+    if (!desc || !rule) {
+        return;
+    }
+    desc->min_value = rule->min_value;
+    desc->max_value = rule->max_value;
+    desc->step_value = rule->step_value;
+    desc->enum_options = rule->enum_options;
+    desc->enum_option_count = rule->enum_option_count;
+    desc->may_require_restart = rule->may_require_restart;
+    if (rule->units) {
+        desc->units = rule->units;
+    }
+    if (rule->validation_hint) {
+        desc->validation_hint = rule->validation_hint;
+    }
+}
+
+static void
+ui_cmd_descriptor_apply_metadata(dsd_app_command_descriptor* desc) {
+    if (!desc) {
+        return;
+    }
+    desc->name = ui_cmd_name_for_id(desc->command_id);
+    desc->label = ui_cmd_label_for_id(desc->command_id);
+    desc->description = "App-control command";
+    desc->validation_hint = "";
+    if (ui_cmd_is_radio_descriptor(desc->command_id)) {
+        desc->availability_flags |= DSD_APP_COMMAND_AVAIL_RADIO;
+    }
+    ui_cmd_descriptor_apply_rule(desc, ui_cmd_descriptor_rule_for_id(desc->command_id));
+}
+
+static void
+ui_cmd_descriptor_emit(dsd_app_command_descriptor* out, size_t max, size_t* count, int command_id,
+                       dsd_app_command_payload_kind payload_kind, unsigned int capability_flags, size_t payload_size) {
     if (!count) {
         return;
     }
     if (out && *count < max) {
-        out[*count].command_id = command_id;
-        out[*count].flags = flags;
-        out[*count].payload_size = payload_size;
+        dsd_app_command_descriptor desc;
+        DSD_MEMSET(&desc, 0, sizeof desc);
+        desc.command_id = command_id;
+        desc.payload_kind = payload_kind;
+        desc.capability_flags = capability_flags;
+        desc.payload_size = payload_size;
+        ui_cmd_descriptor_apply_metadata(&desc);
+        out[*count] = desc;
     }
     (*count)++;
 }
 
 int
-dsd_app_command_capabilities_get(dsd_app_command_capability* out, size_t max, size_t* out_count) {
+dsd_app_command_descriptors_get(dsd_app_command_descriptor* out, size_t max, size_t* out_count) {
     size_t count = 0;
     for (size_t i = 0; i < sizeof k_ui_cmd_action_ids / sizeof k_ui_cmd_action_ids[0]; i++) {
-        ui_cmd_capability_emit(out, max, &count, k_ui_cmd_action_ids[i], DSD_APP_COMMAND_CAP_ACTION, 0U);
+        ui_cmd_descriptor_emit(out, max, &count, k_ui_cmd_action_ids[i], DSD_APP_COMMAND_PAYLOAD_NONE,
+                               DSD_APP_COMMAND_CAP_ACTION, 0U);
     }
     for (size_t i = 0; i < sizeof k_ui_cmd_i32_ids / sizeof k_ui_cmd_i32_ids[0]; i++) {
-        ui_cmd_capability_emit(out, max, &count, k_ui_cmd_i32_ids[i], DSD_APP_COMMAND_CAP_I32, sizeof(int32_t));
+        ui_cmd_descriptor_emit(out, max, &count, k_ui_cmd_i32_ids[i], DSD_APP_COMMAND_PAYLOAD_I32,
+                               DSD_APP_COMMAND_CAP_I32, sizeof(int32_t));
     }
     for (size_t i = 0; i < sizeof k_ui_cmd_string_ids / sizeof k_ui_cmd_string_ids[0]; i++) {
-        ui_cmd_capability_emit(out, max, &count, k_ui_cmd_string_ids[i], DSD_APP_COMMAND_CAP_STRING,
-                               DSD_APP_CMD_DISPATCH_DATA_MAX);
+        ui_cmd_descriptor_emit(out, max, &count, k_ui_cmd_string_ids[i], DSD_APP_COMMAND_PAYLOAD_STRING,
+                               DSD_APP_COMMAND_CAP_STRING, DSD_APP_CMD_DISPATCH_DATA_MAX);
     }
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_TG_HOLD_TOGGLE, DSD_APP_COMMAND_CAP_U8, sizeof(uint8_t));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_CALL_ALERT_EVENTS_SET, DSD_APP_COMMAND_CAP_U8,
-                           sizeof(uint8_t));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_LOCKOUT_SLOT, DSD_APP_COMMAND_CAP_U8, sizeof(uint8_t));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_TG_HOLD_SET, DSD_APP_COMMAND_CAP_U32, sizeof(uint32_t));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_KEY_BASIC_SET, DSD_APP_COMMAND_CAP_U32, sizeof(uint32_t));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_KEY_SCRAMBLER_SET, DSD_APP_COMMAND_CAP_U32, sizeof(uint32_t));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_KEY_RC4DES_SET, DSD_APP_COMMAND_CAP_U64, sizeof(uint64_t));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_INPUT_WARN_DB_SET, DSD_APP_COMMAND_CAP_DOUBLE, sizeof(double));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_RTL_SET_SQL_DB, DSD_APP_COMMAND_CAP_DOUBLE, sizeof(double));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_HANGTIME_SET, DSD_APP_COMMAND_CAP_DOUBLE, sizeof(double));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_CONST_GATE_DELTA, DSD_APP_COMMAND_CAP_FLOAT, sizeof(float));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_UDP_OUT_CFG, DSD_APP_COMMAND_CAP_ENDPOINT,
-                           sizeof(dsd_app_endpoint_payload));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, DSD_APP_COMMAND_CAP_ENDPOINT,
-                           sizeof(dsd_app_endpoint_payload));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_RIGCTL_CONNECT_CFG, DSD_APP_COMMAND_CAP_ENDPOINT,
-                           sizeof(dsd_app_endpoint_payload));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_UDP_INPUT_CFG, DSD_APP_COMMAND_CAP_ENDPOINT,
-                           sizeof(dsd_app_udp_input_payload));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_P25_P2_PARAMS_SET, DSD_APP_COMMAND_CAP_STRUCT,
-                           sizeof(dsd_app_p25_p2_params_payload));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_KEY_HYTERA_SET, DSD_APP_COMMAND_CAP_STRUCT,
-                           sizeof(dsd_app_hytera_key_payload));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_KEY_AES_SET, DSD_APP_COMMAND_CAP_STRUCT,
-                           sizeof(dsd_app_aes_key_payload));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_DSP_OP, DSD_APP_COMMAND_CAP_STRUCT,
-                           sizeof(dsd_app_dsp_payload));
-    ui_cmd_capability_emit(out, max, &count, DSD_APP_CMD_CONFIG_APPLY, DSD_APP_COMMAND_CAP_STRUCT,
-                           sizeof(dsdneoUserConfig));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_TG_HOLD_TOGGLE, DSD_APP_COMMAND_PAYLOAD_U8,
+                           DSD_APP_COMMAND_CAP_U8, sizeof(uint8_t));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_CALL_ALERT_EVENTS_SET, DSD_APP_COMMAND_PAYLOAD_U8,
+                           DSD_APP_COMMAND_CAP_U8, sizeof(uint8_t));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_LOCKOUT_SLOT, DSD_APP_COMMAND_PAYLOAD_U8,
+                           DSD_APP_COMMAND_CAP_U8, sizeof(uint8_t));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_TG_HOLD_SET, DSD_APP_COMMAND_PAYLOAD_U32,
+                           DSD_APP_COMMAND_CAP_U32, sizeof(uint32_t));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_KEY_BASIC_SET, DSD_APP_COMMAND_PAYLOAD_U32,
+                           DSD_APP_COMMAND_CAP_U32, sizeof(uint32_t));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_KEY_SCRAMBLER_SET, DSD_APP_COMMAND_PAYLOAD_U32,
+                           DSD_APP_COMMAND_CAP_U32, sizeof(uint32_t));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_KEY_RC4DES_SET, DSD_APP_COMMAND_PAYLOAD_U64,
+                           DSD_APP_COMMAND_CAP_U64, sizeof(uint64_t));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_INPUT_WARN_DB_SET, DSD_APP_COMMAND_PAYLOAD_DOUBLE,
+                           DSD_APP_COMMAND_CAP_DOUBLE, sizeof(double));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_RTL_SET_SQL_DB, DSD_APP_COMMAND_PAYLOAD_DOUBLE,
+                           DSD_APP_COMMAND_CAP_DOUBLE, sizeof(double));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_HANGTIME_SET, DSD_APP_COMMAND_PAYLOAD_DOUBLE,
+                           DSD_APP_COMMAND_CAP_DOUBLE, sizeof(double));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_CONST_GATE_DELTA, DSD_APP_COMMAND_PAYLOAD_FLOAT,
+                           DSD_APP_COMMAND_CAP_FLOAT, sizeof(float));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_UDP_OUT_CFG, DSD_APP_COMMAND_PAYLOAD_ENDPOINT,
+                           DSD_APP_COMMAND_CAP_ENDPOINT, sizeof(dsd_app_endpoint_payload));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, DSD_APP_COMMAND_PAYLOAD_ENDPOINT,
+                           DSD_APP_COMMAND_CAP_ENDPOINT, sizeof(dsd_app_endpoint_payload));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_RIGCTL_CONNECT_CFG, DSD_APP_COMMAND_PAYLOAD_ENDPOINT,
+                           DSD_APP_COMMAND_CAP_ENDPOINT, sizeof(dsd_app_endpoint_payload));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_UDP_INPUT_CFG, DSD_APP_COMMAND_PAYLOAD_ENDPOINT,
+                           DSD_APP_COMMAND_CAP_ENDPOINT, sizeof(dsd_app_udp_input_payload));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_P25_P2_PARAMS_SET, DSD_APP_COMMAND_PAYLOAD_STRUCT,
+                           DSD_APP_COMMAND_CAP_STRUCT, sizeof(dsd_app_p25_p2_params_payload));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_KEY_HYTERA_SET, DSD_APP_COMMAND_PAYLOAD_STRUCT,
+                           DSD_APP_COMMAND_CAP_STRUCT, sizeof(dsd_app_hytera_key_payload));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_KEY_AES_SET, DSD_APP_COMMAND_PAYLOAD_STRUCT,
+                           DSD_APP_COMMAND_CAP_STRUCT, sizeof(dsd_app_aes_key_payload));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_DSP_OP, DSD_APP_COMMAND_PAYLOAD_STRUCT,
+                           DSD_APP_COMMAND_CAP_STRUCT, sizeof(dsd_app_dsp_payload));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_CONFIG_APPLY, DSD_APP_COMMAND_PAYLOAD_STRUCT,
+                           DSD_APP_COMMAND_CAP_STRUCT, sizeof(dsdneoUserConfig));
+    ui_cmd_descriptor_emit(out, max, &count, DSD_APP_CMD_CONFIG_METADATA_SET, DSD_APP_COMMAND_PAYLOAD_STRUCT,
+                           DSD_APP_COMMAND_CAP_STRUCT, sizeof(dsd_app_config_metadata_payload));
     if (out_count) {
         *out_count = count;
     }
     return (out && max < count) ? 1 : 0;
+}
+
+int
+dsd_app_command_capabilities_get(dsd_app_command_capability* out, size_t max, size_t* out_count) {
+    size_t desc_count = 0;
+    (void)dsd_app_command_descriptors_get(NULL, 0U, &desc_count);
+    if (desc_count == 0U) {
+        if (out_count) {
+            *out_count = 0U;
+        }
+        return 0;
+    }
+    dsd_app_command_descriptor* descs = (dsd_app_command_descriptor*)calloc(desc_count, sizeof(*descs));
+    if (!descs) {
+        return -1;
+    }
+    (void)dsd_app_command_descriptors_get(descs, desc_count, &desc_count);
+    for (size_t i = 0; i < desc_count; i++) {
+        if (out && i < max) {
+            out[i].command_id = descs[i].command_id;
+            out[i].flags = descs[i].capability_flags;
+            out[i].payload_size = descs[i].payload_size;
+        }
+    }
+    free(descs);
+    if (out_count) {
+        *out_count = desc_count;
+    }
+    return (out && max < desc_count) ? 1 : 0;
 }
 
 static int
@@ -2503,6 +2768,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_KEY_AES_SET, sizeof(dsd_app_aes_key_payload)},
     {DSD_APP_CMD_DSP_OP, sizeof(dsd_app_dsp_payload)},
     {DSD_APP_CMD_CONFIG_APPLY, sizeof(dsdneoUserConfig)},
+    {DSD_APP_CMD_CONFIG_METADATA_SET, sizeof(dsd_app_config_metadata_payload)},
 };
 
 static size_t
@@ -3230,6 +3496,20 @@ ui_cmd_handle_reverse_mute_toggle_legacy(dsd_opts* opts, dsd_state* state, const
 }
 
 static int
+ui_cmd_handle_config_metadata_set_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)opts;
+    if (!state || !c || c->n < sizeof(dsd_app_config_metadata_payload)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_app_config_metadata_payload payload;
+    DSD_MEMCPY(&payload, c->data, sizeof payload);
+    state->config_autosave_enabled = payload.autosave_enabled ? 1 : 0;
+    DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", payload.path);
+    state->config_autosave_path[sizeof state->config_autosave_path - 1] = '\0';
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
 ui_cmd_handle_config_apply_legacy(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
@@ -3283,6 +3563,7 @@ apply_cmd_legacy_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_
         {DSD_APP_CMD_P25_CC_CAND_TOGGLE, ui_cmd_handle_p25_cc_cand_toggle_legacy},
         {DSD_APP_CMD_REVERSE_MUTE_TOGGLE, ui_cmd_handle_reverse_mute_toggle_legacy},
         {DSD_APP_CMD_CONFIG_APPLY, ui_cmd_handle_config_apply_legacy},
+        {DSD_APP_CMD_CONFIG_METADATA_SET, ui_cmd_handle_config_metadata_set_legacy},
     };
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }

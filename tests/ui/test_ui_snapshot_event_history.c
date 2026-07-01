@@ -130,19 +130,60 @@ assert_frontend_snapshot_fields(const dsd_frontend_snapshot* snap) {
     assert(snap->trunk_cc_candidates.used == 3U);
 
     assert(snap->event_history_present == 1);
-    assert(snap->event_history[0].items[1].present == 1);
-    assert(snap->event_history[0].items[1].slot == 0U);
-    assert(snap->event_history[0].items[1].severity == DSD_FRONTEND_EVENT_SEVERITY_WARNING);
-    assert(snap->event_history[0].items[1].category == DSD_FRONTEND_EVENT_CATEGORY_CONTROL);
-    assert(snap->event_history[0].items[1].protocol == DSD_FRONTEND_PROTOCOL_P25);
-    assert(snap->event_history[0].items[1].encryption_state == DSD_FRONTEND_ENCRYPTION_ENCRYPTED);
-    assert(snap->event_history[0].items[1].encryption_alg_id == 0x80U);
-    assert(snap->event_history[0].items[1].encryption_key_id == 0x1234U);
-    assert(snap->event_history[0].items[1].source_id == 123U);
-    assert(snap->event_history[0].items[1].target_id == 321U);
-    assert(strcmp(snap->event_history[0].items[1].source_text, "RADIO-123") == 0);
-    assert(strcmp(snap->event_history[0].items[1].summary_text, "voice grant") == 0);
-    assert(snap->event_history[1].items[1].source_id == 456U);
+    assert(snap->event_history_sequence != 0U);
+    assert(snap->event_history_slot_count == DSD_FRONTEND_EVENT_HISTORY_SLOTS);
+    assert(snap->event_history_items_per_slot == DSD_FRONTEND_EVENT_HISTORY_ITEMS);
+    _Static_assert(sizeof(dsd_frontend_snapshot) < ((size_t)128U * 1024U), "frontend snapshot must stay cheap to poll");
+}
+
+static void
+assert_frontend_history_api(uint64_t sequence) {
+    dsd_frontend_event_history_summary summaries[2];
+    dsd_frontend_event_history_page_info info;
+    dsd_frontend_event_history_query query;
+    DSD_MEMSET(summaries, 0, sizeof summaries);
+    DSD_MEMSET(&info, 0, sizeof info);
+    DSD_MEMSET(&query, 0, sizeof query);
+    query.slot = 0;
+    query.offset = 1;
+    query.limit = 2;
+    assert(dsd_app_frontend_event_history_page_get(&query, summaries, 2U, &info) == 0);
+    assert(info.present == 1);
+    assert(info.unchanged == 0);
+    assert(info.sequence == sequence);
+    assert(info.total_items == DSD_FRONTEND_EVENT_HISTORY_ITEMS);
+    assert(info.returned_items == 2U);
+    assert(summaries[0].present == 1);
+    assert(summaries[0].slot == 0U);
+    assert(summaries[0].severity == DSD_FRONTEND_EVENT_SEVERITY_WARNING);
+    assert(summaries[0].category == DSD_FRONTEND_EVENT_CATEGORY_CONTROL);
+    assert(summaries[0].protocol == DSD_FRONTEND_PROTOCOL_P25);
+    assert(summaries[0].encryption_state == DSD_FRONTEND_ENCRYPTION_ENCRYPTED);
+    assert(summaries[0].source_id == 123U);
+    assert(summaries[0].target_id == 321U);
+    assert(strcmp(summaries[0].source_text, "RADIO-123") == 0);
+    assert(strcmp(summaries[0].summary_text, "voice grant") == 0);
+
+    query.known_sequence = sequence;
+    DSD_MEMSET(&info, 0, sizeof info);
+    DSD_MEMSET(summaries, 0, sizeof summaries);
+    assert(dsd_app_frontend_event_history_page_get(&query, summaries, 2U, &info) == 0);
+    assert(info.unchanged == 1);
+    assert(info.returned_items == 0U);
+
+    dsd_frontend_event_history_item detail;
+    uint64_t detail_sequence = 0;
+    DSD_MEMSET(&detail, 0, sizeof detail);
+    assert(dsd_app_frontend_event_history_item_get(0U, 1U, &detail, &detail_sequence) == 0);
+    assert(detail_sequence == sequence);
+    assert(detail.present == 1);
+    assert(detail.slot == 0U);
+    assert(detail.encryption_alg_id == 0x80U);
+    assert(detail.encryption_key_id == 0x1234U);
+    assert(strcmp(detail.source_text, "RADIO-123") == 0);
+    assert(strcmp(detail.summary_text, "voice grant") == 0);
+    assert(dsd_app_frontend_event_history_item_get(1U, 1U, &detail, NULL) == 0);
+    assert(detail.source_id == 456U);
 }
 
 int
@@ -239,6 +280,7 @@ main(void) {
     assert(frontend_snap != NULL);
     assert(dsd_app_frontend_snapshot_get(frontend_snap) == 0);
     assert_frontend_snapshot_fields(frontend_snap);
+    assert_frontend_history_api(frontend_snap->event_history_sequence);
     free(frontend_snap);
 
     // Update only non-head rows; this must still refresh the snapshot copy.
@@ -246,11 +288,16 @@ main(void) {
     history[1].Event_History_Items[1].source_id = 987U;
     ui_terminal_telemetry_publish_snapshot(state);
     assert_slot_tail(dsd_app_get_latest_snapshot(), 789U, 987U);
+    dsd_frontend_event_history_item updated_detail;
+    assert(dsd_app_frontend_event_history_item_get(0U, 1U, &updated_detail, NULL) == 0);
+    assert(updated_detail.source_id == 789U);
 
     // Reset-like clear with unchanged head rows must also be reflected.
     DSD_MEMSET(history, 0, 2u * sizeof(*history));
     ui_terminal_telemetry_publish_snapshot(state);
     assert_slot_tail(dsd_app_get_latest_snapshot(), 0U, 0U);
+    assert(dsd_app_frontend_event_history_item_get(0U, 1U, &updated_detail, NULL) == 0);
+    assert(updated_detail.present == 0U);
 
     assert(dsd_tg_policy_make_exact_entry(7777U, "B", "POLICY-ONLY", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     assert(dsd_tg_policy_append_exact(state, &entry) == 0);

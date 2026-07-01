@@ -17,7 +17,6 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/ui_cmd.h>
 #include <sndfile.h>
 #include <stdarg.h>
@@ -85,8 +84,8 @@ static int g_reparse_calls;
 static int g_audio_enum_rc;
 static dsd_audio_device g_audio_inputs[2];
 static dsd_audio_device g_audio_outputs[2];
-
-volatile uint8_t exitflag;
+static dsd_app_config_metadata_payload g_config_metadata;
+static int g_config_metadata_calls;
 
 static void
 reset_capture(void) {
@@ -110,7 +109,8 @@ reset_capture(void) {
     g_audio_enum_rc = 0;
     DSD_MEMSET(g_audio_inputs, 0, sizeof g_audio_inputs);
     DSD_MEMSET(g_audio_outputs, 0, sizeof g_audio_outputs);
-    exitflag = 0;
+    DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
+    g_config_metadata_calls = 0;
 }
 
 static void
@@ -283,6 +283,16 @@ dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload) {
 int
 dsd_app_command_apply_config(const dsdneoUserConfig* config) {
     return dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, config, config ? sizeof *config : 0U);
+}
+
+int
+dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload) {
+    DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
+    if (payload) {
+        g_config_metadata = *payload;
+    }
+    g_config_metadata_calls++;
+    return dsd_app_post_cmd(DSD_APP_CMD_CONFIG_METADATA_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 void ui_statusf(const char* fmt, ...) DSD_ATTR_FORMAT(printf, 1, 2);
@@ -796,7 +806,7 @@ test_simple_commands_and_prompts(void) {
     act_toggle_invert(NULL);
     rc |= expect_int("invert command", g_cmd.id, DSD_APP_CMD_INVERT_TOGGLE);
     act_exit(NULL);
-    rc |= expect_int("exit flag", exitflag, 1);
+    rc |= expect_int("exit command", g_cmd.id, DSD_APP_CMD_QUIT);
 
     reset_capture();
     act_event_log_set(&ctx);
@@ -919,13 +929,14 @@ test_io_actions_and_choosers(void) {
     opts.wav_out_f = NULL;
     io_enable_per_call_wav(&ctx);
     rc |= expect_int("per-call wav start command", g_cmd.id, DSD_APP_CMD_WAV_START);
-    rc |= expect_int("per-call wav flag", opts.dmr_stereo_wav, 1);
+    rc |= expect_int("per-call wav start leaves flag", opts.dmr_stereo_wav, 0);
 
     reset_capture();
+    opts.dmr_stereo_wav = 1;
     opts.wav_out_f = (SNDFILE*)0x1;
     io_enable_per_call_wav(&ctx);
     rc |= expect_int("per-call wav stop command", g_cmd.id, DSD_APP_CMD_WAV_STOP);
-    rc |= expect_int("per-call wav cleared", opts.dmr_stereo_wav, 0);
+    rc |= expect_int("per-call wav stop leaves flag", opts.dmr_stereo_wav, 1);
 
     reset_capture();
     g_audio_outputs[0].initialized = 1;
@@ -1471,7 +1482,10 @@ test_config_and_pulse_failure_variants(void) {
 
     reset_capture();
     act_config_save_default(&ctx);
-    rc |= expect_str("save default autosave path", state.config_autosave_path, "/tmp/default.toml");
+    rc |= expect_int("save default metadata command", g_cmd.id, DSD_APP_CMD_CONFIG_METADATA_SET);
+    rc |= expect_int("save default metadata count", g_config_metadata_calls, 1);
+    rc |= expect_int("save default autosave enabled", g_config_metadata.autosave_enabled, 1);
+    rc |= expect_str("save default autosave path", g_config_metadata.path, "/tmp/default.toml");
     rc |= expect_str("save default status", g_status, "Config saved to /tmp/default.toml");
 
     reset_capture();

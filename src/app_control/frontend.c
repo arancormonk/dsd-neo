@@ -62,6 +62,119 @@ frontend_copy_display_opts(const dsd_frontend_display_opts* src, dsd_frontend_co
     }
 }
 
+static void
+frontend_status_copy_audio_opts(dsd_frontend_status* out, const dsd_opts* opts) {
+    out->audio_in_type = opts->audio_in_type;
+    out->audio_out_type = opts->audio_out_type;
+    out->audio_out = opts->audio_out;
+    copy_text(out->audio_in_dev, sizeof out->audio_in_dev, opts->audio_in_dev);
+    copy_text(out->audio_out_dev, sizeof out->audio_out_dev, opts->audio_out_dev);
+    copy_text(out->pa_input_idx, sizeof out->pa_input_idx, opts->pa_input_idx);
+    copy_text(out->pa_output_idx, sizeof out->pa_output_idx, opts->pa_output_idx);
+}
+
+static void
+frontend_status_copy_endpoint_opts(dsd_frontend_status* out, const dsd_opts* opts) {
+    copy_text(out->tcp_hostname, sizeof out->tcp_hostname, opts->tcp_hostname);
+    out->tcp_portno = opts->tcp_portno;
+    copy_text(out->udp_hostname, sizeof out->udp_hostname, opts->udp_hostname);
+    out->udp_portno = opts->udp_portno;
+    copy_text(out->udp_in_bindaddr, sizeof out->udp_in_bindaddr, opts->udp_in_bindaddr);
+    out->udp_in_portno = opts->udp_in_portno;
+    copy_text(out->rigctlhostname, sizeof out->rigctlhostname, opts->rigctlhostname);
+    out->rigctlportno = opts->rigctlportno;
+    out->use_rigctl = opts->use_rigctl;
+}
+
+static void
+frontend_status_copy_recording_opts(dsd_frontend_status* out, const dsd_opts* opts) {
+    out->payload_logging = opts->payload;
+    out->event_log_enabled = opts->event_out_file[0] != '\0' ? 1 : 0;
+    copy_text(out->event_log_path, sizeof out->event_log_path, opts->event_out_file);
+    out->per_call_wav_enabled = opts->dmr_stereo_wav;
+    out->per_call_wav_active = (opts->wav_out_f || opts->wav_out_fR) ? 1 : 0;
+    out->static_wav_enabled = opts->static_wav_file;
+    out->static_wav_active = (opts->static_wav_file && opts->wav_out_f) ? 1 : 0;
+    copy_text(out->wav_out_dir, sizeof out->wav_out_dir, opts->wav_out_dir);
+    copy_text(out->wav_out_file, sizeof out->wav_out_file, opts->wav_out_file);
+    copy_text(out->wav_out_file_raw, sizeof out->wav_out_file_raw, opts->wav_out_file_raw);
+    out->symbol_capture_active = opts->symbol_out_f ? 1 : 0;
+    out->symbol_playback_active =
+        (opts->symbolfile != NULL
+         && (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT))
+            ? 1
+            : 0;
+    copy_text(out->symbol_out_file, sizeof out->symbol_out_file, opts->symbol_out_file);
+}
+
+static void
+frontend_status_copy_connection_opts(dsd_frontend_status* out, const dsd_opts* opts) {
+    out->tcp_audio_connected = (opts->audio_in_type == AUDIO_IN_TCP && opts->tcp_in_ctx != NULL) ? 1 : 0;
+    out->udp_input_active = (opts->audio_in_type == AUDIO_IN_UDP && opts->udp_in_ctx != NULL) ? 1 : 0;
+    out->rigctl_connected = (opts->use_rigctl && opts->rigctl_sockfd != 0) ? 1 : 0;
+    out->rtl_input_active = (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_started) ? 1 : 0;
+}
+
+static void
+frontend_status_copy_control_opts(dsd_frontend_status* out, const dsd_opts* opts) {
+    out->trunk_use_allow_list = opts->trunk_use_allow_list;
+    out->trunk_tune_group_calls = opts->trunk_tune_group_calls;
+    out->trunk_tune_private_calls = opts->trunk_tune_private_calls;
+    out->trunk_tune_data_calls = opts->trunk_tune_data_calls;
+    out->trunk_tune_enc_calls = opts->trunk_tune_enc_calls;
+    out->p25_lcw_retune = opts->p25_lcw_retune;
+    out->p25_prefer_candidates = opts->p25_prefer_candidates;
+    out->call_alert = opts->call_alert;
+    out->call_alert_events = opts->call_alert_events;
+    out->slot_preference = opts->slot_preference;
+    out->slot1_on = opts->slot1_on;
+    out->slot2_on = opts->slot2_on;
+    out->trunk_hangtime = opts->trunk_hangtime;
+    out->p25_trunk = opts->p25_trunk;
+    out->trunk_enable = opts->trunk_enable;
+    out->scanner_mode = opts->scanner_mode;
+}
+
+static void
+frontend_status_copy_radio_opts(dsd_frontend_status* out, const dsd_opts* opts) {
+    out->rtl_dev_index = opts->rtl_dev_index;
+    out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
+    out->rtl_gain_value = opts->rtl_gain_value;
+    out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
+    out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
+    out->rtl_squelch_level = opts->rtl_squelch_level;
+    out->rtl_volume_multiplier = opts->rtl_volume_multiplier;
+    out->rtl_bias_tee = opts->rtl_bias_tee;
+    out->rtltcp_autotune = opts->rtltcp_autotune;
+    out->rtl_auto_ppm = opts->rtl_auto_ppm;
+    out->input_warn_db = opts->input_warn_db;
+    out->input_volume_multiplier = opts->input_volume_multiplier;
+}
+
+static void
+frontend_status_copy_opts(dsd_frontend_status* out, const dsd_opts* opts) {
+    out->frontend_kind = opts->frontend_kind;
+    frontend_copy_display_opts(&opts->frontend_display, &out->display, &out->terminal_display);
+    frontend_status_copy_audio_opts(out, opts);
+    frontend_status_copy_endpoint_opts(out, opts);
+    frontend_status_copy_recording_opts(out, opts);
+    frontend_status_copy_connection_opts(out, opts);
+    frontend_status_copy_control_opts(out, opts);
+    frontend_status_copy_radio_opts(out, opts);
+}
+
+static void
+frontend_status_copy_state(dsd_frontend_status* out, const dsd_state* state) {
+    out->config_autosave_enabled = state->config_autosave_enabled;
+    copy_text(out->config_autosave_path, sizeof out->config_autosave_path, state->config_autosave_path);
+    out->p2_wacn = state->p2_wacn;
+    out->p2_sysid = state->p2_sysid;
+    out->p2_cc = state->p2_cc;
+    out->tg_hold = (uint32_t)state->tg_hold;
+    out->lasttg = (uint32_t)state->lasttg;
+    out->lasttgR = (uint32_t)state->lasttgR;
+}
+
 void
 dsd_app_frontend_status_from_opts_state(const dsd_opts* opts, const dsd_state* state, dsd_frontend_status* out) {
     if (!out) {
@@ -69,53 +182,10 @@ dsd_app_frontend_status_from_opts_state(const dsd_opts* opts, const dsd_state* s
     }
     DSD_MEMSET(out, 0, sizeof(*out));
     if (opts) {
-        out->frontend_kind = opts->frontend_kind;
-        frontend_copy_display_opts(&opts->frontend_display, &out->display, &out->terminal_display);
-        out->audio_in_type = opts->audio_in_type;
-        out->audio_out_type = opts->audio_out_type;
-        out->audio_out = opts->audio_out;
-        copy_text(out->audio_in_dev, sizeof out->audio_in_dev, opts->audio_in_dev);
-        copy_text(out->audio_out_dev, sizeof out->audio_out_dev, opts->audio_out_dev);
-        copy_text(out->pa_input_idx, sizeof out->pa_input_idx, opts->pa_input_idx);
-        copy_text(out->pa_output_idx, sizeof out->pa_output_idx, opts->pa_output_idx);
-        copy_text(out->tcp_hostname, sizeof out->tcp_hostname, opts->tcp_hostname);
-        out->tcp_portno = opts->tcp_portno;
-        copy_text(out->udp_hostname, sizeof out->udp_hostname, opts->udp_hostname);
-        out->udp_portno = opts->udp_portno;
-        copy_text(out->udp_in_bindaddr, sizeof out->udp_in_bindaddr, opts->udp_in_bindaddr);
-        out->udp_in_portno = opts->udp_in_portno;
-        copy_text(out->rigctlhostname, sizeof out->rigctlhostname, opts->rigctlhostname);
-        out->rigctlportno = opts->rigctlportno;
-        out->use_rigctl = opts->use_rigctl;
-        out->slot_preference = opts->slot_preference;
-        out->slot1_on = opts->slot1_on;
-        out->slot2_on = opts->slot2_on;
-        out->trunk_hangtime = opts->trunk_hangtime;
-        out->p25_trunk = opts->p25_trunk;
-        out->trunk_enable = opts->trunk_enable;
-        out->scanner_mode = opts->scanner_mode;
-        out->rtl_dev_index = opts->rtl_dev_index;
-        out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
-        out->rtl_gain_value = opts->rtl_gain_value;
-        out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
-        out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
-        out->rtl_squelch_level = opts->rtl_squelch_level;
-        out->rtl_volume_multiplier = opts->rtl_volume_multiplier;
-        out->rtl_bias_tee = opts->rtl_bias_tee;
-        out->rtltcp_autotune = opts->rtltcp_autotune;
-        out->rtl_auto_ppm = opts->rtl_auto_ppm;
-        out->input_warn_db = opts->input_warn_db;
-        out->input_volume_multiplier = opts->input_volume_multiplier;
+        frontend_status_copy_opts(out, opts);
     }
     if (state) {
-        out->config_autosave_enabled = state->config_autosave_enabled;
-        copy_text(out->config_autosave_path, sizeof out->config_autosave_path, state->config_autosave_path);
-        out->p2_wacn = state->p2_wacn;
-        out->p2_sysid = state->p2_sysid;
-        out->p2_cc = state->p2_cc;
-        out->tg_hold = (uint32_t)state->tg_hold;
-        out->lasttg = (uint32_t)state->lasttg;
-        out->lasttgR = (uint32_t)state->lasttgR;
+        frontend_status_copy_state(out, state);
     }
 }
 

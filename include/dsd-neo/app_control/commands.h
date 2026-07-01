@@ -209,8 +209,9 @@ enum dsd_app_command_id {
     DSD_APP_CMD_M17_USER_DATA_SET = 651, // payload: char s[] (<=49 chars)
 
     // DSP runtime (rtl_stream_*)
-    DSD_APP_CMD_DSP_OP = 700,      // payload: dsd_app_dsp_payload (see ui_dsp_cmd.h)
-    DSD_APP_CMD_CONFIG_APPLY = 710 // payload: dsdneoUserConfig (see runtime/config.h)
+    DSD_APP_CMD_DSP_OP = 700,             // payload: dsd_app_dsp_payload (see ui_dsp_cmd.h)
+    DSD_APP_CMD_CONFIG_APPLY = 710,       // payload: dsdneoUserConfig (see runtime/config.h)
+    DSD_APP_CMD_CONFIG_METADATA_SET = 711 // payload: dsd_app_config_metadata_payload
 };
 
 /** DSP control opcodes understood by the decoder/control-pump thread. */
@@ -265,6 +266,11 @@ typedef struct {
     uint64_t K4;
 } dsd_app_aes_key_payload;
 
+typedef struct {
+    int32_t autosave_enabled;
+    char path[1024];
+} dsd_app_config_metadata_payload;
+
 typedef uint64_t dsd_app_command_token;
 
 typedef enum {
@@ -308,6 +314,49 @@ enum {
     DSD_APP_COMMAND_CAP_STRUCT = 1u << 9,
 };
 
+typedef enum {
+    DSD_APP_COMMAND_PAYLOAD_NONE = 0,
+    DSD_APP_COMMAND_PAYLOAD_I32 = 1,
+    DSD_APP_COMMAND_PAYLOAD_U8 = 2,
+    DSD_APP_COMMAND_PAYLOAD_U32 = 3,
+    DSD_APP_COMMAND_PAYLOAD_U64 = 4,
+    DSD_APP_COMMAND_PAYLOAD_DOUBLE = 5,
+    DSD_APP_COMMAND_PAYLOAD_FLOAT = 6,
+    DSD_APP_COMMAND_PAYLOAD_STRING = 7,
+    DSD_APP_COMMAND_PAYLOAD_ENDPOINT = 8,
+    DSD_APP_COMMAND_PAYLOAD_STRUCT = 9
+} dsd_app_command_payload_kind;
+
+enum {
+    DSD_APP_COMMAND_AVAIL_ALWAYS = 0u,
+    DSD_APP_COMMAND_AVAIL_RADIO = 1u << 0,
+    DSD_APP_COMMAND_AVAIL_REQUIRES_ACTIVE_RUNTIME = 1u << 1
+};
+
+typedef struct {
+    int32_t value;
+    const char* label;
+} dsd_app_command_enum_option;
+
+typedef struct {
+    int command_id;
+    const char* name;
+    const char* label;
+    const char* description;
+    dsd_app_command_payload_kind payload_kind;
+    unsigned int capability_flags;
+    size_t payload_size;
+    double min_value;
+    double max_value;
+    double step_value;
+    const char* units;
+    const dsd_app_command_enum_option* enum_options;
+    size_t enum_option_count;
+    unsigned int availability_flags;
+    int may_require_restart;
+    const char* validation_hint;
+} dsd_app_command_descriptor;
+
 typedef struct {
     int command_id;
     unsigned int flags;
@@ -336,7 +385,10 @@ int dsd_app_command_set_hytera_key_tracked(const dsd_app_hytera_key_payload* pay
 int dsd_app_command_set_aes_key_tracked(const dsd_app_aes_key_payload* payload, dsd_app_command_token* out_token);
 int dsd_app_command_dsp_op_tracked(const dsd_app_dsp_payload* payload, dsd_app_command_token* out_token);
 int dsd_app_command_apply_config_tracked(const dsdneoUserConfig* config, dsd_app_command_token* out_token);
+int dsd_app_command_set_config_metadata_tracked(const dsd_app_config_metadata_payload* payload,
+                                                dsd_app_command_token* out_token);
 int dsd_app_command_result_get(dsd_app_command_token token, dsd_app_command_result* out);
+int dsd_app_command_descriptors_get(dsd_app_command_descriptor* out, size_t max, size_t* out_count);
 int dsd_app_command_capabilities_get(dsd_app_command_capability* out, size_t max, size_t* out_count);
 
 int dsd_app_command_action(int cmd_id);
@@ -354,6 +406,7 @@ int dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload);
 int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
 int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);
 int dsd_app_command_apply_config(const dsdneoUserConfig* config);
+int dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload);
 
 #ifdef __cplusplus
 }

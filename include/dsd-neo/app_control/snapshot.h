@@ -108,6 +108,42 @@ typedef struct dsd_frontend_event_history_slot {
     dsd_frontend_event_history_item items[DSD_FRONTEND_EVENT_HISTORY_ITEMS];
 } dsd_frontend_event_history_slot;
 
+typedef struct dsd_frontend_event_history_summary {
+    uint8_t present;
+    uint8_t write_pending;
+    uint8_t slot;
+    dsd_frontend_event_severity severity;
+    dsd_frontend_event_category category;
+    dsd_frontend_protocol protocol;
+    dsd_frontend_encryption_state encryption_state;
+    uint32_t source_id;
+    uint32_t target_id;
+    uint32_t channel;
+    int64_t timestamp_unix_s;
+    char source_text[DSD_FRONTEND_SHORT_TEXT];
+    char target_text[DSD_FRONTEND_SHORT_TEXT];
+    char source_label[DSD_FRONTEND_SHORT_TEXT];
+    char target_label[DSD_FRONTEND_SHORT_TEXT];
+    char system_label[DSD_FRONTEND_SHORT_TEXT];
+    char summary_text[DSD_FRONTEND_SHORT_TEXT];
+    char detail_text[DSD_FRONTEND_SHORT_TEXT];
+} dsd_frontend_event_history_summary;
+
+typedef struct dsd_frontend_event_history_query {
+    uint8_t slot;
+    size_t offset;
+    size_t limit;
+    uint64_t known_sequence;
+} dsd_frontend_event_history_query;
+
+typedef struct dsd_frontend_event_history_page_info {
+    uint64_t sequence;
+    size_t total_items;
+    size_t returned_items;
+    int present;
+    int unchanged;
+} dsd_frontend_event_history_page_info;
+
 typedef struct dsd_frontend_trunk_channel {
     uint16_t channel;
     long freq_hz;
@@ -185,11 +221,18 @@ typedef struct dsd_frontend_snapshot {
     size_t trunk_channel_count;
     uint64_t trunk_channel_sequence;
     dsd_frontend_trunk_cc_candidates trunk_cc_candidates;
-    dsd_frontend_event_history_slot event_history[DSD_FRONTEND_EVENT_HISTORY_SLOTS];
+    uint64_t event_history_sequence;
+    size_t event_history_slot_count;
+    size_t event_history_items_per_slot;
     int event_history_present;
 } dsd_frontend_snapshot;
 
 int dsd_app_frontend_snapshot_get(dsd_frontend_snapshot* out);
+int dsd_app_frontend_event_history_page_get(const dsd_frontend_event_history_query* query,
+                                            dsd_frontend_event_history_summary* out_items, size_t max_items,
+                                            dsd_frontend_event_history_page_info* out_info);
+int dsd_app_frontend_event_history_item_get(uint8_t slot, size_t index, dsd_frontend_event_history_item* out,
+                                            uint64_t* out_sequence);
 void dsd_app_frontend_redraw_request(void);
 int dsd_app_frontend_redraw_consume(void);
 

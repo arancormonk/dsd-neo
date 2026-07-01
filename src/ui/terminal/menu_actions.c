@@ -18,7 +18,6 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/exitflag.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,7 +62,7 @@ act_reset_eh(void* v) {
 void
 act_exit(void* v) {
     UNUSED(v);
-    exitflag = 1;
+    (void)dsd_app_command_action(DSD_APP_CMD_QUIT);
 }
 
 // ---- Event/WAV/DSP actions ----
@@ -99,6 +98,16 @@ act_dsp_out(void* v) {
 }
 
 // ---- Config actions ----
+
+static void
+ui_submit_config_metadata(int autosave_enabled, const char* path) {
+    dsd_app_config_metadata_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.autosave_enabled = autosave_enabled ? 1 : 0;
+    DSD_SNPRINTF(payload.path, sizeof payload.path, "%s", path ? path : "");
+    payload.path[sizeof payload.path - 1] = '\0';
+    (void)dsd_app_command_set_config_metadata(&payload);
+}
 
 void
 act_config_load(void* v) {
@@ -253,9 +262,10 @@ act_config_save_current(void* v) {
     }
 }
 
+// cppcheck-suppress-begin constParameterPointer
 void
 act_config_save_default(void* v) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     if (!c || !c->state) {
         return;
     }
@@ -267,13 +277,14 @@ act_config_save_default(void* v) {
     dsdneoUserConfig cfg;
     dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
     if (dsd_user_config_save_atomic(path, &cfg) == 0) {
-        // Keep subsequent "save current" actions pinned to the default path used here.
-        DSD_SNPRINTF(c->state->config_autosave_path, sizeof(c->state->config_autosave_path), "%s", path);
+        ui_submit_config_metadata(1, path);
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);
     }
 }
+
+// cppcheck-suppress-end constParameterPointer
 
 void
 act_config_save_as(void* v) {
@@ -744,22 +755,23 @@ io_toggle_cc_candidates(void* vctx) {
     (void)dsd_app_command_action(DSD_APP_CMD_P25_CC_CAND_TOGGLE);
 }
 
+// cppcheck-suppress-begin constParameterPointer
 void
 io_enable_per_call_wav(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     if (!c || !c->opts) {
         return;
     }
     if (c->opts->dmr_stereo_wav == 1 && c->opts->wav_out_f != NULL) {
-        c->opts->dmr_stereo_wav = 0;
         (void)dsd_app_command_action(DSD_APP_CMD_WAV_STOP);
         ui_statusf("Per-call WAV stop requested");
     } else {
-        c->opts->dmr_stereo_wav = 1;
         (void)dsd_app_command_action(DSD_APP_CMD_WAV_START);
         ui_statusf("Per-call WAV start requested");
     }
 }
+
+// cppcheck-suppress-end constParameterPointer
 
 void
 io_save_symbol_capture(void* vctx) {

@@ -73,6 +73,8 @@ static int g_config_load_rc;
 static int g_profile_load_rc;
 static int g_config_save_rc;
 static int g_snapshot_calls;
+static dsd_app_config_metadata_payload g_config_metadata;
+static int g_config_metadata_calls;
 
 int
 dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
@@ -168,6 +170,16 @@ dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload) {
 int
 dsd_app_command_apply_config(const dsdneoUserConfig* config) {
     return dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, config, config ? sizeof *config : 0U);
+}
+
+int
+dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload) {
+    DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
+    if (payload) {
+        g_config_metadata = *payload;
+    }
+    g_config_metadata_calls++;
+    return dsd_app_post_cmd(DSD_APP_CMD_CONFIG_METADATA_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 void ui_statusf(const char* fmt, ...) DSD_ATTR_FORMAT(printf, 1, 2);
@@ -339,6 +351,8 @@ reset_capture(void) {
     g_profile_load_rc = 0;
     g_config_save_rc = 0;
     g_snapshot_calls = 0;
+    DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
+    g_config_metadata_calls = 0;
 }
 
 static UiCtx
@@ -543,9 +557,11 @@ test_config_callbacks_apply_and_report_failures(void) {
 
     reset_capture();
     cb_config_load(&ctx, "/tmp/good.toml");
+    rc |= expect_int("config load command count", g_cmd.calls, 2);
     rc |= expect_int("config load command", g_cmd.id, DSD_APP_CMD_CONFIG_APPLY);
-    rc |= expect_int("config load autosave enabled", state.config_autosave_enabled, 1);
-    rc |= expect_str("config load autosave path", state.config_autosave_path, "/tmp/good.toml");
+    rc |= expect_int("config load metadata count", g_config_metadata_calls, 1);
+    rc |= expect_int("config load autosave enabled", g_config_metadata.autosave_enabled, 1);
+    rc |= expect_str("config load autosave path", g_config_metadata.path, "/tmp/good.toml");
     rc |= expect_str("config load success status", g_status, "Config loaded from /tmp/good.toml");
 
     reset_capture();
@@ -556,6 +572,10 @@ test_config_callbacks_apply_and_report_failures(void) {
     reset_capture();
     cb_config_save_as(&ctx, "/tmp/save.toml");
     rc |= expect_int("config save snapshots", g_snapshot_calls, 1);
+    rc |= expect_int("config save metadata command", g_cmd.id, DSD_APP_CMD_CONFIG_METADATA_SET);
+    rc |= expect_int("config save metadata count", g_config_metadata_calls, 1);
+    rc |= expect_int("config save autosave enabled", g_config_metadata.autosave_enabled, 1);
+    rc |= expect_str("config save autosave path", g_config_metadata.path, "/tmp/save.toml");
     rc |= expect_str("config save success status", g_status, "Config saved to /tmp/save.toml");
 
     reset_capture();
@@ -567,9 +587,11 @@ test_config_callbacks_apply_and_report_failures(void) {
     reset_capture();
     ProfileSelCtx* pctx = make_profile_ctx(&state, "/tmp/profiles.toml", "mobile");
     chooser_done_config_profile(pctx, 0);
+    rc |= expect_int("profile load command count", g_cmd.calls, 2);
     rc |= expect_int("profile load command", g_cmd.id, DSD_APP_CMD_CONFIG_APPLY);
-    rc |= expect_int("profile load disables autosave", state.config_autosave_enabled, 0);
-    rc |= expect_str("profile load path", state.config_autosave_path, "/tmp/profiles.toml");
+    rc |= expect_int("profile load metadata count", g_config_metadata_calls, 1);
+    rc |= expect_int("profile load disables autosave", g_config_metadata.autosave_enabled, 0);
+    rc |= expect_str("profile load path", g_config_metadata.path, "/tmp/profiles.toml");
     rc |= expect_str("profile load status", g_status, "Profile loaded: mobile");
 
     reset_capture();

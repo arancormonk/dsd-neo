@@ -167,6 +167,16 @@ cb_keys_hex(void* v, const char* p) {
 
 // ---- Config callbacks ----
 
+static void
+ui_submit_config_metadata(int autosave_enabled, const char* path) {
+    dsd_app_config_metadata_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.autosave_enabled = autosave_enabled ? 1 : 0;
+    DSD_SNPRINTF(payload.path, sizeof payload.path, "%s", path ? path : "");
+    payload.path[sizeof payload.path - 1] = '\0';
+    (void)dsd_app_command_set_config_metadata(&payload);
+}
+
 void
 cb_config_load(void* v, const char* path) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);
@@ -185,13 +195,7 @@ cb_config_load(void* v, const char* path) {
         return;
     }
 
-    // Treat UI-loaded configs as the active config path for later saves/autosave.
-    if (c->state) {
-        c->state->config_autosave_enabled = 1;
-        DSD_SNPRINTF(c->state->config_autosave_path, sizeof c->state->config_autosave_path, "%s", path);
-        c->state->config_autosave_path[sizeof c->state->config_autosave_path - 1] = '\0';
-    }
-
+    ui_submit_config_metadata(1, path);
     (void)dsd_app_command_apply_config(&cfg);
     ui_statusf("Config loaded from %s", path);
 }
@@ -225,12 +229,7 @@ chooser_done_config_profile(void* u, int sel) {
         if (dsd_user_config_load_profile(pctx->path, profile, &cfg) != 0) {
             ui_statusf("Failed to load profile %s from %s", profile, pctx->path);
         } else {
-            if (pctx->state) {
-                pctx->state->config_autosave_enabled = 0;
-                DSD_SNPRINTF(pctx->state->config_autosave_path, sizeof pctx->state->config_autosave_path, "%s",
-                             pctx->path);
-                pctx->state->config_autosave_path[sizeof pctx->state->config_autosave_path - 1] = '\0';
-            }
+            ui_submit_config_metadata(0, pctx->path);
             (void)dsd_app_command_apply_config(&cfg);
             ui_statusf("Profile loaded: %s", profile);
         }
@@ -252,6 +251,7 @@ cb_config_save_as(void* v, const char* path) {
     dsdneoUserConfig cfg;
     dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
     if (dsd_user_config_save_atomic(path, &cfg) == 0) {
+        ui_submit_config_metadata(1, path);
         ui_statusf("Config saved to %s", path);
     } else {
         ui_statusf("Failed to save config to %s", path);

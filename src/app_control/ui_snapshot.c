@@ -35,6 +35,7 @@ static unsigned long long g_pub_seq = 0;
 static unsigned long long g_consume_seq = 0;
 static unsigned long long g_pub_eh_seq = 0;
 static unsigned long long g_consume_eh_seq = 0;
+static int g_pub_eh_present = 0;
 
 #define UI_SNAPSHOT_FIELD_END(field)            (offsetof(dsd_state, field) + sizeof(((dsd_state*)0)->field))
 #define UI_SNAPSHOT_COPY_FIELD(dst, src, field) DSD_MEMCPY(&(dst)->field, &(src)->field, sizeof((dst)->field))
@@ -218,7 +219,7 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
     // Deep copy pointer-backed UI data (event history for 2 slots) only when changed.
     // Event history storage is zero-initialized and copied as a whole slot.
     if (state->event_history_s != NULL) {
-        int eh_changed = 0;
+        int eh_changed = g_pub_eh_present ? 0 : 1;
         if (!g_have || !ui_event_history_slot_equal(&g_pub_eh[0], &state->event_history_s[0])) {
             DSD_MEMCPY(&g_pub_eh[0], &state->event_history_s[0], sizeof(Event_History_I));
             eh_changed = 1;
@@ -230,8 +231,13 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
         if (eh_changed) {
             g_pub_eh_seq++;
         }
+        g_pub_eh_present = 1;
         g_pub.event_history_s = g_pub_eh;
     } else {
+        if (g_pub_eh_present) {
+            g_pub_eh_seq++;
+        }
+        g_pub_eh_present = 0;
         g_pub.event_history_s = NULL;
     }
     g_have = 1;
@@ -262,6 +268,23 @@ dsd_app_get_latest_snapshot(void) {
         g_consume.event_history_s = g_consume_eh;
     } else {
         g_consume.event_history_s = NULL;
+    }
+    dsd_mutex_unlock(&g_mu);
+    return &g_consume;
+}
+
+static const dsd_state*
+dsd_app_get_latest_live_snapshot(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    if (!g_have) {
+        dsd_mutex_unlock(&g_mu);
+        return NULL;
+    }
+    if (g_consume_seq != g_pub_seq) {
+        ui_snapshot_copy_render_state(&g_consume, &g_pub);
+        ui_snapshot_copy_trunk_cc_candidates(&g_consume, &g_pub, &g_consume_cc_candidates);
+        g_consume_seq = g_pub_seq;
     }
     dsd_mutex_unlock(&g_mu);
     return &g_consume;
@@ -501,18 +524,50 @@ frontend_event_history_item_copy(dsd_frontend_event_history_item* dst, const Eve
 }
 
 static void
-frontend_snapshot_copy_event_history(dsd_frontend_snapshot* out, const dsd_state* state) {
-    if (!out || !state || !state->event_history_s) {
+frontend_event_history_summary_copy(dsd_frontend_event_history_summary* dst, const Event_History* src, uint8_t slot) {
+    if (!dst || !src) {
         return;
     }
-    out->event_history_present = 1;
-    for (size_t slot = 0; slot < DSD_FRONTEND_EVENT_HISTORY_SLOTS; slot++) {
-        for (size_t i = 0; i < DSD_FRONTEND_EVENT_HISTORY_ITEMS; i++) {
-            frontend_event_history_item_copy(&out->event_history[slot].items[i],
-                                             &state->event_history_s[slot].Event_History_Items[i]);
-            out->event_history[slot].items[i].slot = (uint8_t)slot;
-        }
+    DSD_MEMSET(dst, 0, sizeof(*dst));
+    dst->present = frontend_event_has_content(src) ? 1U : 0U;
+    dst->write_pending = src->write;
+    dst->slot = slot;
+    dst->severity = frontend_severity_from_core(src->severity);
+    if (dst->severity == DSD_FRONTEND_EVENT_SEVERITY_UNKNOWN) {
+        dst->severity = frontend_severity_from_text(src->internal_str[0] ? src->internal_str : src->event_string);
     }
+    dst->category = frontend_category_from_core(src->category);
+    if (dst->category == DSD_FRONTEND_EVENT_CATEGORY_UNKNOWN) {
+        dst->category = frontend_category_from_event(src);
+    }
+    dst->protocol = frontend_protocol_from_systype(src->systype);
+    dst->encryption_state = frontend_encryption_from_event(src);
+    dst->source_id = src->source_id;
+    dst->target_id = src->target_id;
+    dst->channel = src->channel;
+    dst->timestamp_unix_s = (int64_t)src->event_time;
+    frontend_copy_text(dst->source_text, sizeof dst->source_text, src->src_str);
+    frontend_copy_text(dst->target_text, sizeof dst->target_text, src->tgt_str);
+    frontend_copy_text(dst->source_label, sizeof dst->source_label, src->s_name);
+    frontend_copy_text(dst->target_label, sizeof dst->target_label, src->t_name);
+    frontend_copy_text(dst->system_label, sizeof dst->system_label, src->sysid_string);
+    frontend_copy_text(dst->summary_text, sizeof dst->summary_text, src->event_string);
+    frontend_copy_text(dst->detail_text, sizeof dst->detail_text, src->internal_str);
+}
+
+static void
+frontend_snapshot_copy_event_history_meta(dsd_frontend_snapshot* out) {
+    if (!out) {
+        return;
+    }
+    out->event_history_slot_count = DSD_FRONTEND_EVENT_HISTORY_SLOTS;
+    out->event_history_items_per_slot = DSD_FRONTEND_EVENT_HISTORY_ITEMS;
+
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    out->event_history_present = (g_have && g_pub_eh_present) ? 1 : 0;
+    out->event_history_sequence = (uint64_t)g_pub_eh_seq;
+    dsd_mutex_unlock(&g_mu);
 }
 
 static void
@@ -623,7 +678,7 @@ dsd_app_frontend_snapshot_get(dsd_frontend_snapshot* out) {
     }
     DSD_MEMSET(out, 0, sizeof(*out));
     const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    const dsd_state* state = dsd_app_get_latest_snapshot();
+    const dsd_state* state = dsd_app_get_latest_live_snapshot();
     out->has_options = opts ? 1 : 0;
     dsd_app_frontend_status_from_opts_state(opts, state, &out->status);
     (void)dsd_app_frontend_get_metrics_from_opts_state(opts, state, &out->metrics);
@@ -631,7 +686,94 @@ dsd_app_frontend_snapshot_get(dsd_frontend_snapshot* out) {
         frontend_snapshot_copy_state_scalars(out, state);
         frontend_snapshot_copy_trunk_channels(out, state);
         frontend_snapshot_copy_cc_candidates(out, state);
-        frontend_snapshot_copy_event_history(out, state);
     }
+    frontend_snapshot_copy_event_history_meta(out);
     return (opts || state) ? 0 : -1;
+}
+
+static int
+frontend_event_history_query_valid(const dsd_frontend_event_history_query* query) {
+    return query != NULL && query->slot < DSD_FRONTEND_EVENT_HISTORY_SLOTS;
+}
+
+static int
+frontend_event_history_page_finish(dsd_frontend_event_history_page_info* out_info,
+                                   const dsd_frontend_event_history_page_info* info, int rc) {
+    if (out_info) {
+        *out_info = *info;
+    }
+    return rc;
+}
+
+static size_t
+frontend_event_history_page_count(const dsd_frontend_event_history_query* query,
+                                  const dsd_frontend_event_history_summary* out_items, size_t max_items) {
+    if (out_items == NULL || query->offset >= DSD_FRONTEND_EVENT_HISTORY_ITEMS) {
+        return 0U;
+    }
+    size_t count = query->limit;
+    if (count > max_items) {
+        count = max_items;
+    }
+    const size_t available = DSD_FRONTEND_EVENT_HISTORY_ITEMS - query->offset;
+    return count > available ? available : count;
+}
+
+int
+dsd_app_frontend_event_history_page_get(const dsd_frontend_event_history_query* query,
+                                        dsd_frontend_event_history_summary* out_items, size_t max_items,
+                                        dsd_frontend_event_history_page_info* out_info) {
+    if (!frontend_event_history_query_valid(query)) {
+        return -1;
+    }
+    dsd_frontend_event_history_page_info info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.total_items = DSD_FRONTEND_EVENT_HISTORY_ITEMS;
+
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    info.sequence = (uint64_t)g_pub_eh_seq;
+    info.present = (g_have && g_pub_eh_present) ? 1 : 0;
+    if (!info.present) {
+        dsd_mutex_unlock(&g_mu);
+        return frontend_event_history_page_finish(out_info, &info, g_have ? 0 : -1);
+    }
+    if (query->known_sequence != 0U && query->known_sequence == info.sequence) {
+        info.unchanged = 1;
+        dsd_mutex_unlock(&g_mu);
+        return frontend_event_history_page_finish(out_info, &info, 0);
+    }
+
+    size_t count = frontend_event_history_page_count(query, out_items, max_items);
+    for (size_t i = 0; i < count; i++) {
+        size_t idx = query->offset + i;
+        frontend_event_history_summary_copy(&out_items[i], &g_pub_eh[query->slot].Event_History_Items[idx],
+                                            query->slot);
+    }
+    info.returned_items = count;
+    dsd_mutex_unlock(&g_mu);
+
+    return frontend_event_history_page_finish(out_info, &info, 0);
+}
+
+int
+dsd_app_frontend_event_history_item_get(uint8_t slot, size_t index, dsd_frontend_event_history_item* out,
+                                        uint64_t* out_sequence) {
+    if (!out || slot >= DSD_FRONTEND_EVENT_HISTORY_SLOTS || index >= DSD_FRONTEND_EVENT_HISTORY_ITEMS) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    if (!g_have || !g_pub_eh_present) {
+        dsd_mutex_unlock(&g_mu);
+        return -1;
+    }
+    frontend_event_history_item_copy(out, &g_pub_eh[slot].Event_History_Items[index]);
+    out->slot = slot;
+    if (out_sequence) {
+        *out_sequence = (uint64_t)g_pub_eh_seq;
+    }
+    dsd_mutex_unlock(&g_mu);
+    return 0;
 }

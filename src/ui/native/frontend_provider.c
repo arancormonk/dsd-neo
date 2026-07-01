@@ -8,6 +8,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/log.h>
@@ -53,11 +54,26 @@ dsd_native_frontend_run_main_loop(const dsd_frontend_host_callbacks* host, void*
 
     LOG_NOTICE("Native frontend scaffold only; no native GUI is rendered yet.\n");
 
+    uint64_t last_event_history_sequence = 0;
     while (!host->engine_finished(host->context)) {
         dsd_frontend_snapshot snapshot;
         (void)dsd_app_frontend_redraw_consume();
         if (dsd_app_frontend_snapshot_get(&snapshot) == 0) {
-            (void)snapshot;
+            if (snapshot.event_history_present && snapshot.event_history_sequence != last_event_history_sequence) {
+                dsd_frontend_event_history_summary items[8];
+                dsd_frontend_event_history_query query = {
+                    .slot = 0,
+                    .offset = 0,
+                    .limit = sizeof items / sizeof items[0],
+                    .known_sequence = last_event_history_sequence,
+                };
+                dsd_frontend_event_history_page_info info;
+                DSD_MEMSET(&info, 0, sizeof info);
+                if (dsd_app_frontend_event_history_page_get(&query, items, sizeof items / sizeof items[0], &info)
+                    == 0) {
+                    last_event_history_sequence = info.sequence;
+                }
+            }
         }
         dsd_sleep_ms(33);
     }

@@ -48,6 +48,33 @@ typedef struct dsd_frontend_status {
     int config_autosave_enabled;
     char config_autosave_path[2048];
 
+    int payload_logging;
+    int event_log_enabled;
+    char event_log_path[1024];
+    int per_call_wav_enabled;
+    int per_call_wav_active;
+    int static_wav_enabled;
+    int static_wav_active;
+    char wav_out_dir[512];
+    char wav_out_file[1024];
+    char wav_out_file_raw[1024];
+    int symbol_capture_active;
+    int symbol_playback_active;
+    char symbol_out_file[1024];
+    int tcp_audio_connected;
+    int udp_input_active;
+    int rigctl_connected;
+    int rtl_input_active;
+    int trunk_use_allow_list;
+    int trunk_tune_group_calls;
+    int trunk_tune_private_calls;
+    int trunk_tune_data_calls;
+    int trunk_tune_enc_calls;
+    int p25_lcw_retune;
+    int p25_prefer_candidates;
+    int call_alert;
+    uint8_t call_alert_events;
+
     uint64_t p2_wacn;
     uint64_t p2_sysid;
     uint64_t p2_cc;

@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <sndfile.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -14,6 +15,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include "../../src/app_control/frontend_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
@@ -58,6 +60,26 @@ fill_frontend_inputs(dsd_opts* opts, dsd_state* state) {
     opts->rtl_dsp_bw_khz = 24;
     opts->rtl_auto_ppm = 1;
     opts->input_warn_db = -42.5;
+    opts->payload = 1;
+    DSD_SNPRINTF(opts->event_out_file, sizeof opts->event_out_file, "%s", "/tmp/events.log");
+    opts->dmr_stereo_wav = 1;
+    opts->wav_out_f = (SNDFILE*)0x1;
+    opts->static_wav_file = 1;
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", "/tmp/wav");
+    DSD_SNPRINTF(opts->wav_out_file, sizeof opts->wav_out_file, "%s", "/tmp/static.wav");
+    DSD_SNPRINTF(opts->wav_out_file_raw, sizeof opts->wav_out_file_raw, "%s", "/tmp/raw.wav");
+    opts->symbol_out_f = (FILE*)0x1;
+    DSD_SNPRINTF(opts->symbol_out_file, sizeof opts->symbol_out_file, "%s", "/tmp/symbols.bin");
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = (dsd_socket_t)7;
+    opts->trunk_use_allow_list = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    opts->trunk_tune_data_calls = 1;
+    opts->p25_lcw_retune = 1;
+    opts->p25_prefer_candidates = 1;
+    opts->call_alert = 1;
+    opts->call_alert_events = 3;
 
     state->config_autosave_enabled = 1;
     DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", "/tmp/dsd-neo.ini");
@@ -90,6 +112,27 @@ test_status_copies_opts_and_state(void) {
     assert(status.rtlsdr_center_freq == 851012500U);
     assert(status.rtlsdr_ppm_error == -3);
     assert(status.rtl_auto_ppm == 1);
+    assert(status.payload_logging == 1);
+    assert(status.event_log_enabled == 1);
+    assert(strcmp(status.event_log_path, "/tmp/events.log") == 0);
+    assert(status.per_call_wav_enabled == 1);
+    assert(status.per_call_wav_active == 1);
+    assert(status.static_wav_enabled == 1);
+    assert(status.static_wav_active == 1);
+    assert(strcmp(status.wav_out_dir, "/tmp/wav") == 0);
+    assert(strcmp(status.wav_out_file, "/tmp/static.wav") == 0);
+    assert(strcmp(status.wav_out_file_raw, "/tmp/raw.wav") == 0);
+    assert(status.symbol_capture_active == 1);
+    assert(strcmp(status.symbol_out_file, "/tmp/symbols.bin") == 0);
+    assert(status.rigctl_connected == 1);
+    assert(status.trunk_use_allow_list == 1);
+    assert(status.trunk_tune_group_calls == 1);
+    assert(status.trunk_tune_private_calls == 1);
+    assert(status.trunk_tune_data_calls == 1);
+    assert(status.p25_lcw_retune == 1);
+    assert(status.p25_prefer_candidates == 1);
+    assert(status.call_alert == 1);
+    assert(status.call_alert_events == 3);
     assert(status.p2_wacn == 0xbee00U);
     assert(status.tg_hold == 1001U);
     assert(status.lasttgR == 1003U);

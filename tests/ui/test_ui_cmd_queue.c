@@ -316,6 +316,63 @@ test_tracked_command_results(void) {
     rc |= expect_true("capability count nonzero", cap_count > 8U);
     rc |= expect_int("capability truncated query", dsd_app_command_capabilities_get(caps, 8U, &cap_count), 1);
 
+    dsd_app_command_descriptor descs[160];
+    size_t desc_count = 0;
+    rc |= expect_int("descriptor count query", dsd_app_command_descriptors_get(NULL, 0U, &desc_count), 0);
+    rc |= expect_int("descriptor count parity", (int)desc_count, (int)cap_count);
+    rc |= expect_true("descriptor test buffer large enough", desc_count <= sizeof descs / sizeof descs[0]);
+    rc |= expect_int("descriptor full query", dsd_app_command_descriptors_get(descs, desc_count, &desc_count), 0);
+    const dsd_app_command_descriptor* gain_desc = NULL;
+    const dsd_app_command_descriptor* bw_desc = NULL;
+    const dsd_app_command_descriptor* config_desc = NULL;
+    const dsd_app_command_descriptor* metadata_desc = NULL;
+    for (size_t i = 0; i < desc_count; i++) {
+        rc |= expect_true("descriptor label present", descs[i].label != NULL && descs[i].label[0] != '\0');
+        if (descs[i].command_id == DSD_APP_CMD_GAIN_SET) {
+            gain_desc = &descs[i];
+        } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_BW) {
+            bw_desc = &descs[i];
+        } else if (descs[i].command_id == DSD_APP_CMD_CONFIG_APPLY) {
+            config_desc = &descs[i];
+        } else if (descs[i].command_id == DSD_APP_CMD_CONFIG_METADATA_SET) {
+            metadata_desc = &descs[i];
+        }
+    }
+    rc |= expect_true("gain descriptor present", gain_desc != NULL);
+    if (gain_desc) {
+        rc |= expect_true("gain descriptor range", gain_desc->min_value == 0.0 && gain_desc->max_value == 50.0);
+    }
+    rc |= expect_true("rtl bandwidth descriptor present", bw_desc != NULL);
+    if (bw_desc) {
+        rc |= expect_true("rtl bandwidth enum options", bw_desc->enum_option_count >= 7U);
+        rc |= expect_true("rtl bandwidth radio availability",
+                          (bw_desc->availability_flags & DSD_APP_COMMAND_AVAIL_RADIO) != 0U);
+        rc |= expect_int("rtl bandwidth restart hint", bw_desc->may_require_restart, 1);
+    }
+    rc |= expect_true("config descriptor present", config_desc != NULL);
+    if (config_desc) {
+        rc |= expect_int("config restart hint", config_desc->may_require_restart, 1);
+    }
+    rc |= expect_true("config metadata descriptor present", metadata_desc != NULL);
+    if (metadata_desc) {
+        rc |= expect_int("config metadata payload kind", metadata_desc->payload_kind, DSD_APP_COMMAND_PAYLOAD_STRUCT);
+        rc |= expect_true("config metadata payload size",
+                          metadata_desc->payload_size == sizeof(dsd_app_config_metadata_payload));
+    }
+
+    dsd_app_config_metadata_payload metadata;
+    DSD_MEMSET(&metadata, 0, sizeof metadata);
+    metadata.autosave_enabled = 1;
+    DSD_SNPRINTF(metadata.path, sizeof metadata.path, "%s", "/tmp/queued-config.toml");
+    dsd_app_command_token metadata_token = 0;
+    rc |= expect_int("tracked config metadata queued",
+                     dsd_app_command_set_config_metadata_tracked(&metadata, &metadata_token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tracked config metadata drain count", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tracked config metadata enabled", state.config_autosave_enabled, 1);
+    rc |= expect_str("tracked config metadata path", state.config_autosave_path, "/tmp/queued-config.toml");
+    rc |= expect_command_status("tracked config metadata result", metadata_token, DSD_APP_COMMAND_RESULT_COMPLETED);
+
     opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     dsdneoUserConfig cfg;
     DSD_MEMSET(&cfg, 0, sizeof cfg);

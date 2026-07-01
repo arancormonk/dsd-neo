@@ -41,8 +41,23 @@ dsd_app_frontend_redraw_consume(void) {
 
 int
 dsd_app_frontend_snapshot_get(dsd_frontend_snapshot* out) {
-    (void)out;
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof *out);
+    }
     g_snapshot_calls++;
+    return 0;
+}
+
+int
+dsd_app_frontend_event_history_page_get(const dsd_frontend_event_history_query* query,
+                                        dsd_frontend_event_history_summary* out_items, size_t max_items,
+                                        dsd_frontend_event_history_page_info* out_info) {
+    (void)query;
+    (void)out_items;
+    (void)max_items;
+    if (out_info) {
+        DSD_MEMSET(out_info, 0, sizeof *out_info);
+    }
     return 0;
 }
 

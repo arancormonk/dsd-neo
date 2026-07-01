@@ -2,9 +2,9 @@
 
 # Frontend Snapshot Map
 
-`dsd_frontend_snapshot` is the app-control boundary for read-only frontend state. New frontends should read
-`dsd_frontend_snapshot`, `dsd_frontend_status`, and `dsd_frontend_metrics` instead of reaching into live
-`dsd_opts`, live `dsd_state`, or terminal UI helpers.
+`dsd_frontend_snapshot` is the app-control boundary for cheap read-only frontend state. New frontends should read
+`dsd_frontend_snapshot`, `dsd_frontend_status`, `dsd_frontend_metrics`, and the paged event-history APIs instead of
+reaching into live `dsd_opts`, live `dsd_state`, or terminal UI helpers.
 
 ## Status
 
@@ -12,6 +12,8 @@
 - `status.display`: common frontend display preferences copied from `dsd_opts.frontend_display`.
 - `status.terminal_display`: terminal-only render preferences copied from `dsd_opts.frontend_display`.
 - Decoder/input status fields: copied from stable option and runtime fields needed by existing frontend status views.
+- Native-visible controls and labels can read promoted recording, logging, trunk policy, connection, call-alert, and
+  capture/playback state from `dsd_frontend_status` instead of raw `dsd_opts` or terminal menu helpers.
 
 ## Metrics
 
@@ -46,12 +48,21 @@
 
 ## Event History
 
-- `event_history[*].items[*].present`: true when a core `Event_History` item contains source, target, text, GPS,
-  alias, detail, PDU, or rendered summary content.
-- `severity` and `category`: copied from neutral core event metadata when present, otherwise inferred from current
-  event content for compatibility with older writers.
-- `protocol`: derived from the core sync/system type.
-- Source/target IDs, labels, modes, system IDs, channel, timestamp, service options, encryption metadata, PDU bytes,
-  summary text, detail text, GPS text, text message, and alias are copied from the matching `Event_History` fields.
+- The live snapshot carries only metadata: `event_history_present`, `event_history_sequence`,
+  `event_history_slot_count`, and `event_history_items_per_slot`.
+- Frontends should call `dsd_app_frontend_event_history_page_get()` when `event_history_sequence` changes. Passing the
+  last known sequence lets app-control report `unchanged` without copying rows.
+- Page rows use `dsd_frontend_event_history_summary`: compact source/target labels, IDs, protocol, severity/category,
+  encryption state, timestamp, and short summary/detail text.
+- Frontends should call `dsd_app_frontend_event_history_item_get()` only for selected rows that need full detail.
+  The full detail item includes source/target IDs, labels, modes, system IDs, channel, timestamp, service options,
+  encryption metadata, PDU bytes, summary text, detail text, GPS text, text message, and alias.
 - Terminal color pairs are not part of the public snapshot. Terminal UI keeps using the internally copied compatibility
   `dsd_state` and maps neutral metadata to curses attributes inside `src/ui/terminal/`.
+
+## Commands
+
+- `dsd_app_command_descriptors_get()` is the native-control metadata source. It exposes command labels, payload kind,
+  payload size, value ranges, enum options, units, radio/runtime availability flags, restart hints, and validation
+  hints.
+- `dsd_app_command_capabilities_get()` remains as the compatibility view and is derived from the descriptor table.
