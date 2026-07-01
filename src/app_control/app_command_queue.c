@@ -2830,7 +2830,7 @@ apply_cmd_legacy_basic_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             opts->frontend_display.terminal_compact = opts->frontend_display.terminal_compact ? 0 : 1;
             return 1;
         case DSD_APP_CMD_HISTORY_CYCLE:
-            (void)ui_history_cycle_mode();
+            (void)dsd_app_frontend_history_cycle_mode();
             dsd_telemetry_request_redraw();
             return 1;
         default: return 0;

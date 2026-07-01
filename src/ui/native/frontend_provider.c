@@ -7,9 +7,6 @@
 
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
-#include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/log.h>
 
@@ -67,8 +64,7 @@ dsd_native_frontend_run_main_loop(const dsd_frontend_host_callbacks* host, void*
                     .limit = sizeof items / sizeof items[0],
                     .known_sequence = last_event_history_sequence,
                 };
-                dsd_frontend_event_history_page_info info;
-                DSD_MEMSET(&info, 0, sizeof info);
+                dsd_frontend_event_history_page_info info = {0};
                 if (dsd_app_frontend_event_history_page_get(&query, items, sizeof items / sizeof items[0], &info)
                     == 0) {
                     last_event_history_sequence = info.sequence;

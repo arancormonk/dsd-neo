@@ -95,12 +95,12 @@ dsd_telemetry_request_redraw(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 int
-ui_history_get_mode(void) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_history_get_mode(void) { // NOLINT(misc-use-internal-linkage)
     return g_history_mode;
 }
 
 void
-ui_history_set_mode(int mode) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_history_set_mode(int mode) { // NOLINT(misc-use-internal-linkage)
     g_history_mode = mode % 3;
     if (g_history_mode < 0) {
         g_history_mode += 3;
@@ -108,9 +108,9 @@ ui_history_set_mode(int mode) { // NOLINT(misc-use-internal-linkage)
 }
 
 int
-ui_history_cycle_mode(void) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_history_cycle_mode(void) { // NOLINT(misc-use-internal-linkage)
     g_history_cycle_calls++;
-    ui_history_set_mode(g_history_mode + 1);
+    dsd_app_frontend_history_set_mode(g_history_mode + 1);
     return g_history_mode;
 }
 
@@ -225,12 +225,12 @@ main(void) {
     cap_reset();
     opts->frontend_display.terminal_history = 1;
     assert(ncurses_input_handler(opts, state, DSD_KEY_HISTORY) == 1);
-    assert(ui_history_get_mode() == 2);
+    assert(dsd_app_frontend_history_get_mode() == 2);
     assert(g_cap.calls == 0);
     assert(g_history_cycle_calls == 1);
     assert(g_redraw_calls == 1);
     assert(ncurses_input_handler(opts, state, DSD_KEY_HISTORY) == 1);
-    assert(ui_history_get_mode() == 0);
+    assert(dsd_app_frontend_history_get_mode() == 0);
     assert(g_cap.calls == 0);
     assert(g_history_cycle_calls == 2);
     assert(g_redraw_calls == 2);

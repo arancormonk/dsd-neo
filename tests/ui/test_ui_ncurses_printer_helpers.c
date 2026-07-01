@@ -19,7 +19,6 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -172,13 +171,6 @@ ui_is_thread_context(void) { // NOLINT(misc-use-internal-linkage)
     return 1;
 }
 
-void
-dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts,
-                                      const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-}
-
 int
 ui_is_locked_from_label(const dsd_state* state, const char* label) { // NOLINT(misc-use-internal-linkage)
     (void)state;
@@ -249,8 +241,8 @@ compute_p25p1_voice_avg_err(const dsd_state* s, double* out_avg) { // NOLINT(mis
 }
 
 size_t
-ui_history_compact_event_text(char* out, size_t out_size, const char* event_text,
-                              int mode) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_history_compact_event_text(char* out, size_t out_size, const char* event_text,
+                                            int mode) { // NOLINT(misc-use-internal-linkage)
     (void)mode;
     if (out_size > 0U) {
         DSD_SNPRINTF(out, out_size, "%s", event_text ? event_text : "");
@@ -259,13 +251,14 @@ ui_history_compact_event_text(char* out, size_t out_size, const char* event_text
 }
 
 time_t
-ui_history_event_sort_time(const char* event_text, time_t fallback_time) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_history_event_sort_time(const char* event_text,
+                                         time_t fallback_time) { // NOLINT(misc-use-internal-linkage)
     (void)event_text;
     return fallback_time;
 }
 
 int
-ui_history_get_mode(void) { // NOLINT(misc-use-internal-linkage)
+dsd_app_frontend_history_get_mode(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 

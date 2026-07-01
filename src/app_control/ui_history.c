@@ -83,17 +83,17 @@ ui_history_datetime_fields_in_range(int year, int month, int day, int hour, int 
 }
 
 int
-ui_history_get_mode(void) {
+dsd_app_frontend_history_get_mode(void) {
     return ui_history_normalize_mode(atomic_load(&g_ui_history_mode));
 }
 
 void
-ui_history_set_mode(int mode) {
+dsd_app_frontend_history_set_mode(int mode) {
     atomic_store(&g_ui_history_mode, ui_history_normalize_mode(mode));
 }
 
 int
-ui_history_cycle_mode(void) {
+dsd_app_frontend_history_cycle_mode(void) {
     int current = atomic_load(&g_ui_history_mode);
     for (;;) {
         int next = ui_history_normalize_mode(current + 1);
@@ -104,7 +104,7 @@ ui_history_cycle_mode(void) {
 }
 
 size_t
-ui_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode) {
+dsd_app_frontend_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode) {
     if (out == NULL || out_size == 0) {
         return 0;
     }
@@ -124,7 +124,7 @@ ui_history_compact_event_text(char* out, size_t out_size, const char* event_text
 }
 
 time_t
-ui_history_event_sort_time(const char* event_text, time_t fallback_time) {
+dsd_app_frontend_history_event_sort_time(const char* event_text, time_t fallback_time) {
     if (!ui_history_has_full_datetime_prefix(event_text)) {
         return fallback_time;
     }
@@ -154,4 +154,29 @@ ui_history_event_sort_time(const char* event_text, time_t fallback_time) {
         return fallback_time;
     }
     return parsed;
+}
+
+int
+ui_history_get_mode(void) {
+    return dsd_app_frontend_history_get_mode();
+}
+
+void
+ui_history_set_mode(int mode) {
+    dsd_app_frontend_history_set_mode(mode);
+}
+
+int
+ui_history_cycle_mode(void) {
+    return dsd_app_frontend_history_cycle_mode();
+}
+
+size_t
+ui_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode) {
+    return dsd_app_frontend_history_compact_event_text(out, out_size, event_text, mode);
+}
+
+time_t
+ui_history_event_sort_time(const char* event_text, time_t fallback_time) {
+    return dsd_app_frontend_history_event_sort_time(event_text, fallback_time);
 }

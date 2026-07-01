@@ -88,7 +88,7 @@ dsd_runtime_set_control_pump(dsd_control_pump_fn fn) {
 }
 
 void
-ui_history_set_mode(int mode) {
+dsd_app_frontend_history_set_mode(int mode) {
     g_history_mode = mode;
 }
 

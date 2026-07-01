@@ -31,7 +31,6 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -1512,7 +1511,8 @@ ui_history_print_event_summary(const Event_History* item, const char* line_prefi
 
     char compact_string[2000];
     char text_string[2000];
-    ui_history_compact_event_text(compact_string, sizeof compact_string, item->event_string, ctx->history_mode);
+    dsd_app_frontend_history_compact_event_text(compact_string, sizeof compact_string, item->event_string,
+                                                ctx->history_mode);
     size_t text_size = (size_t)line_size;
     if (text_size >= sizeof text_string) {
         text_size = sizeof text_string - 1U;
@@ -1639,7 +1639,7 @@ ui_history_collect_slot_items(const dsd_state* state, uint8_t slot, ui_history_i
         }
         refs[count].slot = slot;
         refs[count].idx = idx;
-        refs[count].sort_time = ui_history_event_sort_time(item->event_string, item->event_time);
+        refs[count].sort_time = dsd_app_frontend_history_event_sort_time(item->event_string, item->event_time);
         count++;
     }
     return count;
@@ -1694,7 +1694,7 @@ ui_history_render_sorted_slot_items(const dsd_state* state, const ui_history_ren
 
 static void
 ui_render_event_history_section(const dsd_state* state) {
-    const int history_mode = ui_history_get_mode();
+    const int history_mode = dsd_app_frontend_history_get_mode();
     int history_draw_footer = 1;
     attron(COLOR_PAIR(4));
     ui_history_render_header(state, history_mode);
@@ -2932,11 +2932,9 @@ ui_ncurses_printer_impl(dsd_opts* opts, dsd_state* state) {
     if (!opts) {
         return;
     }
-    /* Demod path must not touch ncurses. Allow calls only from the UI thread
-       context; otherwise publish snapshots and request a redraw. */
+    /* Demod path must not touch ncurses. Telemetry is published through
+       runtime/app-control hooks, so non-UI-thread calls are render no-ops. */
     if (!ui_is_thread_context()) {
-        // Publish snapshots for the UI thread to consume and request a redraw
-        dsd_telemetry_publish_both_and_redraw(opts, state);
         return;
     }
     int level = 0;

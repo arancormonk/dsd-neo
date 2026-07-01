@@ -57,12 +57,143 @@ expect_command_status(const char* tag, dsd_app_command_token token, dsd_app_comm
 }
 
 static int
+expect_command_result_stable(const char* tag, dsd_app_command_token token, dsd_app_command_result_status want) {
+    dsd_app_command_result first;
+    dsd_app_command_result second;
+    DSD_MEMSET(&first, 0, sizeof(first));
+    DSD_MEMSET(&second, 0, sizeof(second));
+    if (dsd_app_command_result_get(token, &first) != 0 || dsd_app_command_result_get(token, &second) != 0) {
+        DSD_FPRINTF(stderr, "%s: result for token %llu not found\n", tag, (unsigned long long)token);
+        return 1;
+    }
+    if (first.status != want) {
+        DSD_FPRINTF(stderr, "%s: got status %d want %d (%s)\n", tag, (int)first.status, (int)want, first.message);
+        return 1;
+    }
+    if (first.token != second.token || first.coalesced_to != second.coalesced_to
+        || first.command_id != second.command_id || first.status != second.status
+        || first.detail_code != second.detail_code || strcmp(first.message, second.message) != 0) {
+        DSD_FPRINTF(stderr, "%s: repeated result reads were not stable\n", tag);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
         DSD_FPRINTF(stderr, "%s: expectation failed\n", tag);
         return 1;
     }
     return 0;
+}
+
+static size_t
+expected_descriptor_payload_size(const dsd_app_command_descriptor* desc) {
+    switch (desc->payload_kind) {
+        case DSD_APP_COMMAND_PAYLOAD_NONE: return 0U;
+        case DSD_APP_COMMAND_PAYLOAD_I32: return sizeof(int32_t);
+        case DSD_APP_COMMAND_PAYLOAD_U8: return sizeof(uint8_t);
+        case DSD_APP_COMMAND_PAYLOAD_U32: return sizeof(uint32_t);
+        case DSD_APP_COMMAND_PAYLOAD_U64: return sizeof(uint64_t);
+        case DSD_APP_COMMAND_PAYLOAD_DOUBLE: return sizeof(double);
+        case DSD_APP_COMMAND_PAYLOAD_FLOAT: return sizeof(float);
+        case DSD_APP_COMMAND_PAYLOAD_STRING: return desc->payload_size;
+        case DSD_APP_COMMAND_PAYLOAD_ENDPOINT:
+            if (desc->command_id == DSD_APP_CMD_UDP_INPUT_CFG) {
+                const size_t udp_size = sizeof(dsd_app_udp_input_payload);
+                return udp_size;
+            }
+            return sizeof(dsd_app_endpoint_payload);
+        case DSD_APP_COMMAND_PAYLOAD_STRUCT:
+            switch (desc->command_id) {
+                case DSD_APP_CMD_P25_P2_PARAMS_SET: return sizeof(dsd_app_p25_p2_params_payload);
+                case DSD_APP_CMD_KEY_HYTERA_SET: return sizeof(dsd_app_hytera_key_payload);
+                case DSD_APP_CMD_KEY_AES_SET: return sizeof(dsd_app_aes_key_payload);
+                case DSD_APP_CMD_DSP_OP: return sizeof(dsd_app_dsp_payload);
+                case DSD_APP_CMD_CONFIG_APPLY: return sizeof(dsdneoUserConfig);
+                case DSD_APP_CMD_CONFIG_METADATA_SET: return sizeof(dsd_app_config_metadata_payload);
+                default: return 0U;
+            }
+        default: return 0U;
+    }
+}
+
+static unsigned int
+expected_descriptor_capability(dsd_app_command_payload_kind kind) {
+    switch (kind) {
+        case DSD_APP_COMMAND_PAYLOAD_NONE: return DSD_APP_COMMAND_CAP_ACTION;
+        case DSD_APP_COMMAND_PAYLOAD_I32: return DSD_APP_COMMAND_CAP_I32;
+        case DSD_APP_COMMAND_PAYLOAD_U8: return DSD_APP_COMMAND_CAP_U8;
+        case DSD_APP_COMMAND_PAYLOAD_U32: return DSD_APP_COMMAND_CAP_U32;
+        case DSD_APP_COMMAND_PAYLOAD_U64: return DSD_APP_COMMAND_CAP_U64;
+        case DSD_APP_COMMAND_PAYLOAD_DOUBLE: return DSD_APP_COMMAND_CAP_DOUBLE;
+        case DSD_APP_COMMAND_PAYLOAD_FLOAT: return DSD_APP_COMMAND_CAP_FLOAT;
+        case DSD_APP_COMMAND_PAYLOAD_STRING: return DSD_APP_COMMAND_CAP_STRING;
+        case DSD_APP_COMMAND_PAYLOAD_ENDPOINT: return DSD_APP_COMMAND_CAP_ENDPOINT;
+        case DSD_APP_COMMAND_PAYLOAD_STRUCT: return DSD_APP_COMMAND_CAP_STRUCT;
+        default: return 0U;
+    }
+}
+
+static int
+expect_descriptor_metadata(const dsd_app_command_descriptor* desc) {
+    int rc = 0;
+    const unsigned int known_availability = DSD_APP_COMMAND_AVAIL_RADIO | DSD_APP_COMMAND_AVAIL_REQUIRES_ACTIVE_RUNTIME;
+    if (!desc) {
+        return 1;
+    }
+    if (!desc->name || desc->name[0] == '\0' || !desc->label || desc->label[0] == '\0' || !desc->description
+        || desc->description[0] == '\0') {
+        DSD_FPRINTF(stderr, "descriptor %d missing text metadata\n", desc->command_id);
+        rc = 1;
+    }
+    if ((desc->availability_flags & ~known_availability) != 0U) {
+        DSD_FPRINTF(stderr, "descriptor %d has unknown availability flags 0x%x\n", desc->command_id,
+                    desc->availability_flags);
+        rc = 1;
+    }
+    const unsigned int expected_cap = expected_descriptor_capability(desc->payload_kind);
+    if (expected_cap == 0U || (desc->capability_flags & expected_cap) == 0U) {
+        DSD_FPRINTF(stderr, "descriptor %d has mismatched payload capability 0x%x for kind %d\n", desc->command_id,
+                    desc->capability_flags, (int)desc->payload_kind);
+        rc = 1;
+    }
+    const size_t expected_size = expected_descriptor_payload_size(desc);
+    if (desc->payload_kind == DSD_APP_COMMAND_PAYLOAD_STRING) {
+        if (desc->payload_size == 0U) {
+            DSD_FPRINTF(stderr, "descriptor %d string payload size is empty\n", desc->command_id);
+            rc = 1;
+        }
+    } else if (desc->payload_size != expected_size) {
+        DSD_FPRINTF(stderr, "descriptor %d payload size got %zu want %zu\n", desc->command_id, desc->payload_size,
+                    expected_size);
+        rc = 1;
+    }
+    if (desc->enum_option_count > 0U) {
+        if (!desc->enum_options) {
+            DSD_FPRINTF(stderr, "descriptor %d has enum count without enum options\n", desc->command_id);
+            rc = 1;
+        } else {
+            for (size_t i = 0; i < desc->enum_option_count; i++) {
+                if (!desc->enum_options[i].label || desc->enum_options[i].label[0] == '\0') {
+                    DSD_FPRINTF(stderr, "descriptor %d enum option %zu missing label\n", desc->command_id, i);
+                    rc = 1;
+                }
+            }
+        }
+    }
+    return rc;
+}
+
+static const dsd_app_command_descriptor*
+find_descriptor(const dsd_app_command_descriptor* descs, size_t count, int command_id) {
+    for (size_t i = 0; i < count; i++) {
+        if (descs[i].command_id == command_id) {
+            return &descs[i];
+        }
+    }
+    return NULL;
 }
 
 static int
@@ -286,6 +417,8 @@ test_tracked_command_results(void) {
     rc |= expect_int("tracked coalesced latest value", (int)opts.audio_gain, 9);
     rc |= expect_command_status("tracked gain first completed", gain_first, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_command_status("tracked gain second remains coalesced", gain_second, DSD_APP_COMMAND_RESULT_COALESCED);
+    rc |= expect_command_result_stable("tracked gain first stable", gain_first, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_command_result_stable("tracked gain second stable", gain_second, DSD_APP_COMMAND_RESULT_COALESCED);
 
     uint8_t short_payload = 0xAAU;
     dsd_app_command_token invalid = 0;
@@ -295,12 +428,15 @@ test_tracked_command_results(void) {
         DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("tracked invalid drain count", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_command_status("tracked invalid payload result", invalid, DSD_APP_COMMAND_RESULT_INVALID_PAYLOAD);
+    rc |=
+        expect_command_result_stable("tracked invalid payload stable", invalid, DSD_APP_COMMAND_RESULT_INVALID_PAYLOAD);
 
     dsd_app_command_token unsupported = 0;
     rc |= expect_int("tracked unsupported raw queued", dsd_app_command_submit_tracked(999999, NULL, 0U, &unsupported),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("tracked unsupported drain count", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_command_status("tracked unsupported result", unsupported, DSD_APP_COMMAND_RESULT_UNSUPPORTED);
+    rc |= expect_command_result_stable("tracked unsupported stable", unsupported, DSD_APP_COMMAND_RESULT_UNSUPPORTED);
 
     dsd_app_command_token backend_fail = 0;
     rc |=
@@ -309,6 +445,7 @@ test_tracked_command_results(void) {
                    DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("tracked backend failure drain count", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_command_status("tracked backend failure result", backend_fail, DSD_APP_COMMAND_RESULT_FAILED);
+    rc |= expect_command_result_stable("tracked backend failure stable", backend_fail, DSD_APP_COMMAND_RESULT_FAILED);
 
     dsd_app_command_capability caps[8];
     size_t cap_count = 0;
@@ -323,13 +460,25 @@ test_tracked_command_results(void) {
     rc |= expect_true("descriptor test buffer large enough", desc_count <= sizeof descs / sizeof descs[0]);
     rc |= expect_int("descriptor full query", dsd_app_command_descriptors_get(descs, desc_count, &desc_count), 0);
     const dsd_app_command_descriptor* gain_desc = NULL;
+    const dsd_app_command_descriptor* ppm_desc = NULL;
+    const dsd_app_command_descriptor* freq_desc = NULL;
+    const dsd_app_command_descriptor* input_warn_desc = NULL;
+    const dsd_app_command_descriptor* hangtime_desc = NULL;
     const dsd_app_command_descriptor* bw_desc = NULL;
     const dsd_app_command_descriptor* config_desc = NULL;
     const dsd_app_command_descriptor* metadata_desc = NULL;
     for (size_t i = 0; i < desc_count; i++) {
-        rc |= expect_true("descriptor label present", descs[i].label != NULL && descs[i].label[0] != '\0');
+        rc |= expect_descriptor_metadata(&descs[i]);
         if (descs[i].command_id == DSD_APP_CMD_GAIN_SET) {
             gain_desc = &descs[i];
+        } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_PPM) {
+            ppm_desc = &descs[i];
+        } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_FREQ) {
+            freq_desc = &descs[i];
+        } else if (descs[i].command_id == DSD_APP_CMD_INPUT_WARN_DB_SET) {
+            input_warn_desc = &descs[i];
+        } else if (descs[i].command_id == DSD_APP_CMD_HANGTIME_SET) {
+            hangtime_desc = &descs[i];
         } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_BW) {
             bw_desc = &descs[i];
         } else if (descs[i].command_id == DSD_APP_CMD_CONFIG_APPLY) {
@@ -341,6 +490,33 @@ test_tracked_command_results(void) {
     rc |= expect_true("gain descriptor present", gain_desc != NULL);
     if (gain_desc) {
         rc |= expect_true("gain descriptor range", gain_desc->min_value == 0.0 && gain_desc->max_value == 50.0);
+        rc |= expect_true("gain descriptor step", gain_desc->step_value == 1.0);
+    }
+    rc |= expect_true("rtl ppm descriptor present", ppm_desc != NULL);
+    if (ppm_desc) {
+        rc |= expect_true("rtl ppm descriptor range", ppm_desc->min_value == -200.0 && ppm_desc->max_value == 200.0);
+        rc |= expect_true("rtl ppm descriptor units", ppm_desc->units != NULL && strcmp(ppm_desc->units, "ppm") == 0);
+    }
+    rc |= expect_true("rtl frequency descriptor present", freq_desc != NULL);
+    if (freq_desc) {
+        rc |= expect_true("rtl frequency descriptor range",
+                          freq_desc->min_value == 0.0 && freq_desc->max_value == 3000000000.0);
+        rc |= expect_true("rtl frequency descriptor units",
+                          freq_desc->units != NULL && strcmp(freq_desc->units, "Hz") == 0);
+    }
+    rc |= expect_true("input warn descriptor present", input_warn_desc != NULL);
+    if (input_warn_desc) {
+        rc |= expect_true("input warn descriptor range",
+                          input_warn_desc->min_value == -120.0 && input_warn_desc->max_value == 0.0);
+        rc |= expect_true("input warn descriptor units",
+                          input_warn_desc->units != NULL && strcmp(input_warn_desc->units, "dBFS") == 0);
+    }
+    rc |= expect_true("hangtime descriptor present", hangtime_desc != NULL);
+    if (hangtime_desc) {
+        rc |= expect_true("hangtime descriptor range",
+                          hangtime_desc->min_value == 0.0 && hangtime_desc->max_value == 3600.0);
+        rc |= expect_true("hangtime descriptor units",
+                          hangtime_desc->units != NULL && strcmp(hangtime_desc->units, "seconds") == 0);
     }
     rc |= expect_true("rtl bandwidth descriptor present", bw_desc != NULL);
     if (bw_desc) {
@@ -359,6 +535,8 @@ test_tracked_command_results(void) {
         rc |= expect_true("config metadata payload size",
                           metadata_desc->payload_size == sizeof(dsd_app_config_metadata_payload));
     }
+    rc |= expect_true("descriptor lookup helper",
+                      find_descriptor(descs, desc_count, DSD_APP_CMD_RTL_SET_AUTO_PPM) != NULL);
 
     dsd_app_config_metadata_payload metadata;
     DSD_MEMSET(&metadata, 0, sizeof metadata);
@@ -372,6 +550,8 @@ test_tracked_command_results(void) {
     rc |= expect_int("tracked config metadata enabled", state.config_autosave_enabled, 1);
     rc |= expect_str("tracked config metadata path", state.config_autosave_path, "/tmp/queued-config.toml");
     rc |= expect_command_status("tracked config metadata result", metadata_token, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_command_result_stable("tracked config metadata stable", metadata_token,
+                                       DSD_APP_COMMAND_RESULT_COMPLETED);
 
     opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     dsdneoUserConfig cfg;
@@ -384,6 +564,8 @@ test_tracked_command_results(void) {
     rc |= expect_int("tracked config restart drain count", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("tracked config preserves active frontend", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
     rc |= expect_command_status("tracked config restart result", restart, DSD_APP_COMMAND_RESULT_RESTART_REQUIRED);
+    rc |=
+        expect_command_result_stable("tracked config restart stable", restart, DSD_APP_COMMAND_RESULT_RESTART_REQUIRED);
 
     freeState(&state);
     return rc;

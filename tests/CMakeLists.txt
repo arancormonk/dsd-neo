@@ -71,6 +71,11 @@ add_test(
     COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
 )
 
+add_test(
+    NAME UI_NATIVE_BOUNDARY
+    COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
+)
+
 set(_DSD_PUBLIC_HEADER_TEST_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/public_header_smoke"
 )

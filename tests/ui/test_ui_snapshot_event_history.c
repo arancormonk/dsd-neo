@@ -161,8 +161,15 @@ assert_frontend_history_api(uint64_t sequence) {
     assert(summaries[0].encryption_state == DSD_FRONTEND_ENCRYPTION_ENCRYPTED);
     assert(summaries[0].source_id == 123U);
     assert(summaries[0].target_id == 321U);
+    assert(summaries[0].channel == 0x1234U);
+    assert(summaries[0].timestamp_unix_s == 1770001234);
     assert(strcmp(summaries[0].source_text, "RADIO-123") == 0);
+    assert(strcmp(summaries[0].target_text, "TG-321") == 0);
+    assert(strcmp(summaries[0].source_label, "Unit 123") == 0);
+    assert(strcmp(summaries[0].target_label, "Dispatch") == 0);
+    assert(strcmp(summaries[0].system_label, "WACN BEE00 SYS 123") == 0);
     assert(strcmp(summaries[0].summary_text, "voice grant") == 0);
+    assert(strcmp(summaries[0].detail_text, "grant detail") == 0);
 
     query.known_sequence = sequence;
     DSD_MEMSET(&info, 0, sizeof info);
@@ -178,10 +185,32 @@ assert_frontend_history_api(uint64_t sequence) {
     assert(detail_sequence == sequence);
     assert(detail.present == 1);
     assert(detail.slot == 0U);
+    assert(detail.subtype == 7);
     assert(detail.encryption_alg_id == 0x80U);
     assert(detail.encryption_key_id == 0x1234U);
+    assert(detail.encryption_message_indicator == 0x456789ULL);
+    assert(detail.service_options == 0x20U);
+    assert(detail.group_individual == 1);
+    assert(detail.system_id[0] == 0xbee00U);
+    assert(detail.system_id[1] == 0x123U);
+    assert(detail.system_id[2] == 0x456U);
+    assert(detail.channel == 0x1234U);
+    assert(detail.timestamp_unix_s == 1770001234);
     assert(strcmp(detail.source_text, "RADIO-123") == 0);
+    assert(strcmp(detail.target_text, "TG-321") == 0);
+    assert(strcmp(detail.source_label, "Unit 123") == 0);
+    assert(strcmp(detail.target_label, "Dispatch") == 0);
+    assert(strcmp(detail.source_mode, "A") == 0);
+    assert(strcmp(detail.target_mode, "D") == 0);
+    assert(strcmp(detail.system_label, "WACN BEE00 SYS 123") == 0);
     assert(strcmp(detail.summary_text, "voice grant") == 0);
+    assert(strcmp(detail.detail_text, "grant detail") == 0);
+    assert(strcmp(detail.gps_text, "GPS detail") == 0);
+    assert(strcmp(detail.text_message, "Text detail") == 0);
+    assert(strcmp(detail.alias, "Alias detail") == 0);
+    assert(detail.pdu_len == 4U);
+    assert(detail.pdu[0] == 0x12U);
+    assert(detail.pdu[3] == 0x34U);
     assert(dsd_app_frontend_event_history_item_get(1U, 1U, &detail, NULL) == 0);
     assert(detail.source_id == 456U);
 }
@@ -252,18 +281,37 @@ main(void) {
     cc->cool_until[1] = 12.5;
     cc->used = 3U;
 
-    history[0].Event_History_Items[1].source_id = 123U;
-    history[0].Event_History_Items[1].target_id = 321U;
-    history[0].Event_History_Items[1].systype = 0;
-    history[0].Event_History_Items[1].enc = 1;
-    history[0].Event_History_Items[1].enc_alg = 0x80U;
-    history[0].Event_History_Items[1].enc_key = 0x1234U;
-    dsd_event_history_item_set_metadata(&history[0].Event_History_Items[1], DSD_EVENT_SEVERITY_WARNING,
-                                        DSD_EVENT_CATEGORY_CONTROL);
-    DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
-                 "RADIO-123");
-    DSD_SNPRINTF(history[0].Event_History_Items[1].event_string, sizeof history[0].Event_History_Items[1].event_string,
-                 "%s", "voice grant");
+    Event_History* hist0_item = &history[0].Event_History_Items[1];
+    hist0_item->source_id = 123U;
+    hist0_item->target_id = 321U;
+    hist0_item->systype = 0;
+    hist0_item->subtype = 7;
+    hist0_item->gi = 1;
+    hist0_item->enc = 1;
+    hist0_item->enc_alg = 0x80U;
+    hist0_item->enc_key = 0x1234U;
+    hist0_item->mi = 0x456789ULL;
+    hist0_item->svc = 0x20U;
+    hist0_item->sys_id1 = 0xbee00U;
+    hist0_item->sys_id2 = 0x123U;
+    hist0_item->sys_id3 = 0x456U;
+    hist0_item->channel = 0x1234U;
+    hist0_item->event_time = 1770001234;
+    hist0_item->pdu[0] = 0x12U;
+    hist0_item->pdu[3] = 0x34U;
+    dsd_event_history_item_set_metadata(hist0_item, DSD_EVENT_SEVERITY_WARNING, DSD_EVENT_CATEGORY_CONTROL);
+    DSD_SNPRINTF(hist0_item->src_str, sizeof hist0_item->src_str, "%s", "RADIO-123");
+    DSD_SNPRINTF(hist0_item->tgt_str, sizeof hist0_item->tgt_str, "%s", "TG-321");
+    DSD_SNPRINTF(hist0_item->s_name, sizeof hist0_item->s_name, "%s", "Unit 123");
+    DSD_SNPRINTF(hist0_item->t_name, sizeof hist0_item->t_name, "%s", "Dispatch");
+    DSD_SNPRINTF(hist0_item->s_mode, sizeof hist0_item->s_mode, "%s", "A");
+    DSD_SNPRINTF(hist0_item->t_mode, sizeof hist0_item->t_mode, "%s", "D");
+    DSD_SNPRINTF(hist0_item->sysid_string, sizeof hist0_item->sysid_string, "%s", "WACN BEE00 SYS 123");
+    DSD_SNPRINTF(hist0_item->event_string, sizeof hist0_item->event_string, "%s", "voice grant");
+    DSD_SNPRINTF(hist0_item->internal_str, sizeof hist0_item->internal_str, "%s", "grant detail");
+    DSD_SNPRINTF(hist0_item->gps_s, sizeof hist0_item->gps_s, "%s", "GPS detail");
+    DSD_SNPRINTF(hist0_item->text_message, sizeof hist0_item->text_message, "%s", "Text detail");
+    DSD_SNPRINTF(hist0_item->alias, sizeof hist0_item->alias, "%s", "Alias detail");
     history[1].Event_History_Items[1].source_id = 456U;
     ui_terminal_telemetry_publish_snapshot(state);
     history[0].Event_History_Items[1].source_id = 999U;
@@ -279,6 +327,7 @@ main(void) {
     dsd_frontend_snapshot* frontend_snap = (dsd_frontend_snapshot*)calloc(1, sizeof(*frontend_snap));
     assert(frontend_snap != NULL);
     assert(dsd_app_frontend_snapshot_get(frontend_snap) == 0);
+    const uint64_t initial_event_history_sequence = frontend_snap->event_history_sequence;
     assert_frontend_snapshot_fields(frontend_snap);
     assert_frontend_history_api(frontend_snap->event_history_sequence);
     free(frontend_snap);
@@ -289,8 +338,10 @@ main(void) {
     ui_terminal_telemetry_publish_snapshot(state);
     assert_slot_tail(dsd_app_get_latest_snapshot(), 789U, 987U);
     dsd_frontend_event_history_item updated_detail;
-    assert(dsd_app_frontend_event_history_item_get(0U, 1U, &updated_detail, NULL) == 0);
+    uint64_t updated_sequence = 0;
+    assert(dsd_app_frontend_event_history_item_get(0U, 1U, &updated_detail, &updated_sequence) == 0);
     assert(updated_detail.source_id == 789U);
+    assert(updated_sequence != initial_event_history_sequence);
 
     // Reset-like clear with unchanged head rows must also be reflected.
     DSD_MEMSET(history, 0, 2u * sizeof(*history));

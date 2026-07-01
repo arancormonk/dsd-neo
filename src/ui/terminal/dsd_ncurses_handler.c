@@ -143,7 +143,7 @@ ncurses_handle_escape_or_history(dsd_opts* opts, dsd_state* state, int c) {
         return 1;
     }
     if (c == DSD_KEY_HISTORY) {
-        (void)ui_history_cycle_mode();
+        (void)dsd_app_frontend_history_cycle_mode();
         dsd_telemetry_request_redraw();
         return 1;
     }
