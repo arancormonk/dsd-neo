@@ -6,6 +6,8 @@ stage=${1:-dist/dsd-neo-macos}
 exe="$stage/bin/dsd-neo"
 lib_dir="$stage/lib"
 manifest="$stage/dylibs-manifest.txt"
+launcher="$stage/dsd-neo.sh"
+terminfo_dir="$stage/share/terminfo"
 
 find_otool() {
   if command -v otool > /dev/null 2>&1; then
@@ -193,6 +195,18 @@ if [[ -f "$manifest" ]]; then
   fi
 else
   report_error "missing dylibs manifest: $manifest"
+fi
+
+if [[ ! -d "$terminfo_dir" ]]; then
+  report_error "missing bundled terminfo directory: $terminfo_dir"
+elif ! find "$terminfo_dir" -type f -name xterm-256color -print -quit | grep -q .; then
+  report_error "bundled terminfo directory is missing xterm-256color"
+fi
+
+if [[ ! -f "$launcher" ]]; then
+  report_error "missing macOS launcher: $launcher"
+elif ! grep -q 'TERMINFO_DIRS=.*/share/terminfo' "$launcher"; then
+  report_error "macOS launcher does not add bundled terminfo to TERMINFO_DIRS"
 fi
 
 if ((errors > 0)); then

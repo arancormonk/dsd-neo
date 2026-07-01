@@ -518,6 +518,31 @@ jobs:
           cp -f packaging/macos/README-macos.txt "$STAGE/" || true
           cp -f packaging/macos/dsd-neo.sh "$STAGE/" || true
           chmod +x "$STAGE/dsd-neo.sh" || true
+          # Homebrew ncurses needs its terminfo database at runtime. The
+          # database is data rather than a dylib, so otool-based dependency
+          # staging will not discover it.
+          TERMINFO_SRC=""
+          for candidate in \
+            "$HB_PREFIX/opt/ncurses/share/terminfo" \
+            "$HB_PREFIX/share/terminfo" \
+            /usr/share/terminfo; do
+            if [ -d "$candidate" ]; then
+              TERMINFO_SRC="$candidate"
+              break
+            fi
+          done
+          if [ -z "$TERMINFO_SRC" ]; then
+            echo "ERROR: could not locate ncurses terminfo database" >&2
+            exit 1
+          fi
+          rm -rf "$STAGE/share/terminfo"
+          mkdir -p "$STAGE/share/terminfo"
+          cp -a "$TERMINFO_SRC"/. "$STAGE/share/terminfo"/
+          if ! find "$STAGE/share/terminfo" -type f -name xterm-256color -print -quit | grep -q .; then
+            echo "ERROR: staged terminfo database is missing xterm-256color" >&2
+            exit 1
+          fi
+
           # Bundle license/notice files
           DOCDIR="$STAGE/share/doc/dsd-neo"
           mkdir -p "$DOCDIR/licenses"
@@ -730,7 +755,18 @@ jobs:
         run: |
           set -euo pipefail
           STAGE="dist/dsd-neo-macos"
-          "$STAGE/bin/dsd-neo" -h
+          "$STAGE/dsd-neo.sh" -h
+
+      - name: Verify bundled terminfo
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="dist/dsd-neo-macos"
+          if command -v infocmp > /dev/null 2>&1; then
+            TERMINFO_DIRS="$STAGE/share/terminfo:/usr/share/terminfo" infocmp xterm-256color > /dev/null
+          else
+            echo "infocmp not available; terminfo payload checked by tools/check_macos_portable_deps.sh"
+          fi
 
       - name: Create DMG
         id: dmg
@@ -772,7 +808,7 @@ jobs:
           hdiutil attach "$dmg" -nobrowse -noverify -mountpoint "$mnt"
           trap 'hdiutil detach "$mnt" -force || true' EXIT
           # Run help from inside the mounted DMG
-          "$mnt/dsd-neo-macos/bin/dsd-neo" -h || (echo 'Running help from DMG failed' >&2; exit 1)
+          "$mnt/dsd-neo-macos/dsd-neo.sh" -h || (echo 'Running help from DMG failed' >&2; exit 1)
           hdiutil detach "$mnt" -force
           trap - EXIT
 

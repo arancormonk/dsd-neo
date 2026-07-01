@@ -6,6 +6,7 @@ Contents
 - lib/*.dylib              : Bundled runtime library dependencies (when available)
 - dsd-neo.sh               : Launcher that sets DYLD paths and runs dsd-neo
 - dylibs-manifest.txt      : Bundled dylib inventory
+- share/terminfo/          : Bundled ncurses terminal descriptions
 - share/doc/dsd-neo/       : License and third-party notice files
 
 Usage
@@ -16,7 +17,8 @@ Usage
    ./dsd-neo.sh -h
 
 Notes
-- The launcher sets DYLD_FALLBACK_LIBRARY_PATH to use bundled libs.
+- The launcher sets DYLD_FALLBACK_LIBRARY_PATH to use bundled libs and
+  TERMINFO_DIRS to use bundled ncurses terminal descriptions.
 - CI currently produces an arm64 portable DMG from the dev-release preset.
 - This portable build uses PulseAudio by default. If you do not see audio
   devices or get silence, install and start PulseAudio via Homebrew:
