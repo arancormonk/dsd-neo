@@ -905,7 +905,7 @@ test_irrecoverable_header_resets_data_state(void) {
 }
 
 static int
-test_response_header_reports_nack_reason(void) {
+check_response_header_nack_reason(uint8_t r_type, const char* expected) {
     static dsd_opts opts;
     static dsd_state state;
     uint8_t dheader[12];
@@ -924,7 +924,7 @@ test_response_header_reports_nack_reason(void) {
     set_bits(bits, 16, 0x000123U, 24);
     set_bits(bits, 40, 0x000456U, 24);
     set_bits(bits, 72, 1U, 2); // NACK class
-    set_bits(bits, 74, 3U, 3); // memory full
+    set_bits(bits, 74, r_type, 3);
 
     if (dsd_test_capture_stderr_begin(&cap, "dmr_header_response_nack") != 0) {
         return 1;
@@ -939,7 +939,15 @@ test_response_header_reports_nack_reason(void) {
     assert(state.data_header_format[0] == 1);
     assert(state.data_header_valid[0] == 1);
     assert(strcmp(state.dmr_lrrp_gps[0], "") == 0);
-    return expect_contains("response-nack", output, "NACK - Memory Full");
+    return expect_contains("response-nack", output, expected);
+}
+
+static int
+test_response_header_reports_nack_reason(void) {
+    int rc = 0;
+    rc |= check_response_header_nack_reason(1U, "NACK - Packet CRC ERR");
+    rc |= check_response_header_nack_reason(2U, "NACK - Memory Full");
+    return rc;
 }
 
 static void

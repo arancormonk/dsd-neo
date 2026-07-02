@@ -306,24 +306,21 @@ dmr_dheader_handle_response(uint8_t slot, const dmr_dheader_fields* f) {
             dsd_append(rsp_string, sizeof rsp_string, "Illegal Format");
         }
         if (f->r_type == 1) {
-            dsd_append(rsp_string, sizeof rsp_string, "Illegal Format");
-        }
-        if (f->r_type == 2) {
             dsd_append(rsp_string, sizeof rsp_string, "Packet CRC ERR");
         }
-        if (f->r_type == 3) {
+        if (f->r_type == 2) {
             dsd_append(rsp_string, sizeof rsp_string, "Memory Full");
         }
-        if (f->r_type == 4) {
+        if (f->r_type == 3) {
             dsd_append(rsp_string, sizeof rsp_string, "FSN Out of Seq");
         }
-        if (f->r_type == 5) {
+        if (f->r_type == 4) {
             dsd_append(rsp_string, sizeof rsp_string, "Undeliverable");
         }
-        if (f->r_type == 6) {
+        if (f->r_type == 5) {
             dsd_append(rsp_string, sizeof rsp_string, "PKT Out of Seq");
         }
-        if (f->r_type == 7) {
+        if (f->r_type == 6) {
             dsd_append(rsp_string, sizeof rsp_string, "Invalid User");
         }
     }
