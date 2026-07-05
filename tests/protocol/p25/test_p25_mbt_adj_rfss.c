@@ -353,7 +353,8 @@ main(void) {
         mbt[5] = 0x23;
         mbt[6] = 0x02;  // blks
         mbt[7] = 0x3E;  // Protection Parameter Broadcast
-        mbt[8] = 0x84;  // ALGID carried in the MBT header
+        mbt[8] = 0x11;  // non-ALGID header byte; catches the old off-by-one
+        mbt[9] = 0x84;  // ALGID carried in MBT header octet 9
         mbt[12] = 0x04; // data block bytes that used to be misread as RFSS/site/channel
         mbt[13] = 0x05;
         mbt[14] = 0x10;

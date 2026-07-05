@@ -271,6 +271,53 @@ run_bridged_sccb_zero_channel_b_case(void) {
     return rc;
 }
 
+static int
+run_native_sccb_zero_channel_b_case(void) {
+    static dsd_opts opts;
+    dsd_state* state = NULL;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+
+    state->p25_iden_fdma[0].chan_type = 1;
+    state->p25_iden_fdma[0].chan_spac = 100;
+    state->p25_iden_fdma[0].base_freq = 800000000 / 5;
+    state->p25_iden_fdma[0].populated = 1;
+    state->p25_iden_fdma[1].chan_type = 1;
+    state->p25_iden_fdma[1].chan_spac = 100;
+    state->p25_iden_fdma[1].base_freq = 851000000 / 5;
+    state->p25_iden_fdma[1].populated = 1;
+    state->p25_chan_tdma_explicit[1] = 1;
+
+    unsigned long long int MAC[24] = {0};
+    MAC[1] = 0x79;
+    MAC[2] = 0x02;
+    MAC[3] = 0x03;
+    MAC[4] = 0x10;
+    MAC[5] = 0x0A;
+    MAC[6] = 0x01;
+    MAC[7] = 0x00;
+    MAC[8] = 0x00;
+    MAC[9] = 0x01;
+
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    const int count = (cc != NULL) ? cc->count : 0;
+    rc |= expect_eq_long("p2_sccb_zero_ch_b_count", count, 2);
+    rc |= expect_true("p2_sccb_zero_ch_b_has_ch1", cc_candidates_contains(cc, 851000000 + 10 * 100 * 125));
+    rc |= expect_true("p2_sccb_zero_ch_b_has_ch0", cc_candidates_contains(cc, 800000000));
+    rc |= expect_eq_long("p2_sccb_zero_ch_b_chan0_cache", state->trunk_chan_map[0], 800000000);
+    rc |= expect_eq_long("p2_sccb_zero_ch_b_second_lcn", state->trunk_lcn_freq[2], 800000000);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    return rc;
+}
+
 static void
 put_iden_base(unsigned char* mac, int pos, long base_freq) {
     mac[pos + 0] = (unsigned char)((base_freq >> 24) & 0xFF);
@@ -623,6 +670,7 @@ run_cases(void) {
     }
 
     rc |= run_bridged_sccb_zero_channel_b_case();
+    rc |= run_native_sccb_zero_channel_b_case();
 
     // Case 9: SCCB candidates are site-scoped when current RFSS/SITE are known.
     {

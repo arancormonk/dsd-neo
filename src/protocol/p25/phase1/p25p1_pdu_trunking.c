@@ -269,7 +269,7 @@ p25_handle_mbt_adjacent_status_broadcast(const dsd_opts* opts, dsd_state* state,
 
 static void DSD_ATTR_USED
 p25_handle_mbt_protection_parameter_broadcast(dsd_state* state, const uint8_t* mpdu_byte) {
-    uint8_t algid = mpdu_byte ? mpdu_byte[8] : 0;
+    uint8_t algid = mpdu_byte ? mpdu_byte[9] : 0;
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Protection Parameter Broadcast MBT - protected CC ALGID [%02X]", algid);
     p25_store_protected_control_channel(state, algid);

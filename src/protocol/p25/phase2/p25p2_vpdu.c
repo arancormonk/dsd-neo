@@ -73,6 +73,17 @@ p25p2_sccb_matches_current_site(const dsd_state* state, int rfssid, int siteid) 
     return 1;
 }
 
+static int
+p25p2_sccb_implicit_channel_b_valid(int bridged_p1, int channel1, int channel2, int sysclass2) {
+    if (channel2 == channel1 || channel2 == 0xFFFF) {
+        return 0;
+    }
+    if (bridged_p1) {
+        return channel2 != 0;
+    }
+    return sysclass2 != 0;
+}
+
 static void
 p25p2_seed_secondary_lcn_fallback(dsd_state* state, int rfssid, int siteid, const long* freqs, int count) {
     if (!state || !freqs || count <= 0 || !p25p2_sccb_matches_current_site(state, rfssid, siteid)) {
@@ -2732,8 +2743,7 @@ p25p2_vpdu_iter_block_34(p25p2_vpdu_ctx* ctx) {
         int sysclass1 = MAC[6 + len_a];
         int channel2 = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
         int sysclass2 = MAC[9 + len_a];
-        int channel2_valid =
-            (channel2 != 0 && channel2 != channel1 && (bridged_p1 ? channel2 != 0xFFFF : sysclass2 != 0));
+        int channel2_valid = p25p2_sccb_implicit_channel_b_valid(bridged_p1, channel1, channel2, sysclass2);
         long int freq1 = 0;
         long int freq2 = 0;
         // state->p2_is_lcch == 1
