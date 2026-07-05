@@ -122,6 +122,7 @@ test_lockout_label_policy_lookup(void) {
     rc |= expect_true("add B policy", add_policy(state, 123U, "B", "BLOCK") == 0);
     rc |= expect_true("add DE policy", add_policy(state, 456U, "DE", "ENC-BLOCK") == 0);
     rc |= expect_true("add A policy", add_policy(state, 789U, "A", "ALLOW") == 0);
+    rc |= expect_true("add SG policy", add_policy(state, 321U, "DE", "SG-ENC-BLOCK") == 0);
 
     dsd_tg_policy_entry range;
     rc |= expect_true("make range policy",
@@ -140,6 +141,7 @@ test_lockout_label_policy_lookup(void) {
     rc |= expect_int_eq("overflow target not locked", ui_is_locked_from_label(state, "TG: 4294967296"), 0);
     rc |= expect_int_eq("TG B mode locks", ui_is_locked_from_label(state, "Voice TG: 123 src 4"), 1);
     rc |= expect_int_eq("TGT DE mode locks", ui_is_locked_from_label(state, "Call TGT:456 slot 2"), 1);
+    rc |= expect_int_eq("SG DE mode locks", ui_is_locked_from_label(state, "MFID90 GRG Grant: 82F2 SG: 321;"), 1);
     rc |= expect_int_eq("allow mode does not lock", ui_is_locked_from_label(state, "TG: 789"), 0);
     rc |= expect_int_eq("range-only match does not lock label", ui_is_locked_from_label(state, "TG: 1005"), 0);
 
@@ -153,6 +155,8 @@ test_lockout_label_policy_lookup(void) {
     state->synctype = DSD_SYNC_P25P1_POS;
     rc |= expect_int_eq("transient enc cache locks active TG",
                         ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 1);
+    rc |= expect_int_eq("transient enc cache locks active SG",
+                        ui_is_transient_enc_locked_from_label(state, "MFID90 GRG Grant: 82F2 SG: 21001;"), 1);
     rc |= expect_int_eq("transient enc cache does not mutate policy lock helper",
                         ui_is_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
     state->p25_enc_tg_cache_until[0] = now - 1;

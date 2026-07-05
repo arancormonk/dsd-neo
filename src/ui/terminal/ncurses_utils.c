@@ -119,19 +119,22 @@ ui_extract_target_id_from_label(const char* label, uint32_t* out_id) {
     if (!label || !*label) {
         return 0;
     }
-    /* Try group first ("TG:") */
+    /* Try group, generic target, then MFID90 regroup supergroup labels. */
     const char* pos = strstr(label, "TG:");
+    size_t prefix_len = 3;
     if (!pos) {
         /* Fallback to generic target ("TGT:") often used for private/data */
         pos = strstr(label, "TGT:");
+        prefix_len = 4;
+    }
+    if (!pos) {
+        pos = strstr(label, "SG:");
+        prefix_len = 3;
     }
     if (!pos) {
         return 0;
     }
-    pos += 3; /* skip TG: or TGT: prefix; both are 3 chars before ':' */
-    if (*pos == ':') {
-        pos++;
-    }
+    pos += prefix_len;
     while (*pos == ' ') {
         pos++;
     }
@@ -147,7 +150,8 @@ ui_extract_target_id_from_label(const char* label, uint32_t* out_id) {
 }
 
 /* Determine if an Active Channel label refers to a locked-out target.
- * Supports both "TG:" (group) and "TGT:" (target/private/data) fields.
+ * Supports "TG:" (group), "TGT:" (target/private/data), and "SG:" (regroup
+ * supergroup) fields.
  * Returns 1 when the referenced ID is marked with groupMode "DE" or "B". */
 int
 ui_is_locked_from_label(const dsd_state* state, const char* label) {
