@@ -3075,6 +3075,39 @@ BLOCK_END:
 }
 
 static void
+p25p2_vpdu_handle_location_registration_response(dsd_state* state, const unsigned long long int* MAC, int len_a) {
+    int k = 1; // vPDU offset
+    if (MAC[len_a] == 0x07) {
+        k = 0; // TSBK offset
+    }
+
+    int res = (MAC[2 + len_a + k] >> 2) & 0x3F;
+    int rv = MAC[2 + len_a + k] & 0x3;
+    int group = (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
+    int rfss = MAC[5 + len_a + k];
+    int site = MAC[6 + len_a + k];
+    int target = (MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k];
+
+    DSD_FPRINTF(stderr, "\n Location Registration Response");
+    DSD_FPRINTF(stderr, "\n  GROUP: %d RFSS: %03d SITE: %03d TARGET: %d", group, rfss, site, target);
+    if (res != 0) {
+        DSD_FPRINTF(stderr, " RES: %d;", res);
+    }
+
+    switch (rv) {
+        case 0:
+            DSD_FPRINTF(stderr, " REG_ACCEPT;");
+            p25_aff_register(state, (uint32_t)target);
+            p25_ga_add(state, (uint32_t)target, (uint16_t)group);
+            break;
+        case 1: DSD_FPRINTF(stderr, " REG_FAIL;"); break;
+        case 2: DSD_FPRINTF(stderr, " REG_DENY;"); break;
+        case 3: DSD_FPRINTF(stderr, " REG_REFUSED;"); break;
+        default: break;
+    }
+}
+
+static void
 p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
@@ -3088,36 +3121,7 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x6B) {
-        int k = 1; // vPDU offset
-        if (MAC[len_a] == 0x07) {
-            k = 0; // TSBK offset
-        }
-        int res = (MAC[2 + len_a + k] >> 2) & 0x3F;
-        int rv = MAC[2 + len_a + k] & 0x3;
-        int group = (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
-        int rfss = MAC[5 + len_a + k];
-        int site = MAC[6 + len_a + k];
-        int target = (MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k];
-
-        DSD_FPRINTF(stderr, "\n Location Registration Response");
-        DSD_FPRINTF(stderr, "\n  GROUP: %d RFSS: %03d SITE: %03d TARGET: %d", group, rfss, site, target);
-        if (res != 0) {
-            DSD_FPRINTF(stderr, " RES: %d;", res);
-        }
-        if (rv == 0) {
-            DSD_FPRINTF(stderr, " REG_ACCEPT;");
-            p25_aff_register(state, (uint32_t)target);
-            p25_ga_add(state, (uint32_t)target, (uint16_t)group);
-        }
-        if (rv == 1) {
-            DSD_FPRINTF(stderr, " REG_FAIL;");
-        }
-        if (rv == 2) {
-            DSD_FPRINTF(stderr, " REG_DENY;");
-        }
-        if (rv == 3) {
-            DSD_FPRINTF(stderr, " REG_REFUSED;");
-        }
+        p25p2_vpdu_handle_location_registration_response(state, MAC, len_a);
     }
 
     if (MAC[1 + len_a] == 0x6C) {
