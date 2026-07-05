@@ -21,6 +21,8 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
+struct RtlSdrContext;
+
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
