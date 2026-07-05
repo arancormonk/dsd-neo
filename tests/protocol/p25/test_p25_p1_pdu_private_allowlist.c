@@ -152,6 +152,15 @@ p25_store_protected_control_channel(dsd_state* state, uint8_t algid) {
     (void)algid;
 }
 
+size_t
+p25_format_adjacent_cfva(uint8_t cfva, char* out, size_t out_len) {
+    (void)cfva;
+    if (out && out_len > 0) {
+        out[0] = '\0';
+    }
+    return 0;
+}
+
 int
 p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state, uint16_t channel, uint32_t wacn, int wacn_valid,
                               uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
