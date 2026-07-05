@@ -32,6 +32,7 @@ enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH = 8,
     DSD_P25_ENC_TG_CACHE_DEPTH = 8,
+    DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     DSD_VERTEX_KS_MAP_MAX = 64,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
@@ -934,6 +935,13 @@ struct dsd_state {
 
     // P25 source unit WACN from LCW 0x49 (Source ID Extension)
     uint32_t p25_src_nid; // 20-bit WACN from SUID extension
+
+    // P25 Phase 2 standard MAC multi-fragment assembly, one in-flight message.
+    uint8_t p25_mac_frag_active;
+    uint8_t p25_mac_frag_opcode;
+    uint8_t p25_mac_frag_data_len;
+    uint8_t p25_mac_frag_collected;
+    uint8_t p25_mac_frag_data[DSD_P25_MAC_FRAGMENT_MAX_OCTETS];
 
     // P25 current-call flags (per logical slot; FDMA uses slot 0)
     uint8_t p25_call_emergency[2];        // 1 if current call is emergency

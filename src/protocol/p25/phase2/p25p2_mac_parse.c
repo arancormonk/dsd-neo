@@ -70,6 +70,7 @@ static int
 p25p2_mac_motorola_payload_len(uint8_t opcode, int len) {
     switch (opcode) {
         case 0x81u:
+        case 0x82u:
         case 0x89u:
         case 0x8Fu:
         case 0x91u:

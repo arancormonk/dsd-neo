@@ -271,6 +271,147 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
     }
 }
 
+static uint16_t
+tsbk_u16(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int offset) {
+    return (uint16_t)((tsbk_byte[offset] << 8) | tsbk_byte[offset + 1]);
+}
+
+static int
+tsbk_u24(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int offset) {
+    return (tsbk_byte[offset] << 16) | (tsbk_byte[offset + 1] << 8) | tsbk_byte[offset + 2];
+}
+
+static const char*
+tsbk_queued_reason_str(uint8_t code) {
+    switch (code) {
+        case 0x10: return "Requesting Unit Busy Other Service";
+        case 0x20: return "Target Unit Busy Other Service";
+        case 0x2F: return "Target Unit Queued This Call";
+        case 0x30: return "Target Group Currently Active";
+        case 0x40: return "Channel Resources Unavailable";
+        case 0x41: return "Telephone Resources Unavailable";
+        case 0x42: return "Data Resources Unavailable";
+        case 0x50: return "Superseding Service Currently Active";
+        default: break;
+    }
+
+    if (code <= 0x7F) {
+        return "Reserved";
+    }
+    return "User/System Defined";
+}
+
+static const char*
+tsbk_deny_reason_str(uint8_t code) {
+    static const struct {
+        uint8_t code;
+        const char* text;
+    } k_deny_reasons[] = {
+        {0x10, "Requesting Unit Not Valid"},
+        {0x11, "Requesting Unit Not Authorized"},
+        {0x20, "Target Unit Not Valid"},
+        {0x21, "Target Unit Not Authorized"},
+        {0x2F, "Target Unit Refused Call"},
+        {0x30, "Target Group Not Valid"},
+        {0x31, "Target Group Not Authorized"},
+        {0x40, "Invalid Dialing"},
+        {0x41, "Telephone Number Not Authorized"},
+        {0x42, "PSTN Not Valid"},
+        {0x50, "Call Timeout"},
+        {0x51, "Landline Terminated Call"},
+        {0x52, "Subscriber Unit Terminated Call"},
+        {0x5F, "Call Preempted"},
+        {0x60, "Site Access Denial"},
+        {0x67, "PTT Collide"},
+        {0x77, "PTT Bonk"},
+        {0xF0, "Call Options Not Valid For Service"},
+        {0xF1, "Protection Service Option Not Valid"},
+        {0xF2, "Duplex Service Option Not Valid"},
+        {0xF3, "Circuit/Packet Mode Option Not Valid"},
+        {0xFF, "System Does Not Support Service"},
+    };
+
+    for (size_t i = 0; i < sizeof(k_deny_reasons) / sizeof(k_deny_reasons[0]); i++) {
+        if (k_deny_reasons[i].code == code) {
+            return k_deny_reasons[i].text;
+        }
+    }
+
+    if (code <= 0x5E) {
+        return "Reserved";
+    }
+    return "User/System Defined";
+}
+
+static void
+tsbk_handle_mfid90_extended_function(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int class_id = tsbk_byte[2];
+    int operand = tsbk_byte[3];
+    int argument = tsbk_u24(tsbk_byte, 4);
+    int target = tsbk_u24(tsbk_byte, 7);
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Extended Function Command\n");
+    DSD_FPRINTF(stderr, "  Class [%02X] Operand [%02X] Arg [%06X] Target [%d]", class_id, operand, argument, target);
+    if (class_id == 0x02 && operand == 0x00) {
+        DSD_FPRINTF(stderr, " Create Supergroup");
+    } else if (class_id == 0x02 && operand == 0x01) {
+        DSD_FPRINTF(stderr, " Cancel Supergroup");
+    }
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static void
+tsbk_handle_mfid90_traffic_channel_id(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Traffic Channel ID\n");
+    DSD_FPRINTF(stderr, "  MSG: %02X%02X%02X%02X%02X%02X%02X%02X\n", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
+                tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+}
+
+static void
+tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+                               int is_deny) {
+    int has_additional = ((tsbk_byte[2] & 0x80) != 0) || is_deny;
+    int svc_type = tsbk_byte[2] & 0x3F;
+    int reason_code = tsbk_byte[3];
+    int addl_info = tsbk_u24(tsbk_byte, 4);
+    int target_addr = tsbk_u24(tsbk_byte, 7);
+    const char* reason_str =
+        is_deny ? tsbk_deny_reason_str((uint8_t)reason_code) : tsbk_queued_reason_str((uint8_t)reason_code);
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) %s Response\n", is_deny ? "Deny" : "Queued");
+    DSD_FPRINTF(stderr, "  SVC [%02X] Reason [%s]", svc_type, reason_str);
+    if (has_additional) {
+        DSD_FPRINTF(stderr, " Addl [%06X]", addl_info);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
+                     "MOT %s Target: %d Reason: %s Info: %06X; ", is_deny ? "DENY" : "QUEUED", target_addr, reason_str,
+                     addl_info);
+    } else {
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT %s Target: %d Reason: %s; ",
+                     is_deny ? "DENY" : "QUEUED", target_addr, reason_str);
+    }
+    DSD_FPRINTF(stderr, " Target [%d]\n", target_addr);
+    state->last_active_time = time(NULL);
+
+    if (is_deny) {
+        p25_sm_on_deny_response(opts, state, svc_type, reason_code, target_addr);
+    } else {
+        p25_sm_on_queued_response(opts, state, svc_type, reason_code, target_addr);
+    }
+}
+
+static void
+tsbk_handle_mfid90_ack(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int svc_type = tsbk_byte[2] & 0x3F;
+    int source = tsbk_u24(tsbk_byte, 4);
+    int target = tsbk_u24(tsbk_byte, 7);
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Acknowledge Response\n");
+    DSD_FPRINTF(stderr, "  Service [%02X] Source [%d] Target [%d]\n", svc_type, source, target);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
+                 "MOT ACK Target: %d Source: %d Service: %02X; ", target, source, svc_type);
+    state->last_active_time = time(NULL);
+}
+
 static void
 tsbk_handle_mfid90_scan_marker(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
     int mk = (tsbk_byte[2] >> 4) & 0x0F;
@@ -320,18 +461,112 @@ tsbk_handle_mfid90_base_station_id(const dsd_opts* opts, const dsd_state* state,
 }
 
 static void
-tsbk_handle_mfid90(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
-    int opcode = tsbk_byte[0] & 0x3F;
-    DSD_FPRINTF(stderr, "%s", KYEL);
+tsbk_handle_mfid90_display_raw(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) %s\n", label);
+    DSD_FPRINTF(stderr, "  MSG: %02X%02X%02X%02X%02X%02X%02X%02X\n", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
+                tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+}
+
+static int
+tsbk_mfid90_data_channel_valid(uint16_t channel) {
+    return (((channel >> 12) & 0x0F) != 0x0F) && ((channel & 0x0FFF) != 0x0FFF);
+}
+
+static void
+tsbk_handle_mfid90_tdma_data_channel(const dsd_opts* opts, dsd_state* state,
+                                     const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint16_t downlink = tsbk_u16(tsbk_byte, 4);
+    uint16_t uplink = tsbk_u16(tsbk_byte, 6);
+    int downlink_valid = tsbk_mfid90_data_channel_valid(downlink);
+    int uplink_valid = tsbk_mfid90_data_channel_valid(uplink);
+    long int downlink_freq = downlink_valid ? process_channel_to_freq(opts, state, downlink) : 0;
+    long int uplink_freq = uplink_valid ? process_channel_to_freq(opts, state, uplink) : 0;
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) TDMA Data Channel\n");
+    if (downlink_valid) {
+        char suffix[32];
+        p25_format_chan_suffix(state, downlink, -1, suffix, sizeof suffix);
+        DSD_FPRINTF(stderr, "  DL [%04X]%s", downlink, suffix);
+        if (downlink_freq > 0) {
+            DSD_FPRINTF(stderr, " Freq: %.6lf MHz", (double)downlink_freq / 1000000.0);
+        }
+    }
+    if (uplink_valid) {
+        char suffix[32];
+        p25_format_chan_suffix(state, uplink, -1, suffix, sizeof suffix);
+        DSD_FPRINTF(stderr, "%sUL [%04X]%s", downlink_valid ? " " : "  ", uplink, suffix);
+        if (uplink_freq > 0) {
+            DSD_FPRINTF(stderr, " Freq: %.6lf MHz", (double)uplink_freq / 1000000.0);
+        }
+    }
+    if (!downlink_valid && !uplink_valid) {
+        DSD_FPRINTF(stderr, "  Not Active");
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: Not Active; ");
+    } else if (downlink_valid && uplink_valid) {
+        char downlink_suffix[32], uplink_suffix[32];
+        p25_format_chan_suffix(state, downlink, -1, downlink_suffix, sizeof downlink_suffix);
+        p25_format_chan_suffix(state, uplink, -1, uplink_suffix, sizeof uplink_suffix);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: DL %04X%s UL %04X%s; ",
+                     downlink, downlink_suffix, uplink, uplink_suffix);
+    } else {
+        uint16_t channel = downlink_valid ? downlink : uplink;
+        char suffix[32];
+        p25_format_chan_suffix(state, channel, -1, suffix, sizeof suffix);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: %04X%s; ", channel,
+                     suffix);
+    }
+    state->last_active_time = time(NULL);
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static int
+tsbk_handle_mfid90_regroup_grants(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+                                  int opcode) {
     switch (opcode) {
         case 0x00: tsbk_handle_mfid90_regroup_add_del(state, tsbk_byte, 1); break;
         case 0x01: tsbk_handle_mfid90_regroup_add_del(state, tsbk_byte, 0); break;
         case 0x02: tsbk_handle_mfid90_grant(opts, state, tsbk_byte); break;
         case 0x03: tsbk_handle_mfid90_grant_update(opts, state, tsbk_byte); break;
+        case 0x04: tsbk_handle_mfid90_extended_function(tsbk_byte); break;
+        case 0x05: tsbk_handle_mfid90_traffic_channel_id(tsbk_byte); break;
+        default: return 0;
+    }
+    return 1;
+}
+
+static int
+tsbk_handle_mfid90_responses(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+                             int opcode) {
+    switch (opcode) {
+        case 0x06: tsbk_handle_mfid90_queued_deny(opts, state, tsbk_byte, /*is_deny*/ 0); break;
+        case 0x07: tsbk_handle_mfid90_queued_deny(opts, state, tsbk_byte, /*is_deny*/ 1); break;
+        case 0x08: tsbk_handle_mfid90_ack(state, tsbk_byte); break;
         case 0x09: tsbk_handle_mfid90_scan_marker(tsbk_byte); break;
         case 0x0A: tsbk_handle_mfid90_emergency(tsbk_byte); break;
         case 0x0B: tsbk_handle_mfid90_base_station_id(opts, state, tsbk_byte); break;
+        default: return 0;
+    }
+    return 1;
+}
+
+static void
+tsbk_handle_mfid90_misc(const dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+                        int opcode) {
+    switch (opcode) {
+        case 0x0E: tsbk_handle_mfid90_display_raw("Control Channel Planned Shutdown", tsbk_byte); break;
+        case 0x0F: tsbk_handle_mfid90_display_raw("Opcode 15", tsbk_byte); break;
+        case 0x16: tsbk_handle_mfid90_tdma_data_channel(opts, state, tsbk_byte); break;
         default: break;
+    }
+}
+
+static void
+tsbk_handle_mfid90(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int opcode = tsbk_byte[0] & 0x3F;
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    if (!tsbk_handle_mfid90_regroup_grants(opts, state, tsbk_byte, opcode)
+        && !tsbk_handle_mfid90_responses(opts, state, tsbk_byte, opcode)) {
+        tsbk_handle_mfid90_misc(opts, state, tsbk_byte, opcode);
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 }

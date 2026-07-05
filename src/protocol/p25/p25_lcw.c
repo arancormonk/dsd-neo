@@ -31,6 +31,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_cc_update.h"
 
 static inline void
 dsd_append(char* dst, size_t dstsz, const char* src) {
@@ -259,6 +260,54 @@ p25_lcw_trunk_cc_ready_for_grant(p25_lcw_ctx* ctx) {
     return ctx->state->p25_cc_freq != 0 || ctx->state->trunk_cc_freq > 0;
 }
 
+static void
+p25_lcw_store_current_site_status(p25_lcw_ctx* ctx, uint8_t lra, int lra_valid, int network_active,
+                                  int network_active_valid, uint8_t rfssid, uint8_t siteid) {
+    if (!ctx || !ctx->state) {
+        return;
+    }
+    if (lra_valid) {
+        p25_store_site_lra(ctx->state, lra);
+    }
+    if (network_active_valid) {
+        p25_store_site_network_active(ctx->state, (uint8_t)(network_active ? 1U : 0U));
+    }
+    ctx->state->p2_rfssid = rfssid;
+    ctx->state->p2_siteid = siteid;
+    p25_confirm_idens_for_current_site(ctx->state);
+}
+
+static void
+p25_lcw_update_primary_control_channel(p25_lcw_ctx* ctx, uint32_t wacn, uint16_t sysid, uint16_t channel, int seed_lcn0,
+                                       const char* label) {
+    if (!ctx || !ctx->state) {
+        return;
+    }
+
+    long int cc_freq = process_channel_to_freq(ctx->opts, ctx->state, channel);
+    int accepted_cc = p25_cc_update_primary_from_network_status(ctx->opts, ctx->state, cc_freq);
+    const int metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(ctx->opts);
+    if (metadata_allowed) {
+        if (ctx->state->p2_hardset == 0) {
+            (void)p25_update_system_identity(ctx->state, (unsigned long long)wacn, (unsigned long long)sysid);
+        }
+        ctx->state->p25_cc_is_tdma = 0;
+    }
+    if (accepted_cc) {
+        const long neigh[1] = {ctx->state->p25_cc_freq};
+        p25_sm_on_neighbor_update(ctx->opts, ctx->state, neigh, 1);
+        if (seed_lcn0
+            && (ctx->state->trunk_lcn_freq[0] == 0 || ctx->state->trunk_lcn_freq[0] != ctx->state->p25_cc_freq)) {
+            ctx->state->trunk_lcn_freq[0] = ctx->state->p25_cc_freq;
+        }
+        p25_confirm_idens_for_current_site(ctx->state);
+    } else if (cc_freq > 0) {
+        DSD_FPRINTF(stderr, "\n  %s: ignoring CC update while voice-tuned (freq=%ld)", label, cc_freq);
+    } else {
+        DSD_FPRINTF(stderr, "\n  %s: ignoring invalid channel->freq (CHAN-T=%04X)", label, channel);
+    }
+}
+
 static int
 p25_lcw_format_44_skip_grant(const p25_lcw_ctx* ctx, uint16_t group) {
     if (ctx->state->tg_hold != 0 && ctx->state->tg_hold != group) {
@@ -459,32 +508,81 @@ p25_lcw_handle_format_5c(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_format_60(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " System Service Broadcast");
+    uint8_t request_priority = (uint8_t)ConvertBitIntoBytes(&ctx->bits[20], 4);
+    uint32_t available = (uint32_t)ConvertBitIntoBytes(&ctx->bits[24], 24);
+    uint32_t supported = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " RPL [%X] SSA [%06X] SSS [%06X]", request_priority, available, supported);
+    p25_store_system_service_broadcast(ctx->state, available, supported, request_priority);
 }
 
 static void
 p25_lcw_handle_format_61(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Secondary Control Channel Broadcast");
+    uint8_t rfssid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 8);
+    uint8_t siteid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[16], 8);
+    uint16_t channel_a = (uint16_t)ConvertBitIntoBytes(&ctx->bits[24], 16);
+    uint8_t ssc_a = (uint8_t)ConvertBitIntoBytes(&ctx->bits[40], 8);
+    uint16_t channel_b = (uint16_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
+    uint8_t ssc_b = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - RFSS %d Site %d CH A %04X SSC %02X CH B %04X SSC %02X", rfssid, siteid, channel_a, ssc_a,
+                channel_b, ssc_b);
+    (void)p25_announce_secondary_cc_channel(ctx->opts, ctx->state, channel_a, rfssid, siteid, ssc_a);
+    if (channel_b != channel_a && channel_b != 0xFFFFU && ssc_b != 0U) {
+        (void)p25_announce_secondary_cc_channel(ctx->opts, ctx->state, channel_b, rfssid, siteid, ssc_b);
+    }
 }
 
 static void
 p25_lcw_handle_format_62(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Adjacent Site Status Broadcast");
+    uint8_t lra = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 8);
+    uint8_t cfva = (uint8_t)ConvertBitIntoBytes(&ctx->bits[16], 4);
+    uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[20], 12);
+    uint8_t rfssid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[32], 8);
+    uint8_t siteid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[40], 8);
+    uint16_t channel = (uint16_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
+    uint8_t ssc = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - LRA %02X SYS %03X RFSS %d Site %d CH %04X SSC %02X", lra, sysid, rfssid, siteid, channel,
+                ssc);
+    const p25_neighbor_channel_announcement_t announcement = {
+        .channel = channel,
+        .sysid = sysid,
+        .rfss = rfssid,
+        .site = siteid,
+        .lra = lra,
+        .cfva = cfva,
+        .lra_valid = 1U,
+        .cfva_valid = 1U,
+    };
+    (void)p25_announce_neighbor_channel_ex(ctx->opts, ctx->state, &announcement);
 }
 
 static void
 p25_lcw_handle_format_63(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " RFSS Status Broadcast");
+    uint8_t lra = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 8);
+    int network_active = ctx->bits[19] ? 1 : 0;
+    uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[20], 12);
+    uint8_t rfssid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[32], 8);
+    uint8_t siteid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[40], 8);
+    uint16_t channel = (uint16_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
+    uint8_t ssc = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - LRA %02X SYS %03X RFSS %d Site %d CH %04X SSC %02X A %d", lra, sysid, rfssid, siteid,
+                channel, ssc, network_active);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channel);
+    p25_lcw_store_current_site_status(ctx, lra, 1, network_active, 1, rfssid, siteid);
 }
 
 static void
 p25_lcw_handle_format_64(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Network Status Broadcast");
+    uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 20);
+    uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[36], 12);
+    uint16_t channel = (uint16_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
+    uint8_t ssc = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - WACN %05X SYS %03X CH %04X SSC %02X", wacn, sysid, channel, ssc);
+    p25_lcw_update_primary_control_channel(ctx, wacn, sysid, channel, 1, "P25 LCW NET_STS");
 }
 
 static void
@@ -509,8 +607,15 @@ p25_lcw_handle_format_65(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_format_66(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Secondary Control Channel Broadcast %s Explicit (LCSCBX)", dsd_unicode_or_ascii("–", "-"));
+    uint8_t rfssid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 8);
+    uint8_t siteid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[16], 8);
+    uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&ctx->bits[24], 16);
+    uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&ctx->bits[40], 16);
+    uint8_t ssc = (uint8_t)ConvertBitIntoBytes(&ctx->bits[56], 8);
+    DSD_FPRINTF(stderr, " - RFSS %d Site %d CH-T %04X CH-R %04X SSC %02X", rfssid, siteid, channelt, channelr, ssc);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelr);
+    (void)p25_announce_secondary_cc_channel(ctx->opts, ctx->state, channelt, rfssid, siteid, ssc);
 }
 
 static void
@@ -521,12 +626,10 @@ p25_lcw_handle_format_67(p25_lcw_ctx* ctx) {
     uint8_t rfssid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[32], 8);
     uint8_t siteid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[40], 8);
     uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
-    uint8_t cfva = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 4);
-    DSD_FPRINTF(stderr, " - RFSS %d Site %d CH %04X", rfssid, siteid, channelt);
-    UNUSED(channelr);
-    if (cfva & 0x1) {
-        DSD_FPRINTF(stderr, " - Connection Active");
-    }
+    uint8_t ssc = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - LRA %02X RFSS %d Site %d CH-T %04X CH-R %04X SSC %02X", lra, rfssid, siteid, channelt,
+                channelr, ssc);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelr);
     uint16_t sysid = ctx->state ? (uint16_t)ctx->state->p2_sysid : 0U;
     const p25_neighbor_channel_announcement_t announcement = {
         .channel = channelt,
@@ -534,23 +637,37 @@ p25_lcw_handle_format_67(p25_lcw_ctx* ctx) {
         .rfss = rfssid,
         .site = siteid,
         .lra = lra,
-        .cfva = cfva,
         .lra_valid = 1U,
-        .cfva_valid = 1U,
     };
     (void)p25_announce_neighbor_channel_ex(ctx->opts, ctx->state, &announcement);
 }
 
 static void
 p25_lcw_handle_format_68(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " RFSS Status Broadcast %s Explicit (LCRSBX)", dsd_unicode_or_ascii("–", "-"));
+    uint8_t lra = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 8);
+    uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&ctx->bits[16], 16);
+    uint8_t rfssid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[32], 8);
+    uint8_t siteid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[40], 8);
+    uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
+    uint8_t ssc = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - LRA %02X RFSS %d Site %d CH-T %04X CH-R %04X SSC %02X", lra, rfssid, siteid, channelt,
+                channelr, ssc);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelt);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelr);
+    p25_lcw_store_current_site_status(ctx, lra, 1, 0, 0, rfssid, siteid);
 }
 
 static void
 p25_lcw_handle_format_69(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Network Status Broadcast %s Explicit (LCNSBX)", dsd_unicode_or_ascii("–", "-"));
+    uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&ctx->bits[8], 20);
+    uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[28], 12);
+    uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&ctx->bits[40], 16);
+    uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&ctx->bits[56], 16);
+    DSD_FPRINTF(stderr, " - WACN %05X SYS %03X CH-T %04X CH-R %04X", wacn, sysid, channelt, channelr);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelr);
+    p25_lcw_update_primary_control_channel(ctx, wacn, sysid, channelt, 1, "P25 LCW NET_STS-EX");
 }
 
 static void

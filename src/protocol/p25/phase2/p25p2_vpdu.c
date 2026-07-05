@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -28,6 +29,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -1368,69 +1370,110 @@ BLOCK_END:
 }
 
 static void
-p25p2_vpdu_iter_block_06(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
-    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
-    int type = ctx->type;
+p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(p25p2_vpdu_ctx* ctx, int opcode) {
+    dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
     const unsigned long long int* MAC = ctx->mac;
-    struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
-    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
+    struct p25p2_mac_result mac_res = *ctx->mac_res;
+    int len_a = ctx->len_a;
+    int channel = (MAC[2 + len_a] << 8) | MAC[3 + len_a];
+    int target = (MAC[4 + len_a] << 16) | (MAC[5 + len_a] << 8) | MAC[6 + len_a];
+    int source = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
+    long int freq = 0;
+
+    DSD_FPRINTF(stderr, "\n Unit to Unit Channel Grant");
+    if (opcode == 0x46) {
+        DSD_FPRINTF(stderr, " Update");
+    }
+    DSD_FPRINTF(stderr, "\n  CHAN: %04X; SRC: %d; TGT: %d; ", channel, source, target);
+    freq = process_channel_to_freq(opts, state, channel);
+
+    char suffix[32];
+    p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof suffix);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TGT: %d SRC: %d; ",
+                 channel, suffix, target, source);
+    state->last_active_time = time(NULL);
+
+    if (opts->trunk_tune_private_calls == 0) {
+        ctx->skip_rest = 1;
+        return;
+    }
+
+    p25p2_vpdu_print_group_label(state, (uint32_t)source);
+    if (source != target) {
+        p25p2_vpdu_print_group_label(state, (uint32_t)target);
+    }
+
+    if (p25p2_vpdu_can_tune(opts, state, freq)) {
+        int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
+        p25p2_mac_handle_indiv(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
+                               /*policy_data*/ 0);
+    }
+    p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
+}
+
+static void
+p25p2_vpdu_handle_unit_to_unit_grant_extended(p25p2_vpdu_ctx* ctx, int opcode) {
+    dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    const unsigned long long int* MAC = ctx->mac;
+    struct p25p2_mac_result mac_res = *ctx->mac_res;
+    int len_a = ctx->len_a;
+    int channelt = (MAC[2 + len_a] << 8) | MAC[3 + len_a];
+    int channelr = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
+    int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 6 + len_a);
+    int source_sys = p25p2_vpdu_fqid_sysid(MAC, 6 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 10 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 13 + len_a);
+    long int freq = 0;
+
+    DSD_FPRINTF(stderr, "\n Unit to Unit Channel Grant %s Extended", opcode == 0xC6 ? "Update" : "Service");
+    DSD_FPRINTF(stderr, "\n  CHAN-T: %04X; CHAN-R: %04X; SRC: %05X:%03X.%d; TGT: %d; ", channelt, channelr, source_wacn,
+                source_sys, source, target);
+    freq = process_channel_to_freq(opts, state, channelt);
+    if (p25p2_vpdu_channel_is_valid(channelr)) {
+        (void)process_channel_to_freq(opts, state, channelr);
+    }
+
+    char suffix[32];
+    p25_format_chan_suffix(state, (uint16_t)channelt, -1, suffix, sizeof suffix);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TGT: %d SRC: %d; ",
+                 channelt, suffix, target, source);
+    state->last_active_time = time(NULL);
+
+    if (opts->trunk_tune_private_calls == 0) {
+        ctx->skip_rest = 1;
+        return;
+    }
+
+    p25p2_vpdu_print_group_label(state, (uint32_t)source);
+    if (source != target) {
+        p25p2_vpdu_print_group_label(state, (uint32_t)target);
+    }
+
+    if (p25p2_vpdu_can_tune(opts, state, freq)) {
+        int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
+        p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
+                               /*policy_data*/ 0);
+    }
+    p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
+}
+
+static void
+p25p2_vpdu_iter_block_06(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    int len_a = ctx->len_a;
     int len_b = ctx->len_b;
-    int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
-    int slot VPDU_MAYBE_UNUSED = ctx->slot;
     int i = ctx->iter_idx;
-    UNUSED4(type, mac_res, len_c, slot);
+    int opcode = (int)MAC[1 + len_a];
 
-    if (MAC[1 + len_a] == 0x44 || MAC[1 + len_a] == 0x46 || MAC[1 + len_a] == 0xC4) {
-        int opcode = (int)MAC[1 + len_a];
-        int channel = (MAC[2 + len_a] << 8) | MAC[3 + len_a];
-        int target = (MAC[4 + len_a] << 16) | (MAC[5 + len_a] << 8) | MAC[6 + len_a];
-        int source = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
-        unsigned long long int src_suid = 0;
-        long int freq = 0;
-
-        DSD_FPRINTF(stderr, "\n Unit to Unit Channel Grant");
-        if (opcode == 0x46) {
-            DSD_FPRINTF(stderr, " Update");
-        }
-        if (opcode == 0xC4) {
-            DSD_FPRINTF(stderr, " Extended");
-        }
-        DSD_FPRINTF(stderr, "\n  CHAN: %04X; SRC: %d; TGT: %d; ", channel, source, target);
-        if (opcode == 0xC4) {
-            DSD_FPRINTF(stderr, "SUID: %08llX-%08d; ", src_suid >> 24, source);
-        }
-        freq = process_channel_to_freq(opts, state, channel);
-
-        char suffix[32];
-        p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof suffix);
-        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TGT: %d; ", channel,
-                     suffix, target);
-        state->last_active_time = time(NULL);
-
-        if (opts->trunk_tune_private_calls == 0) {
-            ctx->skip_rest = 1;
-            goto BLOCK_END;
-        }
-
-        p25p2_vpdu_print_group_label(state, (uint32_t)source);
-        if (source != target) {
-            p25p2_vpdu_print_group_label(state, (uint32_t)target);
-        }
-
-        if (p25p2_vpdu_can_tune(opts, state, freq)) {
-            int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-            p25p2_mac_handle_indiv(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
-                                   /*policy_data*/ 0);
-        }
-        p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
+    switch (opcode) {
+        case 0x44:
+        case 0x46: p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(ctx, opcode); break;
+        case 0xC4:
+        case 0xC6: p25p2_vpdu_handle_unit_to_unit_grant_extended(ctx, opcode); break;
+        default: break;
     }
-
-    if (len_b < 0) {
-        goto BLOCK_END;
-    }
-BLOCK_END:
-    VPDU_LABEL_UNUSED;
 
     ctx->len_b = len_b;
     ctx->iter_idx = i;
@@ -2222,7 +2265,8 @@ p25p2_vpdu_iter_block_24(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] != 0xA0 && MAC[1 + len_a] != 0xAC && MAC[1 + len_a] != 0xB0 && MAC[2 + len_a] == 0xA4) {
+    if (MAC[1 + len_a] != 0xA0 && MAC[1 + len_a] != 0xAA && MAC[1 + len_a] != 0xAC && MAC[1 + len_a] != 0xB0
+        && MAC[2 + len_a] == 0xA4) {
         // 6.2.36 Manufacturer Specific regarding octet 3 as len
         int len = MAC[3 + len_a] & 0x3F;
 
@@ -4256,9 +4300,12 @@ p25p2_vpdu_handle_status_update_abbreviated(p25p2_vpdu_ctx* ctx) {
 static const char*
 p25p2_vpdu_query_alert_label(int opcode) {
     switch (opcode) {
-        case 0x5A: return "Status Query";
-        case 0x5F: return "Call Alert";
-        case 0x6A: return "Group Affiliation Query";
+        case 0x5A:
+        case 0xDA: return "Status Query";
+        case 0x5F:
+        case 0xDF: return "Call Alert";
+        case 0x6A:
+        case 0xEA: return "Group Affiliation Query";
         default: return "Query";
     }
 }
@@ -4350,15 +4397,243 @@ p25p2_vpdu_handle_roaming_address_update(const p25p2_vpdu_ctx* ctx) {
 }
 
 static void
-p25p2_vpdu_iter_block_58(p25p2_vpdu_ctx* ctx) {
-    int opcode = (int)ctx->mac[1 + ctx->len_a];
+p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    int svc = (int)MAC[2 + len_a];
+    int timer = p25p2_vpdu_u16(MAC, 3 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int slot_idx = ctx->slot & 1;
 
+    DSD_FPRINTF(stderr, "\n Telephone Interconnect Voice Channel User");
+    DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Timer [%0.1fs]", svc, target, (double)timer / 10.0);
+    p25p2_vpdu_print_svc_with_slot_state(ctx->opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
+    p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "TELE Target: %d Timer: %.1fs; ", target,
+                 (double)timer / 10.0);
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_radio_unit_monitor_abbreviated(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    int transmit_time = (int)MAC[3 + len_a];
+    int silent = ((MAC[4 + len_a] & 0x80U) != 0U);
+    int multiplier = (int)(MAC[4 + len_a] & 0x03U);
+    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 8 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Abbreviated");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Time [%d] Mult [%d]%s", target, source, transmit_time, multiplier,
+                silent ? " Silent" : "");
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                 "RUM Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time, multiplier,
+                 silent ? " Silent" : "");
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    int target = p25p2_vpdu_u24(MAC, 2 + len_a);
+    int group = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 7 + len_a);
+    int silent = ((MAC[10 + len_a] & 0x80U) != 0U);
+    int talkgroup_mode = ((MAC[10 + len_a] & 0x40U) != 0U);
+    int transmit_time = (int)MAC[11 + len_a];
+    int key_id = p25p2_vpdu_u16(MAC, 12 + len_a);
+    int algid = (int)MAC[14 + len_a];
+    int monitor = talkgroup_mode ? group : source;
+
+    DSD_FPRINTF(stderr, "\n Radio Unit Monitor Enhanced Command - Abbreviated");
+    DSD_FPRINTF(stderr, "\n  Target [%d] %s [%d] Time [%d] ALG [%02X] KID [%04X]%s", target,
+                talkgroup_mode ? "Group" : "Source", monitor, transmit_time, algid, key_id, silent ? " Silent" : "");
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                 "RUM-E Target: %d %s: %d Time: %d ALG: %02X KID: %04X%s; ", target, talkgroup_mode ? "TG" : "RID",
+                 monitor, transmit_time, algid, key_id, silent ? " Silent" : "");
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_radio_unit_monitor_extended_vch(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    int transmit_time = (int)MAC[3 + len_a];
+    int silent = ((MAC[4 + len_a] & 0x80U) != 0U);
+    int multiplier = (int)(MAC[4 + len_a] & 0x03U);
+    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 8 + len_a);
+    int source_sys = p25p2_vpdu_fqid_sysid(MAC, 8 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 12 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Extended VCH");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Time [%d] Mult [%d]%s", target, source_wacn, source_sys,
+                source, transmit_time, multiplier, silent ? " Silent" : "");
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                 "RUM-X Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time, multiplier,
+                 silent ? " Silent" : "");
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_status_update_extended_vch(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    int unit_status = (int)MAC[3 + len_a];
+    int user_status = (int)MAC[4 + len_a];
+    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 8 + len_a);
+    int source_sys = p25p2_vpdu_fqid_sysid(MAC, 8 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 12 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Status Update - Extended VCH");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Unit [%02X] User [%02X]", target, source_wacn,
+                source_sys, source, unit_status, user_status);
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                 "STATUS-X Target: %d Source: %d Unit: %02X User: %02X; ", target, source, unit_status, user_status);
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_status_query_alert_affiliation_extended_vch(p25p2_vpdu_ctx* ctx, int opcode) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    const char* label = p25p2_vpdu_query_alert_label(opcode);
+    int target = p25p2_vpdu_u24(MAC, 2 + len_a);
+    int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 5 + len_a);
+    int source_sys = p25p2_vpdu_fqid_sysid(MAC, 5 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 9 + len_a);
+
+    DSD_FPRINTF(stderr, "\n %s - Extended VCH", label);
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d]", target, source_wacn, source_sys, source);
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "%s-X Target: %d Source: %d; ", label,
+                 target, source);
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_message_update_extended_vch(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    int message = p25p2_vpdu_u16(MAC, 3 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 8 + len_a);
+    int source_sys = p25p2_vpdu_fqid_sysid(MAC, 8 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 12 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Message Update - Extended VCH");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Message [%04X]", target, source_wacn, source_sys, source,
+                message);
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                 "MSG-X Target: %d Source: %d Message: %04X; ", target, source, message);
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_extended_function_extended_vch(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    int function = p25p2_vpdu_u16(MAC, 3 + len_a);
+    int class_id = (function >> 8) & 0xFF;
+    int operand = function & 0xFF;
+    int argument = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 8 + len_a);
+    int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 11 + len_a);
+    int source_sys = p25p2_vpdu_fqid_sysid(MAC, 11 + len_a);
+    int source = p25p2_vpdu_u24(MAC, 15 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Extended Function Command - Extended VCH");
+    DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d] Source [%05X:%03X.%d]", class_id,
+                operand, argument, target, source_wacn, source_sys, source);
+    if (class_id == 0) {
+        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+    }
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                 "EXTFUNC-X Target: %d Source: %d Function: %04X Arg: %06X; ", target, source, function, argument);
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_extended_function_extended_lcch(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    int function = p25p2_vpdu_u16(MAC, 3 + len_a);
+    int class_id = (function >> 8) & 0xFF;
+    int operand = function & 0xFF;
+    int argument = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 8 + len_a);
+    int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 11 + len_a);
+    int source_sys = p25p2_vpdu_fqid_sysid(MAC, 11 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Extended Function Command - Extended LCCH");
+    DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d] Source [%05X:%03X]", class_id, operand,
+                argument, target, source_wacn, source_sys);
+    if (class_id == 0) {
+        DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+    }
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                 "EXTFUNC-L Target: %d Source: %05X:%03X Function: %04X Arg: %06X; ", target, source_wacn, source_sys,
+                 function, argument);
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_group_affiliation_response_extended(p25p2_vpdu_ctx* ctx) {
+    const unsigned long long int* MAC = ctx->mac;
+    dsd_state* state = ctx->state;
+    const int len_a = ctx->len_a;
+    int local = ((MAC[3 + len_a] & 0x80U) != 0U);
+    int response = (int)(MAC[3 + len_a] & 0x03U);
+    int announcement_group = p25p2_vpdu_u16(MAC, 4 + len_a);
+    int group = p25p2_vpdu_u16(MAC, 6 + len_a);
+    int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 8 + len_a);
+    int source_sys = p25p2_vpdu_fqid_sysid(MAC, 8 + len_a);
+    int source_gid = p25p2_vpdu_u16(MAC, 12 + len_a);
+    int target = p25p2_vpdu_u24(MAC, 14 + len_a);
+
+    DSD_FPRINTF(stderr, "\n Group Affiliation Response - Extended");
+    DSD_FPRINTF(stderr, "\n  LG [%d] Response [%d] AGA [%d] GA [%d] SourceGID [%05X:%03X.%d] Target [%d]", local,
+                response, announcement_group, group, source_wacn, source_sys, source_gid, target);
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                 "AFF-X Target: %d GA: %d AGA: %d Response: %d; ", target, group, announcement_group, response);
+    state->last_active_time = time(NULL);
+
+    if (response == 0) {
+        p25_aff_register(state, (uint32_t)target);
+        p25_ga_add(state, (uint32_t)target, (uint16_t)group);
+    }
+}
+
+static int
+p25p2_vpdu_dispatch_block_58_primary(p25p2_vpdu_ctx* ctx, int opcode) {
     switch (opcode) {
+        case 0x03: p25p2_vpdu_handle_telephone_interconnect_voice_user(ctx); break;
         case 0x41: p25p2_vpdu_handle_group_voice_service_request(ctx); break;
-        case 0x45:
-        case 0xC5: p25p2_vpdu_handle_unit_to_unit_answer_request(ctx, opcode); break;
+        case 0x45: p25p2_vpdu_handle_unit_to_unit_answer_request(ctx, opcode); break;
         case 0x4A: p25p2_vpdu_handle_telephone_interconnect_answer_request(ctx); break;
+        case 0x4C: p25p2_vpdu_handle_radio_unit_monitor_abbreviated(ctx); break;
         case 0x58: p25p2_vpdu_handle_status_update_abbreviated(ctx); break;
+        case 0x5D: DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Obsolete"); break;
+        case 0x5E: p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(ctx); break;
+        default: return 0;
+    }
+    return 1;
+}
+
+static int
+p25p2_vpdu_dispatch_block_58_secondary(p25p2_vpdu_ctx* ctx, int opcode) {
+    switch (opcode) {
         case 0x5A:
         case 0x5F:
         case 0x6A: p25p2_vpdu_handle_query_alert_affiliation_abbreviated(ctx, opcode); break;
@@ -4366,7 +4641,35 @@ p25p2_vpdu_iter_block_58(p25p2_vpdu_ctx* ctx) {
         case 0x60: p25p2_vpdu_handle_ack_response_fne_abbreviated(ctx); break;
         case 0x76: p25p2_vpdu_handle_roaming_address_command(ctx); break;
         case 0x77: p25p2_vpdu_handle_roaming_address_update(ctx); break;
-        default: break;
+        default: return 0;
+    }
+    return 1;
+}
+
+static int
+p25p2_vpdu_dispatch_block_58_extended(p25p2_vpdu_ctx* ctx, int opcode) {
+    switch (opcode) {
+        case 0xC5: p25p2_vpdu_handle_unit_to_unit_answer_request(ctx, opcode); break;
+        case 0xCC: p25p2_vpdu_handle_radio_unit_monitor_extended_vch(ctx); break;
+        case 0xD8: p25p2_vpdu_handle_status_update_extended_vch(ctx); break;
+        case 0xDA:
+        case 0xDF:
+        case 0xEA: p25p2_vpdu_handle_status_query_alert_affiliation_extended_vch(ctx, opcode); break;
+        case 0xDC: p25p2_vpdu_handle_message_update_extended_vch(ctx); break;
+        case 0xE4: p25p2_vpdu_handle_extended_function_extended_vch(ctx); break;
+        case 0xE5: p25p2_vpdu_handle_extended_function_extended_lcch(ctx); break;
+        case 0xE8: p25p2_vpdu_handle_group_affiliation_response_extended(ctx); break;
+        default: return 0;
+    }
+    return 1;
+}
+
+static void
+p25p2_vpdu_iter_block_58(p25p2_vpdu_ctx* ctx) {
+    int opcode = (int)ctx->mac[1 + ctx->len_a];
+
+    if (!p25p2_vpdu_dispatch_block_58_primary(ctx, opcode) && !p25p2_vpdu_dispatch_block_58_secondary(ctx, opcode)) {
+        (void)p25p2_vpdu_dispatch_block_58_extended(ctx, opcode);
     }
 }
 
@@ -4463,6 +4766,125 @@ p25p2_vpdu_handle_motorola_tdma_data_channel(p25p2_vpdu_ctx* ctx) {
     }
 }
 
+static int
+p25p2_vpdu_vendor_has_octets(const p25p2_vpdu_ctx* ctx, int first_octet, int count) {
+    if (!ctx || first_octet < 1 || count < 1) {
+        return 0;
+    }
+    if (ctx->len_b < first_octet + count - 1) {
+        return 0;
+    }
+    return (ctx->len_a + first_octet + count - 1) < 24;
+}
+
+static void
+p25p2_vpdu_append_radio_id(char* radios, size_t radios_cap, int* radio_count, int radio) {
+    char piece[32];
+    DSD_SNPRINTF(piece, sizeof piece, "%s%d", (*radio_count > 0) ? ", " : "", radio);
+    dsd_append(radios, radios_cap, piece);
+    (*radio_count)++;
+}
+
+static void
+p25p2_vpdu_collect_motorola_radio(const p25p2_vpdu_ctx* ctx, int first_octet, char* radios, size_t radios_cap,
+                                  int* radio_count) {
+    if (!p25p2_vpdu_vendor_has_octets(ctx, first_octet, 3)) {
+        return;
+    }
+    p25p2_vpdu_append_radio_id(radios, radios_cap, radio_count, p25p2_vpdu_u24(ctx->mac, ctx->len_a + first_octet));
+}
+
+static void
+p25p2_vpdu_handle_motorola_active_group_radios(p25p2_vpdu_ctx* ctx, int opcode) {
+    dsd_state* state = ctx->state;
+    char radios[128] = {0};
+    int radio_count = 0;
+    int status = -1;
+
+    if (opcode == 0x82) {
+        p25p2_vpdu_collect_motorola_radio(ctx, 5, radios, sizeof radios, &radio_count);
+        p25p2_vpdu_collect_motorola_radio(ctx, 8, radios, sizeof radios, &radio_count);
+        p25p2_vpdu_collect_motorola_radio(ctx, 12, radios, sizeof radios, &radio_count);
+        p25p2_vpdu_collect_motorola_radio(ctx, 15, radios, sizeof radios, &radio_count);
+    } else {
+        if (p25p2_vpdu_vendor_has_octets(ctx, 4, 1)) {
+            status = (int)ctx->mac[ctx->len_a + 4];
+        }
+        p25p2_vpdu_collect_motorola_radio(ctx, 6, radios, sizeof radios, &radio_count);
+        p25p2_vpdu_collect_motorola_radio(ctx, 9, radios, sizeof radios, &radio_count);
+        p25p2_vpdu_collect_motorola_radio(ctx, 13, radios, sizeof radios, &radio_count);
+        p25p2_vpdu_collect_motorola_radio(ctx, 16, radios, sizeof radios, &radio_count);
+    }
+
+    if (radio_count == 0) {
+        DSD_SNPRINTF(radios, sizeof radios, "%s", "NONE");
+    }
+
+    DSD_FPRINTF(stderr, "\n Motorola %d Active Group Radios", opcode);
+    if (status >= 0) {
+        DSD_FPRINTF(stderr, "\n  Status [%02X] Radios [%s]", status, radios);
+        DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "MOT AGR %d Status: %02X Radios: %s; ",
+                     opcode, status, radios);
+    } else {
+        DSD_FPRINTF(stderr, "\n  Radios [%s]", radios);
+        DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "MOT AGR %d Radios: %s; ", opcode,
+                     radios);
+    }
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_motorola_active_group_marker(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    char raw[32] = {0};
+    char piece[8];
+    int len = ctx->len_b;
+
+    if (len <= 0 || len > 8) {
+        len = 3;
+    }
+    for (int octet = 1; octet <= len && (ctx->len_a + octet) < 24; octet++) {
+        DSD_SNPRINTF(piece, sizeof piece, "%02llX", ctx->mac[ctx->len_a + octet] & 0xFFULL);
+        dsd_append(raw, sizeof raw, piece);
+    }
+
+    DSD_FPRINTF(stderr, "\n Motorola Active Group Radios Feature Active");
+    if (raw[0] != '\0') {
+        DSD_FPRINTF(stderr, " MSG [%s]", raw);
+    }
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "MOT AGR Feature Active: %s; ", raw);
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_set_bit_octet(uint8_t* bits, int octet, uint8_t value) {
+    for (int bit = 0; bit < 8; bit++) {
+        bits[(octet * 8) + bit] = (uint8_t)((value >> (7 - bit)) & 0x01U);
+    }
+}
+
+static void
+p25p2_vpdu_handle_harris_gps_location(p25p2_vpdu_ctx* ctx) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    uint8_t bits[24 * 8];
+    int src = (ctx->slot == 0) ? state->lastsrc : state->lastsrcR;
+    int payload_octets = ctx->len_b - 3;
+
+    if (payload_octets <= 0 || !p25p2_vpdu_vendor_has_octets(ctx, 4, 1)) {
+        DSD_FPRINTF(stderr, "\n L3Harris GPS Location invalid: short message");
+        return;
+    }
+
+    DSD_MEMSET(bits, 0, sizeof bits);
+    for (int i = 0; i < payload_octets && (4 + ctx->len_a + i) < 24 && (5 + i) < 24; i++) {
+        p25p2_vpdu_set_bit_octet(bits, 5 + i, (uint8_t)(ctx->mac[4 + ctx->len_a + i] & 0xFFU));
+    }
+
+    DSD_FPRINTF(stderr, "\n L3Harris GPS Location");
+    nmea_harris(opts, state, bits, (uint32_t)src, ctx->slot);
+}
+
 static void
 p25p2_vpdu_handle_harris_data_channel_grant(p25p2_vpdu_ctx* ctx, int opcode) {
     dsd_opts* opts = ctx->opts;
@@ -4504,6 +4926,9 @@ p25p2_vpdu_iter_block_59(p25p2_vpdu_ctx* ctx) {
 
     if (mfid == 0x90) {
         switch (opcode) {
+            case 0x82:
+            case 0x8F: p25p2_vpdu_handle_motorola_active_group_radios(ctx, opcode); break;
+            case 0xBF: p25p2_vpdu_handle_motorola_active_group_marker(ctx); break;
             case 0xA6: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 0); break;
             case 0xA7: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 1); break;
             case 0xA8: p25p2_vpdu_handle_motorola_ack_response(ctx); break;
@@ -4514,9 +4939,426 @@ p25p2_vpdu_iter_block_59(p25p2_vpdu_ctx* ctx) {
         return;
     }
 
-    if (mfid == 0xA4 && (opcode == 0xA0 || opcode == 0xAC)) {
-        p25p2_vpdu_handle_harris_data_channel_grant(ctx, opcode);
+    if (mfid == 0xA4) {
+        switch (opcode) {
+            case 0xA0:
+            case 0xAC: p25p2_vpdu_handle_harris_data_channel_grant(ctx, opcode); break;
+            case 0xAA: p25p2_vpdu_handle_harris_gps_location(ctx); break;
+            default: break;
+        }
     }
+}
+
+static int
+p25p2_vpdu_is_standard_multifragment_base(int opcode) {
+    switch (opcode) {
+        case 0x71:
+        case 0xC7:
+        case 0xCB:
+        case 0xCD:
+        case 0xCE:
+        case 0xCF:
+        case 0xD9:
+        case 0xDB:
+        case 0xDE:
+        case 0xE0: return 1;
+        default: return 0;
+    }
+}
+
+static void
+p25p2_vpdu_frag_clear(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->p25_mac_frag_active = 0;
+    state->p25_mac_frag_opcode = 0;
+    state->p25_mac_frag_data_len = 0;
+    state->p25_mac_frag_collected = 0;
+}
+
+static int
+p25p2_vpdu_frag_u8(const dsd_state* state, int idx) {
+    if (!state || idx < 0 || idx >= (int)state->p25_mac_frag_collected) {
+        return 0;
+    }
+    return (int)state->p25_mac_frag_data[idx];
+}
+
+static int
+p25p2_vpdu_frag_u16(const dsd_state* state, int idx) {
+    return (p25p2_vpdu_frag_u8(state, idx) << 8) | p25p2_vpdu_frag_u8(state, idx + 1);
+}
+
+static int
+p25p2_vpdu_frag_u24(const dsd_state* state, int idx) {
+    return (p25p2_vpdu_frag_u8(state, idx) << 16) | (p25p2_vpdu_frag_u8(state, idx + 1) << 8)
+           | p25p2_vpdu_frag_u8(state, idx + 2);
+}
+
+static int
+p25p2_vpdu_frag_fqid_wacn(const dsd_state* state, int idx) {
+    return (p25p2_vpdu_frag_u8(state, idx) << 12) | (p25p2_vpdu_frag_u8(state, idx + 1) << 4)
+           | ((p25p2_vpdu_frag_u8(state, idx + 2) & 0xF0) >> 4);
+}
+
+static int
+p25p2_vpdu_frag_fqid_sysid(const dsd_state* state, int idx) {
+    return ((p25p2_vpdu_frag_u8(state, idx + 2) & 0x0F) << 8) | p25p2_vpdu_frag_u8(state, idx + 3);
+}
+
+static int
+p25p2_vpdu_frag_explicit_channel(const dsd_state* state, int idx) {
+    int band = (p25p2_vpdu_frag_u8(state, idx) >> 4) & 0x0F;
+    int number = ((p25p2_vpdu_frag_u8(state, idx) & 0x0F) << 8) | p25p2_vpdu_frag_u8(state, idx + 1);
+    return (band << 12) | number;
+}
+
+static int
+p25p2_vpdu_frag_has(const dsd_state* state, int count) {
+    return state && count >= 0 && (int)state->p25_mac_frag_collected >= count;
+}
+
+static void p25p2_vpdu_multifrag_set_active(dsd_state* state, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 2, 3);
+
+static void
+p25p2_vpdu_multifrag_set_active(dsd_state* state, const char* fmt, ...) {
+    va_list ap;
+    if (!state || !fmt) {
+        return;
+    }
+    va_start(ap, fmt);
+    DSD_VSNPRINTF(state->active_channel[0], sizeof state->active_channel[0], fmt, ap);
+    va_end(ap);
+    state->last_active_time = time(NULL);
+}
+
+static void
+p25p2_vpdu_handle_multifrag_authentication_demand(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    if (!p25p2_vpdu_frag_has(state, 16)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0x71 invalid: short authentication demand");
+        return;
+    }
+
+    int target = p25p2_vpdu_frag_u24(state, 1);
+    int target_wacn = p25p2_vpdu_frag_fqid_wacn(state, 4);
+    int target_sys = p25p2_vpdu_frag_fqid_sysid(state, 4);
+    int target_id = p25p2_vpdu_frag_u24(state, 8);
+
+    DSD_FPRINTF(stderr, "\n Authentication Demand - Multi-Fragment Complete");
+    DSD_FPRINTF(stderr, "\n  Target [%d] SUID [%05X:%03X.%d] Seed [%02X%02X%02X%02X%02X]", target, target_wacn,
+                target_sys, target_id, p25p2_vpdu_frag_u8(state, 11), p25p2_vpdu_frag_u8(state, 12),
+                p25p2_vpdu_frag_u8(state, 13), p25p2_vpdu_frag_u8(state, 14), p25p2_vpdu_frag_u8(state, 15));
+    if (p25p2_vpdu_frag_has(state, 26)) {
+        DSD_FPRINTF(stderr, " Challenge [%02X%02X%02X%02X%02X]", p25p2_vpdu_frag_u8(state, 21),
+                    p25p2_vpdu_frag_u8(state, 22), p25p2_vpdu_frag_u8(state, 23), p25p2_vpdu_frag_u8(state, 24),
+                    p25p2_vpdu_frag_u8(state, 25));
+    }
+    p25p2_vpdu_multifrag_set_active(state, "AUTH-L Target: %d SUID: %05X:%03X.%d; ", target, target_wacn, target_sys,
+                                    target_id);
+}
+
+static void
+p25p2_vpdu_handle_multifrag_unit_to_unit_grant(p25p2_vpdu_ctx* ctx, int is_service_grant) {
+    dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    if (!p25p2_vpdu_frag_has(state, 19)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0x%02X invalid: short unit-to-unit grant",
+                    (unsigned)state->p25_mac_frag_opcode);
+        return;
+    }
+
+    int svc = p25p2_vpdu_frag_u8(state, 1);
+    int source = p25p2_vpdu_frag_u24(state, 2);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 5);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 5);
+    int channelt = p25p2_vpdu_frag_explicit_channel(state, 12);
+    int channelr = p25p2_vpdu_frag_explicit_channel(state, 14);
+    int target = p25p2_vpdu_frag_u24(state, 16);
+    long int freq = 0;
+    char suffix[32];
+
+    DSD_FPRINTF(stderr, "\n Unit-to-Unit Voice Channel Grant%s - Extended LCCH Complete",
+                is_service_grant ? "" : " Update");
+    p25p2_vpdu_print_svc_no_state(opts, svc);
+    DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Target [%d] Source [%05X:%03X.%d/%d]", svc,
+                channelt, channelr, target, source_wacn, source_sys, p25p2_vpdu_frag_u24(state, 9), source);
+
+    freq = process_channel_to_freq(opts, state, channelt);
+    if (p25p2_vpdu_channel_is_valid(channelr)) {
+        (void)process_channel_to_freq(opts, state, channelr);
+    }
+    p25_format_chan_suffix(state, (uint16_t)channelt, -1, suffix, sizeof suffix);
+    p25p2_vpdu_multifrag_set_active(state, "%s Active Ch: %04X%s TGT: %d SRC: %d; ",
+                                    is_service_grant ? "UU-SVC-L" : "UU-UP-L", channelt, suffix, target, source);
+
+    if (opts->trunk_tune_private_calls && p25p2_vpdu_can_tune(opts, state, freq)) {
+        p25p2_mac_handle_indiv(ctx->mac_res, opts, state, channelt, svc, target, source, /*policy_encrypted*/ -1,
+                               /*policy_data*/ -1);
+    }
+}
+
+static void
+p25p2_vpdu_handle_multifrag_call_alert(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    if (!p25p2_vpdu_frag_has(state, 16)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xCB invalid: short call alert");
+        return;
+    }
+
+    int source = p25p2_vpdu_frag_u24(state, 1);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 4);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 4);
+    int target = p25p2_vpdu_frag_u24(state, 11);
+    DSD_FPRINTF(stderr, "\n Call Alert - Extended LCCH Complete");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d/%d]", target, source_wacn, source_sys,
+                p25p2_vpdu_frag_u24(state, 8), source);
+    p25p2_vpdu_multifrag_set_active(state, "CALL-L Target: %d Source: %d; ", target, source);
+}
+
+static void
+p25p2_vpdu_handle_multifrag_radio_unit_monitor(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    if (!p25p2_vpdu_frag_has(state, 16)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xCD invalid: short radio unit monitor");
+        return;
+    }
+
+    int transmit_time = p25p2_vpdu_frag_u8(state, 1);
+    int silent = ((p25p2_vpdu_frag_u8(state, 2) & 0x80) != 0);
+    int multiplier = p25p2_vpdu_frag_u8(state, 2) & 0x03;
+    int target = p25p2_vpdu_frag_u24(state, 3);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 6);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 6);
+    int source = p25p2_vpdu_frag_u24(state, 13);
+    DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Extended LCCH Complete");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Time [%d] Mult [%d]%s", target, source_wacn, source_sys,
+                source, transmit_time, multiplier, silent ? " Silent" : "");
+    p25p2_vpdu_multifrag_set_active(state, "RUM-L Target: %d Source: %d Time: %d Mult: %d%s; ", target, source,
+                                    transmit_time, multiplier, silent ? " Silent" : "");
+}
+
+static void
+p25p2_vpdu_handle_multifrag_message_update(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    if (!p25p2_vpdu_frag_has(state, 16)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xCE invalid: short message update");
+        return;
+    }
+
+    int message = p25p2_vpdu_frag_u16(state, 1);
+    int target = p25p2_vpdu_frag_u24(state, 3);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 6);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 6);
+    int source = p25p2_vpdu_frag_u24(state, 13);
+    DSD_FPRINTF(stderr, "\n Message Update - Extended LCCH Complete");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Message [%04X]", target, source_wacn, source_sys, source,
+                message);
+    p25p2_vpdu_multifrag_set_active(state, "MSG-L Target: %d Source: %d Message: %04X; ", target, source, message);
+}
+
+static void
+p25p2_vpdu_handle_multifrag_status_update(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    if (!p25p2_vpdu_frag_has(state, 16)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xD9 invalid: short status update");
+        return;
+    }
+
+    int unit_status = p25p2_vpdu_frag_u8(state, 1);
+    int user_status = p25p2_vpdu_frag_u8(state, 2);
+    int target = p25p2_vpdu_frag_u24(state, 3);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 6);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 6);
+    int source = p25p2_vpdu_frag_u24(state, 13);
+    DSD_FPRINTF(stderr, "\n Status Update - Extended LCCH Complete");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Unit [%02X] User [%02X]", target, source_wacn,
+                source_sys, source, unit_status, user_status);
+    p25p2_vpdu_multifrag_set_active(state, "STATUS-L Target: %d Source: %d Unit: %02X User: %02X; ", target, source,
+                                    unit_status, user_status);
+}
+
+static void
+p25p2_vpdu_handle_multifrag_status_query(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    if (!p25p2_vpdu_frag_has(state, 16)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xDB invalid: short status query");
+        return;
+    }
+
+    int target = p25p2_vpdu_frag_u24(state, 1);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 4);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 4);
+    int source = p25p2_vpdu_frag_u24(state, 11);
+    DSD_FPRINTF(stderr, "\n Status Query - Extended LCCH Complete");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d/%d]", target, source_wacn, source_sys,
+                p25p2_vpdu_frag_u24(state, 8), source);
+    p25p2_vpdu_multifrag_set_active(state, "STATUSQ-L Target: %d Source: %d; ", target, source);
+}
+
+static void
+p25p2_vpdu_handle_multifrag_radio_unit_monitor_enhanced(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    if (!p25p2_vpdu_frag_has(state, 19)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xDE invalid: short enhanced radio unit monitor");
+        return;
+    }
+
+    int target = p25p2_vpdu_frag_u24(state, 1);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 4);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 4);
+    int source_suid = p25p2_vpdu_frag_u24(state, 8);
+    int silent = ((p25p2_vpdu_frag_u8(state, 11) & 0x80) != 0);
+    int talkgroup_mode = ((p25p2_vpdu_frag_u8(state, 11) & 0x40) != 0);
+    int transmit_time = p25p2_vpdu_frag_u8(state, 12);
+    int key_id = p25p2_vpdu_frag_u16(state, 13);
+    int algid = p25p2_vpdu_frag_u8(state, 15);
+    int source = p25p2_vpdu_frag_u24(state, 16);
+    DSD_FPRINTF(stderr, "\n Radio Unit Monitor Enhanced Command - Extended Complete");
+    DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d/%d] Time [%d] ALG [%02X] KID [%04X]%s%s", target,
+                source_wacn, source_sys, source_suid, source, transmit_time, algid, key_id, silent ? " Silent" : "",
+                talkgroup_mode ? " TG" : "");
+    p25p2_vpdu_multifrag_set_active(state, "RUM-E-L Target: %d Source: %d Time: %d Alg: %02X Key: %04X%s%s; ", target,
+                                    source, transmit_time, algid, key_id, silent ? " Silent" : "",
+                                    talkgroup_mode ? " TG" : "");
+}
+
+static void
+p25p2_vpdu_handle_multifrag_ack_response(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    if (!p25p2_vpdu_frag_has(state, 22)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xE0 invalid: short acknowledge response");
+        return;
+    }
+
+    int service_type = p25p2_vpdu_frag_u8(state, 1) & 0x3F;
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 2);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 2);
+    int source_suid = p25p2_vpdu_frag_u24(state, 6);
+    int target_wacn = p25p2_vpdu_frag_fqid_wacn(state, 9);
+    int target_sys = p25p2_vpdu_frag_fqid_sysid(state, 9);
+    int target_suid = p25p2_vpdu_frag_u24(state, 13);
+    int source = p25p2_vpdu_frag_u24(state, 16);
+    int target = p25p2_vpdu_frag_u24(state, 19);
+    DSD_FPRINTF(stderr, "\n Acknowledge Response FNE - Extended Complete");
+    DSD_FPRINTF(stderr, "\n  Service [%02X] Target [%05X:%03X.%d/%d] Source [%05X:%03X.%d/%d]", service_type,
+                target_wacn, target_sys, target_suid, target, source_wacn, source_sys, source_suid, source);
+    p25p2_vpdu_multifrag_set_active(state, "ACK-L Target: %d Source: %d Service: %02X; ", target, source, service_type);
+}
+
+static void
+p25p2_vpdu_handle_completed_multifragment(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    int opcode = (int)state->p25_mac_frag_opcode;
+
+    DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Complete Opcode [%02X] DataLen [%d] Collected [%d]", opcode,
+                (int)state->p25_mac_frag_data_len, (int)state->p25_mac_frag_collected);
+
+    switch (opcode) {
+        case 0x71: p25p2_vpdu_handle_multifrag_authentication_demand(ctx); break;
+        case 0xC7: p25p2_vpdu_handle_multifrag_unit_to_unit_grant(ctx, /*is_service_grant*/ 0); break;
+        case 0xCB: p25p2_vpdu_handle_multifrag_call_alert(ctx); break;
+        case 0xCD: p25p2_vpdu_handle_multifrag_radio_unit_monitor(ctx); break;
+        case 0xCE: p25p2_vpdu_handle_multifrag_message_update(ctx); break;
+        case 0xCF: p25p2_vpdu_handle_multifrag_unit_to_unit_grant(ctx, /*is_service_grant*/ 1); break;
+        case 0xD9: p25p2_vpdu_handle_multifrag_status_update(ctx); break;
+        case 0xDB: p25p2_vpdu_handle_multifrag_status_query(ctx); break;
+        case 0xDE: p25p2_vpdu_handle_multifrag_radio_unit_monitor_enhanced(ctx); break;
+        case 0xE0: p25p2_vpdu_handle_multifrag_ack_response(ctx); break;
+        default: break;
+    }
+}
+
+static int
+p25p2_vpdu_frag_append(dsd_state* state, const unsigned long long int* mac, int start, int len) {
+    int count = len - 2;
+    if (!state || !mac || start < 0 || len < 3 || start + len > 24) {
+        return 0;
+    }
+    if ((int)state->p25_mac_frag_collected + count > DSD_P25_MAC_FRAGMENT_MAX_OCTETS) {
+        return 0;
+    }
+
+    for (int i = 0; i < count; i++) {
+        state->p25_mac_frag_data[state->p25_mac_frag_collected++] = (uint8_t)(mac[start + 2 + i] & 0xFFU);
+    }
+    return 1;
+}
+
+static int
+p25p2_vpdu_consume_multifragment_base(p25p2_vpdu_ctx* ctx, int opcode) {
+    dsd_state* state = ctx->state;
+    const unsigned long long int* mac = ctx->mac;
+    int start = 1 + ctx->len_a;
+    int len = ctx->len_b;
+    int data_len = (start + 2 < 24) ? (int)(mac[start + 2] & 0xFFU) : 0;
+
+    p25p2_vpdu_frag_clear(state);
+    if (len < 3 || data_len <= 0 || data_len > DSD_P25_MAC_FRAGMENT_MAX_OCTETS) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment base 0x%02X invalid length len=%d data=%d", opcode, len, data_len);
+        return 1;
+    }
+
+    state->p25_mac_frag_active = 1;
+    state->p25_mac_frag_opcode = (uint8_t)opcode;
+    state->p25_mac_frag_data_len = (uint8_t)data_len;
+    state->p25_mac_frag_collected = 0;
+    if (!p25p2_vpdu_frag_append(state, mac, start, len)) {
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment base 0x%02X invalid payload length len=%d", opcode, len);
+        p25p2_vpdu_frag_clear(state);
+        return 1;
+    }
+
+    DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Base Opcode [%02X] DataLen [%d] Collected [%d]", opcode,
+                (int)state->p25_mac_frag_data_len, (int)state->p25_mac_frag_collected);
+    if ((int)state->p25_mac_frag_collected >= (int)state->p25_mac_frag_data_len) {
+        p25p2_vpdu_handle_completed_multifragment(ctx);
+        p25p2_vpdu_frag_clear(state);
+    }
+    return 1;
+}
+
+static int
+p25p2_vpdu_consume_multifragment_continuation(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    const unsigned long long int* mac = ctx->mac;
+    int start = 1 + ctx->len_a;
+    int len = ctx->len_b;
+
+    if (!state->p25_mac_frag_active) {
+        DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Continuation ignored: no active base");
+        return 1;
+    }
+    if (!p25p2_vpdu_frag_append(state, mac, start, len)) {
+        DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Continuation invalid length len=%d", len);
+        p25p2_vpdu_frag_clear(state);
+        return 1;
+    }
+
+    DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Continuation Opcode [%02X] DataLen [%d] Collected [%d]",
+                (int)state->p25_mac_frag_opcode, (int)state->p25_mac_frag_data_len, (int)state->p25_mac_frag_collected);
+    if ((int)state->p25_mac_frag_collected >= (int)state->p25_mac_frag_data_len) {
+        p25p2_vpdu_handle_completed_multifragment(ctx);
+        p25p2_vpdu_frag_clear(state);
+    }
+    return 1;
+}
+
+static int
+p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
+    int opcode = (int)ctx->mac[1 + ctx->len_a];
+    if (p25p2_vpdu_is_standard_multifragment_base(opcode)) {
+        return p25p2_vpdu_consume_multifragment_base(ctx, opcode);
+    }
+    if (opcode == 0x10) {
+        return p25p2_vpdu_consume_multifragment_continuation(ctx);
+    }
+    if (ctx->state && ctx->state->p25_mac_frag_active) {
+        DSD_FPRINTF(stderr, "\n MAC Multi-Fragment assembly cleared by non-fragment opcode [%02X]", opcode);
+        p25p2_vpdu_frag_clear(ctx->state);
+    }
+    return 0;
 }
 
 static void
@@ -4598,7 +5440,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 
     for (ctx.iter_idx = 0; !ctx.end_pdu && ctx.iter_idx < 2; ctx.iter_idx++) {
         ctx.skip_rest = 0;
-        p25p2_vpdu_dispatch_blocks(&ctx);
+        if (!p25p2_vpdu_consume_fragment_segment(&ctx)) {
+            p25p2_vpdu_dispatch_blocks(&ctx);
+        }
         if (ctx.end_pdu) {
             break;
         }

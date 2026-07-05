@@ -56,6 +56,13 @@ static int g_neighbor_update_count;
 static int g_neighbor_update_last_count;
 static long g_neighbor_update_last_freq;
 static int g_confirm_idens_count;
+static int g_queued_count;
+static int g_deny_count;
+static int g_last_response_svc;
+static int g_last_response_reason;
+static int g_last_response_target;
+static int g_process_channel_count;
+static int g_last_process_channel;
 static long int g_channel_freq;
 static int g_soft_llr_count;
 static int g_soft_llr_list_count;
@@ -134,7 +141,8 @@ long int
 process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel) {
     (void)opts;
     (void)state;
-    (void)channel;
+    g_process_channel_count++;
+    g_last_process_channel = channel;
     return g_channel_freq;
 }
 
@@ -164,6 +172,28 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     g_last_grant_svc = svc_bits;
     g_last_grant_tg = tg;
     g_last_grant_src = src;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
+    (void)opts;
+    (void)state;
+    g_queued_count++;
+    g_last_response_svc = svc_type;
+    g_last_response_reason = reason_code;
+    g_last_response_target = target;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
+    (void)opts;
+    (void)state;
+    g_deny_count++;
+    g_last_response_svc = svc_type;
+    g_last_response_reason = reason_code;
+    g_last_response_target = target;
 }
 
 void
@@ -343,6 +373,13 @@ reset_calls(void) {
     g_neighbor_update_last_count = 0;
     g_neighbor_update_last_freq = 0;
     g_confirm_idens_count = 0;
+    g_queued_count = 0;
+    g_deny_count = 0;
+    g_last_response_svc = 0;
+    g_last_response_reason = 0;
+    g_last_response_target = 0;
+    g_process_channel_count = 0;
+    g_last_process_channel = 0;
     g_channel_freq = 0;
     g_soft_llr_count = 0;
     g_soft_llr_list_count = 0;
@@ -584,6 +621,114 @@ test_mfid90_grant_update_trunk_dispatch(void) {
 }
 
 static int
+test_mfid90_queued_and_deny_callbacks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    uint8_t queued[TSBK_BYTES_PER_BLOCK] = {0};
+    queued[0] = 0x06;
+    queued[2] = 0x80 | 0x15;
+    queued[3] = 0x42;
+    queued[4] = 0x12;
+    queued[5] = 0x34;
+    queued[6] = 0x56;
+    queued[7] = 0xAB;
+    queued[8] = 0xCD;
+    queued[9] = 0xEF;
+
+    reset_calls();
+    tsbk_handle_mfid90(&opts, &state, queued);
+    int rc = 0;
+    rc |= expect_int("queued callback count", g_queued_count, 1);
+    rc |= expect_int("queued deny count", g_deny_count, 0);
+    rc |= expect_int("queued svc", g_last_response_svc, 0x15);
+    rc |= expect_int("queued reason", g_last_response_reason, 0x42);
+    rc |= expect_int("queued target", g_last_response_target, 0xABCDEF);
+    rc |= expect_int("queued active label", strstr(state.active_channel[0], "MOT QUEUED") != NULL, 1);
+    rc |= expect_int("queued info label", strstr(state.active_channel[0], "Info: 123456") != NULL, 1);
+
+    uint8_t deny[TSBK_BYTES_PER_BLOCK] = {0};
+    deny[0] = 0x07;
+    deny[2] = 0x02;
+    deny[3] = 0x60;
+    deny[7] = 0x00;
+    deny[8] = 0x01;
+    deny[9] = 0x23;
+
+    reset_calls();
+    tsbk_handle_mfid90(&opts, &state, deny);
+    rc |= expect_int("deny callback count", g_deny_count, 1);
+    rc |= expect_int("deny queued count", g_queued_count, 0);
+    rc |= expect_int("deny svc", g_last_response_svc, 0x02);
+    rc |= expect_int("deny reason", g_last_response_reason, 0x60);
+    rc |= expect_int("deny target", g_last_response_target, 0x000123);
+    rc |= expect_int("deny active label", strstr(state.active_channel[0], "MOT DENY") != NULL, 1);
+    rc |= expect_int("deny reason label", strstr(state.active_channel[0], "Site Access Denial") != NULL, 1);
+    return rc;
+}
+
+static int
+test_mfid90_ack_display_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    tsbk[0] = 0x08;
+    tsbk[2] = 0x04;
+    tsbk[4] = 0x01;
+    tsbk[5] = 0x02;
+    tsbk[6] = 0x03;
+    tsbk[7] = 0x04;
+    tsbk[8] = 0x05;
+    tsbk[9] = 0x06;
+
+    reset_calls();
+    tsbk_handle_mfid90(&opts, &state, tsbk);
+    int rc = 0;
+    rc |= expect_int("ack no queued callback", g_queued_count, 0);
+    rc |= expect_int("ack no deny callback", g_deny_count, 0);
+    rc |= expect_int("ack no grant", g_grant_count, 0);
+    rc |= expect_int("ack active label", strstr(state.active_channel[0], "MOT ACK") != NULL, 1);
+    rc |= expect_int("ack service label", strstr(state.active_channel[0], "Service: 04") != NULL, 1);
+    rc |= expect_int("ack source label", strstr(state.active_channel[0], "Source: 66051") != NULL, 1);
+    rc |= expect_int("ack target label", strstr(state.active_channel[0], "Target: 263430") != NULL, 1);
+    return rc;
+}
+
+static int
+test_mfid90_tdma_data_channel_display_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.p25_trunk = 1;
+
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    tsbk[0] = 0x16;
+    tsbk[4] = 0x30;
+    tsbk[5] = 0x60;
+    tsbk[6] = 0x80;
+    tsbk[7] = 0x3E;
+
+    reset_calls();
+    g_channel_freq = 420612500;
+    tsbk_handle_mfid90(&opts, &state, tsbk);
+    int rc = 0;
+    rc |= expect_int("tdma data resolves channels", g_process_channel_count, 2);
+    rc |= expect_int("tdma data last channel", g_last_process_channel, 0x803E);
+    rc |= expect_int("tdma data no grant", g_grant_count, 0);
+    rc |= expect_int("tdma data no seed", g_seed_count, 0);
+    rc |= expect_int("tdma data active label", strstr(state.active_channel[0], "MOT TDMA Data") != NULL, 1);
+    rc |= expect_int("tdma data downlink label", strstr(state.active_channel[0], "3060/3060") != NULL, 1);
+    rc |= expect_int("tdma data uplink label", strstr(state.active_channel[0], "803E/803E") != NULL, 1);
+    return rc;
+}
+
+static int
 test_network_status_state_policy(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -717,6 +862,9 @@ main(void) {
     rc |= test_mfid_a4_patch_and_simulselect_paths();
     rc |= test_mfid90_grant_seeds_trunk_state();
     rc |= test_mfid90_grant_update_trunk_dispatch();
+    rc |= test_mfid90_queued_and_deny_callbacks();
+    rc |= test_mfid90_ack_display_only();
+    rc |= test_mfid90_tdma_data_channel_display_only();
     rc |= test_network_status_state_policy();
     rc |= test_dispatch_gates_mac_and_vendor_handlers();
     return rc;
