@@ -65,6 +65,8 @@ int p25_is_vhf_uhf_base_freq(long int base_freq);
 int p25_iden_vu_bandwidth_hz(uint8_t bw_vu);
 
 void p25_reset_iden_tables(dsd_state* state);
+/** Store WACN/SysID and reset identity-dependent IDEN/pending state when they change. */
+int p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid);
 void p25_confirm_idens_for_current_site(dsd_state* state);
 
 #ifdef __cplusplus

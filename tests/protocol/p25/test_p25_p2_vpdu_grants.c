@@ -160,7 +160,13 @@ main(void) {
         mac[8] = 0x67; // group id (arbitrary)
         long vc = 0;
         int tuned = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
         p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
         rc |= expect_true("A3 tuned", tuned == 1);
         rc |= expect_eq_long("A3 vc", vc, 851125000);
@@ -182,7 +188,13 @@ main(void) {
         mac[9] = 0x02; // source
         long vc = 0;
         int tuned = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
         p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
         rc |= expect_true("UU tuned", tuned == 1);
         rc |= expect_eq_long("UU vc", vc, 851125000);
@@ -209,7 +221,13 @@ main(void) {
         mac[15] = 0x78; // group2
         long vc = 0;
         int tuned = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
         p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
         rc |= expect_true("0x25 tuned", tuned == 1);
         rc |= expect_eq_long("0x25 vc", vc, 851125000);
@@ -226,7 +244,13 @@ main(void) {
         mac[7] = 0x0B; // CHAN-R 0x100B
         long freq_t = 0;
         long freq_r = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
         p25_test_invoke_mac_vpdu_channel_cache(mac, 24, &cfg, 0x100A, 0x100B, &freq_t, &freq_r);
         rc |= expect_eq_long("0xD6 CHAN-T cache", freq_t, 851125000);
         rc |= expect_eq_long("0xD6 CHAN-R cache", freq_r, 851137500);
@@ -475,6 +499,14 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_on_release(&opts, &state);
 
+        state.p2_wacn = 0x11111;
+        state.p2_sysid = 0x222;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+        state.p25_pending_announcement_count = 1;
+        state.p25_pending_announcements[0].populated = 1;
+        state.p25_pending_announcements[0].channel = 0x1001;
+
         MAC[1] = 0x7B;
         MAC[2] = 0x05; // LRA
         MAC[3] = 0xAB;
@@ -498,6 +530,9 @@ main(void) {
         rc |= expect_eq_long("p2 unknown-iden nsb nac", (long)state.p2_cc, 0x055);
         rc |= expect_eq_long("p2 unknown-iden nsb lra", state.p25_site_lra, 0x05);
         rc |= expect_eq_long("p2 unknown-iden nsb lra valid", state.p25_site_lra_valid, 1);
+        rc |= expect_eq_long("p2 unknown-iden nsb clears stale iden", state.p25_iden_fdma[iden].populated, 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb clears explicit iden", state.p25_chan_tdma_explicit[iden], 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb clears pending", state.p25_pending_announcement_count, 0);
     }
 
     // Case L: P2 extended NSB with unknown IDEN keeps identity metadata but
@@ -509,6 +544,14 @@ main(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_on_release(&opts, &state);
+
+        state.p2_wacn = 0x11111;
+        state.p2_sysid = 0x222;
+        state.p25_iden_tdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 2;
+        state.p25_pending_announcement_count = 1;
+        state.p25_pending_announcements[0].populated = 1;
+        state.p25_pending_announcements[0].channel = 0x1002;
 
         MAC[1] = 0xFB;
         MAC[2] = 0x06; // LRA
@@ -534,6 +577,9 @@ main(void) {
         rc |= expect_eq_long("p2 unknown-iden nsb-ext nac", (long)state.p2_cc, 0x056);
         rc |= expect_eq_long("p2 unknown-iden nsb-ext lra", state.p25_site_lra, 0x06);
         rc |= expect_eq_long("p2 unknown-iden nsb-ext lra valid", state.p25_site_lra_valid, 1);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext clears stale iden", state.p25_iden_tdma[iden].populated, 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext clears explicit iden", state.p25_chan_tdma_explicit[iden], 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext clears pending", state.p25_pending_announcement_count, 0);
     }
 
     // Case M: accepted P2 abbreviated NSB promotes the current CC to TDMA,

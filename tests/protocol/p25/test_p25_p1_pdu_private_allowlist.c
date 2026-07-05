@@ -184,6 +184,20 @@ p25_reset_iden_tables(dsd_state* state) {
     (void)state;
 }
 
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
+    if (!state || (wacn == 0 && sysid == 0)) {
+        return 0;
+    }
+    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
+        p25_reset_iden_tables(state);
+    }
+    state->p2_wacn = wacn;
+    state->p2_sysid = sysid;
+    return 1;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]) {

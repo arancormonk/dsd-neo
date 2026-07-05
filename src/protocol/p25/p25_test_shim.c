@@ -58,6 +58,8 @@ p25_test_seed_iden_config(dsd_state* state, const p25_test_iden_config* iden_cfg
 
     int iden = iden_cfg->iden;
     state->p25_chan_iden = iden & 0xF;
+    state->p2_wacn = iden_cfg->system_wacn;
+    state->p2_sysid = iden_cfg->system_sysid;
     if (iden_cfg->tdma) {
         state->p25_iden_tdma[iden].base_freq = iden_cfg->base;
         state->p25_iden_tdma[iden].chan_type = iden_cfg->type & 0xF;
@@ -232,6 +234,13 @@ p25_test_copy_mbt_outputs(const dsd_state* state, const p25_test_mbt_outputs* ou
     p25_test_copy_neighbor_status_outputs(state, outputs, count);
     p25_test_store_int(outputs->cc_prot_valid, state->p25_cc_prot_valid);
     p25_test_store_int(outputs->cc_prot_algid, state->p25_cc_prot_algid);
+    if (outputs->inspect_iden >= 0 && outputs->inspect_iden < 16) {
+        const int iden = outputs->inspect_iden;
+        p25_test_store_int(outputs->inspect_fdma_populated, state->p25_iden_fdma[iden].populated);
+        p25_test_store_int(outputs->inspect_tdma_populated, state->p25_iden_tdma[iden].populated);
+        p25_test_store_int(outputs->inspect_tdma_explicit, state->p25_chan_tdma_explicit[iden]);
+    }
+    p25_test_store_int(outputs->pending_count, state->p25_pending_announcement_count);
 }
 
 // Invoke the P25p1 MBT -> MAC Identifier Update bridge and report key state.

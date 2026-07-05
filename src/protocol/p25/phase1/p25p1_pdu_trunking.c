@@ -197,14 +197,7 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
         state->p25_cc_is_tdma = 0;
 
         if (state->p2_hardset == 0) {
-            if (accepted_cc && (state->p2_wacn != 0 || state->p2_sysid != 0)
-                && (state->p2_wacn != (unsigned long long)wacn || state->p2_sysid != (unsigned long long)sysid)) {
-                p25_reset_iden_tables(state);
-            }
-            if (wacn != 0 || sysid != 0) {
-                state->p2_wacn = wacn;
-                state->p2_sysid = sysid;
-            }
+            (void)p25_update_system_identity(state, (unsigned long long)wacn, (unsigned long long)sysid);
         }
     }
 

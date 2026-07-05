@@ -25,6 +25,8 @@ typedef struct {
     int tdma;
     long base;
     int spac;
+    uint32_t system_wacn;
+    uint16_t system_sysid;
 } p25_test_iden_config;
 
 typedef struct {
@@ -46,6 +48,11 @@ typedef struct {
     int* nb_cfva_valid;
     int* cc_prot_valid;
     int* cc_prot_algid;
+    int inspect_iden;
+    int* inspect_fdma_populated;
+    int* inspect_tdma_populated;
+    int* inspect_tdma_explicit;
+    int* pending_count;
 } p25_test_mbt_outputs;
 
 int p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, const p25_test_iden_config* iden_cfg,

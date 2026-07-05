@@ -3381,26 +3381,14 @@ p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolo
     if (lwacn == 0 && lsysid == 0) {
         return;
     }
-    if ((state->p2_wacn != 0 || state->p2_sysid != 0)
-        && (state->p2_wacn != (unsigned long long)lwacn || state->p2_sysid != (unsigned long long)lsysid)) {
-        p25_reset_iden_tables(state);
+    if (p25_update_system_identity(state, (unsigned long long)lwacn, (unsigned long long)lsysid)) {
+        state->p2_cc = lcolorcode;
     }
-    state->p2_wacn = lwacn;
-    state->p2_sysid = lsysid;
-    state->p2_cc = lcolorcode;
 }
 
 static void
 p25p2_vpdu_store_nsb_identity_metadata(dsd_state* state, int lwacn, int lsysid, int lcolorcode) {
-    if (!state || state->p2_hardset != 0) {
-        return;
-    }
-    if (lwacn == 0 && lsysid == 0) {
-        return;
-    }
-    state->p2_wacn = lwacn;
-    state->p2_sysid = lsysid;
-    state->p2_cc = lcolorcode;
+    p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
 }
 
 static void

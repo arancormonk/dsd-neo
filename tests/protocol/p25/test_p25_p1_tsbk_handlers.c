@@ -182,6 +182,24 @@ p25_confirm_idens_for_current_site(dsd_state* state) {
     g_confirm_idens_count++;
 }
 
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
+    if (!state || (wacn == 0 && sysid == 0)) {
+        return 0;
+    }
+    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
+        DSD_MEMSET(state->p25_iden_fdma, 0, sizeof(state->p25_iden_fdma));
+        DSD_MEMSET(state->p25_iden_tdma, 0, sizeof(state->p25_iden_tdma));
+        DSD_MEMSET(state->p25_chan_tdma_explicit, 0, sizeof(state->p25_chan_tdma_explicit));
+        DSD_MEMSET(state->p25_pending_announcements, 0, sizeof(state->p25_pending_announcements));
+        state->p25_pending_announcement_count = 0;
+    }
+    state->p2_wacn = wacn;
+    state->p2_sysid = sysid;
+    return 1;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_store_site_lra(dsd_state* state, uint8_t lra) {
@@ -611,6 +629,13 @@ test_network_status_state_policy(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.p25_cc_is_tdma = 1;
+    state.p2_wacn = 0x11111;
+    state.p2_sysid = 0x222;
+    state.p25_iden_fdma[1].populated = 1;
+    state.p25_chan_tdma_explicit[1] = 1;
+    state.p25_pending_announcement_count = 1;
+    state.p25_pending_announcements[0].populated = 1;
+    state.p25_pending_announcements[0].channel = 0x1001;
     reset_calls();
     g_channel_freq = 0;
     tsbk_handle_network_status(&opts, &state, tsbk);
@@ -618,6 +643,9 @@ test_network_status_state_policy(void) {
     rc |= expect_int("invalid channel still records fdma", state.p25_cc_is_tdma, 0);
     rc |= expect_long("invalid channel records wacn", state.p2_wacn, 0xABCDE);
     rc |= expect_int("invalid channel records sysid", state.p2_sysid, 0x123);
+    rc |= expect_int("invalid channel clears stale iden", state.p25_iden_fdma[1].populated, 0);
+    rc |= expect_int("invalid channel clears explicit iden", state.p25_chan_tdma_explicit[1], 0);
+    rc |= expect_int("invalid channel clears pending", state.p25_pending_announcement_count, 0);
     rc |= expect_int("invalid channel skips neighbor", g_neighbor_update_count, 0);
     rc |= expect_int("invalid channel skips iden confirmation", g_confirm_idens_count, 0);
     return rc;

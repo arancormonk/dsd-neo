@@ -198,11 +198,29 @@ main(void) {
         st.p25_chan_tdma_explicit[3] = 2;
         st.p25_iden_fdma[3].populated = 1;
         st.p25_iden_tdma[3].populated = 1;
+        st.p25_pending_announcement_count = 1;
+        st.p25_pending_announcements[0].populated = 1;
+        st.p25_pending_announcements[0].channel = 0x3001;
         p25_reset_iden_tables(NULL);
         p25_reset_iden_tables(&st);
         rc |= expect_eq_int("reset explicit tdma", st.p25_chan_tdma_explicit[3], 0);
         rc |= expect_eq_int("reset fdma populated", st.p25_iden_fdma[3].populated, 0);
         rc |= expect_eq_int("reset tdma populated", st.p25_iden_tdma[3].populated, 0);
+        rc |= expect_eq_int("reset pending count", st.p25_pending_announcement_count, 0);
+        rc |= expect_eq_int("reset pending populated", st.p25_pending_announcements[0].populated, 0);
+
+        st.p2_wacn = 0x11111;
+        st.p2_sysid = 0x222;
+        st.p25_chan_tdma_explicit[4] = 1;
+        st.p25_iden_fdma[4].populated = 1;
+        st.p25_pending_announcement_count = 1;
+        st.p25_pending_announcements[0].populated = 1;
+        st.p25_pending_announcements[0].channel = 0x4001;
+        rc |= expect_eq_int("identity update applied", p25_update_system_identity(&st, 0xABCDE, 0x123), 1);
+        rc |= expect_eq_long("identity update wacn", (long)st.p2_wacn, 0xABCDE);
+        rc |= expect_eq_long("identity update sysid", (long)st.p2_sysid, 0x123);
+        rc |= expect_eq_int("identity update clears iden", st.p25_iden_fdma[4].populated, 0);
+        rc |= expect_eq_int("identity update clears pending", st.p25_pending_announcement_count, 0);
 
         static dsd_opts opts;
         DSD_MEMSET(&opts, 0, sizeof(opts));

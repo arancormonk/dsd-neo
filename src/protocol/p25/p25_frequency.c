@@ -425,6 +425,23 @@ p25_reset_iden_tables(dsd_state* state) {
     // Reset the dual-array IDEN storage
     DSD_MEMSET(state->p25_iden_fdma, 0, sizeof(state->p25_iden_fdma));
     DSD_MEMSET(state->p25_iden_tdma, 0, sizeof(state->p25_iden_tdma));
+
+    state->p25_pending_announcement_count = 0;
+    DSD_MEMSET(state->p25_pending_announcements, 0, sizeof(state->p25_pending_announcements));
+}
+
+int
+p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
+    if (!state || (wacn == 0 && sysid == 0)) {
+        return 0;
+    }
+
+    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
+        p25_reset_iden_tables(state);
+    }
+    state->p2_wacn = wacn;
+    state->p2_sysid = sysid;
+    return 1;
 }
 
 // Promote any IDENs whose provenance matches the current site to trusted

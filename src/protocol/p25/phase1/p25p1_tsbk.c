@@ -400,8 +400,7 @@ tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_
         state->p25_cc_is_tdma = 0;
     }
     if (cc_metadata_allowed && state->p2_hardset == 0) {
-        state->p2_wacn = wacn;
-        state->p2_sysid = sysid;
+        (void)p25_update_system_identity(state, (unsigned long long)wacn, (unsigned long long)sysid);
     }
     if (accepted_cc) {
         const long neigh[1] = {state->p25_cc_freq};

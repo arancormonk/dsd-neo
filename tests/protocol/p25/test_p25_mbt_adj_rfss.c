@@ -297,7 +297,13 @@ main(void) {
         (void)cc;
         (void)w;
         (void)sid;
-        p25_test_iden_config cfg = {iden, type, tdma, base5, spac125};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base5,
+            .spac = spac125,
+        };
         p25_test_mbt_outputs outputs = {
             .cc = &cc,
             .wacn = &w,
@@ -359,7 +365,13 @@ main(void) {
         int sid = -1;
         int cc_prot_valid = 0;
         int cc_prot_algid = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base5, spac125};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base5,
+            .spac = spac125,
+        };
         p25_test_mbt_outputs outputs = {
             .cc = &cc,
             .wacn = &w,
@@ -396,7 +408,13 @@ main(void) {
         int nb_count = -1;
         long nb_freqs[P25_NB_MAX];
         DSD_MEMSET(nb_freqs, 0, sizeof(nb_freqs));
-        p25_test_iden_config cfg = {iden, type, tdma, base5, spac125};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base5,
+            .spac = spac125,
+        };
         p25_test_mbt_outputs outputs = {
             .cc = &cc,
             .wacn = &w,
@@ -441,13 +459,28 @@ main(void) {
         int sid = -1;
         int site_lra = -1;
         int site_lra_valid = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base5, spac125};
+        int stale_fdma_populated = -1;
+        int stale_tdma_explicit = -1;
+        int pending_count = -1;
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base5,
+            .spac = spac125,
+            .system_wacn = 0x11111,
+            .system_sysid = 0x222,
+        };
         p25_test_mbt_outputs outputs = {
             .cc = &cc,
             .wacn = &w,
             .sysid = &sid,
             .site_lra = &site_lra,
             .site_lra_valid = &site_lra_valid,
+            .inspect_iden = iden,
+            .inspect_fdma_populated = &stale_fdma_populated,
+            .inspect_tdma_explicit = &stale_tdma_explicit,
+            .pending_count = &pending_count,
         };
         int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &cfg, &outputs);
         if (sh != 0) {
@@ -459,6 +492,9 @@ main(void) {
         rc |= expect_eq_long("mbt_net_sts_unknown_iden_sysid", sid, 0x123);
         rc |= expect_eq_long("mbt_net_sts_unknown_iden_lra", site_lra, 0x44);
         rc |= expect_eq_long("mbt_net_sts_unknown_iden_lra_valid", site_lra_valid, 1);
+        rc |= expect_eq_long("mbt_net_sts_unknown_iden_clears_stale_iden", stale_fdma_populated, 0);
+        rc |= expect_eq_long("mbt_net_sts_unknown_iden_clears_stale_explicit", stale_tdma_explicit, 0);
+        rc |= expect_eq_long("mbt_net_sts_unknown_iden_pending_empty", pending_count, 0);
     }
 
     {
@@ -481,7 +517,13 @@ main(void) {
         int nb_count = 555;
         long nb_freqs[P25_NB_MAX];
         DSD_MEMSET(nb_freqs, 0x7F, sizeof(nb_freqs));
-        p25_test_iden_config bad_cfg = {/*iden*/ 16, type, tdma, base5, spac125};
+        p25_test_iden_config bad_cfg = {
+            .iden = 16,
+            .type = type,
+            .tdma = tdma,
+            .base = base5,
+            .spac = spac125,
+        };
         p25_test_mbt_outputs outputs = {
             .cc = &cc,
             .nb_count = &nb_count,

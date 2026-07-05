@@ -201,7 +201,13 @@ main(void) {
     long vc0 = -1;
     int tuned = -1;
     // Seed only iden=0 (not matching channel’s iden=1). Expect no tuning and vc0 remains 0.
-    p25_test_iden_config cfg = {/*iden*/ 0, /*type*/ 1, /*tdma*/ 0, /*base*/ 851000000 / 5, /*spac*/ 100};
+    p25_test_iden_config cfg = {
+        .iden = 0,
+        .type = 1,
+        .tdma = 0,
+        .base = 851000000 / 5,
+        .spac = 100,
+    };
     p25_test_invoke_mac_vpdu_capture(mac, 10, /*trunk*/ 1, /*cc*/ 851000000, &cfg, &vc0, &tuned);
     rc |= expect_true("not tuned", tuned == 0);
     rc |= expect_true("vc0 not set", vc0 == 0);
