@@ -32,6 +32,8 @@ static dsd_trunk_cc_candidates g_cc_candidates;
 static dsdneoRuntimeConfig g_runtime_config;
 static char g_printw_capture[4096];
 static size_t g_printw_capture_len;
+static int g_test_rows = 24;
+static int g_test_cols = 80;
 
 static void
 reset_printw_capture(void) {
@@ -59,9 +61,44 @@ append_printw_capture(const char* fmt, va_list ap) {
 }
 
 static void
+append_raw_capture(const char* text, int len) {
+    if (!text || g_printw_capture_len >= sizeof(g_printw_capture) - 1U) {
+        return;
+    }
+    if (len < 0) {
+        len = (int)strlen(text);
+    }
+    size_t remaining = sizeof(g_printw_capture) - g_printw_capture_len;
+    size_t copy_len = (size_t)len;
+    if (copy_len >= remaining) {
+        copy_len = remaining - 1U;
+    }
+    if (copy_len == 0U) {
+        return;
+    }
+    DSD_MEMCPY(g_printw_capture + g_printw_capture_len, text, copy_len);
+    g_printw_capture_len += copy_len;
+    g_printw_capture[g_printw_capture_len] = '\0';
+}
+
+static void
 assert_capture_contains(const char* needle) {
     assert(needle != NULL);
     assert(strstr(g_printw_capture, needle) != NULL);
+}
+
+static void
+assert_capture_lines_fit(int max_cols) {
+    int col = 0;
+    for (const char* p = g_printw_capture; *p; p++) {
+        if (*p == '\n') {
+            assert(col <= max_cols);
+            col = 0;
+            continue;
+        }
+        col++;
+    }
+    assert(col <= max_cols);
 }
 
 uint64_t
@@ -107,11 +144,21 @@ p25_format_adjacent_cfva(uint8_t cfva, char* out, size_t out_len) { // NOLINT(mi
 
 size_t
 p25_format_system_service_names(uint32_t service_mask, char* out, size_t out_len) { // NOLINT(misc-use-internal-linkage)
-    (void)service_mask;
-    if (out && out_len > 0) {
-        DSD_SNPRINTF(out, out_len, "%s", "group voice");
+    const char* text = "group voice";
+    size_t count = 1U;
+    if (service_mask == 0x22F7FEU) {
+        text = "network active, group voice, individual voice, group data, individual data, unit registration, "
+               "group affiliation, group affiliation query, authentication, user status, user message, unit status, "
+               "user status query, unit status query, unit page";
+        count = 15U;
+    } else if (service_mask == 0U) {
+        text = "";
+        count = 0U;
     }
-    return 1U;
+    if (out && out_len > 0) {
+        DSD_SNPRINTF(out, out_len, "%s", text);
+    }
+    return count;
 }
 
 const char*
@@ -135,6 +182,7 @@ compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95) { 
 
 void
 ui_print_lborder_green(void) { // NOLINT(misc-use-internal-linkage)
+    append_raw_capture("|", 1);
 }
 
 short
@@ -161,15 +209,15 @@ wprintw(WINDOW* win, const char* fmt, ...) { // NOLINT(misc-use-internal-linkage
 int
 waddch(WINDOW* win, const chtype ch) { // NOLINT(misc-use-internal-linkage)
     (void)win;
-    (void)ch;
+    char c = (char)(ch & A_CHARTEXT);
+    append_raw_capture(&c, 1);
     return 0;
 }
 
 int
 waddnstr(WINDOW* win, const char* str, int n) { // NOLINT(misc-use-internal-linkage)
     (void)win;
-    (void)str;
-    (void)n;
+    append_raw_capture(str, n);
     return 0;
 }
 
@@ -212,6 +260,14 @@ wattr_set(WINDOW* win, attr_t attrs, short pair, void* opts) { // NOLINT(misc-us
 }
 
 WINDOW* stdscr;
+
+#undef getmaxyx
+#define getmaxyx(win, y, x)                                                                                            \
+    do {                                                                                                               \
+        (void)(win);                                                                                                   \
+        (y) = g_test_rows;                                                                                             \
+        (x) = g_test_cols;                                                                                             \
+    } while (0)
 
 #include "../../src/ui/terminal/ncurses_p25_display.c"
 #include "dsd-neo/core/opts.h"
@@ -538,6 +594,42 @@ run_p25_frequency_display_cases(void) {
 }
 
 static int
+run_service_metric_display_cases(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.p25_sys_services_valid = 1;
+    state.p25_sys_services_available = 0x22F7FEU;
+    state.p25_sys_services_supported = 0x22F7FEU;
+    state.p25_sys_services_request_priority = 1;
+
+    g_test_cols = 72;
+    reset_printw_capture();
+    int lines = ui_print_p25_service_metric(&state);
+    assert(lines > 2);
+    assert_capture_contains("| Services: Avail:22F7FE(15) Supp:22F7FE(15) RPL:1");
+    assert_capture_contains("Avail/Supp: network active, group voice");
+    assert(strstr(g_printw_capture, "\n| Supp: network active") == NULL);
+    assert_capture_lines_fit(g_test_cols);
+
+    state.p25_sys_services_supported = 0U;
+    reset_printw_capture();
+    lines = ui_print_p25_service_metric(&state);
+    assert(lines > 3);
+    assert_capture_contains("| Services: Avail:22F7FE(15) Supp:000000(0) RPL:1");
+    assert_capture_contains("Avail: network active");
+    assert_capture_contains("Supp: -");
+    assert_capture_lines_fit(g_test_cols);
+
+    state.p25_sys_services_valid = 0;
+    reset_printw_capture();
+    assert(ui_print_p25_service_metric(&state) == 0);
+    assert(g_printw_capture[0] == '\0');
+    g_test_cols = 80;
+
+    return 0;
+}
+
+static int
 run_p2_gate_helper_cases(void) {
     DSD_MEMSET(&g_runtime_config, 0, sizeof(g_runtime_config));
     g_runtime_config.p25_ring_hold_s = 1.25;
@@ -587,6 +679,7 @@ main(void) {
     run_iden_summary_helper_cases();
     run_iden_render_cases();
     run_p25_frequency_display_cases();
+    run_service_metric_display_cases();
     run_p2_gate_helper_cases();
     printf("UI_NCURSES_P25_DISPLAY_HELPERS: OK\n");
     return 0;

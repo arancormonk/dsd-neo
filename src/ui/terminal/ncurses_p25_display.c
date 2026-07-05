@@ -791,19 +791,126 @@ ui_print_p25_site_status_metric(const dsd_state* state) {
     return 1;
 }
 
+static void
+ui_print_p25_service_wrap_prefix(const char* prefix, int prefix_len, int continuation) {
+    ui_print_lborder_green();
+    if (!continuation) {
+        addnstr(prefix, prefix_len);
+        return;
+    }
+    for (int i = 0; i < prefix_len; i++) {
+        addch(' ');
+    }
+}
+
+static void
+ui_print_p25_service_wrap_newline(const char* prefix, int prefix_len, int* lines, int* used) {
+    addch('\n');
+    (*lines)++;
+    *used = 1 + prefix_len;
+    ui_print_p25_service_wrap_prefix(prefix, prefix_len, 1);
+}
+
+static const char*
+ui_p25_service_next_token(const char* text, const char** out_token, int* out_len) {
+    const char* comma = strchr(text, ',');
+    int len = comma ? (int)(comma - text) : (int)strlen(text);
+    const char* next = comma ? comma + 1 : text + len;
+    if (*next == ' ') {
+        next++;
+    }
+    *out_token = text;
+    *out_len = len;
+    return next;
+}
+
+static void
+ui_print_p25_service_token_text(const char* token, int len, const char* prefix, int prefix_len, int cols, int* lines,
+                                int* used) {
+    while (len > 0) {
+        int avail = cols - *used;
+        if (avail <= 0) {
+            ui_print_p25_service_wrap_newline(prefix, prefix_len, lines, used);
+            avail = cols - *used;
+        }
+        int chunk = (len < avail) ? len : avail;
+        addnstr(token, chunk);
+        token += chunk;
+        len -= chunk;
+        *used += chunk;
+    }
+}
+
+static void
+ui_print_p25_service_token(const char* token, int len, const char* prefix, int prefix_len, int cols, int* lines,
+                           int* used) {
+    int sep = (*used > 1 + prefix_len) ? 2 : 0;
+    if (sep > 0 && *used + sep + len > cols) {
+        ui_print_p25_service_wrap_newline(prefix, prefix_len, lines, used);
+        sep = 0;
+    }
+    if (sep > 0) {
+        addstr(", ");
+        *used += sep;
+    }
+    ui_print_p25_service_token_text(token, len, prefix, prefix_len, cols, lines, used);
+}
+
+static int
+ui_print_p25_service_names_wrapped(const char* label, const char* names) {
+    char prefix[32] = {0};
+    int prefix_len = DSD_SNPRINTF(prefix, sizeof(prefix), " %s: ", label);
+    if (prefix_len < 0) {
+        prefix_len = 0;
+    }
+    if (prefix_len >= (int)sizeof(prefix)) {
+        prefix_len = (int)sizeof(prefix) - 1;
+    }
+
+    int cols = ui_screen_cols_default80();
+    const int min_cols = 1 + prefix_len + 8;
+    if (cols < min_cols) {
+        cols = min_cols;
+    }
+
+    const char* text = (names && names[0]) ? names : "-";
+    int lines = 1;
+    int used = 1 + prefix_len;
+    ui_print_p25_service_wrap_prefix(prefix, prefix_len, 0);
+
+    const char* p = text;
+    while (*p) {
+        const char* token = NULL;
+        int len = 0;
+        p = ui_p25_service_next_token(p, &token, &len);
+        ui_print_p25_service_token(token, len, prefix, prefix_len, cols, &lines, &used);
+    }
+    addch('\n');
+    return lines;
+}
+
 static int
 ui_print_p25_service_metric(const dsd_state* state) {
     if (!state->p25_sys_services_valid) {
         return 0;
     }
-    char available[256] = {0};
-    char supported[256] = {0};
-    (void)p25_format_system_service_names(state->p25_sys_services_available, available, sizeof(available));
-    (void)p25_format_system_service_names(state->p25_sys_services_supported, supported, sizeof(supported));
-    printw("| Services: Avail:%06X [%s] Supp:%06X [%s] RPL:%u\n", state->p25_sys_services_available,
-           available[0] ? available : "-", state->p25_sys_services_supported, supported[0] ? supported : "-",
+    char available[512] = {0};
+    char supported[512] = {0};
+    size_t available_count =
+        p25_format_system_service_names(state->p25_sys_services_available, available, sizeof(available));
+    size_t supported_count =
+        p25_format_system_service_names(state->p25_sys_services_supported, supported, sizeof(supported));
+    printw("| Services: Avail:%06X(%u) Supp:%06X(%u) RPL:%u\n", state->p25_sys_services_available,
+           (unsigned)available_count, state->p25_sys_services_supported, (unsigned)supported_count,
            state->p25_sys_services_request_priority);
-    return 1;
+    int lines = 1;
+    if (state->p25_sys_services_available == state->p25_sys_services_supported) {
+        lines += ui_print_p25_service_names_wrapped("Avail/Supp", available);
+    } else {
+        lines += ui_print_p25_service_names_wrapped("Avail", available);
+        lines += ui_print_p25_service_names_wrapped("Supp", supported);
+    }
+    return lines;
 }
 
 static int
