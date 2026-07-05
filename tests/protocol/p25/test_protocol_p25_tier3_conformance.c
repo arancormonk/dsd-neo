@@ -1093,9 +1093,10 @@ test_vpdu_dispatch_0x7e(void) {
     }
     if (st.p25_pending_announcement_count != 1
         || st.p25_pending_announcements[0].kind != P25_PENDING_ANNOUNCEMENT_NEIGHBOR
-        || st.p25_pending_announcements[0].lra_valid != 1 || st.p25_pending_announcements[0].lra != 0x01
-        || st.p25_pending_announcements[0].cfva_valid != 1 || st.p25_pending_announcements[0].cfva != 0x04) {
-        DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7e: pending adjacent metadata not retained\n");
+        || st.p25_pending_announcements[0].sysid != 0 || st.p25_pending_announcements[0].lra_valid != 1
+        || st.p25_pending_announcements[0].lra != 0x01 || st.p25_pending_announcements[0].cfva_valid != 1
+        || st.p25_pending_announcements[0].cfva != 0x04) {
+        DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7e: pending adjacent metadata/sysid not retained\n");
         rc = 1;
     }
 

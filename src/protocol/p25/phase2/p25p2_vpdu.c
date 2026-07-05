@@ -3553,11 +3553,12 @@ p25p2_vpdu_iter_block_49(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x7C || (MAC[1 + len_a] == 0x7E && MAC[len_a] == 0x07)) {
-        int bridged_p1_adj = (MAC[len_a] == 0x07 && MAC[1 + len_a] == 0x7C);
+        /* Bridged P1 0x3C/0x3E adjacency carries CFVA/reserved here, not SYSID. */
+        int bridged_p1_adj = (MAC[len_a] == 0x07 && (MAC[1 + len_a] == 0x7C || MAC[1 + len_a] == 0x7E));
         int uncoordinated = (MAC[1 + len_a] == 0x7E);
         int lra = MAC[2 + len_a];
         int cfva = MAC[3 + len_a] >> 4;
-        int lsysid = ((MAC[3 + len_a] & 0xF) << 8) | MAC[4 + len_a];
+        int lsysid = bridged_p1_adj ? 0 : (((MAC[3 + len_a] & 0xF) << 8) | MAC[4 + len_a]);
         int rfssid = MAC[5 + len_a];
         int siteid = MAC[6 + len_a];
         int channelt = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
@@ -3582,7 +3583,7 @@ p25p2_vpdu_iter_block_49(p25p2_vpdu_ctx* ctx) {
         }
         const p25_neighbor_channel_announcement_t announcement = {
             .channel = (uint16_t)channelt,
-            .sysid = bridged_p1_adj ? 0U : (uint16_t)lsysid,
+            .sysid = (uint16_t)lsysid,
             .rfss = (uint8_t)rfssid,
             .site = (uint8_t)siteid,
             .lra = (uint8_t)lra,
