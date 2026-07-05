@@ -212,6 +212,13 @@ p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
     g_release_calls++;
 }
 
+void
+p25_sm_note_encrypted_call(dsd_opts* opts, dsd_state* state, int tg) {
+    (void)opts;
+    (void)state;
+    (void)tg;
+}
+
 int
 dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                            size_t name_sz) {

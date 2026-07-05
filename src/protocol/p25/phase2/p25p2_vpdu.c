@@ -305,6 +305,9 @@ p25p2_mac_policy_flag(int svc_bits, int policy_override, int bit) {
     if (policy_override >= 0) {
         return policy_override ? 1 : 0;
     }
+    if (svc_bits < 0) {
+        return 0;
+    }
     return (svc_bits & bit) ? 1 : 0;
 }
 
@@ -403,9 +406,8 @@ p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_s
     if (opts->p25_trunk != 1) {
         return;
     }
-    enc_for_policy =
-        (policy_encrypted_override >= 0) ? (policy_encrypted_override ? 1 : 0) : ((svc_bits & 0x40) ? 1 : 0);
-    data_for_policy = (policy_data_override >= 0) ? (policy_data_override ? 1 : 0) : ((svc_bits & 0x10) ? 1 : 0);
+    enc_for_policy = p25p2_mac_policy_flag(svc_bits, policy_encrypted_override, 0x40);
+    data_for_policy = p25p2_mac_policy_flag(svc_bits, policy_data_override, 0x10);
     if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, enc_for_policy,
                                             data_for_policy, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
                                             DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
@@ -414,12 +416,6 @@ p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_s
         return;
     }
     p25_sm_on_indiv_grant(opts, state, channel, svc_bits, target, source);
-}
-
-static inline int
-p25_mfid90_enc_lockout_blocks(const dsd_opts* opts, const dsd_state* state, int group) {
-    return opts && state && opts->trunk_tune_enc_calls == 0 && !p25_patch_tg_key_is_clear(state, group)
-           && !p25_patch_sg_key_is_clear(state, group);
 }
 
 static inline void
@@ -1040,10 +1036,9 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
         if (p25p2_vpdu_can_tune(opts, state, freq)) {
-            /* No SVC bits are carried here; use conservative ENC gating policy facts. */
-            const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, sgroup) ? 1 : 0;
-            p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0, policy_encrypted,
-                             /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
+            /* No SVC bits are carried here; let the SM apply transient encrypted-call memory. */
+            p25p2_mac_handle(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, sgroup, /*src*/ 0,
+                             /*policy_encrypted*/ -1, /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
         }
         // If playing back files, and we still want to see what freqs are in use in the ncurses terminal
         //might only want to do these on a grant update, and not a grant by itself?
@@ -1091,10 +1086,9 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
         if (p25p2_vpdu_can_tune(opts, state, freq)) {
-            /* No SVC bits are carried here; use conservative ENC gating policy facts. */
-            const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, sgroup) ? 1 : 0;
-            p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sgroup, /*src*/ 0, policy_encrypted,
-                             /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
+            /* No SVC bits are carried here; let the SM apply transient encrypted-call memory. */
+            p25p2_mac_handle(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, sgroup, /*src*/ 0,
+                             /*policy_encrypted*/ -1, /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
         }
         // If playing back files, and we still want to see what freqs are in use in the ncurses terminal
         //might only want to do these on a grant update, and not a grant by itself?
@@ -1157,9 +1151,8 @@ p25p2_vpdu_iter_block_03(p25p2_vpdu_ctx* ctx) {
             int tunable_chan = (j == 0) ? channel1 : channel2;
             int tunable_group = (j == 0) ? group1 : group2;
             long int tunable_freq = (j == 0) ? freq1 : freq2;
-            int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, tunable_group) ? 1 : 0;
-            p25p2_vpdu_group_candidate candidate = {tunable_chan, tunable_group, tunable_freq, 0};
-            p25p2_vpdu_candidate_policy policy = {policy_encrypted, 0, 0, 1};
+            p25p2_vpdu_group_candidate candidate = {tunable_chan, tunable_group, tunable_freq, P25_SM_SVC_UNKNOWN};
+            p25p2_vpdu_candidate_policy policy = {-1, 0, 0, 1};
             int tuned = p25p2_vpdu_try_group_candidate(&mac_res, opts, state, &candidate, &policy);
             if (tuned) {
                 break;
@@ -1346,7 +1339,7 @@ p25p2_vpdu_iter_block_06(p25p2_vpdu_ctx* ctx) {
 
         if (p25p2_vpdu_can_tune(opts, state, freq)) {
             int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-            p25p2_mac_handle_indiv(&mac_res, opts, state, channel, /*svc_bits*/ 0, target, source, policy_encrypted,
+            p25p2_mac_handle_indiv(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
                                    /*policy_data*/ 0);
         }
         p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
@@ -1534,8 +1527,8 @@ p25p2_vpdu_iter_block_09(p25p2_vpdu_ctx* ctx) {
             int tunable_chan = (j == 0) ? channel1 : channel2;
             int tunable_group = (j == 0) ? group1 : group2;
             long int tunable_freq = (j == 0) ? freq1 : freq2;
-            p25p2_vpdu_group_candidate candidate = {tunable_chan, tunable_group, tunable_freq, 0};
-            const p25p2_vpdu_candidate_policy policy = {0, 0, 0, 1};
+            p25p2_vpdu_group_candidate candidate = {tunable_chan, tunable_group, tunable_freq, P25_SM_SVC_UNKNOWN};
+            const p25p2_vpdu_candidate_policy policy = {-1, 0, 0, 1};
             int tuned = p25p2_vpdu_try_group_candidate(&mac_res, opts, state, &candidate, &policy);
             if (tuned) {
                 break;
@@ -1640,7 +1633,7 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
 
         if (p25p2_vpdu_can_tune(opts, state, freq)) {
             const int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-            p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, /*svc_bits*/ 0, (int)target, /*src*/ 0,
+            p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, P25_SM_SVC_UNKNOWN, (int)target, /*src*/ 0,
                                    policy_encrypted, /*policy_data*/ 1);
         }
         if (opts->p25_trunk == 0) {
@@ -1884,9 +1877,8 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n");
         // Route through SM for tuning consideration
         if (opts->p25_trunk == 1 && channel != 0 && freq != 0) {
-            const int policy_encrypted = p25_mfid90_enc_lockout_blocks(opts, state, sg) ? 1 : 0;
-            p25p2_mac_handle(&mac_res, opts, state, channel, /*svc_bits*/ 0, sg, /*src*/ 0, policy_encrypted,
-                             /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
+            p25p2_mac_handle(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, sg, /*src*/ 0,
+                             /*policy_encrypted*/ -1, /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
         }
     }
 

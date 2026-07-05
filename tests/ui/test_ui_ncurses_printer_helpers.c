@@ -178,6 +178,12 @@ ui_is_locked_from_label(const dsd_state* state, const char* label) { // NOLINT(m
 }
 
 int
+ui_is_transient_enc_locked_from_label(const dsd_state* state, const char* label) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    return label != NULL && strstr(label, "TransientEnc") != NULL;
+}
+
+int
 dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                            size_t name_sz) { // NOLINT(misc-use-internal-linkage)
     (void)state;

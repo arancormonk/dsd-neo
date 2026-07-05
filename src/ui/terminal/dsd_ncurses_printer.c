@@ -1901,6 +1901,9 @@ ui_channel_label_is_locked(const dsd_opts* opts, const dsd_state* state, const c
     if (locked || !opts) {
         return locked;
     }
+    if (opts->trunk_tune_enc_calls == 0 && ui_is_transient_enc_locked_from_label(state, label)) {
+        return 1;
+    }
     if (opts->trunk_tune_data_calls == 0 && strstr(label, "Active Data Ch:") != NULL) {
         return 1;
     }

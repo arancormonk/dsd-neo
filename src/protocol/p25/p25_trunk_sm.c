@@ -500,12 +500,18 @@ log_preempt_decision(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_st
 
 typedef struct {
     int svc;
+    int svc_valid;
     int data_call;
     int encrypted_call;
     int enc_override_clear;
     int is_indiv;
     int tg;
 } p25_grant_eval_ctx_t;
+
+static int
+p25_sm_svc_bits_valid(int svc_bits) {
+    return svc_bits >= 0;
+}
 
 static p25_grant_eval_ctx_t
 p25_grant_eval_ctx_from_event(const p25_sm_event_t* ev) {
@@ -514,12 +520,118 @@ p25_grant_eval_ctx_from_event(const p25_sm_event_t* ev) {
     if (!ev) {
         return ctx;
     }
-    ctx.svc = ev->svc_bits;
-    ctx.data_call = SVC_IS_DATA(ctx.svc) ? 1 : 0;
-    ctx.encrypted_call = SVC_IS_ENC(ctx.svc) ? 1 : 0;
+    ctx.svc_valid = p25_sm_svc_bits_valid(ev->svc_bits);
+    ctx.svc = ctx.svc_valid ? ev->svc_bits : 0;
+    ctx.data_call = (ctx.svc_valid && SVC_IS_DATA(ctx.svc)) ? 1 : 0;
+    ctx.encrypted_call = (ctx.svc_valid && SVC_IS_ENC(ctx.svc)) ? 1 : 0;
     ctx.is_indiv = !ev->is_group;
     ctx.tg = ctx.is_indiv ? ev->dst : ev->tg;
     return ctx;
+}
+
+static void
+p25_enc_tg_cache_clear_entry(dsd_state* state, int idx) {
+    if (!state || idx < 0 || idx >= DSD_P25_ENC_TG_CACHE_DEPTH) {
+        return;
+    }
+    state->p25_enc_tg_cache_until[idx] = 0;
+    state->p25_enc_tg_cache_tg[idx] = 0;
+}
+
+static int
+p25_enc_tg_cache_find_active(dsd_state* state, int tg, time_t now) {
+    if (!state || tg <= 0) {
+        return -1;
+    }
+    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
+        time_t until = state->p25_enc_tg_cache_until[i];
+        if (until <= 0) {
+            continue;
+        }
+        if (now >= until) {
+            p25_enc_tg_cache_clear_entry(state, i);
+            continue;
+        }
+        if (state->p25_enc_tg_cache_tg[i] == (uint32_t)tg) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void
+p25_enc_tg_cache_clear_tg(dsd_state* state, int tg) {
+    if (!state || tg <= 0) {
+        return;
+    }
+    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
+        if (state->p25_enc_tg_cache_tg[i] == (uint32_t)tg) {
+            p25_enc_tg_cache_clear_entry(state, i);
+        }
+    }
+}
+
+static int
+p25_enc_tg_cache_refresh_until(const dsd_opts* opts, time_t now, time_t* out_until) {
+    if (!out_until) {
+        return 0;
+    }
+    double backoff_s = p25_failed_vc_retune_backoff_s(opts);
+    time_t backoff_wall = p25_backoff_wall_seconds(backoff_s);
+    if (backoff_wall <= 0) {
+        return 0;
+    }
+    *out_until = now + backoff_wall;
+    return 1;
+}
+
+static int
+p25_enc_tg_cache_choose_slot(dsd_state* state, time_t now) {
+    int first_expired = -1;
+    if (!state) {
+        return -1;
+    }
+    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
+        if (state->p25_enc_tg_cache_until[i] <= now) {
+            first_expired = i;
+            break;
+        }
+    }
+    if (first_expired >= 0) {
+        return first_expired;
+    }
+    int idx = (int)(state->p25_enc_tg_cache_next % DSD_P25_ENC_TG_CACHE_DEPTH);
+    state->p25_enc_tg_cache_next++;
+    return idx;
+}
+
+void
+p25_sm_note_encrypted_call(dsd_opts* opts, dsd_state* state, int tg) {
+    if (!opts || !state || tg <= 0 || opts->trunk_tune_enc_calls != 0) {
+        return;
+    }
+    if (p25_patch_tg_key_is_clear(state, tg) || p25_patch_sg_key_is_clear(state, tg)) {
+        return;
+    }
+
+    time_t now = time(NULL);
+    time_t until = 0;
+    if (!p25_enc_tg_cache_refresh_until(opts, now, &until)) {
+        return;
+    }
+
+    int idx = p25_enc_tg_cache_find_active(state, tg, now);
+    if (idx < 0) {
+        idx = p25_enc_tg_cache_choose_slot(state, now);
+    }
+    if (idx < 0) {
+        return;
+    }
+
+    state->p25_enc_tg_cache_tg[idx] = (uint32_t)tg;
+    state->p25_enc_tg_cache_until[idx] = until;
+    p25_sm_diagf(opts, state, NULL, "enc_tg_cache_arm", "tg=%d idx=%d until=%ld", tg, idx, (long)until);
+    sm_log(opts, state, "enc-tg-cache-arm");
 }
 
 static void
@@ -534,6 +646,55 @@ p25_grant_apply_clear_override(const dsd_opts* opts, const dsd_state* state, p25
             eval_ctx->enc_override_clear = 1;
         }
     }
+}
+
+static void
+p25_grant_clear_transient_cache_if_clear(dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx) {
+    if (!state || !eval_ctx || eval_ctx->is_indiv || eval_ctx->tg <= 0) {
+        return;
+    }
+    if ((eval_ctx->svc_valid && !eval_ctx->encrypted_call) || eval_ctx->enc_override_clear) {
+        p25_enc_tg_cache_clear_tg(state, eval_ctx->tg);
+    }
+}
+
+static int
+p25_grant_patch_clear_key(const dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx) {
+    if (!state || !eval_ctx || eval_ctx->is_indiv || eval_ctx->tg <= 0) {
+        return 0;
+    }
+    return (p25_patch_tg_key_is_clear(state, eval_ctx->tg) || p25_patch_sg_key_is_clear(state, eval_ctx->tg)) ? 1 : 0;
+}
+
+static int
+p25_grant_transient_enc_cache_blocks(dsd_opts* opts, dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx) {
+    if (!opts || !state || !eval_ctx || eval_ctx->is_indiv || eval_ctx->tg <= 0 || opts->trunk_tune_enc_calls != 0) {
+        return 0;
+    }
+    if (eval_ctx->svc_valid) {
+        return 0;
+    }
+    if (p25_grant_patch_clear_key(state, eval_ctx)) {
+        p25_enc_tg_cache_clear_tg(state, eval_ctx->tg);
+        return 0;
+    }
+
+    time_t now = time(NULL);
+    int idx = p25_enc_tg_cache_find_active(state, eval_ctx->tg, now);
+    if (idx < 0) {
+        return 0;
+    }
+
+    time_t until = 0;
+    if (p25_enc_tg_cache_refresh_until(opts, now, &until)) {
+        state->p25_enc_tg_cache_until[idx] = until;
+    } else {
+        p25_enc_tg_cache_clear_entry(state, idx);
+        return 0;
+    }
+    p25_sm_diagf(opts, state, NULL, "grant_enc_cache_skip", "tg=%d idx=%d until=%ld", eval_ctx->tg, idx, (long)until);
+    sm_log(opts, state, "grant-enc-cache");
+    return 1;
 }
 
 static int
@@ -590,6 +751,7 @@ grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg
 
     eval_ctx = p25_grant_eval_ctx_from_event(ev);
     p25_grant_apply_clear_override(opts, state, &eval_ctx);
+    p25_grant_clear_transient_cache_if_clear(state, &eval_ctx);
     if (p25_grant_eval_policy(opts, state, ev, &eval_ctx, &decision) != 0) {
         return 0;
     }
@@ -598,6 +760,10 @@ grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg
         if (out_decision) {
             *out_decision = decision;
         }
+        return 0;
+    }
+
+    if (p25_grant_transient_enc_cache_blocks(opts, state, &eval_ctx)) {
         return 0;
     }
 
@@ -2196,6 +2362,8 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
     if (!opts || !state || tg <= 0) {
         return;
     }
+
+    p25_sm_note_encrypted_call(opts, state, tg);
 
     // Prepare per-slot context. Keep live encryption fields intact: callers may
     // still need ALG/KID/MI after this helper returns to keep audio gates closed.

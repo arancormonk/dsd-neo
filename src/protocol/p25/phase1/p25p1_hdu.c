@@ -325,6 +325,8 @@ hdu_record_enc_lockout(dsd_opts* opts, dsd_state* state, int ttg) {
         return;
     }
 
+    p25_sm_note_encrypted_call(opts, state, ttg);
+
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
                  sizeof(state->event_history_s[0].Event_History_Items[0].internal_str),
                  "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);

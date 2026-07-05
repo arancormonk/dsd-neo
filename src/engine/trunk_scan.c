@@ -77,6 +77,7 @@ typedef struct {
     p25_iden_entry_t p25_iden_fdma[16];
     p25_iden_entry_t p25_iden_tdma[16];
     time_t p25_retune_block_history_until[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
+    time_t p25_enc_tg_cache_until[DSD_P25_ENC_TG_CACHE_DEPTH];
     time_t p25_aff_last_seen[256];
     time_t p25_ga_last_seen[512];
     long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
@@ -133,6 +134,8 @@ typedef struct {
     uint16_t trunk_chan_map_used[DSD_TRUNK_CHAN_MAP_SIZE];
     long p25_retune_block_history_freq[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
     int p25_retune_block_history_slot[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
+    uint32_t p25_enc_tg_cache_tg[DSD_P25_ENC_TG_CACHE_DEPTH];
+    unsigned int p25_enc_tg_cache_next;
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_cc_prot_valid;
@@ -789,6 +792,10 @@ trunk_scan_save_p25_retune_snapshot(const dsd_state* state, dsd_trunk_scan_snaps
                sizeof(snapshot->p25_retune_block_history_freq));
     DSD_MEMCPY(snapshot->p25_retune_block_history_slot, state->p25_retune_block_history_slot,
                sizeof(snapshot->p25_retune_block_history_slot));
+    DSD_MEMCPY(snapshot->p25_enc_tg_cache_until, state->p25_enc_tg_cache_until,
+               sizeof(snapshot->p25_enc_tg_cache_until));
+    DSD_MEMCPY(snapshot->p25_enc_tg_cache_tg, state->p25_enc_tg_cache_tg, sizeof(snapshot->p25_enc_tg_cache_tg));
+    snapshot->p25_enc_tg_cache_next = state->p25_enc_tg_cache_next;
 }
 
 static void
@@ -803,6 +810,9 @@ trunk_scan_restore_p25_retune_snapshot(dsd_state* state, const dsd_trunk_scan_sn
                sizeof(state->p25_retune_block_history_freq));
     DSD_MEMCPY(state->p25_retune_block_history_slot, snapshot->p25_retune_block_history_slot,
                sizeof(state->p25_retune_block_history_slot));
+    DSD_MEMCPY(state->p25_enc_tg_cache_until, snapshot->p25_enc_tg_cache_until, sizeof(state->p25_enc_tg_cache_until));
+    DSD_MEMCPY(state->p25_enc_tg_cache_tg, snapshot->p25_enc_tg_cache_tg, sizeof(state->p25_enc_tg_cache_tg));
+    state->p25_enc_tg_cache_next = snapshot->p25_enc_tg_cache_next;
 }
 
 static void

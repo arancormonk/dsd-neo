@@ -858,6 +858,9 @@ init_state_p25_retune_backoff_defaults(dsd_state* state) {
     for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
         state->p25_retune_block_history_slot[i] = -1;
     }
+    DSD_MEMSET(state->p25_enc_tg_cache_until, 0, sizeof(state->p25_enc_tg_cache_until));
+    DSD_MEMSET(state->p25_enc_tg_cache_tg, 0, sizeof(state->p25_enc_tg_cache_tg));
+    state->p25_enc_tg_cache_next = 0;
 }
 
 static void
