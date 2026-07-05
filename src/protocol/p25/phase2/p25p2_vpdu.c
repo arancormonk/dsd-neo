@@ -4195,7 +4195,7 @@ p25p2_vpdu_handle_group_voice_service_request(p25p2_vpdu_ctx* ctx) {
 }
 
 static void
-p25p2_vpdu_handle_unit_to_unit_answer_request(p25p2_vpdu_ctx* ctx, int opcode) {
+p25p2_vpdu_handle_unit_to_unit_answer_request(const p25p2_vpdu_ctx* ctx, int opcode) {
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
     int svc = (int)MAC[2 + len_a];
@@ -4217,7 +4217,7 @@ p25p2_vpdu_handle_unit_to_unit_answer_request(p25p2_vpdu_ctx* ctx, int opcode) {
 }
 
 static void
-p25p2_vpdu_handle_telephone_interconnect_answer_request(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_handle_telephone_interconnect_answer_request(const p25p2_vpdu_ctx* ctx) {
     static const char hex[] = "0123456789ABCDEF";
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
@@ -4321,7 +4321,7 @@ p25p2_vpdu_handle_ack_response_fne_abbreviated(p25p2_vpdu_ctx* ctx) {
 }
 
 static void
-p25p2_vpdu_handle_roaming_address_command(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_handle_roaming_address_command(const p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
     int stack_op = (int)MAC[3 + len_a];
@@ -4334,7 +4334,7 @@ p25p2_vpdu_handle_roaming_address_command(p25p2_vpdu_ctx* ctx) {
 }
 
 static void
-p25p2_vpdu_handle_roaming_address_update(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_handle_roaming_address_update(const p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
     int last = ((MAC[3 + len_a] & 0x80) != 0);
@@ -4422,7 +4422,7 @@ p25p2_vpdu_handle_motorola_ack_response(p25p2_vpdu_ctx* ctx) {
 }
 
 static void
-p25p2_vpdu_handle_motorola_regroup_extended_function(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     const int len_a = ctx->len_a;
     int function = p25p2_vpdu_u16(MAC, 4 + len_a);
@@ -4441,7 +4441,7 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(p25p2_vpdu_ctx* ctx) {
 static void
 p25p2_vpdu_handle_motorola_tdma_data_channel(p25p2_vpdu_ctx* ctx) {
     static const int channel_offsets[] = {5, 8, 11, 14};
-    dsd_opts* opts = ctx->opts;
+    const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
     int printed = 0;
 
