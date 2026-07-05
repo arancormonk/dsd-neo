@@ -51,17 +51,28 @@ typedef struct {
     uint8_t opcode;
 } p25p1_mbt_fields;
 
+enum {
+    P25_MBT_AMBTC_OPCODE_INDEX = 7,
+    P25_MBT_UMBTC_OPCODE_INDEX = 12,
+};
+
+static int
+p25_mbt_opcode_index(uint8_t fmt) {
+    /*
+     * Alternate MBTC (0x17) carries the opcode in the PDU header. Unconfirmed
+     * MBTC (0x15) carries a data header at the start of block 0; in the
+     * contiguous MPDU buffer that opcode is byte 12 and payload starts at 13.
+     */
+    return (fmt == 0x17) ? P25_MBT_AMBTC_OPCODE_INDEX : P25_MBT_UMBTC_OPCODE_INDEX;
+}
+
 static p25p1_mbt_fields
 p25_parse_mbt_fields(const uint8_t* mpdu_byte) {
     p25p1_mbt_fields fields;
     fields.fmt = mpdu_byte[0] & 0x1F;
     fields.mfid = mpdu_byte[2];
     fields.blks = mpdu_byte[6] & 0x7F;
-    if (fields.fmt == 0x17) {
-        fields.opcode = mpdu_byte[7] & 0x3F;
-    } else {
-        fields.opcode = mpdu_byte[12] & 0x3F;
-    }
+    fields.opcode = mpdu_byte[p25_mbt_opcode_index(fields.fmt)] & 0x3F;
     return fields;
 }
 
@@ -95,6 +106,11 @@ p25_mbt_has_unsupported_survey_format(const p25p1_mbt_fields* fields) {
 }
 
 static int
+p25_mbt_is_bridgeable_iden_update(uint8_t opcode) {
+    return opcode == 0x74 || opcode == 0x7D || opcode == 0x73 || opcode == 0xF3 || opcode == 0x34 || opcode == 0x3D;
+}
+
+static int
 p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
         return 0;
@@ -106,16 +122,17 @@ p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) 
 static void DSD_ATTR_USED
 p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
                                 const p25p1_mbt_fields* fields) {
-    if (fields->fmt != 0x17) {
-        return;
-    }
-    if (!((fields->opcode == 0x74 || fields->opcode == 0x7D || fields->opcode == 0x73 || fields->opcode == 0xF3
-           || fields->opcode == 0x34 || fields->opcode == 0x3D)
-          && fields->mfid < 2)) {
+    if (!fields || !(p25_mbt_is_bridgeable_iden_update(fields->opcode) && fields->mfid < 2)) {
         return;
     }
 
-    int op_idx = 7;
+    /*
+     * Keep UMBTC identifier updates bridgeable. Some paths provide a decoded
+     * non-extended MBTC buffer directly to this decoder; for those frames the
+     * opcode is byte 12 and the IDEN payload begins at byte 13. The survey
+     * broadcast handlers below remain Extended Format only.
+     */
+    int op_idx = p25_mbt_opcode_index(fields->fmt);
     int payload_off = op_idx + 1;
     int total_len = (12 * (fields->blks + 1));
     unsigned long long int MAC[24] = {0};

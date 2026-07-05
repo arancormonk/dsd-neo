@@ -209,6 +209,46 @@ main(void) {
     long want_freq = 851000000 + 10 * 100 * 125; // 851.125 MHz
     rc |= expect_eq_long("freq(0x100A)", freq, want_freq);
 
+    // Non-extended MBTC carries the opcode as the first data-header byte
+    // after the 12-byte PDU header. Preserve that bridge so IDEN updates with
+    // opcode at byte 12 and payload at byte 13 still populate the band plan.
+    {
+        uint8_t umb[48];
+        DSD_MEMSET(umb, 0, sizeof(umb));
+
+        umb[0] = 0x15;  // Unconfirmed MBTC format
+        umb[2] = 0x00;  // MFID (standard)
+        umb[6] = 0x02;  // blks=2
+        umb[12] = 0x74; // Identifier Update VHF/UHF opcode in data header
+
+        umb[13] = 0x20; // IDEN=2, BW=0
+        umb[14] = 0x00; // tx_off hi
+        umb[15] = 0x00; // tx_off lo + spacing hi
+        umb[16] = 0x64; // spacing lo = 100
+        umb[17] = 0x0A; // base (851000000 / 5) = 0x0A250BC0
+        umb[18] = 0x25;
+        umb[19] = 0x0B;
+        umb[20] = 0xC0;
+
+        base = -1;
+        spac = -1;
+        type = -1;
+        tdma = -1;
+        freq = -1;
+
+        int umb_shim_rc = p25_test_mbt_iden_bridge(umb, (int)sizeof(umb), &base, &spac, &type, &tdma, &freq);
+        if (umb_shim_rc != 0) {
+            DSD_FPRINTF(stderr, "umbtc shim invocation failed (%d)\n", umb_shim_rc);
+            return 97;
+        }
+
+        rc |= expect_eq_int("umbtc_chan_type[2]", type, 1);
+        rc |= expect_eq_int("umbtc_chan_tdma[2]", tdma, 0);
+        rc |= expect_eq_long("umbtc_spacing[2]", spac, 100);
+        rc |= expect_eq_long("umbtc_base[2]", base, 851000000 / 5);
+        rc |= expect_eq_long("umbtc_freq(0x200A)", freq, want_freq);
+    }
+
     // AMBTC opcode 0x33 is a foreign-system TDMA identifier update in sdrtrunk.
     // It must not populate the active system IDEN table.
     {
