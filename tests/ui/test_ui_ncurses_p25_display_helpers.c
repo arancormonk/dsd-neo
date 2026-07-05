@@ -380,6 +380,11 @@ run_neighbor_helper_cases(void) {
     assert(strstr(line, "LRA:44 CFVA:current") != NULL);
     assert(strstr(line, "age:25s") != NULL);
 
+    char short_line[32];
+    int short_len = ui_format_neighbor_line(&state, 3, (time_t)200, short_line, sizeof(short_line));
+    assert(short_len == (int)strlen(short_line));
+    assert(short_len < (int)sizeof(short_line));
+
     assert(ui_format_neighbor_line(&state, 2, (time_t)100, line, sizeof(line)) > 0);
     assert(strstr(line, "852.012500 MHz [CC]") != NULL);
     assert(strstr(line, "age:0s") != NULL);

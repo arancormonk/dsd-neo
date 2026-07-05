@@ -411,6 +411,60 @@ test_secondary_cc_deferred_resolution(void) {
 }
 
 static void
+test_pending_neighbor_merge_preserves_metadata(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    const p25_neighbor_channel_announcement_t rich = {
+        .channel = 0x3001,
+        .wacn = 0xABCDE,
+        .sysid = 0x123,
+        .rfss = 4,
+        .site = 5,
+        .lra = 0x44,
+        .cfva = 0x02,
+        .wacn_valid = 1,
+        .lra_valid = 1,
+        .cfva_valid = 1,
+    };
+    assert(p25_announce_neighbor_channel_ex(opts, st, &rich) == 0);
+    assert(st->p25_pending_announcement_count == 1);
+
+    const p25_neighbor_channel_announcement_t sparse = {
+        .channel = 0x3001,
+        .sysid = 0x123,
+        .rfss = 4,
+        .site = 5,
+    };
+    assert(p25_announce_neighbor_channel_ex(opts, st, &sparse) == 0);
+    assert(st->p25_pending_announcement_count == 1);
+    assert(st->p25_pending_announcements[0].wacn_valid == 1);
+    assert(st->p25_pending_announcements[0].wacn == 0xABCDE);
+    assert(st->p25_pending_announcements[0].lra_valid == 1);
+    assert(st->p25_pending_announcements[0].lra == 0x44);
+    assert(st->p25_pending_announcements[0].cfva_valid == 1);
+    assert(st->p25_pending_announcements[0].cfva == 0x02);
+
+    seed_fdma_iden(st, 3, 853000000L, 100);
+    p25_resolve_pending_announcements(opts, st);
+    assert(st->p25_pending_announcement_count == 0);
+    assert(st->p25_nb_count == 1);
+    assert(st->p25_nb_entries[0].freq == 853012500L);
+    assert(st->p25_nb_entries[0].wacn_valid == 1);
+    assert(st->p25_nb_entries[0].wacn == 0xABCDE);
+    assert(st->p25_nb_entries[0].lra_valid == 1);
+    assert(st->p25_nb_entries[0].lra == 0x44);
+    assert(st->p25_nb_entries[0].cfva_valid == 1);
+    assert(st->p25_nb_entries[0].cfva == 0x02);
+
+    dsd_state_ext_free_all(st);
+    free(opts);
+    free(st);
+}
+
+static void
 test_secondary_cc_foreign_site_rejected(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* st = calloc(1, sizeof(*st));
@@ -476,6 +530,7 @@ main(void) {
     test_keepalive_refreshes_timestamp();
     test_secondary_cc_tracking_and_dedupe();
     test_secondary_cc_deferred_resolution();
+    test_pending_neighbor_merge_preserves_metadata();
     test_secondary_cc_foreign_site_rejected();
     test_service_cfva_and_vu_helpers();
     return 0;

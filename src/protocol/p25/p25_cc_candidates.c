@@ -700,6 +700,31 @@ p25_pending_select_slot(dsd_state* state) {
 }
 
 static void
+p25_pending_apply_update(p25_pending_announcement_t* entry, const p25_pending_update_t* update, time_t now) {
+    const p25_neighbor_channel_announcement_t* announcement = &update->announcement;
+    entry->populated = 1;
+    entry->kind = update->kind;
+    entry->rfss = announcement->rfss;
+    entry->site = announcement->site;
+    entry->ssc = update->ssc;
+    entry->sysid = announcement->sysid;
+    entry->channel = announcement->channel;
+    if (announcement->wacn_valid) {
+        entry->wacn = p25_neighbor_wacn20(announcement);
+        entry->wacn_valid = 1U;
+    }
+    if (announcement->lra_valid) {
+        entry->lra = announcement->lra;
+        entry->lra_valid = 1U;
+    }
+    if (announcement->cfva_valid) {
+        entry->cfva = announcement->cfva;
+        entry->cfva_valid = 1U;
+    }
+    entry->last_seen = now;
+}
+
+static void
 p25_pending_store(dsd_state* state, const p25_pending_update_t* update) {
     if (!state || !update || !p25_pending_channel_valid(update->announcement.channel)) {
         return;
@@ -709,24 +734,10 @@ p25_pending_store(dsd_state* state, const p25_pending_update_t* update) {
     p25_pending_announcement_t* entry = p25_pending_find(state, update);
     if (!entry) {
         entry = p25_pending_select_slot(state);
+        DSD_MEMSET(entry, 0, sizeof(*entry));
     }
 
-    const p25_neighbor_channel_announcement_t* announcement = &update->announcement;
-    DSD_MEMSET(entry, 0, sizeof(*entry));
-    entry->populated = 1;
-    entry->kind = update->kind;
-    entry->rfss = announcement->rfss;
-    entry->site = announcement->site;
-    entry->cfva = announcement->cfva;
-    entry->lra = announcement->lra;
-    entry->wacn_valid = announcement->wacn_valid ? 1U : 0U;
-    entry->lra_valid = announcement->lra_valid ? 1U : 0U;
-    entry->cfva_valid = announcement->cfva_valid ? 1U : 0U;
-    entry->ssc = update->ssc;
-    entry->sysid = announcement->sysid;
-    entry->channel = announcement->channel;
-    entry->wacn = announcement->wacn_valid ? p25_neighbor_wacn20(announcement) : 0U;
-    entry->last_seen = now;
+    p25_pending_apply_update(entry, update, now);
 }
 
 static int

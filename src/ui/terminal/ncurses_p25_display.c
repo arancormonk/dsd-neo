@@ -321,6 +321,9 @@ ui_freq_in_cc_candidates(const dsd_state* state, long freq) {
 
 static int
 ui_format_neighbor_line(const dsd_state* state, int idx, time_t now, char* out, size_t out_len) {
+    if (!out || out_len == 0U) {
+        return 0;
+    }
     const p25_nb_entry_t* entry = &state->p25_nb_entries[idx];
     long freq = entry->freq;
     long age = (long)((entry->last_seen != 0) ? (now - entry->last_seen) : 0);
@@ -345,9 +348,10 @@ ui_format_neighbor_line(const dsd_state* state, int idx, time_t now, char* out, 
     } else {
         DSD_SNPRINTF(cfva, sizeof cfva, "%s", " CFVA:?");
     }
-    return DSD_SNPRINTF(out, out_len, "%.6lf MHz%s%s SYS:%03X R:%03u S:%03u%s%s%s age:%lds", (double)freq / 1000000.0,
-                        is_cc ? " [CC]" : "", in_cands ? " [C]" : "", entry->sysid, entry->rfss, entry->site, wacn, lra,
-                        cfva, age);
+    int n = DSD_SNPRINTF(out, out_len, "%.6lf MHz%s%s SYS:%03X R:%03u S:%03u%s%s%s age:%lds", (double)freq / 1000000.0,
+                         is_cc ? " [CC]" : "", in_cands ? " [C]" : "", entry->sysid, entry->rfss, entry->site, wacn,
+                         lra, cfva, age);
+    return (n < 0) ? n : (int)strlen(out);
 }
 
 static int
@@ -1074,7 +1078,7 @@ ui_print_p25_neighbors(const dsd_opts* opts, const dsd_state* state) {
     time_t now = time(NULL);
     for (int i = 0; i < n && shown < 20; i++) {
         int k = idxs[i];
-        char buf[80];
+        char buf[160];
         int m = ui_format_neighbor_line(state, k, now, buf, sizeof(buf));
         if (m < 0) {
             m = 0;
