@@ -126,6 +126,19 @@ main(void) {
     p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1103, /*src*/ 2103);
     rc |= expect_true("group mode DE blocked", st.p25_sm_tune_count == before);
 
+    // Runtime encrypted-call lockout must not persist as a TG policy block.
+    rc |= expect_true("seed mixed-mode group", seed_exact(&st, 1104, "A", "MIXED", 0, 0) == 0);
+    p25_sm_on_release(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    opts.p25_is_tuned = 0;
+    before = st.p25_sm_tune_count;
+    p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x40, /*tg*/ 1104, /*src*/ 2104);
+    rc |= expect_true("encrypted mixed-mode grant blocked", st.p25_sm_tune_count == before);
+    opts.p25_is_tuned = 0;
+    p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1104, /*src*/ 2105);
+    rc |= expect_true("later clear mixed-mode grant tunes", st.p25_sm_tune_count == before + 1);
+    opts.trunk_tune_enc_calls = 1;
+
     // Matching hold does not override explicit B/DE blocks in grant-compatible hold mode.
     st.tg_hold = 1102;
     before = st.p25_sm_tune_count;

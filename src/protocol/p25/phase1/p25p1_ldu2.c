@@ -504,23 +504,6 @@ ldu2_record_enc_lockout(dsd_opts* opts, dsd_state* state, int talkgroup) {
         return;
     }
 
-    int enc_existing = 0;
-    char lockout_name_buf[50];
-    const char* lockout_name = "ENC LO";
-    dsd_tg_policy_entry lockout_entry;
-    if (dsd_tg_policy_lookup_label(state, (uint32_t)talkgroup, NULL, 0, lockout_name_buf, sizeof(lockout_name_buf))) {
-        enc_existing = 1;
-        lockout_name = lockout_name_buf;
-    }
-
-    if (dsd_tg_policy_make_exact_entry((uint32_t)talkgroup, "DE", lockout_name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
-                                       &lockout_entry)
-            != 0
-        || dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0
-        || enc_existing != 0) {
-        return;
-    }
-
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
                  sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
                  "Target: %d; has been locked out; Encryption Lock Out Enabled.", talkgroup);
@@ -565,6 +548,7 @@ ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_error
 
     ldu2_record_enc_lockout(opts, state, state->lasttg);
     DSD_FPRINTF(stderr, " No Enc Following on P25p1 Trunking; Return to CC; \n");
+    state->p25_sm_force_release = 1;
     p25_sm_on_release(opts, state);
 }
 

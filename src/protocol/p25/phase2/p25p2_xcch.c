@@ -570,6 +570,12 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     p25p2_xcch_blank_slot_call_string(state, slot);
     p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
     state->p25_call_is_packet[slot] = 0;
+    state->p25_service_options_valid[slot] = 0;
+    if (slot == 0) {
+        state->dmr_so = 0;
+    } else {
+        state->dmr_soR = 0;
+    }
 }
 
 static void

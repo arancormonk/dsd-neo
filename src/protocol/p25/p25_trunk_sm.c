@@ -356,40 +356,6 @@ is_tdma_channel(const dsd_state* state, int channel) {
     return 0;
 }
 
-static int
-p25_upsert_de_lockout(dsd_state* state, int tg, int* out_was_de) {
-    int was_de = 0;
-    const char* name = "ENC LO";
-    char mode_buf[8];
-    char name_buf[50];
-    dsd_tg_policy_entry entry;
-
-    if (!state || tg <= 0) {
-        if (out_was_de) {
-            *out_was_de = 0;
-        }
-        return 1;
-    }
-
-    if (dsd_tg_policy_lookup_label(state, (uint32_t)tg, mode_buf, sizeof(mode_buf), name_buf, sizeof(name_buf))) {
-        was_de = (strcmp(mode_buf, "DE") == 0);
-        if (name_buf[0] != '\0') {
-            name = name_buf;
-        }
-    }
-    if (out_was_de) {
-        *out_was_de = was_de;
-    }
-    if (was_de) {
-        return 0;
-    }
-
-    if (dsd_tg_policy_make_exact_entry((uint32_t)tg, "DE", name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &entry) != 0) {
-        return 1;
-    }
-    return dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
-}
-
 static inline int
 channel_slot(const dsd_state* state, int channel) {
     return is_tdma_channel(state, channel) ? ((channel & 1) ? 1 : 0) : -1;
@@ -1379,6 +1345,10 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->payload_keyidR = 0;
         state->payload_miP = 0;
         state->payload_miN = 0;
+        state->dmr_so = 0;
+        state->dmr_soR = 0;
+        state->p25_service_options_valid[0] = 0;
+        state->p25_service_options_valid[1] = 0;
         state->p25_p2_enc_lockout_muted[0] = 0;
         state->p25_p2_enc_lockout_muted[1] = 0;
         state->p25_sm_release_count++;
@@ -2223,16 +2193,8 @@ p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algi
 
 void
 p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits) {
-    int already_de = 0;
     if (!opts || !state || tg <= 0) {
         return;
-    }
-
-    if (p25_upsert_de_lockout(state, tg, &already_de) != 0) {
-        return;
-    }
-    if (already_de) {
-        return; // already marked; event previously emitted
     }
 
     // Prepare per-slot context. Keep live encryption fields intact: callers may
@@ -2240,9 +2202,11 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
     if ((slot & 1) == 0) {
         state->lasttg = (uint32_t)tg;
         state->dmr_so = (uint16_t)svc_bits;
+        state->p25_service_options_valid[0] = (svc_bits != 0) ? 1U : 0U;
     } else {
         state->lasttgR = (uint32_t)tg;
         state->dmr_soR = (uint16_t)svc_bits;
+        state->p25_service_options_valid[1] = (svc_bits != 0) ? 1U : 0U;
     }
     state->gi[slot & 1] = 0;
 
@@ -2263,7 +2227,7 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
             dsd_p25_optional_hook_push_event_history(eh);
             dsd_p25_optional_hook_init_event_history(eh, 0, 1);
         }
-    } else if (opts && opts->verbose > 1) {
+    } else if (opts->verbose > 1) {
         p25_sm_log_status(opts, state, "enc-lo-skip-nohist");
     }
 }

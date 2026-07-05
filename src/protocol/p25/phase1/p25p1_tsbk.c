@@ -67,6 +67,8 @@ tsbk_prepare_frame_state(dsd_opts* opts, dsd_state* state) {
 
     // Ensure slot index is sane when swapping protocols.
     state->currentslot = 0;
+    state->dmr_so = 0;
+    state->p25_service_options_valid[0] = 0;
 
     p25_status_accum_ensure_started(state);
 

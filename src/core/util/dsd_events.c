@@ -572,6 +572,54 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, watchdog_
     }
 }
 
+static int
+watchdog_event_p25_algid_is_encrypted(uint8_t alg_id) {
+    return alg_id != 0U && alg_id != 0x80U;
+}
+
+static int
+watchdog_event_p25_has_current_voice_alg(const dsd_state* state) {
+    if (state == NULL) {
+        return 0;
+    }
+    if (DSD_SYNC_IS_P25P2(state->lastsynctype)) {
+        return 1;
+    }
+    if (!DSD_SYNC_IS_P25P1(state->lastsynctype)) {
+        return 0;
+    }
+    return state->lastp25type == 1 || state->lastp25type == 2;
+}
+
+static int
+watchdog_event_p25_has_current_service_options(const dsd_state* state, uint8_t slot) {
+    if (state == NULL || !DSD_SYNC_IS_P25(state->lastsynctype)) {
+        return 0;
+    }
+    return state->p25_service_options_valid[slot & 1U] != 0 ? 1 : 0;
+}
+
+static void
+watchdog_event_current_normalize_p25_crypto(const dsd_state* state, uint8_t slot, watchdog_event_current_ctx* ctx) {
+    if (state == NULL || ctx == NULL || !DSD_SYNC_IS_P25(state->lastsynctype)) {
+        return;
+    }
+
+    if (!watchdog_event_p25_has_current_service_options(state, slot)) {
+        ctx->svc_opts = 0;
+        ctx->enc = 0;
+    }
+
+    if (watchdog_event_p25_algid_is_encrypted(ctx->alg_id) && watchdog_event_p25_has_current_voice_alg(state)) {
+        ctx->enc = 1;
+        return;
+    }
+
+    ctx->alg_id = 0;
+    ctx->key_id = 0;
+    ctx->mi = 0;
+}
+
 static void
 watchdog_event_current_apply_nxdn(const dsd_state* state, watchdog_event_current_ctx* ctx) {
     ctx->source_id = state->nxdn_last_rid;
@@ -890,6 +938,8 @@ watchdog_event_current_build_event_p25(const dsd_state* state, uint8_t slot, con
         char ess_str[30];
         DSD_SNPRINTF(ess_str, sizeof(ess_str), "ENC; ALG: %02X; KID: %04X; ", ctx->alg_id, ctx->key_id);
         watchdog_event_str_append(event_string, event_size, ess_str);
+    } else if (ctx->enc) {
+        watchdog_event_str_append(event_string, event_size, "ENC; ");
     }
     if (ctx->svc_opts & 0x80) {
         watchdog_event_str_append(event_string, event_size, "Emergency; ");
@@ -993,6 +1043,7 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
         watchdog_event_current_apply_slot0_overrides(opts, state, event_struct, &ctx);
     }
 
+    watchdog_event_current_normalize_p25_crypto(state, slot, &ctx);
     watchdog_event_current_load_labels(state, &ctx);
 
     const char* sys_string = dsd_synctype_to_string(state->lastsynctype);

@@ -692,11 +692,8 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     rc |= expect_u64("lockout clears mi", state.payload_miP, 0ULL);
     rc |= expect_int("lockout force release", state.p25_sm_force_release, 1);
     rc |= expect_int("lockout release hook", g_release_calls, 1);
-    rc |= expect_int("lockout policy make", g_policy_make_calls, 1);
-    rc |= expect_int("lockout policy upsert", g_policy_upsert_calls, 1);
-    rc |= expect_int("lockout policy id", (int)g_last_policy_id, 1234);
-    rc |= expect_int("lockout policy source", (int)g_last_policy_source, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT);
-    rc |= expect_int("lockout policy mode", (int)g_last_policy_upsert_mode, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
+    rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
     rc |= expect_int("lockout watchdog", g_watchdog_calls, 1);
     rc |= expect_int("lockout event write", g_write_event_calls, 1);
     rc |= expect_int("lockout event push", g_push_event_calls, 1);

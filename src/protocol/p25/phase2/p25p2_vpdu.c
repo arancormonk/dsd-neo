@@ -641,8 +641,10 @@ static void
 p25p2_vpdu_store_slot_svc(dsd_state* state, int slot, int svc) {
     if ((slot & 1) == 0) {
         state->dmr_so = (uint16_t)svc;
+        state->p25_service_options_valid[0] = 1;
     } else {
         state->dmr_soR = (uint16_t)svc;
+        state->p25_service_options_valid[1] = 1;
     }
 }
 
