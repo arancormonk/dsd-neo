@@ -147,6 +147,15 @@ expect_has_substr(const char* label, const char* haystack, const char* needle) {
 }
 
 static int
+expect_no_substr(const char* label, const char* haystack, const char* needle) {
+    if (haystack != NULL && needle != NULL && strstr(haystack, needle) != NULL) {
+        DSD_FPRINTF(stderr, "%s: unexpected '%s' in '%s'\n", label, needle, haystack);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_str_eq(const char* label, const char* got, const char* want) {
     if (got == NULL || want == NULL || strcmp(got, want) != 0) {
         DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", label, got ? got : "<null>", want ? want : "<null>");
@@ -778,6 +787,56 @@ test_p25_and_dmr_current_append_security_flags(void) {
     rc |= expect_has_substr("p25 enc flag", item->event_string, "ENC; ALG: 84; KID: 2222;");
     rc |= expect_has_substr("p25 emergency", item->event_string, "Emergency;");
     rc |= expect_has_substr("p25 private", item->event_string, "Private;");
+
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    state.lastp25type = 3;
+    state.lastsrc = 5790062U;
+    state.lasttg = 50061U;
+    state.gi[0] = 0;
+    state.nac = 0x293;
+    state.payload_algid = 0xBBU;
+    state.payload_keyid = 0xC021U;
+    state.dmr_so = 0;
+    watchdog_event_current(&opts, &state, 0);
+    item = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_no_substr("p25 clear grant ignores stale enc", item->event_string, "ENC;");
+    rc |= expect_no_substr("p25 clear grant ignores stale alg", item->event_string, "ALG:");
+    rc |= expect_int("p25 clear grant clears event alg", item->enc_alg, 0);
+    rc |= expect_int("p25 clear grant remains clear", item->enc, 0);
+
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    state.lastp25type = 3;
+    state.lastsrc = 5790062U;
+    state.lasttg = 50061U;
+    state.gi[0] = 0;
+    state.nac = 0x293;
+    state.payload_algid = 0xBBU;
+    state.payload_keyid = 0xC021U;
+    state.dmr_so = 0x40U;
+    watchdog_event_current(&opts, &state, 0);
+    item = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_has_substr("p25 grant service option keeps enc", item->event_string, "ENC;");
+    rc |= expect_no_substr("p25 grant service option omits stale alg", item->event_string, "ALG:");
+    rc |= expect_int("p25 grant service option clears event alg", item->enc_alg, 0);
+    rc |= expect_int("p25 grant service option encrypted", item->enc, 1);
+
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    state.lastp25type = 2;
+    state.lastsrc = 5790062U;
+    state.lasttg = 50061U;
+    state.gi[0] = 0;
+    state.nac = 0x293;
+    state.payload_algid = 0x84U;
+    state.payload_keyid = 0x2222U;
+    state.dmr_so = 0;
+    watchdog_event_current(&opts, &state, 0);
+    item = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_has_substr("p25 validated voice alg renders", item->event_string, "ENC; ALG: 84; KID: 2222;");
+    rc |= expect_int("p25 validated voice alg marks encrypted", item->enc, 1);
+    rc |= expect_int("p25 validated voice alg kept", item->enc_alg, 0x84);
     return rc;
 }
 

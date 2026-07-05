@@ -24,7 +24,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
@@ -323,19 +322,6 @@ hdu_read_and_fec(dsd_opts* opts, dsd_state* state, char hex_data[20][6], char he
 static void
 hdu_record_enc_lockout(dsd_opts* opts, dsd_state* state, int ttg) {
     if (ttg == 0) {
-        return;
-    }
-
-    char lockout_name_buf[50];
-    const char* lockout_name = "ENC LO";
-    dsd_tg_policy_entry lockout_entry;
-    if (dsd_tg_policy_lookup_label(state, (uint32_t)ttg, NULL, 0, lockout_name_buf, sizeof(lockout_name_buf))) {
-        lockout_name = lockout_name_buf;
-    }
-    if (dsd_tg_policy_make_exact_entry((uint32_t)ttg, "DE", lockout_name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
-                                       &lockout_entry)
-            != 0
-        || dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0) {
         return;
     }
 
