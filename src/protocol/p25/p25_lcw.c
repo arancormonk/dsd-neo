@@ -185,6 +185,7 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
 
     ctx->state->gi[0] = 0;
     ctx->state->dmr_so = ctx->lc_svcopt;
+    ctx->state->p25_service_options_valid[0] = 1;
     if (group != 0) {
         ctx->state->lasttg = group;
     }
@@ -218,6 +219,7 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     ctx->state->generic_talker_alias_src[0] = 0;
     ctx->state->gi[0] = 1;
     ctx->state->dmr_so = ctx->lc_svcopt;
+    ctx->state->p25_service_options_valid[0] = 1;
 
     p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
 }

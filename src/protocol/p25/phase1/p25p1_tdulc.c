@@ -323,6 +323,8 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     state->p25_call_emergency[0] = 0;
     state->p25_call_priority[0] = 0;
     state->p25_call_is_packet[0] = 0;
+    state->dmr_so = 0;
+    state->p25_service_options_valid[0] = 0;
 
     char dodeca_data[6][12];
     char dodeca_parity[6][12];

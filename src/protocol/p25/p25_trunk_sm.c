@@ -1345,6 +1345,10 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->payload_keyidR = 0;
         state->payload_miP = 0;
         state->payload_miN = 0;
+        state->dmr_so = 0;
+        state->dmr_soR = 0;
+        state->p25_service_options_valid[0] = 0;
+        state->p25_service_options_valid[1] = 0;
         state->p25_p2_enc_lockout_muted[0] = 0;
         state->p25_p2_enc_lockout_muted[1] = 0;
         state->p25_sm_release_count++;
@@ -2198,9 +2202,11 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
     if ((slot & 1) == 0) {
         state->lasttg = (uint32_t)tg;
         state->dmr_so = (uint16_t)svc_bits;
+        state->p25_service_options_valid[0] = (svc_bits != 0) ? 1U : 0U;
     } else {
         state->lasttgR = (uint32_t)tg;
         state->dmr_soR = (uint16_t)svc_bits;
+        state->p25_service_options_valid[1] = (svc_bits != 0) ? 1U : 0U;
     }
     state->gi[slot & 1] = 0;
 

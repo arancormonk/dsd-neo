@@ -591,10 +591,23 @@ watchdog_event_p25_has_current_voice_alg(const dsd_state* state) {
     return state->lastp25type == 1 || state->lastp25type == 2;
 }
 
+static int
+watchdog_event_p25_has_current_service_options(const dsd_state* state, uint8_t slot) {
+    if (state == NULL || !DSD_SYNC_IS_P25(state->lastsynctype)) {
+        return 0;
+    }
+    return state->p25_service_options_valid[slot & 1U] != 0 ? 1 : 0;
+}
+
 static void
-watchdog_event_current_normalize_p25_crypto(const dsd_state* state, watchdog_event_current_ctx* ctx) {
+watchdog_event_current_normalize_p25_crypto(const dsd_state* state, uint8_t slot, watchdog_event_current_ctx* ctx) {
     if (state == NULL || ctx == NULL || !DSD_SYNC_IS_P25(state->lastsynctype)) {
         return;
+    }
+
+    if (!watchdog_event_p25_has_current_service_options(state, slot)) {
+        ctx->svc_opts = 0;
+        ctx->enc = 0;
     }
 
     if (watchdog_event_p25_algid_is_encrypted(ctx->alg_id) && watchdog_event_p25_has_current_voice_alg(state)) {
@@ -1030,7 +1043,7 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
         watchdog_event_current_apply_slot0_overrides(opts, state, event_struct, &ctx);
     }
 
-    watchdog_event_current_normalize_p25_crypto(state, &ctx);
+    watchdog_event_current_normalize_p25_crypto(state, slot, &ctx);
     watchdog_event_current_load_labels(state, &ctx);
 
     const char* sys_string = dsd_synctype_to_string(state->lastsynctype);

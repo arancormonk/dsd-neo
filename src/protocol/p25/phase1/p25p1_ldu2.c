@@ -548,6 +548,7 @@ ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_error
 
     ldu2_record_enc_lockout(opts, state, state->lasttg);
     DSD_FPRINTF(stderr, " No Enc Following on P25p1 Trunking; Return to CC; \n");
+    state->p25_sm_force_release = 1;
     p25_sm_on_release(opts, state);
 }
 

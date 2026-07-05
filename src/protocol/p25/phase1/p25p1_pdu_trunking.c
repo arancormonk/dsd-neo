@@ -156,6 +156,9 @@ p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t*
 
 static void DSD_ATTR_USED
 p25_print_voice_svc_common(const dsd_opts* opts, dsd_state* state, int svc) {
+    state->dmr_so = (uint16_t)svc;
+    state->p25_service_options_valid[0] = 1;
+
     if (svc & 0x80) {
         DSD_FPRINTF(stderr, " Emergency");
         state->p25_call_emergency[0] = 1;

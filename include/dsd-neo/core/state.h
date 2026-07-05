@@ -931,9 +931,10 @@ struct dsd_state {
     uint32_t p25_src_nid; // 20-bit WACN from SUID extension
 
     // P25 current-call flags (per logical slot; FDMA uses slot 0)
-    uint8_t p25_call_emergency[2]; // 1 if current call is emergency
-    uint8_t p25_call_priority[2];  // 0..7 call priority (0 if unknown)
-    uint8_t p25_call_is_packet[2]; // 1 if call/service marked as packet (data), else 0
+    uint8_t p25_call_emergency[2];        // 1 if current call is emergency
+    uint8_t p25_call_priority[2];         // 0..7 call priority (0 if unknown)
+    uint8_t p25_call_is_packet[2];        // 1 if call/service marked as packet (data), else 0
+    uint8_t p25_service_options_valid[2]; // 1 when dmr_so/dmr_soR hold fresh P25 service options
 
     //experimental symbol file capture read throttle
     int symbol_throttle;                     //throttle speed

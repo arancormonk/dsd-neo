@@ -825,6 +825,7 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     ldu2_maybe_enc_lockout(&opts, &state, 0);
 
     rc |= expect_int("lockout release", g_release_calls, 1);
+    rc |= expect_int("lockout force release", state.p25_sm_force_release, 1);
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
     rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
     rc |= expect_int("lockout watchdog", g_watchdog_calls, 1);
@@ -833,9 +834,11 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     rc |= expect_int("lockout init event", g_init_event_calls, 1);
 
     reset_hook_counters();
+    state.p25_sm_force_release = 0;
     state.R = 0x1234U;
     ldu2_maybe_enc_lockout(&opts, &state, 0);
     rc |= expect_int("lockout skipped with key", g_release_calls, 0);
+    rc |= expect_int("lockout skipped force release", state.p25_sm_force_release, 0);
     rc |= expect_int("lockout skipped policy", g_policy_make_calls, 0);
     return rc;
 }

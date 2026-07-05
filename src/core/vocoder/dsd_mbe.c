@@ -855,6 +855,7 @@ static void
 mbe_slot_apply_straight_ks_left(dsd_state* state, char ambe_d[49]) {
     if (state->straight_ks == 1 && state->straight_mod > 0) {
         state->dmr_so = 0;
+        state->p25_service_options_valid[0] = 0;
         state->payload_algid = 0;
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
     }
@@ -864,6 +865,7 @@ static void
 mbe_slot_apply_straight_ks_right(dsd_state* state, char ambe_d[49]) {
     if (state->straight_ks == 1 && state->straight_mod > 0) {
         state->dmr_soR = 0;
+        state->p25_service_options_valid[1] = 0;
         state->payload_algidR = 0;
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
     }

@@ -782,6 +782,7 @@ test_p25_and_dmr_current_append_security_flags(void) {
     state.payload_algid = 0x84U;
     state.payload_keyid = 0x2222U;
     state.dmr_so = 0x80U;
+    state.p25_service_options_valid[0] = 1;
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_has_substr("p25 enc flag", item->event_string, "ENC; ALG: 84; KID: 2222;");
@@ -812,9 +813,27 @@ test_p25_and_dmr_current_append_security_flags(void) {
     state.lasttg = 50061U;
     state.gi[0] = 0;
     state.nac = 0x293;
+    state.payload_algid = 0;
+    state.payload_keyid = 0;
+    state.dmr_so = 0x40U;
+    state.p25_service_options_valid[0] = 0;
+    watchdog_event_current(&opts, &state, 0);
+    item = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_no_substr("p25 stale service option ignores enc", item->event_string, "ENC;");
+    rc |= expect_int("p25 stale service option clears svc", item->svc, 0);
+    rc |= expect_int("p25 stale service option remains clear", item->enc, 0);
+
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    state.lastp25type = 3;
+    state.lastsrc = 5790062U;
+    state.lasttg = 50061U;
+    state.gi[0] = 0;
+    state.nac = 0x293;
     state.payload_algid = 0xBBU;
     state.payload_keyid = 0xC021U;
     state.dmr_so = 0x40U;
+    state.p25_service_options_valid[0] = 1;
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_has_substr("p25 grant service option keeps enc", item->event_string, "ENC;");

@@ -277,6 +277,10 @@ p25_p2_teardown_call(dsd_opts* opts, dsd_state* state) {
     state->p25_call_emergency[1] = 0;
     state->p25_call_priority[0] = 0;
     state->p25_call_priority[1] = 0;
+    state->dmr_so = 0;
+    state->dmr_soR = 0;
+    state->p25_service_options_valid[0] = 0;
+    state->p25_service_options_valid[1] = 0;
     state->payload_algid = 0;
     state->payload_keyid = 0;
     state->payload_miP = 0ULL;
@@ -695,8 +699,10 @@ process_FACCHc(dsd_opts* opts, dsd_state* state) {
 
     if (state->currentslot == 0) {
         state->dmr_so = opcode;
+        state->p25_service_options_valid[0] = 0;
     } else {
         state->dmr_soR = opcode;
+        state->p25_service_options_valid[1] = 0;
     }
 
     if (ec >= 0) {
@@ -755,8 +761,10 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
 
     if (state->currentslot == 0) {
         state->dmr_so = opcode;
+        state->p25_service_options_valid[0] = 0;
     } else {
         state->dmr_soR = opcode;
+        state->p25_service_options_valid[1] = 0;
     }
 
     if (ec >= 0) {
@@ -812,8 +820,10 @@ process_SACCHc(dsd_opts* opts, dsd_state* state) {
     //set inverse true for SACCH
     if (state->currentslot == 0) {
         state->dmr_soR = opcode;
+        state->p25_service_options_valid[1] = 0;
     } else {
         state->dmr_so = opcode;
+        state->p25_service_options_valid[0] = 0;
     }
 
     if (ec >= 0) {
@@ -869,8 +879,10 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
     //set inverse true for SACCH
     if (state->currentslot == 0) {
         state->dmr_soR = opcode;
+        state->p25_service_options_valid[1] = 0;
     } else {
         state->dmr_so = opcode;
+        state->p25_service_options_valid[0] = 0;
     }
 
     if (ec >= 0) {
