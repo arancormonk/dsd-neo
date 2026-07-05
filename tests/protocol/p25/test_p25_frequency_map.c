@@ -216,11 +216,19 @@ main(void) {
         st.p25_pending_announcement_count = 1;
         st.p25_pending_announcements[0].populated = 1;
         st.p25_pending_announcements[0].channel = 0x4001;
+        dsd_state_set_trunk_chan_freq(&st, 0x0000U, 769000000L);
+        dsd_state_set_trunk_chan_freq(&st, 0x4001U, 851012500L);
+        uint64_t identity_map_seq = st.trunk_chan_map_seq;
         rc |= expect_eq_int("identity update applied", p25_update_system_identity(&st, 0xABCDE, 0x123), 1);
         rc |= expect_eq_long("identity update wacn", (long)st.p2_wacn, 0xABCDE);
         rc |= expect_eq_long("identity update sysid", (long)st.p2_sysid, 0x123);
         rc |= expect_eq_int("identity update clears iden", st.p25_iden_fdma[4].populated, 0);
         rc |= expect_eq_int("identity update clears pending", st.p25_pending_announcement_count, 0);
+        rc |= expect_eq_long("identity update clears chan0 cache", st.trunk_chan_map[0x0000], 0);
+        rc |= expect_eq_long("identity update clears chan cache", st.trunk_chan_map[0x4001], 0);
+        rc |= expect_eq_int("identity update clears chan used", (int)st.trunk_chan_map_used_count, 0);
+        int identity_map_seq_advanced = st.trunk_chan_map_seq > identity_map_seq ? 1 : 0;
+        rc |= expect_eq_int("identity update advances chan map seq", identity_map_seq_advanced, 1);
 
         static dsd_opts opts;
         DSD_MEMSET(&opts, 0, sizeof(opts));

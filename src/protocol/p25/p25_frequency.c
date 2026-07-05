@@ -60,6 +60,13 @@ p25_invalidate_chan_map_for_iden(dsd_state* state, int iden) {
     }
 }
 
+static void
+p25_invalidate_chan_map(dsd_state* state) {
+    for (int iden = 0; iden < 16; iden++) {
+        p25_invalidate_chan_map_for_iden(state, iden);
+    }
+}
+
 static int
 p25_auto_prefers_tdma(const dsd_state* state, int iden) {
     int explicit_hint = state->p25_chan_tdma_explicit[iden];
@@ -438,6 +445,7 @@ p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned l
 
     if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
         p25_reset_iden_tables(state);
+        p25_invalidate_chan_map(state);
     }
     state->p2_wacn = wacn;
     state->p2_sysid = sysid;
