@@ -29,12 +29,12 @@ enum {
     P25_FREQ_MODE_TDMA = 1,
 };
 
-static const int k_p25_slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+static const int k_p25_slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
 
 int
 p25_channel_type_is_tdma(int chan_type) {
     int type = chan_type & 0xF;
-    return (type == 3 || type == 4 || type == 5) ? 1 : 0;
+    return p25_channel_type_slots_per_carrier(type) > 1 ? 1 : 0;
 }
 
 int
@@ -344,7 +344,7 @@ p25_promote_iden_if_site_match(const dsd_state* state, p25_iden_entry_t* entry, 
 //     base[iden] is in units of 5 Hz (per IDEN_UP encoding),
 //     spacing[iden] is in units of 125 Hz,
 //     step = channel_number / slots_per_carrier[type]
-// - channel types and slots-per-carrier follow sdrtrunk's ChannelType mapping.
+// - channel types and slots-per-carrier follow the observed TDMA channel type mapping.
 long int
 process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel) {
     return p25_channel_to_freq_impl(opts, state, channel, P25_FREQ_MODE_AUTO, NULL);
@@ -479,6 +479,15 @@ p25_is_vhf_uhf_base_freq(long int base_freq) {
         return 1;
     }
     return 0;
+}
+
+int
+p25_iden_vu_bandwidth_hz(uint8_t bw_vu) {
+    switch (bw_vu & 0x0FU) {
+        case 0x4U: return 6250;
+        case 0x5U: return 12500;
+        default: return 0;
+    }
 }
 
 long int

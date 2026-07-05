@@ -85,6 +85,16 @@ p25_print_mbt_payload_hex(const uint8_t* mpdu_byte, int blks) {
 }
 
 static int
+p25_mbt_is_survey_broadcast(uint8_t opcode) {
+    return opcode == 0x3A || opcode == 0x3B || opcode == 0x3C || opcode == 0x3E;
+}
+
+static int
+p25_mbt_has_unsupported_survey_format(const p25p1_mbt_fields* fields) {
+    return fields && p25_mbt_is_survey_broadcast(fields->opcode) && fields->fmt != 0x17;
+}
+
+static int
 p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
         return 0;
@@ -96,13 +106,16 @@ p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) 
 static void DSD_ATTR_USED
 p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
                                 const p25p1_mbt_fields* fields) {
+    if (fields->fmt != 0x17) {
+        return;
+    }
     if (!((fields->opcode == 0x74 || fields->opcode == 0x7D || fields->opcode == 0x73 || fields->opcode == 0xF3
            || fields->opcode == 0x34 || fields->opcode == 0x3D)
           && fields->mfid < 2)) {
         return;
     }
 
-    int op_idx = (fields->fmt == 0x17) ? 7 : 12;
+    int op_idx = 7;
     int payload_off = op_idx + 1;
     int total_len = (12 * (fields->blks + 1));
     unsigned long long int MAC[24] = {0};
@@ -177,15 +190,14 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
     long int cr_freq = process_channel_to_freq(opts, state, channelr);
     UNUSED(cr_freq);
 
-    if (p25_cc_update_primary_from_network_status(opts, state, ct_freq)) {
+    int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, ct_freq);
+    const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
+    if (cc_metadata_allowed) {
+        p25_store_site_lra(state, (uint8_t)lra);
         state->p25_cc_is_tdma = 0;
 
-        if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
-            state->trunk_lcn_freq[0] = state->p25_cc_freq;
-        }
-
         if (state->p2_hardset == 0) {
-            if ((state->p2_wacn != 0 || state->p2_sysid != 0)
+            if (accepted_cc && (state->p2_wacn != 0 || state->p2_sysid != 0)
                 && (state->p2_wacn != (unsigned long long)wacn || state->p2_sysid != (unsigned long long)sysid)) {
                 p25_reset_iden_tables(state);
             }
@@ -193,6 +205,12 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
                 state->p2_wacn = wacn;
                 state->p2_sysid = sysid;
             }
+        }
+    }
+
+    if (accepted_cc) {
+        if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
+            state->trunk_lcn_freq[0] = state->p25_cc_freq;
         }
 
         const long neigh[1] = {ct_freq};
@@ -238,49 +256,30 @@ p25_handle_mbt_rfss_status_broadcast(dsd_opts* opts, dsd_state* state, const uin
 
 static void DSD_ATTR_USED
 p25_handle_mbt_adjacent_status_broadcast(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
-    int lra = mpdu_byte[3];
-    int cfva = mpdu_byte[4] >> 4;
     int lsysid = ((mpdu_byte[4] & 0xF) << 8) | mpdu_byte[5];
     int rfssid = mpdu_byte[8];
     int siteid = mpdu_byte[9];
     int channelt = (mpdu_byte[12] << 8) | mpdu_byte[13];
-    int channelr = (mpdu_byte[14] << 8) | mpdu_byte[15];
-    int sysclass = mpdu_byte[16];
-    long int wacn = (mpdu_byte[17] << 12) | (mpdu_byte[18] << 4) | (mpdu_byte[19] >> 4);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Adjacent Status Broadcast - Extended\n");
-    DSD_FPRINTF(stderr,
-                "  LRA [%02X] CFVA [%X] RFSS[%03d] SITE [%03d] SYSID [%03X]\n  CHAN-T [%04X] CHAN-R [%04X] SSC [%02X] "
-                "WACN [%05lX]\n  ",
-                lra, cfva, rfssid, siteid, lsysid, channelt, channelr, sysclass, wacn);
+    DSD_FPRINTF(stderr, "  SYSID [%03X] RFSS[%03d] SITE [%03d] CHAN-T [%04X]\n  ", lsysid, rfssid, siteid, channelt);
 
-    if (cfva & 0x8) {
-        DSD_FPRINTF(stderr, " Conventional");
-    }
-    if (cfva & 0x4) {
-        DSD_FPRINTF(stderr, " Failure Condition");
-    }
-    if (cfva & 0x2) {
-        DSD_FPRINTF(stderr, " Up to Date (Correct)");
-    } else {
-        DSD_FPRINTF(stderr, " Last Known");
-    }
-    if (cfva & 0x1) {
-        DSD_FPRINTF(stderr, " Valid RFSS Connection Active");
-    }
-
-    long int f3 = process_channel_to_freq(opts, state, channelt);
-    (void)process_channel_to_freq(opts, state, channelr);
-    if (f3 > 0) {
-        p25_nb_add_ex(state, f3, (uint16_t)lsysid, (uint8_t)rfssid, (uint8_t)siteid, (uint8_t)cfva);
-    }
+    const p25_neighbor_channel_announcement_t announcement = {
+        .channel = (uint16_t)channelt,
+        .sysid = (uint16_t)lsysid,
+        .rfss = (uint8_t)rfssid,
+        .site = (uint8_t)siteid,
+    };
+    (void)p25_announce_neighbor_channel_ex(opts, state, &announcement);
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_protection_parameter_broadcast(void) {
+p25_handle_mbt_protection_parameter_broadcast(dsd_state* state, const uint8_t* mpdu_byte) {
+    uint8_t algid = mpdu_byte ? mpdu_byte[8] : 0;
     DSD_FPRINTF(stderr, "%s", KYEL);
-    DSD_FPRINTF(stderr, "\n Protection Parameter Broadcast MBT - trunking state unchanged");
+    DSD_FPRINTF(stderr, "\n Protection Parameter Broadcast MBT - protected CC ALGID [%02X]", algid);
+    p25_store_protected_control_channel(state, algid);
 }
 
 static void DSD_ATTR_USED
@@ -553,6 +552,11 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_by
     p25_print_mbt_header(&fields);
     p25_mbt_try_bridge_iden_updates(opts, state, mpdu_byte, &fields);
 
+    if (p25_mbt_has_unsupported_survey_format(&fields)) {
+        DSD_FPRINTF(stderr, " - broadcast format %02X not handled", fields.fmt);
+        return;
+    }
+
     if (fields.opcode == 0x3B) {
         p25_handle_mbt_net_sts_broadcast(opts, state, mpdu_byte);
     } else if (fields.opcode == 0x3A) {
@@ -560,7 +564,7 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_by
     } else if (fields.opcode == 0x3C) {
         p25_handle_mbt_adjacent_status_broadcast(opts, state, mpdu_byte);
     } else if (fields.opcode == 0x3E) {
-        p25_handle_mbt_protection_parameter_broadcast();
+        p25_handle_mbt_protection_parameter_broadcast(state, mpdu_byte);
     } else if (fields.opcode == 0x33) {
         p25_handle_mbt_tdma_iden_foreign_system(mpdu_byte);
     } else if (fields.opcode == 0x0) {

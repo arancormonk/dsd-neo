@@ -275,12 +275,45 @@ main(void) {
         int sid = 0;
         int nb_count = 0;
         long nb_freqs[P25_NB_MAX];
+        uint32_t nb_wacn[P25_NB_MAX];
+        int nb_wacn_valid[P25_NB_MAX];
+        int nb_sysid[P25_NB_MAX];
+        int nb_rfss[P25_NB_MAX];
+        int nb_site[P25_NB_MAX];
+        int nb_cfva[P25_NB_MAX];
+        int nb_lra[P25_NB_MAX];
+        int nb_lra_valid[P25_NB_MAX];
+        int nb_cfva_valid[P25_NB_MAX];
         DSD_MEMSET(nb_freqs, 0, sizeof(nb_freqs));
+        DSD_MEMSET(nb_wacn, 0, sizeof(nb_wacn));
+        DSD_MEMSET(nb_wacn_valid, 0, sizeof(nb_wacn_valid));
+        DSD_MEMSET(nb_sysid, 0, sizeof(nb_sysid));
+        DSD_MEMSET(nb_rfss, 0, sizeof(nb_rfss));
+        DSD_MEMSET(nb_site, 0, sizeof(nb_site));
+        DSD_MEMSET(nb_cfva, 0, sizeof(nb_cfva));
+        DSD_MEMSET(nb_lra, 0, sizeof(nb_lra));
+        DSD_MEMSET(nb_lra_valid, 0, sizeof(nb_lra_valid));
+        DSD_MEMSET(nb_cfva_valid, 0, sizeof(nb_cfva_valid));
         (void)cc;
         (void)w;
         (void)sid;
         p25_test_iden_config cfg = {iden, type, tdma, base5, spac125};
-        p25_test_mbt_outputs outputs = {&cc, &w, &sid, &nb_count, nb_freqs};
+        p25_test_mbt_outputs outputs = {
+            .cc = &cc,
+            .wacn = &w,
+            .sysid = &sid,
+            .nb_count = &nb_count,
+            .nb_freqs = nb_freqs,
+            .nb_wacn = nb_wacn,
+            .nb_wacn_valid = nb_wacn_valid,
+            .nb_sysid = nb_sysid,
+            .nb_rfss = nb_rfss,
+            .nb_site = nb_site,
+            .nb_cfva = nb_cfva,
+            .nb_lra = nb_lra,
+            .nb_lra_valid = nb_lra_valid,
+            .nb_cfva_valid = nb_cfva_valid,
+        };
         int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &cfg, &outputs);
         if (sh != 0) {
             return 30;
@@ -290,10 +323,19 @@ main(void) {
         long want2 = 851000000 + 5 * 100 * 125;  // 851.0625 MHz
         rc |= expect_eq_long("adj nb_count", (long)nb_count, 1L);
         rc |= expect_eq_long("adj nb f1", nb_freqs[0], want1);
+        rc |= expect_eq_long("adj nb wacn invalid", nb_wacn_valid[0], 0);
+        rc |= expect_eq_long("adj nb wacn zero", nb_wacn[0], 0);
+        rc |= expect_eq_long("adj nb sysid", nb_sysid[0], 0x123);
+        rc |= expect_eq_long("adj nb rfss", nb_rfss[0], 4);
+        rc |= expect_eq_long("adj nb site", nb_site[0], 5);
+        rc |= expect_eq_long("adj nb cfva", nb_cfva[0], 0);
+        rc |= expect_eq_long("adj nb lra invalid", nb_lra_valid[0], 0);
+        rc |= expect_eq_long("adj nb lra zero", nb_lra[0], 0);
+        rc |= expect_eq_long("adj nb cfva invalid", nb_cfva_valid[0], 0);
         (void)want2;
     }
 
-    // Case C: AMBTC opcode 0x3E is Protection Parameter Broadcast in sdrtrunk,
+    // Case C: AMBTC opcode 0x3E is Protection Parameter Broadcast in common decoders,
     // not RFSS Status. It must not update trunking identity or current CC.
     {
         uint8_t mbt[48];
@@ -305,6 +347,7 @@ main(void) {
         mbt[5] = 0x23;
         mbt[6] = 0x02;  // blks
         mbt[7] = 0x3E;  // Protection Parameter Broadcast
+        mbt[8] = 0x84;  // ALGID carried in the MBT header
         mbt[12] = 0x04; // data block bytes that used to be misread as RFSS/site/channel
         mbt[13] = 0x05;
         mbt[14] = 0x10;
@@ -314,7 +357,17 @@ main(void) {
 
         long cc = -1, w = -1;
         int sid = -1;
-        int sh = p25_test_decode_mbt_with_iden(mbt, (int)sizeof(mbt), iden, type, tdma, base5, spac125, &cc, &w, &sid);
+        int cc_prot_valid = 0;
+        int cc_prot_algid = 0;
+        p25_test_iden_config cfg = {iden, type, tdma, base5, spac125};
+        p25_test_mbt_outputs outputs = {
+            .cc = &cc,
+            .wacn = &w,
+            .sysid = &sid,
+            .cc_prot_valid = &cc_prot_valid,
+            .cc_prot_algid = &cc_prot_algid,
+        };
+        int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &cfg, &outputs);
         if (sh != 0) {
             return 40;
         }
@@ -322,6 +375,90 @@ main(void) {
         rc |= expect_eq_long("ambtc_0x3e_cc_unchanged", cc, 0);
         rc |= expect_eq_long("ambtc_0x3e_wacn_unchanged", w, 0);
         rc |= expect_eq_long("ambtc_0x3e_sysid_unchanged", sid, 0);
+        rc |= expect_eq_long("ambtc_0x3e_cc_prot_valid", cc_prot_valid, 1);
+        rc |= expect_eq_long("ambtc_0x3e_cc_prot_algid", cc_prot_algid, 0x84);
+    }
+
+    // Survey-style MBT broadcast handling is limited to Extended Format 0x17.
+    // A non-extended 0x3C must not populate adjacent-site state.
+    {
+        uint8_t mbt[48];
+        DSD_MEMSET(mbt, 0, sizeof(mbt));
+        mbt[0] = 0x16;  // non-extended format
+        mbt[2] = 0x00;  // MFID standard
+        mbt[6] = 0x02;  // blks
+        mbt[12] = 0x3C; // opcode source for non-extended MBT parsing
+        mbt[13] = 0x10;
+        mbt[14] = 0x0A;
+
+        long cc = -1, w = -1;
+        int sid = -1;
+        int nb_count = -1;
+        long nb_freqs[P25_NB_MAX];
+        DSD_MEMSET(nb_freqs, 0, sizeof(nb_freqs));
+        p25_test_iden_config cfg = {iden, type, tdma, base5, spac125};
+        p25_test_mbt_outputs outputs = {
+            .cc = &cc,
+            .wacn = &w,
+            .sysid = &sid,
+            .nb_count = &nb_count,
+            .nb_freqs = nb_freqs,
+        };
+        int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &cfg, &outputs);
+        if (sh != 0) {
+            return 45;
+        }
+
+        rc |= expect_eq_long("mbt_non_extended_cc_unchanged", cc, 0);
+        rc |= expect_eq_long("mbt_non_extended_wacn_unchanged", w, 0);
+        rc |= expect_eq_long("mbt_non_extended_sysid_unchanged", sid, 0);
+        rc |= expect_eq_long("mbt_non_extended_nb_count", nb_count, 0);
+        rc |= expect_eq_long("mbt_non_extended_nb_freq0", nb_freqs[0], 0);
+    }
+
+    // MBT NET_STS retains WACN/SysID/LRA metadata even when CHAN-T cannot
+    // resolve yet; it must not promote an unresolved channel to current CC.
+    {
+        uint8_t mbt[48];
+        DSD_MEMSET(mbt, 0, sizeof(mbt));
+        mbt[0] = 0x17;  // ALT format
+        mbt[2] = 0x00;  // MFID standard
+        mbt[3] = 0x44;  // LRA
+        mbt[4] = 0x01;  // SYSID hi-nibble
+        mbt[5] = 0x23;  // SYSID lo
+        mbt[6] = 0x02;  // blks
+        mbt[7] = 0x3B;  // NET_STS_BCST
+        mbt[12] = 0xAB; // WACN 0xABCDE
+        mbt[13] = 0xCD;
+        mbt[14] = 0xE0;
+        mbt[15] = 0x80; // CHAN-T 0x800A uses unknown IDEN 8
+        mbt[16] = 0x0A;
+        mbt[17] = 0x80;
+        mbt[18] = 0x0B;
+        mbt[19] = 0x01;
+
+        long cc = -1, w = -1;
+        int sid = -1;
+        int site_lra = -1;
+        int site_lra_valid = 0;
+        p25_test_iden_config cfg = {iden, type, tdma, base5, spac125};
+        p25_test_mbt_outputs outputs = {
+            .cc = &cc,
+            .wacn = &w,
+            .sysid = &sid,
+            .site_lra = &site_lra,
+            .site_lra_valid = &site_lra_valid,
+        };
+        int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &cfg, &outputs);
+        if (sh != 0) {
+            return 46;
+        }
+
+        rc |= expect_eq_long("mbt_net_sts_unknown_iden_cc_empty", cc, 0);
+        rc |= expect_eq_long("mbt_net_sts_unknown_iden_wacn", w, 0xABCDE);
+        rc |= expect_eq_long("mbt_net_sts_unknown_iden_sysid", sid, 0x123);
+        rc |= expect_eq_long("mbt_net_sts_unknown_iden_lra", site_lra, 0x44);
+        rc |= expect_eq_long("mbt_net_sts_unknown_iden_lra_valid", site_lra_valid, 1);
     }
 
     {
@@ -345,7 +482,11 @@ main(void) {
         long nb_freqs[P25_NB_MAX];
         DSD_MEMSET(nb_freqs, 0x7F, sizeof(nb_freqs));
         p25_test_iden_config bad_cfg = {/*iden*/ 16, type, tdma, base5, spac125};
-        p25_test_mbt_outputs outputs = {&cc, NULL, NULL, &nb_count, nb_freqs};
+        p25_test_mbt_outputs outputs = {
+            .cc = &cc,
+            .nb_count = &nb_count,
+            .nb_freqs = nb_freqs,
+        };
         int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &bad_cfg, &outputs);
         rc |= expect_eq_long("invalid nb iden rejected", sh, -2);
         rc |= expect_eq_long("invalid nb iden preserves cc", cc, 444);

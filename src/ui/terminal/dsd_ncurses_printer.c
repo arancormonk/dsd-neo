@@ -1221,6 +1221,9 @@ ui_render_p25_metric_toggles(const dsd_opts* opts, const dsd_state* state) {
         ui_print_header("P25 CC Candidates");
         ui_print_p25_cc_candidates(opts, state);
         ui_print_hr();
+        ui_print_header("P25 Secondary CCs");
+        ui_print_p25_secondary_ccs(opts, state);
+        ui_print_hr();
     }
     if (opts->frontend_display.show_p25_neighbors == 1) {
         ui_print_header("P25 Neighbors");

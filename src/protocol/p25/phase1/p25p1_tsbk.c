@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -379,18 +380,20 @@ tsbk_handle_isp_messages(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
 
 static void
 tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int lra = tsbk_byte[2];
     long int wacn = (tsbk_byte[3] << 12) | (tsbk_byte[4] << 4) | (tsbk_byte[5] >> 4);
     int sysid = ((tsbk_byte[5] & 0xF) << 8) | tsbk_byte[6];
     int channel = (tsbk_byte[7] << 8) | tsbk_byte[8];
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Network Status Broadcast TSBK - Abbreviated \n");
-    DSD_FPRINTF(stderr, "  WACN [%05lX] SYSID [%03X] NAC [%03llX]", wacn, sysid, state->p2_cc);
+    DSD_FPRINTF(stderr, "  LRA [%02X] WACN [%05lX] SYSID [%03X] NAC [%03llX]", lra, wacn, sysid, state->p2_cc);
     if (opts->frontend_display.show_p25_callsign_decode) {
         char callsign[7];
         p25_wacn_sysid_to_callsign((uint32_t)wacn, (uint16_t)sysid, callsign);
         DSD_FPRINTF(stderr, " [%s]", callsign);
     }
     long int cc_freq = process_channel_to_freq(opts, state, channel);
+    p25_store_site_lra(state, (uint8_t)lra);
     int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
     const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
     if (cc_metadata_allowed) {

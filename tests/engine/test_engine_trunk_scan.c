@@ -14,6 +14,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -579,10 +580,20 @@ seed_target0_p25_state(dsd_state* state) {
     state->p25_prot_valid = 1;
     state->p25_prot_algid = 0x80;
     state->p25_prot_kid = 0x1234;
+    state->p25_cc_prot_valid = 1;
+    state->p25_cc_prot_algid = 0x84;
     state->p25_sys_time_valid = 1;
     state->p25_sys_time = 123456;
     state->p25_sys_time_offset_valid = 1;
     state->p25_sys_time_offset = -300;
+    state->p25_sys_services_valid = 1;
+    state->p25_sys_services_available = 0xABCDEF;
+    state->p25_sys_services_supported = 0x123456;
+    state->p25_sys_services_request_priority = 7;
+    state->p25_site_lra_valid = 1;
+    state->p25_site_lra = 0x22;
+    state->p25_site_network_active_valid = 1;
+    state->p25_site_network_active = 1;
     state->p25_patch_count = 1;
     state->p25_patch_sgid[0] = 100;
     state->p25_patch_is_patch[0] = 1;
@@ -605,11 +616,37 @@ seed_target0_p25_state(dsd_state* state) {
     state->p25_ga_last_seen[0] = 333;
     state->p25_nb_count = 1;
     state->p25_nb_entries[0].freq = 851500000;
+    state->p25_nb_entries[0].wacn = 0xABCDE;
+    state->p25_nb_entries[0].wacn_valid = 1;
     state->p25_nb_entries[0].sysid = 0x123;
     state->p25_nb_entries[0].rfss = 1;
     state->p25_nb_entries[0].site = 2;
     state->p25_nb_entries[0].cfva = 3;
+    state->p25_nb_entries[0].lra = 0x55;
+    state->p25_nb_entries[0].lra_valid = 1;
+    state->p25_nb_entries[0].cfva_valid = 1;
     state->p25_nb_entries[0].last_seen = 444;
+    state->p25_secondary_cc_count = 1;
+    state->p25_secondary_cc_entries[0].freq = 851625000;
+    state->p25_secondary_cc_entries[0].channel = 0x1012;
+    state->p25_secondary_cc_entries[0].rfss = 1;
+    state->p25_secondary_cc_entries[0].site = 2;
+    state->p25_secondary_cc_entries[0].ssc = 0xA5;
+    state->p25_secondary_cc_entries[0].last_seen = 446;
+    state->p25_pending_announcement_count = 1;
+    state->p25_pending_announcements[0].populated = 1;
+    state->p25_pending_announcements[0].kind = P25_PENDING_ANNOUNCEMENT_NEIGHBOR;
+    state->p25_pending_announcements[0].rfss = 1;
+    state->p25_pending_announcements[0].site = 2;
+    state->p25_pending_announcements[0].cfva = 3;
+    state->p25_pending_announcements[0].lra = 0x55;
+    state->p25_pending_announcements[0].wacn_valid = 1;
+    state->p25_pending_announcements[0].lra_valid = 1;
+    state->p25_pending_announcements[0].cfva_valid = 1;
+    state->p25_pending_announcements[0].sysid = 0x123;
+    state->p25_pending_announcements[0].channel = 0x300A;
+    state->p25_pending_announcements[0].wacn = 0xABCDE;
+    state->p25_pending_announcements[0].last_seen = 445;
     state->p25_src_nid = 0xABCDE;
     state->p25_call_emergency[0] = 1;
     state->p25_call_priority[0] = 7;
@@ -621,10 +658,20 @@ seed_target1_p25_state(dsd_state* state) {
     state->p25_prot_valid = 1;
     state->p25_prot_algid = 0x81;
     state->p25_prot_kid = 0x7777;
+    state->p25_cc_prot_valid = 1;
+    state->p25_cc_prot_algid = 0x81;
     state->p25_sys_time_valid = 1;
     state->p25_sys_time = 654321;
     state->p25_sys_time_offset_valid = 1;
     state->p25_sys_time_offset = 60;
+    state->p25_sys_services_valid = 1;
+    state->p25_sys_services_available = 0x111111;
+    state->p25_sys_services_supported = 0x222222;
+    state->p25_sys_services_request_priority = 3;
+    state->p25_site_lra_valid = 1;
+    state->p25_site_lra = 0x33;
+    state->p25_site_network_active_valid = 1;
+    state->p25_site_network_active = 0;
     state->p25_patch_count = 1;
     state->p25_patch_sgid[0] = 900;
     state->p25_patch_is_patch[0] = 0;
@@ -647,11 +694,29 @@ seed_target1_p25_state(dsd_state* state) {
     state->p25_ga_last_seen[0] = 907;
     state->p25_nb_count = 1;
     state->p25_nb_entries[0].freq = 852500000;
+    state->p25_nb_entries[0].wacn = 0x77777;
+    state->p25_nb_entries[0].wacn_valid = 1;
     state->p25_nb_entries[0].sysid = 0x777;
     state->p25_nb_entries[0].rfss = 7;
     state->p25_nb_entries[0].site = 8;
     state->p25_nb_entries[0].cfva = 9;
+    state->p25_nb_entries[0].cfva_valid = 1;
     state->p25_nb_entries[0].last_seen = 908;
+    state->p25_secondary_cc_count = 1;
+    state->p25_secondary_cc_entries[0].freq = 852625000;
+    state->p25_secondary_cc_entries[0].channel = 0x2002;
+    state->p25_secondary_cc_entries[0].rfss = 7;
+    state->p25_secondary_cc_entries[0].site = 8;
+    state->p25_secondary_cc_entries[0].ssc = 0x09;
+    state->p25_secondary_cc_entries[0].last_seen = 910;
+    state->p25_pending_announcement_count = 1;
+    state->p25_pending_announcements[0].populated = 1;
+    state->p25_pending_announcements[0].kind = P25_PENDING_ANNOUNCEMENT_SECONDARY_CC;
+    state->p25_pending_announcements[0].rfss = 7;
+    state->p25_pending_announcements[0].site = 8;
+    state->p25_pending_announcements[0].ssc = 9;
+    state->p25_pending_announcements[0].channel = 0x400B;
+    state->p25_pending_announcements[0].last_seen = 909;
     state->p25_src_nid = 0x77777;
     state->p25_call_emergency[0] = 0;
     state->p25_call_priority[0] = 2;
@@ -660,9 +725,12 @@ seed_target1_p25_state(dsd_state* state) {
 
 static int
 expect_empty_target_p25_state(const dsd_state* state) {
-    if (state->p25_prot_valid != 0 || state->p25_sys_time_valid != 0 || state->p25_patch_count != 0
-        || state->p25_aff_count != 0 || state->p25_ga_count != 0 || state->p25_nb_count != 0 || state->p25_src_nid != 0
-        || state->p25_call_emergency[0] != 0 || state->p25_call_priority[0] != 0 || state->p25_call_is_packet[0] != 0) {
+    if (state->p25_prot_valid != 0 || state->p25_cc_prot_valid != 0 || state->p25_sys_time_valid != 0
+        || state->p25_sys_services_valid != 0 || state->p25_site_lra_valid != 0
+        || state->p25_site_network_active_valid != 0 || state->p25_patch_count != 0 || state->p25_aff_count != 0
+        || state->p25_ga_count != 0 || state->p25_nb_count != 0 || state->p25_secondary_cc_count != 0
+        || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0 || state->p25_call_emergency[0] != 0
+        || state->p25_call_priority[0] != 0 || state->p25_call_is_packet[0] != 0) {
         DSD_FPRINTF(stderr, "target 0 P25 state leaked into empty target 1 snapshot\n");
         return 1;
     }
@@ -673,8 +741,12 @@ static int
 expect_target0_p25_state(const dsd_state* state) {
     int test_rc = 0;
     if (state->p25_prot_valid != 1 || state->p25_prot_algid != 0x80 || state->p25_prot_kid != 0x1234
-        || state->p25_sys_time_valid != 1 || state->p25_sys_time != 123456 || state->p25_sys_time_offset_valid != 1
-        || state->p25_sys_time_offset != -300) {
+        || state->p25_cc_prot_valid != 1 || state->p25_cc_prot_algid != 0x84 || state->p25_sys_time_valid != 1
+        || state->p25_sys_time != 123456 || state->p25_sys_time_offset_valid != 1 || state->p25_sys_time_offset != -300
+        || state->p25_sys_services_valid != 1 || state->p25_sys_services_available != 0xABCDEF
+        || state->p25_sys_services_supported != 0x123456 || state->p25_sys_services_request_priority != 7
+        || state->p25_site_lra_valid != 1 || state->p25_site_lra != 0x22 || state->p25_site_network_active_valid != 1
+        || state->p25_site_network_active != 1) {
         DSD_FPRINTF(stderr, "P25 protection/time state leaked across scan targets\n");
         test_rc = 1;
     }
@@ -694,11 +766,32 @@ expect_target0_p25_state(const dsd_state* state) {
         test_rc = 1;
     }
     if (state->p25_nb_count != 1 || state->p25_nb_entries[0].freq != 851500000
+        || state->p25_nb_entries[0].wacn_valid != 1 || state->p25_nb_entries[0].wacn != 0xABCDE
         || state->p25_nb_entries[0].sysid != 0x123 || state->p25_nb_entries[0].rfss != 1
         || state->p25_nb_entries[0].site != 2 || state->p25_nb_entries[0].cfva != 3
-        || state->p25_nb_entries[0].last_seen != 444 || state->p25_src_nid != 0xABCDE
-        || state->p25_call_emergency[0] != 1 || state->p25_call_priority[0] != 7 || state->p25_call_is_packet[0] != 1) {
+        || state->p25_nb_entries[0].lra != 0x55 || state->p25_nb_entries[0].lra_valid != 1
+        || state->p25_nb_entries[0].cfva_valid != 1 || state->p25_nb_entries[0].last_seen != 444
+        || state->p25_src_nid != 0xABCDE || state->p25_call_emergency[0] != 1 || state->p25_call_priority[0] != 7
+        || state->p25_call_is_packet[0] != 1) {
         DSD_FPRINTF(stderr, "P25 neighbor/current-call state leaked across scan targets\n");
+        test_rc = 1;
+    }
+    if (state->p25_secondary_cc_count != 1 || state->p25_secondary_cc_entries[0].freq != 851625000
+        || state->p25_secondary_cc_entries[0].channel != 0x1012 || state->p25_secondary_cc_entries[0].rfss != 1
+        || state->p25_secondary_cc_entries[0].site != 2 || state->p25_secondary_cc_entries[0].ssc != 0xA5
+        || state->p25_secondary_cc_entries[0].last_seen != 446) {
+        DSD_FPRINTF(stderr, "P25 secondary CC state leaked across scan targets\n");
+        test_rc = 1;
+    }
+    if (state->p25_pending_announcement_count != 1 || state->p25_pending_announcements[0].populated != 1
+        || state->p25_pending_announcements[0].kind != P25_PENDING_ANNOUNCEMENT_NEIGHBOR
+        || state->p25_pending_announcements[0].rfss != 1 || state->p25_pending_announcements[0].site != 2
+        || state->p25_pending_announcements[0].cfva != 3 || state->p25_pending_announcements[0].lra != 0x55
+        || state->p25_pending_announcements[0].wacn_valid != 1 || state->p25_pending_announcements[0].lra_valid != 1
+        || state->p25_pending_announcements[0].cfva_valid != 1 || state->p25_pending_announcements[0].sysid != 0x123
+        || state->p25_pending_announcements[0].channel != 0x300A || state->p25_pending_announcements[0].wacn != 0xABCDE
+        || state->p25_pending_announcements[0].last_seen != 445) {
+        DSD_FPRINTF(stderr, "P25 pending announcement state leaked across scan targets\n");
         test_rc = 1;
     }
     return test_rc;

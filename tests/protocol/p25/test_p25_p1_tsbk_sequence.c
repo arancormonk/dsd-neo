@@ -12,6 +12,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -272,6 +273,12 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
 void
 p25_confirm_idens_for_current_site(dsd_state* state) {
     (void)state;
+}
+
+void
+p25_store_site_lra(dsd_state* state, uint8_t lra) {
+    (void)state;
+    (void)lra;
 }
 
 void

@@ -49,6 +49,81 @@ ui_snapshot_copy_range(dsd_state* dst, const dsd_state* src, size_t begin, size_
     DSD_MEMCPY((char*)dst + begin, (const char*)src + begin, end - begin);
 }
 
+static int
+frontend_snapshot_p25_iden_vu_bandwidth_hz(uint8_t bw_vu) {
+    switch (bw_vu & 0x0FU) {
+        case 0x4U: return 6250;
+        case 0x5U: return 12500;
+        default: return 0;
+    }
+}
+
+static const char*
+frontend_snapshot_p25_system_service_name_for_bit(unsigned int service_bit) {
+    static const char* const k_service_names[24] = {
+        NULL,
+        NULL,
+        "network active",
+        NULL,
+        "group voice",
+        "individual voice",
+        "PSTN-unit voice",
+        "unit-PSTN voice",
+        NULL,
+        "group data",
+        "individual data",
+        NULL,
+        "unit registration",
+        "group affiliation",
+        "group affiliation query",
+        "authentication",
+        "encryption",
+        "user status",
+        "user message",
+        "unit status",
+        "user status query",
+        "unit status query",
+        "unit page",
+        "emergency alarm",
+    };
+    if (service_bit < 1U || service_bit > 24U) {
+        return NULL;
+    }
+    return k_service_names[service_bit - 1U];
+}
+
+static size_t
+frontend_snapshot_format_p25_system_service_names(uint32_t service_mask, char* out, size_t out_len) {
+    if (out && out_len > 0U) {
+        out[0] = '\0';
+    }
+    size_t count = 0U;
+    size_t used = 0U;
+    for (unsigned int bit = 1U; bit <= 24U; bit++) {
+        const char* name = frontend_snapshot_p25_system_service_name_for_bit(bit);
+        if (!name || ((service_mask >> (24U - bit)) & 1U) == 0U) {
+            continue;
+        }
+        count++;
+        if (!out || out_len == 0U || used >= out_len - 1U) {
+            continue;
+        }
+        const char* sep = (used > 0U) ? ", " : "";
+        int wrote = DSD_SNPRINTF(out + used, out_len - used, "%s%s", sep, name);
+        if (wrote < 0) {
+            out[used] = '\0';
+            continue;
+        }
+        if ((size_t)wrote >= out_len - used) {
+            used = out_len - 1U;
+            out[used] = '\0';
+        } else {
+            used += (size_t)wrote;
+        }
+    }
+    return count;
+}
+
 static void
 ui_snapshot_copy_trunk_cc_candidates(dsd_state* dst, const dsd_state* src, dsd_trunk_cc_candidates* backing) {
     const dsd_trunk_cc_candidates* cc_candidates =
@@ -680,11 +755,44 @@ frontend_snapshot_copy_p25_neighbors(dsd_frontend_snapshot* out, const dsd_state
         }
         dsd_frontend_p25_neighbor_summary* dst = &out->p25.neighbors[out->p25.neighbor_count++];
         dst->present = 1U;
+        dst->wacn = src->wacn;
+        dst->wacn_valid = src->wacn_valid;
         dst->freq_hz = src->freq;
         dst->sysid = src->sysid;
         dst->rfss = src->rfss;
         dst->site = src->site;
         dst->cfva = src->cfva;
+        dst->lra = src->lra;
+        dst->lra_valid = src->lra_valid;
+        dst->cfva_valid = src->cfva_valid;
+        dst->last_seen_unix_s = (int64_t)src->last_seen;
+    }
+}
+
+static void
+frontend_snapshot_copy_p25_secondary_ccs(dsd_frontend_snapshot* out, const dsd_state* state) {
+    if (!out || !state) {
+        return;
+    }
+    int count = state->p25_secondary_cc_count;
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > DSD_FRONTEND_P25_SECONDARY_CC_MAX) {
+        count = DSD_FRONTEND_P25_SECONDARY_CC_MAX;
+    }
+    for (int i = 0; i < count; i++) {
+        const p25_secondary_cc_entry_t* src = &state->p25_secondary_cc_entries[i];
+        if (src->freq == 0) {
+            continue;
+        }
+        dsd_frontend_p25_secondary_cc_summary* dst = &out->p25.secondary_ccs[out->p25.secondary_cc_count++];
+        dst->present = 1U;
+        dst->channel = src->channel;
+        dst->rfss = src->rfss;
+        dst->site = src->site;
+        dst->system_service_class = src->ssc;
+        dst->freq_hz = src->freq;
         dst->last_seen_unix_s = (int64_t)src->last_seen;
     }
 }
@@ -701,6 +809,7 @@ frontend_snapshot_copy_p25_iden_entry(dsd_frontend_snapshot* out, int id, int td
     dst->trust = src->trust;
     dst->channel_type = (uint8_t)src->chan_type;
     dst->bandwidth = src->bw_vu;
+    dst->bandwidth_hz = frontend_snapshot_p25_iden_vu_bandwidth_hz(src->bw_vu);
     dst->base_freq_hz = src->base_freq * 5L;
     dst->spacing_hz = src->chan_spac * 125;
     dst->transmit_offset = src->trans_off;
@@ -772,6 +881,26 @@ frontend_snapshot_copy_state_scalars(dsd_frontend_snapshot* out, const dsd_state
     out->p25.p25_p2_audio_ring_count[1] = state->p25_p2_audio_ring_count[1];
     out->p25.p25_p2_audio_allowed[0] = state->p25_p2_audio_allowed[0];
     out->p25.p25_p2_audio_allowed[1] = state->p25_p2_audio_allowed[1];
+    out->p25.p25_site_lra_valid = state->p25_site_lra_valid;
+    out->p25.p25_site_lra = state->p25_site_lra;
+    out->p25.p25_site_network_active_valid = state->p25_site_network_active_valid;
+    out->p25.p25_site_network_active = state->p25_site_network_active;
+    out->p25.p25_sys_services_valid = state->p25_sys_services_valid;
+    out->p25.p25_sys_services_available = state->p25_sys_services_available;
+    out->p25.p25_sys_services_supported = state->p25_sys_services_supported;
+    out->p25.p25_sys_services_request_priority = state->p25_sys_services_request_priority;
+    (void)frontend_snapshot_format_p25_system_service_names(state->p25_sys_services_available,
+                                                            out->p25.p25_sys_services_available_names,
+                                                            sizeof(out->p25.p25_sys_services_available_names));
+    (void)frontend_snapshot_format_p25_system_service_names(state->p25_sys_services_supported,
+                                                            out->p25.p25_sys_services_supported_names,
+                                                            sizeof(out->p25.p25_sys_services_supported_names));
+    out->p25.p25_cc_prot_valid = state->p25_cc_prot_valid;
+    out->p25.p25_cc_prot_algid = state->p25_cc_prot_algid;
+    out->p25.p25_sys_time_valid = state->p25_sys_time_valid;
+    out->p25.p25_sys_time_unix_s = (int64_t)state->p25_sys_time;
+    out->p25.p25_sys_time_offset_valid = state->p25_sys_time_offset_valid;
+    out->p25.p25_sys_time_offset_minutes = state->p25_sys_time_offset;
     out->p25.p25_p1_fec_ok = state->p25_p1_fec_ok;
     out->p25.p25_p1_fec_err = state->p25_p1_fec_err;
     out->p25.p25_p2_facch_ok = state->p25_p2_rs_facch_ok;
@@ -781,6 +910,7 @@ frontend_snapshot_copy_state_scalars(dsd_frontend_snapshot* out, const dsd_state
     out->p25.p25_p2_voice_err = state->p25_p2_voice_err_hist_sum[0] + state->p25_p2_voice_err_hist_sum[1];
     frontend_snapshot_copy_active_channels(out, state);
     frontend_snapshot_copy_p25_neighbors(out, state);
+    frontend_snapshot_copy_p25_secondary_ccs(out, state);
     frontend_snapshot_copy_p25_iden_plan(out, state);
 }
 

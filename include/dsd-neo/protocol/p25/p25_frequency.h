@@ -62,6 +62,7 @@ void p25_invalidate_chan_map_for_iden(dsd_state* state, int iden);
  * @return 1 if VHF or UHF, 0 otherwise.
  */
 int p25_is_vhf_uhf_base_freq(long int base_freq);
+int p25_iden_vu_bandwidth_hz(uint8_t bw_vu);
 
 void p25_reset_iden_tables(dsd_state* state);
 void p25_confirm_idens_for_current_site(dsd_state* state);

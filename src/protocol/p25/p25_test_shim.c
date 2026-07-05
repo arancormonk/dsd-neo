@@ -130,28 +130,108 @@ p25_test_copy_channel_cache_outputs(const dsd_state* state, int channel_a, int c
     }
 }
 
+static int
+p25_test_neighbor_output_count(const dsd_state* state) {
+    int count = state->p25_nb_count;
+    if (count < 0) {
+        return 0;
+    }
+    return count < P25_NB_MAX ? count : P25_NB_MAX;
+}
+
+static void
+p25_test_store_long(long* out, long value) {
+    if (out) {
+        *out = value;
+    }
+}
+
+static void
+p25_test_store_int(int* out, int value) {
+    if (out) {
+        *out = value;
+    }
+}
+
+static void
+p25_test_copy_neighbor_long_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs, int count) {
+    if (outputs->nb_freqs) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_freqs[i] = state->p25_nb_entries[i].freq;
+        }
+    }
+    if (outputs->nb_wacn) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_wacn[i] = state->p25_nb_entries[i].wacn;
+        }
+    }
+}
+
+static void
+p25_test_copy_neighbor_identity_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs, int count) {
+    if (outputs->nb_wacn_valid) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_wacn_valid[i] = state->p25_nb_entries[i].wacn_valid;
+        }
+    }
+    if (outputs->nb_sysid) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_sysid[i] = state->p25_nb_entries[i].sysid;
+        }
+    }
+    if (outputs->nb_rfss) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_rfss[i] = state->p25_nb_entries[i].rfss;
+        }
+    }
+    if (outputs->nb_site) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_site[i] = state->p25_nb_entries[i].site;
+        }
+    }
+}
+
+static void
+p25_test_copy_neighbor_status_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs, int count) {
+    if (outputs->nb_cfva) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_cfva[i] = state->p25_nb_entries[i].cfva;
+        }
+    }
+    if (outputs->nb_lra) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_lra[i] = state->p25_nb_entries[i].lra;
+        }
+    }
+    if (outputs->nb_lra_valid) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_lra_valid[i] = state->p25_nb_entries[i].lra_valid;
+        }
+    }
+    if (outputs->nb_cfva_valid) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_cfva_valid[i] = state->p25_nb_entries[i].cfva_valid;
+        }
+    }
+}
+
 static void
 p25_test_copy_mbt_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs) {
     if (!state || !outputs) {
         return;
     }
-    if (outputs->cc) {
-        *outputs->cc = state->p25_cc_freq;
-    }
-    if (outputs->wacn) {
-        *outputs->wacn = (long)state->p2_wacn;
-    }
-    if (outputs->sysid) {
-        *outputs->sysid = state->p2_sysid;
-    }
-    if (outputs->nb_count) {
-        *outputs->nb_count = state->p25_nb_count;
-    }
-    if (outputs->nb_freqs) {
-        for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
-            outputs->nb_freqs[i] = state->p25_nb_entries[i].freq;
-        }
-    }
+    const int count = p25_test_neighbor_output_count(state);
+    p25_test_store_long(outputs->cc, state->p25_cc_freq);
+    p25_test_store_long(outputs->wacn, (long)state->p2_wacn);
+    p25_test_store_int(outputs->sysid, state->p2_sysid);
+    p25_test_store_int(outputs->site_lra, state->p25_site_lra);
+    p25_test_store_int(outputs->site_lra_valid, state->p25_site_lra_valid);
+    p25_test_store_int(outputs->nb_count, state->p25_nb_count);
+    p25_test_copy_neighbor_long_outputs(state, outputs, count);
+    p25_test_copy_neighbor_identity_outputs(state, outputs, count);
+    p25_test_copy_neighbor_status_outputs(state, outputs, count);
+    p25_test_store_int(outputs->cc_prot_valid, state->p25_cc_prot_valid);
+    p25_test_store_int(outputs->cc_prot_algid, state->p25_cc_prot_algid);
 }
 
 // Invoke the P25p1 MBT -> MAC Identifier Update bridge and report key state.

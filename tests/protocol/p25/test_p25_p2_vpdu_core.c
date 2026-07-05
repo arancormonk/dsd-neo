@@ -224,6 +224,168 @@ cc_candidates_contains(const dsd_trunk_cc_candidates* cc, long freq) {
     return 0;
 }
 
+static void
+put_iden_base(unsigned char* mac, int pos, long base_freq) {
+    mac[pos + 0] = (unsigned char)((base_freq >> 24) & 0xFF);
+    mac[pos + 1] = (unsigned char)((base_freq >> 16) & 0xFF);
+    mac[pos + 2] = (unsigned char)((base_freq >> 8) & 0xFF);
+    mac[pos + 3] = (unsigned char)(base_freq & 0xFF);
+}
+
+static void
+build_standard_iden(unsigned char* mac, int iden, int spacing, long base_freq) {
+    DSD_MEMSET(mac, 0, 24);
+    mac[1] = 0x7D;
+    mac[2] = (unsigned char)((iden & 0x0F) << 4);
+    mac[3] = 0x00;
+    mac[4] = (unsigned char)((spacing >> 8) & 0x03);
+    mac[5] = (unsigned char)(spacing & 0xFF);
+    put_iden_base(mac, 6, base_freq);
+}
+
+static int
+run_deferred_sccb_resolution_case(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    dsd_state* state = NULL;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+
+    unsigned long long int MAC[24] = {0};
+    MAC[1] = 0xE9;
+    MAC[2] = 0x02;
+    MAC[3] = 0x03;
+    MAC[4] = 0x10;
+    MAC[5] = 0x0A;
+    MAC[6] = 0x10;
+    MAC[7] = 0x05;
+    MAC[8] = 0x01;
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    rc |= expect_eq_long("p2_sccb_deferred_initial_candidates", cc ? cc->count : 0, 0);
+    rc |= expect_eq_long("p2_sccb_deferred_initial_pending", state->p25_pending_announcement_count, 1);
+
+    unsigned char iden_mac[24];
+    build_standard_iden(iden_mac, 1, 100, 851000000L / 5L);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    for (int i = 0; i < 24; i++) {
+        MAC[i] = iden_mac[i];
+    }
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+
+    const long want = 851000000L + 10L * 100L * 125L;
+    cc = dsd_trunk_cc_candidates_peek(state);
+    rc |= expect_true("p2_sccb_deferred_resolved_candidate", cc_candidates_contains(cc, want));
+    rc |= expect_eq_long("p2_sccb_deferred_pending_empty", state->p25_pending_announcement_count, 0);
+    rc |= expect_eq_long("p2_sccb_deferred_rfss", state->p2_rfssid, 0x02);
+    rc |= expect_eq_long("p2_sccb_deferred_site", state->p2_siteid, 0x03);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    return rc;
+}
+
+static int
+run_deferred_adjacent_wacn_resolution_case(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    dsd_state* state = NULL;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+
+    unsigned long long int MAC[24] = {0};
+    MAC[1] = 0xFE;
+    MAC[2] = 0x01;
+    MAC[3] = 0x21; /* CFVA=2, SYSID high nibble=1 */
+    MAC[4] = 0x23;
+    MAC[5] = 0x04;
+    MAC[6] = 0x05;
+    MAC[7] = 0x10;
+    MAC[8] = 0x0A;
+    MAC[9] = 0x10;
+    MAC[10] = 0x05;
+    MAC[11] = 0x01;
+    MAC[12] = 0xAB;
+    MAC[13] = 0xCD;
+    MAC[14] = 0xE0;
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+
+    rc |= expect_eq_long("p2_adj_deferred_initial_neighbors", state->p25_nb_count, 0);
+    rc |= expect_eq_long("p2_adj_deferred_initial_pending", state->p25_pending_announcement_count, 1);
+
+    unsigned char iden_mac[24];
+    build_standard_iden(iden_mac, 1, 100, 851000000L / 5L);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    for (int i = 0; i < 24; i++) {
+        MAC[i] = iden_mac[i];
+    }
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+
+    const long want = 851000000L + 10L * 100L * 125L;
+    rc |= expect_eq_long("p2_adj_deferred_pending_empty", state->p25_pending_announcement_count, 0);
+    rc |= expect_eq_long("p2_adj_deferred_neighbor_count", state->p25_nb_count, 1);
+    rc |= expect_eq_long("p2_adj_deferred_neighbor_freq", state->p25_nb_entries[0].freq, want);
+    rc |= expect_eq_long("p2_adj_deferred_neighbor_wacn_valid", state->p25_nb_entries[0].wacn_valid, 1);
+    rc |= expect_eq_long("p2_adj_deferred_neighbor_wacn", state->p25_nb_entries[0].wacn, 0xABCDE);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    return rc;
+}
+
+static int
+run_p1_bridged_adjacent_unknown_sysid_case(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    dsd_state* state = NULL;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+
+    const int iden = 1;
+    state->p25_iden_fdma[iden].chan_type = 1;
+    state->p25_iden_fdma[iden].chan_spac = 100;
+    state->p25_iden_fdma[iden].base_freq = 851000000 / 5;
+    state->p25_iden_fdma[iden].populated = 1;
+    state->p25_chan_tdma_explicit[iden] = 1;
+
+    unsigned long long int MAC[24] = {0};
+    MAC[0] = 0x07;
+    MAC[1] = 0x7C;
+    MAC[2] = 0x02; /* LRA */
+    MAC[3] = 0xAF; /* CFVA=0xA, low nibble must not become SYSID high bits */
+    MAC[4] = 0xEE; /* reserved/SYSID-looking byte */
+    MAC[5] = 0x04; /* RFSS */
+    MAC[6] = 0x05; /* SITE */
+    MAC[7] = 0x10;
+    MAC[8] = 0x0A; /* CHAN-T 0x100A */
+    MAC[9] = 0x01;
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+
+    const long want = 851000000L + 10L * 100L * 125L;
+    rc |= expect_eq_long("p1_bridge_adjacent_neighbor_count", state->p25_nb_count, 1);
+    rc |= expect_eq_long("p1_bridge_adjacent_neighbor_freq", state->p25_nb_entries[0].freq, want);
+    rc |= expect_eq_long("p1_bridge_adjacent_neighbor_sysid_unknown", state->p25_nb_entries[0].sysid, 0);
+    rc |= expect_eq_long("p1_bridge_adjacent_neighbor_wacn_invalid", state->p25_nb_entries[0].wacn_valid, 0);
+    rc |= expect_eq_long("p1_bridge_adjacent_neighbor_lra", state->p25_nb_entries[0].lra, 0x02);
+    rc |= expect_eq_long("p1_bridge_adjacent_neighbor_lra_valid", state->p25_nb_entries[0].lra_valid, 1);
+    rc |= expect_eq_long("p1_bridge_adjacent_neighbor_cfva", state->p25_nb_entries[0].cfva, 0x0A);
+    rc |= expect_eq_long("p1_bridge_adjacent_neighbor_cfva_valid", state->p25_nb_entries[0].cfva_valid, 1);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    return rc;
+}
+
 static int
 run_sccb_full_cache_preservation_case(void) {
     int rc = 0;
@@ -391,7 +553,29 @@ run_cases(void) {
         rc |= expect_eq_long("p1_bridge_sccb_explicit_downlink", freqs[0], 851000000 + 10 * 100 * 125);
     }
 
-    // Case 8: SCCB candidates are site-scoped when current RFSS/SITE are known.
+    // Case 8: P1-bridged SCCB implicit keeps channel B even when SSC B is zero.
+    {
+        unsigned char mac[24];
+        long freqs[4] = {0};
+        DSD_MEMSET(mac, 0, sizeof mac);
+        mac[0] = 0x07;
+        mac[1] = 0x79;
+        mac[2] = 0x02; // RFSS
+        mac[3] = 0x03; // SITE
+        mac[4] = 0x10; // CHAN1 0x100A
+        mac[5] = 0x0A;
+        mac[6] = 0x01; // SSC A
+        mac[7] = 0x10; // CHAN2 0x1005
+        mac[8] = 0x05;
+        mac[9] = 0x00; // SSC B zero is still a valid bridged P1 channel B
+
+        int count = run_sccb_candidate_case(mac, 0, 0, freqs, 4, NULL, NULL, NULL, NULL, 0);
+        rc |= expect_eq_long("p1_bridge_sccb_implicit_zero_ssc_count", count, 2);
+        rc |= expect_eq_long("p1_bridge_sccb_implicit_zero_ssc_ch1", freqs[0], 851000000 + 10 * 100 * 125);
+        rc |= expect_eq_long("p1_bridge_sccb_implicit_zero_ssc_ch2", freqs[1], 851000000 + 5 * 100 * 125);
+    }
+
+    // Case 9: SCCB candidates are site-scoped when current RFSS/SITE are known.
     {
         unsigned char mac[24];
         long freqs[4] = {0};
@@ -413,7 +597,7 @@ run_cases(void) {
         rc |= expect_eq_long("p2_sccb_explicit_foreign_site_preserved", site_after, 0x63);
     }
 
-    // Case 9: foreign-site bridged SCCB must not seed fallback LCN rotation.
+    // Case 10: foreign-site bridged SCCB must not seed fallback LCN rotation.
     {
         unsigned char mac[24];
         long freqs[4] = {0};
@@ -434,7 +618,7 @@ run_cases(void) {
         rc |= expect_eq_long("p1_bridge_sccb_foreign_lcn_count", lcn_count, 0);
     }
 
-    // Case 10: adjacent-site status remains neighbor/display data only. It
+    // Case 11: adjacent-site status remains neighbor/display data only. It
     // must not become a CC hunt candidate, matching OP25's rotation behavior.
     {
         unsigned char mac[24];
@@ -454,7 +638,9 @@ run_cases(void) {
         rc |= expect_eq_long("p2_adjacent_not_candidate", count, 0);
     }
 
-    // Case 11: native Phase 2 SCCB implicit keeps a resolved second secondary
+    rc |= run_p1_bridged_adjacent_unknown_sysid_case();
+
+    // Case 12: native Phase 2 SCCB implicit keeps a resolved second secondary
     // CC in fallback rotation even when the first channel's IDEN is unknown.
     {
         unsigned char mac[24];
@@ -479,11 +665,13 @@ run_cases(void) {
         rc |= expect_eq_long("p2_sccb_implicit_partial_iden_lcn_ch2", lcn_freqs[1], 851000000 + 5 * 100 * 125);
     }
 
-    // Case 12: a full persisted cache loaded during SCCB handling must not
+    // Case 13: a full persisted cache loaded during SCCB handling must not
     // evict the freshly validated current-site SCCB candidate.
+    rc |= run_deferred_sccb_resolution_case();
+    rc |= run_deferred_adjacent_wacn_resolution_case();
     rc |= run_sccb_full_cache_preservation_case();
 
-    // Case 13: extended private voice (0x22) derives source from the SUID tail.
+    // Case 14: extended private voice (0x22) derives source from the SUID tail.
     {
         static dsd_opts opts;
         static dsd_state state;

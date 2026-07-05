@@ -12,6 +12,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -81,6 +83,35 @@ const dsd_trunk_cc_candidates*
 dsd_trunk_cc_candidates_peek(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)state;
     return &g_cc_candidates;
+}
+
+int
+p25_iden_vu_bandwidth_hz(uint8_t bw_vu) { // NOLINT(misc-use-internal-linkage)
+    if ((bw_vu & 0x0FU) == 0x4U) {
+        return 6250;
+    }
+    if ((bw_vu & 0x0FU) == 0x5U) {
+        return 12500;
+    }
+    return 0;
+}
+
+size_t
+p25_format_adjacent_cfva(uint8_t cfva, char* out, size_t out_len) { // NOLINT(misc-use-internal-linkage)
+    const char* text = (cfva & 0x2U) ? "current" : "last known";
+    if (out && out_len > 0) {
+        DSD_SNPRINTF(out, out_len, "%s", text);
+    }
+    return 1U;
+}
+
+size_t
+p25_format_system_service_names(uint32_t service_mask, char* out, size_t out_len) { // NOLINT(misc-use-internal-linkage)
+    (void)service_mask;
+    if (out && out_len > 0) {
+        DSD_SNPRINTF(out, out_len, "%s", "group voice");
+    }
+    return 1U;
 }
 
 const char*
@@ -313,6 +344,13 @@ run_neighbor_helper_cases(void) {
     state.p25_nb_entries[2].freq = 852012500L;
     state.p25_nb_entries[2].last_seen = 125;
     state.p25_nb_entries[3].freq = 853012500L;
+    state.p25_nb_entries[3].sysid = 0x123;
+    state.p25_nb_entries[3].rfss = 4;
+    state.p25_nb_entries[3].site = 5;
+    state.p25_nb_entries[3].cfva = 2;
+    state.p25_nb_entries[3].cfva_valid = 1;
+    state.p25_nb_entries[3].lra = 0x44;
+    state.p25_nb_entries[3].lra_valid = 1;
     state.p25_nb_entries[3].last_seen = 175;
     state.p25_nb_entries[4].freq = 854012500L;
     state.p25_nb_entries[4].last_seen = 50;
@@ -338,11 +376,23 @@ run_neighbor_helper_cases(void) {
     assert(ui_format_neighbor_line(&state, 3, (time_t)200, line, sizeof(line)) > 0);
     assert(strstr(line, "853.012500 MHz") != NULL);
     assert(strstr(line, " [C]") != NULL);
+    assert(strstr(line, "SYS:123 R:004 S:005") != NULL);
+    assert(strstr(line, "LRA:44 CFVA:current") != NULL);
     assert(strstr(line, "age:25s") != NULL);
 
     assert(ui_format_neighbor_line(&state, 2, (time_t)100, line, sizeof(line)) > 0);
     assert(strstr(line, "852.012500 MHz [CC]") != NULL);
     assert(strstr(line, "age:0s") != NULL);
+
+    state.p25_secondary_cc_count = 1;
+    state.p25_secondary_cc_entries[0].freq = 853012500L;
+    state.p25_secondary_cc_entries[0].channel = 0x1234;
+    state.p25_secondary_cc_entries[0].rfss = 4;
+    state.p25_secondary_cc_entries[0].site = 5;
+    state.p25_secondary_cc_entries[0].ssc = 0xA0;
+    state.p25_secondary_cc_entries[0].last_seen = 180;
+    assert(ui_format_secondary_cc_line(&state, 0, (time_t)200, line, sizeof(line)) > 0);
+    assert(strstr(line, "853.012500 MHz [C] CH:1234 R:004 S:005 SSC:A0 age:20s") != NULL);
 
     return 0;
 }
@@ -433,6 +483,7 @@ run_iden_render_cases(void) {
     state.p25_iden_fdma[5].chan_type = 1;
     state.p25_iden_fdma[5].trans_off = -45000000;
     state.p25_iden_fdma[5].trust = 2;
+    state.p25_iden_fdma[5].bw_vu = 4;
     state.p25_iden_fdma[5].wacn = 0xABCDEULL;
     state.p25_iden_fdma[5].sysid = 0x123ULL;
     state.p25_iden_fdma[5].rfss = 2ULL;
@@ -445,7 +496,8 @@ run_iden_render_cases(void) {
 
     reset_printw_capture();
     ui_print_p25_iden_plan(NULL, &state);
-    assert_capture_contains("IDEN 5: FDMA[F/T] type:1 base:851.000000MHz spac:0.012500MHz off:-45000000 trust:ok");
+    assert_capture_contains(
+        "IDEN 5: FDMA[F/T] type:1 base:851.000000MHz spac:0.012500MHz off:-45000000 trust:ok bw:6250Hz");
     assert_capture_contains("W:ABCDE S:123");
     assert_capture_contains("R:2 I:7");
     assert_capture_contains("IDEN 5: TDMA[F/T] type:4 base:852.000000MHz spac:0.006250MHz off:0 trust:prov");
