@@ -440,6 +440,22 @@ p25_reset_iden_tables(dsd_state* state) {
     DSD_MEMSET(state->p25_secondary_cc_entries, 0, sizeof(state->p25_secondary_cc_entries));
 }
 
+static void
+p25_reset_system_metadata(dsd_state* state) {
+    state->p25_cc_prot_valid = 0;
+    state->p25_cc_prot_algid = 0;
+
+    state->p25_sys_services_valid = 0;
+    state->p25_sys_services_available = 0;
+    state->p25_sys_services_supported = 0;
+    state->p25_sys_services_request_priority = 0;
+
+    state->p25_site_lra_valid = 0;
+    state->p25_site_lra = 0;
+    state->p25_site_network_active_valid = 0;
+    state->p25_site_network_active = 0;
+}
+
 int
 p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
     if (!state || (wacn == 0 && sysid == 0)) {
@@ -448,6 +464,7 @@ p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned l
 
     if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
         p25_reset_iden_tables(state);
+        p25_reset_system_metadata(state);
         p25_invalidate_chan_map(state);
     }
     state->p2_wacn = wacn;
