@@ -49,6 +49,7 @@ static int g_last_update_active;
 static int g_last_key;
 static int g_last_ssn;
 static int g_last_grant_channel;
+static int g_last_grant_svc;
 static int g_last_grant_tg;
 static int g_last_grant_src;
 static int g_neighbor_update_count;
@@ -158,9 +159,9 @@ void
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
-    (void)svc_bits;
     g_grant_count++;
     g_last_grant_channel = channel;
+    g_last_grant_svc = svc_bits;
     g_last_grant_tg = tg;
     g_last_grant_src = src;
 }
@@ -335,6 +336,7 @@ reset_calls(void) {
     g_last_key = 0;
     g_last_ssn = 0;
     g_last_grant_channel = 0;
+    g_last_grant_svc = 0;
     g_last_grant_tg = 0;
     g_last_grant_src = 0;
     g_neighbor_update_count = 0;
@@ -509,6 +511,7 @@ test_mfid90_grant_seeds_trunk_state(void) {
     opts.p25_trunk = 1;
 
     uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    tsbk[2] = 0xA5;
     tsbk[3] = 0x12;
     tsbk[4] = 0x34;
     tsbk[5] = 0x45;
@@ -524,6 +527,7 @@ test_mfid90_grant_seeds_trunk_state(void) {
     rc |= expect_int("grant seed count", g_seed_count, 1);
     rc |= expect_int("grant count", g_grant_count, 1);
     rc |= expect_int("grant channel", g_last_grant_channel, 0x1234);
+    rc |= expect_int("grant svc", g_last_grant_svc, 0xA5);
     rc |= expect_int("grant tg", g_last_grant_tg, 0x4567);
     rc |= expect_int("grant src", g_last_grant_src, 0x010203);
     rc |= expect_int("active channel set", strstr(state.active_channel[0], "1234/1234") != NULL, 1);

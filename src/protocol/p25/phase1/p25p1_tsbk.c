@@ -225,11 +225,12 @@ tsbk_handle_mfid90_regroup_add_del(dsd_state* state, const uint8_t tsbk_byte[TSB
 
 static void
 tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int svc = tsbk_byte[2];
     int channel = (tsbk_byte[3] << 8) | tsbk_byte[4];
     int sg = (tsbk_byte[5] << 8) | tsbk_byte[6];
     int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
     DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Channel Grant\n");
-    DSD_FPRINTF(stderr, "  CHAN [%04X] SG: %d SRC: %d", channel, sg, source);
+    DSD_FPRINTF(stderr, "  SVC [%02X] CHAN [%04X] SG: %d SRC: %d", svc, channel, sg, source);
     long int freq = process_channel_to_freq(opts, state, channel);
     char suf[32];
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
@@ -239,7 +240,7 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
     DSD_FPRINTF(stderr, "\n");
     if (opts->p25_trunk == 1 && freq != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
-        p25_sm_on_group_grant(opts, state, channel, P25_SM_SVC_UNKNOWN, sg, source);
+        p25_sm_on_group_grant(opts, state, channel, svc, sg, source);
     }
 }
 

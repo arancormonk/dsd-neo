@@ -191,10 +191,14 @@ main(void) {
         DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0xA3;
         mac[2] = 0x90;
+        mac[4] = 0xA5; // service options
         mac[5] = 0x10;
         mac[6] = 0x0A; // channel 0x100A -> 851.125 MHz
         mac[7] = 0x45;
         mac[8] = 0x67; // group id (arbitrary)
+        mac[9] = 0x01;
+        mac[10] = 0x02;
+        mac[11] = 0x03; // source
         long vc = 0;
         int tuned = 0;
         p25_test_iden_config cfg = {
@@ -428,6 +432,220 @@ main(void) {
         rc |= expect_eq_long("0xC0 CHAN-R cache", state.trunk_chan_map[0x100D], 851162500);
         rc |= expect_eq_long("0xC0 stored service options", state.dmr_so, 0x23);
         rc |= expect_eq_long("0xC0 service options valid", state.p25_service_options_valid[0], 1);
+    }
+
+    // Case D5a: MFID90 0xA3 propagates service options and source.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        state.p25_cc_freq = cc;
+        seed_fdma_iden(&state, iden, type, base, spac);
+
+        MAC[1] = 0xA3;
+        MAC[2] = 0x90;
+        MAC[4] = 0xA5;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0A;
+        MAC[7] = 0x34;
+        MAC[8] = 0x56;
+        MAC[9] = 0x01;
+        MAC[10] = 0x02;
+        MAC[11] = 0x03;
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0xA3 capture called", g_group_grant_called, 1);
+        rc |= expect_eq_long("0xA3 capture channel", g_group_grant_channel, 0x100A);
+        rc |= expect_eq_long("0xA3 capture svc", g_group_grant_svc, 0xA5);
+        rc |= expect_eq_long("0xA3 capture tg", g_group_grant_tg, 0x3456);
+        rc |= expect_eq_long("0xA3 capture src", g_group_grant_src, 0x010203);
+        rc |= expect_eq_long("0xA3 stored service options", state.dmr_so, 0xA5);
+        rc |= expect_eq_long("0xA3 emergency state", state.p25_call_emergency[0], 1);
+    }
+
+    // Case D5b: MFID90 0xA4 propagates service options, source, and CHAN-R cache.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        state.p25_cc_freq = cc;
+        seed_fdma_iden(&state, iden, type, base, spac);
+
+        MAC[1] = 0xA4;
+        MAC[2] = 0x90;
+        MAC[4] = 0x23;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0A;
+        MAC[7] = 0x10;
+        MAC[8] = 0x0B;
+        MAC[9] = 0x45;
+        MAC[10] = 0x67;
+        MAC[11] = 0x0A;
+        MAC[12] = 0x0B;
+        MAC[13] = 0x0C;
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0xA4 capture called", g_group_grant_called, 1);
+        rc |= expect_eq_long("0xA4 capture channel", g_group_grant_channel, 0x100A);
+        rc |= expect_eq_long("0xA4 capture svc", g_group_grant_svc, 0x23);
+        rc |= expect_eq_long("0xA4 capture tg", g_group_grant_tg, 0x4567);
+        rc |= expect_eq_long("0xA4 capture src", g_group_grant_src, 0x0A0B0C);
+        rc |= expect_eq_long("0xA4 CHAN-R cache", state.trunk_chan_map[0x100B], 851137500);
+        rc |= expect_eq_long("0xA4 stored service options", state.dmr_so, 0x23);
+    }
+
+    // Case D5c: MFID90 0x83 propagates service options without a source.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        state.p25_cc_freq = cc;
+        seed_fdma_iden(&state, iden, type, base, spac);
+
+        MAC[1] = 0x83;
+        MAC[2] = 0x90;
+        MAC[3] = 0x81;
+        MAC[4] = 0x55;
+        MAC[5] = 0x66;
+        MAC[6] = 0x10;
+        MAC[7] = 0x0A;
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0x83 capture called", g_group_grant_called, 1);
+        rc |= expect_eq_long("0x83 capture channel", g_group_grant_channel, 0x100A);
+        rc |= expect_eq_long("0x83 capture svc", g_group_grant_svc, 0x81);
+        rc |= expect_eq_long("0x83 capture tg", g_group_grant_tg, 0x5566);
+        rc |= expect_eq_long("0x83 capture src", g_group_grant_src, 0);
+        rc |= expect_eq_long("0x83 stored service options", state.dmr_so, 0x81);
+    }
+
+    // Case D5d: encrypted MFID90 0xA3 grants are blocked when encrypted following is disabled.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        seed_fdma_iden(&state, iden, type, base, spac);
+
+        MAC[1] = 0xA3;
+        MAC[2] = 0x90;
+        MAC[4] = 0x40;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0A;
+        MAC[7] = 0x22;
+        MAC[8] = 0x22;
+        MAC[9] = 0x01;
+        MAC[10] = 0x02;
+        MAC[11] = 0x03;
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0xA3 encrypted blocked capture", g_group_grant_called, 0);
+        rc |= expect_true("0xA3 encrypted blocked no tune", opts.p25_is_tuned == 0);
+        rc |= expect_contains("0xA3 encrypted active", state.active_channel[0], "MFID90 Active Ch: 100A");
+    }
+
+    // Case D5e: MFID90 0x80 voice-user messages store service options.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.trunk_tune_enc_calls = 1;
+        state.currentslot = 0;
+
+        MAC[1] = 0x80;
+        MAC[2] = 0x90;
+        MAC[3] = 0xA5;
+        MAC[4] = 0x34;
+        MAC[5] = 0x56;
+        MAC[6] = 0x01;
+        MAC[7] = 0x02;
+        MAC[8] = 0x03;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x80 last tg", state.lasttg, 0x3456);
+        rc |= expect_eq_long("0x80 last src", state.lastsrc, 0x010203);
+        rc |= expect_eq_long("0x80 stored service options", state.dmr_so, 0xA5);
+        rc |= expect_eq_long("0x80 service options valid", state.p25_service_options_valid[0], 1);
+        rc |= expect_eq_long("0x80 emergency state", state.p25_call_emergency[0], 1);
+        rc |= expect_contains("0x80 call banner", state.call_string[0], "Emergency");
+    }
+
+    // Case D5f: MFID90 0xA0 extended voice-user messages store service options.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.trunk_tune_enc_calls = 1;
+        state.currentslot = 1;
+
+        MAC[1] = 0xA0;
+        MAC[2] = 0x90;
+        MAC[4] = 0x40;
+        MAC[5] = 0x45;
+        MAC[6] = 0x67;
+        MAC[7] = 0x0A;
+        MAC[8] = 0x0B;
+        MAC[9] = 0x0C;
+        MAC[10] = 0x12;
+        MAC[11] = 0x34;
+        MAC[12] = 0x50;
+        MAC[13] = 0x67;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0xA0 last tg", state.lasttgR, 0x4567);
+        rc |= expect_eq_long("0xA0 last src", state.lastsrcR, 0x0A0B0C);
+        rc |= expect_eq_long("0xA0 stored service options", state.dmr_soR, 0x40);
+        rc |= expect_eq_long("0xA0 service options valid", state.p25_service_options_valid[1], 1);
+        rc |= expect_contains("0xA0 call banner", state.call_string[1], "Encrypted");
     }
 
     // Case D6: Group Affiliation Response 0x68 accepts on low GAV bits, not status bits 5-6.

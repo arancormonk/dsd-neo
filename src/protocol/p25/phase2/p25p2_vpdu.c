@@ -1072,22 +1072,27 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
     if (MAC[1 + len_a] == 0xA3 && MAC[2 + len_a] == 0x90) {
         int mfid = MAC[2 + len_a];
         UNUSED(mfid);
+        int svc = MAC[4 + len_a];
         int channel = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
         int sgroup = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
+        int source = (MAC[9 + len_a] << 16) | (MAC[10 + len_a] << 8) | MAC[11 + len_a];
+        int slot_idx = state->currentslot & 1;
         long int freq = 0;
         DSD_FPRINTF(stderr, "\n MFID90 Group Regroup Channel Grant - Implicit");
-        DSD_FPRINTF(stderr, "\n  CHAN [%04X] Group [%d][%04X]", channel, sgroup, sgroup);
+        p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 1);
+        DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN [%04X] Group [%d][%04X] Source [%d]", svc, channel, sgroup, sgroup,
+                    source);
         freq = process_channel_to_freq(opts, state, channel);
 
         //add active channel to string for ncurses display
         p25_set_mfid90_active_channel_single(state, channel, sgroup);
+        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
 
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
         if (p25p2_vpdu_can_tune(opts, state, freq)) {
-            /* No SVC bits are carried here; let the SM apply transient encrypted-call memory. */
-            p25p2_mac_handle(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, sgroup, /*src*/ 0,
-                             /*policy_encrypted*/ -1, /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
+            p25p2_mac_handle(&mac_res, opts, state, channel, svc, sgroup, source, /*policy_encrypted*/ -1,
+                             /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
         }
         // If playing back files, and we still want to see what freqs are in use in the ncurses terminal
         //might only want to do these on a grant update, and not a grant by itself?
@@ -1120,24 +1125,32 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0xA4 && MAC[2 + len_a] == 0x90) {
         int mfid = MAC[2 + len_a];
+        int svc = MAC[4 + len_a];
         int channel = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
         int channelr = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
         int sgroup = (MAC[9 + len_a] << 8) | MAC[10 + len_a];
+        int source = (MAC[11 + len_a] << 16) | (MAC[12 + len_a] << 8) | MAC[13 + len_a];
+        int slot_idx = state->currentslot & 1;
         long int freq = 0;
-        UNUSED2(mfid, channelr);
+        UNUSED(mfid);
         DSD_FPRINTF(stderr, "\n MFID90 Group Regroup Channel Grant - Explicit");
-        DSD_FPRINTF(stderr, "\n  CHAN [%04X] Group [%d][%04X]", channel, sgroup, sgroup);
+        p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 1);
+        DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X] Source [%d]", svc, channel,
+                    channelr, sgroup, sgroup, source);
         freq = process_channel_to_freq(opts, state, channel);
+        if (p25p2_vpdu_channel_is_valid(channelr)) {
+            (void)process_channel_to_freq(opts, state, channelr);
+        }
 
         //add active channel to string for ncurses display
         p25_set_mfid90_active_channel_single(state, channel, sgroup);
+        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
 
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
         if (p25p2_vpdu_can_tune(opts, state, freq)) {
-            /* No SVC bits are carried here; let the SM apply transient encrypted-call memory. */
-            p25p2_mac_handle(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, sgroup, /*src*/ 0,
-                             /*policy_encrypted*/ -1, /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
+            p25p2_mac_handle(&mac_res, opts, state, channel, svc, sgroup, source, /*policy_encrypted*/ -1,
+                             /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
         }
         // If playing back files, and we still want to see what freqs are in use in the ncurses terminal
         //might only want to do these on a grant update, and not a grant by itself?
@@ -1946,21 +1959,25 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x83 && MAC[2 + len_a] == 0x90) {
+        int svc = MAC[3 + len_a];
         int sg = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
         int channel = (MAC[6 + len_a] << 8) | MAC[7 + len_a];
+        int slot_idx = state->currentslot & 1;
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Voice Channel Update\n");
-        DSD_FPRINTF(stderr, "  SG: %d CHAN [%04X]", sg, channel);
+        p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 1);
+        DSD_FPRINTF(stderr, "  SVC [%02X] SG: %d CHAN [%04X]", svc, sg, channel);
         long int freq = process_channel_to_freq(opts, state, channel);
         char suf[32];
         p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
         DSD_SNPRINTF(state->active_channel[slot], sizeof(state->active_channel[slot]),
                      "MFID90 GRG VCH Upd: %04X%s SG: %d; ", channel, suf, sg);
+        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
         state->last_active_time = time(NULL);
         DSD_FPRINTF(stderr, "\n");
         // Route through SM for tuning consideration
         if (opts->p25_trunk == 1 && channel != 0 && freq != 0) {
-            p25p2_mac_handle(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, sg, /*src*/ 0,
-                             /*policy_encrypted*/ -1, /*policy_data*/ 0, /*emit_enc_lockout*/ 0);
+            p25p2_mac_handle(&mac_res, opts, state, channel, svc, sg, /*src*/ 0,
+                             /*policy_encrypted*/ -1, /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
         }
     }
 
@@ -2855,6 +2872,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
+    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -2868,30 +2886,21 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0x80 && MAC[2 + len_a] == 0x90) {
 
+        int svc = MAC[3 + len_a];
         int gr = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
         int src = (MAC[6 + len_a] << 16) | (MAC[7 + len_a] << 8) | MAC[8 + len_a];
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
+        p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
         state->gi[slot] = 0;
+        p25p2_vpdu_store_slot_svc(state, slot, svc);
+        p25p2_vpdu_set_group_call_banner(state, slot, svc);
         // Treat observed Super Group activity as an active patch (vendor-specific signaling may differ)
         p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+        p25p2_vpdu_update_group_last_ids(state, slot, gr, src);
 
-        if (slot == 0) {
-            state->lasttg = gr;
-            if (src != 0) {
-                state->lastsrc = src;
-                // Clear alias at start/update of talker for this call (don’t reuse across calls)
-                state->generic_talker_alias[0][0] = '\0';
-                state->generic_talker_alias_src[0] = 0;
-            }
-        } else {
-            state->lasttgR = gr;
-            if (src != 0) {
-                state->lastsrcR = src;
-                // Clear alias at start/update of talker for this call (don’t reuse across calls)
-                state->generic_talker_alias[1][0] = '\0';
-                state->generic_talker_alias_src[1] = 0;
-            }
+        if ((svc & 0x40) && opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+            p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
         }
     }
 
@@ -2907,6 +2916,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
+    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -2920,11 +2930,15 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0xA0 && MAC[2 + len_a] == 0x90) {
 
+        int svc = MAC[4 + len_a];
         int gr = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
         int src = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
+        p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
         state->gi[slot] = 0;
+        p25p2_vpdu_store_slot_svc(state, slot, svc);
+        p25p2_vpdu_set_group_call_banner(state, slot, svc);
         p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
 
         uint32_t mfid90_wacn = (MAC[10 + len_a] << 16) | (MAC[11 + len_a] << 8) | (MAC[12 + len_a] & 0xF0);
@@ -2932,23 +2946,12 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         uint16_t mfid90_sys = (uint16_t)(((MAC[12 + len_a] & 0x0F) << 8) | MAC[13 + len_a]);
         DSD_FPRINTF(stderr, " EXT - FQSUID: %05X:%03X.%d", mfid90_wacn, mfid90_sys, src);
 
-        if (slot == 0) {
-            state->lasttg = gr;
-            if (src != 0) {
-                state->lastsrc = src;
-                state->generic_talker_alias[0][0] = '\0';
-                state->generic_talker_alias_src[0] = 0;
-            }
-        } else {
-            state->lasttgR = gr;
-            if (src != 0) {
-                state->lastsrcR = src;
-                state->generic_talker_alias[1][0] = '\0';
-                state->generic_talker_alias_src[1] = 0;
-            }
-        }
+        p25p2_vpdu_update_group_last_ids(state, slot, gr, src);
         if (src != 0 && gr != 0) {
             p25_ga_add(state, (uint32_t)src, (uint16_t)gr);
+        }
+        if ((svc & 0x40) && opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+            p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
         }
     }
 
