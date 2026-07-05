@@ -186,6 +186,13 @@ main(void) {
     assert(s4.payload_algid == 0x84);
     assert(s4.payload_keyid == 0x1234);
     assert(s4.payload_miP == 0x1122334455667788ULL);
+    int enc_cache_seen = 0;
+    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
+        if (s4.p25_enc_tg_cache_tg[i] == 1234U && s4.p25_enc_tg_cache_until[i] > time(NULL)) {
+            enc_cache_seen = 1;
+        }
+    }
+    assert(enc_cache_seen == 1);
     // re-emit should not create a runtime policy block
     p25_emit_enc_lockout_once(&o4, &s4, 0, 1234, 0x40);
     dsd_tg_policy_lookup lockout_lookup;

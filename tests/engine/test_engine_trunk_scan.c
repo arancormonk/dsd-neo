@@ -1945,14 +1945,19 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
     state.p25_retune_block_history_until[0] = until0;
     state.p25_retune_block_history_freq[0] = 851125000L;
     state.p25_retune_block_history_slot[0] = 1;
+    state.p25_enc_tg_cache_until[0] = until0;
+    state.p25_enc_tg_cache_tg[0] = 2468U;
+    state.p25_enc_tg_cache_next = 5U;
 
     dsd_engine_trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_retune_block_until != 0
-        || state.p25_retune_block_freq != 0 || state.p25_retune_block_history_until[0] != 0) {
-        DSD_FPRINTF(stderr, "retune-backoff leaked into target 1 active=%zu until=%ld freq=%ld hist=%ld\n",
+        || state.p25_retune_block_freq != 0 || state.p25_retune_block_history_until[0] != 0
+        || state.p25_enc_tg_cache_until[0] != 0 || state.p25_enc_tg_cache_tg[0] != 0U) {
+        DSD_FPRINTF(stderr, "retune-backoff leaked into target 1 active=%zu until=%ld freq=%ld hist=%ld enc=%ld/%u\n",
                     dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until,
-                    state.p25_retune_block_freq, (long)state.p25_retune_block_history_until[0]);
+                    state.p25_retune_block_freq, (long)state.p25_retune_block_history_until[0],
+                    (long)state.p25_enc_tg_cache_until[0], state.p25_enc_tg_cache_tg[0]);
         test_rc = 1;
     }
 
@@ -1964,16 +1969,24 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
     state.p25_retune_block_history_until[0] = until1;
     state.p25_retune_block_history_freq[0] = 852125000L;
     state.p25_retune_block_history_slot[0] = 0;
+    state.p25_enc_tg_cache_until[0] = until1;
+    state.p25_enc_tg_cache_tg[0] = 3579U;
+    state.p25_enc_tg_cache_next = 7U;
 
     dsd_engine_trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_retune_block_until != until0
         || state.p25_retune_block_freq != 851125000L || state.p25_retune_block_slot != 1
         || state.p25_retune_block_next != 5U || state.p25_retune_block_history_until[0] != until0
-        || state.p25_retune_block_history_freq[0] != 851125000L || state.p25_retune_block_history_slot[0] != 1) {
-        DSD_FPRINTF(stderr, "retune-backoff target 0 restore failed active=%zu until=%ld freq=%ld slot=%d next=%u\n",
-                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until,
-                    state.p25_retune_block_freq, state.p25_retune_block_slot, state.p25_retune_block_next);
+        || state.p25_retune_block_history_freq[0] != 851125000L || state.p25_retune_block_history_slot[0] != 1
+        || state.p25_enc_tg_cache_until[0] != until0 || state.p25_enc_tg_cache_tg[0] != 2468U
+        || state.p25_enc_tg_cache_next != 5U) {
+        DSD_FPRINTF(
+            stderr,
+            "retune-backoff target 0 restore failed active=%zu until=%ld freq=%ld slot=%d next=%u enc=%ld/%u/%u\n",
+            dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until, state.p25_retune_block_freq,
+            state.p25_retune_block_slot, state.p25_retune_block_next, (long)state.p25_enc_tg_cache_until[0],
+            state.p25_enc_tg_cache_tg[0], state.p25_enc_tg_cache_next);
         test_rc = 1;
     }
 
@@ -1982,10 +1995,15 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_retune_block_until != until1
         || state.p25_retune_block_freq != 852125000L || state.p25_retune_block_slot != 0
         || state.p25_retune_block_next != 7U || state.p25_retune_block_history_until[0] != until1
-        || state.p25_retune_block_history_freq[0] != 852125000L || state.p25_retune_block_history_slot[0] != 0) {
-        DSD_FPRINTF(stderr, "retune-backoff target 1 restore failed active=%zu until=%ld freq=%ld slot=%d next=%u\n",
-                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until,
-                    state.p25_retune_block_freq, state.p25_retune_block_slot, state.p25_retune_block_next);
+        || state.p25_retune_block_history_freq[0] != 852125000L || state.p25_retune_block_history_slot[0] != 0
+        || state.p25_enc_tg_cache_until[0] != until1 || state.p25_enc_tg_cache_tg[0] != 3579U
+        || state.p25_enc_tg_cache_next != 7U) {
+        DSD_FPRINTF(
+            stderr,
+            "retune-backoff target 1 restore failed active=%zu until=%ld freq=%ld slot=%d next=%u enc=%ld/%u/%u\n",
+            dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until, state.p25_retune_block_freq,
+            state.p25_retune_block_slot, state.p25_retune_block_next, (long)state.p25_enc_tg_cache_until[0],
+            state.p25_enc_tg_cache_tg[0], state.p25_enc_tg_cache_next);
         test_rc = 1;
     }
 

@@ -70,6 +70,36 @@ seed_exact(dsd_state* st, uint32_t id, const char* mode, const char* name, int p
     return dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
 }
 
+static void
+seed_fdma_iden(dsd_state* st, int id) {
+    st->p25_chan_iden = id;
+    st->p25_iden_fdma[id].base_freq = 851000000 / 5;
+    st->p25_iden_fdma[id].chan_type = 1;
+    st->p25_iden_fdma[id].chan_spac = 100;
+    st->p25_iden_fdma[id].trust = 2;
+    st->p25_iden_fdma[id].populated = 1;
+    st->p25_chan_tdma_explicit[id] = 1;
+}
+
+static int
+tg_policy_is_absent(const dsd_state* st, uint32_t tg) {
+    dsd_tg_policy_lookup lookup;
+    if (dsd_tg_policy_lookup_id(st, tg, &lookup) != 0) {
+        return 0;
+    }
+    return lookup.match == DSD_TG_POLICY_MATCH_NONE;
+}
+
+static int
+enc_tg_cache_is_absent(const dsd_state* st, uint32_t tg) {
+    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
+        if (st->p25_enc_tg_cache_tg[i] == tg && st->p25_enc_tg_cache_until[i] > 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -88,14 +118,7 @@ main(void) {
 
     // FDMA IDEN
     int id = 1;
-    st.p25_chan_iden = id;
-    // Populate new dual-array
-    st.p25_iden_fdma[id].base_freq = 851000000 / 5;
-    st.p25_iden_fdma[id].chan_type = 1;
-    st.p25_iden_fdma[id].chan_spac = 100;
-    st.p25_iden_fdma[id].trust = 2;
-    st.p25_iden_fdma[id].populated = 1;
-    st.p25_chan_tdma_explicit[id] = 1; // FDMA known
+    seed_fdma_iden(&st, id);
     int ch = (id << 12) | 0x000A;
     (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
     (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
@@ -138,6 +161,43 @@ main(void) {
     p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1104, /*src*/ 2105);
     rc |= expect_true("later clear mixed-mode grant tunes", st.p25_sm_tune_count == before + 1);
     opts.trunk_tune_enc_calls = 1;
+
+    // Transient encrypted-call memory blocks only ambiguous no-SVC grants and never writes TG policy.
+    {
+        static dsd_opts cache_opts;
+        static dsd_state cache_st;
+        DSD_MEMSET(&cache_opts, 0, sizeof cache_opts);
+        DSD_MEMSET(&cache_st, 0, sizeof cache_st);
+        cache_opts.p25_trunk = 1;
+        cache_opts.trunk_tune_group_calls = 1;
+        cache_opts.trunk_tune_private_calls = 1;
+        cache_opts.trunk_tune_data_calls = 1;
+        cache_opts.trunk_tune_enc_calls = 0;
+        cache_st.p25_cc_freq = 851000000;
+        seed_fdma_iden(&cache_st, id);
+        p25_sm_init(&cache_opts, &cache_st);
+
+        before = cache_st.p25_sm_tune_count;
+        p25_sm_on_group_grant(&cache_opts, &cache_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 1300, /*src*/ 2300);
+        rc |= expect_true("unknown-svc grant initially tunes", cache_st.p25_sm_tune_count == before + 1);
+
+        p25_emit_enc_lockout_once(&cache_opts, &cache_st, 0, 1300, /*svc*/ 0);
+        p25_sm_on_release(&cache_opts, &cache_st);
+        before = cache_st.p25_sm_tune_count;
+        cache_opts.p25_is_tuned = 0;
+        p25_sm_on_group_grant(&cache_opts, &cache_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 1300, /*src*/ 2301);
+        rc |= expect_true("unknown-svc grant skipped by transient enc cache", cache_st.p25_sm_tune_count == before);
+        rc |= expect_true("transient enc cache does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
+
+        cache_opts.p25_is_tuned = 0;
+        p25_sm_on_group_grant(&cache_opts, &cache_st, ch, /*svc*/ 0x00, /*tg*/ 1300, /*src*/ 2302);
+        rc |=
+            expect_true("explicit clear grant bypasses transient enc cache", cache_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("explicit clear grant clears transient enc cache", enc_tg_cache_is_absent(&cache_st, 1300U));
+        rc |= expect_true("explicit clear grant does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
+        p25_sm_on_release(&cache_opts, &cache_st);
+        p25_sm_init(&opts, &st);
+    }
 
     // Matching hold does not override explicit B/DE blocks in grant-compatible hold mode.
     st.tg_hold = 1102;

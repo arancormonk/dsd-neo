@@ -31,6 +31,7 @@
 enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH = 8,
+    DSD_P25_ENC_TG_CACHE_DEPTH = 8,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     DSD_VERTEX_KS_MAP_MAX = 64,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
@@ -767,6 +768,10 @@ struct dsd_state {
     time_t p25_retune_block_history_until[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
     long p25_retune_block_history_freq[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
     int p25_retune_block_history_slot[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH]; // -1 when N/A
+    // Transient encrypted-call cache: blocks ambiguous no-SVC grants after proven ENC lockout.
+    time_t p25_enc_tg_cache_until[DSD_P25_ENC_TG_CACHE_DEPTH];
+    uint32_t p25_enc_tg_cache_tg[DSD_P25_ENC_TG_CACHE_DEPTH];
+    unsigned int p25_enc_tg_cache_next;
     // Cached P25 SM tunables (seconds), resolved once at p25_sm_init()
     double p25_cfg_vc_grace_s;
     double p25_cfg_grant_voice_to_s;

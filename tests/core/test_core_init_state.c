@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -63,6 +64,11 @@ main(void) {
         state->p25_retune_block_history_until[i] = 1234567890 + i;
         state->p25_retune_block_history_freq[i] = 851125000L + i;
         state->p25_retune_block_history_slot[i] = i % 2;
+    }
+    state->p25_enc_tg_cache_next = 3U;
+    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
+        state->p25_enc_tg_cache_until[i] = 1234567890 + i;
+        state->p25_enc_tg_cache_tg[i] = (uint32_t)(2400 + i);
     }
     state->rtl_symbol_cache[0] = 1234.0f;
     state->rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP - 1] = 5678.0f;
@@ -252,6 +258,20 @@ main(void) {
             freeState(state);
             free(state);
             return 23;
+        }
+    }
+    if (state->p25_enc_tg_cache_next != 0U) {
+        DSD_FPRINTF(stderr, "initState did not reset P25 encrypted TG cache cursor\n");
+        freeState(state);
+        free(state);
+        return 24;
+    }
+    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
+        if (state->p25_enc_tg_cache_until[i] != 0 || state->p25_enc_tg_cache_tg[i] != 0U) {
+            DSD_FPRINTF(stderr, "initState did not reset P25 encrypted TG cache\n");
+            freeState(state);
+            free(state);
+            return 25;
         }
     }
 

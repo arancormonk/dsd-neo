@@ -53,6 +53,12 @@ typedef enum {
     P25_SM_HUNTING,  // Lost CC, searching candidates
 } p25_sm_state_e;
 
+enum {
+    // Grant decoder sentinel for opcodes that do not carry service options.
+    // Passing svc_bits=0 remains an explicit clear service option for compatibility.
+    P25_SM_SVC_UNKNOWN = -1,
+};
+
 /* ============================================================================
  * Events
  * ============================================================================ */
@@ -78,7 +84,7 @@ typedef struct {
     int tg;       // Talkgroup (for GRANT, 0 if individual)
     int src;      // Source RID (for GRANT)
     int dst;      // Destination RID (for individual GRANT)
-    int svc_bits; // Service options (for GRANT)
+    int svc_bits; // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
     int is_group; // 1 for group grant, 0 for individual
     int algid;    // Algorithm ID (for ENC event)
     int keyid;    // Key ID (for ENC event)
@@ -368,7 +374,7 @@ void p25_sm_init(dsd_opts* opts, dsd_state* state);
  * @param opts Decoder options.
  * @param state Decoder state.
  * @param channel Voice channel number.
- * @param svc_bits Service options associated with the grant.
+ * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
  * @param tg Talkgroup.
  * @param src Source RID.
  */
@@ -380,7 +386,7 @@ void p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int sv
  * @param opts Decoder options.
  * @param state Decoder state.
  * @param channel Voice channel number.
- * @param svc_bits Service options associated with the grant.
+ * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
  * @param dst Destination RID.
  * @param src Source RID.
  */
@@ -703,8 +709,8 @@ void p25_ga_tick(dsd_state* state);
 /**
  * @brief Emit a single encryption lockout event for a talkgroup.
  *
- * Marks the TG as encrypted (mode "DE") if not already and pushes the
- * corresponding event to history/log exactly once per TG until scrubbed.
+ * Records transient encrypted-call state and pushes the corresponding event to history/log exactly once per TG until
+ * scrubbed.
  *
  * @param opts Decoder options.
  * @param state Decoder state.
@@ -713,6 +719,18 @@ void p25_ga_tick(dsd_state* state);
  * @param svc_bits Optional service bits (pass 0 if unknown).
  */
 void p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits);
+
+/**
+ * @brief Record transient encrypted-call state for a talkgroup without emitting a user-visible event.
+ *
+ * Used by lockout paths that already own event-history reporting. The record expires with the effective P25 retune
+ * backoff window and is never written to persistent talkgroup policy.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param tg Talkgroup proven encrypted.
+ */
+void p25_sm_note_encrypted_call(dsd_opts* opts, dsd_state* state, int tg);
 
 #ifdef __cplusplus
 }

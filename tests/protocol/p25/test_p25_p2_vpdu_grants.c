@@ -445,7 +445,43 @@ main(void) {
         rc |= expect_eq_long("0x42 blocked vc", state.p25_vc_freq[0], 0);
     }
 
-    // Case J: rejected P2 NSBs still prove the system carries TDMA voice without changing return CC metadata.
+    // Case J: no-SVC 0x42 grants honor transient encrypted-call memory after a proven VC lockout.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+        p25_sm_init(&opts, &state);
+        p25_emit_enc_lockout_once(&opts, &state, 0, 0x1234, /*svc_bits*/ 0);
+
+        MAC[1] = 0x42; // Group Voice Channel Grant Update - Implicit
+        MAC[2] = 0x10;
+        MAC[3] = 0x0A; // channel1 0x100A -> 851.125 MHz
+        MAC[4] = 0x12;
+        MAC[5] = 0x34; // group1
+        MAC[6] = 0x10;
+        MAC[7] = 0x0A; // channel2 same as channel1, so only one candidate is tried
+        MAC[8] = 0x12;
+        MAC[9] = 0x35; // group2
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x42 blocked by transient enc cache", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0x42 transient enc cache vc", state.p25_vc_freq[0], 0);
+    }
+
+    // Case K: rejected P2 NSBs still prove the system carries TDMA voice without changing return CC metadata.
     {
         static dsd_opts opts;
         static dsd_state state;
