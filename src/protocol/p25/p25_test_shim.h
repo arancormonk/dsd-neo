@@ -6,6 +6,7 @@
 #ifndef DSD_NEO_SRC_PROTOCOL_P25_P25_TEST_SHIM_H_
 #define DSD_NEO_SRC_PROTOCOL_P25_P25_TEST_SHIM_H_
 
+#include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -24,14 +25,34 @@ typedef struct {
     int tdma;
     long base;
     int spac;
+    uint32_t system_wacn;
+    uint16_t system_sysid;
 } p25_test_iden_config;
 
 typedef struct {
     long* cc;
     long* wacn;
     int* sysid;
+    int* site_lra;
+    int* site_lra_valid;
     int* nb_count;
     long* nb_freqs;
+    uint32_t* nb_wacn;
+    int* nb_wacn_valid;
+    int* nb_sysid;
+    int* nb_rfss;
+    int* nb_site;
+    int* nb_cfva;
+    int* nb_lra;
+    int* nb_lra_valid;
+    int* nb_cfva_valid;
+    int* cc_prot_valid;
+    int* cc_prot_algid;
+    int inspect_iden;
+    int* inspect_fdma_populated;
+    int* inspect_tdma_populated;
+    int* inspect_tdma_explicit;
+    int* pending_count;
 } p25_test_mbt_outputs;
 
 int p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, const p25_test_iden_config* iden_cfg,

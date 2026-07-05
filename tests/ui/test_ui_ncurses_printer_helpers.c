@@ -364,6 +364,12 @@ ui_print_p25_cc_candidates(const dsd_opts* opts, const dsd_state* state) { // NO
 }
 
 void
+ui_print_p25_secondary_ccs(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
 print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;

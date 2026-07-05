@@ -72,6 +72,8 @@ typedef struct {
     long p25_retune_block_freq;
     dsd_trunk_cc_candidates cc_candidates;
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX];
+    p25_secondary_cc_entry_t p25_secondary_cc_entries[P25_SECONDARY_CC_MAX];
+    p25_pending_announcement_t p25_pending_announcements[P25_PENDING_ANNOUNCEMENT_MAX];
     p25_iden_entry_t p25_iden_fdma[16];
     p25_iden_entry_t p25_iden_tdma[16];
     time_t p25_retune_block_history_until[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
@@ -80,6 +82,8 @@ typedef struct {
     long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
     uint32_t trunk_chan_map_used_count;
     unsigned int p25_retune_block_next;
+    uint32_t p25_sys_services_available;
+    uint32_t p25_sys_services_supported;
     unsigned int dmr_color_code;
     int p25_chan_iden;
     int p25_retune_block_slot;
@@ -96,6 +100,8 @@ typedef struct {
     int p25_aff_count;
     int p25_ga_count;
     int p25_nb_count;
+    int p25_secondary_cc_count;
+    int p25_pending_announcement_count;
     int lasttg;
     int lasttgR;
     int lastsrc;
@@ -129,8 +135,16 @@ typedef struct {
     int p25_retune_block_history_slot[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
+    uint8_t p25_cc_prot_valid;
+    uint8_t p25_cc_prot_algid;
     uint8_t p25_sys_time_valid;
     uint8_t p25_sys_time_offset_valid;
+    uint8_t p25_sys_services_valid;
+    uint8_t p25_sys_services_request_priority;
+    uint8_t p25_site_lra_valid;
+    uint8_t p25_site_lra;
+    uint8_t p25_site_network_active_valid;
+    uint8_t p25_site_network_active;
     uint8_t p25_cc_cache_loaded;
     uint8_t p25_call_emergency[2];
     uint8_t p25_call_priority[2];
@@ -783,10 +797,7 @@ trunk_scan_restore_p25_retune_snapshot(dsd_state* state, const dsd_trunk_scan_sn
 }
 
 static void
-trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
-    if (!state || !snapshot) {
-        return;
-    }
+trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     snapshot->p2_wacn = state->p2_wacn;
     snapshot->p2_sysid = state->p2_sysid;
     snapshot->p2_cc = state->p2_cc;
@@ -817,77 +828,10 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     snapshot->samplesPerSymbol = state->samplesPerSymbol;
     snapshot->symbolCenter = state->symbolCenter;
     snapshot->rf_mod = state->rf_mod;
-    snapshot->p25_prot_valid = state->p25_prot_valid;
-    snapshot->p25_prot_algid = state->p25_prot_algid;
-    snapshot->p25_prot_kid = state->p25_prot_kid;
-    snapshot->p25_sys_time_valid = state->p25_sys_time_valid;
-    snapshot->p25_sys_time = state->p25_sys_time;
-    snapshot->p25_sys_time_offset_valid = state->p25_sys_time_offset_valid;
-    snapshot->p25_sys_time_offset = state->p25_sys_time_offset;
-    snapshot->p25_patch_count = state->p25_patch_count;
-    DSD_MEMCPY(snapshot->p25_patch_sgid, state->p25_patch_sgid, sizeof(snapshot->p25_patch_sgid));
-    DSD_MEMCPY(snapshot->p25_patch_is_patch, state->p25_patch_is_patch, sizeof(snapshot->p25_patch_is_patch));
-    DSD_MEMCPY(snapshot->p25_patch_active, state->p25_patch_active, sizeof(snapshot->p25_patch_active));
-    DSD_MEMCPY(snapshot->p25_patch_last_update, state->p25_patch_last_update, sizeof(snapshot->p25_patch_last_update));
-    DSD_MEMCPY(snapshot->p25_patch_wgid_count, state->p25_patch_wgid_count, sizeof(snapshot->p25_patch_wgid_count));
-    DSD_MEMCPY(snapshot->p25_patch_wgid, state->p25_patch_wgid, sizeof(snapshot->p25_patch_wgid));
-    DSD_MEMCPY(snapshot->p25_patch_wuid_count, state->p25_patch_wuid_count, sizeof(snapshot->p25_patch_wuid_count));
-    DSD_MEMCPY(snapshot->p25_patch_wuid, state->p25_patch_wuid, sizeof(snapshot->p25_patch_wuid));
-    DSD_MEMCPY(snapshot->p25_patch_key, state->p25_patch_key, sizeof(snapshot->p25_patch_key));
-    DSD_MEMCPY(snapshot->p25_patch_alg, state->p25_patch_alg, sizeof(snapshot->p25_patch_alg));
-    DSD_MEMCPY(snapshot->p25_patch_ssn, state->p25_patch_ssn, sizeof(snapshot->p25_patch_ssn));
-    DSD_MEMCPY(snapshot->p25_patch_key_valid, state->p25_patch_key_valid, sizeof(snapshot->p25_patch_key_valid));
-    snapshot->p25_aff_count = state->p25_aff_count;
-    DSD_MEMCPY(snapshot->p25_aff_rid, state->p25_aff_rid, sizeof(snapshot->p25_aff_rid));
-    DSD_MEMCPY(snapshot->p25_aff_last_seen, state->p25_aff_last_seen, sizeof(snapshot->p25_aff_last_seen));
-    snapshot->p25_ga_count = state->p25_ga_count;
-    DSD_MEMCPY(snapshot->p25_ga_rid, state->p25_ga_rid, sizeof(snapshot->p25_ga_rid));
-    DSD_MEMCPY(snapshot->p25_ga_tg, state->p25_ga_tg, sizeof(snapshot->p25_ga_tg));
-    DSD_MEMCPY(snapshot->p25_ga_last_seen, state->p25_ga_last_seen, sizeof(snapshot->p25_ga_last_seen));
-    snapshot->p25_nb_count = state->p25_nb_count;
-    DSD_MEMCPY(snapshot->p25_nb_entries, state->p25_nb_entries, sizeof(snapshot->p25_nb_entries));
-    snapshot->p25_src_nid = state->p25_src_nid;
-    trunk_scan_save_call_snapshot(state, snapshot);
-    snapshot->p25_cc_eval_freq = state->p25_cc_eval_freq;
-    snapshot->p25_cc_eval_start_m = state->p25_cc_eval_start_m;
-    snapshot->p25_cc_cache_loaded = state->p25_cc_cache_loaded;
-    snapshot->dmr_mfid = state->dmr_mfid;
-    snapshot->dmr_fid = state->dmr_fid;
-    snapshot->dmr_so = state->dmr_so;
-    snapshot->dmr_fidR = state->dmr_fidR;
-    snapshot->dmr_soR = state->dmr_soR;
-    snapshot->dmr_t3_syscode = state->dmr_t3_syscode;
-    trunk_scan_save_dmr_confidence_snapshot(state, snapshot);
-    DSD_MEMCPY(snapshot->dmr_branding, state->dmr_branding, sizeof(snapshot->dmr_branding));
-    DSD_MEMCPY(snapshot->dmr_branding_sub, state->dmr_branding_sub, sizeof(snapshot->dmr_branding_sub));
-    DSD_MEMCPY(snapshot->dmr_site_parms, state->dmr_site_parms, sizeof(snapshot->dmr_site_parms));
-    snapshot->dmr_rest_channel = state->dmr_rest_channel;
-    snapshot->lcn_freq_count = state->lcn_freq_count;
-    snapshot->lcn_freq_roll = state->lcn_freq_roll;
-    snapshot->is_con_plus = state->is_con_plus;
-    snapshot->last_cc_sync_time = state->last_cc_sync_time;
-    snapshot->last_vc_sync_time = state->last_vc_sync_time;
-    snapshot->p25_last_vc_tune_time = state->p25_last_vc_tune_time;
-    snapshot->last_t3_tune_time = state->last_t3_tune_time;
-    snapshot->last_cc_sync_time_m = state->last_cc_sync_time_m;
-    snapshot->last_vc_sync_time_m = state->last_vc_sync_time_m;
-    snapshot->p25_last_vc_tune_time_m = state->p25_last_vc_tune_time_m;
-    snapshot->last_t3_tune_time_m = state->last_t3_tune_time_m;
-
-    const dsd_trunk_cc_candidates* cc_candidates = dsd_trunk_cc_candidates_peek(state);
-    snapshot->has_cc_candidates = cc_candidates ? 1 : 0;
-    if (cc_candidates) {
-        snapshot->cc_candidates = *cc_candidates;
-    } else {
-        DSD_MEMSET(&snapshot->cc_candidates, 0, sizeof(snapshot->cc_candidates));
-    }
 }
 
 static void
-trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
-    if (!state || !snapshot) {
-        return;
-    }
+trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     state->p2_wacn = snapshot->p2_wacn;
     state->p2_sysid = snapshot->p2_sysid;
     state->p2_cc = snapshot->p2_cc;
@@ -917,13 +861,69 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->samplesPerSymbol = snapshot->samplesPerSymbol;
     state->symbolCenter = snapshot->symbolCenter;
     state->rf_mod = snapshot->rf_mod;
+}
+
+static void
+trunk_scan_save_p25_metadata_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    snapshot->p25_prot_valid = state->p25_prot_valid;
+    snapshot->p25_prot_algid = state->p25_prot_algid;
+    snapshot->p25_prot_kid = state->p25_prot_kid;
+    snapshot->p25_cc_prot_valid = state->p25_cc_prot_valid;
+    snapshot->p25_cc_prot_algid = state->p25_cc_prot_algid;
+    snapshot->p25_sys_time_valid = state->p25_sys_time_valid;
+    snapshot->p25_sys_time = state->p25_sys_time;
+    snapshot->p25_sys_time_offset_valid = state->p25_sys_time_offset_valid;
+    snapshot->p25_sys_time_offset = state->p25_sys_time_offset;
+    snapshot->p25_sys_services_valid = state->p25_sys_services_valid;
+    snapshot->p25_sys_services_available = state->p25_sys_services_available;
+    snapshot->p25_sys_services_supported = state->p25_sys_services_supported;
+    snapshot->p25_sys_services_request_priority = state->p25_sys_services_request_priority;
+    snapshot->p25_site_lra_valid = state->p25_site_lra_valid;
+    snapshot->p25_site_lra = state->p25_site_lra;
+    snapshot->p25_site_network_active_valid = state->p25_site_network_active_valid;
+    snapshot->p25_site_network_active = state->p25_site_network_active;
+}
+
+static void
+trunk_scan_restore_p25_metadata_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     state->p25_prot_valid = snapshot->p25_prot_valid;
     state->p25_prot_algid = snapshot->p25_prot_algid;
     state->p25_prot_kid = snapshot->p25_prot_kid;
+    state->p25_cc_prot_valid = snapshot->p25_cc_prot_valid;
+    state->p25_cc_prot_algid = snapshot->p25_cc_prot_algid;
     state->p25_sys_time_valid = snapshot->p25_sys_time_valid;
     state->p25_sys_time = snapshot->p25_sys_time;
     state->p25_sys_time_offset_valid = snapshot->p25_sys_time_offset_valid;
     state->p25_sys_time_offset = snapshot->p25_sys_time_offset;
+    state->p25_sys_services_valid = snapshot->p25_sys_services_valid;
+    state->p25_sys_services_available = snapshot->p25_sys_services_available;
+    state->p25_sys_services_supported = snapshot->p25_sys_services_supported;
+    state->p25_sys_services_request_priority = snapshot->p25_sys_services_request_priority;
+    state->p25_site_lra_valid = snapshot->p25_site_lra_valid;
+    state->p25_site_lra = snapshot->p25_site_lra;
+    state->p25_site_network_active_valid = snapshot->p25_site_network_active_valid;
+    state->p25_site_network_active = snapshot->p25_site_network_active;
+}
+
+static void
+trunk_scan_save_p25_patch_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    snapshot->p25_patch_count = state->p25_patch_count;
+    DSD_MEMCPY(snapshot->p25_patch_sgid, state->p25_patch_sgid, sizeof(snapshot->p25_patch_sgid));
+    DSD_MEMCPY(snapshot->p25_patch_is_patch, state->p25_patch_is_patch, sizeof(snapshot->p25_patch_is_patch));
+    DSD_MEMCPY(snapshot->p25_patch_active, state->p25_patch_active, sizeof(snapshot->p25_patch_active));
+    DSD_MEMCPY(snapshot->p25_patch_last_update, state->p25_patch_last_update, sizeof(snapshot->p25_patch_last_update));
+    DSD_MEMCPY(snapshot->p25_patch_wgid_count, state->p25_patch_wgid_count, sizeof(snapshot->p25_patch_wgid_count));
+    DSD_MEMCPY(snapshot->p25_patch_wgid, state->p25_patch_wgid, sizeof(snapshot->p25_patch_wgid));
+    DSD_MEMCPY(snapshot->p25_patch_wuid_count, state->p25_patch_wuid_count, sizeof(snapshot->p25_patch_wuid_count));
+    DSD_MEMCPY(snapshot->p25_patch_wuid, state->p25_patch_wuid, sizeof(snapshot->p25_patch_wuid));
+    DSD_MEMCPY(snapshot->p25_patch_key, state->p25_patch_key, sizeof(snapshot->p25_patch_key));
+    DSD_MEMCPY(snapshot->p25_patch_alg, state->p25_patch_alg, sizeof(snapshot->p25_patch_alg));
+    DSD_MEMCPY(snapshot->p25_patch_ssn, state->p25_patch_ssn, sizeof(snapshot->p25_patch_ssn));
+    DSD_MEMCPY(snapshot->p25_patch_key_valid, state->p25_patch_key_valid, sizeof(snapshot->p25_patch_key_valid));
+}
+
+static void
+trunk_scan_restore_p25_patch_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     state->p25_patch_count = snapshot->p25_patch_count;
     DSD_MEMCPY(state->p25_patch_sgid, snapshot->p25_patch_sgid, sizeof(state->p25_patch_sgid));
     DSD_MEMCPY(state->p25_patch_is_patch, snapshot->p25_patch_is_patch, sizeof(state->p25_patch_is_patch));
@@ -937,6 +937,30 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     DSD_MEMCPY(state->p25_patch_alg, snapshot->p25_patch_alg, sizeof(state->p25_patch_alg));
     DSD_MEMCPY(state->p25_patch_ssn, snapshot->p25_patch_ssn, sizeof(state->p25_patch_ssn));
     DSD_MEMCPY(state->p25_patch_key_valid, snapshot->p25_patch_key_valid, sizeof(state->p25_patch_key_valid));
+}
+
+static void
+trunk_scan_save_p25_catalog_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    snapshot->p25_aff_count = state->p25_aff_count;
+    DSD_MEMCPY(snapshot->p25_aff_rid, state->p25_aff_rid, sizeof(snapshot->p25_aff_rid));
+    DSD_MEMCPY(snapshot->p25_aff_last_seen, state->p25_aff_last_seen, sizeof(snapshot->p25_aff_last_seen));
+    snapshot->p25_ga_count = state->p25_ga_count;
+    DSD_MEMCPY(snapshot->p25_ga_rid, state->p25_ga_rid, sizeof(snapshot->p25_ga_rid));
+    DSD_MEMCPY(snapshot->p25_ga_tg, state->p25_ga_tg, sizeof(snapshot->p25_ga_tg));
+    DSD_MEMCPY(snapshot->p25_ga_last_seen, state->p25_ga_last_seen, sizeof(snapshot->p25_ga_last_seen));
+    snapshot->p25_nb_count = state->p25_nb_count;
+    DSD_MEMCPY(snapshot->p25_nb_entries, state->p25_nb_entries, sizeof(snapshot->p25_nb_entries));
+    snapshot->p25_secondary_cc_count = state->p25_secondary_cc_count;
+    DSD_MEMCPY(snapshot->p25_secondary_cc_entries, state->p25_secondary_cc_entries,
+               sizeof(snapshot->p25_secondary_cc_entries));
+    snapshot->p25_pending_announcement_count = state->p25_pending_announcement_count;
+    DSD_MEMCPY(snapshot->p25_pending_announcements, state->p25_pending_announcements,
+               sizeof(snapshot->p25_pending_announcements));
+    snapshot->p25_src_nid = state->p25_src_nid;
+}
+
+static void
+trunk_scan_restore_p25_catalog_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     state->p25_aff_count = snapshot->p25_aff_count;
     DSD_MEMCPY(state->p25_aff_rid, snapshot->p25_aff_rid, sizeof(state->p25_aff_rid));
     DSD_MEMCPY(state->p25_aff_last_seen, snapshot->p25_aff_last_seen, sizeof(state->p25_aff_last_seen));
@@ -946,11 +970,51 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     DSD_MEMCPY(state->p25_ga_last_seen, snapshot->p25_ga_last_seen, sizeof(state->p25_ga_last_seen));
     state->p25_nb_count = snapshot->p25_nb_count;
     DSD_MEMCPY(state->p25_nb_entries, snapshot->p25_nb_entries, sizeof(state->p25_nb_entries));
+    state->p25_secondary_cc_count = snapshot->p25_secondary_cc_count;
+    DSD_MEMCPY(state->p25_secondary_cc_entries, snapshot->p25_secondary_cc_entries,
+               sizeof(state->p25_secondary_cc_entries));
+    state->p25_pending_announcement_count = snapshot->p25_pending_announcement_count;
+    DSD_MEMCPY(state->p25_pending_announcements, snapshot->p25_pending_announcements,
+               sizeof(state->p25_pending_announcements));
     state->p25_src_nid = snapshot->p25_src_nid;
+}
+
+static void
+trunk_scan_save_p25_eval_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    trunk_scan_save_call_snapshot(state, snapshot);
+    snapshot->p25_cc_eval_freq = state->p25_cc_eval_freq;
+    snapshot->p25_cc_eval_start_m = state->p25_cc_eval_start_m;
+    snapshot->p25_cc_cache_loaded = state->p25_cc_cache_loaded;
+}
+
+static void
+trunk_scan_restore_p25_eval_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     trunk_scan_restore_call_snapshot(state, snapshot);
     state->p25_cc_eval_freq = snapshot->p25_cc_eval_freq;
     state->p25_cc_eval_start_m = snapshot->p25_cc_eval_start_m;
     state->p25_cc_cache_loaded = snapshot->p25_cc_cache_loaded;
+}
+
+static void
+trunk_scan_save_dmr_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    snapshot->dmr_mfid = state->dmr_mfid;
+    snapshot->dmr_fid = state->dmr_fid;
+    snapshot->dmr_so = state->dmr_so;
+    snapshot->dmr_fidR = state->dmr_fidR;
+    snapshot->dmr_soR = state->dmr_soR;
+    snapshot->dmr_t3_syscode = state->dmr_t3_syscode;
+    trunk_scan_save_dmr_confidence_snapshot(state, snapshot);
+    DSD_MEMCPY(snapshot->dmr_branding, state->dmr_branding, sizeof(snapshot->dmr_branding));
+    DSD_MEMCPY(snapshot->dmr_branding_sub, state->dmr_branding_sub, sizeof(snapshot->dmr_branding_sub));
+    DSD_MEMCPY(snapshot->dmr_site_parms, state->dmr_site_parms, sizeof(snapshot->dmr_site_parms));
+    snapshot->dmr_rest_channel = state->dmr_rest_channel;
+    snapshot->lcn_freq_count = state->lcn_freq_count;
+    snapshot->lcn_freq_roll = state->lcn_freq_roll;
+    snapshot->is_con_plus = state->is_con_plus;
+}
+
+static void
+trunk_scan_restore_dmr_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     state->dmr_mfid = snapshot->dmr_mfid;
     state->dmr_fid = snapshot->dmr_fid;
     state->dmr_so = snapshot->dmr_so;
@@ -965,6 +1029,22 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->lcn_freq_count = snapshot->lcn_freq_count;
     state->lcn_freq_roll = snapshot->lcn_freq_roll;
     state->is_con_plus = snapshot->is_con_plus;
+}
+
+static void
+trunk_scan_save_timing_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    snapshot->last_cc_sync_time = state->last_cc_sync_time;
+    snapshot->last_vc_sync_time = state->last_vc_sync_time;
+    snapshot->p25_last_vc_tune_time = state->p25_last_vc_tune_time;
+    snapshot->last_t3_tune_time = state->last_t3_tune_time;
+    snapshot->last_cc_sync_time_m = state->last_cc_sync_time_m;
+    snapshot->last_vc_sync_time_m = state->last_vc_sync_time_m;
+    snapshot->p25_last_vc_tune_time_m = state->p25_last_vc_tune_time_m;
+    snapshot->last_t3_tune_time_m = state->last_t3_tune_time_m;
+}
+
+static void
+trunk_scan_restore_timing_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     state->last_cc_sync_time = snapshot->last_cc_sync_time;
     state->last_vc_sync_time = snapshot->last_vc_sync_time;
     state->p25_last_vc_tune_time = snapshot->p25_last_vc_tune_time;
@@ -973,7 +1053,21 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     state->last_vc_sync_time_m = snapshot->last_vc_sync_time_m;
     state->p25_last_vc_tune_time_m = snapshot->p25_last_vc_tune_time_m;
     state->last_t3_tune_time_m = snapshot->last_t3_tune_time_m;
+}
 
+static void
+trunk_scan_save_cc_candidate_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    const dsd_trunk_cc_candidates* cc_candidates = dsd_trunk_cc_candidates_peek(state);
+    snapshot->has_cc_candidates = cc_candidates ? 1 : 0;
+    if (cc_candidates) {
+        snapshot->cc_candidates = *cc_candidates;
+    } else {
+        DSD_MEMSET(&snapshot->cc_candidates, 0, sizeof(snapshot->cc_candidates));
+    }
+}
+
+static void
+trunk_scan_restore_cc_candidate_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     if (snapshot->has_cc_candidates) {
         dsd_trunk_cc_candidates* cc_candidates = dsd_trunk_cc_candidates_get(state);
         if (cc_candidates) {
@@ -982,6 +1076,36 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     } else {
         (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES, NULL, NULL);
     }
+}
+
+static void
+trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    if (!state || !snapshot) {
+        return;
+    }
+    trunk_scan_save_p25_identity_snapshot(state, snapshot);
+    trunk_scan_save_p25_metadata_snapshot(state, snapshot);
+    trunk_scan_save_p25_patch_snapshot(state, snapshot);
+    trunk_scan_save_p25_catalog_snapshot(state, snapshot);
+    trunk_scan_save_p25_eval_snapshot(state, snapshot);
+    trunk_scan_save_dmr_snapshot(state, snapshot);
+    trunk_scan_save_timing_snapshot(state, snapshot);
+    trunk_scan_save_cc_candidate_snapshot(state, snapshot);
+}
+
+static void
+trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
+    if (!state || !snapshot) {
+        return;
+    }
+    trunk_scan_restore_p25_identity_snapshot(state, snapshot);
+    trunk_scan_restore_p25_metadata_snapshot(state, snapshot);
+    trunk_scan_restore_p25_patch_snapshot(state, snapshot);
+    trunk_scan_restore_p25_catalog_snapshot(state, snapshot);
+    trunk_scan_restore_p25_eval_snapshot(state, snapshot);
+    trunk_scan_restore_dmr_snapshot(state, snapshot);
+    trunk_scan_restore_timing_snapshot(state, snapshot);
+    trunk_scan_restore_cc_candidate_snapshot(state, snapshot);
 }
 
 static void

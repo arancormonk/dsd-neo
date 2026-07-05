@@ -12,6 +12,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -272,6 +273,29 @@ p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
 void
 p25_confirm_idens_for_current_site(dsd_state* state) {
     (void)state;
+}
+
+int
+p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
+    if (!state || (wacn == 0 && sysid == 0)) {
+        return 0;
+    }
+    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
+        DSD_MEMSET(state->p25_iden_fdma, 0, sizeof(state->p25_iden_fdma));
+        DSD_MEMSET(state->p25_iden_tdma, 0, sizeof(state->p25_iden_tdma));
+        DSD_MEMSET(state->p25_chan_tdma_explicit, 0, sizeof(state->p25_chan_tdma_explicit));
+        DSD_MEMSET(state->p25_pending_announcements, 0, sizeof(state->p25_pending_announcements));
+        state->p25_pending_announcement_count = 0;
+    }
+    state->p2_wacn = wacn;
+    state->p2_sysid = sysid;
+    return 1;
+}
+
+void
+p25_store_site_lra(dsd_state* state, uint8_t lra) {
+    (void)state;
+    (void)lra;
 }
 
 void

@@ -14,6 +14,8 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <errno.h>
@@ -192,20 +194,85 @@ p25_cc_persist_cache(const dsd_opts* opts, const dsd_state* state) {
 
 #define P25_NB_TTL_SEC ((time_t)30 * 60)
 
-static int
-p25_nb_has_site_identity(uint16_t sysid, uint8_t rfss, uint8_t site) {
-    return sysid != 0 || rfss != 0 || site != 0;
+typedef struct {
+    long freq;
+    p25_neighbor_channel_announcement_t announcement;
+} p25_neighbor_record_update_t;
+
+static uint32_t
+p25_neighbor_wacn20(const p25_neighbor_channel_announcement_t* announcement) {
+    return announcement ? (announcement->wacn & 0xFFFFFU) : 0U;
 }
 
 static int
-p25_nb_update_by_site(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva,
-                      time_t now) {
+p25_nb_has_site_identity(const p25_neighbor_channel_announcement_t* announcement) {
+    return announcement && (announcement->sysid != 0 || announcement->rfss != 0 || announcement->site != 0);
+}
+
+static int
+p25_nb_sysid_matches(uint16_t entry_sysid, uint16_t announcement_sysid) {
+    return entry_sysid == announcement_sysid || entry_sysid == 0 || announcement_sysid == 0;
+}
+
+static int
+p25_nb_same_site_identity(const p25_nb_entry_t* entry, const p25_neighbor_channel_announcement_t* announcement) {
+    if (!entry || !announcement) {
+        return 0;
+    }
+    if (entry->rfss == 0 || entry->site == 0 || announcement->rfss == 0 || announcement->site == 0) {
+        return entry->sysid == announcement->sysid && entry->rfss == announcement->rfss
+               && entry->site == announcement->site;
+    }
+    return entry->rfss == announcement->rfss && entry->site == announcement->site
+           && p25_nb_sysid_matches(entry->sysid, announcement->sysid);
+}
+
+static void
+p25_nb_enrich_unknown_identity(p25_nb_entry_t* entry, const p25_neighbor_channel_announcement_t* announcement) {
+    if (!entry || !announcement) {
+        return;
+    }
+    if (entry->sysid == 0 && announcement->sysid != 0) {
+        entry->sysid = announcement->sysid;
+    }
+}
+
+static void
+p25_nb_apply_record_update(p25_nb_entry_t* entry, const p25_neighbor_record_update_t* update, int copy_identity,
+                           time_t now) {
+    const p25_neighbor_channel_announcement_t* announcement = &update->announcement;
+    entry->freq = update->freq;
+    if (copy_identity) {
+        entry->sysid = announcement->sysid;
+        entry->rfss = announcement->rfss;
+        entry->site = announcement->site;
+    }
+    if (announcement->wacn_valid) {
+        entry->wacn = p25_neighbor_wacn20(announcement);
+        entry->wacn_valid = 1;
+    }
+    if (announcement->lra_valid) {
+        entry->lra = announcement->lra;
+        entry->lra_valid = 1;
+    }
+    if (announcement->cfva_valid) {
+        entry->cfva = announcement->cfva;
+        entry->cfva_valid = 1;
+    }
+    entry->last_seen = now;
+}
+
+static int
+p25_nb_update_by_site(dsd_state* state, const p25_neighbor_record_update_t* update, time_t now) {
+    const p25_neighbor_channel_announcement_t* announcement = &update->announcement;
     for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
         p25_nb_entry_t* entry = &state->p25_nb_entries[i];
-        if (entry->sysid == sysid && entry->rfss == rfss && entry->site == site) {
-            entry->freq = freq;
-            entry->cfva = cfva;
-            entry->last_seen = now;
+        if (p25_nb_same_site_identity(entry, announcement)) {
+            if (announcement->wacn_valid && entry->wacn_valid && entry->wacn != p25_neighbor_wacn20(announcement)) {
+                continue;
+            }
+            p25_nb_apply_record_update(entry, update, 0, now);
+            p25_nb_enrich_unknown_identity(entry, announcement);
             return 1;
         }
     }
@@ -213,23 +280,16 @@ p25_nb_update_by_site(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss,
 }
 
 static int
-p25_nb_update_by_freq(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva,
-                      int has_site_identity, time_t now) {
+p25_nb_update_by_freq(dsd_state* state, const p25_neighbor_record_update_t* update, int has_site_identity, time_t now) {
     for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
         p25_nb_entry_t* entry = &state->p25_nb_entries[i];
-        if (entry->freq != freq) {
+        if (entry->freq != update->freq) {
             continue;
         }
         if (has_site_identity && (entry->sysid != 0 || entry->rfss != 0 || entry->site != 0)) {
             continue;
         }
-        if (has_site_identity) {
-            entry->sysid = sysid;
-            entry->rfss = rfss;
-            entry->site = site;
-            entry->cfva = cfva;
-        }
-        entry->last_seen = now;
+        p25_nb_apply_record_update(entry, update, has_site_identity, now);
         return 1;
     }
     return 0;
@@ -257,42 +317,69 @@ p25_nb_select_insert_index(dsd_state* state) {
     return repl;
 }
 
-void
-p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
-    if (!state || freq <= 0) {
+static void
+p25_nb_insert_record(dsd_state* state, const p25_neighbor_record_update_t* update, time_t now) {
+    int idx = p25_nb_select_insert_index(state);
+    p25_nb_entry_t* entry = &state->p25_nb_entries[idx];
+    DSD_MEMSET(entry, 0, sizeof(*entry));
+    p25_nb_apply_record_update(entry, update, 1, now);
+}
+
+static void
+p25_nb_add_ex_wacn_meta(dsd_state* state, const p25_neighbor_record_update_t* update) {
+    if (!state || !update || update->freq <= 0) {
         return;
     }
-    if (freq == state->p25_cc_freq) {
+    if (update->freq == state->p25_cc_freq) {
         return; /* Reject current CC as neighbor. */
     }
 
-    int has_site_identity = p25_nb_has_site_identity(sysid, rfss, site);
+    int has_site_identity = p25_nb_has_site_identity(&update->announcement);
     time_t now = time(NULL);
 
     /* Structured neighbor broadcasts identify sites. Keep those entries keyed
      * by site identity so frequency reuse does not merge distinct neighbors. */
-    if (has_site_identity && p25_nb_update_by_site(state, freq, sysid, rfss, site, cfva, now)) {
+    if (has_site_identity && p25_nb_update_by_site(state, update, now)) {
         return;
     }
 
     /* Legacy frequency-only updates refresh by frequency without clobbering
      * any site metadata learned from structured broadcasts. */
-    if (p25_nb_update_by_freq(state, freq, sysid, rfss, site, cfva, has_site_identity, now)) {
+    if (p25_nb_update_by_freq(state, update, has_site_identity, now)) {
         return;
     }
 
-    int idx = p25_nb_select_insert_index(state);
-    state->p25_nb_entries[idx].freq = freq;
-    state->p25_nb_entries[idx].sysid = sysid;
-    state->p25_nb_entries[idx].rfss = rfss;
-    state->p25_nb_entries[idx].site = site;
-    state->p25_nb_entries[idx].cfva = cfva;
-    state->p25_nb_entries[idx].last_seen = now;
+    p25_nb_insert_record(state, update, now);
+}
+
+void
+p25_nb_add_ex_wacn(dsd_state* state, long freq, uint32_t wacn, int wacn_valid, uint16_t sysid, uint8_t rfss,
+                   uint8_t site, uint8_t cfva) {
+    const p25_neighbor_record_update_t update = {
+        .freq = freq,
+        .announcement =
+            {
+                .wacn = wacn,
+                .sysid = sysid,
+                .rfss = rfss,
+                .site = site,
+                .cfva = cfva,
+                .wacn_valid = wacn_valid ? 1U : 0U,
+                .cfva_valid = 1U,
+            },
+    };
+    p25_nb_add_ex_wacn_meta(state, &update);
+}
+
+void
+p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
+    p25_nb_add_ex_wacn(state, freq, 0, 0, sysid, rfss, site, cfva);
 }
 
 void
 p25_nb_add(dsd_state* state, long freq_hz) {
-    p25_nb_add_ex(state, freq_hz, 0, 0, 0, 0);
+    const p25_neighbor_record_update_t update = {.freq = freq_hz};
+    p25_nb_add_ex_wacn_meta(state, &update);
 }
 
 void
@@ -317,4 +404,535 @@ p25_nb_tick(dsd_state* state) {
         DSD_MEMSET(&state->p25_nb_entries[i], 0, sizeof(state->p25_nb_entries[i]));
     }
     state->p25_nb_count = w;
+}
+
+void
+p25_store_system_service_broadcast(dsd_state* state, uint32_t available, uint32_t supported, uint8_t request_priority) {
+    if (!state) {
+        return;
+    }
+    state->p25_sys_services_valid = 1;
+    state->p25_sys_services_available = available & 0xFFFFFFU;
+    state->p25_sys_services_supported = supported & 0xFFFFFFU;
+    state->p25_sys_services_request_priority = request_priority;
+}
+
+void
+p25_store_site_lra(dsd_state* state, uint8_t lra) {
+    if (!state) {
+        return;
+    }
+    state->p25_site_lra = lra;
+    state->p25_site_lra_valid = 1;
+}
+
+void
+p25_store_site_network_active(dsd_state* state, uint8_t network_active) {
+    if (!state) {
+        return;
+    }
+    state->p25_site_network_active = network_active ? 1 : 0;
+    state->p25_site_network_active_valid = 1;
+}
+
+void
+p25_store_protected_control_channel(dsd_state* state, uint8_t algid) {
+    if (!state) {
+        return;
+    }
+    state->p25_cc_prot_valid = 1;
+    state->p25_cc_prot_algid = algid;
+}
+
+static const char* const k_p25_system_service_names[24] = {
+    NULL,
+    NULL,
+    "network active",
+    NULL,
+    "group voice",
+    "individual voice",
+    "PSTN-unit voice",
+    "unit-PSTN voice",
+    NULL,
+    "group data",
+    "individual data",
+    NULL,
+    "unit registration",
+    "group affiliation",
+    "group affiliation query",
+    "authentication",
+    "encryption",
+    "user status",
+    "user message",
+    "unit status",
+    "user status query",
+    "unit status query",
+    "unit page",
+    "emergency alarm",
+};
+
+const char*
+p25_system_service_name_for_bit(unsigned int service_bit) {
+    if (service_bit < 1U || service_bit > 24U) {
+        return NULL;
+    }
+    return k_p25_system_service_names[service_bit - 1U];
+}
+
+size_t
+p25_format_system_service_names(uint32_t service_mask, char* out, size_t out_len) {
+    if (out && out_len > 0) {
+        out[0] = '\0';
+    }
+    size_t count = 0;
+    size_t used = 0;
+    for (unsigned int bit = 1; bit <= 24U; bit++) {
+        const char* name = p25_system_service_name_for_bit(bit);
+        if (!name || ((service_mask >> (24U - bit)) & 1U) == 0U) {
+            continue;
+        }
+        count++;
+        if (!out || out_len == 0 || used >= out_len - 1U) {
+            continue;
+        }
+        const char* sep = (used > 0U) ? ", " : "";
+        int wrote = DSD_SNPRINTF(out + used, out_len - used, "%s%s", sep, name);
+        if (wrote < 0) {
+            out[used] = '\0';
+            continue;
+        }
+        if ((size_t)wrote >= out_len - used) {
+            used = out_len - 1U;
+            out[used] = '\0';
+        } else {
+            used += (size_t)wrote;
+        }
+    }
+    return count;
+}
+
+const char*
+p25_adjacent_cfva_flag_name(uint8_t flag_mask) {
+    switch (flag_mask & 0x0FU) {
+        case 0x8U: return "conventional";
+        case 0x4U: return "site failure";
+        case 0x2U: return "current";
+        case 0x1U: return "network active";
+        default: return NULL;
+    }
+}
+
+static void
+p25_append_tag(char* out, size_t out_len, size_t* used, size_t* count, const char* tag) {
+    if (!tag) {
+        return;
+    }
+    (*count)++;
+    if (!out || out_len == 0 || *used >= out_len - 1U) {
+        return;
+    }
+    const char* sep = (*used > 0U) ? "," : "";
+    int wrote = DSD_SNPRINTF(out + *used, out_len - *used, "%s%s", sep, tag);
+    if (wrote < 0) {
+        out[*used] = '\0';
+        return;
+    }
+    if ((size_t)wrote >= out_len - *used) {
+        *used = out_len - 1U;
+        out[*used] = '\0';
+    } else {
+        *used += (size_t)wrote;
+    }
+}
+
+size_t
+p25_format_adjacent_cfva(uint8_t cfva, char* out, size_t out_len) {
+    if (out && out_len > 0) {
+        out[0] = '\0';
+    }
+    size_t used = 0;
+    size_t count = 0;
+    if (cfva & 0x8U) {
+        p25_append_tag(out, out_len, &used, &count, p25_adjacent_cfva_flag_name(0x8U));
+    }
+    if (cfva & 0x4U) {
+        p25_append_tag(out, out_len, &used, &count, p25_adjacent_cfva_flag_name(0x4U));
+    }
+    p25_append_tag(out, out_len, &used, &count, (cfva & 0x2U) ? p25_adjacent_cfva_flag_name(0x2U) : "last known");
+    if (cfva & 0x1U) {
+        p25_append_tag(out, out_len, &used, &count, p25_adjacent_cfva_flag_name(0x1U));
+    }
+    return count;
+}
+
+static int
+p25_pending_channel_valid(uint16_t channel) {
+    return channel != 0xFFFFU;
+}
+
+static int
+p25_sccb_matches_current_site(const dsd_state* state, uint8_t rfss, uint8_t site) {
+    if (!state) {
+        return 0;
+    }
+    if (state->p2_rfssid != 0 && rfss != (uint8_t)state->p2_rfssid) {
+        return 0;
+    }
+    if (state->p2_siteid != 0 && site != (uint8_t)state->p2_siteid) {
+        return 0;
+    }
+    return 1;
+}
+
+static void
+p25_note_sccb_site(dsd_state* state, uint8_t rfss, uint8_t site) {
+    if (!p25_sccb_matches_current_site(state, rfss, site)) {
+        return;
+    }
+    if (state->p2_rfssid == 0) {
+        state->p2_rfssid = rfss;
+    }
+    if (state->p2_siteid == 0) {
+        state->p2_siteid = site;
+    }
+}
+
+static int
+p25_secondary_cc_select_insert_index(dsd_state* state) {
+    int idx = state->p25_secondary_cc_count;
+    if (idx < 0) {
+        idx = 0;
+    }
+    if (idx < P25_SECONDARY_CC_MAX) {
+        state->p25_secondary_cc_count = idx + 1;
+        return idx;
+    }
+
+    int repl = 0;
+    time_t oldest = state->p25_secondary_cc_entries[0].last_seen;
+    for (int i = 1; i < P25_SECONDARY_CC_MAX; i++) {
+        if (state->p25_secondary_cc_entries[i].last_seen < oldest) {
+            oldest = state->p25_secondary_cc_entries[i].last_seen;
+            repl = i;
+        }
+    }
+    return repl;
+}
+
+static int
+p25_secondary_cc_same_identity(const p25_secondary_cc_entry_t* entry, long freq, uint16_t channel, uint8_t rfss,
+                               uint8_t site) {
+    if (!entry || entry->freq == 0) {
+        return 0;
+    }
+    if (entry->rfss != rfss || entry->site != site) {
+        return 0;
+    }
+    return entry->channel == channel || entry->freq == freq;
+}
+
+static int
+p25_secondary_cc_store(dsd_state* state, long freq, uint16_t channel, uint8_t rfss, uint8_t site, uint8_t ssc) {
+    if (!state || freq <= 0 || !p25_pending_channel_valid(channel)) {
+        return 0;
+    }
+    time_t now = time(NULL);
+    int count = state->p25_secondary_cc_count;
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > P25_SECONDARY_CC_MAX) {
+        count = P25_SECONDARY_CC_MAX;
+    }
+    for (int i = 0; i < count; i++) {
+        p25_secondary_cc_entry_t* entry = &state->p25_secondary_cc_entries[i];
+        if (p25_secondary_cc_same_identity(entry, freq, channel, rfss, site)) {
+            entry->freq = freq;
+            entry->channel = channel;
+            entry->ssc = ssc;
+            entry->last_seen = now;
+            return 1;
+        }
+    }
+
+    int idx = p25_secondary_cc_select_insert_index(state);
+    p25_secondary_cc_entry_t* entry = &state->p25_secondary_cc_entries[idx];
+    DSD_MEMSET(entry, 0, sizeof(*entry));
+    entry->freq = freq;
+    entry->channel = channel;
+    entry->rfss = rfss;
+    entry->site = site;
+    entry->ssc = ssc;
+    entry->last_seen = now;
+    return 1;
+}
+
+typedef struct {
+    uint8_t kind;
+    uint8_t ssc;
+    p25_neighbor_channel_announcement_t announcement;
+} p25_pending_update_t;
+
+static int
+p25_pending_same_identity(const p25_pending_announcement_t* entry, const p25_pending_update_t* update) {
+    const p25_neighbor_channel_announcement_t* announcement = &update->announcement;
+    if (!entry->populated || entry->kind != update->kind || entry->channel != announcement->channel
+        || entry->sysid != announcement->sysid || entry->rfss != announcement->rfss
+        || entry->site != announcement->site) {
+        return 0;
+    }
+    if (entry->wacn_valid && announcement->wacn_valid) {
+        return entry->wacn == p25_neighbor_wacn20(announcement);
+    }
+    return 1;
+}
+
+static p25_pending_announcement_t*
+p25_pending_find(dsd_state* state, const p25_pending_update_t* update) {
+    int count = state->p25_pending_announcement_count;
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > P25_PENDING_ANNOUNCEMENT_MAX) {
+        count = P25_PENDING_ANNOUNCEMENT_MAX;
+    }
+    for (int i = 0; i < count; i++) {
+        p25_pending_announcement_t* entry = &state->p25_pending_announcements[i];
+        if (p25_pending_same_identity(entry, update)) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+static p25_pending_announcement_t*
+p25_pending_select_slot(dsd_state* state) {
+    int count = state->p25_pending_announcement_count;
+    if (count < 0) {
+        count = 0;
+    }
+    if (count < P25_PENDING_ANNOUNCEMENT_MAX) {
+        state->p25_pending_announcement_count = count + 1;
+        return &state->p25_pending_announcements[count];
+    }
+
+    int repl = 0;
+    time_t oldest = state->p25_pending_announcements[0].last_seen;
+    for (int i = 1; i < P25_PENDING_ANNOUNCEMENT_MAX; i++) {
+        if (state->p25_pending_announcements[i].last_seen < oldest) {
+            oldest = state->p25_pending_announcements[i].last_seen;
+            repl = i;
+        }
+    }
+    return &state->p25_pending_announcements[repl];
+}
+
+static void
+p25_pending_apply_update(p25_pending_announcement_t* entry, const p25_pending_update_t* update, time_t now) {
+    const p25_neighbor_channel_announcement_t* announcement = &update->announcement;
+    entry->populated = 1;
+    entry->kind = update->kind;
+    entry->rfss = announcement->rfss;
+    entry->site = announcement->site;
+    entry->ssc = update->ssc;
+    entry->sysid = announcement->sysid;
+    entry->channel = announcement->channel;
+    if (announcement->wacn_valid) {
+        entry->wacn = p25_neighbor_wacn20(announcement);
+        entry->wacn_valid = 1U;
+    }
+    if (announcement->lra_valid) {
+        entry->lra = announcement->lra;
+        entry->lra_valid = 1U;
+    }
+    if (announcement->cfva_valid) {
+        entry->cfva = announcement->cfva;
+        entry->cfva_valid = 1U;
+    }
+    entry->last_seen = now;
+}
+
+static void
+p25_pending_store(dsd_state* state, const p25_pending_update_t* update) {
+    if (!state || !update || !p25_pending_channel_valid(update->announcement.channel)) {
+        return;
+    }
+
+    time_t now = time(NULL);
+    p25_pending_announcement_t* entry = p25_pending_find(state, update);
+    if (!entry) {
+        entry = p25_pending_select_slot(state);
+        DSD_MEMSET(entry, 0, sizeof(*entry));
+    }
+
+    p25_pending_apply_update(entry, update, now);
+}
+
+static int
+p25_promote_secondary_cc_freq(dsd_opts* opts, dsd_state* state, long freq, uint16_t channel, uint8_t rfss, uint8_t site,
+                              uint8_t ssc) {
+    if (!state || freq <= 0) {
+        return 0;
+    }
+    if (!p25_sccb_matches_current_site(state, rfss, site)) {
+        return 0;
+    }
+
+    (void)p25_secondary_cc_store(state, freq, channel, rfss, site, ssc);
+    p25_cc_try_load_cache(opts, state);
+    p25_cc_add_candidate(state, freq, 1);
+
+    const long notify[1] = {freq};
+    p25_sm_on_neighbor_update(opts, state, notify, 1);
+    p25_note_sccb_site(state, rfss, site);
+    return 1;
+}
+
+int
+p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state, uint16_t channel, uint32_t wacn, int wacn_valid,
+                              uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
+    const p25_neighbor_channel_announcement_t announcement = {
+        .channel = channel,
+        .wacn = wacn,
+        .sysid = sysid,
+        .rfss = rfss,
+        .site = site,
+        .cfva = cfva,
+        .wacn_valid = wacn_valid ? 1U : 0U,
+        .cfva_valid = 1U,
+    };
+    return p25_announce_neighbor_channel_ex(opts, state, &announcement);
+}
+
+int
+p25_announce_neighbor_channel_ex(const dsd_opts* opts, dsd_state* state,
+                                 const p25_neighbor_channel_announcement_t* announcement) {
+    if (!state || !announcement || !p25_pending_channel_valid(announcement->channel)) {
+        return 0;
+    }
+
+    long freq = process_channel_to_freq(opts, state, announcement->channel);
+    if (freq > 0) {
+        const p25_neighbor_record_update_t update = {.freq = freq, .announcement = *announcement};
+        p25_nb_add_ex_wacn_meta(state, &update);
+        return 1;
+    }
+
+    const p25_pending_update_t pending = {
+        .kind = P25_PENDING_ANNOUNCEMENT_NEIGHBOR,
+        .announcement = *announcement,
+    };
+    p25_pending_store(state, &pending);
+    return 0;
+}
+
+int
+p25_announce_secondary_cc_channel(dsd_opts* opts, dsd_state* state, uint16_t channel, uint8_t rfss, uint8_t site,
+                                  uint8_t ssc) {
+    if (!state || !p25_pending_channel_valid(channel)) {
+        return 0;
+    }
+    if (!p25_sccb_matches_current_site(state, rfss, site)) {
+        return 0;
+    }
+    p25_note_sccb_site(state, rfss, site);
+
+    long freq = process_channel_to_freq(opts, state, channel);
+    if (freq > 0) {
+        return p25_promote_secondary_cc_freq(opts, state, freq, channel, rfss, site, ssc);
+    }
+
+    const p25_pending_update_t pending = {
+        .kind = P25_PENDING_ANNOUNCEMENT_SECONDARY_CC,
+        .ssc = ssc,
+        .announcement =
+            {
+                .channel = channel,
+                .rfss = rfss,
+                .site = site,
+            },
+    };
+    p25_pending_store(state, &pending);
+    return 0;
+}
+
+static p25_neighbor_channel_announcement_t
+p25_pending_to_neighbor_announcement(const p25_pending_announcement_t* pending) {
+    p25_neighbor_channel_announcement_t announcement = {
+        .channel = pending->channel,
+        .wacn = pending->wacn,
+        .sysid = pending->sysid,
+        .rfss = pending->rfss,
+        .site = pending->site,
+        .lra = pending->lra,
+        .cfva = pending->cfva,
+        .wacn_valid = pending->wacn_valid,
+        .lra_valid = pending->lra_valid,
+        .cfva_valid = pending->cfva_valid,
+    };
+    return announcement;
+}
+
+static int
+p25_pending_try_resolve(dsd_opts* opts, dsd_state* state, const p25_pending_announcement_t* pending) {
+    if (!state || !pending || !pending->populated || !p25_pending_channel_valid(pending->channel)) {
+        return 1;
+    }
+
+    if (pending->kind == P25_PENDING_ANNOUNCEMENT_SECONDARY_CC
+        && !p25_sccb_matches_current_site(state, pending->rfss, pending->site)) {
+        return 1;
+    }
+
+    long freq = process_channel_to_freq(opts, state, pending->channel);
+    if (freq <= 0) {
+        return 0;
+    }
+
+    if (pending->kind == P25_PENDING_ANNOUNCEMENT_NEIGHBOR) {
+        const p25_neighbor_record_update_t update = {
+            .freq = freq,
+            .announcement = p25_pending_to_neighbor_announcement(pending),
+        };
+        p25_nb_add_ex_wacn_meta(state, &update);
+        return 1;
+    }
+    if (pending->kind == P25_PENDING_ANNOUNCEMENT_SECONDARY_CC) {
+        (void)p25_promote_secondary_cc_freq(opts, state, freq, pending->channel, pending->rfss, pending->site,
+                                            pending->ssc);
+        return 1;
+    }
+    return 1;
+}
+
+void
+p25_resolve_pending_announcements(dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    int count = state->p25_pending_announcement_count;
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > P25_PENDING_ANNOUNCEMENT_MAX) {
+        count = P25_PENDING_ANNOUNCEMENT_MAX;
+    }
+
+    int w = 0;
+    for (int i = 0; i < count; i++) {
+        p25_pending_announcement_t pending = state->p25_pending_announcements[i];
+        if (!pending.populated) {
+            continue;
+        }
+        if (!p25_pending_try_resolve(opts, state, &pending)) {
+            if (w != i) {
+                state->p25_pending_announcements[w] = pending;
+            }
+            w++;
+        }
+    }
+    for (int i = w; i < count; i++) {
+        DSD_MEMSET(&state->p25_pending_announcements[i], 0, sizeof(state->p25_pending_announcements[i]));
+    }
+    state->p25_pending_announcement_count = w;
 }

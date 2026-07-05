@@ -10,9 +10,13 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include "../../../src/protocol/p25/p25_cc_update.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -81,6 +85,46 @@ test_same_frequency_distinct_sites_remain_separate(void) {
     free(st);
 }
 
+/* A zero SysID is unknown and can be enriched by a later matching site update. */
+static void
+test_unknown_sysid_same_site_merges(void) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+
+    p25_nb_add_ex(st, 852675000, 0, 1, 4, 0x02);
+    p25_nb_add_ex(st, 852675000, 0x123, 1, 4, 0x03);
+
+    assert(st->p25_nb_count == 1);
+    assert(st->p25_nb_entries[0].freq == 852675000);
+    assert(st->p25_nb_entries[0].sysid == 0x123);
+    assert(st->p25_nb_entries[0].rfss == 1);
+    assert(st->p25_nb_entries[0].site == 4);
+    assert(st->p25_nb_entries[0].cfva == 0x03);
+
+    p25_nb_add_ex(st, 852675000, 0, 1, 4, 0x0B);
+    assert(st->p25_nb_count == 1);
+    assert(st->p25_nb_entries[0].sysid == 0x123);
+    assert(st->p25_nb_entries[0].cfva == 0x0B);
+
+    free(st);
+}
+
+/* Non-zero SysID mismatches remain distinct even when RFSS/site/frequency match. */
+static void
+test_distinct_known_sysids_remain_separate(void) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+
+    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x02);
+    p25_nb_add_ex(st, 852675000, 0x200, 1, 4, 0x03);
+
+    assert(st->p25_nb_count == 2);
+    assert(st->p25_nb_entries[0].sysid == 0x100);
+    assert(st->p25_nb_entries[1].sysid == 0x200);
+
+    free(st);
+}
+
 /* --- Self-entry rejection ------------------------------------------------- */
 
 /* Current CC frequency must be rejected from the neighbor table. */
@@ -139,6 +183,7 @@ test_nsb_cc_update_rejects_different_freq_while_voice_tuned(void) {
     assert(st->p25_cc_freq == 769768750);
     assert(st->trunk_cc_freq == 769768750);
 
+    dsd_state_ext_free_all(st);
     free(opts);
     free(st);
 }
@@ -158,6 +203,7 @@ test_nsb_cc_update_accepts_same_freq_while_voice_tuned(void) {
     assert(st->p25_cc_freq == 769768750);
     assert(st->trunk_cc_freq == 769768750);
 
+    dsd_state_ext_free_all(st);
     free(opts);
     free(st);
 }
@@ -334,11 +380,213 @@ test_keepalive_refreshes_timestamp(void) {
     free(st);
 }
 
+static void
+seed_fdma_iden(dsd_state* st, int iden, long base_hz, int spacing_125hz) {
+    st->p25_iden_fdma[iden].base_freq = base_hz / 5L;
+    st->p25_iden_fdma[iden].chan_type = 1;
+    st->p25_iden_fdma[iden].chan_spac = spacing_125hz;
+    st->p25_iden_fdma[iden].populated = 1;
+    st->p25_chan_tdma_explicit[iden] |= 1U;
+}
+
+static void
+test_secondary_cc_tracking_and_dedupe(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    st->p2_rfssid = 1;
+    st->p2_siteid = 2;
+    seed_fdma_iden(st, 1, 851000000L, 100);
+
+    assert(p25_announce_secondary_cc_channel(opts, st, 0x100A, 1, 2, 0xA0) == 1);
+    assert(st->p25_secondary_cc_count == 1);
+    assert(st->p25_secondary_cc_entries[0].freq == 851125000L);
+    assert(st->p25_secondary_cc_entries[0].channel == 0x100A);
+    assert(st->p25_secondary_cc_entries[0].rfss == 1);
+    assert(st->p25_secondary_cc_entries[0].site == 2);
+    assert(st->p25_secondary_cc_entries[0].ssc == 0xA0);
+
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(st);
+    assert(cc != NULL);
+    assert(cc->count == 1);
+    assert(cc->candidates[0] == 851125000L);
+
+    assert(p25_announce_secondary_cc_channel(opts, st, 0x100A, 1, 2, 0xA1) == 1);
+    cc = dsd_trunk_cc_candidates_peek(st);
+    assert(st->p25_secondary_cc_count == 1);
+    assert(st->p25_secondary_cc_entries[0].ssc == 0xA1);
+    assert(cc != NULL && cc->count == 1);
+
+    dsd_state_ext_free_all(st);
+    free(opts);
+    free(st);
+}
+
+static void
+test_secondary_cc_deferred_resolution(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    st->p2_rfssid = 1;
+    st->p2_siteid = 2;
+    assert(p25_announce_secondary_cc_channel(opts, st, 0x2001, 1, 2, 0x33) == 0);
+    assert(st->p25_secondary_cc_count == 0);
+    assert(st->p25_pending_announcement_count == 1);
+
+    seed_fdma_iden(st, 2, 852000000L, 100);
+    p25_resolve_pending_announcements(opts, st);
+    assert(st->p25_pending_announcement_count == 0);
+    assert(st->p25_secondary_cc_count == 1);
+    assert(st->p25_secondary_cc_entries[0].freq == 852012500L);
+    assert(st->p25_secondary_cc_entries[0].channel == 0x2001);
+    assert(st->p25_secondary_cc_entries[0].ssc == 0x33);
+
+    dsd_state_ext_free_all(st);
+    free(opts);
+    free(st);
+}
+
+static void
+test_secondary_cc_deferred_resolution_notes_site(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    assert(p25_announce_secondary_cc_channel(opts, st, 0x2001, 1, 2, 0x33) == 0);
+    assert(st->p2_rfssid == 1);
+    assert(st->p2_siteid == 2);
+    assert(st->p25_secondary_cc_count == 0);
+    assert(st->p25_pending_announcement_count == 1);
+
+    assert(p25_announce_secondary_cc_channel(opts, st, 0x2002, 9, 9, 0x44) == 0);
+    assert(st->p25_pending_announcement_count == 1);
+
+    seed_fdma_iden(st, 2, 852000000L, 100);
+    p25_resolve_pending_announcements(opts, st);
+    assert(st->p25_pending_announcement_count == 0);
+    assert(st->p25_secondary_cc_count == 1);
+    assert(st->p25_secondary_cc_entries[0].freq == 852012500L);
+    assert(st->p25_secondary_cc_entries[0].rfss == 1);
+    assert(st->p25_secondary_cc_entries[0].site == 2);
+
+    dsd_state_ext_free_all(st);
+    free(opts);
+    free(st);
+}
+
+static void
+test_pending_neighbor_merge_preserves_metadata(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    const p25_neighbor_channel_announcement_t rich = {
+        .channel = 0x3001,
+        .wacn = 0xABCDE,
+        .sysid = 0x123,
+        .rfss = 4,
+        .site = 5,
+        .lra = 0x44,
+        .cfva = 0x02,
+        .wacn_valid = 1,
+        .lra_valid = 1,
+        .cfva_valid = 1,
+    };
+    assert(p25_announce_neighbor_channel_ex(opts, st, &rich) == 0);
+    assert(st->p25_pending_announcement_count == 1);
+
+    const p25_neighbor_channel_announcement_t sparse = {
+        .channel = 0x3001,
+        .sysid = 0x123,
+        .rfss = 4,
+        .site = 5,
+    };
+    assert(p25_announce_neighbor_channel_ex(opts, st, &sparse) == 0);
+    assert(st->p25_pending_announcement_count == 1);
+    assert(st->p25_pending_announcements[0].wacn_valid == 1);
+    assert(st->p25_pending_announcements[0].wacn == 0xABCDE);
+    assert(st->p25_pending_announcements[0].lra_valid == 1);
+    assert(st->p25_pending_announcements[0].lra == 0x44);
+    assert(st->p25_pending_announcements[0].cfva_valid == 1);
+    assert(st->p25_pending_announcements[0].cfva == 0x02);
+
+    seed_fdma_iden(st, 3, 853000000L, 100);
+    p25_resolve_pending_announcements(opts, st);
+    assert(st->p25_pending_announcement_count == 0);
+    assert(st->p25_nb_count == 1);
+    assert(st->p25_nb_entries[0].freq == 853012500L);
+    assert(st->p25_nb_entries[0].wacn_valid == 1);
+    assert(st->p25_nb_entries[0].wacn == 0xABCDE);
+    assert(st->p25_nb_entries[0].lra_valid == 1);
+    assert(st->p25_nb_entries[0].lra == 0x44);
+    assert(st->p25_nb_entries[0].cfva_valid == 1);
+    assert(st->p25_nb_entries[0].cfva == 0x02);
+
+    dsd_state_ext_free_all(st);
+    free(opts);
+    free(st);
+}
+
+static void
+test_secondary_cc_foreign_site_rejected(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    st->p2_rfssid = 1;
+    st->p2_siteid = 2;
+    seed_fdma_iden(st, 1, 851000000L, 100);
+
+    assert(p25_announce_secondary_cc_channel(opts, st, 0x100A, 9, 9, 0x11) == 0);
+    assert(st->p25_secondary_cc_count == 0);
+    assert(st->p25_pending_announcement_count == 0);
+    assert(dsd_trunk_cc_candidates_peek(st) == NULL);
+
+    free(opts);
+    free(st);
+}
+
+static void
+test_service_cfva_and_vu_helpers(void) {
+    assert(strcmp(p25_system_service_name_for_bit(5), "group voice") == 0);
+    assert(p25_system_service_name_for_bit(1) == NULL);
+    assert(p25_system_service_name_for_bit(25) == NULL);
+
+    char names[128];
+    uint32_t services = (1U << 19U) | (1U << 14U) | 1U;
+    assert(p25_format_system_service_names(services, names, sizeof(names)) == 3U);
+    assert(strstr(names, "group voice") != NULL);
+    assert(strstr(names, "group data") != NULL);
+    assert(strstr(names, "emergency alarm") != NULL);
+
+    char cfva[96];
+    assert(strcmp(p25_adjacent_cfva_flag_name(0x8U), "conventional") == 0);
+    assert(p25_format_adjacent_cfva(0x0BU, cfva, sizeof(cfva)) == 3U);
+    assert(strstr(cfva, "conventional") != NULL);
+    assert(strstr(cfva, "current") != NULL);
+    assert(strstr(cfva, "network active") != NULL);
+    assert(p25_format_adjacent_cfva(0x00U, cfva, sizeof(cfva)) == 1U);
+    assert(strcmp(cfva, "last known") == 0);
+
+    assert(p25_iden_vu_bandwidth_hz(0x4U) == 6250);
+    assert(p25_iden_vu_bandwidth_hz(0x5U) == 12500);
+    assert(p25_iden_vu_bandwidth_hz(0x6U) == 0);
+}
+
 int
 main(void) {
     test_metadata_zero_fill_preserves();
     test_same_site_refreshes_metadata();
     test_same_frequency_distinct_sites_remain_separate();
+    test_unknown_sysid_same_site_merges();
+    test_distinct_known_sysids_remain_separate();
     test_self_entry_rejected();
     test_cc_rotation_accepts_old();
     test_nsb_cc_update_rejects_different_freq_while_voice_tuned();
@@ -351,5 +599,11 @@ main(void) {
     test_lru_eviction();
     test_null_and_invalid_freq();
     test_keepalive_refreshes_timestamp();
+    test_secondary_cc_tracking_and_dedupe();
+    test_secondary_cc_deferred_resolution();
+    test_secondary_cc_deferred_resolution_notes_site();
+    test_pending_neighbor_merge_preserves_metadata();
+    test_secondary_cc_foreign_site_rejected();
+    test_service_cfva_and_vu_helpers();
     return 0;
 }

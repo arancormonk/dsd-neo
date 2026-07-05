@@ -29,12 +29,12 @@ enum {
     P25_FREQ_MODE_TDMA = 1,
 };
 
-static const int k_p25_slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+static const int k_p25_slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
 
 int
 p25_channel_type_is_tdma(int chan_type) {
     int type = chan_type & 0xF;
-    return (type == 3 || type == 4 || type == 5) ? 1 : 0;
+    return p25_channel_type_slots_per_carrier(type) > 1 ? 1 : 0;
 }
 
 int
@@ -57,6 +57,13 @@ p25_invalidate_chan_map_for_iden(dsd_state* state, int iden) {
 
     for (int ch = start; ch < end; ch++) {
         dsd_state_set_trunk_chan_freq(state, (uint32_t)ch, 0);
+    }
+}
+
+static void
+p25_invalidate_chan_map(dsd_state* state) {
+    for (int iden = 0; iden < 16; iden++) {
+        p25_invalidate_chan_map_for_iden(state, iden);
     }
 }
 
@@ -344,7 +351,7 @@ p25_promote_iden_if_site_match(const dsd_state* state, p25_iden_entry_t* entry, 
 //     base[iden] is in units of 5 Hz (per IDEN_UP encoding),
 //     spacing[iden] is in units of 125 Hz,
 //     step = channel_number / slots_per_carrier[type]
-// - channel types and slots-per-carrier follow sdrtrunk's ChannelType mapping.
+// - channel types and slots-per-carrier follow the observed TDMA channel type mapping.
 long int
 process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel) {
     return p25_channel_to_freq_impl(opts, state, channel, P25_FREQ_MODE_AUTO, NULL);
@@ -425,6 +432,44 @@ p25_reset_iden_tables(dsd_state* state) {
     // Reset the dual-array IDEN storage
     DSD_MEMSET(state->p25_iden_fdma, 0, sizeof(state->p25_iden_fdma));
     DSD_MEMSET(state->p25_iden_tdma, 0, sizeof(state->p25_iden_tdma));
+
+    state->p25_pending_announcement_count = 0;
+    DSD_MEMSET(state->p25_pending_announcements, 0, sizeof(state->p25_pending_announcements));
+
+    state->p25_secondary_cc_count = 0;
+    DSD_MEMSET(state->p25_secondary_cc_entries, 0, sizeof(state->p25_secondary_cc_entries));
+}
+
+static void
+p25_reset_system_metadata(dsd_state* state) {
+    state->p25_cc_prot_valid = 0;
+    state->p25_cc_prot_algid = 0;
+
+    state->p25_sys_services_valid = 0;
+    state->p25_sys_services_available = 0;
+    state->p25_sys_services_supported = 0;
+    state->p25_sys_services_request_priority = 0;
+
+    state->p25_site_lra_valid = 0;
+    state->p25_site_lra = 0;
+    state->p25_site_network_active_valid = 0;
+    state->p25_site_network_active = 0;
+}
+
+int
+p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
+    if (!state || (wacn == 0 && sysid == 0)) {
+        return 0;
+    }
+
+    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
+        p25_reset_iden_tables(state);
+        p25_reset_system_metadata(state);
+        p25_invalidate_chan_map(state);
+    }
+    state->p2_wacn = wacn;
+    state->p2_sysid = sysid;
+    return 1;
 }
 
 // Promote any IDENs whose provenance matches the current site to trusted
@@ -479,6 +524,15 @@ p25_is_vhf_uhf_base_freq(long int base_freq) {
         return 1;
     }
     return 0;
+}
+
+int
+p25_iden_vu_bandwidth_hz(uint8_t bw_vu) {
+    switch (bw_vu & 0x0FU) {
+        case 0x4U: return 6250;
+        case 0x5U: return 12500;
+        default: return 0;
+    }
 }
 
 long int

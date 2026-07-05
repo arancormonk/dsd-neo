@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -49,8 +50,8 @@ p25_lcw_signed_offset_units(int sign_bit, int raw_offset) {
 }
 
 static void
-p25_lcw_store_fdma_iden(const dsd_opts* opts, dsd_state* state, int iden, long int base_freq, int chan_spac,
-                        int trans_off, uint8_t bw_vu) {
+p25_lcw_store_fdma_iden(dsd_opts* opts, dsd_state* state, int iden, long int base_freq, int chan_spac, int trans_off,
+                        uint8_t bw_vu) {
     if (!state || iden < 0 || iden >= 16 || base_freq == 0 || chan_spac == 0) {
         return;
     }
@@ -70,6 +71,7 @@ p25_lcw_store_fdma_iden(const dsd_opts* opts, dsd_state* state, int iden, long i
     e->rfss = state->p2_rfssid;
     e->site = state->p2_siteid;
     state->p25_chan_tdma_explicit[iden] |= 1;
+    p25_resolve_pending_announcements(opts, state);
 }
 
 /**
@@ -519,10 +521,22 @@ p25_lcw_handle_format_67(p25_lcw_ctx* ctx) {
     uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
     uint8_t cfva = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 4);
     DSD_FPRINTF(stderr, " - RFSS %d Site %d CH %04X", rfssid, siteid, channelt);
-    UNUSED2(lra, channelr);
+    UNUSED(channelr);
     if (cfva & 0x1) {
         DSD_FPRINTF(stderr, " - Connection Active");
     }
+    uint16_t sysid = ctx->state ? (uint16_t)ctx->state->p2_sysid : 0U;
+    const p25_neighbor_channel_announcement_t announcement = {
+        .channel = channelt,
+        .sysid = sysid,
+        .rfss = rfssid,
+        .site = siteid,
+        .lra = lra,
+        .cfva = cfva,
+        .lra_valid = 1U,
+        .cfva_valid = 1U,
+    };
+    (void)p25_announce_neighbor_channel_ex(ctx->opts, ctx->state, &announcement);
 }
 
 static void

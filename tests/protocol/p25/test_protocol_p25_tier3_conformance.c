@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -109,6 +110,15 @@ build_time_date_mac(unsigned long long MAC[24], int vd, int vt, int vl, int lto_
         mac_set_bits(MAC, 53, 6, (uint64_t)minutes);
         mac_set_bits(MAC, 59, 6, (uint64_t)seconds);
     }
+}
+
+static void
+build_p1_bridged_time_date_offset_mac(unsigned long long MAC[24], int raw_offset, int reserved_bit) {
+    DSD_MEMSET(MAC, 0, 24 * sizeof(*MAC));
+    MAC[0] = 0x07;
+    MAC[1] = 0x75;
+    MAC[2] = (unsigned long long)(0x20 | (reserved_bit ? 0x10 : 0x00) | ((raw_offset >> 8) & 0x0F));
+    MAC[3] = (unsigned long long)(raw_offset & 0xFF);
 }
 
 /* ============================================================================
@@ -835,6 +845,39 @@ test_time_date_state_stores_offset(void) {
     return rc;
 }
 
+static int
+test_time_date_bridged_p1_survey_offset_layout(void) {
+    int rc = 0;
+
+    static dsd_opts opts;
+    static dsd_state st;
+    unsigned long long MAC[24];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    build_p1_bridged_time_date_offset_mac(MAC, 330, 1);
+    process_MAC_VPDU(&opts, &st, 0, MAC);
+
+    if (st.p25_sys_time_offset != 330 || st.p25_sys_time_offset_valid != 1) {
+        DSD_FPRINTF(stderr, "FAIL: bridged P1 positive UTC offset expected +330, got %d valid %u\n",
+                    st.p25_sys_time_offset, st.p25_sys_time_offset_valid);
+        rc = 1;
+    }
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    build_p1_bridged_time_date_offset_mac(MAC, 0x800 | 330, 0);
+    process_MAC_VPDU(&opts, &st, 0, MAC);
+
+    if (st.p25_sys_time_offset != -330 || st.p25_sys_time_offset_valid != 1) {
+        DSD_FPRINTF(stderr, "FAIL: bridged P1 negative UTC offset expected -330, got %d valid %u\n",
+                    st.p25_sys_time_offset, st.p25_sys_time_offset_valid);
+        rc = 1;
+    }
+
+    return rc;
+}
+
 /**
  * test_time_date_state_stores_utc_from_local_offset - verify the announced
  * local date/time plus UTC offset is stored as the corresponding UTC instant.
@@ -904,6 +947,118 @@ test_vpdu_dispatch_0x75(void) {
 }
 
 /**
+ * test_vpdu_dispatch_0x78 — verify System Service Broadcast state retention.
+ */
+static int
+test_vpdu_dispatch_0x78(void) {
+    int rc = 0;
+
+    static dsd_opts opts;
+    static dsd_state st;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+
+    unsigned long long MAC[24];
+    DSD_MEMSET(MAC, 0, sizeof(MAC));
+    MAC[1] = 0x78;
+    MAC[3] = 0xAB;
+    MAC[4] = 0xCD;
+    MAC[5] = 0xEF;
+    MAC[6] = 0x12;
+    MAC[7] = 0x34;
+    MAC[8] = 0x56;
+    MAC[9] = 0x07;
+
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+
+    if (st.p25_sys_services_valid != 1 || st.p25_sys_services_available != 0xABCDEFU
+        || st.p25_sys_services_supported != 0x123456U || st.p25_sys_services_request_priority != 0x07U) {
+        DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x78: service state not retained\n");
+        rc = 1;
+    }
+
+    return rc;
+}
+
+/**
+ * test_vpdu_dispatch_0x7a — verify RFSS status LRA and active/failsoft state.
+ */
+static int
+test_vpdu_dispatch_0x7a(void) {
+    int rc = 0;
+
+    static dsd_opts opts;
+    static dsd_state st;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+
+    unsigned long long MAC[24];
+    DSD_MEMSET(MAC, 0, sizeof(MAC));
+    MAC[1] = 0x7A;
+    MAC[2] = 0xAB; /* LRA */
+    MAC[3] = 0x11; /* A bit + SYSID high nibble */
+    MAC[4] = 0x23;
+    MAC[5] = 0x04;
+    MAC[6] = 0x05;
+    MAC[7] = 0x10;
+    MAC[8] = 0x0A;
+    MAC[9] = 0x01;
+
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+
+    if (st.p25_site_lra_valid != 1 || st.p25_site_lra != 0xAB || st.p25_site_network_active_valid != 1
+        || st.p25_site_network_active != 1 || st.p2_rfssid != 0x04 || st.p2_siteid != 0x05) {
+        DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7a: RFSS status state not retained\n");
+        rc = 1;
+    }
+
+    return rc;
+}
+
+/**
+ * test_vpdu_dispatch_0x7c_adjacent_validity — verify adjacent-status LRA/CFVA
+ * validity survives immediate channel resolution.
+ */
+static int
+test_vpdu_dispatch_0x7c_adjacent_validity(void) {
+    int rc = 0;
+
+    static dsd_opts opts;
+    static dsd_state st;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+
+    st.p25_iden_fdma[1].base_freq = 851000000L / 5L;
+    st.p25_iden_fdma[1].chan_type = 1;
+    st.p25_iden_fdma[1].chan_spac = 100;
+    st.p25_iden_fdma[1].populated = 1;
+    st.p25_chan_tdma_explicit[1] = 1;
+
+    unsigned long long MAC[24];
+    DSD_MEMSET(MAC, 0, sizeof(MAC));
+    MAC[1] = 0x7C;
+    MAC[2] = 0xAB;
+    MAC[3] = 0xB1;
+    MAC[4] = 0x23;
+    MAC[5] = 0x04;
+    MAC[6] = 0x05;
+    MAC[7] = 0x10;
+    MAC[8] = 0x0A;
+    MAC[9] = 0x02;
+
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+
+    if (st.p25_nb_count != 1 || st.p25_nb_entries[0].freq != 851125000L || st.p25_nb_entries[0].lra_valid != 1
+        || st.p25_nb_entries[0].lra != 0xAB || st.p25_nb_entries[0].cfva_valid != 1
+        || st.p25_nb_entries[0].cfva != 0x0B) {
+        DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7c_adjacent_validity: adjacent metadata not retained\n");
+        rc = 1;
+    }
+
+    return rc;
+}
+
+/**
  * test_vpdu_dispatch_0x7e — verify bridged TSBK opcode 0x3E is handled as
  * Adjacent Status Broadcast, not as Protection Parameter Broadcast.
  */
@@ -934,6 +1089,14 @@ test_vpdu_dispatch_0x7e(void) {
     if (st.p25_prot_algid != 0 || st.p25_prot_kid != 0) {
         DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7e: protection state changed ALGID=0x%02X KID=0x%04X\n",
                     st.p25_prot_algid, st.p25_prot_kid);
+        rc = 1;
+    }
+    if (st.p25_pending_announcement_count != 1
+        || st.p25_pending_announcements[0].kind != P25_PENDING_ANNOUNCEMENT_NEIGHBOR
+        || st.p25_pending_announcements[0].sysid != 0 || st.p25_pending_announcements[0].lra_valid != 1
+        || st.p25_pending_announcements[0].lra != 0x01 || st.p25_pending_announcements[0].cfva_valid != 1
+        || st.p25_pending_announcements[0].cfva != 0x04) {
+        DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7e: pending adjacent metadata/sysid not retained\n");
         rc = 1;
     }
 
@@ -1014,10 +1177,14 @@ main(void) {
     rc |= test_time_date_state_init_zero();
     rc |= test_time_date_state_stores_time_t();
     rc |= test_time_date_state_stores_offset();
+    rc |= test_time_date_bridged_p1_survey_offset_layout();
     rc |= test_time_date_state_stores_utc_from_local_offset();
 
     /* 6.4 VPDU dispatch tests */
     rc |= test_vpdu_dispatch_0x75();
+    rc |= test_vpdu_dispatch_0x78();
+    rc |= test_vpdu_dispatch_0x7a();
+    rc |= test_vpdu_dispatch_0x7c_adjacent_validity();
     rc |= test_vpdu_dispatch_0x7e();
     rc |= test_vpdu_dispatch_0x7f();
 

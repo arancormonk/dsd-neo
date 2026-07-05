@@ -116,6 +116,40 @@ main(void) {
         return 3;
     }
 
+    for (int type = 0; type <= 2; type++) {
+        long f_even = 0, f_odd = 0;
+        if (p25_test_frequency_for(/*iden*/ type, type, /*tdma*/ 1, /*base*/ 1000, /*spac*/ 1,
+                                   /*chan16*/ (type << 12) | 10, /*map_override*/ 0, &f_even)
+            != 0) {
+            return 12 + type;
+        }
+        if (p25_test_frequency_for(/*iden*/ type, type, /*tdma*/ 1, /*base*/ 1000, /*spac*/ 1,
+                                   /*chan16*/ (type << 12) | 11, /*map_override*/ 0, &f_odd)
+            != 0) {
+            return 15 + type;
+        }
+        if (expect_eq_long("TDMA opcode FDMA type delta", f_odd - f_even, 125L)) {
+            return 18 + type;
+        }
+    }
+
+    for (int type = 3; type <= 15; type++) {
+        long f_even = 0, f_odd = 0;
+        if (p25_test_frequency_for(/*iden*/ type, type, /*tdma*/ 1, /*base*/ 1000, /*spac*/ 1,
+                                   /*chan16*/ (type << 12) | 10, /*map_override*/ 0, &f_even)
+            != 0) {
+            return 21 + type;
+        }
+        if (p25_test_frequency_for(/*iden*/ type, type, /*tdma*/ 1, /*base*/ 1000, /*spac*/ 1,
+                                   /*chan16*/ (type << 12) | 11, /*map_override*/ 0, &f_odd)
+            != 0) {
+            return 24 + type;
+        }
+        if (expect_eq_long("TDMA opcode TDMA type same carrier", f_odd, f_even)) {
+            return 27 + type;
+        }
+    }
+
     // FDMA spacing: adjacent channels differ by spac*125 units.
     long fA = 0, fB = 0;
     int spac = 2;

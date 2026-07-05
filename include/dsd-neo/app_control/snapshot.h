@@ -29,6 +29,7 @@ enum {
     DSD_FRONTEND_TRUNK_CHANNEL_MAX = 1024,
     DSD_FRONTEND_TRUNK_CC_CANDIDATES_MAX = 16,
     DSD_FRONTEND_P25_NEIGHBOR_MAX = 32,
+    DSD_FRONTEND_P25_SECONDARY_CC_MAX = 16,
     DSD_FRONTEND_P25_IDEN_PLAN_MAX = 32,
     DSD_FRONTEND_ACTIVE_CHANNEL_MAX = 2,
 };
@@ -202,13 +203,28 @@ typedef struct dsd_frontend_active_channel_summary {
 
 typedef struct dsd_frontend_p25_neighbor_summary {
     uint8_t present;
+    uint32_t wacn;
+    uint8_t wacn_valid;
     uint16_t sysid;
     uint8_t rfss;
     uint8_t site;
     uint8_t cfva;
+    uint8_t lra;
     long freq_hz;
+    uint8_t lra_valid;
+    uint8_t cfva_valid;
     int64_t last_seen_unix_s;
 } dsd_frontend_p25_neighbor_summary;
+
+typedef struct dsd_frontend_p25_secondary_cc_summary {
+    uint8_t present;
+    uint16_t channel;
+    uint8_t rfss;
+    uint8_t site;
+    uint8_t system_service_class;
+    long freq_hz;
+    int64_t last_seen_unix_s;
+} dsd_frontend_p25_secondary_cc_summary;
 
 typedef struct dsd_frontend_p25_iden_entry_summary {
     uint8_t present;
@@ -217,6 +233,7 @@ typedef struct dsd_frontend_p25_iden_entry_summary {
     uint8_t trust;
     uint8_t channel_type;
     uint8_t bandwidth;
+    int bandwidth_hz;
     long base_freq_hz;
     int spacing_hz;
     int transmit_offset;
@@ -238,6 +255,22 @@ typedef struct dsd_frontend_p25_display {
     int p25_p2_active_slot;
     int p25_p2_audio_ring_count[2];
     int p25_p2_audio_allowed[2];
+    uint8_t p25_site_lra_valid;
+    uint8_t p25_site_lra;
+    uint8_t p25_site_network_active_valid;
+    uint8_t p25_site_network_active;
+    uint8_t p25_sys_services_valid;
+    uint32_t p25_sys_services_available;
+    uint32_t p25_sys_services_supported;
+    uint8_t p25_sys_services_request_priority;
+    char p25_sys_services_available_names[DSD_FRONTEND_LONG_TEXT];
+    char p25_sys_services_supported_names[DSD_FRONTEND_LONG_TEXT];
+    uint8_t p25_cc_prot_valid;
+    uint8_t p25_cc_prot_algid;
+    uint8_t p25_sys_time_valid;
+    int64_t p25_sys_time_unix_s;
+    uint8_t p25_sys_time_offset_valid;
+    int16_t p25_sys_time_offset_minutes;
     unsigned int p25_p1_fec_ok;
     unsigned int p25_p1_fec_err;
     unsigned int p25_p2_facch_ok;
@@ -247,6 +280,8 @@ typedef struct dsd_frontend_p25_display {
     unsigned int p25_p2_voice_err;
     dsd_frontend_p25_neighbor_summary neighbors[DSD_FRONTEND_P25_NEIGHBOR_MAX];
     size_t neighbor_count;
+    dsd_frontend_p25_secondary_cc_summary secondary_ccs[DSD_FRONTEND_P25_SECONDARY_CC_MAX];
+    size_t secondary_cc_count;
     dsd_frontend_p25_iden_entry_summary iden_plan[DSD_FRONTEND_P25_IDEN_PLAN_MAX];
     size_t iden_plan_count;
     size_t iden_plan_confirmed_count;

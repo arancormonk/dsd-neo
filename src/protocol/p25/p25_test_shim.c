@@ -58,6 +58,8 @@ p25_test_seed_iden_config(dsd_state* state, const p25_test_iden_config* iden_cfg
 
     int iden = iden_cfg->iden;
     state->p25_chan_iden = iden & 0xF;
+    state->p2_wacn = iden_cfg->system_wacn;
+    state->p2_sysid = iden_cfg->system_sysid;
     if (iden_cfg->tdma) {
         state->p25_iden_tdma[iden].base_freq = iden_cfg->base;
         state->p25_iden_tdma[iden].chan_type = iden_cfg->type & 0xF;
@@ -130,28 +132,115 @@ p25_test_copy_channel_cache_outputs(const dsd_state* state, int channel_a, int c
     }
 }
 
+static int
+p25_test_neighbor_output_count(const dsd_state* state) {
+    int count = state->p25_nb_count;
+    if (count < 0) {
+        return 0;
+    }
+    return count < P25_NB_MAX ? count : P25_NB_MAX;
+}
+
+static void
+p25_test_store_long(long* out, long value) {
+    if (out) {
+        *out = value;
+    }
+}
+
+static void
+p25_test_store_int(int* out, int value) {
+    if (out) {
+        *out = value;
+    }
+}
+
+static void
+p25_test_copy_neighbor_long_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs, int count) {
+    if (outputs->nb_freqs) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_freqs[i] = state->p25_nb_entries[i].freq;
+        }
+    }
+    if (outputs->nb_wacn) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_wacn[i] = state->p25_nb_entries[i].wacn;
+        }
+    }
+}
+
+static void
+p25_test_copy_neighbor_identity_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs, int count) {
+    if (outputs->nb_wacn_valid) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_wacn_valid[i] = state->p25_nb_entries[i].wacn_valid;
+        }
+    }
+    if (outputs->nb_sysid) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_sysid[i] = state->p25_nb_entries[i].sysid;
+        }
+    }
+    if (outputs->nb_rfss) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_rfss[i] = state->p25_nb_entries[i].rfss;
+        }
+    }
+    if (outputs->nb_site) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_site[i] = state->p25_nb_entries[i].site;
+        }
+    }
+}
+
+static void
+p25_test_copy_neighbor_status_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs, int count) {
+    if (outputs->nb_cfva) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_cfva[i] = state->p25_nb_entries[i].cfva;
+        }
+    }
+    if (outputs->nb_lra) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_lra[i] = state->p25_nb_entries[i].lra;
+        }
+    }
+    if (outputs->nb_lra_valid) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_lra_valid[i] = state->p25_nb_entries[i].lra_valid;
+        }
+    }
+    if (outputs->nb_cfva_valid) {
+        for (int i = 0; i < count; i++) {
+            outputs->nb_cfva_valid[i] = state->p25_nb_entries[i].cfva_valid;
+        }
+    }
+}
+
 static void
 p25_test_copy_mbt_outputs(const dsd_state* state, const p25_test_mbt_outputs* outputs) {
     if (!state || !outputs) {
         return;
     }
-    if (outputs->cc) {
-        *outputs->cc = state->p25_cc_freq;
+    const int count = p25_test_neighbor_output_count(state);
+    p25_test_store_long(outputs->cc, state->p25_cc_freq);
+    p25_test_store_long(outputs->wacn, (long)state->p2_wacn);
+    p25_test_store_int(outputs->sysid, state->p2_sysid);
+    p25_test_store_int(outputs->site_lra, state->p25_site_lra);
+    p25_test_store_int(outputs->site_lra_valid, state->p25_site_lra_valid);
+    p25_test_store_int(outputs->nb_count, state->p25_nb_count);
+    p25_test_copy_neighbor_long_outputs(state, outputs, count);
+    p25_test_copy_neighbor_identity_outputs(state, outputs, count);
+    p25_test_copy_neighbor_status_outputs(state, outputs, count);
+    p25_test_store_int(outputs->cc_prot_valid, state->p25_cc_prot_valid);
+    p25_test_store_int(outputs->cc_prot_algid, state->p25_cc_prot_algid);
+    if (outputs->inspect_iden >= 0 && outputs->inspect_iden < 16) {
+        const int iden = outputs->inspect_iden;
+        p25_test_store_int(outputs->inspect_fdma_populated, state->p25_iden_fdma[iden].populated);
+        p25_test_store_int(outputs->inspect_tdma_populated, state->p25_iden_tdma[iden].populated);
+        p25_test_store_int(outputs->inspect_tdma_explicit, state->p25_chan_tdma_explicit[iden]);
     }
-    if (outputs->wacn) {
-        *outputs->wacn = (long)state->p2_wacn;
-    }
-    if (outputs->sysid) {
-        *outputs->sysid = state->p2_sysid;
-    }
-    if (outputs->nb_count) {
-        *outputs->nb_count = state->p25_nb_count;
-    }
-    if (outputs->nb_freqs) {
-        for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
-            outputs->nb_freqs[i] = state->p25_nb_entries[i].freq;
-        }
-    }
+    p25_test_store_int(outputs->pending_count, state->p25_pending_announcement_count);
 }
 
 // Invoke the P25p1 MBT -> MAC Identifier Update bridge and report key state.

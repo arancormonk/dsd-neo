@@ -160,7 +160,13 @@ main(void) {
         mac[8] = 0x67; // group id (arbitrary)
         long vc = 0;
         int tuned = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
         p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
         rc |= expect_true("A3 tuned", tuned == 1);
         rc |= expect_eq_long("A3 vc", vc, 851125000);
@@ -182,7 +188,13 @@ main(void) {
         mac[9] = 0x02; // source
         long vc = 0;
         int tuned = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
         p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
         rc |= expect_true("UU tuned", tuned == 1);
         rc |= expect_eq_long("UU vc", vc, 851125000);
@@ -209,7 +221,13 @@ main(void) {
         mac[15] = 0x78; // group2
         long vc = 0;
         int tuned = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
         p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
         rc |= expect_true("0x25 tuned", tuned == 1);
         rc |= expect_eq_long("0x25 vc", vc, 851125000);
@@ -226,7 +244,13 @@ main(void) {
         mac[7] = 0x0B; // CHAN-R 0x100B
         long freq_t = 0;
         long freq_r = 0;
-        p25_test_iden_config cfg = {iden, type, tdma, base, spac};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
         p25_test_invoke_mac_vpdu_channel_cache(mac, 24, &cfg, 0x100A, 0x100B, &freq_t, &freq_r);
         rc |= expect_eq_long("0xD6 CHAN-T cache", freq_t, 851125000);
         rc |= expect_eq_long("0xD6 CHAN-R cache", freq_r, 851137500);
@@ -434,6 +458,9 @@ main(void) {
         state.p25_cc_freq = cc;
         state.trunk_cc_freq = cc;
         state.p25_cc_is_tdma = 0;
+        state.p2_wacn = 0x11111;
+        state.p2_sysid = 0x222;
+        state.p2_cc = 0x333;
         state.p25_iden_fdma[iden].base_freq = base;
         state.p25_iden_fdma[iden].chan_type = type;
         state.p25_iden_fdma[iden].chan_spac = spac;
@@ -457,11 +484,105 @@ main(void) {
         rc |= expect_true("p2 rejected nsb preserves cc modulation", state.p25_cc_is_tdma == 0);
         rc |= expect_eq_long("p2 rejected nsb preserves p25 cc", state.p25_cc_freq, cc);
         rc |= expect_eq_long("p2 rejected nsb preserves trunk cc", state.trunk_cc_freq, cc);
-        rc |= expect_true("p2 rejected nsb skips wacn", state.p2_wacn == 0);
-        rc |= expect_true("p2 rejected nsb skips sysid", state.p2_sysid == 0);
+        rc |= expect_eq_long("p2 rejected nsb preserves wacn", (long)state.p2_wacn, 0x11111);
+        rc |= expect_eq_long("p2 rejected nsb preserves sysid", (long)state.p2_sysid, 0x222);
+        rc |= expect_eq_long("p2 rejected nsb preserves nac", (long)state.p2_cc, 0x333);
     }
 
-    // Case K: accepted P2 abbreviated NSB promotes the current CC to TDMA,
+    // Case K: P2 abbreviated NSB with unknown IDEN keeps identity metadata but
+    // does not promote the unresolved channel to current CC or LCN0.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        state.p2_wacn = 0x11111;
+        state.p2_sysid = 0x222;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+        state.p25_pending_announcement_count = 1;
+        state.p25_pending_announcements[0].populated = 1;
+        state.p25_pending_announcements[0].channel = 0x1001;
+
+        MAC[1] = 0x7B;
+        MAC[2] = 0x05; // LRA
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1;
+        MAC[6] = 0x23;
+        MAC[7] = 0x80;
+        MAC[8] = 0x0A; // unknown IDEN 8
+        MAC[9] = 0x00;
+        MAC[10] = 0x00;
+        MAC[11] = 0x55;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("p2 unknown-iden nsb marks system tdma", state.p25_sys_is_tdma == 1);
+        rc |= expect_true("p2 unknown-iden nsb does not mark cc tdma", state.p25_cc_is_tdma == 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb p25 cc empty", state.p25_cc_freq, 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb trunk cc empty", state.trunk_cc_freq, 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb lcn0 empty", state.trunk_lcn_freq[0], 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb wacn", (long)state.p2_wacn, 0xABCDE);
+        rc |= expect_eq_long("p2 unknown-iden nsb sysid", (long)state.p2_sysid, 0x123);
+        rc |= expect_eq_long("p2 unknown-iden nsb nac", (long)state.p2_cc, 0x055);
+        rc |= expect_eq_long("p2 unknown-iden nsb lra", state.p25_site_lra, 0x05);
+        rc |= expect_eq_long("p2 unknown-iden nsb lra valid", state.p25_site_lra_valid, 1);
+        rc |= expect_eq_long("p2 unknown-iden nsb clears stale iden", state.p25_iden_fdma[iden].populated, 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb clears explicit iden", state.p25_chan_tdma_explicit[iden], 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb clears pending", state.p25_pending_announcement_count, 0);
+    }
+
+    // Case L: P2 extended NSB with unknown IDEN keeps identity metadata but
+    // does not promote the unresolved channel to current CC.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        state.p2_wacn = 0x11111;
+        state.p2_sysid = 0x222;
+        state.p25_iden_tdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 2;
+        state.p25_pending_announcement_count = 1;
+        state.p25_pending_announcements[0].populated = 1;
+        state.p25_pending_announcements[0].channel = 0x1002;
+
+        MAC[1] = 0xFB;
+        MAC[2] = 0x06; // LRA
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1;
+        MAC[6] = 0x23;
+        MAC[7] = 0x80;
+        MAC[8] = 0x0A; // CHAN-T unknown IDEN 8
+        MAC[9] = 0x80;
+        MAC[10] = 0x0B; // CHAN-R unknown IDEN 8
+        MAC[12] = 0x00;
+        MAC[13] = 0x56;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("p2 unknown-iden nsb-ext marks system tdma", state.p25_sys_is_tdma == 1);
+        rc |= expect_true("p2 unknown-iden nsb-ext does not mark cc tdma", state.p25_cc_is_tdma == 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext p25 cc empty", state.p25_cc_freq, 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext trunk cc empty", state.trunk_cc_freq, 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext lcn0 empty", state.trunk_lcn_freq[0], 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext wacn", (long)state.p2_wacn, 0xABCDE);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext sysid", (long)state.p2_sysid, 0x123);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext nac", (long)state.p2_cc, 0x056);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext lra", state.p25_site_lra, 0x06);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext lra valid", state.p25_site_lra_valid, 1);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext clears stale iden", state.p25_iden_tdma[iden].populated, 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext clears explicit iden", state.p25_chan_tdma_explicit[iden], 0);
+        rc |= expect_eq_long("p2 unknown-iden nsb-ext clears pending", state.p25_pending_announcement_count, 0);
+    }
+
+    // Case M: accepted P2 abbreviated NSB promotes the current CC to TDMA,
     // stores system identity, seeds LCN0, and confirms matching IDEN provenance.
     {
         static dsd_opts opts;
@@ -503,7 +624,44 @@ main(void) {
         rc |= expect_eq_long("p2 accepted nsb confirms iden", state.p25_iden_fdma[iden].trust, 2);
     }
 
-    // Case L: accepted P2 extended NSB resolves both T/R channels and updates
+    // Case M2: rejected voice-followed abbreviated NSB must not overwrite
+    // current-site LRA metadata from a different control channel.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_is_tuned = 1;
+        state.p25_cc_freq = 851000000;
+        state.trunk_cc_freq = 851000000;
+        state.p25_site_lra = 0x44;
+        state.p25_site_lra_valid = 1;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].populated = 1;
+
+        MAC[1] = 0x7B;
+        MAC[2] = 0x01;
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1;
+        MAC[6] = 0x23;
+        MAC[7] = 0x10;
+        MAC[8] = 0x0A;
+        MAC[10] = 0x00;
+        MAC[11] = 0x55;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("p2 rejected voice nsb preserves p25 cc", state.p25_cc_freq, 851000000);
+        rc |= expect_eq_long("p2 rejected voice nsb preserves lra", state.p25_site_lra, 0x44);
+        rc |= expect_eq_long("p2 rejected voice nsb preserves lra valid", state.p25_site_lra_valid, 1);
+    }
+
+    // Case N: accepted P2 extended NSB resolves both T/R channels and updates
     // TDMA CC identity through the same state-machine notification path.
     {
         static dsd_opts opts;
@@ -543,7 +701,46 @@ main(void) {
         rc |= expect_eq_long("p2 accepted nsb-ext nac", (long)state.p2_cc, 0x056);
     }
 
-    // Case M: encrypted explicit multi-grants should publish channel state but
+    // Case N2: rejected voice-followed extended NSB must not overwrite
+    // current-site LRA metadata from a different control channel.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_is_tuned = 1;
+        state.p25_cc_freq = 851000000;
+        state.trunk_cc_freq = 851000000;
+        state.p25_site_lra = 0x45;
+        state.p25_site_lra_valid = 1;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].populated = 1;
+
+        MAC[1] = 0xFB;
+        MAC[2] = 0x02;
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1;
+        MAC[6] = 0x23;
+        MAC[7] = 0x10;
+        MAC[8] = 0x0A;
+        MAC[9] = 0x10;
+        MAC[10] = 0x0B;
+        MAC[12] = 0x00;
+        MAC[13] = 0x56;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("p2 rejected voice nsb-ext preserves p25 cc", state.p25_cc_freq, 851000000);
+        rc |= expect_eq_long("p2 rejected voice nsb-ext preserves lra", state.p25_site_lra, 0x45);
+        rc |= expect_eq_long("p2 rejected voice nsb-ext preserves lra valid", state.p25_site_lra_valid, 1);
+    }
+
+    // Case O: encrypted explicit multi-grants should publish channel state but
     // suppress retune when encrypted following is disabled and no clear key is known.
     {
         static dsd_opts opts;
@@ -589,7 +786,7 @@ main(void) {
         rc |= expect_contains("0x25 encrypted multi active ch group2", state.active_channel[0], "TG: 22136");
     }
 
-    // Case M2: MAC words are specified as octets. If high bits leak into a
+    // Case P: MAC words are specified as octets. If high bits leak into a
     // word, the VPDU decoder must mask them before rendering active channels.
     {
         static dsd_opts opts;
@@ -633,7 +830,7 @@ main(void) {
         rc |= expect_contains("0x25 octet clamp group2", state.active_channel[0], "TG: 62");
     }
 
-    // Case N: encrypted implicit triple updates are also blocked before candidate
+    // Case Q: encrypted implicit triple updates are also blocked before candidate
     // tuning while still refreshing active-channel state.
     {
         static dsd_opts opts;
@@ -679,7 +876,7 @@ main(void) {
         rc |= expect_contains("0x05 encrypted triple active group3", state.active_channel[0], "TG: 39612");
     }
 
-    // Case O: telephone interconnect grants carry service state and tune like
+    // Case R: telephone interconnect grants carry service state and tune like
     // private calls when private-call following is enabled.
     {
         static dsd_opts opts;
@@ -720,7 +917,7 @@ main(void) {
         rc |= expect_eq_long("0x48 telephone packet", state.p25_call_is_packet[0], 1);
     }
 
-    // Case P: explicit SNDCP data grants update data-channel state in playback
+    // Case S: explicit SNDCP data grants update data-channel state in playback
     // mode, with P25p2 playback mirroring both TDMA slots.
     {
         static dsd_opts opts;

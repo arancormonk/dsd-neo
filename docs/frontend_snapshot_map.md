@@ -72,11 +72,15 @@ Remaining risks to keep visible during native UI work:
 
 ## P25 And Trunking
 
-- `p25`: copied from P25 system, control-channel, voice-channel, TDMA active-slot, audio-ring, and FEC/error counters
-  in `dsd_state`.
-- `p25.neighbors`: copied P25 adjacent-site summaries with frequency, SysID, RFSS, Site, CFVA, and last-seen time.
+- `p25`: copied from P25 system, control-channel, voice-channel, site metadata, raw service masks plus decoded service
+  names, protected-control-channel ALGID, decoded system time, TDMA active-slot, audio-ring, and FEC/error counters in
+  `dsd_state`.
+- `p25.neighbors`: copied P25 adjacent-site summaries with frequency, optional WACN plus validity, SysID, RFSS, Site,
+  LRA plus validity, CFVA plus validity, and last-seen time.
+- `p25.secondary_ccs`: copied resolved current-site secondary-control-channel announcements with frequency, channel,
+  RFSS, Site, system service class, and last-seen time.
 - `p25.iden_plan`: copied FDMA/TDMA IDEN bandplan entries with ID, class, trust, base frequency, channel spacing,
-  channel type, bandwidth, transmit offset, and provenance fields.
+  channel type, raw VHF/UHF bandwidth plus normalized Hz when known, transmit offset, and provenance fields.
 - `active_channels`: copied per-slot active P25 channel summaries with source/target IDs, payload encryption metadata,
   voice-channel frequencies, and audio gate state. Terminal display strings are not part of this public summary.
 - `trunk_channels`: copied from the tracked trunk channel map and its sequence counter.

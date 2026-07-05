@@ -135,9 +135,76 @@ p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t
 }
 
 void
+p25_store_site_lra(dsd_state* state, uint8_t lra) {
+    (void)state;
+    (void)lra;
+}
+
+void
+p25_store_site_network_active(dsd_state* state, uint8_t network_active) {
+    (void)state;
+    (void)network_active;
+}
+
+void
+p25_store_protected_control_channel(dsd_state* state, uint8_t algid) {
+    (void)state;
+    (void)algid;
+}
+
+size_t
+p25_format_adjacent_cfva(uint8_t cfva, char* out, size_t out_len) {
+    (void)cfva;
+    if (out && out_len > 0) {
+        out[0] = '\0';
+    }
+    return 0;
+}
+
+int
+p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state, uint16_t channel, uint32_t wacn, int wacn_valid,
+                              uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
+    (void)opts;
+    (void)state;
+    (void)channel;
+    (void)wacn;
+    (void)wacn_valid;
+    (void)sysid;
+    (void)rfss;
+    (void)site;
+    (void)cfva;
+    return 0;
+}
+
+int
+p25_announce_neighbor_channel_ex(const dsd_opts* opts, dsd_state* state,
+                                 const p25_neighbor_channel_announcement_t* announcement) {
+    if (!announcement) {
+        return 0;
+    }
+    return p25_announce_neighbor_channel(opts, state, announcement->channel, announcement->wacn,
+                                         announcement->wacn_valid, announcement->sysid, announcement->rfss,
+                                         announcement->site, announcement->cfva);
+}
+
+void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_reset_iden_tables(dsd_state* state) {
     (void)state;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
+    if (!state || (wacn == 0 && sysid == 0)) {
+        return 0;
+    }
+    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
+        p25_reset_iden_tables(state);
+    }
+    state->p2_wacn = wacn;
+    state->p2_sysid = sysid;
+    return 1;
 }
 
 void

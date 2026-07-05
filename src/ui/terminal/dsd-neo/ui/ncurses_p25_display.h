@@ -26,6 +26,9 @@ int ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state);
 /** Print P25 control channel candidate list. */
 void ui_print_p25_cc_candidates(const dsd_opts* opts, const dsd_state* state);
 
+/** Print resolved P25 secondary control channel broadcasts. */
+void ui_print_p25_secondary_ccs(const dsd_opts* opts, const dsd_state* state);
+
 /** Print P25 neighbor site list. */
 void ui_print_p25_neighbors(const dsd_opts* opts, const dsd_state* state);
 

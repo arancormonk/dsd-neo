@@ -845,6 +845,14 @@ struct dsd_state {
     uint16_t p25_prot_kid;  ///< Active encryption Key ID (0 = none received)
 
     /*
+     * P25 protected-control-channel state (from MBT 0x3E Protection Parameter
+     * Broadcast). This is intentionally separate from voice/call protection
+     * state above.
+     */
+    uint8_t p25_cc_prot_valid; ///< 1 once a protected CC broadcast has been received
+    uint8_t p25_cc_prot_algid; ///< Control-channel protection Algorithm ID
+
+    /*
      * P25 Time and Date Announcement state (TSBK 0x35 bridged as MAC-like 0x75)
      *
      * Stores the most recently decoded system UTC time and local time offset.
@@ -853,6 +861,18 @@ struct dsd_state {
     time_t p25_sys_time;               ///< Decoded UTC time
     uint8_t p25_sys_time_offset_valid; ///< 1 once a local time offset has been received
     int16_t p25_sys_time_offset;       ///< Local time offset in minutes from UTC
+
+    /*
+     * P25 System Service Broadcast and current-site status metadata.
+     */
+    uint8_t p25_sys_services_valid;
+    uint32_t p25_sys_services_available;
+    uint32_t p25_sys_services_supported;
+    uint8_t p25_sys_services_request_priority;
+    uint8_t p25_site_lra_valid;
+    uint8_t p25_site_lra;
+    uint8_t p25_site_network_active_valid;
+    uint8_t p25_site_network_active;
 
     // P25 Phase 2 voice error moving average per slot (errs2 from AMBE decode)
     uint8_t p25_p2_voice_err_hist[2][64];
@@ -898,6 +918,14 @@ struct dsd_state {
     // Uses p25_nb_entry_t struct with per-neighbor site metadata (CFVA, SysID, RFSS, Site).
     int p25_nb_count;                          // number of active neighbor entries
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX]; // neighbor entries with metadata
+
+    // P25 current-site secondary control channels seen via SCCB.
+    int p25_secondary_cc_count;
+    p25_secondary_cc_entry_t p25_secondary_cc_entries[P25_SECONDARY_CC_MAX];
+
+    // P25 channel announcements that arrived before their IDEN table.
+    int p25_pending_announcement_count;
+    p25_pending_announcement_t p25_pending_announcements[P25_PENDING_ANNOUNCEMENT_MAX];
 
     // P25 source unit WACN from LCW 0x49 (Source ID Extension)
     uint32_t p25_src_nid; // 20-bit WACN from SUID extension

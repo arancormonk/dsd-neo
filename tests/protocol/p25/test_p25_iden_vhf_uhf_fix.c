@@ -187,10 +187,10 @@ test_vhf_uhf_base_classifier(void) {
 }
 
 static int
-test_channel_type_matches_sdrtrunk(void) {
+test_channel_type_matches_op25(void) {
     int rc = 0;
-    const int slots[16] = {1, 1, 1, 2, 4, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
-    const int tdma[16] = {0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const int slots[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+    const int tdma[16] = {0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 
     for (int type = 0; type < 16; type++) {
         char tag[64];
@@ -201,7 +201,7 @@ test_channel_type_matches_sdrtrunk(void) {
     }
 
     if (rc == 0) {
-        DSD_FPRINTF(stderr, "PASS test_channel_type_matches_sdrtrunk\n");
+        DSD_FPRINTF(stderr, "PASS test_channel_type_matches_op25\n");
     }
     return rc;
 }
@@ -213,7 +213,7 @@ main(void) {
     rc |= test_vuhf_0x74_uses_vuhf_layout();
     rc |= test_tdma_0x73_uses_signed_tdma_layout();
     rc |= test_vhf_uhf_base_classifier();
-    rc |= test_channel_type_matches_sdrtrunk();
+    rc |= test_channel_type_matches_op25();
 
     if (rc == 0) {
         DSD_FPRINTF(stderr, "\nAll test_p25_iden_vhf_uhf_fix tests PASSED\n");
