@@ -36,6 +36,21 @@ static const uint8_t standard_mac_msg_len[256] = {
     [0xEC] = 13, [0xF1] = 18, [0xF2] = 16, [0xF3] = 14, [0xFA] = 11, [0xFB] = 13, [0xFC] = 11, [0xFE] = 15,
 };
 
+static const uint8_t motorola_mac_msg_len[256] = {
+    [0x80] = 8,  [0x81] = 17, [0x83] = 7,  [0x84] = 11, [0x89] = 17, [0x91] = 17, [0x95] = 17,
+    [0xA0] = 16, [0xA3] = 11, [0xA4] = 13, [0xA5] = 11, [0xA6] = 11, [0xA7] = 11, [0xA8] = 10,
+};
+
+static const uint8_t harris_mac_msg_len[256] = {
+    [0xA0] = 9,
+    [0xAA] = 17,
+    [0xAC] = 12,
+};
+
+static const uint8_t tait_mac_msg_len[256] = {
+    [0xB5] = 5,
+};
+
 static inline int
 base_len_for(uint8_t opcode) {
     return standard_mac_msg_len[opcode];
@@ -44,36 +59,15 @@ base_len_for(uint8_t opcode) {
 static int
 vendor_len_for(uint8_t mfid, uint8_t opcode) {
     if (mfid == 0x90u) {
-        switch (opcode) {
-            case 0x80: return 8;
-            case 0x83: return 7;
-            case 0x81:
-            case 0x89:
-            case 0x91:
-            case 0x95: return 17;
-            case 0xA0: return 16;
-            case 0x84:
-            case 0xA3:
-            case 0xA5:
-            case 0xA6:
-            case 0xA7: return 11;
-            case 0xA4: return 13;
-            case 0xA8: return 10;
-            default: return 0;
-        }
+        return motorola_mac_msg_len[opcode];
     }
 
     if (mfid == 0xA4u) {
-        switch (opcode) {
-            case 0xA0: return 9;
-            case 0xAA: return 17;
-            case 0xAC: return 12;
-            default: return 0;
-        }
+        return harris_mac_msg_len[opcode];
     }
 
-    if (mfid == 0xD8u && opcode == 0xB5u) {
-        return 5;
+    if (mfid == 0xD8u) {
+        return tait_mac_msg_len[opcode];
     }
 
     return 0;
