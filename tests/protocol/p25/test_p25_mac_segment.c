@@ -253,6 +253,26 @@ main(void) {
     if (rc != 0) {
         return rc;
     }
+    rc = run_payload_len_case("p25_multifrag_cont_len", /*FACCH*/ 0, 0x10, 0x0A, 0x00, /*B*/ 10, /*C*/ 6);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_payload_len_case("p25_harris_a8_len", /*FACCH*/ 0, 0xA8, 0xA4, 0x0A, /*B*/ 10, /*C*/ 6);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_payload_len_case("p25_harris_b0_len", /*SACCH*/ 1, 0xB0, 0xA4, 0x11, /*B*/ 17, /*C*/ 2);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_payload_len_case("p25_tait_b5_fixed_len", /*FACCH*/ 0, 0xB5, 0xD8, 0x08, /*B*/ 5, /*C*/ 11);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_payload_len_case("p25_tait_variable_len", /*FACCH*/ 0, 0xB4, 0xD8, 0x08, /*B*/ 8, /*C*/ 8);
+    if (rc != 0) {
+        return rc;
+    }
     DSD_FPRINTF(stderr, "P25p2 MAC MCO->length inference (FACCH) passed\n");
     return 0;
 }

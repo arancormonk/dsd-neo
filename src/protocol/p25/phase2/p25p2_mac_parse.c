@@ -58,19 +58,31 @@ p25p2_mac_payload_len_override(const unsigned long long mac[24], int opcode_pos)
 
     uint8_t opcode = (uint8_t)p25p2_mac_octet(mac, opcode_pos);
     uint8_t mfid = (uint8_t)p25p2_mac_octet(mac, opcode_pos + 1);
-    if (mfid != 0x90u) {
-        return -1;
+    uint8_t len_octet = (uint8_t)p25p2_mac_octet(mac, opcode_pos + 2);
+
+    if (opcode == 0x08u || opcode == 0x10u || opcode == 0x11u || opcode == 0x12u) {
+        int len = (int)(mfid & 0x3Fu);
+        return (len > 0) ? len : -1;
     }
 
-    if (opcode == 0x81u) {
-        return (int)p25p2_mac_octet(mac, opcode_pos + 2);
-    }
-    if (opcode == 0x8Fu) {
-        int len = (int)p25p2_mac_octet(mac, opcode_pos + 2);
-        return p25p2_clamp_int(len, 0, 12);
-    }
-    if (opcode == 0xBFu) {
-        return 3;
+    if (opcode >= 0x80u && opcode <= 0xBFu) {
+        int len = (int)(len_octet & 0x3Fu);
+        if (mfid == 0x90u) {
+            if (opcode == 0x81u || opcode == 0x89u || opcode == 0x8Fu || opcode == 0xBFu) {
+                return (len > 0) ? len : ((opcode == 0xBFu) ? 3 : -1);
+            }
+            if (opcode == 0x91u || opcode == 0x95u) {
+                return (len > 0) ? len : -1;
+            }
+        }
+        if (mfid == 0xA4u) {
+            if (opcode == 0x81u || opcode == 0x8Fu || opcode == 0xA8u || opcode == 0xB0u) {
+                return (len > 0) ? len : -1;
+            }
+        }
+        if (mfid == 0xD8u && opcode != 0xB5u) {
+            return (len > 0) ? len : -1;
+        }
     }
 
     return -1;

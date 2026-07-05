@@ -5,11 +5,10 @@
 
 /*
  * P25 Phase 2 MAC vendor opcode length checks (table overrides):
- * - Motorola: MFID 0x90 with op 0x91 and 0x95 → lenB=17
- * - Harris:   MFID 0xB0 generic op → lenB=17
- * - Tait:     MFID 0xB5 generic op → lenB=5
- * - Harris extra: MFID 0x81 → lenB=7
- * All cases evaluated on SACCH (capacity 19) to avoid fallback clamp.
+ * - Motorola: MFID 0x90 with op 0x91 and 0x95 -> lenB=17
+ * - Harris:   MFID 0xA4 with fixed grant/location opcodes
+ * - Tait:     MFID 0xD8 op 0xB5 observed with a five-octet structure
+ * All cases evaluated on SACCH (capacity 19) to avoid capacity fallback.
  */
 
 #include <errno.h>
@@ -223,9 +222,10 @@ main(void) {
     int rc = 0;
     rc |= run_one(0x90, 0x91, 17); // Motorola
     rc |= run_one(0x90, 0x95, 17); // Motorola
-    rc |= run_one(0xB0, 0x12, 17); // Harris generic
-    rc |= run_one(0xB5, 0x34, 5);  // Tait generic
-    rc |= run_one(0x81, 0x20, 7);  // Harris extra
+    rc |= run_one(0xA4, 0xA0, 9);  // Harris private data grant
+    rc |= run_one(0xA4, 0xAA, 17); // Harris GPS
+    rc |= run_one(0xA4, 0xAC, 12); // Harris unit-to-unit data grant
+    rc |= run_one(0xD8, 0xB5, 5);  // Tait
     return rc;
 }
 

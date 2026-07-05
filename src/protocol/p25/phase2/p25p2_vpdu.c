@@ -643,6 +643,26 @@ p25p2_vpdu_store_slot_svc(dsd_state* state, int slot, int svc) {
     }
 }
 
+static int
+p25p2_vpdu_u16(const unsigned long long int* mac, int idx) {
+    return (int)((mac[idx] << 8) | mac[idx + 1]);
+}
+
+static int
+p25p2_vpdu_u24(const unsigned long long int* mac, int idx) {
+    return (int)((mac[idx] << 16) | (mac[idx + 1] << 8) | mac[idx + 2]);
+}
+
+static int
+p25p2_vpdu_fqid_wacn(const unsigned long long int* mac, int idx) {
+    return (int)((mac[idx] << 12) | (mac[idx + 1] << 4) | ((mac[idx + 2] & 0xF0) >> 4));
+}
+
+static int
+p25p2_vpdu_fqid_sysid(const unsigned long long int* mac, int idx) {
+    return (int)(((mac[idx + 2] & 0x0F) << 8) | mac[idx + 3]);
+}
+
 static void
 p25p2_vpdu_set_active_group_single(dsd_state* state, int channel, int group) {
     char suffix[32];
@@ -2202,7 +2222,7 @@ p25p2_vpdu_iter_block_24(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1 + len_a] != 0xB0 && MAC[2 + len_a] == 0xA4) {
+    if (MAC[1 + len_a] != 0xA0 && MAC[1 + len_a] != 0xAC && MAC[1 + len_a] != 0xB0 && MAC[2 + len_a] == 0xA4) {
         // 6.2.36 Manufacturer Specific regarding octet 3 as len
         int len = MAC[3 + len_a] & 0x3F;
 
@@ -4158,6 +4178,303 @@ BLOCK_END:
 }
 
 static void
+p25p2_vpdu_iter_block_58(p25p2_vpdu_ctx* ctx) {
+    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
+    int type = ctx->type;
+    const unsigned long long int* MAC = ctx->mac;
+    struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
+    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
+    int len_b = ctx->len_b;
+    int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
+    int slot VPDU_MAYBE_UNUSED = ctx->slot;
+    int i = ctx->iter_idx;
+    int opcode = (int)MAC[1 + len_a];
+    UNUSED4(type, mac_res, len_c, slot);
+
+    if (opcode == 0x41) {
+        int svc = (int)MAC[2 + len_a];
+        int group = p25p2_vpdu_u16(MAC, 3 + len_a);
+        int source = p25p2_vpdu_u24(MAC, 5 + len_a);
+
+        DSD_FPRINTF(stderr, "\n Group Voice Service Request");
+        DSD_FPRINTF(stderr, "\n  SVC [%02X] Group [%d][%04X] Source [%d]", svc, group, group, source);
+        p25p2_vpdu_print_svc_no_state(opts, svc);
+        p25p2_vpdu_print_group_label(state, (uint32_t)group);
+        if (source != 0 && group != 0) {
+            p25_ga_add(state, (uint32_t)source, (uint16_t)group);
+        }
+    }
+
+    if (opcode == 0x45 || opcode == 0xC5) {
+        int svc = (int)MAC[2 + len_a];
+        int target = p25p2_vpdu_u24(MAC, 3 + len_a);
+
+        DSD_FPRINTF(stderr, "\n Unit-to-Unit Answer Request");
+        if (opcode == 0xC5) {
+            int src_wacn = p25p2_vpdu_fqid_wacn(MAC, 6 + len_a);
+            int src_sys = p25p2_vpdu_fqid_sysid(MAC, 6 + len_a);
+            int source = p25p2_vpdu_u24(MAC, 10 + len_a);
+            DSD_FPRINTF(stderr, " - Extended");
+            DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Source [%05X:%03X.%d]", svc, target, src_wacn, src_sys,
+                        source);
+        } else {
+            int source = p25p2_vpdu_u24(MAC, 6 + len_a);
+            DSD_FPRINTF(stderr, " - Abbreviated");
+            DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Source [%d]", svc, target, source);
+        }
+        p25p2_vpdu_print_svc_no_state(opts, svc);
+    }
+
+    if (opcode == 0x4A) {
+        static const char hex[] = "0123456789ABCDEF";
+        char digits[11];
+        int d = 0;
+        for (int b = 2; b <= 6; b++) {
+            digits[d++] = hex[(MAC[b + len_a] >> 4) & 0x0F];
+            digits[d++] = hex[MAC[b + len_a] & 0x0F];
+        }
+        digits[d] = '\0';
+
+        int target = (int)((MAC[7 + len_a] >> 4) & 0x0F);
+        DSD_FPRINTF(stderr, "\n Telephone Interconnect Answer Request");
+        DSD_FPRINTF(stderr, "\n  Target [%d] Digits [%s]", target, digits);
+    }
+
+    if (opcode == 0x58) {
+        int unit_status = (int)MAC[3 + len_a];
+        int user_status = (int)MAC[4 + len_a];
+        int target = p25p2_vpdu_u24(MAC, 5 + len_a);
+        int source = p25p2_vpdu_u24(MAC, 8 + len_a);
+
+        DSD_FPRINTF(stderr, "\n Status Update - Abbreviated");
+        DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Unit [%02X] User [%02X]", target, source, unit_status,
+                    user_status);
+        DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                     "STATUS Target: %d Source: %d Unit: %02X User: %02X; ", target, source, unit_status, user_status);
+        state->last_active_time = time(NULL);
+    }
+
+    if (opcode == 0x5A || opcode == 0x5F || opcode == 0x6A) {
+        int target = p25p2_vpdu_u24(MAC, 2 + len_a);
+        int source = p25p2_vpdu_u24(MAC, 5 + len_a);
+        const char* label = (opcode == 0x5A)   ? "Status Query"
+                            : (opcode == 0x5F) ? "Call Alert"
+                                               : "Group Affiliation Query";
+
+        DSD_FPRINTF(stderr, "\n %s - Abbreviated", label);
+        DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d]", target, source);
+        DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "%s Target: %d Source: %d; ", label,
+                     target, source);
+        state->last_active_time = time(NULL);
+    }
+
+    if (opcode == 0x5C) {
+        int message = p25p2_vpdu_u16(MAC, 3 + len_a);
+        int target = p25p2_vpdu_u24(MAC, 5 + len_a);
+        int source = p25p2_vpdu_u24(MAC, 8 + len_a);
+
+        DSD_FPRINTF(stderr, "\n Message Update - Abbreviated");
+        DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Message [%04X]", target, source, message);
+        DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                     "MSG Target: %d Source: %d Message: %04X; ", target, source, message);
+        state->last_active_time = time(NULL);
+    }
+
+    if (opcode == 0x60) {
+        int has_addl_info = ((MAC[2 + len_a] & 0x80) != 0);
+        int has_extended_addr = ((MAC[2 + len_a] & 0x40) != 0);
+        int svc_type = (int)(MAC[2 + len_a] & 0x3F);
+        int target = p25p2_vpdu_u24(MAC, 7 + len_a);
+
+        DSD_FPRINTF(stderr, "\n Acknowledge Response FNE - Abbreviated");
+        DSD_FPRINTF(stderr, "\n  Service [%02X] Target [%d]", svc_type, target);
+        if (has_addl_info && has_extended_addr) {
+            int target_wacn = (int)((MAC[3 + len_a] << 12) | (MAC[4 + len_a] << 4) | (MAC[5 + len_a] >> 4));
+            int target_sys = (int)(((MAC[5 + len_a] & 0x0F) << 8) | MAC[6 + len_a]);
+            DSD_FPRINTF(stderr, " FQTarget [%05X:%03X.%d]", target_wacn, target_sys, target);
+        } else if (has_addl_info) {
+            int source = p25p2_vpdu_u24(MAC, 4 + len_a);
+            DSD_FPRINTF(stderr, " Source [%d]", source);
+        }
+        DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "ACK Target: %d Service: %02X; ",
+                     target, svc_type);
+        state->last_active_time = time(NULL);
+    }
+
+    if (opcode == 0x76) {
+        int stack_op = (int)MAC[3 + len_a];
+        int target_wacn = p25p2_vpdu_fqid_wacn(MAC, 4 + len_a);
+        int target_sys = p25p2_vpdu_fqid_sysid(MAC, 4 + len_a);
+        int target = p25p2_vpdu_u24(MAC, 8 + len_a);
+
+        DSD_FPRINTF(stderr, "\n Roaming Address Command");
+        DSD_FPRINTF(stderr, "\n  StackOp [%02X] Target [%05X:%03X.%d]", stack_op, target_wacn, target_sys, target);
+    }
+
+    if (opcode == 0x77) {
+        int last = ((MAC[3 + len_a] & 0x80) != 0);
+        int sequence = (int)(MAC[3 + len_a] & 0x0F);
+        int target = p25p2_vpdu_u24(MAC, 4 + len_a);
+        int source_wacn = p25p2_vpdu_fqid_wacn(MAC, 7 + len_a);
+        int source_sys = p25p2_vpdu_fqid_sysid(MAC, 7 + len_a);
+        int source = p25p2_vpdu_u24(MAC, 11 + len_a);
+
+        DSD_FPRINTF(stderr, "\n Roaming Address Update");
+        DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Seq [%d]%s", target, source_wacn, source_sys, source,
+                    sequence, last ? " Last" : "");
+    }
+
+    if (len_b < 0) {
+        goto BLOCK_END;
+    }
+BLOCK_END:
+    VPDU_LABEL_UNUSED;
+
+    ctx->len_b = len_b;
+    ctx->iter_idx = i;
+}
+
+static void
+p25p2_vpdu_iter_block_59(p25p2_vpdu_ctx* ctx) {
+    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
+    int type = ctx->type;
+    const unsigned long long int* MAC = ctx->mac;
+    struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
+    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
+    int len_b = ctx->len_b;
+    int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
+    int slot VPDU_MAYBE_UNUSED = ctx->slot;
+    int i = ctx->iter_idx;
+    int opcode = (int)MAC[1 + len_a];
+    int mfid = (int)MAC[2 + len_a];
+    UNUSED4(type, len_c, slot, i);
+
+    if (mfid == 0x90 && (opcode == 0xA6 || opcode == 0xA7)) {
+        int is_deny = (opcode == 0xA7);
+        int has_addl_info = ((MAC[4 + len_a] & 0x80) != 0);
+        int svc_type = (int)(MAC[4 + len_a] & 0x3F);
+        int reason_code = (int)MAC[5 + len_a];
+        int addl_info = p25p2_vpdu_u24(MAC, 6 + len_a);
+        int target_addr = p25p2_vpdu_u24(MAC, 9 + len_a);
+        const char* reason_str =
+            is_deny ? p25_deny_reason_str((uint8_t)reason_code) : p25_que_reason_str((uint8_t)reason_code);
+
+        DSD_FPRINTF(stderr, "\n Motorola %s Response", is_deny ? "Deny" : "Queued");
+        DSD_FPRINTF(stderr, "\n  SVC [%02X] Reason [%s]", svc_type, reason_str);
+        if (has_addl_info) {
+            DSD_FPRINTF(stderr, " Addl [%06X]", addl_info);
+        }
+        DSD_FPRINTF(stderr, " Target [%d]", target_addr);
+
+        if (has_addl_info) {
+            DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                         "MOT %s Target: %d Reason: %s Info: %06X; ", is_deny ? "DENY" : "QUEUED", target_addr,
+                         reason_str, addl_info);
+        } else {
+            DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "MOT %s Target: %d Reason: %s; ",
+                         is_deny ? "DENY" : "QUEUED", target_addr, reason_str);
+        }
+        state->last_active_time = time(NULL);
+
+        if (is_deny) {
+            p25_sm_on_deny_response(opts, state, svc_type, reason_code, target_addr);
+        } else {
+            p25_sm_on_queued_response(opts, state, svc_type, reason_code, target_addr);
+        }
+    }
+
+    if (mfid == 0x90 && opcode == 0xA8) {
+        int svc_type = (int)(MAC[4 + len_a] & 0x3F);
+        int source = p25p2_vpdu_u24(MAC, 5 + len_a);
+        int target = p25p2_vpdu_u24(MAC, 8 + len_a);
+
+        DSD_FPRINTF(stderr, "\n Motorola Acknowledge Response");
+        DSD_FPRINTF(stderr, "\n  Service [%02X] Source [%d] Target [%d]", svc_type, source, target);
+        DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                     "MOT ACK Target: %d Source: %d Service: %02X; ", target, source, svc_type);
+        state->last_active_time = time(NULL);
+    }
+
+    if (mfid == 0x90 && opcode == 0x84) {
+        int function = p25p2_vpdu_u16(MAC, 4 + len_a);
+        int class_id = (function >> 8) & 0xFF;
+        int operand = function & 0xFF;
+        int argument = p25p2_vpdu_u24(MAC, 6 + len_a);
+        int target = p25p2_vpdu_u24(MAC, 9 + len_a);
+
+        DSD_FPRINTF(stderr, "\n Motorola Group Regroup Extended Function Command");
+        DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d]", class_id, operand, argument,
+                    target);
+        if (class_id == 0) {
+            DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+        }
+    }
+
+    if (mfid == 0x90 && opcode == 0x8B) {
+        DSD_FPRINTF(stderr, "\n Motorola TDMA Data Channel");
+        int printed = 0;
+        const int channel_offsets[] = {5, 8, 11, 14};
+        for (int c = 0; c < (int)(sizeof(channel_offsets) / sizeof(channel_offsets[0])); c++) {
+            int channel = p25p2_vpdu_u16(MAC, channel_offsets[c] + len_a);
+            if (!p25p2_vpdu_channel_is_valid(channel)) {
+                continue;
+            }
+            long int freq = process_channel_to_freq(opts, state, channel);
+            DSD_FPRINTF(stderr, "%s CH%d [%04X]", printed ? "" : "\n ", c + 1, channel);
+            if (freq > 0) {
+                DSD_FPRINTF(stderr, " [%09ld]", freq);
+            }
+            printed = 1;
+        }
+        if (!printed) {
+            DSD_FPRINTF(stderr, " Not Active");
+        }
+    }
+
+    if (mfid == 0xA4 && (opcode == 0xA0 || opcode == 0xAC)) {
+        int channel = p25p2_vpdu_u16(MAC, 5 + len_a);
+        int target = p25p2_vpdu_u24(MAC, 7 + len_a);
+        int source = (opcode == 0xAC) ? p25p2_vpdu_u24(MAC, 10 + len_a) : 0;
+        long int freq = process_channel_to_freq(opts, state, channel);
+        char suffix[32];
+
+        DSD_FPRINTF(stderr, "\n L3Harris %s Data Channel Grant", opcode == 0xAC ? "Unit-to-Unit" : "Private");
+        DSD_FPRINTF(stderr, "\n  CHAN [%04X] Target [%d]", channel, target);
+        if (source != 0) {
+            DSD_FPRINTF(stderr, " Source [%d]", source);
+        }
+
+        p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof suffix);
+        if (source != 0) {
+            DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
+                         "Harris Data Ch: %04X%s TGT: %d SRC: %d; ", channel, suffix, target, source);
+        } else {
+            DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "Harris Data Ch: %04X%s TGT: %d; ",
+                         channel, suffix, target);
+        }
+        state->last_active_time = time(NULL);
+
+        if (p25p2_vpdu_can_tune(opts, state, freq)) {
+            int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
+            p25p2_mac_handle_indiv(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
+                                   /*policy_data*/ 1);
+        }
+        p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
+    }
+
+    if (len_b < 0) {
+        goto BLOCK_END;
+    }
+BLOCK_END:
+    VPDU_LABEL_UNUSED;
+
+    ctx->len_b = len_b;
+    ctx->iter_idx = i;
+}
+
+static void
 p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx) {
     typedef void (*p25p2_vpdu_handler_fn)(p25p2_vpdu_ctx*);
     static const p25p2_vpdu_handler_fn handlers[] = {
@@ -4175,6 +4492,7 @@ p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_iter_block_46, p25p2_vpdu_iter_block_47, p25p2_vpdu_iter_block_48, p25p2_vpdu_iter_block_49,
         p25p2_vpdu_iter_block_50, p25p2_vpdu_iter_block_51, p25p2_vpdu_iter_block_52, p25p2_vpdu_iter_block_53,
         p25p2_vpdu_iter_block_54, p25p2_vpdu_iter_block_55, p25p2_vpdu_iter_block_56, p25p2_vpdu_iter_block_57,
+        p25p2_vpdu_iter_block_58, p25p2_vpdu_iter_block_59,
     };
     const size_t handler_count = sizeof(handlers) / sizeof(handlers[0]);
     for (size_t h = 0; h < handler_count; h++) {

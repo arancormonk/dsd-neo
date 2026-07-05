@@ -1562,6 +1562,82 @@ main(void) {
         rc |= expect_eq_long("0x54 data vc1", state.p25_vc_freq[1], 851125000);
     }
 
+    // Case T: L3Harris private data grants use vendor MFID 0xA4 offsets.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 0;
+        state.lasttg = 0x030405;
+        state.synctype = DSD_SYNC_P25P2_POS;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0xA0;
+        MAC[2] = 0xA4;
+        MAC[3] = 0x09;
+        MAC[4] = 0x00;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0A; // channel
+        MAC[7] = 0x03;
+        MAC[8] = 0x04;
+        MAC[9] = 0x05; // target
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_contains("Harris A0 active", state.active_channel[0], "Harris Data Ch: 100A");
+        rc |= expect_contains("Harris A0 target", state.active_channel[0], "TGT: 197637");
+        rc |= expect_eq_long("Harris A0 vc0", state.p25_vc_freq[0], 851125000);
+        rc |= expect_eq_long("Harris A0 vc1", state.p25_vc_freq[1], 851125000);
+    }
+
+    // Case U: L3Harris unit-to-unit data grants include both target and source radios.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 0;
+        state.lasttg = 0x030405;
+        state.synctype = DSD_SYNC_P25P2_POS;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0xAC;
+        MAC[2] = 0xA4;
+        MAC[3] = 0x0C;
+        MAC[4] = 0x00;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0A; // channel
+        MAC[7] = 0x03;
+        MAC[8] = 0x04;
+        MAC[9] = 0x05; // target
+        MAC[10] = 0x98;
+        MAC[11] = 0x04;
+        MAC[12] = 0x18; // source
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_contains("Harris AC active", state.active_channel[0], "Harris Data Ch: 100A");
+        rc |= expect_contains("Harris AC target", state.active_channel[0], "TGT: 197637");
+        rc |= expect_contains("Harris AC source", state.active_channel[0], "SRC: 9962520");
+        rc |= expect_eq_long("Harris AC vc0", state.p25_vc_freq[0], 851125000);
+        rc |= expect_eq_long("Harris AC vc1", state.p25_vc_freq[1], 851125000);
+    }
+
     return rc;
 }
 
