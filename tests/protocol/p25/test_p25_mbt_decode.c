@@ -263,8 +263,8 @@ main(void) {
 
     // AMBTC Group Affiliation Response (0x28): accepted response tracks TA -> GA only.
     {
-        dsd_opts opts;
-        dsd_state state;
+        static dsd_opts opts;
+        static dsd_state state;
         uint8_t aff[48];
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
@@ -325,8 +325,8 @@ main(void) {
 
     // AMBTC Group Affiliation Response (0x28): rejected response does not track affiliation.
     {
-        dsd_opts opts;
-        dsd_state state;
+        static dsd_opts opts;
+        static dsd_state state;
         uint8_t aff[48];
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
