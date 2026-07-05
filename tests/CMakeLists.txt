@@ -3479,7 +3479,9 @@ add_test(NAME P25_CRC12_16 COMMAND dsd-neo_test_p25_crc12_16)
 add_executable(dsd-neo_test_p25_mbt_decode protocol/p25/test_p25_mbt_decode.c)
 target_include_directories(
     dsd-neo_test_p25_mbt_decode
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_link_libraries(
     dsd-neo_test_p25_mbt_decode

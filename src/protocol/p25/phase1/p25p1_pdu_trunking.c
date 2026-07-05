@@ -553,6 +553,29 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
 }
 
 static void DSD_ATTR_USED
+p25_handle_mbt_group_affiliation_response(dsd_state* state, const uint8_t* mpdu_byte) {
+    uint32_t ta = ((uint32_t)mpdu_byte[3] << 16) | ((uint32_t)mpdu_byte[4] << 8) | (uint32_t)mpdu_byte[5];
+    int mfid = mpdu_byte[2];
+    int wacn = (mpdu_byte[8] << 12) | (mpdu_byte[9] << 4) | ((mpdu_byte[12] & 0xF0) >> 4);
+    int sysid = ((mpdu_byte[12] & 0x0F) << 8) | mpdu_byte[13];
+    int gid = (mpdu_byte[14] << 8) | mpdu_byte[15];
+    int aga = (mpdu_byte[16] << 8) | mpdu_byte[17];
+    int ga = (mpdu_byte[18] << 8) | mpdu_byte[19];
+    int lg = (mpdu_byte[20] >> 7) & 0x01;
+    int gav = mpdu_byte[20] & 0x03;
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Group Affiliation Response MBT - Extended");
+    DSD_FPRINTF(stderr, "\n  MFID [%02X] WACN [%05X] SYSID [%03X] GID [%04X] LG [%d] GAV [%d] AGA [%d] GA [%d] TA [%u]",
+                mfid, wacn, sysid, gid, lg, gav, aga, ga, ta);
+
+    if (gav == 0) {
+        p25_aff_register(state, ta);
+        p25_ga_add(state, ta, (uint16_t)ga);
+    }
+}
+
+static void DSD_ATTR_USED
 p25_handle_mbt_mfid90_unknown(const uint8_t* mpdu_byte, int blks) {
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n MFID 90 (Moto); Opcode: %02X; ", mpdu_byte[0] & 0x3F);
@@ -597,6 +620,12 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_by
         p25_handle_mbt_unit_to_unit_voice_grant(opts, state, mpdu_byte);
     } else if ((fields.opcode == 0x8 || fields.opcode == 0x9) && fields.mfid < 2) {
         p25_handle_mbt_telephone_interconnect_grant(opts, state, mpdu_byte, fields.opcode);
+    } else if (fields.opcode == 0x28) {
+        if (fields.fmt == 0x17) {
+            p25_handle_mbt_group_affiliation_response(state, mpdu_byte);
+        } else {
+            DSD_FPRINTF(stderr, " - group affiliation response format %02X not handled", fields.fmt);
+        }
     } else if (fields.mfid == 0xA4) {
         p25_handle_mbt_mfid_a4(mpdu_byte, fields.blks, fields.opcode);
     } else if (fields.mfid == 0x90) {

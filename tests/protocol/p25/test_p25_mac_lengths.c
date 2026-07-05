@@ -24,8 +24,11 @@ main(void) {
 
     // A few core opcodes (standard MFID 0/1)
     rc |= expect_eq("OP 0x40 (GRP_V_CH_GRANT)", p25p2_mac_len_for(0x01, 0x40), 9);
+    rc |= expect_eq("OP 0x43 (P1 GRP_V_CH_GRANT_UP_EXP bridge)", p25p2_mac_len_for(0x01, 0x43), 9);
     rc |= expect_eq("OP 0x48 (UU_V_CH_GRANT)", p25p2_mac_len_for(0x01, 0x48), 10);
     rc |= expect_eq("OP 0x71 (AUTH_DEMAND)", p25p2_mac_len_for(0x01, 0x71), 29);
+    rc |= expect_eq("OP 0xC0 (GRP_V_CH_GRANT_EXP)", p25p2_mac_len_for(0x01, 0xC0), 11);
+    rc |= expect_eq("OP 0xC3 (GRP_V_CH_GRANT_UP_EXP)", p25p2_mac_len_for(0x01, 0xC3), 8);
 
     // Extended variant set (filled to reduce unknowns)
     rc |= expect_eq("OP 0xF1 (AUTH_DEMAND_EXT)", p25p2_mac_len_for(0x01, 0xF1), 29);

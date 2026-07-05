@@ -11,14 +11,13 @@
 
 #include <dsd-neo/protocol/p25/p25p2_mac_tables.h>
 
-// Length semantics: number of octets following the opcode byte
-// (i.e., includes MFID and payload, excludes the opcode itself).
+// Length semantics: whole MAC message octets, including the opcode byte.
 static const uint8_t mac_msg_len[256] = {
     0,  7,  8,  7,  0,  16, 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  //0F
     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  //1F
     0,  14, 15, 0,  0,  15, 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  //2F
     5,  7,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  //3F
-    9,  7,  9,  0,  9,  8,  9,  0,  10, 10, 9,  0,  10, 0,  0,  0,  //4F
+    9,  7,  9,  9,  9,  8,  9,  0,  10, 10, 9,  0,  10, 0,  0,  0,  //4F
     0,  0,  0,  0,  9,  7,  0,  0,  10, 0,  7,  0,  10, 8,  14, 7,  //5F
     9,  9,  0,  0,  9,  0,  0,  9,  10, 0,  7,  10, 10, 7,  0,  9,  //6F
     9,  29, 9,  9,  9,  9,  10, 13, 9,  9,  9,  11, 9,  9,  0,  0,  //7F

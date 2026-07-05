@@ -8,13 +8,18 @@
  * updates CC frequency and system identifiers using pre-seeded IDEN tables.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
+#include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -190,6 +195,30 @@ expect_eq_int(const char* tag, int got, int want) {
     return 0;
 }
 
+static int
+expect_contains_text(const char* tag, const char* text, const char* needle) {
+    if (!text || !needle || strstr(text, needle) == NULL) {
+        DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", tag, needle ? needle : "(null)", text ? text : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+read_capture_file(const char* path, char* out, size_t out_sz) {
+    if (!path || !out || out_sz == 0) {
+        return -1;
+    }
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        return -1;
+    }
+    size_t n = fread(out, 1, out_sz - 1, f);
+    out[n] = '\0';
+    fclose(f);
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -229,6 +258,92 @@ main(void) {
     rc |= expect_eq_long("p25_cc_freq", cc, want_freq);
     rc |= expect_eq_long("p2_wacn", wacn, 0xABCDE);
     rc |= expect_eq_int("p2_sysid", sysid, 0x123);
+
+    // AMBTC Group Affiliation Response (0x28): accepted response tracks TA -> GA only.
+    {
+        dsd_opts opts;
+        dsd_state state;
+        uint8_t aff[48];
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(aff, 0, sizeof aff);
+
+        state.p25_cc_freq = 851000000;
+        state.trunk_cc_freq = 851000000;
+        state.p2_wacn = 0x11111;
+        state.p2_sysid = 0x222;
+
+        aff[0] = 0x17; // ALT MBT only
+        aff[2] = 0x00; // MFID
+        aff[3] = 0x01;
+        aff[4] = 0x23;
+        aff[5] = 0x45; // TA
+        aff[6] = 0x02;
+        aff[7] = 0x28; // Group Affiliation Response
+        aff[8] = 0xAB;
+        aff[9] = 0xCD;
+        aff[12] = 0xE1; // WACN low nibble + SYSID high nibble
+        aff[13] = 0x23;
+        aff[14] = 0x56;
+        aff[15] = 0x78; // GID
+        aff[16] = 0x12;
+        aff[17] = 0x34; // AGA
+        aff[18] = 0x45;
+        aff[19] = 0x67; // GA
+        aff[20] = 0x80; // LG=1, GAV=0 accepted
+
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_aff_rsp") != 0) {
+            return 100;
+        }
+        p25_decode_pdu_trunking(&opts, &state, aff);
+        dsd_test_capture_stderr_end(&cap);
+
+        char out[2048];
+        if (read_capture_file(cap.path, out, sizeof out) != 0) {
+            return 101;
+        }
+
+        rc |= expect_eq_int("mbt 0x28 aff count", state.p25_aff_count, 1);
+        rc |= expect_eq_int("mbt 0x28 ga count", state.p25_ga_count, 1);
+        rc |= expect_eq_long("mbt 0x28 TA", state.p25_aff_rid[0], 0x012345);
+        rc |= expect_eq_long("mbt 0x28 GA rid", state.p25_ga_rid[0], 0x012345);
+        rc |= expect_eq_long("mbt 0x28 GA tg", state.p25_ga_tg[0], 0x4567);
+        rc |= expect_eq_long("mbt 0x28 preserves p25 cc", state.p25_cc_freq, 851000000);
+        rc |= expect_eq_long("mbt 0x28 preserves trunk cc", state.trunk_cc_freq, 851000000);
+        rc |= expect_eq_long("mbt 0x28 preserves wacn", (long)state.p2_wacn, 0x11111);
+        rc |= expect_eq_int("mbt 0x28 preserves sysid", state.p2_sysid, 0x222);
+        rc |= expect_contains_text("mbt 0x28 WACN/SYSID", out, "WACN [ABCDE] SYSID [123]");
+        rc |= expect_contains_text("mbt 0x28 GID", out, "GID [5678]");
+        rc |= expect_contains_text("mbt 0x28 LG/GAV", out, "LG [1] GAV [0]");
+        rc |= expect_contains_text("mbt 0x28 AGA", out, "AGA [4660]");
+        rc |= expect_contains_text("mbt 0x28 GA", out, "GA [17767]");
+        rc |= expect_contains_text("mbt 0x28 TA print", out, "TA [74565]");
+    }
+
+    // AMBTC Group Affiliation Response (0x28): rejected response does not track affiliation.
+    {
+        dsd_opts opts;
+        dsd_state state;
+        uint8_t aff[48];
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(aff, 0, sizeof aff);
+
+        aff[0] = 0x17;
+        aff[3] = 0x01;
+        aff[4] = 0x23;
+        aff[5] = 0x45;
+        aff[6] = 0x02;
+        aff[7] = 0x28;
+        aff[18] = 0x45;
+        aff[19] = 0x67;
+        aff[20] = 0x02; // GAV=2 rejected
+
+        p25_decode_pdu_trunking(&opts, &state, aff);
+        rc |= expect_eq_int("mbt 0x28 rejected aff count", state.p25_aff_count, 0);
+        rc |= expect_eq_int("mbt 0x28 rejected ga count", state.p25_ga_count, 0);
+    }
 
     return rc;
 }

@@ -279,6 +279,21 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_aff_register(dsd_state* state, uint32_t rid) {
+    (void)state;
+    (void)rid;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg) {
+    (void)state;
+    (void)rid;
+    (void)tg;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_format_chan_suffix(const dsd_state* state, uint16_t channel, int slot_hint, char* out, size_t out_sz) {
     (void)state;
     (void)channel;

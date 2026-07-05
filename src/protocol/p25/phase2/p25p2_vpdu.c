@@ -938,6 +938,42 @@ p25p2_vpdu_block07_print_entry(const dsd_opts* opts, dsd_state* state, int svc, 
     return freq_t;
 }
 
+static void
+p25p2_vpdu_handle_group_explicit_grant(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
+                                       int svc, int reserved, int channelt, int channelr, int group, int source,
+                                       const char* label, int set_packet_bit, int store_slot_svc) {
+    int slot_idx = state->currentslot & 1;
+    long int freq_t = 0;
+
+    DSD_FPRINTF(stderr, "\n");
+    p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, set_packet_bit);
+    DSD_FPRINTF(stderr, " %s", label);
+    DSD_FPRINTF(stderr, "\n  SVC [%02X]", svc);
+    if (reserved >= 0) {
+        DSD_FPRINTF(stderr, " RES [%02X]", reserved);
+    }
+    DSD_FPRINTF(stderr, " CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", channelt, channelr, group, group);
+    if (source > 0) {
+        DSD_FPRINTF(stderr, " Source [%d]", source);
+    }
+
+    freq_t = process_channel_to_freq(opts, state, channelt);
+    if (p25p2_vpdu_channel_is_valid(channelr)) {
+        (void)process_channel_to_freq(opts, state, channelr);
+    }
+    if (store_slot_svc) {
+        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
+    }
+    p25p2_vpdu_set_active_group_single(state, channelt, group);
+    p25p2_vpdu_print_group_label(state, (uint32_t)group);
+
+    if (p25p2_vpdu_can_tune(opts, state, freq_t)) {
+        p25p2_mac_handle(mac_res, opts, state, channelt, svc, group, source, /*policy_encrypted*/ -1,
+                         /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
+    }
+    p25p2_vpdu_update_playback_if_match(opts, state, group, freq_t);
+}
+
 static int
 p25p2_vpdu_groups_clear_for_enc(const dsd_state* state, const int* groups, int count) {
     for (int i = 0; i < count; i++) {
@@ -1560,30 +1596,36 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
+    if (MAC[1 + len_a] == 0x43) {
+        int svc = MAC[2 + len_a];
+        int reserved = MAC[3 + len_a];
+        int channelt = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
+        int channelr = (MAC[6 + len_a] << 8) | MAC[7 + len_a];
+        int group = (MAC[8 + len_a] << 8) | MAC[9 + len_a];
+        p25p2_vpdu_handle_group_explicit_grant(&mac_res, opts, state, svc, reserved, channelt, channelr, group,
+                                               /*source*/ 0, "Group Voice Channel Grant Update - Explicit",
+                                               /*set_packet_bit*/ 0, /*store_slot_svc*/ 0);
+    }
+
+    if (MAC[1 + len_a] == 0xC0) {
+        int svc = MAC[2 + len_a];
+        int channelt = (MAC[3 + len_a] << 8) | MAC[4 + len_a];
+        int channelr = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
+        int group = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
+        int source = (MAC[9 + len_a] << 16) | (MAC[10 + len_a] << 8) | MAC[11 + len_a];
+        p25p2_vpdu_handle_group_explicit_grant(&mac_res, opts, state, svc, /*reserved*/ -1, channelt, channelr, group,
+                                               source, "Group Voice Channel Grant - Explicit",
+                                               /*set_packet_bit*/ 1, /*store_slot_svc*/ 1);
+    }
+
     if (MAC[1 + len_a] == 0xC3) {
         int svc = MAC[2 + len_a];
         int channelt = (MAC[3 + len_a] << 8) | MAC[4 + len_a];
         int channelr = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
         int group = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
-        int slot_idx = state->currentslot & 1;
-        long int freq1 = 0;
-
-        DSD_FPRINTF(stderr, "\n");
-        p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
-        DSD_FPRINTF(stderr, " Group Voice Channel Grant Update - Explicit");
-        DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, channelt, channelr,
-                    group, group);
-        freq1 = process_channel_to_freq(opts, state, channelt);
-        if (p25p2_vpdu_channel_is_valid(channelr)) {
-            (void)process_channel_to_freq(opts, state, channelr);
-        }
-
-        p25p2_vpdu_print_group_label(state, (uint32_t)group);
-        if (p25p2_vpdu_can_tune(opts, state, freq1)) {
-            p25p2_mac_handle(&mac_res, opts, state, channelt, svc, group, /*src*/ 0, /*policy_encrypted*/ -1,
-                             /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
-        }
-        p25p2_vpdu_update_playback_if_match(opts, state, group, freq1);
+        p25p2_vpdu_handle_group_explicit_grant(&mac_res, opts, state, svc, /*reserved*/ -1, channelt, channelr, group,
+                                               /*source*/ 0, "Group Voice Channel Grant Update - Explicit",
+                                               /*set_packet_bit*/ 0, /*store_slot_svc*/ 0);
     }
 
     if (len_b < 0) {
@@ -3751,7 +3793,7 @@ p25p2_vpdu_iter_block_52(p25p2_vpdu_ctx* ctx) {
             k = 0; // TSBK offset
         }
         int lg = (MAC[2 + len_a + k] >> 7) & 0x1;
-        int gav = (MAC[2 + len_a + k] >> 5) & 0x3;
+        int gav = MAC[2 + len_a + k] & 0x3;
         int aga = (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
         int ga = (MAC[5 + len_a + k] << 8) | MAC[6 + len_a + k];
         int ta = (MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k];

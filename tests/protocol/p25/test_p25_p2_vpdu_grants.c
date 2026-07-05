@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -137,6 +138,42 @@ expect_contains(const char* tag, const char* text, const char* needle) {
     return 0;
 }
 
+static int g_group_grant_called = 0;
+static int g_group_grant_channel = -1;
+static int g_group_grant_svc = -1;
+static int g_group_grant_tg = -1;
+static int g_group_grant_src = -1;
+
+static void
+sm_on_group_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    (void)opts;
+    (void)state;
+    g_group_grant_called++;
+    g_group_grant_channel = channel;
+    g_group_grant_svc = svc_bits;
+    g_group_grant_tg = tg;
+    g_group_grant_src = src;
+}
+
+static void
+reset_group_grant_capture(void) {
+    g_group_grant_called = 0;
+    g_group_grant_channel = -1;
+    g_group_grant_svc = -1;
+    g_group_grant_tg = -1;
+    g_group_grant_src = -1;
+}
+
+static void
+seed_fdma_iden(dsd_state* state, int iden, int type, long base, int spac) {
+    state->p25_iden_fdma[iden].base_freq = base;
+    state->p25_iden_fdma[iden].chan_type = type;
+    state->p25_iden_fdma[iden].chan_spac = spac;
+    state->p25_iden_fdma[iden].trust = 2;
+    state->p25_iden_fdma[iden].populated = 1;
+    state->p25_chan_tdma_explicit[iden] = 1;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -254,6 +291,192 @@ main(void) {
         p25_test_invoke_mac_vpdu_channel_cache(mac, 24, &cfg, 0x100A, 0x100B, &freq_t, &freq_r);
         rc |= expect_eq_long("0xD6 CHAN-T cache", freq_t, 851125000);
         rc |= expect_eq_long("0xD6 CHAN-R cache", freq_r, 851137500);
+    }
+
+    // Case D2: Bridged P1 TSBK 0x03 uses synthetic opcode 0x43 and skips the reserved octet.
+    {
+        unsigned char mac[24];
+        DSD_MEMSET(mac, 0, sizeof mac);
+        mac[1] = 0x43;
+        mac[2] = 0x85; // service options
+        mac[3] = 0xAA; // reserved octet; must not become CHAN-T high byte
+        mac[4] = 0x10;
+        mac[5] = 0x0A; // CHAN-T 0x100A
+        mac[6] = 0x10;
+        mac[7] = 0x0B; // CHAN-R 0x100B
+        mac[8] = 0x34;
+        mac[9] = 0x56; // group
+        long vc = 0;
+        int tuned = 0;
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
+        p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
+        rc |= expect_true("0x43 tuned after reserved skip", tuned == 1);
+        rc |= expect_eq_long("0x43 vc", vc, 851125000);
+    }
+
+    // Case D3: 0x43 propagates SVC, CHAN-T, TG, source=0, and resolves CHAN-R.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        state.p25_cc_freq = cc;
+        seed_fdma_iden(&state, iden, type, base, spac);
+
+        MAC[1] = 0x43;
+        MAC[2] = 0x85;
+        MAC[3] = 0xAA;
+        MAC[4] = 0x10;
+        MAC[5] = 0x0A;
+        MAC[6] = 0x10;
+        MAC[7] = 0x0B;
+        MAC[8] = 0x34;
+        MAC[9] = 0x56;
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0x43 capture called", g_group_grant_called, 1);
+        rc |= expect_eq_long("0x43 capture channel", g_group_grant_channel, 0x100A);
+        rc |= expect_eq_long("0x43 capture svc", g_group_grant_svc, 0x85);
+        rc |= expect_eq_long("0x43 capture tg", g_group_grant_tg, 0x3456);
+        rc |= expect_eq_long("0x43 capture src", g_group_grant_src, 0);
+        rc |= expect_eq_long("0x43 CHAN-R cache", state.trunk_chan_map[0x100B], 851137500);
+        rc |= expect_contains("0x43 active channel", state.active_channel[0], "TG: 13398");
+    }
+
+    // Case D4: True MAC 0xC0 Group Voice Channel Grant Explicit propagates source and both channels.
+    {
+        unsigned char mac[24];
+        DSD_MEMSET(mac, 0, sizeof mac);
+        mac[1] = 0xC0;
+        mac[2] = 0x23; // service options
+        mac[3] = 0x10;
+        mac[4] = 0x0C; // CHAN-T 0x100C
+        mac[5] = 0x10;
+        mac[6] = 0x0D; // CHAN-R 0x100D
+        mac[7] = 0x22;
+        mac[8] = 0x22; // group
+        mac[9] = 0x01;
+        mac[10] = 0x02;
+        mac[11] = 0x03; // source
+        long vc = 0;
+        int tuned = 0;
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base,
+            .spac = spac,
+        };
+        p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
+        rc |= expect_true("0xC0 tuned", tuned == 1);
+        rc |= expect_eq_long("0xC0 vc", vc, 851150000);
+    }
+
+    // Case D5: 0xC0 captures SVC, CHAN-T, TG, source address, service-option state, and CHAN-R cache.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        state.p25_cc_freq = cc;
+        seed_fdma_iden(&state, iden, type, base, spac);
+
+        MAC[1] = 0xC0;
+        MAC[2] = 0x23;
+        MAC[3] = 0x10;
+        MAC[4] = 0x0C;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0D;
+        MAC[7] = 0x22;
+        MAC[8] = 0x22;
+        MAC[9] = 0x01;
+        MAC[10] = 0x02;
+        MAC[11] = 0x03;
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0xC0 capture called", g_group_grant_called, 1);
+        rc |= expect_eq_long("0xC0 capture channel", g_group_grant_channel, 0x100C);
+        rc |= expect_eq_long("0xC0 capture svc", g_group_grant_svc, 0x23);
+        rc |= expect_eq_long("0xC0 capture tg", g_group_grant_tg, 0x2222);
+        rc |= expect_eq_long("0xC0 capture src", g_group_grant_src, 0x010203);
+        rc |= expect_eq_long("0xC0 CHAN-R cache", state.trunk_chan_map[0x100D], 851162500);
+        rc |= expect_eq_long("0xC0 stored service options", state.dmr_so, 0x23);
+        rc |= expect_eq_long("0xC0 service options valid", state.p25_service_options_valid[0], 1);
+    }
+
+    // Case D6: Group Affiliation Response 0x68 accepts on low GAV bits, not status bits 5-6.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+
+        MAC[1] = 0x68;
+        MAC[3] = 0x20; // old parser saw GAV=1 from bits 5-6; correct low bits are accepted (0)
+        MAC[4] = 0x12;
+        MAC[5] = 0x34; // AGA
+        MAC[6] = 0x45;
+        MAC[7] = 0x67; // GA
+        MAC[8] = 0x01;
+        MAC[9] = 0x02;
+        MAC[10] = 0x03; // TA
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x68 accepted aff count", state.p25_aff_count, 1);
+        rc |= expect_eq_long("0x68 accepted ga count", state.p25_ga_count, 1);
+        rc |= expect_eq_long("0x68 accepted TA", state.p25_aff_rid[0], 0x010203);
+        rc |= expect_eq_long("0x68 accepted GA rid", state.p25_ga_rid[0], 0x010203);
+        rc |= expect_eq_long("0x68 accepted GA tg", state.p25_ga_tg[0], 0x4567);
+    }
+
+    // Case D7: Group Affiliation Response 0x68 rejects when low GAV bits are non-zero.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+
+        MAC[1] = 0x68;
+        MAC[3] = 0x82; // LG set, low GAV=2 rejected; old parser saw bits 5-6 as accepted (0)
+        MAC[4] = 0x12;
+        MAC[5] = 0x34;
+        MAC[6] = 0x45;
+        MAC[7] = 0x67;
+        MAC[8] = 0x01;
+        MAC[9] = 0x02;
+        MAC[10] = 0x03;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x68 rejected aff count", state.p25_aff_count, 0);
+        rc |= expect_eq_long("0x68 rejected ga count", state.p25_ga_count, 0);
     }
 
     // Case E: a grant decoded through MAC VPDU must honor failed-VC retune backoff.
