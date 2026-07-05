@@ -46,18 +46,18 @@ vendor_len_for(uint8_t mfid, uint8_t opcode) {
     if (mfid == 0x90u) {
         switch (opcode) {
             case 0x80: return 8;
-            case 0x81: return 17;
             case 0x83: return 7;
-            case 0x84: return 11;
-            case 0x89: return 17;
-            case 0x91: return 17;
+            case 0x81:
+            case 0x89:
+            case 0x91:
             case 0x95: return 17;
             case 0xA0: return 16;
-            case 0xA3: return 11;
-            case 0xA4: return 13;
-            case 0xA5: return 11;
-            case 0xA6: return 11;
+            case 0x84:
+            case 0xA3:
+            case 0xA5:
+            case 0xA6:
             case 0xA7: return 11;
+            case 0xA4: return 13;
             case 0xA8: return 10;
             default: return 0;
         }
