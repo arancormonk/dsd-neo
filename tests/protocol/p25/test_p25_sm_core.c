@@ -21,7 +21,6 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -187,12 +186,11 @@ main(void) {
     assert(s4.payload_algid == 0x84);
     assert(s4.payload_keyid == 0x1234);
     assert(s4.payload_miP == 0x1122334455667788ULL);
-    // re-emit should no-op
+    // re-emit should not create a runtime policy block
     p25_emit_enc_lockout_once(&o4, &s4, 0, 1234, 0x40);
     dsd_tg_policy_lookup lockout_lookup;
     assert(dsd_tg_policy_lookup_id(&s4, 1234U, &lockout_lookup) == 0);
-    assert(lockout_lookup.match == DSD_TG_POLICY_MATCH_EXACT);
-    assert(strcmp(lockout_lookup.entry.mode, "DE") == 0);
+    assert(lockout_lookup.match == DSD_TG_POLICY_MATCH_NONE);
 
     // 4) NAC mismatch uses the latched expected CC NAC, not mutable state->p2_cc.
     static dsd_opts o5;
