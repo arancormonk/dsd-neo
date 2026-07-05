@@ -451,6 +451,35 @@ test_secondary_cc_deferred_resolution(void) {
 }
 
 static void
+test_secondary_cc_deferred_resolution_notes_site(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(opts != NULL);
+    assert(st != NULL);
+
+    assert(p25_announce_secondary_cc_channel(opts, st, 0x2001, 1, 2, 0x33) == 0);
+    assert(st->p2_rfssid == 1);
+    assert(st->p2_siteid == 2);
+    assert(st->p25_secondary_cc_count == 0);
+    assert(st->p25_pending_announcement_count == 1);
+
+    assert(p25_announce_secondary_cc_channel(opts, st, 0x2002, 9, 9, 0x44) == 0);
+    assert(st->p25_pending_announcement_count == 1);
+
+    seed_fdma_iden(st, 2, 852000000L, 100);
+    p25_resolve_pending_announcements(opts, st);
+    assert(st->p25_pending_announcement_count == 0);
+    assert(st->p25_secondary_cc_count == 1);
+    assert(st->p25_secondary_cc_entries[0].freq == 852012500L);
+    assert(st->p25_secondary_cc_entries[0].rfss == 1);
+    assert(st->p25_secondary_cc_entries[0].site == 2);
+
+    dsd_state_ext_free_all(st);
+    free(opts);
+    free(st);
+}
+
+static void
 test_pending_neighbor_merge_preserves_metadata(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* st = calloc(1, sizeof(*st));
@@ -572,6 +601,7 @@ main(void) {
     test_keepalive_refreshes_timestamp();
     test_secondary_cc_tracking_and_dedupe();
     test_secondary_cc_deferred_resolution();
+    test_secondary_cc_deferred_resolution_notes_site();
     test_pending_neighbor_merge_preserves_metadata();
     test_secondary_cc_foreign_site_rejected();
     test_service_cfva_and_vu_helpers();

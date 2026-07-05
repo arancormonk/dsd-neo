@@ -266,6 +266,8 @@ p25_handle_mbt_rfss_status_broadcast(dsd_opts* opts, dsd_state* state, const uin
 
 static void DSD_ATTR_USED
 p25_handle_mbt_adjacent_status_broadcast(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
+    int lra = mpdu_byte[3];
+    int cfva = mpdu_byte[4] >> 4;
     int lsysid = ((mpdu_byte[4] & 0xF) << 8) | mpdu_byte[5];
     int rfssid = mpdu_byte[8];
     int siteid = mpdu_byte[9];
@@ -273,13 +275,22 @@ p25_handle_mbt_adjacent_status_broadcast(const dsd_opts* opts, dsd_state* state,
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Adjacent Status Broadcast - Extended\n");
-    DSD_FPRINTF(stderr, "  SYSID [%03X] RFSS[%03d] SITE [%03d] CHAN-T [%04X]\n  ", lsysid, rfssid, siteid, channelt);
+    DSD_FPRINTF(stderr, "  LRA [%02X] SYSID [%03X] RFSS[%03d] SITE [%03d] CHAN-T [%04X]\n  ", lra, lsysid, rfssid,
+                siteid, channelt);
+    char cfva_buf[96];
+    if (p25_format_adjacent_cfva((uint8_t)cfva, cfva_buf, sizeof cfva_buf) > 0U) {
+        DSD_FPRINTF(stderr, "%s", cfva_buf);
+    }
 
     const p25_neighbor_channel_announcement_t announcement = {
         .channel = (uint16_t)channelt,
         .sysid = (uint16_t)lsysid,
         .rfss = (uint8_t)rfssid,
         .site = (uint8_t)siteid,
+        .lra = (uint8_t)lra,
+        .cfva = (uint8_t)cfva,
+        .lra_valid = 1U,
+        .cfva_valid = 1U,
     };
     (void)p25_announce_neighbor_channel_ex(opts, state, &announcement);
 }

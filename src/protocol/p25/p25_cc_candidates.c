@@ -835,6 +835,7 @@ p25_announce_secondary_cc_channel(dsd_opts* opts, dsd_state* state, uint16_t cha
     if (!p25_sccb_matches_current_site(state, rfss, site)) {
         return 0;
     }
+    p25_note_sccb_site(state, rfss, site);
 
     long freq = process_channel_to_freq(opts, state, channel);
     if (freq > 0) {

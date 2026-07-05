@@ -334,10 +334,10 @@ main(void) {
         rc |= expect_eq_long("adj nb sysid", nb_sysid[0], 0x123);
         rc |= expect_eq_long("adj nb rfss", nb_rfss[0], 4);
         rc |= expect_eq_long("adj nb site", nb_site[0], 5);
-        rc |= expect_eq_long("adj nb cfva", nb_cfva[0], 0);
-        rc |= expect_eq_long("adj nb lra invalid", nb_lra_valid[0], 0);
-        rc |= expect_eq_long("adj nb lra zero", nb_lra[0], 0);
-        rc |= expect_eq_long("adj nb cfva invalid", nb_cfva_valid[0], 0);
+        rc |= expect_eq_long("adj nb cfva", nb_cfva[0], 0x02);
+        rc |= expect_eq_long("adj nb lra valid", nb_lra_valid[0], 1);
+        rc |= expect_eq_long("adj nb lra", nb_lra[0], 0x02);
+        rc |= expect_eq_long("adj nb cfva valid", nb_cfva_valid[0], 1);
         (void)want2;
     }
 
