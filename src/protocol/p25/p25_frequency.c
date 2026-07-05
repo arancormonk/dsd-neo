@@ -435,6 +435,9 @@ p25_reset_iden_tables(dsd_state* state) {
 
     state->p25_pending_announcement_count = 0;
     DSD_MEMSET(state->p25_pending_announcements, 0, sizeof(state->p25_pending_announcements));
+
+    state->p25_secondary_cc_count = 0;
+    DSD_MEMSET(state->p25_secondary_cc_entries, 0, sizeof(state->p25_secondary_cc_entries));
 }
 
 int

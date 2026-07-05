@@ -209,6 +209,34 @@ p25_nb_has_site_identity(const p25_neighbor_channel_announcement_t* announcement
     return announcement && (announcement->sysid != 0 || announcement->rfss != 0 || announcement->site != 0);
 }
 
+static int
+p25_nb_sysid_matches(uint16_t entry_sysid, uint16_t announcement_sysid) {
+    return entry_sysid == announcement_sysid || entry_sysid == 0 || announcement_sysid == 0;
+}
+
+static int
+p25_nb_same_site_identity(const p25_nb_entry_t* entry, const p25_neighbor_channel_announcement_t* announcement) {
+    if (!entry || !announcement) {
+        return 0;
+    }
+    if (entry->rfss == 0 || entry->site == 0 || announcement->rfss == 0 || announcement->site == 0) {
+        return entry->sysid == announcement->sysid && entry->rfss == announcement->rfss
+               && entry->site == announcement->site;
+    }
+    return entry->rfss == announcement->rfss && entry->site == announcement->site
+           && p25_nb_sysid_matches(entry->sysid, announcement->sysid);
+}
+
+static void
+p25_nb_enrich_unknown_identity(p25_nb_entry_t* entry, const p25_neighbor_channel_announcement_t* announcement) {
+    if (!entry || !announcement) {
+        return;
+    }
+    if (entry->sysid == 0 && announcement->sysid != 0) {
+        entry->sysid = announcement->sysid;
+    }
+}
+
 static void
 p25_nb_apply_record_update(p25_nb_entry_t* entry, const p25_neighbor_record_update_t* update, int copy_identity,
                            time_t now) {
@@ -239,12 +267,12 @@ p25_nb_update_by_site(dsd_state* state, const p25_neighbor_record_update_t* upda
     const p25_neighbor_channel_announcement_t* announcement = &update->announcement;
     for (int i = 0; i < state->p25_nb_count && i < P25_NB_MAX; i++) {
         p25_nb_entry_t* entry = &state->p25_nb_entries[i];
-        if (entry->sysid == announcement->sysid && entry->rfss == announcement->rfss
-            && entry->site == announcement->site) {
+        if (p25_nb_same_site_identity(entry, announcement)) {
             if (announcement->wacn_valid && entry->wacn_valid && entry->wacn != p25_neighbor_wacn20(announcement)) {
                 continue;
             }
             p25_nb_apply_record_update(entry, update, 0, now);
+            p25_nb_enrich_unknown_identity(entry, announcement);
             return 1;
         }
     }

@@ -85,6 +85,46 @@ test_same_frequency_distinct_sites_remain_separate(void) {
     free(st);
 }
 
+/* A zero SysID is unknown and can be enriched by a later matching site update. */
+static void
+test_unknown_sysid_same_site_merges(void) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+
+    p25_nb_add_ex(st, 852675000, 0, 1, 4, 0x02);
+    p25_nb_add_ex(st, 852675000, 0x123, 1, 4, 0x03);
+
+    assert(st->p25_nb_count == 1);
+    assert(st->p25_nb_entries[0].freq == 852675000);
+    assert(st->p25_nb_entries[0].sysid == 0x123);
+    assert(st->p25_nb_entries[0].rfss == 1);
+    assert(st->p25_nb_entries[0].site == 4);
+    assert(st->p25_nb_entries[0].cfva == 0x03);
+
+    p25_nb_add_ex(st, 852675000, 0, 1, 4, 0x0B);
+    assert(st->p25_nb_count == 1);
+    assert(st->p25_nb_entries[0].sysid == 0x123);
+    assert(st->p25_nb_entries[0].cfva == 0x0B);
+
+    free(st);
+}
+
+/* Non-zero SysID mismatches remain distinct even when RFSS/site/frequency match. */
+static void
+test_distinct_known_sysids_remain_separate(void) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    assert(st != NULL);
+
+    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x02);
+    p25_nb_add_ex(st, 852675000, 0x200, 1, 4, 0x03);
+
+    assert(st->p25_nb_count == 2);
+    assert(st->p25_nb_entries[0].sysid == 0x100);
+    assert(st->p25_nb_entries[1].sysid == 0x200);
+
+    free(st);
+}
+
 /* --- Self-entry rejection ------------------------------------------------- */
 
 /* Current CC frequency must be rejected from the neighbor table. */
@@ -516,6 +556,8 @@ main(void) {
     test_metadata_zero_fill_preserves();
     test_same_site_refreshes_metadata();
     test_same_frequency_distinct_sites_remain_separate();
+    test_unknown_sysid_same_site_merges();
+    test_distinct_known_sysids_remain_separate();
     test_self_entry_rejected();
     test_cc_rotation_accepts_old();
     test_nsb_cc_update_rejects_different_freq_while_voice_tuned();
