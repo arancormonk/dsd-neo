@@ -203,8 +203,11 @@ p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned l
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_store_site_lra(dsd_state* state, uint8_t lra) {
-    (void)state;
-    (void)lra;
+    if (!state) {
+        return;
+    }
+    state->p25_site_lra = lra;
+    state->p25_site_lra_valid = 1;
 }
 
 void
@@ -615,6 +618,8 @@ test_network_status_state_policy(void) {
     state.p25_cc_is_tdma = 1;
     state.p2_wacn = 0x11111;
     state.p2_sysid = 0x222;
+    state.p25_site_lra = 0x77;
+    state.p25_site_lra_valid = 1;
     reset_calls();
     g_channel_freq = 851012500;
     tsbk_handle_network_status(&opts, &state, tsbk);
@@ -623,6 +628,8 @@ test_network_status_state_policy(void) {
     rc |= expect_int("voice tuned preserves tdma marker", state.p25_cc_is_tdma, 1);
     rc |= expect_long("voice tuned preserves wacn", state.p2_wacn, 0x11111);
     rc |= expect_int("voice tuned preserves sysid", state.p2_sysid, 0x222);
+    rc |= expect_int("voice tuned preserves lra", state.p25_site_lra, 0x77);
+    rc |= expect_int("voice tuned preserves lra valid", state.p25_site_lra_valid, 1);
     rc |= expect_int("voice tuned skips neighbor", g_neighbor_update_count, 0);
     rc |= expect_int("voice tuned skips iden confirmation", g_confirm_idens_count, 0);
 

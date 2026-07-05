@@ -2733,7 +2733,7 @@ p25p2_vpdu_iter_block_34(p25p2_vpdu_ctx* ctx) {
         int channel2 = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
         int sysclass2 = MAC[9 + len_a];
         int channel2_valid =
-            bridged_p1 ? (channel2 != channel1 && channel2 != 0xFFFF) : (channel2 != channel1 && sysclass2 != 0);
+            (channel2 != 0 && channel2 != channel1 && (bridged_p1 ? channel2 != 0xFFFF : sysclass2 != 0));
         long int freq1 = 0;
         long int freq2 = 0;
         // state->p2_is_lcch == 1
@@ -2742,7 +2742,9 @@ p25p2_vpdu_iter_block_34(p25p2_vpdu_ctx* ctx) {
                     siteid, channel1, sysclass1, channel2, sysclass2);
 
         freq1 = process_channel_to_freq(opts, state, channel1);
-        freq2 = process_channel_to_freq(opts, state, channel2);
+        if (channel2_valid) {
+            freq2 = process_channel_to_freq(opts, state, channel2);
+        }
         (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channel1, (uint8_t)rfssid, (uint8_t)siteid,
                                                 (uint8_t)sysclass1);
         if (channel2_valid) {
@@ -3450,13 +3452,16 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "  LRA [%02X] WACN [%05X] SYSID [%03X] NAC [%03X] CHAN-T [%04X]", lra, lwacn, lsysid,
                     lcolorcode, channel);
         long int cc_freq = process_channel_to_freq(opts, state, channel);
-        p25_store_site_lra(state, (uint8_t)lra);
         p25p2_vpdu_note_nsb_system_tdma(state);
         int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
+        const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
+        if (cc_metadata_allowed) {
+            p25_store_site_lra(state, (uint8_t)lra);
+        }
         if (accepted_cc) {
             p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 1);
         } else {
-            if (!p25_cc_update_is_voice_tuned(opts)) {
+            if (cc_metadata_allowed) {
                 p25p2_vpdu_store_nsb_identity_metadata(state, lwacn, lsysid, lcolorcode);
             }
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
@@ -3501,13 +3506,16 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
                     lsysid, lcolorcode, channelt, channelr);
         long int nf1 = process_channel_to_freq(opts, state, channelt);
         (void)process_channel_to_freq(opts, state, channelr);
-        p25_store_site_lra(state, (uint8_t)lra);
         p25p2_vpdu_note_nsb_system_tdma(state);
         int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, nf1);
+        const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
+        if (cc_metadata_allowed) {
+            p25_store_site_lra(state, (uint8_t)lra);
+        }
         if (accepted_cc) {
             p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0);
         } else {
-            if (!p25_cc_update_is_voice_tuned(opts)) {
+            if (cc_metadata_allowed) {
                 p25p2_vpdu_store_nsb_identity_metadata(state, lwacn, lsysid, lcolorcode);
             }
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);

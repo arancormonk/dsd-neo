@@ -393,10 +393,10 @@ tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_
         DSD_FPRINTF(stderr, " [%s]", callsign);
     }
     long int cc_freq = process_channel_to_freq(opts, state, channel);
-    p25_store_site_lra(state, (uint8_t)lra);
     int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
     const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
     if (cc_metadata_allowed) {
+        p25_store_site_lra(state, (uint8_t)lra);
         state->p25_cc_is_tdma = 0;
     }
     if (cc_metadata_allowed && state->p2_hardset == 0) {

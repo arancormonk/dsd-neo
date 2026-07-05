@@ -624,6 +624,43 @@ main(void) {
         rc |= expect_eq_long("p2 accepted nsb confirms iden", state.p25_iden_fdma[iden].trust, 2);
     }
 
+    // Case M2: rejected voice-followed abbreviated NSB must not overwrite
+    // current-site LRA metadata from a different control channel.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_is_tuned = 1;
+        state.p25_cc_freq = 851000000;
+        state.trunk_cc_freq = 851000000;
+        state.p25_site_lra = 0x44;
+        state.p25_site_lra_valid = 1;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].populated = 1;
+
+        MAC[1] = 0x7B;
+        MAC[2] = 0x01;
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1;
+        MAC[6] = 0x23;
+        MAC[7] = 0x10;
+        MAC[8] = 0x0A;
+        MAC[10] = 0x00;
+        MAC[11] = 0x55;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("p2 rejected voice nsb preserves p25 cc", state.p25_cc_freq, 851000000);
+        rc |= expect_eq_long("p2 rejected voice nsb preserves lra", state.p25_site_lra, 0x44);
+        rc |= expect_eq_long("p2 rejected voice nsb preserves lra valid", state.p25_site_lra_valid, 1);
+    }
+
     // Case N: accepted P2 extended NSB resolves both T/R channels and updates
     // TDMA CC identity through the same state-machine notification path.
     {
@@ -662,6 +699,45 @@ main(void) {
         rc |= expect_eq_long("p2 accepted nsb-ext wacn", (long)state.p2_wacn, 0xABCDE);
         rc |= expect_eq_long("p2 accepted nsb-ext sysid", (long)state.p2_sysid, 0x123);
         rc |= expect_eq_long("p2 accepted nsb-ext nac", (long)state.p2_cc, 0x056);
+    }
+
+    // Case N2: rejected voice-followed extended NSB must not overwrite
+    // current-site LRA metadata from a different control channel.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_is_tuned = 1;
+        state.p25_cc_freq = 851000000;
+        state.trunk_cc_freq = 851000000;
+        state.p25_site_lra = 0x45;
+        state.p25_site_lra_valid = 1;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].populated = 1;
+
+        MAC[1] = 0xFB;
+        MAC[2] = 0x02;
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1;
+        MAC[6] = 0x23;
+        MAC[7] = 0x10;
+        MAC[8] = 0x0A;
+        MAC[9] = 0x10;
+        MAC[10] = 0x0B;
+        MAC[12] = 0x00;
+        MAC[13] = 0x56;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("p2 rejected voice nsb-ext preserves p25 cc", state.p25_cc_freq, 851000000);
+        rc |= expect_eq_long("p2 rejected voice nsb-ext preserves lra", state.p25_site_lra, 0x45);
+        rc |= expect_eq_long("p2 rejected voice nsb-ext preserves lra valid", state.p25_site_lra_valid, 1);
     }
 
     // Case O: encrypted explicit multi-grants should publish channel state but
