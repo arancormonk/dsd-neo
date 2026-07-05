@@ -22,6 +22,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -135,6 +136,30 @@ expect_contains(const char* tag, const char* text, const char* needle) {
         DSD_FPRINTF(stderr, "%s: '%s' did not contain '%s'\n", tag, text ? text : "(null)", needle ? needle : "(null)");
         return 1;
     }
+    return 0;
+}
+
+static int
+expect_not_contains(const char* tag, const char* text, const char* needle) {
+    if (text != NULL && needle != NULL && strstr(text, needle) != NULL) {
+        DSD_FPRINTF(stderr, "%s: '%s' unexpectedly contained '%s'\n", tag, text, needle);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+read_capture_file(const char* path, char* out, size_t out_sz) {
+    if (!path || !out || out_sz == 0) {
+        return -1;
+    }
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        return -1;
+    }
+    size_t n = fread(out, 1, out_sz - 1, f);
+    out[n] = '\0';
+    fclose(f);
     return 0;
 }
 
@@ -695,6 +720,55 @@ main(void) {
         process_MAC_VPDU(&opts, &state, 0, MAC);
         rc |= expect_eq_long("0x68 rejected aff count", state.p25_aff_count, 0);
         rc |= expect_eq_long("0x68 rejected ga count", state.p25_ga_count, 0);
+    }
+
+    // Case D8: Location Registration Response 0x6B accepts and tracks TA -> group.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+
+        MAC[0] = 0x07; // bridged P1 TSBK layout
+        MAC[1] = 0x6B;
+        MAC[2] = 0x00; // RV=0 accepted
+        MAC[3] = 0x45;
+        MAC[4] = 0x67; // group
+        MAC[5] = 0x02; // RFSS
+        MAC[6] = 0x03; // site
+        MAC[7] = 0x0A;
+        MAC[8] = 0x0B;
+        MAC[9] = 0x0C; // target address
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x6B accepted aff count", state.p25_aff_count, 1);
+        rc |= expect_eq_long("0x6B accepted ga count", state.p25_ga_count, 1);
+        rc |= expect_eq_long("0x6B accepted TA", state.p25_aff_rid[0], 0x0A0B0C);
+        rc |= expect_eq_long("0x6B accepted GA rid", state.p25_ga_rid[0], 0x0A0B0C);
+        rc |= expect_eq_long("0x6B accepted GA tg", state.p25_ga_tg[0], 0x4567);
+    }
+
+    // Case D9: Location Registration Response 0x6B rejects do not track affiliation.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+
+        MAC[0] = 0x07;
+        MAC[1] = 0x6B;
+        MAC[2] = 0x02; // RV=2 rejected
+        MAC[3] = 0x45;
+        MAC[4] = 0x67;
+        MAC[7] = 0x0A;
+        MAC[8] = 0x0B;
+        MAC[9] = 0x0C;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x6B rejected aff count", state.p25_aff_count, 0);
+        rc |= expect_eq_long("0x6B rejected ga count", state.p25_ga_count, 0);
     }
 
     // Case E: a grant decoded through MAC VPDU must honor failed-VC retune backoff.
@@ -1351,6 +1425,63 @@ main(void) {
         rc |= expect_contains("0x05 encrypted triple active group1", state.active_channel[0], "TG: 4660");
         rc |= expect_contains("0x05 encrypted triple active group2", state.active_channel[0], "TG: 22136");
         rc |= expect_contains("0x05 encrypted triple active group3", state.active_channel[0], "TG: 39612");
+    }
+
+    // Case Q2: standard TDMA 0x05 with service option 0x90 is still a grant update, not MFID90 BSI.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x05;
+        MAC[2] = 0x90; // service options, not a vendor MFID
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[5] = 0x12;
+        MAC[6] = 0x34;
+        MAC[7] = 0x00;
+        MAC[8] = 0x10;
+        MAC[9] = 0x0B;
+        MAC[10] = 0x56;
+        MAC[11] = 0x78;
+        MAC[12] = 0x00;
+        MAC[13] = 0x10;
+        MAC[14] = 0x0C;
+        MAC[15] = 0x9A;
+        MAC[16] = 0xBC;
+
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "p25_p2_0x05_not_bsi") != 0) {
+            return 100;
+        }
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        if (dsd_test_capture_stderr_end(&cap) != 0) {
+            return 101;
+        }
+
+        char out[4096];
+        if (read_capture_file(cap.path, out, sizeof out) != 0) {
+            return 102;
+        }
+        (void)remove(cap.path);
+
+        rc |=
+            expect_contains("0x05 output is grant update", out, "Group Voice Channel Grant Update Multiple - Implicit");
+        rc |= expect_not_contains("0x05 output is not BSI", out, "System Broadcast (BSI)");
+        rc |= expect_contains("0x05 svc 0x90 active group1", state.active_channel[0], "TG: 4660");
     }
 
     // Case R: telephone interconnect grants carry service state and tune like

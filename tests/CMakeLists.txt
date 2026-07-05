@@ -4237,8 +4237,9 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/p25
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
-target_link_libraries(dsd-neo_test_p25_p2_vpdu_grants PRIVATE dsd-neo_proto_p25)
+target_link_libraries(dsd-neo_test_p25_p2_vpdu_grants PRIVATE dsd-neo_proto_p25 dsd-neo_test_support)
 add_test(NAME P25_P2_VPDU_GRANTS COMMAND dsd-neo_test_p25_p2_vpdu_grants)
 
 add_executable(

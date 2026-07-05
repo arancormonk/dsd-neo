@@ -347,6 +347,82 @@ main(void) {
         rc |= expect_eq_int("mbt 0x28 rejected ga count", state.p25_ga_count, 0);
     }
 
+    // AMBTC Unit Registration Response (0x2C): accepted response tracks the registered local RID.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        uint8_t reg[48];
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(reg, 0, sizeof reg);
+
+        state.p25_cc_freq = 851000000;
+        state.trunk_cc_freq = 851000000;
+        state.p2_wacn = 0x11111;
+        state.p2_sysid = 0x222;
+
+        reg[0] = 0x17; // ALT MBT only
+        reg[2] = 0x00; // MFID
+        reg[3] = 0x01;
+        reg[4] = 0x23;
+        reg[5] = 0x45; // local source/WUID
+        reg[6] = 0x01;
+        reg[7] = 0x2C; // Unit Registration Response
+        reg[8] = 0xAB;
+        reg[9] = 0xCD;
+        reg[12] = 0xE1; // WACN low nibble + SYSID high nibble
+        reg[13] = 0x23;
+        reg[14] = 0x56;
+        reg[15] = 0x78;
+        reg[16] = 0x9A; // fully qualified source ID
+        reg[17] = 0x00; // reserved=0, RV=0 accepted
+
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_unit_reg_rsp") != 0) {
+            return 102;
+        }
+        p25_decode_pdu_trunking(&opts, &state, reg);
+        dsd_test_capture_stderr_end(&cap);
+
+        char out[2048];
+        if (read_capture_file(cap.path, out, sizeof out) != 0) {
+            return 103;
+        }
+
+        rc |= expect_eq_int("mbt 0x2C aff count", state.p25_aff_count, 1);
+        rc |= expect_eq_long("mbt 0x2C local source", state.p25_aff_rid[0], 0x012345);
+        rc |= expect_eq_long("mbt 0x2C preserves p25 cc", state.p25_cc_freq, 851000000);
+        rc |= expect_eq_long("mbt 0x2C preserves trunk cc", state.trunk_cc_freq, 851000000);
+        rc |= expect_eq_long("mbt 0x2C preserves wacn", (long)state.p2_wacn, 0x11111);
+        rc |= expect_eq_int("mbt 0x2C preserves sysid", state.p2_sysid, 0x222);
+        rc |= expect_contains_text("mbt 0x2C WACN/SYSID", out, "WACN [ABCDE] SYSID [123]");
+        rc |= expect_contains_text("mbt 0x2C SRC_ID", out, "SRC_ID [56789A]");
+        rc |= expect_contains_text("mbt 0x2C SRC", out, "SRC [74565]");
+        rc |= expect_contains_text("mbt 0x2C response", out, "REG_ACCEPT");
+    }
+
+    // AMBTC Unit Registration Response (0x2C): rejected response does not track affiliation.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        uint8_t reg[48];
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(reg, 0, sizeof reg);
+
+        reg[0] = 0x17;
+        reg[3] = 0x01;
+        reg[4] = 0x23;
+        reg[5] = 0x45;
+        reg[6] = 0x01;
+        reg[7] = 0x2C;
+        reg[17] = 0x02; // RV=2 denied
+
+        p25_decode_pdu_trunking(&opts, &state, reg);
+        rc |= expect_eq_int("mbt 0x2C rejected aff count", state.p25_aff_count, 0);
+        rc |= expect_eq_int("mbt 0x2C rejected ga count", state.p25_ga_count, 0);
+    }
+
     return rc;
 }
 

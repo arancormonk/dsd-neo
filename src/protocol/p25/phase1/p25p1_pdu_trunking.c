@@ -576,6 +576,34 @@ p25_handle_mbt_group_affiliation_response(dsd_state* state, const uint8_t* mpdu_
 }
 
 static void DSD_ATTR_USED
+p25_handle_mbt_unit_registration_response(dsd_state* state, const uint8_t* mpdu_byte) {
+    uint32_t src = ((uint32_t)mpdu_byte[3] << 16) | ((uint32_t)mpdu_byte[4] << 8) | (uint32_t)mpdu_byte[5];
+    int mfid = mpdu_byte[2];
+    int wacn = (mpdu_byte[8] << 12) | (mpdu_byte[9] << 4) | ((mpdu_byte[12] & 0xF0) >> 4);
+    int sysid = ((mpdu_byte[12] & 0x0F) << 8) | mpdu_byte[13];
+    uint32_t sid = ((uint32_t)mpdu_byte[14] << 16) | ((uint32_t)mpdu_byte[15] << 8) | (uint32_t)mpdu_byte[16];
+    int res = (mpdu_byte[17] >> 2) & 0x3F;
+    int rv = mpdu_byte[17] & 0x03;
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Unit Registration Response MBT - Extended");
+    DSD_FPRINTF(stderr, "\n  MFID [%02X] WACN [%05X] SYSID [%03X] SRC_ID [%06X] SRC [%u]", mfid, wacn, sysid, sid, src);
+    if (res != 0) {
+        DSD_FPRINTF(stderr, " RES [%02X]", res);
+    }
+    if (rv == 0) {
+        DSD_FPRINTF(stderr, " REG_ACCEPT");
+        p25_aff_register(state, src);
+    } else if (rv == 1) {
+        DSD_FPRINTF(stderr, " REG_FAIL");
+    } else if (rv == 2) {
+        DSD_FPRINTF(stderr, " REG_DENY");
+    } else {
+        DSD_FPRINTF(stderr, " REG_REFUSED");
+    }
+}
+
+static void DSD_ATTR_USED
 p25_handle_mbt_mfid90_unknown(const uint8_t* mpdu_byte, int blks) {
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n MFID 90 (Moto); Opcode: %02X; ", mpdu_byte[0] & 0x3F);
@@ -631,6 +659,14 @@ p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* 
             p25_handle_mbt_group_affiliation_response(state, mpdu_byte);
         } else {
             DSD_FPRINTF(stderr, " - group affiliation response format %02X not handled", fields->fmt);
+        }
+        return 1;
+    }
+    if (fields->opcode == 0x2C) {
+        if (fields->fmt == 0x17) {
+            p25_handle_mbt_unit_registration_response(state, mpdu_byte);
+        } else {
+            DSD_FPRINTF(stderr, " - unit registration response format %02X not handled", fields->fmt);
         }
         return 1;
     }

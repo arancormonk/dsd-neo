@@ -1992,45 +1992,6 @@ BLOCK_END:
 }
 
 static void
-p25p2_vpdu_iter_block_18(p25p2_vpdu_ctx* ctx) {
-    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
-    const dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
-    int type = ctx->type;
-    const unsigned long long int* MAC = ctx->mac;
-    struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
-    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
-    int len_b = ctx->len_b;
-    int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
-    int slot VPDU_MAYBE_UNUSED = ctx->slot;
-    int i = ctx->iter_idx;
-    UNUSED4(type, mac_res, len_c, slot);
-
-    if (MAC[1 + len_a] == 0x05 && MAC[2 + len_a] == 0x90) {
-        DSD_FPRINTF(stderr, "\n MFID90 (Moto) System Broadcast (BSI)\n");
-        DSD_FPRINTF(stderr, "  Data:");
-        for (int bi = 3; bi <= 9 && (bi + len_a) < 24; bi++) {
-            DSD_FPRINTF(stderr, " %02llX", MAC[bi + len_a]);
-        }
-        // Show computed callsign from current WACN/SysID if available
-        if (opts->frontend_display.show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
-            char callsign[7];
-            p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
-            DSD_FPRINTF(stderr, " [%s]", callsign);
-        }
-        DSD_FPRINTF(stderr, "\n");
-    }
-
-    if (len_b < 0) {
-        goto BLOCK_END;
-    }
-BLOCK_END:
-    VPDU_LABEL_UNUSED;
-
-    ctx->len_b = len_b;
-    ctx->iter_idx = i;
-}
-
-static void
 p25p2_vpdu_iter_block_19(p25p2_vpdu_ctx* ctx) {
     dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
@@ -3127,6 +3088,39 @@ p25p2_vpdu_iter_block_39(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
+    if (MAC[1 + len_a] == 0x6B) {
+        int k = 1; // vPDU offset
+        if (MAC[len_a] == 0x07) {
+            k = 0; // TSBK offset
+        }
+        int res = (MAC[2 + len_a + k] >> 2) & 0x3F;
+        int rv = MAC[2 + len_a + k] & 0x3;
+        int group = (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
+        int rfss = MAC[5 + len_a + k];
+        int site = MAC[6 + len_a + k];
+        int target = (MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k];
+
+        DSD_FPRINTF(stderr, "\n Location Registration Response");
+        DSD_FPRINTF(stderr, "\n  GROUP: %d RFSS: %03d SITE: %03d TARGET: %d", group, rfss, site, target);
+        if (res != 0) {
+            DSD_FPRINTF(stderr, " RES: %d;", res);
+        }
+        if (rv == 0) {
+            DSD_FPRINTF(stderr, " REG_ACCEPT;");
+            p25_aff_register(state, (uint32_t)target);
+            p25_ga_add(state, (uint32_t)target, (uint16_t)group);
+        }
+        if (rv == 1) {
+            DSD_FPRINTF(stderr, " REG_FAIL;");
+        }
+        if (rv == 2) {
+            DSD_FPRINTF(stderr, " REG_DENY;");
+        }
+        if (rv == 3) {
+            DSD_FPRINTF(stderr, " REG_REFUSED;");
+        }
+    }
+
     if (MAC[1 + len_a] == 0x6C) {
         /*
     			Unit Registration Response TSBK
@@ -4168,17 +4162,16 @@ p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_iter_block_05, p25p2_vpdu_iter_block_06, p25p2_vpdu_iter_block_07, p25p2_vpdu_iter_block_08,
         p25p2_vpdu_iter_block_09, p25p2_vpdu_iter_block_10, p25p2_vpdu_iter_block_11, p25p2_vpdu_iter_block_12,
         p25p2_vpdu_iter_block_13, p25p2_vpdu_iter_block_14, p25p2_vpdu_iter_block_15, p25p2_vpdu_iter_block_16,
-        p25p2_vpdu_iter_block_17, p25p2_vpdu_iter_block_18, p25p2_vpdu_iter_block_19, p25p2_vpdu_iter_block_20,
-        p25p2_vpdu_iter_block_21, p25p2_vpdu_iter_block_22, p25p2_vpdu_iter_block_23, p25p2_vpdu_iter_block_24,
-        p25p2_vpdu_iter_block_25, p25p2_vpdu_iter_block_26, p25p2_vpdu_iter_block_27, p25p2_vpdu_iter_block_28,
-        p25p2_vpdu_iter_block_29, p25p2_vpdu_iter_block_30, p25p2_vpdu_iter_block_31, p25p2_vpdu_iter_block_32,
-        p25p2_vpdu_iter_block_33, p25p2_vpdu_iter_block_34, p25p2_vpdu_iter_block_35, p25p2_vpdu_iter_block_36,
-        p25p2_vpdu_iter_block_37, p25p2_vpdu_iter_block_38, p25p2_vpdu_iter_block_39, p25p2_vpdu_iter_block_40,
-        p25p2_vpdu_iter_block_41, p25p2_vpdu_iter_block_42, p25p2_vpdu_iter_block_43, p25p2_vpdu_iter_block_44,
-        p25p2_vpdu_iter_block_45, p25p2_vpdu_iter_block_46, p25p2_vpdu_iter_block_47, p25p2_vpdu_iter_block_48,
-        p25p2_vpdu_iter_block_49, p25p2_vpdu_iter_block_50, p25p2_vpdu_iter_block_51, p25p2_vpdu_iter_block_52,
-        p25p2_vpdu_iter_block_53, p25p2_vpdu_iter_block_54, p25p2_vpdu_iter_block_55, p25p2_vpdu_iter_block_56,
-        p25p2_vpdu_iter_block_57,
+        p25p2_vpdu_iter_block_17, p25p2_vpdu_iter_block_19, p25p2_vpdu_iter_block_20, p25p2_vpdu_iter_block_21,
+        p25p2_vpdu_iter_block_22, p25p2_vpdu_iter_block_23, p25p2_vpdu_iter_block_24, p25p2_vpdu_iter_block_25,
+        p25p2_vpdu_iter_block_26, p25p2_vpdu_iter_block_27, p25p2_vpdu_iter_block_28, p25p2_vpdu_iter_block_29,
+        p25p2_vpdu_iter_block_30, p25p2_vpdu_iter_block_31, p25p2_vpdu_iter_block_32, p25p2_vpdu_iter_block_33,
+        p25p2_vpdu_iter_block_34, p25p2_vpdu_iter_block_35, p25p2_vpdu_iter_block_36, p25p2_vpdu_iter_block_37,
+        p25p2_vpdu_iter_block_38, p25p2_vpdu_iter_block_39, p25p2_vpdu_iter_block_40, p25p2_vpdu_iter_block_41,
+        p25p2_vpdu_iter_block_42, p25p2_vpdu_iter_block_43, p25p2_vpdu_iter_block_44, p25p2_vpdu_iter_block_45,
+        p25p2_vpdu_iter_block_46, p25p2_vpdu_iter_block_47, p25p2_vpdu_iter_block_48, p25p2_vpdu_iter_block_49,
+        p25p2_vpdu_iter_block_50, p25p2_vpdu_iter_block_51, p25p2_vpdu_iter_block_52, p25p2_vpdu_iter_block_53,
+        p25p2_vpdu_iter_block_54, p25p2_vpdu_iter_block_55, p25p2_vpdu_iter_block_56, p25p2_vpdu_iter_block_57,
     };
     const size_t handler_count = sizeof(handlers) / sizeof(handlers[0]);
     for (size_t h = 0; h < handler_count; h++) {
