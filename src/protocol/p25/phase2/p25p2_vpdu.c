@@ -4179,7 +4179,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_58(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
