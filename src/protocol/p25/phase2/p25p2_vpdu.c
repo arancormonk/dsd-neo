@@ -3466,14 +3466,12 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
         int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
         const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
         if (cc_metadata_allowed) {
+            p25p2_vpdu_store_nsb_identity_metadata(state, lwacn, lsysid, lcolorcode);
             p25_store_site_lra(state, (uint8_t)lra);
         }
         if (accepted_cc) {
             p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 1);
         } else {
-            if (cc_metadata_allowed) {
-                p25p2_vpdu_store_nsb_identity_metadata(state, lwacn, lsysid, lcolorcode);
-            }
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
         }
     }
@@ -3520,14 +3518,12 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
         int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, nf1);
         const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
         if (cc_metadata_allowed) {
+            p25p2_vpdu_store_nsb_identity_metadata(state, lwacn, lsysid, lcolorcode);
             p25_store_site_lra(state, (uint8_t)lra);
         }
         if (accepted_cc) {
             p25p2_vpdu_accept_nsb_cc(opts, state, lwacn, lsysid, lcolorcode, 0);
         } else {
-            if (cc_metadata_allowed) {
-                p25p2_vpdu_store_nsb_identity_metadata(state, lwacn, lsysid, lcolorcode);
-            }
             p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
         }
     }

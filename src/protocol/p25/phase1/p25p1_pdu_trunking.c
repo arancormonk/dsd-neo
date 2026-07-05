@@ -210,12 +210,12 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
     int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, ct_freq);
     const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
     if (cc_metadata_allowed) {
-        p25_store_site_lra(state, (uint8_t)lra);
-        state->p25_cc_is_tdma = 0;
-
         if (state->p2_hardset == 0) {
             (void)p25_update_system_identity(state, (unsigned long long)wacn, (unsigned long long)sysid);
         }
+
+        p25_store_site_lra(state, (uint8_t)lra);
+        state->p25_cc_is_tdma = 0;
     }
 
     if (accepted_cc) {

@@ -396,11 +396,12 @@ tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_
     int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
     const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
     if (cc_metadata_allowed) {
+        if (state->p2_hardset == 0) {
+            (void)p25_update_system_identity(state, (unsigned long long)wacn, (unsigned long long)sysid);
+        }
+
         p25_store_site_lra(state, (uint8_t)lra);
         state->p25_cc_is_tdma = 0;
-    }
-    if (cc_metadata_allowed && state->p2_hardset == 0) {
-        (void)p25_update_system_identity(state, (unsigned long long)wacn, (unsigned long long)sysid);
     }
     if (accepted_cc) {
         const long neigh[1] = {state->p25_cc_freq};
