@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -141,6 +142,27 @@ test_lockout_label_policy_lookup(void) {
     rc |= expect_int_eq("TGT DE mode locks", ui_is_locked_from_label(state, "Call TGT:456 slot 2"), 1);
     rc |= expect_int_eq("allow mode does not lock", ui_is_locked_from_label(state, "TG: 789"), 0);
     rc |= expect_int_eq("range-only match does not lock label", ui_is_locked_from_label(state, "TG: 1005"), 0);
+
+    const time_t now = time(NULL);
+    state->p25_enc_tg_cache_tg[0] = 21001U;
+    state->p25_enc_tg_cache_until[0] = now + 10;
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_NONE;
+    rc |= expect_int_eq("transient cache requires p25 sync",
+                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
+    state->synctype = DSD_SYNC_P25P1_POS;
+    rc |= expect_int_eq("transient enc cache locks active TG",
+                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 1);
+    rc |= expect_int_eq("transient enc cache does not mutate policy lock helper",
+                        ui_is_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
+    state->p25_enc_tg_cache_until[0] = now - 1;
+    rc |= expect_int_eq("expired transient enc cache does not lock",
+                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
+    state->p25_enc_tg_cache_until[0] = now + 10;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->lastsynctype = DSD_SYNC_NONE;
+    rc |= expect_int_eq("non-p25 transient enc cache does not lock",
+                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
 
     dsd_state_ext_free_all(state);
     free(state);
