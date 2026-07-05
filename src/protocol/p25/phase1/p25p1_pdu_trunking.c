@@ -591,6 +591,52 @@ p25_handle_mbt_unknown_mfid(const uint8_t* mpdu_byte, int blks, uint8_t mfid, ui
     DSD_FPRINTF(stderr, " %s", KNRM);
 }
 
+static int
+p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
+                               const p25p1_mbt_fields* fields) {
+    if (fields->opcode == 0x3B) {
+        p25_handle_mbt_net_sts_broadcast(opts, state, mpdu_byte);
+        return 1;
+    }
+    if (fields->opcode == 0x3A) {
+        p25_handle_mbt_rfss_status_broadcast(opts, state, mpdu_byte);
+        return 1;
+    }
+    if (fields->opcode == 0x3C) {
+        p25_handle_mbt_adjacent_status_broadcast(opts, state, mpdu_byte);
+        return 1;
+    }
+    if (fields->opcode == 0x3E) {
+        p25_handle_mbt_protection_parameter_broadcast(state, mpdu_byte);
+        return 1;
+    }
+    if (fields->opcode == 0x33) {
+        p25_handle_mbt_tdma_iden_foreign_system(mpdu_byte);
+        return 1;
+    }
+    if (fields->opcode == 0x0) {
+        p25_handle_mbt_group_voice_grant(opts, state, mpdu_byte);
+        return 1;
+    }
+    if (fields->opcode == 0x6) {
+        p25_handle_mbt_unit_to_unit_voice_grant(opts, state, mpdu_byte);
+        return 1;
+    }
+    if ((fields->opcode == 0x8 || fields->opcode == 0x9) && fields->mfid < 2) {
+        p25_handle_mbt_telephone_interconnect_grant(opts, state, mpdu_byte, fields->opcode);
+        return 1;
+    }
+    if (fields->opcode == 0x28) {
+        if (fields->fmt == 0x17) {
+            p25_handle_mbt_group_affiliation_response(state, mpdu_byte);
+        } else {
+            DSD_FPRINTF(stderr, " - group affiliation response format %02X not handled", fields->fmt);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 //trunking data delivered via PDU format
 void
 p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
@@ -604,29 +650,11 @@ p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_by
         return;
     }
 
-    if (fields.opcode == 0x3B) {
-        p25_handle_mbt_net_sts_broadcast(opts, state, mpdu_byte);
-    } else if (fields.opcode == 0x3A) {
-        p25_handle_mbt_rfss_status_broadcast(opts, state, mpdu_byte);
-    } else if (fields.opcode == 0x3C) {
-        p25_handle_mbt_adjacent_status_broadcast(opts, state, mpdu_byte);
-    } else if (fields.opcode == 0x3E) {
-        p25_handle_mbt_protection_parameter_broadcast(state, mpdu_byte);
-    } else if (fields.opcode == 0x33) {
-        p25_handle_mbt_tdma_iden_foreign_system(mpdu_byte);
-    } else if (fields.opcode == 0x0) {
-        p25_handle_mbt_group_voice_grant(opts, state, mpdu_byte);
-    } else if (fields.opcode == 0x6) {
-        p25_handle_mbt_unit_to_unit_voice_grant(opts, state, mpdu_byte);
-    } else if ((fields.opcode == 0x8 || fields.opcode == 0x9) && fields.mfid < 2) {
-        p25_handle_mbt_telephone_interconnect_grant(opts, state, mpdu_byte, fields.opcode);
-    } else if (fields.opcode == 0x28) {
-        if (fields.fmt == 0x17) {
-            p25_handle_mbt_group_affiliation_response(state, mpdu_byte);
-        } else {
-            DSD_FPRINTF(stderr, " - group affiliation response format %02X not handled", fields.fmt);
-        }
-    } else if (fields.mfid == 0xA4) {
+    if (p25_handle_mbt_standard_opcode(opts, state, mpdu_byte, &fields)) {
+        return;
+    }
+
+    if (fields.mfid == 0xA4) {
         p25_handle_mbt_mfid_a4(mpdu_byte, fields.blks, fields.opcode);
     } else if (fields.mfid == 0x90) {
         if (fields.opcode == 0x02) {
