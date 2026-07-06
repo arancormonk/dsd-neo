@@ -1082,6 +1082,24 @@ run_vendor_mac_display_only_cases(void) {
 
     seed_vendor_display_only_state(&opts, &state);
     DSD_MEMSET(MAC, 0, sizeof MAC);
+    opts.frontend_display.show_p25_callsign_decode = 1;
+    state.p2_wacn = 0x92493;
+    state.p2_sysid = 0x796;
+    MAC[1] = 0x85;
+    MAC[2] = 0x90;
+    MAC[3] = 0x09;
+    MAC[4] = 0xA1;
+    MAC[5] = 0xEA;
+    MAC[6] = 0x5A;
+    MAC[7] = 0x18;
+    MAC[8] = 0x72;
+    MAC[9] = 0x09;
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_vendor_display_only_state("moto 0x85 bsi", &opts, &state);
+    dsd_state_ext_free_all(&state);
+
+    seed_vendor_display_only_state(&opts, &state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
     MAC[1] = 0x82;
     MAC[2] = 0x90;
     MAC[3] = 0x11;
@@ -1626,6 +1644,9 @@ main(void) {
     rc |= expect_file_contains("sndcp request fields", cap.path, "DSO [AA] DAC [1234] Source [74565]");
     rc |= expect_file_contains("sndcp response label", cap.path, "SNDCP Data Page Response");
     rc |= expect_file_contains("sndcp response fields", cap.path, "DSO [BB] Response [55] DAC [4567] Source [6636321]");
+    rc |= expect_file_contains("motorola bsi label", cap.path, "MFID90 (Moto) System Broadcast (BSI)");
+    rc |= expect_file_contains("motorola bsi text", cap.path, "BSI [SITE1234]");
+    rc |= expect_file_contains("motorola bsi callsign", cap.path, "[WPIH50]");
     (void)remove(cap.path);
     return rc;
 }

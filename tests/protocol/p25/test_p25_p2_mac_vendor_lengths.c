@@ -221,6 +221,7 @@ run_one(uint8_t mfid, uint8_t opcode, uint8_t len_octet, int want_lenB) {
 int
 main(void) {
     int rc = 0;
+    rc |= run_one(0x90, 0x85, 0x09, 9);  // Motorola BSI, MCO 0x05
     rc |= run_one(0x90, 0x91, 0x00, 17); // Motorola
     rc |= run_one(0x90, 0x95, 0x00, 17); // Motorola
     rc |= run_one(0xA4, 0xA0, 0x2A, 9);  // Harris private data grant

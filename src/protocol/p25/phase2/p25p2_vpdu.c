@@ -21,6 +21,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -565,6 +566,11 @@ p25p2_vpdu_channel_is_valid(int channel) {
 static int
 p25p2_vpdu_mfid_is_standard(uint8_t mfid) {
     return mfid == 0x00u || mfid == 0x01u;
+}
+
+static int
+p25p2_vpdu_opcode_is_vendor_partition(int opcode) {
+    return opcode >= 0x80 && opcode <= 0xBF;
 }
 
 static int
@@ -5018,10 +5024,63 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
 }
 
 static void
+p25p2_vpdu_decode_motorola_bsi_text(const p25p2_vpdu_ctx* ctx, char out[9]) {
+    const unsigned long long int* mac = ctx->mac;
+    int first = ctx->len_a + 4;
+    uint64_t packed = 0;
+
+    out[0] = '\0';
+    if (first < 0 || first + 5 >= 24) {
+        return;
+    }
+
+    for (int i = 0; i < 6; i++) {
+        packed = (packed << 8) | (uint64_t)(mac[first + i] & 0xFFULL);
+    }
+
+    int pos = 0;
+    for (int shift = 42; shift >= 0 && pos < 8; shift -= 6) {
+        uint8_t ch = (uint8_t)((packed >> shift) & 0x3FU);
+        if (ch != 0x00U) {
+            out[pos++] = (char)(ch + 43U);
+        }
+    }
+    out[pos] = '\0';
+}
+
+static void
+p25p2_vpdu_handle_motorola_bsi(p25p2_vpdu_ctx* ctx) {
+    const dsd_opts* opts = ctx->opts;
+    const dsd_state* state = ctx->state;
+    int len_a = ctx->len_a;
+    char bsi[9];
+
+    p25p2_vpdu_decode_motorola_bsi_text(ctx, bsi);
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) System Broadcast (BSI)\n");
+    if (bsi[0] != '\0') {
+        DSD_FPRINTF(stderr, "  BSI [%s]", bsi);
+    }
+    DSD_FPRINTF(stderr, "  Data:");
+    for (int bi = 3; bi <= 9 && (bi + len_a) < 24; bi++) {
+        DSD_FPRINTF(stderr, " %02llX", ctx->mac[bi + len_a] & 0xFFULL);
+    }
+    if (opts->frontend_display.show_p25_callsign_decode && (state->p2_wacn != 0 || state->p2_sysid != 0)) {
+        char callsign[7];
+        p25_wacn_sysid_to_callsign((uint32_t)state->p2_wacn, (uint16_t)state->p2_sysid, callsign);
+        if (callsign[0] != '\0') {
+            DSD_FPRINTF(stderr, " [%s]", callsign);
+        }
+    }
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static void
 p25p2_vpdu_dispatch_motorola_vendor(p25p2_vpdu_ctx* ctx, int opcode) {
     switch (opcode) {
         case 0x82:
         case 0x8F: p25p2_vpdu_handle_motorola_active_group_radios(ctx, opcode); break;
+        case 0x85: p25p2_vpdu_handle_motorola_bsi(ctx); break;
         case 0xBF: p25p2_vpdu_handle_motorola_active_group_marker(ctx); break;
         case 0xA6: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 0); break;
         case 0xA7: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 1); break;
@@ -5052,12 +5111,12 @@ p25p2_vpdu_iter_block_59(p25p2_vpdu_ctx* ctx) {
         return;
     }
 
-    if (mfid == 0x90) {
+    if (mfid == 0x90 && p25p2_vpdu_opcode_is_vendor_partition(opcode)) {
         p25p2_vpdu_dispatch_motorola_vendor(ctx, opcode);
         return;
     }
 
-    if (mfid == 0xA4) {
+    if (mfid == 0xA4 && p25p2_vpdu_opcode_is_vendor_partition(opcode)) {
         p25p2_vpdu_dispatch_harris_vendor(ctx, opcode);
     }
 }
