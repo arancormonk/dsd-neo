@@ -209,30 +209,46 @@ expect_contains(const char* tag, const char* text, const char* needle) {
 
 static int
 capture_lcw_output(dsd_opts* opts, dsd_state* st, uint8_t lcw[96], char* out, size_t out_sz) {
+    if (!out || out_sz == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+
     FILE* capture = tmpfile();
-    if (!capture || !out || out_sz == 0) {
+    if (!capture) {
         return -1;
     }
 
-    fflush(stderr);
+    (void)fflush(stderr);
     int saved = dup(fileno(stderr));
     if (saved < 0 || dup2(fileno(capture), fileno(stderr)) < 0) {
         if (saved >= 0) {
-            close(saved);
+            (void)close(saved);
         }
-        fclose(capture);
+        (void)fclose(capture);
         return -1;
     }
 
     p25_lcw(opts, st, lcw, /*irrecoverable_errors*/ 0);
-    fflush(stderr);
-    (void)dup2(saved, fileno(stderr));
-    close(saved);
+    (void)fflush(stderr);
+    int restored = dup2(saved, fileno(stderr));
+    (void)close(saved);
+    if (restored < 0) {
+        (void)fclose(capture);
+        return -1;
+    }
 
-    rewind(capture);
+    if (fseek(capture, 0, SEEK_SET) != 0) {
+        (void)fclose(capture);
+        return -1;
+    }
     size_t n = fread(out, 1, out_sz - 1, capture);
+    if (n < out_sz - 1 && ferror(capture) != 0) {
+        (void)fclose(capture);
+        return -1;
+    }
     out[n] = '\0';
-    fclose(capture);
+    (void)fclose(capture);
     return 0;
 }
 
