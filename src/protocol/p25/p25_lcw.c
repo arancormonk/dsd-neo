@@ -774,6 +774,16 @@ p25_lcw_handle_mfid90_opcode_01(p25_lcw_ctx* ctx) {
 }
 
 static void
+p25_lcw_handle_mfid90_opcode_02(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Failsoft");
+    DSD_FPRINTF(stderr, " Data:");
+    for (int bi = 16; bi + 8 <= 72; bi += 8) {
+        uint8_t b = (uint8_t)ConvertBitIntoBytes(&ctx->bits[bi], 8);
+        DSD_FPRINTF(stderr, " %02X", b);
+    }
+}
+
+static void
 p25_lcw_handle_mfid90_opcode_03(p25_lcw_ctx* ctx) {
     UNUSED(ctx);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Add");
@@ -813,6 +823,15 @@ p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
 }
 
 static void
+p25_lcw_handle_mfid90_opcode_0a(p25_lcw_ctx* ctx) {
+    uint16_t group = (uint16_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
+    uint32_t source = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Emergency Alarm Activation");
+    DSD_FPRINTF(stderr, " Group: %u Source: %u;", group, source);
+    DSD_FPRINTF(stderr, " %s** EMERGENCY **%s", KRED, KYEL);
+}
+
+static void
 p25_lcw_handle_mfid90_opcode_15(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " MFID90 (Moto) Talker Alias Header");
     apx_embedded_alias_header_phase1(ctx->opts, ctx->state, 0, ctx->bits);
@@ -828,8 +847,9 @@ static int
 p25_lcw_dispatch_mfid90(p25_lcw_ctx* ctx) {
     static const p25_lcw_handler_entry handlers[] = {
         {0x00, p25_lcw_handle_mfid90_opcode_00}, {0x01, p25_lcw_handle_mfid90_opcode_01},
-        {0x03, p25_lcw_handle_mfid90_opcode_03}, {0x04, p25_lcw_handle_mfid90_opcode_04},
-        {0x05, p25_lcw_handle_mfid90_opcode_05}, {0x06, p25_lcw_handle_mfid90_opcode_06},
+        {0x02, p25_lcw_handle_mfid90_opcode_02}, {0x03, p25_lcw_handle_mfid90_opcode_03},
+        {0x04, p25_lcw_handle_mfid90_opcode_04}, {0x05, p25_lcw_handle_mfid90_opcode_05},
+        {0x06, p25_lcw_handle_mfid90_opcode_06}, {0x0A, p25_lcw_handle_mfid90_opcode_0a},
         {0x0F, p25_lcw_handle_mfid90_opcode_0f}, {0x15, p25_lcw_handle_mfid90_opcode_15},
         {0x17, p25_lcw_handle_mfid90_opcode_17},
     };

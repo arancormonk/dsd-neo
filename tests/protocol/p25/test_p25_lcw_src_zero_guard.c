@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -193,6 +194,45 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     DSD_FPRINTF(stderr, "PASS: %s\n", tag);
+    return 0;
+}
+
+static int
+expect_contains(const char* tag, const char* text, const char* needle) {
+    if (!text || !needle || strstr(text, needle) == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: %s missing '%s' in '%s'\n", tag, needle ? needle : "(null)", text ? text : "(null)");
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "PASS: %s\n", tag);
+    return 0;
+}
+
+static int
+capture_lcw_output(dsd_opts* opts, dsd_state* st, uint8_t lcw[96], char* out, size_t out_sz) {
+    FILE* capture = tmpfile();
+    if (!capture || !out || out_sz == 0) {
+        return -1;
+    }
+
+    fflush(stderr);
+    int saved = dup(fileno(stderr));
+    if (saved < 0 || dup2(fileno(capture), fileno(stderr)) < 0) {
+        if (saved >= 0) {
+            close(saved);
+        }
+        fclose(capture);
+        return -1;
+    }
+
+    p25_lcw(opts, st, lcw, /*irrecoverable_errors*/ 0);
+    fflush(stderr);
+    (void)dup2(saved, fileno(stderr));
+    close(saved);
+
+    rewind(capture);
+    size_t n = fread(out, 1, out_sz - 1, capture);
+    out[n] = '\0';
+    fclose(capture);
     return 0;
 }
 
@@ -602,6 +642,42 @@ main(void) {
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
         rc |= expect_true("MFID90_regroup_update_group_call", st.gi[0] == 0);
+    }
+
+    /*
+     * Additional Motorola vendor LCWs are metadata/display-only; they should be
+     * recognized without changing call or patch state.
+     */
+    {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
+        st.lasttg = 0xAAAA;
+        st.lastsrc = 0xBBBBCC;
+        char out[2048];
+
+        uint8_t lcw[96];
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x02);
+        set_bits_msb(lcw, 8, 8, 0x90);
+        set_bits_msb(lcw, 16, 8, 0xAB);
+        if (capture_lcw_output(&opts, &st, lcw, out, sizeof(out)) != 0) {
+            return 1;
+        }
+        rc |= expect_contains("MFID90_failsoft_label", out, "MFID90 (Moto) Failsoft");
+        rc |= expect_true("MFID90_failsoft_no_state", st.lasttg == 0xAAAA && st.lastsrc == 0xBBBBCC);
+
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x0A);
+        set_bits_msb(lcw, 8, 8, 0x90);
+        set_bits_msb(lcw, 32, 16, 0x1234);
+        set_bits_msb(lcw, 48, 24, 0x456789);
+        if (capture_lcw_output(&opts, &st, lcw, out, sizeof(out)) != 0) {
+            return 1;
+        }
+        rc |= expect_contains("MFID90_emergency_label", out, "Emergency Alarm Activation");
+        rc |= expect_contains("MFID90_emergency_group", out, "Group: 4660");
+        rc |= expect_contains("MFID90_emergency_source", out, "Source: 4548489");
+        rc |= expect_true("MFID90_emergency_no_patch", st.p25_patch_count == 0);
     }
 
     /*

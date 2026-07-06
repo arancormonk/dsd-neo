@@ -662,6 +662,18 @@ tsbk_handle_isp_service_messages(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BY
             tsbk_isp_print_src_tgt("Unit-to-Unit Answer Response", tsbk_byte, "TO");
             DSD_FPRINTF(stderr, " SVC [%02X] RESPONSE [%02X]", tsbk_byte[2], tsbk_byte[3]);
             return 1;
+        case 0x08:
+            tsbk_isp_print_src_tgt("Telephone Interconnect Explicit Dial Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X]", tsbk_byte[2]);
+            return 1;
+        case 0x09:
+            tsbk_isp_print_src_tgt("Telephone Interconnect PSTN Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X]", tsbk_byte[2]);
+            return 1;
+        case 0x0A:
+            tsbk_isp_print_src_tgt("Telephone Interconnect Answer Response", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X] RESPONSE [%02X]", tsbk_byte[2], tsbk_byte[3]);
+            return 1;
         case 0x10:
             tsbk_isp_print_src_tgt("Individual Data Service Request", tsbk_byte, "TO");
             DSD_FPRINTF(stderr, " SVC [%02X]", tsbk_byte[2]);
@@ -752,6 +764,7 @@ tsbk_handle_isp_registration_messages(uint8_t opcode, const uint8_t tsbk_byte[TS
                         tsbk_u16(tsbk_byte, 5), tsbk_u16(tsbk_byte, 5));
             return 1;
         case 0x30: tsbk_isp_print_wacn_sys_src("Protection Parameter Request", tsbk_byte); return 1;
+        case 0x32: tsbk_isp_print_wacn_sys_src("Identifier/Frequency Band Update Request", tsbk_byte); return 1;
         default: return 0;
     }
 }
@@ -818,6 +831,38 @@ tsbk_handle_isp_messages(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
 }
 
 static void
+tsbk_handle_mfid90_isp_messages(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint8_t opcode = (uint8_t)(tsbk_byte[0] & 0x3F);
+    DSD_FPRINTF(stderr, "%s", KYEL);
+
+    switch (opcode) {
+        case 0x00: {
+            uint8_t svc = tsbk_byte[2];
+            uint16_t sg = tsbk_u16(tsbk_byte, 5);
+            uint32_t source = (uint32_t)tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Voice Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%u] SG [%u][%04X] SVC [%02X]", source, sg, sg, svc);
+            break;
+        }
+        case 0x01: {
+            uint16_t function = tsbk_u16(tsbk_byte, 2);
+            uint32_t argument = (uint32_t)tsbk_u24(tsbk_byte, 4);
+            uint32_t source = (uint32_t)tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n MFID90 (Moto) Extended Function Response (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%u] FUNC [%04X] ARG [%06X]", source, function, argument);
+            break;
+        }
+        default:
+            DSD_FPRINTF(stderr, "\n Unsupported MFID90 ISP opcode (protected/inbound) OP [%02X]", opcode);
+            DSD_FPRINTF(stderr, " DATA [%02X%02X%02X%02X%02X%02X%02X%02X]", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
+                        tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+            break;
+    }
+
+    DSD_FPRINTF(stderr, "\n%s", KNRM);
+}
+
+static void
 tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
     int lra = tsbk_byte[2];
     long int wacn = (tsbk_byte[3] << 12) | (tsbk_byte[4] << 4) | (tsbk_byte[5] >> 4);
@@ -866,6 +911,8 @@ tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t*
     if (protectbit == 1) {
         if (MFID < 0x2) {
             tsbk_handle_isp_messages(ctx->tsbk_byte);
+        } else if (MFID == 0x90) {
+            tsbk_handle_mfid90_isp_messages(ctx->tsbk_byte);
         }
         return;
     }

@@ -46,6 +46,8 @@ p25p1_pdu_print_group_label(const dsd_state* state, uint32_t id) {
 
 typedef struct {
     uint8_t fmt;
+    uint8_t direction;
+    int is_outbound;
     uint8_t mfid;
     int blks;
     uint8_t opcode;
@@ -77,6 +79,8 @@ p25_parse_mbt_fields_checked(const uint8_t* mpdu_byte, size_t mpdu_len, p25p1_mb
     }
 
     fields->fmt = mpdu_byte[0] & 0x1F;
+    fields->direction = (uint8_t)((mpdu_byte[0] >> 5) & 0x01U);
+    fields->is_outbound = fields->direction != 0U;
     fields->mfid = mpdu_byte[2];
     fields->blks = mpdu_byte[6] & 0x7F;
 
@@ -96,6 +100,7 @@ p25_print_mbt_header(const p25p1_mbt_fields* fields) {
         DSD_FPRINTF(stderr, " ALT");
     }
     DSD_FPRINTF(stderr, " MBT");
+    DSD_FPRINTF(stderr, fields->is_outbound ? " OSP" : " ISP");
     DSD_FPRINTF(stderr, " - OP: %02X", fields->opcode);
 }
 
@@ -203,7 +208,7 @@ p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) 
 static void DSD_ATTR_USED
 p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                 const p25p1_mbt_fields* fields) {
-    if (!fields || !(p25_mbt_is_bridgeable_iden_update(fields->opcode) && fields->mfid < 2)) {
+    if (!fields || !fields->is_outbound || !(p25_mbt_is_bridgeable_iden_update(fields->opcode) && fields->mfid < 2)) {
         return;
     }
 
@@ -850,6 +855,171 @@ p25_handle_mbt_unknown_mfid(const uint8_t* mpdu_byte, int blks, uint8_t mfid, ui
     DSD_FPRINTF(stderr, " %s", KNRM);
 }
 
+static void
+p25_handle_mbt_inbound_two_party(const uint8_t* mpdu_byte, const char* label, int has_response) {
+    uint8_t svc = mpdu_byte[8];
+    uint8_t response = mpdu_byte[9];
+    uint32_t target = p25_mbt_u24(mpdu_byte, 3U);
+    uint32_t source = p25_mbt_u24(mpdu_byte, 14U);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n %s MBT - Inbound", label);
+    DSD_FPRINTF(stderr, " SVC [%02X] FM [%u] TO [%u]", svc, source, target);
+    if (has_response) {
+        DSD_FPRINTF(stderr, " RESPONSE [%02X]", response);
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+p25_handle_mbt_inbound_telephone(const uint8_t* mpdu_byte, const char* label) {
+    uint8_t svc = mpdu_byte[8];
+    uint32_t source = p25_mbt_u24(mpdu_byte, 14U);
+    uint32_t target = p25_mbt_u24(mpdu_byte, 3U);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n %s MBT - Inbound", label);
+    DSD_FPRINTF(stderr, " SVC [%02X] FM [%u] TO [%u]", svc, source, target);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+p25_handle_mbt_inbound_identifier_request(const uint8_t* mpdu_byte) {
+    uint32_t wacn = ((uint32_t)mpdu_byte[3] << 12) | ((uint32_t)mpdu_byte[4] << 4) | ((uint32_t)mpdu_byte[5] >> 4);
+    uint16_t sysid = (uint16_t)(((uint16_t)(mpdu_byte[5] & 0x0F) << 8) | (uint16_t)mpdu_byte[6]);
+    uint32_t source = p25_mbt_u24(mpdu_byte, 14U);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Identifier/Frequency Band Update Request MBT - Inbound");
+    DSD_FPRINTF(stderr, " FM [%u] WACN [%05X] SYSID [%03X]", source, wacn, sysid);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+p25_handle_mbt_inbound_umbtc_explicit_dial(const uint8_t* mpdu_byte, size_t mpdu_len) {
+    static const char hex[] = "0123456789ABCDEF";
+    char digits[33];
+    size_t d = 0U;
+    uint32_t source = (mpdu_len >= 18U) ? p25_mbt_u24(mpdu_byte, 15U) : 0U;
+
+    for (size_t i = 13U; i < mpdu_len && d + 2U < sizeof(digits); i++) {
+        digits[d++] = hex[(mpdu_byte[i] >> 4) & 0x0F];
+        digits[d++] = hex[mpdu_byte[i] & 0x0F];
+    }
+    digits[d] = '\0';
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Telephone Interconnect Explicit Dial Request UMBTC - Inbound");
+    if (source != 0U) {
+        DSD_FPRINTF(stderr, " FM [%u]", source);
+    }
+    if (digits[0] != '\0') {
+        DSD_FPRINTF(stderr, " DIGITS [%s]", digits);
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+p25_handle_mbt_inbound_mfid90_group_regroup_request(const uint8_t* mpdu_byte) {
+    uint8_t svc = mpdu_byte[8];
+    uint16_t sg = p25_mbt_u16(mpdu_byte, 16U);
+    uint32_t source = p25_mbt_u24(mpdu_byte, 3U);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Voice Request MBT - Inbound");
+    DSD_FPRINTF(stderr, " SVC [%02X] SG [%u][%04X] FM [%u]", svc, sg, sg, source);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
+p25_handle_mbt_inbound_mfid90_extended_function_response(const uint8_t* mpdu_byte) {
+    uint16_t function = p25_mbt_u16(mpdu_byte, 8U);
+    uint32_t argument = p25_mbt_u24(mpdu_byte, 12U);
+    uint32_t source = p25_mbt_u24(mpdu_byte, 3U);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Extended Function Response MBT - Inbound");
+    DSD_FPRINTF(stderr, " FM [%u] FUNC [%04X] ARG [%06X]", source, function, argument);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static int
+p25_handle_mbt_inbound_standard_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p25p1_mbt_fields* fields) {
+    switch (fields->opcode) {
+        case 0x04:
+            if (!p25_mbt_require_len(fields, mpdu_len, 17U, "Unit-to-Unit Voice Service Request")) {
+                return 1;
+            }
+            p25_handle_mbt_inbound_two_party(mpdu_byte, "Unit-to-Unit Voice Service Request", 0);
+            return 1;
+        case 0x08:
+            if (fields->fmt == 0x15) {
+                if (!p25_mbt_require_len(fields, mpdu_len, 13U, "Telephone Interconnect Explicit Dial Request")) {
+                    return 1;
+                }
+                p25_handle_mbt_inbound_umbtc_explicit_dial(mpdu_byte, mpdu_len);
+                return 1;
+            }
+            return 0;
+        case 0x09:
+            if (!p25_mbt_require_len(fields, mpdu_len, 17U, "Telephone Interconnect PSTN Request")) {
+                return 1;
+            }
+            p25_handle_mbt_inbound_telephone(mpdu_byte, "Telephone Interconnect PSTN Request");
+            return 1;
+        case 0x0A:
+            if (!p25_mbt_require_len(fields, mpdu_len, 17U, "Telephone Interconnect Answer Response")) {
+                return 1;
+            }
+            p25_handle_mbt_inbound_two_party(mpdu_byte, "Telephone Interconnect Answer Response", 1);
+            return 1;
+        case 0x32:
+            if (!p25_mbt_require_len(fields, mpdu_len, 17U, "Identifier/Frequency Band Update Request")) {
+                return 1;
+            }
+            p25_handle_mbt_inbound_identifier_request(mpdu_byte);
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+p25_handle_mbt_inbound_mfid90_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p25p1_mbt_fields* fields) {
+    switch (fields->opcode) {
+        case 0x00:
+            if (!p25_mbt_require_len(fields, mpdu_len, 18U, "MFID90 Group Regroup Voice Request")) {
+                return 1;
+            }
+            p25_handle_mbt_inbound_mfid90_group_regroup_request(mpdu_byte);
+            return 1;
+        case 0x01:
+            if (!p25_mbt_require_len(fields, mpdu_len, 15U, "MFID90 Extended Function Response")) {
+                return 1;
+            }
+            p25_handle_mbt_inbound_mfid90_extended_function_response(mpdu_byte);
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+p25_handle_mbt_inbound_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p25p1_mbt_fields* fields) {
+    if (!fields) {
+        return 0;
+    }
+    if (fields->mfid < 2 && p25_handle_mbt_inbound_standard_opcode(mpdu_byte, mpdu_len, fields)) {
+        return 1;
+    }
+    if (fields->mfid == 0x90 && p25_handle_mbt_inbound_mfid90_opcode(mpdu_byte, mpdu_len, fields)) {
+        return 1;
+    }
+
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, "\n Inbound MBT metadata only - MFID %02X OP %02X", fields->mfid, fields->opcode);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+    return 1;
+}
+
 static int
 p25_handle_mbt_site_status_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                   const p25p1_mbt_fields* fields) {
@@ -1042,6 +1212,11 @@ p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t*
 
     p25_print_mbt_header(&fields);
     p25_mbt_try_bridge_iden_updates(opts, state, mpdu_byte, mpdu_len, &fields);
+
+    if (!fields.is_outbound) {
+        (void)p25_handle_mbt_inbound_opcode(mpdu_byte, mpdu_len, &fields);
+        return 0;
+    }
 
     if (p25_mbt_has_unsupported_survey_format(&fields)) {
         DSD_FPRINTF(stderr, " - broadcast format %02X not handled", fields.fmt);

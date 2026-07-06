@@ -485,7 +485,7 @@ static void p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx);
 static void p25p2_vpdu_lcch_signal_update(p25p2_vpdu_ctx* ctx);
 static int p25p2_vpdu_validate_len_and_warn(const p25p2_vpdu_ctx* ctx);
 static void p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx);
-static int p25p2_vpdu_advance_segment(p25p2_vpdu_ctx* ctx);
+static int p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index);
 
 static void
 p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx) {
@@ -2104,20 +2104,21 @@ p25p2_vpdu_iter_block_19(p25p2_vpdu_ctx* ctx) {
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
     struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
+    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
     int len_b = ctx->len_b;
     int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
     int slot VPDU_MAYBE_UNUSED = ctx->slot;
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1] == 0x91 && MAC[2] == 0x90) {
-        uint8_t len = MAC[3]; //this indication is correct, 0x11, or 17 octets including opcode and mfid
+    if (MAC[1 + len_a] == 0x91 && MAC[2 + len_a] == 0x90) {
+        uint8_t len = (uint8_t)MAC[3 + len_a]; //0x11, or 17 octets including opcode and mfid
         uint8_t mac_bits[24 * 8];
         DSD_MEMSET(mac_bits, 0, sizeof(mac_bits));
         uint8_t bytes[24];
         DSD_MEMSET(bytes, 0, sizeof(bytes));
-        for (int bi = 0; bi < 24; bi++) {
-            bytes[bi] = (uint8_t)MAC[bi];
+        for (int bi = 0; bi < 24 && (len_a + bi) < 24; bi++) {
+            bytes[bi] = (uint8_t)MAC[len_a + bi];
         }
         unpack_byte_array_into_bit_array(bytes + 1, mac_bits, len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Header");
@@ -2141,20 +2142,21 @@ p25p2_vpdu_iter_block_20(p25p2_vpdu_ctx* ctx) {
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
     struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
+    int len_a VPDU_MAYBE_UNUSED = ctx->len_a;
     int len_b = ctx->len_b;
     int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
     int slot VPDU_MAYBE_UNUSED = ctx->slot;
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[1] == 0x95 && MAC[2] == 0x90) {
-        uint8_t len = MAC[3]; //this indication is correct, 0x11, or 17 octets including opcode and mfid
+    if (MAC[1 + len_a] == 0x95 && MAC[2 + len_a] == 0x90) {
+        uint8_t len = (uint8_t)MAC[3 + len_a]; //0x11, or 17 octets including opcode and mfid
         uint8_t mac_bits[24 * 8];
         DSD_MEMSET(mac_bits, 0, sizeof(mac_bits));
         uint8_t bytes[24];
         DSD_MEMSET(bytes, 0, sizeof(bytes));
-        for (int bi = 0; bi < 24; bi++) {
-            bytes[bi] = (uint8_t)MAC[bi];
+        for (int bi = 0; bi < 24 && (len_a + bi) < 24; bi++) {
+            bytes[bi] = (uint8_t)MAC[len_a + bi];
         }
         unpack_byte_array_into_bit_array(bytes + 1, mac_bits, len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Blocks");
@@ -2324,8 +2326,8 @@ p25p2_vpdu_iter_block_24(p25p2_vpdu_ctx* ctx) {
             DSD_FPRINTF(stderr, "\n MFID A4 (Harris); VCH %d;", slot);
             uint8_t bytes[24];
             DSD_MEMSET(bytes, 0, sizeof(bytes));
-            for (int8_t bi = 0; bi < 24; bi++) {
-                bytes[bi] = (uint8_t)MAC[bi];
+            for (int bi = 0; bi < 24 && (len_a + bi) < 24; bi++) {
+                bytes[bi] = (uint8_t)MAC[len_a + bi];
             }
             l3h_embedded_alias_decode(opts, state, slot, len, bytes);
         }
@@ -2376,7 +2378,7 @@ p25p2_vpdu_iter_block_25(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
-    if (MAC[len_a + 1] == 0x80 && MAC[len_a + 2] != 0xA4 && MAC[len_a + 2] != 0x90) {
+    if (MAC[len_a + 1] == 0x80 && MAC[len_a + 2] == 0xAA && MAC[len_a + 3] == 0xA4) {
         int unk1 =
             MAC[len_a
                 + 1]; //assuming this is the octet set for the 'manufacturer specific' message, may only be the MSBit
@@ -5446,12 +5448,14 @@ p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx) {
 }
 
 static int
-p25p2_vpdu_advance_segment(p25p2_vpdu_ctx* ctx) {
-    if ((ctx->len_b + ctx->len_c) < 24 && ctx->len_c != 0) {
-        ctx->len_a = ctx->len_b;
-        return 1;
+p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index) {
+    if (!ctx || !ctx->mac_res || index < 0 || index >= ctx->mac_res->segment_count) {
+        return 0;
     }
-    return 0;
+    ctx->len_a = ctx->mac_res->segments[index].offset;
+    ctx->len_b = ctx->mac_res->segments[index].length;
+    ctx->len_c = (index + 1 < ctx->mac_res->segment_count) ? ctx->mac_res->segments[index + 1].length : 0;
+    return ctx->len_b > 0;
 }
 
 void
@@ -5493,16 +5497,13 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         ctx.end_pdu = 1;
     }
 
-    for (ctx.iter_idx = 0; !ctx.end_pdu && ctx.iter_idx < 2; ctx.iter_idx++) {
+    for (ctx.iter_idx = 0; !ctx.end_pdu && ctx.iter_idx < mac_res.segment_count; ctx.iter_idx++) {
         ctx.skip_rest = 0;
+        if (!p25p2_vpdu_select_segment(&ctx, ctx.iter_idx)) {
+            break;
+        }
         if (!p25p2_vpdu_consume_fragment_segment(&ctx)) {
             p25p2_vpdu_dispatch_blocks(&ctx);
-        }
-        if (ctx.end_pdu) {
-            break;
-        }
-        if (!p25p2_vpdu_advance_segment(&ctx)) {
-            break;
         }
     }
 

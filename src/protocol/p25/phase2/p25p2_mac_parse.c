@@ -121,6 +121,14 @@ p25p2_mac_payload_len_override(const unsigned long long mac[24], int opcode_pos)
         return multifrag_len;
     }
 
+    if (opcode == 0x80u && mfid == 0xAAu && len_octet == 0xA4u && opcode_pos + 4 < 24) {
+        uint8_t shifted_len = (uint8_t)p25p2_mac_octet(mac, opcode_pos + 3);
+        if ((shifted_len & 0x3Fu) > 0u) {
+            return (int)(shifted_len & 0x3Fu);
+        }
+        return 17;
+    }
+
     if (opcode >= 0x80u && opcode <= 0xBFu) {
         return p25p2_mac_vendor_payload_len(mfid, opcode, (int)(len_octet & 0x3Fu));
     }
@@ -129,59 +137,61 @@ p25p2_mac_payload_len_override(const unsigned long long mac[24], int opcode_pos)
 }
 
 static int
-p25p2_mac_resolve_len_b(int type, const unsigned long long mac[24], int capacity, int len_b) {
-    if (len_b != 0 && len_b <= capacity) {
-        return len_b;
+p25p2_mac_resolve_segment_len(int type, const unsigned long long mac[24], int offset, int capacity) {
+    int opcode_pos = 1 + offset;
+    if (opcode_pos < 0 || opcode_pos >= 24 || offset >= capacity) {
+        return 0;
     }
-    if (len_b == 0 || len_b > capacity) {
+
+    int len = p25p2_mac_payload_len_override(mac, opcode_pos);
+    if (len >= 0) {
+        return len;
+    }
+
+    if (opcode_pos + 1 < 24) {
+        len =
+            p25p2_mac_len_for((uint8_t)p25p2_mac_octet(mac, opcode_pos + 1), (uint8_t)p25p2_mac_octet(mac, opcode_pos));
+        if (len > 0) {
+            return len;
+        }
+    }
+
+    if (offset == 0) {
         int guess = p25p2_mac_guess_len_b(type, mac, capacity);
         if (guess >= 0) {
             return guess;
         }
     }
-    return len_b;
-}
 
-static int
-p25p2_mac_has_second_message(int type, int len_b) {
-    if (type == 1) {
-        return len_b < 19;
-    }
-    if (type == 0) {
-        return len_b < 16;
-    }
-    return 0;
-}
-
-static int
-p25p2_mac_resolve_len_c(int type, const unsigned long long mac[24], int len_b, int capacity) {
-    if (!p25p2_mac_has_second_message(type, len_b)) {
-        return 0;
-    }
-
-    int next_opcode_pos = 1 + len_b;
-    if (next_opcode_pos >= 24) {
-        return 0;
-    }
-
-    int len_c = p25p2_mac_payload_len_override(mac, next_opcode_pos);
-    if (len_c >= 0) {
-        return len_c;
-    }
-    if (next_opcode_pos + 1 >= 24) {
-        return 0;
-    }
-
-    len_c = p25p2_mac_len_for((uint8_t)mac[next_opcode_pos + 1], (uint8_t)mac[next_opcode_pos]);
-    if (len_c != 0) {
-        return len_c;
-    }
-
-    int remain = capacity - len_b;
+    int remain = capacity - offset;
     if (remain > 0) {
         return remain;
     }
     return 0;
+}
+
+static int
+p25p2_mac_parse_segments(int type, const unsigned long long mac[24], struct p25p2_mac_result* out) {
+    const int capacity = p25p2_mac_capacity(type);
+    int offset = 0;
+
+    for (int seg = 0; seg < P25P2_MAC_MAX_SEGMENTS && offset < capacity; seg++) {
+        int len = p25p2_mac_resolve_segment_len(type, mac, offset, capacity);
+        if (len <= 0) {
+            break;
+        }
+
+        out->segments[out->segment_count].offset = offset;
+        out->segments[out->segment_count].length = len;
+        out->segment_count++;
+
+        if (len > capacity - offset) {
+            break;
+        }
+        offset += len;
+    }
+
+    return out->segment_count;
 }
 
 int
@@ -190,23 +200,27 @@ p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_res
         return -1;
     }
 
+    for (int i = 0; i < P25P2_MAC_MAX_SEGMENTS; i++) {
+        out->segments[i].offset = 0;
+        out->segments[i].length = 0;
+    }
     out->type = type;
     out->len_a = 0;
     out->mfid = (uint8_t)mac[2];
     out->opcode = (uint8_t)mac[1];
+    out->len_b = 0;
+    out->len_c = 0;
+    out->segment_count = 0;
 
-    int len_a = 0;
-    int payload_len = p25p2_mac_payload_len_override(mac, 1);
-    int len_b = (payload_len >= 0) ? payload_len : p25p2_mac_len_for(out->mfid, out->opcode);
-    const int capacity = p25p2_mac_capacity(type);
-    if (payload_len < 0) {
-        len_b = p25p2_mac_resolve_len_b(type, mac, capacity, len_b);
+    (void)p25p2_mac_parse_segments(type, mac, out);
+
+    if (out->segment_count > 0) {
+        out->len_a = out->segments[0].offset;
+        out->len_b = out->segments[0].length;
     }
-    int len_c = p25p2_mac_resolve_len_c(type, mac, len_b, capacity);
-
-    out->len_a = len_a;
-    out->len_b = len_b;
-    out->len_c = len_c;
+    if (out->segment_count > 1) {
+        out->len_c = out->segments[1].length;
+    }
 
     return 0;
 }

@@ -262,7 +262,7 @@ init_private_trunking(dsd_opts* opts, dsd_state* state) {
 static void
 build_ambtc_unit_to_unit(uint8_t* mbt, uint8_t opcode, uint8_t svc, uint16_t channelt, uint16_t channelr) {
     DSD_MEMSET(mbt, 0, 48);
-    mbt[0] = 0x17;
+    mbt[0] = 0x37;
     mbt[2] = 0x00;
     mbt[6] = 0x02;
     mbt[7] = opcode;
@@ -298,7 +298,7 @@ build_ambtc_unit_to_unit(uint8_t* mbt, uint8_t opcode, uint8_t svc, uint16_t cha
 static void
 build_ambtc_base(uint8_t* mbt, uint8_t opcode, uint8_t blocks, uint32_t header_address) {
     DSD_MEMSET(mbt, 0, 48);
-    mbt[0] = 0x17;
+    mbt[0] = 0x37;
     mbt[2] = 0x00;
     mbt[3] = (uint8_t)((header_address >> 16) & 0xFFU);
     mbt[4] = (uint8_t)((header_address >> 8) & 0xFFU);
@@ -443,7 +443,7 @@ main(void) {
     // Craft ALT MBT: NET_STS_BCST (0x3B), channelt=0x100A (iden=1, ch=10), WACN=0xABCDE, SYSID=0x123
     uint8_t mbt[48];
     DSD_MEMSET(mbt, 0, sizeof(mbt));
-    mbt[0] = 0x17;  // ALT format
+    mbt[0] = 0x37;  // outbound ALT format
     mbt[2] = 0x00;  // MFID standard
     mbt[6] = 0x02;  // blks=2 (enough payload)
     mbt[7] = 0x3B;  // opcode
@@ -735,7 +735,7 @@ main(void) {
         state.p2_wacn = 0x11111;
         state.p2_sysid = 0x222;
 
-        aff[0] = 0x17; // ALT MBT only
+        aff[0] = 0x37; // outbound ALT MBT only
         aff[2] = 0x00; // MFID
         aff[3] = 0x01;
         aff[4] = 0x23;
@@ -792,7 +792,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         DSD_MEMSET(aff, 0, sizeof aff);
 
-        aff[0] = 0x17;
+        aff[0] = 0x37;
         aff[3] = 0x01;
         aff[4] = 0x23;
         aff[5] = 0x45;
@@ -821,7 +821,7 @@ main(void) {
         state.p2_wacn = 0x11111;
         state.p2_sysid = 0x222;
 
-        reg[0] = 0x17; // ALT MBT only
+        reg[0] = 0x37; // outbound ALT MBT only
         reg[2] = 0x00; // MFID
         reg[3] = 0x01;
         reg[4] = 0x23;
@@ -870,7 +870,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         DSD_MEMSET(reg, 0, sizeof reg);
 
-        reg[0] = 0x17;
+        reg[0] = 0x37;
         reg[3] = 0x01;
         reg[4] = 0x23;
         reg[5] = 0x45;

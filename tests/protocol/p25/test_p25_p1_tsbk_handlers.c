@@ -495,6 +495,19 @@ capture_isp_output(const uint8_t tsbk[TSBK_BYTES_PER_BLOCK], char* out, size_t o
 }
 
 static int
+capture_mfid90_isp_output(const uint8_t tsbk[TSBK_BYTES_PER_BLOCK], char* out, size_t out_sz) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_mfid90_isp_tsbk") != 0) {
+        return -1;
+    }
+    tsbk_handle_mfid90_isp_messages(tsbk);
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        return -1;
+    }
+    return read_capture_file(cap.path, out, out_sz);
+}
+
+static int
 test_crc_candidate_selection_and_fallback(void) {
     uint8_t dibits[TSBK_DIBITS_PER_REP] = {0};
     int16_t llr[TSBK_SOFT_BITS_PER_REP] = {0};
@@ -573,6 +586,25 @@ test_standard_isp_metadata_logging_and_no_retune(void) {
     }
     rc |= expect_contains("isp answer label", out, "Unit-to-Unit Answer Response");
     rc |= expect_contains("isp answer response", out, "RESPONSE [03]");
+
+    build_isp_two_party(tsbk, 0x08, 0x84, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp explicit dial label", out, "Telephone Interconnect Explicit Dial Request");
+
+    build_isp_two_party(tsbk, 0x09, 0x85, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp pstn label", out, "Telephone Interconnect PSTN Request");
+
+    build_isp_two_party(tsbk, 0x0A, 0x86, 0x02);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp telephone answer label", out, "Telephone Interconnect Answer Response");
+    rc |= expect_contains("isp telephone answer response", out, "RESPONSE [02]");
 
     build_isp_two_party(tsbk, 0x10, 0x04, 0x00);
     if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
@@ -787,6 +819,12 @@ test_standard_isp_metadata_logging_and_no_retune(void) {
     }
     rc |= expect_contains("isp protection label", out, "Protection Parameter Request");
 
+    build_isp_wacn_sys(tsbk, 0x32);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp iden request label", out, "Identifier/Frequency Band Update Request");
+
     build_isp_two_party(tsbk, 0x36, 0x00, 0x00);
     if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
         return 1;
@@ -834,6 +872,37 @@ test_standard_isp_metadata_logging_and_no_retune(void) {
     rc |= expect_int("isp no frequency lookup", g_process_channel_count, 0);
     rc |= expect_int("isp no queued callbacks", g_queued_count, 0);
     rc |= expect_int("isp no deny callbacks", g_deny_count, 0);
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x00;
+    tsbk[2] = 0x80;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_mfid90_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("mfid90 isp regroup label", out, "Group Regroup Voice Request");
+    rc |= expect_contains("mfid90 isp regroup source", out, "FM [74565]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x01;
+    tsbk[2] = 0x12;
+    tsbk[3] = 0x34;
+    tsbk[4] = 0x56;
+    tsbk[5] = 0x78;
+    tsbk[6] = 0x9A;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_mfid90_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("mfid90 isp extended function label", out, "Extended Function Response");
+    rc |= expect_contains("mfid90 isp extended function fields", out, "FUNC [1234] ARG [56789A]");
+
     return rc;
 }
 
