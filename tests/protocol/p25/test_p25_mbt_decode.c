@@ -428,6 +428,20 @@ build_umbtc_grant_like(uint8_t* mbt, uint8_t opcode, uint8_t mfid) {
     mbt[19] = 0x34;
 }
 
+static void
+build_inbound_umbtc_explicit_dial(uint8_t* mbt) {
+    DSD_MEMSET(mbt, 0, 48);
+    mbt[0] = 0x15; // inbound UMBTC
+    mbt[1] = 0x3D; // trunking SAP
+    mbt[6] = 0x01;
+    mbt[12] = 0x08; // Telephone Interconnect Explicit Dial Request
+    mbt[13] = 0x12;
+    mbt[14] = 0x34;
+    mbt[15] = 0x56;
+    mbt[16] = 0x78;
+    mbt[17] = 0x9A; // source address
+}
+
 static int
 read_capture_file(const char* path, char* out, size_t out_sz) {
     if (!path || !out || out_sz == 0) {
@@ -810,6 +824,22 @@ main(void) {
         rc |= expect_contains_text("umbtc mfid90 raw", out, "MFID 90 (Moto); Opcode: 02");
         rc |= expect_not_contains_text("umbtc mfid90 no ambtc grant", out,
                                        "MFID90 Group Regroup Channel Grant - Explicit");
+    }
+
+    // Inbound UMBTC explicit dial requests keep source address bytes out of the digit string.
+    {
+        uint8_t umbtc[48];
+        char out[4096];
+
+        build_inbound_umbtc_explicit_dial(umbtc);
+        if (capture_mbt_output("p25_mbt_inbound_umbtc_explicit_dial", umbtc, 18U, out, sizeof out) != 0) {
+            return 125;
+        }
+        rc |= expect_contains_text("inbound umbtc dial label", out,
+                                   "Telephone Interconnect Explicit Dial Request UMBTC - Inbound");
+        rc |= expect_contains_text("inbound umbtc dial source", out, "FM [5666970]");
+        rc |= expect_contains_text("inbound umbtc dial digits", out, "DIGITS [1234]");
+        rc |= expect_not_contains_text("inbound umbtc dial excludes source", out, "DIGITS [123456789A]");
     }
 
     // Each new metadata/data opcode has an explicit short-payload guard.

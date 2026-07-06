@@ -921,9 +921,10 @@ p25_handle_mbt_inbound_umbtc_explicit_dial(const uint8_t* mpdu_byte, size_t mpdu
     static const char hex[] = "0123456789ABCDEF";
     char digits[33];
     size_t d = 0U;
+    size_t digits_end = (mpdu_len >= 18U) ? 15U : mpdu_len;
     uint32_t source = (mpdu_len >= 18U) ? p25_mbt_u24(mpdu_byte, 15U) : 0U;
 
-    for (size_t i = 13U; i < mpdu_len && d + 2U < sizeof(digits); i++) {
+    for (size_t i = 13U; i < digits_end && d + 2U < sizeof(digits); i++) {
         digits[d++] = hex[(mpdu_byte[i] >> 4) & 0x0F];
         digits[d++] = hex[mpdu_byte[i] & 0x0F];
     }
