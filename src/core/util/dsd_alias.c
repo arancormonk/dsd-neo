@@ -45,6 +45,80 @@ policy_try_append_alias(dsd_state* state, uint32_t id, const char* mode, const c
     return dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0 ? 1 : 0;
 }
 
+static void
+alias_append(char* dst, size_t dst_sz, const char* src) {
+    if (!dst || !src || dst_sz == 0) {
+        return;
+    }
+    size_t len = strlen(dst);
+    if (len >= dst_sz) {
+        return;
+    }
+    DSD_SNPRINTF(dst + len, dst_sz - len, "%s", src);
+}
+
+static uint8_t
+alias_slot_index(uint8_t slot) {
+    return (slot >= 2U) ? 1U : slot;
+}
+
+static int
+alias_current_call_matches(const dsd_state* state, uint8_t slot, uint32_t src, uint32_t tg) {
+    if (!state || !state->event_history_s || src == 0) {
+        return 0;
+    }
+
+    uint8_t slot_idx = alias_slot_index(slot);
+    const Event_History* ev = &state->event_history_s[slot_idx].Event_History_Items[0];
+    if (ev->source_id != src) {
+        return 0;
+    }
+    if (tg != 0 && ev->target_id != 0 && ev->target_id != tg) {
+        return 0;
+    }
+    return 1;
+}
+
+typedef struct {
+    uint8_t valid;
+    uint8_t sequence;
+    uint8_t block_count;
+    uint8_t next_block;
+} apx_alias_rx_state;
+
+static apx_alias_rx_state g_apx_alias_state[2];
+
+static void
+apx_alias_state_reset(uint8_t slot) {
+    DSD_MEMSET(&g_apx_alias_state[alias_slot_index(slot)], 0, sizeof(g_apx_alias_state[0]));
+}
+
+static void
+apx_alias_state_begin(uint8_t slot, uint8_t sequence, uint8_t block_count) {
+    apx_alias_rx_state* rx = &g_apx_alias_state[alias_slot_index(slot)];
+    rx->valid = block_count != 0U;
+    rx->sequence = sequence;
+    rx->block_count = block_count;
+    rx->next_block = 1U;
+}
+
+static int
+apx_alias_state_accept_block(uint8_t slot, uint8_t sequence, uint8_t block_num) {
+    apx_alias_rx_state* rx = &g_apx_alias_state[alias_slot_index(slot)];
+    if (!rx->valid || block_num == 0U || block_num > rx->block_count || sequence != rx->sequence
+        || block_num != rx->next_block) {
+        apx_alias_state_reset(slot);
+        return 0;
+    }
+
+    if (block_num < rx->block_count) {
+        rx->next_block = (uint8_t)(block_num + 1U);
+    } else {
+        apx_alias_state_reset(slot);
+    }
+    return 1;
+}
+
 //Motorola P25 OTA Alias Decoding ripped/demystified from Ilya Smirnov's SDRTrunk Voodoo Code
 static uint8_t moto_alias_lut[256] = {
     0xD2, 0xF6, 0xD4, 0x2B, 0x63, 0x49, 0x94, 0x5E, 0xA7, 0x5C, 0x70, 0x69, 0xF7, 0x08, 0xB1, 0x7D, 0x38, 0xCF, 0xCC,
@@ -74,6 +148,7 @@ apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
     //use dmr_pdu_sf for storage, store entire header (will be used to verify complete reception of full alias)
     DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot])); //reset storage for header and blocks
     DSD_MEMCPY(state->dmr_pdu_sf[slot], lc_bits, 72 * sizeof(uint8_t));
+    apx_alias_state_begin(slot, sn, ta_len);
 }
 
 void
@@ -99,14 +174,16 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
         //clear out now stale storage
         DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
+        apx_alias_state_reset(slot);
     }
 
     else //good len and header stored
     {
 
-        //sanity check, bn cannot equal zero (this shouldn't happen, but bad decode could occur)
-        if (bn == 0) {
-            bn = 1;
+        if (!apx_alias_state_accept_block(slot, sn, bn)) {
+            DSD_FPRINTF(stderr, " Alias Sequence/Block Mismatch");
+            DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
+            return;
         }
 
         DSD_FPRINTF(stderr, " SN: %X;", sn);
@@ -168,6 +245,7 @@ apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
     DSD_MEMCPY(state->dmr_pdu_sf[slot], bits,
                (size_t)alias_st
                    * sizeof(uint8_t)); //this header block has 128 bits of relevant data (through the fqsuid)
+    apx_alias_state_begin(slot, sn, ta_len);
 }
 
 void
@@ -191,6 +269,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
         //clear out now stale storage
         DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
+        apx_alias_state_reset(slot);
     }
 
     else //good len and header stored
@@ -199,9 +278,10 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
         int16_t rel_st = 36;    //start of relevant bits in this block
         int16_t alias_st = 136; //start of the encoded alias
 
-        //sanity check, bn cannot equal zero (this shouldn't happen, but bad decode could occur)
-        if (bn == 0) {
-            bn = 1;
+        if (!apx_alias_state_accept_block(slot, sn, bn)) {
+            DSD_FPRINTF(stderr, " Alias Sequence/Block Mismatch");
+            DSD_MEMSET(state->dmr_pdu_sf[slot], 0, sizeof(state->dmr_pdu_sf[slot]));
+            return;
         }
 
         DSD_FPRINTF(stderr, " SN: %X;", sn);
@@ -366,12 +446,15 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
     uint32_t rid = (uint32_t)ConvertBitIntoBytes(&input[104], 24);
 
     DSD_SNPRINTF(fqs, sizeof fqs, " FQ-SUID: %05X:%03X.%06X (%d);", wacn, sys, rid, rid);
-    if (rid != 0 && state->event_history_s[slot].Event_History_Items[0].source_id == rid) {
-        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
-                     sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s; %s", str, fqs);
+    uint8_t slot_idx = alias_slot_index(slot);
+    int current_call_match = alias_current_call_matches(state, slot, rid, 0);
+    if (current_call_match) {
+        DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].alias,
+                     sizeof(state->event_history_s[slot_idx].Event_History_Items[0].alias), "%s; %s", str, fqs);
     }
 
-    if (policy_try_append_alias(state, rid, "D", str)) //not already in there, so save it there now
+    if (current_call_match
+        && policy_try_append_alias(state, rid, "D", str)) //not already in there, so save it there now
     {
         dsd_tg_policy_entry row;
         if (dsd_tg_policy_make_exact_entry(rid, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &row) == 0) {
@@ -379,15 +462,100 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
             DSD_SNPRINTF(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
             (void)dsd_tg_policy_append_group_file_row(opts, &row, metadata);
         }
+    } else if (rid != 0 && !current_call_match) {
+        DSD_FPRINTF(stderr, " Alias Deferred: current call source mismatch;");
     }
 }
 
 //end Motorola P25 OTA Alias Decoding
 
+static uint8_t l3h_alias_sanitize_char(uint8_t value);
+
+typedef struct {
+    uint8_t mask;
+    char last_alias[40];
+    uint8_t fragment[4][8];
+} l3h_alias_phase1_state;
+
+static l3h_alias_phase1_state g_l3h_alias_phase1[2];
+
+static void
+l3h_alias_phase1_reset(uint8_t slot) {
+    DSD_MEMSET(&g_l3h_alias_phase1[alias_slot_index(slot)], 0, sizeof(g_l3h_alias_phase1[0]));
+}
+
+static void
+l3h_alias_fragment_to_string(const uint8_t* fragment, char* out, size_t out_sz) {
+    if (!fragment || !out || out_sz == 0) {
+        return;
+    }
+
+    size_t pos = 0;
+    for (size_t i = 0; i < 7U && pos + 1U < out_sz; i++) {
+        uint8_t c = l3h_alias_sanitize_char(fragment[i]);
+        if (c == 0U) {
+            break;
+        }
+        out[pos++] = (char)c;
+    }
+    while (pos > 0U && out[pos - 1U] == ' ') {
+        pos--;
+    }
+    out[pos] = '\0';
+}
+
+static void
+l3h_alias_append_fragment(char* alias, size_t alias_sz, const char* fragment) {
+    if (!alias || alias_sz == 0 || !fragment || fragment[0] == '\0') {
+        return;
+    }
+    if (strstr(alias, fragment) != NULL) {
+        return;
+    }
+    alias_append(alias, alias_sz, fragment);
+}
+
+static void
+l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    l3h_alias_phase1_state* rx = &g_l3h_alias_phase1[alias_slot_index(slot)];
+    if ((rx->mask & 0x03U) != 0x03U) {
+        return;
+    }
+
+    char alias[40];
+    DSD_MEMSET(alias, 0, sizeof(alias));
+    for (uint8_t block = 0; block < 4U; block++) {
+        if ((rx->mask & (uint8_t)(1U << block)) == 0U) {
+            continue;
+        }
+        char fragment[16];
+        DSD_MEMSET(fragment, 0, sizeof(fragment));
+        l3h_alias_fragment_to_string(rx->fragment[block], fragment, sizeof(fragment));
+        l3h_alias_append_fragment(alias, sizeof(alias), fragment);
+    }
+
+    if (alias[0] == '\0' || strcmp(alias, rx->last_alias) == 0) {
+        return;
+    }
+
+    uint8_t input[44];
+    DSD_MEMSET(input, 0, sizeof(input));
+    size_t alias_len = strlen(alias);
+    if (alias_len > (sizeof(input) - 4U)) {
+        alias_len = sizeof(input) - 4U;
+    }
+    DSD_MEMCPY(input + 4, alias, alias_len);
+    DSD_SNPRINTF(rx->last_alias, sizeof(rx->last_alias), "%s", alias);
+    l3h_embedded_alias_decode(opts, state, slot, (int16_t)(4U + alias_len - 1U), input);
+}
+
 void
 l3h_embedded_alias_blocks_phase1(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
 
     uint8_t op = (uint8_t)ConvertBitIntoBytes(&lc_bits[0], 8);
+    if (op < 0x32U || op > 0x35U) {
+        return;
+    }
     uint8_t ptr = op - 0x32;
     uint8_t bytes[7];
     DSD_MEMSET(bytes, 0, sizeof(bytes));
@@ -395,13 +563,17 @@ l3h_embedded_alias_blocks_phase1(const dsd_opts* opts, dsd_state* state, uint8_t
         bytes[i] = (uint8_t)ConvertBitIntoBytes(&lc_bits[16 + (i * 8)], 8);
     }
 
+    uint8_t slot_idx = alias_slot_index(slot);
     //use +4 offset to match the MAC vPDU since that was already worked out long ago
-    DSD_MEMCPY(state->dmr_pdu_sf[slot] + 4 + ((size_t)ptr * 7), bytes, sizeof(bytes));
-
-    //to be tested
-    if (ptr == 4) { //is there always 4 blocks, or is it a variable amount?
-        l3h_embedded_alias_decode(opts, state, slot, 4 + 28, state->dmr_pdu_sf[slot]);
+    DSD_MEMCPY(state->dmr_pdu_sf[slot_idx] + 4 + ((size_t)ptr * 7), bytes, sizeof(bytes));
+    if (ptr == 0U) {
+        l3h_alias_phase1_reset(slot);
     }
+    l3h_alias_phase1_state* rx = &g_l3h_alias_phase1[alias_slot_index(slot)];
+    DSD_MEMCPY(rx->fragment[ptr], bytes, sizeof(bytes));
+    rx->mask = (uint8_t)(rx->mask | (uint8_t)(1U << ptr));
+
+    l3h_alias_phase1_maybe_decode(opts, state, slot);
 }
 
 static void
@@ -470,7 +642,7 @@ l3h_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, 
     } else {
         DSD_FPRINTF(stderr, " TG: UNK; SRC: UNK; Talker Alias: ");
     }
-    for (int16_t i = 4; i <= len; i++) {
+    for (int16_t i = 4; i <= len && ptr < (int8_t)(sizeof(ttemp) - 1U); i++) {
         l3h_alias_print_char(input[i]);
         ttemp[ptr] = (char)l3h_alias_sanitize_char(input[i]);
         ptr++;
@@ -479,21 +651,21 @@ l3h_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, 
     //assign completed talker to a more useful string instead
     DSD_SNPRINTF(str, ptr + 1, "%s", ttemp);
 
-    if (state->event_history_s[slot].Event_History_Items[0].source_id == tsrc && tsrc != 0) {
-        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
-                     sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s", str);
+    uint8_t slot_idx = alias_slot_index(slot);
+    int current_call_match = alias_current_call_matches(state, slot, tsrc, ttg);
+    if (current_call_match) {
+        DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].alias,
+                     sizeof(state->event_history_s[slot_idx].Event_History_Items[0].alias), "%s", str);
     }
 
     //The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
-    if (tsrc != 0) {
+    if (current_call_match) {
         l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
+    } else if (tsrc != 0) {
+        DSD_FPRINTF(stderr, " Alias Deferred: current call source/talkgroup mismatch;");
     }
 
-    //reset storage
-    {
-        uint8_t slot_idx = (slot >= 2) ? 1 : slot;
-        DSD_MEMSET(state->dmr_pdu_sf[slot_idx], 0, sizeof(state->dmr_pdu_sf[slot_idx]));
-    }
+    DSD_MEMSET(state->dmr_pdu_sf[slot_idx], 0, sizeof(state->dmr_pdu_sf[slot_idx]));
 }
 
 void
