@@ -282,7 +282,8 @@ tsbk_u24(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int offset) {
 }
 
 static int
-tsbk_handle_standard_osp_data_channel(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+tsbk_handle_standard_osp_data_channel(const dsd_opts* opts, dsd_state* state,
+                                      const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
     uint8_t opcode = (uint8_t)(tsbk_byte[0] & 0x3F);
 
     switch (opcode) {
