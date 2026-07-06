@@ -5368,7 +5368,7 @@ p25p2_vpdu_handle_completed_multifragment(p25p2_vpdu_ctx* ctx) {
                 frag ? (int)frag->data_len : 0, frag ? (int)frag->collected : 0);
 
     switch (opcode) {
-        case 0x71: p25p2_vpdu_handle_multifrag_authentication_demand(ctx); break;
+        case 0x71:
         case 0xF1: p25p2_vpdu_handle_multifrag_authentication_demand(ctx); break;
         case 0xC7: p25p2_vpdu_handle_multifrag_unit_to_unit_grant(ctx, /*is_service_grant*/ 0); break;
         case 0xCB: p25p2_vpdu_handle_multifrag_call_alert(ctx); break;
