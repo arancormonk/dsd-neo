@@ -858,7 +858,6 @@ p25_handle_mbt_unknown_mfid(const uint8_t* mpdu_byte, int blks, uint8_t mfid, ui
 static void
 p25_handle_mbt_inbound_two_party(const uint8_t* mpdu_byte, const char* label, int has_response) {
     uint8_t svc = mpdu_byte[8];
-    uint8_t response = mpdu_byte[9];
     uint32_t target = p25_mbt_u24(mpdu_byte, 3U);
     uint32_t source = p25_mbt_u24(mpdu_byte, 14U);
 
@@ -866,6 +865,7 @@ p25_handle_mbt_inbound_two_party(const uint8_t* mpdu_byte, const char* label, in
     DSD_FPRINTF(stderr, "\n %s MBT - Inbound", label);
     DSD_FPRINTF(stderr, " SVC [%02X] FM [%u] TO [%u]", svc, source, target);
     if (has_response) {
+        uint8_t response = mpdu_byte[9];
         DSD_FPRINTF(stderr, " RESPONSE [%02X]", response);
     }
     DSD_FPRINTF(stderr, "%s", KNRM);

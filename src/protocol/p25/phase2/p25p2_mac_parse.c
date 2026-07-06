@@ -163,11 +163,7 @@ p25p2_mac_resolve_segment_len(int type, const unsigned long long mac[24], int of
         }
     }
 
-    int remain = capacity - offset;
-    if (remain > 0) {
-        return remain;
-    }
-    return 0;
+    return capacity - offset;
 }
 
 static int
