@@ -1025,6 +1025,20 @@ run_standard_mac_multifragment_cases(void) {
     rc |= expect_true("invalid continuation clears without active state", state.active_channel[0][0] == '\0');
     dsd_state_ext_free_all(&state);
 
+    DSD_MEMSET(&state, 0, sizeof state);
+    init_multifragment_base(base, 0x71, 255);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
+    for (int i = 0; i < 11; i++) {
+        init_multifragment_continuation(cont, 23);
+        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    }
+    init_multifragment_continuation(cont, 11);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    rc |= expect_eq_long("max-length multi-fragment clears active", state.p25_mac_frag_active, 0);
+    rc |= expect_eq_long("max-length multi-fragment clears collected", state.p25_mac_frag_collected, 0);
+    rc |= expect_contains("max-length multi-fragment completes", state.active_channel[0], "AUTH-L");
+    dsd_state_ext_free_all(&state);
+
     return rc;
 }
 

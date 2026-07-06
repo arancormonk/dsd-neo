@@ -5283,8 +5283,12 @@ p25p2_vpdu_frag_append(dsd_state* state, const unsigned long long int* mac, int 
     if (!state || !mac || start < 0 || len < 3 || start + len > 24) {
         return 0;
     }
-    if ((int)state->p25_mac_frag_collected + count > DSD_P25_MAC_FRAGMENT_MAX_OCTETS) {
+    int remaining = (int)state->p25_mac_frag_data_len - (int)state->p25_mac_frag_collected;
+    if (remaining <= 0) {
         return 0;
+    }
+    if (count > remaining) {
+        count = remaining;
     }
 
     for (int i = 0; i < count; i++) {
@@ -5302,7 +5306,7 @@ p25p2_vpdu_consume_multifragment_base(p25p2_vpdu_ctx* ctx, int opcode) {
     int data_len = (start + 2 < 24) ? (int)(mac[start + 2] & 0xFFU) : 0;
 
     p25p2_vpdu_frag_clear(state);
-    if (len < 3 || data_len <= 0 || data_len > DSD_P25_MAC_FRAGMENT_MAX_OCTETS) {
+    if (len < 3 || data_len <= 0) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment base 0x%02X invalid length len=%d data=%d", opcode, len, data_len);
         return 1;
     }
