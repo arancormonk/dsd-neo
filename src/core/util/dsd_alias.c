@@ -472,11 +472,14 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
 static uint8_t l3h_alias_sanitize_char(uint8_t value);
 static int l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len,
                                               const uint8_t* input, int save_policy);
+static void l3h_alias_resolve_src_tg(const dsd_state* state, uint8_t slot, uint32_t* tsrc, uint32_t* ttg);
 
 typedef struct {
     uint8_t mask;
     char last_alias[40];
     char last_saved_alias[40];
+    uint32_t src;
+    uint32_t tg;
     uint8_t fragment[4][8];
 } l3h_alias_phase1_state;
 
@@ -491,7 +494,39 @@ static void
 l3h_alias_phase1_clear_fragments(uint8_t slot) {
     l3h_alias_phase1_state* rx = &g_l3h_alias_phase1[alias_slot_index(slot)];
     rx->mask = 0;
+    rx->src = 0;
+    rx->tg = 0;
     DSD_MEMSET(rx->fragment, 0, sizeof(rx->fragment));
+}
+
+static void
+l3h_alias_phase1_set_key(l3h_alias_phase1_state* rx, uint32_t src, uint32_t tg) {
+    if (!rx) {
+        return;
+    }
+    rx->src = src;
+    rx->tg = tg;
+}
+
+static int
+l3h_alias_phase1_key_matches(const l3h_alias_phase1_state* rx, uint32_t src, uint32_t tg) {
+    if (!rx || rx->src == 0 || src == 0 || rx->src != src) {
+        return 0;
+    }
+    if (rx->tg != 0 && tg != 0 && rx->tg != tg) {
+        return 0;
+    }
+    return 1;
+}
+
+static void
+l3h_alias_phase1_refresh_key(l3h_alias_phase1_state* rx, uint32_t tg) {
+    if (!rx) {
+        return;
+    }
+    if (rx->tg == 0 && tg != 0) {
+        rx->tg = tg;
+    }
 }
 
 static void
@@ -560,11 +595,6 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
         return;
     }
     int is_complete = ((rx->mask & 0x0FU) == 0x0FU);
-    int alias_changed = strcmp(alias, rx->last_alias) != 0;
-    int already_saved = strcmp(alias, rx->last_saved_alias) == 0;
-    if (!alias_changed && (!is_complete || already_saved)) {
-        return;
-    }
 
     uint8_t input[44];
     DSD_MEMSET(input, 0, sizeof(input));
@@ -573,6 +603,22 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
         alias_len = sizeof(input) - 4U;
     }
     DSD_MEMCPY(input + 4, alias, alias_len);
+
+    uint32_t tsrc = 0;
+    uint32_t ttg = 0;
+    l3h_alias_resolve_src_tg(state, slot, &tsrc, &ttg);
+    if (!alias_current_call_matches(state, slot, tsrc, ttg)) {
+        (void)l3h_embedded_alias_decode_internal(opts, state, slot, (int16_t)(4U + alias_len - 1U), input,
+                                                 /*save_policy*/ is_complete);
+        l3h_alias_phase1_clear_fragments(slot);
+        return;
+    }
+
+    int alias_changed = strcmp(alias, rx->last_alias) != 0;
+    int already_saved = strcmp(alias, rx->last_saved_alias) == 0;
+    if (!alias_changed && (!is_complete || already_saved)) {
+        return;
+    }
     if (alias_changed) {
         DSD_SNPRINTF(rx->last_alias, sizeof(rx->last_alias), "%s", alias);
     }
@@ -599,10 +645,21 @@ l3h_embedded_alias_blocks_phase1(const dsd_opts* opts, dsd_state* state, uint8_t
 
     uint8_t slot_idx = alias_slot_index(slot);
     l3h_alias_phase1_state* rx = &g_l3h_alias_phase1[slot_idx];
+    uint32_t tsrc = 0;
+    uint32_t ttg = 0;
+    l3h_alias_resolve_src_tg(state, slot, &tsrc, &ttg);
     if (ptr == 0U) {
         l3h_alias_phase1_reset(slot);
+        rx = &g_l3h_alias_phase1[slot_idx];
+        l3h_alias_phase1_set_key(rx, tsrc, ttg);
     } else if ((rx->mask & 0x01U) == 0U) {
         return;
+    } else if (!l3h_alias_phase1_key_matches(rx, tsrc, ttg)) {
+        l3h_alias_phase1_clear_fragments(slot);
+        DSD_MEMSET(state->dmr_pdu_sf[slot_idx], 0, sizeof(state->dmr_pdu_sf[slot_idx]));
+        return;
+    } else {
+        l3h_alias_phase1_refresh_key(rx, ttg);
     }
     //use +4 offset to match the MAC vPDU since that was already worked out long ago
     DSD_MEMCPY(state->dmr_pdu_sf[slot_idx] + 4 + ((size_t)ptr * 7), bytes, sizeof(bytes));

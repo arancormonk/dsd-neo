@@ -320,6 +320,47 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "", "l3h mismatch no event alias");
     rc |= expect_no_policy(st, st->lastsrc, "l3h mismatch no policy");
 
+    st->lastsrc = 710006u;
+    st->lasttg = 49u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x33U, "GOOD   ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "",
+                     "l3h deferred mismatch clears block1 before stray block2");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h deferred mismatch stray block2 no policy");
+
+    build_l3h_alias_lcw(lcw, 0x32U, "GOOD   ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x33U, "TWO    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "GOODTWO",
+                     "l3h current sequence recovers after deferred mismatch");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h recovered partial sequence no policy");
+
+    st->lastsrc = 710007u;
+    st->lasttg = 50u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x32U, "OLD    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+
+    st->lastsrc = 710008u;
+    st->lasttg = 51u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x33U, "NEW    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "",
+                     "l3h source change clears stale block1 before block2");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h source change stray block2 no policy");
+
     return rc;
 }
 
