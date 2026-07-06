@@ -262,6 +262,7 @@ init_private_trunking(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->p25_trunk = 1;
+    opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     opts->trunk_tune_data_calls = 1;
     opts->trunk_tune_enc_calls = 1;
@@ -399,6 +400,26 @@ static void
 build_ambtc_group_data_grant(uint8_t* mbt) {
     build_ambtc_base(mbt, 0x11, 0x01, 0x012345);
     mbt[8] = 0x04;
+    mbt[14] = 0x10;
+    mbt[15] = 0x0A;
+    mbt[16] = 0x10;
+    mbt[17] = 0x10;
+    mbt[18] = 0x12;
+    mbt[19] = 0x34;
+}
+
+static void
+build_umbtc_grant_like(uint8_t* mbt, uint8_t opcode, uint8_t mfid) {
+    DSD_MEMSET(mbt, 0, 48);
+    mbt[0] = 0x35; // outbound UMBTC
+    mbt[1] = 0x3D; // trunking SAP
+    mbt[2] = mfid;
+    mbt[3] = 0x01;
+    mbt[4] = 0x23;
+    mbt[5] = 0x45; // source if misdecoded as AMBTC
+    mbt[6] = 0x02;
+    mbt[8] = 0x04; // service options if misdecoded as AMBTC
+    mbt[12] = opcode;
     mbt[14] = 0x10;
     mbt[15] = 0x0A;
     mbt[16] = 0x10;
@@ -763,6 +784,32 @@ main(void) {
         rc |= expect_contains_text("mbt mfid a4 collision raw", out, "MFID A4 (Harris); Opcode: 28");
         rc |= expect_not_contains_text("mbt mfid a4 collision no standard", out,
                                        "Group Affiliation Response MBT - Extended");
+    }
+
+    // Outbound UMBTC opcodes use block-0 offsets and must not enter AMBTC grant handlers.
+    {
+        uint8_t umbtc[48];
+        char out[4096];
+
+        build_umbtc_grant_like(umbtc, 0x00, 0x00);
+        if (capture_mbt_output("p25_mbt_umbtc_standard_no_ambtc", umbtc, sizeof umbtc, out, sizeof out) != 0) {
+            return 123;
+        }
+        rc |= expect_eq_int("umbtc standard no group grant", g_group_grant_count, 0);
+        rc |= expect_eq_int("umbtc standard no indiv grant", g_indiv_grant_count, 0);
+        rc |= expect_contains_text("umbtc standard guard log", out, "UMBTC standard opcode 00 not handled as AMBTC");
+        rc |= expect_not_contains_text("umbtc standard no ambtc grant", out,
+                                       "Group Voice Channel Grant Update - Extended");
+
+        build_umbtc_grant_like(umbtc, 0x02, 0x90);
+        if (capture_mbt_output("p25_mbt_umbtc_mfid90_no_ambtc", umbtc, sizeof umbtc, out, sizeof out) != 0) {
+            return 124;
+        }
+        rc |= expect_eq_int("umbtc mfid90 no group grant", g_group_grant_count, 0);
+        rc |= expect_eq_int("umbtc mfid90 no indiv grant", g_indiv_grant_count, 0);
+        rc |= expect_contains_text("umbtc mfid90 raw", out, "MFID 90 (Moto); Opcode: 02");
+        rc |= expect_not_contains_text("umbtc mfid90 no ambtc grant", out,
+                                       "MFID90 Group Regroup Channel Grant - Explicit");
     }
 
     // Each new metadata/data opcode has an explicit short-payload guard.

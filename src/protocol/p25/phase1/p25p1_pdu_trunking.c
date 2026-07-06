@@ -212,6 +212,11 @@ p25_mbt_mfid_is_standard(uint8_t mfid) {
 }
 
 static int
+p25_mbt_is_ambtc(const p25p1_mbt_fields* fields) {
+    return fields && fields->fmt == 0x17;
+}
+
+static int
 p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
         return 0;
@@ -1196,6 +1201,10 @@ p25_handle_mbt_affiliation_roaming_opcode(dsd_state* state, const uint8_t* mpdu_
 static int
 p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                const p25p1_mbt_fields* fields) {
+    if (!p25_mbt_is_ambtc(fields)) {
+        return 0;
+    }
+
     if (p25_handle_mbt_site_status_opcode(opts, state, mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
@@ -1244,10 +1253,15 @@ p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t*
         return 0;
     }
 
+    if (!p25_mbt_is_ambtc(&fields) && p25_mbt_mfid_is_standard(fields.mfid)) {
+        DSD_FPRINTF(stderr, " - UMBTC standard opcode %02X not handled as AMBTC", fields.opcode);
+        return 0;
+    }
+
     if (fields.mfid == 0xA4) {
         p25_handle_mbt_mfid_a4(mpdu_byte, fields.blks, fields.opcode, mpdu_len);
     } else if (fields.mfid == 0x90) {
-        if (fields.opcode == 0x02) {
+        if (p25_mbt_is_ambtc(&fields) && fields.opcode == 0x02) {
             if (!p25_mbt_require_len(&fields, mpdu_len, 18U, "MFID90 Group Regroup Channel Grant")) {
                 return 0;
             }
