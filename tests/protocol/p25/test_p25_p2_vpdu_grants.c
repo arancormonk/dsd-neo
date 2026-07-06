@@ -199,6 +199,156 @@ seed_fdma_iden(dsd_state* state, int iden, int type, long base, int spac) {
     state->p25_chan_tdma_explicit[iden] = 1;
 }
 
+static int
+run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    char label[128];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = slot;
+    state.gi[slot] = 1;
+    state.p25_service_options_valid[slot] = 1;
+    state.p25_call_emergency[slot] = 1;
+    state.p25_call_is_packet[slot] = 1;
+    state.p25_call_priority[slot] = 7;
+    DSD_SNPRINTF(state.generic_talker_alias[slot], sizeof state.generic_talker_alias[slot], "%s", "STALE");
+    state.generic_talker_alias_src[slot] = 0x0F0E0D;
+    if (slot == 0) {
+        state.dmr_so = 0x5A;
+        state.lasttg = 0x1111;
+        state.lastsrc = 0x010101;
+    } else {
+        state.dmr_soR = 0x6B;
+        state.lasttgR = 0x2222;
+        state.lastsrcR = 0x020202;
+    }
+
+    MAC[1] = 0x90;
+    MAC[2] = (unsigned long long int)(mfid & 0xFF);
+    MAC[3] = 0x34;
+    MAC[4] = 0x56;
+    MAC[5] = 0x01;
+    MAC[6] = 0x02;
+    MAC[7] = 0x03;
+
+    reset_group_grant_capture();
+    p25_sm_api api = {0};
+    api.on_group_grant = sm_on_group_grant_capture;
+    p25_sm_set_api(&api);
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    p25_sm_reset_api();
+
+    DSD_SNPRINTF(label, sizeof label, "%s no grant dispatch", tag);
+    rc |= expect_eq_long(label, g_group_grant_called, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s no retune", tag);
+    rc |= expect_eq_long(label, opts.p25_is_tuned, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s group call", tag);
+    rc |= expect_eq_long(label, state.gi[slot], 0);
+    DSD_SNPRINTF(label, sizeof label, "%s mac wall timestamp", tag);
+    rc |= expect_true(label, state.p25_p2_last_mac_active[slot] != 0);
+    DSD_SNPRINTF(label, sizeof label, "%s mac mono timestamp", tag);
+    rc |= expect_true(label, state.p25_p2_last_mac_active_m[slot] > 0.0);
+    DSD_SNPRINTF(label, sizeof label, "%s patch count", tag);
+    rc |= expect_eq_long(label, state.p25_patch_count, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s patch sg", tag);
+    rc |= expect_eq_long(label, state.p25_patch_sgid[0], 0x3456);
+    DSD_SNPRINTF(label, sizeof label, "%s patch active", tag);
+    rc |= expect_eq_long(label, state.p25_patch_active[0], 1);
+    DSD_SNPRINTF(label, sizeof label, "%s patch kind", tag);
+    rc |= expect_eq_long(label, state.p25_patch_is_patch[0], 1);
+    DSD_SNPRINTF(label, sizeof label, "%s alias cleared", tag);
+    rc |= expect_true(label, state.generic_talker_alias[slot][0] == '\0');
+    DSD_SNPRINTF(label, sizeof label, "%s alias src cleared", tag);
+    rc |= expect_eq_long(label, state.generic_talker_alias_src[slot], 0);
+    DSD_SNPRINTF(label, sizeof label, "%s call banner", tag);
+    rc |= expect_contains(label, state.call_string[slot], "Group");
+    DSD_SNPRINTF(label, sizeof label, "%s service options valid unchanged", tag);
+    rc |= expect_eq_long(label, state.p25_service_options_valid[slot], 1);
+    DSD_SNPRINTF(label, sizeof label, "%s emergency unchanged", tag);
+    rc |= expect_eq_long(label, state.p25_call_emergency[slot], 1);
+    DSD_SNPRINTF(label, sizeof label, "%s packet unchanged", tag);
+    rc |= expect_eq_long(label, state.p25_call_is_packet[slot], 1);
+    DSD_SNPRINTF(label, sizeof label, "%s priority unchanged", tag);
+    rc |= expect_eq_long(label, state.p25_call_priority[slot], 7);
+    DSD_SNPRINTF(label, sizeof label, "%s enc lockout unchanged", tag);
+    rc |= expect_eq_long(label, state.p25_p2_enc_lockout_muted[slot], 0);
+
+    if (slot == 0) {
+        DSD_SNPRINTF(label, sizeof label, "%s last tg", tag);
+        rc |= expect_eq_long(label, state.lasttg, 0x3456);
+        DSD_SNPRINTF(label, sizeof label, "%s last src", tag);
+        rc |= expect_eq_long(label, state.lastsrc, 0x010203);
+        DSD_SNPRINTF(label, sizeof label, "%s service options unchanged", tag);
+        rc |= expect_eq_long(label, state.dmr_so, 0x5A);
+    } else {
+        DSD_SNPRINTF(label, sizeof label, "%s last tg", tag);
+        rc |= expect_eq_long(label, state.lasttgR, 0x3456);
+        DSD_SNPRINTF(label, sizeof label, "%s last src", tag);
+        rc |= expect_eq_long(label, state.lastsrcR, 0x010203);
+        DSD_SNPRINTF(label, sizeof label, "%s service options unchanged", tag);
+        rc |= expect_eq_long(label, state.dmr_soR, 0x6B);
+    }
+
+    return rc;
+}
+
+static int
+run_standard_regroup_voice_user_nonstandard_guard_case(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.currentslot = 0;
+    state.gi[0] = 1;
+    state.lasttg = 0x1111;
+    state.lastsrc = 0x010101;
+    state.dmr_so = 0x5A;
+    state.p25_service_options_valid[0] = 1;
+    state.p25_patch_count = 1;
+    state.p25_patch_sgid[0] = 0x2222;
+    state.p25_patch_active[0] = 1;
+    DSD_SNPRINTF(state.generic_talker_alias[0], sizeof state.generic_talker_alias[0], "%s", "KEEP");
+    state.generic_talker_alias_src[0] = 0x010101;
+
+    MAC[1] = 0x90;
+    MAC[2] = 0x90;
+    MAC[3] = 0x34;
+    MAC[4] = 0x56;
+    MAC[5] = 0x01;
+    MAC[6] = 0x02;
+    MAC[7] = 0x03;
+
+    reset_group_grant_capture();
+    p25_sm_api api = {0};
+    api.on_group_grant = sm_on_group_grant_capture;
+    p25_sm_set_api(&api);
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    p25_sm_reset_api();
+
+    rc |= expect_eq_long("0x90/mfid90 guard no grant dispatch", g_group_grant_called, 0);
+    rc |= expect_eq_long("0x90/mfid90 guard last tg", state.lasttg, 0x1111);
+    rc |= expect_eq_long("0x90/mfid90 guard last src", state.lastsrc, 0x010101);
+    rc |= expect_eq_long("0x90/mfid90 guard group flag", state.gi[0], 1);
+    rc |= expect_eq_long("0x90/mfid90 guard service options", state.dmr_so, 0x5A);
+    rc |= expect_eq_long("0x90/mfid90 guard service valid", state.p25_service_options_valid[0], 1);
+    rc |= expect_eq_long("0x90/mfid90 guard patch count", state.p25_patch_count, 1);
+    rc |= expect_eq_long("0x90/mfid90 guard patch sg", state.p25_patch_sgid[0], 0x2222);
+    rc |= expect_eq_long("0x90/mfid90 guard mac timestamp", state.p25_p2_last_mac_active[0], 0);
+    rc |= expect_contains("0x90/mfid90 guard alias", state.generic_talker_alias[0], "KEEP");
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -672,6 +822,10 @@ main(void) {
         rc |= expect_eq_long("0xA0 service options valid", state.p25_service_options_valid[1], 1);
         rc |= expect_contains("0xA0 call banner", state.call_string[1], "Encrypted");
     }
+
+    rc |= run_standard_regroup_voice_user_case(0x00, 0, "0x90/mfid00");
+    rc |= run_standard_regroup_voice_user_case(0x01, 1, "0x90/mfid01");
+    rc |= run_standard_regroup_voice_user_nonstandard_guard_case();
 
     // Case D6: Group Affiliation Response 0x68 accepts on low GAV bits, not status bits 5-6.
     {

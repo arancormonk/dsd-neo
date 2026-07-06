@@ -562,6 +562,11 @@ p25p2_vpdu_channel_is_valid(int channel) {
 }
 
 static int
+p25p2_vpdu_mfid_is_standard(uint8_t mfid) {
+    return mfid == 0x00u || mfid == 0x01u;
+}
+
+static int
 p25p2_vpdu_can_tune(const dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
         return 0;
@@ -4973,9 +4978,38 @@ p25p2_vpdu_handle_harris_data_channel_grant(p25p2_vpdu_ctx* ctx, int opcode) {
 }
 
 static void
+p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    const unsigned long long int* mac = ctx->mac;
+    int slot = ctx->slot & 1;
+    int supergroup = p25p2_vpdu_u16(mac, 3 + ctx->len_a);
+    int source = p25p2_vpdu_u24(mac, 5 + ctx->len_a);
+
+    if (ctx->len_b < 7) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d Standard Group Regroup Voice", slot + 1, supergroup, source);
+
+    state->p25_p2_last_mac_active[slot] = time(NULL);
+    state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
+    state->gi[slot] = 0;
+    p25p2_vpdu_set_group_call_banner(state, slot, /*svc*/ 0);
+    if (supergroup != 0) {
+        p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
+    }
+    p25p2_vpdu_update_group_last_ids(state, slot, supergroup, source);
+}
+
+static void
 p25p2_vpdu_iter_block_59(p25p2_vpdu_ctx* ctx) {
     int opcode = (int)ctx->mac[1 + ctx->len_a];
     int mfid = (int)ctx->mac[2 + ctx->len_a];
+
+    if (opcode == 0x90 && p25p2_vpdu_mfid_is_standard((uint8_t)mfid)) {
+        p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(ctx);
+        return;
+    }
 
     if (mfid == 0x90) {
         switch (opcode) {
