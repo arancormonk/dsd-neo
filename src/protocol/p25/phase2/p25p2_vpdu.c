@@ -3693,7 +3693,14 @@ p25p2_vpdu_iter_block_49(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0x7C || (MAC[1 + len_a] == 0x7E && MAC[len_a] == 0x07)) {
-        /* Bridged P1 0x3C/0x3E adjacency carries CFVA/reserved here, not SYSID. */
+        /*
+         * Preserve the current conflict split: bridged P1 TSBK 0x3E (MAC
+         * 0x7E) is adjacency/uncoordinated band plan, while bridged 0x3F
+         * (0x7F) is Protection Parameter Update. Older AABC-B tables conflict
+         * with newer SDRTrunk/observed behavior; change only with current
+         * AABC-E text or captures. Bridged P1 0x3C/0x3E adjacency carries
+         * CFVA/reserved here, not SYSID.
+         */
         int bridged_p1_adj = (MAC[len_a] == 0x07 && (MAC[1 + len_a] == 0x7C || MAC[1 + len_a] == 0x7E));
         int uncoordinated = (MAC[1 + len_a] == 0x7E);
         int lra = MAC[2 + len_a];

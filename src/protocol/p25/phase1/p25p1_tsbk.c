@@ -600,19 +600,220 @@ tsbk_handle_mfid_a4(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLO
     p25_patch_set_kas(state, sg, key, -1, ssn);
 }
 
+static uint32_t
+tsbk_wacn_from_24(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    return ((uint32_t)tsbk_byte[3] << 12) | ((uint32_t)tsbk_byte[4] << 4) | ((uint32_t)tsbk_byte[5] >> 4);
+}
+
+static uint16_t
+tsbk_sys_from_44(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    return (uint16_t)(((uint16_t)(tsbk_byte[5] & 0x0F) << 8) | (uint16_t)tsbk_byte[6]);
+}
+
+static void
+tsbk_isp_print_src_tgt(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], const char* target_label) {
+    int target = tsbk_u24(tsbk_byte, 4);
+    int source = tsbk_u24(tsbk_byte, 7);
+    DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
+    DSD_FPRINTF(stderr, " FM [%d] %s [%d]", source, target_label ? target_label : "TO", target);
+}
+
+static void
+tsbk_isp_print_group_request(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int has_service) {
+    int svc = tsbk_byte[2];
+    int group = tsbk_u16(tsbk_byte, 5);
+    int source = tsbk_u24(tsbk_byte, 7);
+    DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
+    DSD_FPRINTF(stderr, " FM [%d] Group [%d][%04X]", source, group, group);
+    if (has_service) {
+        DSD_FPRINTF(stderr, " SVC [%02X]", svc);
+    }
+}
+
+static void
+tsbk_isp_print_status(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int has_status) {
+    int target = tsbk_u24(tsbk_byte, 4);
+    int source = tsbk_u24(tsbk_byte, 7);
+    DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
+    DSD_FPRINTF(stderr, " FM [%d] TO [%d]", source, target);
+    if (has_status) {
+        DSD_FPRINTF(stderr, " UNIT STATUS [%02X] USER STATUS [%02X]", tsbk_byte[2], tsbk_byte[3]);
+    }
+}
+
+static void
+tsbk_isp_print_wacn_sys_src(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint32_t wacn = tsbk_wacn_from_24(tsbk_byte);
+    uint16_t sysid = tsbk_sys_from_44(tsbk_byte);
+    int source = tsbk_u24(tsbk_byte, 7);
+    DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
+    DSD_FPRINTF(stderr, " FM [%d] WACN [%05X] SYSID [%03X]", source, wacn, sysid);
+}
+
+static int
+tsbk_handle_isp_service_messages(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    switch (opcode) {
+        case 0x00: tsbk_isp_print_group_request("Group Voice Service Request", tsbk_byte, 1); return 1;
+        case 0x04:
+            tsbk_isp_print_src_tgt("Unit-to-Unit Voice Service Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X]", tsbk_byte[2]);
+            return 1;
+        case 0x05:
+            tsbk_isp_print_src_tgt("Unit-to-Unit Answer Response", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X] RESPONSE [%02X]", tsbk_byte[2], tsbk_byte[3]);
+            return 1;
+        case 0x10:
+            tsbk_isp_print_src_tgt("Individual Data Service Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X]", tsbk_byte[2]);
+            return 1;
+        case 0x11: tsbk_isp_print_group_request("Group Data Service Request", tsbk_byte, 1); return 1;
+        case 0x12:
+            DSD_FPRINTF(stderr, "\n SNDCP Data Channel Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] DSO [%02X] DAC [%04X]", tsbk_u24(tsbk_byte, 7), tsbk_byte[2],
+                        tsbk_u16(tsbk_byte, 3));
+            return 1;
+        case 0x13:
+            DSD_FPRINTF(stderr, "\n SNDCP Data Page Response (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] DSO [%02X] RESPONSE [%02X] DAC [%04X]", tsbk_u24(tsbk_byte, 7), tsbk_byte[2],
+                        tsbk_byte[3], tsbk_u16(tsbk_byte, 4));
+            return 1;
+        case 0x14:
+            DSD_FPRINTF(stderr, "\n SNDCP Reconnect Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] DSO [%02X] DAC [%04X] DATA_TO_SEND [%d]", tsbk_u24(tsbk_byte, 7),
+                        tsbk_byte[2], tsbk_u16(tsbk_byte, 3), (tsbk_byte[5] & 0x80) ? 1 : 0);
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+tsbk_handle_isp_status_control_messages(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    switch (opcode) {
+        case 0x18: tsbk_isp_print_status("Status Update Request", tsbk_byte, 1); return 1;
+        case 0x19: tsbk_isp_print_status("Status Query Response", tsbk_byte, 1); return 1;
+        case 0x1A: tsbk_isp_print_status("Status Query Request", tsbk_byte, 0); return 1;
+        case 0x1C:
+            tsbk_isp_print_src_tgt("Message Update Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SHORT DATA [%04X]", tsbk_u16(tsbk_byte, 2));
+            return 1;
+        case 0x1F: tsbk_isp_print_src_tgt("Call Alert Request", tsbk_byte, "TO"); return 1;
+        case 0x20:
+            tsbk_isp_print_src_tgt("Unit Acknowledge Response", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " ACK SVC [%02X]", tsbk_byte[2] & 0x3F);
+            return 1;
+        case 0x23:
+            DSD_FPRINTF(stderr, "\n Cancel Service Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] VALID [%d] SVC [%02X] REASON [%02X] INFO [%06X]", tsbk_u24(tsbk_byte, 7),
+                        (tsbk_byte[2] & 0x80) ? 1 : 0, tsbk_byte[2] & 0x3F, tsbk_byte[3], tsbk_u24(tsbk_byte, 4));
+            return 1;
+        case 0x24:
+            DSD_FPRINTF(stderr, "\n Extended Function Response (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] FUNC [%04X] ARG [%06X]", tsbk_u24(tsbk_byte, 7), tsbk_u16(tsbk_byte, 2),
+                        tsbk_u24(tsbk_byte, 4));
+            return 1;
+        case 0x27: {
+            int group = tsbk_u16(tsbk_byte, 5);
+            int source = tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n Emergency Alarm Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " Source [%d] Group [%d][%04X]", source, group, group);
+            DSD_FPRINTF(stderr, " %s** EMERGENCY **%s", KRED, KYEL);
+            return 1;
+        }
+        default: return 0;
+    }
+}
+
+static int
+tsbk_handle_isp_registration_messages(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    switch (opcode) {
+        case 0x28: {
+            int sysid = ((tsbk_byte[3] & 0x0F) << 8) | tsbk_byte[4];
+            int group = tsbk_u16(tsbk_byte, 5);
+            int source = tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n Group Affiliation Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] SYSID [%03X] Group [%d][%04X]", source, sysid, group, group);
+            return 1;
+        }
+        case 0x29:
+            DSD_FPRINTF(stderr, "\n Group Affiliation Query Response (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] Announcement Group [%d][%04X] Group [%d][%04X]", tsbk_u24(tsbk_byte, 7),
+                        tsbk_u16(tsbk_byte, 3), tsbk_u16(tsbk_byte, 3), tsbk_u16(tsbk_byte, 5), tsbk_u16(tsbk_byte, 5));
+            return 1;
+        case 0x2B: tsbk_isp_print_wacn_sys_src("Unit De-Registration Request", tsbk_byte); return 1;
+        case 0x2C:
+            tsbk_isp_print_wacn_sys_src("Unit Registration Request", tsbk_byte);
+            DSD_FPRINTF(stderr, " EMERGENCY [%d] CAPABILITY [%02X]", (tsbk_byte[2] & 0x80) ? 1 : 0,
+                        tsbk_byte[2] & 0x7F);
+            return 1;
+        case 0x2D:
+            DSD_FPRINTF(stderr, "\n Location Registration Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] EMERGENCY [%d] CAPABILITY [%02X] LRA [%02X] Group [%d][%04X]",
+                        tsbk_u24(tsbk_byte, 7), (tsbk_byte[2] & 0x80) ? 1 : 0, tsbk_byte[2] & 0x7F, tsbk_byte[4],
+                        tsbk_u16(tsbk_byte, 5), tsbk_u16(tsbk_byte, 5));
+            return 1;
+        case 0x30: tsbk_isp_print_wacn_sys_src("Protection Parameter Request", tsbk_byte); return 1;
+        default: return 0;
+    }
+}
+
+static int
+tsbk_handle_isp_auth_roaming_messages(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    switch (opcode) {
+        case 0x2E:
+        case 0x2F:
+            tsbk_isp_print_src_tgt(opcode == 0x2E ? "Authentication Query (obsolete)"
+                                                  : "Authentication Response (obsolete)",
+                                   tsbk_byte, "TO");
+            return 1;
+        case 0x36: tsbk_isp_print_src_tgt("Roaming Address Request", tsbk_byte, "TO"); return 1;
+        case 0x37:
+            tsbk_isp_print_wacn_sys_src("Roaming Address Response", tsbk_byte);
+            DSD_FPRINTF(stderr, " MSN [%d] FINAL [%d]", tsbk_byte[2] & 0x0F, (tsbk_byte[2] & 0x80) ? 1 : 0);
+            return 1;
+        case 0x38:
+        case 0x39:
+        case 0x3A:
+        case 0x3B:
+            DSD_FPRINTF(stderr, "\n Authentication Message (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " OP [%02X] SRC [%d] DATA [%02X%02X%02X%02X%02X%02X%02X%02X]", opcode,
+                        tsbk_u24(tsbk_byte, 7), tsbk_byte[2], tsbk_byte[3], tsbk_byte[4], tsbk_byte[5], tsbk_byte[6],
+                        tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+            return 1;
+        default: return 0;
+    }
+}
+
+static void
+tsbk_isp_print_unsupported(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    DSD_FPRINTF(stderr, "\n Unsupported ISP opcode (protected/inbound) OP [%02X]", opcode);
+    DSD_FPRINTF(stderr, " DATA [%02X%02X%02X%02X%02X%02X%02X%02X]", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
+                tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+}
+
 static void
 tsbk_handle_isp_messages(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
-    int opcode = tsbk_byte[0] & 0x3F;
-    if (opcode != 0x27) {
-        return;
-    }
-
-    int group = (tsbk_byte[5] << 8) | tsbk_byte[6];
-    int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
+    uint8_t opcode = (uint8_t)(tsbk_byte[0] & 0x3F);
     DSD_FPRINTF(stderr, "%s", KYEL);
-    DSD_FPRINTF(stderr, "\n Emergency Alarm Request (ISP)\n");
-    DSD_FPRINTF(stderr, "  Source: %d Group: %d", source, group);
-    DSD_FPRINTF(stderr, " %s** EMERGENCY **%s", KRED, KYEL);
+
+    /*
+     * Standard protected TSBKs carry inbound ISP messages. Field offsets below
+     * mirror SDRTrunk's phase1/message/tsbk/standard/isp classes. These are
+     * subscriber-to-network requests/responses, so this path logs metadata only
+     * and intentionally does not retune or feed the outbound grant state machine.
+     */
+    int handled = tsbk_handle_isp_service_messages(opcode, tsbk_byte);
+    if (!handled) {
+        handled = tsbk_handle_isp_status_control_messages(opcode, tsbk_byte);
+    }
+    if (!handled) {
+        handled = tsbk_handle_isp_registration_messages(opcode, tsbk_byte);
+    }
+    if (!handled) {
+        handled = tsbk_handle_isp_auth_roaming_messages(opcode, tsbk_byte);
+    }
+    if (!handled) {
+        tsbk_isp_print_unsupported(opcode, tsbk_byte);
+    }
     DSD_FPRINTF(stderr, "\n");
 }
 

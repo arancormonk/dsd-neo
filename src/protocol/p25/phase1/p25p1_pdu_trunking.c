@@ -54,7 +54,11 @@ typedef struct {
 enum {
     P25_MBT_AMBTC_OPCODE_INDEX = 7,
     P25_MBT_UMBTC_OPCODE_INDEX = 12,
+    P25_MBT_LEGACY_MAX_LEN = 48,
 };
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len);
 
 static int
 p25_mbt_opcode_index(uint8_t fmt) {
@@ -66,14 +70,22 @@ p25_mbt_opcode_index(uint8_t fmt) {
     return (fmt == 0x17) ? P25_MBT_AMBTC_OPCODE_INDEX : P25_MBT_UMBTC_OPCODE_INDEX;
 }
 
-static p25p1_mbt_fields
-p25_parse_mbt_fields(const uint8_t* mpdu_byte) {
-    p25p1_mbt_fields fields;
-    fields.fmt = mpdu_byte[0] & 0x1F;
-    fields.mfid = mpdu_byte[2];
-    fields.blks = mpdu_byte[6] & 0x7F;
-    fields.opcode = mpdu_byte[p25_mbt_opcode_index(fields.fmt)] & 0x3F;
-    return fields;
+static int
+p25_parse_mbt_fields_checked(const uint8_t* mpdu_byte, size_t mpdu_len, p25p1_mbt_fields* fields) {
+    if (!mpdu_byte || !fields || mpdu_len <= 6U) {
+        return 0;
+    }
+
+    fields->fmt = mpdu_byte[0] & 0x1F;
+    fields->mfid = mpdu_byte[2];
+    fields->blks = mpdu_byte[6] & 0x7F;
+
+    int op_idx = p25_mbt_opcode_index(fields->fmt);
+    if (op_idx < 0 || (size_t)op_idx >= mpdu_len) {
+        return 0;
+    }
+    fields->opcode = mpdu_byte[op_idx] & 0x3F;
+    return 1;
 }
 
 static void
@@ -88,11 +100,80 @@ p25_print_mbt_header(const p25p1_mbt_fields* fields) {
 }
 
 static void
-p25_print_mbt_payload_hex(const uint8_t* mpdu_byte, int blks) {
-    int limit = (12 * (blks + 1) % 37);
-    for (int i = 0; i < limit; i++) {
+p25_print_mbt_payload_hex(const uint8_t* mpdu_byte, int blks, size_t mpdu_len) {
+    size_t limit = (size_t)((12 * (blks + 1)) % 37);
+    if (limit > mpdu_len) {
+        limit = mpdu_len;
+    }
+    for (size_t i = 0; i < limit; i++) {
         DSD_FPRINTF(stderr, "%02X", mpdu_byte[i]);
     }
+}
+
+static int
+p25_mbt_require_len(const p25p1_mbt_fields* fields, size_t mpdu_len, size_t needed, const char* label) {
+    if (mpdu_len >= needed) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, " - %s short payload (fmt %02X op %02X need %zu got %zu)", label ? label : "MBT",
+                fields ? fields->fmt : 0U, fields ? fields->opcode : 0U, needed, mpdu_len);
+    return 0;
+}
+
+static uint16_t
+p25_mbt_u16(const uint8_t* mpdu_byte, size_t off) {
+    return (uint16_t)(((uint16_t)mpdu_byte[off] << 8) | (uint16_t)mpdu_byte[off + 1U]);
+}
+
+static uint32_t
+p25_mbt_u24(const uint8_t* mpdu_byte, size_t off) {
+    return ((uint32_t)mpdu_byte[off] << 16) | ((uint32_t)mpdu_byte[off + 1U] << 8) | (uint32_t)mpdu_byte[off + 2U];
+}
+
+static void
+p25_mbt_decode_header_addr(const uint8_t* mpdu_byte, uint32_t* out_addr) {
+    if (out_addr) {
+        *out_addr = p25_mbt_u24(mpdu_byte, 3U);
+    }
+}
+
+static void
+p25_mbt_decode_source_fq_high16(const uint8_t* mpdu_byte, uint32_t* out_local, uint32_t* out_wacn, uint16_t* out_sysid,
+                                uint32_t* out_id) {
+    if (out_local) {
+        *out_local = ((uint32_t)mpdu_byte[22] << 16) | ((uint32_t)mpdu_byte[23] << 8) | (uint32_t)mpdu_byte[24];
+    }
+    if (out_wacn) {
+        *out_wacn = ((uint32_t)mpdu_byte[8] << 12) | ((uint32_t)mpdu_byte[9] << 4) | ((uint32_t)mpdu_byte[12] >> 4);
+    }
+    if (out_sysid) {
+        *out_sysid = (uint16_t)(((uint16_t)(mpdu_byte[12] & 0x0F) << 8) | (uint16_t)mpdu_byte[13]);
+    }
+    if (out_id) {
+        *out_id = p25_mbt_u24(mpdu_byte, 14U);
+    }
+}
+
+static void
+p25_mbt_decode_target_fq_block1(const uint8_t* mpdu_byte, uint32_t* out_local, uint32_t* out_wacn, uint16_t* out_sysid,
+                                uint32_t* out_id) {
+    if (out_local) {
+        *out_local = p25_mbt_u24(mpdu_byte, 3U);
+    }
+    if (out_wacn) {
+        *out_wacn = ((uint32_t)mpdu_byte[25] << 12) | ((uint32_t)mpdu_byte[26] << 4) | ((uint32_t)mpdu_byte[27] >> 4);
+    }
+    if (out_sysid) {
+        *out_sysid = (uint16_t)(((uint16_t)(mpdu_byte[27] & 0x0F) << 8) | (uint16_t)mpdu_byte[28]);
+    }
+    if (out_id) {
+        *out_id = p25_mbt_u24(mpdu_byte, 29U);
+    }
+}
+
+static void
+p25_mbt_print_fq_radio(const char* prefix, uint32_t local, uint32_t wacn, uint16_t sysid, uint32_t id) {
+    DSD_FPRINTF(stderr, " %s [%u] FULL [%05X.%03X.%06X]", prefix, local, wacn, sysid, id);
 }
 
 static int
@@ -120,7 +201,7 @@ p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) 
 }
 
 static void DSD_ATTR_USED
-p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
+p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                 const p25p1_mbt_fields* fields) {
     if (!fields || !(p25_mbt_is_bridgeable_iden_update(fields->opcode) && fields->mfid < 2)) {
         return;
@@ -134,7 +215,10 @@ p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t*
      */
     int op_idx = p25_mbt_opcode_index(fields->fmt);
     int payload_off = op_idx + 1;
-    int total_len = (12 * (fields->blks + 1));
+    size_t total_len = 12U * (size_t)(fields->blks + 1);
+    if (total_len > mpdu_len) {
+        total_len = mpdu_len;
+    }
     unsigned long long int MAC[24] = {0};
 
     uint8_t mac_opcode = fields->opcode;
@@ -144,7 +228,7 @@ p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t*
     MAC[1] = mac_opcode;
 
     int mac_i = 2;
-    for (int i = payload_off; i < total_len && mac_i < 24; i++, mac_i++) {
+    for (size_t i = (size_t)payload_off; i < total_len && mac_i < 24; i++, mac_i++) {
         MAC[mac_i] = mpdu_byte[i];
     }
 
@@ -378,36 +462,66 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
-    int svc = mpdu_byte[8];
-    int channelt = (mpdu_byte[22] << 8) | mpdu_byte[23];
-    int channelr = (mpdu_byte[24] << 8) | mpdu_byte[25];
-    long int source = (mpdu_byte[3] << 16) | (mpdu_byte[4] << 8) | mpdu_byte[5];
-    long int target = (mpdu_byte[19] << 16) | (mpdu_byte[20] << 8) | mpdu_byte[21];
-    long int src_nid = (mpdu_byte[12] << 24) | (mpdu_byte[13] << 16) | (mpdu_byte[14] << 8) | mpdu_byte[15];
-    long int src_sid = (mpdu_byte[16] << 16) | (mpdu_byte[17] << 8) | mpdu_byte[18];
-    long int tgt_nid = (mpdu_byte[26] << 16) | (mpdu_byte[27] << 8) | mpdu_byte[28];
-    long int tgt_sid = (mpdu_byte[29] << 16) | (mpdu_byte[30] << 8) | mpdu_byte[31];
+p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
+                                        uint8_t opcode) {
+    const int has_block1 = mpdu_len >= 32U;
+    uint8_t svc = mpdu_byte[8];
+    uint16_t channelt = (uint16_t)(((uint16_t)mpdu_byte[22] << 8) | (uint16_t)mpdu_byte[23]);
+    uint16_t channelr = has_block1 ? (uint16_t)(((uint16_t)mpdu_byte[24] << 8) | (uint16_t)mpdu_byte[25]) : 0xFFFFU;
+    uint32_t source = ((uint32_t)mpdu_byte[3] << 16) | ((uint32_t)mpdu_byte[4] << 8) | (uint32_t)mpdu_byte[5];
+    uint32_t target = ((uint32_t)mpdu_byte[19] << 16) | ((uint32_t)mpdu_byte[20] << 8) | (uint32_t)mpdu_byte[21];
+    uint32_t src_wacn =
+        ((uint32_t)mpdu_byte[12] << 12) | ((uint32_t)mpdu_byte[13] << 4) | ((uint32_t)mpdu_byte[14] >> 4);
+    uint16_t src_sys = (uint16_t)(((uint16_t)(mpdu_byte[14] & 0x0F) << 8) | (uint16_t)mpdu_byte[15]);
+    uint32_t src_id = ((uint32_t)mpdu_byte[16] << 16) | ((uint32_t)mpdu_byte[17] << 8) | (uint32_t)mpdu_byte[18];
+    uint32_t tgt_wacn = 0;
+    uint16_t tgt_sys = 0;
+    uint32_t tgt_id = target;
     long int freq1 = 0;
-    long int freq2 = 0;
-    UNUSED(freq2);
+
+    if (has_block1) {
+        tgt_wacn = ((uint32_t)mpdu_byte[9] << 12) | ((uint32_t)mpdu_byte[26] << 4) | ((uint32_t)mpdu_byte[27] >> 4);
+        tgt_sys = (uint16_t)(((uint16_t)(mpdu_byte[27] & 0x0F) << 8) | (uint16_t)mpdu_byte[28]);
+        tgt_id = ((uint32_t)mpdu_byte[29] << 16) | ((uint32_t)mpdu_byte[30] << 8) | (uint32_t)mpdu_byte[31];
+    }
 
     DSD_FPRINTF(stderr, "%s\n ", KYEL);
     p25_print_voice_svc_common(opts, state, svc);
 
-    DSD_FPRINTF(stderr, " Unit to Unit Voice Channel Grant Update - Extended");
-    DSD_FPRINTF(stderr,
-                "\n  SVC: %02X; CHAN-T: %04X; CHAN-R: %04X; SRC: %ld; TGT: %ld; FULL SRC: %08lX-%08ld; FULL TGT: "
-                "%08lX-%08ld;",
-                svc, channelt, channelr, source, target, src_nid, src_sid, tgt_nid, tgt_sid);
+    /*
+     * AMBTC 0x04 (grant) and 0x06 (grant update) share the extended UU
+     * layout used by SDRTrunk/Trunk Recorder: service and target-WACN high
+     * bits in the header, source FQ + local target + downlink in block 0, and
+     * uplink + target FQ in block 1.
+     */
+    DSD_FPRINTF(stderr, " Unit to Unit Voice Channel Grant");
+    if (opcode == 0x06) {
+        DSD_FPRINTF(stderr, " Update");
+    }
+    DSD_FPRINTF(stderr, " - Extended");
+    DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN-T [%04X]", svc, channelt);
+    if (has_block1) {
+        DSD_FPRINTF(stderr, " CHAN-R [%04X]", channelr);
+    } else {
+        DSD_FPRINTF(stderr, " CHAN-R [----]");
+    }
+    DSD_FPRINTF(stderr, " SRC [%u] TGT [%u] FULL SRC [%05X.%03X.%06X]", source, target, src_wacn, src_sys, src_id);
+    if (has_block1) {
+        DSD_FPRINTF(stderr, " FULL TGT [%05X.%03X.%06X]", tgt_wacn, tgt_sys, tgt_id);
+    } else {
+        DSD_FPRINTF(stderr, " FULL TGT [unavailable]");
+    }
 
     freq1 = process_channel_to_freq(opts, state, channelt);
-    (void)process_channel_to_freq(opts, state, channelr);
+    if (has_block1) {
+        (void)process_channel_to_freq(opts, state, channelr);
+    }
 
     char suf2[32];
     p25_format_chan_suffix(state, channelt, -1, suf2, sizeof(suf2));
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TGT: %u; ", channelt,
-                 suf2, (uint32_t)target);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active UU Ch: %04X%s SRC: %u TGT: %u; ",
+                 channelt, suf2, source, target);
+    state->last_active_time = time(NULL);
 
     p25p1_pdu_print_group_label(state, (uint32_t)target);
 
@@ -423,6 +537,123 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
         p25_sm_on_indiv_grant(opts, state, channelt, svc, (int)target, (int)source);
     }
+}
+
+static void DSD_ATTR_USED
+p25_handle_mbt_unit_to_unit_answer_request(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
+    int svc = mpdu_byte[8];
+    uint32_t target = p25_mbt_u24(mpdu_byte, 3U);
+    uint32_t src_wacn =
+        ((uint32_t)mpdu_byte[13] << 12) | ((uint32_t)mpdu_byte[14] << 4) | ((uint32_t)mpdu_byte[15] >> 4);
+    uint16_t src_sys = (uint16_t)(((uint16_t)(mpdu_byte[15] & 0x0F) << 8) | (uint16_t)mpdu_byte[16]);
+    uint32_t src_id = p25_mbt_u24(mpdu_byte, 17U);
+
+    DSD_FPRINTF(stderr, "%s\n ", KYEL);
+    p25_print_voice_svc_common(opts, state, svc);
+    DSD_FPRINTF(stderr, " Unit to Unit Answer Request MBT - Extended");
+    DSD_FPRINTF(stderr, "\n  SVC [%02X] TO [%u] FULL SRC [%05X.%03X.%06X]", svc, target, src_wacn, src_sys, src_id);
+}
+
+static void DSD_ATTR_USED
+p25_handle_mbt_extended_command_metadata(const uint8_t* mpdu_byte, uint8_t opcode) {
+    const char* label = "Command";
+    uint32_t src_local = 0;
+    uint32_t src_wacn = 0;
+    uint16_t src_sys = 0;
+    uint32_t src_id = 0;
+    uint32_t tgt_local = 0;
+    uint32_t tgt_wacn = 0;
+    uint16_t tgt_sys = 0;
+    uint32_t tgt_id = 0;
+
+    p25_mbt_decode_source_fq_high16(mpdu_byte, &src_local, &src_wacn, &src_sys, &src_id);
+    p25_mbt_decode_target_fq_block1(mpdu_byte, &tgt_local, &tgt_wacn, &tgt_sys, &tgt_id);
+
+    if (opcode == 0x18) {
+        label = "Status Update";
+    } else if (opcode == 0x1A) {
+        label = "Status Query";
+    } else if (opcode == 0x1C) {
+        label = "Message Update";
+    } else if (opcode == 0x1F) {
+        label = "Call Alert";
+    }
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n %s MBT - Extended", label);
+    p25_mbt_print_fq_radio("FM", src_local, src_wacn, src_sys, src_id);
+    p25_mbt_print_fq_radio("TO", tgt_local, tgt_wacn, tgt_sys, tgt_id);
+    if (opcode == 0x18) {
+        DSD_FPRINTF(stderr, " UNIT STATUS [%02X] USER STATUS [%02X]", mpdu_byte[17], mpdu_byte[18]);
+    } else if (opcode == 0x1C) {
+        DSD_FPRINTF(stderr, " SHORT DATA [%04X]", p25_mbt_u16(mpdu_byte, 17U));
+    }
+}
+
+static void DSD_ATTR_USED
+p25_handle_mbt_group_affiliation_query(const uint8_t* mpdu_byte) {
+    uint32_t target = 0;
+    uint32_t src_wacn = 0;
+    uint16_t src_sys = 0;
+    uint32_t src_id = 0;
+
+    p25_mbt_decode_header_addr(mpdu_byte, &target);
+    src_wacn = ((uint32_t)mpdu_byte[8] << 12) | ((uint32_t)mpdu_byte[9] << 4) | ((uint32_t)mpdu_byte[12] >> 4);
+    src_sys = (uint16_t)(((uint16_t)(mpdu_byte[12] & 0x0F) << 8) | (uint16_t)mpdu_byte[13]);
+    src_id = p25_mbt_u24(mpdu_byte, 14U);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Group Affiliation Query MBT - Extended");
+    DSD_FPRINTF(stderr, " TO [%u] FULL SRC [%05X.%03X.%06X]", target, src_wacn, src_sys, src_id);
+}
+
+static void DSD_ATTR_USED
+p25_handle_mbt_roaming_address(const uint8_t* mpdu_byte, uint8_t opcode) {
+    uint32_t target = p25_mbt_u24(mpdu_byte, 3U);
+    int final = (mpdu_byte[8] & 0x80) ? 1 : 0;
+    int msn = mpdu_byte[8] & 0x0F;
+    uint32_t wacn_a = ((uint32_t)mpdu_byte[9] << 12) | ((uint32_t)mpdu_byte[12] << 4) | ((uint32_t)mpdu_byte[13] >> 4);
+    uint16_t sys_a = (uint16_t)(((uint16_t)(mpdu_byte[13] & 0x0F) << 8) | (uint16_t)mpdu_byte[14]);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Roaming Address %s MBT - Extended", (opcode == 0x36) ? "Command" : "Update");
+    DSD_FPRINTF(stderr, " TO [%u] MSN [%d] FINAL [%d] ADDR-A [%05X.%03X]", target, msn, final, wacn_a, sys_a);
+}
+
+static void DSD_ATTR_USED
+p25_handle_mbt_individual_data_channel_grant(const uint8_t* mpdu_byte, size_t mpdu_len) {
+    int has_uplink = mpdu_len >= 26U;
+    uint8_t svc = mpdu_byte[8];
+    uint32_t source = p25_mbt_u24(mpdu_byte, 3U);
+    uint32_t src_wacn =
+        ((uint32_t)mpdu_byte[12] << 12) | ((uint32_t)mpdu_byte[13] << 4) | ((uint32_t)mpdu_byte[14] >> 4);
+    uint16_t src_sys = (uint16_t)(((uint16_t)(mpdu_byte[14] & 0x0F) << 8) | (uint16_t)mpdu_byte[15]);
+    uint32_t src_id = p25_mbt_u24(mpdu_byte, 16U);
+    uint32_t target = p25_mbt_u24(mpdu_byte, 19U);
+    uint16_t channelt = p25_mbt_u16(mpdu_byte, 22U);
+    uint16_t channelr = has_uplink ? p25_mbt_u16(mpdu_byte, 24U) : 0xFFFFU;
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Individual Data Channel Grant MBT - Obsolete");
+    DSD_FPRINTF(stderr, " SVC [%02X] SRC [%u] FULL SRC [%05X.%03X.%06X] TO [%u] CHAN-T [%04X]", svc, source, src_wacn,
+                src_sys, src_id, target, channelt);
+    if (has_uplink) {
+        DSD_FPRINTF(stderr, " CHAN-R [%04X]", channelr);
+    }
+}
+
+static void DSD_ATTR_USED
+p25_handle_mbt_group_data_channel_grant(const uint8_t* mpdu_byte) {
+    uint8_t svc = mpdu_byte[8];
+    uint32_t source = p25_mbt_u24(mpdu_byte, 3U);
+    uint16_t channelt = p25_mbt_u16(mpdu_byte, 14U);
+    uint16_t channelr = p25_mbt_u16(mpdu_byte, 16U);
+    uint16_t group = p25_mbt_u16(mpdu_byte, 18U);
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "\n Group Data Channel Grant MBT - Obsolete");
+    DSD_FPRINTF(stderr, " SVC [%02X] SRC [%u] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, source, channelt,
+                channelr, group, group);
 }
 
 static int DSD_ATTR_USED
@@ -493,10 +724,10 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_mfid_a4(const uint8_t* mpdu_byte, int blks, uint8_t opcode) {
+p25_handle_mbt_mfid_a4(const uint8_t* mpdu_byte, int blks, uint8_t opcode, size_t mpdu_len) {
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n MFID A4 (Harris); Opcode: %02X; ", opcode);
-    p25_print_mbt_payload_hex(mpdu_byte, blks);
+    p25_print_mbt_payload_hex(mpdu_byte, blks, mpdu_len);
     DSD_FPRINTF(stderr, " %s", KNRM);
 }
 
@@ -604,101 +835,236 @@ p25_handle_mbt_unit_registration_response(dsd_state* state, const uint8_t* mpdu_
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_mfid90_unknown(const uint8_t* mpdu_byte, int blks) {
+p25_handle_mbt_mfid90_unknown(const uint8_t* mpdu_byte, int blks, size_t mpdu_len) {
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n MFID 90 (Moto); Opcode: %02X; ", mpdu_byte[0] & 0x3F);
-    p25_print_mbt_payload_hex(mpdu_byte, blks);
+    p25_print_mbt_payload_hex(mpdu_byte, blks, mpdu_len);
     DSD_FPRINTF(stderr, " %s", KNRM);
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_unknown_mfid(const uint8_t* mpdu_byte, int blks, uint8_t mfid, uint8_t opcode) {
+p25_handle_mbt_unknown_mfid(const uint8_t* mpdu_byte, int blks, uint8_t mfid, uint8_t opcode, size_t mpdu_len) {
     DSD_FPRINTF(stderr, "%s", KCYN);
     DSD_FPRINTF(stderr, "\n MFID %02X (Unknown); Opcode: %02X; ", mfid, opcode);
-    p25_print_mbt_payload_hex(mpdu_byte, blks);
+    p25_print_mbt_payload_hex(mpdu_byte, blks, mpdu_len);
     DSD_FPRINTF(stderr, " %s", KNRM);
 }
 
 static int
-p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
+p25_handle_mbt_site_status_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
+                                  const p25p1_mbt_fields* fields) {
+    switch (fields->opcode) {
+        case 0x3B:
+            if (!p25_mbt_require_len(fields, mpdu_len, 20U, "Network Status Broadcast")) {
+                return 1;
+            }
+            p25_handle_mbt_net_sts_broadcast(opts, state, mpdu_byte);
+            return 1;
+        case 0x3A:
+            if (!p25_mbt_require_len(fields, mpdu_len, 19U, "RFSS Status Broadcast")) {
+                return 1;
+            }
+            p25_handle_mbt_rfss_status_broadcast(opts, state, mpdu_byte);
+            return 1;
+        case 0x3C:
+            if (!p25_mbt_require_len(fields, mpdu_len, 14U, "Adjacent Status Broadcast")) {
+                return 1;
+            }
+            p25_handle_mbt_adjacent_status_broadcast(opts, state, mpdu_byte);
+            return 1;
+        case 0x3E:
+            /*
+             * Keep AMBTC 0x3E as Protection Parameter Broadcast. Older AABC-B
+             * tables conflict with newer SDRTrunk/observed behavior and with
+             * bridged P1 TSBK 0x3E adjacency handling; change only with current
+             * AABC-E text or captures.
+             */
+            if (!p25_mbt_require_len(fields, mpdu_len, 10U, "Protection Parameter Broadcast")) {
+                return 1;
+            }
+            p25_handle_mbt_protection_parameter_broadcast(state, mpdu_byte);
+            return 1;
+        case 0x33:
+            if (!p25_mbt_require_len(fields, mpdu_len, 19U, "TDMA Identifier Update")) {
+                return 1;
+            }
+            p25_handle_mbt_tdma_iden_foreign_system(mpdu_byte);
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+p25_handle_mbt_voice_service_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
+                                    const p25p1_mbt_fields* fields) {
+    switch (fields->opcode) {
+        case 0x00:
+            if (!p25_mbt_require_len(fields, mpdu_len, 20U, "Group Voice Channel Grant")) {
+                return 1;
+            }
+            p25_handle_mbt_group_voice_grant(opts, state, mpdu_byte);
+            return 1;
+        case 0x04:
+        case 0x06:
+            if (!p25_mbt_require_len(fields, mpdu_len, 24U, "Unit-to-Unit Voice Channel Grant")) {
+                return 1;
+            }
+            p25_handle_mbt_unit_to_unit_voice_grant(opts, state, mpdu_byte, mpdu_len, fields->opcode);
+            return 1;
+        case 0x05:
+            if (!p25_mbt_require_len(fields, mpdu_len, 20U, "Unit-to-Unit Answer Request")) {
+                return 1;
+            }
+            p25_handle_mbt_unit_to_unit_answer_request(opts, state, mpdu_byte);
+            return 1;
+        case 0x08:
+        case 0x09:
+            if (fields->mfid >= 2) {
+                return 0;
+            }
+            if (!p25_mbt_require_len(fields, mpdu_len, 18U, "Telephone Interconnect Voice Channel Grant")) {
+                return 1;
+            }
+            p25_handle_mbt_telephone_interconnect_grant(opts, state, mpdu_byte, fields->opcode);
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+p25_handle_mbt_data_service_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p25p1_mbt_fields* fields) {
+    switch (fields->opcode) {
+        case 0x10:
+            if (!p25_mbt_require_len(fields, mpdu_len, 24U, "Individual Data Channel Grant")) {
+                return 1;
+            }
+            p25_handle_mbt_individual_data_channel_grant(mpdu_byte, mpdu_len);
+            return 1;
+        case 0x11:
+            if (!p25_mbt_require_len(fields, mpdu_len, 20U, "Group Data Channel Grant")) {
+                return 1;
+            }
+            p25_handle_mbt_group_data_channel_grant(mpdu_byte);
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+p25_handle_mbt_command_metadata_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p25p1_mbt_fields* fields) {
+    switch (fields->opcode) {
+        case 0x18:
+        case 0x1A:
+        case 0x1C:
+        case 0x1F:
+            if (!p25_mbt_require_len(fields, mpdu_len, 32U, "AMBTC command/status metadata")) {
+                return 1;
+            }
+            p25_handle_mbt_extended_command_metadata(mpdu_byte, fields->opcode);
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+p25_handle_mbt_affiliation_roaming_opcode(dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
+                                          const p25p1_mbt_fields* fields) {
+    switch (fields->opcode) {
+        case 0x28:
+            if (fields->fmt == 0x17) {
+                if (!p25_mbt_require_len(fields, mpdu_len, 21U, "Group Affiliation Response")) {
+                    return 1;
+                }
+                p25_handle_mbt_group_affiliation_response(state, mpdu_byte);
+            } else {
+                DSD_FPRINTF(stderr, " - group affiliation response format %02X not handled", fields->fmt);
+            }
+            return 1;
+        case 0x2A:
+            if (!p25_mbt_require_len(fields, mpdu_len, 17U, "Group Affiliation Query")) {
+                return 1;
+            }
+            p25_handle_mbt_group_affiliation_query(mpdu_byte);
+            return 1;
+        case 0x2C:
+            if (fields->fmt == 0x17) {
+                if (!p25_mbt_require_len(fields, mpdu_len, 18U, "Unit Registration Response")) {
+                    return 1;
+                }
+                p25_handle_mbt_unit_registration_response(state, mpdu_byte);
+            } else {
+                DSD_FPRINTF(stderr, " - unit registration response format %02X not handled", fields->fmt);
+            }
+            return 1;
+        case 0x36:
+        case 0x37:
+            if (!p25_mbt_require_len(fields, mpdu_len, 15U, "Roaming Address")) {
+                return 1;
+            }
+            p25_handle_mbt_roaming_address(mpdu_byte, fields->opcode);
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                const p25p1_mbt_fields* fields) {
-    if (fields->opcode == 0x3B) {
-        p25_handle_mbt_net_sts_broadcast(opts, state, mpdu_byte);
+    if (p25_handle_mbt_site_status_opcode(opts, state, mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
-    if (fields->opcode == 0x3A) {
-        p25_handle_mbt_rfss_status_broadcast(opts, state, mpdu_byte);
+    if (p25_handle_mbt_voice_service_opcode(opts, state, mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
-    if (fields->opcode == 0x3C) {
-        p25_handle_mbt_adjacent_status_broadcast(opts, state, mpdu_byte);
+    if (p25_handle_mbt_data_service_opcode(mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
-    if (fields->opcode == 0x3E) {
-        p25_handle_mbt_protection_parameter_broadcast(state, mpdu_byte);
+    if (p25_handle_mbt_command_metadata_opcode(mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
-    if (fields->opcode == 0x33) {
-        p25_handle_mbt_tdma_iden_foreign_system(mpdu_byte);
-        return 1;
-    }
-    if (fields->opcode == 0x0) {
-        p25_handle_mbt_group_voice_grant(opts, state, mpdu_byte);
-        return 1;
-    }
-    if (fields->opcode == 0x6) {
-        p25_handle_mbt_unit_to_unit_voice_grant(opts, state, mpdu_byte);
-        return 1;
-    }
-    if ((fields->opcode == 0x8 || fields->opcode == 0x9) && fields->mfid < 2) {
-        p25_handle_mbt_telephone_interconnect_grant(opts, state, mpdu_byte, fields->opcode);
-        return 1;
-    }
-    if (fields->opcode == 0x28) {
-        if (fields->fmt == 0x17) {
-            p25_handle_mbt_group_affiliation_response(state, mpdu_byte);
-        } else {
-            DSD_FPRINTF(stderr, " - group affiliation response format %02X not handled", fields->fmt);
-        }
-        return 1;
-    }
-    if (fields->opcode == 0x2C) {
-        if (fields->fmt == 0x17) {
-            p25_handle_mbt_unit_registration_response(state, mpdu_byte);
-        } else {
-            DSD_FPRINTF(stderr, " - unit registration response format %02X not handled", fields->fmt);
-        }
-        return 1;
-    }
-    return 0;
+    return p25_handle_mbt_affiliation_roaming_opcode(state, mpdu_byte, mpdu_len, fields);
 }
 
 //trunking data delivered via PDU format
 void
 p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
-    p25p1_mbt_fields fields = p25_parse_mbt_fields(mpdu_byte);
+    (void)p25_decode_pdu_trunking_bounded(opts, state, mpdu_byte, P25_MBT_LEGACY_MAX_LEN);
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len) {
+    p25p1_mbt_fields fields;
+    if (!p25_parse_mbt_fields_checked(mpdu_byte, mpdu_len, &fields)) {
+        DSD_FPRINTF(stderr, " ALT MBT - short payload (got %zu)", mpdu_len);
+        return -1;
+    }
 
     p25_print_mbt_header(&fields);
-    p25_mbt_try_bridge_iden_updates(opts, state, mpdu_byte, &fields);
+    p25_mbt_try_bridge_iden_updates(opts, state, mpdu_byte, mpdu_len, &fields);
 
     if (p25_mbt_has_unsupported_survey_format(&fields)) {
         DSD_FPRINTF(stderr, " - broadcast format %02X not handled", fields.fmt);
-        return;
+        return 0;
     }
 
-    if (p25_handle_mbt_standard_opcode(opts, state, mpdu_byte, &fields)) {
-        return;
+    if (p25_handle_mbt_standard_opcode(opts, state, mpdu_byte, mpdu_len, &fields)) {
+        return 0;
     }
 
     if (fields.mfid == 0xA4) {
-        p25_handle_mbt_mfid_a4(mpdu_byte, fields.blks, fields.opcode);
+        p25_handle_mbt_mfid_a4(mpdu_byte, fields.blks, fields.opcode, mpdu_len);
     } else if (fields.mfid == 0x90) {
         if (fields.opcode == 0x02) {
+            if (!p25_mbt_require_len(&fields, mpdu_len, 18U, "MFID90 Group Regroup Channel Grant")) {
+                return 0;
+            }
             p25_handle_mbt_mfid90_group_regroup(opts, state, mpdu_byte);
         } else {
-            p25_handle_mbt_mfid90_unknown(mpdu_byte, fields.blks);
+            p25_handle_mbt_mfid90_unknown(mpdu_byte, fields.blks, mpdu_len);
         }
     } else {
-        p25_handle_mbt_unknown_mfid(mpdu_byte, fields.blks, fields.mfid, mpdu_byte[0] & 0x3F);
+        p25_handle_mbt_unknown_mfid(mpdu_byte, fields.blks, fields.mfid, mpdu_byte[0] & 0x3F, mpdu_len);
     }
+    return 0;
 }
