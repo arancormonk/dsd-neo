@@ -5455,6 +5455,9 @@ p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
     if (opcode == 0x10) {
         return p25p2_vpdu_consume_multifragment_continuation(ctx);
     }
+    if (opcode == 0x00 && ctx->iter_idx > 0) {
+        return 1;
+    }
     if (ctx->state && ctx->state->p25_mac_frag_active) {
         DSD_FPRINTF(stderr, "\n MAC Multi-Fragment assembly cleared by non-fragment opcode [%02X]", opcode);
         p25p2_vpdu_frag_clear(ctx->state);

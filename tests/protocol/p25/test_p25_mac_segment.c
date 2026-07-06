@@ -348,9 +348,17 @@ run_direct_segment_parse_cases(void) {
     if (p25p2_mac_parse(1, mac, &res) != 0) {
         return 402;
     }
-    rc |= expect_int("shifted harris count", res.segment_count, 2);
-    rc |= expect_int("shifted harris offset", res.segments[1].offset, 5);
-    rc |= expect_int("shifted harris len", res.segments[1].length, 17);
+    rc |= expect_int("truncated shifted harris count", res.segment_count, 1);
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x30;
+    mac[6] = 0x30;
+    mac[11] = 0xE4;
+    if (p25p2_mac_parse(1, mac, &res) != 0) {
+        return 403;
+    }
+    rc |= expect_int("truncated third segment count", res.segment_count, 2);
+    rc |= expect_int("truncated third compat lenC", res.len_c, 5);
 
     return rc;
 }
@@ -386,7 +394,7 @@ run_offset_relative_vpdu_cases(void) {
     mac[8] = 0xA4;
     mac[9] = 0x11;
     p25_test_process_mac_vpdu(1, mac, 24);
-    rc |= expect_int("offset shifted harris gps", g_nmea_harris_calls, 1);
+    rc |= expect_int("truncated shifted harris gps", g_nmea_harris_calls, 0);
 
     return rc;
 }

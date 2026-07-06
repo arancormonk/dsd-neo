@@ -178,6 +178,10 @@ p25p2_mac_parse_segments(int type, const unsigned long long mac[24], struct p25p
             break;
         }
 
+        if (offset > 0 && len > capacity - offset) {
+            break;
+        }
+
         out->segments[out->segment_count].offset = offset;
         out->segments[out->segment_count].length = len;
         out->segment_count++;
