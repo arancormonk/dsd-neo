@@ -5049,6 +5049,7 @@ static int
 p25p2_vpdu_is_standard_multifragment_base(int opcode) {
     switch (opcode) {
         case 0x71:
+        case 0xF1:
         case 0xC7:
         case 0xCB:
         case 0xCD:
@@ -5145,7 +5146,9 @@ static void
 p25p2_vpdu_handle_multifrag_authentication_demand(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
     if (!p25p2_vpdu_frag_has(ctx, 16)) {
-        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0x71 invalid: short authentication demand");
+        const p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
+        DSD_FPRINTF(stderr, "\n MAC multi-fragment 0x%02X invalid: short authentication demand",
+                    (unsigned)(frag ? frag->opcode : 0U));
         return;
     }
 
@@ -5366,6 +5369,7 @@ p25p2_vpdu_handle_completed_multifragment(p25p2_vpdu_ctx* ctx) {
 
     switch (opcode) {
         case 0x71: p25p2_vpdu_handle_multifrag_authentication_demand(ctx); break;
+        case 0xF1: p25p2_vpdu_handle_multifrag_authentication_demand(ctx); break;
         case 0xC7: p25p2_vpdu_handle_multifrag_unit_to_unit_grant(ctx, /*is_service_grant*/ 0); break;
         case 0xCB: p25p2_vpdu_handle_multifrag_call_alert(ctx); break;
         case 0xCD: p25p2_vpdu_handle_multifrag_radio_unit_monitor(ctx); break;

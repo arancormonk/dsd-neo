@@ -1120,8 +1120,9 @@ run_standard_mac_multifragment_cases(void) {
         int opcode;
         const char* label;
     } complete_cases[] = {
-        {0x71, "AUTH-L"},   {0xC7, "UU-UP-L"},  {0xCB, "CALL-L"},    {0xCD, "RUM-L"},   {0xCE, "MSG-L"},
-        {0xCF, "UU-SVC-L"}, {0xD9, "STATUS-L"}, {0xDB, "STATUSQ-L"}, {0xDE, "RUM-E-L"}, {0xE0, "ACK-L"},
+        {0x71, "AUTH-L"},    {0xF1, "AUTH-L"},  {0xC7, "UU-UP-L"},  {0xCB, "CALL-L"},
+        {0xCD, "RUM-L"},     {0xCE, "MSG-L"},   {0xCF, "UU-SVC-L"}, {0xD9, "STATUS-L"},
+        {0xDB, "STATUSQ-L"}, {0xDE, "RUM-E-L"}, {0xE0, "ACK-L"},
     };
 
     static dsd_opts opts;

@@ -82,13 +82,8 @@ p25p2_mac_motorola_payload_len(uint8_t opcode, int len) {
 
 static int
 p25p2_mac_harris_payload_len(uint8_t opcode, int len) {
-    switch (opcode) {
-        case 0x81u:
-        case 0x8Fu:
-        case 0xA8u:
-        case 0xB0u: return p25p2_mac_positive_len(len);
-        default: return -1;
-    }
+    (void)opcode;
+    return p25p2_mac_positive_len(len);
 }
 
 static int

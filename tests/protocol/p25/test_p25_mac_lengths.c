@@ -34,6 +34,7 @@ main(void) {
     rc |= expect_eq("OP 0x5D (RUM_OBSOLETE)", p25p2_mac_len_for(0x01, 0x5D), 8);
     rc |= expect_eq("OP 0x5E (RUM_ENH_ABBR)", p25p2_mac_len_for(0x01, 0x5E), 14);
     rc |= expect_eq("OP 0x71 (AUTH_DEMAND base fragment)", p25p2_mac_len_for(0x01, 0x71), 18);
+    rc |= expect_eq("OP 0xF1 (AUTH_DEMAND extended base fragment)", p25p2_mac_len_for(0x01, 0xF1), 18);
     rc |= expect_eq("OP 0x90 (GRG_VCH_USER_ABBR mfid00)", p25p2_mac_len_for(0x00, 0x90), 7);
     rc |= expect_eq("OP 0x90 (GRG_VCH_USER_ABBR mfid01)", p25p2_mac_len_for(0x01, 0x90), 7);
     rc |= expect_eq("OP 0xC0 (GRP_V_CH_GRANT_EXP)", p25p2_mac_len_for(0x01, 0xC0), 11);
