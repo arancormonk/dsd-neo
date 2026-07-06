@@ -565,6 +565,61 @@ l3h_alias_is_repeated_pair_fragment(const char* fragment, const char* previous_p
     return strcmp(fragment, previous_pair_fragment) == 0;
 }
 
+static int
+l3h_alias_phase1_build_alias(const l3h_alias_phase1_state* rx, char* alias, size_t alias_sz) {
+    if (!rx || !alias || alias_sz == 0) {
+        return 0;
+    }
+
+    char fragments[4][16];
+    DSD_MEMSET(fragments, 0, sizeof(fragments));
+    for (uint8_t block = 0; block < 4U; block++) {
+        if ((rx->mask & (uint8_t)(1U << block)) == 0U) {
+            continue;
+        }
+        l3h_alias_fragment_to_string(rx->fragment[block], fragments[block], sizeof(fragments[block]));
+    }
+
+    for (uint8_t block = 0; block < 4U; block++) {
+        int repeated_pair_fragment =
+            block >= 2U && l3h_alias_is_repeated_pair_fragment(fragments[block], fragments[block - 2U]);
+        if ((rx->mask & (uint8_t)(1U << block)) == 0U || repeated_pair_fragment) {
+            continue;
+        }
+        l3h_alias_append_fragment(alias, alias_sz, fragments[block]);
+    }
+
+    return alias[0] != '\0';
+}
+
+static size_t
+l3h_alias_phase1_make_input(const char* alias, uint8_t* input, size_t input_sz) {
+    if (!input || input_sz == 0) {
+        return 0;
+    }
+    DSD_MEMSET(input, 0, input_sz);
+    if (!alias || input_sz <= 4U) {
+        return 0;
+    }
+
+    size_t alias_len = strlen(alias);
+    if (alias_len > (input_sz - 4U)) {
+        alias_len = input_sz - 4U;
+    }
+    DSD_MEMCPY(input + 4, alias, alias_len);
+    return alias_len;
+}
+
+static int
+l3h_alias_phase1_should_emit(const l3h_alias_phase1_state* rx, const char* alias, int is_complete, int* alias_changed) {
+    int changed = rx && alias && strcmp(alias, rx->last_alias) != 0;
+    int already_saved = rx && alias && strcmp(alias, rx->last_saved_alias) == 0;
+    if (alias_changed) {
+        *alias_changed = changed;
+    }
+    return changed || (is_complete && !already_saved);
+}
+
 static void
 l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     l3h_alias_phase1_state* rx = &g_l3h_alias_phase1[alias_slot_index(slot)];
@@ -574,35 +629,13 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
 
     char alias[40];
     DSD_MEMSET(alias, 0, sizeof(alias));
-    char fragments[4][16];
-    DSD_MEMSET(fragments, 0, sizeof(fragments));
-    for (uint8_t block = 0; block < 4U; block++) {
-        if ((rx->mask & (uint8_t)(1U << block)) == 0U) {
-            continue;
-        }
-        l3h_alias_fragment_to_string(rx->fragment[block], fragments[block], sizeof(fragments[block]));
-    }
-    for (uint8_t block = 0; block < 4U; block++) {
-        int repeated_pair_fragment =
-            block >= 2U && l3h_alias_is_repeated_pair_fragment(fragments[block], fragments[block - 2U]);
-        if ((rx->mask & (uint8_t)(1U << block)) == 0U || repeated_pair_fragment) {
-            continue;
-        }
-        l3h_alias_append_fragment(alias, sizeof(alias), fragments[block]);
-    }
-
-    if (alias[0] == '\0') {
+    if (!l3h_alias_phase1_build_alias(rx, alias, sizeof(alias))) {
         return;
     }
     int is_complete = ((rx->mask & 0x0FU) == 0x0FU);
 
     uint8_t input[44];
-    DSD_MEMSET(input, 0, sizeof(input));
-    size_t alias_len = strlen(alias);
-    if (alias_len > (sizeof(input) - 4U)) {
-        alias_len = sizeof(input) - 4U;
-    }
-    DSD_MEMCPY(input + 4, alias, alias_len);
+    size_t alias_len = l3h_alias_phase1_make_input(alias, input, sizeof(input));
 
     uint32_t tsrc = 0;
     uint32_t ttg = 0;
@@ -614,9 +647,8 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
         return;
     }
 
-    int alias_changed = strcmp(alias, rx->last_alias) != 0;
-    int already_saved = strcmp(alias, rx->last_saved_alias) == 0;
-    if (!alias_changed && (!is_complete || already_saved)) {
+    int alias_changed = 0;
+    if (!l3h_alias_phase1_should_emit(rx, alias, is_complete, &alias_changed)) {
         return;
     }
     if (alias_changed) {
