@@ -276,6 +276,26 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ECHOONE", "l3h repeated complete alias");
     rc |= expect_policy_name(st, st->lastsrc, "ECHOONE", "l3h repeated complete policy");
 
+    st->lastsrc = 710005u;
+    st->lasttg = 48u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x33U, "A      ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAA", "l3h contained fragment retained");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h contained fragment no policy");
+    build_l3h_alias_lcw(lcw, 0x34U, "ALPHA  ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x35U, "A      ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAA",
+                     "l3h contained fragment repeated complete alias");
+    rc |= expect_policy_name(st, st->lastsrc, "ALPHAA", "l3h contained fragment complete policy");
+
     st->lastsrc = 710003u;
     st->lasttg = 46u;
     st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;

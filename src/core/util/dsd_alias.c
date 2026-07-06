@@ -519,10 +519,15 @@ l3h_alias_append_fragment(char* alias, size_t alias_sz, const char* fragment) {
     if (!alias || alias_sz == 0 || !fragment || fragment[0] == '\0') {
         return;
     }
-    if (strstr(alias, fragment) != NULL) {
-        return;
-    }
     alias_append(alias, alias_sz, fragment);
+}
+
+static int
+l3h_alias_is_repeated_pair_fragment(const char* fragment, const char* previous_pair_fragment) {
+    if (!fragment || !previous_pair_fragment || fragment[0] == '\0') {
+        return 0;
+    }
+    return strcmp(fragment, previous_pair_fragment) == 0;
 }
 
 static void
@@ -534,14 +539,21 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
 
     char alias[40];
     DSD_MEMSET(alias, 0, sizeof(alias));
+    char fragments[4][16];
+    DSD_MEMSET(fragments, 0, sizeof(fragments));
     for (uint8_t block = 0; block < 4U; block++) {
         if ((rx->mask & (uint8_t)(1U << block)) == 0U) {
             continue;
         }
-        char fragment[16];
-        DSD_MEMSET(fragment, 0, sizeof(fragment));
-        l3h_alias_fragment_to_string(rx->fragment[block], fragment, sizeof(fragment));
-        l3h_alias_append_fragment(alias, sizeof(alias), fragment);
+        l3h_alias_fragment_to_string(rx->fragment[block], fragments[block], sizeof(fragments[block]));
+    }
+    for (uint8_t block = 0; block < 4U; block++) {
+        int repeated_pair_fragment =
+            block >= 2U && l3h_alias_is_repeated_pair_fragment(fragments[block], fragments[block - 2U]);
+        if ((rx->mask & (uint8_t)(1U << block)) == 0U || repeated_pair_fragment) {
+            continue;
+        }
+        l3h_alias_append_fragment(alias, sizeof(alias), fragments[block]);
     }
 
     if (alias[0] == '\0') {
