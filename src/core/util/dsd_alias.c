@@ -656,10 +656,7 @@ l3h_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, 
     if (current_call_match) {
         DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].alias,
                      sizeof(state->event_history_s[slot_idx].Event_History_Items[0].alias), "%s", str);
-    }
-
-    //The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
-    if (current_call_match) {
+        //The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
         l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
     } else if (tsrc != 0) {
         DSD_FPRINTF(stderr, " Alias Deferred: current call source/talkgroup mismatch;");
