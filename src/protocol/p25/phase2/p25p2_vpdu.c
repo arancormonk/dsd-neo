@@ -983,8 +983,7 @@ typedef struct {
 
 static void
 p25p2_vpdu_handle_group_explicit_grant(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
-                                       const p25p2_group_explicit_grant* grant) {
-    int slot_idx = state->currentslot & 1;
+                                       int slot_idx, const p25p2_group_explicit_grant* grant) {
     long int freq_t = 0;
 
     DSD_FPRINTF(stderr, "\n");
@@ -1107,7 +1106,7 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
         int channel = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
         int sgroup = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
         int source = (MAC[9 + len_a] << 16) | (MAC[10 + len_a] << 8) | MAC[11 + len_a];
-        int slot_idx = state->currentslot & 1;
+        int slot_idx = slot & 1;
         long int freq = 0;
         DSD_FPRINTF(stderr, "\n MFID90 Group Regroup Channel Grant - Implicit");
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 1);
@@ -1161,7 +1160,7 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
         int channelr = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
         int sgroup = (MAC[9 + len_a] << 8) | MAC[10 + len_a];
         int source = (MAC[11 + len_a] << 16) | (MAC[12 + len_a] << 8) | MAC[13 + len_a];
-        int slot_idx = state->currentslot & 1;
+        int slot_idx = slot & 1;
         long int freq = 0;
         UNUSED(mfid);
         DSD_FPRINTF(stderr, "\n MFID90 Group Regroup Channel Grant - Explicit");
@@ -1282,7 +1281,7 @@ p25p2_vpdu_iter_block_04(p25p2_vpdu_ctx* ctx) {
         int channel = (MAC[3 + len_a] << 8) | MAC[4 + len_a];
         int group = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
         int source = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
-        int slot_idx = state->currentslot & 1;
+        int slot_idx = slot & 1;
         long int freq = 0;
 
         DSD_FPRINTF(stderr, "\n");
@@ -1331,7 +1330,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
         int channel = (MAC[3 + len_a + k] << 8) | MAC[4 + len_a + k];
         int timer = (MAC[5 + len_a + k] << 8) | MAC[6 + len_a + k];
         uint32_t target = (uint32_t)((MAC[7 + len_a + k] << 16) | (MAC[8 + len_a + k] << 8) | MAC[9 + len_a + k]);
-        int slot_idx = state->currentslot & 1;
+        int slot_idx = slot & 1;
         long int freq = 0;
 
         if (MAC[1 + len_a] & 0x80) {
@@ -1692,7 +1691,7 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
     int len_c VPDU_MAYBE_UNUSED = ctx->len_c;
     int slot VPDU_MAYBE_UNUSED = ctx->slot;
     int i = ctx->iter_idx;
-    UNUSED4(type, mac_res, len_c, slot);
+    UNUSED3(type, mac_res, len_c);
 
     if (MAC[1 + len_a] == 0x43) {
         int svc = MAC[2 + len_a];
@@ -1711,7 +1710,7 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
             .store_slot_svc = 0,
             .label = "Group Voice Channel Grant Update - Explicit",
         };
-        p25p2_vpdu_handle_group_explicit_grant(&mac_res, opts, state, &grant);
+        p25p2_vpdu_handle_group_explicit_grant(&mac_res, opts, state, slot & 1, &grant);
     }
 
     if (MAC[1 + len_a] == 0xC0) {
@@ -1731,7 +1730,7 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
             .store_slot_svc = 1,
             .label = "Group Voice Channel Grant - Explicit",
         };
-        p25p2_vpdu_handle_group_explicit_grant(&mac_res, opts, state, &grant);
+        p25p2_vpdu_handle_group_explicit_grant(&mac_res, opts, state, slot & 1, &grant);
     }
 
     if (MAC[1 + len_a] == 0xC3) {
@@ -1750,7 +1749,7 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
             .store_slot_svc = 0,
             .label = "Group Voice Channel Grant Update - Explicit",
         };
-        p25p2_vpdu_handle_group_explicit_grant(&mac_res, opts, state, &grant);
+        p25p2_vpdu_handle_group_explicit_grant(&mac_res, opts, state, slot & 1, &grant);
     }
 
     if (len_b < 0) {
@@ -2073,7 +2072,7 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
         int svc = MAC[3 + len_a];
         int sg = (MAC[4 + len_a] << 8) | MAC[5 + len_a];
         int channel = (MAC[6 + len_a] << 8) | MAC[7 + len_a];
-        int slot_idx = state->currentslot & 1;
+        int slot_idx = slot & 1;
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Voice Channel Update\n");
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 1);
         DSD_FPRINTF(stderr, "  SVC [%02X] SG: %d CHAN [%04X]", svc, sg, channel);
@@ -3482,7 +3481,7 @@ p25p2_vpdu_iter_block_45(p25p2_vpdu_ctx* ctx) {
         int svc = MAC[2 + len_a];
         int gr = (MAC[3 + len_a] << 8) | MAC[4 + len_a];
         int src = (MAC[5 + len_a] << 16) | (MAC[6 + len_a] << 8) | MAC[7 + len_a];
-        int slot_idx = state->currentslot & 1;
+        int slot_idx = slot & 1;
         unsigned long long int src_suid = 0;
 
         if (MAC[1 + len_a] == 0x21) {

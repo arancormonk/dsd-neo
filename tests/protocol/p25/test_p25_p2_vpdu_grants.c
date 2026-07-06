@@ -727,6 +727,100 @@ main(void) {
         rc |= expect_eq_long("0x83 stored service options", state.dmr_so, 0x81);
     }
 
+    // Case D5c2: SACCH grants apply service-option state to the decoded slot, not currentslot.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        state.currentslot = 0;
+        state.dmr_so = 0x11;
+        state.dmr_soR = 0x22;
+        state.p25_service_options_valid[0] = 1;
+
+        MAC[1] = 0x40;
+        MAC[2] = 0x93; // emergency, packet, priority 3
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[5] = 0x12;
+        MAC[6] = 0x34;
+        MAC[7] = 0x01;
+        MAC[8] = 0x02;
+        MAC[9] = 0x03;
+
+        process_MAC_VPDU(&opts, &state, 1, MAC);
+        rc |= expect_eq_long("0x40 SACCH slot0 svc unchanged", state.dmr_so, 0x11);
+        rc |= expect_eq_long("0x40 SACCH slot1 svc", state.dmr_soR, 0x93);
+        rc |= expect_eq_long("0x40 SACCH slot0 valid unchanged", state.p25_service_options_valid[0], 1);
+        rc |= expect_eq_long("0x40 SACCH slot1 valid", state.p25_service_options_valid[1], 1);
+        rc |= expect_eq_long("0x40 SACCH slot0 emergency unchanged", state.p25_call_emergency[0], 0);
+        rc |= expect_eq_long("0x40 SACCH slot1 emergency", state.p25_call_emergency[1], 1);
+        rc |= expect_eq_long("0x40 SACCH slot1 packet", state.p25_call_is_packet[1], 1);
+    }
+
+    // Case D5c3: shared explicit-grant helper also stores SACCH service bits on the decoded slot.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        state.currentslot = 1;
+        state.dmr_so = 0x11;
+        state.dmr_soR = 0x22;
+        state.p25_service_options_valid[1] = 1;
+
+        MAC[1] = 0xC0;
+        MAC[2] = 0x50; // encrypted packet
+        MAC[3] = 0x10;
+        MAC[4] = 0x0C;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0D;
+        MAC[7] = 0x22;
+        MAC[8] = 0x22;
+        MAC[9] = 0x01;
+        MAC[10] = 0x02;
+        MAC[11] = 0x03;
+
+        process_MAC_VPDU(&opts, &state, 1, MAC);
+        rc |= expect_eq_long("0xC0 SACCH slot0 svc", state.dmr_so, 0x50);
+        rc |= expect_eq_long("0xC0 SACCH slot1 svc unchanged", state.dmr_soR, 0x22);
+        rc |= expect_eq_long("0xC0 SACCH slot0 valid", state.p25_service_options_valid[0], 1);
+        rc |= expect_eq_long("0xC0 SACCH slot1 valid unchanged", state.p25_service_options_valid[1], 1);
+        rc |= expect_eq_long("0xC0 SACCH slot0 packet", state.p25_call_is_packet[0], 1);
+        rc |= expect_eq_long("0xC0 SACCH slot1 packet unchanged", state.p25_call_is_packet[1], 0);
+    }
+
+    // Case D5c4: MFID90 grant helpers use the decoded SACCH slot for call state.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        state.currentslot = 1;
+        state.dmr_so = 0x11;
+        state.dmr_soR = 0x22;
+
+        MAC[1] = 0xA3;
+        MAC[2] = 0x90;
+        MAC[4] = 0x81; // emergency, priority 1
+        MAC[5] = 0x10;
+        MAC[6] = 0x0A;
+        MAC[7] = 0x34;
+        MAC[8] = 0x56;
+        MAC[9] = 0x01;
+        MAC[10] = 0x02;
+        MAC[11] = 0x03;
+
+        process_MAC_VPDU(&opts, &state, 1, MAC);
+        rc |= expect_eq_long("0xA3 SACCH slot0 svc", state.dmr_so, 0x81);
+        rc |= expect_eq_long("0xA3 SACCH slot1 svc unchanged", state.dmr_soR, 0x22);
+        rc |= expect_eq_long("0xA3 SACCH slot0 emergency", state.p25_call_emergency[0], 1);
+        rc |= expect_eq_long("0xA3 SACCH slot1 emergency unchanged", state.p25_call_emergency[1], 0);
+    }
+
     // Case D5d: encrypted MFID90 0xA3 grants are blocked when encrypted following is disabled.
     {
         static dsd_opts opts;

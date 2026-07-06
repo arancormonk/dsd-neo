@@ -470,10 +470,13 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
 //end Motorola P25 OTA Alias Decoding
 
 static uint8_t l3h_alias_sanitize_char(uint8_t value);
+static int l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len,
+                                              const uint8_t* input, int save_policy);
 
 typedef struct {
     uint8_t mask;
     char last_alias[40];
+    char last_saved_alias[40];
     uint8_t fragment[4][8];
 } l3h_alias_phase1_state;
 
@@ -541,7 +544,13 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
         l3h_alias_append_fragment(alias, sizeof(alias), fragment);
     }
 
-    if (alias[0] == '\0' || strcmp(alias, rx->last_alias) == 0) {
+    if (alias[0] == '\0') {
+        return;
+    }
+    int is_complete = ((rx->mask & 0x0FU) == 0x0FU);
+    int alias_changed = strcmp(alias, rx->last_alias) != 0;
+    int already_saved = strcmp(alias, rx->last_saved_alias) == 0;
+    if (!alias_changed && (!is_complete || already_saved)) {
         return;
     }
 
@@ -552,8 +561,14 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
         alias_len = sizeof(input) - 4U;
     }
     DSD_MEMCPY(input + 4, alias, alias_len);
-    DSD_SNPRINTF(rx->last_alias, sizeof(rx->last_alias), "%s", alias);
-    l3h_embedded_alias_decode(opts, state, slot, (int16_t)(4U + alias_len - 1U), input);
+    if (alias_changed) {
+        DSD_SNPRINTF(rx->last_alias, sizeof(rx->last_alias), "%s", alias);
+    }
+    int saved = l3h_embedded_alias_decode_internal(opts, state, slot, (int16_t)(4U + alias_len - 1U), input,
+                                                   /*save_policy*/ is_complete);
+    if (saved) {
+        DSD_SNPRINTF(rx->last_saved_alias, sizeof(rx->last_saved_alias), "%s", alias);
+    }
 }
 
 void
@@ -636,8 +651,9 @@ l3h_alias_append_policy_row(const dsd_opts* opts, dsd_state* state, uint32_t tsr
     }
 }
 
-void
-l3h_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, const uint8_t* input) {
+static int
+l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len,
+                                   const uint8_t* input, int save_policy) {
 
     //storage info for storing to groupName, if not available
     char str[40];
@@ -668,13 +684,21 @@ l3h_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, 
     if (current_call_match) {
         DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].alias,
                      sizeof(state->event_history_s[slot_idx].Event_History_Items[0].alias), "%s", str);
-        //The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
-        l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
+        if (save_policy) {
+            // The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
+            l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
+        }
     } else if (tsrc != 0) {
         DSD_FPRINTF(stderr, " Alias Deferred: current call source/talkgroup mismatch;");
     }
 
     DSD_MEMSET(state->dmr_pdu_sf[slot_idx], 0, sizeof(state->dmr_pdu_sf[slot_idx]));
+    return current_call_match && save_policy;
+}
+
+void
+l3h_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, const uint8_t* input) {
+    (void)l3h_embedded_alias_decode_internal(opts, state, slot, len, input, /*save_policy*/ 1);
 }
 
 void

@@ -245,15 +245,36 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     build_l3h_alias_lcw(lcw, 0x33U, "UNIT   ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT", "l3h block1+2 alias");
-    rc |= expect_policy_name(st, st->lastsrc, "ALPHAUNIT", "l3h block1+2 policy");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h block1+2 no policy");
 
     build_l3h_alias_lcw(lcw, 0x34U, "ALPHA  ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT", "l3h duplicate block3");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h block1+2+3 no policy");
 
     build_l3h_alias_lcw(lcw, 0x35U, "7      ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT7", "l3h unique block4");
+    rc |= expect_policy_name(st, st->lastsrc, "ALPHAUNIT7", "l3h complete policy");
+
+    st->lastsrc = 710004u;
+    st->lasttg = 47u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x32U, "ECHO   ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x33U, "ONE    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ECHOONE", "l3h repeated block1+2 alias");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h repeated block1+2 no policy");
+    build_l3h_alias_lcw(lcw, 0x34U, "ECHO   ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x35U, "ONE    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ECHOONE", "l3h repeated complete alias");
+    rc |= expect_policy_name(st, st->lastsrc, "ECHOONE", "l3h repeated complete policy");
 
     st->lastsrc = 710003u;
     st->lasttg = 46u;
