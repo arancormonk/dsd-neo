@@ -5643,9 +5643,10 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         ctx.end_pdu = 1;
     }
 
-    for (ctx.iter_idx = 0; !ctx.end_pdu && ctx.iter_idx < mac_res.segment_count; ctx.iter_idx++) {
+    for (int segment_idx = 0; !ctx.end_pdu && segment_idx < mac_res.segment_count; segment_idx++) {
         ctx.skip_rest = 0;
-        if (!p25p2_vpdu_select_segment(&ctx, ctx.iter_idx)) {
+        ctx.iter_idx = segment_idx;
+        if (!p25p2_vpdu_select_segment(&ctx, segment_idx)) {
             break;
         }
         if (!p25p2_vpdu_consume_fragment_segment(&ctx)) {

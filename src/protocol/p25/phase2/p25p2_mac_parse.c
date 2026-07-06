@@ -55,6 +55,11 @@ p25p2_mac_positive_len(int len) {
     return (len > 0) ? len : -1;
 }
 
+static int
+p25p2_mac_is_fill_remaining(uint8_t opcode) {
+    return opcode == 0x00u || (opcode >= 0x80u && opcode <= 0xBFu);
+}
+
 /* TDMA 0x08 Null Avoid Zero Bias and 0x10 Multi-Fragment Continuation both carry length in octet 2. */
 static int
 p25p2_mac_length_coded_tdma_len(uint8_t opcode, int len) {
@@ -143,6 +148,7 @@ p25p2_mac_resolve_segment_len(int type, const unsigned long long mac[24], int of
     if (opcode_pos < 0 || opcode_pos >= 24 || offset >= capacity) {
         return 0;
     }
+    uint8_t opcode = (uint8_t)p25p2_mac_octet(mac, opcode_pos);
 
     int len = p25p2_mac_payload_len_override(mac, opcode_pos);
     if (len >= 0) {
@@ -164,7 +170,11 @@ p25p2_mac_resolve_segment_len(int type, const unsigned long long mac[24], int of
         }
     }
 
-    return capacity - offset;
+    if (p25p2_mac_is_fill_remaining(opcode)) {
+        return capacity - offset;
+    }
+
+    return 0;
 }
 
 static int
@@ -218,6 +228,8 @@ p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_res
     if (out->segment_count > 0) {
         out->len_a = out->segments[0].offset;
         out->len_b = out->segments[0].length;
+    } else {
+        out->len_c = p25p2_mac_capacity(type);
     }
     if (out->segment_count > 1) {
         out->len_c = out->segments[1].length;

@@ -343,6 +343,25 @@ run_direct_segment_parse_cases(void) {
     rc |= expect_int("generic harris compat lenC", res.len_c, 5);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x00;
+    if (p25p2_mac_parse(1, mac, &res) != 0) {
+        return 406;
+    }
+    rc |= expect_int("null fills remaining count", res.segment_count, 1);
+    rc |= expect_int("null fills remaining len", res.segments[0].length, 19);
+    rc |= expect_int("null fills remaining compat lenB", res.len_b, 19);
+    rc |= expect_int("null fills remaining compat lenC", res.len_c, 0);
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x23;
+    if (p25p2_mac_parse(0, mac, &res) != 0) {
+        return 407;
+    }
+    rc |= expect_int("unsupported first count", res.segment_count, 0);
+    rc |= expect_int("unsupported first compat lenB", res.len_b, 0);
+    rc |= expect_int("unsupported first compat lenC", res.len_c, 16);
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0xA0;
     mac[2] = 0xA4;
     mac[3] = 0x2A;
@@ -417,6 +436,17 @@ run_offset_relative_vpdu_cases(void) {
     mac[8] = 0x06;
     p25_test_process_mac_vpdu(1, mac, 24);
     rc |= expect_int("offset harris alias", g_l3h_alias_calls, 1);
+
+    g_apx_alias_header_calls = 0;
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x82;
+    mac[2] = 0xA4;
+    mac[3] = 0x05;
+    mac[6] = 0x91;
+    mac[7] = 0x90;
+    mac[8] = 0x06;
+    p25_test_process_mac_vpdu(1, mac, 24);
+    rc |= expect_int("handler scratch keeps next segment", g_apx_alias_header_calls, 1);
 
     g_nmea_harris_calls = 0;
     DSD_MEMSET(mac, 0, sizeof(mac));
