@@ -516,6 +516,20 @@ capture_mfid90_isp_output(const uint8_t tsbk[TSBK_BYTES_PER_BLOCK], char* out, s
 }
 
 static int
+capture_standard_osp_data_output(dsd_opts* opts, dsd_state* state, const uint8_t tsbk[TSBK_BYTES_PER_BLOCK], char* out,
+                                 size_t out_sz) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_standard_osp_data_tsbk") != 0) {
+        return -1;
+    }
+    int handled = tsbk_handle_standard_osp_data_channel(opts, state, tsbk);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || handled == 0) {
+        return -1;
+    }
+    return read_capture_file(cap.path, out, out_sz);
+}
+
+static int
 test_crc_candidate_selection_and_fallback(void) {
     uint8_t dibits[TSBK_DIBITS_PER_REP] = {0};
     int16_t llr[TSBK_SOFT_BITS_PER_REP] = {0};
@@ -915,6 +929,113 @@ test_standard_isp_metadata_logging_and_no_retune(void) {
 }
 
 static int
+test_standard_osp_data_channel_metadata_and_dispatch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    char out[2048];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    g_channel_freq = 851012500;
+
+    tsbk[0] = 0x10;
+    tsbk[2] = 0x10;
+    tsbk[3] = 0x01;
+    tsbk[4] = 0x01;
+    tsbk[5] = 0x02;
+    tsbk[6] = 0x03;
+    tsbk[7] = 0x04;
+    tsbk[8] = 0x05;
+    tsbk[9] = 0x06;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp individual data label", out, "Individual Data Channel Grant - Obsolete");
+    rc |= expect_contains("osp individual data channel", out, "CHAN [1001]");
+    rc |= expect_contains("osp individual data target", out, "Target [66051]");
+    rc |= expect_contains("osp individual data source", out, "Source [263430]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x11;
+    tsbk[2] = 0x90;
+    tsbk[3] = 0x10;
+    tsbk[4] = 0x02;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp group data label", out, "Group Data Channel Grant - Obsolete");
+    rc |= expect_contains("osp group data service", out, "SVC [90]");
+    rc |= expect_contains("osp group data group", out, "Group [4660][1234]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x12;
+    tsbk[2] = 0x10;
+    tsbk[3] = 0x03;
+    tsbk[4] = 0x22;
+    tsbk[5] = 0x22;
+    tsbk[6] = 0x10;
+    tsbk[7] = 0x04;
+    tsbk[8] = 0x33;
+    tsbk[9] = 0x33;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp group announcement label", out, "Group Data Channel Announcement - Obsolete");
+    rc |= expect_contains("osp group announcement channel a", out, "CHAN-A [1003]");
+    rc |= expect_contains("osp group announcement channel b", out, "CHAN-B [1004]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x13;
+    tsbk[2] = 0x40;
+    tsbk[3] = 0xAA;
+    tsbk[4] = 0x10;
+    tsbk[5] = 0x05;
+    tsbk[6] = 0x10;
+    tsbk[7] = 0x06;
+    tsbk[8] = 0x44;
+    tsbk[9] = 0x44;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp group explicit label", out, "Group Data Channel Announcement Explicit - Obsolete");
+    rc |= expect_contains("osp group explicit channels", out, "CHAN-T [1005] CHAN-R [1006]");
+    rc |= expect_int("osp data channel frequency lookups", g_process_channel_count, 6);
+    rc |= expect_int("osp data channel no grant callbacks", g_grant_count, 0);
+    rc |= expect_int("osp data channel no mac callbacks", g_mac_count, 0);
+    rc |= expect_int("osp data channel no active text", state.active_channel[0][0], 0);
+
+    tsbk_decode_ctx_t ctx;
+    unsigned long long pdu[24] = {0};
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x12;
+    tsbk[2] = 0x10;
+    tsbk[3] = 0x07;
+    tsbk[4] = 0x55;
+    tsbk[5] = 0x55;
+    tsbk[6] = 0x10;
+    tsbk[7] = 0x08;
+    tsbk[8] = 0x66;
+    tsbk[9] = 0x66;
+    DSD_MEMCPY(ctx.tsbk_byte, tsbk, sizeof(tsbk));
+    pdu[1] = 0x52;
+    reset_calls();
+    tsbk_dispatch_message(&opts, &state, &ctx, 0, 0, 0, pdu);
+    rc |= expect_int("osp data dispatch suppresses mac bridge", g_mac_count, 0);
+    rc |= expect_int("osp data dispatch resolves channels", g_process_channel_count, 2);
+
+    return rc;
+}
+
+static int
 test_mfid90_regroup_add_delete(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1309,6 +1430,7 @@ main(void) {
     int rc = 0;
     rc |= test_crc_candidate_selection_and_fallback();
     rc |= test_standard_isp_metadata_logging_and_no_retune();
+    rc |= test_standard_osp_data_channel_metadata_and_dispatch();
     rc |= test_mfid90_regroup_add_delete();
     rc |= test_mfid_a4_patch_and_simulselect_paths();
     rc |= test_mfid90_grant_seeds_trunk_state();

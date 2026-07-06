@@ -415,6 +415,10 @@ main(void) {
     if (rc != 0) {
         return rc;
     }
+    rc = run_payload_len_case("p25_moto_8b_len", /*FACCH*/ 0, 0x8B, 0x90, 0x0F, /*B*/ 15, /*C*/ 1);
+    if (rc != 0) {
+        return rc;
+    }
     rc = run_payload_len_case("p25_moto_8f_len", /*FACCH*/ 0, 0x8F, 0x90, 0x0B, /*B*/ 11, /*C*/ 5);
     if (rc != 0) {
         return rc;

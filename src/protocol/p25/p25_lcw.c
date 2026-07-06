@@ -785,14 +785,36 @@ p25_lcw_handle_mfid90_opcode_02(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_mfid90_opcode_03(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
+    uint32_t sg = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 16);
+    uint32_t ga1 = (uint32_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
+    uint32_t ga2 = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Add");
+    DSD_FPRINTF(stderr, " SG: %u;", (unsigned)sg);
+    if (ga1 != 0 && ga1 != sg) {
+        DSD_FPRINTF(stderr, " GA1: %u;", (unsigned)ga1);
+        p25_patch_add_wgid(ctx->state, (int)sg, (int)ga1);
+    }
+    if (ga2 != 0 && ga2 != sg) {
+        DSD_FPRINTF(stderr, " GA2: %u;", (unsigned)ga2);
+        p25_patch_add_wgid(ctx->state, (int)sg, (int)ga2);
+    }
 }
 
 static void
 p25_lcw_handle_mfid90_opcode_04(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
+    uint32_t sg = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 16);
+    uint32_t ga1 = (uint32_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
+    uint32_t ga2 = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Delete");
+    DSD_FPRINTF(stderr, " SG: %u;", (unsigned)sg);
+    if (ga1 != 0 && ga1 != sg) {
+        DSD_FPRINTF(stderr, " GA1: %u;", (unsigned)ga1);
+        p25_patch_remove_wgid(ctx->state, (int)sg, (int)ga1);
+    }
+    if (ga2 != 0 && ga2 != sg) {
+        DSD_FPRINTF(stderr, " GA2: %u;", (unsigned)ga2);
+        p25_patch_remove_wgid(ctx->state, (int)sg, (int)ga2);
+    }
 }
 
 static void
@@ -893,9 +915,11 @@ p25_lcw_dispatch_mfid_a4(p25_lcw_ctx* ctx) {
     }
 
     if (ctx->lc_format == 0x0A) {
+        uint32_t unk = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 8);
         uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[24], 24);
         uint32_t tgt = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
-        DSD_FPRINTF(stderr, " MFIDA4 (Harris) Data Channel; SRC: %d; TGT: %d;", src, tgt);
+        DSD_FPRINTF(stderr, " MFIDA4 (Harris) 0x0A Data/Return-to-Control Indication; UNK: %02X; SRC: %u; TGT: %u;",
+                    (unsigned)unk, (unsigned)src, (unsigned)tgt);
         return 1;
     }
 
