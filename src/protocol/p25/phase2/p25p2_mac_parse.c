@@ -55,8 +55,9 @@ p25p2_mac_positive_len(int len) {
     return (len > 0) ? len : -1;
 }
 
+/* TDMA 0x08 Null Avoid Zero Bias and 0x10 Multi-Fragment Continuation both carry length in octet 2. */
 static int
-p25p2_mac_multifrag_len(uint8_t opcode, int len) {
+p25p2_mac_length_coded_tdma_len(uint8_t opcode, int len) {
     switch (opcode) {
         case 0x08u:
         case 0x10u: return p25p2_mac_positive_len(len);
@@ -109,7 +110,7 @@ p25p2_mac_payload_len_override(const unsigned long long mac[24], int opcode_pos)
     uint8_t opcode = (uint8_t)p25p2_mac_octet(mac, opcode_pos);
     uint8_t mfid = (uint8_t)p25p2_mac_octet(mac, opcode_pos + 1);
     uint8_t len_octet = (uint8_t)p25p2_mac_octet(mac, opcode_pos + 2);
-    int multifrag_len = p25p2_mac_multifrag_len(opcode, (int)(mfid & 0x3Fu));
+    int length_coded_tdma_len = p25p2_mac_length_coded_tdma_len(opcode, (int)(mfid & 0x3Fu));
 
     if (opcode == 0x11u) {
         return 2 + (2 * (int)((mfid & 0x03u) + 1u));
@@ -118,8 +119,8 @@ p25p2_mac_payload_len_override(const unsigned long long mac[24], int opcode_pos)
         return 2 + (3 * (int)((mfid & 0x03u) + 1u));
     }
 
-    if (multifrag_len >= 0) {
-        return multifrag_len;
+    if (length_coded_tdma_len >= 0) {
+        return length_coded_tdma_len;
     }
 
     if (opcode == 0x80u && mfid == 0xAAu && len_octet == 0xA4u && opcode_pos + 4 < 24) {

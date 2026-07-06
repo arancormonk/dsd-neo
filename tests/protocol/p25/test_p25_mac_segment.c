@@ -439,6 +439,10 @@ main(void) {
     if (rc != 0) {
         return rc;
     }
+    rc = run_payload_len_case("p25_null_avoid_zero_bias_len", /*FACCH*/ 0, 0x08, 0x0A, 0x00, /*B*/ 10, /*C*/ 6);
+    if (rc != 0) {
+        return rc;
+    }
     rc = run_payload_len_case("p25_harris_a8_len", /*FACCH*/ 0, 0xA8, 0xA4, 0x0A, /*B*/ 10, /*C*/ 6);
     if (rc != 0) {
         return rc;

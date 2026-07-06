@@ -5063,6 +5063,11 @@ p25p2_vpdu_is_standard_multifragment_base(int opcode) {
     }
 }
 
+static int
+p25p2_vpdu_is_null_avoid_zero_bias(int opcode) {
+    return opcode == 0x08;
+}
+
 static p25_mac_fragment_state_t*
 p25p2_vpdu_frag_for_ctx(const p25p2_vpdu_ctx* ctx) {
     if (!ctx || !ctx->state) {
@@ -5465,6 +5470,9 @@ p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
     }
     if (opcode == 0x10) {
         return p25p2_vpdu_consume_multifragment_continuation(ctx);
+    }
+    if (p25p2_vpdu_is_null_avoid_zero_bias(opcode)) {
+        return 1;
     }
     if (opcode == 0x00 && ctx->iter_idx > 0) {
         return 1;

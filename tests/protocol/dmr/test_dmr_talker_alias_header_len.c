@@ -255,6 +255,17 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT7", "l3h unique block4");
 
+    st->lastsrc = 710003u;
+    st->lasttg = 46u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x33U, "STALE  ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "", "l3h stray block2 ignored");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h stray block2 no policy");
+
     st->lastsrc = 710002u;
     st->lasttg = 45u;
     st->event_history_s[0].Event_History_Items[0].source_id = 999999u;

@@ -485,6 +485,13 @@ l3h_alias_phase1_reset(uint8_t slot) {
 }
 
 static void
+l3h_alias_phase1_clear_fragments(uint8_t slot) {
+    l3h_alias_phase1_state* rx = &g_l3h_alias_phase1[alias_slot_index(slot)];
+    rx->mask = 0;
+    DSD_MEMSET(rx->fragment, 0, sizeof(rx->fragment));
+}
+
+static void
 l3h_alias_fragment_to_string(const uint8_t* fragment, char* out, size_t out_sz) {
     if (!fragment || !out || out_sz == 0) {
         return;
@@ -564,16 +571,21 @@ l3h_embedded_alias_blocks_phase1(const dsd_opts* opts, dsd_state* state, uint8_t
     }
 
     uint8_t slot_idx = alias_slot_index(slot);
-    //use +4 offset to match the MAC vPDU since that was already worked out long ago
-    DSD_MEMCPY(state->dmr_pdu_sf[slot_idx] + 4 + ((size_t)ptr * 7), bytes, sizeof(bytes));
+    l3h_alias_phase1_state* rx = &g_l3h_alias_phase1[slot_idx];
     if (ptr == 0U) {
         l3h_alias_phase1_reset(slot);
+    } else if ((rx->mask & 0x01U) == 0U) {
+        return;
     }
-    l3h_alias_phase1_state* rx = &g_l3h_alias_phase1[alias_slot_index(slot)];
+    //use +4 offset to match the MAC vPDU since that was already worked out long ago
+    DSD_MEMCPY(state->dmr_pdu_sf[slot_idx] + 4 + ((size_t)ptr * 7), bytes, sizeof(bytes));
     DSD_MEMCPY(rx->fragment[ptr], bytes, sizeof(bytes));
     rx->mask = (uint8_t)(rx->mask | (uint8_t)(1U << ptr));
 
     l3h_alias_phase1_maybe_decode(opts, state, slot);
+    if (ptr == 3U) {
+        l3h_alias_phase1_clear_fragments(slot);
+    }
 }
 
 static void

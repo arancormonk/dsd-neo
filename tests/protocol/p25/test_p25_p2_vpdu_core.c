@@ -1103,10 +1103,15 @@ init_multifragment_base(unsigned long long int* mac, int opcode, unsigned data_l
 }
 
 static void
-init_multifragment_continuation(unsigned long long int* mac, unsigned len) {
+init_length_coded_tdma_segment(unsigned long long int* mac, unsigned opcode, unsigned len) {
     DSD_MEMSET(mac, 0, sizeof(unsigned long long int) * 24U);
-    mac[1] = 0x10;
+    mac[1] = (unsigned long long int)(opcode & 0xFFU);
     mac[2] = (unsigned long long int)(len & 0x3FU);
+}
+
+static void
+init_multifragment_continuation(unsigned long long int* mac, unsigned len) {
+    init_length_coded_tdma_segment(mac, 0x10U, len);
 }
 
 static int
@@ -1152,6 +1157,28 @@ run_standard_mac_multifragment_cases(void) {
     rc |= expect_contains("completed 0xD9 source", state.active_channel[0], "Source: 4478310");
     rc |= expect_contains("completed 0xD9 unit", state.active_channel[0], "Unit: 12");
     rc |= expect_contains("completed 0xD9 user", state.active_channel[0], "User: 34");
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    init_multifragment_base(base, 0xD9, 24);
+    base[4] = 0x12;
+    base[5] = 0x34;
+    put_u24_ull(base, 6, 0x010203);
+    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
+    put_u24_ull(base, 16, 0x445566);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
+
+    init_length_coded_tdma_segment(cont, 0x08U, 6);
+    cont[3] = 0x88;
+    cont[4] = 0x88;
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    rc |= expect_eq_long("null avoid zero bias keeps fragment active", state.p25_mac_frag[0].active, 1);
+    rc |= expect_eq_long("null avoid zero bias does not append", state.p25_mac_frag[0].collected, 16);
+
+    init_multifragment_continuation(cont, 10);
+    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    rc |= expect_contains("null avoid zero bias allows completion", state.active_channel[0], "STATUS-L");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
