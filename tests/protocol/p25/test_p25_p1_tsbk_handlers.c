@@ -436,9 +436,17 @@ read_capture_file(const char* path, char* out, size_t out_sz) {
     if (!f) {
         return -1;
     }
-    size_t n = fread(out, 1, out_sz - 1, f);
+    const size_t max_read = out_sz - 1;
+    size_t n = fread(out, 1, max_read, f);
+    if (n > max_read) {
+        n = max_read;
+    }
+    if (n < max_read && ferror(f) != 0) {
+        (void)fclose(f);
+        return -1;
+    }
     out[n] = '\0';
-    fclose(f);
+    (void)fclose(f);
     return 0;
 }
 
