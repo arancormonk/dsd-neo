@@ -352,6 +352,20 @@ run_direct_segment_parse_cases(void) {
     rc |= expect_int("null fills remaining compat lenB", res.len_b, 19);
     rc |= expect_int("null fills remaining compat lenC", res.len_c, 0);
 
+    const uint8_t bridged_ops[] = {0x69U, 0x7FU, 0xEFU};
+    for (size_t i = 0; i < sizeof(bridged_ops) / sizeof(bridged_ops[0]); i++) {
+        DSD_MEMSET(mac, 0, sizeof(mac));
+        mac[1] = 0x30;
+        mac[6] = bridged_ops[i];
+        if (p25p2_mac_parse(1, mac, &res) != 0) {
+            return 408;
+        }
+        rc |= expect_int("bridged later segment count", res.segment_count, 2);
+        rc |= expect_int("bridged later segment offset", res.segments[1].offset, 5);
+        rc |= expect_int("bridged later segment len", res.segments[1].length, 14);
+        rc |= expect_int("bridged later segment compat lenC", res.len_c, 14);
+    }
+
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x23;
     if (p25p2_mac_parse(0, mac, &res) != 0) {

@@ -1009,6 +1009,8 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     //initialize unified dmr pdu 'superframe'
     DSD_MEMSET(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
     DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
+    DSD_MEMSET(state->p25_apx_alias_rx, 0, sizeof(state->p25_apx_alias_rx));
+    DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
 
     //initialize cap+ bits and block num storage
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));

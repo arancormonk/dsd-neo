@@ -608,6 +608,81 @@ test_apx_alias_dump_updates_history_and_policy(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+static int
+test_alias_sequence_state_is_per_decoder(dsd_opts* opts) {
+    int rc = 0;
+    dsd_state* st_a = (dsd_state*)calloc(1, sizeof(*st_a));
+    dsd_state* st_b = (dsd_state*)calloc(1, sizeof(*st_b));
+    Event_History_I* hist_a = (Event_History_I*)calloc(2u, sizeof(*hist_a));
+    Event_History_I* hist_b = (Event_History_I*)calloc(2u, sizeof(*hist_b));
+    uint8_t header_a[72];
+    uint8_t header_b[72];
+    uint8_t block[72];
+    uint8_t lcw[72];
+
+    if (!st_a || !st_b || !hist_a || !hist_b) {
+        free(hist_b);
+        free(hist_a);
+        free(st_b);
+        free(st_a);
+        return 100;
+    }
+
+    st_a->event_history_s = hist_a;
+    st_b->event_history_s = hist_b;
+
+    DSD_MEMSET(header_a, 0, sizeof(header_a));
+    value_to_bits_msb(header_a, 0, sizeof(header_a), 0x1590U, 16);
+    value_to_bits_msb(header_a, 32, sizeof(header_a), 2U, 8);
+    value_to_bits_msb(header_a, 56, sizeof(header_a), 0x0AU, 4);
+    apx_embedded_alias_header_phase1(opts, st_a, 0, header_a);
+
+    DSD_MEMSET(header_b, 0, sizeof(header_b));
+    value_to_bits_msb(header_b, 0, sizeof(header_b), 0x1590U, 16);
+    value_to_bits_msb(header_b, 32, sizeof(header_b), 1U, 8);
+    value_to_bits_msb(header_b, 56, sizeof(header_b), 0x0BU, 4);
+    apx_embedded_alias_header_phase1(opts, st_b, 0, header_b);
+
+    rc |= expect_u8(st_a->p25_apx_alias_rx[0].sequence, 0x0AU, "apx state A sequence retained");
+    rc |= expect_u8(st_b->p25_apx_alias_rx[0].sequence, 0x0BU, "apx state B sequence retained");
+
+    DSD_MEMSET(block, 0, sizeof(block));
+    value_to_bits_msb(block, 16, sizeof(block), 1U, 8);
+    value_to_bits_msb(block, 24, sizeof(block), 0x0AU, 4);
+    block[28] = 1U;
+    apx_embedded_alias_blocks_phase1(opts, st_a, 0, block);
+    rc |= expect_u8(st_a->dmr_pdu_sf[0][72], 1U, "apx state A accepts block after state B header");
+
+    st_a->lastsrc = 720001u;
+    st_a->lasttg = 52u;
+    hist_a[0].Event_History_Items[0].source_id = st_a->lastsrc;
+    hist_a[0].Event_History_Items[0].target_id = st_a->lasttg;
+
+    st_b->lastsrc = 720002u;
+    st_b->lasttg = 53u;
+    hist_b[0].Event_History_Items[0].source_id = st_b->lastsrc;
+    hist_b[0].Event_History_Items[0].target_id = st_b->lasttg;
+
+    build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
+    l3h_embedded_alias_blocks_phase1(opts, st_a, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x32U, "BRAVO  ");
+    l3h_embedded_alias_blocks_phase1(opts, st_b, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x33U, "UNIT   ");
+    l3h_embedded_alias_blocks_phase1(opts, st_a, 0, lcw);
+
+    rc |= expect_str(hist_a[0].Event_History_Items[0].alias, "ALPHAUNIT", "l3h state A assembles after state B block");
+    rc |= expect_str(hist_b[0].Event_History_Items[0].alias, "", "l3h state B waits for block 2");
+
+    dsd_state_ext_free_all(st_a);
+    dsd_state_ext_free_all(st_b);
+    free(hist_b);
+    free(hist_a);
+    free(st_b);
+    free(st_a);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -650,6 +725,7 @@ main(void) {
     rc |= test_dmr_alias_header_and_block_format_variants(opts, st);
     rc |= test_dmr_alias_invalid_characters_and_unicode_branch(opts, st);
     rc |= test_apx_alias_dump_updates_history_and_policy(opts, st);
+    rc |= test_alias_sequence_state_is_per_decoder(opts);
 
     // Runtime alias handling stores learned aliases through the policy table.
     st->lastsrc = 600000u;

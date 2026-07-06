@@ -174,6 +174,10 @@ p25p2_mac_resolve_segment_len(int type, const unsigned long long mac[24], int of
         return capacity - offset;
     }
 
+    if (offset > 0) {
+        return capacity - offset;
+    }
+
     return 0;
 }
 
