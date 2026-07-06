@@ -5002,6 +5002,31 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
 }
 
 static void
+p25p2_vpdu_dispatch_motorola_vendor(p25p2_vpdu_ctx* ctx, int opcode) {
+    switch (opcode) {
+        case 0x82:
+        case 0x8F: p25p2_vpdu_handle_motorola_active_group_radios(ctx, opcode); break;
+        case 0xBF: p25p2_vpdu_handle_motorola_active_group_marker(ctx); break;
+        case 0xA6: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 0); break;
+        case 0xA7: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 1); break;
+        case 0xA8: p25p2_vpdu_handle_motorola_ack_response(ctx); break;
+        case 0x84: p25p2_vpdu_handle_motorola_regroup_extended_function(ctx); break;
+        case 0x8B: p25p2_vpdu_handle_motorola_tdma_data_channel(ctx); break;
+        default: break;
+    }
+}
+
+static void
+p25p2_vpdu_dispatch_harris_vendor(p25p2_vpdu_ctx* ctx, int opcode) {
+    switch (opcode) {
+        case 0xA0:
+        case 0xAC: p25p2_vpdu_handle_harris_data_channel_grant(ctx, opcode); break;
+        case 0xAA: p25p2_vpdu_handle_harris_gps_location(ctx); break;
+        default: break;
+    }
+}
+
+static void
 p25p2_vpdu_iter_block_59(p25p2_vpdu_ctx* ctx) {
     int opcode = (int)ctx->mac[1 + ctx->len_a];
     int mfid = (int)ctx->mac[2 + ctx->len_a];
@@ -5012,27 +5037,12 @@ p25p2_vpdu_iter_block_59(p25p2_vpdu_ctx* ctx) {
     }
 
     if (mfid == 0x90) {
-        switch (opcode) {
-            case 0x82:
-            case 0x8F: p25p2_vpdu_handle_motorola_active_group_radios(ctx, opcode); break;
-            case 0xBF: p25p2_vpdu_handle_motorola_active_group_marker(ctx); break;
-            case 0xA6: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 0); break;
-            case 0xA7: p25p2_vpdu_handle_motorola_queued_deny(ctx, /*is_deny*/ 1); break;
-            case 0xA8: p25p2_vpdu_handle_motorola_ack_response(ctx); break;
-            case 0x84: p25p2_vpdu_handle_motorola_regroup_extended_function(ctx); break;
-            case 0x8B: p25p2_vpdu_handle_motorola_tdma_data_channel(ctx); break;
-            default: break;
-        }
+        p25p2_vpdu_dispatch_motorola_vendor(ctx, opcode);
         return;
     }
 
     if (mfid == 0xA4) {
-        switch (opcode) {
-            case 0xA0:
-            case 0xAC: p25p2_vpdu_handle_harris_data_channel_grant(ctx, opcode); break;
-            case 0xAA: p25p2_vpdu_handle_harris_gps_location(ctx); break;
-            default: break;
-        }
+        p25p2_vpdu_dispatch_harris_vendor(ctx, opcode);
     }
 }
 
