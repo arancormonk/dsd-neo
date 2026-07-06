@@ -226,6 +226,15 @@ expect_contains_text(const char* tag, const char* text, const char* needle) {
     return 0;
 }
 
+static int
+expect_not_contains_text(const char* tag, const char* text, const char* needle) {
+    if (text && needle && strstr(text, needle) != NULL) {
+        DSD_FPRINTF(stderr, "%s: unexpected '%s' in '%s'\n", tag, needle, text);
+        return 1;
+    }
+    return 0;
+}
+
 static void
 seed_fdma_iden(dsd_state* state, int iden) {
     state->p25_chan_iden = iden & 0xF;
@@ -730,6 +739,30 @@ main(void) {
         rc |= expect_contains_text("mbt 0x11 label", out, "Group Data Channel Grant MBT - Obsolete");
         rc |= expect_contains_text("mbt 0x11 channel", out, "CHAN-T [100A] CHAN-R [1010]");
         rc |= expect_contains_text("mbt 0x11 group", out, "Group [4660][1234]");
+    }
+
+    // Vendor MFIDs with standard opcode collisions stay on the vendor/raw path.
+    {
+        uint8_t meta[48];
+        char out[4096];
+
+        build_ambtc_individual_data_grant(meta);
+        meta[2] = 0x90;
+        if (capture_mbt_output("p25_mbt_mfid90_collision_0x10", meta, sizeof meta, out, sizeof out) != 0) {
+            return 121;
+        }
+        rc |= expect_contains_text("mbt mfid90 collision raw", out, "MFID 90 (Moto); Opcode: 10");
+        rc |= expect_not_contains_text("mbt mfid90 collision no standard", out,
+                                       "Individual Data Channel Grant MBT - Obsolete");
+
+        build_ambtc_base(meta, 0x28, 0x02, 0x012345);
+        meta[2] = 0xA4;
+        if (capture_mbt_output("p25_mbt_mfid_a4_collision_0x28", meta, sizeof meta, out, sizeof out) != 0) {
+            return 122;
+        }
+        rc |= expect_contains_text("mbt mfid a4 collision raw", out, "MFID A4 (Harris); Opcode: 28");
+        rc |= expect_not_contains_text("mbt mfid a4 collision no standard", out,
+                                       "Group Affiliation Response MBT - Extended");
     }
 
     // Each new metadata/data opcode has an explicit short-payload guard.

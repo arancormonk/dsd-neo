@@ -207,6 +207,11 @@ p25_mbt_is_bridgeable_iden_update(uint8_t opcode) {
 }
 
 static int
+p25_mbt_mfid_is_standard(uint8_t mfid) {
+    return mfid < 2U;
+}
+
+static int
 p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
         return 0;
@@ -218,7 +223,8 @@ p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) 
 static void DSD_ATTR_USED
 p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                 const p25p1_mbt_fields* fields) {
-    if (!fields || !fields->is_outbound || !(p25_mbt_is_bridgeable_iden_update(fields->opcode) && fields->mfid < 2)) {
+    if (!fields || !fields->is_outbound
+        || !(p25_mbt_is_bridgeable_iden_update(fields->opcode) && p25_mbt_mfid_is_standard(fields->mfid))) {
         return;
     }
 
@@ -850,9 +856,9 @@ p25_handle_mbt_unit_registration_response(dsd_state* state, const uint8_t* mpdu_
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_mfid90_unknown(const uint8_t* mpdu_byte, int blks, size_t mpdu_len) {
+p25_handle_mbt_mfid90_unknown(const uint8_t* mpdu_byte, int blks, uint8_t opcode, size_t mpdu_len) {
     DSD_FPRINTF(stderr, "%s", KCYN);
-    DSD_FPRINTF(stderr, "\n MFID 90 (Moto); Opcode: %02X; ", mpdu_byte[0] & 0x3F);
+    DSD_FPRINTF(stderr, "\n MFID 90 (Moto); Opcode: %02X; ", opcode);
     p25_print_mbt_payload_hex(mpdu_byte, blks, mpdu_len);
     DSD_FPRINTF(stderr, " %s", KNRM);
 }
@@ -1017,7 +1023,7 @@ p25_handle_mbt_inbound_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p
     if (!fields) {
         return 0;
     }
-    if (fields->mfid < 2 && p25_handle_mbt_inbound_standard_opcode(mpdu_byte, mpdu_len, fields)) {
+    if (p25_mbt_mfid_is_standard(fields->mfid) && p25_handle_mbt_inbound_standard_opcode(mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
     if (fields->mfid == 0x90 && p25_handle_mbt_inbound_mfid90_opcode(mpdu_byte, mpdu_len, fields)) {
@@ -1233,7 +1239,8 @@ p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t*
         return 0;
     }
 
-    if (p25_handle_mbt_standard_opcode(opts, state, mpdu_byte, mpdu_len, &fields)) {
+    if (p25_mbt_mfid_is_standard(fields.mfid)
+        && p25_handle_mbt_standard_opcode(opts, state, mpdu_byte, mpdu_len, &fields)) {
         return 0;
     }
 
@@ -1246,10 +1253,10 @@ p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t*
             }
             p25_handle_mbt_mfid90_group_regroup(opts, state, mpdu_byte);
         } else {
-            p25_handle_mbt_mfid90_unknown(mpdu_byte, fields.blks, mpdu_len);
+            p25_handle_mbt_mfid90_unknown(mpdu_byte, fields.blks, fields.opcode, mpdu_len);
         }
     } else {
-        p25_handle_mbt_unknown_mfid(mpdu_byte, fields.blks, fields.mfid, mpdu_byte[0] & 0x3F, mpdu_len);
+        p25_handle_mbt_unknown_mfid(mpdu_byte, fields.blks, fields.mfid, fields.opcode, mpdu_len);
     }
     return 0;
 }
