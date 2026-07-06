@@ -486,6 +486,7 @@ static void p25p2_vpdu_lcch_signal_update(p25p2_vpdu_ctx* ctx);
 static int p25p2_vpdu_validate_len_and_warn(const p25p2_vpdu_ctx* ctx);
 static void p25p2_vpdu_dispatch_blocks(p25p2_vpdu_ctx* ctx);
 static int p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index);
+static int p25p2_vpdu_vendor_has_octets(const p25p2_vpdu_ctx* ctx, int first_octet, int count);
 
 static void
 p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx) {
@@ -4807,6 +4808,9 @@ p25p2_vpdu_handle_motorola_tdma_data_channel(p25p2_vpdu_ctx* ctx) {
 
     DSD_FPRINTF(stderr, "\n Motorola TDMA Data Channel");
     for (int c = 0; c < (int)(sizeof(channel_offsets) / sizeof(channel_offsets[0])); c++) {
+        if (!p25p2_vpdu_vendor_has_octets(ctx, channel_offsets[c], 2)) {
+            continue;
+        }
         int channel = p25p2_vpdu_u16(ctx->mac, channel_offsets[c] + ctx->len_a);
         if (!p25p2_vpdu_channel_is_valid(channel)) {
             continue;

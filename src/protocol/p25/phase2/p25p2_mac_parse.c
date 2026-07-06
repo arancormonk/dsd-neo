@@ -82,7 +82,10 @@ p25p2_mac_motorola_payload_len(uint8_t opcode, int len) {
 
 static int
 p25p2_mac_harris_payload_len(uint8_t opcode, int len) {
-    (void)opcode;
+    int fixed_len = p25p2_mac_len_for(0xA4u, opcode);
+    if (fixed_len > 0) {
+        return fixed_len;
+    }
     return p25p2_mac_positive_len(len);
 }
 

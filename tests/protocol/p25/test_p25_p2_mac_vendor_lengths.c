@@ -164,7 +164,7 @@ expect_eq_int(const char* tag, int got, int want) {
 }
 
 static int
-run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
+run_one(uint8_t mfid, uint8_t opcode, uint8_t len_octet, int want_lenB) {
     // Enable JSON
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     dsd_neo_config_init(NULL);
@@ -179,6 +179,7 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = opcode;
     mac[2] = mfid;
+    mac[3] = len_octet;
     p25_test_process_mac_vpdu(1 /* SACCH */, mac, 24);
 
     dsd_test_capture_stderr_end(&cap);
@@ -220,12 +221,12 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
 int
 main(void) {
     int rc = 0;
-    rc |= run_one(0x90, 0x91, 17); // Motorola
-    rc |= run_one(0x90, 0x95, 17); // Motorola
-    rc |= run_one(0xA4, 0xA0, 9);  // Harris private data grant
-    rc |= run_one(0xA4, 0xAA, 17); // Harris GPS
-    rc |= run_one(0xA4, 0xAC, 12); // Harris unit-to-unit data grant
-    rc |= run_one(0xD8, 0xB5, 5);  // Tait
+    rc |= run_one(0x90, 0x91, 0x00, 17); // Motorola
+    rc |= run_one(0x90, 0x95, 0x00, 17); // Motorola
+    rc |= run_one(0xA4, 0xA0, 0x2A, 9);  // Harris private data grant
+    rc |= run_one(0xA4, 0xAA, 0x21, 17); // Harris GPS
+    rc |= run_one(0xA4, 0xAC, 0x2C, 12); // Harris unit-to-unit data grant
+    rc |= run_one(0xD8, 0xB5, 0x00, 5);  // Tait
     return rc;
 }
 
