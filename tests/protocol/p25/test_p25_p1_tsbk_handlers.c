@@ -1235,6 +1235,24 @@ test_mfid90_queued_and_deny_callbacks(void) {
     rc |= expect_int("deny target", g_last_response_target, 0x000123);
     rc |= expect_int("deny active label", strstr(state.active_channel[0], "MOT DENY") != NULL, 1);
     rc |= expect_int("deny reason label", strstr(state.active_channel[0], "Site Access Denial") != NULL, 1);
+    rc |= expect_int("deny no info without flag", strstr(state.active_channel[0], "Info:") == NULL, 1);
+
+    uint8_t deny_aii[TSBK_BYTES_PER_BLOCK] = {0};
+    deny_aii[0] = 0x07;
+    deny_aii[2] = 0x80 | 0x02;
+    deny_aii[3] = 0x60;
+    deny_aii[4] = 0x12;
+    deny_aii[5] = 0x34;
+    deny_aii[6] = 0x56;
+    deny_aii[7] = 0x00;
+    deny_aii[8] = 0x01;
+    deny_aii[9] = 0x23;
+
+    reset_calls();
+    tsbk_handle_mfid90(&opts, &state, deny_aii);
+    rc |= expect_int("deny aii callback count", g_deny_count, 1);
+    rc |= expect_int("deny aii target", g_last_response_target, 0x000123);
+    rc |= expect_int("deny aii info label", strstr(state.active_channel[0], "Info: 123456") != NULL, 1);
     return rc;
 }
 

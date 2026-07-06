@@ -662,6 +662,11 @@ p25p2_vpdu_u24(const unsigned long long int* mac, int idx) {
 }
 
 static int
+p25p2_vpdu_is_bridged_p1(const p25p2_vpdu_ctx* ctx) {
+    return (ctx != NULL && ctx->len_a == 0 && ctx->mac[0] == 0x07);
+}
+
+static int
 p25p2_vpdu_tdma_paging_count(const unsigned long long int* mac, int len_a) {
     return (int)((mac[2 + len_a] & 0x03U) + 1U);
 }
@@ -4342,10 +4347,11 @@ p25p2_vpdu_handle_status_update_abbreviated(p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     dsd_state* state = ctx->state;
     const int len_a = ctx->len_a;
-    int unit_status = (int)MAC[3 + len_a];
-    int user_status = (int)MAC[4 + len_a];
-    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
-    int source = p25p2_vpdu_u24(MAC, 8 + len_a);
+    const int bridged_p1 = p25p2_vpdu_is_bridged_p1(ctx);
+    int unit_status = (int)MAC[(bridged_p1 ? 2 : 3) + len_a];
+    int user_status = (int)MAC[(bridged_p1 ? 3 : 4) + len_a];
+    int target = p25p2_vpdu_u24(MAC, (bridged_p1 ? 4 : 5) + len_a);
+    int source = p25p2_vpdu_u24(MAC, (bridged_p1 ? 7 : 8) + len_a);
 
     DSD_FPRINTF(stderr, "\n Status Update - Abbreviated");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Unit [%02X] User [%02X]", target, source, unit_status,
@@ -4373,9 +4379,15 @@ p25p2_vpdu_handle_query_alert_affiliation_abbreviated(p25p2_vpdu_ctx* ctx, int o
     const unsigned long long int* MAC = ctx->mac;
     dsd_state* state = ctx->state;
     const int len_a = ctx->len_a;
+    const int bridged_p1 = p25p2_vpdu_is_bridged_p1(ctx);
     int target = p25p2_vpdu_u24(MAC, 2 + len_a);
     int source = p25p2_vpdu_u24(MAC, 5 + len_a);
     const char* label = p25p2_vpdu_query_alert_label(opcode);
+
+    if (bridged_p1) {
+        target = p25p2_vpdu_u24(MAC, 4 + len_a);
+        source = p25p2_vpdu_u24(MAC, 7 + len_a);
+    }
 
     DSD_FPRINTF(stderr, "\n %s - Abbreviated", label);
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d]", target, source);
@@ -4389,9 +4401,10 @@ p25p2_vpdu_handle_message_update_abbreviated(p25p2_vpdu_ctx* ctx) {
     const unsigned long long int* MAC = ctx->mac;
     dsd_state* state = ctx->state;
     const int len_a = ctx->len_a;
-    int message = p25p2_vpdu_u16(MAC, 3 + len_a);
-    int target = p25p2_vpdu_u24(MAC, 5 + len_a);
-    int source = p25p2_vpdu_u24(MAC, 8 + len_a);
+    const int bridged_p1 = p25p2_vpdu_is_bridged_p1(ctx);
+    int message = p25p2_vpdu_u16(MAC, (bridged_p1 ? 2 : 3) + len_a);
+    int target = p25p2_vpdu_u24(MAC, (bridged_p1 ? 4 : 5) + len_a);
+    int source = p25p2_vpdu_u24(MAC, (bridged_p1 ? 7 : 8) + len_a);
 
     DSD_FPRINTF(stderr, "\n Message Update - Abbreviated");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Message [%04X]", target, source, message);

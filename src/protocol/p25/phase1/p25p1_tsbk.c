@@ -438,7 +438,7 @@ tsbk_handle_mfid90_traffic_channel_id(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLO
 static void
 tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
                                int is_deny) {
-    int has_additional = ((tsbk_byte[2] & 0x80) != 0) || is_deny;
+    int has_additional = ((tsbk_byte[2] & 0x80) != 0);
     int svc_type = tsbk_byte[2] & 0x3F;
     int reason_code = tsbk_byte[3];
     int addl_info = tsbk_u24(tsbk_byte, 4);

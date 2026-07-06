@@ -786,6 +786,68 @@ run_standard_mac_supplemental_display_cases(void) {
 
     DSD_MEMSET(&state, 0, sizeof state);
     DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[0] = 0x07;
+    MAC[1] = 0x58;
+    MAC[2] = 0x21;
+    MAC[3] = 0x43;
+    put_u24_ull(MAC, 4, 0x0ABCDE);
+    put_u24_ull(MAC, 7, 0x012345);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_contains("p1 bridged 0x18 status target", state.active_channel[0], "STATUS Target: 703710");
+    rc |= expect_contains("p1 bridged 0x18 status source", state.active_channel[0], "Source: 74565");
+    rc |= expect_contains("p1 bridged 0x18 status codes", state.active_channel[0], "Unit: 21 User: 43");
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[0] = 0x07;
+    MAC[1] = 0x5A;
+    put_u24_ull(MAC, 4, 0x0ABCDE);
+    put_u24_ull(MAC, 7, 0x012345);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_contains("p1 bridged 0x1A query target", state.active_channel[0], "Status Query Target: 703710");
+    rc |= expect_contains("p1 bridged 0x1A query source", state.active_channel[0], "Source: 74565");
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[0] = 0x07;
+    MAC[1] = 0x5C;
+    MAC[2] = 0xBE;
+    MAC[3] = 0xEF;
+    put_u24_ull(MAC, 4, 0x0ABCDE);
+    put_u24_ull(MAC, 7, 0x012345);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_contains("p1 bridged 0x1C message target", state.active_channel[0], "MSG Target: 703710");
+    rc |= expect_contains("p1 bridged 0x1C message source", state.active_channel[0], "Source: 74565");
+    rc |= expect_contains("p1 bridged 0x1C message body", state.active_channel[0], "Message: BEEF");
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[0] = 0x07;
+    MAC[1] = 0x5F;
+    put_u24_ull(MAC, 4, 0x0ABCDE);
+    put_u24_ull(MAC, 7, 0x012345);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_contains("p1 bridged 0x1F alert target", state.active_channel[0], "Call Alert Target: 703710");
+    rc |= expect_contains("p1 bridged 0x1F alert source", state.active_channel[0], "Source: 74565");
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[0] = 0x07;
+    MAC[1] = 0x6A;
+    put_u24_ull(MAC, 4, 0x0ABCDE);
+    put_u24_ull(MAC, 7, 0x012345);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_contains("p1 bridged 0x2A affiliation target", state.active_channel[0],
+                          "Group Affiliation Query Target: 703710");
+    rc |= expect_contains("p1 bridged 0x2A affiliation source", state.active_channel[0], "Source: 74565");
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
     MAC[1] = 0xCC;
     MAC[3] = 0x20;
     MAC[4] = 0x82;
