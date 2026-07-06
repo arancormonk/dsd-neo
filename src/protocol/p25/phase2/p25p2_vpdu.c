@@ -496,7 +496,7 @@ p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx) {
         case 0x0: tag = "SIGNAL"; break;
         case 0x1: tag = "PTT"; break;
         case 0x2: tag = "END"; break;
-        case 0x3: tag = "IDLE"; break;
+        case 0x3: tag = "TELE"; break;
         case 0x4: tag = "ACTIVE"; break;
         case 0x6: tag = "HANGTIME"; break;
         default: tag = "MAC"; break;
