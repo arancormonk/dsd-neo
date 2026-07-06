@@ -5063,57 +5063,64 @@ p25p2_vpdu_is_standard_multifragment_base(int opcode) {
     }
 }
 
+static p25_mac_fragment_state_t*
+p25p2_vpdu_frag_for_ctx(const p25p2_vpdu_ctx* ctx) {
+    if (!ctx || !ctx->state) {
+        return NULL;
+    }
+    return &ctx->state->p25_mac_frag[ctx->slot & 1];
+}
+
 static void
-p25p2_vpdu_frag_clear(dsd_state* state) {
-    if (!state) {
+p25p2_vpdu_frag_clear(p25_mac_fragment_state_t* frag) {
+    if (!frag) {
         return;
     }
-    state->p25_mac_frag_active = 0;
-    state->p25_mac_frag_opcode = 0;
-    state->p25_mac_frag_data_len = 0;
-    state->p25_mac_frag_collected = 0;
+    DSD_MEMSET(frag, 0, sizeof(*frag));
 }
 
 static int
-p25p2_vpdu_frag_u8(const dsd_state* state, int idx) {
-    if (!state || idx < 0 || idx >= (int)state->p25_mac_frag_collected) {
+p25p2_vpdu_frag_u8(const p25p2_vpdu_ctx* ctx, int idx) {
+    const p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
+    if (!frag || idx < 0 || idx >= (int)frag->collected) {
         return 0;
     }
-    return (int)state->p25_mac_frag_data[idx];
+    return (int)frag->data[idx];
 }
 
 static int
-p25p2_vpdu_frag_u16(const dsd_state* state, int idx) {
-    return (p25p2_vpdu_frag_u8(state, idx) << 8) | p25p2_vpdu_frag_u8(state, idx + 1);
+p25p2_vpdu_frag_u16(const p25p2_vpdu_ctx* ctx, int idx) {
+    return (p25p2_vpdu_frag_u8(ctx, idx) << 8) | p25p2_vpdu_frag_u8(ctx, idx + 1);
 }
 
 static int
-p25p2_vpdu_frag_u24(const dsd_state* state, int idx) {
-    return (p25p2_vpdu_frag_u8(state, idx) << 16) | (p25p2_vpdu_frag_u8(state, idx + 1) << 8)
-           | p25p2_vpdu_frag_u8(state, idx + 2);
+p25p2_vpdu_frag_u24(const p25p2_vpdu_ctx* ctx, int idx) {
+    return (p25p2_vpdu_frag_u8(ctx, idx) << 16) | (p25p2_vpdu_frag_u8(ctx, idx + 1) << 8)
+           | p25p2_vpdu_frag_u8(ctx, idx + 2);
 }
 
 static int
-p25p2_vpdu_frag_fqid_wacn(const dsd_state* state, int idx) {
-    return (p25p2_vpdu_frag_u8(state, idx) << 12) | (p25p2_vpdu_frag_u8(state, idx + 1) << 4)
-           | ((p25p2_vpdu_frag_u8(state, idx + 2) & 0xF0) >> 4);
+p25p2_vpdu_frag_fqid_wacn(const p25p2_vpdu_ctx* ctx, int idx) {
+    return (p25p2_vpdu_frag_u8(ctx, idx) << 12) | (p25p2_vpdu_frag_u8(ctx, idx + 1) << 4)
+           | ((p25p2_vpdu_frag_u8(ctx, idx + 2) & 0xF0) >> 4);
 }
 
 static int
-p25p2_vpdu_frag_fqid_sysid(const dsd_state* state, int idx) {
-    return ((p25p2_vpdu_frag_u8(state, idx + 2) & 0x0F) << 8) | p25p2_vpdu_frag_u8(state, idx + 3);
+p25p2_vpdu_frag_fqid_sysid(const p25p2_vpdu_ctx* ctx, int idx) {
+    return ((p25p2_vpdu_frag_u8(ctx, idx + 2) & 0x0F) << 8) | p25p2_vpdu_frag_u8(ctx, idx + 3);
 }
 
 static int
-p25p2_vpdu_frag_explicit_channel(const dsd_state* state, int idx) {
-    int band = (p25p2_vpdu_frag_u8(state, idx) >> 4) & 0x0F;
-    int number = ((p25p2_vpdu_frag_u8(state, idx) & 0x0F) << 8) | p25p2_vpdu_frag_u8(state, idx + 1);
+p25p2_vpdu_frag_explicit_channel(const p25p2_vpdu_ctx* ctx, int idx) {
+    int band = (p25p2_vpdu_frag_u8(ctx, idx) >> 4) & 0x0F;
+    int number = ((p25p2_vpdu_frag_u8(ctx, idx) & 0x0F) << 8) | p25p2_vpdu_frag_u8(ctx, idx + 1);
     return (band << 12) | number;
 }
 
 static int
-p25p2_vpdu_frag_has(const dsd_state* state, int count) {
-    return state && count >= 0 && (int)state->p25_mac_frag_collected >= count;
+p25p2_vpdu_frag_has(const p25p2_vpdu_ctx* ctx, int count) {
+    const p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
+    return frag && count >= 0 && (int)frag->collected >= count;
 }
 
 static void p25p2_vpdu_multifrag_set_active(dsd_state* state, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 2, 3);
@@ -5133,24 +5140,24 @@ p25p2_vpdu_multifrag_set_active(dsd_state* state, const char* fmt, ...) {
 static void
 p25p2_vpdu_handle_multifrag_authentication_demand(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
-    if (!p25p2_vpdu_frag_has(state, 16)) {
+    if (!p25p2_vpdu_frag_has(ctx, 16)) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment 0x71 invalid: short authentication demand");
         return;
     }
 
-    int target = p25p2_vpdu_frag_u24(state, 1);
-    int target_wacn = p25p2_vpdu_frag_fqid_wacn(state, 4);
-    int target_sys = p25p2_vpdu_frag_fqid_sysid(state, 4);
-    int target_id = p25p2_vpdu_frag_u24(state, 8);
+    int target = p25p2_vpdu_frag_u24(ctx, 1);
+    int target_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 4);
+    int target_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 4);
+    int target_id = p25p2_vpdu_frag_u24(ctx, 8);
 
     DSD_FPRINTF(stderr, "\n Authentication Demand - Multi-Fragment Complete");
     DSD_FPRINTF(stderr, "\n  Target [%d] SUID [%05X:%03X.%d] Seed [%02X%02X%02X%02X%02X]", target, target_wacn,
-                target_sys, target_id, p25p2_vpdu_frag_u8(state, 11), p25p2_vpdu_frag_u8(state, 12),
-                p25p2_vpdu_frag_u8(state, 13), p25p2_vpdu_frag_u8(state, 14), p25p2_vpdu_frag_u8(state, 15));
-    if (p25p2_vpdu_frag_has(state, 26)) {
-        DSD_FPRINTF(stderr, " Challenge [%02X%02X%02X%02X%02X]", p25p2_vpdu_frag_u8(state, 21),
-                    p25p2_vpdu_frag_u8(state, 22), p25p2_vpdu_frag_u8(state, 23), p25p2_vpdu_frag_u8(state, 24),
-                    p25p2_vpdu_frag_u8(state, 25));
+                target_sys, target_id, p25p2_vpdu_frag_u8(ctx, 11), p25p2_vpdu_frag_u8(ctx, 12),
+                p25p2_vpdu_frag_u8(ctx, 13), p25p2_vpdu_frag_u8(ctx, 14), p25p2_vpdu_frag_u8(ctx, 15));
+    if (p25p2_vpdu_frag_has(ctx, 26)) {
+        DSD_FPRINTF(stderr, " Challenge [%02X%02X%02X%02X%02X]", p25p2_vpdu_frag_u8(ctx, 21),
+                    p25p2_vpdu_frag_u8(ctx, 22), p25p2_vpdu_frag_u8(ctx, 23), p25p2_vpdu_frag_u8(ctx, 24),
+                    p25p2_vpdu_frag_u8(ctx, 25));
     }
     p25p2_vpdu_multifrag_set_active(state, "AUTH-L Target: %d SUID: %05X:%03X.%d; ", target, target_wacn, target_sys,
                                     target_id);
@@ -5160,19 +5167,20 @@ static void
 p25p2_vpdu_handle_multifrag_unit_to_unit_grant(p25p2_vpdu_ctx* ctx, int is_service_grant) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (!p25p2_vpdu_frag_has(state, 19)) {
+    if (!p25p2_vpdu_frag_has(ctx, 19)) {
+        const p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
         DSD_FPRINTF(stderr, "\n MAC multi-fragment 0x%02X invalid: short unit-to-unit grant",
-                    (unsigned)state->p25_mac_frag_opcode);
+                    (unsigned)(frag ? frag->opcode : 0U));
         return;
     }
 
-    int svc = p25p2_vpdu_frag_u8(state, 1);
-    int source = p25p2_vpdu_frag_u24(state, 2);
-    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 5);
-    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 5);
-    int channelt = p25p2_vpdu_frag_explicit_channel(state, 12);
-    int channelr = p25p2_vpdu_frag_explicit_channel(state, 14);
-    int target = p25p2_vpdu_frag_u24(state, 16);
+    int svc = p25p2_vpdu_frag_u8(ctx, 1);
+    int source = p25p2_vpdu_frag_u24(ctx, 2);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 5);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 5);
+    int channelt = p25p2_vpdu_frag_explicit_channel(ctx, 12);
+    int channelr = p25p2_vpdu_frag_explicit_channel(ctx, 14);
+    int target = p25p2_vpdu_frag_u24(ctx, 16);
     long int freq = 0;
     char suffix[32];
 
@@ -5180,7 +5188,7 @@ p25p2_vpdu_handle_multifrag_unit_to_unit_grant(p25p2_vpdu_ctx* ctx, int is_servi
                 is_service_grant ? "" : " Update");
     p25p2_vpdu_print_svc_no_state(opts, svc);
     DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Target [%d] Source [%05X:%03X.%d/%d]", svc,
-                channelt, channelr, target, source_wacn, source_sys, p25p2_vpdu_frag_u24(state, 9), source);
+                channelt, channelr, target, source_wacn, source_sys, p25p2_vpdu_frag_u24(ctx, 9), source);
 
     freq = process_channel_to_freq(opts, state, channelt);
     if (p25p2_vpdu_channel_is_valid(channelr)) {
@@ -5199,36 +5207,36 @@ p25p2_vpdu_handle_multifrag_unit_to_unit_grant(p25p2_vpdu_ctx* ctx, int is_servi
 static void
 p25p2_vpdu_handle_multifrag_call_alert(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
-    if (!p25p2_vpdu_frag_has(state, 16)) {
+    if (!p25p2_vpdu_frag_has(ctx, 16)) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xCB invalid: short call alert");
         return;
     }
 
-    int source = p25p2_vpdu_frag_u24(state, 1);
-    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 4);
-    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 4);
-    int target = p25p2_vpdu_frag_u24(state, 11);
+    int source = p25p2_vpdu_frag_u24(ctx, 1);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 4);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 4);
+    int target = p25p2_vpdu_frag_u24(ctx, 11);
     DSD_FPRINTF(stderr, "\n Call Alert - Extended LCCH Complete");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d/%d]", target, source_wacn, source_sys,
-                p25p2_vpdu_frag_u24(state, 8), source);
+                p25p2_vpdu_frag_u24(ctx, 8), source);
     p25p2_vpdu_multifrag_set_active(state, "CALL-L Target: %d Source: %d; ", target, source);
 }
 
 static void
 p25p2_vpdu_handle_multifrag_radio_unit_monitor(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
-    if (!p25p2_vpdu_frag_has(state, 16)) {
+    if (!p25p2_vpdu_frag_has(ctx, 16)) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xCD invalid: short radio unit monitor");
         return;
     }
 
-    int transmit_time = p25p2_vpdu_frag_u8(state, 1);
-    int silent = ((p25p2_vpdu_frag_u8(state, 2) & 0x80) != 0);
-    int multiplier = p25p2_vpdu_frag_u8(state, 2) & 0x03;
-    int target = p25p2_vpdu_frag_u24(state, 3);
-    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 6);
-    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 6);
-    int source = p25p2_vpdu_frag_u24(state, 13);
+    int transmit_time = p25p2_vpdu_frag_u8(ctx, 1);
+    int silent = ((p25p2_vpdu_frag_u8(ctx, 2) & 0x80) != 0);
+    int multiplier = p25p2_vpdu_frag_u8(ctx, 2) & 0x03;
+    int target = p25p2_vpdu_frag_u24(ctx, 3);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 6);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 6);
+    int source = p25p2_vpdu_frag_u24(ctx, 13);
     DSD_FPRINTF(stderr, "\n Radio Unit Monitor Command - Extended LCCH Complete");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Time [%d] Mult [%d]%s", target, source_wacn, source_sys,
                 source, transmit_time, multiplier, silent ? " Silent" : "");
@@ -5239,16 +5247,16 @@ p25p2_vpdu_handle_multifrag_radio_unit_monitor(p25p2_vpdu_ctx* ctx) {
 static void
 p25p2_vpdu_handle_multifrag_message_update(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
-    if (!p25p2_vpdu_frag_has(state, 16)) {
+    if (!p25p2_vpdu_frag_has(ctx, 16)) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xCE invalid: short message update");
         return;
     }
 
-    int message = p25p2_vpdu_frag_u16(state, 1);
-    int target = p25p2_vpdu_frag_u24(state, 3);
-    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 6);
-    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 6);
-    int source = p25p2_vpdu_frag_u24(state, 13);
+    int message = p25p2_vpdu_frag_u16(ctx, 1);
+    int target = p25p2_vpdu_frag_u24(ctx, 3);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 6);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 6);
+    int source = p25p2_vpdu_frag_u24(ctx, 13);
     DSD_FPRINTF(stderr, "\n Message Update - Extended LCCH Complete");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Message [%04X]", target, source_wacn, source_sys, source,
                 message);
@@ -5258,17 +5266,17 @@ p25p2_vpdu_handle_multifrag_message_update(p25p2_vpdu_ctx* ctx) {
 static void
 p25p2_vpdu_handle_multifrag_status_update(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
-    if (!p25p2_vpdu_frag_has(state, 16)) {
+    if (!p25p2_vpdu_frag_has(ctx, 16)) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xD9 invalid: short status update");
         return;
     }
 
-    int unit_status = p25p2_vpdu_frag_u8(state, 1);
-    int user_status = p25p2_vpdu_frag_u8(state, 2);
-    int target = p25p2_vpdu_frag_u24(state, 3);
-    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 6);
-    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 6);
-    int source = p25p2_vpdu_frag_u24(state, 13);
+    int unit_status = p25p2_vpdu_frag_u8(ctx, 1);
+    int user_status = p25p2_vpdu_frag_u8(ctx, 2);
+    int target = p25p2_vpdu_frag_u24(ctx, 3);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 6);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 6);
+    int source = p25p2_vpdu_frag_u24(ctx, 13);
     DSD_FPRINTF(stderr, "\n Status Update - Extended LCCH Complete");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d] Unit [%02X] User [%02X]", target, source_wacn,
                 source_sys, source, unit_status, user_status);
@@ -5279,39 +5287,39 @@ p25p2_vpdu_handle_multifrag_status_update(p25p2_vpdu_ctx* ctx) {
 static void
 p25p2_vpdu_handle_multifrag_status_query(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
-    if (!p25p2_vpdu_frag_has(state, 16)) {
+    if (!p25p2_vpdu_frag_has(ctx, 16)) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xDB invalid: short status query");
         return;
     }
 
-    int target = p25p2_vpdu_frag_u24(state, 1);
-    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 4);
-    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 4);
-    int source = p25p2_vpdu_frag_u24(state, 11);
+    int target = p25p2_vpdu_frag_u24(ctx, 1);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 4);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 4);
+    int source = p25p2_vpdu_frag_u24(ctx, 11);
     DSD_FPRINTF(stderr, "\n Status Query - Extended LCCH Complete");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d/%d]", target, source_wacn, source_sys,
-                p25p2_vpdu_frag_u24(state, 8), source);
+                p25p2_vpdu_frag_u24(ctx, 8), source);
     p25p2_vpdu_multifrag_set_active(state, "STATUSQ-L Target: %d Source: %d; ", target, source);
 }
 
 static void
 p25p2_vpdu_handle_multifrag_radio_unit_monitor_enhanced(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
-    if (!p25p2_vpdu_frag_has(state, 19)) {
+    if (!p25p2_vpdu_frag_has(ctx, 19)) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xDE invalid: short enhanced radio unit monitor");
         return;
     }
 
-    int target = p25p2_vpdu_frag_u24(state, 1);
-    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 4);
-    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 4);
-    int source_suid = p25p2_vpdu_frag_u24(state, 8);
-    int silent = ((p25p2_vpdu_frag_u8(state, 11) & 0x80) != 0);
-    int talkgroup_mode = ((p25p2_vpdu_frag_u8(state, 11) & 0x40) != 0);
-    int transmit_time = p25p2_vpdu_frag_u8(state, 12);
-    int key_id = p25p2_vpdu_frag_u16(state, 13);
-    int algid = p25p2_vpdu_frag_u8(state, 15);
-    int source = p25p2_vpdu_frag_u24(state, 16);
+    int target = p25p2_vpdu_frag_u24(ctx, 1);
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 4);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 4);
+    int source_suid = p25p2_vpdu_frag_u24(ctx, 8);
+    int silent = ((p25p2_vpdu_frag_u8(ctx, 11) & 0x80) != 0);
+    int talkgroup_mode = ((p25p2_vpdu_frag_u8(ctx, 11) & 0x40) != 0);
+    int transmit_time = p25p2_vpdu_frag_u8(ctx, 12);
+    int key_id = p25p2_vpdu_frag_u16(ctx, 13);
+    int algid = p25p2_vpdu_frag_u8(ctx, 15);
+    int source = p25p2_vpdu_frag_u24(ctx, 16);
     DSD_FPRINTF(stderr, "\n Radio Unit Monitor Enhanced Command - Extended Complete");
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d/%d] Time [%d] ALG [%02X] KID [%04X]%s%s", target,
                 source_wacn, source_sys, source_suid, source, transmit_time, algid, key_id, silent ? " Silent" : "",
@@ -5324,20 +5332,20 @@ p25p2_vpdu_handle_multifrag_radio_unit_monitor_enhanced(p25p2_vpdu_ctx* ctx) {
 static void
 p25p2_vpdu_handle_multifrag_ack_response(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
-    if (!p25p2_vpdu_frag_has(state, 22)) {
+    if (!p25p2_vpdu_frag_has(ctx, 22)) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment 0xE0 invalid: short acknowledge response");
         return;
     }
 
-    int service_type = p25p2_vpdu_frag_u8(state, 1) & 0x3F;
-    int source_wacn = p25p2_vpdu_frag_fqid_wacn(state, 2);
-    int source_sys = p25p2_vpdu_frag_fqid_sysid(state, 2);
-    int source_suid = p25p2_vpdu_frag_u24(state, 6);
-    int target_wacn = p25p2_vpdu_frag_fqid_wacn(state, 9);
-    int target_sys = p25p2_vpdu_frag_fqid_sysid(state, 9);
-    int target_suid = p25p2_vpdu_frag_u24(state, 13);
-    int source = p25p2_vpdu_frag_u24(state, 16);
-    int target = p25p2_vpdu_frag_u24(state, 19);
+    int service_type = p25p2_vpdu_frag_u8(ctx, 1) & 0x3F;
+    int source_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 2);
+    int source_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 2);
+    int source_suid = p25p2_vpdu_frag_u24(ctx, 6);
+    int target_wacn = p25p2_vpdu_frag_fqid_wacn(ctx, 9);
+    int target_sys = p25p2_vpdu_frag_fqid_sysid(ctx, 9);
+    int target_suid = p25p2_vpdu_frag_u24(ctx, 13);
+    int source = p25p2_vpdu_frag_u24(ctx, 16);
+    int target = p25p2_vpdu_frag_u24(ctx, 19);
     DSD_FPRINTF(stderr, "\n Acknowledge Response FNE - Extended Complete");
     DSD_FPRINTF(stderr, "\n  Service [%02X] Target [%05X:%03X.%d/%d] Source [%05X:%03X.%d/%d]", service_type,
                 target_wacn, target_sys, target_suid, target, source_wacn, source_sys, source_suid, source);
@@ -5346,11 +5354,11 @@ p25p2_vpdu_handle_multifrag_ack_response(p25p2_vpdu_ctx* ctx) {
 
 static void
 p25p2_vpdu_handle_completed_multifragment(p25p2_vpdu_ctx* ctx) {
-    dsd_state* state = ctx->state;
-    int opcode = (int)state->p25_mac_frag_opcode;
+    const p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
+    int opcode = frag ? (int)frag->opcode : 0;
 
     DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Complete Opcode [%02X] DataLen [%d] Collected [%d]", opcode,
-                (int)state->p25_mac_frag_data_len, (int)state->p25_mac_frag_collected);
+                frag ? (int)frag->data_len : 0, frag ? (int)frag->collected : 0);
 
     switch (opcode) {
         case 0x71: p25p2_vpdu_handle_multifrag_authentication_demand(ctx); break;
@@ -5368,12 +5376,12 @@ p25p2_vpdu_handle_completed_multifragment(p25p2_vpdu_ctx* ctx) {
 }
 
 static int
-p25p2_vpdu_frag_append(dsd_state* state, const unsigned long long int* mac, int start, int len) {
+p25p2_vpdu_frag_append(p25_mac_fragment_state_t* frag, const unsigned long long int* mac, int start, int len) {
     int count = len - 2;
-    if (!state || !mac || start < 0 || len < 3 || start + len > 24) {
+    if (!frag || !mac || start < 0 || len < 3 || start + len > 24) {
         return 0;
     }
-    int remaining = (int)state->p25_mac_frag_data_len - (int)state->p25_mac_frag_collected;
+    int remaining = (int)frag->data_len - (int)frag->collected;
     if (remaining <= 0) {
         return 0;
     }
@@ -5382,66 +5390,69 @@ p25p2_vpdu_frag_append(dsd_state* state, const unsigned long long int* mac, int 
     }
 
     for (int i = 0; i < count; i++) {
-        state->p25_mac_frag_data[state->p25_mac_frag_collected++] = (uint8_t)(mac[start + 2 + i] & 0xFFU);
+        frag->data[frag->collected++] = (uint8_t)(mac[start + 2 + i] & 0xFFU);
     }
     return 1;
 }
 
 static int
 p25p2_vpdu_consume_multifragment_base(p25p2_vpdu_ctx* ctx, int opcode) {
-    dsd_state* state = ctx->state;
+    p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
     const unsigned long long int* mac = ctx->mac;
     int start = 1 + ctx->len_a;
     int len = ctx->len_b;
     int data_len = (start + 2 < 24) ? (int)(mac[start + 2] & 0xFFU) : 0;
 
-    p25p2_vpdu_frag_clear(state);
+    p25p2_vpdu_frag_clear(frag);
     if (len < 3 || data_len <= 0) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment base 0x%02X invalid length len=%d data=%d", opcode, len, data_len);
         return 1;
     }
 
-    state->p25_mac_frag_active = 1;
-    state->p25_mac_frag_opcode = (uint8_t)opcode;
-    state->p25_mac_frag_data_len = (uint8_t)data_len;
-    state->p25_mac_frag_collected = 0;
-    if (!p25p2_vpdu_frag_append(state, mac, start, len)) {
+    if (!frag) {
+        return 1;
+    }
+    frag->active = 1;
+    frag->opcode = (uint8_t)opcode;
+    frag->data_len = (uint8_t)data_len;
+    frag->collected = 0;
+    if (!p25p2_vpdu_frag_append(frag, mac, start, len)) {
         DSD_FPRINTF(stderr, "\n MAC multi-fragment base 0x%02X invalid payload length len=%d", opcode, len);
-        p25p2_vpdu_frag_clear(state);
+        p25p2_vpdu_frag_clear(frag);
         return 1;
     }
 
     DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Base Opcode [%02X] DataLen [%d] Collected [%d]", opcode,
-                (int)state->p25_mac_frag_data_len, (int)state->p25_mac_frag_collected);
-    if ((int)state->p25_mac_frag_collected >= (int)state->p25_mac_frag_data_len) {
+                (int)frag->data_len, (int)frag->collected);
+    if ((int)frag->collected >= (int)frag->data_len) {
         p25p2_vpdu_handle_completed_multifragment(ctx);
-        p25p2_vpdu_frag_clear(state);
+        p25p2_vpdu_frag_clear(frag);
     }
     return 1;
 }
 
 static int
 p25p2_vpdu_consume_multifragment_continuation(p25p2_vpdu_ctx* ctx) {
-    dsd_state* state = ctx->state;
+    p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
     const unsigned long long int* mac = ctx->mac;
     int start = 1 + ctx->len_a;
     int len = ctx->len_b;
 
-    if (!state->p25_mac_frag_active) {
+    if (!frag || !frag->active) {
         DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Continuation ignored: no active base");
         return 1;
     }
-    if (!p25p2_vpdu_frag_append(state, mac, start, len)) {
+    if (!p25p2_vpdu_frag_append(frag, mac, start, len)) {
         DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Continuation invalid length len=%d", len);
-        p25p2_vpdu_frag_clear(state);
+        p25p2_vpdu_frag_clear(frag);
         return 1;
     }
 
     DSD_FPRINTF(stderr, "\n MAC Multi-Fragment Continuation Opcode [%02X] DataLen [%d] Collected [%d]",
-                (int)state->p25_mac_frag_opcode, (int)state->p25_mac_frag_data_len, (int)state->p25_mac_frag_collected);
-    if ((int)state->p25_mac_frag_collected >= (int)state->p25_mac_frag_data_len) {
+                (int)frag->opcode, (int)frag->data_len, (int)frag->collected);
+    if ((int)frag->collected >= (int)frag->data_len) {
         p25p2_vpdu_handle_completed_multifragment(ctx);
-        p25p2_vpdu_frag_clear(state);
+        p25p2_vpdu_frag_clear(frag);
     }
     return 1;
 }
@@ -5458,9 +5469,10 @@ p25p2_vpdu_consume_fragment_segment(p25p2_vpdu_ctx* ctx) {
     if (opcode == 0x00 && ctx->iter_idx > 0) {
         return 1;
     }
-    if (ctx->state && ctx->state->p25_mac_frag_active) {
+    p25_mac_fragment_state_t* frag = p25p2_vpdu_frag_for_ctx(ctx);
+    if (frag && frag->active) {
         DSD_FPRINTF(stderr, "\n MAC Multi-Fragment assembly cleared by non-fragment opcode [%02X]", opcode);
-        p25p2_vpdu_frag_clear(ctx->state);
+        p25p2_vpdu_frag_clear(frag);
     }
     return 0;
 }

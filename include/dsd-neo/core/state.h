@@ -38,6 +38,14 @@ enum DSD_ATTR_PACKED {
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
 
+typedef struct {
+    uint8_t active;
+    uint8_t opcode;
+    uint8_t data_len;
+    uint8_t collected;
+    uint8_t data[DSD_P25_MAC_FRAGMENT_MAX_OCTETS];
+} p25_mac_fragment_state_t;
+
 typedef enum DSD_ATTR_PACKED {
     DSD_EVENT_SEVERITY_UNKNOWN = 0,
     DSD_EVENT_SEVERITY_DEBUG = 1,
@@ -936,12 +944,8 @@ struct dsd_state {
     // P25 source unit WACN from LCW 0x49 (Source ID Extension)
     uint32_t p25_src_nid; // 20-bit WACN from SUID extension
 
-    // P25 Phase 2 standard MAC multi-fragment assembly, one in-flight message.
-    uint8_t p25_mac_frag_active;
-    uint8_t p25_mac_frag_opcode;
-    uint8_t p25_mac_frag_data_len;
-    uint8_t p25_mac_frag_collected;
-    uint8_t p25_mac_frag_data[DSD_P25_MAC_FRAGMENT_MAX_OCTETS];
+    // P25 Phase 2 standard MAC multi-fragment assembly, one in-flight message per TDMA slot.
+    p25_mac_fragment_state_t p25_mac_frag[2];
 
     // P25 current-call flags (per logical slot; FDMA uses slot 0)
     uint8_t p25_call_emergency[2];        // 1 if current call is emergency

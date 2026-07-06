@@ -611,6 +611,33 @@ main(void) {
         rc |= expect_contains_text("mbt 0x04 short log", out, "short payload");
     }
 
+    // Legacy MBT entry point clamps to the declared BLKS count before decoding.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        uint8_t uu[48];
+        init_private_trunking(&opts, &state);
+        seed_fdma_iden(&state, 1);
+        build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x100A, 0x100A);
+        uu[6] = 0x00;
+        reset_indiv_grants();
+
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_uu_legacy_declared_short") != 0) {
+            return 110;
+        }
+        p25_decode_pdu_trunking(&opts, &state, uu);
+        dsd_test_capture_stderr_end(&cap);
+
+        char out[2048];
+        if (read_capture_file(cap.path, out, sizeof out) != 0) {
+            return 111;
+        }
+        rc |= expect_eq_int("mbt 0x04 legacy declared short no grant", g_indiv_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x04 legacy declared short inactive", state.active_channel[0][0] == '\0', 1);
+        rc |= expect_contains_text("mbt 0x04 legacy declared short log", out, "short payload");
+    }
+
     // AMBTC metadata-only decoders log useful fields and do not dispatch voice grants.
     {
         uint8_t meta[48];
@@ -618,7 +645,7 @@ main(void) {
 
         build_ambtc_unit_answer(meta);
         if (capture_mbt_output("p25_mbt_meta_0x05", meta, sizeof meta, out, sizeof out) != 0) {
-            return 110;
+            return 112;
         }
         rc |= expect_eq_int("mbt 0x05 no indiv grant", g_indiv_grant_count, 0);
         rc |= expect_eq_int("mbt 0x05 no group grant", g_group_grant_count, 0);

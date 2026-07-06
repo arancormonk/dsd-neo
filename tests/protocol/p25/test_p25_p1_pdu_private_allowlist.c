@@ -335,6 +335,7 @@ main(void) {
     // Build ALT MBT Unit-to-Unit Voice Channel Grant - Extended (opcode 0x06).
     mpdu[0] = 0x37; // outbound ALT MBT format
     mpdu[2] = 0x00; // MFID standard
+    mpdu[6] = 0x02; // header plus two data blocks
     mpdu[7] = 0x06; // opcode: UU Voice Channel Grant Extended
     mpdu[8] = 0x00; // svc clear
     mpdu[3] = 0x00;
@@ -363,6 +364,7 @@ main(void) {
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x37; // outbound ALT MBT
     mpdu[2] = 0x00;
+    mpdu[6] = 0x01; // header plus one data block
     mpdu[7] = 0x00; // Group Voice Channel Grant Update - Extended
     mpdu[8] = 0x00; // clear voice service
     mpdu[3] = 0x01;
@@ -388,6 +390,7 @@ main(void) {
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x37;
     mpdu[2] = 0x00;
+    mpdu[6] = 0x01; // header plus one data block
     mpdu[7] = 0x08; // Telephone Interconnect Voice Channel Grant
     mpdu[3] = 0x01;
     mpdu[4] = 0x02;
@@ -416,6 +419,7 @@ main(void) {
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x37;
     mpdu[2] = 0x90;
+    mpdu[6] = 0x01; // header plus one data block
     mpdu[7] = 0x02; // MFID90 Group Regroup Channel Grant - Explicit
     mpdu[3] = 0x04;
     mpdu[4] = 0x05;
@@ -437,6 +441,7 @@ main(void) {
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x17; // inbound ALT MBT ISP
     mpdu[2] = 0x00;
+    mpdu[6] = 0x01; // header plus one data block
     mpdu[7] = 0x04; // inbound UU voice service request, not an outbound grant
     mpdu[8] = 0x00;
     mpdu[14] = 0x10;
@@ -454,6 +459,7 @@ main(void) {
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x15; // inbound UMBTC ISP
     mpdu[2] = 0x00;
+    mpdu[6] = 0x01;  // header plus one data block
     mpdu[12] = 0x08; // explicit telephone dial request
     opts.p25_is_tuned = 0;
     reset_calls();
@@ -465,6 +471,7 @@ main(void) {
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x17; // inbound Motorola protected ISP
     mpdu[2] = 0x90;
+    mpdu[6] = 0x01; // header plus one data block
     mpdu[7] = 0x00; // group regroup voice request, not MFID90 grant
     mpdu[16] = 0x22;
     mpdu[17] = 0x22;

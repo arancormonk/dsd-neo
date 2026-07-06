@@ -72,6 +72,16 @@ p25_mbt_opcode_index(uint8_t fmt) {
     return (fmt == 0x17) ? P25_MBT_AMBTC_OPCODE_INDEX : P25_MBT_UMBTC_OPCODE_INDEX;
 }
 
+static size_t
+p25_mbt_declared_len(const uint8_t* mpdu_byte) {
+    if (!mpdu_byte) {
+        return 0U;
+    }
+
+    size_t declared = ((size_t)(mpdu_byte[6] & 0x7FU) + 1U) * 12U;
+    return declared <= P25_MBT_LEGACY_MAX_LEN ? declared : P25_MBT_LEGACY_MAX_LEN;
+}
+
 static int
 p25_parse_mbt_fields_checked(const uint8_t* mpdu_byte, size_t mpdu_len, p25p1_mbt_fields* fields) {
     if (!mpdu_byte || !fields || mpdu_len <= 6U) {
@@ -1198,7 +1208,7 @@ p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* 
 //trunking data delivered via PDU format
 void
 p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
-    (void)p25_decode_pdu_trunking_bounded(opts, state, mpdu_byte, P25_MBT_LEGACY_MAX_LEN);
+    (void)p25_decode_pdu_trunking_bounded(opts, state, mpdu_byte, p25_mbt_declared_len(mpdu_byte));
 }
 
 int

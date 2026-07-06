@@ -1162,14 +1162,40 @@ run_standard_mac_multifragment_cases(void) {
     put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
     put_u24_ull(base, 16, 0x445566);
     process_MAC_VPDU(&opts, &state, 1 /* SACCH */, base);
-    rc |= expect_eq_long("SACCH base ignores null padding active", state.p25_mac_frag_active, 1);
-    rc |= expect_eq_long("SACCH base ignores null padding collected", state.p25_mac_frag_collected, 16);
+    rc |= expect_eq_long("SACCH base ignores null padding active", state.p25_mac_frag[1].active, 1);
+    rc |= expect_eq_long("SACCH base ignores null padding collected", state.p25_mac_frag[1].collected, 16);
 
     init_multifragment_continuation(cont, 10);
     put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
     process_MAC_VPDU(&opts, &state, 1 /* SACCH */, cont);
     rc |= expect_contains("SACCH completed 0xD9 status label", state.active_channel[0], "STATUS-L");
-    rc |= expect_eq_long("SACCH completed 0xD9 clears active", state.p25_mac_frag_active, 0);
+    rc |= expect_eq_long("SACCH completed 0xD9 clears active", state.p25_mac_frag[1].active, 0);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    init_multifragment_base(base, 0xD9, 24);
+    base[4] = 0x12;
+    base[5] = 0x34;
+    put_u24_ull(base, 6, 0x010203);
+    put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
+    put_u24_ull(base, 16, 0x445566);
+    state.currentslot = 0;
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
+    rc |= expect_eq_long("slot0 base active before slot1 continuation", state.p25_mac_frag[0].active, 1);
+    rc |= expect_eq_long("slot0 base collected before slot1 continuation", state.p25_mac_frag[0].collected, 16);
+
+    init_multifragment_continuation(cont, 10);
+    put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
+    state.currentslot = 1;
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    rc |= expect_eq_long("slot1 continuation does not append slot0", state.p25_mac_frag[0].collected, 16);
+    rc |= expect_eq_long("slot1 continuation leaves slot0 active", state.p25_mac_frag[0].active, 1);
+    rc |= expect_eq_long("slot1 continuation has no slot1 active", state.p25_mac_frag[1].active, 0);
+    rc |= expect_true("slot1 continuation does not complete slot0", state.active_channel[0][0] == '\0');
+
+    state.currentslot = 0;
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    rc |= expect_contains("slot0 continuation completes slot0", state.active_channel[0], "STATUS-L");
     dsd_state_ext_free_all(&state);
 
     for (size_t i = 0; i < sizeof(complete_cases) / sizeof(complete_cases[0]); i++) {
@@ -1213,8 +1239,8 @@ run_standard_mac_multifragment_cases(void) {
     }
     init_multifragment_continuation(cont, 11);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
-    rc |= expect_eq_long("max-length multi-fragment clears active", state.p25_mac_frag_active, 0);
-    rc |= expect_eq_long("max-length multi-fragment clears collected", state.p25_mac_frag_collected, 0);
+    rc |= expect_eq_long("max-length multi-fragment clears active", state.p25_mac_frag[0].active, 0);
+    rc |= expect_eq_long("max-length multi-fragment clears collected", state.p25_mac_frag[0].collected, 0);
     rc |= expect_contains("max-length multi-fragment completes", state.active_channel[0], "AUTH-L");
     dsd_state_ext_free_all(&state);
 
