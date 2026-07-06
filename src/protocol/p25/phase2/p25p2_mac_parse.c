@@ -59,9 +59,7 @@ static int
 p25p2_mac_multifrag_len(uint8_t opcode, int len) {
     switch (opcode) {
         case 0x08u:
-        case 0x10u:
-        case 0x11u:
-        case 0x12u: return p25p2_mac_positive_len(len);
+        case 0x10u: return p25p2_mac_positive_len(len);
         default: return -1;
     }
 }
@@ -111,6 +109,13 @@ p25p2_mac_payload_len_override(const unsigned long long mac[24], int opcode_pos)
     uint8_t mfid = (uint8_t)p25p2_mac_octet(mac, opcode_pos + 1);
     uint8_t len_octet = (uint8_t)p25p2_mac_octet(mac, opcode_pos + 2);
     int multifrag_len = p25p2_mac_multifrag_len(opcode, (int)(mfid & 0x3Fu));
+
+    if (opcode == 0x11u) {
+        return 2 + (2 * (int)((mfid & 0x03u) + 1u));
+    }
+    if (opcode == 0x12u) {
+        return 2 + (3 * (int)((mfid & 0x03u) + 1u));
+    }
 
     if (multifrag_len >= 0) {
         return multifrag_len;

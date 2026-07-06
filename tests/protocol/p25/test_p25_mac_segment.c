@@ -234,6 +234,56 @@ run_payload_len_case(const char* tag, int type, uint8_t opcode, uint8_t mfid, ui
     return 0;
 }
 
+static int
+run_tdma_paging_len_case(const char* tag, uint8_t opcode, uint8_t count_bits, int expectB, int expectC) {
+    setenv("DSD_NEO_PDU_JSON", "1", 1);
+    dsd_neo_config_init(NULL);
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, tag) != 0) {
+        DSD_FPRINTF(stderr, "Failed to capture stderr: %s\n", strerror(errno));
+        return 300;
+    }
+
+    unsigned char mac[24];
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = opcode;
+    mac[2] = count_bits;
+    if ((1 + expectB) < (int)sizeof(mac)) {
+        mac[1 + expectB] = 0x30; // following fixed-length MAC structure proves alignment
+        mac[2 + expectB] = 0x00;
+    }
+    p25_test_process_mac_vpdu(1 /* SACCH */, mac, 24);
+
+    dsd_test_capture_stderr_end(&cap);
+
+    FILE* f = fopen(cap.path, "r");
+    if (!f) {
+        DSD_FPRINTF(stderr, "Failed to open %s\n", cap.path);
+        return 301;
+    }
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    int lenB = -1, lenC = -1;
+    if (parse_len_fields(buf, &lenB, &lenC) != 0) {
+        DSD_FPRINTF(stderr, "%s JSON parse failed: %s\n", tag, buf);
+        return 302;
+    }
+    if (lenB != expectB) {
+        DSD_FPRINTF(stderr, "%s lenB mismatch got B=%d want B=%d (C=%d)\n", tag, lenB, expectB, lenC);
+        return 303;
+    }
+    if (lenC != expectC) {
+        DSD_FPRINTF(stderr, "%s lenC mismatch got C=%d want C=%d\n", tag, lenC, expectC);
+        return 304;
+    }
+    (void)remove(cap.path);
+    return 0;
+}
+
 int
 main(void) {
     // FACCH capacity = 16 octets (after opcode). Choose opcode 0x23 (base table 0), MCO=35 → infer 34 → cap 16.
@@ -274,6 +324,38 @@ main(void) {
         return rc;
     }
     rc = run_payload_len_case("p25_tait_variable_len", /*FACCH*/ 0, 0xB4, 0xD8, 0x08, /*B*/ 8, /*C*/ 8);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_tdma_paging_len_case("p25_tdma_11_count1", 0x11, 0x00, /*B*/ 4, /*C*/ 5);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_tdma_paging_len_case("p25_tdma_11_count2", 0x11, 0x01, /*B*/ 6, /*C*/ 5);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_tdma_paging_len_case("p25_tdma_11_count3", 0x11, 0x02, /*B*/ 8, /*C*/ 5);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_tdma_paging_len_case("p25_tdma_11_count4", 0x11, 0x03, /*B*/ 10, /*C*/ 5);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_tdma_paging_len_case("p25_tdma_12_count1", 0x12, 0x00, /*B*/ 5, /*C*/ 5);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_tdma_paging_len_case("p25_tdma_12_count2", 0x12, 0x01, /*B*/ 8, /*C*/ 5);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_tdma_paging_len_case("p25_tdma_12_count3", 0x12, 0x02, /*B*/ 11, /*C*/ 5);
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_tdma_paging_len_case("p25_tdma_12_count4", 0x12, 0x03, /*B*/ 14, /*C*/ 5);
     if (rc != 0) {
         return rc;
     }

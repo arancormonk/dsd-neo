@@ -160,6 +160,39 @@ expect_contains(const char* tag, const char* haystack, const char* needle) {
     return 0;
 }
 
+static int
+expect_file_contains(const char* tag, const char* path, const char* needle) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        DSD_FPRINTF(stderr, "%s: failed to open capture %s\n", tag, path ? path : "(null)");
+        return 1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return 1;
+    }
+    long sz = ftell(f);
+    if (sz < 0) {
+        fclose(f);
+        return 1;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return 1;
+    }
+    char* buf = (char*)calloc((size_t)sz + 1U, 1);
+    if (!buf) {
+        fclose(f);
+        return 1;
+    }
+    (void)fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+
+    int rc = expect_contains(tag, buf, needle);
+    free(buf);
+    return rc;
+}
+
 static void
 put_u24_ull(unsigned long long int* mac, int pos, unsigned value) {
     mac[pos + 0] = (unsigned long long int)((value >> 16) & 0xFFU);
@@ -174,6 +207,65 @@ put_fqid_tail_ull(unsigned long long int* mac, int pos, unsigned wacn, unsigned 
     mac[pos + 2] = (unsigned long long int)(((wacn & 0x0FU) << 4) | ((sysid >> 8) & 0x0FU));
     mac[pos + 3] = (unsigned long long int)(sysid & 0xFFU);
     put_u24_ull(mac, pos + 4, source);
+}
+
+static void
+seed_metadata_only_state(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof *opts);
+    DSD_MEMSET(state, 0, sizeof *state);
+    opts->p25_trunk = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    state->p25_cc_freq = 851000000L;
+    state->lasttg = 0x1111;
+    state->lasttgR = 0x2222;
+    state->lastsrc = 0x010203;
+    state->lastsrcR = 0x040506;
+    state->p25_aff_count = 1;
+    state->p25_aff_rid[0] = 0x112233;
+    state->p25_ga_count = 1;
+    state->p25_ga_rid[0] = 0x112233;
+    state->p25_ga_tg[0] = 0x3344;
+    state->p25_patch_count = 1;
+    state->p25_patch_sgid[0] = 0x4567;
+    state->p25_patch_active[0] = 1;
+    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "%s", "KEEP");
+}
+
+static int
+expect_metadata_only_state(const char* tag, const dsd_opts* opts, const dsd_state* state) {
+    int rc = 0;
+    char label[128];
+
+    DSD_SNPRINTF(label, sizeof label, "%s p25 tuned", tag);
+    rc |= expect_eq_long(label, opts->p25_is_tuned, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s trunk tuned", tag);
+    rc |= expect_eq_long(label, opts->trunk_is_tuned, 0);
+    DSD_SNPRINTF(label, sizeof label, "%s vc0", tag);
+    rc |= expect_eq_long(label, state->p25_vc_freq[0], 0);
+    DSD_SNPRINTF(label, sizeof label, "%s vc1", tag);
+    rc |= expect_eq_long(label, state->p25_vc_freq[1], 0);
+    DSD_SNPRINTF(label, sizeof label, "%s active channel", tag);
+    rc |= expect_contains(label, state->active_channel[0], "KEEP");
+    DSD_SNPRINTF(label, sizeof label, "%s lasttg", tag);
+    rc |= expect_eq_long(label, state->lasttg, 0x1111);
+    DSD_SNPRINTF(label, sizeof label, "%s lasttgR", tag);
+    rc |= expect_eq_long(label, state->lasttgR, 0x2222);
+    DSD_SNPRINTF(label, sizeof label, "%s lastsrc", tag);
+    rc |= expect_eq_long(label, state->lastsrc, 0x010203);
+    DSD_SNPRINTF(label, sizeof label, "%s lastsrcR", tag);
+    rc |= expect_eq_long(label, state->lastsrcR, 0x040506);
+    DSD_SNPRINTF(label, sizeof label, "%s aff count", tag);
+    rc |= expect_eq_long(label, state->p25_aff_count, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s ga count", tag);
+    rc |= expect_eq_long(label, state->p25_ga_count, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s patch count", tag);
+    rc |= expect_eq_long(label, state->p25_patch_count, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s patch sg", tag);
+    rc |= expect_eq_long(label, state->p25_patch_sgid[0], 0x4567);
+    DSD_SNPRINTF(label, sizeof label, "%s patch active", tag);
+    rc |= expect_eq_long(label, state->p25_patch_active[0], 1);
+    return rc;
 }
 
 static int
@@ -573,6 +665,75 @@ run_sccb_full_cache_preservation_case(void) {
 
     dsd_state_ext_free_all(state);
     free(state);
+    return rc;
+}
+
+static int
+run_tdma_paging_and_sndcp_metadata_cases(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    seed_metadata_only_state(&opts, &state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x11;
+    MAC[2] = 0x03;
+    MAC[3] = 0x12;
+    MAC[4] = 0x34;
+    MAC[5] = 0x45;
+    MAC[6] = 0x67;
+    MAC[7] = 0x89;
+    MAC[8] = 0xAB;
+    MAC[9] = 0xCD;
+    MAC[10] = 0xEF;
+    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, MAC);
+    rc |= expect_metadata_only_state("tdma 0x11 paging", &opts, &state);
+    dsd_state_ext_free_all(&state);
+
+    seed_metadata_only_state(&opts, &state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x12;
+    MAC[2] = 0xA3;
+    put_u24_ull(MAC, 3, 0x010203);
+    put_u24_ull(MAC, 6, 0x040506);
+    put_u24_ull(MAC, 9, 0x070809);
+    put_u24_ull(MAC, 12, 0x0A0B0C);
+    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, MAC);
+    rc |= expect_metadata_only_state("tdma 0x12 paging", &opts, &state);
+    dsd_state_ext_free_all(&state);
+
+    seed_metadata_only_state(&opts, &state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x52;
+    MAC[2] = 0xAA;
+    MAC[3] = 0x12;
+    MAC[4] = 0x34;
+    put_u24_ull(MAC, 5, 0x012345);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_metadata_only_state("mac 0x52 sndcp request", &opts, &state);
+    dsd_state_ext_free_all(&state);
+
+    seed_metadata_only_state(&opts, &state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x53;
+    MAC[2] = 0xBB;
+    MAC[3] = 0x55;
+    MAC[4] = 0x45;
+    MAC[5] = 0x67;
+    put_u24_ull(MAC, 6, 0x654321);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_metadata_only_state("mac 0x53 sndcp response", &opts, &state);
+    dsd_state_ext_free_all(&state);
+
+    seed_metadata_only_state(&opts, &state);
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x85;
+    MAC[2] = 0x90;
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_metadata_only_state("mfid90 0x85 no regroup alias", &opts, &state);
+    dsd_state_ext_free_all(&state);
+
     return rc;
 }
 
@@ -1296,6 +1457,7 @@ run_cases(void) {
         dsd_state_ext_free_all(&state);
     }
 
+    rc |= run_tdma_paging_and_sndcp_metadata_cases();
     rc |= run_standard_mac_supplemental_display_cases();
     rc |= run_standard_mac_unit_to_unit_extended_cases();
     rc |= run_group_affiliation_response_extended_case();
@@ -1319,6 +1481,17 @@ main(void) {
     }
     int rc = run_cases();
     dsd_test_capture_stderr_end(&cap);
+    rc |= expect_file_contains("tdma 0x11 paging label", cap.path, "TDMA Indirect Group Paging");
+    rc |= expect_file_contains("tdma 0x11 paging tg1", cap.path, "TG1 [4660][1234]");
+    rc |= expect_file_contains("tdma 0x11 paging tg4", cap.path, "TG4 [52719][CDEF]");
+    rc |= expect_file_contains("tdma 0x12 paging label", cap.path, "TDMA Individual Paging with Priority");
+    rc |= expect_file_contains("tdma 0x12 paging id1 priority", cap.path, "ID1 [66051] Priority [1]");
+    rc |= expect_file_contains("tdma 0x12 paging id2 priority", cap.path, "ID2 [263430] Priority [0]");
+    rc |= expect_file_contains("tdma 0x12 paging id3 priority", cap.path, "ID3 [460809] Priority [1]");
+    rc |= expect_file_contains("sndcp request label", cap.path, "SNDCP Data Channel Request");
+    rc |= expect_file_contains("sndcp request fields", cap.path, "DSO [AA] DAC [1234] Source [74565]");
+    rc |= expect_file_contains("sndcp response label", cap.path, "SNDCP Data Page Response");
+    rc |= expect_file_contains("sndcp response fields", cap.path, "DSO [BB] Response [55] DAC [4567] Source [6636321]");
     (void)remove(cap.path);
     return rc;
 }

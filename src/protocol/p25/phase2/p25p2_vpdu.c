@@ -656,6 +656,11 @@ p25p2_vpdu_u24(const unsigned long long int* mac, int idx) {
 }
 
 static int
+p25p2_vpdu_tdma_paging_count(const unsigned long long int* mac, int len_a) {
+    return (int)((mac[2 + len_a] & 0x03U) + 1U);
+}
+
+static int
 p25p2_vpdu_fqid_wacn(const unsigned long long int* mac, int idx) {
     return (int)((mac[idx] << 12) | (mac[idx + 1] << 4) | ((mac[idx + 2] & 0xF0) >> 4));
 }
@@ -1767,6 +1772,24 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
 
+    if (MAC[1 + len_a] == 0x11) {
+        int count = p25p2_vpdu_tdma_paging_count(MAC, len_a);
+        DSD_FPRINTF(stderr, "\n TDMA Indirect Group Paging");
+        DSD_FPRINTF(stderr, "\n  Count [%d]", count);
+        for (int page = 0; page < count && page < 4; page++) {
+            int tg = p25p2_vpdu_u16(MAC, 3 + len_a + (page * 2));
+            DSD_FPRINTF(stderr, " TG%d [%d][%04X]", page + 1, tg, tg);
+        }
+    }
+
+    if (MAC[1 + len_a] == 0x52) {
+        int dso = (int)MAC[2 + len_a];
+        int dac = p25p2_vpdu_u16(MAC, 3 + len_a);
+        int source = p25p2_vpdu_u24(MAC, 5 + len_a);
+        DSD_FPRINTF(stderr, "\n SNDCP Data Channel Request");
+        DSD_FPRINTF(stderr, "\n  DSO [%02X] DAC [%04X] Source [%d]", dso, dac, source);
+    }
+
     if (MAC[1 + len_a] == 0x54) {
         DSD_FPRINTF(stderr, "\n SNDCP Data Channel Grant - Explicit");
         int dso = MAC[2 + len_a];
@@ -1829,6 +1852,27 @@ p25p2_vpdu_iter_block_12(p25p2_vpdu_ctx* ctx) {
     int slot VPDU_MAYBE_UNUSED = ctx->slot;
     int i = ctx->iter_idx;
     UNUSED4(type, mac_res, len_c, slot);
+
+    if (MAC[1 + len_a] == 0x12) {
+        int count = p25p2_vpdu_tdma_paging_count(MAC, len_a);
+        int priority_bits = (int)MAC[2 + len_a];
+        DSD_FPRINTF(stderr, "\n TDMA Individual Paging with Priority");
+        DSD_FPRINTF(stderr, "\n  Count [%d]", count);
+        for (int page = 0; page < count && page < 4; page++) {
+            int target = p25p2_vpdu_u24(MAC, 3 + len_a + (page * 3));
+            int priority = (priority_bits & (0x80 >> page)) ? 1 : 0;
+            DSD_FPRINTF(stderr, " ID%d [%d] Priority [%d]", page + 1, target, priority);
+        }
+    }
+
+    if (MAC[1 + len_a] == 0x53) {
+        int dso = (int)MAC[2 + len_a];
+        int response = (int)MAC[3 + len_a];
+        int dac = p25p2_vpdu_u16(MAC, 4 + len_a);
+        int source = p25p2_vpdu_u24(MAC, 6 + len_a);
+        DSD_FPRINTF(stderr, "\n SNDCP Data Page Response");
+        DSD_FPRINTF(stderr, "\n  DSO [%02X] Response [%02X] DAC [%04X] Source [%d]", dso, response, dac, source);
+    }
 
     if (MAC[1 + len_a] == 0x55) {
         DSD_FPRINTF(stderr, "\n SNDCP Data Page Request ");
