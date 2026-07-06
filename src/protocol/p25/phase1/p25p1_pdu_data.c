@@ -221,6 +221,82 @@ p25_sndcp_append_ipv4(char* out, size_t out_sz, const uint8_t* p, int off) {
     dsd_append(out, out_sz, ip);
 }
 
+static int
+p25_sndcp_nat_has_ipv4(uint8_t nat) {
+    return nat == 0U || nat == 1U;
+}
+
+static const char*
+p25_sndcp_deactivate_label(uint8_t value) {
+    switch (value) {
+        case 0: return "All NSAPIs";
+        case 1: return "This NSAPI";
+        default: return "Reserved";
+    }
+}
+
+static void
+p25_sndcp_append_activate_request(const uint8_t* p, int plen, char* out_summary, size_t out_sz) {
+    if (plen < 10) {
+        return;
+    }
+
+    uint8_t nat = p25_nibble_lo(p[1]);
+    char extra[128];
+    DSD_SNPRINTF(extra, sizeof(extra), " Ver:%u NAT:%s DSUT:%u", (unsigned)p25_nibble_hi(p[1]),
+                 p25_sndcp_nat_label(nat), (unsigned)p25_nibble_hi(p[6]));
+    dsd_append(out_summary, out_sz, extra);
+    if (p25_sndcp_nat_has_ipv4(nat)) {
+        p25_sndcp_append_ipv4(out_summary, out_sz, p, 2);
+    }
+    DSD_SNPRINTF(extra, sizeof(extra), " IPComp:%u UDPComp:%u MDP:%u", (unsigned)(p[7] & 0xFFU),
+                 (unsigned)p25_nibble_lo(p[6]), (unsigned)(p[9] & 0xFFU));
+    dsd_append(out_summary, out_sz, extra);
+}
+
+static void
+p25_sndcp_append_activate_accept(const uint8_t* p, int plen, char* out_summary, size_t out_sz) {
+    if (plen < 11) {
+        return;
+    }
+
+    uint8_t nat = p25_nibble_lo(p[2]);
+    int mtu = p25_sndcp_mtu_bytes(p25_nibble_hi(p[9]));
+    char extra[160];
+    DSD_SNPRINTF(extra, sizeof(extra), " Priority:%u Ready:%ds Standby:%ds NAT:%s", (unsigned)p25_nibble_hi(p[1]),
+                 p25_sndcp_ready_seconds(p25_nibble_lo(p[1])), p25_sndcp_standby_seconds(p25_nibble_hi(p[2])),
+                 p25_sndcp_nat_label(nat));
+    dsd_append(out_summary, out_sz, extra);
+    if (p25_sndcp_nat_has_ipv4(nat)) {
+        p25_sndcp_append_ipv4(out_summary, out_sz, p, 3);
+    }
+    DSD_SNPRINTF(extra, sizeof(extra), " MTU:%d IPComp:%u UDPComp:%u MDP:%u", mtu, (unsigned)(p[7] & 0xFFU),
+                 (unsigned)p25_nibble_lo(p[9]), (unsigned)(p[10] & 0xFFU));
+    dsd_append(out_summary, out_sz, extra);
+}
+
+static void
+p25_sndcp_append_reject(const uint8_t* p, int plen, char* out_summary, size_t out_sz) {
+    if (plen < 2) {
+        return;
+    }
+
+    char extra[128];
+    DSD_SNPRINTF(extra, sizeof(extra), " Reason:%s", p25_sndcp_reject_reason(p[1]));
+    dsd_append(out_summary, out_sz, extra);
+}
+
+static void
+p25_sndcp_append_deactivate(const uint8_t* p, int plen, char* out_summary, size_t out_sz) {
+    if (plen < 2) {
+        return;
+    }
+
+    char extra[80];
+    DSD_SNPRINTF(extra, sizeof(extra), " Deactivate:%s", p25_sndcp_deactivate_label(p25_nibble_hi(p[1])));
+    dsd_append(out_summary, out_sz, extra);
+}
+
 static void
 p25_parse_sap6_sndcp(const uint8_t* p, int plen, int outbound, char* out_summary, size_t out_sz) {
     if (!out_summary || out_sz == 0) {
@@ -235,50 +311,23 @@ p25_parse_sap6_sndcp(const uint8_t* p, int plen, int outbound, char* out_summary
     uint8_t nsapi = p25_nibble_lo(p[0]);
     DSD_SNPRINTF(out_summary, out_sz, "SNDCP %s NSAPI:%u", p25_sndcp_type_label(type, outbound), (unsigned)nsapi);
 
-    if (!outbound && type == 0 && plen >= 10) {
-        uint8_t nat = p25_nibble_lo(p[1]);
-        char extra[128];
-        DSD_SNPRINTF(extra, sizeof(extra), " Ver:%u NAT:%s DSUT:%u", (unsigned)p25_nibble_hi(p[1]),
-                     p25_sndcp_nat_label(nat), (unsigned)p25_nibble_hi(p[6]));
-        dsd_append(out_summary, out_sz, extra);
-        if (nat == 0 || nat == 1) {
-            p25_sndcp_append_ipv4(out_summary, out_sz, p, 2);
-        }
-        DSD_SNPRINTF(extra, sizeof(extra), " IPComp:%u UDPComp:%u MDP:%u", (unsigned)(p[7] & 0xFFU),
-                     (unsigned)p25_nibble_lo(p[6]), (unsigned)(p[9] & 0xFFU));
-        dsd_append(out_summary, out_sz, extra);
+    if (!outbound && type == 0) {
+        p25_sndcp_append_activate_request(p, plen, out_summary, out_sz);
         return;
     }
 
-    if (outbound && type == 0 && plen >= 11) {
-        uint8_t nat = p25_nibble_lo(p[2]);
-        int mtu = p25_sndcp_mtu_bytes(p25_nibble_hi(p[9]));
-        char extra[160];
-        DSD_SNPRINTF(extra, sizeof(extra), " Priority:%u Ready:%ds Standby:%ds NAT:%s", (unsigned)p25_nibble_hi(p[1]),
-                     p25_sndcp_ready_seconds(p25_nibble_lo(p[1])), p25_sndcp_standby_seconds(p25_nibble_hi(p[2])),
-                     p25_sndcp_nat_label(nat));
-        dsd_append(out_summary, out_sz, extra);
-        if (nat == 0 || nat == 1) {
-            p25_sndcp_append_ipv4(out_summary, out_sz, p, 3);
-        }
-        DSD_SNPRINTF(extra, sizeof(extra), " MTU:%d IPComp:%u UDPComp:%u MDP:%u", mtu, (unsigned)(p[7] & 0xFFU),
-                     (unsigned)p25_nibble_lo(p[9]), (unsigned)(p[10] & 0xFFU));
-        dsd_append(out_summary, out_sz, extra);
+    if (outbound && type == 0) {
+        p25_sndcp_append_activate_accept(p, plen, out_summary, out_sz);
         return;
     }
 
-    if (outbound && type == 3 && plen >= 2) {
-        char extra[128];
-        DSD_SNPRINTF(extra, sizeof(extra), " Reason:%s", p25_sndcp_reject_reason(p[1]));
-        dsd_append(out_summary, out_sz, extra);
+    if (outbound && type == 3) {
+        p25_sndcp_append_reject(p, plen, out_summary, out_sz);
         return;
     }
 
-    if (type == 2 && plen >= 2) {
-        char extra[80];
-        DSD_SNPRINTF(extra, sizeof(extra), " Deactivate:%s",
-                     p25_nibble_hi(p[1]) == 0 ? "All NSAPIs" : (p25_nibble_hi(p[1]) == 1 ? "This NSAPI" : "Reserved"));
-        dsd_append(out_summary, out_sz, extra);
+    if (type == 2) {
+        p25_sndcp_append_deactivate(p, plen, out_summary, out_sz);
     }
 }
 
