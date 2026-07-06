@@ -5049,7 +5049,7 @@ p25p2_vpdu_decode_motorola_bsi_text(const p25p2_vpdu_ctx* ctx, char out[9]) {
 }
 
 static void
-p25p2_vpdu_handle_motorola_bsi(p25p2_vpdu_ctx* ctx) {
+p25p2_vpdu_handle_motorola_bsi(const p25p2_vpdu_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     const dsd_state* state = ctx->state;
     int len_a = ctx->len_a;
