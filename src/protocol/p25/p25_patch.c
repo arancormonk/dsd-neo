@@ -31,6 +31,33 @@ find_patch_idx(const dsd_state* state, uint16_t sgid) {
     return -1;
 }
 
+static int
+p25_patch_entry_is_stale(const dsd_state* state, int idx, time_t now) {
+    if (!state || idx < 0 || idx >= 8) {
+        return 1;
+    }
+    return (state->p25_patch_last_update[idx] > 0 && (now - state->p25_patch_last_update[idx]) > P25_PATCH_TTL_SECONDS)
+               ? 1
+               : 0;
+}
+
+static void
+p25_patch_clear_entry_context(dsd_state* state, int idx) {
+    if (!state || idx < 0 || idx >= 8) {
+        return;
+    }
+    state->p25_patch_wgid_count[idx] = 0;
+    state->p25_patch_wuid_count[idx] = 0;
+    for (int k = 0; k < 8; k++) {
+        state->p25_patch_wgid[idx][k] = 0;
+        state->p25_patch_wuid[idx][k] = 0;
+    }
+    state->p25_patch_key[idx] = 0;
+    state->p25_patch_alg[idx] = 0;
+    state->p25_patch_ssn[idx] = 0;
+    state->p25_patch_key_valid[idx] = 0;
+}
+
 static void
 p25_patch_sweep_stale(dsd_state* state) {
     if (!state) {
@@ -105,9 +132,7 @@ p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {
     state->p25_patch_is_patch[idx] = is_patch ? 1 : 0;
     state->p25_patch_active[idx] = active ? 1 : 0;
     state->p25_patch_last_update[idx] = now;
-    state->p25_patch_wgid_count[idx] = 0;
-    state->p25_patch_wuid_count[idx] = 0;
-    state->p25_patch_key_valid[idx] = 0;
+    p25_patch_clear_entry_context(state, idx);
 }
 
 int
@@ -348,9 +373,38 @@ p25_patch_clear_sg(dsd_state* state, int sgid) {
     if (idx < 0) {
         return;
     }
-    state->p25_patch_wgid_count[idx] = 0;
-    state->p25_patch_wuid_count[idx] = 0;
+    p25_patch_clear_entry_context(state, idx);
     state->p25_patch_active[idx] = 0;
+    state->p25_patch_last_update[idx] = time(NULL);
+}
+
+int
+p25_patch_prepare_grg_update(dsd_state* state, int sgid, int is_patch, int active, int ssn) {
+    if (!state || sgid <= 0 || sgid > 0xFFFF) {
+        return 0;
+    }
+
+    const int normalized_ssn = (ssn >= 0) ? (ssn & 0x1F) : -1;
+    int idx = find_patch_idx(state, (uint16_t)sgid);
+    if (!active) {
+        if (idx < 0) {
+            p25_patch_update(state, sgid, is_patch, 0);
+        }
+        p25_patch_clear_sg(state, sgid);
+        idx = find_patch_idx(state, (uint16_t)sgid);
+        if (idx >= 0) {
+            state->p25_patch_is_patch[idx] = is_patch ? 1 : 0;
+        }
+        return 0;
+    }
+
+    if (idx >= 0 && state->p25_patch_active[idx] != 0 && normalized_ssn >= 0
+        && state->p25_patch_ssn[idx] != (uint8_t)normalized_ssn) {
+        p25_patch_clear_entry_context(state, idx);
+    }
+
+    p25_patch_update(state, sgid, is_patch, 1);
+    return 1;
 }
 
 void
@@ -432,4 +486,29 @@ p25_patch_sg_key_is_clear(const dsd_state* state, int sgid) {
         return (s->p25_patch_key_valid[i] && s->p25_patch_key[i] == 0) ? 1 : 0;
     }
     return 0;
+}
+
+int
+p25_patch_collect_active_wgids(const dsd_state* state, int sgid, uint16_t* out, size_t cap) {
+    if (!state || sgid <= 0 || sgid > 0xFFFF) {
+        return 0;
+    }
+
+    time_t now = time(NULL);
+    int idx = find_patch_idx(state, (uint16_t)sgid);
+    if (idx < 0 || !state->p25_patch_active[idx] || p25_patch_entry_is_stale(state, idx, now)) {
+        return 0;
+    }
+
+    int count = state->p25_patch_wgid_count[idx];
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > 8) {
+        count = 8;
+    }
+    for (int i = 0; out && i < count && (size_t)i < cap; i++) {
+        out[i] = state->p25_patch_wgid[idx][i];
+    }
+    return count;
 }

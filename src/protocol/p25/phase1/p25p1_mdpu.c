@@ -597,6 +597,7 @@ static void
 p25_mpdu_clear_last_call(dsd_state* state) {
     state->lasttg = 0;
     state->lastsrc = 0;
+    state->p25_policy_tg[0] = 0;
 }
 
 static void

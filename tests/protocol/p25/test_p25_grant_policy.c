@@ -5,8 +5,10 @@
 
 /* Verify policy-backed P25 grant filtering behavior in the trunk SM path. */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -136,6 +138,46 @@ main(void) {
     p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1101, /*src*/ 2101);
     rc |= expect_true("group known A tunes", st.p25_sm_tune_count == before + 1);
 
+    // Active patch members can satisfy grant policy while the OTA target remains the supergroup.
+    p25_sm_on_release(&opts, &st);
+    opts.trunk_use_allow_list = 0;
+    st.tg_hold = 1401;
+    p25_patch_add_wgid(&st, 1400, 1401);
+    before = st.p25_sm_tune_count;
+    opts.p25_is_tuned = 0;
+    p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1400, /*src*/ 2400);
+    rc |= expect_true("patch member hold tunes supergroup", st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("patch member hold stores policy tg", st.p25_policy_tg[0] == 1401U);
+    st.synctype = DSD_SYNC_P25P1_POS;
+    st.lasttg = 1400;
+    st.lastsrc = 2400;
+    int enc = 1;
+    rc |= expect_true("patch member hold audio gate call", dsd_audio_group_gate_mono(&opts, &st, 1400, enc, &enc) == 0);
+    rc |= expect_true("patch member hold audio gate opens", enc == 0);
+    st.tg_hold = 0;
+
+    p25_sm_on_release(&opts, &st);
+    opts.trunk_use_allow_list = 1;
+    rc |= expect_true("seed patch member allow", seed_exact(&st, 1403, "A", "PATCH-MEMBER", 0, 0) == 0);
+    p25_patch_add_wgid(&st, 1402, 1403);
+    before = st.p25_sm_tune_count;
+    opts.p25_is_tuned = 0;
+    p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1402, /*src*/ 2402);
+    rc |= expect_true("patch member allowlist tunes supergroup", st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("patch member allowlist policy tg", st.p25_policy_tg[0] == 1403U);
+    st.synctype = DSD_SYNC_P25P2_POS;
+    st.lasttg = 1402;
+    st.lastsrc = 2402;
+    st.gi[0] = 0;
+    rc |= expect_true("patch member allowlist p2 media gate", dsd_p25p2_decode_audio_allowed(&opts, &st, 0, 0) == 1);
+
+    p25_sm_on_release(&opts, &st);
+    p25_patch_add_wgid(&st, 1404, 1405);
+    before = st.p25_sm_tune_count;
+    opts.p25_is_tuned = 0;
+    p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1404, /*src*/ 2404);
+    rc |= expect_true("patch no policy match blocked by allowlist", st.p25_sm_tune_count == before);
+
     // Explicit mode blocks remain enforced.
     rc |= expect_true("seed group B", seed_exact(&st, 1102, "B", "BLOCK", 0, 0) == 0);
     before = st.p25_sm_tune_count;
@@ -251,6 +293,20 @@ main(void) {
     before = st.p25_sm_tune_count;
     p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1202, /*src*/ 2202);
     rc |= expect_true("high preempt candidate tuned", st.p25_sm_tune_count == before + 1);
+
+    // Patch-member priority/preempt displaces using the matched member policy, not the OTA SG's default priority.
+    p25_sm_on_release(&opts, &st);
+    rc |= expect_true("seed patch active base", seed_exact(&st, 1500, "A", "PATCH-ACTIVE", 80, 0) == 0);
+    rc |= expect_true("seed patch member preempt", seed_exact(&st, 1502, "A", "PATCH-PREEMPT", 95, 1) == 0);
+    p25_patch_add_wgid(&st, 1501, 1502);
+    before = st.p25_sm_tune_count;
+    opts.p25_is_tuned = 0;
+    p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1500, /*src*/ 2500);
+    rc |= expect_true("patch preempt active tuned", st.p25_sm_tune_count == before + 1);
+    before = st.p25_sm_tune_count;
+    p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1501, /*src*/ 2501);
+    rc |= expect_true("patch member preempt tunes", st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("patch member preempt policy tg", st.p25_policy_tg[0] == 1502U);
 
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");

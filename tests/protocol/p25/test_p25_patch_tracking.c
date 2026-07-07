@@ -188,6 +188,38 @@ test_guard_replacement_and_policy_edges(void) {
     rc |= expect_eq_int("nonclear tg policy", p25_patch_tg_key_is_clear(&st, 0x2345), 0);
     rc |= expect_eq_int("nonclear sg policy", p25_patch_sg_key_is_clear(&st, 69), 0);
 
+    DSD_MEMSET(&st, 0, sizeof st);
+    rc |= expect_eq_int("prepare active returns process", p25_patch_prepare_grg_update(&st, 500, 1, 1, 3), 1);
+    p25_patch_add_wgid(&st, 500, 100);
+    p25_patch_set_kas(&st, 500, 0x2222, 0x84, 3);
+    rc |= expect_eq_int("prepare same ssn returns process", p25_patch_prepare_grg_update(&st, 500, 1, 1, 3), 1);
+    p25_patch_add_wgid(&st, 500, 101);
+    int idx500 = find_idx(&st, 500);
+    rc |= expect_true("prepare same ssn keeps sg", idx500 >= 0);
+    if (idx500 >= 0) {
+        rc |= expect_eq_int("prepare same ssn accumulates", st.p25_patch_wgid_count[idx500], 2);
+    }
+    rc |= expect_eq_int("prepare changed ssn returns process", p25_patch_prepare_grg_update(&st, 500, 1, 1, 4), 1);
+    p25_patch_add_wgid(&st, 500, 102);
+    p25_patch_set_kas(&st, 500, 0x3333, 0x89, 4);
+    idx500 = find_idx(&st, 500);
+    rc |= expect_true("prepare changed ssn keeps sg", idx500 >= 0);
+    if (idx500 >= 0) {
+        uint16_t members[8] = {0};
+        rc |= expect_eq_int("prepare changed ssn clears old", st.p25_patch_wgid_count[idx500], 1);
+        rc |= expect_eq_int("prepare changed ssn new member", st.p25_patch_wgid[idx500][0], 102);
+        rc |= expect_eq_int("collect active count", p25_patch_collect_active_wgids(&st, 500, members, 8), 1);
+        rc |= expect_eq_int("collect active member", members[0], 102);
+    }
+    rc |= expect_eq_int("prepare inactive suppresses members", p25_patch_prepare_grg_update(&st, 500, 1, 0, 4), 0);
+    idx500 = find_idx(&st, 500);
+    rc |= expect_true("prepare inactive keeps record", idx500 >= 0);
+    if (idx500 >= 0) {
+        rc |= expect_eq_int("prepare inactive clears active", st.p25_patch_active[idx500], 0);
+        rc |= expect_eq_int("prepare inactive clears count", st.p25_patch_wgid_count[idx500], 0);
+        rc |= expect_eq_int("prepare inactive clears key valid", st.p25_patch_key_valid[idx500], 0);
+    }
+
     return rc;
 }
 

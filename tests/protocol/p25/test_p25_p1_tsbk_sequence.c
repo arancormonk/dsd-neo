@@ -359,6 +359,21 @@ p25_patch_remove_wgid(dsd_state* state, int sg, int wgid) {
 }
 
 void
+p25_patch_clear_sg(dsd_state* state, int sg) {
+    (void)state;
+    (void)sg;
+}
+
+int
+p25_patch_prepare_grg_update(dsd_state* state, int sg, int is_patch, int active, int ssn) {
+    (void)state;
+    (void)sg;
+    (void)is_patch;
+    (void)ssn;
+    return active ? 1 : 0;
+}
+
+void
 p25_patch_set_kas(dsd_state* state, int sg, int kas, int algid, int ssn) {
     (void)state;
     (void)sg;

@@ -179,6 +179,10 @@ p25p2_xcch_set_slot_mi(dsd_state* state, int slot, unsigned long long int mi) {
 
 static void
 p25p2_xcch_set_slot_tg(dsd_state* state, int slot, int tg) {
+    int previous = (slot == 0) ? state->lasttg : state->lasttgR;
+    if (previous != tg) {
+        state->p25_policy_tg[slot & 1] = 0;
+    }
     if (slot == 0) {
         state->lasttg = tg;
     } else {
@@ -208,6 +212,7 @@ p25p2_xcch_clear_slot_ids(dsd_state* state, int slot) {
         state->lastsrcR = 0;
         state->lasttgR = 0;
     }
+    state->p25_policy_tg[slot & 1] = 0;
 }
 
 static void
@@ -456,6 +461,7 @@ p25p2_xcch_reset_idle_slot_facch(dsd_state* state, int slot) {
         state->lastsrcR = 0;
         state->lasttgR = 0;
     }
+    state->p25_policy_tg[slot & 1] = 0;
 }
 
 static int

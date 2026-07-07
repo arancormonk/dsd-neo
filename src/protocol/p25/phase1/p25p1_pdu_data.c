@@ -793,10 +793,14 @@ p25_update_pdu_header_state(dsd_opts* opts, dsd_state* state, const P25PduHeader
         watchdog_event_datacall(opts, state, state->lastsrc, state->lasttg, state->dmr_lrrp_gps[0], 0);
         state->lastsrc = 0;
         state->lasttg = 0;
+        state->p25_policy_tg[0] = 0;
         watchdog_event_history(opts, state, 0);
         dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
     }
 
+    if ((uint32_t)state->lasttg != h->address) {
+        state->p25_policy_tg[0] = 0;
+    }
     state->lasttg = h->address;
     state->lastsrc = 0xFFFFFF; // none given, unless extended, so put any here for now
 }
@@ -1035,6 +1039,7 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     watchdog_event_datacall(opts, state, state->lastsrc, state->lasttg, state->dmr_lrrp_gps[0], 0);
     state->lastsrc = 0;
     state->lasttg = 0;
+    state->p25_policy_tg[0] = 0;
     watchdog_event_history(opts, state, 0);
     dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
 }

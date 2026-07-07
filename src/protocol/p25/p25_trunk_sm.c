@@ -708,9 +708,45 @@ p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm
             opts, state, (uint32_t)ev->src, (uint32_t)ev->dst, eval_ctx->encrypted_call, eval_ctx->data_call,
             DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW, DSD_TG_POLICY_HOLD_COMPAT_GRANT, out_decision);
     }
-    return dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)eval_ctx->tg, (uint32_t)ev->src,
-                                             eval_ctx->encrypted_call, eval_ctx->data_call,
-                                             DSD_TG_POLICY_HOLD_COMPAT_GRANT, out_decision);
+    uint16_t members[8] = {0};
+    int member_count =
+        p25_patch_collect_active_wgids(state, eval_ctx->tg, members, sizeof(members) / sizeof(members[0]));
+    dsd_tg_policy_decision best;
+    dsd_tg_policy_decision first;
+    int have_best = 0;
+    int have_first = 0;
+    DSD_MEMSET(&best, 0, sizeof(best));
+    DSD_MEMSET(&first, 0, sizeof(first));
+
+    for (int i = 0; i <= member_count; i++) {
+        uint32_t target = (i == 0) ? (uint32_t)eval_ctx->tg : (uint32_t)members[i - 1];
+        dsd_tg_policy_decision candidate;
+        if (i > 0 && (target == 0U || target == (uint32_t)eval_ctx->tg)) {
+            continue;
+        }
+        if (dsd_tg_policy_evaluate_group_call(opts, state, target, (uint32_t)ev->src, eval_ctx->encrypted_call,
+                                              eval_ctx->data_call, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &candidate)
+            != 0) {
+            return -1;
+        }
+        if (!have_first) {
+            first = candidate;
+            have_first = 1;
+        }
+        if (!candidate.tune_allowed) {
+            continue;
+        }
+        if (!have_best || (candidate.tg_hold_match && !best.tg_hold_match)
+            || (candidate.tg_hold_match == best.tg_hold_match && candidate.priority > best.priority)
+            || (candidate.tg_hold_match == best.tg_hold_match && candidate.priority == best.priority
+                && candidate.preempt_requested && !best.preempt_requested)) {
+            best = candidate;
+            have_best = 1;
+        }
+    }
+
+    *out_decision = have_best ? best : first;
+    return have_first ? 0 : -1;
 }
 
 static int
@@ -720,9 +756,10 @@ p25_grant_handle_policy_block(dsd_opts* opts, dsd_state* state, const p25_grant_
         return 0;
     }
     p25_sm_diagf((dsd_opts*)opts, state, NULL, "grant_block",
-                 "reason=%s tg=%d svc=0x%02X data=%d enc=%d indiv=%d block=0x%08X",
-                 grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons), eval_ctx->tg, eval_ctx->svc,
-                 eval_ctx->data_call, eval_ctx->encrypted_call, eval_ctx->is_indiv, decision->block_reasons);
+                 "reason=%s tg=%d policy_tg=%u svc=0x%02X data=%d enc=%d indiv=%d block=0x%08X",
+                 grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons), eval_ctx->tg, decision->target_id,
+                 eval_ctx->svc, eval_ctx->data_call, eval_ctx->encrypted_call, eval_ctx->is_indiv,
+                 decision->block_reasons);
     sm_log(opts, state, grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons));
     if (!eval_ctx->is_indiv && eval_ctx->tg > 0 && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
         p25_emit_enc_lockout_once(opts, state, 0, eval_ctx->tg, eval_ctx->svc);
@@ -1001,6 +1038,23 @@ p25_grant_handle_duplicate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
     return 1;
 }
 
+static void
+p25_grant_store_policy_tg(dsd_state* state, const p25_sm_event_t* ev, int slot,
+                          const dsd_tg_policy_decision* decision) {
+    if (!state || !ev || !decision || !ev->is_group) {
+        return;
+    }
+
+    uint32_t policy_tg =
+        (decision->target_id > 0U && decision->target_id != (uint32_t)ev->tg) ? decision->target_id : 0U;
+    if (slot >= 0 && slot <= 1) {
+        state->p25_policy_tg[slot] = policy_tg;
+        return;
+    }
+    state->p25_policy_tg[0] = policy_tg;
+    state->p25_policy_tg[1] = 0;
+}
+
 static int
 p25_retune_block_slot_matches(int blocked_slot, int grant_slot) {
     return blocked_slot == grant_slot;
@@ -1141,6 +1195,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     // Skip if already tuned to same frequency AND same TG (avoid bounce on duplicate grants)
     // Different TG/call type should still trigger a new tune
     if (p25_grant_handle_duplicate(ctx, opts, state, &route, &decision, freq, target_id, now_m)) {
+        p25_grant_store_policy_tg(state, ev, slot, &decision);
         return;
     }
 
@@ -1155,6 +1210,9 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     }
     p25_grant_store_vc_context(ctx, state, ev, freq, target_id, now_m);
     p25_grant_clear_slot_state(ctx);
+    state->p25_policy_tg[0] = 0;
+    state->p25_policy_tg[1] = 0;
+    p25_grant_store_policy_tg(state, ev, slot, &decision);
     ctx->tune_count++;
     ctx->grant_count++;
     p25_grant_debug_log_tdma(opts, state, ctx, ev, freq, ted_sps);
@@ -1162,9 +1220,9 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     state->p25_sm_tune_count++;
     (void)dsd_tg_policy_note_active_call(state, &route, &decision, now_m);
     p25_sm_diagf(opts, state, ctx, "grant_accept",
-                 "ch=0x%04X freq=%ld slot=%d target=%d src=%d needs_retune=%d "
+                 "ch=0x%04X freq=%ld slot=%d target=%d ota_tg=%d src=%d needs_retune=%d "
                  "prio=%d preempt=%d",
-                 ev->channel & 0xFFFF, freq, slot, target_id, ev->src, needs_retune, decision.priority,
+                 ev->channel & 0xFFFF, freq, slot, target_id, ev->tg, ev->src, needs_retune, decision.priority,
                  decision.preempt_requested);
 
     set_state(ctx, opts, state, P25_SM_TUNED, "grant");
@@ -1517,6 +1575,8 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->p25_service_options_valid[1] = 0;
         state->p25_p2_enc_lockout_muted[0] = 0;
         state->p25_p2_enc_lockout_muted[1] = 0;
+        state->p25_policy_tg[0] = 0;
+        state->p25_policy_tg[1] = 0;
         state->p25_sm_release_count++;
     }
     if (opts) {
@@ -2376,6 +2436,7 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
         state->dmr_soR = (uint16_t)svc_bits;
         state->p25_service_options_valid[1] = (svc_bits != 0) ? 1U : 0U;
     }
+    state->p25_policy_tg[slot & 1] = 0;
     state->gi[slot & 1] = 0;
 
     // Compose event text and push

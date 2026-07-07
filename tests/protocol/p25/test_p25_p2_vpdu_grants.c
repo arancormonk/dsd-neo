@@ -149,6 +149,42 @@ expect_not_contains(const char* tag, const char* text, const char* needle) {
 }
 
 static int
+find_patch_idx(const dsd_state* st, uint16_t sgid) {
+    for (int i = 0; i < st->p25_patch_count && i < 8; i++) {
+        if (st->p25_patch_sgid[i] == sgid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int
+patch_has_wgid(const dsd_state* st, int idx, uint16_t wgid) {
+    if (!st || idx < 0 || idx >= 8) {
+        return 0;
+    }
+    for (int i = 0; i < st->p25_patch_wgid_count[idx] && i < 8; i++) {
+        if (st->p25_patch_wgid[idx][i] == wgid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+patch_has_wuid(const dsd_state* st, int idx, uint32_t wuid) {
+    if (!st || idx < 0 || idx >= 8) {
+        return 0;
+    }
+    for (int i = 0; i < st->p25_patch_wuid_count[idx] && i < 8; i++) {
+        if (st->p25_patch_wuid[idx][i] == wuid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 read_capture_file(const char* path, char* out, size_t out_sz) {
     if (!path || !out || out_sz == 0) {
         return -1;
@@ -349,6 +385,169 @@ run_standard_regroup_voice_user_nonstandard_guard_case(void) {
     return rc;
 }
 
+static int
+test_harris_a4_grg_state_management(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.currentslot = 0;
+
+    MAC[1] = 0xB0;
+    MAC[2] = 0xA4;
+    MAC[3] = 0x11;
+    MAC[4] = (unsigned long long)((0x3 << 5) | 0x09); // active WGID patch, SSN 9
+    MAC[5] = 0x12;
+    MAC[6] = 0x34;
+    MAC[7] = 0xBE;
+    MAC[8] = 0xEF;
+    MAC[9] = 0x84;
+    MAC[10] = 0x11;
+    MAC[11] = 0x11;
+    MAC[12] = 0x00;
+    MAC[13] = 0x00;
+    MAC[14] = 0x22;
+    MAC[15] = 0x22;
+    MAC[16] = 0x33;
+    MAC[17] = 0x33;
+    process_MAC_VPDU(&opts, &state, 1, MAC);
+
+    int idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("harris a4 wgid sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("harris a4 wgid active", state.p25_patch_active[idx], 1);
+        rc |= expect_eq_long("harris a4 wgid patch", state.p25_patch_is_patch[idx], 1);
+        rc |= expect_eq_long("harris a4 wgid count", state.p25_patch_wgid_count[idx], 3);
+        rc |= expect_true("harris a4 wgid 1111", patch_has_wgid(&state, idx, 0x1111));
+        rc |= expect_true("harris a4 wgid 2222", patch_has_wgid(&state, idx, 0x2222));
+        rc |= expect_true("harris a4 wgid 3333", patch_has_wgid(&state, idx, 0x3333));
+        rc |= expect_eq_long("harris a4 key", state.p25_patch_key[idx], 0xBEEF);
+        rc |= expect_eq_long("harris a4 alg", state.p25_patch_alg[idx], 0x84);
+        rc |= expect_eq_long("harris a4 ssn", state.p25_patch_ssn[idx], 9);
+    }
+
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xB0;
+    MAC[2] = 0xA4;
+    MAC[3] = 0x0B;
+    MAC[4] = (unsigned long long)((0x3 << 5) | 0x0A); // SSN replacement
+    MAC[5] = 0x12;
+    MAC[6] = 0x34;
+    MAC[7] = 0xBE;
+    MAC[8] = 0xEF;
+    MAC[9] = 0x89;
+    MAC[10] = 0x44;
+    MAC[11] = 0x44;
+    process_MAC_VPDU(&opts, &state, 1, MAC);
+    idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("harris a4 replacement sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("harris a4 replacement count", state.p25_patch_wgid_count[idx], 1);
+        rc |= expect_true("harris a4 replacement new member", patch_has_wgid(&state, idx, 0x4444));
+        rc |= expect_true("harris a4 replacement stale member cleared", !patch_has_wgid(&state, idx, 0x1111));
+        rc |= expect_eq_long("harris a4 replacement alg", state.p25_patch_alg[idx], 0x89);
+        rc |= expect_eq_long("harris a4 replacement ssn", state.p25_patch_ssn[idx], 10);
+    }
+
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xB0;
+    MAC[2] = 0xA4;
+    MAC[3] = 0x0B;
+    MAC[4] = (unsigned long long)((0x2 << 5) | 0x0A); // inactive WGID command
+    MAC[5] = 0x12;
+    MAC[6] = 0x34;
+    MAC[7] = 0xBE;
+    MAC[8] = 0xEF;
+    MAC[9] = 0x89;
+    MAC[10] = 0x55;
+    MAC[11] = 0x55;
+    process_MAC_VPDU(&opts, &state, 1, MAC);
+    idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("harris a4 inactive sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("harris a4 inactive clears active", state.p25_patch_active[idx], 0);
+        rc |= expect_eq_long("harris a4 inactive clears members", state.p25_patch_wgid_count[idx], 0);
+        rc |= expect_eq_long("harris a4 inactive clears key", state.p25_patch_key_valid[idx], 0);
+    }
+
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xB0;
+    MAC[2] = 0xA4;
+    MAC[3] = 0x0E;
+    MAC[4] = (unsigned long long)((0x1 << 5) | 0x03); // active WUID patch, SSN 3
+    MAC[5] = 0x22;
+    MAC[6] = 0x22;
+    MAC[7] = 0x12;
+    MAC[8] = 0x34;
+    MAC[9] = 0x01;
+    MAC[10] = 0x02;
+    MAC[11] = 0x03;
+    MAC[12] = 0x00;
+    MAC[13] = 0x00;
+    MAC[14] = 0x00;
+    process_MAC_VPDU(&opts, &state, 1, MAC);
+    idx = find_patch_idx(&state, 0x2222);
+    rc |= expect_true("harris a4 wuid sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("harris a4 wuid count ignores zero", state.p25_patch_wuid_count[idx], 1);
+        rc |= expect_true("harris a4 wuid member", patch_has_wuid(&state, idx, 0x010203));
+        rc |= expect_eq_long("harris a4 wuid key", state.p25_patch_key[idx], 0x1234);
+        rc |= expect_eq_long("harris a4 wuid ssn", state.p25_patch_ssn[idx], 3);
+    }
+
+    return rc;
+}
+
+static int
+test_motorola_extended_function_supergroup_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+
+    MAC[1] = 0x84;
+    MAC[2] = 0x90;
+    MAC[4] = 0x02;
+    MAC[5] = 0x00;
+    MAC[6] = 0x00;
+    MAC[7] = 0x12;
+    MAC[8] = 0x34;
+    MAC[9] = 0x01;
+    MAC[10] = 0x02;
+    MAC[11] = 0x03;
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+
+    int idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("moto ext create sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("moto ext create active", state.p25_patch_active[idx], 1);
+        rc |= expect_eq_long("moto ext create wuid count", state.p25_patch_wuid_count[idx], 1);
+        rc |= expect_true("moto ext create wuid", patch_has_wuid(&state, idx, 0x010203));
+    }
+
+    MAC[5] = 0x01;
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("moto ext cancel sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("moto ext cancel inactive", state.p25_patch_active[idx], 0);
+        rc |= expect_eq_long("moto ext cancel clears wuid", state.p25_patch_wuid_count[idx], 0);
+    }
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[4] = 0x00;
+    MAC[5] = 0x7F;
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    rc |= expect_eq_long("moto ext class0 metadata only", state.p25_patch_count, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -359,6 +558,9 @@ main(void) {
     const int iden = 1, type = 1, tdma = 0, spac = 100; // 100*125 = 12.5 kHz
     const long base = 170200000;                        // 170200000*5 = 851,000,000 Hz
     const long cc = 851000000;                          // non-zero CC freq enables tuning
+
+    rc |= test_harris_a4_grg_state_management();
+    rc |= test_motorola_extended_function_supergroup_state();
 
     // Case A: MFID 0x90, opcode A3 (Group Regroup Channel Grant - Implicit)
     {
