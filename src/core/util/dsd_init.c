@@ -896,6 +896,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_p2_enc_pending_ttg[0] = 0;
     state->p25_p2_enc_pending_ttg[1] = 0;
     state->p25_p2_active_slot = -1;
+    DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     state->p25_cc_is_tdma =
         2; //init on 2, TSBK NET_STS will set 0, TDMA NET_STS will set 1. //used to determine if we need to change symbol rate when cc hunting
     state->p25_sys_is_tdma = 0;

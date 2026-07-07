@@ -107,6 +107,16 @@ main(void) {
     state->payload_keyid = 0x1234;
     state->payload_keyidR = 0x5678;
     state->p25_p2_enc_lockout_muted[0] = 1U;
+    state->p25_mac_frag[0].active = 1U;
+    state->p25_mac_frag[0].opcode = 0x89U;
+    state->p25_mac_frag[0].data_len = 4U;
+    state->p25_mac_frag[0].collected = 2U;
+    state->p25_mac_frag[0].data[0] = 0xAAU;
+    state->p25_mac_frag[1].active = 1U;
+    state->p25_mac_frag[1].opcode = 0x8AU;
+    state->p25_mac_frag[1].data_len = 8U;
+    state->p25_mac_frag[1].collected = 6U;
+    state->p25_mac_frag[1].data[5] = 0xBBU;
     state->dropL = 1;
     state->dropR = 2;
     state->nxdn_cipher_type = 3U;
@@ -233,6 +243,16 @@ main(void) {
         freeState(state);
         free(state);
         return 12;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (state->p25_mac_frag[i].active != 0U || state->p25_mac_frag[i].opcode != 0U
+            || state->p25_mac_frag[i].data_len != 0U || state->p25_mac_frag[i].collected != 0U
+            || state->p25_mac_frag[i].data[0] != 0U || state->p25_mac_frag[i].data[5] != 0U) {
+            DSD_FPRINTF(stderr, "initState did not clear P25P2 MAC fragment state\n");
+            freeState(state);
+            free(state);
+            return 26;
+        }
     }
 
     // Sparse trunk map bookkeeping must reset before any first live grant arrives.
