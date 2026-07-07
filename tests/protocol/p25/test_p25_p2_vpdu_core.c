@@ -194,6 +194,12 @@ expect_file_contains(const char* tag, const char* path, const char* needle) {
 }
 
 static void
+put_u16_ull(unsigned long long int* mac, int pos, unsigned value) {
+    mac[pos + 0] = (unsigned long long int)((value >> 8) & 0xFFU);
+    mac[pos + 1] = (unsigned long long int)(value & 0xFFU);
+}
+
+static void
 put_u24_ull(unsigned long long int* mac, int pos, unsigned value) {
     mac[pos + 0] = (unsigned long long int)((value >> 16) & 0xFFU);
     mac[pos + 1] = (unsigned long long int)((value >> 8) & 0xFFU);
@@ -773,7 +779,8 @@ run_standard_mac_supplemental_display_cases(void) {
     DSD_MEMSET(MAC, 0, sizeof MAC);
     MAC[1] = 0x5E;
     put_u24_ull(MAC, 2, 0x010203);
-    put_u24_ull(MAC, 5, 0x004567);
+    put_u16_ull(MAC, 5, 0x4567);
+    put_u24_ull(MAC, 7, 0x89ABCD);
     MAC[10] = 0x40;
     MAC[11] = 0x05;
     MAC[12] = 0x12;

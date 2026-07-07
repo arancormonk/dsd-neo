@@ -4518,7 +4518,7 @@ p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(p25p2_vpdu_ctx* ctx) {
     dsd_state* state = ctx->state;
     const int len_a = ctx->len_a;
     int target = p25p2_vpdu_u24(MAC, 2 + len_a);
-    int group = p25p2_vpdu_u24(MAC, 5 + len_a);
+    int group = p25p2_vpdu_u16(MAC, 5 + len_a);
     int source = p25p2_vpdu_u24(MAC, 7 + len_a);
     int silent = ((MAC[10 + len_a] & 0x80U) != 0U);
     int talkgroup_mode = ((MAC[10 + len_a] & 0x40U) != 0U);
