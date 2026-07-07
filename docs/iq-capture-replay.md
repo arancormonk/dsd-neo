@@ -48,7 +48,9 @@ The writer records:
 - for v2 captures, an `events` array describing scheduled replay events.
 
 The v2 `events` array is ordered by capture-data `byte_offset`, not wall-clock time. Replay dispatches every event at an
-offset when the reader reaches that byte position in the data stream. Equal offsets are allowed and preserve file order.
+offset when the reader reaches that byte position in the data stream. Replay preserves the order of equal-offset events
+as stored in metadata; generated captures may place a `RETUNE` before a same-offset `MUTE` record to preserve
+retune/reset semantics.
 
 Event objects contain:
 
@@ -97,4 +99,6 @@ rounds down to sample alignment. Zero effective bytes are rejected for `--iq-rep
 - `--iq-capture-format cf32` is only valid when the active backend stream is native `cf32` (for example Soapy CF32).
 - Soapy drivers that only provide `CS16` can be used for live decode, but are not currently accepted by the IQ capture
   CLI.
+- The metadata parser and public sample-format helpers recognize `cs16` metadata with 4-byte sample alignment, but live
+  capture and replay demod conversion currently accept only `cu8` and `cf32`.
 - If requested capture format does not match the active backend stream format, startup fails with a clear error.

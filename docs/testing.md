@@ -29,11 +29,14 @@ ctest --preset dev-debug --output-on-failure
 
 ## Continuous Integration
 
-GitHub Actions runs tests and quality checks on pull requests and pushes to the
-primary branch. Required checks include cross-platform builds, sanitizer tests,
-static analysis, workflow linting, dependency review, secret scanning, OSV
-scanning, repository guardrails for secret redaction and workflow source/download
-pinning, fuzz smoke tests, release tag validation, and install/package validation.
+GitHub Actions runs tests and quality checks on pull requests, primary-branch
+pushes, tags, schedules, and manual dispatches. Coverage varies by event:
+cross-platform builds, sanitizer tests, static analysis, workflow linting,
+secret scanning, OSV scanning, repository guardrails for secret redaction and
+workflow source/download pinning, fuzz smoke tests, and install/package
+validation run where their workflows declare those events. Dependency review is
+PR-only, release tag validation is tag-only, and extended fuzzing is scheduled
+or manually dispatched.
 
 ## Regression Test Requirement
 

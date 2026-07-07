@@ -249,10 +249,12 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_WARNINGS_AS_ERRORS=ON|OFF` — Treat warnings as errors (default ON).
   - `-DDSD_ENABLE_FAST_MATH=ON` — Enable fast‑math (`-ffast-math`/`/fp:fast`) across targets.
   - `-DDSD_ENABLE_LTO=ON` — Enable IPO/LTO in Release builds (when supported).
+  - `-DDSD_ENABLE_HARDENING=ON|OFF` — Enable supported Release-like compiler/linker hardening (default ON).
   - `-DDSD_ENABLE_NATIVE=ON` — Enable `-march=native -mtune=native` (non‑portable binaries).
   - `-DDSD_ENABLE_ASAN=ON` — AddressSanitizer in Debug builds.
   - `-DDSD_ENABLE_UBSAN=ON` — UndefinedBehaviorSanitizer in Debug builds.
   - `-DDSD_ENABLE_TSAN=ON` — ThreadSanitizer in Debug builds; use a separate build from ASan/UBSan.
+  - `-DDSD_ENABLE_FUZZING=ON` — Enable libFuzzer instrumentation and fuzz targets (Clang/libFuzzer builds).
 - Audio backend selection:
   - `-DDSD_USE_PORTAUDIO=ON` — Use PortAudio instead of PulseAudio (default on Windows).
 - Radio backend selection:
@@ -261,6 +263,8 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_REQUIRE_RTLSDR=ON|OFF` — Fail configure when RTL-SDR is enabled but unavailable.
   - `-DDSD_REQUIRE_SOAPYSDR=ON|OFF` — Fail configure when SoapySDR >= 0.8.1 is enabled but unavailable.
 - UI and behavior toggles:
+  - `-DDSD_ENABLE_TERMINAL_UI=ON|OFF` — Build the ncurses/PDCurses terminal frontend (default ON).
+  - `-DDSD_ENABLE_NATIVE_UI=ON|OFF` — Build the native frontend scaffold (default OFF).
   - `-DCOLORS=OFF` — Disable ncurses color output.
   - `-DCOLORSLOGS=OFF` — Disable colored terminal/log output.
 - Protocol and feature knobs:
@@ -434,7 +438,10 @@ Quick examples
   - `tools/check_release_hardening.sh` (verifies Linux ELF PIE/RELRO/BIND_NOW, macOS Mach-O PIE/@rpath, and hardening compile flags).
   - `tools/check_release_hardening.ps1` (verifies Windows PE ASLR, NX, and high-entropy VA hardening).
 - Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.
-- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass (security guardrails including workflow source/download pins, clang-format, CMake format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Semgrep, zizmor, OSV scan, shell/workflow lint) on changed paths.
+- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass
+  (security guardrails including workflow source/download pins, install-destination checks, clang-format, CMake format,
+  clang-tidy, cppcheck, IWYU, GCC fanalyzer, Lizard, Semgrep, zizmor, OSV scan, and shell/workflow lint) on changed
+  paths.
 - Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`.
 - Manual preflight runner: `tools/preflight_ci.sh` runs the same CI-aligned checks as `pre-push` without pushing.
 - Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the full local guardrail set.
@@ -453,5 +460,7 @@ Quick examples
 
 - Project license: GPL‑3.0‑or‑later (see `LICENSE`).
 - Portions remain under ISC per the original DSD author (see `COPYRIGHT`).
-- Third-party notices live in `THIRD_PARTY.md` (installed license texts: `share/doc/dsd-neo/licenses/`).
-- Project-authored source files carry SPDX identifiers reflecting their license; vendored third-party files retain upstream license headers.
+- Third-party and embedded-code notices are summarized in `THIRD_PARTY.md` (installed license texts:
+  `share/doc/dsd-neo/licenses/`).
+- Project-authored source files carry SPDX identifiers reflecting their license; vendored and embedded upstream-derived
+  code retains upstream license/provenance headers, which should be consulted for file-specific details.

@@ -95,6 +95,18 @@ depending directly on protocol headers. The runtime provides a small hook table 
 `include/dsd-neo/runtime/frame_sync_hooks.h`; the engine installs the concrete implementations at startup in
 `src/engine/frame_sync_hooks_install.c`.
 
+## App-Control
+
+- Path: `src/app_control`, `include/dsd-neo/app_control`
+- Target: `dsd-neo_app_control`
+- Responsibilities:
+  - Copied frontend snapshots, status, metrics, paged event history, and UI message state
+  - Typed app command descriptors, command queue dispatch, tracked command results, and menu service helpers
+  - Frontend runtime/control-pump glue and telemetry hook installation
+  - Public frontend boundary headers under `<dsd-neo/app_control/...>`; new frontends should use these APIs instead of
+    reading decoder, IO, or protocol internals directly
+- Build files: `src/app_control/CMakeLists.txt`
+
 ## DSP
 
 - Path: `src/dsp`, `include/dsd-neo/dsp`
@@ -154,7 +166,8 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 
 - Path: `src/fec`, `include/dsd-neo/fec`
 - Target: `dsd-neo_fec`
-- Responsibilities: BCH, Golay, Hamming, RS, BPTC, CRC/FCS
+- Responsibilities: BCH, Golay, Hamming, RS, and BPTC helpers. Protocol-specific CRC/FCS helpers live with the
+  corresponding protocol modules under `src/protocol/...`.
 - Build files: `src/fec/CMakeLists.txt`
 
 ## Crypto
@@ -199,7 +212,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 ## UI
 
 - Path: `src/ui`, `include/dsd-neo/ui`
-- Target: `dsd-neo_ui_terminal`
+- Targets: `dsd-neo_ui_terminal`; optional `dsd-neo_ui_native` when `DSD_ENABLE_NATIVE_UI=ON`
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
@@ -207,7 +220,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     app-control commands; terminal UI code must not include IO/RTL headers directly.
   - Radio-driven UI controls are gated by `USE_RADIO`; visualizers consume app-control frontend metric APIs.
 
-Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`
+Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`, `src/ui/native/CMakeLists.txt`
 
 Key public headers:
 
@@ -287,6 +300,7 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 
 External dependencies (resolved via CMake):
 
-- Required: LibSndFile; an audio backend (PulseAudio by default, PortAudio on Windows); MBE vocoder (`mbe-neo` 2.x).
+- Required: OpenSSL 3.x libcrypto; LibSndFile; an audio backend (PulseAudio by default, PortAudio on Windows); MBE
+  vocoder (`mbe-neo` 2.x).
 - Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
 - Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl.
