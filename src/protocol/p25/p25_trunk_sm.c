@@ -1076,6 +1076,19 @@ p25_grant_store_policy_tg(dsd_state* state, const p25_sm_event_t* ev, int slot,
     state->p25_policy_tg[1] = 0;
 }
 
+static void
+p25_grant_clear_replaced_policy_tg(dsd_state* state, int slot, int slot_only) {
+    if (!state) {
+        return;
+    }
+    if (slot_only && slot >= 0 && slot <= 1) {
+        state->p25_policy_tg[slot] = 0;
+        return;
+    }
+    state->p25_policy_tg[0] = 0;
+    state->p25_policy_tg[1] = 0;
+}
+
 static int
 p25_retune_block_slot_matches(int blocked_slot, int grant_slot) {
     return blocked_slot == grant_slot;
@@ -1179,6 +1192,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     int target_id = 0;
     int ted_sps = 0;
     int needs_retune = 0;
+    int clear_policy_slot_only = 0;
     long freq = 0;
     double now_m = 0.0;
     p25_freq_trace_t freq_trace;
@@ -1210,6 +1224,10 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         return;
     }
     needs_retune = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz != 0 && ctx->vc_freq_hz != freq) ? 1 : 0;
+    clear_policy_slot_only = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz == freq && ctx->vc_is_tdma
+                              && is_tdma_channel(state, ev->channel) && slot >= 0 && slot <= 1)
+                                 ? 1
+                                 : 0;
     target_id = p25_grant_target_id(ev, &decision);
     p25_grant_fill_route(&route, ev, freq, slot, needs_retune, target_id);
 
@@ -1231,8 +1249,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     }
     p25_grant_store_vc_context(ctx, state, ev, freq, target_id, now_m);
     p25_grant_clear_slot_state(ctx);
-    state->p25_policy_tg[0] = 0;
-    state->p25_policy_tg[1] = 0;
+    p25_grant_clear_replaced_policy_tg(state, slot, clear_policy_slot_only);
     p25_grant_store_policy_tg(state, ev, slot, &decision);
     ctx->tune_count++;
     ctx->grant_count++;

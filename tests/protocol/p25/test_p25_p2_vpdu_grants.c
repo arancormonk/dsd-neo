@@ -811,7 +811,46 @@ main(void) {
         rc |= expect_eq_long("0xC0 service options valid", state.p25_service_options_valid[0], 1);
     }
 
-    // Case D5a: MFID90 0xA3 propagates service options and source.
+    // Case D5a: patched-supergroup grants dispatch to the SM even when TG hold matches only a member WGID.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        state.p25_cc_freq = cc;
+        state.tg_hold = 0x3333;
+        seed_fdma_iden(&state, iden, type, base, spac);
+        p25_patch_add_wgid(&state, 0x2222, 0x3333);
+
+        MAC[1] = 0xC0;
+        MAC[2] = 0x23;
+        MAC[3] = 0x10;
+        MAC[4] = 0x0C;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0D;
+        MAC[7] = 0x22;
+        MAC[8] = 0x22;
+        MAC[9] = 0x01;
+        MAC[10] = 0x02;
+        MAC[11] = 0x03;
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0xC0 patch member hold dispatch", g_group_grant_called, 1);
+        rc |= expect_eq_long("0xC0 patch member hold tg", g_group_grant_tg, 0x2222);
+        rc |= expect_eq_long("0xC0 patch member hold src", g_group_grant_src, 0x010203);
+    }
+
+    // Case D5b: MFID90 0xA3 propagates service options and source.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -851,7 +890,7 @@ main(void) {
         rc |= expect_eq_long("0xA3 emergency state", state.p25_call_emergency[0], 1);
     }
 
-    // Case D5b: MFID90 0xA4 propagates service options, source, and CHAN-R cache.
+    // Case D5c: MFID90 0xA4 propagates service options, source, and CHAN-R cache.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -1048,15 +1087,11 @@ main(void) {
         MAC[10] = 0x02;
         MAC[11] = 0x03;
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0xA3 encrypted blocked capture", g_group_grant_called, 0);
         rc |= expect_true("0xA3 encrypted blocked no tune", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0xA3 encrypted cache tg", state.p25_enc_tg_cache_tg[0], 0x2222);
+        rc |= expect_true("0xA3 encrypted cache armed", state.p25_enc_tg_cache_until[0] > time(NULL));
         rc |= expect_contains("0xA3 encrypted active", state.active_channel[0], "MFID90 Active Ch: 100A");
     }
 

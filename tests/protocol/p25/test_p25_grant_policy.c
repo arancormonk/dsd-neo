@@ -83,6 +83,17 @@ seed_fdma_iden(dsd_state* st, int id) {
     st->p25_chan_tdma_explicit[id] = 1;
 }
 
+static void
+seed_tdma_iden(dsd_state* st, int id) {
+    st->p25_chan_iden = id;
+    st->p25_iden_tdma[id].base_freq = 851000000 / 5;
+    st->p25_iden_tdma[id].chan_type = 3;
+    st->p25_iden_tdma[id].chan_spac = 100;
+    st->p25_iden_tdma[id].trust = 2;
+    st->p25_iden_tdma[id].populated = 1;
+    st->p25_chan_tdma_explicit[id] = 2;
+}
+
 static int
 tg_policy_is_absent(const dsd_state* st, uint32_t tg) {
     dsd_tg_policy_lookup lookup;
@@ -307,6 +318,34 @@ main(void) {
     p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1501, /*src*/ 2501);
     rc |= expect_true("patch member preempt tunes", st.p25_sm_tune_count == before + 1);
     rc |= expect_true("patch member preempt policy tg", st.p25_policy_tg[0] == 1502U);
+
+    // Same-frequency TDMA grants update one slot without clearing the other slot's patch policy mapping.
+    {
+        static dsd_opts dual_opts;
+        static dsd_state dual_st;
+        DSD_MEMSET(&dual_opts, 0, sizeof dual_opts);
+        DSD_MEMSET(&dual_st, 0, sizeof dual_st);
+        dual_opts.p25_trunk = 1;
+        dual_opts.trunk_tune_group_calls = 1;
+        dual_opts.trunk_tune_private_calls = 1;
+        dual_opts.trunk_tune_data_calls = 1;
+        dual_opts.trunk_tune_enc_calls = 1;
+        dual_opts.trunk_use_allow_list = 1;
+        dual_st.p25_cc_freq = 851000000;
+        seed_tdma_iden(&dual_st, id);
+        p25_sm_init(&dual_opts, &dual_st);
+
+        rc |= expect_true("seed dual slot member 0", seed_exact(&dual_st, 1502, "A", "SLOT0-MEMBER", 0, 0) == 0);
+        rc |= expect_true("seed dual slot member 1", seed_exact(&dual_st, 1602, "A", "SLOT1-MEMBER", 0, 0) == 0);
+        p25_patch_add_wgid(&dual_st, 1501, 1502);
+        p25_patch_add_wgid(&dual_st, 1601, 1602);
+
+        p25_sm_on_group_grant(&dual_opts, &dual_st, 0x100B, /*svc*/ 0x00, /*tg*/ 1601, /*src*/ 2601);
+        rc |= expect_true("dual slot1 policy tg stored", dual_st.p25_policy_tg[1] == 1602U);
+        p25_sm_on_group_grant(&dual_opts, &dual_st, 0x100A, /*svc*/ 0x00, /*tg*/ 1501, /*src*/ 2600);
+        rc |= expect_true("dual slot0 policy tg stored", dual_st.p25_policy_tg[0] == 1502U);
+        rc |= expect_true("dual slot1 policy tg preserved", dual_st.p25_policy_tg[1] == 1602U);
+    }
 
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");

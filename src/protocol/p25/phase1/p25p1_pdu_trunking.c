@@ -465,24 +465,9 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
-    dsd_tg_policy_decision decision;
-    int enc_for_policy = (svc & 0x40) ? 1 : 0;
-    if (enc_for_policy && opts->trunk_tune_enc_calls == 0
-        && (p25_patch_tg_key_is_clear(state, group) || p25_patch_sg_key_is_clear(state, group))) {
-        enc_for_policy = 0;
-    }
-
-    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, enc_for_policy,
-                                          (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-            != 0
-        || !decision.tune_allowed) {
-        if (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
-            p25_emit_enc_lockout_once(opts, state, 0, group, svc);
-        }
-        return;
-    }
-
     if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
+        // The trunk state machine owns group-grant policy so patched
+        // supergroup grants can be evaluated against their member talkgroups.
         p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
     }
 }
@@ -788,23 +773,9 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
-    dsd_tg_policy_decision decision;
-    int enc_for_policy = (svc & 0x40) ? 1 : 0;
-    if (enc_for_policy && opts->trunk_tune_enc_calls == 0 && p25_patch_sg_key_is_clear(state, group)) {
-        enc_for_policy = 0;
-    }
-
-    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, enc_for_policy,
-                                          (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-            != 0
-        || !decision.tune_allowed) {
-        if (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
-            p25_emit_enc_lockout_once(opts, state, 0, group, svc);
-        }
-        return;
-    }
-
     if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
+        // The trunk state machine owns group-grant policy so patched
+        // supergroup grants can be evaluated against their member talkgroups.
         p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
     }
 }

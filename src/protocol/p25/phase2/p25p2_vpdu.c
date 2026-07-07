@@ -313,27 +313,6 @@ p25p2_mac_policy_flag(int svc_bits, int policy_override, int bit) {
     return (svc_bits & bit) ? 1 : 0;
 }
 
-static int
-p25p2_mac_group_enc_for_policy(const dsd_opts* opts, const dsd_state* state, int group, int svc_bits,
-                               int policy_encrypted_override) {
-    int enc_for_policy = p25p2_mac_policy_flag(svc_bits, policy_encrypted_override, 0x40);
-    if (!(enc_for_policy && policy_encrypted_override < 0 && opts->trunk_tune_enc_calls == 0)) {
-        return enc_for_policy;
-    }
-    if (p25_patch_tg_key_is_clear(state, group) || p25_patch_sg_key_is_clear(state, group)) {
-        return 0;
-    }
-    return enc_for_policy;
-}
-
-static int
-p25p2_mac_group_policy_allows(const dsd_opts* opts, const dsd_state* state, int group, int source, int enc_for_policy,
-                              int data_for_policy, dsd_tg_policy_decision* decision) {
-    int rc = dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, enc_for_policy,
-                                               data_for_policy, DSD_TG_POLICY_HOLD_COMPAT_GRANT, decision);
-    return (rc == 0 && decision->tune_allowed);
-}
-
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
 p25p2_emit_mac_json_if_enabled(const dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
@@ -374,8 +353,10 @@ p25p2_emit_mac_json_if_enabled(const dsd_state* state, int xch_type, uint8_t mfi
 static void
 p25p2_mac_handle(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* state, int channel, int svc_bits,
                  int group, int source, int policy_encrypted_override, int policy_data_override, int emit_enc_lockout) {
-    dsd_tg_policy_decision decision;
     (void)res;
+    (void)policy_encrypted_override;
+    (void)policy_data_override;
+    (void)emit_enc_lockout;
     if (!opts || !state) {
         return;
     }
@@ -383,15 +364,8 @@ p25p2_mac_handle(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* 
         return;
     }
 
-    int enc_for_policy = p25p2_mac_group_enc_for_policy(opts, state, group, svc_bits, policy_encrypted_override);
-    int data_for_policy = p25p2_mac_policy_flag(svc_bits, policy_data_override, 0x10);
-    if (!p25p2_mac_group_policy_allows(opts, state, group, source, enc_for_policy, data_for_policy, &decision)) {
-        if (emit_enc_lockout && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
-            p25_emit_enc_lockout_once(opts, state, 0, group, svc_bits);
-        }
-        return;
-    }
-
+    // The trunk state machine owns group-grant policy so patched supergroup
+    // grants can be evaluated against their member talkgroups.
     p25_sm_on_group_grant(opts, state, channel, svc_bits, group, source);
 }
 

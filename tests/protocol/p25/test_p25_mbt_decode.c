@@ -10,6 +10,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <stdbool.h>
@@ -39,6 +40,10 @@ static int g_last_indiv_channel;
 static int g_last_indiv_svc;
 static int g_last_indiv_dst;
 static int g_last_indiv_src;
+static int g_last_group_channel;
+static int g_last_group_svc;
+static int g_last_group_tg;
+static int g_last_group_src;
 
 static void
 sm_noop_init(dsd_opts* opts, dsd_state* state) {
@@ -50,11 +55,11 @@ static void
 sm_noop_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
     g_group_grant_count++;
+    g_last_group_channel = channel;
+    g_last_group_svc = svc_bits;
+    g_last_group_tg = tg;
+    g_last_group_src = src;
 }
 
 static void
@@ -116,6 +121,10 @@ reset_indiv_grants(void) {
     g_last_indiv_svc = 0;
     g_last_indiv_dst = 0;
     g_last_indiv_src = 0;
+    g_last_group_channel = 0;
+    g_last_group_svc = 0;
+    g_last_group_tg = 0;
+    g_last_group_src = 0;
 }
 
 // Additional stubs referenced by linked objects (rigctl/rtl streaming)
@@ -318,6 +327,33 @@ build_ambtc_base(uint8_t* mbt, uint8_t opcode, uint8_t blocks, uint32_t header_a
 }
 
 static void
+build_ambtc_group_voice(uint8_t* mbt, uint8_t svc, uint16_t channelt, uint16_t channelr, uint16_t group,
+                        uint32_t source) {
+    build_ambtc_base(mbt, 0x00, 0x01, source);
+    mbt[8] = svc;
+    mbt[14] = (uint8_t)(channelt >> 8);
+    mbt[15] = (uint8_t)(channelt & 0xFFU);
+    mbt[16] = (uint8_t)(channelr >> 8);
+    mbt[17] = (uint8_t)(channelr & 0xFFU);
+    mbt[18] = (uint8_t)(group >> 8);
+    mbt[19] = (uint8_t)(group & 0xFFU);
+}
+
+static void
+build_ambtc_mfid90_group_regroup(uint8_t* mbt, uint8_t svc, uint16_t channelt, uint16_t channelr, uint16_t group,
+                                 uint32_t source) {
+    build_ambtc_base(mbt, 0x02, 0x01, source);
+    mbt[2] = 0x90;
+    mbt[8] = svc;
+    mbt[12] = (uint8_t)(channelt >> 8);
+    mbt[13] = (uint8_t)(channelt & 0xFFU);
+    mbt[14] = (uint8_t)(channelr >> 8);
+    mbt[15] = (uint8_t)(channelr & 0xFFU);
+    mbt[16] = (uint8_t)(group >> 8);
+    mbt[17] = (uint8_t)(group & 0xFFU);
+}
+
+static void
 build_ambtc_unit_answer(uint8_t* mbt) {
     build_ambtc_base(mbt, 0x05, 0x01, 0x0ABCDE);
     mbt[8] = 0x82;
@@ -514,6 +550,42 @@ main(void) {
     rc |= expect_eq_long("p25_cc_freq", cc, want_freq);
     rc |= expect_eq_long("p2_wacn", wacn, 0xABCDE);
     rc |= expect_eq_int("p2_sysid", sysid, 0x123);
+
+    // AMBTC Group Voice Channel Grant: patched SG dispatches when TG hold matches only a member WGID.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        uint8_t grant[48];
+        init_private_trunking(&opts, &state);
+        seed_fdma_iden(&state, 1);
+        state.tg_hold = 0x3333;
+        p25_patch_add_wgid(&state, 0x2222, 0x3333);
+        build_ambtc_group_voice(grant, 0x00, 0x100A, 0x100A, 0x2222, 0x010203);
+        reset_indiv_grants();
+        p25_decode_pdu_trunking(&opts, &state, grant);
+        rc |= expect_eq_int("mbt group patch member hold count", g_group_grant_count, 1);
+        rc |= expect_eq_int("mbt group patch member hold channel", g_last_group_channel, 0x100A);
+        rc |= expect_eq_int("mbt group patch member hold tg", g_last_group_tg, 0x2222);
+        rc |= expect_eq_int("mbt group patch member hold src", g_last_group_src, 0x010203);
+    }
+
+    // MFID90 Group Regroup Grant: patched SG dispatches when TG hold matches only a member WGID.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        uint8_t grant[48];
+        init_private_trunking(&opts, &state);
+        seed_fdma_iden(&state, 1);
+        state.tg_hold = 0x4444;
+        p25_patch_add_wgid(&state, 0x5555, 0x4444);
+        build_ambtc_mfid90_group_regroup(grant, 0x00, 0x100A, 0x100B, 0x5555, 0x010204);
+        reset_indiv_grants();
+        p25_decode_pdu_trunking(&opts, &state, grant);
+        rc |= expect_eq_int("mbt mfid90 patch member hold count", g_group_grant_count, 1);
+        rc |= expect_eq_int("mbt mfid90 patch member hold channel", g_last_group_channel, 0x100A);
+        rc |= expect_eq_int("mbt mfid90 patch member hold tg", g_last_group_tg, 0x5555);
+        rc |= expect_eq_int("mbt mfid90 patch member hold src", g_last_group_src, 0x010204);
+    }
 
     // AMBTC Unit-to-Unit Voice Channel Grant (0x04): resolved FDMA channel dispatches one private grant.
     {
