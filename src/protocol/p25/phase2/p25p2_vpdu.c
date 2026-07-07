@@ -856,10 +856,33 @@ p25p2_vpdu_set_private_call_banner(dsd_state* state, int slot, int svc) {
     }
 }
 
+static int
+p25p2_vpdu_policy_tg_matches_patch_member(const dsd_state* state, int slot, int talkgroup) {
+    uint16_t wgids[8] = {0};
+    int count = 0;
+    uint32_t policy_tg = 0;
+    if (!state || slot < 0 || slot > 1 || talkgroup <= 0) {
+        return 0;
+    }
+
+    policy_tg = state->p25_policy_tg[slot & 1];
+    if (policy_tg == 0U || policy_tg > 0xFFFFU) {
+        return 0;
+    }
+
+    count = p25_patch_collect_active_wgids(state, talkgroup, wgids, sizeof(wgids) / sizeof(wgids[0]));
+    for (int i = 0; i < count && i < 8; i++) {
+        if ((uint32_t)wgids[i] == policy_tg) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void
 p25p2_vpdu_update_group_last_ids(dsd_state* state, int slot, int talkgroup, int source) {
     int previous = (slot == 0) ? state->lasttg : state->lasttgR;
-    if (previous != talkgroup) {
+    if (previous != talkgroup && !p25p2_vpdu_policy_tg_matches_patch_member(state, slot & 1, talkgroup)) {
         state->p25_policy_tg[slot & 1] = 0;
     }
     if (slot == 0) {

@@ -132,9 +132,11 @@ test_guard_replacement_and_policy_edges(void) {
 
     DSD_MEMSET(&st, 0, sizeof st);
     st.p25_patch_count = 8;
+    time_t base = time(NULL);
     for (int i = 0; i < 8; i++) {
         st.p25_patch_sgid[i] = (uint16_t)(100 + i);
-        st.p25_patch_last_update[i] = (time_t)(1000 + i);
+        st.p25_patch_last_update[i] = base - (8 - i);
+        st.p25_patch_active[i] = 1;
         st.p25_patch_wgid_count[i] = 1;
         st.p25_patch_key_valid[i] = 1;
     }
@@ -144,6 +146,40 @@ test_guard_replacement_and_policy_edges(void) {
     rc |= expect_eq_int("replacement clears wgid count", st.p25_patch_wgid_count[0], 0);
     rc |= expect_eq_int("replacement clears key valid", st.p25_patch_key_valid[0], 0);
     rc |= expect_eq_int("replacement stores simulselect", st.p25_patch_is_patch[0], 0);
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.p25_patch_count = 8;
+    base = time(NULL);
+    for (int i = 0; i < 8; i++) {
+        st.p25_patch_sgid[i] = (uint16_t)(200 + i);
+        st.p25_patch_active[i] = 1;
+        st.p25_patch_last_update[i] = base - (8 - i);
+        st.p25_patch_wgid_count[i] = 1;
+        st.p25_patch_wgid[i][0] = (uint16_t)(300 + i);
+    }
+    p25_patch_clear_sg(&st, 205);
+    p25_patch_update(&st, 299, 1, 1);
+    rc |= expect_eq_int("inactive slot reused count", st.p25_patch_count, 8);
+    rc |= expect_true("inactive slot reused new sg", find_idx(&st, 299) >= 0);
+    rc |= expect_true("inactive slot reuse preserves active oldest", find_idx(&st, 200) >= 0);
+    int reused = find_idx(&st, 299);
+    if (reused >= 0) {
+        rc |= expect_eq_int("inactive slot reused clears members", st.p25_patch_wgid_count[reused], 0);
+        rc |= expect_eq_int("inactive slot reused active", st.p25_patch_active[reused], 1);
+    }
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.p25_patch_count = 8;
+    base = time(NULL);
+    for (int i = 0; i < 8; i++) {
+        st.p25_patch_sgid[i] = (uint16_t)(400 + i);
+        st.p25_patch_active[i] = 1;
+        st.p25_patch_last_update[i] = base;
+    }
+    p25_patch_update(&st, 499, 1, 0);
+    rc |= expect_eq_int("inactive full table does not evict count", st.p25_patch_count, 8);
+    rc |= expect_true("inactive full table preserves active oldest", find_idx(&st, 400) >= 0);
+    rc |= expect_true("inactive full table skips new inactive", find_idx(&st, 499) < 0);
 
     DSD_MEMSET(&st, 0, sizeof st);
     p25_patch_update(&st, 10, 1, 1);

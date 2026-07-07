@@ -8,9 +8,12 @@
  * Asserts trunking tune side-effects via test shim capture.
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -146,6 +149,15 @@ expect_not_contains(const char* tag, const char* text, const char* needle) {
         return 1;
     }
     return 0;
+}
+
+static int
+seed_policy_group(dsd_state* st, uint32_t tg, const char* mode, const char* name) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(tg, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return -1;
+    }
+    return dsd_tg_policy_append_exact(st, &row);
 }
 
 static int
@@ -1121,6 +1133,46 @@ main(void) {
         rc |= expect_eq_long("0x80 service options valid", state.p25_service_options_valid[0], 1);
         rc |= expect_eq_long("0x80 emergency state", state.p25_call_emergency[0], 1);
         rc |= expect_contains("0x80 call banner", state.call_string[0], "Emergency");
+    }
+
+    // Case D5e2: first regroup voice-user metadata preserves the patch-member policy target from the grant.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.trunk_use_allow_list = 1;
+        state.synctype = DSD_SYNC_P25P2_POS;
+        state.currentslot = 0;
+        state.lasttg = 0x2222;
+        state.lastsrc = 0x010101;
+
+        rc |= expect_eq_long("0x80 policy seed member", seed_policy_group(&state, 0x1234, "A", "PATCH-MEMBER"), 0);
+        p25_patch_add_wgid(&state, 0x3456, 0x1234);
+        state.p25_policy_tg[0] = 0x1234;
+
+        MAC[1] = 0x80;
+        MAC[2] = 0x90;
+        MAC[3] = 0x00;
+        MAC[4] = 0x34;
+        MAC[5] = 0x56;
+        MAC[6] = 0x01;
+        MAC[7] = 0x02;
+        MAC[8] = 0x03;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x80 policy member last tg", state.lasttg, 0x3456);
+        rc |= expect_eq_long("0x80 policy member preserved", state.p25_policy_tg[0], 0x1234);
+        rc |= expect_eq_long("0x80 policy member audio", dsd_p25p2_decode_audio_allowed(&opts, &state, 0, 0), 1);
+
+        state.p25_policy_tg[0] = 0x7777;
+        MAC[4] = 0x45;
+        MAC[5] = 0x67;
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x80 stale policy clears", state.p25_policy_tg[0], 0);
+
+        dsd_state_ext_free_all(&state);
     }
 
     // Case D5f: MFID90 0xA0 extended voice-user messages store service options.

@@ -58,6 +58,39 @@ p25_patch_clear_entry_context(dsd_state* state, int idx) {
     state->p25_patch_key_valid[idx] = 0;
 }
 
+static int
+p25_patch_replacement_idx(const dsd_state* state, int active, time_t now) {
+    if (!state) {
+        return -1;
+    }
+
+    for (int i = 0; i < 8; i++) {
+        if (!state->p25_patch_active[i]) {
+            return i;
+        }
+    }
+
+    for (int i = 0; i < 8; i++) {
+        if (p25_patch_entry_is_stale(state, i, now)) {
+            return i;
+        }
+    }
+
+    if (!active) {
+        return -1;
+    }
+
+    int repl = 0;
+    time_t oldest = state->p25_patch_last_update[0];
+    for (int i = 1; i < 8; i++) {
+        if (state->p25_patch_last_update[i] < oldest) {
+            oldest = state->p25_patch_last_update[i];
+            repl = i;
+        }
+    }
+    return repl;
+}
+
 static void
 p25_patch_sweep_stale(dsd_state* state) {
     if (!state) {
@@ -115,16 +148,11 @@ p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {
         idx = 0;
     }
     if (idx >= 8) {
-        // Replace the stalest entry
-        int repl = 0;
-        time_t oldest = state->p25_patch_last_update[0];
-        for (int i = 1; i < 8; i++) {
-            if (state->p25_patch_last_update[i] < oldest) {
-                oldest = state->p25_patch_last_update[i];
-                repl = i;
-            }
+        state->p25_patch_count = 8;
+        idx = p25_patch_replacement_idx(state, active ? 1 : 0, now);
+        if (idx < 0) {
+            return;
         }
-        idx = repl;
     } else {
         state->p25_patch_count = idx + 1;
     }
