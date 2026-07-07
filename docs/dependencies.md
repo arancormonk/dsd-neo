@@ -27,20 +27,20 @@ Optional compiled dependencies are:
 - PortAudio on non-Windows builds when selected
 - help2man for generated man pages
 
-Vendored compiled third-party components are:
+Vendored and embedded third-party components include:
 
 - ezpwd Reed-Solomon under `src/third_party/ezpwd/`
 - PFFFT/FFTPACK under `src/third_party/pffft/`
 - Tiny AES code in `src/crypto/crypt-aes.c`
 
-Vendored code retains upstream notices. License and attribution details are in
-`THIRD_PARTY.md`.
+Vendored code and embedded upstream-derived snippets retain upstream notices.
+License and attribution details are in `THIRD_PARTY.md`.
 
 Registry-managed vcpkg dependencies are pinned by the manifest
-`builtin-baseline`. At baseline `cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3`,
-the `openssl` port resolves to OpenSSL `3.6.2` and the `curl` port resolves to
-curl `8.19.0`; system-package builds enforce the OpenSSL requirement through
-`find_package(OpenSSL 3.0 REQUIRED)`.
+`builtin-baseline` (`cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3` in the current
+manifest). The baseline, overlay ports, and triplets are the source of truth
+for exact registry versions; system-package builds enforce the OpenSSL
+requirement through `find_package(OpenSSL 3.0 REQUIRED)`.
 
 ## Packaging Dependencies
 

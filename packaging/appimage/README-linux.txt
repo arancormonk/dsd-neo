@@ -13,3 +13,6 @@ Key bits:
 End users:
 - Download dsd-neo-linux-<arch>-portable-<version>.AppImage or dsd-neo-linux-<arch>-portable-nightly.AppImage
 - chmod +x and run: ./dsd-neo-linux-*-portable-*.AppImage -h
+- Radio use still depends on host device access. RTL-SDR requires the usual USB permissions/udev setup, and non-RTL
+  SoapySDR devices require compatible host Soapy modules and hardware drivers discoverable through the AppImage's
+  `SOAPY_SDR_PLUGIN_PATH` hook or standard host Soapy module paths.

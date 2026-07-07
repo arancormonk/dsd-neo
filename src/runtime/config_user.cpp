@@ -1577,7 +1577,8 @@ render_template_intro(FILE* stream) {
     DSD_FPRINTF(stream, "# Uncomment and modify values as needed.\n");
     DSD_FPRINTF(stream, "# Lines starting with # are comments.\n");
     DSD_FPRINTF(stream, "#\n");
-    DSD_FPRINTF(stream, "# Precedence: CLI arguments > environment variables > config file > defaults\n");
+    DSD_FPRINTF(stream, "# User-config precedence: defaults < config file < CLI arguments\n");
+    DSD_FPRINTF(stream, "# Selected DSD_NEO_* environment variables are separate runtime overrides.\n");
     DSD_FPRINTF(stream, "\n");
     DSD_FPRINTF(stream, "version = 1\n\n");
 }

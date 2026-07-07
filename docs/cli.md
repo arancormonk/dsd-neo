@@ -44,9 +44,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 
 - Config loading is opt-in: use `--config` to enable, optionally with a path (e.g. `--config /path/to/config.ini`).
 - Convenience: `dsd-neo /path/to/config.ini` (single positional `*.ini`) is treated as `--config /path/to/config.ini`.
-- Default path (when `--config` is passed without a path): `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`.
+- Default path (when bare `--config` is passed and `DSD_NEO_CONFIG` is not set): `${XDG_CONFIG_HOME:-$HOME/.config}/dsd-neo/config.ini`.
 - Alternatively, set `DSD_NEO_CONFIG=<path>` environment variable to enable config loading (this is the only way for a no-arg run to load a config).
-- Precedence detail: `--config /path/to/config.ini` > `--config` default path (ignores `DSD_NEO_CONFIG`) > `DSD_NEO_CONFIG`.
+- Config path precedence: explicit `--config /path/to/config.ini` or a positional `*.ini` > `DSD_NEO_CONFIG` > default path for bare `--config`.
 - Explicit config paths may be absolute, relative, or use `~`/environment expansion; include paths are resolved relative to the containing config file.
 - `--interactive-setup` runs the wizard even when a config exists.
 - `--print-config` prints the effective config as INI after all env/CLI overrides.
@@ -101,7 +101,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 ## Display & UI
 
-- `--frontend terminal` Use the terminal UI
+- `--frontend terminal` Use the terminal UI (`-N` is the legacy alias)
 - `-Z` Log MBE/PDU payloads to the console (verbose)
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)

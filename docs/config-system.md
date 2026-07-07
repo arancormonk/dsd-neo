@@ -15,8 +15,10 @@ workflows.
   mode, trunking basics, and UI behavior.
 - **Non-breaking behavior** for existing users:
   - If no config file exists, behavior is identical to current releases.
-  - CLI arguments and environment variables always take precedence over
-    config file values.
+  - For keys covered by the config file, CLI arguments override config file
+    values.
+  - Existing `DSD_NEO_*` environment variables remain separate runtime knobs;
+    only documented keys are persisted in user config files.
 - **Simple INI-style format** that's easy to read and edit.
 - **Future-proof**: Config files are versioned; unknown keys/sections are
   ignored on load (use `--validate-config` to report warnings).
@@ -63,7 +65,7 @@ rtl_freq = "851.375M"       # supports K/M/G suffix or raw Hz
 
 [output]
 backend = "pulse"           # pulse / null
-frontend = "terminal"       # none / terminal
+frontend = "terminal"       # none / terminal / native
 
 [alerts]
 enabled = false             # map to -a / call alert toggle
@@ -216,11 +218,11 @@ explicitly requested.
 - Environment: `DSD_NEO_CONFIG=/path/to/config.ini`
 - Explicit paths may be absolute, relative to the current working directory, or use `~`/environment expansion.
 
-When both are present, CLI wins:
+When multiple config-path sources are present, explicit CLI paths win:
 
-1. `--config PATH` (explicit path)
-2. Default path (when `--config` is passed without a path; this ignores `DSD_NEO_CONFIG`)
-3. `DSD_NEO_CONFIG`
+1. `--config PATH` or a single positional `*.ini`
+2. `DSD_NEO_CONFIG`
+3. Default path, only when bare `--config` is passed and no environment path is set
 
 If the file cannot be read or parsed:
 
@@ -286,7 +288,13 @@ small subset is exposed as config keys for convenience (for example
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
 | `soapy_args` | STRING | SoapySDR device selection args (from SoapySDRUtil `--find`/`--probe`) | (empty) |
+| `soapy_profile` | ENUM | SoapySDR capability profile (`auto|generic|airspy|sdrplay|hackrf|lime|pluto|rtlsdr|uhd`) | `auto` |
+| `soapy_stream_format` | ENUM | SoapySDR RX stream format (`auto|cf32|cs16`) | `auto` |
+| `soapy_antenna` | STRING | SoapySDR RX antenna name | (empty) |
+| `soapy_clock` | STRING | SoapySDR clock source name | (empty) |
 | `soapy_settings` | STRING | SoapySDR driver settings (`key=value`, `rx:key=value`) | (empty) |
+| `soapy_gains` | STRING | Named SoapySDR gain stages (`NAME:dB`) | (empty) |
+| `soapy_bandwidth_hz` | INT (-1-20000000) | SoapySDR hardware bandwidth (`-1` profile/default, `0` driver auto) | `-1` |
 | `file_path` | PATH | Input file path (WAV/BIN/RAW/SYM) | (empty) |
 | `file_sample_rate` | INT (8000-192000) | File sample rate (WAV/RAW) | `48000` |
 | `tcp_host` | STRING | TCP PCM input host | `127.0.0.1` |
@@ -424,7 +432,8 @@ Output format:
 # Uncomment and modify values as needed.
 # Lines starting with # are comments.
 #
-# Precedence: CLI arguments > environment variables > config file > defaults
+# User-config precedence: defaults < config file < CLI arguments
+# Selected DSD_NEO_* environment variables are separate runtime overrides.
 
 version = 1
 
@@ -725,7 +734,7 @@ restart to take full effect.
 
 ## Summary
 
-- INI-based config with clear precedence (CLI > env > config > defaults).
+- INI-based config with clear user-config precedence (defaults < config file < CLI arguments).
 - Platform-specific default paths when config loading is explicitly enabled.
 - Validation with line-number diagnostics.
 - Template generation for discoverability.
