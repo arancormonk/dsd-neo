@@ -501,9 +501,6 @@ p25_patch_collect_active_wgids(const dsd_state* state, int sgid, uint16_t* out, 
     }
 
     int count = state->p25_patch_wgid_count[idx];
-    if (count < 0) {
-        count = 0;
-    }
     if (count > 8) {
         count = 8;
     }
