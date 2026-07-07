@@ -1219,7 +1219,7 @@ p25_grant_should_clear_slot_only(const p25_sm_ctx_t* ctx, const dsd_state* state
 }
 
 static int
-p25_grant_prepare_route(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                         const dsd_tg_policy_decision* decision, p25_grant_route_ctx_t* out) {
     p25_freq_trace_t freq_trace;
     if (!ctx || !opts || !state || !ev || !decision || !out) {
