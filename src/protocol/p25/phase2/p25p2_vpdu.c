@@ -3057,6 +3057,91 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
+static int
+p25p2_vpdu_harris_a4_msg_len(int len_b, int len_grg) {
+    return (len_grg > 0 && len_grg < len_b) ? len_grg : len_b;
+}
+
+static void
+p25p2_vpdu_print_harris_a4_options(int tga, int ssn) {
+    DSD_FPRINTF(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
+    DSD_FPRINTF(stderr, (tga & 0x4) ? " Simulselect" : " Patch");
+    DSD_FPRINTF(stderr, (tga & 0x1) ? " Active;" : " Inactive;");
+    DSD_FPRINTF(stderr, " SSN: %02d;", ssn);
+}
+
+static int
+p25p2_vpdu_harris_a4_wgid_count(int msg_len) {
+    int count = (msg_len >= 11) ? ((msg_len - 9) / 2) : 0;
+    return (count > 4) ? 4 : count;
+}
+
+static int
+p25p2_vpdu_harris_a4_wuid_count(int msg_len) {
+    int count = (msg_len >= 11) ? ((msg_len - 8) / 3) : 0;
+    return (count > 3) ? 3 : count;
+}
+
+static void
+p25p2_vpdu_handle_harris_a4_wgid(dsd_state* state, const unsigned long long int* mac, int len_a, int msg_len,
+                                 int is_patch, int active, int ssn) {
+    int sg = (mac[5 + len_a] << 8) | mac[6 + len_a];
+    int key = (mac[7 + len_a] << 8) | mac[8 + len_a];
+    int alg = mac[9 + len_a];
+    DSD_FPRINTF(stderr, " SG: %d; KEY ID: %04X; ALG: %02X;\n  ", sg, key, alg);
+    if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
+        return;
+    }
+
+    int count = p25p2_vpdu_harris_a4_wgid_count(msg_len);
+    for (int wi = 0; wi < count && (10 + len_a + (wi * 2) + 1) < 24; wi++) {
+        int wgid = (mac[10 + len_a + (wi * 2)] << 8) | mac[11 + len_a + (wi * 2)];
+        DSD_FPRINTF(stderr, "WGID: %d; ", wgid);
+        if (wgid != 0) {
+            p25_patch_add_wgid(state, sg, wgid);
+        }
+    }
+    p25_patch_set_kas(state, sg, key, alg, ssn);
+}
+
+static void
+p25p2_vpdu_handle_harris_a4_wuid(dsd_state* state, const unsigned long long int* mac, int len_a, int msg_len,
+                                 int is_patch, int active, int ssn) {
+    int sg = (mac[5 + len_a] << 8) | mac[6 + len_a];
+    int key = (mac[7 + len_a] << 8) | mac[8 + len_a];
+    DSD_FPRINTF(stderr, "  SG: %d KEY ID: %04X", sg, key);
+    if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
+        return;
+    }
+
+    int count = p25p2_vpdu_harris_a4_wuid_count(msg_len);
+    for (int wi = 0; wi < count && (9 + len_a + (wi * 3) + 2) < 24; wi++) {
+        int wuid = (mac[9 + len_a + (wi * 3)] << 16) | (mac[10 + len_a + (wi * 3)] << 8) | mac[11 + len_a + (wi * 3)];
+        DSD_FPRINTF(stderr, " WUID: %d;", wuid);
+        if (wuid != 0) {
+            p25_patch_add_wuid(state, sg, (uint32_t)wuid);
+        }
+    }
+    p25_patch_set_kas(state, sg, key, -1, ssn);
+}
+
+static void
+p25p2_vpdu_handle_harris_a4_grg(dsd_state* state, const unsigned long long int* mac, int len_a, int len_b) {
+    int len_grg = mac[3 + len_a] & 0x3F;
+    int msg_len = p25p2_vpdu_harris_a4_msg_len(len_b, len_grg);
+    int tga = mac[4 + len_a] >> 5;
+    int ssn = mac[4 + len_a] & 0x1F;
+    int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
+    int active = (tga & 0x1) ? 1 : 0;
+
+    p25p2_vpdu_print_harris_a4_options(tga, ssn);
+    if ((tga & 0x2) == 2) {
+        p25p2_vpdu_handle_harris_a4_wgid(state, mac, len_a, msg_len, is_patch, active, ssn);
+    } else {
+        p25p2_vpdu_handle_harris_a4_wuid(state, mac, len_a, msg_len, is_patch, active, ssn);
+    }
+}
+
 static void
 p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
@@ -3072,79 +3157,7 @@ p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0xB0 && MAC[2 + len_a] == 0xA4) //&& MAC[2+len_a] == 0xA4
     {
-        int len_grg = MAC[3 + len_a] & 0x3F; //MFID Len in Octets
-        int msg_len = len_b;
-        int tga = MAC[4 + len_a] >> 5;   //3 bit TGA values from GRG_Options
-        int ssn = MAC[4 + len_a] & 0x1F; //5 bit SSN from from GRG_Options
-        int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
-        int active = (tga & 0x1) ? 1 : 0;
-
-        if (len_grg > 0 && len_grg < msg_len) {
-            msg_len = len_grg;
-        }
-
-        DSD_FPRINTF(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
-        if ((tga & 4) == 4) {
-            DSD_FPRINTF(stderr, " Simulselect"); //one-way regroup
-        } else {
-            DSD_FPRINTF(stderr, " Patch"); //two-way regroup
-        }
-        if (tga & 1) {
-            DSD_FPRINTF(stderr, " Active;"); //activated
-        } else {
-            DSD_FPRINTF(stderr, " Inactive;"); //deactivated
-        }
-
-        DSD_FPRINTF(stderr, " SSN: %02d;", ssn);
-
-        if ((tga & 0x2) == 2) //group WGID to supergroup
-        {
-            int sg = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
-            int key = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
-            int alg = MAC[9 + len_a];
-            DSD_FPRINTF(stderr, " SG: %d; KEY ID: %04X; ALG: %02X;\n  ", sg, key, alg);
-            if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
-                goto BLOCK_END;
-            }
-
-            int count = (msg_len >= 11) ? ((msg_len - 9) / 2) : 0;
-            if (count > 4) {
-                count = 4;
-            }
-            for (int wi = 0; wi < count && (10 + len_a + (wi * 2) + 1) < 24; wi++) {
-                int wgid = (MAC[10 + len_a + (wi * 2)] << 8) | MAC[11 + len_a + (wi * 2)];
-                DSD_FPRINTF(stderr, "WGID: %d; ", wgid);
-                if (wgid != 0) {
-                    p25_patch_add_wgid(state, sg, wgid);
-                }
-            }
-            p25_patch_set_kas(state, sg, key, alg, ssn);
-
-        }
-
-        else if ((tga & 0x2) == 0) //individual WUID to supergroup
-        {
-            int sg = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
-            int key = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
-            DSD_FPRINTF(stderr, "  SG: %d KEY ID: %04X", sg, key);
-            if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
-                goto BLOCK_END;
-            }
-
-            int count = (msg_len >= 11) ? ((msg_len - 8) / 3) : 0;
-            if (count > 3) {
-                count = 3;
-            }
-            for (int wi = 0; wi < count && (9 + len_a + (wi * 3) + 2) < 24; wi++) {
-                int wuid =
-                    (MAC[9 + len_a + (wi * 3)] << 16) | (MAC[10 + len_a + (wi * 3)] << 8) | MAC[11 + len_a + (wi * 3)];
-                DSD_FPRINTF(stderr, " WUID: %d;", wuid);
-                if (wuid != 0) {
-                    p25_patch_add_wuid(state, sg, (uint32_t)wuid);
-                }
-            }
-            p25_patch_set_kas(state, sg, key, -1, ssn);
-        }
+        p25p2_vpdu_handle_harris_a4_grg(state, MAC, len_a, len_b);
     }
 
     if (len_b < 0) {

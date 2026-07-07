@@ -698,16 +698,26 @@ p25_grant_transient_enc_cache_blocks(dsd_opts* opts, dsd_state* state, const p25
 }
 
 static int
-p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
-                      const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
-    if (!opts || !state || !ev || !eval_ctx || !out_decision) {
-        return -1;
+p25_grant_policy_candidate_is_better(const dsd_tg_policy_decision* candidate, const dsd_tg_policy_decision* best,
+                                     int have_best) {
+    if (!candidate || !candidate->tune_allowed) {
+        return 0;
     }
-    if (eval_ctx->is_indiv) {
-        return dsd_tg_policy_evaluate_private_call(
-            opts, state, (uint32_t)ev->src, (uint32_t)ev->dst, eval_ctx->encrypted_call, eval_ctx->data_call,
-            DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW, DSD_TG_POLICY_HOLD_COMPAT_GRANT, out_decision);
+    if (!have_best || !best) {
+        return 1;
     }
+    if (candidate->tg_hold_match != best->tg_hold_match) {
+        return candidate->tg_hold_match ? 1 : 0;
+    }
+    if (candidate->priority != best->priority) {
+        return (candidate->priority > best->priority) ? 1 : 0;
+    }
+    return (candidate->preempt_requested && !best->preempt_requested) ? 1 : 0;
+}
+
+static int
+p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
+                            const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
     uint16_t members[8] = {0};
     int member_count =
         p25_patch_collect_active_wgids(state, eval_ctx->tg, members, sizeof(members) / sizeof(members[0]));
@@ -733,20 +743,31 @@ p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm
             first = candidate;
             have_first = 1;
         }
-        if (!candidate.tune_allowed) {
-            continue;
-        }
-        if (!have_best || (candidate.tg_hold_match && !best.tg_hold_match)
-            || (candidate.tg_hold_match == best.tg_hold_match && candidate.priority > best.priority)
-            || (candidate.tg_hold_match == best.tg_hold_match && candidate.priority == best.priority
-                && candidate.preempt_requested && !best.preempt_requested)) {
+        if (p25_grant_policy_candidate_is_better(&candidate, &best, have_best)) {
             best = candidate;
             have_best = 1;
         }
     }
 
+    if (!have_first) {
+        return -1;
+    }
     *out_decision = have_best ? best : first;
-    return have_first ? 0 : -1;
+    return 0;
+}
+
+static int
+p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
+                      const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
+    if (!opts || !state || !ev || !eval_ctx || !out_decision) {
+        return -1;
+    }
+    if (eval_ctx->is_indiv) {
+        return dsd_tg_policy_evaluate_private_call(
+            opts, state, (uint32_t)ev->src, (uint32_t)ev->dst, eval_ctx->encrypted_call, eval_ctx->data_call,
+            DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW, DSD_TG_POLICY_HOLD_COMPAT_GRANT, out_decision);
+    }
+    return p25_grant_eval_group_policy(opts, state, ev, eval_ctx, out_decision);
 }
 
 static int
