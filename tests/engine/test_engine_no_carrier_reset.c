@@ -263,6 +263,16 @@ main(void) {
     if (state->dmr_reliab_buf != NULL) {
         state->dmr_reliab_p = state->dmr_reliab_buf + 321;
     }
+    state->p25_mac_frag[0].active = 1U;
+    state->p25_mac_frag[0].opcode = 0x89U;
+    state->p25_mac_frag[0].data_len = 4U;
+    state->p25_mac_frag[0].collected = 2U;
+    state->p25_mac_frag[0].data[0] = 0xAAU;
+    state->p25_mac_frag[1].active = 1U;
+    state->p25_mac_frag[1].opcode = 0x8AU;
+    state->p25_mac_frag[1].data_len = 8U;
+    state->p25_mac_frag[1].collected = 6U;
+    state->p25_mac_frag[1].data[5] = 0xBBU;
     state->rtl_fsk_sps_num = 48000;
     state->rtl_fsk_sps_den = 4800;
     state->rtl_fsk_sps_accum = 2400;
@@ -272,6 +282,12 @@ main(void) {
     rc |= expect_true("dmr-payload-pointer-buffer", state->dmr_payload_p == state->dmr_payload_buf + 200);
     rc |= expect_true("dmr-payload-pointer-not-dibit", state->dmr_payload_p != state->dibit_buf + 200);
     rc |= expect_true("dibit-pointer-reset", state->dibit_buf_p == state->dibit_buf + 200);
+    rc |= expect_true("p25-mac-fragment-reset",
+                      state->p25_mac_frag[0].active == 0U && state->p25_mac_frag[0].opcode == 0U
+                          && state->p25_mac_frag[0].data_len == 0U && state->p25_mac_frag[0].collected == 0U
+                          && state->p25_mac_frag[0].data[0] == 0U && state->p25_mac_frag[1].active == 0U
+                          && state->p25_mac_frag[1].opcode == 0U && state->p25_mac_frag[1].data_len == 0U
+                          && state->p25_mac_frag[1].collected == 0U && state->p25_mac_frag[1].data[5] == 0U);
     rc |= expect_true("rtl-fsk-sps-cache-reset",
                       state->rtl_fsk_sps_num == 0 && state->rtl_fsk_sps_den == 0 && state->rtl_fsk_sps_accum == 0);
 

@@ -279,6 +279,21 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_aff_register(dsd_state* state, uint32_t rid) {
+    (void)state;
+    (void)rid;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg) {
+    (void)state;
+    (void)rid;
+    (void)tg;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_format_chan_suffix(const dsd_state* state, uint16_t channel, int slot_hint, char* out, size_t out_sz) {
     (void)state;
     (void)channel;
@@ -318,8 +333,9 @@ main(void) {
     st.p25_chan_tdma_explicit[id] = 1; // FDMA known
 
     // Build ALT MBT Unit-to-Unit Voice Channel Grant - Extended (opcode 0x06).
-    mpdu[0] = 0x17; // ALT MBT format
+    mpdu[0] = 0x37; // outbound ALT MBT format
     mpdu[2] = 0x00; // MFID standard
+    mpdu[6] = 0x02; // header plus two data blocks
     mpdu[7] = 0x06; // opcode: UU Voice Channel Grant Extended
     mpdu[8] = 0x00; // svc clear
     mpdu[3] = 0x00;
@@ -346,8 +362,9 @@ main(void) {
 
     rc |= expect_true("policy seed group grant", seed_policy_group(&st, 0x1234u, "A", "TG-ALLOW") == 0);
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
-    mpdu[0] = 0x17; // ALT MBT
+    mpdu[0] = 0x37; // outbound ALT MBT
     mpdu[2] = 0x00;
+    mpdu[6] = 0x01; // header plus one data block
     mpdu[7] = 0x00; // Group Voice Channel Grant Update - Extended
     mpdu[8] = 0x00; // clear voice service
     mpdu[3] = 0x01;
@@ -371,8 +388,9 @@ main(void) {
     rc |= expect_true("p1 pdu group active channel", strstr(st.active_channel[0], "TG: 4660") != NULL);
 
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
-    mpdu[0] = 0x17;
+    mpdu[0] = 0x37;
     mpdu[2] = 0x00;
+    mpdu[6] = 0x01; // header plus one data block
     mpdu[7] = 0x08; // Telephone Interconnect Voice Channel Grant
     mpdu[3] = 0x01;
     mpdu[4] = 0x02;
@@ -399,8 +417,9 @@ main(void) {
 
     rc |= expect_true("policy seed mfid90 sg", seed_policy_group(&st, 0x2222u, "A", "SG-ALLOW") == 0);
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
-    mpdu[0] = 0x17;
+    mpdu[0] = 0x37;
     mpdu[2] = 0x90;
+    mpdu[6] = 0x01; // header plus one data block
     mpdu[7] = 0x02; // MFID90 Group Regroup Channel Grant - Explicit
     mpdu[3] = 0x04;
     mpdu[4] = 0x05;
@@ -418,6 +437,50 @@ main(void) {
     reset_calls();
     p25_decode_pdu_trunking(&opts, &st, mpdu);
     rc |= expect_true("p1 pdu mfid90 active channel", strstr(st.active_channel[0], "SG: 8738") != NULL);
+
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x17; // inbound ALT MBT ISP
+    mpdu[2] = 0x00;
+    mpdu[6] = 0x01; // header plus one data block
+    mpdu[7] = 0x04; // inbound UU voice service request, not an outbound grant
+    mpdu[8] = 0x00;
+    mpdu[14] = 0x10;
+    mpdu[15] = 0x0A;
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 0;
+    reset_calls();
+    before = st.p25_sm_tune_count;
+    st.active_channel[0][0] = '\0';
+    p25_decode_pdu_trunking(&opts, &st, mpdu);
+    rc |= expect_true("inbound ambtc uu no tune", st.p25_sm_tune_count == before);
+    rc |= expect_true("inbound ambtc uu no active grant", strstr(st.active_channel[0], "Active UU") == NULL);
+    rc |= expect_true("inbound ambtc uu no group callback", g_group_grant_count == 0);
+
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x15; // inbound UMBTC ISP
+    mpdu[2] = 0x00;
+    mpdu[6] = 0x01;  // header plus one data block
+    mpdu[12] = 0x08; // explicit telephone dial request
+    opts.p25_is_tuned = 0;
+    reset_calls();
+    before = st.p25_sm_tune_count;
+    p25_decode_pdu_trunking(&opts, &st, mpdu);
+    rc |= expect_true("inbound umbtc dial no tune", st.p25_sm_tune_count == before);
+    rc |= expect_true("inbound umbtc dial no group callback", g_group_grant_count == 0);
+
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x17; // inbound Motorola protected ISP
+    mpdu[2] = 0x90;
+    mpdu[6] = 0x01; // header plus one data block
+    mpdu[7] = 0x00; // group regroup voice request, not MFID90 grant
+    mpdu[16] = 0x22;
+    mpdu[17] = 0x22;
+    opts.p25_is_tuned = 0;
+    reset_calls();
+    st.active_channel[0][0] = '\0';
+    p25_decode_pdu_trunking(&opts, &st, mpdu);
+    rc |= expect_true("inbound mfid90 regroup no group callback", g_group_grant_count == 0);
+    rc |= expect_true("inbound mfid90 regroup no active grant", strstr(st.active_channel[0], "MFID90 Ch") == NULL);
 
     dsd_state_ext_free_all(&st);
 

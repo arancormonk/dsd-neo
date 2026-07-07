@@ -263,6 +263,24 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
 }
 
 void
+p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
+    (void)opts;
+    (void)state;
+    (void)svc_type;
+    (void)reason_code;
+    (void)target;
+}
+
+void
+p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
+    (void)opts;
+    (void)state;
+    (void)svc_type;
+    (void)reason_code;
+    (void)target;
+}
+
+void
 p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;

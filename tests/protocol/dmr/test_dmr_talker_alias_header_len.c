@@ -207,6 +207,163 @@ test_harris_l3h_alias_state(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+static void
+build_l3h_alias_lcw(uint8_t bits[72], uint8_t opcode, const char payload[7]) {
+    DSD_MEMSET(bits, 0, 72);
+    value_to_bits_msb(bits, 0, 72, opcode, 8);
+    value_to_bits_msb(bits, 8, 72, 0xA4U, 8);
+    for (size_t i = 0; i < 7U; i++) {
+        value_to_bits_msb(bits, 16U + (i * 8U), 72, (uint8_t)payload[i], 8);
+    }
+}
+
+static int
+expect_no_policy(const dsd_state* st, uint32_t id, const char* tag) {
+    dsd_tg_policy_lookup lookup;
+    if (dsd_tg_policy_lookup_id(st, id, &lookup) == 0 && lookup.match == DSD_TG_POLICY_MATCH_EXACT) {
+        DSD_FPRINTF(stderr, "%s: unexpected policy id=%u name='%s'\n", tag, id, lookup.entry.name);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    uint8_t lcw[72];
+
+    st->lastsrc = 710001u;
+    st->lasttg = 44u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "", "l3h block1 waits for block2");
+
+    build_l3h_alias_lcw(lcw, 0x33U, "UNIT   ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT", "l3h block1+2 alias");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h block1+2 no policy");
+
+    build_l3h_alias_lcw(lcw, 0x34U, "ALPHA  ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT", "l3h duplicate block3");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h block1+2+3 no policy");
+
+    build_l3h_alias_lcw(lcw, 0x35U, "7      ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT7", "l3h unique block4");
+    rc |= expect_policy_name(st, st->lastsrc, "ALPHAUNIT7", "l3h complete policy");
+
+    st->lastsrc = 710004u;
+    st->lasttg = 47u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x32U, "ECHO   ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x33U, "ONE    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ECHOONE", "l3h repeated block1+2 alias");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h repeated block1+2 no policy");
+    build_l3h_alias_lcw(lcw, 0x34U, "ECHO   ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x35U, "ONE    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ECHOONE", "l3h repeated complete alias");
+    rc |= expect_policy_name(st, st->lastsrc, "ECHOONE", "l3h repeated complete policy");
+
+    st->lastsrc = 710005u;
+    st->lasttg = 48u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x33U, "A      ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAA", "l3h contained fragment retained");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h contained fragment no policy");
+    build_l3h_alias_lcw(lcw, 0x34U, "ALPHA  ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x35U, "A      ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAA",
+                     "l3h contained fragment repeated complete alias");
+    rc |= expect_policy_name(st, st->lastsrc, "ALPHAA", "l3h contained fragment complete policy");
+
+    st->lastsrc = 710003u;
+    st->lasttg = 46u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x33U, "STALE  ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "", "l3h stray block2 ignored");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h stray block2 no policy");
+
+    st->lastsrc = 710002u;
+    st->lasttg = 45u;
+    st->event_history_s[0].Event_History_Items[0].source_id = 999999u;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x32U, "BAD    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x33U, "CACHE  ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "", "l3h mismatch no event alias");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h mismatch no policy");
+
+    st->lastsrc = 710006u;
+    st->lasttg = 49u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x33U, "GOOD   ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "",
+                     "l3h deferred mismatch clears block1 before stray block2");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h deferred mismatch stray block2 no policy");
+
+    build_l3h_alias_lcw(lcw, 0x32U, "GOOD   ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x33U, "TWO    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "GOODTWO",
+                     "l3h current sequence recovers after deferred mismatch");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h recovered partial sequence no policy");
+
+    st->lastsrc = 710007u;
+    st->lasttg = 50u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x32U, "OLD    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+
+    st->lastsrc = 710008u;
+    st->lasttg = 51u;
+    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
+
+    build_l3h_alias_lcw(lcw, 0x33U, "NEW    ");
+    l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "",
+                     "l3h source change clears stale block1 before block2");
+    rc |= expect_no_policy(st, st->lastsrc, "l3h source change stray block2 no policy");
+
+    return rc;
+}
+
 static int
 test_apx_alias_phase_storage(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
@@ -226,7 +383,7 @@ test_apx_alias_phase_storage(dsd_opts* opts, dsd_state* st) {
     rc |= expect_u8(st->dmr_pdu_sf[0][71], header1[71], "apx-p1-header-copy-last");
 
     DSD_MEMSET(block1, 0, sizeof(block1));
-    value_to_bits_msb(block1, 16, sizeof(block1), 0U, 8);
+    value_to_bits_msb(block1, 16, sizeof(block1), 1U, 8);
     value_to_bits_msb(block1, 24, sizeof(block1), 0x0AU, 4);
     for (size_t i = 28U; i < sizeof(block1); i++) {
         block1[i] = (uint8_t)(i & 1U);
@@ -235,6 +392,13 @@ test_apx_alias_phase_storage(dsd_opts* opts, dsd_state* st) {
     for (size_t i = 0U; i < 44U; i++) {
         rc |= expect_u8(st->dmr_pdu_sf[0][72U + i], block1[28U + i], "apx-p1-block-copy");
     }
+
+    apx_embedded_alias_header_phase1(opts, st, 0, header1);
+    DSD_MEMSET(block1, 0, sizeof(block1));
+    value_to_bits_msb(block1, 16, sizeof(block1), 2U, 8);
+    value_to_bits_msb(block1, 24, sizeof(block1), 0x0AU, 4);
+    apx_embedded_alias_blocks_phase1(opts, st, 0, block1);
+    rc |= expect_u8(st->dmr_pdu_sf[0][0], 0U, "apx-p1-out-of-order-clears-first");
 
     DSD_MEMSET(st->dmr_pdu_sf[0], 0xA5, sizeof(st->dmr_pdu_sf[0]));
     DSD_MEMSET(block1, 0, sizeof(block1));
@@ -263,6 +427,13 @@ test_apx_alias_phase_storage(dsd_opts* opts, dsd_state* st) {
     for (size_t i = 0U; i < 100U; i++) {
         rc |= expect_u8(st->dmr_pdu_sf[1][136U + i], block2[36U + i], "apx-p2-block-copy");
     }
+
+    apx_embedded_alias_header_phase2(opts, st, 1, header2);
+    DSD_MEMSET(block2, 0, sizeof(block2));
+    value_to_bits_msb(block2, 24, sizeof(block2), 1U, 8);
+    value_to_bits_msb(block2, 32, sizeof(block2), 0x0CU, 4);
+    apx_embedded_alias_blocks_phase2(opts, st, 1, block2);
+    rc |= expect_u8(st->dmr_pdu_sf[1][0], 0U, "apx-p2-sequence-mismatch-clears-first");
 
     DSD_MEMSET(st->dmr_pdu_sf[1], 0xA5, sizeof(st->dmr_pdu_sf[1]));
     DSD_MEMSET(block2, 0, sizeof(block2));
@@ -423,6 +594,92 @@ test_apx_alias_dump_updates_history_and_policy(dsd_opts* opts, dsd_state* st) {
                             "apx dump event alias");
     rc |= expect_policy_name(st, rid, "M. ", "apx dump runtime alias policy");
 
+    const uint32_t rid_mismatch = 0x00DEF0U;
+    DSD_MEMSET(input, 0, sizeof input);
+    DSD_MEMSET(decoded, 0, sizeof decoded);
+    value_to_bits_msb(input, 72, sizeof(input), 0x12345U, 20);
+    value_to_bits_msb(input, 92, sizeof(input), 0x678U, 12);
+    value_to_bits_msb(input, 104, sizeof(input), rid_mismatch, 24);
+    decoded[1] = 'X';
+    st->event_history_s[0].Event_History_Items[0].source_id = rid_mismatch + 1U;
+    apx_embedded_alias_dump(opts, st, 0, 2, input, decoded);
+    rc |= expect_no_policy(st, rid_mismatch, "apx dump mismatch no policy");
+
+    return rc;
+}
+
+static int
+test_alias_sequence_state_is_per_decoder(dsd_opts* opts) {
+    int rc = 0;
+    dsd_state* st_a = (dsd_state*)calloc(1, sizeof(*st_a));
+    dsd_state* st_b = (dsd_state*)calloc(1, sizeof(*st_b));
+    Event_History_I* hist_a = (Event_History_I*)calloc(2u, sizeof(*hist_a));
+    Event_History_I* hist_b = (Event_History_I*)calloc(2u, sizeof(*hist_b));
+    uint8_t header_a[72];
+    uint8_t header_b[72];
+    uint8_t block[72];
+    uint8_t lcw[72];
+
+    if (!st_a || !st_b || !hist_a || !hist_b) {
+        free(hist_b);
+        free(hist_a);
+        free(st_b);
+        free(st_a);
+        return 100;
+    }
+
+    st_a->event_history_s = hist_a;
+    st_b->event_history_s = hist_b;
+
+    DSD_MEMSET(header_a, 0, sizeof(header_a));
+    value_to_bits_msb(header_a, 0, sizeof(header_a), 0x1590U, 16);
+    value_to_bits_msb(header_a, 32, sizeof(header_a), 2U, 8);
+    value_to_bits_msb(header_a, 56, sizeof(header_a), 0x0AU, 4);
+    apx_embedded_alias_header_phase1(opts, st_a, 0, header_a);
+
+    DSD_MEMSET(header_b, 0, sizeof(header_b));
+    value_to_bits_msb(header_b, 0, sizeof(header_b), 0x1590U, 16);
+    value_to_bits_msb(header_b, 32, sizeof(header_b), 1U, 8);
+    value_to_bits_msb(header_b, 56, sizeof(header_b), 0x0BU, 4);
+    apx_embedded_alias_header_phase1(opts, st_b, 0, header_b);
+
+    rc |= expect_u8(st_a->p25_apx_alias_rx[0].sequence, 0x0AU, "apx state A sequence retained");
+    rc |= expect_u8(st_b->p25_apx_alias_rx[0].sequence, 0x0BU, "apx state B sequence retained");
+
+    DSD_MEMSET(block, 0, sizeof(block));
+    value_to_bits_msb(block, 16, sizeof(block), 1U, 8);
+    value_to_bits_msb(block, 24, sizeof(block), 0x0AU, 4);
+    block[28] = 1U;
+    apx_embedded_alias_blocks_phase1(opts, st_a, 0, block);
+    rc |= expect_u8(st_a->dmr_pdu_sf[0][72], 1U, "apx state A accepts block after state B header");
+
+    st_a->lastsrc = 720001u;
+    st_a->lasttg = 52u;
+    hist_a[0].Event_History_Items[0].source_id = st_a->lastsrc;
+    hist_a[0].Event_History_Items[0].target_id = st_a->lasttg;
+
+    st_b->lastsrc = 720002u;
+    st_b->lasttg = 53u;
+    hist_b[0].Event_History_Items[0].source_id = st_b->lastsrc;
+    hist_b[0].Event_History_Items[0].target_id = st_b->lasttg;
+
+    build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
+    l3h_embedded_alias_blocks_phase1(opts, st_a, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x32U, "BRAVO  ");
+    l3h_embedded_alias_blocks_phase1(opts, st_b, 0, lcw);
+    build_l3h_alias_lcw(lcw, 0x33U, "UNIT   ");
+    l3h_embedded_alias_blocks_phase1(opts, st_a, 0, lcw);
+
+    rc |= expect_str(hist_a[0].Event_History_Items[0].alias, "ALPHAUNIT", "l3h state A assembles after state B block");
+    rc |= expect_str(hist_b[0].Event_History_Items[0].alias, "", "l3h state B waits for block 2");
+
+    dsd_state_ext_free_all(st_a);
+    dsd_state_ext_free_all(st_b);
+    free(hist_b);
+    free(hist_a);
+    free(st_b);
+    free(st_a);
+
     return rc;
 }
 
@@ -461,12 +718,14 @@ main(void) {
     rc |= expect_has_substr(st->generic_talker_alias[0], "KE8NAX", "talker_alias_header");
     rc |= test_direct_dmr_alias_decoders(opts, st);
     rc |= test_harris_l3h_alias_state(opts, st);
+    rc |= test_harris_l3h_phase1_block_assembly(opts, st);
     rc |= test_apx_alias_phase_storage(opts, st);
     rc |= test_tait_iso7_alias_sanitizes_and_policies(opts, st);
     rc |= test_dmr_alias_block_guards_leave_state(opts, st);
     rc |= test_dmr_alias_header_and_block_format_variants(opts, st);
     rc |= test_dmr_alias_invalid_characters_and_unicode_branch(opts, st);
     rc |= test_apx_alias_dump_updates_history_and_policy(opts, st);
+    rc |= test_alias_sequence_state_is_per_decoder(opts);
 
     // Runtime alias handling stores learned aliases through the policy table.
     st->lastsrc = 600000u;

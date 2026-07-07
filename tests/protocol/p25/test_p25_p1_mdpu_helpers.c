@@ -787,6 +787,24 @@ test_trunking_payload_crc_dispatch(void) {
     rc |= expect_int("trunking crc ok", ctx.err[1], 0);
     rc |= expect_int("trunking dispatch", g_pdu_trunking_calls, 1);
 
+    ctx.io = 0;
+    ctx.fmt = 0x17;
+    ctx.err[0] = 0;
+    ctx.err[1] = -2;
+    fill_rate12_payload_with_crc(&ctx, payload_prefix);
+    reset_dispatch_counters();
+    rc |= expect_int("inbound ambtc handler accepted", p25_mpdu_handle_trunking(&opts, &state, &ctx), 1);
+    rc |= expect_int("inbound ambtc dispatch", g_pdu_trunking_calls, 1);
+
+    ctx.io = 1;
+    ctx.fmt = 0x15;
+    ctx.err[0] = 0;
+    ctx.err[1] = -2;
+    fill_rate12_payload_with_crc(&ctx, payload_prefix);
+    reset_dispatch_counters();
+    rc |= expect_int("umbtc handler accepted", p25_mpdu_handle_trunking(&opts, &state, &ctx), 1);
+    rc |= expect_int("umbtc dispatch", g_pdu_trunking_calls, 1);
+
     ctx.err[0] = 1;
     ctx.err[1] = -2;
     reset_dispatch_counters();
