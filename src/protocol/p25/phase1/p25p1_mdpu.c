@@ -491,7 +491,7 @@ p25_mpdu_handle_trunking(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) 
         ctx->err[1] = 0;
     }
 
-    if (ctx->err[0] == 0 && ctx->err[1] == 0 && ctx->io == 1 && ctx->fmt == 0x17) {
+    if (ctx->err[0] == 0 && ctx->err[1] == 0) {
         p25_decode_pdu_trunking(opts, state, ctx->mpdu_byte);
     }
 

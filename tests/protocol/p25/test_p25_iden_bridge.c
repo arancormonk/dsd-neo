@@ -169,7 +169,7 @@ main(void) {
     uint8_t mbt[48];
     DSD_MEMSET(mbt, 0, sizeof(mbt));
 
-    mbt[0] = 0x17; // ALT format
+    mbt[0] = 0x37; // outbound ALT format
     mbt[2] = 0x00; // MFID (standard)
     mbt[6] = 0x02; // blks=2 (3x12=36 total bytes), ample for payload
     mbt[7] = 0x74; // Identifier Update VHF/UHF (MAC-coded opcode)
@@ -216,7 +216,7 @@ main(void) {
         uint8_t umb[48];
         DSD_MEMSET(umb, 0, sizeof(umb));
 
-        umb[0] = 0x15;  // Unconfirmed MBTC format
+        umb[0] = 0x35;  // outbound Unconfirmed MBTC format
         umb[2] = 0x00;  // MFID (standard)
         umb[6] = 0x02;  // blks=2
         umb[12] = 0x74; // Identifier Update VHF/UHF opcode in data header
@@ -255,7 +255,7 @@ main(void) {
         uint8_t tdma_mbt[48];
         DSD_MEMSET(tdma_mbt, 0, sizeof(tdma_mbt));
 
-        tdma_mbt[0] = 0x17; // ALT format
+        tdma_mbt[0] = 0x37; // outbound ALT format
         tdma_mbt[2] = 0x00; // MFID (standard)
         tdma_mbt[3] = 0x34; // IDEN=3, channel type=4
         tdma_mbt[6] = 0x02; // blks=2

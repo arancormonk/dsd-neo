@@ -197,7 +197,7 @@ main(void) {
     // Build ALT MBT NET_STS_BCST with CHAN-T referencing iden=1 while we seed iden=0 only.
     uint8_t mbt[48];
     DSD_MEMSET(mbt, 0, sizeof(mbt));
-    mbt[0] = 0x17;  // ALT format
+    mbt[0] = 0x37;  // outbound ALT format
     mbt[2] = 0x00;  // MFID standard
     mbt[6] = 0x02;  // blks
     mbt[7] = 0x3B;  // NET_STS_BCST opcode
