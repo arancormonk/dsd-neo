@@ -132,7 +132,7 @@ jobs:
           mkdir -p "${APPIMAGE_DEPS_DIR}" "${APPIMAGE_CCACHE_DIR}"
 
       - name: Restore AppImage dependency cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.APPIMAGE_DEPS_DIR }}
           key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.image_pin }}-${{ steps.dep-shas.outputs.cmake_sha }}-${{ steps.dep-shas.outputs.openssl_sha }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_root_key }}
@@ -163,7 +163,7 @@ jobs:
           mkdir -p "${APPIMAGE_DEPS_DIR}"
 
       - name: Restore AppImage ccache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.APPIMAGE_CCACHE_DIR }}
           key: ccache-${{ runner.os }}-appimage-${{ matrix.arch }}-${{ github.sha }}
@@ -486,12 +486,12 @@ jobs:
           upload-release-assets: false
       - name: Attest artifact provenance
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
         with:
           subject-path: ${{ steps.names.outputs.OUT }}
       - name: Attest artifact SBOM
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
         with:
           subject-path: ${{ steps.names.outputs.OUT }}
           sbom-path: ${{ steps.names.outputs.OUT }}.spdx.json

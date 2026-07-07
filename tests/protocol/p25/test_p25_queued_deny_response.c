@@ -191,6 +191,23 @@ build_que_deny_mac(unsigned long long MAC[24], int is_deny, int svc_type, int re
     build_que_deny_mac_aii(MAC, is_deny, svc_type, reason_code, addl_info, target_addr, addl_info != 0);
 }
 
+static void
+build_moto_que_deny_mac(unsigned long long MAC[24], int is_deny, int svc_type, int reason_code, int addl_info,
+                        int target_addr, int has_addl_info) {
+    DSD_MEMSET(MAC, 0, 24 * sizeof(unsigned long long));
+    MAC[1] = (unsigned long long)(is_deny ? 0xA7 : 0xA6);
+    MAC[2] = 0x90;
+    MAC[3] = 0x0B;
+    MAC[4] = (unsigned long long)((svc_type & 0x3F) | (has_addl_info ? 0x80 : 0));
+    MAC[5] = (unsigned long long)(reason_code & 0xFF);
+    MAC[6] = (unsigned long long)((addl_info >> 16) & 0xFF);
+    MAC[7] = (unsigned long long)((addl_info >> 8) & 0xFF);
+    MAC[8] = (unsigned long long)(addl_info & 0xFF);
+    MAC[9] = (unsigned long long)((target_addr >> 16) & 0xFF);
+    MAC[10] = (unsigned long long)((target_addr >> 8) & 0xFF);
+    MAC[11] = (unsigned long long)(target_addr & 0xFF);
+}
+
 /* ============================================================================
  * Test: QUE_RSP field extraction with known payload
  * ============================================================================ */
@@ -814,6 +831,81 @@ test_additional_info_indicator_controls_display(void) {
 }
 
 /* ============================================================================
+ * Test: Motorola vendor queued/deny responses use vendor field offsets
+ * ============================================================================ */
+
+static int
+test_motorola_queued_response_field_extraction(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+    reset_tracking();
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
+
+    unsigned long long MAC[24];
+    build_moto_que_deny_mac(MAC, 0, 0x15, 0x42, 0x123456, 0xABCDEF, 1);
+    process_MAC_VPDU(&opts, &st, 0, MAC);
+
+    int rc = 0;
+    if (g_queued_calls != 1 || g_deny_calls != 0) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_response: queued=%d deny=%d\n", g_queued_calls, g_deny_calls);
+        rc = 1;
+    }
+    if (g_last_svc_type != 0x15 || g_last_reason_code != 0x42 || g_last_target != 0xABCDEF) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_response: svc=0x%02X reason=0x%02X target=0x%06X\n",
+                    g_last_svc_type, g_last_reason_code, g_last_target);
+        rc = 1;
+    }
+    if (strstr(st.active_channel[0], "MOT QUEUED") == NULL || strstr(st.active_channel[0], "Info: 123456") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_response: active_channel '%s'\n", st.active_channel[0]);
+        rc = 1;
+    }
+
+    p25_sm_reset_api();
+    return rc;
+}
+
+static int
+test_motorola_deny_response_field_extraction(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+    reset_tracking();
+    {
+        p25_sm_api api = sm_test_api();
+        p25_sm_set_api(&api);
+    }
+
+    unsigned long long MAC[24];
+    build_moto_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 0x000123, 0);
+    process_MAC_VPDU(&opts, &st, 0, MAC);
+
+    int rc = 0;
+    if (g_deny_calls != 1 || g_queued_calls != 0) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_deny_response: queued=%d deny=%d\n", g_queued_calls, g_deny_calls);
+        rc = 1;
+    }
+    if (g_last_svc_type != 0x02 || g_last_reason_code != 0x60 || g_last_target != 0x000123) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_deny_response: svc=0x%02X reason=0x%02X target=0x%06X\n",
+                    g_last_svc_type, g_last_reason_code, g_last_target);
+        rc = 1;
+    }
+    if (strstr(st.active_channel[0], "MOT DENY") == NULL
+        || strstr(st.active_channel[0], "Site Access Denial") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_deny_response: active_channel '%s'\n", st.active_channel[0]);
+        rc = 1;
+    }
+
+    p25_sm_reset_api();
+    return rc;
+}
+
+/* ============================================================================
  * main
  * ============================================================================ */
 
@@ -836,6 +928,8 @@ main(void) {
     rc |= test_active_channel_que_format();
     rc |= test_active_channel_deny_format();
     rc |= test_additional_info_indicator_controls_display();
+    rc |= test_motorola_queued_response_field_extraction();
+    rc |= test_motorola_deny_response_field_extraction();
 
     if (rc == 0) {
         DSD_FPRINTF(stderr, "All P25 queued/deny response tests passed.\n");

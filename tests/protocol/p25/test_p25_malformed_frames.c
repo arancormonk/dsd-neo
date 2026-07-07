@@ -183,7 +183,7 @@ main(void) {
     {
         uint8_t mbt[32];
         DSD_MEMSET(mbt, 0, sizeof mbt);
-        mbt[0] = 0x17;
+        mbt[0] = 0x37;
         mbt[2] = 0x00;
         mbt[3] = 0x01;
         mbt[4] = 0x01;

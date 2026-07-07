@@ -3479,7 +3479,9 @@ add_test(NAME P25_CRC12_16 COMMAND dsd-neo_test_p25_crc12_16)
 add_executable(dsd-neo_test_p25_mbt_decode protocol/p25/test_p25_mbt_decode.c)
 target_include_directories(
     dsd-neo_test_p25_mbt_decode
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 target_link_libraries(
     dsd-neo_test_p25_mbt_decode
@@ -3550,6 +3552,10 @@ add_executable(
 target_include_directories(
     dsd-neo_test_p25_p1_tsbk_handlers
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_p1_tsbk_handlers
+    PRIVATE dsd-neo_test_support
 )
 target_compile_options(
     dsd-neo_test_p25_p1_tsbk_handlers
@@ -4235,8 +4241,12 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/p25
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
-target_link_libraries(dsd-neo_test_p25_p2_vpdu_grants PRIVATE dsd-neo_proto_p25)
+target_link_libraries(
+    dsd-neo_test_p25_p2_vpdu_grants
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
 add_test(NAME P25_P2_VPDU_GRANTS COMMAND dsd-neo_test_p25_p2_vpdu_grants)
 
 add_executable(
@@ -7189,6 +7199,24 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_p25_iden_lcw_full PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_IDEN_LCW_FULL COMMAND dsd-neo_test_p25_iden_lcw_full)
+
+# P25 LCW site/control-channel broadcasts
+add_executable(
+    dsd-neo_test_p25_lcw_site_broadcasts
+    protocol/p25/test_p25_lcw_site_broadcasts.c
+)
+target_include_directories(
+    dsd-neo_test_p25_lcw_site_broadcasts
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_lcw_site_broadcasts
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_LCW_SITE_BROADCASTS
+    COMMAND dsd-neo_test_p25_lcw_site_broadcasts
+)
 
 # P25 IDEN preservation property-based test (FDMA/TDMA formula, cache, empty slots)
 add_executable(
