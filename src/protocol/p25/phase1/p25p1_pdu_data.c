@@ -122,6 +122,215 @@ p25_parse_sap34_syscfg(dsd_opts* opts, dsd_state* state, const uint8_t* p, int p
                  (unsigned)b2, plen);
 }
 
+static uint8_t
+p25_nibble_hi(uint8_t value) {
+    return (uint8_t)((value >> 4U) & 0x0FU);
+}
+
+static uint8_t
+p25_nibble_lo(uint8_t value) {
+    return (uint8_t)(value & 0x0FU);
+}
+
+static const char*
+p25_sndcp_type_label(uint8_t type, int outbound) {
+    if (outbound) {
+        switch (type) {
+            case 0: return "Activate TDS Context Accept";
+            case 1: return "Deactivate TDS Context Accept";
+            case 2: return "Deactivate TDS Context Request";
+            case 3: return "Activate TDS Context Reject";
+            case 4: return "RF Unconfirmed Data";
+            case 5: return "RF Confirmed Data";
+            default: break;
+        }
+    } else {
+        switch (type) {
+            case 0: return "Activate TDS Context Request";
+            case 1: return "Deactivate TDS Context Accept";
+            case 2: return "Deactivate TDS Context Request";
+            case 5: return "RF Confirmed Data";
+            default: break;
+        }
+    }
+    return outbound ? "Outbound Unknown" : "Inbound Unknown";
+}
+
+static const char*
+p25_sndcp_nat_label(uint8_t nat) {
+    switch (nat) {
+        case 0: return "IPv4 Static";
+        case 1: return "IPv4 Dynamic";
+        case 15: return "No Address";
+        default: return "Reserved";
+    }
+}
+
+static const char*
+p25_sndcp_reject_reason(uint8_t reason) {
+    static const char* labels[] = {
+        "Any Reason",
+        "MRC Not Provisioned For TDS",
+        "MRC DSUT Not Supported",
+        "Max TDS Contexts Exceeded",
+        "SNDCP Version Not Supported",
+        "TDS Not Supported By FNE",
+        "TDS Not Supported By This System",
+        "IPv4 Static Address Not Correct",
+        "IPv4 Static Address Not Allowed",
+        "IPv4 Static Address In Use",
+        "IPv4 Not Supported",
+        "IPv4 Dynamic Address Pool Empty",
+        "IPv4 Dynamic Address Not Supported",
+    };
+    if (reason < (sizeof(labels) / sizeof(labels[0]))) {
+        return labels[reason];
+    }
+    return "Unknown";
+}
+
+static int
+p25_sndcp_ready_seconds(uint8_t value) {
+    static const int seconds[16] = {0, 1, 2, 4, 6, 8, 10, 15, 20, 25, 30, 60, 120, 180, 300, 86400};
+    return seconds[value & 0x0FU];
+}
+
+static int
+p25_sndcp_standby_seconds(uint8_t value) {
+    static const int seconds[16] = {0,    10,    30,    60,    600,   1200,   1800,   3600,
+                                    7200, 14400, 28800, 43200, 86400, 172800, 259200, 1000000};
+    return seconds[value & 0x0FU];
+}
+
+static int
+p25_sndcp_mtu_bytes(uint8_t value) {
+    switch (value) {
+        case 1: return 296;
+        case 2: return 510;
+        case 3: return 1020;
+        case 4: return 1500;
+        default: return 0;
+    }
+}
+
+static void
+p25_sndcp_append_ipv4(char* out, size_t out_sz, const uint8_t* p, int off) {
+    char ip[48];
+    DSD_SNPRINTF(ip, sizeof(ip), " IP:%u.%u.%u.%u", (unsigned)p[off], (unsigned)p[off + 1], (unsigned)p[off + 2],
+                 (unsigned)p[off + 3]);
+    dsd_append(out, out_sz, ip);
+}
+
+static int
+p25_sndcp_nat_has_ipv4(uint8_t nat) {
+    return nat == 0U || nat == 1U;
+}
+
+static const char*
+p25_sndcp_deactivate_label(uint8_t value) {
+    switch (value) {
+        case 0: return "All NSAPIs";
+        case 1: return "This NSAPI";
+        default: return "Reserved";
+    }
+}
+
+static void
+p25_sndcp_append_activate_request(const uint8_t* p, int plen, char* out_summary, size_t out_sz) {
+    if (plen < 10) {
+        return;
+    }
+
+    uint8_t nat = p25_nibble_lo(p[1]);
+    char extra[128];
+    DSD_SNPRINTF(extra, sizeof(extra), " Ver:%u NAT:%s DSUT:%u", (unsigned)p25_nibble_hi(p[1]),
+                 p25_sndcp_nat_label(nat), (unsigned)p25_nibble_hi(p[6]));
+    dsd_append(out_summary, out_sz, extra);
+    if (p25_sndcp_nat_has_ipv4(nat)) {
+        p25_sndcp_append_ipv4(out_summary, out_sz, p, 2);
+    }
+    DSD_SNPRINTF(extra, sizeof(extra), " IPComp:%u UDPComp:%u MDP:%u", (unsigned)(p[7] & 0xFFU),
+                 (unsigned)p25_nibble_lo(p[6]), (unsigned)(p[9] & 0xFFU));
+    dsd_append(out_summary, out_sz, extra);
+}
+
+static void
+p25_sndcp_append_activate_accept(const uint8_t* p, int plen, char* out_summary, size_t out_sz) {
+    if (plen < 11) {
+        return;
+    }
+
+    uint8_t nat = p25_nibble_lo(p[2]);
+    int mtu = p25_sndcp_mtu_bytes(p25_nibble_hi(p[9]));
+    char extra[160];
+    DSD_SNPRINTF(extra, sizeof(extra), " Priority:%u Ready:%ds Standby:%ds NAT:%s", (unsigned)p25_nibble_hi(p[1]),
+                 p25_sndcp_ready_seconds(p25_nibble_lo(p[1])), p25_sndcp_standby_seconds(p25_nibble_hi(p[2])),
+                 p25_sndcp_nat_label(nat));
+    dsd_append(out_summary, out_sz, extra);
+    if (p25_sndcp_nat_has_ipv4(nat)) {
+        p25_sndcp_append_ipv4(out_summary, out_sz, p, 3);
+    }
+    DSD_SNPRINTF(extra, sizeof(extra), " MTU:%d IPComp:%u UDPComp:%u MDP:%u", mtu, (unsigned)(p[7] & 0xFFU),
+                 (unsigned)p25_nibble_lo(p[9]), (unsigned)(p[10] & 0xFFU));
+    dsd_append(out_summary, out_sz, extra);
+}
+
+static void
+p25_sndcp_append_reject(const uint8_t* p, int plen, char* out_summary, size_t out_sz) {
+    if (plen < 2) {
+        return;
+    }
+
+    char extra[128];
+    DSD_SNPRINTF(extra, sizeof(extra), " Reason:%s", p25_sndcp_reject_reason(p[1]));
+    dsd_append(out_summary, out_sz, extra);
+}
+
+static void
+p25_sndcp_append_deactivate(const uint8_t* p, int plen, char* out_summary, size_t out_sz) {
+    if (plen < 2) {
+        return;
+    }
+
+    char extra[80];
+    DSD_SNPRINTF(extra, sizeof(extra), " Deactivate:%s", p25_sndcp_deactivate_label(p25_nibble_hi(p[1])));
+    dsd_append(out_summary, out_sz, extra);
+}
+
+static void
+p25_parse_sap6_sndcp(const uint8_t* p, int plen, int outbound, char* out_summary, size_t out_sz) {
+    if (!out_summary || out_sz == 0) {
+        return;
+    }
+    if (!p || plen <= 0) {
+        DSD_SNPRINTF(out_summary, out_sz, "SNDCP truncated");
+        return;
+    }
+
+    uint8_t type = p25_nibble_hi(p[0]);
+    uint8_t nsapi = p25_nibble_lo(p[0]);
+    DSD_SNPRINTF(out_summary, out_sz, "SNDCP %s NSAPI:%u", p25_sndcp_type_label(type, outbound), (unsigned)nsapi);
+
+    if (!outbound && type == 0) {
+        p25_sndcp_append_activate_request(p, plen, out_summary, out_sz);
+        return;
+    }
+
+    if (outbound && type == 0) {
+        p25_sndcp_append_activate_accept(p, plen, out_summary, out_sz);
+        return;
+    }
+
+    if (outbound && type == 3) {
+        p25_sndcp_append_reject(p, plen, out_summary, out_sz);
+        return;
+    }
+
+    if (type == 2) {
+        p25_sndcp_append_deactivate(p, plen, out_summary, out_sz);
+    }
+}
+
 void
 p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string, size_t rsp_string_size) {
     if (rsp_string == NULL || rsp_string_size == 0) {
@@ -681,6 +890,42 @@ p25_handle_sap34_syscfg_data(dsd_opts* opts, dsd_state* state, const P25PduDataF
 }
 
 static void
+p25_handle_sap6_sndcp_data(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, const uint8_t* payload,
+                           int len, int ptr, int encrypted) {
+    UNUSED(opts);
+    char summary[256] = {0};
+    int span = p25_pdu_payload_span(len, ptr);
+    p25_parse_sap6_sndcp(payload, span, pdu->io == 1, summary, sizeof(summary));
+    if (summary[0] != '\0') {
+        DSD_FPRINTF(stderr, " %s;", summary);
+        DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "%s", summary);
+    }
+    p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
+}
+
+static int
+p25_handle_sap4_packet_data(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, uint8_t* input, int len,
+                            int ptr, int encrypted) {
+    uint8_t emitted = 0;
+    if (pdu->offset == 2 && len >= 2) {
+        const uint8_t* header = input + 12;
+        uint8_t type = p25_nibble_hi(header[0]);
+        uint8_t nsapi = p25_nibble_lo(header[0]);
+        uint8_t ip_comp = p25_nibble_hi(header[1]);
+        uint8_t udp_comp = p25_nibble_lo(header[1]);
+        char summary[160];
+        DSD_SNPRINTF(summary, sizeof(summary), "SNDCP Packet Header %s NSAPI:%u IPComp:%u UDPComp:%u",
+                     p25_sndcp_type_label(type, pdu->io == 1), (unsigned)nsapi, (unsigned)ip_comp, (unsigned)udp_comp);
+        DSD_FPRINTF(stderr, " %s;", summary);
+        DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "%s", summary);
+        p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
+        emitted = 1;
+    }
+    decode_ip_pdu(opts, state, (uint16_t)(len + 1), input + ptr);
+    return emitted;
+}
+
+static void
 p25_store_lrrp_text_for_history(dsd_state* state) {
     if (state == NULL || state->event_history_s == NULL) {
         return;
@@ -733,18 +978,20 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
     p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
 }
 
-static void
+static int
 p25_decode_clear_pdu_payload(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, uint8_t* input, int len,
                              int ptr, int encrypted) {
     uint8_t* payload = input + ptr;
     switch (pdu->sap) {
-        case 0:
-        case 4: decode_ip_pdu(opts, state, (uint16_t)(len + 1), payload); break;
-        case 32: p25_handle_sap32_regauth_data(opts, state, pdu, payload, len, ptr, encrypted); break;
-        case 34: p25_handle_sap34_syscfg_data(opts, state, pdu, payload, len, ptr, encrypted); break;
-        case 48: p25_handle_sap48_location_data(opts, state, pdu, payload, len, ptr, encrypted); break;
+        case 0: decode_ip_pdu(opts, state, (uint16_t)(len + 1), payload); return 0;
+        case 4: return p25_handle_sap4_packet_data(opts, state, pdu, input, len, ptr, encrypted);
+        case 6: p25_handle_sap6_sndcp_data(opts, state, pdu, payload, len, ptr, encrypted); return 1;
+        case 32: p25_handle_sap32_regauth_data(opts, state, pdu, payload, len, ptr, encrypted); return 1;
+        case 34: p25_handle_sap34_syscfg_data(opts, state, pdu, payload, len, ptr, encrypted); return 1;
+        case 48: p25_handle_sap48_location_data(opts, state, pdu, payload, len, ptr, encrypted); return 1;
         default: break;
     }
+    return 0;
 }
 
 static uint8_t
@@ -765,6 +1012,7 @@ void
 p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     P25PduDataFields pdu = p25_read_pdu_data_fields(input);
     uint8_t encrypted = 0;
+    int json_emitted = 0;
     int ptr = 12; //initial ptr index value past the first header
 
     len = p25_pdu_payload_len(len, pdu.pad);
@@ -775,12 +1023,12 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
         if (pdu.offset) {
             ptr = 12 + pdu.offset;
         }
-        p25_decode_clear_pdu_payload(opts, state, &pdu, input, len, ptr, encrypted);
+        json_emitted = p25_decode_clear_pdu_payload(opts, state, &pdu, input, len, ptr, encrypted);
     } else {
         DSD_FPRINTF(stderr, " Encrypted PDU;");
     }
 
-    if (pdu.sap != 32 && pdu.sap != 34 && pdu.sap != 48) {
+    if (!json_emitted && pdu.sap != 32 && pdu.sap != 34 && pdu.sap != 48) {
         p25_emit_pdu_json_for_fields(&pdu, len, encrypted, "");
     }
 

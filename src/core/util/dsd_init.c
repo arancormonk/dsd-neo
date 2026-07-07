@@ -896,6 +896,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_p2_enc_pending_ttg[0] = 0;
     state->p25_p2_enc_pending_ttg[1] = 0;
     state->p25_p2_active_slot = -1;
+    DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     state->p25_cc_is_tdma =
         2; //init on 2, TSBK NET_STS will set 0, TDMA NET_STS will set 1. //used to determine if we need to change symbol rate when cc hunting
     state->p25_sys_is_tdma = 0;
@@ -1009,6 +1010,8 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     //initialize unified dmr pdu 'superframe'
     DSD_MEMSET(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
     DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
+    DSD_MEMSET(state->p25_apx_alias_rx, 0, sizeof(state->p25_apx_alias_rx));
+    DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
 
     //initialize cap+ bits and block num storage
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));

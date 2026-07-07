@@ -24,16 +24,27 @@
 extern "C" {
 #endif
 
+#define P25P2_MAC_MAX_SEGMENTS 3
+
+struct p25p2_mac_segment {
+    /* Offset, in octets, from MAC[1] to the segment opcode. */
+    int offset;
+    /* Segment length in octets, including opcode/vendor/length octets. */
+    int length;
+};
+
 struct p25p2_mac_result {
     /* Channel type: 0 = FACCH, 1 = SACCH. */
     int type;
     /* MFID and opcode from the MAC header. */
     uint8_t mfid;
     uint8_t opcode;
-    /* Message-carrying octet lengths (excluding opcode byte). */
+    /* Compatibility fields: first offset and first two segment lengths. */
     int len_a;
     int len_b;
     int len_c;
+    int segment_count;
+    struct p25p2_mac_segment segments[P25P2_MAC_MAX_SEGMENTS];
 };
 
 struct p25p2_iden_update {

@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -193,6 +194,61 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     DSD_FPRINTF(stderr, "PASS: %s\n", tag);
+    return 0;
+}
+
+static int
+expect_contains(const char* tag, const char* text, const char* needle) {
+    if (!text || !needle || strstr(text, needle) == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: %s missing '%s' in '%s'\n", tag, needle ? needle : "(null)", text ? text : "(null)");
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "PASS: %s\n", tag);
+    return 0;
+}
+
+static int
+capture_lcw_output(dsd_opts* opts, dsd_state* st, uint8_t lcw[96], char* out, size_t out_sz) {
+    if (!out || out_sz == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+
+    FILE* capture = tmpfile();
+    if (!capture) {
+        return -1;
+    }
+
+    (void)fflush(stderr);
+    int saved = dup(fileno(stderr));
+    if (saved < 0 || dup2(fileno(capture), fileno(stderr)) < 0) {
+        if (saved >= 0) {
+            (void)close(saved);
+        }
+        (void)fclose(capture);
+        return -1;
+    }
+
+    p25_lcw(opts, st, lcw, /*irrecoverable_errors*/ 0);
+    (void)fflush(stderr);
+    int restored = dup2(saved, fileno(stderr));
+    (void)close(saved);
+    if (restored < 0) {
+        (void)fclose(capture);
+        return -1;
+    }
+
+    if (fseek(capture, 0, SEEK_SET) != 0) {
+        (void)fclose(capture);
+        return -1;
+    }
+    size_t n = fread(out, 1, out_sz - 1, capture);
+    if (n < out_sz - 1 && ferror(capture) != 0) {
+        (void)fclose(capture);
+        return -1;
+    }
+    out[n] = '\0';
+    (void)fclose(capture);
     return 0;
 }
 
@@ -605,6 +661,79 @@ main(void) {
     }
 
     /*
+     * Motorola LCW regroup add/delete carries two patched talkgroups.  Treat
+     * zero and supergroup-as-member as absent, matching sdrtrunk's LCW model.
+     */
+    {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
+
+        uint8_t lcw[96];
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x03);
+        set_bits_msb(lcw, 8, 8, 0x90);
+        set_bits_msb(lcw, 16, 16, 0x0700);
+        set_bits_msb(lcw, 32, 16, 0x0101);
+        set_bits_msb(lcw, 48, 16, 0x0202);
+
+        p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+
+        rc |= expect_true("MFID90_lcw_regroup_add_count", st.p25_patch_count == 1);
+        rc |= expect_true("MFID90_lcw_regroup_add_sgid", st.p25_patch_sgid[0] == 0x0700);
+        rc |= expect_true("MFID90_lcw_regroup_add_members", st.p25_patch_wgid_count[0] == 2);
+        rc |= expect_true("MFID90_lcw_regroup_add_member1", st.p25_patch_wgid[0][0] == 0x0101);
+        rc |= expect_true("MFID90_lcw_regroup_add_member2", st.p25_patch_wgid[0][1] == 0x0202);
+
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x04);
+        set_bits_msb(lcw, 8, 8, 0x90);
+        set_bits_msb(lcw, 16, 16, 0x0700);
+        set_bits_msb(lcw, 32, 16, 0x0101);
+        set_bits_msb(lcw, 48, 16, 0x0700);
+
+        p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+
+        rc |= expect_true("MFID90_lcw_regroup_delete_one", st.p25_patch_wgid_count[0] == 1);
+        rc |= expect_true("MFID90_lcw_regroup_delete_keeps_other", st.p25_patch_wgid[0][0] == 0x0202);
+    }
+
+    /*
+     * Additional Motorola vendor LCWs are metadata/display-only; they should be
+     * recognized without changing call or patch state.
+     */
+    {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
+        st.lasttg = 0xAAAA;
+        st.lastsrc = 0xBBBBCC;
+        char out[2048];
+
+        uint8_t lcw[96];
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x02);
+        set_bits_msb(lcw, 8, 8, 0x90);
+        set_bits_msb(lcw, 16, 8, 0xAB);
+        if (capture_lcw_output(&opts, &st, lcw, out, sizeof(out)) != 0) {
+            return 1;
+        }
+        rc |= expect_contains("MFID90_failsoft_label", out, "MFID90 (Moto) Failsoft");
+        rc |= expect_true("MFID90_failsoft_no_state", st.lasttg == 0xAAAA && st.lastsrc == 0xBBBBCC);
+
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x0A);
+        set_bits_msb(lcw, 8, 8, 0x90);
+        set_bits_msb(lcw, 32, 16, 0x1234);
+        set_bits_msb(lcw, 48, 24, 0x456789);
+        if (capture_lcw_output(&opts, &st, lcw, out, sizeof(out)) != 0) {
+            return 1;
+        }
+        rc |= expect_contains("MFID90_emergency_label", out, "Emergency Alarm Activation");
+        rc |= expect_contains("MFID90_emergency_group", out, "Group: 4660");
+        rc |= expect_contains("MFID90_emergency_source", out, "Source: 4548489");
+        rc |= expect_true("MFID90_emergency_no_patch", st.p25_patch_count == 0);
+    }
+
+    /*
      * Harris GPS is assembled from a block-1 prefix plus block-2 continuation.
      * A valid prefix dispatches to the GPS decoder stub and then clears the
      * scratch buffer; a missing block 1 only clears scratch state.
@@ -644,6 +773,38 @@ main(void) {
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
         rc |= expect_true("HarrisGPS_missing_block1_no_dispatch", g_nmea_harris_calls == 1);
         rc |= expect_true("HarrisGPS_missing_block1_clears_scratch", st.dmr_pdu_sf[0][0] == 0);
+    }
+
+    /*
+     * L3Harris opcode 0x0A is observed as a data/return-to-control indication,
+     * but sources are inconclusive.  Keep it metadata-only.
+     */
+    {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&st, 0, sizeof st);
+        opts.p25_is_tuned = 1;
+        opts.trunk_is_tuned = 1;
+        st.p25_vc_freq[0] = 851000000;
+        st.p25_vc_freq[1] = 851000000;
+        char out[2048];
+
+        uint8_t lcw[96];
+        DSD_MEMSET(lcw, 0, sizeof lcw);
+        set_bits_msb(lcw, 0, 8, 0x0A);
+        set_bits_msb(lcw, 8, 8, 0xA4);
+        set_bits_msb(lcw, 16, 8, 0x7E);
+        set_bits_msb(lcw, 24, 24, 0x123456);
+        set_bits_msb(lcw, 48, 24, 0xABCDEF);
+
+        if (capture_lcw_output(&opts, &st, lcw, out, sizeof(out)) != 0) {
+            return 1;
+        }
+        rc |= expect_contains("MFIDA4_0x0A_neutral_label", out, "Data/Return-to-Control Indication");
+        rc |= expect_contains("MFIDA4_0x0A_source", out, "SRC: 1193046");
+        rc |= expect_contains("MFIDA4_0x0A_target", out, "TGT: 11259375");
+        rc |= expect_true("MFIDA4_0x0A_no_release", opts.p25_is_tuned == 1 && opts.trunk_is_tuned == 1
+                                                        && st.p25_vc_freq[0] == 851000000
+                                                        && st.p25_vc_freq[1] == 851000000);
     }
 
     /*

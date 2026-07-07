@@ -227,6 +227,45 @@ extract_first_fields(FILE* rf, char* out_xch, size_t xch_cap, char* out_summary,
 }
 
 static int
+line_contains(const char* line, const char* line_end, const char* needle) {
+    const char* p = line;
+    while ((p = strstr(p, needle)) != NULL) {
+        if (p < line_end) {
+            return 1;
+        }
+        p++;
+    }
+    return 0;
+}
+
+static int
+expect_json_record_summary(const char* buf, const char* xch, int op, const char* summary) {
+    char xch_field[32];
+    char op_field[32];
+    char summary_field[64];
+
+    DSD_SNPRINTF(xch_field, sizeof xch_field, "\"xch\":\"%s\"", xch);
+    DSD_SNPRINTF(op_field, sizeof op_field, "\"op\":%d", op);
+    DSD_SNPRINTF(summary_field, sizeof summary_field, "\"summary\":\"%s\"", summary);
+
+    const char* line = buf;
+    while (line && *line) {
+        const char* line_end = strchr(line, '\n');
+        if (!line_end) {
+            line_end = line + strlen(line);
+        }
+        if (line_contains(line, line_end, xch_field) && line_contains(line, line_end, op_field)
+            && line_contains(line, line_end, summary_field)) {
+            return 0;
+        }
+        line = (*line_end == '\n') ? line_end + 1 : line_end;
+    }
+
+    DSD_FPRINTF(stderr, "missing JSON record xch=%s op=%d summary=%s\n", xch, op, summary);
+    return 1;
+}
+
+static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
@@ -279,7 +318,7 @@ main(void) {
         p25_test_process_mac_vpdu(1 /*SACCH*/, mac, 24);
     }
 
-    // Case C: LCCH labeling and summary (IDLE)
+    // Case C: LCCH labeling and TDMA 0x03 telephone user summary
     {
         unsigned char mac[24];
         DSD_MEMSET(mac, 0, sizeof mac);
@@ -324,8 +363,8 @@ main(void) {
     char xch[8] = {0}, summary[32] = {0};
     int lenB = -1, lenC = -1, slot = -1;
     int er = extract_last_fields(buf, (int)nread, xch, sizeof xch, &lenB, &lenC, &slot, summary, sizeof summary);
-    free(buf);
     if (er != 0) {
+        free(buf);
         DSD_FPRINTF(stderr, "parse JSON er=%d\n", er);
         fclose(rf);
         return 103;
@@ -333,6 +372,8 @@ main(void) {
     rc |= expect_eq_int("FACCH clamp lenB", lenB, 16);
     rc |= expect_eq_int("FACCH clamp lenC", lenC, 0);
     rc |= expect_eq_int("FACCH clamp slot", slot, 1);
+    rc |= expect_json_record_summary(buf, "LCCH", 0x03, "TELE");
+    free(buf);
 
     // First line should be Case A or earlier; specifically check LCCH label via reading first line after moving to start
     fseek(rf, 0, SEEK_SET);
@@ -346,7 +387,7 @@ main(void) {
     // Because multiple records were written, the first line may be from Case A. Ensure at least one LCCH record exists by
     // opening again and scanning briefly for LCCH; if not, accept first line checks for MCO-derived values.
     if (strcmp(fxch, "LCCH") == 0) {
-        rc |= expect_eq_str("LCCH summary", fsum, "IDLE");
+        rc |= expect_eq_str("LCCH summary", fsum, "TELE");
     } else {
         // Validate SACCH case was written correctly in the file by ensuring last record was FACCH and previous one was SACCH.
         // We already asserted FACCH clamp; here we do a weak check that first line had an xch field present.

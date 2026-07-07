@@ -212,7 +212,7 @@ main(void) {
     {
         uint8_t mbt[48];
         DSD_MEMSET(mbt, 0, sizeof(mbt));
-        mbt[0] = 0x17;  // ALT format
+        mbt[0] = 0x37;  // OSP ALT format
         mbt[2] = 0x00;  // MFID standard
         mbt[3] = 0x01;  // LRA
         mbt[4] = 0x01;  // SYSID hi-nibble
@@ -255,7 +255,7 @@ main(void) {
     {
         uint8_t mbt[48];
         DSD_MEMSET(mbt, 0, sizeof(mbt));
-        mbt[0] = 0x17;  // ALT format
+        mbt[0] = 0x37;  // OSP ALT format
         mbt[2] = 0x00;  // MFID standard
         mbt[3] = 0x02;  // LRA
         mbt[4] = 0x21;  // CFVA=2 <<4, SYSID hi-nibble=1
@@ -346,7 +346,7 @@ main(void) {
     {
         uint8_t mbt[48];
         DSD_MEMSET(mbt, 0, sizeof(mbt));
-        mbt[0] = 0x17; // ALT format
+        mbt[0] = 0x37; // OSP ALT format
         mbt[2] = 0x00; // MFID standard
         mbt[3] = 0x03; // LRA-like byte if misdecoded
         mbt[4] = 0x01; // would make SYSID 0x123 if misdecoded as RFSS status
@@ -392,12 +392,12 @@ main(void) {
         rc |= expect_eq_long("ambtc_0x3e_cc_prot_algid", cc_prot_algid, 0x84);
     }
 
-    // Survey-style MBT broadcast handling is limited to Extended Format 0x17.
+    // Survey-style MBT broadcast handling is limited to OSP Extended Format 0x17.
     // A non-extended 0x3C must not populate adjacent-site state.
     {
         uint8_t mbt[48];
         DSD_MEMSET(mbt, 0, sizeof(mbt));
-        mbt[0] = 0x16;  // non-extended format
+        mbt[0] = 0x36;  // OSP non-extended format
         mbt[2] = 0x00;  // MFID standard
         mbt[6] = 0x02;  // blks
         mbt[12] = 0x3C; // opcode source for non-extended MBT parsing
@@ -440,7 +440,7 @@ main(void) {
     {
         uint8_t mbt[48];
         DSD_MEMSET(mbt, 0, sizeof(mbt));
-        mbt[0] = 0x17;  // ALT format
+        mbt[0] = 0x37;  // OSP ALT format
         mbt[2] = 0x00;  // MFID standard
         mbt[3] = 0x44;  // LRA
         mbt[4] = 0x01;  // SYSID hi-nibble
