@@ -35,6 +35,7 @@ main(void) {
     rc |= expect_eq("OP 0x5E (RUM_ENH_ABBR)", p25p2_mac_len_for(0x01, 0x5E), 14);
     rc |= expect_eq("OP 0x71 (AUTH_DEMAND base fragment)", p25p2_mac_len_for(0x01, 0x71), 18);
     rc |= expect_eq("OP 0xF1 (AUTH_DEMAND extended base fragment)", p25p2_mac_len_for(0x01, 0xF1), 18);
+    rc |= expect_eq("OP 0x88 (standard-vendor unknown LCCH)", p25p2_mac_len_for(0x00, 0x88), 5);
     rc |= expect_eq("OP 0x90 (GRG_VCH_USER_ABBR mfid00)", p25p2_mac_len_for(0x00, 0x90), 7);
     rc |= expect_eq("OP 0x90 (GRG_VCH_USER_ABBR mfid01)", p25p2_mac_len_for(0x01, 0x90), 7);
     rc |= expect_eq("OP 0xC0 (GRP_V_CH_GRANT_EXP)", p25p2_mac_len_for(0x01, 0xC0), 11);
@@ -67,6 +68,10 @@ main(void) {
     rc |= expect_eq("Harris 0xAC", p25p2_mac_len_for(0xA4, 0xAC), 12);
     rc |= expect_eq("Tait 0xB5", p25p2_mac_len_for(0xD8, 0xB5), 5);
     rc |= expect_eq("Tait unknown fixed table fallback", p25p2_mac_len_for(0xD8, 0xB4), 0);
+    rc |= expect_eq("Moto unknown vendor partition collision", p25p2_mac_len_for(0x90, 0x88), 0);
+    rc |= expect_eq("Harris unknown vendor partition collision 0x88", p25p2_mac_len_for(0xA4, 0x88), 0);
+    rc |= expect_eq("Harris unknown vendor partition collision 0x90", p25p2_mac_len_for(0xA4, 0x90), 0);
+    rc |= expect_eq("Tait unknown vendor partition collision", p25p2_mac_len_for(0xD8, 0x90), 0);
 
     return rc;
 }

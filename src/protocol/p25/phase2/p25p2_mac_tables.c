@@ -16,8 +16,8 @@
  *
  * The standard table follows sdrtrunk's MacOpcode lengths for fixed-length
  * structures. Vendor partition opcodes are intentionally handled in
- * vendor_len_for() so Motorola/Harris/Tait opcodes do not collide by opcode
- * number alone.
+ * vendor_len_for() so Motorola/Harris/Tait opcodes do not collide with
+ * standard-vendor entries by opcode number alone.
  */
 static const uint8_t standard_mac_msg_len[256] = {
     [0x01] = 7,  [0x02] = 8,  [0x03] = 7,  [0x05] = 16, [0x21] = 14, [0x22] = 15, [0x25] = 15, [0x30] = 5,  [0x31] = 7,
@@ -57,6 +57,16 @@ base_len_for(uint8_t opcode) {
 }
 
 static int
+is_vendor_partition_opcode(uint8_t opcode) {
+    return opcode >= 0x80u && opcode <= 0xBFu;
+}
+
+static int
+is_known_vendor_mfid(uint8_t mfid) {
+    return mfid == 0x90u || mfid == 0xA4u || mfid == 0xD8u;
+}
+
+static int
 vendor_len_for(uint8_t mfid, uint8_t opcode) {
     if (mfid == 0x90u) {
         return motorola_mac_msg_len[opcode];
@@ -78,6 +88,10 @@ p25p2_mac_len_for(uint8_t mfid, uint8_t opcode) {
     int vendor = vendor_len_for(mfid, opcode);
     if (vendor != 0) {
         return vendor;
+    }
+
+    if (is_vendor_partition_opcode(opcode) && is_known_vendor_mfid(mfid)) {
+        return 0;
     }
 
     int base = base_len_for(opcode);

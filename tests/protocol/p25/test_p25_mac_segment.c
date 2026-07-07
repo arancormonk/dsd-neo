@@ -343,6 +343,22 @@ run_direct_segment_parse_cases(void) {
     rc |= expect_int("generic harris compat lenC", res.len_c, 5);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x88;
+    mac[2] = 0xA4;
+    mac[3] = 0x08;
+    mac[9] = 0x30;
+    mac[14] = 0x30;
+    if (p25p2_mac_parse(1, mac, &res) != 0) {
+        return 409;
+    }
+    rc |= expect_int("harris collision count", res.segment_count, 3);
+    rc |= expect_int("harris collision len 0", res.segments[0].length, 8);
+    rc |= expect_int("harris collision offset 1", res.segments[1].offset, 8);
+    rc |= expect_int("harris collision len 1", res.segments[1].length, 5);
+    rc |= expect_int("harris collision offset 2", res.segments[2].offset, 13);
+    rc |= expect_int("harris collision len 2", res.segments[2].length, 5);
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x00;
     if (p25p2_mac_parse(1, mac, &res) != 0) {
         return 406;
