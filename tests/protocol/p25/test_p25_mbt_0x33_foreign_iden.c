@@ -139,7 +139,7 @@ expect_eq_u8(const char* tag, uint8_t got, uint8_t want) {
 static void
 build_mbt_0x33(uint8_t* mbt, int iden, int chan_type) {
     DSD_MEMSET(mbt, 0, 32);
-    mbt[0] = 0x17; /* ALT MBT */
+    mbt[0] = 0x37; /* OSP ALT MBT */
     mbt[2] = 0x00; /* standard MFID */
     mbt[6] = 0x01; /* one data block */
     mbt[7] = 0x33;

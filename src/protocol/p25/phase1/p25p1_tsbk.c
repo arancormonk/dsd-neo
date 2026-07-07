@@ -225,11 +225,12 @@ tsbk_handle_mfid90_regroup_add_del(dsd_state* state, const uint8_t tsbk_byte[TSB
 
 static void
 tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int service_options = tsbk_byte[2];
     int channel = (tsbk_byte[3] << 8) | tsbk_byte[4];
     int sg = (tsbk_byte[5] << 8) | tsbk_byte[6];
-    int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
+    int source_address = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
     DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Channel Grant\n");
-    DSD_FPRINTF(stderr, "  CHAN [%04X] SG: %d SRC: %d", channel, sg, source);
+    DSD_FPRINTF(stderr, "  SVC [%02X] CHAN [%04X] SG: %d SRC: %d", service_options, channel, sg, source_address);
     long int freq = process_channel_to_freq(opts, state, channel);
     char suf[32];
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
@@ -239,7 +240,7 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
     DSD_FPRINTF(stderr, "\n");
     if (opts->p25_trunk == 1 && freq != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
-        p25_sm_on_group_grant(opts, state, channel, P25_SM_SVC_UNKNOWN, sg, source);
+        p25_sm_on_group_grant(opts, state, channel, service_options, sg, source_address);
     }
 }
 
@@ -268,6 +269,215 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         p25_sm_on_group_grant(opts, state, ch2, P25_SM_SVC_UNKNOWN, sg2, /*src*/ 0);
     }
+}
+
+static uint16_t
+tsbk_u16(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int offset) {
+    return (uint16_t)((tsbk_byte[offset] << 8) | tsbk_byte[offset + 1]);
+}
+
+static int
+tsbk_u24(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int offset) {
+    return (tsbk_byte[offset] << 16) | (tsbk_byte[offset + 1] << 8) | tsbk_byte[offset + 2];
+}
+
+static int
+tsbk_handle_standard_osp_data_channel(const dsd_opts* opts, dsd_state* state,
+                                      const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint8_t opcode = (uint8_t)(tsbk_byte[0] & 0x3F);
+
+    switch (opcode) {
+        case 0x10: {
+            uint16_t channel = tsbk_u16(tsbk_byte, 2);
+            int target = tsbk_u24(tsbk_byte, 4);
+            int source = tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n Individual Data Channel Grant - Obsolete");
+            DSD_FPRINTF(stderr, "\n  CHAN [%04X] Target [%d] Source [%d]", channel, target, source);
+            if (channel != 0) {
+                (void)process_channel_to_freq(opts, state, channel);
+            }
+            return 1;
+        }
+        case 0x11: {
+            uint8_t svc = tsbk_byte[2];
+            uint16_t channel = tsbk_u16(tsbk_byte, 3);
+            uint16_t group = tsbk_u16(tsbk_byte, 5);
+            int source = tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n Group Data Channel Grant - Obsolete");
+            DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN [%04X] Group [%d][%04X] Source [%d]", svc, channel, group, group,
+                        source);
+            if (channel != 0) {
+                (void)process_channel_to_freq(opts, state, channel);
+            }
+            return 1;
+        }
+        case 0x12: {
+            uint16_t channel_a = tsbk_u16(tsbk_byte, 2);
+            uint16_t group_a = tsbk_u16(tsbk_byte, 4);
+            uint16_t channel_b = tsbk_u16(tsbk_byte, 6);
+            uint16_t group_b = tsbk_u16(tsbk_byte, 8);
+            DSD_FPRINTF(stderr, "\n Group Data Channel Announcement - Obsolete");
+            DSD_FPRINTF(stderr, "\n  CHAN-A [%04X] Group-A [%d][%04X] CHAN-B [%04X] Group-B [%d][%04X]", channel_a,
+                        group_a, group_a, channel_b, group_b, group_b);
+            if (channel_a != 0) {
+                (void)process_channel_to_freq(opts, state, channel_a);
+            }
+            if (channel_b != 0) {
+                (void)process_channel_to_freq(opts, state, channel_b);
+            }
+            return 1;
+        }
+        case 0x13: {
+            uint8_t svc = tsbk_byte[2];
+            uint8_t reserved = tsbk_byte[3];
+            uint16_t channel_t = tsbk_u16(tsbk_byte, 4);
+            uint16_t channel_r = tsbk_u16(tsbk_byte, 6);
+            uint16_t group = tsbk_u16(tsbk_byte, 8);
+            DSD_FPRINTF(stderr, "\n Group Data Channel Announcement Explicit - Obsolete");
+            DSD_FPRINTF(stderr, "\n  SVC [%02X] RES [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, reserved,
+                        channel_t, channel_r, group, group);
+            if (channel_t != 0) {
+                (void)process_channel_to_freq(opts, state, channel_t);
+            }
+            if (channel_r != 0) {
+                (void)process_channel_to_freq(opts, state, channel_r);
+            }
+            return 1;
+        }
+        default: break;
+    }
+    return 0;
+}
+
+static const char*
+tsbk_queued_reason_str(uint8_t code) {
+    switch (code) {
+        case 0x10: return "Requesting Unit Busy Other Service";
+        case 0x20: return "Target Unit Busy Other Service";
+        case 0x2F: return "Target Unit Queued This Call";
+        case 0x30: return "Target Group Currently Active";
+        case 0x40: return "Channel Resources Unavailable";
+        case 0x41: return "Telephone Resources Unavailable";
+        case 0x42: return "Data Resources Unavailable";
+        case 0x50: return "Superseding Service Currently Active";
+        default: break;
+    }
+
+    if (code <= 0x7F) {
+        return "Reserved";
+    }
+    return "User/System Defined";
+}
+
+static const char*
+tsbk_deny_reason_str(uint8_t code) {
+    static const struct {
+        uint8_t code;
+        const char* text;
+    } k_deny_reasons[] = {
+        {0x10, "Requesting Unit Not Valid"},
+        {0x11, "Requesting Unit Not Authorized"},
+        {0x20, "Target Unit Not Valid"},
+        {0x21, "Target Unit Not Authorized"},
+        {0x2F, "Target Unit Refused Call"},
+        {0x30, "Target Group Not Valid"},
+        {0x31, "Target Group Not Authorized"},
+        {0x40, "Invalid Dialing"},
+        {0x41, "Telephone Number Not Authorized"},
+        {0x42, "PSTN Not Valid"},
+        {0x50, "Call Timeout"},
+        {0x51, "Landline Terminated Call"},
+        {0x52, "Subscriber Unit Terminated Call"},
+        {0x5F, "Call Preempted"},
+        {0x60, "Site Access Denial"},
+        {0x67, "PTT Collide"},
+        {0x77, "PTT Bonk"},
+        {0xF0, "Call Options Not Valid For Service"},
+        {0xF1, "Protection Service Option Not Valid"},
+        {0xF2, "Duplex Service Option Not Valid"},
+        {0xF3, "Circuit/Packet Mode Option Not Valid"},
+        {0xFF, "System Does Not Support Service"},
+    };
+
+    for (size_t i = 0; i < sizeof(k_deny_reasons) / sizeof(k_deny_reasons[0]); i++) {
+        if (k_deny_reasons[i].code == code) {
+            return k_deny_reasons[i].text;
+        }
+    }
+
+    if (code <= 0x5E) {
+        return "Reserved";
+    }
+    return "User/System Defined";
+}
+
+static void
+tsbk_handle_mfid90_extended_function(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int class_id = tsbk_byte[2];
+    int operand = tsbk_byte[3];
+    int argument = tsbk_u24(tsbk_byte, 4);
+    int target = tsbk_u24(tsbk_byte, 7);
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Extended Function Command\n");
+    DSD_FPRINTF(stderr, "  Class [%02X] Operand [%02X] Arg [%06X] Target [%d]", class_id, operand, argument, target);
+    if (class_id == 0x02 && operand == 0x00) {
+        DSD_FPRINTF(stderr, " Create Supergroup");
+    } else if (class_id == 0x02 && operand == 0x01) {
+        DSD_FPRINTF(stderr, " Cancel Supergroup");
+    }
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static void
+tsbk_handle_mfid90_traffic_channel_id(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Traffic Channel ID\n");
+    DSD_FPRINTF(stderr, "  MSG: %02X%02X%02X%02X%02X%02X%02X%02X\n", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
+                tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+}
+
+static void
+tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+                               int is_deny) {
+    int has_additional = ((tsbk_byte[2] & 0x80) != 0);
+    int svc_type = tsbk_byte[2] & 0x3F;
+    int reason_code = tsbk_byte[3];
+    int addl_info = tsbk_u24(tsbk_byte, 4);
+    int target_addr = tsbk_u24(tsbk_byte, 7);
+    const char* reason_str =
+        is_deny ? tsbk_deny_reason_str((uint8_t)reason_code) : tsbk_queued_reason_str((uint8_t)reason_code);
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) %s Response\n", is_deny ? "Deny" : "Queued");
+    DSD_FPRINTF(stderr, "  SVC [%02X] Reason [%s]", svc_type, reason_str);
+    if (has_additional) {
+        DSD_FPRINTF(stderr, " Addl [%06X]", addl_info);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
+                     "MOT %s Target: %d Reason: %s Info: %06X; ", is_deny ? "DENY" : "QUEUED", target_addr, reason_str,
+                     addl_info);
+    } else {
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT %s Target: %d Reason: %s; ",
+                     is_deny ? "DENY" : "QUEUED", target_addr, reason_str);
+    }
+    DSD_FPRINTF(stderr, " Target [%d]\n", target_addr);
+    state->last_active_time = time(NULL);
+
+    if (is_deny) {
+        p25_sm_on_deny_response(opts, state, svc_type, reason_code, target_addr);
+    } else {
+        p25_sm_on_queued_response(opts, state, svc_type, reason_code, target_addr);
+    }
+}
+
+static void
+tsbk_handle_mfid90_ack(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int svc_type = tsbk_byte[2] & 0x3F;
+    int source = tsbk_u24(tsbk_byte, 4);
+    int target = tsbk_u24(tsbk_byte, 7);
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) Acknowledge Response\n");
+    DSD_FPRINTF(stderr, "  Service [%02X] Source [%d] Target [%d]\n", svc_type, source, target);
+    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
+                 "MOT ACK Target: %d Source: %d Service: %02X; ", target, source, svc_type);
+    state->last_active_time = time(NULL);
 }
 
 static void
@@ -319,18 +529,112 @@ tsbk_handle_mfid90_base_station_id(const dsd_opts* opts, const dsd_state* state,
 }
 
 static void
-tsbk_handle_mfid90(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
-    int opcode = tsbk_byte[0] & 0x3F;
-    DSD_FPRINTF(stderr, "%s", KYEL);
+tsbk_handle_mfid90_display_raw(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) %s\n", label);
+    DSD_FPRINTF(stderr, "  MSG: %02X%02X%02X%02X%02X%02X%02X%02X\n", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
+                tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+}
+
+static int
+tsbk_mfid90_data_channel_valid(uint16_t channel) {
+    return (((channel >> 12) & 0x0F) != 0x0F) && ((channel & 0x0FFF) != 0x0FFF);
+}
+
+static void
+tsbk_handle_mfid90_tdma_data_channel(const dsd_opts* opts, dsd_state* state,
+                                     const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint16_t downlink = tsbk_u16(tsbk_byte, 4);
+    uint16_t uplink = tsbk_u16(tsbk_byte, 6);
+    int downlink_valid = tsbk_mfid90_data_channel_valid(downlink);
+    int uplink_valid = tsbk_mfid90_data_channel_valid(uplink);
+    long int downlink_freq = downlink_valid ? process_channel_to_freq(opts, state, downlink) : 0;
+    long int uplink_freq = uplink_valid ? process_channel_to_freq(opts, state, uplink) : 0;
+
+    DSD_FPRINTF(stderr, "\n MFID90 (Moto) TDMA Data Channel\n");
+    if (downlink_valid) {
+        char suffix[32];
+        p25_format_chan_suffix(state, downlink, -1, suffix, sizeof suffix);
+        DSD_FPRINTF(stderr, "  DL [%04X]%s", downlink, suffix);
+        if (downlink_freq > 0) {
+            DSD_FPRINTF(stderr, " Freq: %.6lf MHz", (double)downlink_freq / 1000000.0);
+        }
+    }
+    if (uplink_valid) {
+        char suffix[32];
+        p25_format_chan_suffix(state, uplink, -1, suffix, sizeof suffix);
+        DSD_FPRINTF(stderr, "%sUL [%04X]%s", downlink_valid ? " " : "  ", uplink, suffix);
+        if (uplink_freq > 0) {
+            DSD_FPRINTF(stderr, " Freq: %.6lf MHz", (double)uplink_freq / 1000000.0);
+        }
+    }
+    if (!downlink_valid && !uplink_valid) {
+        DSD_FPRINTF(stderr, "  Not Active");
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: Not Active; ");
+    } else if (downlink_valid && uplink_valid) {
+        char downlink_suffix[32], uplink_suffix[32];
+        p25_format_chan_suffix(state, downlink, -1, downlink_suffix, sizeof downlink_suffix);
+        p25_format_chan_suffix(state, uplink, -1, uplink_suffix, sizeof uplink_suffix);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: DL %04X%s UL %04X%s; ",
+                     downlink, downlink_suffix, uplink, uplink_suffix);
+    } else {
+        uint16_t channel = downlink_valid ? downlink : uplink;
+        char suffix[32];
+        p25_format_chan_suffix(state, channel, -1, suffix, sizeof suffix);
+        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: %04X%s; ", channel,
+                     suffix);
+    }
+    state->last_active_time = time(NULL);
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static int
+tsbk_handle_mfid90_regroup_grants(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+                                  int opcode) {
     switch (opcode) {
         case 0x00: tsbk_handle_mfid90_regroup_add_del(state, tsbk_byte, 1); break;
         case 0x01: tsbk_handle_mfid90_regroup_add_del(state, tsbk_byte, 0); break;
         case 0x02: tsbk_handle_mfid90_grant(opts, state, tsbk_byte); break;
         case 0x03: tsbk_handle_mfid90_grant_update(opts, state, tsbk_byte); break;
+        case 0x04: tsbk_handle_mfid90_extended_function(tsbk_byte); break;
+        case 0x05: tsbk_handle_mfid90_traffic_channel_id(tsbk_byte); break;
+        default: return 0;
+    }
+    return 1;
+}
+
+static int
+tsbk_handle_mfid90_responses(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+                             int opcode) {
+    switch (opcode) {
+        case 0x06: tsbk_handle_mfid90_queued_deny(opts, state, tsbk_byte, /*is_deny*/ 0); break;
+        case 0x07: tsbk_handle_mfid90_queued_deny(opts, state, tsbk_byte, /*is_deny*/ 1); break;
+        case 0x08: tsbk_handle_mfid90_ack(state, tsbk_byte); break;
         case 0x09: tsbk_handle_mfid90_scan_marker(tsbk_byte); break;
         case 0x0A: tsbk_handle_mfid90_emergency(tsbk_byte); break;
         case 0x0B: tsbk_handle_mfid90_base_station_id(opts, state, tsbk_byte); break;
+        default: return 0;
+    }
+    return 1;
+}
+
+static void
+tsbk_handle_mfid90_misc(const dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK],
+                        int opcode) {
+    switch (opcode) {
+        case 0x0E: tsbk_handle_mfid90_display_raw("Control Channel Planned Shutdown", tsbk_byte); break;
+        case 0x0F: tsbk_handle_mfid90_display_raw("Opcode 15", tsbk_byte); break;
+        case 0x16: tsbk_handle_mfid90_tdma_data_channel(opts, state, tsbk_byte); break;
         default: break;
+    }
+}
+
+static void
+tsbk_handle_mfid90(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    int opcode = tsbk_byte[0] & 0x3F;
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    if (!tsbk_handle_mfid90_regroup_grants(opts, state, tsbk_byte, opcode)
+        && !tsbk_handle_mfid90_responses(opts, state, tsbk_byte, opcode)) {
+        tsbk_handle_mfid90_misc(opts, state, tsbk_byte, opcode);
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
@@ -364,20 +668,266 @@ tsbk_handle_mfid_a4(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLO
     p25_patch_set_kas(state, sg, key, -1, ssn);
 }
 
+static uint32_t
+tsbk_wacn_from_24(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    return ((uint32_t)tsbk_byte[3] << 12) | ((uint32_t)tsbk_byte[4] << 4) | ((uint32_t)tsbk_byte[5] >> 4);
+}
+
+static uint16_t
+tsbk_sys_from_44(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    return (uint16_t)(((uint16_t)(tsbk_byte[5] & 0x0F) << 8) | (uint16_t)tsbk_byte[6]);
+}
+
+static void
+tsbk_isp_print_src_tgt(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], const char* target_label) {
+    int target = tsbk_u24(tsbk_byte, 4);
+    int source = tsbk_u24(tsbk_byte, 7);
+    DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
+    DSD_FPRINTF(stderr, " FM [%d] %s [%d]", source, target_label ? target_label : "TO", target);
+}
+
+static void
+tsbk_isp_print_group_request(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int has_service) {
+    int svc = tsbk_byte[2];
+    int group = tsbk_u16(tsbk_byte, 5);
+    int source = tsbk_u24(tsbk_byte, 7);
+    DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
+    DSD_FPRINTF(stderr, " FM [%d] Group [%d][%04X]", source, group, group);
+    if (has_service) {
+        DSD_FPRINTF(stderr, " SVC [%02X]", svc);
+    }
+}
+
+static void
+tsbk_isp_print_status(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int has_status) {
+    int target = tsbk_u24(tsbk_byte, 4);
+    int source = tsbk_u24(tsbk_byte, 7);
+    DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
+    DSD_FPRINTF(stderr, " FM [%d] TO [%d]", source, target);
+    if (has_status) {
+        DSD_FPRINTF(stderr, " UNIT STATUS [%02X] USER STATUS [%02X]", tsbk_byte[2], tsbk_byte[3]);
+    }
+}
+
+static void
+tsbk_isp_print_wacn_sys_src(const char* label, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint32_t wacn = tsbk_wacn_from_24(tsbk_byte);
+    uint16_t sysid = tsbk_sys_from_44(tsbk_byte);
+    int source = tsbk_u24(tsbk_byte, 7);
+    DSD_FPRINTF(stderr, "\n %s (ISP protected/inbound)", label);
+    DSD_FPRINTF(stderr, " FM [%d] WACN [%05X] SYSID [%03X]", source, wacn, sysid);
+}
+
+static int
+tsbk_handle_isp_service_messages(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    switch (opcode) {
+        case 0x00: tsbk_isp_print_group_request("Group Voice Service Request", tsbk_byte, 1); return 1;
+        case 0x04:
+            tsbk_isp_print_src_tgt("Unit-to-Unit Voice Service Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X]", tsbk_byte[2]);
+            return 1;
+        case 0x05:
+            tsbk_isp_print_src_tgt("Unit-to-Unit Answer Response", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X] RESPONSE [%02X]", tsbk_byte[2], tsbk_byte[3]);
+            return 1;
+        case 0x08:
+            tsbk_isp_print_src_tgt("Telephone Interconnect Explicit Dial Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X]", tsbk_byte[2]);
+            return 1;
+        case 0x09:
+            tsbk_isp_print_src_tgt("Telephone Interconnect PSTN Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X]", tsbk_byte[2]);
+            return 1;
+        case 0x0A:
+            tsbk_isp_print_src_tgt("Telephone Interconnect Answer Response", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X] RESPONSE [%02X]", tsbk_byte[2], tsbk_byte[3]);
+            return 1;
+        case 0x10:
+            tsbk_isp_print_src_tgt("Individual Data Service Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SVC [%02X]", tsbk_byte[2]);
+            return 1;
+        case 0x11: tsbk_isp_print_group_request("Group Data Service Request", tsbk_byte, 1); return 1;
+        case 0x12:
+            DSD_FPRINTF(stderr, "\n SNDCP Data Channel Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] DSO [%02X] DAC [%04X]", tsbk_u24(tsbk_byte, 7), tsbk_byte[2],
+                        tsbk_u16(tsbk_byte, 3));
+            return 1;
+        case 0x13:
+            DSD_FPRINTF(stderr, "\n SNDCP Data Page Response (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] DSO [%02X] RESPONSE [%02X] DAC [%04X]", tsbk_u24(tsbk_byte, 7), tsbk_byte[2],
+                        tsbk_byte[3], tsbk_u16(tsbk_byte, 4));
+            return 1;
+        case 0x14:
+            DSD_FPRINTF(stderr, "\n SNDCP Reconnect Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] DSO [%02X] DAC [%04X] DATA_TO_SEND [%d]", tsbk_u24(tsbk_byte, 7),
+                        tsbk_byte[2], tsbk_u16(tsbk_byte, 3), (tsbk_byte[5] & 0x80) ? 1 : 0);
+            return 1;
+        default: return 0;
+    }
+}
+
+static int
+tsbk_handle_isp_status_control_messages(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    switch (opcode) {
+        case 0x18: tsbk_isp_print_status("Status Update Request", tsbk_byte, 1); return 1;
+        case 0x19: tsbk_isp_print_status("Status Query Response", tsbk_byte, 1); return 1;
+        case 0x1A: tsbk_isp_print_status("Status Query Request", tsbk_byte, 0); return 1;
+        case 0x1C:
+            tsbk_isp_print_src_tgt("Message Update Request", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " SHORT DATA [%04X]", tsbk_u16(tsbk_byte, 2));
+            return 1;
+        case 0x1F: tsbk_isp_print_src_tgt("Call Alert Request", tsbk_byte, "TO"); return 1;
+        case 0x20:
+            tsbk_isp_print_src_tgt("Unit Acknowledge Response", tsbk_byte, "TO");
+            DSD_FPRINTF(stderr, " ACK SVC [%02X]", tsbk_byte[2] & 0x3F);
+            return 1;
+        case 0x23:
+            DSD_FPRINTF(stderr, "\n Cancel Service Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] VALID [%d] SVC [%02X] REASON [%02X] INFO [%06X]", tsbk_u24(tsbk_byte, 7),
+                        (tsbk_byte[2] & 0x80) ? 1 : 0, tsbk_byte[2] & 0x3F, tsbk_byte[3], tsbk_u24(tsbk_byte, 4));
+            return 1;
+        case 0x24:
+            DSD_FPRINTF(stderr, "\n Extended Function Response (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] FUNC [%04X] ARG [%06X]", tsbk_u24(tsbk_byte, 7), tsbk_u16(tsbk_byte, 2),
+                        tsbk_u24(tsbk_byte, 4));
+            return 1;
+        case 0x27: {
+            int group = tsbk_u16(tsbk_byte, 5);
+            int source = tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n Emergency Alarm Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " Source [%d] Group [%d][%04X]", source, group, group);
+            DSD_FPRINTF(stderr, " %s** EMERGENCY **%s", KRED, KYEL);
+            return 1;
+        }
+        default: return 0;
+    }
+}
+
+static int
+tsbk_handle_isp_registration_messages(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    switch (opcode) {
+        case 0x28: {
+            int sysid = ((tsbk_byte[3] & 0x0F) << 8) | tsbk_byte[4];
+            int group = tsbk_u16(tsbk_byte, 5);
+            int source = tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n Group Affiliation Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] SYSID [%03X] Group [%d][%04X]", source, sysid, group, group);
+            return 1;
+        }
+        case 0x29:
+            DSD_FPRINTF(stderr, "\n Group Affiliation Query Response (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] Announcement Group [%d][%04X] Group [%d][%04X]", tsbk_u24(tsbk_byte, 7),
+                        tsbk_u16(tsbk_byte, 3), tsbk_u16(tsbk_byte, 3), tsbk_u16(tsbk_byte, 5), tsbk_u16(tsbk_byte, 5));
+            return 1;
+        case 0x2B: tsbk_isp_print_wacn_sys_src("Unit De-Registration Request", tsbk_byte); return 1;
+        case 0x2C:
+            tsbk_isp_print_wacn_sys_src("Unit Registration Request", tsbk_byte);
+            DSD_FPRINTF(stderr, " EMERGENCY [%d] CAPABILITY [%02X]", (tsbk_byte[2] & 0x80) ? 1 : 0,
+                        tsbk_byte[2] & 0x7F);
+            return 1;
+        case 0x2D:
+            DSD_FPRINTF(stderr, "\n Location Registration Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%d] EMERGENCY [%d] CAPABILITY [%02X] LRA [%02X] Group [%d][%04X]",
+                        tsbk_u24(tsbk_byte, 7), (tsbk_byte[2] & 0x80) ? 1 : 0, tsbk_byte[2] & 0x7F, tsbk_byte[4],
+                        tsbk_u16(tsbk_byte, 5), tsbk_u16(tsbk_byte, 5));
+            return 1;
+        case 0x30: tsbk_isp_print_wacn_sys_src("Protection Parameter Request", tsbk_byte); return 1;
+        case 0x32: tsbk_isp_print_wacn_sys_src("Identifier/Frequency Band Update Request", tsbk_byte); return 1;
+        default: return 0;
+    }
+}
+
+static int
+tsbk_handle_isp_auth_roaming_messages(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    switch (opcode) {
+        case 0x2E:
+        case 0x2F:
+            tsbk_isp_print_src_tgt(opcode == 0x2E ? "Authentication Query (obsolete)"
+                                                  : "Authentication Response (obsolete)",
+                                   tsbk_byte, "TO");
+            return 1;
+        case 0x36: tsbk_isp_print_src_tgt("Roaming Address Request", tsbk_byte, "TO"); return 1;
+        case 0x37:
+            tsbk_isp_print_wacn_sys_src("Roaming Address Response", tsbk_byte);
+            DSD_FPRINTF(stderr, " MSN [%d] FINAL [%d]", tsbk_byte[2] & 0x0F, (tsbk_byte[2] & 0x80) ? 1 : 0);
+            return 1;
+        case 0x38:
+        case 0x39:
+        case 0x3A:
+        case 0x3B:
+            DSD_FPRINTF(stderr, "\n Authentication Message (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " OP [%02X] SRC [%d] DATA [%02X%02X%02X%02X%02X%02X%02X%02X]", opcode,
+                        tsbk_u24(tsbk_byte, 7), tsbk_byte[2], tsbk_byte[3], tsbk_byte[4], tsbk_byte[5], tsbk_byte[6],
+                        tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+            return 1;
+        default: return 0;
+    }
+}
+
+static void
+tsbk_isp_print_unsupported(uint8_t opcode, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    DSD_FPRINTF(stderr, "\n Unsupported ISP opcode (protected/inbound) OP [%02X]", opcode);
+    DSD_FPRINTF(stderr, " DATA [%02X%02X%02X%02X%02X%02X%02X%02X]", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
+                tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+}
+
 static void
 tsbk_handle_isp_messages(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
-    int opcode = tsbk_byte[0] & 0x3F;
-    if (opcode != 0x27) {
-        return;
+    uint8_t opcode = (uint8_t)(tsbk_byte[0] & 0x3F);
+    DSD_FPRINTF(stderr, "%s", KYEL);
+
+    /*
+     * Standard protected TSBKs carry inbound ISP messages. Field offsets below
+     * mirror SDRTrunk's phase1/message/tsbk/standard/isp classes. These are
+     * subscriber-to-network requests/responses, so this path logs metadata only
+     * and intentionally does not retune or feed the outbound grant state machine.
+     */
+    int handled = tsbk_handle_isp_service_messages(opcode, tsbk_byte);
+    if (!handled) {
+        handled = tsbk_handle_isp_status_control_messages(opcode, tsbk_byte);
+    }
+    if (!handled) {
+        handled = tsbk_handle_isp_registration_messages(opcode, tsbk_byte);
+    }
+    if (!handled) {
+        handled = tsbk_handle_isp_auth_roaming_messages(opcode, tsbk_byte);
+    }
+    if (!handled) {
+        tsbk_isp_print_unsupported(opcode, tsbk_byte);
+    }
+    DSD_FPRINTF(stderr, "\n");
+}
+
+static void
+tsbk_handle_mfid90_isp_messages(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint8_t opcode = (uint8_t)(tsbk_byte[0] & 0x3F);
+    DSD_FPRINTF(stderr, "%s", KYEL);
+
+    switch (opcode) {
+        case 0x00: {
+            uint8_t svc = tsbk_byte[2];
+            uint16_t sg = tsbk_u16(tsbk_byte, 5);
+            uint32_t source = (uint32_t)tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n MFID90 (Moto) Group Regroup Voice Request (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%u] SG [%u][%04X] SVC [%02X]", source, sg, sg, svc);
+            break;
+        }
+        case 0x01: {
+            uint16_t function = tsbk_u16(tsbk_byte, 2);
+            uint32_t argument = (uint32_t)tsbk_u24(tsbk_byte, 4);
+            uint32_t source = (uint32_t)tsbk_u24(tsbk_byte, 7);
+            DSD_FPRINTF(stderr, "\n MFID90 (Moto) Extended Function Response (ISP protected/inbound)");
+            DSD_FPRINTF(stderr, " FM [%u] FUNC [%04X] ARG [%06X]", source, function, argument);
+            break;
+        }
+        default:
+            DSD_FPRINTF(stderr, "\n Unsupported MFID90 ISP opcode (protected/inbound) OP [%02X]", opcode);
+            DSD_FPRINTF(stderr, " DATA [%02X%02X%02X%02X%02X%02X%02X%02X]", tsbk_byte[2], tsbk_byte[3], tsbk_byte[4],
+                        tsbk_byte[5], tsbk_byte[6], tsbk_byte[7], tsbk_byte[8], tsbk_byte[9]);
+            break;
     }
 
-    int group = (tsbk_byte[5] << 8) | tsbk_byte[6];
-    int source = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
-    DSD_FPRINTF(stderr, "%s", KYEL);
-    DSD_FPRINTF(stderr, "\n Emergency Alarm Request (ISP)\n");
-    DSD_FPRINTF(stderr, "  Source: %d Group: %d", source, group);
-    DSD_FPRINTF(stderr, " %s** EMERGENCY **%s", KRED, KYEL);
-    DSD_FPRINTF(stderr, "\n");
+    DSD_FPRINTF(stderr, "\n%s", KNRM);
 }
 
 static void
@@ -429,11 +979,16 @@ tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t*
     if (protectbit == 1) {
         if (MFID < 0x2) {
             tsbk_handle_isp_messages(ctx->tsbk_byte);
+        } else if (MFID == 0x90) {
+            tsbk_handle_mfid90_isp_messages(ctx->tsbk_byte);
         }
         return;
     }
 
     if (MFID < 0x2 && PDU[1] != 0x7B) {
+        if (tsbk_handle_standard_osp_data_channel(opts, state, ctx->tsbk_byte)) {
+            return;
+        }
         DSD_FPRINTF(stderr, "%s", KYEL);
         process_MAC_VPDU(opts, state, 0, PDU);
         DSD_FPRINTF(stderr, "%s", KNRM);

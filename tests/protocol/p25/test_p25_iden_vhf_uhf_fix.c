@@ -73,6 +73,16 @@ build_vuhf_iden(unsigned char* mac, int opcode, int iden, int low_nibble, int si
     put_base(mac, 6, base_freq);
 }
 
+static void
+put_tdma_iden_payload(unsigned char* mac, int pos, int iden, int chan_type, int sign_bit, int tx_raw, int spacing,
+                      long base_freq) {
+    mac[pos + 0] = (unsigned char)(((iden & 0x0F) << 4) | (chan_type & 0x0F));
+    mac[pos + 1] = (unsigned char)(((sign_bit & 0x01) << 7) | ((tx_raw >> 6) & 0x7F));
+    mac[pos + 2] = (unsigned char)(((tx_raw & 0x3F) << 2) | ((spacing >> 8) & 0x03));
+    mac[pos + 3] = (unsigned char)(spacing & 0xFF);
+    put_base(mac, pos + 4, base_freq);
+}
+
 static int
 test_standard_0x7d_stays_standard_on_vhf_base(void) {
     int rc = 0;
@@ -174,6 +184,44 @@ test_tdma_0x73_uses_signed_tdma_layout(void) {
 }
 
 static int
+test_tdma_0xf3_extended_sign_matches_aabc(void) {
+    int rc = 0;
+    unsigned char mac[24];
+    unsigned long long words[24] = {0};
+    struct p25p2_iden_update up = {0};
+
+    const int iden = 7;
+    const int chan_type = 3;
+    const int tx_raw = 0x0222;
+    const int spacing = 0x064;
+    const long base = 851000000L / 5L;
+
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xF3;
+    put_tdma_iden_payload(mac, 3, iden, chan_type, 1, tx_raw, spacing, base);
+    for (int i = 0; i < 24; i++) {
+        words[i] = mac[i];
+    }
+    rc |= expect_eq_int("0xF3 positive decode", p25p2_mac_decode_iden_tdma(words, 3, &up), 0);
+    rc |= expect_eq_int("0xF3 positive offset", up.trans_off, tx_raw);
+
+    DSD_MEMSET(&up, 0, sizeof up);
+    DSD_MEMSET(mac, 0, sizeof mac);
+    mac[1] = 0xF3;
+    put_tdma_iden_payload(mac, 3, iden, chan_type, 0, tx_raw, spacing, base);
+    for (int i = 0; i < 24; i++) {
+        words[i] = mac[i];
+    }
+    rc |= expect_eq_int("0xF3 negative decode", p25p2_mac_decode_iden_tdma(words, 3, &up), 0);
+    rc |= expect_eq_int("0xF3 negative offset", up.trans_off, -tx_raw);
+
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "PASS test_tdma_0xf3_extended_sign_matches_aabc\n");
+    }
+    return rc;
+}
+
+static int
 test_vhf_uhf_base_classifier(void) {
     int rc = 0;
     rc |= expect_eq_int("VHF base", p25_is_vhf_uhf_base_freq(155000000L / 5L), 1);
@@ -212,6 +260,7 @@ main(void) {
     rc |= test_standard_0x7d_stays_standard_on_vhf_base();
     rc |= test_vuhf_0x74_uses_vuhf_layout();
     rc |= test_tdma_0x73_uses_signed_tdma_layout();
+    rc |= test_tdma_0xf3_extended_sign_matches_aabc();
     rc |= test_vhf_uhf_base_classifier();
     rc |= test_channel_type_matches_op25();
 

@@ -32,6 +32,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_mfid90_utils.h"
+#include "test_support.h"
 
 static int g_add_wgid_count;
 static int g_add_wuid_count;
@@ -49,12 +50,20 @@ static int g_last_update_active;
 static int g_last_key;
 static int g_last_ssn;
 static int g_last_grant_channel;
+static int g_last_grant_svc;
 static int g_last_grant_tg;
 static int g_last_grant_src;
 static int g_neighbor_update_count;
 static int g_neighbor_update_last_count;
 static long g_neighbor_update_last_freq;
 static int g_confirm_idens_count;
+static int g_queued_count;
+static int g_deny_count;
+static int g_last_response_svc;
+static int g_last_response_reason;
+static int g_last_response_target;
+static int g_process_channel_count;
+static int g_last_process_channel;
 static long int g_channel_freq;
 static int g_soft_llr_count;
 static int g_soft_llr_list_count;
@@ -133,7 +142,8 @@ long int
 process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel) {
     (void)opts;
     (void)state;
-    (void)channel;
+    g_process_channel_count++;
+    g_last_process_channel = channel;
     return g_channel_freq;
 }
 
@@ -158,11 +168,33 @@ void
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
     (void)state;
-    (void)svc_bits;
     g_grant_count++;
     g_last_grant_channel = channel;
+    g_last_grant_svc = svc_bits;
     g_last_grant_tg = tg;
     g_last_grant_src = src;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
+    (void)opts;
+    (void)state;
+    g_queued_count++;
+    g_last_response_svc = svc_type;
+    g_last_response_reason = reason_code;
+    g_last_response_target = target;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
+    (void)opts;
+    (void)state;
+    g_deny_count++;
+    g_last_response_svc = svc_type;
+    g_last_response_reason = reason_code;
+    g_last_response_target = target;
 }
 
 void
@@ -335,12 +367,20 @@ reset_calls(void) {
     g_last_key = 0;
     g_last_ssn = 0;
     g_last_grant_channel = 0;
+    g_last_grant_svc = 0;
     g_last_grant_tg = 0;
     g_last_grant_src = 0;
     g_neighbor_update_count = 0;
     g_neighbor_update_last_count = 0;
     g_neighbor_update_last_freq = 0;
     g_confirm_idens_count = 0;
+    g_queued_count = 0;
+    g_deny_count = 0;
+    g_last_response_svc = 0;
+    g_last_response_reason = 0;
+    g_last_response_target = 0;
+    g_process_channel_count = 0;
+    g_last_process_channel = 0;
     g_channel_freq = 0;
     g_soft_llr_count = 0;
     g_soft_llr_list_count = 0;
@@ -376,6 +416,117 @@ expect_bytes(const char* tag, const uint8_t* got, const uint8_t* want, size_t le
         return 1;
     }
     return 0;
+}
+
+static int
+expect_contains(const char* tag, const char* text, const char* needle) {
+    if (!text || !needle || strstr(text, needle) == NULL) {
+        DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", tag, needle ? needle : "(null)", text ? text : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+read_capture_file(const char* path, char* out, size_t out_sz) {
+    if (!path || !out || out_sz == 0) {
+        return -1;
+    }
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        return -1;
+    }
+    const size_t max_read = out_sz - 1;
+    size_t n = fread(out, 1, max_read, f);
+    if (n > max_read) {
+        n = max_read;
+    }
+    if (n < max_read && ferror(f) != 0) {
+        (void)fclose(f);
+        return -1;
+    }
+    out[n] = '\0';
+    (void)fclose(f);
+    return 0;
+}
+
+static void
+build_isp_two_party(uint8_t tsbk[TSBK_BYTES_PER_BLOCK], uint8_t opcode, uint8_t byte2, uint8_t byte3) {
+    DSD_MEMSET(tsbk, 0, TSBK_BYTES_PER_BLOCK);
+    tsbk[0] = opcode & 0x3F;
+    tsbk[2] = byte2;
+    tsbk[3] = byte3;
+    tsbk[4] = 0x0A;
+    tsbk[5] = 0xBC;
+    tsbk[6] = 0xDE;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+}
+
+static void
+build_isp_group(uint8_t tsbk[TSBK_BYTES_PER_BLOCK], uint8_t opcode, uint8_t svc) {
+    DSD_MEMSET(tsbk, 0, TSBK_BYTES_PER_BLOCK);
+    tsbk[0] = opcode & 0x3F;
+    tsbk[2] = svc;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+}
+
+static void
+build_isp_wacn_sys(uint8_t tsbk[TSBK_BYTES_PER_BLOCK], uint8_t opcode) {
+    DSD_MEMSET(tsbk, 0, TSBK_BYTES_PER_BLOCK);
+    tsbk[0] = opcode & 0x3F;
+    tsbk[3] = 0xAB;
+    tsbk[4] = 0xCD;
+    tsbk[5] = 0xE1;
+    tsbk[6] = 0x23;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+}
+
+static int
+capture_isp_output(const uint8_t tsbk[TSBK_BYTES_PER_BLOCK], char* out, size_t out_sz) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_isp_tsbk") != 0) {
+        return -1;
+    }
+    tsbk_handle_isp_messages(tsbk);
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        return -1;
+    }
+    return read_capture_file(cap.path, out, out_sz);
+}
+
+static int
+capture_mfid90_isp_output(const uint8_t tsbk[TSBK_BYTES_PER_BLOCK], char* out, size_t out_sz) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_mfid90_isp_tsbk") != 0) {
+        return -1;
+    }
+    tsbk_handle_mfid90_isp_messages(tsbk);
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        return -1;
+    }
+    return read_capture_file(cap.path, out, out_sz);
+}
+
+static int
+capture_standard_osp_data_output(dsd_opts* opts, dsd_state* state, const uint8_t tsbk[TSBK_BYTES_PER_BLOCK], char* out,
+                                 size_t out_sz) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_standard_osp_data_tsbk") != 0) {
+        return -1;
+    }
+    int handled = tsbk_handle_standard_osp_data_channel(opts, state, tsbk);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || handled == 0) {
+        return -1;
+    }
+    return read_capture_file(cap.path, out, out_sz);
 }
 
 static int
@@ -424,6 +575,463 @@ test_crc_candidate_selection_and_fallback(void) {
     rc |= expect_int("fallback list called", g_soft_llr_list_count, 1);
     rc |= expect_int("fallback decoder called", g_soft_llr_count, 1);
     rc |= expect_bytes("fallback bytes copied", out, want, sizeof(out));
+    return rc;
+}
+
+static int
+test_standard_isp_metadata_logging_and_no_retune(void) {
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    char out[4096];
+    int rc = 0;
+
+    reset_calls();
+
+    build_isp_group(tsbk, 0x00, 0x90);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp group voice label", out, "Group Voice Service Request");
+    rc |= expect_contains("isp group voice group", out, "Group [4660][1234]");
+    rc |= expect_contains("isp group voice service", out, "SVC [90]");
+
+    build_isp_two_party(tsbk, 0x04, 0x81, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp unit voice label", out, "Unit-to-Unit Voice Service Request");
+    rc |= expect_contains("isp unit voice radios", out, "FM [74565] TO [703710]");
+    rc |= expect_contains("isp unit voice service", out, "SVC [81]");
+
+    build_isp_two_party(tsbk, 0x05, 0x82, 0x03);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp answer label", out, "Unit-to-Unit Answer Response");
+    rc |= expect_contains("isp answer response", out, "RESPONSE [03]");
+
+    build_isp_two_party(tsbk, 0x08, 0x84, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp explicit dial label", out, "Telephone Interconnect Explicit Dial Request");
+
+    build_isp_two_party(tsbk, 0x09, 0x85, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp pstn label", out, "Telephone Interconnect PSTN Request");
+
+    build_isp_two_party(tsbk, 0x0A, 0x86, 0x02);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp telephone answer label", out, "Telephone Interconnect Answer Response");
+    rc |= expect_contains("isp telephone answer response", out, "RESPONSE [02]");
+
+    build_isp_two_party(tsbk, 0x10, 0x04, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp individual data label", out, "Individual Data Service Request");
+
+    build_isp_group(tsbk, 0x11, 0x04);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp group data label", out, "Group Data Service Request");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x12;
+    tsbk[2] = 0xAA;
+    tsbk[3] = 0x12;
+    tsbk[4] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp sndcp channel label", out, "SNDCP Data Channel Request");
+    rc |= expect_contains("isp sndcp channel fields", out, "DSO [AA] DAC [1234]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x13;
+    tsbk[2] = 0xAA;
+    tsbk[3] = 0x55;
+    tsbk[4] = 0x12;
+    tsbk[5] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp sndcp page label", out, "SNDCP Data Page Response");
+    rc |= expect_contains("isp sndcp page fields", out, "DSO [AA] RESPONSE [55] DAC [1234]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x14;
+    tsbk[2] = 0xAA;
+    tsbk[3] = 0x12;
+    tsbk[4] = 0x34;
+    tsbk[5] = 0x80;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp sndcp reconnect label", out, "SNDCP Reconnect Request");
+    rc |= expect_contains("isp sndcp reconnect fields", out, "DSO [AA] DAC [1234] DATA_TO_SEND [1]");
+
+    build_isp_two_party(tsbk, 0x18, 0x21, 0x43);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp status update label", out, "Status Update Request");
+    rc |= expect_contains("isp status update fields", out, "UNIT STATUS [21] USER STATUS [43]");
+
+    build_isp_two_party(tsbk, 0x19, 0x21, 0x43);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp status response label", out, "Status Query Response");
+
+    build_isp_two_party(tsbk, 0x1A, 0x00, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp status query label", out, "Status Query Request");
+
+    build_isp_two_party(tsbk, 0x1C, 0xBE, 0xEF);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp message update label", out, "Message Update Request");
+    rc |= expect_contains("isp message update data", out, "SHORT DATA [BEEF]");
+
+    build_isp_two_party(tsbk, 0x1F, 0x00, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp call alert label", out, "Call Alert Request");
+
+    build_isp_two_party(tsbk, 0x20, 0x3B, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp ack label", out, "Unit Acknowledge Response");
+    rc |= expect_contains("isp ack service", out, "ACK SVC [3B]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x23;
+    tsbk[2] = 0x80 | 0x04;
+    tsbk[3] = 0x60;
+    tsbk[4] = 0x12;
+    tsbk[5] = 0x34;
+    tsbk[6] = 0x56;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp cancel label", out, "Cancel Service Request");
+    rc |= expect_contains("isp cancel fields", out, "VALID [1] SVC [04] REASON [60] INFO [123456]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x24;
+    tsbk[2] = 0x12;
+    tsbk[3] = 0x34;
+    tsbk[4] = 0x56;
+    tsbk[5] = 0x78;
+    tsbk[6] = 0x9A;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp extended function label", out, "Extended Function Response");
+    rc |= expect_contains("isp extended function fields", out, "FUNC [1234] ARG [56789A]");
+
+    build_isp_group(tsbk, 0x27, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp emergency label", out, "Emergency Alarm Request");
+    rc |= expect_contains("isp emergency marker", out, "** EMERGENCY **");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x28;
+    tsbk[3] = 0x01;
+    tsbk[4] = 0x23;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp affiliation label", out, "Group Affiliation Request");
+    rc |= expect_contains("isp affiliation sysid", out, "SYSID [123]");
+    rc |= expect_contains("isp affiliation group", out, "Group [4660][1234]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x29;
+    tsbk[3] = 0x22;
+    tsbk[4] = 0x22;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp affiliation query label", out, "Group Affiliation Query Response");
+    rc |= expect_contains("isp affiliation query ann", out, "Announcement Group [8738][2222]");
+
+    build_isp_wacn_sys(tsbk, 0x2B);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp dereg label", out, "Unit De-Registration Request");
+    rc |= expect_contains("isp dereg wacn", out, "WACN [ABCDE] SYSID [123]");
+
+    build_isp_wacn_sys(tsbk, 0x2C);
+    tsbk[2] = 0x80 | 0x55;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp registration label", out, "Unit Registration Request");
+    rc |= expect_contains("isp registration fields", out, "EMERGENCY [1] CAPABILITY [55]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x2D;
+    tsbk[2] = 0x80 | 0x55;
+    tsbk[4] = 0x77;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp location label", out, "Location Registration Request");
+    rc |= expect_contains("isp location lra", out, "LRA [77]");
+
+    build_isp_two_party(tsbk, 0x2E, 0x00, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp auth query label", out, "Authentication Query (obsolete)");
+
+    build_isp_two_party(tsbk, 0x2F, 0x00, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp auth response label", out, "Authentication Response (obsolete)");
+
+    build_isp_wacn_sys(tsbk, 0x30);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp protection label", out, "Protection Parameter Request");
+
+    build_isp_wacn_sys(tsbk, 0x32);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp iden request label", out, "Identifier/Frequency Band Update Request");
+
+    build_isp_two_party(tsbk, 0x36, 0x00, 0x00);
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp roaming request label", out, "Roaming Address Request");
+
+    build_isp_wacn_sys(tsbk, 0x37);
+    tsbk[2] = 0x80 | 0x05;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp roaming response label", out, "Roaming Address Response");
+    rc |= expect_contains("isp roaming response fields", out, "MSN [5] FINAL [1]");
+
+    for (uint8_t op = 0x38; op <= 0x3B; op++) {
+        DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+        tsbk[0] = op;
+        tsbk[2] = 0x10;
+        tsbk[3] = 0x20;
+        tsbk[4] = 0x30;
+        tsbk[5] = 0x40;
+        tsbk[6] = 0x50;
+        tsbk[7] = 0x01;
+        tsbk[8] = 0x23;
+        tsbk[9] = 0x45;
+        if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+            return 1;
+        }
+        rc |= expect_contains("isp auth message label", out, "Authentication Message");
+    }
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x21;
+    tsbk[2] = 0xDE;
+    tsbk[3] = 0xAD;
+    tsbk[4] = 0xBE;
+    tsbk[5] = 0xEF;
+    if (capture_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("isp unsupported label", out, "Unsupported ISP opcode");
+
+    rc |= expect_int("isp no grant callbacks", g_grant_count, 0);
+    rc |= expect_int("isp no mac callbacks", g_mac_count, 0);
+    rc |= expect_int("isp no frequency lookup", g_process_channel_count, 0);
+    rc |= expect_int("isp no queued callbacks", g_queued_count, 0);
+    rc |= expect_int("isp no deny callbacks", g_deny_count, 0);
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x00;
+    tsbk[2] = 0x80;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_mfid90_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("mfid90 isp regroup label", out, "Group Regroup Voice Request");
+    rc |= expect_contains("mfid90 isp regroup source", out, "FM [74565]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x01;
+    tsbk[2] = 0x12;
+    tsbk[3] = 0x34;
+    tsbk[4] = 0x56;
+    tsbk[5] = 0x78;
+    tsbk[6] = 0x9A;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_mfid90_isp_output(tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("mfid90 isp extended function label", out, "Extended Function Response");
+    rc |= expect_contains("mfid90 isp extended function fields", out, "FUNC [1234] ARG [56789A]");
+
+    return rc;
+}
+
+static int
+test_standard_osp_data_channel_metadata_and_dispatch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    char out[2048];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    g_channel_freq = 851012500;
+
+    tsbk[0] = 0x10;
+    tsbk[2] = 0x10;
+    tsbk[3] = 0x01;
+    tsbk[4] = 0x01;
+    tsbk[5] = 0x02;
+    tsbk[6] = 0x03;
+    tsbk[7] = 0x04;
+    tsbk[8] = 0x05;
+    tsbk[9] = 0x06;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp individual data label", out, "Individual Data Channel Grant - Obsolete");
+    rc |= expect_contains("osp individual data channel", out, "CHAN [1001]");
+    rc |= expect_contains("osp individual data target", out, "Target [66051]");
+    rc |= expect_contains("osp individual data source", out, "Source [263430]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x11;
+    tsbk[2] = 0x90;
+    tsbk[3] = 0x10;
+    tsbk[4] = 0x02;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp group data label", out, "Group Data Channel Grant - Obsolete");
+    rc |= expect_contains("osp group data service", out, "SVC [90]");
+    rc |= expect_contains("osp group data group", out, "Group [4660][1234]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x12;
+    tsbk[2] = 0x10;
+    tsbk[3] = 0x03;
+    tsbk[4] = 0x22;
+    tsbk[5] = 0x22;
+    tsbk[6] = 0x10;
+    tsbk[7] = 0x04;
+    tsbk[8] = 0x33;
+    tsbk[9] = 0x33;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp group announcement label", out, "Group Data Channel Announcement - Obsolete");
+    rc |= expect_contains("osp group announcement channel a", out, "CHAN-A [1003]");
+    rc |= expect_contains("osp group announcement channel b", out, "CHAN-B [1004]");
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x13;
+    tsbk[2] = 0x40;
+    tsbk[3] = 0xAA;
+    tsbk[4] = 0x10;
+    tsbk[5] = 0x05;
+    tsbk[6] = 0x10;
+    tsbk[7] = 0x06;
+    tsbk[8] = 0x44;
+    tsbk[9] = 0x44;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp group explicit label", out, "Group Data Channel Announcement Explicit - Obsolete");
+    rc |= expect_contains("osp group explicit channels", out, "CHAN-T [1005] CHAN-R [1006]");
+    rc |= expect_int("osp data channel frequency lookups", g_process_channel_count, 6);
+    rc |= expect_int("osp data channel no grant callbacks", g_grant_count, 0);
+    rc |= expect_int("osp data channel no mac callbacks", g_mac_count, 0);
+    rc |= expect_int("osp data channel no active text", state.active_channel[0][0], 0);
+
+    tsbk_decode_ctx_t ctx;
+    unsigned long long pdu[24] = {0};
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x12;
+    tsbk[2] = 0x10;
+    tsbk[3] = 0x07;
+    tsbk[4] = 0x55;
+    tsbk[5] = 0x55;
+    tsbk[6] = 0x10;
+    tsbk[7] = 0x08;
+    tsbk[8] = 0x66;
+    tsbk[9] = 0x66;
+    DSD_MEMCPY(ctx.tsbk_byte, tsbk, sizeof(tsbk));
+    pdu[1] = 0x52;
+    reset_calls();
+    tsbk_dispatch_message(&opts, &state, &ctx, 0, 0, 0, pdu);
+    rc |= expect_int("osp data dispatch suppresses mac bridge", g_mac_count, 0);
+    rc |= expect_int("osp data dispatch resolves channels", g_process_channel_count, 2);
+
     return rc;
 }
 
@@ -509,6 +1117,7 @@ test_mfid90_grant_seeds_trunk_state(void) {
     opts.p25_trunk = 1;
 
     uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    tsbk[2] = 0xA5;
     tsbk[3] = 0x12;
     tsbk[4] = 0x34;
     tsbk[5] = 0x45;
@@ -524,6 +1133,7 @@ test_mfid90_grant_seeds_trunk_state(void) {
     rc |= expect_int("grant seed count", g_seed_count, 1);
     rc |= expect_int("grant count", g_grant_count, 1);
     rc |= expect_int("grant channel", g_last_grant_channel, 0x1234);
+    rc |= expect_int("grant svc", g_last_grant_svc, 0xA5);
     rc |= expect_int("grant tg", g_last_grant_tg, 0x4567);
     rc |= expect_int("grant src", g_last_grant_src, 0x010203);
     rc |= expect_int("active channel set", strstr(state.active_channel[0], "1234/1234") != NULL, 1);
@@ -576,6 +1186,132 @@ test_mfid90_grant_update_trunk_dispatch(void) {
     g_channel_freq = 0;
     tsbk_handle_mfid90_grant_update(&opts, &state, tsbk);
     rc |= expect_int("zero translated freq skips update grants", g_grant_count, 0);
+    return rc;
+}
+
+static int
+test_mfid90_queued_and_deny_callbacks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    uint8_t queued[TSBK_BYTES_PER_BLOCK] = {0};
+    queued[0] = 0x06;
+    queued[2] = 0x80 | 0x15;
+    queued[3] = 0x42;
+    queued[4] = 0x12;
+    queued[5] = 0x34;
+    queued[6] = 0x56;
+    queued[7] = 0xAB;
+    queued[8] = 0xCD;
+    queued[9] = 0xEF;
+
+    reset_calls();
+    tsbk_handle_mfid90(&opts, &state, queued);
+    int rc = 0;
+    rc |= expect_int("queued callback count", g_queued_count, 1);
+    rc |= expect_int("queued deny count", g_deny_count, 0);
+    rc |= expect_int("queued svc", g_last_response_svc, 0x15);
+    rc |= expect_int("queued reason", g_last_response_reason, 0x42);
+    rc |= expect_int("queued target", g_last_response_target, 0xABCDEF);
+    rc |= expect_int("queued active label", strstr(state.active_channel[0], "MOT QUEUED") != NULL, 1);
+    rc |= expect_int("queued info label", strstr(state.active_channel[0], "Info: 123456") != NULL, 1);
+
+    uint8_t deny[TSBK_BYTES_PER_BLOCK] = {0};
+    deny[0] = 0x07;
+    deny[2] = 0x02;
+    deny[3] = 0x60;
+    deny[7] = 0x00;
+    deny[8] = 0x01;
+    deny[9] = 0x23;
+
+    reset_calls();
+    tsbk_handle_mfid90(&opts, &state, deny);
+    rc |= expect_int("deny callback count", g_deny_count, 1);
+    rc |= expect_int("deny queued count", g_queued_count, 0);
+    rc |= expect_int("deny svc", g_last_response_svc, 0x02);
+    rc |= expect_int("deny reason", g_last_response_reason, 0x60);
+    rc |= expect_int("deny target", g_last_response_target, 0x000123);
+    rc |= expect_int("deny active label", strstr(state.active_channel[0], "MOT DENY") != NULL, 1);
+    rc |= expect_int("deny reason label", strstr(state.active_channel[0], "Site Access Denial") != NULL, 1);
+    rc |= expect_int("deny no info without flag", strstr(state.active_channel[0], "Info:") == NULL, 1);
+
+    uint8_t deny_aii[TSBK_BYTES_PER_BLOCK] = {0};
+    deny_aii[0] = 0x07;
+    deny_aii[2] = 0x80 | 0x02;
+    deny_aii[3] = 0x60;
+    deny_aii[4] = 0x12;
+    deny_aii[5] = 0x34;
+    deny_aii[6] = 0x56;
+    deny_aii[7] = 0x00;
+    deny_aii[8] = 0x01;
+    deny_aii[9] = 0x23;
+
+    reset_calls();
+    tsbk_handle_mfid90(&opts, &state, deny_aii);
+    rc |= expect_int("deny aii callback count", g_deny_count, 1);
+    rc |= expect_int("deny aii target", g_last_response_target, 0x000123);
+    rc |= expect_int("deny aii info label", strstr(state.active_channel[0], "Info: 123456") != NULL, 1);
+    return rc;
+}
+
+static int
+test_mfid90_ack_display_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    tsbk[0] = 0x08;
+    tsbk[2] = 0x04;
+    tsbk[4] = 0x01;
+    tsbk[5] = 0x02;
+    tsbk[6] = 0x03;
+    tsbk[7] = 0x04;
+    tsbk[8] = 0x05;
+    tsbk[9] = 0x06;
+
+    reset_calls();
+    tsbk_handle_mfid90(&opts, &state, tsbk);
+    int rc = 0;
+    rc |= expect_int("ack no queued callback", g_queued_count, 0);
+    rc |= expect_int("ack no deny callback", g_deny_count, 0);
+    rc |= expect_int("ack no grant", g_grant_count, 0);
+    rc |= expect_int("ack active label", strstr(state.active_channel[0], "MOT ACK") != NULL, 1);
+    rc |= expect_int("ack service label", strstr(state.active_channel[0], "Service: 04") != NULL, 1);
+    rc |= expect_int("ack source label", strstr(state.active_channel[0], "Source: 66051") != NULL, 1);
+    rc |= expect_int("ack target label", strstr(state.active_channel[0], "Target: 263430") != NULL, 1);
+    return rc;
+}
+
+static int
+test_mfid90_tdma_data_channel_display_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.p25_trunk = 1;
+
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    tsbk[0] = 0x16;
+    tsbk[4] = 0x30;
+    tsbk[5] = 0x60;
+    tsbk[6] = 0x80;
+    tsbk[7] = 0x3E;
+
+    reset_calls();
+    g_channel_freq = 420612500;
+    tsbk_handle_mfid90(&opts, &state, tsbk);
+    int rc = 0;
+    rc |= expect_int("tdma data resolves channels", g_process_channel_count, 2);
+    rc |= expect_int("tdma data last channel", g_last_process_channel, 0x803E);
+    rc |= expect_int("tdma data no grant", g_grant_count, 0);
+    rc |= expect_int("tdma data no seed", g_seed_count, 0);
+    rc |= expect_int("tdma data active label", strstr(state.active_channel[0], "MOT TDMA Data") != NULL, 1);
+    rc |= expect_int("tdma data downlink label", strstr(state.active_channel[0], "3060/3060") != NULL, 1);
+    rc |= expect_int("tdma data uplink label", strstr(state.active_channel[0], "803E/803E") != NULL, 1);
     return rc;
 }
 
@@ -692,6 +1428,8 @@ test_dispatch_gates_mac_and_vendor_handlers(void) {
     ctx.tsbk_byte[9] = 0x90;
     tsbk_dispatch_message(&opts, &state, &ctx, 0, 0, 1, pdu);
     rc |= expect_int("protected isp skips mac", g_mac_count, 0);
+    rc |= expect_int("protected isp skips grants", g_grant_count, 0);
+    rc |= expect_int("protected isp skips channel lookup", g_process_channel_count, 0);
 
     reset_calls();
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
@@ -709,10 +1447,15 @@ int
 main(void) {
     int rc = 0;
     rc |= test_crc_candidate_selection_and_fallback();
+    rc |= test_standard_isp_metadata_logging_and_no_retune();
+    rc |= test_standard_osp_data_channel_metadata_and_dispatch();
     rc |= test_mfid90_regroup_add_delete();
     rc |= test_mfid_a4_patch_and_simulselect_paths();
     rc |= test_mfid90_grant_seeds_trunk_state();
     rc |= test_mfid90_grant_update_trunk_dispatch();
+    rc |= test_mfid90_queued_and_deny_callbacks();
+    rc |= test_mfid90_ack_display_only();
+    rc |= test_mfid90_tdma_data_channel_display_only();
     rc |= test_network_status_state_policy();
     rc |= test_dispatch_gates_mac_and_vendor_handlers();
     return rc;

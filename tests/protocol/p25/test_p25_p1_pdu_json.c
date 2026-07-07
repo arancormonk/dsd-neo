@@ -4,7 +4,7 @@
  */
 
 /*
- * Verify P25 Phase 1 PDU JSON emission for data SAPs (RegAuth, SysCfg).
+ * Verify P25 Phase 1 PDU JSON emission for data SAPs.
  */
 
 #include <errno.h>
@@ -332,6 +332,98 @@ main(void) {
         p25_test_p1_pdu_data_decode(pdu, total_len);
     }
 
+    // Case 4: SAP 6 inbound SNDCP Activate TDS Context Request.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x10; // fmt=16, io=0/inbound
+        pdu[1] = 6;    // SAP 6
+        pdu[2] = 0x21; // MFID
+        pdu[6] = 0x02;
+        pdu[12] = 0x07; // type=0, nsapi=7
+        pdu[13] = 0x41; // version=4, IPv4 dynamic
+        pdu[14] = 198;
+        pdu[15] = 51;
+        pdu[16] = 100;
+        pdu[17] = 9;
+        pdu[18] = 0x20; // DSUT=2
+        pdu[19] = 0x00;
+        pdu[20] = 0x00;
+        pdu[21] = 0x01;
+        int total_len = 12 + 10 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 5: SAP 6 outbound SNDCP Activate TDS Context Accept.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x30; // fmt=16, io=1/outbound
+        pdu[1] = 6;    // SAP 6
+        pdu[2] = 0x22; // MFID
+        pdu[6] = 0x02;
+        pdu[12] = 0x05; // type=0, nsapi=5
+        pdu[13] = 0xAB; // priority=10, ready timer=60s
+        pdu[14] = 0x31; // standby timer=60s, IPv4 dynamic
+        pdu[15] = 192;
+        pdu[16] = 0;
+        pdu[17] = 2;
+        pdu[18] = 7;
+        pdu[19] = 0x00;
+        pdu[20] = 0x00;
+        pdu[21] = 0x20; // MTU 510, UDP compression none
+        pdu[22] = 0x02; // MDP PPP
+        int total_len = 12 + 11 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 6: SAP 6 outbound SNDCP Activate TDS Context Reject.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x30; // fmt=16, io=1/outbound
+        pdu[1] = 6;
+        pdu[2] = 0x23;
+        pdu[6] = 0x02;
+        pdu[12] = 0x34; // type=3, nsapi=4
+        pdu[13] = 0x0A; // IPv4 not supported
+        int total_len = 12 + 2 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 7: SAP 6 outbound SNDCP Deactivate TDS Context Request.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x30; // fmt=16, io=1/outbound
+        pdu[1] = 6;
+        pdu[2] = 0x24;
+        pdu[6] = 0x02;
+        pdu[12] = 0x21; // type=2, nsapi=1
+        pdu[13] = 0x10; // deactivate this NSAPI
+        int total_len = 12 + 2 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 8: SAP 4 packet data with the optional 2-octet SNDCP packet header.
+    {
+        uint8_t pdu[96];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x30; // fmt=16, io=1/outbound
+        pdu[1] = 4;    // SAP 4
+        pdu[2] = 0x33; // MFID
+        pdu[6] = 0x03;
+        pdu[9] = 0x02;  // data header offset = 2 octets
+        pdu[12] = 0x45; // RF unconfirmed data, NSAPI 5
+        pdu[13] = 0x00; // no IP/UDP header compression
+        pdu[14] = 0x45; // start of IPv4 payload passed to decode_ip_pdu
+        pdu[15] = 0x00;
+        pdu[16] = 0x00;
+        pdu[17] = 0x14;
+        int total_len = 12 + 2 + 20 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
     dsd_test_capture_stderr_end(&cap);
 
     FILE* rf = fopen(cap.path, "rb");
@@ -354,7 +446,7 @@ main(void) {
     }
     fclose(rf);
 
-    // Parse last (SysCfg)
+    // Parse last (SAP 4 packet header)
     int sap = -1, mfid = -1, io = -1, jlen = -1;
     char summary[128];
     int er = parse_last_json(buf, (int)nread, &sap, &mfid, &io, &jlen, summary, sizeof(summary));
@@ -363,11 +455,18 @@ main(void) {
         DSD_FPRINTF(stderr, "parse_last_json er=%d\n", er);
         return 103;
     }
-    rc |= expect_eq_int("SysCfg sap", sap, 34);
-    rc |= expect_eq_int("SysCfg mfid", mfid, 0x55);
-    rc |= expect_eq_int("SysCfg io", io, 1);
-    rc |= expect_eq_int("SysCfg len", jlen, 3);
-    rc |= expect_str_contains("SysCfg summary", summary, "SysCfg");
+    rc |= expect_eq_int("SAP4 sap", sap, 4);
+    rc |= expect_eq_int("SAP4 mfid", mfid, 0x33);
+    rc |= expect_eq_int("SAP4 io", io, 1);
+    rc |= expect_eq_int("SAP4 len", jlen, 22);
+    rc |= expect_str_contains("SAP4 summary", summary, "SNDCP Packet Header");
+    rc |= expect_str_contains("SysCfg summary", buf, "SysCfg");
+    rc |= expect_str_contains("SAP6 request output", buf, "Activate TDS Context Request");
+    rc |= expect_str_contains("SAP6 request IP", buf, "IP:198.51.100.9");
+    rc |= expect_str_contains("SAP6 accept output", buf, "Activate TDS Context Accept");
+    rc |= expect_str_contains("SAP6 SNDCP MTU", buf, "MTU:510");
+    rc |= expect_str_contains("SAP6 reject output", buf, "IPv4 Not Supported");
+    rc |= expect_str_contains("SAP6 deactivate output", buf, "Deactivate:This NSAPI");
     rc |= expect_str_contains("SAP48 NMEA output", buf, "$GPRMC,123519");
     rc |= expect_eq_int("SAP48 NMEA avoids UTF8 fallback", g_utf8_calls, 0);
     free(buf);
