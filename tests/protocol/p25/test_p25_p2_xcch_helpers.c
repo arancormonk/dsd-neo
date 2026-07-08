@@ -148,6 +148,12 @@ p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 void
+p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+    (void)observed_m;
+    p25_sm_emit_idle(opts, state, slot);
+}
+
+void
 p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid, int tg) {
     (void)opts;
     (void)state;

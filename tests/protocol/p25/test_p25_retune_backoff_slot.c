@@ -772,7 +772,70 @@ main(void) {
         dsd_state_ext_free_all(&pending_st);
     }
 
-    // 13) A forced release after one TDMA slot produced voice still records a
+    // 13) A grant accepted from a MAC_IDLE payload must survive the following
+    // idle event so the other slot's explicit end cannot release the VC early.
+    {
+        static dsd_opts idle_payload_opts;
+        static dsd_state idle_payload_st;
+        DSD_MEMSET(&idle_payload_opts, 0, sizeof idle_payload_opts);
+        DSD_MEMSET(&idle_payload_st, 0, sizeof idle_payload_st);
+        idle_payload_opts.p25_trunk = 1;
+        idle_payload_opts.trunk_tune_group_calls = 1;
+        idle_payload_opts.trunk_hangtime = 0.2f;
+        idle_payload_opts.p25_grant_voice_to_s = 0.8;
+        idle_payload_opts.p25_retune_backoff_s = 2.0;
+        idle_payload_st.p25_cc_freq = 851000000;
+        idle_payload_st.p25_chan_iden = id;
+        idle_payload_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+        idle_payload_st.p25_chan_tdma_explicit[id] = 2;
+
+        p25_sm_ctx_t idle_payload_ctx;
+        p25_sm_init_ctx(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st);
+        g_last_tuned_vc = 0;
+        g_tune_to_freq_calls = 0;
+        g_return_to_cc_calls = 0;
+        p25_sm_event_t active_slot0 = p25_sm_ev_group_grant(ch_slot0, 0, 3451, 4451, 0);
+        p25_sm_event_t ptt_slot0 = p25_sm_ev_ptt(0);
+        p25_sm_event_t payload_grant_slot1 = p25_sm_ev_group_grant(ch_slot1, 0, 3452, 4452, 0);
+        p25_sm_event_t end_slot0 = p25_sm_ev_end(0);
+
+        p25_sm_event(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st, &active_slot0);
+        rc |=
+            expect_true("idle-payload initial tune", g_tune_to_freq_calls == 1 && idle_payload_opts.p25_is_tuned == 1);
+        p25_sm_event(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st, &ptt_slot0);
+        idle_payload_st.p25_p2_audio_allowed[0] = 1;
+
+        double idle_observed_m = dsd_time_now_monotonic_s() - 1.0;
+        p25_sm_event(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st, &payload_grant_slot1);
+        rc |= expect_true("idle-payload same-carrier grant", g_tune_to_freq_calls == 1
+                                                                 && idle_payload_ctx.slots[1].grant_active
+                                                                 && idle_payload_ctx.slots[1].voice_active == 0);
+
+        p25_sm_event_t idle_slot1 = p25_sm_ev_idle_at(1, idle_observed_m);
+        p25_sm_event(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st, &idle_slot1);
+        rc |= expect_true("idle-payload grant survives idle",
+                          idle_payload_ctx.slots[1].grant_active && idle_payload_ctx.slots[1].voice_active == 0);
+
+        p25_sm_event(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st, &end_slot0);
+        rc |= expect_true("idle-payload pending grant blocks explicit release",
+                          idle_payload_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 0
+                              && idle_payload_ctx.state == P25_SM_TUNED && idle_payload_ctx.slots[1].grant_active);
+
+        double now_m = dsd_time_now_monotonic_s();
+        idle_payload_ctx.t_voice_m = 0.0;
+        idle_payload_ctx.t_tune_m = now_m - 1.0;
+        idle_payload_ctx.slots[1].last_grant_m = idle_payload_ctx.t_tune_m;
+        p25_sm_tick_ctx(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st);
+        rc |= expect_true("idle-payload grant timeout returned", idle_payload_opts.p25_is_tuned == 0
+                                                                     && g_return_to_cc_calls == 1
+                                                                     && idle_payload_ctx.state == P25_SM_ON_CC);
+        rc |= expect_true("idle-payload slot backoff",
+                          retune_backoff_history_has_slot(&idle_payload_st, g_last_tuned_vc, 1));
+
+        dsd_state_ext_free_all(&idle_payload_st);
+    }
+
+    // 14) A forced release after one TDMA slot produced voice still records a
     // pending grant on the other slot that never produced audio.
     {
         static dsd_opts forced_pending_opts;
@@ -824,7 +887,7 @@ main(void) {
         dsd_state_ext_free_all(&forced_pending_st);
     }
 
-    // 14) A transient return-to-CC failure during grant timeout must not record
+    // 15) A transient return-to-CC failure during grant timeout must not record
     // a failed VC until the retry is accepted.
     static const dsd_trunk_tune_result transient_returns[] = {
         DSD_TRUNK_TUNE_RESULT_DEFERRED,
@@ -876,7 +939,7 @@ main(void) {
     }
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 15) Same-carrier preemption releases to the CC first. The replacement
+    // 16) Same-carrier preemption releases to the CC first. The replacement
     // grant must retune the VC instead of reusing a carrier that is no longer tuned.
     {
         static dsd_opts preempt_opts;

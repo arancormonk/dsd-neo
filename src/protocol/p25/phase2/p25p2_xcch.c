@@ -587,6 +587,8 @@ p25p2_xcch_handle_sacch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot) 
 
 static void
 p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot, unsigned long long int smac[24]) {
+    double idle_observed_m = dsd_time_now_monotonic_s();
+
     p25p2_xcch_set_slot_burst(state, slot, 24);
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
@@ -594,7 +596,7 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     process_MAC_VPDU(opts, state, 1, smac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    p25_sm_emit_idle(opts, state, slot);
+    p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     state->p25_p2_enc_lockout_muted[slot] = 0;
     p25p2_xcch_blank_slot_call_string(state, slot);
     p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
@@ -682,6 +684,8 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
         return;
     }
 
+    double idle_observed_m = dsd_time_now_monotonic_s();
+
     p25p2_xcch_reset_idle_slot_facch(state, slot);
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
@@ -690,7 +694,7 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     p25p2_xcch_blank_slot_call_string(state, slot);
-    p25_sm_emit_idle(opts, state, slot);
+    p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
     p25_p2_audio_ring_reset(state, slot);
 }

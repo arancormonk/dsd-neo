@@ -89,6 +89,7 @@ typedef struct {
     int algid;              // Algorithm ID (for ENC event)
     int keyid;              // Key ID (for ENC event)
     int data_call_override; // 0=infer from svc_bits, 1=force data, -1=force non-data
+    double observed_m;      // Optional monotonic timestamp when the event was observed
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -326,6 +327,11 @@ void p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot);
  * @brief Emit IDLE event for a slot.
  */
 void p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot);
+
+/**
+ * @brief Emit IDLE event with a previously captured monotonic observation timestamp.
+ */
+void p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m);
 
 /**
  * @brief Emit TDU (P1 terminator) event.
@@ -584,6 +590,13 @@ p25_sm_ev_idle(int slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_IDLE;
     ev.slot = slot;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_idle_at(int slot, double observed_m) {
+    p25_sm_event_t ev = p25_sm_ev_idle(slot);
+    ev.observed_m = observed_m;
     return ev;
 }
 

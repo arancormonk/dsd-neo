@@ -1597,6 +1597,15 @@ p25_voice_end_can_release_explicit(const p25_sm_ctx_t* ctx, int other) {
     return ctx->slots[other].voice_active ? 0 : 1;
 }
 
+static int
+p25_voice_end_preserve_recent_idle_grant(const p25_sm_ctx_t* ctx, int slot, int is_explicit_end, double observed_m) {
+    if (!ctx || slot < 0 || slot > 1 || is_explicit_end || observed_m <= 0.0) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    return (slot_ctx->grant_active && slot_ctx->last_grant_m > observed_m) ? 1 : 0;
+}
+
 static void
 p25_voice_end_try_explicit_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, int is_explicit_end) {
     if (!is_explicit_end || ctx->state != P25_SM_TUNED || !opts || !state) {
@@ -1623,17 +1632,21 @@ p25_voice_end_try_explicit_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
 }
 
 static void
-handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end) {
+handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end,
+                 double observed_m) {
     if (!ctx) {
         return;
     }
 
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
+    int preserve_recent_grant = p25_voice_end_preserve_recent_idle_grant(ctx, s, is_explicit_end, observed_m);
 
     // Mark voice inactive but keep last_active_m for hangtime tracking
     ctx->slots[s].voice_active = 0;
-    ctx->slots[s].grant_active = 0;
-    if (state) {
+    if (!preserve_recent_grant) {
+        ctx->slots[s].grant_active = 0;
+    }
+    if (state && !preserve_recent_grant) {
         (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? s : -1);
     }
 
@@ -2377,20 +2390,19 @@ p25_sm_handle_event_active(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
 static void
 p25_sm_handle_event_end(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // MAC_END_PTT is an explicit call termination - trigger immediate release check.
-    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1);
+    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1, ev->observed_m);
 }
 
 static void
 p25_sm_handle_event_idle(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // MAC_IDLE may occur during brief gaps - use hangtime, not immediate release.
-    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0);
+    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0, ev->observed_m);
 }
 
 static void
 p25_sm_handle_event_tdu(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
-    (void)ev;
     // P1 terminator - explicit call end, trigger immediate release check.
-    handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 1);
+    handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 1, ev ? ev->observed_m : 0.0);
 }
 
 static void
@@ -2835,6 +2847,12 @@ p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot) {
 void
 p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot) {
     p25_sm_event_t ev = p25_sm_ev_idle(slot);
+    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+}
+
+void
+p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+    p25_sm_event_t ev = p25_sm_ev_idle_at(slot, observed_m);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
