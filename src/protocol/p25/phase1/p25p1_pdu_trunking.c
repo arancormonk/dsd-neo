@@ -640,7 +640,8 @@ p25_handle_mbt_roaming_address(const uint8_t* mpdu_byte, uint8_t opcode) {
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_individual_data_channel_grant(const uint8_t* mpdu_byte, size_t mpdu_len) {
+p25_handle_mbt_individual_data_channel_grant(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte,
+                                             size_t mpdu_len) {
     int has_uplink = mpdu_len >= 26U;
     uint8_t svc = mpdu_byte[8];
     uint32_t source = p25_mbt_u24(mpdu_byte, 3U);
@@ -651,6 +652,7 @@ p25_handle_mbt_individual_data_channel_grant(const uint8_t* mpdu_byte, size_t mp
     uint32_t target = p25_mbt_u24(mpdu_byte, 19U);
     uint16_t channelt = p25_mbt_u16(mpdu_byte, 22U);
     uint16_t channelr = has_uplink ? p25_mbt_u16(mpdu_byte, 24U) : 0xFFFFU;
+    long int freq = 0;
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Individual Data Channel Grant MBT - Obsolete");
@@ -659,20 +661,46 @@ p25_handle_mbt_individual_data_channel_grant(const uint8_t* mpdu_byte, size_t mp
     if (has_uplink) {
         DSD_FPRINTF(stderr, " CHAN-R [%04X]", channelr);
     }
+
+    freq = process_channel_to_freq(opts, state, channelt);
+    if (has_uplink) {
+        (void)process_channel_to_freq(opts, state, channelr);
+    }
+
+    dsd_tg_policy_decision decision;
+    if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, (svc & 0x40) ? 1 : 0, 1,
+                                            DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                            DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+            != 0
+        || !decision.tune_allowed) {
+        return;
+    }
+
+    if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
+        p25_sm_on_indiv_data_grant(opts, state, channelt, svc, (int)target, (int)source);
+    }
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_group_data_channel_grant(const uint8_t* mpdu_byte) {
+p25_handle_mbt_group_data_channel_grant(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     uint8_t svc = mpdu_byte[8];
     uint32_t source = p25_mbt_u24(mpdu_byte, 3U);
     uint16_t channelt = p25_mbt_u16(mpdu_byte, 14U);
     uint16_t channelr = p25_mbt_u16(mpdu_byte, 16U);
     uint16_t group = p25_mbt_u16(mpdu_byte, 18U);
+    long int freq = 0;
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Group Data Channel Grant MBT - Obsolete");
     DSD_FPRINTF(stderr, " SVC [%02X] SRC [%u] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, source, channelt,
                 channelr, group, group);
+
+    freq = process_channel_to_freq(opts, state, channelt);
+    (void)process_channel_to_freq(opts, state, channelr);
+
+    if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
+        p25_sm_on_group_data_grant(opts, state, channelt, svc, (int)group, (int)source);
+    }
 }
 
 static int DSD_ATTR_USED
@@ -1099,19 +1127,20 @@ p25_handle_mbt_voice_service_opcode(dsd_opts* opts, dsd_state* state, const uint
 }
 
 static int
-p25_handle_mbt_data_service_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p25p1_mbt_fields* fields) {
+p25_handle_mbt_data_service_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
+                                   const p25p1_mbt_fields* fields) {
     switch (fields->opcode) {
         case 0x10:
             if (!p25_mbt_require_len(fields, mpdu_len, 24U, "Individual Data Channel Grant")) {
                 return 1;
             }
-            p25_handle_mbt_individual_data_channel_grant(mpdu_byte, mpdu_len);
+            p25_handle_mbt_individual_data_channel_grant(opts, state, mpdu_byte, mpdu_len);
             return 1;
         case 0x11:
             if (!p25_mbt_require_len(fields, mpdu_len, 20U, "Group Data Channel Grant")) {
                 return 1;
             }
-            p25_handle_mbt_group_data_channel_grant(mpdu_byte);
+            p25_handle_mbt_group_data_channel_grant(opts, state, mpdu_byte);
             return 1;
         default: return 0;
     }
@@ -1187,7 +1216,7 @@ p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* 
     if (p25_handle_mbt_voice_service_opcode(opts, state, mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
-    if (p25_handle_mbt_data_service_opcode(mpdu_byte, mpdu_len, fields)) {
+    if (p25_handle_mbt_data_service_opcode(opts, state, mpdu_byte, mpdu_len, fields)) {
         return 1;
     }
     if (p25_handle_mbt_command_metadata_opcode(mpdu_byte, mpdu_len, fields)) {

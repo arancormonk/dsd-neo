@@ -275,6 +275,12 @@ p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, i
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    p25_sm_on_group_grant(opts, state, channel, svc_bits, tg, src);
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     (void)channel;
     (void)svc_bits;
@@ -285,6 +291,12 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     }
     state->p25_sm_tune_count++;
     opts->p25_is_tuned = 1;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+    p25_sm_on_indiv_grant(opts, state, channel, svc_bits, dst, src);
 }
 
 void

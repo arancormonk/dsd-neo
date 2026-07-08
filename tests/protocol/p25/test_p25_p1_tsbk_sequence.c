@@ -263,6 +263,26 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
 }
 
 void
+p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    (void)opts;
+    (void)state;
+    (void)channel;
+    (void)svc_bits;
+    (void)tg;
+    (void)src;
+}
+
+void
+p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+    (void)opts;
+    (void)state;
+    (void)channel;
+    (void)svc_bits;
+    (void)dst;
+    (void)src;
+}
+
+void
 p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
     (void)opts;
     (void)state;

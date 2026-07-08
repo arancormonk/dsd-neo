@@ -282,68 +282,92 @@ tsbk_u24(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int offset) {
 }
 
 static int
-tsbk_handle_standard_osp_data_channel(const dsd_opts* opts, dsd_state* state,
-                                      const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+tsbk_handle_individual_data_channel_grant(dsd_opts* opts, dsd_state* state,
+                                          const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint16_t channel = tsbk_u16(tsbk_byte, 2);
+    int target = tsbk_u24(tsbk_byte, 4);
+    int source = tsbk_u24(tsbk_byte, 7);
+    long int freq = 0;
+    DSD_FPRINTF(stderr, "\n Individual Data Channel Grant - Obsolete");
+    DSD_FPRINTF(stderr, "\n  CHAN [%04X] Target [%d] Source [%d]", channel, target, source);
+    if (channel != 0) {
+        freq = process_channel_to_freq(opts, state, channel);
+    }
+    if (opts && opts->p25_trunk == 1 && channel != 0 && freq != 0) {
+        p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
+        p25_sm_on_indiv_data_grant(opts, state, channel, P25_SM_SVC_UNKNOWN, target, source);
+    }
+    return 1;
+}
+
+static int
+tsbk_handle_group_data_channel_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint8_t svc_bits = tsbk_byte[2];
+    uint16_t channel = tsbk_u16(tsbk_byte, 3);
+    uint16_t group = tsbk_u16(tsbk_byte, 5);
+    int src = tsbk_u24(tsbk_byte, 7);
+    long int freq = 0;
+    DSD_FPRINTF(stderr, "\n Group Data Channel Grant - Obsolete");
+    DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN [%04X] Group [%d][%04X] Source [%d]", svc_bits, channel, group, group,
+                src);
+    if (channel != 0) {
+        freq = process_channel_to_freq(opts, state, channel);
+    }
+    if (opts && opts->p25_trunk == 1 && channel != 0 && freq != 0) {
+        p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
+        p25_sm_on_group_data_grant(opts, state, channel, svc_bits, group, src);
+    }
+    return 1;
+}
+
+static int
+tsbk_handle_group_data_channel_announcement(const dsd_opts* opts, dsd_state* state,
+                                            const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint16_t channel_a = tsbk_u16(tsbk_byte, 2);
+    uint16_t group_a = tsbk_u16(tsbk_byte, 4);
+    uint16_t channel_b = tsbk_u16(tsbk_byte, 6);
+    uint16_t group_b = tsbk_u16(tsbk_byte, 8);
+    DSD_FPRINTF(stderr, "\n Group Data Channel Announcement - Obsolete");
+    DSD_FPRINTF(stderr, "\n  CHAN-A [%04X] Group-A [%d][%04X] CHAN-B [%04X] Group-B [%d][%04X]", channel_a, group_a,
+                group_a, channel_b, group_b, group_b);
+    if (channel_a != 0) {
+        (void)process_channel_to_freq(opts, state, channel_a);
+    }
+    if (channel_b != 0) {
+        (void)process_channel_to_freq(opts, state, channel_b);
+    }
+    return 1;
+}
+
+static int
+tsbk_handle_group_data_channel_announcement_explicit(const dsd_opts* opts, dsd_state* state,
+                                                     const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+    uint8_t svc = tsbk_byte[2];
+    uint8_t reserved = tsbk_byte[3];
+    uint16_t channel_t = tsbk_u16(tsbk_byte, 4);
+    uint16_t channel_r = tsbk_u16(tsbk_byte, 6);
+    uint16_t group = tsbk_u16(tsbk_byte, 8);
+    DSD_FPRINTF(stderr, "\n Group Data Channel Announcement Explicit - Obsolete");
+    DSD_FPRINTF(stderr, "\n  SVC [%02X] RES [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, reserved,
+                channel_t, channel_r, group, group);
+    if (channel_t != 0) {
+        (void)process_channel_to_freq(opts, state, channel_t);
+    }
+    if (channel_r != 0) {
+        (void)process_channel_to_freq(opts, state, channel_r);
+    }
+    return 1;
+}
+
+static int
+tsbk_handle_standard_osp_data_channel(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
     uint8_t opcode = (uint8_t)(tsbk_byte[0] & 0x3F);
 
     switch (opcode) {
-        case 0x10: {
-            uint16_t channel = tsbk_u16(tsbk_byte, 2);
-            int target = tsbk_u24(tsbk_byte, 4);
-            int source = tsbk_u24(tsbk_byte, 7);
-            DSD_FPRINTF(stderr, "\n Individual Data Channel Grant - Obsolete");
-            DSD_FPRINTF(stderr, "\n  CHAN [%04X] Target [%d] Source [%d]", channel, target, source);
-            if (channel != 0) {
-                (void)process_channel_to_freq(opts, state, channel);
-            }
-            return 1;
-        }
-        case 0x11: {
-            uint8_t svc = tsbk_byte[2];
-            uint16_t channel = tsbk_u16(tsbk_byte, 3);
-            uint16_t group = tsbk_u16(tsbk_byte, 5);
-            int source = tsbk_u24(tsbk_byte, 7);
-            DSD_FPRINTF(stderr, "\n Group Data Channel Grant - Obsolete");
-            DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN [%04X] Group [%d][%04X] Source [%d]", svc, channel, group, group,
-                        source);
-            if (channel != 0) {
-                (void)process_channel_to_freq(opts, state, channel);
-            }
-            return 1;
-        }
-        case 0x12: {
-            uint16_t channel_a = tsbk_u16(tsbk_byte, 2);
-            uint16_t group_a = tsbk_u16(tsbk_byte, 4);
-            uint16_t channel_b = tsbk_u16(tsbk_byte, 6);
-            uint16_t group_b = tsbk_u16(tsbk_byte, 8);
-            DSD_FPRINTF(stderr, "\n Group Data Channel Announcement - Obsolete");
-            DSD_FPRINTF(stderr, "\n  CHAN-A [%04X] Group-A [%d][%04X] CHAN-B [%04X] Group-B [%d][%04X]", channel_a,
-                        group_a, group_a, channel_b, group_b, group_b);
-            if (channel_a != 0) {
-                (void)process_channel_to_freq(opts, state, channel_a);
-            }
-            if (channel_b != 0) {
-                (void)process_channel_to_freq(opts, state, channel_b);
-            }
-            return 1;
-        }
-        case 0x13: {
-            uint8_t svc = tsbk_byte[2];
-            uint8_t reserved = tsbk_byte[3];
-            uint16_t channel_t = tsbk_u16(tsbk_byte, 4);
-            uint16_t channel_r = tsbk_u16(tsbk_byte, 6);
-            uint16_t group = tsbk_u16(tsbk_byte, 8);
-            DSD_FPRINTF(stderr, "\n Group Data Channel Announcement Explicit - Obsolete");
-            DSD_FPRINTF(stderr, "\n  SVC [%02X] RES [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, reserved,
-                        channel_t, channel_r, group, group);
-            if (channel_t != 0) {
-                (void)process_channel_to_freq(opts, state, channel_t);
-            }
-            if (channel_r != 0) {
-                (void)process_channel_to_freq(opts, state, channel_r);
-            }
-            return 1;
-        }
+        case 0x10: return tsbk_handle_individual_data_channel_grant(opts, state, tsbk_byte);
+        case 0x11: return tsbk_handle_group_data_channel_grant(opts, state, tsbk_byte);
+        case 0x12: return tsbk_handle_group_data_channel_announcement(opts, state, tsbk_byte);
+        case 0x13: return tsbk_handle_group_data_channel_announcement_explicit(opts, state, tsbk_byte);
         default: break;
     }
     return 0;

@@ -391,7 +391,11 @@ p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_s
         || !decision.tune_allowed) {
         return;
     }
-    p25_sm_on_indiv_grant(opts, state, channel, svc_bits, target, source);
+    if (policy_data_override > 0) {
+        p25_sm_on_indiv_data_grant(opts, state, channel, svc_bits, target, source);
+    } else {
+        p25_sm_on_indiv_grant(opts, state, channel, svc_bits, target, source);
+    }
 }
 
 static inline void

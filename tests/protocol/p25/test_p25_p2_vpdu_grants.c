@@ -216,6 +216,11 @@ static int g_group_grant_channel = -1;
 static int g_group_grant_svc = -1;
 static int g_group_grant_tg = -1;
 static int g_group_grant_src = -1;
+static int g_indiv_data_grant_called = 0;
+static int g_indiv_data_grant_channel = -1;
+static int g_indiv_data_grant_svc = -1;
+static int g_indiv_data_grant_dst = -1;
+static int g_indiv_data_grant_src = -1;
 
 static void
 sm_on_group_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
@@ -229,12 +234,28 @@ sm_on_group_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc
 }
 
 static void
+sm_on_indiv_data_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+    (void)opts;
+    (void)state;
+    g_indiv_data_grant_called++;
+    g_indiv_data_grant_channel = channel;
+    g_indiv_data_grant_svc = svc_bits;
+    g_indiv_data_grant_dst = dst;
+    g_indiv_data_grant_src = src;
+}
+
+static void
 reset_group_grant_capture(void) {
     g_group_grant_called = 0;
     g_group_grant_channel = -1;
     g_group_grant_svc = -1;
     g_group_grant_tg = -1;
     g_group_grant_src = -1;
+    g_indiv_data_grant_called = 0;
+    g_indiv_data_grant_channel = -1;
+    g_indiv_data_grant_svc = -1;
+    g_indiv_data_grant_dst = -1;
+    g_indiv_data_grant_src = -1;
 }
 
 static void
@@ -2060,6 +2081,122 @@ main(void) {
         rc |= expect_eq_long("0x48 telephone svc", state.dmr_so, 0x93);
         rc |= expect_eq_long("0x48 telephone emergency", state.p25_call_emergency[0], 1);
         rc |= expect_eq_long("0x48 telephone packet", state.p25_call_is_packet[0], 1);
+    }
+
+    // Case S0: explicit SNDCP data grants use the data-grant SM surface and respect data tuning policy.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_private_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        opts.trunk_tune_data_calls = 0;
+        state.p25_cc_freq = 851000000;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x54;
+        MAC[2] = 0x22;
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0B;
+        MAC[7] = 0x03;
+        MAC[8] = 0x04;
+        MAC[9] = 0x05;
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_indiv_data_grant = sm_on_indiv_data_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x54 data disabled no callback", g_indiv_data_grant_called, 0);
+
+        opts.trunk_tune_data_calls = 1;
+        reset_group_grant_capture();
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+        rc |= expect_eq_long("0x54 data callback", g_indiv_data_grant_called, 1);
+        rc |= expect_eq_long("0x54 data callback channel", g_indiv_data_grant_channel, 0x100A);
+        rc |= expect_eq_long("0x54 data callback svc", g_indiv_data_grant_svc, P25_SM_SVC_UNKNOWN);
+        rc |= expect_eq_long("0x54 data callback dst", g_indiv_data_grant_dst, 0x030405);
+        rc |= expect_eq_long("0x54 data callback src", g_indiv_data_grant_src, 0);
+    }
+
+    // Case S1: L3Harris data grants also use the data-grant SM surface.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_private_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        opts.trunk_tune_data_calls = 1;
+        state.p25_cc_freq = 851000000;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        p25_sm_api api = {0};
+        api.on_indiv_data_grant = sm_on_indiv_data_grant_capture;
+        p25_sm_set_api(&api);
+
+        MAC[1] = 0xA0;
+        MAC[2] = 0xA4;
+        MAC[3] = 0x09;
+        MAC[4] = 0x00;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0A;
+        MAC[7] = 0x03;
+        MAC[8] = 0x04;
+        MAC[9] = 0x05;
+
+        reset_group_grant_capture();
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("Harris A0 data callback", g_indiv_data_grant_called, 1);
+        rc |= expect_eq_long("Harris A0 data channel", g_indiv_data_grant_channel, 0x100A);
+        rc |= expect_eq_long("Harris A0 data dst", g_indiv_data_grant_dst, 0x030405);
+        rc |= expect_eq_long("Harris A0 data src", g_indiv_data_grant_src, 0);
+
+        DSD_MEMSET(MAC, 0, sizeof MAC);
+        MAC[1] = 0xAC;
+        MAC[2] = 0xA4;
+        MAC[3] = 0x0C;
+        MAC[4] = 0x00;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0A;
+        MAC[7] = 0x03;
+        MAC[8] = 0x04;
+        MAC[9] = 0x05;
+        MAC[10] = 0x98;
+        MAC[11] = 0x04;
+        MAC[12] = 0x18;
+
+        reset_group_grant_capture();
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+        rc |= expect_eq_long("Harris AC data callback", g_indiv_data_grant_called, 1);
+        rc |= expect_eq_long("Harris AC data channel", g_indiv_data_grant_channel, 0x100A);
+        rc |= expect_eq_long("Harris AC data dst", g_indiv_data_grant_dst, 0x030405);
+        rc |= expect_eq_long("Harris AC data src", g_indiv_data_grant_src, 0x980418);
     }
 
     // Case S: explicit SNDCP data grants update data-channel state in playback

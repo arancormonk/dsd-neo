@@ -522,7 +522,13 @@ p25_grant_eval_ctx_from_event(const p25_sm_event_t* ev) {
     }
     ctx.svc_valid = p25_sm_svc_bits_valid(ev->svc_bits);
     ctx.svc = ctx.svc_valid ? ev->svc_bits : 0;
-    ctx.data_call = (ctx.svc_valid && SVC_IS_DATA(ctx.svc)) ? 1 : 0;
+    if (ev->data_call_override > 0) {
+        ctx.data_call = 1;
+    } else if (ev->data_call_override < 0) {
+        ctx.data_call = 0;
+    } else {
+        ctx.data_call = (ctx.svc_valid && SVC_IS_DATA(ctx.svc)) ? 1 : 0;
+    }
     ctx.encrypted_call = (ctx.svc_valid && SVC_IS_ENC(ctx.svc)) ? 1 : 0;
     ctx.is_indiv = !ev->is_group;
     ctx.tg = ctx.is_indiv ? ev->dst : ev->tg;

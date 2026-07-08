@@ -17,6 +17,8 @@
 void p25_sm_init(dsd_opts* opts, dsd_state* state);
 void p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
 void p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src);
+void p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
+void p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src);
 void p25_sm_on_release(dsd_opts* opts, dsd_state* state);
 void p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count);
 int p25_sm_next_cc_candidate(dsd_state* state, long* out_freq);
@@ -25,6 +27,8 @@ void p25_sm_tick(dsd_opts* opts, dsd_state* state);
 static int g_init_calls;
 static int g_group_calls;
 static int g_indiv_calls;
+static int g_group_data_calls;
+static int g_indiv_data_calls;
 static int g_release_calls;
 static int g_neighbor_calls;
 static int g_next_calls;
@@ -42,6 +46,16 @@ static int g_last_indiv_channel;
 static int g_last_indiv_svc_bits;
 static int g_last_indiv_dst;
 static int g_last_indiv_src;
+
+static int g_last_group_data_channel;
+static int g_last_group_data_svc_bits;
+static int g_last_group_data_tg;
+static int g_last_group_data_src;
+
+static int g_last_indiv_data_channel;
+static int g_last_indiv_data_svc_bits;
+static int g_last_indiv_data_dst;
+static int g_last_indiv_data_src;
 
 static const long* g_last_neighbor_freqs;
 static int g_last_neighbor_count;
@@ -75,6 +89,28 @@ fake_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits,
     g_last_indiv_svc_bits = svc_bits;
     g_last_indiv_dst = dst;
     g_last_indiv_src = src;
+}
+
+static void
+fake_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    g_group_data_calls++;
+    g_last_opts = opts;
+    g_last_state = state;
+    g_last_group_data_channel = channel;
+    g_last_group_data_svc_bits = svc_bits;
+    g_last_group_data_tg = tg;
+    g_last_group_data_src = src;
+}
+
+static void
+fake_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+    g_indiv_data_calls++;
+    g_last_opts = opts;
+    g_last_state = state;
+    g_last_indiv_data_channel = channel;
+    g_last_indiv_data_svc_bits = svc_bits;
+    g_last_indiv_data_dst = dst;
+    g_last_indiv_data_src = src;
 }
 
 static void
@@ -159,6 +195,8 @@ main(void) {
     api.init = fake_init;
     api.on_group_grant = fake_on_group_grant;
     api.on_indiv_grant = fake_on_indiv_grant;
+    api.on_group_data_grant = fake_on_group_data_grant;
+    api.on_indiv_data_grant = fake_on_indiv_data_grant;
     api.on_release = fake_on_release;
     api.on_neighbor_update = fake_on_neighbor_update;
     api.next_cc_candidate = fake_next_cc_candidate;
@@ -183,6 +221,39 @@ main(void) {
     rc |= expect_eq_int("indiv_svc_bits", g_last_indiv_svc_bits, 0x34);
     rc |= expect_eq_int("indiv_dst", g_last_indiv_dst, 300);
     rc |= expect_eq_int("indiv_src", g_last_indiv_src, 400);
+
+    p25_sm_on_group_data_grant(opts, state, 9, 0x56, 500, 600);
+    rc |= expect_eq_int("group_data_calls", g_group_data_calls, 1);
+    rc |= expect_eq_int("group_data_channel", g_last_group_data_channel, 9);
+    rc |= expect_eq_int("group_data_svc_bits", g_last_group_data_svc_bits, 0x56);
+    rc |= expect_eq_int("group_data_tg", g_last_group_data_tg, 500);
+    rc |= expect_eq_int("group_data_src", g_last_group_data_src, 600);
+    rc |= expect_eq_int("group_legacy_not_used_for_data_when_data_cb_exists", g_group_calls, 1);
+
+    p25_sm_on_indiv_data_grant(opts, state, 10, 0x78, 700, 800);
+    rc |= expect_eq_int("indiv_data_calls", g_indiv_data_calls, 1);
+    rc |= expect_eq_int("indiv_data_channel", g_last_indiv_data_channel, 10);
+    rc |= expect_eq_int("indiv_data_svc_bits", g_last_indiv_data_svc_bits, 0x78);
+    rc |= expect_eq_int("indiv_data_dst", g_last_indiv_data_dst, 700);
+    rc |= expect_eq_int("indiv_data_src", g_last_indiv_data_src, 800);
+    rc |= expect_eq_int("indiv_legacy_not_used_for_data_when_data_cb_exists", g_indiv_calls, 1);
+
+    api.on_group_data_grant = NULL;
+    api.on_indiv_data_grant = NULL;
+    p25_sm_set_api(&api);
+    p25_sm_on_group_data_grant(opts, state, 11, 0x9A, 900, 1000);
+    rc |= expect_eq_int("group_data_legacy_fallback_calls", g_group_calls, 2);
+    rc |= expect_eq_int("group_data_legacy_fallback_channel", g_last_group_channel, 11);
+    rc |= expect_eq_int("group_data_legacy_fallback_svc", g_last_group_svc_bits, 0x9A);
+    rc |= expect_eq_int("group_data_legacy_fallback_tg", g_last_group_tg, 900);
+    rc |= expect_eq_int("group_data_legacy_fallback_src", g_last_group_src, 1000);
+
+    p25_sm_on_indiv_data_grant(opts, state, 12, 0xBC, 1100, 1200);
+    rc |= expect_eq_int("indiv_data_legacy_fallback_calls", g_indiv_calls, 2);
+    rc |= expect_eq_int("indiv_data_legacy_fallback_channel", g_last_indiv_channel, 12);
+    rc |= expect_eq_int("indiv_data_legacy_fallback_svc", g_last_indiv_svc_bits, 0xBC);
+    rc |= expect_eq_int("indiv_data_legacy_fallback_dst", g_last_indiv_dst, 1100);
+    rc |= expect_eq_int("indiv_data_legacy_fallback_src", g_last_indiv_src, 1200);
 
     p25_sm_on_release(opts, state);
     rc |= expect_eq_int("release_calls", g_release_calls, 1);

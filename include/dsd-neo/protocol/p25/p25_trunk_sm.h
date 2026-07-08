@@ -78,16 +78,17 @@ typedef enum {
 
 typedef struct {
     p25_sm_event_type_e type;
-    int slot;     // 0 or 1 for TDMA, -1 for P1/N/A
-    int channel;  // 16-bit channel number (for GRANT)
-    long freq_hz; // Frequency in Hz (for GRANT)
-    int tg;       // Talkgroup (for GRANT, 0 if individual)
-    int src;      // Source RID (for GRANT)
-    int dst;      // Destination RID (for individual GRANT)
-    int svc_bits; // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
-    int is_group; // 1 for group grant, 0 for individual
-    int algid;    // Algorithm ID (for ENC event)
-    int keyid;    // Key ID (for ENC event)
+    int slot;               // 0 or 1 for TDMA, -1 for P1/N/A
+    int channel;            // 16-bit channel number (for GRANT)
+    long freq_hz;           // Frequency in Hz (for GRANT)
+    int tg;                 // Talkgroup (for GRANT, 0 if individual)
+    int src;                // Source RID (for GRANT)
+    int dst;                // Destination RID (for individual GRANT)
+    int svc_bits;           // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
+    int data_call_override; // 0=infer from svc_bits, 1=force data, -1=force non-data
+    int is_group;           // 1 for group grant, 0 for individual
+    int algid;              // Algorithm ID (for ENC event)
+    int keyid;              // Key ID (for ENC event)
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -381,6 +382,18 @@ void p25_sm_init(dsd_opts* opts, dsd_state* state);
 void p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
 
 /**
+ * @brief Handle a group data channel grant (explicit data policy form).
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param channel Data channel number.
+ * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
+ * @param tg Talkgroup.
+ * @param src Source RID.
+ */
+void p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
+
+/**
  * @brief Apply group grant policy side effects without attempting route/tune.
  *
  * Use when a decoder has a valid group grant but cannot yet resolve or follow
@@ -407,6 +420,18 @@ void p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int chann
  * @param src Source RID.
  */
 void p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src);
+
+/**
+ * @brief Handle an individual data channel grant (explicit data policy form).
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param channel Data channel number.
+ * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
+ * @param dst Destination RID.
+ * @param src Source RID.
+ */
+void p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src);
 
 /**
  * @brief Handle an explicit release/end-of-call indication.
@@ -501,6 +526,20 @@ p25_sm_ev_indiv_grant(int channel, long freq_hz, int dst, int src, int svc_bits)
     ev.src = src;
     ev.svc_bits = svc_bits;
     ev.is_group = 0;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_group_data_grant(int channel, long freq_hz, int tg, int src, int svc_bits) {
+    p25_sm_event_t ev = p25_sm_ev_group_grant(channel, freq_hz, tg, src, svc_bits);
+    ev.data_call_override = 1;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_indiv_data_grant(int channel, long freq_hz, int dst, int src, int svc_bits) {
+    p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, freq_hz, dst, src, svc_bits);
+    ev.data_call_override = 1;
     return ev;
 }
 
