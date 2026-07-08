@@ -1032,6 +1032,18 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long f
 }
 
 static void
+p25_grant_refresh_reused_carrier_watchdogs(dsd_state* state, double now_m) {
+    if (!state) {
+        return;
+    }
+    time_t now = time(NULL);
+    state->last_vc_sync_time = now;
+    state->p25_last_vc_tune_time = now;
+    state->last_vc_sync_time_m = now_m;
+    state->p25_last_vc_tune_time_m = now_m;
+}
+
+static void
 p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev, long freq, int target_id,
                            const p25_grant_eval_ctx_t* eval_ctx, double now_m, int slot, int reused_carrier) {
     if (!ctx || !ev) {
@@ -1049,8 +1061,11 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     if (!reused_carrier || ctx->t_tune_m <= 0.0 || data_call) {
         ctx->t_tune_m = now_m;
     }
-    if (!reused_carrier || ctx->t_voice_m <= 0.0) {
+    if (!reused_carrier || ctx->t_voice_m <= 0.0 || data_call) {
         ctx->t_voice_m = 0.0;
+    }
+    if (reused_carrier) {
+        p25_grant_refresh_reused_carrier_watchdogs(state, now_m);
     }
     if (!reused_carrier) {
         ctx->vc_cqpsk_retry_done = 0;

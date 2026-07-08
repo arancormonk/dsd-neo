@@ -481,13 +481,24 @@ main(void) {
                                                        && mixed_data_ctx.slots[0].grant_active
                                                        && mixed_data_ctx.vc_data_call == 0);
         double stale_grant_m = dsd_time_now_monotonic_s() - 1.0;
+        time_t stale_grant_wall = time(NULL) - 10;
         mixed_data_ctx.t_tune_m = stale_grant_m;
-        mixed_data_ctx.t_voice_m = 0.0;
+        mixed_data_ctx.t_voice_m = stale_grant_m;
         mixed_data_ctx.slots[0].last_grant_m = stale_grant_m;
+        mixed_data_st.last_vc_sync_time = stale_grant_wall;
+        mixed_data_st.p25_last_vc_tune_time = stale_grant_wall;
+        mixed_data_st.last_vc_sync_time_m = stale_grant_m;
+        mixed_data_st.p25_last_vc_tune_time_m = stale_grant_m;
         p25_sm_event(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st, &mixed_data_slot1);
         rc |= expect_true("mixed data same-carrier refreshes timeout",
                           g_tune_to_freq_calls == 1 && mixed_data_ctx.vc_data_call == 1
                               && mixed_data_ctx.slots[1].data_call && mixed_data_ctx.t_tune_m > stale_grant_m);
+        rc |= expect_true("mixed data clears stale voice hangtime", mixed_data_ctx.t_voice_m == 0.0);
+        rc |= expect_true("mixed data refreshes vc watchdogs",
+                          mixed_data_st.last_vc_sync_time > stale_grant_wall
+                              && mixed_data_st.p25_last_vc_tune_time > stale_grant_wall
+                              && mixed_data_st.last_vc_sync_time_m > stale_grant_m
+                              && mixed_data_st.p25_last_vc_tune_time_m > stale_grant_m);
         p25_sm_tick_ctx(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st);
         rc |= expect_true("mixed data timeout window retained", mixed_data_opts.p25_is_tuned == 1
                                                                     && g_return_to_cc_calls == 0
@@ -534,9 +545,20 @@ main(void) {
         rc |= expect_true("pending initial tune", g_tune_to_freq_calls == 1 && pending_opts.p25_is_tuned == 1);
         p25_sm_event(&pending_ctx, &pending_opts, &pending_st, &ptt_slot0);
         pending_st.p25_p2_audio_allowed[0] = 1;
+        double stale_watchdog_m = dsd_time_now_monotonic_s() - 3.0;
+        time_t stale_watchdog_wall = time(NULL) - 10;
+        pending_st.last_vc_sync_time = stale_watchdog_wall;
+        pending_st.p25_last_vc_tune_time = stale_watchdog_wall;
+        pending_st.last_vc_sync_time_m = stale_watchdog_m;
+        pending_st.p25_last_vc_tune_time_m = stale_watchdog_m;
         p25_sm_event(&pending_ctx, &pending_opts, &pending_st, &pending_voice_slot1);
         rc |= expect_true("pending same-carrier grant", g_tune_to_freq_calls == 1 && pending_ctx.slots[1].grant_active
                                                             && pending_ctx.slots[1].voice_active == 0);
+        rc |= expect_true("pending same-carrier refreshes vc watchdogs",
+                          pending_st.last_vc_sync_time > stale_watchdog_wall
+                              && pending_st.p25_last_vc_tune_time > stale_watchdog_wall
+                              && pending_st.last_vc_sync_time_m > stale_watchdog_m
+                              && pending_st.p25_last_vc_tune_time_m > stale_watchdog_m);
         p25_sm_event(&pending_ctx, &pending_opts, &pending_st, &end_slot0);
 
         double now_m = dsd_time_now_monotonic_s();
