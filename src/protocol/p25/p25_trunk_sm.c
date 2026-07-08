@@ -1669,6 +1669,19 @@ p25_sm_has_pending_voice_grant(const p25_sm_ctx_t* ctx, const dsd_state* state) 
     return p25_sm_slot_waiting_for_voice(ctx, state, 0) || p25_sm_slot_waiting_for_voice(ctx, state, 1);
 }
 
+static int
+p25_sm_has_pending_data_grant(const p25_sm_ctx_t* ctx) {
+    if (!ctx || !ctx->vc_is_tdma) {
+        return 0;
+    }
+    for (int s = 0; s < 2; s++) {
+        if (ctx->slots[s].grant_active && ctx->slots[s].data_call) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static double
 p25_sm_pending_voice_grant_timeout_start_m(const p25_sm_ctx_t* ctx, const dsd_state* state) {
     double latest_grant_m = 0.0;
@@ -2677,7 +2690,7 @@ p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
         ctx->t_voice_m = now_m;
         return;
     }
-    if (ctx->t_voice_m > 0.0 && p25_sm_has_pending_voice_grant(ctx, state)) {
+    if (ctx->t_voice_m > 0.0 && (p25_sm_has_pending_voice_grant(ctx, state) || p25_sm_has_pending_data_grant(ctx))) {
         ctx->t_voice_m = 0.0;
     }
     if (ctx->t_voice_m > 0.0) {

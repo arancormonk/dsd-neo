@@ -513,7 +513,79 @@ main(void) {
         dsd_state_ext_free_all(&mixed_data_st);
     }
 
-    // 10) When one slot ends while the other slot has a pending voice grant,
+    // 10) When one slot ends while the other slot has a pending data grant,
+    // the data grant stays on the refreshed grant-timeout path rather than
+    // inheriting the ended slot's hangtime.
+    {
+        static dsd_opts pending_data_opts;
+        static dsd_state pending_data_st;
+        DSD_MEMSET(&pending_data_opts, 0, sizeof pending_data_opts);
+        DSD_MEMSET(&pending_data_st, 0, sizeof pending_data_st);
+        pending_data_opts.p25_trunk = 1;
+        pending_data_opts.trunk_tune_group_calls = 1;
+        pending_data_opts.trunk_tune_data_calls = 1;
+        pending_data_opts.trunk_hangtime = 0.2f;
+        pending_data_opts.p25_grant_voice_to_s = 0.8;
+        pending_data_opts.p25_retune_backoff_s = 2.0;
+        pending_data_st.p25_cc_freq = 851000000;
+        pending_data_st.p25_chan_iden = id;
+        pending_data_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+        pending_data_st.p25_chan_tdma_explicit[id] = 2;
+
+        p25_sm_ctx_t pending_data_ctx;
+        p25_sm_init_ctx(&pending_data_ctx, &pending_data_opts, &pending_data_st);
+        g_last_tuned_vc = 0;
+        g_tune_to_freq_calls = 0;
+        g_return_to_cc_calls = 0;
+        p25_sm_event_t pending_data_voice_slot0 = p25_sm_ev_group_grant(ch_slot0, 0, 3501, 4501, 0);
+        p25_sm_event_t pending_data_slot1 = p25_sm_ev_group_data_grant(ch_slot1, 0, 3502, 4502, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t pending_data_ptt_slot0 = p25_sm_ev_ptt(0);
+        p25_sm_event_t pending_data_end_slot0 = p25_sm_ev_end(0);
+
+        p25_sm_event(&pending_data_ctx, &pending_data_opts, &pending_data_st, &pending_data_voice_slot0);
+        rc |= expect_true("pending data initial tune", g_tune_to_freq_calls == 1 && pending_data_opts.p25_is_tuned == 1
+                                                           && pending_data_ctx.slots[0].grant_active);
+        p25_sm_event(&pending_data_ctx, &pending_data_opts, &pending_data_st, &pending_data_ptt_slot0);
+        pending_data_st.p25_p2_audio_allowed[0] = 1;
+        rc |= expect_true("pending data voice active", pending_data_ctx.slots[0].voice_active == 1);
+
+        p25_sm_event(&pending_data_ctx, &pending_data_opts, &pending_data_st, &pending_data_slot1);
+        rc |= expect_true("pending data same-carrier accepted",
+                          g_tune_to_freq_calls == 1 && pending_data_ctx.vc_data_call == 1
+                              && pending_data_ctx.slots[1].grant_active && pending_data_ctx.slots[1].data_call
+                              && pending_data_ctx.slots[0].voice_active);
+
+        p25_sm_tick_ctx(&pending_data_ctx, &pending_data_opts, &pending_data_st);
+        rc |= expect_true("pending data voice tick retained", pending_data_opts.p25_is_tuned == 1
+                                                                  && g_return_to_cc_calls == 0
+                                                                  && pending_data_ctx.t_voice_m > 0.0);
+        p25_sm_event(&pending_data_ctx, &pending_data_opts, &pending_data_st, &pending_data_end_slot0);
+        rc |= expect_true("pending data blocks explicit voice release",
+                          pending_data_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 0
+                              && pending_data_ctx.state == P25_SM_TUNED && pending_data_ctx.slots[0].grant_active == 0
+                              && pending_data_ctx.slots[1].grant_active && pending_data_ctx.slots[1].data_call);
+
+        double now_m = dsd_time_now_monotonic_s();
+        pending_data_ctx.t_voice_m = now_m - 1.0;
+        pending_data_ctx.t_tune_m = now_m - 0.2;
+        p25_sm_tick_ctx(&pending_data_ctx, &pending_data_opts, &pending_data_st);
+        rc |= expect_true("pending data not released on ended-slot hangtime",
+                          pending_data_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 0
+                              && pending_data_ctx.state == P25_SM_TUNED && pending_data_ctx.t_voice_m == 0.0
+                              && pending_data_ctx.slots[1].grant_active);
+
+        now_m = dsd_time_now_monotonic_s();
+        pending_data_ctx.t_tune_m = now_m - 1.0;
+        p25_sm_tick_ctx(&pending_data_ctx, &pending_data_opts, &pending_data_st);
+        rc |= expect_true("pending data grant timeout returned", pending_data_opts.p25_is_tuned == 0
+                                                                     && g_return_to_cc_calls == 1
+                                                                     && pending_data_ctx.state == P25_SM_ON_CC);
+        rc |= expect_true("pending data timeout does not arm backoff", retune_backoff_empty(&pending_data_st));
+
+        dsd_state_ext_free_all(&pending_data_st);
+    }
+
+    // 11) When one slot ends while the other slot has a pending voice grant,
     // the pending grant stays on the grant-timeout path rather than inheriting
     // the ended slot's hangtime.
     {
@@ -584,7 +656,7 @@ main(void) {
         dsd_state_ext_free_all(&pending_st);
     }
 
-    // 11) A transient return-to-CC failure during grant timeout must not record
+    // 12) A transient return-to-CC failure during grant timeout must not record
     // a failed VC until the retry is accepted.
     static const dsd_trunk_tune_result transient_returns[] = {
         DSD_TRUNK_TUNE_RESULT_DEFERRED,
