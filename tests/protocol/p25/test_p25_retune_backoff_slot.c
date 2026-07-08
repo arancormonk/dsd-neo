@@ -705,7 +705,59 @@ main(void) {
         dsd_state_ext_free_all(&pending_st);
     }
 
-    // 13) A transient return-to-CC failure during grant timeout must not record
+    // 13) A forced release after one TDMA slot produced voice still records a
+    // pending grant on the other slot that never produced audio.
+    {
+        static dsd_opts forced_pending_opts;
+        static dsd_state forced_pending_st;
+        DSD_MEMSET(&forced_pending_opts, 0, sizeof forced_pending_opts);
+        DSD_MEMSET(&forced_pending_st, 0, sizeof forced_pending_st);
+        forced_pending_opts.p25_trunk = 1;
+        forced_pending_opts.trunk_tune_group_calls = 1;
+        forced_pending_opts.trunk_hangtime = 0.2f;
+        forced_pending_opts.p25_grant_voice_to_s = 10.0;
+        forced_pending_opts.p25_retune_backoff_s = 2.0;
+        forced_pending_st.p25_cc_freq = 851000000;
+        forced_pending_st.p25_chan_iden = id;
+        forced_pending_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+        forced_pending_st.p25_chan_tdma_explicit[id] = 2;
+
+        p25_sm_ctx_t forced_pending_ctx;
+        p25_sm_init_ctx(&forced_pending_ctx, &forced_pending_opts, &forced_pending_st);
+        g_last_tuned_vc = 0;
+        g_tune_to_freq_calls = 0;
+        g_return_to_cc_calls = 0;
+        p25_sm_event_t forced_pending_active = p25_sm_ev_group_grant(ch_slot0, 0, 3701, 4701, 0);
+        p25_sm_event_t forced_pending_waiting = p25_sm_ev_group_grant(ch_slot1, 0, 3702, 4702, 0);
+        p25_sm_event_t forced_pending_ptt = p25_sm_ev_ptt(0);
+
+        p25_sm_event(&forced_pending_ctx, &forced_pending_opts, &forced_pending_st, &forced_pending_active);
+        rc |= expect_true("forced-pending initial tune", g_tune_to_freq_calls == 1
+                                                             && forced_pending_opts.p25_is_tuned == 1
+                                                             && forced_pending_ctx.slots[0].grant_active);
+        p25_sm_event(&forced_pending_ctx, &forced_pending_opts, &forced_pending_st, &forced_pending_ptt);
+        forced_pending_st.p25_p2_audio_allowed[0] = 1;
+        rc |= expect_true("forced-pending voice observed",
+                          forced_pending_ctx.t_voice_m > 0.0 && forced_pending_ctx.slots[0].voice_active == 1);
+
+        p25_sm_event(&forced_pending_ctx, &forced_pending_opts, &forced_pending_st, &forced_pending_waiting);
+        rc |= expect_true("forced-pending same-carrier accepted", g_tune_to_freq_calls == 1
+                                                                      && forced_pending_ctx.slots[1].grant_active
+                                                                      && forced_pending_ctx.slots[1].voice_active == 0);
+
+        forced_pending_st.p25_sm_force_release = 1;
+        p25_sm_release(&forced_pending_ctx, &forced_pending_opts, &forced_pending_st, "forced-pending-release");
+        rc |= expect_true("forced-pending returned", forced_pending_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1
+                                                         && forced_pending_ctx.state == P25_SM_ON_CC);
+        rc |= expect_true("forced-pending slot1 backoff",
+                          retune_backoff_history_has_slot(&forced_pending_st, g_last_tuned_vc, 1));
+        rc |= expect_true("forced-pending active slot not failed",
+                          !retune_backoff_history_has_slot(&forced_pending_st, g_last_tuned_vc, 0));
+
+        dsd_state_ext_free_all(&forced_pending_st);
+    }
+
+    // 14) A transient return-to-CC failure during grant timeout must not record
     // a failed VC until the retry is accepted.
     static const dsd_trunk_tune_result transient_returns[] = {
         DSD_TRUNK_TUNE_RESULT_DEFERRED,
@@ -757,7 +809,7 @@ main(void) {
     }
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 14) Same-carrier preemption releases to the CC first. The replacement
+    // 15) Same-carrier preemption releases to the CC first. The replacement
     // grant must retune the VC instead of reusing a carrier that is no longer tuned.
     {
         static dsd_opts preempt_opts;

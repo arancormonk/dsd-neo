@@ -1942,6 +1942,11 @@ p25_arm_failed_vc_retune_slot_backoffs(const p25_sm_ctx_t* ctx, const dsd_opts* 
     return armed_slots;
 }
 
+static int
+p25_vc_has_observed_voice(const p25_sm_ctx_t* ctx) {
+    return (ctx && (ctx->t_voice_m > 0.0 || ctx->slots[0].voice_active || ctx->slots[1].voice_active)) ? 1 : 0;
+}
+
 static void
 p25_arm_failed_vc_retune_fallback_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
                                           double backoff_s, time_t until) {
@@ -1955,8 +1960,7 @@ p25_arm_failed_vc_retune_fallback_backoff(const p25_sm_ctx_t* ctx, const dsd_opt
 
 static void
 p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
-    if (!ctx || !state || ctx->vc_freq_hz <= 0 || ctx->t_voice_m > 0.0 || ctx->slots[0].voice_active
-        || ctx->slots[1].voice_active) {
+    if (!ctx || !state || ctx->vc_freq_hz <= 0) {
         return;
     }
     double backoff_s = p25_failed_vc_retune_backoff_s(opts);
@@ -1968,6 +1972,9 @@ p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
     time_t until = time(NULL) + backoff_wall;
     int armed_slots = p25_arm_failed_vc_retune_slot_backoffs(ctx, opts, state, backoff_s, until);
     if (armed_slots == 0) {
+        if (p25_vc_has_observed_voice(ctx)) {
+            return;
+        }
         if (ctx->vc_data_call) {
             p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_backoff_skip", "reason=data-grant ch=0x%04X freq=%ld",
                          ctx->vc_channel & 0xFFFF, ctx->vc_freq_hz);
