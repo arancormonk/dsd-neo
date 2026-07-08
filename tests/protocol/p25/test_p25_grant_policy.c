@@ -445,6 +445,45 @@ main(void) {
                           dual_ctx->slots[1].grant_active && dual_ctx->slots[1].target_id == 1701);
     }
 
+    // Group TG IDs and individual RID destinations are separate namespaces.
+    {
+        static dsd_opts namespace_opts;
+        static dsd_state namespace_st;
+        DSD_MEMSET(&namespace_opts, 0, sizeof namespace_opts);
+        DSD_MEMSET(&namespace_st, 0, sizeof namespace_st);
+        namespace_opts.p25_trunk = 1;
+        namespace_opts.trunk_tune_group_calls = 1;
+        namespace_opts.trunk_tune_private_calls = 1;
+        namespace_opts.trunk_tune_data_calls = 1;
+        namespace_opts.trunk_tune_enc_calls = 1;
+        namespace_opts.trunk_use_allow_list = 1;
+        namespace_st.p25_cc_freq = 851000000;
+        seed_tdma_iden(&namespace_st, id);
+        p25_sm_init(&namespace_opts, &namespace_st);
+
+        rc |= expect_true("seed namespace group", seed_exact(&namespace_st, 1234, "A", "GROUP-SAME-RID", 0, 0) == 0);
+        p25_sm_on_indiv_grant(&namespace_opts, &namespace_st, 0x100A, /*svc*/ 0x00, /*dst*/ 1234, /*src*/ 4234);
+        p25_sm_ctx_t* namespace_ctx = p25_sm_get_ctx();
+        unsigned namespace_tunes_after_private = namespace_st.p25_sm_tune_count;
+        rc |= expect_true("namespace private slot0 stored",
+                          namespace_ctx->slots[0].grant_active && namespace_ctx->slots[0].target_id == 1234
+                              && namespace_ctx->slots[0].is_group == 0 && namespace_ctx->slots[0].dst == 1234);
+        namespace_ctx->slots[0].voice_active = 1;
+        namespace_ctx->slots[0].last_active_m = 1.0;
+        namespace_st.p25_p2_audio_allowed[0] = 1;
+
+        p25_sm_on_group_grant(&namespace_opts, &namespace_st, 0x100B, /*svc*/ 0x00, /*tg*/ 1234, /*src*/ 5234);
+        rc |= expect_true("namespace group same-carrier no retune",
+                          namespace_st.p25_sm_tune_count == namespace_tunes_after_private);
+        rc |= expect_true("namespace private slot preserved",
+                          namespace_ctx->slots[0].grant_active && namespace_ctx->slots[0].voice_active == 1
+                              && namespace_ctx->slots[0].target_id == 1234 && namespace_ctx->slots[0].is_group == 0
+                              && namespace_ctx->slots[0].dst == 1234);
+        rc |= expect_true("namespace group slot stored",
+                          namespace_ctx->slots[1].grant_active && namespace_ctx->slots[1].target_id == 1234
+                              && namespace_ctx->slots[1].is_group == 1 && namespace_ctx->slots[1].ota_tg == 1234);
+    }
+
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
 
