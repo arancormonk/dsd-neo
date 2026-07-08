@@ -30,29 +30,50 @@ dsd_audio_state_is_p25(const dsd_state* state) {
 }
 
 static int
+dsd_audio_p25_policy_pair_valid(uint32_t ota_target, uint32_t policy_tg) {
+    return (ota_target != 0U && ota_target <= UINT16_MAX && policy_tg != 0U && policy_tg <= UINT16_MAX
+            && policy_tg != ota_target)
+               ? 1
+               : 0;
+}
+
+static int
+dsd_audio_p25_patch_entry_current(const dsd_state* state, int idx, uint32_t ota_target, time_t now) {
+    if (!state || idx < 0 || idx >= 8 || !state->p25_patch_active[idx]
+        || state->p25_patch_sgid[idx] != (uint16_t)ota_target) {
+        return 0;
+    }
+    if (state->p25_patch_last_update[idx] > 0
+        && (now - state->p25_patch_last_update[idx]) > DSD_AUDIO_P25_PATCH_TTL_SECONDS) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+dsd_audio_p25_patch_entry_has_wgid(const dsd_state* state, int idx, uint32_t policy_tg) {
+    uint8_t count = state->p25_patch_wgid_count[idx];
+    for (int k = 0; k < count && k < 8; k++) {
+        if (state->p25_patch_wgid[idx][k] == (uint16_t)policy_tg) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 dsd_audio_p25_patch_member_active(const dsd_state* state, uint32_t ota_target, uint32_t policy_tg) {
-    if (!state || ota_target == 0U || ota_target > UINT16_MAX || policy_tg == 0U || policy_tg > UINT16_MAX
-        || policy_tg == ota_target) {
+    if (!state || !dsd_audio_p25_policy_pair_valid(ota_target, policy_tg)) {
         return 0;
     }
 
     time_t now = time(NULL);
     for (int i = 0; i < state->p25_patch_count && i < 8; i++) {
-        if (!state->p25_patch_active[i] || state->p25_patch_sgid[i] != (uint16_t)ota_target) {
-            continue;
-        }
-        if (state->p25_patch_last_update[i] > 0
-            && (now - state->p25_patch_last_update[i]) > DSD_AUDIO_P25_PATCH_TTL_SECONDS) {
-            continue;
-        }
-        uint8_t count = state->p25_patch_wgid_count[i];
-        for (int k = 0; k < count && k < 8; k++) {
-            if (state->p25_patch_wgid[i][k] == (uint16_t)policy_tg) {
-                return 1;
-            }
+        if (dsd_audio_p25_patch_entry_current(state, i, ota_target, now)
+            && dsd_audio_p25_patch_entry_has_wgid(state, i, policy_tg)) {
+            return 1;
         }
     }
-
     return 0;
 }
 
