@@ -1167,6 +1167,21 @@ p25_grant_debug_log_tdma(const dsd_opts* opts, const dsd_state* state, const p25
 }
 
 static int
+p25_grant_slot_duplicate_matches(const p25_sm_slot_ctx_t* slot_ctx, const dsd_tg_policy_call_route* route, long freq,
+                                 int target_id, int data_call) {
+    if (!slot_ctx || !route) {
+        return 0;
+    }
+    return slot_ctx->grant_active && slot_ctx->freq_hz == freq && slot_ctx->channel == route->channel
+           && slot_ctx->target_id == target_id && slot_ctx->data_call == data_call;
+}
+
+static int
+p25_grant_fallback_duplicate_matches(const p25_sm_ctx_t* ctx, int target_id, int data_call) {
+    return ctx && ctx->vc_tg == target_id && ctx->vc_data_call == data_call;
+}
+
+static int
 p25_grant_handle_duplicate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
                            const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision, long freq,
                            int target_id, const p25_grant_eval_ctx_t* eval_ctx, double now_m) {
@@ -1175,12 +1190,10 @@ p25_grant_handle_duplicate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
         return 0;
     }
     if (route->slot >= 0 && route->slot <= 1) {
-        const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[route->slot];
-        if (!slot_ctx->grant_active || slot_ctx->freq_hz != freq || slot_ctx->channel != route->channel
-            || slot_ctx->target_id != target_id || slot_ctx->data_call != data_call) {
+        if (!p25_grant_slot_duplicate_matches(&ctx->slots[route->slot], route, freq, target_id, data_call)) {
             return 0;
         }
-    } else if (ctx->vc_tg != target_id || ctx->vc_data_call != data_call) {
+    } else if (!p25_grant_fallback_duplicate_matches(ctx, target_id, data_call)) {
         return 0;
     }
 
@@ -1766,6 +1779,48 @@ p25_retune_block_remember_failure(dsd_state* state, long freq, int slot, time_t 
     state->p25_retune_block_history_until[replace_idx] = until;
 }
 
+static int
+p25_backoff_slot_context_valid(const p25_sm_slot_ctx_t* slot_ctx) {
+    return slot_ctx && slot_ctx->grant_active && !slot_ctx->data_call && slot_ctx->freq_hz > 0 && slot_ctx->channel > 0;
+}
+
+static void
+p25_arm_failed_vc_retune_slot_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
+                                      const p25_sm_slot_ctx_t* slot_ctx, int slot, double backoff_s, time_t until) {
+    state->p25_retune_block_freq = slot_ctx->freq_hz;
+    state->p25_retune_block_slot = slot;
+    state->p25_retune_block_until = until;
+    p25_retune_block_remember_failure(state, slot_ctx->freq_hz, slot, until);
+    p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_backoff_arm", "ch=0x%04X freq=%ld slot=%d seconds=%.3f until=%ld",
+                 slot_ctx->channel & 0xFFFF, slot_ctx->freq_hz, slot, backoff_s, (long)until);
+}
+
+static int
+p25_arm_failed_vc_retune_slot_backoffs(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
+                                       double backoff_s, time_t until) {
+    int armed_slots = 0;
+    for (int s = 0; s < 2; s++) {
+        const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
+        if (!p25_backoff_slot_context_valid(slot_ctx)) {
+            continue;
+        }
+        p25_arm_failed_vc_retune_slot_backoff(ctx, opts, state, slot_ctx, s, backoff_s, until);
+        armed_slots++;
+    }
+    return armed_slots;
+}
+
+static void
+p25_arm_failed_vc_retune_fallback_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
+                                          double backoff_s, time_t until) {
+    state->p25_retune_block_freq = ctx->vc_freq_hz;
+    state->p25_retune_block_slot = channel_slot(state, ctx->vc_channel);
+    state->p25_retune_block_until = until;
+    p25_retune_block_remember_failure(state, ctx->vc_freq_hz, state->p25_retune_block_slot, until);
+    p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_backoff_arm", "ch=0x%04X freq=%ld slot=%d seconds=%.3f until=%ld",
+                 ctx->vc_channel & 0xFFFF, ctx->vc_freq_hz, state->p25_retune_block_slot, backoff_s, (long)until);
+}
+
 static void
 p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx || !state || ctx->vc_freq_hz <= 0 || ctx->t_voice_m > 0.0 || ctx->slots[0].voice_active
@@ -1785,29 +1840,9 @@ p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
     }
 
     time_t until = time(NULL) + backoff_wall;
-    int armed_slots = 0;
-    for (int s = 0; s < 2; s++) {
-        const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
-        if (!slot_ctx->grant_active || slot_ctx->data_call || slot_ctx->freq_hz <= 0 || slot_ctx->channel <= 0) {
-            continue;
-        }
-        state->p25_retune_block_freq = slot_ctx->freq_hz;
-        state->p25_retune_block_slot = s;
-        state->p25_retune_block_until = until;
-        p25_retune_block_remember_failure(state, slot_ctx->freq_hz, s, until);
-        p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_backoff_arm",
-                     "ch=0x%04X freq=%ld slot=%d seconds=%.3f until=%ld", slot_ctx->channel & 0xFFFF, slot_ctx->freq_hz,
-                     s, backoff_s, (long)until);
-        armed_slots++;
-    }
+    int armed_slots = p25_arm_failed_vc_retune_slot_backoffs(ctx, opts, state, backoff_s, until);
     if (armed_slots == 0) {
-        state->p25_retune_block_freq = ctx->vc_freq_hz;
-        state->p25_retune_block_slot = channel_slot(state, ctx->vc_channel);
-        state->p25_retune_block_until = until;
-        p25_retune_block_remember_failure(state, ctx->vc_freq_hz, state->p25_retune_block_slot, until);
-        p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_backoff_arm",
-                     "ch=0x%04X freq=%ld slot=%d seconds=%.3f until=%ld", ctx->vc_channel & 0xFFFF, ctx->vc_freq_hz,
-                     state->p25_retune_block_slot, backoff_s, (long)until);
+        p25_arm_failed_vc_retune_fallback_backoff(ctx, opts, state, backoff_s, until);
     }
     sm_log(opts, state, "grant-vc-backoff-arm");
     if (opts && opts->verbose > 1) {
