@@ -507,6 +507,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     state.p25_p2_audio_allowed[1] = 1;
     state.p25_p2_enc_lockout_muted[1] = 1;
     state.p25_call_is_packet[1] = 1;
+    state.p25_policy_tg[1] = 0x5678;
     DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "packet");
     pack_payload_from_mac(payload, 180, mac, 0x3, 0, 0);
 
@@ -517,6 +518,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch idle burst", (int)state.dmrburstR, 24);
     rc |= expect_int("sacch idle gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("sacch idle packet clear", state.p25_call_is_packet[1], 0);
+    rc |= expect_int("sacch idle policy clear", (int)state.p25_policy_tg[1], 0);
     rc |= expect_int("sacch idle mute clear", state.p25_p2_enc_lockout_muted[1], 0);
     rc |= expect_int("sacch idle call blank", strncmp(state.call_string[1], P25P2_EMPTY_CALL_STRING, 21), 0);
 
