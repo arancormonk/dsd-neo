@@ -715,6 +715,49 @@ dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
     state->voice_counter[1] = 0;
 }
 
+void
+dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
+    if (!opts || !state || slot < 0 || slot > 1) {
+        return;
+    }
+    // This helper is specifically for the short/int16 P25p2 SS18 path.
+    if (opts->floating_point != 0 || opts->pulse_digi_rate_out != 8000) {
+        return;
+    }
+
+    const int other = slot ^ 1;
+    int has_slot = (slot == 0) ? p25p2_s16_frames_have_audio(state->s_l4) : p25p2_s16_frames_have_audio(state->s_r4);
+    if (!has_slot) {
+        return;
+    }
+
+    short saved_other[18][160];
+    int saved_other_counter = state->voice_counter[other];
+    int saved_other_allowed = state->p25_p2_audio_allowed[other];
+
+    if (other == 0) {
+        DSD_MEMCPY(saved_other, state->s_l4, sizeof(saved_other));
+        DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+    } else {
+        DSD_MEMCPY(saved_other, state->s_r4, sizeof(saved_other));
+        DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    }
+
+    state->p25_p2_audio_allowed[slot] = 1;
+    state->p25_p2_audio_allowed[other] = 0;
+
+    playSynthesizedVoiceSS18(opts, state);
+
+    state->voice_counter[slot] = 0;
+    state->voice_counter[other] = saved_other_counter;
+    state->p25_p2_audio_allowed[other] = saved_other_allowed;
+    if (other == 0) {
+        DSD_MEMCPY(state->s_l4, saved_other, sizeof(saved_other));
+    } else {
+        DSD_MEMCPY(state->s_r4, saved_other, sizeof(saved_other));
+    }
+}
+
 //NOTE: Tones produce ringing sound when put through the hpf_d, may want to look into tweaking it,
 //or looking for a way to store is_tone by glancing at ambe_d values and not running hpf_d on them
 

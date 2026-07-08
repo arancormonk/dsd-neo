@@ -393,6 +393,80 @@ run_ss18_partial_flush_guard_case(void) {
 }
 
 static int
+run_ss18_partial_flush_slot_case(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    st.dmrburstL = 21;
+    st.dmrburstR = 21;
+    st.s_l4[0][0] = 321;
+    st.s_r4[0][0] = -654;
+    st.voice_counter[0] = 7;
+    st.voice_counter[1] = 8;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+
+    dsd_p25p2_flush_partial_audio_slot(&opts, &st, 0);
+
+    short out[160 * 2] = {0};
+    const size_t expected_bytes = (size_t)160 * 2U * sizeof(out[0]);
+    rc |= expect_eq("partial slot flush captured calls", g_audio_capture_calls >= 1, 1);
+    int copied = copy_capture_bytes("partial slot flush captured bytes", out, expected_bytes);
+    rc |= copied;
+    if (copied == 0) {
+        rc |= expect_eq("partial slot flush left sample", out[0], 321);
+        rc |= expect_eq("partial slot flush masks right sample", out[1], 0);
+    }
+    rc |= expect_eq("partial slot flush allowed left", st.p25_p2_audio_allowed[0], 1);
+    rc |= expect_eq("partial slot flush allowed right preserved", st.p25_p2_audio_allowed[1], 1);
+    rc |= expect_eq("partial slot flush voice counter left", st.voice_counter[0], 0);
+    rc |= expect_eq("partial slot flush voice counter right preserved", st.voice_counter[1], 8);
+    rc |= expect_eq("partial slot flush clears left frames", short_18_blocks_are_clear(st.s_l4), 1);
+    rc |= expect_eq("partial slot flush preserves right sample", st.s_r4[0][0], -654);
+
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    st.dmrburstL = 21;
+    st.dmrburstR = 21;
+    st.s_l4[0][0] = 111;
+    st.s_r4[0][0] = -222;
+    st.voice_counter[0] = 3;
+    st.voice_counter[1] = 4;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+
+    dsd_p25p2_flush_partial_audio_slot(&opts, &st, 1);
+
+    short out2[160 * 2] = {0};
+    rc |= expect_eq("partial slot flush right captured calls", g_audio_capture_calls >= 1, 1);
+    copied = copy_capture_bytes("partial slot flush right captured bytes", out2, expected_bytes);
+    rc |= copied;
+    if (copied == 0) {
+        rc |= expect_eq("partial slot flush masks left sample", out2[0], 0);
+        rc |= expect_eq("partial slot flush right sample", out2[1], -222);
+    }
+    rc |= expect_eq("partial slot flush left allowed preserved", st.p25_p2_audio_allowed[0], 1);
+    rc |= expect_eq("partial slot flush right allowed", st.p25_p2_audio_allowed[1], 1);
+    rc |= expect_eq("partial slot flush left counter preserved", st.voice_counter[0], 3);
+    rc |= expect_eq("partial slot flush right counter", st.voice_counter[1], 0);
+    rc |= expect_eq("partial slot flush preserves left sample", st.s_l4[0][0], 111);
+    rc |= expect_eq("partial slot flush clears right frames", short_18_blocks_are_clear(st.s_r4), 1);
+    return rc;
+}
+
+static int
 run_short_mono_playback_case(void) {
     static dsd_opts opts;
     static dsd_state st;
@@ -730,6 +804,7 @@ main(void) {
                                      /*muted_slot_aes_loaded*/ 0, /*muted_slot_key*/ 1ULL);
     rc |= run_ss18_partial_flush_case();
     rc |= run_ss18_partial_flush_guard_case();
+    rc |= run_ss18_partial_flush_slot_case();
     rc |= run_short_mono_playback_case();
     rc |= run_float_mono_playback_case();
     rc |= run_short_stereo_fdma_playback_case();
