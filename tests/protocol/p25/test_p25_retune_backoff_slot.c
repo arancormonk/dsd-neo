@@ -11,6 +11,7 @@
  *   immediately (no backoff).
  * - Multiple failed VC/slot pairs remain blocked concurrently instead of the
  *   newest failure replacing the previous one.
+ * - Explicit data grants bypass stale failed-voice backoff on the same slot.
  */
 
 #include <dsd-neo/core/dsd_time.h>
@@ -314,7 +315,46 @@ main(void) {
                                                   && data_forced_ctx.state == P25_SM_ON_CC);
     rc |= expect_true("forced data does not arm backoff", retune_backoff_empty(&data_forced_st));
 
-    // 8) A transient return-to-CC failure during grant timeout must not record
+    // 8) A stale failed-voice backoff must not suppress an explicit data grant
+    // on the same TDMA channel/slot.
+    static dsd_opts mixed_opts;
+    static dsd_state mixed_st;
+    DSD_MEMSET(&mixed_opts, 0, sizeof mixed_opts);
+    DSD_MEMSET(&mixed_st, 0, sizeof mixed_st);
+    mixed_opts.p25_trunk = 1;
+    mixed_opts.trunk_tune_group_calls = 1;
+    mixed_opts.trunk_tune_data_calls = 1;
+    mixed_opts.trunk_hangtime = 0.2f;
+    mixed_opts.p25_grant_voice_to_s = 0.5;
+    mixed_opts.p25_retune_backoff_s = 2.0;
+    mixed_st.p25_cc_freq = 851000000;
+    mixed_st.p25_chan_iden = id;
+    mixed_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+    mixed_st.p25_chan_tdma_explicit[id] = 2;
+
+    p25_sm_ctx_t mixed_ctx;
+    p25_sm_init_ctx(&mixed_ctx, &mixed_opts, &mixed_st);
+    g_last_tuned_vc = 0;
+    g_tune_to_freq_calls = 0;
+    g_return_to_cc_calls = 0;
+    p25_sm_event(&mixed_ctx, &mixed_opts, &mixed_st, &ev_slot1);
+    rc |= expect_true("mixed voice initial tune", mixed_st.p25_sm_tune_count == 1 && mixed_opts.p25_is_tuned == 1
+                                                      && g_tune_to_freq_calls == 1 && mixed_ctx.vc_data_call == 0);
+
+    mixed_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    mixed_ctx.t_voice_m = 0.0;
+    p25_sm_tick_ctx(&mixed_ctx, &mixed_opts, &mixed_st);
+    rc |= expect_true("mixed voice returned",
+                      mixed_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && mixed_ctx.state == P25_SM_ON_CC);
+    rc |= expect_true("mixed voice backoff armed", mixed_st.p25_retune_block_freq == g_last_tuned_vc
+                                                       && mixed_st.p25_retune_block_slot == 1
+                                                       && mixed_st.p25_retune_block_until > time(NULL));
+
+    p25_sm_event(&mixed_ctx, &mixed_opts, &mixed_st, &data_ev_slot1);
+    rc |= expect_true("data grant bypasses voice backoff",
+                      g_tune_to_freq_calls == 2 && mixed_opts.p25_is_tuned == 1 && mixed_ctx.vc_data_call == 1);
+
+    // 9) A transient return-to-CC failure during grant timeout must not record
     // a failed VC until the retry is accepted.
     static const dsd_trunk_tune_result transient_returns[] = {
         DSD_TRUNK_TUNE_RESULT_DEFERRED,
@@ -366,6 +406,7 @@ main(void) {
     }
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
+    dsd_state_ext_free_all(&mixed_st);
     dsd_state_ext_free_all(&data_forced_st);
     dsd_state_ext_free_all(&data_st);
     dsd_state_ext_free_all(&forced_st);

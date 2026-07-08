@@ -1248,9 +1248,10 @@ p25_grant_should_clear_slot_only(const p25_sm_ctx_t* ctx, const dsd_state* state
 
 static int
 p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
-                        const dsd_tg_policy_decision* decision, p25_grant_route_ctx_t* out) {
+                        const dsd_tg_policy_decision* decision, const p25_grant_eval_ctx_t* eval_ctx,
+                        p25_grant_route_ctx_t* out) {
     p25_freq_trace_t freq_trace;
-    if (!ctx || !opts || !state || !ev || !decision || !out) {
+    if (!ctx || !opts || !state || !ev || !decision || !eval_ctx || !out) {
         return 0;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
@@ -1263,7 +1264,7 @@ p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
 
     out->now_m = now_monotonic();
     out->slot = channel_slot(state, ev->channel);
-    if (p25_grant_retune_blocked(opts, state, out->freq, out->slot, ev->channel)) {
+    if (!eval_ctx->data_call && p25_grant_retune_blocked(opts, state, out->freq, out->slot, ev->channel)) {
         return 0;
     }
     out->needs_retune = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz != 0 && ctx->vc_freq_hz != out->freq) ? 1 : 0;
@@ -1292,7 +1293,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         return;
     }
 
-    if (!p25_grant_prepare_route(ctx, opts, state, ev, &decision, &grant)) {
+    if (!p25_grant_prepare_route(ctx, opts, state, ev, &decision, &eval_ctx, &grant)) {
         return;
     }
 
