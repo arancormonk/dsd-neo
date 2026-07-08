@@ -651,6 +651,8 @@ seed_target0_p25_state(dsd_state* state) {
     state->p25_call_emergency[0] = 1;
     state->p25_call_priority[0] = 7;
     state->p25_call_is_packet[0] = 1;
+    state->p25_policy_tg[0] = 200;
+    state->p25_policy_tg[1] = 201;
 }
 
 static void
@@ -721,6 +723,8 @@ seed_target1_p25_state(dsd_state* state) {
     state->p25_call_emergency[0] = 0;
     state->p25_call_priority[0] = 2;
     state->p25_call_is_packet[0] = 0;
+    state->p25_policy_tg[0] = 901;
+    state->p25_policy_tg[1] = 902;
 }
 
 static int
@@ -730,7 +734,8 @@ expect_empty_target_p25_state(const dsd_state* state) {
         || state->p25_site_network_active_valid != 0 || state->p25_patch_count != 0 || state->p25_aff_count != 0
         || state->p25_ga_count != 0 || state->p25_nb_count != 0 || state->p25_secondary_cc_count != 0
         || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0 || state->p25_call_emergency[0] != 0
-        || state->p25_call_priority[0] != 0 || state->p25_call_is_packet[0] != 0) {
+        || state->p25_call_priority[0] != 0 || state->p25_call_is_packet[0] != 0 || state->p25_policy_tg[0] != 0
+        || state->p25_policy_tg[1] != 0) {
         DSD_FPRINTF(stderr, "target 0 P25 state leaked into empty target 1 snapshot\n");
         return 1;
     }
@@ -772,7 +777,7 @@ expect_target0_p25_state(const dsd_state* state) {
         || state->p25_nb_entries[0].lra != 0x55 || state->p25_nb_entries[0].lra_valid != 1
         || state->p25_nb_entries[0].cfva_valid != 1 || state->p25_nb_entries[0].last_seen != 444
         || state->p25_src_nid != 0xABCDE || state->p25_call_emergency[0] != 1 || state->p25_call_priority[0] != 7
-        || state->p25_call_is_packet[0] != 1) {
+        || state->p25_call_is_packet[0] != 1 || state->p25_policy_tg[0] != 200 || state->p25_policy_tg[1] != 201) {
         DSD_FPRINTF(stderr, "P25 neighbor/current-call state leaked across scan targets\n");
         test_rc = 1;
     }

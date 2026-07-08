@@ -8,9 +8,12 @@
  * Asserts trunking tune side-effects via test shim capture.
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -144,6 +147,51 @@ expect_not_contains(const char* tag, const char* text, const char* needle) {
     if (text != NULL && needle != NULL && strstr(text, needle) != NULL) {
         DSD_FPRINTF(stderr, "%s: '%s' unexpectedly contained '%s'\n", tag, text, needle);
         return 1;
+    }
+    return 0;
+}
+
+static int
+seed_policy_group(dsd_state* st, uint32_t tg, const char* mode, const char* name) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(tg, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return -1;
+    }
+    return dsd_tg_policy_append_exact(st, &row);
+}
+
+static int
+find_patch_idx(const dsd_state* st, uint16_t sgid) {
+    for (int i = 0; i < st->p25_patch_count && i < 8; i++) {
+        if (st->p25_patch_sgid[i] == sgid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int
+patch_has_wgid(const dsd_state* st, int idx, uint16_t wgid) {
+    if (!st || idx < 0 || idx >= 8) {
+        return 0;
+    }
+    for (int i = 0; i < st->p25_patch_wgid_count[idx] && i < 8; i++) {
+        if (st->p25_patch_wgid[idx][i] == wgid) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+patch_has_wuid(const dsd_state* st, int idx, uint32_t wuid) {
+    if (!st || idx < 0 || idx >= 8) {
+        return 0;
+    }
+    for (int i = 0; i < st->p25_patch_wuid_count[idx] && i < 8; i++) {
+        if (st->p25_patch_wuid[idx][i] == wuid) {
+            return 1;
+        }
     }
     return 0;
 }
@@ -349,6 +397,169 @@ run_standard_regroup_voice_user_nonstandard_guard_case(void) {
     return rc;
 }
 
+static int
+test_harris_a4_grg_state_management(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.currentslot = 0;
+
+    MAC[1] = 0xB0;
+    MAC[2] = 0xA4;
+    MAC[3] = 0x11;
+    MAC[4] = (unsigned long long)((0x3 << 5) | 0x09); // active WGID patch, SSN 9
+    MAC[5] = 0x12;
+    MAC[6] = 0x34;
+    MAC[7] = 0xBE;
+    MAC[8] = 0xEF;
+    MAC[9] = 0x84;
+    MAC[10] = 0x11;
+    MAC[11] = 0x11;
+    MAC[12] = 0x00;
+    MAC[13] = 0x00;
+    MAC[14] = 0x22;
+    MAC[15] = 0x22;
+    MAC[16] = 0x33;
+    MAC[17] = 0x33;
+    process_MAC_VPDU(&opts, &state, 1, MAC);
+
+    int idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("harris a4 wgid sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("harris a4 wgid active", state.p25_patch_active[idx], 1);
+        rc |= expect_eq_long("harris a4 wgid patch", state.p25_patch_is_patch[idx], 1);
+        rc |= expect_eq_long("harris a4 wgid count", state.p25_patch_wgid_count[idx], 3);
+        rc |= expect_true("harris a4 wgid 1111", patch_has_wgid(&state, idx, 0x1111));
+        rc |= expect_true("harris a4 wgid 2222", patch_has_wgid(&state, idx, 0x2222));
+        rc |= expect_true("harris a4 wgid 3333", patch_has_wgid(&state, idx, 0x3333));
+        rc |= expect_eq_long("harris a4 key", state.p25_patch_key[idx], 0xBEEF);
+        rc |= expect_eq_long("harris a4 alg", state.p25_patch_alg[idx], 0x84);
+        rc |= expect_eq_long("harris a4 ssn", state.p25_patch_ssn[idx], 9);
+    }
+
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xB0;
+    MAC[2] = 0xA4;
+    MAC[3] = 0x0B;
+    MAC[4] = (unsigned long long)((0x3 << 5) | 0x0A); // SSN replacement
+    MAC[5] = 0x12;
+    MAC[6] = 0x34;
+    MAC[7] = 0xBE;
+    MAC[8] = 0xEF;
+    MAC[9] = 0x89;
+    MAC[10] = 0x44;
+    MAC[11] = 0x44;
+    process_MAC_VPDU(&opts, &state, 1, MAC);
+    idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("harris a4 replacement sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("harris a4 replacement count", state.p25_patch_wgid_count[idx], 1);
+        rc |= expect_true("harris a4 replacement new member", patch_has_wgid(&state, idx, 0x4444));
+        rc |= expect_true("harris a4 replacement stale member cleared", !patch_has_wgid(&state, idx, 0x1111));
+        rc |= expect_eq_long("harris a4 replacement alg", state.p25_patch_alg[idx], 0x89);
+        rc |= expect_eq_long("harris a4 replacement ssn", state.p25_patch_ssn[idx], 10);
+    }
+
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xB0;
+    MAC[2] = 0xA4;
+    MAC[3] = 0x0B;
+    MAC[4] = (unsigned long long)((0x2 << 5) | 0x0A); // inactive WGID command
+    MAC[5] = 0x12;
+    MAC[6] = 0x34;
+    MAC[7] = 0xBE;
+    MAC[8] = 0xEF;
+    MAC[9] = 0x89;
+    MAC[10] = 0x55;
+    MAC[11] = 0x55;
+    process_MAC_VPDU(&opts, &state, 1, MAC);
+    idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("harris a4 inactive sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("harris a4 inactive clears active", state.p25_patch_active[idx], 0);
+        rc |= expect_eq_long("harris a4 inactive clears members", state.p25_patch_wgid_count[idx], 0);
+        rc |= expect_eq_long("harris a4 inactive clears key", state.p25_patch_key_valid[idx], 0);
+    }
+
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0xB0;
+    MAC[2] = 0xA4;
+    MAC[3] = 0x0E;
+    MAC[4] = (unsigned long long)((0x1 << 5) | 0x03); // active WUID patch, SSN 3
+    MAC[5] = 0x22;
+    MAC[6] = 0x22;
+    MAC[7] = 0x12;
+    MAC[8] = 0x34;
+    MAC[9] = 0x01;
+    MAC[10] = 0x02;
+    MAC[11] = 0x03;
+    MAC[12] = 0x00;
+    MAC[13] = 0x00;
+    MAC[14] = 0x00;
+    process_MAC_VPDU(&opts, &state, 1, MAC);
+    idx = find_patch_idx(&state, 0x2222);
+    rc |= expect_true("harris a4 wuid sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("harris a4 wuid count ignores zero", state.p25_patch_wuid_count[idx], 1);
+        rc |= expect_true("harris a4 wuid member", patch_has_wuid(&state, idx, 0x010203));
+        rc |= expect_eq_long("harris a4 wuid key", state.p25_patch_key[idx], 0x1234);
+        rc |= expect_eq_long("harris a4 wuid ssn", state.p25_patch_ssn[idx], 3);
+    }
+
+    return rc;
+}
+
+static int
+test_motorola_extended_function_supergroup_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+
+    MAC[1] = 0x84;
+    MAC[2] = 0x90;
+    MAC[4] = 0x02;
+    MAC[5] = 0x00;
+    MAC[6] = 0x00;
+    MAC[7] = 0x12;
+    MAC[8] = 0x34;
+    MAC[9] = 0x01;
+    MAC[10] = 0x02;
+    MAC[11] = 0x03;
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+
+    int idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("moto ext create sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("moto ext create active", state.p25_patch_active[idx], 1);
+        rc |= expect_eq_long("moto ext create wuid count", state.p25_patch_wuid_count[idx], 1);
+        rc |= expect_true("moto ext create wuid", patch_has_wuid(&state, idx, 0x010203));
+    }
+
+    MAC[5] = 0x01;
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    idx = find_patch_idx(&state, 0x1234);
+    rc |= expect_true("moto ext cancel sg exists", idx >= 0);
+    if (idx >= 0) {
+        rc |= expect_eq_long("moto ext cancel inactive", state.p25_patch_active[idx], 0);
+        rc |= expect_eq_long("moto ext cancel clears wuid", state.p25_patch_wuid_count[idx], 0);
+    }
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    MAC[4] = 0x00;
+    MAC[5] = 0x7F;
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    rc |= expect_eq_long("moto ext class0 metadata only", state.p25_patch_count, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -359,6 +570,9 @@ main(void) {
     const int iden = 1, type = 1, tdma = 0, spac = 100; // 100*125 = 12.5 kHz
     const long base = 170200000;                        // 170200000*5 = 851,000,000 Hz
     const long cc = 851000000;                          // non-zero CC freq enables tuning
+
+    rc |= test_harris_a4_grg_state_management();
+    rc |= test_motorola_extended_function_supergroup_state();
 
     // Case A: MFID 0x90, opcode A3 (Group Regroup Channel Grant - Implicit)
     {
@@ -609,7 +823,46 @@ main(void) {
         rc |= expect_eq_long("0xC0 service options valid", state.p25_service_options_valid[0], 1);
     }
 
-    // Case D5a: MFID90 0xA3 propagates service options and source.
+    // Case D5a: patched-supergroup grants dispatch to the SM even when TG hold matches only a member WGID.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        state.p25_cc_freq = cc;
+        state.tg_hold = 0x3333;
+        seed_fdma_iden(&state, iden, type, base, spac);
+        p25_patch_add_wgid(&state, 0x2222, 0x3333);
+
+        MAC[1] = 0xC0;
+        MAC[2] = 0x23;
+        MAC[3] = 0x10;
+        MAC[4] = 0x0C;
+        MAC[5] = 0x10;
+        MAC[6] = 0x0D;
+        MAC[7] = 0x22;
+        MAC[8] = 0x22;
+        MAC[9] = 0x01;
+        MAC[10] = 0x02;
+        MAC[11] = 0x03;
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0xC0 patch member hold dispatch", g_group_grant_called, 1);
+        rc |= expect_eq_long("0xC0 patch member hold tg", g_group_grant_tg, 0x2222);
+        rc |= expect_eq_long("0xC0 patch member hold src", g_group_grant_src, 0x010203);
+    }
+
+    // Case D5b: MFID90 0xA3 propagates service options and source.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -649,7 +902,7 @@ main(void) {
         rc |= expect_eq_long("0xA3 emergency state", state.p25_call_emergency[0], 1);
     }
 
-    // Case D5b: MFID90 0xA4 propagates service options, source, and CHAN-R cache.
+    // Case D5c: MFID90 0xA4 propagates service options, source, and CHAN-R cache.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -846,15 +1099,11 @@ main(void) {
         MAC[10] = 0x02;
         MAC[11] = 0x03;
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0xA3 encrypted blocked capture", g_group_grant_called, 0);
         rc |= expect_true("0xA3 encrypted blocked no tune", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0xA3 encrypted cache tg", state.p25_enc_tg_cache_tg[0], 0x2222);
+        rc |= expect_true("0xA3 encrypted cache armed", state.p25_enc_tg_cache_until[0] > time(NULL));
         rc |= expect_contains("0xA3 encrypted active", state.active_channel[0], "MFID90 Active Ch: 100A");
     }
 
@@ -884,6 +1133,46 @@ main(void) {
         rc |= expect_eq_long("0x80 service options valid", state.p25_service_options_valid[0], 1);
         rc |= expect_eq_long("0x80 emergency state", state.p25_call_emergency[0], 1);
         rc |= expect_contains("0x80 call banner", state.call_string[0], "Emergency");
+    }
+
+    // Case D5e2: first regroup voice-user metadata preserves the patch-member policy target from the grant.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.trunk_use_allow_list = 1;
+        state.synctype = DSD_SYNC_P25P2_POS;
+        state.currentslot = 0;
+        state.lasttg = 0x2222;
+        state.lastsrc = 0x010101;
+
+        rc |= expect_eq_long("0x80 policy seed member", seed_policy_group(&state, 0x1234, "A", "PATCH-MEMBER"), 0);
+        p25_patch_add_wgid(&state, 0x3456, 0x1234);
+        state.p25_policy_tg[0] = 0x1234;
+
+        MAC[1] = 0x80;
+        MAC[2] = 0x90;
+        MAC[3] = 0x00;
+        MAC[4] = 0x34;
+        MAC[5] = 0x56;
+        MAC[6] = 0x01;
+        MAC[7] = 0x02;
+        MAC[8] = 0x03;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x80 policy member last tg", state.lasttg, 0x3456);
+        rc |= expect_eq_long("0x80 policy member preserved", state.p25_policy_tg[0], 0x1234);
+        rc |= expect_eq_long("0x80 policy member audio", dsd_p25p2_decode_audio_allowed(&opts, &state, 0, 0), 1);
+
+        state.p25_policy_tg[0] = 0x7777;
+        MAC[4] = 0x45;
+        MAC[5] = 0x67;
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_eq_long("0x80 stale policy clears", state.p25_policy_tg[0], 0);
+
+        dsd_state_ext_free_all(&state);
     }
 
     // Case D5f: MFID90 0xA0 extended voice-user messages store service options.

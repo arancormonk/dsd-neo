@@ -125,6 +125,7 @@ typedef struct {
     uint32_t p25_patch_wuid[8][8];
     uint32_t p25_aff_rid[256];
     uint32_t p25_ga_rid[512];
+    uint32_t p25_policy_tg[2];
     uint16_t p25_prot_kid;
     int16_t p25_sys_time_offset;
     uint16_t p25_patch_sgid[8];
@@ -753,6 +754,7 @@ trunk_scan_save_call_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* s
     DSD_MEMCPY(snapshot->p25_call_emergency, state->p25_call_emergency, sizeof(snapshot->p25_call_emergency));
     DSD_MEMCPY(snapshot->p25_call_priority, state->p25_call_priority, sizeof(snapshot->p25_call_priority));
     DSD_MEMCPY(snapshot->p25_call_is_packet, state->p25_call_is_packet, sizeof(snapshot->p25_call_is_packet));
+    DSD_MEMCPY(snapshot->p25_policy_tg, state->p25_policy_tg, sizeof(snapshot->p25_policy_tg));
     DSD_MEMCPY(snapshot->p25_service_options_valid, state->p25_service_options_valid,
                sizeof(snapshot->p25_service_options_valid));
     snapshot->dmr_so = state->dmr_so;
@@ -769,6 +771,7 @@ trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
     DSD_MEMCPY(state->p25_call_emergency, snapshot->p25_call_emergency, sizeof(state->p25_call_emergency));
     DSD_MEMCPY(state->p25_call_priority, snapshot->p25_call_priority, sizeof(state->p25_call_priority));
     DSD_MEMCPY(state->p25_call_is_packet, snapshot->p25_call_is_packet, sizeof(state->p25_call_is_packet));
+    DSD_MEMCPY(state->p25_policy_tg, snapshot->p25_policy_tg, sizeof(state->p25_policy_tg));
     DSD_MEMCPY(state->p25_service_options_valid, snapshot->p25_service_options_valid,
                sizeof(state->p25_service_options_valid));
     state->dmr_so = snapshot->dmr_so;

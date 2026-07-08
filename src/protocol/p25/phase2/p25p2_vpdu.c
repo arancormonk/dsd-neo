@@ -313,27 +313,6 @@ p25p2_mac_policy_flag(int svc_bits, int policy_override, int bit) {
     return (svc_bits & bit) ? 1 : 0;
 }
 
-static int
-p25p2_mac_group_enc_for_policy(const dsd_opts* opts, const dsd_state* state, int group, int svc_bits,
-                               int policy_encrypted_override) {
-    int enc_for_policy = p25p2_mac_policy_flag(svc_bits, policy_encrypted_override, 0x40);
-    if (!(enc_for_policy && policy_encrypted_override < 0 && opts->trunk_tune_enc_calls == 0)) {
-        return enc_for_policy;
-    }
-    if (p25_patch_tg_key_is_clear(state, group) || p25_patch_sg_key_is_clear(state, group)) {
-        return 0;
-    }
-    return enc_for_policy;
-}
-
-static int
-p25p2_mac_group_policy_allows(const dsd_opts* opts, const dsd_state* state, int group, int source, int enc_for_policy,
-                              int data_for_policy, dsd_tg_policy_decision* decision) {
-    int rc = dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, enc_for_policy,
-                                               data_for_policy, DSD_TG_POLICY_HOLD_COMPAT_GRANT, decision);
-    return (rc == 0 && decision->tune_allowed);
-}
-
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
 p25p2_emit_mac_json_if_enabled(const dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
@@ -374,8 +353,10 @@ p25p2_emit_mac_json_if_enabled(const dsd_state* state, int xch_type, uint8_t mfi
 static void
 p25p2_mac_handle(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* state, int channel, int svc_bits,
                  int group, int source, int policy_encrypted_override, int policy_data_override, int emit_enc_lockout) {
-    dsd_tg_policy_decision decision;
     (void)res;
+    (void)policy_encrypted_override;
+    (void)policy_data_override;
+    (void)emit_enc_lockout;
     if (!opts || !state) {
         return;
     }
@@ -383,15 +364,8 @@ p25p2_mac_handle(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* 
         return;
     }
 
-    int enc_for_policy = p25p2_mac_group_enc_for_policy(opts, state, group, svc_bits, policy_encrypted_override);
-    int data_for_policy = p25p2_mac_policy_flag(svc_bits, policy_data_override, 0x10);
-    if (!p25p2_mac_group_policy_allows(opts, state, group, source, enc_for_policy, data_for_policy, &decision)) {
-        if (emit_enc_lockout && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
-            p25_emit_enc_lockout_once(opts, state, 0, group, svc_bits);
-        }
-        return;
-    }
-
+    // The trunk state machine owns group-grant policy so patched supergroup
+    // grants can be evaluated against their member talkgroups.
     p25_sm_on_group_grant(opts, state, channel, svc_bits, group, source);
 }
 
@@ -767,6 +741,7 @@ p25p2_vpdu_clear_slot_banner(dsd_state* state, int slot) {
 static void
 p25p2_vpdu_gate_slot_audio(dsd_state* state, int slot) {
     state->p25_p2_audio_allowed[slot] = 0;
+    state->p25_policy_tg[slot & 1] = 0;
     p25_p2_audio_ring_reset(state, slot);
 }
 
@@ -881,8 +856,35 @@ p25p2_vpdu_set_private_call_banner(dsd_state* state, int slot, int svc) {
     }
 }
 
+static int
+p25p2_vpdu_policy_tg_matches_patch_member(const dsd_state* state, int slot, int talkgroup) {
+    uint16_t wgids[8] = {0};
+    int count = 0;
+    uint32_t policy_tg = 0;
+    if (!state || slot < 0 || slot > 1 || talkgroup <= 0) {
+        return 0;
+    }
+
+    policy_tg = state->p25_policy_tg[slot & 1];
+    if (policy_tg == 0U || policy_tg > 0xFFFFU) {
+        return 0;
+    }
+
+    count = p25_patch_collect_active_wgids(state, talkgroup, wgids, sizeof(wgids) / sizeof(wgids[0]));
+    for (int i = 0; i < count && i < 8; i++) {
+        if ((uint32_t)wgids[i] == policy_tg) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void
 p25p2_vpdu_update_group_last_ids(dsd_state* state, int slot, int talkgroup, int source) {
+    int previous = (slot == 0) ? state->lasttg : state->lasttgR;
+    if (previous != talkgroup && !p25p2_vpdu_policy_tg_matches_patch_member(state, slot & 1, talkgroup)) {
+        state->p25_policy_tg[slot & 1] = 0;
+    }
     if (slot == 0) {
         state->lasttg = talkgroup;
         if (source != 0) {
@@ -902,6 +904,7 @@ p25p2_vpdu_update_group_last_ids(dsd_state* state, int slot, int talkgroup, int 
 
 static void
 p25p2_vpdu_update_private_last_ids(dsd_state* state, int slot, int talkgroup, int source) {
+    state->p25_policy_tg[slot & 1] = 0;
     if (slot == 0) {
         state->lasttg = talkgroup;
         if (source != 0) {
@@ -3051,6 +3054,91 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
+static int
+p25p2_vpdu_harris_a4_msg_len(int len_b, int len_grg) {
+    return (len_grg > 0 && len_grg < len_b) ? len_grg : len_b;
+}
+
+static void
+p25p2_vpdu_print_harris_a4_options(int tga, int ssn) {
+    DSD_FPRINTF(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
+    DSD_FPRINTF(stderr, (tga & 0x4) ? " Simulselect" : " Patch");
+    DSD_FPRINTF(stderr, (tga & 0x1) ? " Active;" : " Inactive;");
+    DSD_FPRINTF(stderr, " SSN: %02d;", ssn);
+}
+
+static int
+p25p2_vpdu_harris_a4_wgid_count(int msg_len) {
+    int count = (msg_len >= 11) ? ((msg_len - 9) / 2) : 0;
+    return (count > 4) ? 4 : count;
+}
+
+static int
+p25p2_vpdu_harris_a4_wuid_count(int msg_len) {
+    int count = (msg_len >= 11) ? ((msg_len - 8) / 3) : 0;
+    return (count > 3) ? 3 : count;
+}
+
+static void
+p25p2_vpdu_handle_harris_a4_wgid(dsd_state* state, const unsigned long long int* mac, int len_a, int msg_len,
+                                 int is_patch, int active, int ssn) {
+    int sg = (mac[5 + len_a] << 8) | mac[6 + len_a];
+    int key = (mac[7 + len_a] << 8) | mac[8 + len_a];
+    int alg = mac[9 + len_a];
+    DSD_FPRINTF(stderr, " SG: %d; KEY ID: %04X; ALG: %02X;\n  ", sg, key, alg);
+    if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
+        return;
+    }
+
+    int count = p25p2_vpdu_harris_a4_wgid_count(msg_len);
+    for (int wi = 0; wi < count && (10 + len_a + (wi * 2) + 1) < 24; wi++) {
+        int wgid = (mac[10 + len_a + (wi * 2)] << 8) | mac[11 + len_a + (wi * 2)];
+        DSD_FPRINTF(stderr, "WGID: %d; ", wgid);
+        if (wgid != 0) {
+            p25_patch_add_wgid(state, sg, wgid);
+        }
+    }
+    p25_patch_set_kas(state, sg, key, alg, ssn);
+}
+
+static void
+p25p2_vpdu_handle_harris_a4_wuid(dsd_state* state, const unsigned long long int* mac, int len_a, int msg_len,
+                                 int is_patch, int active, int ssn) {
+    int sg = (mac[5 + len_a] << 8) | mac[6 + len_a];
+    int key = (mac[7 + len_a] << 8) | mac[8 + len_a];
+    DSD_FPRINTF(stderr, "  SG: %d KEY ID: %04X", sg, key);
+    if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
+        return;
+    }
+
+    int count = p25p2_vpdu_harris_a4_wuid_count(msg_len);
+    for (int wi = 0; wi < count && (9 + len_a + (wi * 3) + 2) < 24; wi++) {
+        int wuid = (mac[9 + len_a + (wi * 3)] << 16) | (mac[10 + len_a + (wi * 3)] << 8) | mac[11 + len_a + (wi * 3)];
+        DSD_FPRINTF(stderr, " WUID: %d;", wuid);
+        if (wuid != 0) {
+            p25_patch_add_wuid(state, sg, (uint32_t)wuid);
+        }
+    }
+    p25_patch_set_kas(state, sg, key, -1, ssn);
+}
+
+static void
+p25p2_vpdu_handle_harris_a4_grg(dsd_state* state, const unsigned long long int* mac, int len_a, int len_b) {
+    int len_grg = mac[3 + len_a] & 0x3F;
+    int msg_len = p25p2_vpdu_harris_a4_msg_len(len_b, len_grg);
+    int tga = mac[4 + len_a] >> 5;
+    int ssn = mac[4 + len_a] & 0x1F;
+    int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
+    int active = (tga & 0x1) ? 1 : 0;
+
+    p25p2_vpdu_print_harris_a4_options(tga, ssn);
+    if ((tga & 0x2) == 2) {
+        p25p2_vpdu_handle_harris_a4_wgid(state, mac, len_a, msg_len, is_patch, active, ssn);
+    } else {
+        p25p2_vpdu_handle_harris_a4_wuid(state, mac, len_a, msg_len, is_patch, active, ssn);
+    }
+}
+
 static void
 p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
@@ -3066,78 +3154,7 @@ p25p2_vpdu_iter_block_37(p25p2_vpdu_ctx* ctx) {
 
     if (MAC[1 + len_a] == 0xB0 && MAC[2 + len_a] == 0xA4) //&& MAC[2+len_a] == 0xA4
     {
-        int len_grg = MAC[3 + len_a] & 0x3F; //MFID Len in Octets
-        int tga = MAC[4 + len_a] >> 5;       //3 bit TGA values from GRG_Options
-        int ssn = MAC[4 + len_a] & 0x1F;     //5 bit SSN from from GRG_Options
-
-        DSD_FPRINTF(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
-        if ((tga & 4) == 4) {
-            DSD_FPRINTF(stderr, " Simulselect"); //one-way regroup
-        } else {
-            DSD_FPRINTF(stderr, " Patch"); //two-way regroup
-        }
-        if (tga & 1) {
-            DSD_FPRINTF(stderr, " Active;"); //activated
-        } else {
-            DSD_FPRINTF(stderr, " Inactive;"); //deactivated
-        }
-
-        DSD_FPRINTF(stderr, " SSN: %02d;", ssn);
-
-        if ((tga & 0x2) == 2) //group WGID to supergroup
-        {
-            int sg = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
-            int key = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
-            int alg = MAC[9 + len_a];
-            int t1 = (MAC[10 + len_a] << 8) | MAC[11 + len_a];
-            int t2 = (MAC[12 + len_a] << 8) | MAC[13 + len_a];
-            int t3 = (MAC[14 + len_a] << 8) | MAC[15 + len_a];
-            int t4 = (MAC[16 + len_a] << 8) | MAC[17 + len_a];
-            UNUSED4(t1, t2, t3, t4);
-            DSD_FPRINTF(stderr, " SG: %d; KEY ID: %04X; ALG: %02X;\n  ", sg, key, alg);
-            int a = 0;
-            int wgid = 0;
-
-            for (int wi = 10; wi <= len_grg;) {
-                //failsafe to prevent oob array
-                if ((wi + len_a) > 20) {
-                    ctx->end_pdu = 1;
-                    goto BLOCK_END;
-                }
-                wgid = (MAC[10 + len_a + a] << 8) | MAC[11 + len_a + a];
-                DSD_FPRINTF(stderr, "WGID: %d; ", wgid);
-                p25_patch_add_wgid(state, sg, wgid);
-                a = a + 2;
-                wi = wi + 2;
-            }
-
-            // Update patch tracker for this SG (two-way patch if bit4 of TGA is 0)
-            int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
-            int active = (tga & 0x1) ? 1 : 0;
-            p25_patch_update(state, sg, is_patch, active);
-            p25_patch_set_kas(state, sg, key, alg, ssn);
-
-        }
-
-        else if ((tga & 0x2) == 0) //individual WUID to supergroup
-        {
-            int sg = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
-            int key = (MAC[7 + len_a] << 8) | MAC[8 + len_a];
-            int t1 = (MAC[9 + len_a] << 16) | (MAC[10 + len_a] << 8) | MAC[11 + len_a];
-            int t2 = (MAC[12 + len_a] << 16) | (MAC[13 + len_a] << 8) | MAC[14 + len_a];
-            int t3 = (MAC[15 + len_a] << 16) | (MAC[16 + len_a] << 8) | MAC[17 + len_a];
-            DSD_FPRINTF(stderr, "  SG: %d KEY ID: %04X", sg, key);
-            DSD_FPRINTF(stderr, " WUID: %d; WUID: %d; WUID: %d; ", t1, t2, t3);
-            p25_patch_add_wuid(state, sg, (uint32_t)t1);
-            p25_patch_add_wuid(state, sg, (uint32_t)t2);
-            p25_patch_add_wuid(state, sg, (uint32_t)t3);
-
-            // Update patch tracker
-            int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
-            int active = (tga & 0x1) ? 1 : 0;
-            p25_patch_update(state, sg, is_patch, active);
-            p25_patch_set_kas(state, sg, key, -1, ssn);
-        }
+        p25p2_vpdu_handle_harris_a4_grg(state, MAC, len_a, len_b);
     }
 
     if (len_b < 0) {
@@ -4815,6 +4832,21 @@ p25p2_vpdu_handle_motorola_regroup_extended_function(const p25p2_vpdu_ctx* ctx) 
     DSD_FPRINTF(stderr, "\n  Class [%02X] Operand [%02X] Arg [%06X] Target [%d]", class_id, operand, argument, target);
     if (class_id == 0) {
         DSD_FPRINTF(stderr, " %s", p25_extended_function_class0_operand_label((uint8_t)operand));
+    } else if (class_id == 0x02 && operand == 0x00) {
+        int sg = argument & 0xFFFF;
+        DSD_FPRINTF(stderr, " Create Supergroup");
+        if (sg != 0) {
+            p25_patch_prepare_grg_update(ctx->state, sg, /*is_patch*/ 1, /*active*/ 1, /*ssn*/ -1);
+            if (target != 0) {
+                p25_patch_add_wuid(ctx->state, sg, (uint32_t)target);
+            }
+        }
+    } else if (class_id == 0x02 && operand == 0x01) {
+        int sg = argument & 0xFFFF;
+        DSD_FPRINTF(stderr, " Cancel Supergroup");
+        if (sg != 0) {
+            p25_patch_clear_sg(ctx->state, sg);
+        }
     }
 }
 

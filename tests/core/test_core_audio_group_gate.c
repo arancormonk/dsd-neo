@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -52,6 +53,17 @@ seed_policy_group(dsd_state* st, uint32_t tg, const char* mode, const char* name
         return -1;
     }
     return dsd_tg_policy_append_exact(st, &row);
+}
+
+static void
+seed_active_patch_member(dsd_state* st, uint16_t sg, uint16_t wg) {
+    st->p25_patch_count = 1;
+    st->p25_patch_sgid[0] = sg;
+    st->p25_patch_is_patch[0] = 1U;
+    st->p25_patch_active[0] = 1U;
+    st->p25_patch_last_update[0] = time(NULL);
+    st->p25_patch_wgid_count[0] = 1U;
+    st->p25_patch_wgid[0][0] = wg;
 }
 
 static void
@@ -322,6 +334,87 @@ main(void) {
     st->lasttg = 0;
     st->gi[0] = 0;
     rc |= expect_eq("case9-target-zero-gi-unset", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
+
+    // Case 10: P25 patch-member policy targets are only honored while the OTA SG still owns the active member.
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(st);
+    opts->trunk_use_allow_list = 1;
+    rc |= expect_eq("case10-seed-member", seed_policy_group(st, 9401U, "A", "PATCH-MEMBER"), 0);
+    st->synctype = DSD_SYNC_P25P2_POS;
+    st->currentslot = 0;
+    st->gi[0] = 0;
+    st->lasttg = 9400;
+    st->lastsrc = 777001;
+    st->p25_policy_tg[0] = 9401U;
+    st->p25_p2_audio_allowed[0] = 1U;
+    seed_active_patch_member(st, 9400U, 9401U);
+    {
+        int out = -1;
+        int allow = -1;
+        rc |= expect_eq("case10-aud-ret-valid", dsd_audio_group_gate_mono(opts, st, 9400UL, 0, &out), 0);
+        rc |= expect_eq("case10-aud-out-valid", out, 0);
+        rc |= expect_eq("case10-decode-valid", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 1);
+        rc |= expect_eq("case10-rec-ret-valid", dsd_audio_record_gate_mono(opts, st, &allow), 0);
+        rc |= expect_eq("case10-rec-allow-valid", allow, 1);
+
+        st->p25_patch_active[0] = 0U;
+        rc |= expect_eq("case10-aud-ret-inactive", dsd_audio_group_gate_mono(opts, st, 9400UL, 0, &out), 0);
+        rc |= expect_eq("case10-aud-out-inactive", out, 1);
+        rc |= expect_eq("case10-decode-inactive", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
+        rc |= expect_eq("case10-rec-ret-inactive", dsd_audio_record_gate_mono(opts, st, &allow), 0);
+        rc |= expect_eq("case10-rec-allow-inactive", allow, 0);
+    }
+
+    // Case 10b: A live member from another SG must not be substituted for changed slot metadata.
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(st);
+    opts->trunk_use_allow_list = 1;
+    rc |= expect_eq("case10b-seed-member", seed_policy_group(st, 9501U, "A", "OTHER-PATCH-MEMBER"), 0);
+    st->synctype = DSD_SYNC_P25P2_POS;
+    st->currentslot = 0;
+    st->gi[0] = 0;
+    st->lasttg = 9502;
+    st->lastsrc = 777002;
+    st->p25_policy_tg[0] = 9501U;
+    st->p25_p2_audio_allowed[0] = 1U;
+    seed_active_patch_member(st, 9500U, 9501U);
+    {
+        int out = -1;
+        int allow = -1;
+        rc |= expect_eq("case10b-aud-ret", dsd_audio_group_gate_mono(opts, st, 9502UL, 0, &out), 0);
+        rc |= expect_eq("case10b-aud-out", out, 1);
+        rc |= expect_eq("case10b-decode", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
+        rc |= expect_eq("case10b-rec-ret", dsd_audio_record_gate_mono(opts, st, &allow), 0);
+        rc |= expect_eq("case10b-rec-allow", allow, 0);
+    }
+
+    // Case 10c: Dual-slot P25 SG calls must apply each slot's patched policy TG independently.
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(st);
+    opts->trunk_use_allow_list = 1;
+    rc |= expect_eq("case10c-seed-right-member", seed_policy_group(st, 9602U, "A", "RIGHT-PATCH-MEMBER"), 0);
+    st->synctype = DSD_SYNC_P25P2_POS;
+    st->lasttg = 9600;
+    st->lasttgR = 9600;
+    st->lastsrc = 777003;
+    st->lastsrcR = 777004;
+    st->p25_policy_tg[0] = 9601U;
+    st->p25_policy_tg[1] = 9602U;
+    st->p25_patch_count = 1;
+    st->p25_patch_sgid[0] = 9600U;
+    st->p25_patch_is_patch[0] = 1U;
+    st->p25_patch_active[0] = 1U;
+    st->p25_patch_last_update[0] = time(NULL);
+    st->p25_patch_wgid_count[0] = 2U;
+    st->p25_patch_wgid[0][0] = 9601U;
+    st->p25_patch_wgid[0][1] = 9602U;
+    {
+        int outL = -1;
+        int outR = -1;
+        rc |= expect_eq("case10c-ret", dsd_audio_group_gate_dual(opts, st, 9600UL, 9600UL, 0, 0, &outL, &outR), 0);
+        rc |= expect_eq("case10c-outL", outL, 1);
+        rc |= expect_eq("case10c-outR", outR, 0);
+    }
 
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");

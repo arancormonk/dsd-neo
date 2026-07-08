@@ -225,6 +225,18 @@ p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) 
     return state->p25_cc_freq != 0;
 }
 
+static void
+p25p1_pdu_dispatch_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int group, int src,
+                               long int freq) {
+    // The trunk state machine owns group-grant policy so patched supergroup
+    // grants can be evaluated against their member talkgroups.
+    if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
+        p25_sm_on_group_grant(opts, state, channel, svc_bits, group, src);
+    } else {
+        p25_sm_apply_group_grant_policy(opts, state, channel, svc_bits, group, src);
+    }
+}
+
 static void DSD_ATTR_USED
 p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                 const p25p1_mbt_fields* fields) {
@@ -438,21 +450,21 @@ p25_handle_mbt_tdma_iden_foreign_system(const uint8_t* mpdu_byte) {
 
 static void DSD_ATTR_USED
 p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
-    int svc = mpdu_byte[8];
+    int svc_bits = mpdu_byte[8];
     int channelt = (mpdu_byte[14] << 8) | mpdu_byte[15];
     int channelr = (mpdu_byte[16] << 8) | mpdu_byte[17];
-    long int source = (mpdu_byte[3] << 16) | (mpdu_byte[4] << 8) | mpdu_byte[5];
+    long int src = (mpdu_byte[3] << 16) | (mpdu_byte[4] << 8) | mpdu_byte[5];
     int group = (mpdu_byte[18] << 8) | mpdu_byte[19];
     long int freq1 = 0;
     long int freq2 = 0;
     UNUSED(freq2);
 
     DSD_FPRINTF(stderr, "%s\n ", KYEL);
-    p25_print_voice_svc_common(opts, state, svc);
+    p25_print_voice_svc_common(opts, state, svc_bits);
 
     DSD_FPRINTF(stderr, " Group Voice Channel Grant Update - Extended");
-    DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc, channelt, channelr, group,
-                group);
+    DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc_bits, channelt, channelr,
+                group, group);
 
     freq1 = process_channel_to_freq(opts, state, channelt);
     (void)process_channel_to_freq(opts, state, channelr);
@@ -465,26 +477,7 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
-    dsd_tg_policy_decision decision;
-    int enc_for_policy = (svc & 0x40) ? 1 : 0;
-    if (enc_for_policy && opts->trunk_tune_enc_calls == 0
-        && (p25_patch_tg_key_is_clear(state, group) || p25_patch_sg_key_is_clear(state, group))) {
-        enc_for_policy = 0;
-    }
-
-    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, enc_for_policy,
-                                          (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-            != 0
-        || !decision.tune_allowed) {
-        if (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
-            p25_emit_enc_lockout_once(opts, state, 0, group, svc);
-        }
-        return;
-    }
-
-    if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
-        p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
-    }
+    p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1);
 }
 
 static void DSD_ATTR_USED
@@ -759,23 +752,23 @@ p25_handle_mbt_mfid_a4(const uint8_t* mpdu_byte, int blks, uint8_t opcode, size_
 
 static void DSD_ATTR_USED
 p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
-    int svc = mpdu_byte[8];
+    int svc_bits = mpdu_byte[8];
     int channelt = (mpdu_byte[12] << 8) | mpdu_byte[13];
     int channelr = (mpdu_byte[14] << 8) | mpdu_byte[15];
-    long int source = (mpdu_byte[3] << 16) | (mpdu_byte[4] << 8) | mpdu_byte[5];
+    long int src = (mpdu_byte[3] << 16) | (mpdu_byte[4] << 8) | mpdu_byte[5];
     int group = (mpdu_byte[16] << 8) | mpdu_byte[17];
     long int freq1 = 0;
     long int freq2 = 0;
     UNUSED(freq2);
 
     DSD_FPRINTF(stderr, "%s\n ", KYEL);
-    if (svc & 0x40) {
+    if (svc_bits & 0x40) {
         DSD_FPRINTF(stderr, " Encrypted");
     }
 
     DSD_FPRINTF(stderr, " MFID90 Group Regroup Channel Grant - Explicit");
-    DSD_FPRINTF(stderr, "\n  RES/P [%02X] CHAN-T [%04X] CHAN-R [%04X] SG [%d][%04X]", svc, channelt, channelr, group,
-                group);
+    DSD_FPRINTF(stderr, "\n  RES/P [%02X] CHAN-T [%04X] CHAN-R [%04X] SG [%d][%04X]", svc_bits, channelt, channelr,
+                group, group);
 
     freq1 = process_channel_to_freq(opts, state, channelt);
     (void)process_channel_to_freq(opts, state, channelr);
@@ -788,25 +781,7 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
-    dsd_tg_policy_decision decision;
-    int enc_for_policy = (svc & 0x40) ? 1 : 0;
-    if (enc_for_policy && opts->trunk_tune_enc_calls == 0 && p25_patch_sg_key_is_clear(state, group)) {
-        enc_for_policy = 0;
-    }
-
-    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, enc_for_policy,
-                                          (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-            != 0
-        || !decision.tune_allowed) {
-        if (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
-            p25_emit_enc_lockout_once(opts, state, 0, group, svc);
-        }
-        return;
-    }
-
-    if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
-        p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
-    }
+    p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1);
 }
 
 static void DSD_ATTR_USED

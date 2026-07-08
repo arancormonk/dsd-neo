@@ -412,18 +412,28 @@ tsbk_deny_reason_str(uint8_t code) {
 }
 
 static void
-tsbk_handle_mfid90_extended_function(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+tsbk_handle_mfid90_extended_function(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
     int class_id = tsbk_byte[2];
     int operand = tsbk_byte[3];
     int argument = tsbk_u24(tsbk_byte, 4);
     int target = tsbk_u24(tsbk_byte, 7);
+    int sg = argument & 0xFFFF;
 
     DSD_FPRINTF(stderr, "\n MFID90 (Moto) Extended Function Command\n");
     DSD_FPRINTF(stderr, "  Class [%02X] Operand [%02X] Arg [%06X] Target [%d]", class_id, operand, argument, target);
     if (class_id == 0x02 && operand == 0x00) {
         DSD_FPRINTF(stderr, " Create Supergroup");
+        if (sg != 0) {
+            p25_patch_prepare_grg_update(state, sg, /*is_patch*/ 1, /*active*/ 1, /*ssn*/ -1);
+            if (target != 0) {
+                p25_patch_add_wuid(state, sg, (uint32_t)target);
+            }
+        }
     } else if (class_id == 0x02 && operand == 0x01) {
         DSD_FPRINTF(stderr, " Cancel Supergroup");
+        if (sg != 0) {
+            p25_patch_clear_sg(state, sg);
+        }
     }
     DSD_FPRINTF(stderr, "\n");
 }
@@ -595,7 +605,7 @@ tsbk_handle_mfid90_regroup_grants(dsd_opts* opts, dsd_state* state, const uint8_
         case 0x01: tsbk_handle_mfid90_regroup_add_del(state, tsbk_byte, 0); break;
         case 0x02: tsbk_handle_mfid90_grant(opts, state, tsbk_byte); break;
         case 0x03: tsbk_handle_mfid90_grant_update(opts, state, tsbk_byte); break;
-        case 0x04: tsbk_handle_mfid90_extended_function(tsbk_byte); break;
+        case 0x04: tsbk_handle_mfid90_extended_function(state, tsbk_byte); break;
         case 0x05: tsbk_handle_mfid90_traffic_channel_id(tsbk_byte); break;
         default: return 0;
     }
@@ -647,25 +657,38 @@ tsbk_handle_mfid_a4(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLO
 
     int sg = (tsbk_byte[3] << 8) | tsbk_byte[4];
     int key = (tsbk_byte[5] << 8) | tsbk_byte[6];
-    int add = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
+    int alg = tsbk_byte[7];
+    int wgid = (tsbk_byte[8] << 8) | tsbk_byte[9];
+    int wuid = (tsbk_byte[7] << 16) | (tsbk_byte[8] << 8) | tsbk_byte[9];
     int tga = tsbk_byte[2] >> 5;
     int ssn = tsbk_byte[2] & 0x1F;
+    int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
+    int active = (tga & 0x1) ? 1 : 0;
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n MFID A4 (Harris) Group Regroup Explicit Encryption Command\n");
+    DSD_FPRINTF(stderr, "  SG: %d; KEY ID: %04X; ", sg, key);
     if ((tga & 0x2) == 2) {
-        DSD_FPRINTF(stderr, "  SG: %d; KEY ID: %04X; WGID: %d; ", sg, key, add);
-        p25_patch_add_wgid(state, sg, add);
+        DSD_FPRINTF(stderr, "ALG: %02X; WGID: %d; ", alg, wgid);
     } else {
-        DSD_FPRINTF(stderr, "  SG: %d; KEY ID: %04X; WUID: %d; ", sg, key, add);
-        p25_patch_add_wuid(state, sg, (uint32_t)add);
+        DSD_FPRINTF(stderr, "WUID: %d; ", wuid);
     }
     DSD_FPRINTF(stderr, (tga & 0x4) ? " Simulselect" : " Patch");
     DSD_FPRINTF(stderr, (tga & 0x1) ? " Active;" : " Inactive;");
     DSD_FPRINTF(stderr, " SSN: %02d \n", ssn);
-    int is_patch = ((tga & 0x4) == 0) ? 1 : 0;
-    int active = (tga & 0x1) ? 1 : 0;
-    p25_patch_update(state, sg, is_patch, active);
-    p25_patch_set_kas(state, sg, key, -1, ssn);
+    if (!p25_patch_prepare_grg_update(state, sg, is_patch, active, ssn)) {
+        return;
+    }
+    if ((tga & 0x2) == 2) {
+        if (wgid != 0) {
+            p25_patch_add_wgid(state, sg, wgid);
+        }
+        p25_patch_set_kas(state, sg, key, alg, ssn);
+    } else {
+        if (wuid != 0) {
+            p25_patch_add_wuid(state, sg, (uint32_t)wuid);
+        }
+        p25_patch_set_kas(state, sg, key, -1, ssn);
+    }
 }
 
 static uint32_t

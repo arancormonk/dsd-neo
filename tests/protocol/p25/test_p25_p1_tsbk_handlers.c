@@ -39,6 +39,7 @@ static int g_add_wuid_count;
 static int g_remove_wgid_count;
 static int g_update_count;
 static int g_kas_count;
+static int g_clear_count;
 static int g_seed_count;
 static int g_grant_count;
 static int g_mac_count;
@@ -48,6 +49,7 @@ static uint32_t g_last_wuid;
 static int g_last_update_patch;
 static int g_last_update_active;
 static int g_last_key;
+static int g_last_alg;
 static int g_last_ssn;
 static int g_last_grant_channel;
 static int g_last_grant_svc;
@@ -128,12 +130,36 @@ p25_patch_remove_wuid(dsd_state* state, int sgid, uint32_t wuid) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_patch_clear_sg(dsd_state* state, int sgid) {
+    (void)state;
+    g_clear_count++;
+    g_last_sg = sgid;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_patch_prepare_grg_update(dsd_state* state, int sgid, int is_patch, int active, int ssn) {
+    (void)state;
+    (void)ssn;
+    g_update_count++;
+    g_last_sg = sgid;
+    g_last_update_patch = is_patch;
+    g_last_update_active = active;
+    if (!active) {
+        g_clear_count++;
+        return 0;
+    }
+    return 1;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_patch_set_kas(dsd_state* state, int sgid, int key, int alg, int ssn) {
     (void)state;
-    (void)alg;
     g_kas_count++;
     g_last_sg = sgid;
     g_last_key = key;
+    g_last_alg = alg;
     g_last_ssn = ssn;
 }
 
@@ -356,6 +382,7 @@ reset_calls(void) {
     g_remove_wgid_count = 0;
     g_update_count = 0;
     g_kas_count = 0;
+    g_clear_count = 0;
     g_seed_count = 0;
     g_grant_count = 0;
     g_mac_count = 0;
@@ -365,6 +392,7 @@ reset_calls(void) {
     g_last_update_patch = 0;
     g_last_update_active = 0;
     g_last_key = 0;
+    g_last_alg = 0;
     g_last_ssn = 0;
     g_last_grant_channel = 0;
     g_last_grant_svc = 0;
@@ -1085,26 +1113,71 @@ test_mfid_a4_patch_and_simulselect_paths(void) {
     int rc = 0;
     rc |= expect_int("a4 patch adds wgid", g_add_wgid_count, 1);
     rc |= expect_int("a4 patch sg", g_last_sg, 0x1234);
-    rc |= expect_int("a4 patch wgid", g_last_wgid, 0x010203);
+    rc |= expect_int("a4 patch wgid", g_last_wgid, 0x0203);
     rc |= expect_int("a4 patch update count", g_update_count, 1);
     rc |= expect_int("a4 patch is_patch", g_last_update_patch, 1);
     rc |= expect_int("a4 patch active", g_last_update_active, 1);
     rc |= expect_int("a4 patch kas key", g_last_key, 0xBEEF);
+    rc |= expect_int("a4 patch kas alg", g_last_alg, 0x01);
     rc |= expect_int("a4 patch kas ssn", g_last_ssn, 7);
 
     tsbk[2] = (uint8_t)((0x4 << 5) | 0x05);
     reset_calls();
     tsbk_handle_mfid_a4(&state, tsbk);
-    rc |= expect_int("a4 simulselect adds wuid", g_add_wuid_count, 1);
-    rc |= expect_int("a4 simulselect wuid", (int)g_last_wuid, 0x010203);
+    rc |= expect_int("a4 inactive clears", g_clear_count, 1);
+    rc |= expect_int("a4 inactive does not add wuid", g_add_wuid_count, 0);
     rc |= expect_int("a4 simulselect is_patch", g_last_update_patch, 0);
     rc |= expect_int("a4 simulselect inactive", g_last_update_active, 0);
-    rc |= expect_int("a4 simulselect ssn", g_last_ssn, 5);
+    rc |= expect_int("a4 inactive no kas", g_kas_count, 0);
+
+    tsbk[2] = (uint8_t)((0x1 << 5) | 0x06);
+    reset_calls();
+    tsbk_handle_mfid_a4(&state, tsbk);
+    rc |= expect_int("a4 active wuid adds", g_add_wuid_count, 1);
+    rc |= expect_int("a4 active wuid", (int)g_last_wuid, 0x010203);
+    rc |= expect_int("a4 active wuid ssn", g_last_ssn, 6);
 
     tsbk[0] = 0x31;
     reset_calls();
     tsbk_handle_mfid_a4(&state, tsbk);
     rc |= expect_int("a4 non-op ignored", g_add_wgid_count + g_add_wuid_count + g_update_count + g_kas_count, 0);
+    return rc;
+}
+
+static int
+test_mfid90_extended_function_supergroup_state(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    int rc = 0;
+
+    tsbk[2] = 0x02;
+    tsbk[3] = 0x00;
+    tsbk[4] = 0x00;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x02;
+    tsbk[9] = 0x03;
+    reset_calls();
+    tsbk_handle_mfid90_extended_function(&state, tsbk);
+    rc |= expect_int("mfid90 ext create update", g_update_count, 1);
+    rc |= expect_int("mfid90 ext create sg", g_last_sg, 0x1234);
+    rc |= expect_int("mfid90 ext create wuid count", g_add_wuid_count, 1);
+    rc |= expect_int("mfid90 ext create wuid", (int)g_last_wuid, 0x010203);
+
+    tsbk[3] = 0x01;
+    reset_calls();
+    tsbk_handle_mfid90_extended_function(&state, tsbk);
+    rc |= expect_int("mfid90 ext cancel clear", g_clear_count, 1);
+    rc |= expect_int("mfid90 ext cancel no add", g_add_wuid_count, 0);
+    rc |= expect_int("mfid90 ext cancel sg", g_last_sg, 0x1234);
+
+    tsbk[2] = 0x00;
+    tsbk[3] = 0x7F;
+    reset_calls();
+    tsbk_handle_mfid90_extended_function(&state, tsbk);
+    rc |= expect_int("mfid90 ext class0 metadata only", g_update_count + g_clear_count + g_add_wuid_count, 0);
     return rc;
 }
 
@@ -1451,6 +1524,7 @@ main(void) {
     rc |= test_standard_osp_data_channel_metadata_and_dispatch();
     rc |= test_mfid90_regroup_add_delete();
     rc |= test_mfid_a4_patch_and_simulselect_paths();
+    rc |= test_mfid90_extended_function_supergroup_state();
     rc |= test_mfid90_grant_seeds_trunk_state();
     rc |= test_mfid90_grant_update_trunk_dispatch();
     rc |= test_mfid90_queued_and_deny_callbacks();

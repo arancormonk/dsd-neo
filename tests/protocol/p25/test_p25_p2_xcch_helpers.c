@@ -275,11 +275,13 @@ test_slot_ptt_and_end_helpers(void) {
     state.p25_p2_enc_lockout_muted[0] = 1;
     state.fourv_counter[0] = 9;
     state.voice_counter[0] = 7;
+    state.p25_policy_tg[0] = 0x5678;
     fill_mac(mac, 0x84, 0x2468, 0x010203, 0x1234);
 
     p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 0, 0);
     rc |= expect_int("slot0 lastsrc", state.lastsrc, 0x010203);
     rc |= expect_int("slot0 lasttg", state.lasttg, 0x1234);
+    rc |= expect_int("slot0 policy tg preserved", (int)state.p25_policy_tg[0], 0x5678);
     rc |= expect_int("slot0 algid", state.payload_algid, 0x84);
     rc |= expect_int("slot0 keyid", state.payload_keyid, 0x2468);
     rc |= expect_u64("slot0 mi", state.payload_miP, 0x1122334455667788ULL);
@@ -505,6 +507,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     state.p25_p2_audio_allowed[1] = 1;
     state.p25_p2_enc_lockout_muted[1] = 1;
     state.p25_call_is_packet[1] = 1;
+    state.p25_policy_tg[1] = 0x5678;
     DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "packet");
     pack_payload_from_mac(payload, 180, mac, 0x3, 0, 0);
 
@@ -515,6 +518,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch idle burst", (int)state.dmrburstR, 24);
     rc |= expect_int("sacch idle gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("sacch idle packet clear", state.p25_call_is_packet[1], 0);
+    rc |= expect_int("sacch idle policy clear", (int)state.p25_policy_tg[1], 0);
     rc |= expect_int("sacch idle mute clear", state.p25_p2_enc_lockout_muted[1], 0);
     rc |= expect_int("sacch idle call blank", strncmp(state.call_string[1], P25P2_EMPTY_CALL_STRING, 21), 0);
 

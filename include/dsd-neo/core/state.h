@@ -971,6 +971,7 @@ struct dsd_state {
     uint8_t p25_call_priority[2];         // 0..7 call priority (0 if unknown)
     uint8_t p25_call_is_packet[2];        // 1 if call/service marked as packet (data), else 0
     uint8_t p25_service_options_valid[2]; // 1 when dmr_so/dmr_soR hold fresh P25 service options
+    uint32_t p25_policy_tg[2];            // matched policy TG for patched SG calls; 0 means use OTA TG
 
     //experimental symbol file capture read throttle
     int symbol_throttle;                     //throttle speed

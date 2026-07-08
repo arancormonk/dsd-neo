@@ -381,6 +381,22 @@ void p25_sm_init(dsd_opts* opts, dsd_state* state);
 void p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
 
 /**
+ * @brief Apply group grant policy side effects without attempting route/tune.
+ *
+ * Use when a decoder has a valid group grant but cannot yet resolve or follow
+ * its channel. This preserves encrypted lockout/cache and clear-key regroup
+ * policy behavior until a tunable grant arrives.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param channel Voice channel number.
+ * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
+ * @param tg Talkgroup.
+ * @param src Source RID.
+ */
+void p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
+
+/**
  * @brief Handle an individual (unit-to-unit/telephone) voice channel grant.
  *
  * @param opts Decoder options.
@@ -620,6 +636,21 @@ void p25_patch_remove_wuid(dsd_state* state, int sgid, uint32_t wuid);
 void p25_patch_clear_sg(dsd_state* state, int sgid);
 
 /**
+ * @brief Prepare an MFID GRG update, clearing inactive or version-replaced state.
+ *
+ * Inactive GRG commands remove the supergroup record. Active commands with a
+ * changed SSN clear stale membership before the caller adds the new members.
+ *
+ * @param state Decoder state holding patch context.
+ * @param sgid Super Group ID.
+ * @param is_patch 1 for two-way patch, 0 for simulselect.
+ * @param active 1 to activate/update, 0 to deactivate/clear.
+ * @param ssn SSN from GRG options, or -1 when absent.
+ * @return 1 if members should be processed, 0 when the command cleared state.
+ */
+int p25_patch_prepare_grg_update(dsd_state* state, int sgid, int is_patch, int active, int ssn);
+
+/**
  * @brief Set optional Key/Alg/SSN context for an SG.
  *
  * Values of -1 leave the existing field unchanged.
@@ -651,6 +682,19 @@ int p25_patch_tg_key_is_clear(const dsd_state* state, int tg);
  * @return 1 if active and explicitly clear; 0 otherwise.
  */
 int p25_patch_sg_key_is_clear(const dsd_state* state, int sgid);
+
+/**
+ * @brief Collect active WGID members for a supergroup.
+ *
+ * Stale, inactive, and non-existent supergroups return 0.
+ *
+ * @param state Decoder state (read-only).
+ * @param sgid Super Group ID.
+ * @param out Optional WGID destination array.
+ * @param cap Capacity of destination array.
+ * @return Number of active WGID members known for the SG.
+ */
+int p25_patch_collect_active_wgids(const dsd_state* state, int sgid, uint16_t* out, size_t cap);
 
 /* ============================================================================
  * Affiliation (RID) tracking

@@ -132,9 +132,11 @@ test_guard_replacement_and_policy_edges(void) {
 
     DSD_MEMSET(&st, 0, sizeof st);
     st.p25_patch_count = 8;
+    time_t base = time(NULL);
     for (int i = 0; i < 8; i++) {
         st.p25_patch_sgid[i] = (uint16_t)(100 + i);
-        st.p25_patch_last_update[i] = (time_t)(1000 + i);
+        st.p25_patch_last_update[i] = base - (8 - i);
+        st.p25_patch_active[i] = 1;
         st.p25_patch_wgid_count[i] = 1;
         st.p25_patch_key_valid[i] = 1;
     }
@@ -144,6 +146,40 @@ test_guard_replacement_and_policy_edges(void) {
     rc |= expect_eq_int("replacement clears wgid count", st.p25_patch_wgid_count[0], 0);
     rc |= expect_eq_int("replacement clears key valid", st.p25_patch_key_valid[0], 0);
     rc |= expect_eq_int("replacement stores simulselect", st.p25_patch_is_patch[0], 0);
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.p25_patch_count = 8;
+    base = time(NULL);
+    for (int i = 0; i < 8; i++) {
+        st.p25_patch_sgid[i] = (uint16_t)(200 + i);
+        st.p25_patch_active[i] = 1;
+        st.p25_patch_last_update[i] = base - (8 - i);
+        st.p25_patch_wgid_count[i] = 1;
+        st.p25_patch_wgid[i][0] = (uint16_t)(300 + i);
+    }
+    p25_patch_clear_sg(&st, 205);
+    p25_patch_update(&st, 299, 1, 1);
+    rc |= expect_eq_int("inactive slot reused count", st.p25_patch_count, 8);
+    rc |= expect_true("inactive slot reused new sg", find_idx(&st, 299) >= 0);
+    rc |= expect_true("inactive slot reuse preserves active oldest", find_idx(&st, 200) >= 0);
+    int reused = find_idx(&st, 299);
+    if (reused >= 0) {
+        rc |= expect_eq_int("inactive slot reused clears members", st.p25_patch_wgid_count[reused], 0);
+        rc |= expect_eq_int("inactive slot reused active", st.p25_patch_active[reused], 1);
+    }
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.p25_patch_count = 8;
+    base = time(NULL);
+    for (int i = 0; i < 8; i++) {
+        st.p25_patch_sgid[i] = (uint16_t)(400 + i);
+        st.p25_patch_active[i] = 1;
+        st.p25_patch_last_update[i] = base;
+    }
+    p25_patch_update(&st, 499, 1, 0);
+    rc |= expect_eq_int("inactive full table does not evict count", st.p25_patch_count, 8);
+    rc |= expect_true("inactive full table preserves active oldest", find_idx(&st, 400) >= 0);
+    rc |= expect_true("inactive full table skips new inactive", find_idx(&st, 499) < 0);
 
     DSD_MEMSET(&st, 0, sizeof st);
     p25_patch_update(&st, 10, 1, 1);
@@ -187,6 +223,38 @@ test_guard_replacement_and_policy_edges(void) {
     p25_patch_set_kas(&st, 69, 0x1234, -1, -1);
     rc |= expect_eq_int("nonclear tg policy", p25_patch_tg_key_is_clear(&st, 0x2345), 0);
     rc |= expect_eq_int("nonclear sg policy", p25_patch_sg_key_is_clear(&st, 69), 0);
+
+    DSD_MEMSET(&st, 0, sizeof st);
+    rc |= expect_eq_int("prepare active returns process", p25_patch_prepare_grg_update(&st, 500, 1, 1, 3), 1);
+    p25_patch_add_wgid(&st, 500, 100);
+    p25_patch_set_kas(&st, 500, 0x2222, 0x84, 3);
+    rc |= expect_eq_int("prepare same ssn returns process", p25_patch_prepare_grg_update(&st, 500, 1, 1, 3), 1);
+    p25_patch_add_wgid(&st, 500, 101);
+    int idx500 = find_idx(&st, 500);
+    rc |= expect_true("prepare same ssn keeps sg", idx500 >= 0);
+    if (idx500 >= 0) {
+        rc |= expect_eq_int("prepare same ssn accumulates", st.p25_patch_wgid_count[idx500], 2);
+    }
+    rc |= expect_eq_int("prepare changed ssn returns process", p25_patch_prepare_grg_update(&st, 500, 1, 1, 4), 1);
+    p25_patch_add_wgid(&st, 500, 102);
+    p25_patch_set_kas(&st, 500, 0x3333, 0x89, 4);
+    idx500 = find_idx(&st, 500);
+    rc |= expect_true("prepare changed ssn keeps sg", idx500 >= 0);
+    if (idx500 >= 0) {
+        uint16_t members[8] = {0};
+        rc |= expect_eq_int("prepare changed ssn clears old", st.p25_patch_wgid_count[idx500], 1);
+        rc |= expect_eq_int("prepare changed ssn new member", st.p25_patch_wgid[idx500][0], 102);
+        rc |= expect_eq_int("collect active count", p25_patch_collect_active_wgids(&st, 500, members, 8), 1);
+        rc |= expect_eq_int("collect active member", members[0], 102);
+    }
+    rc |= expect_eq_int("prepare inactive suppresses members", p25_patch_prepare_grg_update(&st, 500, 1, 0, 4), 0);
+    idx500 = find_idx(&st, 500);
+    rc |= expect_true("prepare inactive keeps record", idx500 >= 0);
+    if (idx500 >= 0) {
+        rc |= expect_eq_int("prepare inactive clears active", st.p25_patch_active[idx500], 0);
+        rc |= expect_eq_int("prepare inactive clears count", st.p25_patch_wgid_count[idx500], 0);
+        rc |= expect_eq_int("prepare inactive clears key valid", st.p25_patch_key_valid[idx500], 0);
+    }
 
     return rc;
 }

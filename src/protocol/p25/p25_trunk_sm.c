@@ -698,6 +698,65 @@ p25_grant_transient_enc_cache_blocks(dsd_opts* opts, dsd_state* state, const p25
 }
 
 static int
+p25_grant_policy_candidate_is_better(const dsd_tg_policy_decision* candidate, const dsd_tg_policy_decision* best,
+                                     int have_best) {
+    if (!candidate || !candidate->tune_allowed) {
+        return 0;
+    }
+    if (!have_best || !best) {
+        return 1;
+    }
+    if (candidate->tg_hold_match != best->tg_hold_match) {
+        return candidate->tg_hold_match ? 1 : 0;
+    }
+    if (candidate->priority != best->priority) {
+        return (candidate->priority > best->priority) ? 1 : 0;
+    }
+    return (candidate->preempt_requested && !best->preempt_requested) ? 1 : 0;
+}
+
+static int
+p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
+                            const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
+    uint16_t members[8] = {0};
+    int member_count =
+        p25_patch_collect_active_wgids(state, eval_ctx->tg, members, sizeof(members) / sizeof(members[0]));
+    dsd_tg_policy_decision best;
+    dsd_tg_policy_decision first;
+    int have_best = 0;
+    int have_first = 0;
+    DSD_MEMSET(&best, 0, sizeof(best));
+    DSD_MEMSET(&first, 0, sizeof(first));
+
+    for (int i = 0; i <= member_count; i++) {
+        uint32_t target = (i == 0) ? (uint32_t)eval_ctx->tg : (uint32_t)members[i - 1];
+        dsd_tg_policy_decision candidate;
+        if (i > 0 && (target == 0U || target == (uint32_t)eval_ctx->tg)) {
+            continue;
+        }
+        if (dsd_tg_policy_evaluate_group_call(opts, state, target, (uint32_t)ev->src, eval_ctx->encrypted_call,
+                                              eval_ctx->data_call, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &candidate)
+            != 0) {
+            return -1;
+        }
+        if (!have_first) {
+            first = candidate;
+            have_first = 1;
+        }
+        if (p25_grant_policy_candidate_is_better(&candidate, &best, have_best)) {
+            best = candidate;
+            have_best = 1;
+        }
+    }
+
+    if (!have_first) {
+        return -1;
+    }
+    *out_decision = have_best ? best : first;
+    return 0;
+}
+
+static int
 p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
                       const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
     if (!opts || !state || !ev || !eval_ctx || !out_decision) {
@@ -708,9 +767,7 @@ p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm
             opts, state, (uint32_t)ev->src, (uint32_t)ev->dst, eval_ctx->encrypted_call, eval_ctx->data_call,
             DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW, DSD_TG_POLICY_HOLD_COMPAT_GRANT, out_decision);
     }
-    return dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)eval_ctx->tg, (uint32_t)ev->src,
-                                             eval_ctx->encrypted_call, eval_ctx->data_call,
-                                             DSD_TG_POLICY_HOLD_COMPAT_GRANT, out_decision);
+    return p25_grant_eval_group_policy(opts, state, ev, eval_ctx, out_decision);
 }
 
 static int
@@ -720,9 +777,10 @@ p25_grant_handle_policy_block(dsd_opts* opts, dsd_state* state, const p25_grant_
         return 0;
     }
     p25_sm_diagf((dsd_opts*)opts, state, NULL, "grant_block",
-                 "reason=%s tg=%d svc=0x%02X data=%d enc=%d indiv=%d block=0x%08X",
-                 grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons), eval_ctx->tg, eval_ctx->svc,
-                 eval_ctx->data_call, eval_ctx->encrypted_call, eval_ctx->is_indiv, decision->block_reasons);
+                 "reason=%s tg=%d policy_tg=%u svc=0x%02X data=%d enc=%d indiv=%d block=0x%08X",
+                 grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons), eval_ctx->tg, decision->target_id,
+                 eval_ctx->svc, eval_ctx->data_call, eval_ctx->encrypted_call, eval_ctx->is_indiv,
+                 decision->block_reasons);
     sm_log(opts, state, grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons));
     if (!eval_ctx->is_indiv && eval_ctx->tg > 0 && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
         p25_emit_enc_lockout_once(opts, state, 0, eval_ctx->tg, eval_ctx->svc);
@@ -1001,6 +1059,36 @@ p25_grant_handle_duplicate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
     return 1;
 }
 
+static void
+p25_grant_store_policy_tg(dsd_state* state, const p25_sm_event_t* ev, int slot,
+                          const dsd_tg_policy_decision* decision) {
+    if (!state || !ev || !decision || !ev->is_group) {
+        return;
+    }
+
+    uint32_t policy_tg =
+        (decision->target_id > 0U && decision->target_id != (uint32_t)ev->tg) ? decision->target_id : 0U;
+    if (slot >= 0 && slot <= 1) {
+        state->p25_policy_tg[slot] = policy_tg;
+        return;
+    }
+    state->p25_policy_tg[0] = policy_tg;
+    state->p25_policy_tg[1] = 0;
+}
+
+static void
+p25_grant_clear_replaced_policy_tg(dsd_state* state, int slot, int slot_only) {
+    if (!state) {
+        return;
+    }
+    if (slot_only && slot >= 0 && slot <= 1) {
+        state->p25_policy_tg[slot] = 0;
+        return;
+    }
+    state->p25_policy_tg[0] = 0;
+    state->p25_policy_tg[1] = 0;
+}
+
 static int
 p25_retune_block_slot_matches(int blocked_slot, int grant_slot) {
     return blocked_slot == grant_slot;
@@ -1092,6 +1180,71 @@ p25_grant_seed_cc_before_vc_tune(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
     set_state(ctx, opts, state, P25_SM_ON_CC, "grant-cc-seed");
 }
 
+typedef struct {
+    dsd_tg_policy_call_route route;
+    int slot;
+    int target_id;
+    int needs_retune;
+    int clear_policy_slot_only;
+    int ted_sps;
+    long freq;
+    double now_m;
+} p25_grant_route_ctx_t;
+
+static void
+p25_grant_log_freq(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq,
+                   const p25_freq_trace_t* freq_trace) {
+    if (!freq_trace) {
+        return;
+    }
+    p25_sm_diagf(opts, state, ctx, "grant_freq",
+                 "ch=0x%04X freq=%ld source=%s failure=%s iden=%d type=%d tdma=%d denom=%d step=%d cached=%d "
+                 "ambiguous=%d base=%ld spacing=%ld tg=%d src=%d dst=%d svc=0x%02X",
+                 ev->channel & 0xFFFF, freq, freq_trace->source, freq_trace->failure[0] ? freq_trace->failure : "none",
+                 freq_trace->iden, freq_trace->chan_type, freq_trace->use_tdma, freq_trace->denom, freq_trace->step,
+                 freq_trace->cached, freq_trace->ambiguous, freq_trace->base_hz, freq_trace->spacing_hz, ev->tg,
+                 ev->src, ev->dst, ev->svc_bits);
+}
+
+static int
+p25_grant_should_clear_slot_only(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev, long freq,
+                                 int slot) {
+    if (!ctx || !state || !ev || slot < 0 || slot > 1) {
+        return 0;
+    }
+    return (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz == freq && ctx->vc_is_tdma
+            && is_tdma_channel(state, ev->channel))
+               ? 1
+               : 0;
+}
+
+static int
+p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                        const dsd_tg_policy_decision* decision, p25_grant_route_ctx_t* out) {
+    p25_freq_trace_t freq_trace;
+    if (!ctx || !opts || !state || !ev || !decision || !out) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->freq = process_channel_to_freq_trace(opts, state, ev->channel, &freq_trace);
+    p25_grant_log_freq(opts, state, ctx, ev, out->freq, &freq_trace);
+    if (out->freq == 0) {
+        sm_log(opts, state, "grant-no-freq");
+        return 0;
+    }
+
+    out->now_m = now_monotonic();
+    out->slot = channel_slot(state, ev->channel);
+    if (p25_grant_retune_blocked(opts, state, out->freq, out->slot, ev->channel)) {
+        return 0;
+    }
+    out->needs_retune = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz != 0 && ctx->vc_freq_hz != out->freq) ? 1 : 0;
+    out->clear_policy_slot_only = p25_grant_should_clear_slot_only(ctx, state, ev, out->freq, out->slot);
+    out->target_id = p25_grant_target_id(ev, decision);
+    p25_grant_fill_route(&out->route, ev, out->freq, out->slot, out->needs_retune, out->target_id);
+    return 1;
+}
+
 /* ============================================================================
  * Event Handlers
  * ============================================================================ */
@@ -1099,14 +1252,7 @@ p25_grant_seed_cc_before_vc_tune(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
 static void
 handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     dsd_tg_policy_decision decision;
-    dsd_tg_policy_call_route route;
-    int slot = 0;
-    int target_id = 0;
-    int ted_sps = 0;
-    int needs_retune = 0;
-    long freq = 0;
-    double now_m = 0.0;
-    p25_freq_trace_t freq_trace;
+    p25_grant_route_ctx_t grant;
     if (!ctx || !ev || !opts || !state) {
         return;
     }
@@ -1116,58 +1262,58 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         return;
     }
 
-    freq = process_channel_to_freq_trace(opts, state, ev->channel, &freq_trace);
-    p25_sm_diagf(opts, state, ctx, "grant_freq",
-                 "ch=0x%04X freq=%ld source=%s failure=%s iden=%d type=%d tdma=%d denom=%d step=%d cached=%d "
-                 "ambiguous=%d base=%ld spacing=%ld tg=%d src=%d dst=%d svc=0x%02X",
-                 ev->channel & 0xFFFF, freq, freq_trace.source, freq_trace.failure[0] ? freq_trace.failure : "none",
-                 freq_trace.iden, freq_trace.chan_type, freq_trace.use_tdma, freq_trace.denom, freq_trace.step,
-                 freq_trace.cached, freq_trace.ambiguous, freq_trace.base_hz, freq_trace.spacing_hz, ev->tg, ev->src,
-                 ev->dst, ev->svc_bits);
-    if (freq == 0) {
-        sm_log(opts, state, "grant-no-freq");
+    if (!p25_grant_prepare_route(ctx, opts, state, ev, &decision, &grant)) {
         return;
     }
-
-    now_m = now_monotonic();
-    slot = channel_slot(state, ev->channel);
-    if (p25_grant_retune_blocked(opts, state, freq, slot, ev->channel)) {
-        return;
-    }
-    needs_retune = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz != 0 && ctx->vc_freq_hz != freq) ? 1 : 0;
-    target_id = p25_grant_target_id(ev, &decision);
-    p25_grant_fill_route(&route, ev, freq, slot, needs_retune, target_id);
 
     // Skip if already tuned to same frequency AND same TG (avoid bounce on duplicate grants)
     // Different TG/call type should still trigger a new tune
-    if (p25_grant_handle_duplicate(ctx, opts, state, &route, &decision, freq, target_id, now_m)) {
+    if (p25_grant_handle_duplicate(ctx, opts, state, &grant.route, &decision, grant.freq, grant.target_id,
+                                   grant.now_m)) {
+        p25_grant_store_policy_tg(state, ev, grant.slot, &decision);
         return;
     }
 
-    if (!p25_grant_preempt_active_call_if_needed(ctx, opts, state, &route, &decision, now_m)) {
+    if (!p25_grant_preempt_active_call_if_needed(ctx, opts, state, &grant.route, &decision, grant.now_m)) {
         return;
     }
 
-    p25_grant_seed_cc_before_vc_tune(ctx, opts, state, now_m);
+    p25_grant_seed_cc_before_vc_tune(ctx, opts, state, grant.now_m);
 
-    if (!p25_grant_try_tune_vc(ctx, ev, opts, state, freq, slot, &ted_sps)) {
+    if (!p25_grant_try_tune_vc(ctx, ev, opts, state, grant.freq, grant.slot, &grant.ted_sps)) {
         return;
     }
-    p25_grant_store_vc_context(ctx, state, ev, freq, target_id, now_m);
+    p25_grant_store_vc_context(ctx, state, ev, grant.freq, grant.target_id, grant.now_m);
     p25_grant_clear_slot_state(ctx);
+    p25_grant_clear_replaced_policy_tg(state, grant.slot, grant.clear_policy_slot_only);
+    p25_grant_store_policy_tg(state, ev, grant.slot, &decision);
     ctx->tune_count++;
     ctx->grant_count++;
-    p25_grant_debug_log_tdma(opts, state, ctx, ev, freq, ted_sps);
+    p25_grant_debug_log_tdma(opts, state, ctx, ev, grant.freq, grant.ted_sps);
 
     state->p25_sm_tune_count++;
-    (void)dsd_tg_policy_note_active_call(state, &route, &decision, now_m);
+    (void)dsd_tg_policy_note_active_call(state, &grant.route, &decision, grant.now_m);
     p25_sm_diagf(opts, state, ctx, "grant_accept",
-                 "ch=0x%04X freq=%ld slot=%d target=%d src=%d needs_retune=%d "
+                 "ch=0x%04X freq=%ld slot=%d target=%d ota_tg=%d src=%d needs_retune=%d "
                  "prio=%d preempt=%d",
-                 ev->channel & 0xFFFF, freq, slot, target_id, ev->src, needs_retune, decision.priority,
-                 decision.preempt_requested);
+                 ev->channel & 0xFFFF, grant.freq, grant.slot, grant.target_id, ev->tg, ev->src, grant.needs_retune,
+                 decision.priority, decision.preempt_requested);
 
     set_state(ctx, opts, state, P25_SM_TUNED, "grant");
+}
+
+void
+p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    if (!opts || !state || opts->p25_trunk != 1) {
+        return;
+    }
+
+    p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, tg, src, svc_bits);
+    dsd_tg_policy_decision decision;
+    if (grant_allowed(opts, state, &ev, &decision)) {
+        p25_sm_diagf(opts, state, NULL, "grant_policy_only", "ch=0x%04X tg=%d src=%d svc=0x%02X policy_tg=%u",
+                     channel & 0xFFFF, tg, src, svc_bits & 0xFF, decision.target_id);
+    }
 }
 
 // Helper to check if slot has decryption capability
@@ -1517,6 +1663,8 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->p25_service_options_valid[1] = 0;
         state->p25_p2_enc_lockout_muted[0] = 0;
         state->p25_p2_enc_lockout_muted[1] = 0;
+        state->p25_policy_tg[0] = 0;
+        state->p25_policy_tg[1] = 0;
         state->p25_sm_release_count++;
     }
     if (opts) {
@@ -2376,6 +2524,7 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
         state->dmr_soR = (uint16_t)svc_bits;
         state->p25_service_options_valid[1] = (svc_bits != 0) ? 1U : 0U;
     }
+    state->p25_policy_tg[slot & 1] = 0;
     state->gi[slot & 1] = 0;
 
     // Compose event text and push
