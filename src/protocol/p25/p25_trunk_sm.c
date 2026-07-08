@@ -2541,14 +2541,12 @@ p25_sm_tick_try_cqpsk_retry(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
 
 static void
 p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double grant_timeout) {
-    double dt_tune = 0.0;
     double timeout_start_m = 0.0;
     if (!ctx) {
         return;
     }
     if (ctx->t_tune_m > 0.0) {
-        dt_tune = now_m - ctx->t_tune_m;
-        p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, dt_tune);
+        p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, now_m - ctx->t_tune_m);
     }
 
     timeout_start_m = p25_sm_pending_voice_grant_timeout_start_m(ctx, state);
