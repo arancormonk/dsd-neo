@@ -1056,6 +1056,7 @@ test_standard_osp_data_channel_metadata_and_dispatch(void) {
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
+    state.p25_cc_freq = 851000000;
 
     tsbk[0] = 0x10;
     tsbk[2] = 0x10;
@@ -1159,6 +1160,63 @@ test_standard_osp_data_channel_metadata_and_dispatch(void) {
     tsbk_dispatch_message(&opts, &state, &ctx, 0, 0, 0, pdu);
     rc |= expect_int("osp data dispatch suppresses mac bridge", g_mac_count, 0);
     rc |= expect_int("osp data dispatch resolves channels", g_process_channel_count, 2);
+
+    return rc;
+}
+
+static int
+test_standard_osp_data_grants_require_control_channel(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    char out[2048];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.p25_trunk = 1;
+    opts.trunk_tune_private_calls = 1;
+    opts.trunk_tune_data_calls = 1;
+    opts.trunk_tune_enc_calls = 1;
+
+    tsbk[0] = 0x10;
+    tsbk[2] = 0x10;
+    tsbk[3] = 0x01;
+    tsbk[4] = 0x01;
+    tsbk[5] = 0x02;
+    tsbk[6] = 0x03;
+    tsbk[7] = 0x04;
+    tsbk[8] = 0x05;
+    tsbk[9] = 0x06;
+    reset_calls();
+    g_channel_freq = 851012500;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp individual data unknown cc label", out, "Individual Data Channel Grant - Obsolete");
+    rc |= expect_int("osp individual data unknown cc seeds", g_seed_count, 1);
+    rc |= expect_int("osp individual data unknown cc no callback", g_indiv_data_grant_count, 0);
+    rc |= expect_int("osp individual data unknown cc resolves channel", g_process_channel_count, 1);
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x11;
+    tsbk[2] = 0x90;
+    tsbk[3] = 0x10;
+    tsbk[4] = 0x02;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    reset_calls();
+    g_channel_freq = 851012500;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp group data unknown cc label", out, "Group Data Channel Grant - Obsolete");
+    rc |= expect_int("osp group data unknown cc seeds", g_seed_count, 1);
+    rc |= expect_int("osp group data unknown cc no callback", g_group_data_grant_count, 0);
+    rc |= expect_int("osp group data unknown cc resolves channel", g_process_channel_count, 1);
 
     return rc;
 }
@@ -1660,6 +1718,7 @@ main(void) {
     rc |= test_crc_candidate_selection_and_fallback();
     rc |= test_standard_isp_metadata_logging_and_no_retune();
     rc |= test_standard_osp_data_channel_metadata_and_dispatch();
+    rc |= test_standard_osp_data_grants_require_control_channel();
     rc |= test_standard_osp_individual_data_allowlist_blocks_unknown();
     rc |= test_mfid90_regroup_add_delete();
     rc |= test_mfid_a4_patch_and_simulselect_paths();
