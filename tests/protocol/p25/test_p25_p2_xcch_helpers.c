@@ -516,6 +516,27 @@ test_sacch_dispatch_and_lcch_crc_abort(void) {
     rc |= expect_int("lcch crc abort resets ring", g_ring_reset_count[1], 1);
     rc |= expect_int("lcch crc abort no vpdu", g_vpdu_count, 0);
 
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    fill_mac(mac, 0x80, 0x2222, 0x030405, 0x3456);
+    pack_payload_from_mac(payload, 180, mac, 0x0, 0, 0);
+    state.currentslot = 0;
+    state.p2_is_lcch = 1;
+
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("lcch cc sync timestamp", state.last_cc_sync_time_m > 0.0 ? 1 : 0, 1);
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.p2_is_lcch = 1;
+    opts.p25_is_tuned = 1;
+
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("voice-tuned lcch no cc timestamp", state.last_cc_sync_time_m == 0.0 ? 1 : 0, 1);
+
     return rc;
 }
 

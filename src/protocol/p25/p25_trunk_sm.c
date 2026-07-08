@@ -45,6 +45,7 @@ static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ct
 static atomic_int g_p25_sm_release_lock = 0;
 
 #define P25_FAILED_VC_RETUNE_BACKOFF_DEFAULT_S 10.0
+#define P25_RECENT_END_GRANT_SUPPRESS_S        1.5
 
 static inline double
 now_monotonic(void) {
@@ -941,6 +942,7 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     ctx->vc_tg = target_id;
     ctx->vc_src = ev->src;
     ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
+    ctx->vc_is_group = ev->is_group ? 1 : 0;
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
     ctx->vc_cqpsk_retry_done = 0;
@@ -948,6 +950,50 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
         // Clear any stale one-shot VC CQPSK override from a previous attempt.
         state->p25_vc_cqpsk_override = -1;
     }
+}
+
+static void
+p25_recent_end_clear(p25_sm_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->recent_end_freq_hz = 0;
+    ctx->recent_end_channel = 0;
+    ctx->recent_end_tg = 0;
+    ctx->recent_end_src = 0;
+    ctx->recent_end_slot = -1;
+    ctx->recent_end_is_group = 0;
+    ctx->recent_end_until_m = 0.0;
+}
+
+static int
+p25_recent_end_source_matches(int ended_src, int grant_src) {
+    return ended_src <= 0 || grant_src <= 0 || ended_src == grant_src;
+}
+
+static void
+p25_recent_end_record(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, double now_m) {
+    if (!ctx || !ctx->vc_is_tdma || ctx->vc_freq_hz <= 0 || ctx->vc_tg <= 0) {
+        return;
+    }
+
+    int ended_slot = (slot >= 0 && slot <= 1) ? slot : channel_slot(state, ctx->vc_channel);
+    if (ended_slot < 0 || ended_slot > 1) {
+        return;
+    }
+
+    ctx->recent_end_freq_hz = ctx->vc_freq_hz;
+    ctx->recent_end_channel = ctx->vc_channel;
+    ctx->recent_end_tg = ctx->vc_tg;
+    ctx->recent_end_src = ctx->vc_src;
+    ctx->recent_end_slot = ended_slot;
+    ctx->recent_end_is_group = ctx->vc_is_group;
+    ctx->recent_end_until_m = now_m + P25_RECENT_END_GRANT_SUPPRESS_S;
+
+    p25_sm_diagf(opts, state, ctx, "grant_recent_end_arm",
+                 "ch=0x%04X freq=%ld slot=%d tg=%d src=%d seconds=%.3f until_m=%.3f", ctx->recent_end_channel & 0xFFFF,
+                 ctx->recent_end_freq_hz, ctx->recent_end_slot, ctx->recent_end_tg, ctx->recent_end_src,
+                 P25_RECENT_END_GRANT_SUPPRESS_S, ctx->recent_end_until_m);
 }
 
 static int
@@ -1191,6 +1237,32 @@ typedef struct {
     double now_m;
 } p25_grant_route_ctx_t;
 
+static int
+p25_grant_recent_end_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                             const p25_grant_route_ctx_t* grant) {
+    if (!ctx || !ev || !grant || ctx->state != P25_SM_ON_CC || ctx->recent_end_until_m <= 0.0) {
+        return 0;
+    }
+
+    if (grant->now_m >= ctx->recent_end_until_m) {
+        p25_recent_end_clear(ctx);
+        return 0;
+    }
+
+    if (ctx->recent_end_freq_hz != grant->freq || ctx->recent_end_slot != grant->slot
+        || ctx->recent_end_tg != grant->target_id || ctx->recent_end_is_group != (ev->is_group ? 1 : 0)
+        || !p25_recent_end_source_matches(ctx->recent_end_src, ev->src)) {
+        return 0;
+    }
+
+    p25_sm_diagf(opts, state, ctx, "grant_recent_end_skip",
+                 "ch=0x%04X recent_ch=0x%04X freq=%ld slot=%d target=%d ota_tg=%d src=%d until_m=%.3f",
+                 ev->channel & 0xFFFF, ctx->recent_end_channel & 0xFFFF, grant->freq, grant->slot, grant->target_id,
+                 ev->tg, ev->src, ctx->recent_end_until_m);
+    sm_log(opts, state, "grant-recent-end-skip");
+    return 1;
+}
+
 static void
 p25_grant_log_freq(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq,
                    const p25_freq_trace_t* freq_trace) {
@@ -1263,6 +1335,10 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     }
 
     if (!p25_grant_prepare_route(ctx, opts, state, ev, &decision, &grant)) {
+        return;
+    }
+
+    if (p25_grant_recent_end_blocked(ctx, opts, state, ev, &grant)) {
         return;
     }
 
@@ -1400,6 +1476,7 @@ p25_voice_end_try_explicit_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
     int other = slot ^ 1;
     if (p25_voice_end_can_release_explicit(ctx, other)) {
         // All active slots terminated - release immediately like P25P1 Call Termination
+        p25_recent_end_record(ctx, opts, state, slot, now_monotonic());
         do_release(ctx, opts, state, "call-end", 0);
     }
 }
@@ -1578,6 +1655,7 @@ p25_release_clear_context(p25_sm_ctx_t* ctx) {
     ctx->vc_channel = 0;
     ctx->vc_tg = 0;
     ctx->vc_src = 0;
+    ctx->vc_is_group = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
     ctx->release_count++;

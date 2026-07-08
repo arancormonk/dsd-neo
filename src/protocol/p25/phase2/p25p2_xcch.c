@@ -540,6 +540,19 @@ p25p2_xcch_validate_facch_crc(const dsd_state* state, const int payload[156], co
 }
 
 static void
+p25p2_xcch_refresh_lcch_cc_sync(const dsd_opts* opts, dsd_state* state, int err) {
+    if (!state || state->p2_is_lcch != 1 || err != 0) {
+        return;
+    }
+    if (opts && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) {
+        return;
+    }
+
+    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+}
+
+static void
 p25p2_xcch_handle_sacch_mac_signal(dsd_opts* opts, dsd_state* state, unsigned long long int smac[24], int err) {
     DSD_FPRINTF(stderr, " MAC_SIGNAL ");
     if (err != 0) {
@@ -751,6 +764,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
     if (abort_processing) {
         return;
     }
+    p25p2_xcch_refresh_lcch_cc_sync(opts, state, err);
 
     switch (opcode) {
         case 0x0: p25p2_xcch_handle_sacch_mac_signal(opts, state, smac, err); break;

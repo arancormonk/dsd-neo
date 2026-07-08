@@ -129,7 +129,17 @@ typedef struct {
     int vc_tg;
     int vc_src;
     int vc_is_tdma;          // 1 if TDMA channel, 0 if single-carrier
+    int vc_is_group;         // 1 for group call, 0 for individual call
     int vc_cqpsk_retry_done; // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
+
+    // Recently ended TDMA call; used to ignore immediate stale post-EOT grants.
+    long recent_end_freq_hz;
+    int recent_end_channel;
+    int recent_end_tg;
+    int recent_end_src;
+    int recent_end_slot;
+    int recent_end_is_group;
+    double recent_end_until_m;
 
     // Per-slot activity (index 0 = left/P1, index 1 = right)
     p25_sm_slot_ctx_t slots[2];
