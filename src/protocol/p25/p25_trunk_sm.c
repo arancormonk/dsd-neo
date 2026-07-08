@@ -2203,14 +2203,47 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
                  ctx->config.hangtime_s, ctx->config.grant_timeout_s, ctx->expected_cc_nac);
 }
 
+static int
+p25_sm_vc_sync_slot(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
+    if (!ctx) {
+        return -1;
+    }
+    if (slot >= 0 && slot <= 1) {
+        return slot;
+    }
+    if (!ctx->vc_is_tdma) {
+        return 0;
+    }
+    if (state && state->p25_p2_active_slot >= 0 && state->p25_p2_active_slot <= 1) {
+        return state->p25_p2_active_slot;
+    }
+
+    int candidate = -1;
+    for (int s = 0; s < 2; s++) {
+        if (!ctx->slots[s].grant_active || ctx->slots[s].data_call) {
+            continue;
+        }
+        if (candidate >= 0) {
+            return -1;
+        }
+        candidate = s;
+    }
+    return candidate;
+}
+
 static void
-p25_sm_handle_vc_sync_event(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
+p25_sm_handle_vc_sync_event(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot) {
     if (!ctx || ctx->state != P25_SM_TUNED) {
         return;
     }
-    ctx->t_voice_m = now_monotonic();
-    p25_sm_diagf((dsd_opts*)opts, state, ctx, "vc_sync", "freq=%ld ch=0x%04X tg=%d tdma=%d", ctx->vc_freq_hz,
-                 ctx->vc_channel & 0xFFFF, ctx->vc_tg, ctx->vc_is_tdma);
+    double now_m = now_monotonic();
+    int sync_slot = p25_sm_vc_sync_slot(ctx, state, slot);
+    ctx->t_voice_m = now_m;
+    if (sync_slot >= 0 && sync_slot <= 1 && ctx->slots[sync_slot].grant_active && !ctx->slots[sync_slot].data_call) {
+        ctx->slots[sync_slot].last_active_m = now_m;
+    }
+    p25_sm_diagf((dsd_opts*)opts, state, ctx, "vc_sync", "freq=%ld ch=0x%04X tg=%d tdma=%d slot=%d", ctx->vc_freq_hz,
+                 ctx->vc_channel & 0xFFFF, ctx->vc_tg, ctx->vc_is_tdma, sync_slot);
 #ifdef USE_RADIO
     /* Learn successful TDMA VC acquisition only for the OP25-style CQPSK timing
      * chain. */
@@ -2270,8 +2303,7 @@ p25_sm_handle_event_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* 
 
 static void
 p25_sm_handle_event_vc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
-    (void)ev;
-    p25_sm_handle_vc_sync_event(ctx, opts, state);
+    p25_sm_handle_vc_sync_event(ctx, opts, state, ev ? ev->slot : -1);
 }
 
 static void
