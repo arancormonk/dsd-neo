@@ -966,11 +966,6 @@ p25_recent_end_clear(p25_sm_ctx_t* ctx) {
     ctx->recent_end_until_m = 0.0;
 }
 
-static int
-p25_recent_end_source_matches(int ended_src, int grant_src) {
-    return ended_src <= 0 || grant_src <= 0 || ended_src == grant_src;
-}
-
 static void
 p25_recent_end_record(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, int slot, double now_m) {
     if (!ctx || !ctx->vc_is_tdma || ctx->vc_freq_hz <= 0 || ctx->vc_tg <= 0) {
@@ -1249,16 +1244,20 @@ p25_grant_recent_end_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
         return 0;
     }
 
-    if (ctx->recent_end_freq_hz != grant->freq || ctx->recent_end_slot != grant->slot
-        || ctx->recent_end_tg != grant->target_id || ctx->recent_end_is_group != (ev->is_group ? 1 : 0)
-        || !p25_recent_end_source_matches(ctx->recent_end_src, ev->src)) {
+    if (!is_tdma_channel(state, ev->channel) || grant->slot < 0 || grant->slot > 1) {
+        return 0;
+    }
+
+    if (ctx->recent_end_freq_hz != grant->freq || ctx->recent_end_tg != grant->target_id
+        || ctx->recent_end_is_group != (ev->is_group ? 1 : 0)) {
         return 0;
     }
 
     p25_sm_diagf(opts, state, ctx, "grant_recent_end_skip",
-                 "ch=0x%04X recent_ch=0x%04X freq=%ld slot=%d target=%d ota_tg=%d src=%d until_m=%.3f",
-                 ev->channel & 0xFFFF, ctx->recent_end_channel & 0xFFFF, grant->freq, grant->slot, grant->target_id,
-                 ev->tg, ev->src, ctx->recent_end_until_m);
+                 "ch=0x%04X recent_ch=0x%04X freq=%ld slot=%d recent_slot=%d target=%d ota_tg=%d src=%d "
+                 "recent_src=%d until_m=%.3f",
+                 ev->channel & 0xFFFF, ctx->recent_end_channel & 0xFFFF, grant->freq, grant->slot, ctx->recent_end_slot,
+                 grant->target_id, ev->tg, ev->src, ctx->recent_end_src, ctx->recent_end_until_m);
     sm_log(opts, state, "grant-recent-end-skip");
     return 1;
 }

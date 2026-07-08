@@ -152,8 +152,9 @@ main(void) {
     st.p25_chan_tdma_explicit[id] = 2; // TDMA known
 
     // Two channels mapping to the same RF: low bit selects slot
-    int ch_slot0 = (id << 12) | 0x0002; // slot 0
-    int ch_slot1 = (id << 12) | 0x0003; // slot 1 (same RF)
+    int ch_slot0 = (id << 12) | 0x0002;      // slot 0
+    int ch_slot1 = (id << 12) | 0x0003;      // slot 1 (same RF)
+    int ch_next_slot0 = (id << 12) | 0x0004; // slot 0 on next RF
 
     p25_sm_ctx_t ctx;
     p25_sm_init_ctx(&ctx, &opts, &st);
@@ -267,9 +268,14 @@ main(void) {
     p25_sm_event(&eot_ctx, &eot_opts, &eot_st, &stale_update);
     rc |= expect_true("same-slot recent end grant skipped", g_tune_to_freq_calls == 1 && eot_opts.p25_is_tuned == 0);
 
-    p25_sm_event_t other_slot_update = p25_sm_ev_group_grant(ch_slot0, 0, 3001, 0, P25_SM_SVC_UNKNOWN);
+    p25_sm_event_t other_slot_update = p25_sm_ev_group_grant(ch_slot0, 0, 3001, 6002, P25_SM_SVC_UNKNOWN);
     p25_sm_event(&eot_ctx, &eot_opts, &eot_st, &other_slot_update);
-    rc |= expect_true("opposite-slot recent end grant allowed",
+    rc |=
+        expect_true("opposite-slot recent end grant skipped", g_tune_to_freq_calls == 1 && eot_opts.p25_is_tuned == 0);
+
+    p25_sm_event_t different_rf_update = p25_sm_ev_group_grant(ch_next_slot0, 0, 3001, 6002, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&eot_ctx, &eot_opts, &eot_st, &different_rf_update);
+    rc |= expect_true("different-rf recent end grant allowed",
                       g_tune_to_freq_calls == 2 && eot_opts.p25_is_tuned == 1 && eot_ctx.state == P25_SM_TUNED);
 
     static dsd_opts eot_other_opts;
@@ -295,6 +301,30 @@ main(void) {
     rc |= expect_true("different-tg recent end grant allowed", g_tune_to_freq_calls == 2
                                                                    && eot_other_opts.p25_is_tuned == 1
                                                                    && eot_other_ctx.state == P25_SM_TUNED);
+
+    static dsd_opts eot_expired_opts;
+    static dsd_state eot_expired_st;
+    DSD_MEMSET(&eot_expired_opts, 0, sizeof eot_expired_opts);
+    DSD_MEMSET(&eot_expired_st, 0, sizeof eot_expired_st);
+    eot_expired_opts.p25_trunk = 1;
+    eot_expired_opts.trunk_tune_group_calls = 1;
+    eot_expired_st.p25_cc_freq = 851000000;
+    eot_expired_st.p25_chan_iden = id;
+    eot_expired_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+    eot_expired_st.p25_chan_tdma_explicit[id] = 2;
+
+    p25_sm_ctx_t eot_expired_ctx;
+    p25_sm_init_ctx(&eot_expired_ctx, &eot_expired_opts, &eot_expired_st);
+    g_tune_to_freq_calls = 0;
+    g_return_to_cc_calls = 0;
+    p25_sm_event(&eot_expired_ctx, &eot_expired_opts, &eot_expired_st, &eot_grant);
+    p25_sm_event(&eot_expired_ctx, &eot_expired_opts, &eot_expired_st, &eot_ptt);
+    p25_sm_event(&eot_expired_ctx, &eot_expired_opts, &eot_expired_st, &eot_end);
+    eot_expired_ctx.recent_end_until_m = dsd_time_now_monotonic_s() - 0.001;
+    p25_sm_event(&eot_expired_ctx, &eot_expired_opts, &eot_expired_st, &stale_update);
+    rc |=
+        expect_true("expired recent end grant allowed", g_tune_to_freq_calls == 2 && eot_expired_opts.p25_is_tuned == 1
+                                                            && eot_expired_ctx.state == P25_SM_TUNED);
 
     // 8) A transient return-to-CC failure during grant timeout must not record
     // a failed VC until the retry is accepted.
@@ -349,6 +379,7 @@ main(void) {
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
     dsd_state_ext_free_all(&eot_other_st);
+    dsd_state_ext_free_all(&eot_expired_st);
     dsd_state_ext_free_all(&eot_st);
     dsd_state_ext_free_all(&forced_st);
     dsd_state_ext_free_all(&st);
