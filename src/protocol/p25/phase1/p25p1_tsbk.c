@@ -15,6 +15,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
@@ -294,6 +295,14 @@ tsbk_handle_individual_data_channel_grant(dsd_opts* opts, dsd_state* state,
         freq = process_channel_to_freq(opts, state, channel);
     }
     if (opts && opts->p25_trunk == 1 && channel != 0 && freq != 0) {
+        dsd_tg_policy_decision decision;
+        if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 1,
+                                                DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+                                                DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                != 0
+            || !decision.tune_allowed) {
+            return 1;
+        }
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         p25_sm_on_indiv_data_grant(opts, state, channel, P25_SM_SVC_UNKNOWN, target, source);
     }
