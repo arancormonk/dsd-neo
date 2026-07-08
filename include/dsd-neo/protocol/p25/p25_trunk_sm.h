@@ -85,10 +85,10 @@ typedef struct {
     int src;                // Source RID (for GRANT)
     int dst;                // Destination RID (for individual GRANT)
     int svc_bits;           // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
-    int data_call_override; // 0=infer from svc_bits, 1=force data, -1=force non-data
     int is_group;           // 1 for group grant, 0 for individual
     int algid;              // Algorithm ID (for ENC event)
     int keyid;              // Key ID (for ENC event)
+    int data_call_override; // 0=infer from svc_bits, 1=force data, -1=force non-data
 } p25_sm_event_t;
 
 /* ============================================================================

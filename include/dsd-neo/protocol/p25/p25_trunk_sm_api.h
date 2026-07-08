@@ -17,14 +17,14 @@ typedef struct p25_sm_api {
     void (*init)(dsd_opts* opts, dsd_state* state);
     void (*on_group_grant)(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
     void (*on_indiv_grant)(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src);
-    void (*on_group_data_grant)(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
-    void (*on_indiv_data_grant)(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src);
     void (*on_release)(dsd_opts* opts, dsd_state* state);
     void (*on_neighbor_update)(dsd_opts* opts, dsd_state* state, const long* freqs, int count);
     int (*next_cc_candidate)(dsd_state* state, long* out_freq);
     void (*tick)(dsd_opts* opts, dsd_state* state);
     void (*on_queued_response)(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
     void (*on_deny_response)(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
+    void (*on_group_data_grant)(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
+    void (*on_indiv_data_grant)(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src);
 } p25_sm_api;
 
 void p25_sm_set_api(const p25_sm_api* api);
