@@ -1043,7 +1043,9 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     ctx->vc_src = ev->src;
     ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
     ctx->vc_data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
-    ctx->t_tune_m = now_m;
+    if (!reused_carrier || ctx->t_tune_m <= 0.0) {
+        ctx->t_tune_m = now_m;
+    }
     if (!reused_carrier || ctx->t_voice_m <= 0.0) {
         ctx->t_voice_m = 0.0;
     }
@@ -1821,8 +1823,12 @@ p25_retune_block_remember_failure(dsd_state* state, long freq, int slot, time_t 
 }
 
 static int
-p25_backoff_slot_context_valid(const p25_sm_slot_ctx_t* slot_ctx) {
-    return slot_ctx && slot_ctx->grant_active && !slot_ctx->data_call && slot_ctx->freq_hz > 0;
+p25_backoff_slot_context_valid(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
+    if (!ctx || slot < 0 || slot > 1) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    return p25_sm_slot_waiting_for_voice(ctx, state, slot) && slot_ctx->freq_hz > 0;
 }
 
 static void
@@ -1842,7 +1848,7 @@ p25_arm_failed_vc_retune_slot_backoffs(const p25_sm_ctx_t* ctx, const dsd_opts* 
     int armed_slots = 0;
     for (int s = 0; s < 2; s++) {
         const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
-        if (!p25_backoff_slot_context_valid(slot_ctx)) {
+        if (!p25_backoff_slot_context_valid(ctx, state, s)) {
             continue;
         }
         p25_arm_failed_vc_retune_slot_backoff(ctx, opts, state, slot_ctx, s, backoff_s, until);

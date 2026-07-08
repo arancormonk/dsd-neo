@@ -479,15 +479,14 @@ main(void) {
         rc |= expect_true("mixed data voice tune", g_tune_to_freq_calls == 1 && mixed_data_opts.p25_is_tuned == 1
                                                        && mixed_data_ctx.slots[0].grant_active
                                                        && mixed_data_ctx.vc_data_call == 0);
-        p25_sm_event(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st, &mixed_data_slot1);
-        rc |= expect_true("mixed data same-carrier no retune", g_tune_to_freq_calls == 1
-                                                                   && mixed_data_ctx.vc_data_call == 1
-                                                                   && mixed_data_ctx.slots[1].data_call);
-
         double stale_grant_m = dsd_time_now_monotonic_s() - 1.0;
         mixed_data_ctx.t_tune_m = stale_grant_m;
         mixed_data_ctx.t_voice_m = 0.0;
         mixed_data_ctx.slots[0].last_grant_m = stale_grant_m;
+        p25_sm_event(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st, &mixed_data_slot1);
+        rc |= expect_true("mixed data same-carrier no retune",
+                          g_tune_to_freq_calls == 1 && mixed_data_ctx.vc_data_call == 1
+                              && mixed_data_ctx.slots[1].data_call && mixed_data_ctx.t_tune_m == stale_grant_m);
         p25_sm_tick_ctx(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st);
         rc |= expect_true("mixed data returned", mixed_data_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1
                                                      && mixed_data_ctx.state == P25_SM_ON_CC);
@@ -551,6 +550,8 @@ main(void) {
                                                                 && pending_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("pending grant timeout backoff",
                           retune_backoff_history_has_slot(&pending_st, g_last_tuned_vc, 1));
+        rc |= expect_true("active slot not marked failed",
+                          !retune_backoff_history_has_slot(&pending_st, g_last_tuned_vc, 0));
 
         dsd_state_ext_free_all(&pending_st);
     }
