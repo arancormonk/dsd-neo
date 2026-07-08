@@ -987,8 +987,12 @@ p25_grant_clear_policy_slot(dsd_state* state, int slot) {
 }
 
 static int
-p25_grant_slot_matches_moved_target(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev, int target_id) {
+p25_grant_slot_matches_moved_target(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev, int target_id,
+                                    int data_call) {
     if (!slot_ctx || !ev || !slot_ctx->grant_active || slot_ctx->target_id != target_id) {
+        return 0;
+    }
+    if (slot_ctx->data_call != (data_call ? 1 : 0)) {
         return 0;
     }
 
@@ -1002,13 +1006,13 @@ p25_grant_slot_matches_moved_target(const p25_sm_slot_ctx_t* slot_ctx, const p25
 
 static void
 p25_grant_clear_moved_target_slots(p25_sm_ctx_t* ctx, dsd_state* state, int keep_slot, const p25_sm_event_t* ev,
-                                   int target_id, long freq) {
+                                   int target_id, long freq, int data_call) {
     if (!ctx || !ev || target_id <= 0) {
         return;
     }
     for (int s = 0; s < 2; s++) {
         const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
-        if (s == keep_slot || !p25_grant_slot_matches_moved_target(slot_ctx, ev, target_id)) {
+        if (s == keep_slot || !p25_grant_slot_matches_moved_target(slot_ctx, ev, target_id, data_call)) {
             continue;
         }
         if (slot_ctx->freq_hz == freq && slot_ctx->channel == ev->channel) {
@@ -1483,7 +1487,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     if (!p25_grant_try_tune_vc(ctx, ev, opts, state, grant.freq, grant.slot, grant.reused_carrier, &grant.ted_sps)) {
         return;
     }
-    p25_grant_clear_moved_target_slots(ctx, state, grant.slot, ev, grant.target_id, grant.freq);
+    p25_grant_clear_moved_target_slots(ctx, state, grant.slot, ev, grant.target_id, grant.freq, eval_ctx.data_call);
     if (grant.clear_policy_slot_only) {
         p25_grant_clear_one_slot_state(ctx, grant.slot);
     } else {

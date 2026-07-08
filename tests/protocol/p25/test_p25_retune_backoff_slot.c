@@ -585,7 +585,56 @@ main(void) {
         dsd_state_ext_free_all(&pending_data_st);
     }
 
-    // 11) When one slot ends while the other slot has a pending voice grant,
+    // 11) A same-target data grant on the opposite TDMA slot must not clear an
+    // active voice slot for that target.
+    {
+        static dsd_opts same_target_opts;
+        static dsd_state same_target_st;
+        DSD_MEMSET(&same_target_opts, 0, sizeof same_target_opts);
+        DSD_MEMSET(&same_target_st, 0, sizeof same_target_st);
+        same_target_opts.p25_trunk = 1;
+        same_target_opts.trunk_tune_group_calls = 1;
+        same_target_opts.trunk_tune_data_calls = 1;
+        same_target_opts.trunk_hangtime = 0.2f;
+        same_target_opts.p25_grant_voice_to_s = 0.8;
+        same_target_opts.p25_retune_backoff_s = 2.0;
+        same_target_st.p25_cc_freq = 851000000;
+        same_target_st.p25_chan_iden = id;
+        same_target_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+        same_target_st.p25_chan_tdma_explicit[id] = 2;
+
+        p25_sm_ctx_t same_target_ctx;
+        p25_sm_init_ctx(&same_target_ctx, &same_target_opts, &same_target_st);
+        g_last_tuned_vc = 0;
+        g_tune_to_freq_calls = 0;
+        g_return_to_cc_calls = 0;
+        p25_sm_event_t same_target_voice = p25_sm_ev_group_grant(ch_slot0, 0, 3601, 4601, 0);
+        p25_sm_event_t same_target_data = p25_sm_ev_group_data_grant(ch_slot1, 0, 3601, 4602, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t same_target_ptt = p25_sm_ev_ptt(0);
+
+        p25_sm_event(&same_target_ctx, &same_target_opts, &same_target_st, &same_target_voice);
+        rc |= expect_true("same-target voice tuned", g_tune_to_freq_calls == 1 && same_target_opts.p25_is_tuned == 1
+                                                         && same_target_ctx.slots[0].grant_active
+                                                         && same_target_ctx.slots[0].target_id == 3601
+                                                         && !same_target_ctx.slots[0].data_call);
+        p25_sm_event(&same_target_ctx, &same_target_opts, &same_target_st, &same_target_ptt);
+        same_target_st.p25_p2_audio_allowed[0] = 1;
+        rc |= expect_true("same-target voice active", same_target_ctx.slots[0].voice_active == 1);
+
+        p25_sm_event(&same_target_ctx, &same_target_opts, &same_target_st, &same_target_data);
+        rc |= expect_true("same-target data accepted", g_tune_to_freq_calls == 1 && same_target_ctx.vc_data_call == 1
+                                                           && same_target_ctx.slots[1].grant_active
+                                                           && same_target_ctx.slots[1].data_call
+                                                           && same_target_ctx.slots[1].target_id == 3601);
+        rc |= expect_true("same-target voice slot retained", same_target_ctx.slots[0].grant_active
+                                                                 && same_target_ctx.slots[0].voice_active
+                                                                 && same_target_ctx.slots[0].target_id == 3601
+                                                                 && same_target_st.p25_p2_audio_allowed[0] == 1);
+
+        dsd_state_ext_free_all(&same_target_st);
+    }
+
+    // 12) When one slot ends while the other slot has a pending voice grant,
     // the pending grant stays on the grant-timeout path rather than inheriting
     // the ended slot's hangtime.
     {
@@ -656,7 +705,7 @@ main(void) {
         dsd_state_ext_free_all(&pending_st);
     }
 
-    // 12) A transient return-to-CC failure during grant timeout must not record
+    // 13) A transient return-to-CC failure during grant timeout must not record
     // a failed VC until the retry is accepted.
     static const dsd_trunk_tune_result transient_returns[] = {
         DSD_TRUNK_TUNE_RESULT_DEFERRED,
@@ -708,7 +757,7 @@ main(void) {
     }
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 12) Same-carrier preemption releases to the CC first. The replacement
+    // 14) Same-carrier preemption releases to the CC first. The replacement
     // grant must retune the VC instead of reusing a carrier that is no longer tuned.
     {
         static dsd_opts preempt_opts;
