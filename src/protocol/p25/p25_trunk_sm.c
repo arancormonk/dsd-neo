@@ -35,8 +35,8 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 
-static void do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
-                       int arm_failed_vc_backoff_on_accept);
+static int do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
+                      int arm_failed_vc_backoff_on_accept);
 static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx, const char* event,
                          const char* format, ...) DSD_ATTR_FORMAT(printf, 5, 6);
 
@@ -927,8 +927,7 @@ p25_grant_preempt_active_call_if_needed(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
     }
     log_preempt_decision(ctx, opts, state, route, decision, "policy-allow", 1);
     sm_log(opts, state, "grant-preempt-accept");
-    do_release(ctx, opts, state, "grant-preempt", 0);
-    return 1;
+    return do_release(ctx, opts, state, "grant-preempt", 0);
 }
 
 static void
@@ -1598,6 +1597,46 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     p25_voice_end_try_explicit_release(ctx, opts, state, s, is_explicit_end);
 }
 
+static int
+p25_sm_slot_waiting_for_voice(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
+    if (!ctx || slot < 0 || slot > 1) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    if (!slot_ctx->grant_active || slot_ctx->data_call || slot_ctx->voice_active || slot_ctx->last_active_m > 0.0) {
+        return 0;
+    }
+    if (state && state->p25_p2_audio_allowed[slot]) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+p25_sm_has_pending_voice_grant(const p25_sm_ctx_t* ctx, const dsd_state* state) {
+    if (!ctx || !ctx->vc_is_tdma) {
+        return 0;
+    }
+    return p25_sm_slot_waiting_for_voice(ctx, state, 0) || p25_sm_slot_waiting_for_voice(ctx, state, 1);
+}
+
+static double
+p25_sm_pending_voice_grant_timeout_start_m(const p25_sm_ctx_t* ctx, const dsd_state* state) {
+    double latest_grant_m = 0.0;
+    if (!ctx || !ctx->vc_is_tdma) {
+        return 0.0;
+    }
+    for (int s = 0; s < 2; s++) {
+        if (!p25_sm_slot_waiting_for_voice(ctx, state, s)) {
+            continue;
+        }
+        if (ctx->slots[s].last_grant_m > latest_grant_m) {
+            latest_grant_m = ctx->slots[s].last_grant_m;
+        }
+    }
+    return latest_grant_m;
+}
+
 static void
 handle_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
@@ -1829,12 +1868,6 @@ p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
         || ctx->slots[1].voice_active) {
         return;
     }
-    if (ctx->vc_data_call) {
-        p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_backoff_skip", "reason=data-grant ch=0x%04X freq=%ld",
-                     ctx->vc_channel & 0xFFFF, ctx->vc_freq_hz);
-        return;
-    }
-
     double backoff_s = p25_failed_vc_retune_backoff_s(opts);
     time_t backoff_wall = p25_backoff_wall_seconds(backoff_s);
     if (backoff_wall <= 0) {
@@ -1844,6 +1877,11 @@ p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
     time_t until = time(NULL) + backoff_wall;
     int armed_slots = p25_arm_failed_vc_retune_slot_backoffs(ctx, opts, state, backoff_s, until);
     if (armed_slots == 0) {
+        if (ctx->vc_data_call) {
+            p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_backoff_skip", "reason=data-grant ch=0x%04X freq=%ld",
+                         ctx->vc_channel & 0xFFFF, ctx->vc_freq_hz);
+            return;
+        }
         p25_arm_failed_vc_retune_fallback_backoff(ctx, opts, state, backoff_s, until);
     }
     sm_log(opts, state, "grant-vc-backoff-arm");
@@ -1886,20 +1924,20 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-static void
+static int
 do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
            int arm_failed_vc_backoff_on_accept) {
     double tune_start_m = 0.0;
     int had_force_release = 0;
     if (!ctx) {
-        return;
+        return 0;
     }
 
     // Avoid double-return-to-CC thrash if multiple callers attempt to release at
     // nearly the same time (e.g., explicit call termination + watchdog tick).
     int expected = 0;
     if (!atomic_compare_exchange_strong(&g_p25_sm_release_lock, &expected, 1)) {
-        return;
+        return 0;
     }
 
     if (state) {
@@ -1912,7 +1950,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         p25_sm_diagf(opts, state, ctx, "release_skip", "reason=%s opts_tuned=%d", reason ? reason : "none",
                      opts ? ((opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) ? 1 : 0) : 0);
         atomic_store(&g_p25_sm_release_lock, 0);
-        return;
+        return 0;
     }
 
     p25_sm_diagf(opts, state, ctx, "release_request", "reason=%s force=%d arm_backoff=%d", reason ? reason : "none",
@@ -1923,7 +1961,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     // can retry through the same state machine instead of pretending the tuner moved.
     if (!p25_release_return_to_cc_accepted(ctx, opts, state, had_force_release, &tune_start_m)) {
         atomic_store(&g_p25_sm_release_lock, 0);
-        return;
+        return 0;
     }
 
     if (had_force_release || arm_failed_vc_backoff_on_accept) {
@@ -1938,6 +1976,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     set_state(ctx, opts, state, P25_SM_ON_CC, "release->cc");
 
     atomic_store(&g_p25_sm_release_lock, 0);
+    return 1;
 }
 
 /* ============================================================================
@@ -2502,13 +2541,25 @@ p25_sm_tick_try_cqpsk_retry(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
 
 static void
 p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double grant_timeout) {
-    if (!ctx || ctx->t_tune_m <= 0.0) {
+    double dt_tune = 0.0;
+    double timeout_start_m = 0.0;
+    if (!ctx) {
         return;
     }
-    double dt_tune = now_m - ctx->t_tune_m;
-    p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, dt_tune);
-    if (dt_tune >= grant_timeout) {
-        do_release(ctx, opts, state, "grant-timeout", ctx->vc_data_call ? 0 : 1);
+    if (ctx->t_tune_m > 0.0) {
+        dt_tune = now_m - ctx->t_tune_m;
+        p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, dt_tune);
+    }
+
+    timeout_start_m = p25_sm_pending_voice_grant_timeout_start_m(ctx, state);
+    if (ctx->t_tune_m > 0.0 && (timeout_start_m <= 0.0 || ctx->t_tune_m < timeout_start_m)) {
+        timeout_start_m = ctx->t_tune_m;
+    }
+    if (timeout_start_m <= 0.0) {
+        return;
+    }
+    if ((now_m - timeout_start_m) >= grant_timeout) {
+        do_release(ctx, opts, state, "grant-timeout", 1);
     }
 }
 
@@ -2521,6 +2572,9 @@ p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
     if (ctx->slots[0].voice_active || ctx->slots[1].voice_active) {
         ctx->t_voice_m = now_m;
         return;
+    }
+    if (ctx->t_voice_m > 0.0 && p25_sm_has_pending_voice_grant(ctx, state)) {
+        ctx->t_voice_m = 0.0;
     }
     if (ctx->t_voice_m > 0.0) {
         p25_sm_tick_tuned_check_hangtime(ctx, opts, state, now_m, hangtime);
