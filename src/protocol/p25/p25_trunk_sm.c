@@ -2550,7 +2550,7 @@ p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
     }
 
     timeout_start_m = p25_sm_pending_voice_grant_timeout_start_m(ctx, state);
-    if (ctx->t_tune_m > 0.0 && (timeout_start_m <= 0.0 || ctx->t_tune_m < timeout_start_m)) {
+    if (ctx->t_tune_m > timeout_start_m) {
         timeout_start_m = ctx->t_tune_m;
     }
     if (timeout_start_m <= 0.0) {

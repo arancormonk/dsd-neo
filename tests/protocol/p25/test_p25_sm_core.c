@@ -804,6 +804,55 @@ main(void) {
     assert(s19.symbolCenter == tuned_center);
     assert(ctx19.state == P25_SM_TUNED);
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    // 21) A successful CQPSK retry refreshes the TDMA grant timeout window.
+    static dsd_opts o20;
+    static dsd_state s20;
+    DSD_MEMSET(&o20, 0, sizeof(o20));
+    DSD_MEMSET(&s20, 0, sizeof(s20));
+    o20.p25_trunk = 1;
+    o20.trunk_tune_group_calls = 1;
+    o20.audio_in_type = AUDIO_IN_RTL;
+    o20.trunk_hangtime = 5.0f;
+    o20.p25_grant_voice_to_s = 0.8;
+    o20.p25_retune_backoff_s = 2.0;
+    s20.p25_cc_freq = 851000000;
+    s20.trunk_cc_freq = 851000000;
+    s20.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s20.p25_iden_fdma[id9].chan_type = 1;
+    s20.p25_iden_fdma[id9].chan_spac = 100;
+    s20.p25_iden_fdma[id9].trust = 2;
+    s20.p25_iden_fdma[id9].populated = 1;
+    s20.p25_chan_tdma_explicit[id9] = 2;
+    s20.p25_vc_cqpsk_pref = -1;
+    (void)dsd_unsetenv("DSD_NEO_CQPSK");
+    dsd_neo_config_init(&o20);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+
+    p25_sm_ctx_t ctx20;
+    p25_sm_init_ctx(&ctx20, &o20, &s20);
+    g_result_tune_to_freq_calls = 0;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_event(&ctx20, &o20, &s20, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx20.state == P25_SM_TUNED);
+    assert(ctx20.vc_is_tdma == 1);
+    assert(o20.p25_is_tuned == 1);
+
+    s20.p25_vc_cqpsk_override = 0;
+    const double stale_grant_m = dsd_time_now_monotonic_s() - 0.85;
+    ctx20.t_tune_m = stale_grant_m;
+    ctx20.t_voice_m = 0.0;
+    ctx20.slots[0].last_grant_m = stale_grant_m;
+    p25_sm_tick_ctx(&ctx20, &o20, &s20);
+    assert(g_result_tune_to_freq_calls == 2);
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx20.vc_cqpsk_retry_done == 1);
+    assert(ctx20.t_tune_m > stale_grant_m);
+    assert(ctx20.state == P25_SM_TUNED);
+    assert(o20.p25_is_tuned == 1);
+    assert(ctx20.slots[0].grant_active == 1);
+    assert(s20.p25_retune_block_until == 0);
 #endif
 
     install_trunk_tuning_hooks();

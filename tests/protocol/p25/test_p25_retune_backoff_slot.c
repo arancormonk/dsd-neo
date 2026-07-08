@@ -153,6 +153,20 @@ retune_backoff_history_has_slot(const dsd_state* state, long freq, int slot) {
     return 0;
 }
 
+static void
+age_pending_grants(p25_sm_ctx_t* ctx, double age_s) {
+    if (!ctx) {
+        return;
+    }
+    double stale_m = dsd_time_now_monotonic_s() - age_s;
+    ctx->t_tune_m = stale_m;
+    for (int s = 0; s < 2; s++) {
+        if (ctx->slots[s].grant_active && !ctx->slots[s].data_call) {
+            ctx->slots[s].last_grant_m = stale_m;
+        }
+    }
+}
+
 static int
 seed_exact(dsd_state* st, uint32_t id, const char* mode, const char* name, int priority, int preempt) {
     dsd_tg_policy_entry row;
@@ -205,7 +219,7 @@ main(void) {
     rc |= expect_true("initial tune", st.p25_sm_tune_count == 1 && opts.p25_is_tuned == 1 && g_tune_to_freq_calls == 1);
 
     // 2) Let the grant timeout without any voice/VC sync; this arms backoff for slot 1.
-    ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    age_pending_grants(&ctx, 1.0);
     ctx.t_voice_m = 0.0;
     p25_sm_tick_ctx(&ctx, &opts, &st);
     rc |= expect_true("returned", opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && ctx.state == P25_SM_ON_CC);
@@ -223,7 +237,7 @@ main(void) {
 
     // 5) When the second slot also fails before voice, both recent failures
     // should remain blocked. This catches single-entry backoff regressions.
-    ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    age_pending_grants(&ctx, 1.0);
     ctx.t_voice_m = 0.0;
     p25_sm_tick_ctx(&ctx, &opts, &st);
     rc |= expect_true("second returned",
@@ -273,7 +287,7 @@ main(void) {
         rc |= expect_true("zero channel both slots active",
                           zero_ctx.slots[0].grant_active && zero_ctx.slots[1].grant_active);
 
-        zero_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+        age_pending_grants(&zero_ctx, 1.0);
         zero_ctx.t_voice_m = 0.0;
         p25_sm_tick_ctx(&zero_ctx, &zero_opts, &zero_st);
         rc |= expect_true("zero channel returned",
@@ -316,7 +330,7 @@ main(void) {
     rc |= expect_true("forced initial tune",
                       forced_st.p25_sm_tune_count == 1 && forced_opts.p25_is_tuned == 1 && g_tune_to_freq_calls == 1);
 
-    forced_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    age_pending_grants(&forced_ctx, 1.0);
     forced_ctx.t_voice_m = 0.0;
     forced_st.p25_sm_force_release = 1;
     p25_sm_release(&forced_ctx, &forced_opts, &forced_st, "explicit-release");
@@ -422,7 +436,7 @@ main(void) {
     rc |= expect_true("mixed voice initial tune", mixed_st.p25_sm_tune_count == 1 && mixed_opts.p25_is_tuned == 1
                                                       && g_tune_to_freq_calls == 1 && mixed_ctx.vc_data_call == 0);
 
-    mixed_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    age_pending_grants(&mixed_ctx, 1.0);
     mixed_ctx.t_voice_m = 0.0;
     p25_sm_tick_ctx(&mixed_ctx, &mixed_opts, &mixed_st);
     rc |= expect_true("mixed voice returned",
@@ -574,7 +588,7 @@ main(void) {
             expect_true("transient initial tune", transient_st.p25_sm_tune_count == 1
                                                       && transient_opts.p25_is_tuned == 1 && g_tune_to_freq_calls == 1);
 
-        transient_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+        age_pending_grants(&transient_ctx, 1.0);
         transient_ctx.t_voice_m = 0.0;
         p25_sm_tick_ctx(&transient_ctx, &transient_opts, &transient_st);
         rc |= expect_true("transient return preserved vc", transient_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 1
