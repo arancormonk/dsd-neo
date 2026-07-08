@@ -130,6 +130,7 @@ typedef struct {
     int vc_tg;
     int vc_src;
     int vc_is_tdma;          // 1 if TDMA channel, 0 if single-carrier
+    int vc_data_call;        // 1 if the accepted grant is data, 0 if voice
     int vc_cqpsk_retry_done; // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
 
     // Per-slot activity (index 0 = left/P1, index 1 = right)

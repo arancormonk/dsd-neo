@@ -123,6 +123,19 @@ expect_true(const char* tag, int cond) {
     return 0;
 }
 
+static int
+retune_backoff_empty(const dsd_state* state) {
+    if (!state || state->p25_retune_block_until != 0 || state->p25_retune_block_freq != 0) {
+        return 0;
+    }
+    for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
+        if (state->p25_retune_block_history_until[i] != 0 || state->p25_retune_block_history_freq[i] != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -231,7 +244,77 @@ main(void) {
                                                   && forced_st.p25_retune_block_slot == 1
                                                   && forced_st.p25_retune_block_until > time(NULL));
 
-    // 7) A transient return-to-CC failure during grant timeout must not record
+    // 7) Data grants time out and forced-release without arming failed-voice backoff.
+    static dsd_opts data_opts;
+    static dsd_state data_st;
+    DSD_MEMSET(&data_opts, 0, sizeof data_opts);
+    DSD_MEMSET(&data_st, 0, sizeof data_st);
+    data_opts.p25_trunk = 1;
+    data_opts.trunk_tune_group_calls = 1;
+    data_opts.trunk_tune_data_calls = 1;
+    data_opts.trunk_hangtime = 0.2f;
+    data_opts.p25_grant_voice_to_s = 0.5;
+    data_opts.p25_retune_backoff_s = 2.0;
+    data_st.p25_cc_freq = 851000000;
+    data_st.p25_chan_iden = id;
+    data_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+    data_st.p25_chan_tdma_explicit[id] = 2;
+
+    p25_sm_ctx_t data_ctx;
+    p25_sm_init_ctx(&data_ctx, &data_opts, &data_st);
+    g_last_tuned_vc = 0;
+    g_tune_to_freq_calls = 0;
+    g_return_to_cc_calls = 0;
+    p25_sm_event_t data_ev_slot1 = p25_sm_ev_group_data_grant(ch_slot1, 0, 1001, 2002, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&data_ctx, &data_opts, &data_st, &data_ev_slot1);
+    rc |= expect_true("data initial tune", data_st.p25_sm_tune_count == 1 && data_opts.p25_is_tuned == 1
+                                               && g_tune_to_freq_calls == 1 && data_ctx.vc_data_call == 1);
+
+    data_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    data_ctx.t_voice_m = 0.0;
+    p25_sm_tick_ctx(&data_ctx, &data_opts, &data_st);
+    rc |= expect_true("data returned",
+                      data_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && data_ctx.state == P25_SM_ON_CC);
+    rc |= expect_true("data timeout does not arm backoff", retune_backoff_empty(&data_st));
+
+    p25_sm_event(&data_ctx, &data_opts, &data_st, &ev_slot1);
+    rc |= expect_true("voice grant after data timeout allowed",
+                      g_tune_to_freq_calls == 2 && data_opts.p25_is_tuned == 1 && data_ctx.vc_data_call == 0);
+
+    static dsd_opts data_forced_opts;
+    static dsd_state data_forced_st;
+    DSD_MEMSET(&data_forced_opts, 0, sizeof data_forced_opts);
+    DSD_MEMSET(&data_forced_st, 0, sizeof data_forced_st);
+    data_forced_opts.p25_trunk = 1;
+    data_forced_opts.trunk_tune_group_calls = 1;
+    data_forced_opts.trunk_tune_data_calls = 1;
+    data_forced_opts.trunk_hangtime = 0.2f;
+    data_forced_opts.p25_grant_voice_to_s = 10.0;
+    data_forced_opts.p25_retune_backoff_s = 2.0;
+    data_forced_st.p25_cc_freq = 851000000;
+    data_forced_st.p25_chan_iden = id;
+    data_forced_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+    data_forced_st.p25_chan_tdma_explicit[id] = 2;
+
+    p25_sm_ctx_t data_forced_ctx;
+    p25_sm_init_ctx(&data_forced_ctx, &data_forced_opts, &data_forced_st);
+    g_last_tuned_vc = 0;
+    g_tune_to_freq_calls = 0;
+    g_return_to_cc_calls = 0;
+    p25_sm_event(&data_forced_ctx, &data_forced_opts, &data_forced_st, &data_ev_slot1);
+    rc |= expect_true("forced data initial tune", data_forced_st.p25_sm_tune_count == 1
+                                                      && data_forced_opts.p25_is_tuned == 1 && g_tune_to_freq_calls == 1
+                                                      && data_forced_ctx.vc_data_call == 1);
+
+    data_forced_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    data_forced_ctx.t_voice_m = 0.0;
+    data_forced_st.p25_sm_force_release = 1;
+    p25_sm_release(&data_forced_ctx, &data_forced_opts, &data_forced_st, "explicit-data-release");
+    rc |= expect_true("forced data returned", data_forced_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1
+                                                  && data_forced_ctx.state == P25_SM_ON_CC);
+    rc |= expect_true("forced data does not arm backoff", retune_backoff_empty(&data_forced_st));
+
+    // 8) A transient return-to-CC failure during grant timeout must not record
     // a failed VC until the retry is accepted.
     static const dsd_trunk_tune_result transient_returns[] = {
         DSD_TRUNK_TUNE_RESULT_DEFERRED,
@@ -283,6 +366,8 @@ main(void) {
     }
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
+    dsd_state_ext_free_all(&data_forced_st);
+    dsd_state_ext_free_all(&data_st);
     dsd_state_ext_free_all(&forced_st);
     dsd_state_ext_free_all(&st);
 
