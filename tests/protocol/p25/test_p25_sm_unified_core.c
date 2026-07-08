@@ -400,6 +400,49 @@ test_tdma_pending_other_slot_blocks_release(void) {
     return 0;
 }
 
+// Test: P25P2 TDMA - an encrypted locked-out slot clears its grant context so
+// the opposite slot can release immediately on explicit END.
+static int
+test_tdma_enc_lockout_slot_does_not_block_release(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_group_grant(0x1235, 851500000, 1001, 124, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    g_state.p25_p2_audio_allowed[0] = 1;
+    g_state.p25_p2_audio_allowed[1] = 1;
+
+    ev = p25_sm_ev_enc(1, 0x84, 0x1234, 1001);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    if (ctx.state != P25_SM_TUNED || ctx.slots[1].grant_active != 0 || ctx.slots[1].voice_active != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Expected encrypted slot 1 to mute without keeping an active grant\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC) {
+        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC after clear slot END with encrypted slot muted, got %s\n",
+                    p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    return 0;
+}
+
 // Test: P25P2 TDMA - END on single-slot call releases immediately
 // This tests the bug fix where calls on only one slot were waiting for
 // the full hangtime (10s forced release) instead of releasing on MAC_END_PTT.
@@ -579,6 +622,7 @@ main(void) {
     fail += test_sacch_slot_mapping();
     fail += test_tdma_partial_end_stays_tuned();
     fail += test_tdma_pending_other_slot_blocks_release();
+    fail += test_tdma_enc_lockout_slot_does_not_block_release();
     fail += test_tdma_single_slot_end_releases();
     fail += test_tdma_enc_respects_media_policy();
 

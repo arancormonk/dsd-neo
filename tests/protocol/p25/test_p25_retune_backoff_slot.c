@@ -449,8 +449,9 @@ main(void) {
     rc |= expect_true("data grant bypasses voice backoff",
                       g_tune_to_freq_calls == 2 && mixed_opts.p25_is_tuned == 1 && mixed_ctx.vc_data_call == 1);
 
-    // 9) A same-carrier data grant must not hide a pending failed voice grant
-    // on the other TDMA slot when the carrier returns to the CC.
+    // 9) A same-carrier data grant gets a fresh timeout window without hiding a
+    // pending failed voice grant on the other TDMA slot when the carrier returns
+    // to the CC.
     {
         static dsd_opts mixed_data_opts;
         static dsd_state mixed_data_st;
@@ -484,9 +485,14 @@ main(void) {
         mixed_data_ctx.t_voice_m = 0.0;
         mixed_data_ctx.slots[0].last_grant_m = stale_grant_m;
         p25_sm_event(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st, &mixed_data_slot1);
-        rc |= expect_true("mixed data same-carrier no retune",
+        rc |= expect_true("mixed data same-carrier refreshes timeout",
                           g_tune_to_freq_calls == 1 && mixed_data_ctx.vc_data_call == 1
-                              && mixed_data_ctx.slots[1].data_call && mixed_data_ctx.t_tune_m == stale_grant_m);
+                              && mixed_data_ctx.slots[1].data_call && mixed_data_ctx.t_tune_m > stale_grant_m);
+        p25_sm_tick_ctx(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st);
+        rc |= expect_true("mixed data timeout window retained", mixed_data_opts.p25_is_tuned == 1
+                                                                    && g_return_to_cc_calls == 0
+                                                                    && mixed_data_ctx.state == P25_SM_TUNED);
+        mixed_data_ctx.t_tune_m = stale_grant_m;
         p25_sm_tick_ctx(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st);
         rc |= expect_true("mixed data returned", mixed_data_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1
                                                      && mixed_data_ctx.state == P25_SM_ON_CC);

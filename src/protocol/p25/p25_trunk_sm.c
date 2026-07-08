@@ -1042,8 +1042,11 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     ctx->vc_tg = target_id;
     ctx->vc_src = ev->src;
     ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
-    ctx->vc_data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
-    if (!reused_carrier || ctx->t_tune_m <= 0.0) {
+    const int data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
+    ctx->vc_data_call = data_call;
+    // Data grants do not use per-slot pending voice timing, so reused carrier
+    // data grants need their own timeout window.
+    if (!reused_carrier || ctx->t_tune_m <= 0.0 || data_call) {
         ctx->t_tune_m = now_m;
     }
     if (!reused_carrier || ctx->t_voice_m <= 0.0) {
@@ -1713,6 +1716,11 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     // Clear voice activity indicator to prevent audio routing logic from
     // treating this locked-out slot as having active voice
     ctx->slots[slot].voice_active = 0;
+    ctx->slots[slot].grant_active = 0;
+    (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
+    if (ctx->vc_is_tdma) {
+        state->p25_policy_tg[slot] = 0;
+    }
     if (slot == 0) {
         state->dmrburstL = 0;
         // Reset voice counters to prevent stale state from affecting later calls
