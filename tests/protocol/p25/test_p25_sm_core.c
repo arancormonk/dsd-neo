@@ -149,6 +149,14 @@ init_basic(dsd_opts* o, dsd_state* s) {
 
 int
 main(void) {
+    p25_sm_event_t legacy_group_grant = {
+        P25_SM_EV_GRANT, -1, 0x1234, 851500000L, 1000, 123, 0, P25_SM_SVC_UNKNOWN, 1, 0x80, 0x1234, 0,
+    };
+    assert(legacy_group_grant.is_group == 1);
+    assert(legacy_group_grant.algid == 0x80);
+    assert(legacy_group_grant.keyid == 0x1234);
+    assert(legacy_group_grant.data_call_override == 0);
+
     static dsd_opts opts;
     static dsd_state st;
     install_trunk_tuning_hooks();

@@ -9,6 +9,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
@@ -260,6 +261,64 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     (void)svc_bits;
     (void)tg;
     (void)src;
+}
+
+void
+p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    (void)opts;
+    (void)state;
+    (void)channel;
+    (void)svc_bits;
+    (void)tg;
+    (void)src;
+}
+
+void
+p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+    (void)opts;
+    (void)state;
+    (void)channel;
+    (void)svc_bits;
+    (void)dst;
+    (void)src;
+}
+
+int
+dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
+                                    int encrypted, int data_call, dsd_tg_policy_private_allowlist_mode allowlist_mode,
+                                    dsd_tg_policy_hold_behavior hold_behavior, dsd_tg_policy_decision* out) {
+    (void)state;
+    (void)hold_behavior;
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->target_id = dst;
+    out->source_id = src;
+    out->encrypted = encrypted;
+    out->data_call = data_call;
+    out->tune_allowed = 1;
+    out->audio_allowed = 1;
+    out->record_allowed = 1;
+    out->stream_allowed = 1;
+    out->match = DSD_TG_POLICY_MATCH_NONE;
+    if (opts && opts->trunk_tune_private_calls == 0) {
+        out->tune_allowed = 0;
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED;
+    }
+    if (opts && data_call && opts->trunk_tune_data_calls == 0) {
+        out->tune_allowed = 0;
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_DATA_DISABLED;
+    }
+    if (opts && encrypted && opts->trunk_tune_enc_calls == 0) {
+        out->tune_allowed = 0;
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
+    }
+    if (opts && opts->trunk_use_allow_list == 1 && allowlist_mode == DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK) {
+        out->tune_allowed = 0;
+        out->block_reasons |= DSD_TG_POLICY_BLOCK_ALLOWLIST;
+    }
+    return 0;
 }
 
 void

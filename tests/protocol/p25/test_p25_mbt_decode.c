@@ -37,6 +37,8 @@ int p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint
 
 static int g_indiv_grant_count;
 static int g_group_grant_count;
+static int g_indiv_data_grant_count;
+static int g_group_data_grant_count;
 static int g_last_indiv_channel;
 static int g_last_indiv_svc;
 static int g_last_indiv_dst;
@@ -45,6 +47,14 @@ static int g_last_group_channel;
 static int g_last_group_svc;
 static int g_last_group_tg;
 static int g_last_group_src;
+static int g_last_indiv_data_channel;
+static int g_last_indiv_data_svc;
+static int g_last_indiv_data_dst;
+static int g_last_indiv_data_src;
+static int g_last_group_data_channel;
+static int g_last_group_data_svc;
+static int g_last_group_data_tg;
+static int g_last_group_data_src;
 
 static void
 sm_noop_init(dsd_opts* opts, dsd_state* state) {
@@ -72,6 +82,28 @@ sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bi
     g_last_indiv_svc = svc_bits;
     g_last_indiv_dst = dst;
     g_last_indiv_src = src;
+}
+
+static void
+sm_noop_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    (void)opts;
+    (void)state;
+    g_group_data_grant_count++;
+    g_last_group_data_channel = channel;
+    g_last_group_data_svc = svc_bits;
+    g_last_group_data_tg = tg;
+    g_last_group_data_src = src;
+}
+
+static void
+sm_noop_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+    (void)opts;
+    (void)state;
+    g_indiv_data_grant_count++;
+    g_last_indiv_data_channel = channel;
+    g_last_indiv_data_svc = svc_bits;
+    g_last_indiv_data_dst = dst;
+    g_last_indiv_data_src = src;
 }
 
 static void
@@ -107,6 +139,8 @@ sm_noop_api(void) {
     api.init = sm_noop_init;
     api.on_group_grant = sm_noop_on_group_grant;
     api.on_indiv_grant = sm_noop_on_indiv_grant;
+    api.on_group_data_grant = sm_noop_on_group_data_grant;
+    api.on_indiv_data_grant = sm_noop_on_indiv_data_grant;
     api.on_release = sm_noop_on_release;
     api.on_neighbor_update = sm_noop_on_neighbor_update;
     api.next_cc_candidate = sm_noop_next_cc_candidate;
@@ -118,6 +152,8 @@ static void
 reset_indiv_grants(void) {
     g_indiv_grant_count = 0;
     g_group_grant_count = 0;
+    g_indiv_data_grant_count = 0;
+    g_group_data_grant_count = 0;
     g_last_indiv_channel = 0;
     g_last_indiv_svc = 0;
     g_last_indiv_dst = 0;
@@ -126,6 +162,14 @@ reset_indiv_grants(void) {
     g_last_group_svc = 0;
     g_last_group_tg = 0;
     g_last_group_src = 0;
+    g_last_indiv_data_channel = 0;
+    g_last_indiv_data_svc = 0;
+    g_last_indiv_data_dst = 0;
+    g_last_indiv_data_src = 0;
+    g_last_group_data_channel = 0;
+    g_last_group_data_svc = 0;
+    g_last_group_data_tg = 0;
+    g_last_group_data_src = 0;
 }
 
 // Additional stubs referenced by linked objects (rigctl/rtl streaming)
@@ -873,7 +917,7 @@ main(void) {
         rc |= expect_contains_text("mbt 0x37 msn", out, "MSN [5] FINAL [1] ADDR-A [ABCDE.234]");
     }
 
-    // Obsolete AMBTC data grants are metadata-only and do not trigger voice grant callbacks.
+    // Obsolete AMBTC data grants dispatch only through the explicit data-grant callbacks.
     {
         uint8_t meta[48];
         char out[4096];
@@ -882,8 +926,13 @@ main(void) {
         if (capture_mbt_output("p25_mbt_data_0x10", meta, sizeof meta, out, sizeof out) != 0) {
             return 118;
         }
-        rc |= expect_eq_int("mbt 0x10 no indiv grant", g_indiv_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x10 no voice indiv grant", g_indiv_grant_count, 0);
         rc |= expect_eq_int("mbt 0x10 no group grant", g_group_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x10 data indiv grant", g_indiv_data_grant_count, 1);
+        rc |= expect_eq_int("mbt 0x10 data channel", g_last_indiv_data_channel, 0x100A);
+        rc |= expect_eq_int("mbt 0x10 data svc preserved", g_last_indiv_data_svc, 0x04);
+        rc |= expect_eq_int("mbt 0x10 data dst", g_last_indiv_data_dst, 0x0ABCDE);
+        rc |= expect_eq_int("mbt 0x10 data src", g_last_indiv_data_src, 0x012345);
         rc |= expect_contains_text("mbt 0x10 label", out, "Individual Data Channel Grant MBT - Obsolete");
         rc |= expect_contains_text("mbt 0x10 channel", out, "CHAN-T [100A] CHAN-R [1010]");
         rc |= expect_contains_text("mbt 0x10 target", out, "TO [703710]");
@@ -893,7 +942,12 @@ main(void) {
             return 119;
         }
         rc |= expect_eq_int("mbt 0x11 no indiv grant", g_indiv_grant_count, 0);
-        rc |= expect_eq_int("mbt 0x11 no group grant", g_group_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x11 no voice group grant", g_group_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x11 data group grant", g_group_data_grant_count, 1);
+        rc |= expect_eq_int("mbt 0x11 data channel", g_last_group_data_channel, 0x100A);
+        rc |= expect_eq_int("mbt 0x11 data svc preserved", g_last_group_data_svc, 0x04);
+        rc |= expect_eq_int("mbt 0x11 data tg", g_last_group_data_tg, 0x1234);
+        rc |= expect_eq_int("mbt 0x11 data src", g_last_group_data_src, 0x012345);
         rc |= expect_contains_text("mbt 0x11 label", out, "Group Data Channel Grant MBT - Obsolete");
         rc |= expect_contains_text("mbt 0x11 channel", out, "CHAN-T [100A] CHAN-R [1010]");
         rc |= expect_contains_text("mbt 0x11 group", out, "Group [4660][1234]");

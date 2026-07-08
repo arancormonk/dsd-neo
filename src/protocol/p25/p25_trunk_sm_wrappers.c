@@ -112,6 +112,12 @@ p25_sm_on_group_grant_default(dsd_opts* opts, dsd_state* state, int channel, int
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
+static void
+p25_sm_on_group_data_grant_default(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    p25_sm_event_t ev = p25_sm_ev_group_data_grant(channel, 0, tg, src, svc_bits);
+    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+}
+
 void
 p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     p25_sm_api api = p25_sm_get_api();
@@ -122,9 +128,29 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
     p25_sm_on_group_grant_default(opts, state, channel, svc_bits, tg, src);
 }
 
+void
+p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    p25_sm_api api = p25_sm_get_api();
+    if (api.on_group_data_grant) {
+        api.on_group_data_grant(opts, state, channel, svc_bits, tg, src);
+        return;
+    }
+    if (api.on_group_grant) {
+        api.on_group_grant(opts, state, channel, svc_bits, tg, src);
+        return;
+    }
+    p25_sm_on_group_data_grant_default(opts, state, channel, svc_bits, tg, src);
+}
+
 static void
 p25_sm_on_indiv_grant_default(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, 0, dst, src, svc_bits);
+    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+}
+
+static void
+p25_sm_on_indiv_data_grant_default(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+    p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channel, 0, dst, src, svc_bits);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
@@ -136,6 +162,20 @@ p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
         return;
     }
     p25_sm_on_indiv_grant_default(opts, state, channel, svc_bits, dst, src);
+}
+
+void
+p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+    p25_sm_api api = p25_sm_get_api();
+    if (api.on_indiv_data_grant) {
+        api.on_indiv_data_grant(opts, state, channel, svc_bits, dst, src);
+        return;
+    }
+    if (api.on_indiv_grant) {
+        api.on_indiv_grant(opts, state, channel, svc_bits, dst, src);
+        return;
+    }
+    p25_sm_on_indiv_data_grant_default(opts, state, channel, svc_bits, dst, src);
 }
 
 static void

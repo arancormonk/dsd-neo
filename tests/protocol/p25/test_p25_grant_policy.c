@@ -281,6 +281,72 @@ main(void) {
     p25_sm_on_indiv_grant(&opts, &st, ch, /*svc*/ 0x00, /*dst*/ 9001, /*src*/ 9002);
     rc |= expect_true("private unknown allowed in allow-list", st.p25_sm_tune_count == before + 1);
 
+    // Explicit data grant wrappers force data-call policy without rewriting service bits.
+    {
+        static dsd_opts data_opts;
+        static dsd_state data_st;
+        DSD_MEMSET(&data_opts, 0, sizeof data_opts);
+        DSD_MEMSET(&data_st, 0, sizeof data_st);
+        data_opts.p25_trunk = 1;
+        data_opts.trunk_tune_group_calls = 1;
+        data_opts.trunk_tune_private_calls = 1;
+        data_opts.trunk_tune_data_calls = 0;
+        data_opts.trunk_tune_enc_calls = 1;
+        data_st.p25_cc_freq = 851000000;
+        seed_fdma_iden(&data_st, id);
+        p25_sm_init(&data_opts, &data_st);
+
+        before = data_st.p25_sm_tune_count;
+        p25_sm_on_group_data_grant(&data_opts, &data_st, ch, /*svc*/ 0x00, /*tg*/ 3100, /*src*/ 4100);
+        rc |= expect_true("group data clear svc blocked when data disabled", data_st.p25_sm_tune_count == before);
+        p25_sm_on_indiv_data_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*dst*/ 3101, /*src*/ 4101);
+        rc |= expect_true("indiv data unknown svc blocked when data disabled", data_st.p25_sm_tune_count == before);
+
+        data_opts.trunk_tune_data_calls = 1;
+        data_opts.p25_is_tuned = 0;
+        p25_sm_on_group_data_grant(&data_opts, &data_st, ch, /*svc*/ 0x00, /*tg*/ 3102, /*src*/ 4102);
+        rc |= expect_true("group data clear svc tunes when data enabled", data_st.p25_sm_tune_count == before + 1);
+        p25_sm_on_release(&data_opts, &data_st);
+        data_opts.p25_is_tuned = 0;
+        before = data_st.p25_sm_tune_count;
+        p25_sm_on_indiv_data_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*dst*/ 3103, /*src*/ 4103);
+        rc |= expect_true("indiv data unknown svc tunes when data enabled", data_st.p25_sm_tune_count == before + 1);
+
+        p25_sm_on_release(&data_opts, &data_st);
+        data_opts.trunk_tune_enc_calls = 0;
+        data_opts.p25_is_tuned = 0;
+        before = data_st.p25_sm_tune_count;
+        p25_sm_on_group_data_grant(&data_opts, &data_st, ch, /*svc*/ 0x40, /*tg*/ 3104, /*src*/ 4104);
+        rc |= expect_true("group data raw enc bit blocks when enc disabled", data_st.p25_sm_tune_count == before);
+        rc |=
+            expect_true("group data raw enc bit does not arm voice enc cache", enc_tg_cache_is_absent(&data_st, 3104U));
+        p25_sm_on_group_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 3104, /*src*/ 4105);
+        rc |= expect_true("svc-less voice grant not skipped after encrypted data grant",
+                          data_st.p25_sm_tune_count == before + 1);
+        p25_sm_on_release(&data_opts, &data_st);
+
+        p25_emit_enc_lockout_once(&data_opts, &data_st, 0, 3105, /*svc*/ 0x40);
+        rc |= expect_true("seed transient voice enc cache", !enc_tg_cache_is_absent(&data_st, 3105U));
+        before = data_st.p25_sm_tune_count;
+        data_opts.p25_is_tuned = 0;
+        p25_sm_on_group_data_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 3105, /*src*/ 4106);
+        rc |= expect_true("svc-less group data grant ignores voice enc cache", data_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("svc-less group data grant preserves voice enc cache",
+                          !enc_tg_cache_is_absent(&data_st, 3105U));
+        p25_sm_on_release(&data_opts, &data_st);
+
+        data_opts.trunk_tune_data_calls = 0;
+        data_opts.p25_is_tuned = 0;
+        before = data_st.p25_sm_tune_count;
+        p25_sm_on_group_data_grant(&data_opts, &data_st, ch, /*svc*/ 0x00, /*tg*/ 3105, /*src*/ 4107);
+        rc |= expect_true("clear group data grant blocked when data disabled", data_st.p25_sm_tune_count == before);
+        rc |= expect_true("clear group data grant preserves voice enc cache", !enc_tg_cache_is_absent(&data_st, 3105U));
+        p25_sm_on_group_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 3105, /*src*/ 4108);
+        rc |= expect_true("svc-less voice grant still skipped after clear data grant",
+                          data_st.p25_sm_tune_count == before);
+        p25_sm_init(&opts, &st);
+    }
+
     // Priority preemption: preempt-flagged low-priority candidate does not displace.
     rc |= expect_true("seed active high", seed_exact(&st, 1200, "A", "ACTIVE-HIGH", 80, 0) == 0);
     rc |= expect_true("seed candidate low preempt", seed_exact(&st, 1201, "A", "CAND-LOW", 10, 1) == 0);

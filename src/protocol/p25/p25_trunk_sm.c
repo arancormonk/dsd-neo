@@ -522,7 +522,13 @@ p25_grant_eval_ctx_from_event(const p25_sm_event_t* ev) {
     }
     ctx.svc_valid = p25_sm_svc_bits_valid(ev->svc_bits);
     ctx.svc = ctx.svc_valid ? ev->svc_bits : 0;
-    ctx.data_call = (ctx.svc_valid && SVC_IS_DATA(ctx.svc)) ? 1 : 0;
+    if (ev->data_call_override > 0) {
+        ctx.data_call = 1;
+    } else if (ev->data_call_override < 0) {
+        ctx.data_call = 0;
+    } else {
+        ctx.data_call = (ctx.svc_valid && SVC_IS_DATA(ctx.svc)) ? 1 : 0;
+    }
     ctx.encrypted_call = (ctx.svc_valid && SVC_IS_ENC(ctx.svc)) ? 1 : 0;
     ctx.is_indiv = !ev->is_group;
     ctx.tg = ctx.is_indiv ? ev->dst : ev->tg;
@@ -648,9 +654,14 @@ p25_grant_apply_clear_override(const dsd_opts* opts, const dsd_state* state, p25
     }
 }
 
+static int
+p25_grant_uses_voice_enc_cache(const p25_grant_eval_ctx_t* eval_ctx) {
+    return (eval_ctx && !eval_ctx->data_call) ? 1 : 0;
+}
+
 static void
 p25_grant_clear_transient_cache_if_clear(dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx) {
-    if (!state || !eval_ctx || eval_ctx->is_indiv || eval_ctx->tg <= 0) {
+    if (!state || !eval_ctx || !p25_grant_uses_voice_enc_cache(eval_ctx) || eval_ctx->is_indiv || eval_ctx->tg <= 0) {
         return;
     }
     if ((eval_ctx->svc_valid && !eval_ctx->encrypted_call) || eval_ctx->enc_override_clear) {
@@ -669,6 +680,9 @@ p25_grant_patch_clear_key(const dsd_state* state, const p25_grant_eval_ctx_t* ev
 static int
 p25_grant_transient_enc_cache_blocks(dsd_opts* opts, dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx) {
     if (!opts || !state || !eval_ctx || eval_ctx->is_indiv || eval_ctx->tg <= 0 || opts->trunk_tune_enc_calls != 0) {
+        return 0;
+    }
+    if (!p25_grant_uses_voice_enc_cache(eval_ctx)) {
         return 0;
     }
     if (eval_ctx->svc_valid) {
@@ -782,7 +796,8 @@ p25_grant_handle_policy_block(dsd_opts* opts, dsd_state* state, const p25_grant_
                  eval_ctx->svc, eval_ctx->data_call, eval_ctx->encrypted_call, eval_ctx->is_indiv,
                  decision->block_reasons);
     sm_log(opts, state, grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons));
-    if (!eval_ctx->is_indiv && eval_ctx->tg > 0 && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
+    if (p25_grant_uses_voice_enc_cache(eval_ctx) && !eval_ctx->is_indiv && eval_ctx->tg > 0
+        && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
         p25_emit_enc_lockout_once(opts, state, 0, eval_ctx->tg, eval_ctx->svc);
     }
     return 1;
@@ -800,7 +815,8 @@ p25_grant_track_src_tg(dsd_state* state, const p25_sm_event_t* ev, const p25_gra
 }
 
 static int
-grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg_policy_decision* out_decision) {
+grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg_policy_decision* out_decision,
+              p25_grant_eval_ctx_t* out_eval_ctx) {
     p25_grant_eval_ctx_t eval_ctx;
     dsd_tg_policy_decision decision;
     if (!opts || !state || !ev) {
@@ -818,10 +834,16 @@ grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg
         if (out_decision) {
             *out_decision = decision;
         }
+        if (out_eval_ctx) {
+            *out_eval_ctx = eval_ctx;
+        }
         return 0;
     }
 
     if (p25_grant_transient_enc_cache_blocks(opts, state, &eval_ctx)) {
+        if (out_eval_ctx) {
+            *out_eval_ctx = eval_ctx;
+        }
         return 0;
     }
 
@@ -832,6 +854,9 @@ grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg
 
     if (out_decision) {
         *out_decision = decision;
+    }
+    if (out_eval_ctx) {
+        *out_eval_ctx = eval_ctx;
     }
     return 1;
 }
@@ -932,7 +957,7 @@ p25_grant_clear_slot_state(p25_sm_ctx_t* ctx) {
 
 static void
 p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev, long freq, int target_id,
-                           double now_m) {
+                           const p25_grant_eval_ctx_t* eval_ctx, double now_m) {
     if (!ctx || !ev) {
         return;
     }
@@ -941,6 +966,7 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     ctx->vc_tg = target_id;
     ctx->vc_src = ev->src;
     ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
+    ctx->vc_data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
     ctx->vc_cqpsk_retry_done = 0;
@@ -1048,13 +1074,15 @@ p25_grant_debug_log_tdma(const dsd_opts* opts, const dsd_state* state, const p25
 static int
 p25_grant_handle_duplicate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
                            const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision, long freq,
-                           int target_id, double now_m) {
-    if (ctx->state != P25_SM_TUNED || ctx->vc_freq_hz != freq || ctx->vc_tg != target_id) {
+                           int target_id, const p25_grant_eval_ctx_t* eval_ctx, double now_m) {
+    int data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
+    if (ctx->state != P25_SM_TUNED || ctx->vc_freq_hz != freq || ctx->vc_tg != target_id
+        || ctx->vc_data_call != data_call) {
         return 0;
     }
     (void)dsd_tg_policy_note_active_call(state, route, decision, now_m);
-    p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_duplicate", "freq=%ld tg=%d target=%d slot=%d", freq, ctx->vc_tg,
-                 target_id, route->slot);
+    p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_duplicate", "freq=%ld tg=%d target=%d slot=%d data=%d", freq,
+                 ctx->vc_tg, target_id, route->slot, data_call);
     sm_log(opts, state, "grant-same-freq");
     return 1;
 }
@@ -1220,9 +1248,10 @@ p25_grant_should_clear_slot_only(const p25_sm_ctx_t* ctx, const dsd_state* state
 
 static int
 p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
-                        const dsd_tg_policy_decision* decision, p25_grant_route_ctx_t* out) {
+                        const dsd_tg_policy_decision* decision, const p25_grant_eval_ctx_t* eval_ctx,
+                        p25_grant_route_ctx_t* out) {
     p25_freq_trace_t freq_trace;
-    if (!ctx || !opts || !state || !ev || !decision || !out) {
+    if (!ctx || !opts || !state || !ev || !decision || !eval_ctx || !out) {
         return 0;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
@@ -1235,7 +1264,7 @@ p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
 
     out->now_m = now_monotonic();
     out->slot = channel_slot(state, ev->channel);
-    if (p25_grant_retune_blocked(opts, state, out->freq, out->slot, ev->channel)) {
+    if (!eval_ctx->data_call && p25_grant_retune_blocked(opts, state, out->freq, out->slot, ev->channel)) {
         return 0;
     }
     out->needs_retune = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz != 0 && ctx->vc_freq_hz != out->freq) ? 1 : 0;
@@ -1252,23 +1281,25 @@ p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
 static void
 handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     dsd_tg_policy_decision decision;
+    p25_grant_eval_ctx_t eval_ctx;
     p25_grant_route_ctx_t grant;
     if (!ctx || !ev || !opts || !state) {
         return;
     }
+    DSD_MEMSET(&eval_ctx, 0, sizeof(eval_ctx));
 
     // Check grant policy
-    if (!grant_allowed(opts, state, ev, &decision)) {
+    if (!grant_allowed(opts, state, ev, &decision, &eval_ctx)) {
         return;
     }
 
-    if (!p25_grant_prepare_route(ctx, opts, state, ev, &decision, &grant)) {
+    if (!p25_grant_prepare_route(ctx, opts, state, ev, &decision, &eval_ctx, &grant)) {
         return;
     }
 
     // Skip if already tuned to same frequency AND same TG (avoid bounce on duplicate grants)
     // Different TG/call type should still trigger a new tune
-    if (p25_grant_handle_duplicate(ctx, opts, state, &grant.route, &decision, grant.freq, grant.target_id,
+    if (p25_grant_handle_duplicate(ctx, opts, state, &grant.route, &decision, grant.freq, grant.target_id, &eval_ctx,
                                    grant.now_m)) {
         p25_grant_store_policy_tg(state, ev, grant.slot, &decision);
         return;
@@ -1283,7 +1314,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     if (!p25_grant_try_tune_vc(ctx, ev, opts, state, grant.freq, grant.slot, &grant.ted_sps)) {
         return;
     }
-    p25_grant_store_vc_context(ctx, state, ev, grant.freq, grant.target_id, grant.now_m);
+    p25_grant_store_vc_context(ctx, state, ev, grant.freq, grant.target_id, &eval_ctx, grant.now_m);
     p25_grant_clear_slot_state(ctx);
     p25_grant_clear_replaced_policy_tg(state, grant.slot, grant.clear_policy_slot_only);
     p25_grant_store_policy_tg(state, ev, grant.slot, &decision);
@@ -1295,9 +1326,9 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     (void)dsd_tg_policy_note_active_call(state, &grant.route, &decision, grant.now_m);
     p25_sm_diagf(opts, state, ctx, "grant_accept",
                  "ch=0x%04X freq=%ld slot=%d target=%d ota_tg=%d src=%d needs_retune=%d "
-                 "prio=%d preempt=%d",
+                 "prio=%d preempt=%d data=%d",
                  ev->channel & 0xFFFF, grant.freq, grant.slot, grant.target_id, ev->tg, ev->src, grant.needs_retune,
-                 decision.priority, decision.preempt_requested);
+                 decision.priority, decision.preempt_requested, eval_ctx.data_call);
 
     set_state(ctx, opts, state, P25_SM_TUNED, "grant");
 }
@@ -1310,7 +1341,7 @@ p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, i
 
     p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, tg, src, svc_bits);
     dsd_tg_policy_decision decision;
-    if (grant_allowed(opts, state, &ev, &decision)) {
+    if (grant_allowed(opts, state, &ev, &decision, NULL)) {
         p25_sm_diagf(opts, state, NULL, "grant_policy_only", "ch=0x%04X tg=%d src=%d svc=0x%02X policy_tg=%u",
                      channel & 0xFFFF, tg, src, svc_bits & 0xFF, decision.target_id);
     }
@@ -1552,9 +1583,9 @@ p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
     }
 
     *out_tune_start_m = now_monotonic();
-    p25_sm_diagf(opts, state, ctx, "release_cc_attempt", "freq=%ld ch=0x%04X tg=%d force=%d tdma=%d",
+    p25_sm_diagf(opts, state, ctx, "release_cc_attempt", "freq=%ld ch=0x%04X tg=%d force=%d tdma=%d data=%d",
                  state ? ((state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq) : 0,
-                 ctx->vc_channel & 0xFFFF, ctx->vc_tg, had_force_release, ctx->vc_is_tdma);
+                 ctx->vc_channel & 0xFFFF, ctx->vc_tg, had_force_release, ctx->vc_is_tdma, ctx->vc_data_call);
     dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state);
     if (dsd_trunk_tune_result_is_ok(tune_result)) {
         p25_sm_diagf(opts, state, ctx, "release_cc_result", "result=%s tune_start_m=%.3f",
@@ -1578,6 +1609,7 @@ p25_release_clear_context(p25_sm_ctx_t* ctx) {
     ctx->vc_channel = 0;
     ctx->vc_tg = 0;
     ctx->vc_src = 0;
+    ctx->vc_data_call = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
     ctx->release_count++;
@@ -1617,6 +1649,11 @@ static void
 p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx || !state || ctx->vc_freq_hz <= 0 || ctx->t_voice_m > 0.0 || ctx->slots[0].voice_active
         || ctx->slots[1].voice_active) {
+        return;
+    }
+    if (ctx->vc_data_call) {
+        p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_backoff_skip", "reason=data-grant ch=0x%04X freq=%ld",
+                     ctx->vc_channel & 0xFFFF, ctx->vc_freq_hz);
         return;
     }
 
@@ -2295,7 +2332,7 @@ p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
     double dt_tune = now_m - ctx->t_tune_m;
     p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, dt_tune);
     if (dt_tune >= grant_timeout) {
-        do_release(ctx, opts, state, "grant-timeout", 1);
+        do_release(ctx, opts, state, "grant-timeout", ctx->vc_data_call ? 0 : 1);
     }
 }
 
