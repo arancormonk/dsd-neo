@@ -147,6 +147,25 @@ init_basic(dsd_opts* o, dsd_state* s) {
     p25_sm_init(o, s);
 }
 
+static void
+setup_tdma_iden(dsd_state* s, int id) {
+    s->p25_chan_iden = id;
+    s->p25_iden_tdma[id].base_freq = 851000000 / 5;
+    s->p25_iden_tdma[id].chan_type = 3;
+    s->p25_iden_tdma[id].chan_spac = 100;
+    s->p25_iden_tdma[id].trust = 2;
+    s->p25_iden_tdma[id].populated = 1;
+    s->p25_chan_tdma_explicit[id] = 2;
+}
+
+static void
+clear_decoder_vc_tune_state(dsd_opts* opts, dsd_state* state) {
+    opts->p25_is_tuned = 0;
+    opts->trunk_is_tuned = 0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+}
+
 int
 main(void) {
     p25_sm_event_t legacy_group_grant = {
@@ -756,8 +775,83 @@ main(void) {
     assert(ctx18.state == P25_SM_ON_CC);
     assert(g_result_tune_to_cc_calls == cc_calls_before_seeded_release_tick);
 
+    // 20) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
+    static dsd_opts o19a;
+    static dsd_state s19a;
+    DSD_MEMSET(&o19a, 0, sizeof(o19a));
+    DSD_MEMSET(&s19a, 0, sizeof(s19a));
+    o19a.p25_trunk = 1;
+    o19a.trunk_tune_group_calls = 1;
+    s19a.p25_cc_freq = 851000000;
+    setup_tdma_iden(&s19a, 2);
+    const int tdma_slot0_ch = (2 << 12) | 0x0000;
+    const int tdma_slot1_ch = (2 << 12) | 0x0001;
+    p25_sm_event_t same_tg_slot0 = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 3101, 4101, 0);
+    p25_sm_event_t moved_tg_slot1 = p25_sm_ev_group_grant(tdma_slot1_ch, 0, 3102, 4102, 0);
+    p25_sm_ctx_t ctx19a;
+    p25_sm_init_ctx(&ctx19a, &o19a, &s19a);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+
+    p25_sm_event(&ctx19a, &o19a, &s19a, &same_tg_slot0);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19a.state == P25_SM_TUNED);
+    assert(o19a.p25_is_tuned == 1);
+
+    clear_decoder_vc_tune_state(&o19a, &s19a);
+    p25_sm_event(&ctx19a, &o19a, &s19a, &same_tg_slot0);
+    assert(g_result_tune_to_freq_calls == 2);
+    assert(o19a.p25_is_tuned == 1);
+    assert(ctx19a.state == P25_SM_TUNED);
+
+    clear_decoder_vc_tune_state(&o19a, &s19a);
+    p25_sm_event(&ctx19a, &o19a, &s19a, &moved_tg_slot1);
+    assert(g_result_tune_to_freq_calls == 3);
+    assert(o19a.p25_is_tuned == 1);
+    assert(ctx19a.state == P25_SM_TUNED);
+    assert(ctx19a.slots[1].grant_active == 1);
+
+    // 21) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
+    static dsd_opts o19b;
+    static dsd_state s19b;
+    DSD_MEMSET(&o19b, 0, sizeof(o19b));
+    DSD_MEMSET(&s19b, 0, sizeof(s19b));
+    o19b.p25_trunk = 1;
+    o19b.p25_is_tuned = 1;
+    o19b.trunk_is_tuned = 1;
+    o19b.trunk_tune_enc_calls = 0;
+    s19b.p25_cc_freq = 851000000;
+    s19b.p25_vc_freq[0] = s19b.p25_vc_freq[1] = 851000000;
+    s19b.trunk_vc_freq[0] = s19b.trunk_vc_freq[1] = 851000000;
+    setup_tdma_iden(&s19b, 2);
+
+    p25_sm_ctx_t ctx19b;
+    p25_sm_init_ctx(&ctx19b, &o19b, &s19b);
+    ctx19b.state = P25_SM_TUNED;
+    ctx19b.vc_is_tdma = 1;
+    ctx19b.vc_freq_hz = 851000000;
+    ctx19b.vc_channel = tdma_slot0_ch;
+    ctx19b.vc_tg = 5101;
+    ctx19b.slots[1].grant_active = 1;
+    ctx19b.slots[1].freq_hz = 851000000;
+    ctx19b.slots[1].channel = tdma_slot1_ch;
+    ctx19b.slots[1].target_id = 5102;
+    ctx19b.slots[1].last_grant_m = dsd_time_now_monotonic_s();
+    s19b.p25_p2_audio_allowed[0] = 1;
+
+    p25_sm_event_t enc_slot0 = p25_sm_ev_enc(0, 0x84, 0x1234, 5101);
+    g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_event(&ctx19b, &o19b, &s19b, &enc_slot0);
+    assert(g_result_return_to_cc_calls == 0);
+    assert(o19b.p25_is_tuned == 1);
+    assert(ctx19b.state == P25_SM_TUNED);
+    assert(ctx19b.slots[1].grant_active == 1);
+    assert(s19b.p25_p2_audio_allowed[0] == 0);
+    assert(s19b.p25_p2_enc_lockout_muted[0] == 1);
+
 #ifdef USE_RADIO
-    // 20) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
+    // 22) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
     static dsd_opts o19;
     static dsd_state s19;
     DSD_MEMSET(&o19, 0, sizeof(o19));
@@ -805,7 +899,7 @@ main(void) {
     assert(ctx19.state == P25_SM_TUNED);
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 21) A successful CQPSK retry refreshes the TDMA grant timeout window.
+    // 23) A successful CQPSK retry refreshes the TDMA grant timeout window.
     static dsd_opts o20;
     static dsd_state s20;
     DSD_MEMSET(&o20, 0, sizeof(o20));

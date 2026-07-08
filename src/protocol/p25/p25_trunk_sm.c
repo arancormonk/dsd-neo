@@ -1200,6 +1200,20 @@ p25_grant_debug_log_tdma(const dsd_opts* opts, const dsd_state* state, const p25
 }
 
 static int
+p25_grant_decoder_tuned_to_freq(const dsd_opts* opts, const dsd_state* state, long freq) {
+    if (!opts || !state || freq <= 0) {
+        return 0;
+    }
+    if (opts->p25_is_tuned != 1 && opts->trunk_is_tuned != 1) {
+        return 0;
+    }
+    return (state->p25_vc_freq[0] == freq || state->p25_vc_freq[1] == freq || state->trunk_vc_freq[0] == freq
+            || state->trunk_vc_freq[1] == freq)
+               ? 1
+               : 0;
+}
+
+static int
 p25_grant_slot_duplicate_matches(const p25_sm_slot_ctx_t* slot_ctx, const dsd_tg_policy_call_route* route, long freq,
                                  int target_id, int data_call) {
     if (!slot_ctx || !route) {
@@ -1219,7 +1233,8 @@ p25_grant_handle_duplicate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
                            const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision, long freq,
                            int target_id, const p25_grant_eval_ctx_t* eval_ctx, double now_m) {
     int data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
-    if (!ctx || !route || ctx->state != P25_SM_TUNED || ctx->vc_freq_hz != freq) {
+    if (!ctx || !route || ctx->state != P25_SM_TUNED || ctx->vc_freq_hz != freq
+        || !p25_grant_decoder_tuned_to_freq(opts, state, freq)) {
         return 0;
     }
     if (route->slot >= 0 && route->slot <= 1) {
@@ -1386,13 +1401,13 @@ p25_grant_log_freq(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* c
 }
 
 static int
-p25_grant_should_clear_slot_only(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev, long freq,
-                                 int slot) {
+p25_grant_should_clear_slot_only(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state,
+                                 const p25_sm_event_t* ev, long freq, int slot) {
     if (!ctx || !state || !ev || slot < 0 || slot > 1) {
         return 0;
     }
     return (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz == freq && ctx->vc_is_tdma
-            && is_tdma_channel(state, ev->channel))
+            && p25_grant_decoder_tuned_to_freq(opts, state, freq) && is_tdma_channel(state, ev->channel))
                ? 1
                : 0;
 }
@@ -1419,7 +1434,7 @@ p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
         return 0;
     }
     out->needs_retune = (ctx->state == P25_SM_TUNED && ctx->vc_freq_hz != 0 && ctx->vc_freq_hz != out->freq) ? 1 : 0;
-    out->clear_policy_slot_only = p25_grant_should_clear_slot_only(ctx, state, ev, out->freq, out->slot);
+    out->clear_policy_slot_only = p25_grant_should_clear_slot_only(ctx, opts, state, ev, out->freq, out->slot);
     out->reused_carrier = out->clear_policy_slot_only;
     out->target_id = p25_grant_target_id(ev, decision);
     p25_grant_fill_route(&out->route, ev, out->freq, out->slot, out->needs_retune, out->target_id);
@@ -1460,7 +1475,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     if (!p25_grant_preempt_active_call_if_needed(ctx, opts, state, &grant.route, &decision, grant.now_m)) {
         return;
     }
-    grant.clear_policy_slot_only = p25_grant_should_clear_slot_only(ctx, state, ev, grant.freq, grant.slot);
+    grant.clear_policy_slot_only = p25_grant_should_clear_slot_only(ctx, opts, state, ev, grant.freq, grant.slot);
     grant.reused_carrier = grant.clear_policy_slot_only;
 
     p25_grant_seed_cc_before_vc_tune(ctx, opts, state, grant.now_m);
@@ -1681,6 +1696,17 @@ p25_enc_lockout_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) 
     state->p25_policy_tg[slot] = 0;
 }
 
+static int
+p25_enc_lockout_other_slot_active(const p25_sm_ctx_t* ctx, const dsd_state* state, int other) {
+    if (!ctx || !state || other < 0 || other > 1) {
+        return 0;
+    }
+    return (ctx->slots[other].voice_active || ctx->slots[other].grant_active || state->p25_p2_audio_allowed[other]
+            || (state->p25_p2_audio_ring_count[other] > 0))
+               ? 1
+               : 0;
+}
+
 static void
 handle_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
@@ -1774,8 +1800,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
 
     // Check if opposite slot is active - only release if both slots are quiet
     int other = slot ^ 1;
-    int other_active = ctx->slots[other].voice_active || state->p25_p2_audio_allowed[other]
-                       || (state->p25_p2_audio_ring_count[other] > 0);
+    int other_active = p25_enc_lockout_other_slot_active(ctx, state, other);
 
     if (!other_active) {
         do_release(ctx, opts, state, "enc-lockout", 0);
