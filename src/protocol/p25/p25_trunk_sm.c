@@ -1975,7 +1975,7 @@ p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
         if (p25_vc_has_observed_voice(ctx)) {
             return;
         }
-        if (ctx->vc_data_call) {
+        if (ctx->vc_data_call || p25_sm_has_pending_data_grant(ctx)) {
             p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_backoff_skip", "reason=data-grant ch=0x%04X freq=%ld",
                          ctx->vc_channel & 0xFFFF, ctx->vc_freq_hz);
             return;

@@ -12,6 +12,8 @@
  * - Multiple failed VC/slot pairs remain blocked concurrently instead of the
  *   newest failure replacing the previous one.
  * - Explicit data grants bypass stale failed-voice backoff on the same slot.
+ * - Remaining per-slot data grants keep a canceled same-carrier voice grant
+ *   from arming failed-voice fallback backoff.
  */
 
 #include <dsd-neo/core/dsd_time.h>
@@ -583,6 +585,71 @@ main(void) {
         rc |= expect_true("pending data timeout does not arm backoff", retune_backoff_empty(&pending_data_st));
 
         dsd_state_ext_free_all(&pending_data_st);
+    }
+
+    // 10b) If a data grant remains active on one TDMA slot after a later
+    // same-carrier voice grant on the other slot is canceled before PTT, the
+    // data-only timeout must not arm failed-voice fallback backoff for that
+    // canceled voice slot.
+    {
+        static dsd_opts data_after_cancel_opts;
+        static dsd_state data_after_cancel_st;
+        DSD_MEMSET(&data_after_cancel_opts, 0, sizeof data_after_cancel_opts);
+        DSD_MEMSET(&data_after_cancel_st, 0, sizeof data_after_cancel_st);
+        data_after_cancel_opts.p25_trunk = 1;
+        data_after_cancel_opts.trunk_tune_group_calls = 1;
+        data_after_cancel_opts.trunk_tune_data_calls = 1;
+        data_after_cancel_opts.trunk_hangtime = 0.2f;
+        data_after_cancel_opts.p25_grant_voice_to_s = 0.8;
+        data_after_cancel_opts.p25_retune_backoff_s = 2.0;
+        data_after_cancel_st.p25_cc_freq = 851000000;
+        data_after_cancel_st.p25_chan_iden = id;
+        data_after_cancel_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+        data_after_cancel_st.p25_chan_tdma_explicit[id] = 2;
+
+        p25_sm_ctx_t data_after_cancel_ctx;
+        p25_sm_init_ctx(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st);
+        g_last_tuned_vc = 0;
+        g_tune_to_freq_calls = 0;
+        g_return_to_cc_calls = 0;
+        p25_sm_event_t data_after_cancel_data = p25_sm_ev_group_data_grant(ch_slot1, 0, 3651, 4651, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t data_after_cancel_voice = p25_sm_ev_group_grant(ch_slot0, 0, 3652, 4652, 0);
+        p25_sm_event_t data_after_cancel_end = p25_sm_ev_end(0);
+
+        p25_sm_event(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st, &data_after_cancel_data);
+        rc |= expect_true("data-after-cancel data tuned", g_tune_to_freq_calls == 1
+                                                              && data_after_cancel_opts.p25_is_tuned == 1
+                                                              && data_after_cancel_ctx.slots[1].grant_active
+                                                              && data_after_cancel_ctx.slots[1].data_call);
+
+        p25_sm_event(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st, &data_after_cancel_voice);
+        rc |=
+            expect_true("data-after-cancel voice same-carrier",
+                        g_tune_to_freq_calls == 1 && data_after_cancel_ctx.vc_data_call == 0
+                            && data_after_cancel_ctx.slots[0].grant_active && !data_after_cancel_ctx.slots[0].data_call
+                            && data_after_cancel_ctx.slots[1].grant_active && data_after_cancel_ctx.slots[1].data_call);
+
+        p25_sm_event(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st, &data_after_cancel_end);
+        rc |= expect_true("data-after-cancel data remains", data_after_cancel_opts.p25_is_tuned == 1
+                                                                && g_return_to_cc_calls == 0
+                                                                && data_after_cancel_ctx.slots[0].grant_active == 0
+                                                                && data_after_cancel_ctx.slots[1].grant_active
+                                                                && data_after_cancel_ctx.slots[1].data_call);
+
+        data_after_cancel_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+        data_after_cancel_ctx.t_voice_m = 0.0;
+        p25_sm_tick_ctx(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st);
+        rc |= expect_true("data-after-cancel returned", data_after_cancel_opts.p25_is_tuned == 0
+                                                            && g_return_to_cc_calls == 1
+                                                            && data_after_cancel_ctx.state == P25_SM_ON_CC);
+        rc |= expect_true("data-after-cancel no fallback backoff", retune_backoff_empty(&data_after_cancel_st));
+
+        p25_sm_event(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st, &data_after_cancel_voice);
+        rc |= expect_true("data-after-cancel follow-up voice allowed", g_tune_to_freq_calls == 2
+                                                                           && data_after_cancel_opts.p25_is_tuned == 1
+                                                                           && data_after_cancel_ctx.vc_data_call == 0);
+
+        dsd_state_ext_free_all(&data_after_cancel_st);
     }
 
     // 11) A same-target data grant on the opposite TDMA slot must not clear an
