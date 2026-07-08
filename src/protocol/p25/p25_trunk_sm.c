@@ -972,7 +972,7 @@ p25_recent_end_source_matches(int ended_src, int grant_src) {
 }
 
 static void
-p25_recent_end_record(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, double now_m) {
+p25_recent_end_record(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, int slot, double now_m) {
     if (!ctx || !ctx->vc_is_tdma || ctx->vc_freq_hz <= 0 || ctx->vc_tg <= 0) {
         return;
     }
