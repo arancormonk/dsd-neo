@@ -42,6 +42,7 @@ static int g_flush_burst_l;
 static int g_flush_burst_r;
 static int g_flush_gate_l;
 static int g_flush_gate_r;
+static int g_flush_slot;
 static int g_flush_close_l_count;
 static int g_flush_close_r_count;
 static int g_ring_reset_count[2];
@@ -196,6 +197,31 @@ dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
 }
 
+void
+dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
+    (void)opts;
+    g_flush_count++;
+    g_flush_slot = slot;
+
+    if (!state || slot < 0 || slot > 1) {
+        return;
+    }
+
+    g_flush_burst_l = (int)state->dmrburstL;
+    g_flush_burst_r = (int)state->dmrburstR;
+    g_flush_gate_l = state->p25_p2_audio_allowed[0];
+    g_flush_gate_r = state->p25_p2_audio_allowed[1];
+    g_flush_close_l_count = g_close_l_count;
+    g_flush_close_r_count = g_close_r_count;
+
+    state->voice_counter[slot] = 0;
+    if (slot == 0) {
+        DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+    } else {
+        DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+    }
+}
+
 #include "../../../src/protocol/p25/phase2/p25p2_xcch.c"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -223,6 +249,7 @@ reset_stubs(void) {
     g_flush_burst_r = -1;
     g_flush_gate_l = -1;
     g_flush_gate_r = -1;
+    g_flush_slot = -1;
     g_flush_close_l_count = -1;
     g_flush_close_r_count = -1;
     DSD_MEMSET(g_ring_reset_count, 0, sizeof(g_ring_reset_count));
@@ -581,9 +608,13 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&opts, 0, sizeof(opts));
     state.currentslot = 0;
+    state.dmrburstL = 21;
     state.dmrburstR = 21;
+    state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
+    state.voice_counter[0] = 5;
     state.voice_counter[1] = 1;
+    state.s_l4[0][0] = 456;
     state.s_r4[0][0] = -123;
     opts.pulse_digi_rate_out = 8000;
     opts.mbe_out_fR = (FILE*)0x1;
@@ -593,13 +624,17 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch hangtime vpdu", g_vpdu_count, 1);
     rc |= expect_int("sacch hangtime vpdu type", g_vpdu_type, 1);
     rc |= expect_int("sacch hangtime flush", g_flush_count, 1);
+    rc |= expect_int("sacch hangtime flush slot", g_flush_slot, 1);
     rc |= expect_int("sacch hangtime flush before burst", g_flush_burst_r, 21);
     rc |= expect_int("sacch hangtime flush before close", g_flush_close_r_count, 0);
     rc |= expect_int("sacch hangtime flush sees gate", g_flush_gate_r, 1);
     rc |= expect_int("sacch hangtime burst right", (int)state.dmrburstR, 22);
     rc |= expect_int("sacch hangtime close right", g_close_r_count, 1);
     rc |= expect_int("sacch hangtime gate preserved", state.p25_p2_audio_allowed[1], 1);
+    rc |= expect_int("sacch hangtime other gate preserved", state.p25_p2_audio_allowed[0], 1);
+    rc |= expect_int("sacch hangtime other voice counter preserved", state.voice_counter[0], 5);
     rc |= expect_int("sacch hangtime voice counter reset", state.voice_counter[1], 0);
+    rc |= expect_int("sacch hangtime other sample preserved", state.s_l4[0][0], 456);
     rc |= expect_int("sacch hangtime sample cleared", state.s_r4[0][0], 0);
 
     return rc;
@@ -677,9 +712,13 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&opts, 0, sizeof(opts));
     state.currentslot = 1;
+    state.dmrburstL = 21;
     state.dmrburstR = 21;
+    state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
+    state.voice_counter[0] = 4;
     state.voice_counter[1] = 1;
+    state.s_l4[0][0] = -345;
     state.s_r4[0][0] = 234;
     opts.pulse_digi_rate_out = 8000;
     opts.mbe_out_fR = (FILE*)0x1;
@@ -689,13 +728,17 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch hangtime vpdu", g_vpdu_count, 1);
     rc |= expect_int("facch hangtime vpdu type", g_vpdu_type, 0);
     rc |= expect_int("facch hangtime flush", g_flush_count, 1);
+    rc |= expect_int("facch hangtime flush slot", g_flush_slot, 1);
     rc |= expect_int("facch hangtime flush before burst", g_flush_burst_r, 21);
     rc |= expect_int("facch hangtime flush before close", g_flush_close_r_count, 0);
     rc |= expect_int("facch hangtime flush sees gate", g_flush_gate_r, 1);
     rc |= expect_int("facch hangtime burst right", (int)state.dmrburstR, 22);
     rc |= expect_int("facch hangtime close right", g_close_r_count, 1);
     rc |= expect_int("facch hangtime gate preserved", state.p25_p2_audio_allowed[1], 1);
+    rc |= expect_int("facch hangtime other gate preserved", state.p25_p2_audio_allowed[0], 1);
+    rc |= expect_int("facch hangtime other voice counter preserved", state.voice_counter[0], 4);
     rc |= expect_int("facch hangtime voice counter reset", state.voice_counter[1], 0);
+    rc |= expect_int("facch hangtime other sample preserved", state.s_l4[0][0], -345);
     rc |= expect_int("facch hangtime sample cleared", state.s_r4[0][0], 0);
 
     return rc;

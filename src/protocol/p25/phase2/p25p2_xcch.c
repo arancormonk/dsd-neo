@@ -256,7 +256,7 @@ p25p2_xcch_close_slot_mbe_out(dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 static void
-p25p2_xcch_flush_partial_audio_on_hangtime(dsd_opts* opts, dsd_state* state) {
+p25p2_xcch_flush_partial_audio_on_hangtime(dsd_opts* opts, dsd_state* state, int slot) {
     int audio_allowed[2];
 
     if (!opts || !state) {
@@ -269,7 +269,7 @@ p25p2_xcch_flush_partial_audio_on_hangtime(dsd_opts* opts, dsd_state* state) {
     // Flush before MAC_HANGTIME changes burst 21 to 22; SS18 single-slot
     // duplication uses those active burst hints. Unlike release, hangtime stays
     // on the VC, so restore the existing audio gates after the flush.
-    dsd_p25p2_flush_partial_audio(opts, state);
+    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
 
     state->p25_p2_audio_allowed[0] = audio_allowed[0];
     state->p25_p2_audio_allowed[1] = audio_allowed[1];
@@ -277,7 +277,7 @@ p25p2_xcch_flush_partial_audio_on_hangtime(dsd_opts* opts, dsd_state* state) {
 
 static void
 p25p2_xcch_handle_mac_hangtime_slot(dsd_opts* opts, dsd_state* state, int slot) {
-    p25p2_xcch_flush_partial_audio_on_hangtime(opts, state);
+    p25p2_xcch_flush_partial_audio_on_hangtime(opts, state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 22);
     p25p2_xcch_close_slot_mbe_out(opts, state, slot);
 }

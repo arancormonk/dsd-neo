@@ -175,6 +175,8 @@ int dsd_dmr_apply_forced_algid(dsd_state* state);
 
 /** @brief Flush partially buffered P25p2 SS18 audio on call end/release. */
 void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state);
+/** @brief Flush partially buffered P25p2 SS18 audio for one slot while preserving the other slot. */
+void dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot);
 
 /** @brief Talkgroup/whitelist/TG-hold gating for mono mix (enc flags 0=unmuted,1=muted). */
 int dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in, int* enc_out);
