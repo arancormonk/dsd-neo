@@ -18,9 +18,58 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#define DSD_AUDIO_P25_PATCH_TTL_SECONDS 20
+
+static int
+dsd_audio_state_is_p25(const dsd_state* state) {
+    return (state && (DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype))) ? 1 : 0;
+}
+
+static int
+dsd_audio_p25_patch_member_active(const dsd_state* state, uint32_t ota_target, uint32_t policy_tg) {
+    if (!state || ota_target == 0U || ota_target > UINT16_MAX || policy_tg == 0U || policy_tg > UINT16_MAX
+        || policy_tg == ota_target) {
+        return 0;
+    }
+
+    time_t now = time(NULL);
+    for (int i = 0; i < state->p25_patch_count && i < 8; i++) {
+        if (!state->p25_patch_active[i] || state->p25_patch_sgid[i] != (uint16_t)ota_target) {
+            continue;
+        }
+        if (state->p25_patch_last_update[i] > 0
+            && (now - state->p25_patch_last_update[i]) > DSD_AUDIO_P25_PATCH_TTL_SECONDS) {
+            continue;
+        }
+        uint8_t count = state->p25_patch_wgid_count[i];
+        for (int k = 0; k < count && k < 8; k++) {
+            if (state->p25_patch_wgid[i][k] == (uint16_t)policy_tg) {
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int
+dsd_audio_p25_policy_tg_valid_for_slot(const dsd_state* state, int slot, uint32_t ota_target) {
+    if (!dsd_audio_state_is_p25(state) || slot < 0 || slot > 1) {
+        return 0;
+    }
+
+    int raw_target = (slot == 0) ? state->lasttg : state->lasttgR;
+    if (raw_target <= 0 || (uint32_t)raw_target != ota_target) {
+        return 0;
+    }
+
+    return dsd_audio_p25_patch_member_active(state, ota_target, state->p25_policy_tg[slot]);
+}
 
 static uint32_t
 dsd_audio_group_source_id(const dsd_state* state, unsigned long tg) {
@@ -28,10 +77,12 @@ dsd_audio_group_source_id(const dsd_state* state, unsigned long tg) {
     if (!state) {
         return 0;
     }
-    if (state->p25_policy_tg[0] == id && state->lasttg > 0) {
+    if (state->lasttg > 0 && state->p25_policy_tg[0] == id
+        && dsd_audio_p25_policy_tg_valid_for_slot(state, 0, (uint32_t)state->lasttg)) {
         return (uint32_t)state->lastsrc;
     }
-    if (state->p25_policy_tg[1] == id && state->lasttgR > 0) {
+    if (state->lasttgR > 0 && state->p25_policy_tg[1] == id
+        && dsd_audio_p25_policy_tg_valid_for_slot(state, 1, (uint32_t)state->lasttgR)) {
         return (uint32_t)state->lastsrcR;
     }
     if (state->lasttg >= 0 && (uint32_t)state->lasttg == id) {
@@ -43,17 +94,12 @@ dsd_audio_group_source_id(const dsd_state* state, unsigned long tg) {
     return 0;
 }
 
-static int
-dsd_audio_state_is_p25(const dsd_state* state) {
-    return (state && (DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype))) ? 1 : 0;
-}
-
 static uint32_t
 dsd_audio_p25_policy_target_for_slot(const dsd_state* state, int slot, uint32_t ota_target) {
-    if (!dsd_audio_state_is_p25(state) || slot < 0 || slot > 1) {
+    if (!dsd_audio_p25_policy_tg_valid_for_slot(state, slot, ota_target)) {
         return ota_target;
     }
-    return (state->p25_policy_tg[slot] != 0U) ? state->p25_policy_tg[slot] : ota_target;
+    return state->p25_policy_tg[slot];
 }
 
 static uint32_t
@@ -61,10 +107,12 @@ dsd_audio_p25_policy_target_for_group(const dsd_state* state, uint32_t ota_targe
     if (!dsd_audio_state_is_p25(state)) {
         return ota_target;
     }
-    if (state->lasttg >= 0 && (uint32_t)state->lasttg == ota_target && state->p25_policy_tg[0] != 0U) {
+    if (state->lasttg > 0 && (uint32_t)state->lasttg == ota_target
+        && dsd_audio_p25_policy_tg_valid_for_slot(state, 0, ota_target)) {
         return state->p25_policy_tg[0];
     }
-    if (state->lasttgR >= 0 && (uint32_t)state->lasttgR == ota_target && state->p25_policy_tg[1] != 0U) {
+    if (state->lasttgR > 0 && (uint32_t)state->lasttgR == ota_target
+        && dsd_audio_p25_policy_tg_valid_for_slot(state, 1, ota_target)) {
         return state->p25_policy_tg[1];
     }
     return ota_target;

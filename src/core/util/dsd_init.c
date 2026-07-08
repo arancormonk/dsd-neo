@@ -694,6 +694,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->p25_call_priority[0] = state->p25_call_priority[1] = 0;
     state->p25_call_is_packet[0] = state->p25_call_is_packet[1] = 0;
     state->p25_service_options_valid[0] = state->p25_service_options_valid[1] = 0;
+    state->p25_policy_tg[0] = state->p25_policy_tg[1] = 0;
 
     // Initialize P25 Phase 1 metrics counters (also reset on retune)
     state->p25_p1_fec_ok = 0;
