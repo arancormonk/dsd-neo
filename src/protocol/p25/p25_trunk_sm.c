@@ -654,9 +654,14 @@ p25_grant_apply_clear_override(const dsd_opts* opts, const dsd_state* state, p25
     }
 }
 
+static int
+p25_grant_uses_voice_enc_cache(const p25_grant_eval_ctx_t* eval_ctx) {
+    return (eval_ctx && !eval_ctx->data_call) ? 1 : 0;
+}
+
 static void
 p25_grant_clear_transient_cache_if_clear(dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx) {
-    if (!state || !eval_ctx || eval_ctx->is_indiv || eval_ctx->tg <= 0) {
+    if (!state || !eval_ctx || !p25_grant_uses_voice_enc_cache(eval_ctx) || eval_ctx->is_indiv || eval_ctx->tg <= 0) {
         return;
     }
     if ((eval_ctx->svc_valid && !eval_ctx->encrypted_call) || eval_ctx->enc_override_clear) {
@@ -675,6 +680,9 @@ p25_grant_patch_clear_key(const dsd_state* state, const p25_grant_eval_ctx_t* ev
 static int
 p25_grant_transient_enc_cache_blocks(dsd_opts* opts, dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx) {
     if (!opts || !state || !eval_ctx || eval_ctx->is_indiv || eval_ctx->tg <= 0 || opts->trunk_tune_enc_calls != 0) {
+        return 0;
+    }
+    if (!p25_grant_uses_voice_enc_cache(eval_ctx)) {
         return 0;
     }
     if (eval_ctx->svc_valid) {
@@ -788,7 +796,8 @@ p25_grant_handle_policy_block(dsd_opts* opts, dsd_state* state, const p25_grant_
                  eval_ctx->svc, eval_ctx->data_call, eval_ctx->encrypted_call, eval_ctx->is_indiv,
                  decision->block_reasons);
     sm_log(opts, state, grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons));
-    if (!eval_ctx->is_indiv && eval_ctx->tg > 0 && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
+    if (p25_grant_uses_voice_enc_cache(eval_ctx) && !eval_ctx->is_indiv && eval_ctx->tg > 0
+        && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
         p25_emit_enc_lockout_once(opts, state, 0, eval_ctx->tg, eval_ctx->svc);
     }
     return 1;

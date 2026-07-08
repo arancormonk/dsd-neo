@@ -318,6 +318,32 @@ main(void) {
         before = data_st.p25_sm_tune_count;
         p25_sm_on_group_data_grant(&data_opts, &data_st, ch, /*svc*/ 0x40, /*tg*/ 3104, /*src*/ 4104);
         rc |= expect_true("group data raw enc bit blocks when enc disabled", data_st.p25_sm_tune_count == before);
+        rc |=
+            expect_true("group data raw enc bit does not arm voice enc cache", enc_tg_cache_is_absent(&data_st, 3104U));
+        p25_sm_on_group_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 3104, /*src*/ 4105);
+        rc |= expect_true("svc-less voice grant not skipped after encrypted data grant",
+                          data_st.p25_sm_tune_count == before + 1);
+        p25_sm_on_release(&data_opts, &data_st);
+
+        p25_emit_enc_lockout_once(&data_opts, &data_st, 0, 3105, /*svc*/ 0x40);
+        rc |= expect_true("seed transient voice enc cache", !enc_tg_cache_is_absent(&data_st, 3105U));
+        before = data_st.p25_sm_tune_count;
+        data_opts.p25_is_tuned = 0;
+        p25_sm_on_group_data_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 3105, /*src*/ 4106);
+        rc |= expect_true("svc-less group data grant ignores voice enc cache", data_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("svc-less group data grant preserves voice enc cache",
+                          !enc_tg_cache_is_absent(&data_st, 3105U));
+        p25_sm_on_release(&data_opts, &data_st);
+
+        data_opts.trunk_tune_data_calls = 0;
+        data_opts.p25_is_tuned = 0;
+        before = data_st.p25_sm_tune_count;
+        p25_sm_on_group_data_grant(&data_opts, &data_st, ch, /*svc*/ 0x00, /*tg*/ 3105, /*src*/ 4107);
+        rc |= expect_true("clear group data grant blocked when data disabled", data_st.p25_sm_tune_count == before);
+        rc |= expect_true("clear group data grant preserves voice enc cache", !enc_tg_cache_is_absent(&data_st, 3105U));
+        p25_sm_on_group_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 3105, /*src*/ 4108);
+        rc |= expect_true("svc-less voice grant still skipped after clear data grant",
+                          data_st.p25_sm_tune_count == before);
         p25_sm_init(&opts, &st);
     }
 
