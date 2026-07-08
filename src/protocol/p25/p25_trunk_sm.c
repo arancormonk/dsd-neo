@@ -994,7 +994,7 @@ p25_grant_clear_moved_target_slots(p25_sm_ctx_t* ctx, dsd_state* state, int keep
         return;
     }
     for (int s = 0; s < 2; s++) {
-        p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
+        const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[s];
         if (s == keep_slot || !slot_ctx->grant_active || slot_ctx->target_id != target_id) {
             continue;
         }
@@ -1518,7 +1518,10 @@ p25_voice_end_can_release_explicit(const p25_sm_ctx_t* ctx, int other) {
     if (!ctx->vc_is_tdma) {
         return 1;
     }
-    if (other >= 0 && other <= 1 && ctx->slots[other].grant_active) {
+    if (other < 0 || other > 1) {
+        return 1;
+    }
+    if (ctx->slots[other].grant_active) {
         return 0;
     }
     if (ctx->slots[other].last_active_m <= 0.0) {
