@@ -1643,6 +1643,16 @@ p25_sm_pending_voice_grant_timeout_start_m(const p25_sm_ctx_t* ctx, const dsd_st
 }
 
 static void
+p25_enc_lockout_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
+    if (!ctx || !state || slot < 0 || slot > 1) {
+        return;
+    }
+    ctx->slots[slot].grant_active = 0;
+    (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
+    state->p25_policy_tg[slot] = 0;
+}
+
+static void
 handle_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
         return;
@@ -1716,11 +1726,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     // Clear voice activity indicator to prevent audio routing logic from
     // treating this locked-out slot as having active voice
     ctx->slots[slot].voice_active = 0;
-    ctx->slots[slot].grant_active = 0;
-    (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
-    if (ctx->vc_is_tdma) {
-        state->p25_policy_tg[slot] = 0;
-    }
+    p25_enc_lockout_clear_slot_grant(ctx, state, slot);
     if (slot == 0) {
         state->dmrburstL = 0;
         // Reset voice counters to prevent stale state from affecting later calls
