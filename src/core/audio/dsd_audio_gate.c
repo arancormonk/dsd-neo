@@ -115,6 +115,26 @@ dsd_audio_group_source_id(const dsd_state* state, unsigned long tg) {
 }
 
 static uint32_t
+dsd_audio_group_source_id_for_slot(const dsd_state* state, int slot, uint32_t ota_target, uint32_t policy_tg) {
+    if (!state || slot < 0 || slot > 1) {
+        return dsd_audio_group_source_id(state, policy_tg);
+    }
+
+    int raw_target = (slot == 0) ? state->lasttg : state->lasttgR;
+    int raw_source = (slot == 0) ? state->lastsrc : state->lastsrcR;
+    if (raw_source <= 0) {
+        return 0;
+    }
+    if (raw_target >= 0 && (uint32_t)raw_target == ota_target) {
+        return (uint32_t)raw_source;
+    }
+    if (raw_target >= 0 && (uint32_t)raw_target == policy_tg) {
+        return (uint32_t)raw_source;
+    }
+    return dsd_audio_group_source_id(state, policy_tg);
+}
+
+static uint32_t
 dsd_audio_p25_policy_target_for_slot(const dsd_state* state, int slot, uint32_t ota_target) {
     if (!dsd_audio_p25_policy_tg_valid_for_slot(state, slot, ota_target)) {
         return ota_target;
@@ -316,9 +336,12 @@ dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int
     return 0;
 }
 
-int
-dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in, int* enc_out) {
+static int
+dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, unsigned long tg, int enc_in,
+                          int* enc_out) {
     dsd_tg_policy_decision decision;
+    uint32_t ota_tg = (uint32_t)tg;
+    uint32_t policy_tg = 0;
     uint32_t source_id = 0;
 
     if (!opts || !state || !enc_out) {
@@ -326,8 +349,13 @@ dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned
     }
 
     int enc = (enc_in != 0) ? 1 : 0;
-    uint32_t policy_tg = dsd_audio_p25_policy_target_for_group(state, (uint32_t)tg);
-    source_id = dsd_audio_group_source_id(state, policy_tg);
+    if (slot >= 0 && slot <= 1) {
+        policy_tg = dsd_audio_p25_policy_target_for_slot(state, slot, ota_tg);
+        source_id = dsd_audio_group_source_id_for_slot(state, slot, ota_tg, policy_tg);
+    } else {
+        policy_tg = dsd_audio_p25_policy_target_for_group(state, ota_tg);
+        source_id = dsd_audio_group_source_id(state, policy_tg);
+    }
 
     if (dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY,
                                           &decision)
@@ -344,14 +372,19 @@ dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned
 }
 
 int
+dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in, int* enc_out) {
+    return dsd_audio_group_gate_slot(opts, state, -1, tg, enc_in, enc_out);
+}
+
+int
 dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned long tgL, unsigned long tgR,
                           int encL_in, int encR_in, int* encL_out, int* encR_out) {
     if (!encL_out || !encR_out) {
         return -1;
     }
     int rc = 0;
-    rc |= dsd_audio_group_gate_mono(opts, state, tgL, encL_in, encL_out);
-    rc |= dsd_audio_group_gate_mono(opts, state, tgR, encR_in, encR_out);
+    rc |= dsd_audio_group_gate_slot(opts, state, 0, tgL, encL_in, encL_out);
+    rc |= dsd_audio_group_gate_slot(opts, state, 1, tgR, encR_in, encR_out);
     return rc;
 }
 

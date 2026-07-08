@@ -388,6 +388,34 @@ main(void) {
         rc |= expect_eq("case10b-rec-allow", allow, 0);
     }
 
+    // Case 10c: Dual-slot P25 SG calls must apply each slot's patched policy TG independently.
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(st);
+    opts->trunk_use_allow_list = 1;
+    rc |= expect_eq("case10c-seed-right-member", seed_policy_group(st, 9602U, "A", "RIGHT-PATCH-MEMBER"), 0);
+    st->synctype = DSD_SYNC_P25P2_POS;
+    st->lasttg = 9600;
+    st->lasttgR = 9600;
+    st->lastsrc = 777003;
+    st->lastsrcR = 777004;
+    st->p25_policy_tg[0] = 9601U;
+    st->p25_policy_tg[1] = 9602U;
+    st->p25_patch_count = 1;
+    st->p25_patch_sgid[0] = 9600U;
+    st->p25_patch_is_patch[0] = 1U;
+    st->p25_patch_active[0] = 1U;
+    st->p25_patch_last_update[0] = time(NULL);
+    st->p25_patch_wgid_count[0] = 2U;
+    st->p25_patch_wgid[0][0] = 9601U;
+    st->p25_patch_wgid[0][1] = 9602U;
+    {
+        int outL = -1;
+        int outR = -1;
+        rc |= expect_eq("case10c-ret", dsd_audio_group_gate_dual(opts, st, 9600UL, 9600UL, 0, 0, &outL, &outR), 0);
+        rc |= expect_eq("case10c-outL", outL, 1);
+        rc |= expect_eq("case10c-outR", outR, 0);
+    }
+
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");
     }
