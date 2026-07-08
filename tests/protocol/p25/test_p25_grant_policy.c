@@ -407,10 +407,42 @@ main(void) {
         p25_patch_add_wgid(&dual_st, 1601, 1602);
 
         p25_sm_on_group_grant(&dual_opts, &dual_st, 0x100B, /*svc*/ 0x00, /*tg*/ 1601, /*src*/ 2601);
+        p25_sm_ctx_t* dual_ctx = p25_sm_get_ctx();
+        unsigned dual_tunes_after_slot1 = dual_st.p25_sm_tune_count;
         rc |= expect_true("dual slot1 policy tg stored", dual_st.p25_policy_tg[1] == 1602U);
+        rc |= expect_true("dual slot1 grant context",
+                          dual_ctx->slots[1].grant_active && dual_ctx->slots[1].target_id == 1602);
+        dual_ctx->slots[1].voice_active = 1;
+        dual_ctx->slots[1].last_active_m = 1.0;
+        dual_st.p25_p2_audio_allowed[1] = 1;
+
         p25_sm_on_group_grant(&dual_opts, &dual_st, 0x100A, /*svc*/ 0x00, /*tg*/ 1501, /*src*/ 2600);
+        rc |= expect_true("dual slot0 same-carrier no retune", dual_st.p25_sm_tune_count == dual_tunes_after_slot1);
+        rc |= expect_true("dual slot0 same-carrier active slot", dual_st.p25_p2_active_slot == 0);
         rc |= expect_true("dual slot0 policy tg stored", dual_st.p25_policy_tg[0] == 1502U);
         rc |= expect_true("dual slot1 policy tg preserved", dual_st.p25_policy_tg[1] == 1602U);
+        rc |= expect_true("dual slot1 active preserved",
+                          dual_ctx->slots[1].voice_active == 1 && dual_ctx->slots[1].target_id == 1602);
+        rc |= expect_true("dual slot0 grant context",
+                          dual_ctx->slots[0].grant_active && dual_ctx->slots[0].target_id == 1502);
+
+        rc |= expect_true("seed same-slot replacement", seed_exact(&dual_st, 1701, "A", "SLOT0-REPL", 0, 0) == 0);
+        p25_sm_on_group_grant(&dual_opts, &dual_st, 0x100A, /*svc*/ 0x00, /*tg*/ 1701, /*src*/ 2701);
+        rc |= expect_true("dual same-slot replacement no retune", dual_st.p25_sm_tune_count == dual_tunes_after_slot1);
+        rc |= expect_true("dual same-slot replacement target",
+                          dual_ctx->slots[0].grant_active && dual_ctx->slots[0].target_id == 1701);
+        rc |= expect_true("dual same-slot preserves other slot",
+                          dual_ctx->slots[1].voice_active == 1 && dual_ctx->slots[1].target_id == 1602);
+
+        dual_ctx->slots[1].voice_active = 0;
+        dual_ctx->slots[1].last_active_m = 0.0;
+        dual_st.p25_p2_audio_allowed[1] = 0;
+        p25_sm_on_group_grant(&dual_opts, &dual_st, 0x100B, /*svc*/ 0x00, /*tg*/ 1701, /*src*/ 2702);
+        rc |= expect_true("dual moved target no retune", dual_st.p25_sm_tune_count == dual_tunes_after_slot1);
+        rc |= expect_true("dual moved target active slot", dual_st.p25_p2_active_slot == 1);
+        rc |= expect_true("dual moved target clears old slot", dual_ctx->slots[0].grant_active == 0);
+        rc |= expect_true("dual moved target stores new slot",
+                          dual_ctx->slots[1].grant_active && dual_ctx->slots[1].target_id == 1701);
     }
 
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
