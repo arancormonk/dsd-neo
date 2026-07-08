@@ -283,6 +283,11 @@ tsbk_u24(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK], int offset) {
 }
 
 static int
+tsbk_channel_is_present(uint16_t channel) {
+    return channel != 0xFFFFU;
+}
+
+static int
 tsbk_can_tune_data_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
         return 0;
@@ -300,10 +305,10 @@ tsbk_handle_individual_data_channel_grant(dsd_opts* opts, dsd_state* state,
     long int freq = 0;
     DSD_FPRINTF(stderr, "\n Individual Data Channel Grant - Obsolete");
     DSD_FPRINTF(stderr, "\n  CHAN [%04X] Target [%d] Source [%d]", channel, target, source);
-    if (channel != 0) {
+    if (tsbk_channel_is_present(channel)) {
         freq = process_channel_to_freq(opts, state, channel);
     }
-    if (opts && state && opts->p25_trunk == 1 && channel != 0 && freq != 0) {
+    if (opts && state && opts->p25_trunk == 1 && tsbk_channel_is_present(channel) && freq != 0) {
         dsd_tg_policy_decision decision;
         if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 1,
                                                 DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
@@ -329,10 +334,10 @@ tsbk_handle_group_data_channel_grant(dsd_opts* opts, dsd_state* state, const uin
     DSD_FPRINTF(stderr, "\n Group Data Channel Grant - Obsolete");
     DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN [%04X] Group [%d][%04X] Source [%d]", svc_bits, channel, group, group,
                 src);
-    if (channel != 0) {
+    if (tsbk_channel_is_present(channel)) {
         freq = process_channel_to_freq(opts, state, channel);
     }
-    if (channel != 0 && tsbk_can_tune_data_grant(opts, state, freq)) {
+    if (tsbk_channel_is_present(channel) && tsbk_can_tune_data_grant(opts, state, freq)) {
         p25_sm_on_group_data_grant(opts, state, channel, svc_bits, group, src);
     }
     return 1;

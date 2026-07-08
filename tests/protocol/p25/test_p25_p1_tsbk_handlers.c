@@ -1222,6 +1222,69 @@ test_standard_osp_data_grants_require_control_channel(void) {
 }
 
 static int
+test_standard_osp_data_grants_allow_channel_zero(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
+    char out[2048];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.p25_trunk = 1;
+    opts.trunk_tune_private_calls = 1;
+    opts.trunk_tune_data_calls = 1;
+    opts.trunk_tune_enc_calls = 1;
+    state.p25_cc_freq = 851000000;
+
+    tsbk[0] = 0x10;
+    tsbk[4] = 0x01;
+    tsbk[5] = 0x02;
+    tsbk[6] = 0x03;
+    tsbk[7] = 0x04;
+    tsbk[8] = 0x05;
+    tsbk[9] = 0x06;
+    reset_calls();
+    g_channel_freq = 851012500;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp individual data channel zero label", out, "Individual Data Channel Grant - Obsolete");
+    rc |= expect_contains("osp individual data channel zero field", out, "CHAN [0000]");
+    rc |= expect_int("osp individual data channel zero resolves channel", g_process_channel_count, 1);
+    rc |= expect_int("osp individual data channel zero lookup value", g_last_process_channel, 0);
+    rc |= expect_int("osp individual data channel zero callback", g_indiv_data_grant_count, 1);
+    rc |= expect_int("osp individual data channel zero callback channel", g_last_indiv_data_grant_channel, 0);
+    rc |= expect_int("osp individual data channel zero dst", g_last_indiv_data_grant_dst, 0x010203);
+    rc |= expect_int("osp individual data channel zero src", g_last_indiv_data_grant_src, 0x040506);
+
+    DSD_MEMSET(tsbk, 0, sizeof(tsbk));
+    tsbk[0] = 0x11;
+    tsbk[2] = 0x90;
+    tsbk[5] = 0x12;
+    tsbk[6] = 0x34;
+    tsbk[7] = 0x01;
+    tsbk[8] = 0x23;
+    tsbk[9] = 0x45;
+    reset_calls();
+    g_channel_freq = 851012500;
+    if (capture_standard_osp_data_output(&opts, &state, tsbk, out, sizeof(out)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("osp group data channel zero label", out, "Group Data Channel Grant - Obsolete");
+    rc |= expect_contains("osp group data channel zero field", out, "CHAN [0000]");
+    rc |= expect_int("osp group data channel zero resolves channel", g_process_channel_count, 1);
+    rc |= expect_int("osp group data channel zero lookup value", g_last_process_channel, 0);
+    rc |= expect_int("osp group data channel zero callback", g_group_data_grant_count, 1);
+    rc |= expect_int("osp group data channel zero callback channel", g_last_group_data_grant_channel, 0);
+    rc |= expect_int("osp group data channel zero svc", g_last_group_data_grant_svc, 0x90);
+    rc |= expect_int("osp group data channel zero tg", g_last_group_data_grant_tg, 0x1234);
+    rc |= expect_int("osp group data channel zero src", g_last_group_data_grant_src, 0x012345);
+
+    return rc;
+}
+
+static int
 test_standard_osp_individual_data_allowlist_blocks_unknown(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1719,6 +1782,7 @@ main(void) {
     rc |= test_standard_isp_metadata_logging_and_no_retune();
     rc |= test_standard_osp_data_channel_metadata_and_dispatch();
     rc |= test_standard_osp_data_grants_require_control_channel();
+    rc |= test_standard_osp_data_grants_allow_channel_zero();
     rc |= test_standard_osp_individual_data_allowlist_blocks_unknown();
     rc |= test_mfid90_regroup_add_delete();
     rc |= test_mfid_a4_patch_and_simulselect_paths();
