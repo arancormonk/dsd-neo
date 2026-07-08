@@ -225,6 +225,18 @@ p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) 
     return state->p25_cc_freq != 0;
 }
 
+static void
+p25p1_pdu_dispatch_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc, int group, int source,
+                               long int freq) {
+    // The trunk state machine owns group-grant policy so patched supergroup
+    // grants can be evaluated against their member talkgroups.
+    if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
+        p25_sm_on_group_grant(opts, state, channel, svc, group, source);
+    } else {
+        p25_sm_apply_group_grant_policy(opts, state, channel, svc, group, source);
+    }
+}
+
 static void DSD_ATTR_USED
 p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                 const p25p1_mbt_fields* fields) {
@@ -465,11 +477,7 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
-    if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
-        // The trunk state machine owns group-grant policy so patched
-        // supergroup grants can be evaluated against their member talkgroups.
-        p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
-    }
+    p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc, group, (int)source, freq1);
 }
 
 static void DSD_ATTR_USED
@@ -773,11 +781,7 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
-    if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
-        // The trunk state machine owns group-grant policy so patched
-        // supergroup grants can be evaluated against their member talkgroups.
-        p25_sm_on_group_grant(opts, state, channelt, svc, group, (int)source);
-    }
+    p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc, group, (int)source, freq1);
 }
 
 static void DSD_ATTR_USED

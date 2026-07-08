@@ -265,6 +265,16 @@ p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bit
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    (void)channel;
+    (void)src;
+    if (opts && state && opts->p25_trunk == 1 && opts->trunk_tune_enc_calls == 0 && (svc_bits & 0x40) && tg > 0) {
+        p25_emit_enc_lockout_once(opts, state, 0, tg, svc_bits);
+    }
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
     (void)channel;
     (void)svc_bits;

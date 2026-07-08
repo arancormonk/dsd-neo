@@ -381,6 +381,22 @@ void p25_sm_init(dsd_opts* opts, dsd_state* state);
 void p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
 
 /**
+ * @brief Apply group grant policy side effects without attempting route/tune.
+ *
+ * Use when a decoder has a valid group grant but cannot yet resolve or follow
+ * its channel. This preserves encrypted lockout/cache and clear-key regroup
+ * policy behavior until a tunable grant arrives.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param channel Voice channel number.
+ * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
+ * @param tg Talkgroup.
+ * @param src Source RID.
+ */
+void p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
+
+/**
  * @brief Handle an individual (unit-to-unit/telephone) voice channel grant.
  *
  * @param opts Decoder options.

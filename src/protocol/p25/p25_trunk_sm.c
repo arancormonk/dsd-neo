@@ -1302,6 +1302,20 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     set_state(ctx, opts, state, P25_SM_TUNED, "grant");
 }
 
+void
+p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    if (!opts || !state || opts->p25_trunk != 1) {
+        return;
+    }
+
+    p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, tg, src, svc_bits);
+    dsd_tg_policy_decision decision;
+    if (grant_allowed(opts, state, &ev, &decision)) {
+        p25_sm_diagf(opts, state, NULL, "grant_policy_only", "ch=0x%04X tg=%d src=%d svc=0x%02X policy_tg=%u",
+                     channel & 0xFFFF, tg, src, svc_bits & 0xFF, decision.target_id);
+    }
+}
+
 // Helper to check if slot has decryption capability
 static int
 slot_can_decrypt(const dsd_state* state, int slot, int algid) {
