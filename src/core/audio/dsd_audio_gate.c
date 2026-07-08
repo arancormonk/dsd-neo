@@ -16,7 +16,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
