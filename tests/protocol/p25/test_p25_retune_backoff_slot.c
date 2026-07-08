@@ -18,6 +18,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
@@ -137,6 +139,31 @@ retune_backoff_empty(const dsd_state* state) {
     return 1;
 }
 
+static int
+retune_backoff_history_has_slot(const dsd_state* state, long freq, int slot) {
+    if (!state || freq <= 0) {
+        return 0;
+    }
+    for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
+        if (state->p25_retune_block_history_freq[i] == freq && state->p25_retune_block_history_slot[i] == slot
+            && state->p25_retune_block_history_until[i] > time(NULL)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+seed_exact(dsd_state* st, uint32_t id, const char* mode, const char* name, int priority, int preempt) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return 1;
+    }
+    row.priority = priority;
+    row.preempt = preempt ? 1u : 0u;
+    return dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+}
+
 int
 main(void) {
     int rc = 0;
@@ -209,6 +236,60 @@ main(void) {
     rc |= expect_true("first failed slot still blocked", g_tune_to_freq_calls == 2 && opts.p25_is_tuned == 0);
     p25_sm_event(&ctx, &opts, &st, &ev_slot0);
     rc |= expect_true("second failed slot blocked", g_tune_to_freq_calls == 2 && opts.p25_is_tuned == 0);
+
+    // 5b) Channel 0 is a valid IDEN 0 TDMA slot. When both slots on the same
+    // RF fail together, channel 0/slot 0 must remain in the per-slot backoff.
+    {
+        static dsd_opts zero_opts;
+        static dsd_state zero_st;
+        DSD_MEMSET(&zero_opts, 0, sizeof zero_opts);
+        DSD_MEMSET(&zero_st, 0, sizeof zero_st);
+        zero_opts.p25_trunk = 1;
+        zero_opts.trunk_tune_group_calls = 1;
+        zero_opts.trunk_hangtime = 0.2f;
+        zero_opts.p25_grant_voice_to_s = 0.5;
+        zero_opts.p25_retune_backoff_s = 2.0;
+        zero_st.p25_cc_freq = 851000000;
+        zero_st.p25_chan_iden = 0;
+        zero_st.p25_iden_tdma[0].base_freq = 851000000 / 5;
+        zero_st.p25_iden_tdma[0].chan_type = 3;
+        zero_st.p25_iden_tdma[0].chan_spac = 100;
+        zero_st.p25_iden_tdma[0].trust = 2;
+        zero_st.p25_iden_tdma[0].populated = 1;
+        zero_st.p25_chan_tdma_explicit[0] = 2;
+
+        p25_sm_ctx_t zero_ctx;
+        p25_sm_init_ctx(&zero_ctx, &zero_opts, &zero_st);
+        g_last_tuned_vc = 0;
+        g_tune_to_freq_calls = 0;
+        g_return_to_cc_calls = 0;
+
+        p25_sm_event_t zero_ev_slot1 = p25_sm_ev_group_grant(0x0001, 0, 3001, 4001, 0);
+        p25_sm_event_t zero_ev_slot0 = p25_sm_ev_group_grant(0x0000, 0, 3000, 4000, 0);
+        p25_sm_event(&zero_ctx, &zero_opts, &zero_st, &zero_ev_slot1);
+        rc |= expect_true("zero channel initial tune", g_tune_to_freq_calls == 1 && zero_opts.p25_is_tuned == 1);
+        p25_sm_event(&zero_ctx, &zero_opts, &zero_st, &zero_ev_slot0);
+        rc |= expect_true("zero channel same-carrier no retune", g_tune_to_freq_calls == 1);
+        rc |= expect_true("zero channel both slots active",
+                          zero_ctx.slots[0].grant_active && zero_ctx.slots[1].grant_active);
+
+        zero_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+        zero_ctx.t_voice_m = 0.0;
+        p25_sm_tick_ctx(&zero_ctx, &zero_opts, &zero_st);
+        rc |= expect_true("zero channel returned",
+                          zero_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && zero_ctx.state == P25_SM_ON_CC);
+        rc |= expect_true("zero channel slot0 backoff remembered",
+                          retune_backoff_history_has_slot(&zero_st, g_last_tuned_vc, 0));
+        rc |= expect_true("zero channel slot1 backoff remembered",
+                          retune_backoff_history_has_slot(&zero_st, g_last_tuned_vc, 1));
+
+        p25_sm_event(&zero_ctx, &zero_opts, &zero_st, &zero_ev_slot0);
+        rc |= expect_true("zero channel slot0 blocked", g_tune_to_freq_calls == 1 && zero_opts.p25_is_tuned == 0);
+        p25_sm_event(&zero_ctx, &zero_opts, &zero_st, &zero_ev_slot1);
+        rc |= expect_true("zero channel slot1 blocked", g_tune_to_freq_calls == 1 && zero_opts.p25_is_tuned == 0);
+
+        dsd_state_ext_free_all(&zero_st);
+    }
 
     // 6) A decoder/frame-sync forced release before grant timeout still records
     // the failed VC because no voice was observed.
@@ -405,6 +486,57 @@ main(void) {
         dsd_state_ext_free_all(&transient_st);
     }
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    // 10) Same-carrier preemption releases to the CC first. The replacement
+    // grant must retune the VC instead of reusing a carrier that is no longer tuned.
+    {
+        static dsd_opts preempt_opts;
+        static dsd_state preempt_st;
+        DSD_MEMSET(&preempt_opts, 0, sizeof preempt_opts);
+        DSD_MEMSET(&preempt_st, 0, sizeof preempt_st);
+        preempt_opts.p25_trunk = 1;
+        preempt_opts.trunk_tune_group_calls = 1;
+        preempt_opts.trunk_hangtime = 0.2f;
+        preempt_opts.p25_retune_backoff_s = 2.0;
+        preempt_st.p25_cc_freq = 851000000;
+        preempt_st.p25_chan_iden = id;
+        preempt_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+        preempt_st.p25_chan_tdma_explicit[id] = 2;
+
+        rc |= expect_true("seed preempt active", seed_exact(&preempt_st, 4001, "A", "PREEMPT-ACTIVE", 10, 0) == 0);
+        rc |=
+            expect_true("seed preempt candidate", seed_exact(&preempt_st, 4002, "A", "PREEMPT-CANDIDATE", 90, 1) == 0);
+        (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
+        (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
+
+        p25_sm_ctx_t preempt_ctx;
+        p25_sm_init_ctx(&preempt_ctx, &preempt_opts, &preempt_st);
+        g_last_tuned_vc = 0;
+        g_tune_to_freq_calls = 0;
+        g_return_to_cc_calls = 0;
+        p25_sm_event_t preempt_active = p25_sm_ev_group_grant(ch_slot0, 0, 4001, 5001, 0);
+        p25_sm_event_t preempt_candidate = p25_sm_ev_group_grant(ch_slot0, 0, 4002, 5002, 0);
+
+        p25_sm_event(&preempt_ctx, &preempt_opts, &preempt_st, &preempt_active);
+        rc |= expect_true("preempt active tuned", g_tune_to_freq_calls == 1 && preempt_opts.p25_is_tuned == 1
+                                                      && preempt_ctx.state == P25_SM_TUNED);
+        preempt_ctx.slots[0].voice_active = 1;
+        preempt_ctx.slots[0].last_active_m = dsd_time_now_monotonic_s();
+        preempt_ctx.t_voice_m = preempt_ctx.slots[0].last_active_m;
+        preempt_st.p25_p2_audio_allowed[0] = 1;
+
+        p25_sm_event(&preempt_ctx, &preempt_opts, &preempt_st, &preempt_candidate);
+        rc |= expect_true("preempt returned to cc first", g_return_to_cc_calls == 1);
+        rc |= expect_true("preempt retuned vc", g_tune_to_freq_calls == 2 && preempt_opts.p25_is_tuned == 1
+                                                    && preempt_st.p25_sm_tune_count == 2);
+        rc |= expect_true("preempt replacement active", preempt_ctx.state == P25_SM_TUNED && preempt_ctx.vc_tg == 4002
+                                                            && preempt_ctx.slots[0].grant_active
+                                                            && preempt_ctx.slots[0].target_id == 4002);
+
+        (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
+        (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
+        dsd_state_ext_free_all(&preempt_st);
+    }
 
     dsd_state_ext_free_all(&mixed_st);
     dsd_state_ext_free_all(&data_forced_st);

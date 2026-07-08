@@ -1427,6 +1427,8 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     if (!p25_grant_preempt_active_call_if_needed(ctx, opts, state, &grant.route, &decision, grant.now_m)) {
         return;
     }
+    grant.clear_policy_slot_only = p25_grant_should_clear_slot_only(ctx, state, ev, grant.freq, grant.slot);
+    grant.reused_carrier = grant.clear_policy_slot_only;
 
     p25_grant_seed_cc_before_vc_tune(ctx, opts, state, grant.now_m);
 
@@ -1781,7 +1783,7 @@ p25_retune_block_remember_failure(dsd_state* state, long freq, int slot, time_t 
 
 static int
 p25_backoff_slot_context_valid(const p25_sm_slot_ctx_t* slot_ctx) {
-    return slot_ctx && slot_ctx->grant_active && !slot_ctx->data_call && slot_ctx->freq_hz > 0 && slot_ctx->channel > 0;
+    return slot_ctx && slot_ctx->grant_active && !slot_ctx->data_call && slot_ctx->freq_hz > 0;
 }
 
 static void
