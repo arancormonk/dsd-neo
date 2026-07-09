@@ -11,7 +11,6 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>

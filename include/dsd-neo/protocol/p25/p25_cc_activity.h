@@ -13,6 +13,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <time.h>
 
 #ifdef __cplusplus
