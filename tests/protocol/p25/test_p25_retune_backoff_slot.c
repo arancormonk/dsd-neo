@@ -169,6 +169,19 @@ age_pending_grants(p25_sm_ctx_t* ctx, double age_s) {
     }
 }
 
+static void
+mark_cc_reacquired(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    double now_m = dsd_time_now_monotonic_s();
+    if (now_m <= state->last_cc_sync_time_m) {
+        now_m = state->last_cc_sync_time_m + 0.001;
+    }
+    state->last_cc_sync_time = time(NULL);
+    state->last_cc_sync_time_m = now_m;
+}
+
 static int
 seed_exact(dsd_state* st, uint32_t id, const char* mode, const char* name, int priority, int preempt) {
     dsd_tg_policy_entry row;
@@ -229,6 +242,7 @@ main(void) {
     rc |= expect_true("returned", opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && ctx.state == P25_SM_ON_CC);
     rc |= expect_true("backoff armed", st.p25_retune_block_freq == g_last_tuned_vc && st.p25_retune_block_slot == 1
                                            && st.p25_retune_block_until > time(NULL));
+    mark_cc_reacquired(&st);
 
     // 3) Same-slot repeat grant on the same RF should be blocked during backoff.
     p25_sm_event(&ctx, &opts, &st, &ev_slot1);
@@ -249,6 +263,7 @@ main(void) {
     rc |=
         expect_true("second backoff armed", st.p25_retune_block_freq == g_last_tuned_vc && st.p25_retune_block_slot == 0
                                                 && st.p25_retune_block_until > time(NULL));
+    mark_cc_reacquired(&st);
 
     p25_sm_event(&ctx, &opts, &st, &ev_slot1);
     rc |= expect_true("first failed slot still blocked", g_tune_to_freq_calls == 2 && opts.p25_is_tuned == 0);
@@ -300,6 +315,7 @@ main(void) {
                           retune_backoff_history_has_slot(&zero_st, g_last_tuned_vc, 0));
         rc |= expect_true("zero channel slot1 backoff remembered",
                           retune_backoff_history_has_slot(&zero_st, g_last_tuned_vc, 1));
+        mark_cc_reacquired(&zero_st);
 
         p25_sm_event(&zero_ctx, &zero_opts, &zero_st, &zero_ev_slot0);
         rc |= expect_true("zero channel slot0 blocked", g_tune_to_freq_calls == 1 && zero_opts.p25_is_tuned == 0);
@@ -387,6 +403,7 @@ main(void) {
     rc |= expect_true("data returned",
                       data_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && data_ctx.state == P25_SM_ON_CC);
     rc |= expect_true("data timeout does not arm backoff", retune_backoff_empty(&data_st));
+    mark_cc_reacquired(&data_st);
 
     p25_sm_event(&data_ctx, &data_opts, &data_st, &ev_slot1);
     rc |= expect_true("voice grant after data timeout allowed",
@@ -459,6 +476,7 @@ main(void) {
     rc |= expect_true("mixed voice backoff armed", mixed_st.p25_retune_block_freq == g_last_tuned_vc
                                                        && mixed_st.p25_retune_block_slot == 1
                                                        && mixed_st.p25_retune_block_until > time(NULL));
+    mark_cc_reacquired(&mixed_st);
 
     p25_sm_event(&mixed_ctx, &mixed_opts, &mixed_st, &data_ev_slot1);
     rc |= expect_true("data grant bypasses voice backoff",
@@ -656,6 +674,7 @@ main(void) {
                                                             && g_return_to_cc_calls == 1
                                                             && data_after_cancel_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("data-after-cancel no fallback backoff", retune_backoff_empty(&data_after_cancel_st));
+        mark_cc_reacquired(&data_after_cancel_st);
 
         p25_sm_event(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st, &data_after_cancel_voice);
         rc |= expect_true("data-after-cancel follow-up voice allowed", g_tune_to_freq_calls == 2

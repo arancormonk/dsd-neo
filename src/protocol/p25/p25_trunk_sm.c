@@ -322,6 +322,24 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_state* state, double tun
     ctx->cc_sync_pending = 1;
 }
 
+static int
+p25_sm_refresh_cc_sync_from_state(p25_sm_ctx_t* ctx, const dsd_state* state) {
+    if (!ctx) {
+        return 0;
+    }
+    if (state && state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
+        ctx->t_cc_sync_m = state->last_cc_sync_time_m;
+        if (ctx->cc_sync_pending && ctx->t_cc_sync_m > ctx->t_cc_tune_m) {
+            ctx->t_cc_tune_m = 0.0;
+            ctx->cc_sync_pending = 0;
+        }
+        p25_sm_set_expected_cc_nac(ctx, state, 1);
+        return 1;
+    }
+    p25_sm_set_expected_cc_nac(ctx, state, 0);
+    return 0;
+}
+
 // Determine if channel is TDMA based on IDEN hints.
 // Uses bitmask semantics for p25_chan_tdma_explicit[iden]:
 //   bit0 (0x01) = has FDMA/non-TDMA entry
@@ -1504,6 +1522,23 @@ p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     return 1;
 }
 
+static int
+p25_grant_blocked_by_pending_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                                const p25_grant_route_ctx_t* grant) {
+    if (!ctx || !ev || !grant || ctx->state != P25_SM_ON_CC || !ctx->cc_sync_pending) {
+        return 0;
+    }
+    (void)p25_sm_refresh_cc_sync_from_state(ctx, state);
+    if (!ctx->cc_sync_pending) {
+        return 0;
+    }
+
+    p25_sm_diagf(opts, state, ctx, "grant_cc_pending",
+                 "ch=0x%04X freq=%ld slot=%d tg=%d src=%d tune_m=%.3f last_cc_m=%.3f", ev->channel & 0xFFFF,
+                 grant->freq, grant->slot, ev->tg, ev->src, ctx->t_cc_tune_m, state ? state->last_cc_sync_time_m : 0.0);
+    return 1;
+}
+
 /* ============================================================================
  * Event Handlers
  * ============================================================================ */
@@ -1524,6 +1559,9 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     }
 
     if (!p25_grant_prepare_route(ctx, opts, state, ev, &decision, &eval_ctx, &grant)) {
+        return;
+    }
+    if (p25_grant_blocked_by_pending_cc(ctx, opts, state, ev, &grant)) {
         return;
     }
 
@@ -2518,19 +2556,7 @@ p25_sm_tick_handle_forced_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
 
 static void
 p25_sm_tick_on_cc_sync_from_state(p25_sm_ctx_t* ctx, const dsd_state* state) {
-    if (!ctx) {
-        return;
-    }
-    if (state && state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
-        ctx->t_cc_sync_m = state->last_cc_sync_time_m;
-        if (ctx->cc_sync_pending && ctx->t_cc_sync_m > ctx->t_cc_tune_m) {
-            ctx->t_cc_tune_m = 0.0;
-            ctx->cc_sync_pending = 0;
-        }
-        p25_sm_set_expected_cc_nac(ctx, state, 1);
-    } else {
-        p25_sm_set_expected_cc_nac(ctx, state, 0);
-    }
+    (void)p25_sm_refresh_cc_sync_from_state(ctx, state);
 }
 
 static double

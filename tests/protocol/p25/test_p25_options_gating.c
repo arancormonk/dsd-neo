@@ -8,12 +8,14 @@
  * Ensures trunk_tune_group_calls / trunk_tune_private_calls disable tuning.
  */
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -127,6 +129,19 @@ seed_exact(dsd_state* st, uint32_t id, const char* mode, const char* name) {
     return dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
 }
 
+static void
+mark_cc_reacquired(dsd_state* st) {
+    if (!st) {
+        return;
+    }
+    double now_m = dsd_time_now_monotonic_s();
+    if (now_m <= st->last_cc_sync_time_m) {
+        now_m = st->last_cc_sync_time_m + 0.001;
+    }
+    st->last_cc_sync_time = time(NULL);
+    st->last_cc_sync_time_m = now_m;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -175,6 +190,7 @@ main(void) {
     process_MAC_VPDU(&opts, &st, 0, MAC);
     rc |= expect_true("group allowed tunes", st.p25_sm_tune_count == before + 1);
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     opts.p25_is_tuned = 0;
 
     // Case C: private grant gating — reuse MAC with private opcode mapping
@@ -209,6 +225,7 @@ main(void) {
 
     // Case D: helper-path private allow-list behavior: unknown private IDs block.
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     opts.p25_is_tuned = 0;
     opts.trunk_use_allow_list = 1;
     opts.trunk_tune_private_calls = 1;

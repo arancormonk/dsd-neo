@@ -379,6 +379,19 @@ matrix_stale_cc_timers(matrix_fixture* fixture) {
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
 }
 
+static void
+matrix_mark_cc_reacquired(matrix_fixture* fixture) {
+    if (!fixture || !fixture->state) {
+        return;
+    }
+    double now_m = dsd_time_now_monotonic_s();
+    if (now_m <= fixture->state->last_cc_sync_time_m) {
+        now_m = fixture->state->last_cc_sync_time_m + 0.001;
+    }
+    fixture->state->last_cc_sync_time = time(NULL);
+    fixture->state->last_cc_sync_time_m = now_m;
+}
+
 static int
 matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const matrix_flow_case* flow,
                    const matrix_return_script* script) {
@@ -410,6 +423,7 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
                         "post-return tick remains ON_CC");
     rc |= matrix_expect(g_hooks.cc_calls == cc_calls_before_post_return_tick, mode->name, flow->name, script->name,
                         "post-return tick does not hunt CC");
+    matrix_mark_cc_reacquired(fixture);
     return rc;
 }
 

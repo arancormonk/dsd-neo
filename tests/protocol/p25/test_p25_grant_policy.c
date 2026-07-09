@@ -6,6 +6,7 @@
 /* Verify policy-backed P25 grant filtering behavior in the trunk SM path. */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -15,6 +16,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -70,6 +72,19 @@ seed_exact(dsd_state* st, uint32_t id, const char* mode, const char* name, int p
     row.priority = priority;
     row.preempt = preempt ? 1u : 0u;
     return dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+}
+
+static void
+mark_cc_reacquired(dsd_state* st) {
+    if (!st) {
+        return;
+    }
+    double now_m = dsd_time_now_monotonic_s();
+    if (now_m <= st->last_cc_sync_time_m) {
+        now_m = st->last_cc_sync_time_m + 0.001;
+    }
+    st->last_cc_sync_time = time(NULL);
+    st->last_cc_sync_time_m = now_m;
 }
 
 static void
@@ -151,6 +166,7 @@ main(void) {
 
     // Active patch members can satisfy grant policy while the OTA target remains the supergroup.
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     opts.trunk_use_allow_list = 0;
     st.tg_hold = 1401;
     p25_patch_add_wgid(&st, 1400, 1401);
@@ -168,6 +184,7 @@ main(void) {
     st.tg_hold = 0;
 
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     opts.trunk_use_allow_list = 1;
     rc |= expect_true("seed patch member allow", seed_exact(&st, 1403, "A", "PATCH-MEMBER", 0, 0) == 0);
     p25_patch_add_wgid(&st, 1402, 1403);
@@ -183,6 +200,7 @@ main(void) {
     rc |= expect_true("patch member allowlist p2 media gate", dsd_p25p2_decode_audio_allowed(&opts, &st, 0, 0) == 1);
 
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     p25_patch_add_wgid(&st, 1404, 1405);
     before = st.p25_sm_tune_count;
     opts.p25_is_tuned = 0;
@@ -205,6 +223,7 @@ main(void) {
     // Runtime encrypted-call lockout must not persist as a TG policy block.
     rc |= expect_true("seed mixed-mode group", seed_exact(&st, 1104, "A", "MIXED", 0, 0) == 0);
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     opts.trunk_tune_enc_calls = 0;
     opts.p25_is_tuned = 0;
     before = st.p25_sm_tune_count;
@@ -236,6 +255,7 @@ main(void) {
 
         p25_emit_enc_lockout_once(&cache_opts, &cache_st, 0, 1300, /*svc*/ 0);
         p25_sm_on_release(&cache_opts, &cache_st);
+        mark_cc_reacquired(&cache_st);
         before = cache_st.p25_sm_tune_count;
         cache_opts.p25_is_tuned = 0;
         p25_sm_on_group_grant(&cache_opts, &cache_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 1300, /*src*/ 2301);
@@ -249,6 +269,7 @@ main(void) {
         rc |= expect_true("explicit clear grant clears transient enc cache", enc_tg_cache_is_absent(&cache_st, 1300U));
         rc |= expect_true("explicit clear grant does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
         p25_sm_on_release(&cache_opts, &cache_st);
+        mark_cc_reacquired(&cache_st);
         p25_sm_init(&opts, &st);
     }
 
@@ -262,6 +283,7 @@ main(void) {
 
     // TG 0 is evaluated like any other exact ID.
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     opts.p25_is_tuned = 0;
     rc |= expect_true("seed tg0 A", seed_exact(&st, 0, "A", "ZERO-ALLOW", 0, 0) == 0);
     before = st.p25_sm_tune_count;
@@ -276,6 +298,7 @@ main(void) {
 
     // SM private-grant path keeps unknown private IDs allowed under allow-list mode.
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     before = st.p25_sm_tune_count;
     opts.p25_is_tuned = 0;
     p25_sm_on_indiv_grant(&opts, &st, ch, /*svc*/ 0x00, /*dst*/ 9001, /*src*/ 9002);
@@ -307,12 +330,14 @@ main(void) {
         p25_sm_on_group_data_grant(&data_opts, &data_st, ch, /*svc*/ 0x00, /*tg*/ 3102, /*src*/ 4102);
         rc |= expect_true("group data clear svc tunes when data enabled", data_st.p25_sm_tune_count == before + 1);
         p25_sm_on_release(&data_opts, &data_st);
+        mark_cc_reacquired(&data_st);
         data_opts.p25_is_tuned = 0;
         before = data_st.p25_sm_tune_count;
         p25_sm_on_indiv_data_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*dst*/ 3103, /*src*/ 4103);
         rc |= expect_true("indiv data unknown svc tunes when data enabled", data_st.p25_sm_tune_count == before + 1);
 
         p25_sm_on_release(&data_opts, &data_st);
+        mark_cc_reacquired(&data_st);
         data_opts.trunk_tune_enc_calls = 0;
         data_opts.p25_is_tuned = 0;
         before = data_st.p25_sm_tune_count;
@@ -324,6 +349,7 @@ main(void) {
         rc |= expect_true("svc-less voice grant not skipped after encrypted data grant",
                           data_st.p25_sm_tune_count == before + 1);
         p25_sm_on_release(&data_opts, &data_st);
+        mark_cc_reacquired(&data_st);
 
         p25_emit_enc_lockout_once(&data_opts, &data_st, 0, 3105, /*svc*/ 0x40);
         rc |= expect_true("seed transient voice enc cache", !enc_tg_cache_is_absent(&data_st, 3105U));
@@ -334,6 +360,7 @@ main(void) {
         rc |= expect_true("svc-less group data grant preserves voice enc cache",
                           !enc_tg_cache_is_absent(&data_st, 3105U));
         p25_sm_on_release(&data_opts, &data_st);
+        mark_cc_reacquired(&data_st);
 
         data_opts.trunk_tune_data_calls = 0;
         data_opts.p25_is_tuned = 0;
@@ -351,6 +378,7 @@ main(void) {
     rc |= expect_true("seed active high", seed_exact(&st, 1200, "A", "ACTIVE-HIGH", 80, 0) == 0);
     rc |= expect_true("seed candidate low preempt", seed_exact(&st, 1201, "A", "CAND-LOW", 10, 1) == 0);
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     before = st.p25_sm_tune_count;
     opts.p25_is_tuned = 0;
     p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1200, /*src*/ 2200);
@@ -373,6 +401,7 @@ main(void) {
 
     // Patch-member priority/preempt displaces using the matched member policy, not the OTA SG's default priority.
     p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
     rc |= expect_true("seed patch active base", seed_exact(&st, 1500, "A", "PATCH-ACTIVE", 80, 0) == 0);
     rc |= expect_true("seed patch member preempt", seed_exact(&st, 1502, "A", "PATCH-PREEMPT", 95, 1) == 0);
     p25_patch_add_wgid(&st, 1501, 1502);

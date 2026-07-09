@@ -776,7 +776,49 @@ main(void) {
     assert(ctx18.state == P25_SM_ON_CC);
     assert(g_result_tune_to_cc_calls == cc_calls_before_seeded_release_tick);
 
-    // 20) A CC retune that does not produce decoded CC activity should hunt before full stale-CC grace.
+    // 20) Grants observed before decoded CC activity after a CC retune must not pull us back to a VC.
+    static dsd_opts o18aa;
+    static dsd_state s18aa;
+    DSD_MEMSET(&o18aa, 0, sizeof(o18aa));
+    DSD_MEMSET(&s18aa, 0, sizeof(s18aa));
+    o18aa.p25_trunk = 1;
+    o18aa.trunk_tune_group_calls = 1;
+    s18aa.p25_cc_freq = 851000000;
+    s18aa.trunk_cc_freq = 851000000;
+    s18aa.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s18aa.p25_iden_fdma[id9].chan_type = 1;
+    s18aa.p25_iden_fdma[id9].chan_spac = 100;
+    s18aa.p25_iden_fdma[id9].trust = 2;
+    s18aa.p25_iden_fdma[id9].populated = 1;
+    s18aa.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx18aa;
+    p25_sm_init_ctx(&ctx18aa, &o18aa, &s18aa);
+    const double pending_grant_cc_tune_m = dsd_time_now_monotonic_s();
+    ctx18aa.state = P25_SM_ON_CC;
+    ctx18aa.t_cc_sync_m = pending_grant_cc_tune_m - 0.25;
+    ctx18aa.t_cc_tune_m = pending_grant_cc_tune_m;
+    ctx18aa.cc_sync_pending = 1;
+    s18aa.last_cc_sync_time_m = pending_grant_cc_tune_m - 0.10;
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18aa.state == P25_SM_ON_CC);
+    assert(ctx18aa.cc_sync_pending == 1);
+
+    s18aa.last_cc_sync_time_m = pending_grant_cc_tune_m;
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18aa.state == P25_SM_ON_CC);
+    assert(ctx18aa.cc_sync_pending == 1);
+
+    s18aa.last_cc_sync_time_m = pending_grant_cc_tune_m + 0.25;
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx18aa.state == P25_SM_TUNED);
+    assert(ctx18aa.cc_sync_pending == 0);
+
+    // 21) A CC retune that does not produce decoded CC activity should hunt before full stale-CC grace.
     static dsd_opts o18b;
     static dsd_state s18b;
     DSD_MEMSET(&o18b, 0, sizeof(o18b));
@@ -803,7 +845,7 @@ main(void) {
     assert(g_last_tuned_cc == 852000000);
     assert(ctx18b.state == P25_SM_ON_CC);
 
-    // 21) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
+    // 22) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
     static dsd_opts o19a;
     static dsd_state s19a;
     DSD_MEMSET(&o19a, 0, sizeof(o19a));
@@ -839,7 +881,7 @@ main(void) {
     assert(ctx19a.state == P25_SM_TUNED);
     assert(ctx19a.slots[1].grant_active == 1);
 
-    // 21) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
+    // 23) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
     static dsd_opts o19b;
     static dsd_state s19b;
     DSD_MEMSET(&o19b, 0, sizeof(o19b));
@@ -879,7 +921,7 @@ main(void) {
     assert(s19b.p25_p2_enc_lockout_muted[0] == 1);
 
 #ifdef USE_RADIO
-    // 22) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
+    // 24) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
     static dsd_opts o19;
     static dsd_state s19;
     DSD_MEMSET(&o19, 0, sizeof(o19));
@@ -927,7 +969,7 @@ main(void) {
     assert(ctx19.state == P25_SM_TUNED);
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 23) A successful CQPSK retry refreshes the TDMA grant timeout window.
+    // 25) A successful CQPSK retry refreshes the TDMA grant timeout window.
     static dsd_opts o20;
     static dsd_state s20;
     DSD_MEMSET(&o20, 0, sizeof(o20));
