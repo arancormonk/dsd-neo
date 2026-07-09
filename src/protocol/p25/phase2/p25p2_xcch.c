@@ -288,13 +288,17 @@ p25p2_xcch_blank_slot_call_string(dsd_state* state, int slot) {
 }
 
 static void
-p25p2_xcch_clear_sacch_idle_metadata_if_stale(dsd_state* state, uint8_t slot, double idle_observed_m) {
+p25p2_xcch_clear_idle_metadata_if_stale(dsd_state* state, uint8_t slot, double idle_observed_m, int clear_slot_ids) {
     if (p25_sm_slot_grant_newer_than(slot, idle_observed_m)) {
         return;
     }
 
     p25p2_xcch_blank_slot_call_string(state, slot);
-    state->p25_policy_tg[slot & 1] = 0;
+    if (clear_slot_ids) {
+        p25p2_xcch_clear_slot_ids(state, slot);
+    } else {
+        state->p25_policy_tg[slot & 1] = 0;
+    }
     state->p25_call_is_packet[slot] = 0;
     state->p25_service_options_valid[slot] = 0;
     if (slot == 0) {
@@ -493,15 +497,6 @@ p25p2_xcch_reset_idle_slot_facch(dsd_state* state, int slot) {
     p25p2_xcch_set_slot_burst(state, slot, 24);
     state->fourv_counter[slot] = 0;
     state->voice_counter[slot] = 0;
-
-    if (slot == 0) {
-        state->lastsrc = 0;
-        state->lasttg = 0;
-    } else {
-        state->lastsrcR = 0;
-        state->lasttgR = 0;
-    }
-    state->p25_policy_tg[slot & 1] = 0;
 }
 
 static int
@@ -615,7 +610,7 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     state->p25_p2_enc_lockout_muted[slot] = 0;
-    p25p2_xcch_clear_sacch_idle_metadata_if_stale(state, slot, idle_observed_m);
+    p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 0);
     p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
 }
 
@@ -702,8 +697,8 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     process_MAC_VPDU(opts, state, 0, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    p25p2_xcch_blank_slot_call_string(state, slot);
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
+    p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 1);
     p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
     p25_p2_audio_ring_reset(state, slot);
 }
