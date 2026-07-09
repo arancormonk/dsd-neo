@@ -987,6 +987,19 @@ p25_grant_clear_policy_slot(dsd_state* state, int slot) {
 }
 
 static int
+p25_grant_slot_call_identity_matches(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
+    if (!slot_ctx || !ev) {
+        return 0;
+    }
+
+    const int is_group = ev->is_group ? 1 : 0;
+    if (slot_ctx->is_group != is_group) {
+        return 0;
+    }
+    return is_group ? (slot_ctx->ota_tg == ev->tg) : (slot_ctx->dst == ev->dst);
+}
+
+static int
 p25_grant_slot_matches_moved_target(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev, int target_id,
                                     int data_call) {
     if (!slot_ctx || !ev || !slot_ctx->grant_active || slot_ctx->target_id != target_id) {
@@ -996,12 +1009,7 @@ p25_grant_slot_matches_moved_target(const p25_sm_slot_ctx_t* slot_ctx, const p25
         return 0;
     }
 
-    const int is_group = ev->is_group ? 1 : 0;
-    if (slot_ctx->is_group != is_group) {
-        return 0;
-    }
-
-    return is_group ? (slot_ctx->ota_tg == ev->tg) : (slot_ctx->dst == ev->dst);
+    return p25_grant_slot_call_identity_matches(slot_ctx, ev);
 }
 
 static void
@@ -1218,12 +1226,15 @@ p25_grant_decoder_tuned_to_freq(const dsd_opts* opts, const dsd_state* state, lo
 }
 
 static int
-p25_grant_slot_duplicate_matches(const p25_sm_slot_ctx_t* slot_ctx, const dsd_tg_policy_call_route* route, long freq,
-                                 int target_id, int data_call) {
-    if (!slot_ctx || !route) {
+p25_grant_slot_duplicate_matches(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev,
+                                 const dsd_tg_policy_call_route* route, long freq, int target_id, int data_call) {
+    if (!slot_ctx || !ev || !route) {
         return 0;
     }
     if (slot_ctx->freq_hz != freq || slot_ctx->target_id != target_id || slot_ctx->data_call != data_call) {
+        return 0;
+    }
+    if (!p25_grant_slot_call_identity_matches(slot_ctx, ev)) {
         return 0;
     }
     return (slot_ctx->grant_active || slot_ctx->last_active_m > 0.0) ? 1 : 0;
@@ -1269,16 +1280,16 @@ p25_grant_refresh_duplicate_slot(p25_sm_ctx_t* ctx, dsd_state* state, const dsd_
 }
 
 static int
-p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
+p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                            const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision, long freq,
                            int target_id, const p25_grant_eval_ctx_t* eval_ctx, double now_m) {
     int data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
-    if (!ctx || !route || ctx->state != P25_SM_TUNED || ctx->vc_freq_hz != freq
+    if (!ctx || !ev || !route || ctx->state != P25_SM_TUNED || ctx->vc_freq_hz != freq
         || !p25_grant_decoder_tuned_to_freq(opts, state, freq)) {
         return 0;
     }
     if (route->slot >= 0 && route->slot <= 1) {
-        if (!p25_grant_slot_duplicate_matches(&ctx->slots[route->slot], route, freq, target_id, data_call)) {
+        if (!p25_grant_slot_duplicate_matches(&ctx->slots[route->slot], ev, route, freq, target_id, data_call)) {
             return 0;
         }
     } else if (!p25_grant_fallback_duplicate_matches(ctx, target_id, data_call)) {
@@ -1510,10 +1521,10 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         return;
     }
 
-    // Skip if already tuned to same frequency AND same TG (avoid bounce on duplicate grants)
-    // Different TG/call type should still trigger a new tune
-    if (p25_grant_handle_duplicate(ctx, opts, state, &grant.route, &decision, grant.freq, grant.target_id, &eval_ctx,
-                                   grant.now_m)) {
+    // Skip only true duplicate grants; same-RF grants for a different call context
+    // still need normal grant handling so the slot context is replaced.
+    if (p25_grant_handle_duplicate(ctx, opts, state, ev, &grant.route, &decision, grant.freq, grant.target_id,
+                                   &eval_ctx, grant.now_m)) {
         p25_grant_store_policy_tg(state, ev, grant.slot, &decision);
         return;
     }

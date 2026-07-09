@@ -905,6 +905,48 @@ main(void) {
         dsd_state_ext_free_all(&repeat_st);
     }
 
+    // 13c) A same-slot group TG and private RID can have the same numeric
+    // target ID; they must not collapse into one duplicate grant context.
+    {
+        static dsd_opts collision_opts;
+        static dsd_state collision_st;
+        DSD_MEMSET(&collision_opts, 0, sizeof collision_opts);
+        DSD_MEMSET(&collision_st, 0, sizeof collision_st);
+        collision_opts.p25_trunk = 1;
+        collision_opts.trunk_tune_group_calls = 1;
+        collision_opts.trunk_tune_private_calls = 1;
+        collision_opts.trunk_hangtime = 0.2f;
+        collision_opts.p25_grant_voice_to_s = 0.8;
+        collision_opts.p25_retune_backoff_s = 2.0;
+        collision_st.p25_cc_freq = 851000000;
+        collision_st.p25_chan_iden = id;
+        collision_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+        collision_st.p25_chan_tdma_explicit[id] = 2;
+
+        p25_sm_ctx_t collision_ctx;
+        p25_sm_init_ctx(&collision_ctx, &collision_opts, &collision_st);
+        g_last_tuned_vc = 0;
+        g_tune_to_freq_calls = 0;
+        g_return_to_cc_calls = 0;
+        p25_sm_event_t private_grant = p25_sm_ev_indiv_grant(ch_slot0, 0, 3661, 4661, 0);
+        p25_sm_event_t group_grant = p25_sm_ev_group_grant(ch_slot0, 0, 3661, 5661, 0);
+
+        p25_sm_event(&collision_ctx, &collision_opts, &collision_st, &private_grant);
+        rc |= expect_true("namespace private tuned", g_tune_to_freq_calls == 1 && collision_opts.p25_is_tuned == 1
+                                                         && collision_ctx.slots[0].grant_active
+                                                         && !collision_ctx.slots[0].is_group
+                                                         && collision_ctx.slots[0].dst == 3661);
+
+        p25_sm_event(&collision_ctx, &collision_opts, &collision_st, &group_grant);
+        rc |= expect_true("namespace group replaces private",
+                          g_tune_to_freq_calls == 1 && collision_ctx.state == P25_SM_TUNED
+                              && collision_ctx.slots[0].grant_active && collision_ctx.slots[0].is_group
+                              && collision_ctx.slots[0].target_id == 3661 && collision_ctx.slots[0].ota_tg == 3661
+                              && collision_ctx.slots[0].dst == 0 && collision_ctx.vc_src == 5661);
+
+        dsd_state_ext_free_all(&collision_st);
+    }
+
     // 14) A forced release after one TDMA slot produced voice still records a
     // pending grant on the other slot that never produced audio.
     {
