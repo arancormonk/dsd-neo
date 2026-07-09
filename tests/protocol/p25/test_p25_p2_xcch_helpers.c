@@ -7,6 +7,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
