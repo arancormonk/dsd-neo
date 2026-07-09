@@ -939,11 +939,13 @@ p25_sm_clear_one_slot_activity(p25_sm_ctx_t* ctx, int slot) {
     ctx->slots[slot].last_active_m = 0.0;
 }
 
+#ifdef USE_RADIO
 static void
 p25_sm_clear_slot_activity(p25_sm_ctx_t* ctx) {
     p25_sm_clear_one_slot_activity(ctx, 0);
     p25_sm_clear_one_slot_activity(ctx, 1);
 }
+#endif
 
 static void
 p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
