@@ -607,6 +607,7 @@ main(void) {
     o14b.audio_in_type = AUDIO_IN_RTL;
     o14b.rtlsdr_center_freq = 851012500U;
     s14b.synctype = DSD_SYNC_P25P2_POS;
+    s14b.p25_cc_is_tdma = 2;
     s14b.p25_iden_fdma[id9].base_freq = 851000000 / 5;
     s14b.p25_iden_fdma[id9].chan_type = 1;
     s14b.p25_iden_fdma[id9].chan_spac = 100;
@@ -623,7 +624,7 @@ main(void) {
     assert(s14b.p25_cc_freq == 851012500);
     assert(s14b.trunk_cc_freq == 851012500);
     assert(s14b.trunk_lcn_freq[0] == 851012500);
-    assert(s14b.p25_cc_is_tdma == 1);
+    assert(s14b.p25_cc_is_tdma == 2);
     assert(o14b.p25_is_tuned == 0);
     assert(s14b.p25_sm_tune_count == 0);
     assert(ctx14b.state == P25_SM_ON_CC);
@@ -775,7 +776,34 @@ main(void) {
     assert(ctx18.state == P25_SM_ON_CC);
     assert(g_result_tune_to_cc_calls == cc_calls_before_seeded_release_tick);
 
-    // 20) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
+    // 20) A CC retune that does not produce decoded CC activity should hunt before full stale-CC grace.
+    static dsd_opts o18b;
+    static dsd_state s18b;
+    DSD_MEMSET(&o18b, 0, sizeof(o18b));
+    DSD_MEMSET(&s18b, 0, sizeof(s18b));
+    o18b.p25_trunk = 1;
+    o18b.p25_prefer_candidates = 1;
+    s18b.p25_cc_freq = 851000000;
+    s18b.trunk_cc_freq = 851000000;
+    (void)dsd_trunk_cc_candidates_add(&s18b, 852000000, 0);
+    p25_sm_ctx_t ctx18b;
+    p25_sm_init_ctx(&ctx18b, &o18b, &s18b);
+    ctx18b.config.cc_grace_s = 5.0;
+    const double pending_cc_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    ctx18b.t_cc_sync_m = pending_cc_tune_m;
+    ctx18b.t_cc_tune_m = pending_cc_tune_m;
+    ctx18b.cc_sync_pending = 1;
+    s18b.last_cc_sync_time = time(NULL) - 3;
+    s18b.last_cc_sync_time_m = pending_cc_tune_m;
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_cc_calls = 0;
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx18b, &o18b, &s18b);
+    assert(g_result_tune_to_cc_calls == 1);
+    assert(g_last_tuned_cc == 852000000);
+    assert(ctx18b.state == P25_SM_ON_CC);
+
+    // 21) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
     static dsd_opts o19a;
     static dsd_state s19a;
     DSD_MEMSET(&o19a, 0, sizeof(o19a));

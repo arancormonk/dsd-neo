@@ -78,6 +78,27 @@ main(void) {
     g_last_tuned_cc = 0;
     p25_sm_tick(&o, &st);
     assert(g_last_tuned_cc == B);
+
+    static dsd_opts o2;
+    static dsd_state st2;
+    init_basic(&o2, &st2);
+    (void)dsd_trunk_cc_candidates_add(&st2, A, 0);
+    (void)dsd_trunk_cc_candidates_add(&st2, B, 0);
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    double pending_m = dsd_time_now_monotonic_s() - 2.5;
+    ctx->state = P25_SM_ON_CC;
+    ctx->config.cc_grace_s = 5.0;
+    ctx->t_cc_sync_m = pending_m;
+    ctx->t_cc_tune_m = pending_m;
+    ctx->cc_sync_pending = 1;
+    st2.last_cc_sync_time_m = pending_m;
+    st2.p25_cc_eval_freq = A;
+    st2.p25_cc_eval_start_m = pending_m;
+
+    g_last_tuned_cc = 0;
+    p25_sm_tick(&o2, &st2);
+    assert(g_last_tuned_cc == B);
     return 0;
 }
 

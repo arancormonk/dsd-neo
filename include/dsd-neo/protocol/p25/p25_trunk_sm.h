@@ -153,7 +153,9 @@ typedef struct {
     double t_voice_m;    // Monotonic time of last voice activity
     double t_hangtime_m; // Monotonic time hangtime started
     double t_cc_sync_m;  // Monotonic time of last CC sync
+    double t_cc_tune_m;  // Monotonic time of last CC tune awaiting decode
     double t_hunt_try_m; // Monotonic time of last CC candidate attempt
+    int cc_sync_pending; // 1 until a CC tune is followed by decoded CC sync
 
     // Statistics (for debugging/UI)
     uint32_t tune_count;
