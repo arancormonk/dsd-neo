@@ -1542,6 +1542,11 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
         return -1;
     }
 
+    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
+        // A parked pending context predates this physical retune. Restart it in
+        // ON_CC so the acquisition watchdog honors the refreshed grace period.
+        (void)p25_sm_restart_pending_cc_acquisition(&rt->p25_ctx, opts, state, trunk_scan_now_m(), "scan-retune");
+    }
     rt->retry_until_m = 0.0;
     LOG_NOTICE("Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
     return 0;

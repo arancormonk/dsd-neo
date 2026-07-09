@@ -209,13 +209,32 @@ void p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25
  * behavior. The generic trunk CC alias is preferred when it is already known.
  * Otherwise the tuner is sampled only while legacy tune flags indicate the
  * decoder is parked on the control channel; voice-channel tunes are ignored.
- * Live P25 Phase 2 sync seeds a TDMA CC modulation hint; live P25 Phase 1 sync
- * clears any stale TDMA CC hint.
+ * Live P25 Phase 2 LCCH context seeds a TDMA CC modulation hint; ordinary
+ * Phase 2 traffic sync leaves the hint unchanged. Live P25 Phase 1 sync clears
+ * any stale TDMA CC hint.
  *
  * @param opts Decoder options.
  * @param state Decoder state.
  */
 void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Restart a pending CC acquisition after an accepted external retune.
+ *
+ * This is a no-op unless the context is already awaiting decoded CC activity.
+ * It refreshes the acquisition baseline and returns a hunting context to
+ * ON_CC so the normal acquisition watchdog grants the new tune its full grace
+ * period.
+ *
+ * @param ctx State machine context.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param tune_start_m Monotonic timestamp captured after retune acceptance.
+ * @param source Short diagnostic source label.
+ * @return 1 when pending acquisition was restarted, 0 otherwise.
+ */
+int p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double tune_start_m,
+                                          const char* source);
 
 /**
  * @brief Periodic tick for timeout-based transitions.

@@ -1462,7 +1462,7 @@ main(void) {
         rc |= expect_eq_long("0x40 LCCH grant seeded CC", state.p25_cc_freq, cc);
         rc |= expect_eq_long("0x40 LCCH grant seeded trunk CC", state.trunk_cc_freq, cc);
         rc |= expect_eq_long("0x40 LCCH grant seeded LCN0", state.trunk_lcn_freq[0], cc);
-        rc |= expect_true("0x40 LCCH grant preserves CC modulation hint", state.p25_cc_is_tdma == 2);
+        rc |= expect_true("0x40 LCCH grant marks TDMA CC", state.p25_cc_is_tdma == 1);
         rc |= expect_eq_long("0x40 LCCH grant vc", state.p25_vc_freq[0], 851125000);
     }
 

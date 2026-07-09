@@ -79,6 +79,25 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
 }
 
 int
+p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double tune_start_m,
+                                      const char* source) {
+    (void)opts;
+    (void)source;
+    if (!ctx || !ctx->cc_sync_pending) {
+        return 0;
+    }
+    ctx->state = P25_SM_ON_CC;
+    ctx->t_cc_sync_m = tune_start_m;
+    ctx->t_cc_tune_m = tune_start_m;
+    ctx->t_hunt_try_m = 0.0;
+    if (state) {
+        state->last_cc_sync_time_m = tune_start_m;
+        state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
+    }
+    return 1;
+}
+
+int
 p25_sm_tick_guard_try_enter(void) {
     g_p25_tick_guard_enter_calls++;
     if (!g_p25_tick_guard_available) {
@@ -1329,6 +1348,71 @@ test_p25_target_switch_resyncs_sm_mode(void) {
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_sm_mode != DSD_P25_SM_MODE_HUNTING) {
         DSD_FPRINTF(stderr, "restored P25 scan target SM mode invalid active=%zu mode=%d\n",
                     dsd_engine_trunk_scan_active_index(&state), state.p25_sm_mode);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_p25_scan_retune_restarts_pending_cc_acquisition(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(1.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    p25_sm_ctx_t* first_ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || !first_ctx) {
+        DSD_FPRINTF(stderr, "pending CC timer scan init failed rc=%d active=%zu ctx=%p err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), (void*)first_ctx, err);
+        test_rc = 1;
+    } else {
+        first_ctx->state = P25_SM_HUNTING;
+        first_ctx->cc_sync_pending = 1;
+        first_ctx->t_cc_sync_m = 1.0;
+        first_ctx->t_cc_tune_m = 1.0;
+        first_ctx->t_hunt_try_m = 0.5;
+        state.p25_sm_mode = DSD_P25_SM_MODE_HUNTING;
+        state.p25_last_cc_msg_time_m = 0.75;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(1.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "pending CC timer scan did not rotate away from first target\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(4.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    p25_sm_ctx_t* restored_ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || !restored_ctx || restored_ctx->cc_sync_pending != 1
+        || restored_ctx->state != P25_SM_ON_CC || restored_ctx->t_cc_sync_m != 4.0 || restored_ctx->t_cc_tune_m != 4.0
+        || restored_ctx->t_hunt_try_m != 0.0 || state.p25_sm_mode != DSD_P25_SM_MODE_ON_CC
+        || state.p25_last_cc_msg_time_m != 0.75) {
+        DSD_FPRINTF(stderr,
+                    "pending CC timer did not restart after retune active=%zu ctx=%p state=%d pending=%d sync=%.3f "
+                    "tune=%.3f hunt=%.3f mode=%d decoded=%.3f\n",
+                    dsd_engine_trunk_scan_active_index(&state), (void*)restored_ctx,
+                    restored_ctx ? (int)restored_ctx->state : -1, restored_ctx ? restored_ctx->cc_sync_pending : -1,
+                    restored_ctx ? restored_ctx->t_cc_sync_m : -1.0, restored_ctx ? restored_ctx->t_cc_tune_m : -1.0,
+                    restored_ctx ? restored_ctx->t_hunt_try_m : -1.0, state.p25_sm_mode, state.p25_last_cc_msg_time_m);
         test_rc = 1;
     }
 
@@ -2816,6 +2900,7 @@ main(void) {
     rc |= test_p25_targets_seed_valid_control_channel_timing();
     rc |= test_p25_nac_state_isolated_per_target();
     rc |= test_p25_target_switch_resyncs_sm_mode();
+    rc |= test_p25_scan_retune_restarts_pending_cc_acquisition();
     rc |= test_mixed_target_switch_resets_dmr_demod_profile();
     rc |= test_conventional_activity_hold_and_allowlist_block();
     rc |= test_conventional_activity_encrypted_lockout_does_not_hold();

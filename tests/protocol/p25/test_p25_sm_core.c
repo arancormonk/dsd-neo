@@ -902,7 +902,8 @@ main(void) {
     assert(g_last_tuned_cc == 852000000);
     assert(ctx18b.state == P25_SM_ON_CC);
 
-    // 22) HUNTING must keep grants blocked until decoded CC activity proves reacquisition.
+    // 22) HUNTING must keep grants blocked until decoded CC activity proves reacquisition,
+    // then recover even when that activity is not a grant.
     static dsd_opts o18c;
     static dsd_state s18c;
     DSD_MEMSET(&o18c, 0, sizeof(o18c));
@@ -947,13 +948,27 @@ main(void) {
     assert(ctx18c.state == P25_SM_HUNTING);
     assert(ctx18c.cc_sync_pending == 1);
 
+    int cc_calls_before_hunt_recovery = g_result_tune_to_cc_calls;
+    p25_sm_tick_ctx(&ctx18c, &o18c, &s18c);
+    assert(g_result_tune_to_cc_calls == cc_calls_before_hunt_recovery);
+    assert(ctx18c.state == P25_SM_HUNTING);
+    assert(ctx18c.cc_sync_pending == 1);
+
     s18c.p25_last_cc_msg_time = time(NULL);
     s18c.p25_last_cc_msg_time_m = hunting_pending_tune_m + 0.25;
+    ctx18c.t_hunt_try_m = 0.0;
+    p25_sm_tick_ctx(&ctx18c, &o18c, &s18c);
+    assert(g_result_tune_to_cc_calls == cc_calls_before_hunt_recovery);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18c.state == P25_SM_ON_CC);
+    assert(ctx18c.cc_sync_pending == 0);
+    assert(ctx18c.t_cc_tune_m == 0.0);
+    assert(ctx18c.t_cc_sync_m == s18c.p25_last_cc_msg_time_m);
+
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
     assert(g_result_tune_to_freq_calls == 1);
     assert(ctx18c.state == P25_SM_ON_CC);
-    assert(ctx18c.cc_sync_pending == 0);
 
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
     p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
@@ -961,7 +976,37 @@ main(void) {
     assert(ctx18c.state == P25_SM_TUNED);
     g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 23) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
+    // 23) An accepted external CC retune restarts pending acquisition in ON_CC.
+    static dsd_opts o18d;
+    static dsd_state s18d;
+    DSD_MEMSET(&o18d, 0, sizeof(o18d));
+    DSD_MEMSET(&s18d, 0, sizeof(s18d));
+    o18d.p25_trunk = 1;
+    s18d.p25_cc_freq = 851000000;
+    s18d.trunk_cc_freq = 851000000;
+    p25_sm_ctx_t ctx18d;
+    p25_sm_init_ctx(&ctx18d, &o18d, &s18d);
+    const double external_cc_tune_m = 100.0;
+    const double external_decoded_cc_m = external_cc_tune_m - 2.0;
+    ctx18d.state = P25_SM_HUNTING;
+    ctx18d.cc_sync_pending = 1;
+    ctx18d.t_cc_sync_m = external_cc_tune_m - 3.0;
+    ctx18d.t_cc_tune_m = external_cc_tune_m - 3.0;
+    ctx18d.t_hunt_try_m = external_cc_tune_m - 1.0;
+    s18d.p25_sm_mode = DSD_P25_SM_MODE_HUNTING;
+    s18d.last_cc_sync_time_m = external_cc_tune_m - 3.0;
+    s18d.p25_last_cc_msg_time_m = external_decoded_cc_m;
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18d, &o18d, &s18d, external_cc_tune_m, "test-retune") == 1);
+    assert(ctx18d.state == P25_SM_ON_CC);
+    assert(ctx18d.cc_sync_pending == 1);
+    assert(ctx18d.t_cc_sync_m == external_cc_tune_m);
+    assert(ctx18d.t_cc_tune_m == external_cc_tune_m);
+    assert(ctx18d.t_hunt_try_m == 0.0);
+    assert(s18d.p25_sm_mode == DSD_P25_SM_MODE_ON_CC);
+    assert(s18d.last_cc_sync_time_m == external_cc_tune_m);
+    assert(s18d.p25_last_cc_msg_time_m == external_decoded_cc_m);
+
+    // 24) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
     static dsd_opts o19a;
     static dsd_state s19a;
     DSD_MEMSET(&o19a, 0, sizeof(o19a));
@@ -997,7 +1042,7 @@ main(void) {
     assert(ctx19a.state == P25_SM_TUNED);
     assert(ctx19a.slots[1].grant_active == 1);
 
-    // 24) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
+    // 25) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
     static dsd_opts o19b;
     static dsd_state s19b;
     DSD_MEMSET(&o19b, 0, sizeof(o19b));
@@ -1037,7 +1082,7 @@ main(void) {
     assert(s19b.p25_p2_enc_lockout_muted[0] == 1);
 
 #ifdef USE_RADIO
-    // 25) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
+    // 26) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
     static dsd_opts o19;
     static dsd_state s19;
     DSD_MEMSET(&o19, 0, sizeof(o19));
@@ -1085,7 +1130,7 @@ main(void) {
     assert(ctx19.state == P25_SM_TUNED);
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 26) A successful CQPSK retry refreshes the TDMA grant timeout window.
+    // 27) A successful CQPSK retry refreshes the TDMA grant timeout window.
     static dsd_opts o20;
     static dsd_state s20;
     DSD_MEMSET(&o20, 0, sizeof(o20));
@@ -1135,7 +1180,7 @@ main(void) {
     assert(s20.p25_retune_block_until == 0);
 #endif
 
-    // 27) A concurrent stale-context release must not reset a release already in progress.
+    // 28) A concurrent stale-context release must not reset a release already in progress.
     static dsd_opts o21;
     static dsd_state s21;
     DSD_MEMSET(&o21, 0, sizeof(o21));

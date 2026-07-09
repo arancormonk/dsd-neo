@@ -224,9 +224,11 @@ p25_sm_seed_cc_modulation_from_current_sync(dsd_state* state) {
     if (!state) {
         return;
     }
-    // P25P2 sync is often a traffic-channel MAC on mixed FDMA-CC/P2-VC systems;
-    // only explicit CC-status messages should promote the CC to TDMA timing.
-    if (DSD_SYNC_IS_P25P1(state->synctype)) {
+    // Ordinary P25P2 sync is often a traffic-channel MAC on mixed FDMA-CC/P2-VC
+    // systems. Only LCCH context proves that the seeded CC uses TDMA timing.
+    if (state->p2_is_lcch == 1) {
+        state->p25_cc_is_tdma = 1;
+    } else if (DSD_SYNC_IS_P25P1(state->synctype)) {
         state->p25_cc_is_tdma = 0;
     }
 }
@@ -471,6 +473,22 @@ set_state(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, p25_sm_stat
     p25_sm_diagf((dsd_opts*)opts, state, ctx, "state", "old=%s new=%s reason=%s", p25_sm_state_name(old),
                  p25_sm_state_name(new_state), reason ? reason : "none");
     sm_log(opts, state, reason);
+}
+
+int
+p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double tune_start_m,
+                                      const char* source) {
+    if (!ctx || !ctx->cc_sync_pending) {
+        return 0;
+    }
+    const char* reason = source ? source : "external-retune";
+    if (tune_start_m <= 0.0) {
+        tune_start_m = now_monotonic();
+    }
+    p25_sm_start_cc_grace_after_tune(ctx, opts, state, tune_start_m, reason);
+    ctx->t_hunt_try_m = 0.0;
+    set_state(ctx, opts, state, P25_SM_ON_CC, reason);
+    return 1;
 }
 
 /* ============================================================================
@@ -2922,6 +2940,12 @@ p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
 static void
 p25_sm_tick_hunting(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     if (!ctx) {
+        return;
+    }
+    const double decoded_after_m = ctx->cc_sync_pending ? ctx->t_cc_tune_m : ctx->t_cc_sync_m;
+    if (state && state->p25_last_cc_msg_time_m > decoded_after_m
+        && p25_sm_refresh_cc_sync_from_state(ctx, opts, state, "hunt-tick")) {
+        set_state(ctx, opts, state, P25_SM_ON_CC, "cc-activity");
         return;
     }
     if (ctx->t_hunt_try_m <= 0.0 || (now_m - ctx->t_hunt_try_m) >= CC_HUNT_INTERVAL_S) {
