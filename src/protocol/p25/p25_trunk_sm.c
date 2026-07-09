@@ -1223,8 +1223,7 @@ p25_grant_slot_duplicate_matches(const p25_sm_slot_ctx_t* slot_ctx, const dsd_tg
     if (!slot_ctx || !route) {
         return 0;
     }
-    if (slot_ctx->freq_hz != freq || slot_ctx->channel != route->channel || slot_ctx->target_id != target_id
-        || slot_ctx->data_call != data_call) {
+    if (slot_ctx->freq_hz != freq || slot_ctx->target_id != target_id || slot_ctx->data_call != data_call) {
         return 0;
     }
     return (slot_ctx->grant_active || slot_ctx->last_active_m > 0.0) ? 1 : 0;
@@ -1255,6 +1254,8 @@ p25_grant_refresh_duplicate_slot(p25_sm_ctx_t* ctx, dsd_state* state, const dsd_
         (!slot_ctx->grant_active && slot_ctx->last_active_m > 0.0 && !slot_ctx->voice_active) ? 1 : 0;
 
     slot_ctx->grant_active = 1;
+    slot_ctx->freq_hz = route->freq_hz;
+    slot_ctx->channel = route->channel;
     slot_ctx->last_grant_m = now_m;
     if (hangtime_refresh && !data_call) {
         slot_ctx->last_active_m = 0.0;
@@ -1285,6 +1286,10 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
     }
 
     p25_grant_refresh_duplicate_slot(ctx, state, route, now_m, data_call);
+    if (data_call) {
+        ctx->t_tune_m = now_m;
+        ctx->t_voice_m = 0.0;
+    }
     p25_grant_refresh_reused_carrier_watchdogs(state, now_m);
     (void)dsd_tg_policy_note_active_call(state, route, decision, now_m);
     p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_duplicate", "freq=%ld tg=%d target=%d slot=%d data=%d", freq,

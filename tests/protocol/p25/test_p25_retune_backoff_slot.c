@@ -211,6 +211,8 @@ main(void) {
     // Two channels mapping to the same RF: low bit selects slot
     int ch_slot0 = (id << 12) | 0x0002; // slot 0
     int ch_slot1 = (id << 12) | 0x0003; // slot 1 (same RF)
+    int alt_id = 3;
+    int ch_slot0_alt_id = (alt_id << 12) | 0x0002; // slot 0, same RF via a different IDEN
 
     p25_sm_ctx_t ctx;
     p25_sm_init_ctx(&ctx, &opts, &st);
@@ -367,6 +369,17 @@ main(void) {
     p25_sm_event(&data_ctx, &data_opts, &data_st, &data_ev_slot1);
     rc |= expect_true("data initial tune", data_st.p25_sm_tune_count == 1 && data_opts.p25_is_tuned == 1
                                                && g_tune_to_freq_calls == 1 && data_ctx.vc_data_call == 1);
+
+    double stale_data_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    data_ctx.t_tune_m = stale_data_tune_m;
+    data_ctx.t_voice_m = 0.0;
+    p25_sm_event(&data_ctx, &data_opts, &data_st, &data_ev_slot1);
+    rc |= expect_true("data duplicate refreshed tune timer", g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 0
+                                                                 && data_opts.p25_is_tuned == 1
+                                                                 && data_ctx.t_tune_m > stale_data_tune_m);
+    p25_sm_tick_ctx(&data_ctx, &data_opts, &data_st);
+    rc |= expect_true("data duplicate avoids stale timeout",
+                      data_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 0 && data_ctx.state == P25_SM_TUNED);
 
     data_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
     data_ctx.t_voice_m = 0.0;
@@ -851,6 +864,8 @@ main(void) {
         repeat_st.p25_chan_iden = id;
         repeat_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
         repeat_st.p25_chan_tdma_explicit[id] = 2;
+        repeat_st.p25_iden_tdma[alt_id] = st.p25_iden_tdma[id];
+        repeat_st.p25_chan_tdma_explicit[alt_id] = 2;
 
         p25_sm_ctx_t repeat_ctx;
         p25_sm_init_ctx(&repeat_ctx, &repeat_opts, &repeat_st);
@@ -859,6 +874,7 @@ main(void) {
         g_return_to_cc_calls = 0;
 
         p25_sm_event_t repeat_grant = p25_sm_ev_group_grant(ch_slot0, 0, 3461, 4461, 0);
+        p25_sm_event_t repeat_alt_id_grant = p25_sm_ev_group_grant(ch_slot0_alt_id, 0, 3461, 4461, 0);
         p25_sm_event_t repeat_ptt = p25_sm_ev_ptt(0);
         p25_sm_event_t repeat_idle = p25_sm_ev_idle(0);
 
@@ -877,13 +893,14 @@ main(void) {
                               && repeat_ctx.slots[0].last_active_m > 0.0 && repeat_ctx.t_voice_m > 0.0);
         double old_last_grant_m = repeat_ctx.slots[0].last_grant_m;
 
-        p25_sm_event(&repeat_ctx, &repeat_opts, &repeat_st, &repeat_grant);
-        rc |= expect_true("repeat hangtime grant accepted",
+        p25_sm_event(&repeat_ctx, &repeat_opts, &repeat_st, &repeat_alt_id_grant);
+        rc |= expect_true("repeat hangtime alt id grant accepted",
                           g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 0 && repeat_opts.p25_is_tuned == 1
                               && repeat_ctx.state == P25_SM_TUNED && repeat_ctx.slots[0].grant_active);
-        rc |= expect_true("repeat hangtime grant refreshed", repeat_ctx.slots[0].last_grant_m > old_last_grant_m
-                                                                 && repeat_ctx.slots[0].last_active_m == 0.0
-                                                                 && repeat_ctx.t_voice_m == 0.0);
+        rc |= expect_true("repeat hangtime alt id grant refreshed",
+                          repeat_ctx.slots[0].last_grant_m > old_last_grant_m
+                              && repeat_ctx.slots[0].channel == ch_slot0_alt_id
+                              && repeat_ctx.slots[0].last_active_m == 0.0 && repeat_ctx.t_voice_m == 0.0);
 
         dsd_state_ext_free_all(&repeat_st);
     }
