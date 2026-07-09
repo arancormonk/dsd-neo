@@ -21,7 +21,9 @@
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#endif
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -939,11 +941,13 @@ p25_sm_clear_one_slot_activity(p25_sm_ctx_t* ctx, int slot) {
     ctx->slots[slot].last_active_m = 0.0;
 }
 
+#ifdef USE_RADIO
 static void
 p25_sm_clear_slot_activity(p25_sm_ctx_t* ctx) {
     p25_sm_clear_one_slot_activity(ctx, 0);
     p25_sm_clear_one_slot_activity(ctx, 1);
 }
+#endif
 
 static void
 p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
