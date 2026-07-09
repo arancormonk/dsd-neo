@@ -152,7 +152,7 @@ tsbk_decode_block(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_
 }
 
 static void
-tsbk_update_fec_counters(dsd_opts* opts, dsd_state* state, int err) {
+tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
     if (err == 0) {
         p25_sm_note_cc_activity(opts, state, "p25p1-tsbk");
         state->p25_p1_fec_ok++;
