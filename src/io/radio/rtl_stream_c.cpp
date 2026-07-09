@@ -76,6 +76,7 @@ int dsd_rtl_stream_get_auto_ppm(void);
 int dsd_rtl_stream_set_rtltcp_autotune(int onoff);
 int dsd_rtl_stream_get_rtltcp_autotune(void);
 int dsd_rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz);
+void dsd_rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data);
 /* Eye-based SNR fallback */
 double dsd_rtl_stream_estimate_snr_c4fm_eye(void);
 double dsd_rtl_stream_estimate_snr_qpsk_const(void);
@@ -123,6 +124,9 @@ int dsd_rtl_stream_test_retune_profile_request_binding(int* out_first_profile, i
 int dsd_rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
                                                             uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
                                                             uint32_t* out_coalesced_request_id);
+int dsd_rtl_stream_test_tagged_completion_boundary(uint64_t first_token, uint64_t second_token, size_t queued_samples,
+                                                   uint64_t* out_coalesced_token, uint32_t* out_generation_before,
+                                                   uint32_t* out_generation_after);
 int dsd_rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_gain_tenth_db, int* out_gain_is_auto,
                                                     int* out_autogain_is_set, int* out_autogain_on);
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);
@@ -253,6 +257,19 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     return ctx->stream->tune(center_freq_hz);
 }
 
+extern "C" int
+rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t token) {
+    if (!ctx || !ctx->stream || token == 0U) {
+        return RTL_STREAM_TUNE_FAILED;
+    }
+    return ctx->stream->tune_tagged(center_freq_hz, token);
+}
+
+extern "C" void
+rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data) {
+    dsd_rtl_stream_register_tune_completion_callback(callback, user_data);
+}
+
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 extern "C" int
 rtl_stream_test_request_retune(const RtlSdrContext* ctx, uint32_t freq_hz, int timeout_ms) {
@@ -351,6 +368,14 @@ rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* 
                                                     uint32_t* out_coalesced_request_id) {
     return dsd_rtl_stream_test_retune_profile_coalesced_no_profile(out_profile, out_profile_freq_hz, out_manual_freq_hz,
                                                                    out_request_id, out_coalesced_request_id);
+}
+
+extern "C" int
+rtl_stream_test_tagged_completion_boundary(uint64_t first_token, uint64_t second_token, size_t queued_samples,
+                                           uint64_t* out_coalesced_token, uint32_t* out_generation_before,
+                                           uint32_t* out_generation_after) {
+    return dsd_rtl_stream_test_tagged_completion_boundary(
+        first_token, second_token, queued_samples, out_coalesced_token, out_generation_before, out_generation_after);
 }
 
 extern "C" int

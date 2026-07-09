@@ -1444,6 +1444,26 @@ no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
     state->p25_call_is_packet[1] = 0;
 }
 
+static dsd_trunk_tune_result
+no_carrier_return_to_cc_correlated(dsd_opts* opts, dsd_state* state, uint64_t* out_request_id) {
+    const uint64_t request_id = dsd_trunk_tuning_request_begin();
+    if (out_request_id) {
+        *out_request_id = request_id;
+    }
+    if (request_id == 0U) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+
+    dsd_trunk_tune_result result = dsd_engine_return_to_cc_request(opts, state, request_id);
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        dsd_trunk_tuning_request_mark_ready(request_id);
+        dsd_trunk_tune_result status = dsd_trunk_tuning_request_status(request_id, NULL);
+        return status == DSD_TRUNK_TUNE_RESULT_OK ? status : result;
+    }
+    dsd_trunk_tuning_request_complete(request_id, result);
+    return dsd_trunk_tuning_request_status(request_id, NULL);
+}
+
 static int
 no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
                                    int clear_generic_p25_alias, int* helper_attempted,
@@ -1460,7 +1480,18 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
     const long old_trunk_cc_freq = state->trunk_cc_freq;
     no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
 
-    dsd_trunk_tune_result tune_result = dsd_engine_return_to_cc(opts, state);
+    uint64_t tune_request_id = 0U;
+    dsd_trunk_tune_result tune_result = no_carrier_return_to_cc_correlated(opts, state, &tune_request_id);
+    if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        (void)p25_sm_await_pending_cc_tune(p25_sm_get_ctx(), opts, state, tune_request_id, "no-carrier");
+    } else if (tune_result == DSD_TRUNK_TUNE_RESULT_OK) {
+        double completed_m = 0.0;
+        (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
+        if (completed_m <= 0.0) {
+            completed_m = dsd_time_now_monotonic_s();
+        }
+        (void)p25_sm_restart_pending_cc_acquisition(p25_sm_get_ctx(), opts, state, completed_m, "no-carrier");
+    }
     if (helper_result) {
         *helper_result = tune_result;
     }
@@ -2146,7 +2177,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
                                    uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
         p25_sm_tick_guard_enter();
-        if (!frame_tune_generation || *frame_tune_generation == dsd_trunk_tuning_generation()) {
+        if (!frame_tune_generation || dsd_trunk_tuning_frame_is_current(*frame_tune_generation)) {
             processFrame(opts, state);
         }
         p25_sm_tick_guard_leave();

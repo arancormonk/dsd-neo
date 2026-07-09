@@ -20,6 +20,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -407,6 +408,15 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
     }
 
     int rc = 0;
+    if (fixture->ctx.cc_tune_pending) {
+        const uint64_t request_id = fixture->ctx.cc_tune_request_id;
+        rc |= matrix_expect(request_id != 0U && fixture->ctx.t_cc_tune_m == 0.0, mode->name, flow->name, script->name,
+                            "pending return holds acquisition timer");
+        dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+        p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+        rc |= matrix_expect(fixture->ctx.cc_tune_pending == 0 && fixture->ctx.t_cc_tune_m > 0.0, mode->name, flow->name,
+                            script->name, "completed return starts acquisition timer");
+    }
     rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, flow->name, script->name, "returned to ON_CC");
     rc |= matrix_expect(fixture->opts->p25_is_tuned == 0 && fixture->opts->trunk_is_tuned == 0, mode->name, flow->name,
                         script->name, "tuned flags cleared");
@@ -732,6 +742,16 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
                             "accepted cc hunt returns ON_CC");
         rc |= matrix_expect(fixture->state->p25_cc_eval_freq == candidate, mode->name, "cc-hunt", result_name,
                             "accepted candidate is under evaluation");
+        if (first_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+            const uint64_t request_id = fixture->ctx.cc_tune_request_id;
+            rc |=
+                matrix_expect(fixture->ctx.cc_tune_pending == 1 && request_id != 0U && fixture->ctx.t_cc_tune_m == 0.0,
+                              mode->name, "cc-hunt", result_name, "pending hunt holds acquisition timer");
+            dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+            p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+            rc |= matrix_expect(fixture->ctx.cc_tune_pending == 0 && fixture->ctx.t_cc_tune_m > 0.0, mode->name,
+                                "cc-hunt", result_name, "completed hunt starts acquisition timer");
+        }
         return rc;
     }
 

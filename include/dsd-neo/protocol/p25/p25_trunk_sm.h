@@ -149,13 +149,15 @@ typedef struct {
     p25_sm_slot_ctx_t slots[2];
 
     // Timing
-    double t_tune_m;     // Monotonic time of last VC tune
-    double t_voice_m;    // Monotonic time of last voice activity
-    double t_hangtime_m; // Monotonic time hangtime started
-    double t_cc_sync_m;  // Monotonic time of last CC sync
-    double t_cc_tune_m;  // Monotonic time of last CC tune awaiting decode
-    double t_hunt_try_m; // Monotonic time of last CC candidate attempt
-    int cc_sync_pending; // 1 until a CC tune is followed by decoded CC sync
+    double t_tune_m;             // Monotonic time of last VC tune
+    double t_voice_m;            // Monotonic time of last voice activity
+    double t_hangtime_m;         // Monotonic time hangtime started
+    double t_cc_sync_m;          // Monotonic time of last CC sync
+    double t_cc_tune_m;          // Monotonic time of last CC tune awaiting decode
+    double t_hunt_try_m;         // Monotonic time of last CC candidate attempt
+    uint64_t cc_tune_request_id; // Runtime request awaiting asynchronous tune completion
+    int cc_tune_pending;         // 1 while the tuner/output pipeline is still changing channels
+    int cc_sync_pending;         // 1 until a completed CC tune is followed by decoded CC sync
 
     // Statistics (for debugging/UI)
     uint32_t tune_count;
@@ -219,22 +221,36 @@ void p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25
 void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief Restart a pending CC acquisition after an accepted external retune.
+ * @brief Start CC acquisition after a completed external retune.
  *
- * This is a no-op unless the context is already awaiting decoded CC activity.
- * It refreshes the acquisition baseline and returns a hunting context to
- * ON_CC so the normal acquisition watchdog grants the new tune its full grace
- * period.
+ * Refreshes the acquisition baseline and returns the context to ON_CC so the
+ * normal acquisition watchdog grants the completed tune its full grace period.
  *
  * @param ctx State machine context.
  * @param opts Decoder options.
  * @param state Decoder state.
- * @param tune_start_m Monotonic timestamp captured after retune acceptance.
+ * @param tune_start_m Monotonic timestamp captured after retune completion.
  * @param source Short diagnostic source label.
- * @return 1 when pending acquisition was restarted, 0 otherwise.
+ * @return 1 when acquisition was started, 0 otherwise.
  */
 int p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double tune_start_m,
                                           const char* source);
+
+/**
+ * @brief Hold CC acquisition until an exact asynchronous retune completes.
+ *
+ * No acquisition deadline begins until the supplied request completes, even
+ * for a previously synchronized parked context.
+ *
+ * @param ctx State machine context.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param request_id Runtime tune request being awaited.
+ * @param source Short diagnostic source label.
+ * @return 1 when the pending tune was recorded, 0 on invalid input.
+ */
+int p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, uint64_t request_id,
+                                 const char* source);
 
 /**
  * @brief Periodic tick for timeout-based transitions.

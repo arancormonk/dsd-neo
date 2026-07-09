@@ -10,8 +10,10 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +47,7 @@ fake_rtl_fsk_output_kind(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 static int g_rtl_tune_calls = 0;
 static uint32_t g_rtl_tune_freq = 0;
+static uint64_t g_rtl_tune_token = 0U;
 static int g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 static int g_rtl_output_rate = 48000;
 static int g_rtl_cqpsk_enable = 0;
@@ -67,6 +70,7 @@ static void
 reset_rtl_profile_fakes(void) {
     g_rtl_tune_calls = 0;
     g_rtl_tune_freq = 0;
+    g_rtl_tune_token = 0U;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_output_rate = 48000;
     g_rtl_cqpsk_enable = 1;
@@ -198,6 +202,12 @@ __wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
         apply_pending_profile(center_freq_hz);
     }
     return g_rtl_tune_result;
+}
+
+int
+__wrap_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t token) {
+    g_rtl_tune_token = token;
+    return __wrap_rtl_stream_tune(ctx, center_freq_hz);
 }
 
 int
@@ -473,7 +483,8 @@ main(void) {
 
     noCarrier(opts, state);
 
-    rc |= expect_true("p25-rtl-nocarrier-cc-retune", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769868750U);
+    rc |= expect_true("p25-rtl-nocarrier-cc-retune",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769868750U && g_rtl_tune_token != 0U);
     rc |= expect_true("p25-rtl-nocarrier-syncs-selected-cc",
                       state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-rate", g_rtl_symbol_rate_hz == 4800);
@@ -484,6 +495,38 @@ main(void) {
     rc |= expect_true("p25-rtl-nocarrier-reenables-slots", opts->slot1_on == 1 && opts->slot2_on == 1);
     rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
+
+    // A controller wait timeout keeps frame dispatch closed and starts the CC
+    // acquisition window only after the exact tagged request completes.
+    reset_rtl_profile_fakes();
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->p25_cc_freq = 769868750;
+    state->trunk_cc_freq = 769868750;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 771056250;
+    p25_sm_ctx_t* pending_ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(pending_ctx, opts, state);
+
+    noCarrier(opts, state);
+
+    uint64_t pending_request_id = pending_ctx->cc_tune_request_id;
+    rc |= expect_true("p25-rtl-nocarrier-pending-tagged",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_token != 0U && pending_request_id == g_rtl_tune_token);
+    rc |= expect_true("p25-rtl-nocarrier-pending-holds-acquisition",
+                      pending_ctx->cc_tune_pending == 1 && pending_ctx->t_cc_tune_m == 0.0);
+    rc |= expect_true("p25-rtl-nocarrier-pending-closes-frame-gate",
+                      !dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
+
+    dsd_trunk_tuning_request_complete(pending_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    p25_sm_tick_ctx(pending_ctx, opts, state);
+    rc |= expect_true("p25-rtl-nocarrier-completion-starts-acquisition",
+                      pending_ctx->cc_tune_pending == 0 && pending_ctx->t_cc_tune_m > 0.0);
+    rc |= expect_true("p25-rtl-nocarrier-completion-opens-frame-gate",
+                      dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {

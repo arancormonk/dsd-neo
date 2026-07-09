@@ -12,6 +12,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -28,6 +29,7 @@ static int g_get_frame_sync_calls = 0;
 static int g_outer_tick_calls = 0;
 static int g_synced_tick_calls = 0;
 static int g_process_frame_guard_failures = 0;
+static uint64_t g_pending_tune_request = 0U;
 
 void
 printFrameInfo(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
@@ -60,11 +62,15 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     (void)state;
     g_get_frame_sync_calls++;
     if (g_get_frame_sync_calls == 1) {
-        // Simulate an accepted retune while work for the old tuner generation
-        // is still being assembled. That frame must not reach processFrame().
-        dsd_trunk_tuning_generation_advance();
+        // Frames assembled before and during an asynchronous retune must stay
+        // blocked even though their completed generation still compares equal.
+        g_pending_tune_request = dsd_trunk_tuning_request_begin();
+    } else if (g_get_frame_sync_calls == 3) {
+        // Completion while a frame is being assembled advances the generation;
+        // that frame is stale too. Only the next freshly collected frame is valid.
+        dsd_trunk_tuning_request_complete(g_pending_tune_request, DSD_TRUNK_TUNE_RESULT_OK);
     }
-    if (g_get_frame_sync_calls <= 3) {
+    if (g_get_frame_sync_calls <= 4) {
         return DSD_SYNC_P25P1_POS;
     }
     dsd_exitflag_store(1);
@@ -122,8 +128,9 @@ main(void) {
         DSD_FPRINTF(stderr, "engine run failed rc=%d\n", rc);
         test_rc = 1;
     }
-    if (g_process_frame_calls != 2) {
-        DSD_FPRINTF(stderr, "stale tune-generation frame was not discarded calls=%d\n", g_process_frame_calls);
+    if (g_process_frame_calls != 1) {
+        DSD_FPRINTF(stderr, "pending/stale tune-generation frames were not discarded calls=%d\n",
+                    g_process_frame_calls);
         test_rc = 1;
     }
     if (g_process_frame_guard_failures != 0) {

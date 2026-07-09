@@ -185,6 +185,8 @@ typedef struct {
     double idle_since_m;
     double retry_until_m;
     double last_allowed_activity_m;
+    uint64_t tune_request_id;
+    int tune_pending;
 } dsd_trunk_scan_target_runtime;
 
 typedef struct {
@@ -1501,19 +1503,25 @@ trunk_scan_retune_freq(const dsd_state* state, const dsd_trunk_scan_target* targ
 }
 
 static dsd_trunk_tune_result
-trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
+trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
+                         uint64_t* out_request_id) {
+    if (out_request_id) {
+        *out_request_id = 0U;
+    }
     const long int freq = trunk_scan_retune_freq(state, &rt->target);
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
         state->p25_cc_freq = freq;
         state->trunk_cc_freq = freq;
-        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_p25_cc_sps(opts, state));
+        return dsd_trunk_tuning_hook_tune_to_cc_with_id(opts, state, freq, trunk_scan_p25_cc_sps(opts, state),
+                                                        out_request_id);
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
         state->p25_cc_freq = 0;
         state->trunk_cc_freq = freq;
-        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_dmr_sps(opts, state));
+        return dsd_trunk_tuning_hook_tune_to_cc_with_id(opts, state, freq, trunk_scan_dmr_sps(opts, state),
+                                                        out_request_id);
     }
-    return dsd_engine_scan_tune_to_freq(opts, state, freq, trunk_scan_dmr_sps(opts, state));
+    return dsd_engine_scan_tune_to_freq_with_id(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
 }
 
 static int
@@ -1535,7 +1543,8 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     double now_m = trunk_scan_now_m();
     rt->parked_since_m = now_m;
     rt->idle_since_m = now_m;
-    dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt);
+    uint64_t tune_request_id = 0U;
+    dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt, &tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         rt->retry_until_m = now_m + 2.0;
         LOG_WARNING("Trunk scan target '%s' retune failed; cooling down briefly\n", rt->target.id);
@@ -1543,9 +1552,22 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     }
 
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-        // A parked pending context predates this physical retune. Restart it in
-        // ON_CC so the acquisition watchdog honors the refreshed grace period.
-        (void)p25_sm_restart_pending_cc_acquisition(&rt->p25_ctx, opts, state, trunk_scan_now_m(), "scan-retune");
+        if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+            (void)p25_sm_await_pending_cc_tune(&rt->p25_ctx, opts, state, tune_request_id, "scan-retune");
+        } else {
+            double completed_m = 0.0;
+            (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
+            if (completed_m <= 0.0) {
+                completed_m = trunk_scan_now_m();
+            }
+            (void)p25_sm_restart_pending_cc_acquisition(&rt->p25_ctx, opts, state, completed_m, "scan-retune");
+        }
+    } else if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        rt->tune_request_id = tune_request_id;
+        rt->tune_pending = 1;
+    } else {
+        rt->tune_request_id = 0U;
+        rt->tune_pending = 0;
     }
     rt->retry_until_m = 0.0;
     LOG_NOTICE("Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
@@ -1603,8 +1625,12 @@ trunk_scan_retry_active_if_due(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
 static int
 trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coord) {
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->tune_pending) {
+        return 1;
+    }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-        return (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1 || p25_sm_get_state(&rt->p25_ctx) == P25_SM_TUNED);
+        return (rt->p25_ctx.cc_tune_pending || opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1
+                || p25_sm_get_state(&rt->p25_ctx) == P25_SM_TUNED);
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
         return (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
@@ -1666,11 +1692,45 @@ trunk_scan_tick_active_target_sm(dsd_opts* opts, dsd_state* state, dsd_trunk_sca
     }
 }
 
+static int
+trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtime* rt, double now_m) {
+    if (!rt || !rt->tune_pending) {
+        return 1;
+    }
+    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(rt->tune_request_id, NULL);
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        return 0;
+    }
+
+    rt->tune_request_id = 0U;
+    rt->tune_pending = 0;
+    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
+        rt->idle_since_m = -1.0;
+        return 1;
+    }
+
+    rt->retry_until_m = now_m + 2.0;
+    LOG_WARNING("Trunk scan target '%s' asynchronous retune failed; cooling down briefly\n", rt->target.id);
+    (void)state;
+    return -1;
+}
+
 static void
 trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     double now_m = trunk_scan_now_m();
-    trunk_scan_retry_active_if_due(opts, state, coord, now_m);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    int pending_status = trunk_scan_resolve_pending_retune(state, rt, now_m);
+    if (pending_status == 0) {
+        return;
+    }
+    if (pending_status < 0) {
+        if (coord->count > 1) {
+            trunk_scan_advance(opts, state, coord);
+        }
+        return;
+    }
+    trunk_scan_retry_active_if_due(opts, state, coord, now_m);
+    rt = &coord->targets[coord->active];
     trunk_scan_tick_active_target_sm(opts, state, rt);
     if (trunk_scan_active_is_held(opts, coord)) {
         rt->idle_since_m = -1.0;

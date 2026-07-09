@@ -46,6 +46,7 @@ static dsd_trunk_tune_result g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESUL
 static int g_result_tune_to_freq_calls = 0;
 static int g_result_tune_to_cc_calls = 0;
 static int g_result_return_to_cc_calls = 0;
+static int g_result_hook_commits_decoder_state = 1;
 static long g_rigctl_current_freq = 0;
 static atomic_int g_release_hook_block = 0;
 static dsd_mutex_t g_release_hook_mutex;
@@ -99,7 +100,7 @@ trunk_tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int t
     (void)ted_sps;
     g_result_tune_to_freq_calls++;
     g_last_tuned_vc = freq;
-    if (g_result_tune_to_freq_result == DSD_TRUNK_TUNE_RESULT_OK) {
+    if (g_result_tune_to_freq_result == DSD_TRUNK_TUNE_RESULT_OK && g_result_hook_commits_decoder_state) {
         if (opts) {
             opts->p25_is_tuned = 1;
             opts->trunk_is_tuned = 1;
@@ -1306,6 +1307,61 @@ main(void) {
                     release_mutex_destroy_rc);
         return 1;
     }
+
+    // 29) Hardware-only legacy VC hooks still receive their return callback.
+    install_trunk_tuning_hooks();
+    static dsd_opts o22;
+    static dsd_state s22;
+    DSD_MEMSET(&o22, 0, sizeof(o22));
+    DSD_MEMSET(&s22, 0, sizeof(s22));
+    o22.p25_trunk = 1;
+    o22.trunk_tune_group_calls = 1;
+    s22.p25_cc_freq = 851000000;
+    s22.trunk_cc_freq = 851000000;
+    s22.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s22.p25_iden_fdma[id9].chan_type = 1;
+    s22.p25_iden_fdma[id9].chan_spac = 100;
+    s22.p25_iden_fdma[id9].trust = 2;
+    s22.p25_iden_fdma[id9].populated = 1;
+    s22.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx22;
+    p25_sm_init_ctx(&ctx22, &o22, &s22);
+    g_return_to_cc_called = 0;
+    p25_sm_event(&ctx22, &o22, &s22, &ev9);
+    assert(ctx22.state == P25_SM_TUNED);
+    assert(o22.p25_is_tuned == 1 && o22.trunk_is_tuned == 1);
+    assert(s22.p25_vc_freq[0] == ctx22.vc_freq_hz && s22.trunk_vc_freq[0] == ctx22.vc_freq_hz);
+    assert(s22.last_vc_sync_time_m > 0.0 && s22.p25_last_vc_tune_time_m > 0.0);
+    p25_sm_release(&ctx22, &o22, &s22, "legacy-hook-release");
+    assert(g_return_to_cc_called == 1);
+    assert(ctx22.state == P25_SM_ON_CC);
+
+    // 30) Result hooks may control hardware without duplicating decoder bookkeeping.
+    install_result_tuning_hooks();
+    static dsd_opts o23;
+    static dsd_state s23;
+    DSD_MEMSET(&o23, 0, sizeof(o23));
+    DSD_MEMSET(&s23, 0, sizeof(s23));
+    o23.p25_trunk = 1;
+    o23.trunk_tune_group_calls = 1;
+    s23.p25_cc_freq = 851000000;
+    s23.trunk_cc_freq = 851000000;
+    s23.p25_iden_fdma[id9] = s22.p25_iden_fdma[id9];
+    s23.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx23;
+    p25_sm_init_ctx(&ctx23, &o23, &s23);
+    g_result_hook_commits_decoder_state = 0;
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_event(&ctx23, &o23, &s23, &ev9);
+    assert(ctx23.state == P25_SM_TUNED);
+    assert(o23.p25_is_tuned == 1 && o23.trunk_is_tuned == 1);
+    assert(s23.p25_vc_freq[0] == ctx23.vc_freq_hz && s23.trunk_vc_freq[0] == ctx23.vc_freq_hz);
+    p25_sm_release(&ctx23, &o23, &s23, "result-hook-release");
+    assert(g_result_return_to_cc_calls == 1);
+    assert(ctx23.state == P25_SM_ON_CC);
+    g_result_hook_commits_decoder_state = 1;
 
     install_trunk_tuning_hooks();
 

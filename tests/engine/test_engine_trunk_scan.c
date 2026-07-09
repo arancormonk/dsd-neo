@@ -83,10 +83,12 @@ p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_sta
                                       const char* source) {
     (void)opts;
     (void)source;
-    if (!ctx || !ctx->cc_sync_pending) {
+    if (!ctx) {
         return 0;
     }
     ctx->state = P25_SM_ON_CC;
+    ctx->cc_tune_request_id = 0U;
+    ctx->cc_tune_pending = 0;
     ctx->t_cc_sync_m = tune_start_m;
     ctx->t_cc_tune_m = tune_start_m;
     ctx->t_hunt_try_m = 0.0;
@@ -95,6 +97,26 @@ p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_sta
             state->p25_cc_eval_start_m = ctx->t_cc_tune_m;
         }
         state->last_cc_sync_time_m = tune_start_m;
+        state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
+    }
+    return 1;
+}
+
+int
+p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, uint64_t request_id,
+                             const char* source) {
+    (void)opts;
+    (void)source;
+    if (!ctx || request_id == 0U) {
+        return 0;
+    }
+    ctx->state = P25_SM_ON_CC;
+    ctx->cc_tune_request_id = request_id;
+    ctx->cc_tune_pending = 1;
+    ctx->cc_sync_pending = 1;
+    ctx->t_cc_tune_m = 0.0;
+    if (state) {
+        state->p25_cc_eval_start_m = 0.0;
         state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
     }
     return 1;
@@ -157,6 +179,15 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     opts->trunk_is_tuned = 0;
     state->last_cc_sync_time_m = dsd_engine_trunk_scan_active_index(state) == (size_t)-1 ? 0.0 : 1.0;
     return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+dsd_trunk_tune_result
+dsd_engine_scan_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                     uint64_t* out_request_id) {
+    if (out_request_id) {
+        *out_request_id = 0U;
+    }
+    return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps);
 }
 
 int
@@ -1348,8 +1379,8 @@ test_p25_target_switch_resyncs_sm_mode(void) {
 
     dsd_engine_trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_sm_mode != DSD_P25_SM_MODE_HUNTING) {
-        DSD_FPRINTF(stderr, "restored P25 scan target SM mode invalid active=%zu mode=%d\n",
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_sm_mode != DSD_P25_SM_MODE_ON_CC) {
+        DSD_FPRINTF(stderr, "retuned P25 scan target SM mode invalid active=%zu mode=%d\n",
                     dsd_engine_trunk_scan_active_index(&state), state.p25_sm_mode);
         test_rc = 1;
     }
@@ -1410,10 +1441,11 @@ test_p25_scan_retune_restarts_pending_cc_acquisition(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     p25_sm_ctx_t* restored_ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || !restored_ctx || restored_ctx->cc_sync_pending != 1
-        || restored_ctx->state != P25_SM_ON_CC || restored_ctx->t_cc_sync_m != 4.0 || restored_ctx->t_cc_tune_m != 4.0
-        || restored_ctx->t_hunt_try_m != 0.0 || state.p25_sm_mode != DSD_P25_SM_MODE_ON_CC
-        || state.p25_cc_freq != 853000000 || state.trunk_cc_freq != 853000000 || state.p25_cc_eval_freq != 853000000
-        || state.p25_cc_eval_start_m != 4.0 || state.p25_last_cc_msg_time_m != 0.75) {
+        || restored_ctx->state != P25_SM_ON_CC || restored_ctx->t_cc_sync_m <= 1.0
+        || restored_ctx->t_cc_tune_m != restored_ctx->t_cc_sync_m || restored_ctx->t_hunt_try_m != 0.0
+        || state.p25_sm_mode != DSD_P25_SM_MODE_ON_CC || state.p25_cc_freq != 853000000
+        || state.trunk_cc_freq != 853000000 || state.p25_cc_eval_freq != 853000000
+        || state.p25_cc_eval_start_m != restored_ctx->t_cc_tune_m || state.p25_last_cc_msg_time_m != 0.75) {
         DSD_FPRINTF(stderr,
                     "pending CC timer did not restart after retune active=%zu ctx=%p state=%d pending=%d sync=%.3f "
                     "tune=%.3f hunt=%.3f mode=%d cc=%ld trunk_cc=%ld eval_freq=%ld eval_start=%.3f decoded=%.3f\n",
@@ -1801,6 +1833,7 @@ static int g_counting_tune_to_cc_calls = 0;
 static int g_counting_tune_to_cc_failures_remaining = 0;
 static int g_counting_tune_to_cc_ted_sps = 0;
 static long int g_counting_tune_to_cc_freq = 0;
+static dsd_trunk_tune_result g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
 static dsd_trunk_tune_result
 counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
@@ -1815,7 +1848,134 @@ counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
     if (state) {
         state->trunk_cc_freq = freq;
     }
-    return DSD_TRUNK_TUNE_RESULT_OK;
+    return g_counting_tune_to_cc_result;
+}
+
+static int
+test_p25_pending_retune_holds_scan_dwell(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_result = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(1.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    if (rc != 0 || !ctx || !ctx->cc_tune_pending || ctx->cc_tune_request_id == 0U || g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "pending scan init failed rc=%d ctx=%p pending=%d request=%llu calls=%d err=%s\n", rc,
+                    (void*)ctx, ctx ? ctx->cc_tune_pending : -1,
+                    (unsigned long long)(ctx ? ctx->cc_tune_request_id : 0U), g_counting_tune_to_cc_calls, err);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(2.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "pending P25 retune did not hold scan dwell active=%zu calls=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+
+    if (ctx && ctx->cc_tune_request_id != 0U) {
+        dsd_trunk_tuning_request_complete(ctx->cc_tune_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+        (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 2.0, "test-complete");
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_engine_trunk_scan_test_set_now(2.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_engine_trunk_scan_test_set_now(2.36);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_calls != 2) {
+        DSD_FPRINTF(stderr, "scan dwell did not restart after pending completion active=%zu calls=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_generic_pending_retune_holds_and_recovers(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,451000000,,250,,\n"
+                             "b,dmr-trunk,452000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_result = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(1.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    uint64_t request_id = dsd_trunk_tuning_pending_request();
+    if (rc != 0 || request_id == 0U || g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "generic pending scan init failed rc=%d request=%llu calls=%d err=%s\n", rc,
+                    (unsigned long long)request_id, g_counting_tune_to_cc_calls, err);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(2.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "generic pending retune did not hold scan active=%zu calls=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+
+    dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_engine_trunk_scan_test_set_now(2.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_calls != 2
+        || dsd_trunk_tuning_pending_request() != 0U
+        || !dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation())) {
+        DSD_FPRINTF(stderr, "generic async failure did not recover active=%zu calls=%d pending=%llu\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls,
+                    (unsigned long long)dsd_trunk_tuning_pending_request());
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
 }
 
 static int
@@ -2917,6 +3077,8 @@ main(void) {
     rc |= test_state_ext_cleanup_clears_scan_hooks();
     rc |= test_protocol_hooks_only_expose_matching_target_contexts();
     rc |= test_dmr_trunk_sm_timeout_releases_scan_hold();
+    rc |= test_p25_pending_retune_holds_scan_dwell();
+    rc |= test_generic_pending_retune_holds_and_recovers();
     rc |= test_p25_targets_pass_cc_sps_to_retune_paths();
     rc |= test_p25_targets_use_rtl_output_rate_for_retune_sps();
     rc |= test_channel_map_sequence_advances_on_equal_count_target_switches();

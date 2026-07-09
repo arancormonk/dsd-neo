@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/io/rtl_stream.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -25,6 +26,7 @@ int dsd_rtl_stream_open(dsd_opts* opts);
 void dsd_rtl_stream_close(void);
 int dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state);
 int dsd_rtl_stream_tune(dsd_opts* opts, long int frequency);
+int dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t token);
 unsigned int dsd_rtl_stream_output_rate(void);
 int dsd_rtl_stream_soft_stop(void);
 int rtl_stream_request_ppm(dsd_opts* opts, int ppm);
@@ -155,6 +157,25 @@ RtlSdrOrchestrator::tune(uint32_t center_freq_hz) {
     }
     last_error_code_ = 0;
     return 0;
+}
+
+int
+RtlSdrOrchestrator::tune_tagged(uint32_t center_freq_hz, uint64_t token) {
+    if (!started_) {
+        last_error_code_ = -1;
+        return last_error_code_;
+    }
+    if (!opts_) {
+        last_error_code_ = -2;
+        return last_error_code_;
+    }
+    if (token == 0U) {
+        last_error_code_ = RTL_STREAM_TUNE_FAILED;
+        return last_error_code_;
+    }
+    int rc = dsd_rtl_stream_tune_tagged(opts_, (long int)center_freq_hz, token);
+    last_error_code_ = rc;
+    return rc;
 }
 
 int

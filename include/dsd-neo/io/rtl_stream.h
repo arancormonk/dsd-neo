@@ -77,6 +77,16 @@ class RtlSdrOrchestrator {
     int tune(uint32_t center_freq_hz);
 
     /**
+     * @brief Tune to a new center frequency with a caller completion token.
+     * @param center_freq_hz Frequency in Hz.
+     * @param token Non-zero token forwarded to the registered completion callback.
+     * @return 0 when completed, 1 when deferred, or a negative error/timeout code.
+     * A timeout leaves an accepted request active; its terminal result is
+     * delivered through the registered completion callback.
+     */
+    int tune_tagged(uint32_t center_freq_hz, uint64_t token);
+
+    /**
      * @brief Publish an absolute live PPM request against the stream snapshot.
      * @param ppm Requested correction in PPM; clamped by the runtime helper.
      * @return 0 on success, <0 on error.

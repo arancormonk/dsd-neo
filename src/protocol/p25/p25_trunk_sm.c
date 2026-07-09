@@ -309,6 +309,8 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     if (!ctx) {
         return;
     }
+    ctx->cc_tune_request_id = 0U;
+    ctx->cc_tune_pending = 0;
     ctx->t_cc_sync_m = tune_start_m;
     if (state) {
         if (state->last_cc_sync_time_m <= 0.0 || state->last_cc_sync_time_m < tune_start_m) {
@@ -327,6 +329,45 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
                  "source=%s tune_start_m=%.3f tune_m=%.3f last_cc_m=%.3f decoded_cc_m=%.3f",
                  source ? source : "unknown", tune_start_m, ctx->t_cc_tune_m, state ? state->last_cc_sync_time_m : 0.0,
                  state ? state->p25_last_cc_msg_time_m : 0.0);
+}
+
+static void
+p25_sm_wait_for_cc_tune_completion(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, uint64_t request_id,
+                                   const char* source) {
+    if (!ctx) {
+        return;
+    }
+    ctx->cc_tune_request_id = request_id;
+    ctx->cc_tune_pending = 1;
+    ctx->t_cc_tune_m = 0.0;
+    ctx->cc_sync_pending = 1;
+    if (state && state->p25_cc_eval_freq != 0) {
+        state->p25_cc_eval_start_m = 0.0;
+    }
+    p25_sm_diagf(opts, state, ctx, "cc_tune_pending", "source=%s request=%llu eval_freq=%ld",
+                 source ? source : "unknown", (unsigned long long)ctx->cc_tune_request_id,
+                 state ? state->p25_cc_eval_freq : 0);
+}
+
+static void
+p25_sm_start_cc_acquisition_for_result(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
+                                       dsd_trunk_tune_result tune_result, uint64_t request_id, double tune_start_m,
+                                       const char* source) {
+    if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        p25_sm_wait_for_cc_tune_completion(ctx, opts, state, request_id, source);
+        return;
+    }
+    if (request_id != 0U) {
+        double completed_m = 0.0;
+        if (dsd_trunk_tuning_request_status(request_id, &completed_m) == DSD_TRUNK_TUNE_RESULT_OK
+            && completed_m > 0.0) {
+            tune_start_m = completed_m;
+        }
+    }
+    p25_sm_start_cc_grace_after_tune(ctx, opts, state, tune_start_m, source);
+    if (state && state->p25_cc_eval_freq != 0) {
+        state->p25_cc_eval_start_m = ctx->t_cc_tune_m;
+    }
 }
 
 static int
@@ -365,6 +406,8 @@ p25_sm_cancel_pending_cc_acquisition(p25_sm_ctx_t* ctx) {
     if (!ctx) {
         return;
     }
+    ctx->cc_tune_request_id = 0U;
+    ctx->cc_tune_pending = 0;
     ctx->t_cc_tune_m = 0.0;
     ctx->cc_sync_pending = 0;
 }
@@ -484,10 +527,50 @@ set_state(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, p25_sm_stat
     sm_log(opts, state, reason);
 }
 
+/* Return 1 after successful completion, 0 while still pending, and -1 on failure. */
+static int
+p25_sm_resolve_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    if (!ctx || !ctx->cc_tune_pending) {
+        return 1;
+    }
+
+    double completed_m = 0.0;
+    const uint64_t request_id = ctx->cc_tune_request_id;
+    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, &completed_m);
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        return 0;
+    }
+
+    ctx->cc_tune_request_id = 0U;
+    ctx->cc_tune_pending = 0;
+    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
+        if (completed_m <= 0.0) {
+            completed_m = now_monotonic();
+        }
+        p25_sm_start_cc_grace_after_tune(ctx, opts, state, completed_m, "async-complete");
+        if (state && state->p25_cc_eval_freq != 0) {
+            state->p25_cc_eval_start_m = ctx->t_cc_tune_m;
+        }
+        p25_sm_diagf(opts, state, ctx, "cc_tune_complete", "request=%llu completed_m=%.3f",
+                     (unsigned long long)request_id, completed_m);
+        set_state(ctx, opts, state, P25_SM_ON_CC, "cc-tune-complete");
+        return 1;
+    }
+
+    ctx->t_cc_tune_m = 0.0;
+    ctx->t_cc_sync_m = completed_m > 0.0 ? completed_m : now_monotonic();
+    ctx->cc_sync_pending = 0;
+    ctx->t_hunt_try_m = 0.0;
+    p25_sm_diagf(opts, state, ctx, "cc_tune_complete", "request=%llu result=%s", (unsigned long long)request_id,
+                 p25_tune_result_name(result));
+    set_state(ctx, opts, state, P25_SM_HUNTING, "cc-tune-failed");
+    return -1;
+}
+
 int
 p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double tune_start_m,
                                       const char* source) {
-    if (!ctx || !ctx->cc_sync_pending) {
+    if (!ctx) {
         return 0;
     }
     const char* reason = source ? source : "external-retune";
@@ -498,6 +581,19 @@ p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_sta
     if (state && state->p25_cc_eval_freq != 0) {
         state->p25_cc_eval_start_m = ctx->t_cc_tune_m;
     }
+    ctx->t_hunt_try_m = 0.0;
+    set_state(ctx, opts, state, P25_SM_ON_CC, reason);
+    return 1;
+}
+
+int
+p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, uint64_t request_id,
+                             const char* source) {
+    if (!ctx || request_id == 0U) {
+        return 0;
+    }
+    const char* reason = source ? source : "external-retune";
+    p25_sm_wait_for_cc_tune_completion(ctx, opts, state, request_id, reason);
     ctx->t_hunt_try_m = 0.0;
     set_state(ctx, opts, state, P25_SM_ON_CC, reason);
     return 1;
@@ -1142,6 +1238,23 @@ p25_grant_refresh_reused_carrier_watchdogs(dsd_state* state, double now_m) {
 }
 
 static void
+p25_grant_commit_decoder_tune(dsd_opts* opts, dsd_state* state, long freq) {
+    if (!opts || !state || freq <= 0) {
+        return;
+    }
+    const time_t now = time(NULL);
+    const double now_m = now_monotonic();
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    state->last_vc_sync_time = now;
+    state->p25_last_vc_tune_time = now;
+    state->last_vc_sync_time_m = now_m;
+    state->p25_last_vc_tune_time_m = now_m;
+}
+
+static void
 p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev, long freq, int target_id,
                            const p25_grant_eval_ctx_t* eval_ctx, double now_m, int slot, int reused_carrier) {
     if (!ctx || !ev) {
@@ -1252,6 +1365,7 @@ p25_grant_try_tune_vc(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, dsd_opt
                  vc_is_tdma, ted_sps, ev->tg, ev->src, ev->dst);
     dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, ted_sps);
     if (dsd_trunk_tune_result_is_ok(tune_result)) {
+        p25_grant_commit_decoder_tune(opts, state, freq);
         *out_ted_sps = ted_sps;
         p25_sm_diagf(opts, state, ctx, "grant_tune_result", "ch=0x%04X freq=%ld slot=%d tdma=%d sps=%d result=%s",
                      ev->channel & 0xFFFF, freq, slot, vc_is_tdma, ted_sps, p25_tune_result_name(tune_result));
@@ -1580,8 +1694,18 @@ p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
 static int
 p25_grant_blocked_by_pending_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                                 const p25_grant_route_ctx_t* grant) {
-    if (!ctx || !ev || !grant || !ctx->cc_sync_pending) {
+    if (!ctx || !ev || !grant || (!ctx->cc_tune_pending && !ctx->cc_sync_pending)) {
         return 0;
+    }
+    if (ctx->cc_tune_pending) {
+        int tune_status = p25_sm_resolve_pending_cc_tune(ctx, opts, state);
+        if (tune_status <= 0) {
+            p25_sm_diagf(opts, state, ctx, "grant_cc_pending",
+                         "ch=0x%04X freq=%ld slot=%d tg=%d src=%d request=%llu tune_pending=%d", ev->channel & 0xFFFF,
+                         grant->freq, grant->slot, ev->tg, ev->src, (unsigned long long)ctx->cc_tune_request_id,
+                         ctx->cc_tune_pending);
+            return 1;
+        }
     }
     (void)p25_sm_refresh_cc_sync_from_state(ctx, opts, state, "grant");
     if (!ctx->cc_sync_pending) {
@@ -2031,7 +2155,8 @@ p25_release_ctx_is_stale(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const ds
 
 static int
 p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int had_force_release,
-                                  double* out_tune_start_m) {
+                                  double* out_tune_start_m, dsd_trunk_tune_result* out_tune_result,
+                                  uint64_t* out_request_id) {
     if (ctx->vc_is_tdma && opts && state) {
         dsd_p25_optional_hook_p25p2_flush_partial_audio(opts, state);
     }
@@ -2042,7 +2167,10 @@ p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
                  state ? ((state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq) : 0,
                  ctx->vc_channel & 0xFFFF, ctx->vc_tg, had_force_release, ctx->vc_is_tdma, ctx->vc_data_call,
                  state ? state->p25_cc_is_tdma : 0, cc_ted_sps(opts, state));
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc_with_id(opts, state, out_request_id);
+    if (out_tune_result) {
+        *out_tune_result = tune_result;
+    }
     if (dsd_trunk_tune_result_is_ok(tune_result)) {
         p25_sm_diagf(opts, state, ctx, "release_cc_result", "result=%s tune_start_m=%.3f",
                      p25_tune_result_name(tune_result), *out_tune_start_m);
@@ -2220,6 +2348,8 @@ static int
 p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
                    int arm_failed_vc_backoff_on_accept) {
     double tune_start_m = 0.0;
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    uint64_t tune_request_id = 0U;
     int had_force_release = 0;
     if (state) {
         had_force_release = (state->p25_sm_force_release != 0) ? 1 : 0;
@@ -2240,7 +2370,8 @@ p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const ch
 
     // Return to CC. On failure/defer, leave VC state untouched so the watchdog
     // can retry through the same state machine instead of pretending the tuner moved.
-    if (!p25_release_return_to_cc_accepted(ctx, opts, state, had_force_release, &tune_start_m)) {
+    if (!p25_release_return_to_cc_accepted(ctx, opts, state, had_force_release, &tune_start_m, &tune_result,
+                                           &tune_request_id)) {
         atomic_store(&g_p25_sm_release_lock, 0);
         return 0;
     }
@@ -2251,7 +2382,7 @@ p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const ch
 
     p25_release_clear_context(ctx);
     p25_release_clear_decoder_state(opts, state);
-    p25_sm_start_cc_grace_after_tune(ctx, opts, state, tune_start_m, "release");
+    p25_sm_start_cc_acquisition_for_result(ctx, opts, state, tune_result, tune_request_id, tune_start_m, "release");
 
     // Transition to ON_CC state
     set_state(ctx, opts, state, P25_SM_ON_CC, "release->cc");
@@ -2389,7 +2520,9 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
                      "source=current-site-candidate freq=%ld sps=%d in_cand=%d in_lcn=%d in_neighbor=%d", cand, sps,
                      p25_diag_freq_in_current_site_candidates(state, cand), p25_diag_freq_in_lcn_list(state, cand),
                      p25_diag_freq_in_neighbors(state, cand));
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
+        uint64_t tune_request_id = 0U;
+        dsd_trunk_tune_result tune_result =
+            dsd_trunk_tuning_hook_tune_to_cc_with_id(opts, state, cand, sps, &tune_request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=current-site-candidate freq=%ld result=%s", cand,
                          p25_tune_result_name(tune_result));
@@ -2400,8 +2533,8 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=current-site-candidate freq=%ld result=%s", cand,
                      p25_tune_result_name(tune_result));
         state->p25_cc_eval_freq = cand;
-        state->p25_cc_eval_start_m = now_m;
-        p25_sm_start_cc_grace_after_tune(ctx, opts, state, now_m, "hunt-cand");
+        state->p25_cc_eval_start_m = 0.0;
+        p25_sm_start_cc_acquisition_for_result(ctx, opts, state, tune_result, tune_request_id, now_m, "hunt-cand");
         set_state(ctx, opts, state, P25_SM_ON_CC, "hunt-cand");
         sm_log(opts, state, "hunt-cand-tune");
         return;
@@ -2414,7 +2547,9 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
                      "source=%s freq=%ld sps=%d in_cand=%d in_lcn=%d in_neighbor=%d", source, cand, sps,
                      p25_diag_freq_in_current_site_candidates(state, cand), p25_diag_freq_in_lcn_list(state, cand),
                      p25_diag_freq_in_neighbors(state, cand));
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps);
+        uint64_t tune_request_id = 0U;
+        dsd_trunk_tune_result tune_result =
+            dsd_trunk_tuning_hook_tune_to_cc_with_id(opts, state, cand, sps, &tune_request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=%s freq=%ld result=%s", source, cand,
                          p25_tune_result_name(tune_result));
@@ -2424,7 +2559,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         }
         p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=%s freq=%ld result=%s", source, cand,
                      p25_tune_result_name(tune_result));
-        p25_sm_start_cc_grace_after_tune(ctx, opts, state, now_m, "hunt-lcn");
+        p25_sm_start_cc_acquisition_for_result(ctx, opts, state, tune_result, tune_request_id, now_m, "hunt-lcn");
         set_state(ctx, opts, state, P25_SM_ON_CC, "hunt-lcn");
         sm_log(opts, state, "hunt-lcn-tune");
         return;
@@ -2728,6 +2863,9 @@ p25_sm_tick_on_cc_is_lost(const p25_sm_ctx_t* ctx, const dsd_state* state, doubl
     if (!ctx) {
         return 0;
     }
+    if (ctx->cc_tune_pending) {
+        return 0;
+    }
     if (ctx->cc_sync_pending && ctx->t_cc_tune_m > 0.0) {
         const double acquire_grace = p25_sm_cc_acquire_grace_s(cc_grace);
         if ((now_m - ctx->t_cc_tune_m) > acquire_grace) {
@@ -2757,6 +2895,20 @@ p25_sm_tick_on_cc_is_lost(const p25_sm_ctx_t* ctx, const dsd_state* state, doubl
 static void
 p25_sm_tick_on_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double cc_grace) {
     int acquire_timeout = 0;
+    int tune_status = p25_sm_resolve_pending_cc_tune(ctx, opts, state);
+    if (tune_status == 0) {
+        return;
+    }
+    if (tune_status < 0) {
+        if (state && state->p25_cc_eval_freq != 0) {
+            dsd_trunk_cc_candidates_set_cooldown(state, state->p25_cc_eval_freq, now_m + 10.0);
+            state->p25_cc_eval_freq = 0;
+            state->p25_cc_eval_start_m = 0.0;
+        }
+        ctx->t_hunt_try_m = now_m;
+        try_next_cc(ctx, opts, state, now_m);
+        return;
+    }
     p25_sm_tick_on_cc_sync_from_state(ctx, opts, state);
     if (p25_sm_tick_on_cc_nac_mismatch(ctx, opts, state, now_m)) {
         return;
@@ -2953,6 +3105,20 @@ p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
 static void
 p25_sm_tick_hunting(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     if (!ctx) {
+        return;
+    }
+    int tune_status = p25_sm_resolve_pending_cc_tune(ctx, opts, state);
+    if (tune_status == 0 || (tune_status > 0 && ctx->state == P25_SM_ON_CC)) {
+        return;
+    }
+    if (tune_status < 0) {
+        if (state && state->p25_cc_eval_freq != 0) {
+            dsd_trunk_cc_candidates_set_cooldown(state, state->p25_cc_eval_freq, now_m + 10.0);
+            state->p25_cc_eval_freq = 0;
+            state->p25_cc_eval_start_m = 0.0;
+        }
+        ctx->t_hunt_try_m = now_m;
+        try_next_cc(ctx, opts, state, now_m);
         return;
     }
     const double decoded_after_m = ctx->cc_sync_pending ? ctx->t_cc_tune_m : ctx->t_cc_sync_m;
