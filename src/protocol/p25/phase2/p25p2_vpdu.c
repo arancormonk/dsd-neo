@@ -563,7 +563,7 @@ p25p2_vpdu_has_cc_context(const dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-p25p2_vpdu_current_carrier_matches(const dsd_opts* opts, dsd_state* state, long int freq) {
+p25p2_vpdu_current_carrier_matches(const dsd_opts* opts, const dsd_state* state, long int freq) {
     if (!opts || !state || freq == 0 || (opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0)) {
         return 0;
     }
