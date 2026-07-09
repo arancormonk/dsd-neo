@@ -73,6 +73,7 @@ static int g_trunk_scan_saved_autogain_on = 0;
 static int g_trunk_scan_active_p25_cqpsk_is_set = 0;
 static int g_trunk_scan_active_p25_cqpsk_enable = 0;
 static int g_runtime_config_is_set = 0;
+static int g_tune_generation_advance_calls = 0;
 static dsdneoRuntimeConfig g_runtime_config;
 
 void
@@ -98,6 +99,12 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_in_tick(void) {
     return 0;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_trunk_tuning_generation_advance(void) {
+    g_tune_generation_advance_calls++;
 }
 
 void
@@ -479,6 +486,20 @@ main(void) {
     assert(dsd_engine_trunk_tune_to_freq(opts, state, 853600000, 16) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_frame_sync_reset_calls == 1);
     assert(g_p25p2_frame_reset_calls == 1);
+
+    /* Direct conventional scan retunes publish a new generation only after
+     * the backend accepts the target. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    g_tune_generation_advance_calls = 0;
+    g_setfreq_result = true;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853700000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_tune_generation_advance_calls == 1);
+    g_setfreq_result = false;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853800000, 0) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_tune_generation_advance_calls == 1);
 
 #ifdef USE_RADIO
     /* RTL audio retuned by rigctl has no native RTL controller boundary, so the

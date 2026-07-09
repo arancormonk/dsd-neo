@@ -1117,6 +1117,16 @@ main(void) {
         rc |= expect_true("preempt replacement active", preempt_ctx.state == P25_SM_TUNED && preempt_ctx.vc_tg == 4002
                                                             && preempt_ctx.slots[0].grant_active
                                                             && preempt_ctx.slots[0].target_id == 4002);
+        rc |= expect_true("preempt canceled cc acquisition",
+                          preempt_ctx.cc_sync_pending == 0 && preempt_ctx.t_cc_tune_m == 0.0);
+
+        // A duplicate carried by VC signaling must still refresh the accepted
+        // call after the immediate replacement tune.
+        preempt_ctx.slots[0].last_grant_m = 0.0;
+        p25_sm_event(&preempt_ctx, &preempt_opts, &preempt_st, &preempt_candidate);
+        rc |= expect_true("preempt duplicate grant refreshed", preempt_ctx.slots[0].last_grant_m > 0.0
+                                                                   && g_tune_to_freq_calls == 2
+                                                                   && preempt_ctx.state == P25_SM_TUNED);
 
         static const dsd_trunk_tune_result preempt_release_failures[] = {
             DSD_TRUNK_TUNE_RESULT_DEFERRED,

@@ -42,7 +42,15 @@ void p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
  */
 int p25_sm_tick_guard_try_enter(void);
 
-/** @brief Leave a critical section entered by p25_sm_tick_guard_try_enter(). */
+/**
+ * @brief Enter the critical section shared with P25 SM and trunk-scan ticks.
+ *
+ * This blocking form is intended for frame dispatch, which must complete
+ * against one tuner target and one restored scan snapshot.
+ */
+void p25_sm_tick_guard_enter(void);
+
+/** @brief Leave a critical section entered by either guard entry function. */
 void p25_sm_tick_guard_leave(void);
 
 /**

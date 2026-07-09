@@ -34,6 +34,13 @@ p25_sm_tick_guard_try_enter(void) {
 }
 
 void
+p25_sm_tick_guard_enter(void) {
+    while (!p25_sm_tick_guard_try_enter()) {
+        dsd_sleep_ms(1U);
+    }
+}
+
+void
 p25_sm_tick_guard_leave(void) {
     atomic_store(&g_p25_sm_tick_lock, 0);
 }

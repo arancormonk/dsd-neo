@@ -995,6 +995,8 @@ main(void) {
     ctx18d.t_cc_tune_m = external_cc_tune_m - 3.0;
     ctx18d.t_hunt_try_m = external_cc_tune_m - 1.0;
     s18d.p25_sm_mode = DSD_P25_SM_MODE_HUNTING;
+    s18d.p25_cc_eval_freq = 852000000;
+    s18d.p25_cc_eval_start_m = external_cc_tune_m - 3.0;
     s18d.last_cc_sync_time_m = external_cc_tune_m - 3.0;
     s18d.p25_last_cc_msg_time_m = external_decoded_cc_m;
     assert(p25_sm_restart_pending_cc_acquisition(&ctx18d, &o18d, &s18d, external_cc_tune_m, "test-retune") == 1);
@@ -1004,6 +1006,8 @@ main(void) {
     assert(fabs(ctx18d.t_cc_tune_m - external_cc_tune_m) <= cc_sync_epsilon_s);
     assert(ctx18d.t_hunt_try_m == 0.0);
     assert(s18d.p25_sm_mode == DSD_P25_SM_MODE_ON_CC);
+    assert(s18d.p25_cc_eval_freq == 852000000);
+    assert(fabs(s18d.p25_cc_eval_start_m - ctx18d.t_cc_tune_m) <= cc_sync_epsilon_s);
     assert(fabs(s18d.last_cc_sync_time_m - external_cc_tune_m) <= cc_sync_epsilon_s);
     assert(fabs(s18d.p25_last_cc_msg_time_m - external_decoded_cc_m) <= cc_sync_epsilon_s);
 

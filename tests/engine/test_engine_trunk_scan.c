@@ -91,6 +91,9 @@ p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_sta
     ctx->t_cc_tune_m = tune_start_m;
     ctx->t_hunt_try_m = 0.0;
     if (state) {
+        if (state->p25_cc_eval_freq != 0) {
+            state->p25_cc_eval_start_m = ctx->t_cc_tune_m;
+        }
         state->last_cc_sync_time_m = tune_start_m;
         state->p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
     }
@@ -1389,6 +1392,10 @@ test_p25_scan_retune_restarts_pending_cc_acquisition(void) {
         first_ctx->t_cc_tune_m = 1.0;
         first_ctx->t_hunt_try_m = 0.5;
         state.p25_sm_mode = DSD_P25_SM_MODE_HUNTING;
+        state.p25_cc_freq = 853000000;
+        state.trunk_cc_freq = 853000000;
+        state.p25_cc_eval_freq = 853000000;
+        state.p25_cc_eval_start_m = 1.0;
         state.p25_last_cc_msg_time_m = 0.75;
     }
 
@@ -1405,14 +1412,17 @@ test_p25_scan_retune_restarts_pending_cc_acquisition(void) {
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || !restored_ctx || restored_ctx->cc_sync_pending != 1
         || restored_ctx->state != P25_SM_ON_CC || restored_ctx->t_cc_sync_m != 4.0 || restored_ctx->t_cc_tune_m != 4.0
         || restored_ctx->t_hunt_try_m != 0.0 || state.p25_sm_mode != DSD_P25_SM_MODE_ON_CC
-        || state.p25_last_cc_msg_time_m != 0.75) {
+        || state.p25_cc_freq != 853000000 || state.trunk_cc_freq != 853000000 || state.p25_cc_eval_freq != 853000000
+        || state.p25_cc_eval_start_m != 4.0 || state.p25_last_cc_msg_time_m != 0.75) {
         DSD_FPRINTF(stderr,
                     "pending CC timer did not restart after retune active=%zu ctx=%p state=%d pending=%d sync=%.3f "
-                    "tune=%.3f hunt=%.3f mode=%d decoded=%.3f\n",
+                    "tune=%.3f hunt=%.3f mode=%d cc=%ld trunk_cc=%ld eval_freq=%ld eval_start=%.3f decoded=%.3f\n",
                     dsd_engine_trunk_scan_active_index(&state), (void*)restored_ctx,
                     restored_ctx ? (int)restored_ctx->state : -1, restored_ctx ? restored_ctx->cc_sync_pending : -1,
                     restored_ctx ? restored_ctx->t_cc_sync_m : -1.0, restored_ctx ? restored_ctx->t_cc_tune_m : -1.0,
-                    restored_ctx ? restored_ctx->t_hunt_try_m : -1.0, state.p25_sm_mode, state.p25_last_cc_msg_time_m);
+                    restored_ctx ? restored_ctx->t_hunt_try_m : -1.0, state.p25_sm_mode, state.p25_cc_freq,
+                    state.trunk_cc_freq, state.p25_cc_eval_freq, state.p25_cc_eval_start_m,
+                    state.p25_last_cc_msg_time_m);
         test_rc = 1;
     }
 

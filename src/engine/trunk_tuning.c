@@ -621,6 +621,9 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
         return result;
     }
 
+    // Unlike trunking tune requests, conventional scan retunes do not pass
+    // through a runtime hook wrapper, so publish their accepted generation here.
+    dsd_trunk_tuning_generation_advance();
     dsd_frame_sync_reset_mod_state();
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();

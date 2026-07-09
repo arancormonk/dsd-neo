@@ -2142,10 +2142,14 @@ live_scanner_update_thresholds(dsd_state* state, int* last_max, int* last_min) {
 }
 
 static void
-live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_max, int* last_min) {
+live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_max, int* last_min,
+                                   uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
-        dsd_runtime_pump_controls(opts, state);
-        processFrame(opts, state);
+        p25_sm_tick_guard_enter();
+        if (!frame_tune_generation || *frame_tune_generation == dsd_trunk_tuning_generation()) {
+            processFrame(opts, state);
+        }
+        p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
 
 #ifdef TRACE_DSD
@@ -2153,6 +2157,9 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
 #endif
 
         dsd_runtime_pump_controls(opts, state);
+        if (frame_tune_generation) {
+            *frame_tune_generation = dsd_trunk_tuning_generation();
+        }
         state->synctype = getFrameSync(opts, state);
         live_scanner_update_thresholds(state, last_max, last_min);
     }
@@ -2162,6 +2169,7 @@ static void
 live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     int last_max = INT_MIN;
     int last_min = INT_MAX;
+    uint64_t frame_tune_generation;
 
     while (!exitflag) {
         dsd_runtime_pump_controls(opts, state);
@@ -2170,9 +2178,10 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         dsd_runtime_pump_controls(opts, state);
 
         noCarrier(opts, state);
+        frame_tune_generation = dsd_trunk_tuning_generation();
         state->synctype = getFrameSync(opts, state);
         live_scanner_update_thresholds(state, &last_max, &last_min);
-        live_scanner_process_synced_frames(opts, state, &last_max, &last_min);
+        live_scanner_process_synced_frames(opts, state, &last_max, &last_min, &frame_tune_generation);
     }
 }
 

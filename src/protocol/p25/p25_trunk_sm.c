@@ -360,6 +360,15 @@ p25_sm_refresh_cc_sync_from_state(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_s
     return 0;
 }
 
+static void
+p25_sm_cancel_pending_cc_acquisition(p25_sm_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->t_cc_tune_m = 0.0;
+    ctx->cc_sync_pending = 0;
+}
+
 // Determine if channel is TDMA based on IDEN hints.
 // Uses bitmask semantics for p25_chan_tdma_explicit[iden]:
 //   bit0 (0x01) = has FDMA/non-TDMA entry
@@ -486,6 +495,9 @@ p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_sta
         tune_start_m = now_monotonic();
     }
     p25_sm_start_cc_grace_after_tune(ctx, opts, state, tune_start_m, reason);
+    if (state && state->p25_cc_eval_freq != 0) {
+        state->p25_cc_eval_start_m = ctx->t_cc_tune_m;
+    }
     ctx->t_hunt_try_m = 0.0;
     set_state(ctx, opts, state, P25_SM_ON_CC, reason);
     return 1;
@@ -1631,6 +1643,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     if (!p25_grant_try_tune_vc(ctx, ev, opts, state, grant.freq, grant.slot, grant.reused_carrier, &grant.ted_sps)) {
         return;
     }
+    p25_sm_cancel_pending_cc_acquisition(ctx);
     p25_grant_clear_moved_target_slots(ctx, state, grant.slot, ev, grant.target_id, grant.freq, eval_ctx.data_call);
     if (grant.clear_policy_slot_only) {
         p25_grant_clear_one_slot_state(ctx, grant.slot);
