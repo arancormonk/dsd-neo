@@ -556,10 +556,10 @@ p25p2_vpdu_has_cc_context(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->p25_trunk != 1) {
         return 0;
     }
-    if (state->trunk_cc_freq > 0 || DSD_SYNC_IS_P25P1(state->synctype)) {
+    if (state->trunk_cc_freq > 0 || state->p2_is_lcch == 1 || DSD_SYNC_IS_P25P1(state->synctype)) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
     }
-    return (state->p25_cc_freq != 0 || state->p2_is_lcch == 1) ? 1 : 0;
+    return state->p25_cc_freq != 0;
 }
 
 static int

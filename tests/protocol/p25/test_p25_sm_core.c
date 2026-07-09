@@ -11,7 +11,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -43,6 +46,15 @@ static int g_result_tune_to_freq_calls = 0;
 static int g_result_tune_to_cc_calls = 0;
 static int g_result_return_to_cc_calls = 0;
 static long g_rigctl_current_freq = 0;
+static atomic_int g_release_hook_block = 0;
+static dsd_mutex_t g_release_hook_mutex;
+static dsd_cond_t g_release_hook_cond;
+static int g_release_hook_entered = 0;
+
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+} release_thread_args;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -114,10 +126,43 @@ trunk_tune_to_cc_result(dsd_opts* opts, dsd_state* state, long int freq, int ted
 
 static dsd_trunk_tune_result
 return_to_cc_result(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
     g_result_return_to_cc_calls++;
+    if (atomic_load(&g_release_hook_block)) {
+        int sync_rc = 0;
+        if (opts) {
+            opts->p25_is_tuned = 0;
+            opts->trunk_is_tuned = 0;
+        }
+        if (state) {
+            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+            state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+        }
+        sync_rc = dsd_mutex_lock(&g_release_hook_mutex);
+        if (sync_rc != 0) {
+            atomic_store(&g_release_hook_block, 0);
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
+        }
+        g_release_hook_entered = 1;
+        sync_rc = dsd_cond_signal(&g_release_hook_cond);
+        while (sync_rc == 0 && atomic_load(&g_release_hook_block)) {
+            sync_rc = dsd_cond_wait(&g_release_hook_cond, &g_release_hook_mutex);
+        }
+        if (dsd_mutex_unlock(&g_release_hook_mutex) != 0 || sync_rc != 0) {
+            atomic_store(&g_release_hook_block, 0);
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
+        }
+    }
     return g_result_return_to_cc_result;
+}
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    release_wrapper_thread(void* arg) {
+    release_thread_args* args = (release_thread_args*)arg;
+    p25_sm_on_release(args ? args->opts : NULL, args ? args->state : NULL);
+    DSD_THREAD_RETURN;
 }
 
 static void
@@ -857,7 +902,66 @@ main(void) {
     assert(g_last_tuned_cc == 852000000);
     assert(ctx18b.state == P25_SM_ON_CC);
 
-    // 22) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
+    // 22) HUNTING must keep grants blocked until decoded CC activity proves reacquisition.
+    static dsd_opts o18c;
+    static dsd_state s18c;
+    DSD_MEMSET(&o18c, 0, sizeof(o18c));
+    DSD_MEMSET(&s18c, 0, sizeof(s18c));
+    o18c.p25_trunk = 1;
+    o18c.trunk_tune_group_calls = 1;
+    s18c.p25_cc_freq = 851000000;
+    s18c.trunk_cc_freq = 851000000;
+    s18c.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s18c.p25_iden_fdma[id9].chan_type = 1;
+    s18c.p25_iden_fdma[id9].chan_spac = 100;
+    s18c.p25_iden_fdma[id9].trust = 2;
+    s18c.p25_iden_fdma[id9].populated = 1;
+    s18c.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx18c;
+    p25_sm_init_ctx(&ctx18c, &o18c, &s18c);
+    ctx18c.config.cc_grace_s = 5.0;
+    const double hunting_pending_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    ctx18c.t_cc_sync_m = hunting_pending_tune_m;
+    ctx18c.t_cc_tune_m = hunting_pending_tune_m;
+    ctx18c.cc_sync_pending = 1;
+    s18c.last_cc_sync_time = time(NULL) - 3;
+    s18c.last_cc_sync_time_m = hunting_pending_tune_m;
+    s18c.p25_last_cc_msg_time_m = hunting_pending_tune_m - 0.25;
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    g_result_tune_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx18c, &o18c, &s18c);
+    assert(g_result_tune_to_cc_calls == 1);
+    assert(ctx18c.state == P25_SM_HUNTING);
+    assert(ctx18c.cc_sync_pending == 1);
+
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18c.state == P25_SM_HUNTING);
+    assert(ctx18c.cc_sync_pending == 1);
+
+    s18c.last_cc_sync_time_m = hunting_pending_tune_m + 0.25;
+    p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18c.state == P25_SM_HUNTING);
+    assert(ctx18c.cc_sync_pending == 1);
+
+    s18c.p25_last_cc_msg_time = time(NULL);
+    s18c.p25_last_cc_msg_time_m = hunting_pending_tune_m + 0.25;
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx18c.state == P25_SM_ON_CC);
+    assert(ctx18c.cc_sync_pending == 0);
+
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
+    assert(g_result_tune_to_freq_calls == 2);
+    assert(ctx18c.state == P25_SM_TUNED);
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    // 23) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
     static dsd_opts o19a;
     static dsd_state s19a;
     DSD_MEMSET(&o19a, 0, sizeof(o19a));
@@ -893,7 +997,7 @@ main(void) {
     assert(ctx19a.state == P25_SM_TUNED);
     assert(ctx19a.slots[1].grant_active == 1);
 
-    // 23) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
+    // 24) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
     static dsd_opts o19b;
     static dsd_state s19b;
     DSD_MEMSET(&o19b, 0, sizeof(o19b));
@@ -933,7 +1037,7 @@ main(void) {
     assert(s19b.p25_p2_enc_lockout_muted[0] == 1);
 
 #ifdef USE_RADIO
-    // 24) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
+    // 25) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
     static dsd_opts o19;
     static dsd_state s19;
     DSD_MEMSET(&o19, 0, sizeof(o19));
@@ -981,7 +1085,7 @@ main(void) {
     assert(ctx19.state == P25_SM_TUNED);
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 25) A successful CQPSK retry refreshes the TDMA grant timeout window.
+    // 26) A successful CQPSK retry refreshes the TDMA grant timeout window.
     static dsd_opts o20;
     static dsd_state s20;
     DSD_MEMSET(&o20, 0, sizeof(o20));
@@ -1030,6 +1134,128 @@ main(void) {
     assert(ctx20.slots[0].grant_active == 1);
     assert(s20.p25_retune_block_until == 0);
 #endif
+
+    // 27) A concurrent stale-context release must not reset a release already in progress.
+    static dsd_opts o21;
+    static dsd_state s21;
+    DSD_MEMSET(&o21, 0, sizeof(o21));
+    DSD_MEMSET(&s21, 0, sizeof(s21));
+    o21.p25_trunk = 1;
+    o21.p25_is_tuned = 1;
+    o21.trunk_is_tuned = 1;
+    s21.p25_cc_freq = 851000000;
+    s21.trunk_cc_freq = 851000000;
+    s21.p25_vc_freq[0] = s21.p25_vc_freq[1] = 851125000;
+    s21.trunk_vc_freq[0] = s21.trunk_vc_freq[1] = 851125000;
+
+    p25_sm_ctx_t* release_ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(release_ctx, &o21, &s21);
+    release_ctx->state = P25_SM_TUNED;
+    release_ctx->vc_freq_hz = 851125000;
+    release_ctx->vc_channel = ch9;
+    release_ctx->vc_tg = 6101;
+    release_ctx->tune_count = 41;
+    release_ctx->release_count = 13;
+    release_ctx->cc_return_count = 17;
+    release_ctx->config.cc_grace_s = 9.0;
+
+    int release_sync_rc = dsd_mutex_init(&g_release_hook_mutex);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race mutex init failed: %d\n", release_sync_rc);
+        return 1;
+    }
+    release_sync_rc = dsd_cond_init(&g_release_hook_cond);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race condition init failed: %d\n", release_sync_rc);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+    g_release_hook_entered = 0;
+    g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_return_to_cc_calls = 0;
+    atomic_store(&g_release_hook_block, 1);
+
+    release_thread_args release_args = {&o21, &s21};
+    dsd_thread_t release_thread;
+    release_sync_rc = dsd_thread_create(&release_thread, release_wrapper_thread, &release_args);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race thread create failed: %d\n", release_sync_rc);
+        atomic_store(&g_release_hook_block, 0);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+    release_sync_rc = dsd_mutex_lock(&g_release_hook_mutex);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race mutex lock failed: %d\n", release_sync_rc);
+        atomic_store(&g_release_hook_block, 0);
+        (void)dsd_cond_signal(&g_release_hook_cond);
+        (void)dsd_thread_join(release_thread);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+    int release_wait_rc = 0;
+    while (!g_release_hook_entered && release_wait_rc == 0) {
+        release_wait_rc = dsd_cond_timedwait(&g_release_hook_cond, &g_release_hook_mutex, 10000);
+    }
+    if (release_wait_rc != 0 || !g_release_hook_entered) {
+        DSD_FPRINTF(stderr, "release race hook wait failed: %d\n", release_wait_rc);
+        atomic_store(&g_release_hook_block, 0);
+        (void)dsd_cond_signal(&g_release_hook_cond);
+        (void)dsd_mutex_unlock(&g_release_hook_mutex);
+        (void)dsd_thread_join(release_thread);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+    release_sync_rc = dsd_mutex_unlock(&g_release_hook_mutex);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race mutex unlock failed: %d\n", release_sync_rc);
+        atomic_store(&g_release_hook_block, 0);
+        (void)dsd_cond_signal(&g_release_hook_cond);
+        (void)dsd_thread_join(release_thread);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+
+    p25_sm_on_release(&o21, &s21);
+    assert(g_result_return_to_cc_calls == 1);
+    assert(release_ctx->state == P25_SM_TUNED);
+    assert(release_ctx->tune_count == 41);
+    assert(release_ctx->release_count == 13);
+    assert(release_ctx->cc_return_count == 17);
+    assert(release_ctx->config.cc_grace_s == 9.0);
+
+    release_sync_rc = dsd_mutex_lock(&g_release_hook_mutex);
+    atomic_store(&g_release_hook_block, 0);
+    int release_signal_rc = dsd_cond_signal(&g_release_hook_cond);
+    int release_unlock_rc = (release_sync_rc == 0) ? dsd_mutex_unlock(&g_release_hook_mutex) : release_sync_rc;
+    int release_join_rc = dsd_thread_join(release_thread);
+    if (release_sync_rc != 0 || release_signal_rc != 0 || release_unlock_rc != 0 || release_join_rc != 0) {
+        DSD_FPRINTF(stderr, "release race resume failed: lock=%d signal=%d unlock=%d join=%d\n", release_sync_rc,
+                    release_signal_rc, release_unlock_rc, release_join_rc);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+
+    assert(g_result_return_to_cc_calls == 1);
+    assert(release_ctx->state == P25_SM_ON_CC);
+    assert(release_ctx->cc_sync_pending == 1);
+    assert(release_ctx->t_cc_tune_m > 0.0);
+    assert(release_ctx->tune_count == 41);
+    assert(release_ctx->release_count == 14);
+    assert(release_ctx->cc_return_count == 18);
+    assert(release_ctx->config.cc_grace_s == 9.0);
+    int release_cond_destroy_rc = dsd_cond_destroy(&g_release_hook_cond);
+    int release_mutex_destroy_rc = dsd_mutex_destroy(&g_release_hook_mutex);
+    if (release_cond_destroy_rc != 0 || release_mutex_destroy_rc != 0) {
+        DSD_FPRINTF(stderr, "release race sync destroy failed: cond=%d mutex=%d\n", release_cond_destroy_rc,
+                    release_mutex_destroy_rc);
+        return 1;
+    }
 
     install_trunk_tuning_hooks();
 

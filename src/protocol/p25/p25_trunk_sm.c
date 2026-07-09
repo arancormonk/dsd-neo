@@ -38,7 +38,7 @@
 #include "dsd-neo/platform/platform.h"
 
 static int do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
-                      int arm_failed_vc_backoff_on_accept);
+                      int arm_failed_vc_backoff_on_accept, int recover_stale_ctx);
 static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx, const char* event,
                          const char* format, ...) DSD_ATTR_FORMAT(printf, 5, 6);
 
@@ -967,7 +967,7 @@ p25_grant_preempt_active_call_if_needed(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
     }
     log_preempt_decision(ctx, opts, state, route, decision, "policy-allow", 1);
     sm_log(opts, state, "grant-preempt-accept");
-    return do_release(ctx, opts, state, "grant-preempt", 0);
+    return do_release(ctx, opts, state, "grant-preempt", 0, 0);
 }
 
 static void
@@ -1550,11 +1550,14 @@ p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
 static int
 p25_grant_blocked_by_pending_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                                 const p25_grant_route_ctx_t* grant) {
-    if (!ctx || !ev || !grant || ctx->state != P25_SM_ON_CC || !ctx->cc_sync_pending) {
+    if (!ctx || !ev || !grant || !ctx->cc_sync_pending) {
         return 0;
     }
     (void)p25_sm_refresh_cc_sync_from_state(ctx, opts, state, "grant");
     if (!ctx->cc_sync_pending) {
+        if (ctx->state == P25_SM_HUNTING) {
+            set_state(ctx, opts, state, P25_SM_ON_CC, "grant-cc-reacquired");
+        }
         return 0;
     }
 
@@ -1750,7 +1753,7 @@ p25_voice_end_try_explicit_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
     int other = slot ^ 1;
     if (p25_voice_end_can_release_explicit(ctx, other)) {
         // All active slots terminated - release immediately like P25P1 Call Termination
-        do_release(ctx, opts, state, "call-end", 0);
+        do_release(ctx, opts, state, "call-end", 0, 0);
     }
 }
 
@@ -1967,7 +1970,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     int other_active = p25_enc_lockout_other_slot_active(ctx, state, other);
 
     if (!other_active) {
-        do_release(ctx, opts, state, "enc-lockout", 0);
+        do_release(ctx, opts, state, "enc-lockout", 0, 0);
     } else {
         p25_sm_diagf(opts, state, ctx, "enc_lockout_slot_only", "slot=%d other=%d", slot, other);
         sm_log(opts, state, "enc-lockout-slot-only");
@@ -1982,6 +1985,17 @@ static int
 p25_release_should_return_to_cc(const p25_sm_ctx_t* ctx, const dsd_opts* opts) {
     const int opts_tuned = (opts && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
     return (ctx && (ctx->state == P25_SM_TUNED || opts_tuned)) ? 1 : 0;
+}
+
+static int
+p25_release_ctx_is_stale(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    const int opts_tuned = (opts && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
+    const int state_has_vc = (state
+                              && (state->p25_vc_freq[0] != 0 || state->p25_vc_freq[1] != 0
+                                  || state->trunk_vc_freq[0] != 0 || state->trunk_vc_freq[1] != 0))
+                                 ? 1
+                                 : 0;
+    return (ctx && ctx->state == P25_SM_TUNED && !opts_tuned && !state_has_vc) ? 1 : 0;
 }
 
 static int
@@ -2172,21 +2186,10 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
-           int arm_failed_vc_backoff_on_accept) {
+p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
+                   int arm_failed_vc_backoff_on_accept) {
     double tune_start_m = 0.0;
     int had_force_release = 0;
-    if (!ctx) {
-        return 0;
-    }
-
-    // Avoid double-return-to-CC thrash if multiple callers attempt to release at
-    // nearly the same time (e.g., explicit call termination + watchdog tick).
-    int expected = 0;
-    if (!atomic_compare_exchange_strong(&g_p25_sm_release_lock, &expected, 1)) {
-        return 0;
-    }
-
     if (state) {
         had_force_release = (state->p25_sm_force_release != 0) ? 1 : 0;
         // Clear any pending forced-release request; we're handling teardown now.
@@ -2224,6 +2227,32 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 
     atomic_store(&g_p25_sm_release_lock, 0);
     return 1;
+}
+
+static int
+do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason, int arm_failed_vc_backoff_on_accept,
+           int recover_stale_ctx) {
+    if (!ctx) {
+        return 0;
+    }
+
+    // Avoid double-return-to-CC thrash if multiple callers attempt to release at
+    // nearly the same time (e.g., explicit call termination + watchdog tick).
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&g_p25_sm_release_lock, &expected, 1)) {
+        return 0;
+    }
+
+    // Only public release paths normalize externally cleared decoder state;
+    // internal timeout paths retain their CC-return and failed-grant backoff behavior.
+    if (recover_stale_ctx && p25_release_ctx_is_stale(ctx, opts, state)) {
+        p25_sm_diagf(opts, state, ctx, "release_stale_reset", "reason=%s", reason ? reason : "none");
+        p25_sm_init_ctx(ctx, opts, state);
+        atomic_store(&g_p25_sm_release_lock, 0);
+        return 1;
+    }
+
+    return p25_release_locked(ctx, opts, state, reason, arm_failed_vc_backoff_on_accept);
 }
 
 /* ============================================================================
@@ -2582,7 +2611,7 @@ p25_sm_tick_handle_forced_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
         return 0;
     }
     if (ctx->state == P25_SM_TUNED) {
-        do_release(ctx, opts, state, "release-forced", 0);
+        do_release(ctx, opts, state, "release-forced", 0, 0);
     } else {
         state->p25_sm_force_release = 0;
     }
@@ -2755,7 +2784,7 @@ p25_sm_tick_tuned_check_hangtime(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     dt_voice = now_m - ctx->t_voice_m;
     effective_hangtime = p25_sm_effective_hangtime(state, hangtime);
     if (dt_voice >= effective_hangtime) {
-        do_release(ctx, opts, state, "hangtime-expired", 0);
+        do_release(ctx, opts, state, "hangtime-expired", 0, 0);
     }
 }
 
@@ -2866,7 +2895,7 @@ p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
         return;
     }
     if ((now_m - timeout_start_m) >= grant_timeout) {
-        do_release(ctx, opts, state, "grant-timeout", 1);
+        do_release(ctx, opts, state, "grant-timeout", 1, 0);
     }
 }
 
@@ -3051,7 +3080,7 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
     if (!ctx) {
         ctx = p25_sm_get_ctx();
     }
-    do_release(ctx, opts, state, reason ? reason : "explicit-release", 0);
+    do_release(ctx, opts, state, reason ? reason : "explicit-release", 0, 1);
 }
 
 int

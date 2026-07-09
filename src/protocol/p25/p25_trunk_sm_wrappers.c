@@ -11,7 +11,6 @@
  */
 
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -181,18 +180,7 @@ p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int sv
 
 static void
 p25_sm_on_release_default(dsd_opts* opts, dsd_state* state) {
-    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    const int opts_tuned = (opts && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
-    const int state_has_vc = (state
-                              && (state->p25_vc_freq[0] != 0 || state->p25_vc_freq[1] != 0
-                                  || state->trunk_vc_freq[0] != 0 || state->trunk_vc_freq[1] != 0))
-                                 ? 1
-                                 : 0;
-    if (ctx && ctx->state == P25_SM_TUNED && !opts_tuned && !state_has_vc) {
-        p25_sm_init_ctx(ctx, opts, state);
-        return;
-    }
-    p25_sm_release(ctx, opts, state, "explicit-release");
+    p25_sm_release(p25_sm_get_ctx(), opts, state, "explicit-release");
 }
 
 void
