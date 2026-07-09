@@ -285,6 +285,8 @@ matrix_setup_fixture(matrix_fixture* fixture, const matrix_mode_case* mode) {
     fixture->state->trunk_cc_freq = MATRIX_BASE_CC_HZ;
     fixture->state->last_cc_sync_time = time(NULL);
     fixture->state->last_cc_sync_time_m = now_m;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m;
     fixture->state->nac = 0x293;
     fixture->state->p2_cc = 0x293;
     fixture->state->synctype = mode->synctype;
@@ -377,6 +379,8 @@ matrix_stale_cc_timers(matrix_fixture* fixture) {
     fixture->ctx.t_cc_sync_m = now_m - 10.0;
     fixture->state->last_cc_sync_time = time(NULL) - 10;
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m - 10.0;
 }
 
 static void
@@ -390,6 +394,8 @@ matrix_mark_cc_reacquired(matrix_fixture* fixture) {
     }
     fixture->state->last_cc_sync_time = time(NULL);
     fixture->state->last_cc_sync_time_m = now_m;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m;
 }
 
 static int
@@ -711,6 +717,8 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
     (void)dsd_trunk_cc_candidates_add(fixture->state, candidate, 0);
     fixture->state->last_cc_sync_time = time(NULL) - 10;
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m - 10.0;
     fixture->ctx.t_cc_sync_m = now_m - 10.0;
 
     p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);

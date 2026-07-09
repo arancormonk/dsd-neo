@@ -34,6 +34,8 @@ dsd_clear_cc_sync(dsd_state* state) {
     }
     state->last_cc_sync_time = 0;
     state->last_cc_sync_time_m = 0.0;
+    state->p25_last_cc_msg_time = 0;
+    state->p25_last_cc_msg_time_m = 0.0;
 }
 
 void

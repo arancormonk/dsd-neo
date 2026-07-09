@@ -814,6 +814,18 @@ main(void) {
 
     s18aa.last_cc_sync_time_m = pending_grant_cc_tune_m + 0.25;
     p25_sm_event(&ctx18aa, &o18aa, &s18aa, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18aa.state == P25_SM_ON_CC);
+    assert(ctx18aa.cc_sync_pending == 1);
+
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &(p25_sm_event_t){.type = P25_SM_EV_CC_SYNC});
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18aa.state == P25_SM_ON_CC);
+    assert(ctx18aa.cc_sync_pending == 1);
+
+    s18aa.p25_last_cc_msg_time = time(NULL);
+    s18aa.p25_last_cc_msg_time_m = pending_grant_cc_tune_m + 0.25;
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &ev9);
     assert(g_result_tune_to_freq_calls == 1);
     assert(ctx18aa.state == P25_SM_TUNED);
     assert(ctx18aa.cc_sync_pending == 0);

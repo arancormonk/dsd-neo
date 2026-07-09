@@ -180,6 +180,8 @@ mark_cc_reacquired(dsd_state* state) {
     }
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = now_m;
+    state->p25_last_cc_msg_time = state->last_cc_sync_time;
+    state->p25_last_cc_msg_time_m = now_m;
 }
 
 static int

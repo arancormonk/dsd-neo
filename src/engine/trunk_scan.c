@@ -57,10 +57,12 @@ typedef struct {
     long p25_cc_eval_freq;
     double p25_cc_eval_start_m;
     time_t last_cc_sync_time;
+    time_t p25_last_cc_msg_time;
     time_t last_vc_sync_time;
     time_t p25_last_vc_tune_time;
     time_t last_t3_tune_time;
     double last_cc_sync_time_m;
+    double p25_last_cc_msg_time_m;
     double last_vc_sync_time_m;
     double p25_last_vc_tune_time_m;
     double last_t3_tune_time_m;
@@ -1056,10 +1058,12 @@ trunk_scan_restore_dmr_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot*
 static void
 trunk_scan_save_timing_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     snapshot->last_cc_sync_time = state->last_cc_sync_time;
+    snapshot->p25_last_cc_msg_time = state->p25_last_cc_msg_time;
     snapshot->last_vc_sync_time = state->last_vc_sync_time;
     snapshot->p25_last_vc_tune_time = state->p25_last_vc_tune_time;
     snapshot->last_t3_tune_time = state->last_t3_tune_time;
     snapshot->last_cc_sync_time_m = state->last_cc_sync_time_m;
+    snapshot->p25_last_cc_msg_time_m = state->p25_last_cc_msg_time_m;
     snapshot->last_vc_sync_time_m = state->last_vc_sync_time_m;
     snapshot->p25_last_vc_tune_time_m = state->p25_last_vc_tune_time_m;
     snapshot->last_t3_tune_time_m = state->last_t3_tune_time_m;
@@ -1068,10 +1072,12 @@ trunk_scan_save_timing_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot*
 static void
 trunk_scan_restore_timing_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     state->last_cc_sync_time = snapshot->last_cc_sync_time;
+    state->p25_last_cc_msg_time = snapshot->p25_last_cc_msg_time;
     state->last_vc_sync_time = snapshot->last_vc_sync_time;
     state->p25_last_vc_tune_time = snapshot->p25_last_vc_tune_time;
     state->last_t3_tune_time = snapshot->last_t3_tune_time;
     state->last_cc_sync_time_m = snapshot->last_cc_sync_time_m;
+    state->p25_last_cc_msg_time_m = snapshot->p25_last_cc_msg_time_m;
     state->last_vc_sync_time_m = snapshot->last_vc_sync_time_m;
     state->p25_last_vc_tune_time_m = snapshot->p25_last_vc_tune_time_m;
     state->last_t3_tune_time_m = snapshot->last_t3_tune_time_m;
