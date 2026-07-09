@@ -268,6 +268,16 @@ seed_fdma_iden(dsd_state* state, int iden, int type, long base, int spac) {
     state->p25_chan_tdma_explicit[iden] = 1;
 }
 
+static void
+seed_tdma_iden(dsd_state* state, int iden, int type, long base, int spac) {
+    state->p25_iden_tdma[iden].base_freq = base;
+    state->p25_iden_tdma[iden].chan_type = type;
+    state->p25_iden_tdma[iden].chan_spac = spac;
+    state->p25_iden_tdma[iden].trust = 2;
+    state->p25_iden_tdma[iden].populated = 1;
+    state->p25_chan_tdma_explicit[iden] = 2;
+}
+
 static int
 run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
     static dsd_opts opts;
@@ -1364,6 +1374,54 @@ main(void) {
         process_MAC_VPDU(&opts, &state, 0, MAC);
         rc |= expect_true("0x40 blocked by backoff", opts.p25_is_tuned == 0);
         rc |= expect_eq_long("0x40 blocked vc", state.p25_vc_freq[0], 0);
+    }
+
+    // Case E2: same-carrier TDMA grants decoded on a VC MAC still reach the state machine.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        const int tdma_iden = 2;
+        const int ch_slot1 = (tdma_iden << 12) | 0x0003;
+        const long vc_freq = 851012500;
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        opts.p25_is_tuned = 1;
+        opts.trunk_is_tuned = 1;
+        state.p25_cc_freq = cc;
+        state.p25_vc_freq[0] = vc_freq;
+        state.p25_vc_freq[1] = vc_freq;
+        state.trunk_vc_freq[0] = vc_freq;
+        state.trunk_vc_freq[1] = vc_freq;
+        seed_tdma_iden(&state, tdma_iden, /*type*/ 3, base, spac);
+
+        MAC[1] = 0x40; // Group Voice Channel Grant
+        MAC[2] = 0x00; // svc
+        MAC[3] = (unsigned long long int)((ch_slot1 >> 8) & 0xFF);
+        MAC[4] = (unsigned long long int)(ch_slot1 & 0xFF);
+        MAC[5] = 0x23;
+        MAC[6] = 0x45; // group
+        MAC[7] = 0x00;
+        MAC[8] = 0x00;
+        MAC[9] = 0x07; // source
+
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0x40 tuned same-carrier dispatch", g_group_grant_called, 1);
+        rc |= expect_eq_long("0x40 tuned same-carrier channel", g_group_grant_channel, ch_slot1);
+        rc |= expect_eq_long("0x40 tuned same-carrier tg", g_group_grant_tg, 0x2345);
+        rc |= expect_eq_long("0x40 tuned same-carrier src", g_group_grant_src, 7);
+        rc |= expect_true("0x40 tuned same-carrier remains tuned", opts.p25_is_tuned == 1 && opts.trunk_is_tuned == 1);
     }
 
     // Case F: first live VPDU grant seeds an unknown CC from the current RTL tuner.

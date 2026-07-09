@@ -552,14 +552,39 @@ p25p2_vpdu_opcode_is_vendor_partition(int opcode) {
 }
 
 static int
-p25p2_vpdu_can_tune(const dsd_opts* opts, dsd_state* state, long int freq) {
-    if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
+p25p2_vpdu_has_cc_context(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->p25_trunk != 1) {
         return 0;
     }
     if (state->trunk_cc_freq > 0 || state->p2_is_lcch == 1 || DSD_SYNC_IS_P25P1(state->synctype)) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
     }
     return state->p25_cc_freq != 0;
+}
+
+static int
+p25p2_vpdu_current_carrier_matches(const dsd_opts* opts, const dsd_state* state, long int freq) {
+    if (!opts || !state || freq == 0 || (opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0)) {
+        return 0;
+    }
+    if (state->p25_vc_freq[0] == freq || state->p25_vc_freq[1] == freq || state->trunk_vc_freq[0] == freq
+        || state->trunk_vc_freq[1] == freq) {
+        return 1;
+    }
+
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    return (ctx && ctx->state == P25_SM_TUNED && ctx->vc_freq_hz == freq) ? 1 : 0;
+}
+
+static int
+p25p2_vpdu_can_dispatch_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
+    if (freq == 0 || !p25p2_vpdu_has_cc_context(opts, state)) {
+        return 0;
+    }
+    if (opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0) {
+        return 1;
+    }
+    return p25p2_vpdu_current_carrier_matches(opts, state, freq);
 }
 
 static void
@@ -723,11 +748,14 @@ static int
 p25p2_vpdu_try_group_candidate(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
                                const p25p2_vpdu_group_candidate* candidate, const p25p2_vpdu_candidate_policy* policy) {
     int tuned = 0;
+    int was_tuned = (opts && (opts->p25_is_tuned != 0 || opts->trunk_is_tuned != 0)) ? 1 : 0;
     p25p2_vpdu_print_group_label(state, (uint32_t)candidate->group);
-    if (p25p2_vpdu_can_tune(opts, state, candidate->freq)) {
+    if (p25p2_vpdu_can_dispatch_grant(opts, state, candidate->freq)) {
         p25p2_mac_handle(mac_res, opts, state, candidate->channel, candidate->svc_bits, candidate->group, /*src*/ 0,
                          policy->policy_encrypted_override, policy->policy_data_override, policy->emit_enc_lockout);
-        tuned = (policy->stop_on_tune && opts->p25_is_tuned != 0) ? 1 : 0;
+        tuned = (policy->stop_on_tune && !was_tuned && opts && (opts->p25_is_tuned != 0 || opts->trunk_is_tuned != 0))
+                    ? 1
+                    : 0;
     }
     p25p2_vpdu_update_playback_if_match(opts, state, candidate->group, candidate->freq);
     return tuned;
@@ -1028,7 +1056,7 @@ p25p2_vpdu_handle_group_explicit_grant(const struct p25p2_mac_result* mac_res, d
     p25p2_vpdu_set_active_group_single(state, grant->channelt, grant->group);
     p25p2_vpdu_print_group_label(state, (uint32_t)grant->group);
 
-    if (p25p2_vpdu_can_tune(opts, state, freq_t)) {
+    if (p25p2_vpdu_can_dispatch_grant(opts, state, freq_t)) {
         p25p2_mac_handle(mac_res, opts, state, grant->channelt, grant->svc, grant->group, grant->source,
                          /*policy_encrypted*/ -1,
                          /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
@@ -1139,7 +1167,7 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
 
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
-        if (p25p2_vpdu_can_tune(opts, state, freq)) {
+        if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
             p25p2_mac_handle(&mac_res, opts, state, channel, svc, sgroup, source, /*policy_encrypted*/ -1,
                              /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
         }
@@ -1197,7 +1225,7 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
 
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
-        if (p25p2_vpdu_can_tune(opts, state, freq)) {
+        if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
             p25p2_mac_handle(&mac_res, opts, state, channel, svc, sgroup, source, /*policy_encrypted*/ -1,
                              /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
         }
@@ -1312,7 +1340,7 @@ p25p2_vpdu_iter_block_04(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_set_active_group_single(state, channel, group);
         p25p2_vpdu_print_group_label(state, (uint32_t)group);
 
-        if (p25p2_vpdu_can_tune(opts, state, freq)) {
+        if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
             p25p2_mac_handle(&mac_res, opts, state, channel, svc, group, source, /*policy_encrypted*/ -1,
                              /*policy_data*/ -1, /*emit_enc_lockout*/ 1);
         }
@@ -1377,7 +1405,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
         state->last_active_time = time(NULL);
 
         p25p2_vpdu_print_group_label(state, target);
-        if (p25p2_vpdu_can_tune(opts, state, freq)) {
+        if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
             p25p2_mac_handle_indiv(&mac_res, opts, state, channel, svc, (int)target, /*src*/ 0,
                                    /*policy_encrypted*/ -1, /*policy_data*/ -1);
         }
@@ -1432,7 +1460,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(p25p2_vpdu_ctx* ctx, int opcode
         p25p2_vpdu_print_group_label(state, (uint32_t)target);
     }
 
-    if (p25p2_vpdu_can_tune(opts, state, freq)) {
+    if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
         p25p2_mac_handle_indiv(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
                                /*policy_data*/ 0);
@@ -1479,7 +1507,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_extended(p25p2_vpdu_ctx* ctx, int opcode) {
         p25p2_vpdu_print_group_label(state, (uint32_t)target);
     }
 
-    if (p25p2_vpdu_can_tune(opts, state, freq)) {
+    if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
         p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
                                /*policy_data*/ 0);
@@ -1834,7 +1862,7 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
         }
         state->last_active_time = time(NULL);
 
-        if (p25p2_vpdu_can_tune(opts, state, freq)) {
+        if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
             const int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
             p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, P25_SM_SVC_UNKNOWN, (int)target, /*src*/ 0,
                                    policy_encrypted, /*policy_data*/ 1);
@@ -5027,7 +5055,7 @@ p25p2_vpdu_handle_harris_data_channel_grant(p25p2_vpdu_ctx* ctx, int opcode) {
     }
     state->last_active_time = time(NULL);
 
-    if (p25p2_vpdu_can_tune(opts, state, freq)) {
+    if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
         p25p2_mac_handle_indiv(ctx->mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
                                /*policy_data*/ 1);
@@ -5317,7 +5345,7 @@ p25p2_vpdu_handle_multifrag_unit_to_unit_grant(p25p2_vpdu_ctx* ctx, int is_servi
     p25p2_vpdu_multifrag_set_active(state, "%s Active Ch: %04X%s TGT: %d SRC: %d; ",
                                     is_service_grant ? "UU-SVC-L" : "UU-UP-L", channelt, suffix, target, source);
 
-    if (opts->trunk_tune_private_calls && p25p2_vpdu_can_tune(opts, state, freq)) {
+    if (opts->trunk_tune_private_calls && p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
         p25p2_mac_handle_indiv(ctx->mac_res, opts, state, channelt, svc, target, source, /*policy_encrypted*/ -1,
                                /*policy_data*/ -1);
     }

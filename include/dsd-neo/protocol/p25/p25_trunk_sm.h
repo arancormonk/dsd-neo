@@ -89,6 +89,7 @@ typedef struct {
     int algid;              // Algorithm ID (for ENC event)
     int keyid;              // Key ID (for ENC event)
     int data_call_override; // 0=infer from svc_bits, 1=force data, -1=force non-data
+    double observed_m;      // Optional monotonic timestamp when the event was observed
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -111,6 +112,17 @@ typedef struct {
     int algid;            // Current algorithm ID for this slot
     int keyid;            // Current key ID for this slot
     int tg;               // Current talkgroup for this slot
+    int grant_active;     // 1 if this TDMA slot has an accepted grant context
+    long freq_hz;         // Accepted grant RF frequency
+    int channel;          // Accepted grant channel number
+    int target_id;        // Policy-selected target ID, or OTA target when no policy remap
+    int ota_tg;           // OTA talkgroup for group grants
+    int src;              // Source RID
+    int dst;              // Destination RID for individual grants
+    int is_group;         // 1 for group call, 0 for individual/private
+    int data_call;        // 1 for data grant, 0 for voice
+    int svc_bits;         // Service options, or P25_SM_SVC_UNKNOWN when absent
+    double last_grant_m;  // Monotonic timestamp of last accepted grant for this slot
 } p25_sm_slot_ctx_t;
 
 /* ============================================================================
@@ -269,6 +281,19 @@ void p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const c
 int p25_sm_audio_allowed(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot);
 
 /**
+ * @brief Check whether a TDMA slot has an accepted grant newer than a captured event time.
+ *
+ * Decoders use this after processing a MAC payload but before clearing IDLE
+ * slot metadata, so grants carried inside the IDLE payload can keep their
+ * policy and service context.
+ *
+ * @param slot Slot index (0 or 1).
+ * @param observed_m Monotonic timestamp captured before payload processing.
+ * @return 1 if the global state machine has a newer active grant for the slot, 0 otherwise.
+ */
+int p25_sm_slot_grant_newer_than(int slot, double observed_m);
+
+/**
  * @brief Update audio gating for a slot based on current encryption state.
  *
  * Called when encryption parameters are received to update allow_audio.
@@ -315,6 +340,11 @@ void p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot);
  * @brief Emit IDLE event for a slot.
  */
 void p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot);
+
+/**
+ * @brief Emit IDLE event with a previously captured monotonic observation timestamp.
+ */
+void p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m);
 
 /**
  * @brief Emit TDU (P1 terminator) event.
@@ -573,6 +603,13 @@ p25_sm_ev_idle(int slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_IDLE;
     ev.slot = slot;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_idle_at(int slot, double observed_m) {
+    p25_sm_event_t ev = p25_sm_ev_idle(slot);
+    ev.observed_m = observed_m;
     return ev;
 }
 

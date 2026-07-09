@@ -357,12 +357,18 @@ matrix_send_initial_grant(matrix_fixture* fixture, const matrix_mode_case* mode,
 static void
 matrix_age_tuned_timers(matrix_fixture* fixture) {
     double now_m = dsd_time_now_monotonic_s();
-    fixture->ctx.t_tune_m = now_m - 1.0;
-    fixture->ctx.t_voice_m = now_m - 1.0;
+    double stale_m = now_m - 1.0;
+    fixture->ctx.t_tune_m = stale_m;
+    fixture->ctx.t_voice_m = stale_m;
     fixture->state->last_vc_sync_time = time(NULL) - 1;
-    fixture->state->last_vc_sync_time_m = now_m - 1.0;
+    fixture->state->last_vc_sync_time_m = stale_m;
     fixture->state->p25_last_vc_tune_time = time(NULL) - 1;
-    fixture->state->p25_last_vc_tune_time_m = now_m - 1.0;
+    fixture->state->p25_last_vc_tune_time_m = stale_m;
+    for (int s = 0; s < 2; s++) {
+        if (fixture->ctx.slots[s].last_grant_m > 0.0) {
+            fixture->ctx.slots[s].last_grant_m = stale_m;
+        }
+    }
 }
 
 static void
