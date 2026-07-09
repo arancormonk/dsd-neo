@@ -2861,10 +2861,6 @@ p25_sm_slot_grant_newer_than(int slot, double observed_m) {
     }
 
     const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
-    if (!ctx) {
-        return 0;
-    }
-
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
     return (slot_ctx->grant_active && slot_ctx->last_grant_m > observed_m) ? 1 : 0;
 }
