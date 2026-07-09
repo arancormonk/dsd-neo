@@ -32,6 +32,11 @@
 
 static const char* P25P2_EMPTY_CALL_STRING = "                     ";
 
+typedef struct {
+    int lasttg;
+    int lastsrc;
+} p25p2_xcch_slot_ids_snapshot;
+
 static int
 p25p2_xcch_slot_valid(uint8_t slot) {
     return slot <= 1;
@@ -291,11 +296,33 @@ p25p2_xcch_blank_slot_call_string(dsd_state* state, int slot) {
 }
 
 static void
-p25p2_xcch_clear_idle_metadata_if_stale(dsd_state* state, uint8_t slot, double idle_observed_m, int clear_slot_ids) {
+p25p2_xcch_snapshot_slot_ids(const dsd_state* state, uint8_t slot, p25p2_xcch_slot_ids_snapshot* snapshot) {
+    if (!state || !snapshot || !p25p2_xcch_slot_valid(slot)) {
+        return;
+    }
+
+    snapshot->lasttg = p25p2_xcch_get_slot_tg(state, slot);
+    snapshot->lastsrc = p25p2_xcch_get_slot_src(state, slot);
+}
+
+static void
+p25p2_xcch_clear_slot_call_ids(dsd_state* state, uint8_t slot) {
     if (!state || !p25p2_xcch_slot_valid(slot)) {
         return;
     }
-    if (p25_sm_slot_grant_newer_than(slot, idle_observed_m)) {
+
+    if (slot == 0) {
+        state->lastsrc = 0;
+        state->lasttg = 0;
+    } else {
+        state->lastsrcR = 0;
+        state->lasttgR = 0;
+    }
+}
+
+static void
+p25p2_xcch_clear_slot_idle_metadata(dsd_state* state, uint8_t slot, int clear_slot_ids) {
+    if (!state || !p25p2_xcch_slot_valid(slot)) {
         return;
     }
 
@@ -311,6 +338,35 @@ p25p2_xcch_clear_idle_metadata_if_stale(dsd_state* state, uint8_t slot, double i
         state->dmr_so = 0;
     } else {
         state->dmr_soR = 0;
+    }
+}
+
+static void
+p25p2_xcch_clear_idle_metadata_if_stale(dsd_state* state, uint8_t slot, double idle_observed_m, int clear_slot_ids) {
+    if (!state || !p25p2_xcch_slot_valid(slot)) {
+        return;
+    }
+    if (p25_sm_slot_grant_newer_than(slot, idle_observed_m)) {
+        return;
+    }
+
+    p25p2_xcch_clear_slot_idle_metadata(state, slot, clear_slot_ids);
+}
+
+static void
+p25p2_xcch_restore_slot_ids_for_new_grant(dsd_state* state, uint8_t slot, double idle_observed_m,
+                                          const p25p2_xcch_slot_ids_snapshot* snapshot) {
+    if (!state || !snapshot || !p25p2_xcch_slot_valid(slot) || !p25_sm_slot_grant_newer_than(slot, idle_observed_m)) {
+        return;
+    }
+
+    if (p25p2_xcch_get_slot_tg(state, slot) == 0 && p25p2_xcch_get_slot_src(state, slot) == 0) {
+        p25p2_xcch_set_slot_tg(state, slot, snapshot->lasttg);
+        if (slot == 0) {
+            state->lastsrc = snapshot->lastsrc;
+        } else {
+            state->lastsrcR = snapshot->lastsrc;
+        }
     }
 }
 
@@ -690,13 +746,17 @@ p25p2_xcch_handle_facch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot) 
 
 static void
 p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot, unsigned long long int fmac[24]) {
+    p25p2_xcch_slot_ids_snapshot idle_ids = {0};
+
     if (!p25p2_xcch_slot_valid(slot)) {
         return;
     }
 
     double idle_observed_m = dsd_time_now_monotonic_s();
 
+    p25p2_xcch_snapshot_slot_ids(state, slot, &idle_ids);
     p25p2_xcch_reset_idle_slot_facch(state, slot);
+    p25p2_xcch_clear_slot_call_ids(state, slot);
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -705,6 +765,7 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 1);
+    p25p2_xcch_restore_slot_ids_for_new_grant(state, slot, idle_observed_m, &idle_ids);
     p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
     p25_p2_audio_ring_reset(state, slot);
 }

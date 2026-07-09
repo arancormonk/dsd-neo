@@ -27,6 +27,9 @@ static int g_crc12_result;
 static int g_crc16_result;
 static int g_vpdu_count;
 static int g_vpdu_type;
+static int g_vpdu_entry_lasttg[2];
+static int g_vpdu_entry_lastsrc[2];
+static int g_vpdu_grant_newer_slot;
 static unsigned long long int g_vpdu_mac[24];
 static int g_ptt_count[2];
 static int g_active_count[2];
@@ -74,11 +77,19 @@ crc16_lb_bridge(const int* payload, int len) {
 void
 process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int mac[24]) {
     (void)opts;
-    (void)state;
     g_vpdu_count++;
     g_vpdu_type = type;
+    if (state) {
+        g_vpdu_entry_lasttg[0] = state->lasttg;
+        g_vpdu_entry_lasttg[1] = state->lasttgR;
+        g_vpdu_entry_lastsrc[0] = state->lastsrc;
+        g_vpdu_entry_lastsrc[1] = state->lastsrcR;
+    }
     for (int i = 0; i < 24; i++) {
         g_vpdu_mac[i] = mac[i];
+    }
+    if (g_vpdu_grant_newer_slot >= 0 && g_vpdu_grant_newer_slot <= 1) {
+        g_slot_grant_newer[g_vpdu_grant_newer_slot] = 1;
     }
 }
 
@@ -250,6 +261,11 @@ reset_stubs(void) {
     g_crc16_result = 0;
     g_vpdu_count = 0;
     g_vpdu_type = -1;
+    g_vpdu_entry_lasttg[0] = -1;
+    g_vpdu_entry_lasttg[1] = -1;
+    g_vpdu_entry_lastsrc[0] = -1;
+    g_vpdu_entry_lastsrc[1] = -1;
+    g_vpdu_grant_newer_slot = -1;
     DSD_MEMSET(g_vpdu_mac, 0, sizeof(g_vpdu_mac));
     DSD_MEMSET(g_ptt_count, 0, sizeof(g_ptt_count));
     DSD_MEMSET(g_active_count, 0, sizeof(g_active_count));
@@ -481,6 +497,8 @@ test_facch_public_dispatch_and_crc_gates(void) {
     rc |= expect_int("facch idle emitted", g_idle_count[1], 1);
     rc |= expect_int("facch idle vpdu", g_vpdu_count, 1);
     rc |= expect_int("facch idle vpdu type", g_vpdu_type, 0);
+    rc |= expect_int("facch idle vpdu entry src clear", g_vpdu_entry_lastsrc[1], 0);
+    rc |= expect_int("facch idle vpdu entry tg clear", g_vpdu_entry_lasttg[1], 0);
     rc |= expect_int("facch idle src clear", state.lastsrcR, 0);
     rc |= expect_int("facch idle tg clear", state.lasttgR, 0);
     rc |= expect_int("facch idle gate clear", state.p25_p2_audio_allowed[1], 0);
@@ -504,12 +522,14 @@ test_facch_public_dispatch_and_crc_gates(void) {
     state.p25_service_options_valid[1] = 1;
     state.dmr_soR = 0x93;
     state.p25_p2_enc_lockout_muted[1] = 1;
-    g_slot_grant_newer[1] = 1;
+    g_vpdu_grant_newer_slot = 1;
     DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "grant");
     pack_payload_from_mac(payload, 156, mac, 0x3, 0, 0);
 
     process_FACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("facch idle grant emitted", g_idle_count[1], 1);
+    rc |= expect_int("facch idle grant vpdu entry src clear", g_vpdu_entry_lastsrc[1], 0);
+    rc |= expect_int("facch idle grant vpdu entry tg clear", g_vpdu_entry_lasttg[1], 0);
     rc |= expect_int("facch idle grant gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("facch idle grant ring reset", g_ring_reset_count[1], 1);
     rc |= expect_int("facch idle grant src preserved", state.lastsrcR, 0x010204);
