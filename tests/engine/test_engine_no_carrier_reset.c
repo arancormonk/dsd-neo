@@ -10,6 +10,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -42,6 +43,37 @@ static int
 fake_rtl_fsk_output_kind(void) {
     return RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
 }
+#endif
+
+#if defined(DSD_NEO_TEST_RTL_WRAP)
+static int g_check_p25_tick_guard = 0;
+static int g_p25_tick_guard_held_during_tune = 0;
+static int g_p25_tick_guard_held_during_context_update = 0;
+
+static int
+p25_tick_guard_is_held(void) {
+    if (!p25_sm_tick_guard_try_enter()) {
+        return 1;
+    }
+    p25_sm_tick_guard_leave();
+    return 0;
+}
+
+// GNU ld --wrap entry points must keep the reserved __real_* and __wrap_* names.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, uint64_t request_id,
+                                        const char* source);
+
+int
+__wrap_p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, uint64_t request_id,
+                                    const char* source) {
+    if (g_check_p25_tick_guard) {
+        g_p25_tick_guard_held_during_context_update = p25_tick_guard_is_held();
+    }
+    return __real_p25_sm_await_pending_cc_tune(ctx, opts, state, request_id, source);
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 #endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
@@ -88,6 +120,9 @@ reset_rtl_profile_fakes(void) {
     g_pending_channel_profile = 0;
     g_pending_ted_sps = 0;
     g_pending_ted_override = 0;
+    g_check_p25_tick_guard = 0;
+    g_p25_tick_guard_held_during_tune = 0;
+    g_p25_tick_guard_held_during_context_update = 0;
 }
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
@@ -207,6 +242,9 @@ __wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
 int
 __wrap_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t token) {
     g_rtl_tune_token = token;
+    if (g_check_p25_tick_guard) {
+        g_p25_tick_guard_held_during_tune = p25_tick_guard_is_held();
+    }
     return __wrap_rtl_stream_tune(ctx, center_freq_hz);
 }
 
@@ -451,6 +489,40 @@ main(void) {
         return 1;
     }
 
+    // noCarrier can run from control pumping inside guarded frame dispatch.
+    // Guard contention must defer the P25 return without blocking or clearing
+    // the voice state, then allow the next main-loop pass to complete it.
+    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->p25_cc_freq = 769868750;
+    state->trunk_cc_freq = 769868750;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->p25_vc_freq[0] = 771056250;
+    state->p25_vc_freq[1] = 771056250;
+
+    int preheld_guard = p25_sm_tick_guard_try_enter();
+    rc |= expect_true("p25-nocarrier-contention-setup", preheld_guard == 1);
+    if (preheld_guard) {
+        noCarrier(opts, state);
+        rc |= expect_true("p25-nocarrier-contention-preserves-state",
+                          opts->p25_is_tuned == 1 && opts->trunk_is_tuned == 1 && state->p25_vc_freq[0] == 771056250
+                              && state->p25_vc_freq[1] == 771056250);
+        p25_sm_tick_guard_leave();
+    }
+
+    noCarrier(opts, state);
+    rc |= expect_true("p25-nocarrier-contention-retries",
+                      opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0 && state->p25_vc_freq[0] == 0);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
@@ -509,14 +581,23 @@ main(void) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 771056250;
     p25_sm_ctx_t* pending_ctx = p25_sm_get_ctx();
     p25_sm_init_ctx(pending_ctx, opts, state);
+    g_check_p25_tick_guard = 1;
 
     noCarrier(opts, state);
+    g_check_p25_tick_guard = 0;
 
     uint64_t pending_request_id = pending_ctx->cc_tune_request_id;
     rc |= expect_true("p25-rtl-nocarrier-pending-tagged",
                       g_rtl_tune_calls == 1 && g_rtl_tune_token != 0U && pending_request_id == g_rtl_tune_token);
     rc |= expect_true("p25-rtl-nocarrier-pending-holds-acquisition",
                       pending_ctx->cc_tune_pending == 1 && pending_ctx->t_cc_tune_m == 0.0);
+    rc |= expect_true("p25-rtl-nocarrier-pending-serializes-tune", g_p25_tick_guard_held_during_tune == 1);
+    rc |= expect_true("p25-rtl-nocarrier-pending-serializes-context", g_p25_tick_guard_held_during_context_update == 1);
+    int guard_released = p25_sm_tick_guard_try_enter();
+    rc |= expect_true("p25-rtl-nocarrier-pending-releases-guard", guard_released == 1);
+    if (guard_released) {
+        p25_sm_tick_guard_leave();
+    }
     rc |= expect_true("p25-rtl-nocarrier-pending-closes-frame-gate",
                       !dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
 
@@ -915,6 +996,102 @@ main(void) {
     rc |= expect_true("dmr-rtl-nocarrier-keeps-generic-profile",
                       g_rtl_symbol_rate_hz == 6000 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_WIDE);
 
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    // A failed asynchronous generic voice tune keeps dispatch gated until a
+    // correlated CC recovery establishes a newer coherent tuner boundary.
+    reset_rtl_profile_fakes();
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 0;
+    opts->trunk_enable = 1;
+    opts->p25_is_tuned = 0;
+    opts->trunk_is_tuned = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 769868750;
+    state->trunk_cc_freq = 936000000;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->trunk_vc_freq[0] = 936500000;
+    state->trunk_vc_freq[1] = 936500000;
+
+    const uint64_t failed_generation = dsd_trunk_tuning_generation();
+    rc |= expect_true("generic-rtl-recovery-clean-gate", dsd_trunk_tuning_frame_is_current(failed_generation));
+    const uint64_t failed_request_id = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_mark_ready(failed_request_id);
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("generic-rtl-recovery-pending-suppresses-legacy",
+                      failed_request_id != 0U && g_rtl_tune_calls == 0 && opts->trunk_is_tuned == 1
+                          && dsd_trunk_tuning_request_status(failed_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    dsd_trunk_tuning_request_publish(failed_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("generic-rtl-recovery-seeds-failed-gate",
+                      dsd_trunk_tuning_request_status(failed_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED
+                          && !dsd_trunk_tuning_frame_is_current(failed_generation));
+
+    noCarrier(opts, state);
+
+    const uint64_t recovery_request_id = g_rtl_tune_token;
+    rc |=
+        expect_true("generic-rtl-recovery-retune-is-correlated",
+                    g_rtl_tune_calls == 1 && g_rtl_tune_freq == 936000000U && recovery_request_id > failed_request_id);
+    rc |= expect_true("generic-rtl-recovery-holds-retry-state",
+                      opts->trunk_is_tuned == 1 && state->trunk_vc_freq[0] == 0 && state->trunk_cc_freq == 936000000
+                          && state->p25_cc_freq == 0);
+    rc |= expect_true("generic-rtl-recovery-remains-gated-while-pending",
+                      dsd_trunk_tuning_request_status(recovery_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING
+                          && !dsd_trunk_tuning_frame_is_current(failed_generation));
+    rc |=
+        expect_true("generic-rtl-recovery-preserves-profile", g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_WIDE);
+
+    dsd_trunk_tuning_request_publish(recovery_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("generic-rtl-recovery-failure-stays-gated",
+                      dsd_trunk_tuning_request_status(recovery_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED
+                          && !dsd_trunk_tuning_frame_is_current(failed_generation));
+
+    noCarrier(opts, state);
+
+    const uint64_t retry_request_id = g_rtl_tune_token;
+    rc |= expect_true("generic-rtl-recovery-failure-retries-correlated",
+                      g_rtl_tune_calls == 2 && retry_request_id > recovery_request_id
+                          && dsd_trunk_tuning_request_status(retry_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING
+                          && opts->trunk_is_tuned == 1);
+
+    dsd_trunk_tuning_request_publish(retry_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    const uint64_t first_recovery_generation = dsd_trunk_tuning_generation();
+    rc |= expect_true("generic-rtl-recovery-success-retires-failed-gate",
+                      first_recovery_generation == failed_generation + 1U && dsd_trunk_tuning_pending_request() == 0U
+                          && dsd_trunk_tuning_frame_is_current(first_recovery_generation));
+
+    // A target switch while the recovery was in flight must establish a new
+    // boundary instead of accepting the old completion for the current CC.
+    state->trunk_cc_freq = 937000000;
+    noCarrier(opts, state);
+
+    const uint64_t switched_request_id = g_rtl_tune_token;
+    rc |= expect_true("generic-rtl-recovery-target-switch-retunes",
+                      g_rtl_tune_calls == 3 && g_rtl_tune_freq == 937000000U && switched_request_id > retry_request_id
+                          && dsd_trunk_tuning_request_status(switched_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING
+                          && !dsd_trunk_tuning_frame_is_current(first_recovery_generation));
+
+    dsd_trunk_tuning_request_publish(switched_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    const uint64_t recovery_generation = dsd_trunk_tuning_generation();
+    rc |= expect_true("generic-rtl-recovery-target-switch-commits",
+                      recovery_generation == failed_generation + 2U && dsd_trunk_tuning_pending_request() == 0U
+                          && dsd_trunk_tuning_frame_is_current(recovery_generation));
+
+    noCarrier(opts, state);
+    rc |= expect_true("generic-rtl-recovery-success-commits-without-retune",
+                      g_rtl_tune_calls == 3 && opts->trunk_is_tuned == 0 && state->trunk_vc_freq[0] == 0
+                          && state->trunk_cc_freq == 937000000);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;

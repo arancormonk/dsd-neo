@@ -20,6 +20,8 @@ static long int g_last_freq = 0;
 static long int g_last_cc_freq = 0;
 static int g_last_ted_sps = -1;
 static dsd_trunk_tune_result g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+static dsd_trunk_tune_result g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_OK;
+static uint64_t g_last_request_id = 0U;
 
 static void
 fake_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
@@ -50,6 +52,25 @@ static dsd_trunk_tune_result
 fake_tune_to_cc_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     fake_tune_to_cc(opts, state, freq, ted_sps);
     return g_tune_to_cc_result;
+}
+
+static dsd_trunk_tune_result
+fake_tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    fake_tune_to_freq(opts, state, freq, ted_sps);
+    return g_tune_to_cc_result;
+}
+
+static dsd_trunk_tune_result
+fake_return_to_cc_result(dsd_opts* opts, dsd_state* state) {
+    fake_return_to_cc(opts, state);
+    return g_tune_to_cc_result;
+}
+
+static dsd_trunk_tune_result
+fake_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    fake_tune_to_cc(opts, state, freq, ted_sps);
+    g_last_request_id = request_id;
+    return g_tune_to_cc_request_result;
 }
 
 int
@@ -117,29 +138,63 @@ main(void) {
     assert(dsd_trunk_tuning_generation() == tune_generation);
 
     hooks = (dsd_trunk_tuning_hooks){0};
+    hooks.tune_to_freq_result = fake_tune_to_freq_result;
     hooks.tune_to_cc_result = fake_tune_to_cc_result;
+    hooks.return_to_cc_result = fake_return_to_cc_result;
     dsd_trunk_tuning_hooks_set(hooks);
     g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     tune_generation = dsd_trunk_tuning_generation();
     assert(dsd_trunk_tuning_frame_is_current(tune_generation));
-    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851600000, 0) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    uint64_t pending_request = UINT64_MAX;
+    assert(dsd_trunk_tuning_hook_tune_to_freq_with_id(&opts, &state, 851600000, 0, &pending_request)
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(pending_request == 0U);
+    tune_generation++;
     assert(dsd_trunk_tuning_generation() == tune_generation);
-    assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
-    uint64_t pending_request = dsd_trunk_tuning_pending_request();
-    assert(pending_request != 0U);
-    assert(dsd_trunk_tuning_request_status(pending_request, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING);
-
-    dsd_trunk_tuning_request_complete(pending_request, DSD_TRUNK_TUNE_RESULT_OK);
-    assert(dsd_trunk_tuning_pending_request() == 0U);
-    assert(dsd_trunk_tuning_generation() == tune_generation + 1U);
-    assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
-    tune_generation = dsd_trunk_tuning_generation();
     assert(dsd_trunk_tuning_frame_is_current(tune_generation));
-    double completed_m = 0.0;
-    assert(dsd_trunk_tuning_request_status(pending_request, &completed_m) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(completed_m > 0.0);
-    dsd_trunk_tuning_request_complete(pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+    pending_request = UINT64_MAX;
+    assert(dsd_trunk_tuning_hook_tune_to_cc_with_id(&opts, &state, 851600000, 0, &pending_request)
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(pending_request == 0U);
+    tune_generation++;
     assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+    pending_request = UINT64_MAX;
+    assert(dsd_trunk_tuning_hook_return_to_cc_with_id(&opts, &state, &pending_request)
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(pending_request == 0U);
+    tune_generation++;
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+
+    g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851650000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    tune_generation++;
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+
+    hooks = (dsd_trunk_tuning_hooks){0};
+    hooks.tune_to_cc_request = fake_tune_to_cc_request;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_last_request_id = 0U;
+    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851700000, 0) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(g_last_request_id != 0U);
+    assert(dsd_trunk_tuning_pending_request() == g_last_request_id);
+    assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
+    dsd_trunk_tuning_request_publish(g_last_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_request_status(g_last_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_pending_request() == g_last_request_id);
+    assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
+    uint64_t wrapper_recovery_request = dsd_trunk_tuning_request_begin();
+    assert(wrapper_recovery_request > g_last_request_id);
+    dsd_trunk_tuning_request_complete(wrapper_recovery_request, DSD_TRUNK_TUNE_RESULT_OK);
+    tune_generation++;
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
 
     uint64_t early_completion = dsd_trunk_tuning_request_begin();
     assert(early_completion != 0U);
@@ -249,11 +304,25 @@ main(void) {
     assert(dsd_trunk_tuning_generation() == tune_generation);
     assert(dsd_trunk_tuning_frame_is_current(tune_generation));
 
+    hooks = (dsd_trunk_tuning_hooks){0};
+    hooks.tune_to_cc_result = fake_tune_to_cc_result;
+    dsd_trunk_tuning_hooks_set(hooks);
     g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     tune_generation = dsd_trunk_tuning_generation();
     assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851700000, 0) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
     assert(dsd_trunk_tuning_generation() == tune_generation);
     assert(dsd_trunk_tuning_pending_request() == 0U);
+
+    uint64_t abandoned_request = dsd_trunk_tuning_request_begin();
+    assert(abandoned_request != 0U);
+    dsd_trunk_tuning_request_mark_ready(abandoned_request);
+    assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
+    dsd_trunk_tuning_requests_reset();
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+    dsd_trunk_tuning_request_publish(abandoned_request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
 
     assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_OK));
     assert(dsd_trunk_tune_result_is_ok(DSD_TRUNK_TUNE_RESULT_PENDING));

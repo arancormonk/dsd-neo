@@ -171,6 +171,16 @@ dsd_trunk_tuning_request_begin(void) {
 }
 
 void
+dsd_trunk_tuning_requests_reset(void) {
+    dsd_trunk_tuning_requests_lock();
+    for (int i = 0; i < DSD_TRUNK_TUNING_REQUEST_HISTORY; i++) {
+        g_trunk_tuning_requests[i] = (dsd_trunk_tuning_request_record){0};
+    }
+    atomic_store(&g_trunk_tuning_unresolved_count, 0);
+    dsd_trunk_tuning_requests_unlock();
+}
+
+void
 dsd_trunk_tuning_request_publish(uint64_t request_id, dsd_trunk_tune_result result) {
     if (request_id == 0U || result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         return;
@@ -329,6 +339,16 @@ dsd_trunk_tuning_note_result(uint64_t request_id, dsd_trunk_tune_result result) 
 }
 
 static dsd_trunk_tune_result
+dsd_trunk_tuning_note_legacy_result(dsd_trunk_tune_result result) {
+    /* Legacy result hooks cannot receive a request ID, so a PENDING result is
+     * intentionally uncorrelated and must not close the global frame gate. */
+    if (dsd_trunk_tune_result_is_ok(result)) {
+        dsd_trunk_tuning_generation_advance();
+    }
+    return result;
+}
+
+static dsd_trunk_tune_result
 dsd_trunk_tuning_fallback_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     (void)ted_sps;
     if (!opts || !state || freq <= 0) {
@@ -384,6 +404,13 @@ dsd_trunk_tuning_hooks_set(dsd_trunk_tuning_hooks hooks) {
 dsd_trunk_tune_result
 dsd_trunk_tuning_hook_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                            uint64_t* out_request_id) {
+    if (out_request_id) {
+        *out_request_id = 0U;
+    }
+    if (g_trunk_tuning_hooks.tune_to_freq_result && !g_trunk_tuning_hooks.tune_to_freq_request) {
+        return dsd_trunk_tuning_note_legacy_result(
+            g_trunk_tuning_hooks.tune_to_freq_result(opts, state, freq, ted_sps));
+    }
     const uint64_t request_id = dsd_trunk_tuning_request_begin();
     if (out_request_id) {
         *out_request_id = request_id;
@@ -394,10 +421,6 @@ dsd_trunk_tuning_hook_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, lon
     if (g_trunk_tuning_hooks.tune_to_freq_request) {
         return dsd_trunk_tuning_note_result(
             request_id, g_trunk_tuning_hooks.tune_to_freq_request(opts, state, freq, ted_sps, request_id));
-    }
-    if (g_trunk_tuning_hooks.tune_to_freq_result) {
-        return dsd_trunk_tuning_note_result(request_id,
-                                            g_trunk_tuning_hooks.tune_to_freq_result(opts, state, freq, ted_sps));
     }
     if (g_trunk_tuning_hooks.tune_to_freq) {
         g_trunk_tuning_hooks.tune_to_freq(opts, state, freq, ted_sps);
@@ -414,6 +437,12 @@ dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int fr
 dsd_trunk_tune_result
 dsd_trunk_tuning_hook_tune_to_cc_with_id(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                          uint64_t* out_request_id) {
+    if (out_request_id) {
+        *out_request_id = 0U;
+    }
+    if (g_trunk_tuning_hooks.tune_to_cc_result && !g_trunk_tuning_hooks.tune_to_cc_request) {
+        return dsd_trunk_tuning_note_legacy_result(g_trunk_tuning_hooks.tune_to_cc_result(opts, state, freq, ted_sps));
+    }
     const uint64_t request_id = dsd_trunk_tuning_request_begin();
     if (out_request_id) {
         *out_request_id = request_id;
@@ -424,10 +453,6 @@ dsd_trunk_tuning_hook_tune_to_cc_with_id(dsd_opts* opts, dsd_state* state, long 
     if (g_trunk_tuning_hooks.tune_to_cc_request) {
         return dsd_trunk_tuning_note_result(
             request_id, g_trunk_tuning_hooks.tune_to_cc_request(opts, state, freq, ted_sps, request_id));
-    }
-    if (g_trunk_tuning_hooks.tune_to_cc_result) {
-        return dsd_trunk_tuning_note_result(request_id,
-                                            g_trunk_tuning_hooks.tune_to_cc_result(opts, state, freq, ted_sps));
     }
     if (g_trunk_tuning_hooks.tune_to_cc) {
         g_trunk_tuning_hooks.tune_to_cc(opts, state, freq, ted_sps);
@@ -443,6 +468,12 @@ dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq
 
 dsd_trunk_tune_result
 dsd_trunk_tuning_hook_return_to_cc_with_id(dsd_opts* opts, dsd_state* state, uint64_t* out_request_id) {
+    if (out_request_id) {
+        *out_request_id = 0U;
+    }
+    if (g_trunk_tuning_hooks.return_to_cc_result && !g_trunk_tuning_hooks.return_to_cc_request) {
+        return dsd_trunk_tuning_note_legacy_result(g_trunk_tuning_hooks.return_to_cc_result(opts, state));
+    }
     const uint64_t request_id = dsd_trunk_tuning_request_begin();
     if (out_request_id) {
         *out_request_id = request_id;
@@ -453,9 +484,6 @@ dsd_trunk_tuning_hook_return_to_cc_with_id(dsd_opts* opts, dsd_state* state, uin
     if (g_trunk_tuning_hooks.return_to_cc_request) {
         return dsd_trunk_tuning_note_result(request_id,
                                             g_trunk_tuning_hooks.return_to_cc_request(opts, state, request_id));
-    }
-    if (g_trunk_tuning_hooks.return_to_cc_result) {
-        return dsd_trunk_tuning_note_result(request_id, g_trunk_tuning_hooks.return_to_cc_result(opts, state));
     }
     if (g_trunk_tuning_hooks.return_to_cc) {
         g_trunk_tuning_hooks.return_to_cc(opts, state);

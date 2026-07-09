@@ -36,10 +36,16 @@ trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
 }
 
 static dsd_trunk_tune_result
-trunk_tune_to_cc_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     trunk_tune_to_cc(opts, state, freq, ted_sps);
     g_tune_to_cc_calls++;
     return g_tune_to_cc_result;
+}
+
+static dsd_trunk_tune_result
+trunk_tune_to_cc_legacy_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    return trunk_tune_to_cc_request(opts, state, freq, ted_sps, 0U);
 }
 
 static void
@@ -118,7 +124,7 @@ main(void) {
     (void)dsd_trunk_cc_candidates_add(&st3, B, 0);
     st3.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
     dsd_trunk_tuning_hooks pending_hooks = {0};
-    pending_hooks.tune_to_cc_result = trunk_tune_to_cc_result;
+    pending_hooks.tune_to_cc_request = trunk_tune_to_cc_request;
     dsd_trunk_tuning_hooks_set(pending_hooks);
     g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     g_tune_to_cc_calls = 0;
@@ -185,6 +191,28 @@ main(void) {
     uint64_t recovery_request = dsd_trunk_tuning_request_begin();
     assert(recovery_request > failed_request);
     dsd_trunk_tuning_request_complete(recovery_request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
+
+    // Legacy PENDING hooks are accepted without a correlation ID or wait state.
+    static dsd_opts o4;
+    static dsd_state st4;
+    init_basic(&o4, &st4);
+    (void)dsd_trunk_cc_candidates_add(&st4, A, 0);
+    st4.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
+    dsd_trunk_tuning_hooks legacy_hooks = {0};
+    legacy_hooks.tune_to_cc_result = trunk_tune_to_cc_legacy_result;
+    dsd_trunk_tuning_hooks_set(legacy_hooks);
+    g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_tune_to_cc_calls = 0;
+
+    p25_sm_tick(&o4, &st4);
+    ctx = p25_sm_get_ctx();
+    assert(g_tune_to_cc_calls == 1);
+    assert(ctx->cc_tune_pending == 0);
+    assert(ctx->cc_tune_request_id == 0U);
+    assert(ctx->t_cc_tune_m > 0.0);
+    assert(st4.p25_cc_eval_start_m == ctx->t_cc_tune_m);
     assert(dsd_trunk_tuning_pending_request() == 0U);
     assert(dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
     return 0;

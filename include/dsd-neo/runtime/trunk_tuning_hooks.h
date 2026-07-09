@@ -37,9 +37,12 @@ typedef struct {
     void (*tune_to_freq)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
     void (*tune_to_cc)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
     void (*return_to_cc)(dsd_opts* opts, dsd_state* state);
+    /* Legacy result hooks cannot receive a request ID. A PENDING result remains
+     * accepted but uncorrelated: it advances the generation without gating. */
     dsd_trunk_tune_result (*tune_to_freq_result)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
     dsd_trunk_tune_result (*tune_to_cc_result)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
     dsd_trunk_tune_result (*return_to_cc_result)(dsd_opts* opts, dsd_state* state);
+    /* Request-aware hooks must use request_id when publishing asynchronous completion. */
     dsd_trunk_tune_result (*tune_to_freq_request)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                                   uint64_t request_id);
     dsd_trunk_tune_result (*tune_to_cc_request)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
@@ -50,12 +53,14 @@ typedef struct {
 void dsd_trunk_tuning_hooks_set(dsd_trunk_tuning_hooks hooks);
 
 /**
- * @brief Return the generation of completed trunk-tuning changes.
+ * @brief Return the generation of accepted trunk-tuning boundaries.
  *
  * Frame decoders can snapshot this value before collecting a frame and verify
  * it again before dispatch, preventing work from an earlier trunk target from
- * mutating state restored for a newer target. Runtime hook wrappers and direct
- * trunk-scan retunes publish this generation only after completion.
+ * mutating state restored for a newer target. Correlated hook wrappers and
+ * direct trunk-scan retunes publish this generation only after completion.
+ * Legacy result hooks also publish on an accepted PENDING result because they
+ * have no completion channel; those hooks remain deliberately ungated.
  */
 uint64_t dsd_trunk_tuning_generation(void);
 
@@ -77,6 +82,15 @@ void dsd_trunk_tuning_generation_advance(void);
  * @return Non-zero request ID for the new transition.
  */
 uint64_t dsd_trunk_tuning_request_begin(void);
+
+/**
+ * @brief Clear correlated request history at a quiescent runtime boundary.
+ *
+ * Engine lifecycle code calls this after the previous tuner backend has
+ * stopped and before a new decode run begins. Stale completion callbacks are
+ * ignored after the reset. Do not call while an active run owns tune requests.
+ */
+void dsd_trunk_tuning_requests_reset(void);
 
 /**
  * @brief Publish backend completion for an exact tune transition.
@@ -138,6 +152,7 @@ int dsd_trunk_tuning_frame_is_current(uint64_t frame_generation);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_return_to_cc(dsd_opts* opts, dsd_state* state);
+/* The _with_id wrappers return zero when dispatching through a legacy result hook. */
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, long int freq,
                                                                  int ted_sps, uint64_t* out_request_id);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc_with_id(dsd_opts* opts, dsd_state* state, long int freq,

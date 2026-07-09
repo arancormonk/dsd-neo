@@ -1552,7 +1552,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     }
 
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-        if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
             (void)p25_sm_await_pending_cc_tune(&rt->p25_ctx, opts, state, tune_request_id, "scan-retune");
         } else {
             double completed_m = 0.0;
@@ -1562,7 +1562,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
             }
             (void)p25_sm_restart_pending_cc_acquisition(&rt->p25_ctx, opts, state, completed_m, "scan-retune");
         }
-    } else if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+    } else if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
         rt->tune_request_id = tune_request_id;
         rt->tune_pending = 1;
     } else {

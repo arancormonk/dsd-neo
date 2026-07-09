@@ -1851,6 +1851,12 @@ counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
     return g_counting_tune_to_cc_result;
 }
 
+static dsd_trunk_tune_result
+counting_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
+    return counting_tune_to_cc(opts, state, freq, ted_sps);
+}
+
 static int
 test_p25_pending_retune_holds_scan_dwell(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -1868,7 +1874,7 @@ test_p25_pending_retune_holds_scan_dwell(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
+    hooks.tune_to_cc_request = counting_tune_to_cc_request;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
@@ -1933,7 +1939,7 @@ test_generic_pending_retune_holds_and_recovers(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
+    hooks.tune_to_cc_request = counting_tune_to_cc_request;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
@@ -1967,6 +1973,54 @@ test_generic_pending_retune_holds_and_recovers(void) {
         DSD_FPRINTF(stderr, "generic async failure did not recover active=%zu calls=%d pending=%llu\n",
                     dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls,
                     (unsigned long long)dsd_trunk_tuning_pending_request());
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_legacy_pending_retune_does_not_hold_scan(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,451000000,,250,,\n"
+                             "b,dmr-trunk,452000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_result = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(1.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_trunk_tuning_pending_request() != 0U || g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "legacy pending scan init failed rc=%d pending=%llu calls=%d err=%s\n", rc,
+                    (unsigned long long)dsd_trunk_tuning_pending_request(), g_counting_tune_to_cc_calls, err);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(2.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_calls != 2) {
+        DSD_FPRINTF(stderr, "legacy pending retune held scan active=%zu calls=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls);
         test_rc = 1;
     }
 
@@ -3079,6 +3133,7 @@ main(void) {
     rc |= test_dmr_trunk_sm_timeout_releases_scan_hold();
     rc |= test_p25_pending_retune_holds_scan_dwell();
     rc |= test_generic_pending_retune_holds_and_recovers();
+    rc |= test_legacy_pending_retune_does_not_hold_scan();
     rc |= test_p25_targets_pass_cc_sps_to_retune_paths();
     rc |= test_p25_targets_use_rtl_output_rate_for_retune_sps();
     rc |= test_channel_map_sequence_advances_on_equal_count_target_switches();

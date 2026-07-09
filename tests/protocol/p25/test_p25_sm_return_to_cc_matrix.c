@@ -207,12 +207,30 @@ matrix_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) 
     return result;
 }
 
+static dsd_trunk_tune_result
+matrix_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
+    return matrix_tune_to_freq(opts, state, freq, ted_sps);
+}
+
+static dsd_trunk_tune_result
+matrix_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    return matrix_return_to_cc(opts, state);
+}
+
+static dsd_trunk_tune_result
+matrix_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
+    return matrix_tune_to_cc(opts, state, freq, ted_sps);
+}
+
 static void
 matrix_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = matrix_tune_to_freq;
-    hooks.return_to_cc_result = matrix_return_to_cc;
-    hooks.tune_to_cc_result = matrix_tune_to_cc;
+    hooks.tune_to_freq_request = matrix_tune_to_freq_request;
+    hooks.return_to_cc_request = matrix_return_to_cc_request;
+    hooks.tune_to_cc_request = matrix_tune_to_cc_request;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 

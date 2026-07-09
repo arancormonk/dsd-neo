@@ -353,7 +353,7 @@ static void
 p25_sm_start_cc_acquisition_for_result(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
                                        dsd_trunk_tune_result tune_result, uint64_t request_id, double tune_start_m,
                                        const char* source) {
-    if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+    if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && request_id != 0U) {
         p25_sm_wait_for_cc_tune_completion(ctx, opts, state, request_id, source);
         return;
     }

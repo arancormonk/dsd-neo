@@ -2957,6 +2957,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
             "-Wl,--wrap=rtl_stream_tune_tagged"
+            "-Wl,--wrap=p25_sm_await_pending_cc_tune"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support

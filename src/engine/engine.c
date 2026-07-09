@@ -84,6 +84,9 @@ void codec2_destroy(struct CODEC2* codec2_state);
 // Local caches to avoid redundant device I/O in hot paths
 static long int s_last_rigctl_freq = -1;
 static int s_last_rigctl_bw = -12345;
+static uint64_t s_no_carrier_generic_recovery_request_id = 0U;
+static const dsd_state* s_no_carrier_generic_recovery_state = NULL;
+static long s_no_carrier_generic_recovery_cc = 0;
 #ifdef USE_RADIO
 static uint32_t s_last_rtl_freq = 0;
 #endif
@@ -92,6 +95,10 @@ static void
 reset_device_io_caches(void) {
     s_last_rigctl_freq = -1;
     s_last_rigctl_bw = -12345;
+    s_no_carrier_generic_recovery_request_id = 0U;
+    s_no_carrier_generic_recovery_state = NULL;
+    s_no_carrier_generic_recovery_cc = 0;
+    dsd_trunk_tuning_requests_reset();
 #ifdef USE_RADIO
     s_last_rtl_freq = 0;
 #endif
@@ -1476,6 +1483,14 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
     }
 
     *helper_attempted = 1;
+    if (!p25_sm_tick_guard_try_enter()) {
+        if (helper_result) {
+            *helper_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+        }
+        return 0;
+    }
+    /* The watchdog owns this same context. Keep the selected CC, tagged retune,
+     * and request handoff atomic even when the tuner wait blocks. */
     const long old_p25_cc_freq = state->p25_cc_freq;
     const long old_trunk_cc_freq = state->trunk_cc_freq;
     no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
@@ -1500,13 +1515,95 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
             state->p25_cc_freq = old_p25_cc_freq;
             state->trunk_cc_freq = old_trunk_cc_freq;
         }
+        p25_sm_tick_guard_leave();
         return 0;
     }
 
     no_carrier_sync_helper_tune_cache(opts, state, cc);
     state->edacs_tuned_lcn = -1;
     state->dmr_rest_channel = -1;
+    p25_sm_tick_guard_leave();
     return 1;
+}
+
+static int
+no_carrier_accept_generic_gate_recovery(const dsd_opts* opts, dsd_state* state, long cc) {
+    s_no_carrier_generic_recovery_request_id = 0U;
+    s_no_carrier_generic_recovery_state = NULL;
+    s_no_carrier_generic_recovery_cc = 0;
+    no_carrier_sync_helper_tune_cache(opts, state, cc);
+    state->edacs_tuned_lcn = -1;
+    state->dmr_rest_channel = -1;
+    return 1;
+}
+
+static int
+no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
+                                     int clear_generic_p25_alias, int* helper_attempted) {
+    if (p25_return) {
+        return 0;
+    }
+
+    if (s_no_carrier_generic_recovery_request_id != 0U) {
+        const dsd_trunk_tune_result status =
+            dsd_trunk_tuning_request_status(s_no_carrier_generic_recovery_request_id, NULL);
+        *helper_attempted = 1;
+        if (status == DSD_TRUNK_TUNE_RESULT_PENDING) {
+            return 0;
+        }
+        const uint64_t unresolved_request_id = dsd_trunk_tuning_pending_request();
+        if (unresolved_request_id == 0U) {
+            if (s_no_carrier_generic_recovery_state == state && s_no_carrier_generic_recovery_cc == cc) {
+                return no_carrier_accept_generic_gate_recovery(opts, state, cc);
+            }
+            /* The old target completed, but decoder ownership moved while it
+             * was in flight. Establish a fresh boundary for the current CC. */
+        }
+        if (unresolved_request_id != 0U
+            && dsd_trunk_tuning_request_status(unresolved_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
+            return 0;
+        }
+    } else {
+        const uint64_t unresolved_request_id = dsd_trunk_tuning_pending_request();
+        if (unresolved_request_id == 0U) {
+            return 0;
+        }
+        *helper_attempted = 1;
+        if (dsd_trunk_tuning_request_status(unresolved_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
+            /* Do not replace correlated work with an untagged legacy return.
+             * Its completion will either open the gate or make this path retry
+             * with a newer correlated request. */
+            return 0;
+        }
+    }
+
+    *helper_attempted = 1;
+    const int old_p25_is_tuned = opts->p25_is_tuned;
+    const int old_trunk_is_tuned = opts->trunk_is_tuned;
+    const long old_p25_cc_freq = state->p25_cc_freq;
+    const long old_trunk_cc_freq = state->trunk_cc_freq;
+    no_carrier_sync_selected_control_channel(state, cc, 0, clear_generic_p25_alias);
+
+    uint64_t tune_request_id = 0U;
+    const dsd_trunk_tune_result tune_result = no_carrier_return_to_cc_correlated(opts, state, &tune_request_id);
+    s_no_carrier_generic_recovery_request_id = tune_request_id;
+    s_no_carrier_generic_recovery_state = state;
+    s_no_carrier_generic_recovery_cc = cc;
+    if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        opts->p25_is_tuned = old_p25_is_tuned;
+        opts->trunk_is_tuned = old_trunk_is_tuned;
+        no_carrier_sync_helper_tune_cache(opts, state, cc);
+        return 0;
+    }
+    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
+        if (tune_result != DSD_TRUNK_TUNE_RESULT_DEFERRED) {
+            state->p25_cc_freq = old_p25_cc_freq;
+            state->trunk_cc_freq = old_trunk_cc_freq;
+        }
+        return 0;
+    }
+
+    return no_carrier_accept_generic_gate_recovery(opts, state, cc);
 }
 
 static int
@@ -1597,11 +1694,19 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     if (cc != 0) {
         int p25_helper_attempted = 0;
         dsd_trunk_tune_result p25_helper_result = DSD_TRUNK_TUNE_RESULT_OK;
+        int generic_helper_attempted = 0;
         if (no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
                                                &p25_helper_attempted, &p25_helper_result)) {
             no_carrier_enable_p25_cc_slots_if_known(opts, state);
             accepted_cc_return = 1;
-        } else if (no_carrier_apply_legacy_cc_return(opts, state, cc, p25_helper_attempted)) {
+        } else if (no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result)) {
+            /* Another P25 transition owns the guard; leave the staged
+             * voice state intact so the main loop can retry safely. */
+        } else if (no_carrier_try_generic_gate_recovery(opts, state, cc, p25_return, clear_generic_p25_alias,
+                                                        &generic_helper_attempted)) {
+            accepted_cc_return = 1;
+        } else if (!generic_helper_attempted
+                   && no_carrier_apply_legacy_cc_return(opts, state, cc, p25_helper_attempted)) {
             no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
             accepted_cc_return = 1;
             state->edacs_tuned_lcn = -1;
