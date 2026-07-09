@@ -47,6 +47,7 @@ static int g_flush_close_l_count;
 static int g_flush_close_r_count;
 static int g_ring_reset_count[2];
 static int g_lfsr_count[2];
+static int g_slot_grant_newer[2];
 static uint64_t g_now_ns;
 
 uint64_t
@@ -151,6 +152,15 @@ void
 p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
     (void)observed_m;
     p25_sm_emit_idle(opts, state, slot);
+}
+
+int
+p25_sm_slot_grant_newer_than(int slot, double observed_m) {
+    (void)observed_m;
+    if (slot < 0 || slot > 1) {
+        return 0;
+    }
+    return g_slot_grant_newer[slot] ? 1 : 0;
 }
 
 void
@@ -260,6 +270,7 @@ reset_stubs(void) {
     g_flush_close_r_count = -1;
     DSD_MEMSET(g_ring_reset_count, 0, sizeof(g_ring_reset_count));
     DSD_MEMSET(g_lfsr_count, 0, sizeof(g_lfsr_count));
+    DSD_MEMSET(g_slot_grant_newer, 0, sizeof(g_slot_grant_newer));
     g_now_ns = 0;
 }
 
@@ -579,6 +590,8 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     state.p25_p2_enc_lockout_muted[1] = 1;
     state.p25_call_is_packet[1] = 1;
     state.p25_policy_tg[1] = 0x5678;
+    state.p25_service_options_valid[1] = 1;
+    state.dmr_soR = 0x52;
     DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "packet");
     pack_payload_from_mac(payload, 180, mac, 0x3, 0, 0);
 
@@ -590,8 +603,33 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch idle gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("sacch idle packet clear", state.p25_call_is_packet[1], 0);
     rc |= expect_int("sacch idle policy clear", (int)state.p25_policy_tg[1], 0);
+    rc |= expect_int("sacch idle service valid clear", state.p25_service_options_valid[1], 0);
+    rc |= expect_int("sacch idle service clear", state.dmr_soR, 0);
     rc |= expect_int("sacch idle mute clear", state.p25_p2_enc_lockout_muted[1], 0);
     rc |= expect_int("sacch idle call blank", strncmp(state.call_string[1], P25P2_EMPTY_CALL_STRING, 21), 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.p25_p2_enc_lockout_muted[1] = 1;
+    state.p25_call_is_packet[1] = 1;
+    state.p25_policy_tg[1] = 0x6789;
+    state.p25_service_options_valid[1] = 1;
+    state.dmr_soR = 0x93;
+    g_slot_grant_newer[1] = 1;
+    DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "grant");
+    pack_payload_from_mac(payload, 180, mac, 0x3, 0, 0);
+
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("sacch idle grant emitted", g_idle_count[1], 1);
+    rc |= expect_int("sacch idle grant gate clear", state.p25_p2_audio_allowed[1], 0);
+    rc |= expect_int("sacch idle grant packet preserved", state.p25_call_is_packet[1], 1);
+    rc |= expect_int("sacch idle grant policy preserved", (int)state.p25_policy_tg[1], 0x6789);
+    rc |= expect_int("sacch idle grant service valid preserved", state.p25_service_options_valid[1], 1);
+    rc |= expect_int("sacch idle grant service preserved", state.dmr_soR, 0x93);
+    rc |= expect_int("sacch idle grant mute clear", state.p25_p2_enc_lockout_muted[1], 0);
+    rc |= expect_int("sacch idle grant call preserved", strncmp(state.call_string[1], "grant", 5), 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));

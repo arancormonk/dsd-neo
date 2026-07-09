@@ -281,6 +281,19 @@ void p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const c
 int p25_sm_audio_allowed(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot);
 
 /**
+ * @brief Check whether a TDMA slot has an accepted grant newer than a captured event time.
+ *
+ * Decoders use this after processing a MAC payload but before clearing IDLE
+ * slot metadata, so grants carried inside the IDLE payload can keep their
+ * policy and service context.
+ *
+ * @param slot Slot index (0 or 1).
+ * @param observed_m Monotonic timestamp captured before payload processing.
+ * @return 1 if the global state machine has a newer active grant for the slot, 0 otherwise.
+ */
+int p25_sm_slot_grant_newer_than(int slot, double observed_m);
+
+/**
  * @brief Update audio gating for a slot based on current encryption state.
  *
  * Called when encryption parameters are received to update allow_audio.

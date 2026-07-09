@@ -835,6 +835,59 @@ main(void) {
         dsd_state_ext_free_all(&idle_payload_st);
     }
 
+    // 13b) A repeat of the same same-carrier grant during IDLE hangtime is a
+    // refresh of the retained slot context, not a preemption candidate.
+    {
+        static dsd_opts repeat_opts;
+        static dsd_state repeat_st;
+        DSD_MEMSET(&repeat_opts, 0, sizeof repeat_opts);
+        DSD_MEMSET(&repeat_st, 0, sizeof repeat_st);
+        repeat_opts.p25_trunk = 1;
+        repeat_opts.trunk_tune_group_calls = 1;
+        repeat_opts.trunk_hangtime = 2.0f;
+        repeat_opts.p25_grant_voice_to_s = 0.8;
+        repeat_opts.p25_retune_backoff_s = 2.0;
+        repeat_st.p25_cc_freq = 851000000;
+        repeat_st.p25_chan_iden = id;
+        repeat_st.p25_iden_tdma[id] = st.p25_iden_tdma[id];
+        repeat_st.p25_chan_tdma_explicit[id] = 2;
+
+        p25_sm_ctx_t repeat_ctx;
+        p25_sm_init_ctx(&repeat_ctx, &repeat_opts, &repeat_st);
+        g_last_tuned_vc = 0;
+        g_tune_to_freq_calls = 0;
+        g_return_to_cc_calls = 0;
+
+        p25_sm_event_t repeat_grant = p25_sm_ev_group_grant(ch_slot0, 0, 3461, 4461, 0);
+        p25_sm_event_t repeat_ptt = p25_sm_ev_ptt(0);
+        p25_sm_event_t repeat_idle = p25_sm_ev_idle(0);
+
+        p25_sm_event(&repeat_ctx, &repeat_opts, &repeat_st, &repeat_grant);
+        rc |= expect_true("repeat initial tune", g_tune_to_freq_calls == 1 && repeat_opts.p25_is_tuned == 1
+                                                     && repeat_ctx.slots[0].grant_active);
+        p25_sm_event(&repeat_ctx, &repeat_opts, &repeat_st, &repeat_ptt);
+        repeat_st.p25_p2_audio_allowed[0] = 1;
+        rc |= expect_true("repeat voice active",
+                          repeat_ctx.slots[0].voice_active && repeat_ctx.slots[0].last_active_m > 0.0);
+
+        p25_sm_event(&repeat_ctx, &repeat_opts, &repeat_st, &repeat_idle);
+        repeat_st.p25_p2_audio_allowed[0] = 0;
+        rc |= expect_true("repeat idle retained hangtime",
+                          !repeat_ctx.slots[0].grant_active && !repeat_ctx.slots[0].voice_active
+                              && repeat_ctx.slots[0].last_active_m > 0.0 && repeat_ctx.t_voice_m > 0.0);
+        double old_last_grant_m = repeat_ctx.slots[0].last_grant_m;
+
+        p25_sm_event(&repeat_ctx, &repeat_opts, &repeat_st, &repeat_grant);
+        rc |= expect_true("repeat hangtime grant accepted",
+                          g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 0 && repeat_opts.p25_is_tuned == 1
+                              && repeat_ctx.state == P25_SM_TUNED && repeat_ctx.slots[0].grant_active);
+        rc |= expect_true("repeat hangtime grant refreshed", repeat_ctx.slots[0].last_grant_m > old_last_grant_m
+                                                                 && repeat_ctx.slots[0].last_active_m == 0.0
+                                                                 && repeat_ctx.t_voice_m == 0.0);
+
+        dsd_state_ext_free_all(&repeat_st);
+    }
+
     // 14) A forced release after one TDMA slot produced voice still records a
     // pending grant on the other slot that never produced audio.
     {
