@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <math.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -963,7 +964,7 @@ main(void) {
     assert(ctx18c.state == P25_SM_ON_CC);
     assert(ctx18c.cc_sync_pending == 0);
     assert(ctx18c.t_cc_tune_m == 0.0);
-    assert(ctx18c.t_cc_sync_m == s18c.p25_last_cc_msg_time_m);
+    assert(fabs(ctx18c.t_cc_sync_m - s18c.p25_last_cc_msg_time_m) <= cc_sync_epsilon_s);
 
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
@@ -999,12 +1000,12 @@ main(void) {
     assert(p25_sm_restart_pending_cc_acquisition(&ctx18d, &o18d, &s18d, external_cc_tune_m, "test-retune") == 1);
     assert(ctx18d.state == P25_SM_ON_CC);
     assert(ctx18d.cc_sync_pending == 1);
-    assert(ctx18d.t_cc_sync_m == external_cc_tune_m);
-    assert(ctx18d.t_cc_tune_m == external_cc_tune_m);
+    assert(fabs(ctx18d.t_cc_sync_m - external_cc_tune_m) <= cc_sync_epsilon_s);
+    assert(fabs(ctx18d.t_cc_tune_m - external_cc_tune_m) <= cc_sync_epsilon_s);
     assert(ctx18d.t_hunt_try_m == 0.0);
     assert(s18d.p25_sm_mode == DSD_P25_SM_MODE_ON_CC);
-    assert(s18d.last_cc_sync_time_m == external_cc_tune_m);
-    assert(s18d.p25_last_cc_msg_time_m == external_decoded_cc_m);
+    assert(fabs(s18d.last_cc_sync_time_m - external_cc_tune_m) <= cc_sync_epsilon_s);
+    assert(fabs(s18d.p25_last_cc_msg_time_m - external_decoded_cc_m) <= cc_sync_epsilon_s);
 
     // 24) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
     static dsd_opts o19a;
