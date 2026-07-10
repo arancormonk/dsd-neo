@@ -1698,23 +1698,68 @@ trunk_scan_tick_active_target_sm(dsd_opts* opts, dsd_state* state, dsd_trunk_sca
     }
 }
 
+/* Return 1 when the P25 SM already recovered, 0 while it still owns recovery,
+ * and -1 when no P25 recovery superseded the failed coordinator request. */
+static int
+trunk_scan_reconcile_p25_retune_recovery(dsd_trunk_scan_target_runtime* rt, uint64_t failed_request_id) {
+    if (!rt || rt->target.type != DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
+        return -1;
+    }
+
+    if (rt->p25_ctx.cc_tune_pending) {
+        const uint64_t sm_request_id = rt->p25_ctx.cc_tune_request_id;
+        if (sm_request_id == failed_request_id) {
+            /* The coordinator observed the backend result first. Leave the
+             * request with the P25 SM so its next tick owns recovery. */
+            return 0;
+        }
+        if (sm_request_id > failed_request_id) {
+            rt->tune_request_id = sm_request_id;
+            rt->tune_pending = 1;
+            LOG_INFO("Trunk scan target '%s' adopted P25 recovery retune request %llu\n", rt->target.id,
+                     (unsigned long long)sm_request_id);
+            return 0;
+        }
+    }
+
+    const p25_sm_state_e sm_state = p25_sm_get_state(&rt->p25_ctx);
+    if (sm_state == P25_SM_ON_CC || sm_state == P25_SM_TUNED) {
+        /* A replacement tune completed synchronously (or was decoded and
+         * followed) before the coordinator revisited the failed request. */
+        rt->tune_request_id = 0U;
+        rt->tune_pending = 0;
+        rt->retry_until_m = 0.0;
+        rt->idle_since_m = -1.0;
+        return 1;
+    }
+    return -1;
+}
+
 static int
 trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtime* rt, double now_m) {
     if (!rt || !rt->tune_pending) {
         return 1;
     }
-    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(rt->tune_request_id, NULL);
+    const uint64_t request_id = rt->tune_request_id;
+    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, NULL);
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         return 0;
     }
 
-    rt->tune_request_id = 0U;
-    rt->tune_pending = 0;
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
+        rt->tune_request_id = 0U;
+        rt->tune_pending = 0;
         rt->idle_since_m = -1.0;
         return 1;
     }
 
+    const int p25_recovery = trunk_scan_reconcile_p25_retune_recovery(rt, request_id);
+    if (p25_recovery >= 0) {
+        return p25_recovery;
+    }
+
+    rt->tune_request_id = 0U;
+    rt->tune_pending = 0;
     rt->retry_until_m = now_m + 2.0;
     LOG_WARNING("Trunk scan target '%s' asynchronous retune failed; cooling down briefly\n", rt->target.id);
     (void)state;

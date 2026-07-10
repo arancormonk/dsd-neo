@@ -345,6 +345,7 @@ dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int fr
     return DSD_TRUNK_TUNE_RESULT_FAILED;
 #else
     (void)state;
+    (void)request_id;
     return DSD_TRUNK_TUNE_RESULT_FAILED;
 #endif
 }

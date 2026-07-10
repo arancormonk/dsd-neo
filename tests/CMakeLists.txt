@@ -3216,6 +3216,16 @@ else()
         PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
     )
 endif()
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_app_command_queue
+        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_app_command_queue
+        PRIVATE "LINKER:--wrap=io_control_set_freq"
+    )
+endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
 
 set(_DSD_BOOTSTRAP_FIXTURE_DIR

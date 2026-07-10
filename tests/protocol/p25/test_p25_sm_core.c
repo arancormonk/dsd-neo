@@ -1053,6 +1053,47 @@ main(void) {
     assert(g_result_tune_to_freq_calls == 1);
     assert(ctx18e.state == P25_SM_TUNED);
 
+    // A later raw frame sync must not move the tune boundary past decoded CC
+    // activity that arrived after asynchronous completion but before SM resolution.
+    static dsd_opts o18f;
+    static dsd_state s18f;
+    DSD_MEMSET(&o18f, 0, sizeof(o18f));
+    DSD_MEMSET(&s18f, 0, sizeof(s18f));
+    o18f.p25_trunk = 1;
+    s18f.p25_cc_freq = 851000000;
+    s18f.trunk_cc_freq = 851000000;
+    p25_sm_ctx_t ctx18f;
+    p25_sm_init_ctx(&ctx18f, &o18f, &s18f);
+    ctx18f.state = P25_SM_ON_CC;
+    s18f.p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
+
+    const uint64_t decoded_before_resolution_request_id = dsd_trunk_tuning_request_begin();
+    assert(decoded_before_resolution_request_id != 0U);
+    dsd_trunk_tuning_request_mark_ready(decoded_before_resolution_request_id);
+    assert(p25_sm_await_pending_cc_tune(&ctx18f, &o18f, &s18f, decoded_before_resolution_request_id,
+                                        "test-decoded-before-resolution")
+           == 1);
+    dsd_trunk_tuning_request_publish(decoded_before_resolution_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+
+    double decoded_before_resolution_completion_m = 0.0;
+    assert(
+        dsd_trunk_tuning_request_status(decoded_before_resolution_request_id, &decoded_before_resolution_completion_m)
+        == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(decoded_before_resolution_completion_m > 0.0);
+    const double decoded_before_resolution_m = decoded_before_resolution_completion_m + 0.001;
+    const double later_raw_sync_m = decoded_before_resolution_m + 0.001;
+    s18f.p25_last_cc_msg_time = time(NULL);
+    s18f.p25_last_cc_msg_time_m = decoded_before_resolution_m;
+    s18f.last_cc_sync_time = s18f.p25_last_cc_msg_time;
+    s18f.last_cc_sync_time_m = later_raw_sync_m;
+
+    p25_sm_tick_ctx(&ctx18f, &o18f, &s18f);
+    assert(ctx18f.cc_tune_pending == 0);
+    assert(ctx18f.cc_sync_pending == 0);
+    assert(ctx18f.t_cc_tune_m == 0.0);
+    assert(fabs(ctx18f.t_cc_sync_m - decoded_before_resolution_m) <= cc_sync_epsilon_s);
+    assert(ctx18f.state == P25_SM_ON_CC);
+
     // 25) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
     static dsd_opts o19a;
     static dsd_state s19a;

@@ -1940,6 +1940,168 @@ test_p25_pending_retune_holds_scan_dwell(void) {
 }
 
 static int
+test_p25_pending_retune_adopts_sm_retry(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_trunk_tuning_requests_reset();
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc_request;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(1.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    const uint64_t failed_request_id = ctx ? ctx->cc_tune_request_id : 0U;
+    if (rc != 0 || !ctx || !ctx->cc_tune_pending || failed_request_id == 0U || g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "P25 recovery adoption init failed rc=%d ctx=%p request=%llu calls=%d err=%s\n", rc,
+                    (void*)ctx, (unsigned long long)failed_request_id, g_counting_tune_to_cc_calls, err);
+        test_rc = 1;
+    }
+    if (!ctx) {
+        DSD_MEMSET(&hooks, 0, sizeof hooks);
+        dsd_trunk_tuning_hooks_set(hooks);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        dsd_engine_trunk_scan_test_clear_now();
+        dsd_trunk_tuning_requests_reset();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    dsd_trunk_tuning_request_publish(failed_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    const uint64_t retry_request_id = dsd_trunk_tuning_request_begin();
+    if (retry_request_id == 0U) {
+        DSD_FPRINTF(stderr, "P25 recovery adoption could not allocate retry request\n");
+        test_rc = 1;
+    } else {
+        dsd_trunk_tuning_request_mark_ready(retry_request_id);
+        ctx->cc_tune_request_id = retry_request_id;
+        ctx->cc_tune_pending = 1;
+        ctx->cc_sync_pending = 1;
+        ctx->state = P25_SM_ON_CC;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(2.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1 || !ctx->cc_tune_pending
+        || ctx->cc_tune_request_id != retry_request_id) {
+        DSD_FPRINTF(stderr, "scan did not adopt P25 retry active=%zu calls=%d pending=%d request=%llu/%llu\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls, ctx->cc_tune_pending,
+                    (unsigned long long)ctx->cc_tune_request_id, (unsigned long long)retry_request_id);
+        test_rc = 1;
+    }
+
+    dsd_trunk_tuning_request_publish(retry_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 2.1, "test-sm-recovery");
+    dsd_engine_trunk_scan_test_set_now(2.1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1 || ctx->cc_tune_pending) {
+        DSD_FPRINTF(stderr, "adopted P25 retry completion advanced scan active=%zu calls=%d pending=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls, ctx->cc_tune_pending);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    dsd_trunk_tuning_requests_reset();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_p25_pending_retune_preserves_completed_sm_recovery(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    dsd_trunk_tuning_requests_reset();
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc_request;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(1.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    const uint64_t failed_request_id = ctx ? ctx->cc_tune_request_id : 0U;
+    if (rc != 0 || !ctx || failed_request_id == 0U || g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "P25 completed recovery init failed rc=%d ctx=%p request=%llu calls=%d err=%s\n", rc,
+                    (void*)ctx, (unsigned long long)failed_request_id, g_counting_tune_to_cc_calls, err);
+        test_rc = 1;
+    }
+    if (!ctx) {
+        DSD_MEMSET(&hooks, 0, sizeof hooks);
+        dsd_trunk_tuning_hooks_set(hooks);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        dsd_engine_trunk_scan_test_clear_now();
+        dsd_trunk_tuning_requests_reset();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    dsd_trunk_tuning_request_publish(failed_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    const uint64_t retry_request_id = dsd_trunk_tuning_request_begin();
+    double retry_completed_m = 0.0;
+    if (retry_request_id == 0U) {
+        DSD_FPRINTF(stderr, "P25 completed recovery could not allocate retry request\n");
+        test_rc = 1;
+    } else {
+        dsd_trunk_tuning_request_mark_ready(retry_request_id);
+        dsd_trunk_tuning_request_publish(retry_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+        (void)dsd_trunk_tuning_request_status(retry_request_id, &retry_completed_m);
+        (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, retry_completed_m, "test-sm-recovery");
+    }
+
+    dsd_engine_trunk_scan_test_set_now(2.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1
+        || ctx->state != P25_SM_ON_CC || ctx->cc_tune_pending) {
+        DSD_FPRINTF(stderr, "completed P25 recovery was abandoned active=%zu calls=%d state=%d pending=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls, (int)ctx->state,
+                    ctx->cc_tune_pending);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    dsd_trunk_tuning_requests_reset();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_generic_pending_retune_holds_and_recovers(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
@@ -3149,6 +3311,8 @@ main(void) {
     rc |= test_protocol_hooks_only_expose_matching_target_contexts();
     rc |= test_dmr_trunk_sm_timeout_releases_scan_hold();
     rc |= test_p25_pending_retune_holds_scan_dwell();
+    rc |= test_p25_pending_retune_adopts_sm_retry();
+    rc |= test_p25_pending_retune_preserves_completed_sm_recovery();
     rc |= test_generic_pending_retune_holds_and_recovers();
     rc |= test_legacy_pending_retune_does_not_hold_scan();
     rc |= test_p25_targets_pass_cc_sps_to_retune_paths();

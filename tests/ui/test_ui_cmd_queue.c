@@ -12,6 +12,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdint.h>
@@ -22,6 +23,34 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
+static int g_io_control_tune_calls = 0;
+static long int g_io_control_tune_freq = 0;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
+
+int
+__wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
+    (void)opts;
+    (void)state;
+    g_io_control_tune_calls++;
+    g_io_control_tune_freq = freq;
+    return g_io_control_tune_result;
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+
+static void
+reset_io_control_tune_stub(int result) {
+    g_io_control_tune_result = result;
+    g_io_control_tune_calls = 0;
+    g_io_control_tune_freq = 0;
+}
+#endif
 
 static int
 expect_int(const char* tag, int got, int want) {
@@ -973,6 +1002,116 @@ test_io_and_legacy_state_commands(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+static void
+seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_freq, int tg) {
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->p25_trunk = 1;
+    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
+    state->p25_cc_freq = cc_freq;
+    state->trunk_cc_freq = cc_freq;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = vc_freq;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = vc_freq;
+    state->lasttg = tg;
+    state->lastsrc = tg + 1;
+    state->last_cc_sync_time = 123;
+    state->last_cc_sync_time_m = 42.0;
+    state->samplesPerSymbol = 7;
+    state->symbolCenter = 3;
+}
+
+static int
+test_manual_tune_commands_commit_only_after_acceptance(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_command_token token = 0;
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
+    rc |= expect_int("deferred return-to-CC queued", dsd_app_command_action_tracked(DSD_APP_CMD_RETURN_CC, &token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("deferred return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("deferred return-to-CC failed", token, DSD_APP_COMMAND_RESULT_FAILED);
+    rc |= expect_int("deferred return-to-CC tune calls", g_io_control_tune_calls, 1);
+    rc |= expect_true("deferred return-to-CC frequency", g_io_control_tune_freq == 851000000L);
+    rc |= expect_int("deferred return-to-CC keeps P25 tuned", opts.p25_is_tuned, 1);
+    rc |= expect_int("deferred return-to-CC keeps trunk tuned", opts.trunk_is_tuned, 1);
+    rc |= expect_int("deferred return-to-CC keeps TG", state.lasttg, 1201);
+    rc |= expect_true("deferred return-to-CC keeps VC", state.p25_vc_freq[0] == 852000000L);
+    rc |= expect_true("deferred return-to-CC keeps CC sync", state.last_cc_sync_time_m == 42.0);
+    rc |= expect_int("deferred return-to-CC keeps SPS", state.samplesPerSymbol, 7);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    token = 0;
+    rc |= expect_int("accepted timeout return-to-CC queued",
+                     dsd_app_command_action_tracked(DSD_APP_CMD_RETURN_CC, &token), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("accepted timeout return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("accepted timeout return-to-CC completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_int("accepted timeout clears P25 tuned", opts.p25_is_tuned, 0);
+    rc |= expect_int("accepted timeout clears trunk tuned", opts.trunk_is_tuned, 0);
+    rc |= expect_int("accepted timeout clears TG", state.lasttg, 0);
+    rc |= expect_true("accepted timeout clears VC", state.p25_vc_freq[0] == 0L);
+    rc |= expect_true("accepted timeout refreshes CC sync", state.last_cc_sync_time_m > 42.0);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 853000000L, 854000000L, 2201);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
+    token = 0;
+    rc |= expect_int("deferred lockout queued", dsd_app_command_set_u8_tracked(DSD_APP_CMD_LOCKOUT_SLOT, 0U, &token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("deferred lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("deferred lockout tune failed", token, DSD_APP_COMMAND_RESULT_FAILED);
+    rc |= expect_int("deferred lockout tune calls", g_io_control_tune_calls, 1);
+    rc |= expect_int("deferred lockout keeps P25 tuned", opts.p25_is_tuned, 1);
+    rc |= expect_int("deferred lockout keeps trunk tuned", opts.trunk_is_tuned, 1);
+    rc |= expect_int("deferred lockout keeps TG", state.lasttg, 2201);
+    rc |= expect_true("deferred lockout keeps VC", state.p25_vc_freq[0] == 854000000L);
+    rc |= expect_true("deferred lockout keeps CC sync", state.last_cc_sync_time_m == 42.0);
+    rc |= expect_int("deferred lockout keeps SPS", state.samplesPerSymbol, 7);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 855000000L, 856000000L, 3201);
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 0;
+    state.trunk_lcn_freq[0] = 857000000L;
+    state.trunk_lcn_freq[1] = 858000000L;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
+    token = 0;
+    rc |= expect_int("deferred channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("deferred channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("deferred channel cycle failed", token, DSD_APP_COMMAND_RESULT_FAILED);
+    rc |= expect_int("deferred channel cycle tune calls", g_io_control_tune_calls, 1);
+    rc |= expect_true("deferred channel cycle frequency", g_io_control_tune_freq == 857000000L);
+    rc |= expect_int("deferred channel cycle keeps roll", state.lcn_freq_roll, 0);
+    rc |= expect_int("deferred channel cycle keeps tuned", opts.p25_is_tuned, 1);
+    rc |= expect_int("deferred channel cycle keeps TG", state.lasttg, 3201);
+    rc |= expect_true("deferred channel cycle keeps VC", state.p25_vc_freq[0] == 856000000L);
+    rc |= expect_true("deferred channel cycle keeps CC sync", state.last_cc_sync_time_m == 42.0);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    token = 0;
+    rc |= expect_int("accepted channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("accepted channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("accepted channel cycle completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_int("accepted channel cycle advances roll", state.lcn_freq_roll, 1);
+    rc |= expect_int("accepted channel cycle clears tuned", opts.p25_is_tuned, 0);
+    rc |= expect_int("accepted channel cycle clears TG", state.lasttg, 0);
+    rc |= expect_true("accepted channel cycle clears P25 VC", state.p25_vc_freq[0] == 0L);
+    rc |= expect_true("accepted channel cycle refreshes CC sync", state.last_cc_sync_time_m > 42.0);
+    freeState(&state);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -983,6 +1122,9 @@ main(void) {
     rc |= test_key_and_runtime_state_commands();
     rc |= test_file_network_and_import_commands();
     rc |= test_io_and_legacy_state_commands();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_manual_tune_commands_commit_only_after_acceptance();
+#endif
     if (rc == 0) {
         printf("DSD_APP_CMD_QUEUE: OK\n");
     }

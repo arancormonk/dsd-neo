@@ -313,16 +313,16 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     ctx->cc_tune_pending = 0;
     ctx->t_cc_sync_m = tune_start_m;
     if (state) {
+        const double decoded_cc_m = state->p25_last_cc_msg_time_m;
         if (state->last_cc_sync_time_m <= 0.0 || state->last_cc_sync_time_m < tune_start_m) {
             state->last_cc_sync_time = time(NULL);
             state->last_cc_sync_time_m = tune_start_m;
         }
-        if (state->last_cc_sync_time_m > ctx->t_cc_sync_m
-            && state->last_cc_sync_time_m > state->p25_last_cc_msg_time_m) {
-            // Absorb only tune metadata that is newer than decoded CC activity.
-            // A block decoded before asynchronous completion is resolved writes
-            // both timestamps; keeping the tune boundary intact lets that block
-            // satisfy the strict decoded-after-tune check below.
+        if (state->last_cc_sync_time_m > ctx->t_cc_sync_m && decoded_cc_m <= tune_start_m) {
+            // Absorb a newer raw-sync timestamp only when no decoded CC block
+            // already proves activity after the tune boundary. A block decoded
+            // before asynchronous completion is resolved must remain eligible
+            // to satisfy the strict decoded-after-tune check below.
             ctx->t_cc_sync_m = state->last_cc_sync_time_m;
         }
     }
