@@ -23,6 +23,7 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
@@ -224,31 +225,76 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     return -1;
 }
 
+static int g_p25_tick_guard_depth = 0;
+static int g_p25_tick_guard_enter_calls = 0;
+static int g_p25_tick_guard_leave_calls = 0;
+static int g_p25_tick_guard_errors = 0;
+static int g_rtl_lifecycle_outside_guard = 0;
+static int g_rtl_soft_stop_calls = 0;
+static int g_rtl_destroy_calls = 0;
+static int g_rtl_create_calls = 0;
+static int g_rtl_start_calls = 0;
+static int g_rtl_create_result = -1;
+static int g_rtl_start_result = -1;
+
+void
+p25_sm_tick_guard_enter(void) {
+    g_p25_tick_guard_enter_calls++;
+    if (g_p25_tick_guard_depth != 0) {
+        g_p25_tick_guard_errors++;
+    }
+    g_p25_tick_guard_depth++;
+}
+
+void
+p25_sm_tick_guard_leave(void) {
+    g_p25_tick_guard_leave_calls++;
+    if (g_p25_tick_guard_depth != 1) {
+        g_p25_tick_guard_errors++;
+    }
+    g_p25_tick_guard_depth--;
+}
+
+static void
+note_rtl_lifecycle_call(void) {
+    if (g_p25_tick_guard_depth != 1) {
+        g_rtl_lifecycle_outside_guard++;
+    }
+}
+
 int
 rtl_stream_soft_stop(RtlSdrContext* ctx) {
     (void)ctx;
+    note_rtl_lifecycle_call();
+    g_rtl_soft_stop_calls++;
     return 0;
 }
 
 int
 rtl_stream_destroy(RtlSdrContext* ctx) {
     (void)ctx;
+    note_rtl_lifecycle_call();
+    g_rtl_destroy_calls++;
     return 0;
 }
 
 int
 rtl_stream_create_mirrored(dsd_opts* opts, RtlSdrContext** out_ctx) {
     (void)opts;
+    note_rtl_lifecycle_call();
+    g_rtl_create_calls++;
     if (out_ctx) {
-        *out_ctx = NULL;
+        *out_ctx = g_rtl_create_result == 0 ? (RtlSdrContext*)out_ctx : NULL;
     }
-    return -1;
+    return g_rtl_create_result;
 }
 
 int
 rtl_stream_start(RtlSdrContext* ctx) {
     (void)ctx;
-    return -1;
+    note_rtl_lifecycle_call();
+    g_rtl_start_calls++;
+    return g_rtl_start_result;
 }
 
 int
@@ -552,6 +598,65 @@ test_payload_symbol_and_pulse_state(void) {
 }
 
 #ifdef USE_RADIO
+static void
+reset_rtl_restart_stubs(void) {
+    g_p25_tick_guard_depth = 0;
+    g_p25_tick_guard_enter_calls = 0;
+    g_p25_tick_guard_leave_calls = 0;
+    g_p25_tick_guard_errors = 0;
+    g_rtl_lifecycle_outside_guard = 0;
+    g_rtl_soft_stop_calls = 0;
+    g_rtl_destroy_calls = 0;
+    g_rtl_create_calls = 0;
+    g_rtl_start_calls = 0;
+    g_rtl_create_result = -1;
+    g_rtl_start_result = -1;
+}
+
+static int
+test_rtl_restart_quiesces_p25_retunes(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_rtl_restart_stubs();
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_started = 1;
+    opts.rtl_needs_restart = 1;
+    state.rtl_ctx = (RtlSdrContext*)&state;
+
+    rc |= expect_int("guarded rtl restart reports create failure", svc_rtl_restart(&opts, &state), -1);
+    rc |= expect_int("rtl restart enters P25 tune guard", g_p25_tick_guard_enter_calls, 1);
+    rc |= expect_int("rtl restart leaves P25 tune guard", g_p25_tick_guard_leave_calls, 1);
+    rc |= expect_int("rtl restart balances P25 tune guard", g_p25_tick_guard_depth, 0);
+    rc |= expect_int("rtl restart uses P25 tune guard correctly", g_p25_tick_guard_errors, 0);
+    rc |= expect_int("rtl lifecycle stays inside P25 tune guard", g_rtl_lifecycle_outside_guard, 0);
+    rc |= expect_int("guarded rtl restart soft stops old stream", g_rtl_soft_stop_calls, 1);
+    rc |= expect_int("guarded rtl restart destroys old stream", g_rtl_destroy_calls, 1);
+    rc |= expect_int("guarded rtl restart attempts replacement", g_rtl_create_calls, 1);
+    rc |= expect_int("guarded rtl restart does not start failed replacement", g_rtl_start_calls, 0);
+    rc |= expect_int("failed guarded rtl restart clears context", state.rtl_ctx == NULL, 1);
+
+    reset_rtl_restart_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    g_rtl_create_result = 0;
+    g_rtl_start_result = -1;
+
+    rc |= expect_int("guarded rtl restart reports start failure", svc_rtl_restart(&opts, &state), -1);
+    rc |= expect_int("start failure leaves P25 tune guard", g_p25_tick_guard_leave_calls, 1);
+    rc |= expect_int("start failure balances P25 tune guard", g_p25_tick_guard_depth, 0);
+    rc |= expect_int("start failure lifecycle stays guarded", g_rtl_lifecycle_outside_guard, 0);
+    rc |= expect_int("start failure destroys replacement", g_rtl_destroy_calls, 1);
+    rc |= expect_int("start failure clears replacement context", state.rtl_ctx == NULL, 1);
+
+    reset_rtl_restart_stubs();
+    return rc;
+}
+
 static int
 test_rtl_service_option_contracts(void) {
     int rc = 0;
@@ -671,6 +776,7 @@ main(void) {
     rc |= test_p2_trunking_and_slot_controls();
     rc |= test_payload_symbol_and_pulse_state();
 #ifdef USE_RADIO
+    rc |= test_rtl_restart_quiesces_p25_retunes();
     rc |= test_rtl_service_option_contracts();
 #endif
     rc |= test_file_network_and_import_failure_contracts();

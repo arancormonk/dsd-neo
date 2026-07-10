@@ -45,8 +45,8 @@ int p25_sm_tick_guard_try_enter(void);
 /**
  * @brief Enter the critical section shared with P25 SM and trunk-scan ticks.
  *
- * This blocking form is intended for frame dispatch, which must complete
- * against one tuner target and one restored scan snapshot.
+ * This blocking form is intended for work that must not overlap a tick, such
+ * as frame dispatch against one tuner target or a tuner lifecycle transition.
  */
 void p25_sm_tick_guard_enter(void);
 
