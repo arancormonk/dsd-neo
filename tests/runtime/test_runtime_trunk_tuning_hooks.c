@@ -289,6 +289,28 @@ main(void) {
     assert(dsd_trunk_tuning_generation() == tune_generation);
     assert(dsd_trunk_tuning_frame_is_current(tune_generation));
 
+    uint64_t mode_exit_failure = dsd_trunk_tuning_request_begin();
+    assert(mode_exit_failure != 0U);
+    dsd_trunk_tuning_request_publish(mode_exit_failure, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_pending_request() == mode_exit_failure);
+    assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
+    dsd_trunk_tuning_retire_failed_requests();
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+
+    uint64_t mode_exit_pending = dsd_trunk_tuning_request_begin();
+    assert(mode_exit_pending != 0U);
+    dsd_trunk_tuning_request_mark_ready(mode_exit_pending);
+    dsd_trunk_tuning_retire_failed_requests();
+    assert(dsd_trunk_tuning_pending_request() == mode_exit_pending);
+    assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
+    dsd_trunk_tuning_request_publish(mode_exit_pending, DSD_TRUNK_TUNE_RESULT_FAILED);
+    dsd_trunk_tuning_retire_failed_requests();
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+
     uint64_t older_request = dsd_trunk_tuning_request_begin();
     uint64_t newer_request = dsd_trunk_tuning_request_begin();
     assert(older_request != 0U && newer_request > older_request);

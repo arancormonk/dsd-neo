@@ -1171,6 +1171,21 @@ main(void) {
     }
 #endif
 
+    // Leaving trunking retires terminal correlated failures so scanner/manual
+    // modes cannot inherit a process-wide frame-dispatch gate. In-flight
+    // requests remain gated until their backend publishes a terminal result.
+    const uint64_t inactive_generation = dsd_trunk_tuning_generation();
+    const uint64_t inactive_failed_request = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_publish(inactive_failed_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("inactive-trunking-seeds-failed-gate",
+                      inactive_failed_request != 0U && dsd_trunk_tuning_pending_request() == inactive_failed_request
+                          && !dsd_trunk_tuning_frame_is_current(inactive_generation));
+    opts->scanner_mode = 1;
+    noCarrier(opts, state);
+    rc |= expect_true("inactive-trunking-retires-failed-gate",
+                      dsd_trunk_tuning_pending_request() == 0U && dsd_trunk_tuning_generation() == inactive_generation
+                          && dsd_trunk_tuning_frame_is_current(inactive_generation));
+
     // Trunk scan keeps long-lived discovery state across carrier gaps. The test
     // keeps DMR confidence and P25 control-channel candidates populated while
     // still requiring transient P25 frame metrics to be reset.

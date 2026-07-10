@@ -2411,8 +2411,18 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     // Only public release paths normalize externally cleared decoder state;
     // internal timeout paths retain their CC-return and failed-grant backoff behavior.
     if (recover_stale_ctx && p25_release_ctx_is_stale(ctx, opts, state)) {
+        const uint32_t tune_count = ctx->tune_count;
+        const uint32_t grant_count = ctx->grant_count;
         p25_sm_diagf(opts, state, ctx, "release_stale_reset", "reason=%s", reason ? reason : "none");
+        p25_release_clear_context(ctx);
+        const uint32_t release_count = ctx->release_count;
+        const uint32_t cc_return_count = ctx->cc_return_count;
+        p25_release_clear_decoder_state(opts, state);
         p25_sm_init_ctx(ctx, opts, state);
+        ctx->tune_count = tune_count;
+        ctx->release_count = release_count;
+        ctx->grant_count = grant_count;
+        ctx->cc_return_count = cc_return_count;
         atomic_store(&g_p25_sm_release_lock, 0);
         return 1;
     }

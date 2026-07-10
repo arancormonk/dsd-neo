@@ -3384,7 +3384,12 @@ apply_cmd_legacy_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd
                     opts->group_in_file);
     }
 
-    return apply_lockout_decoder_transition(opts, state);
+    const int transition_status = apply_lockout_decoder_transition(opts, state);
+    if (transition_status == UI_CMD_APPLY_FAILED) {
+        LOG_WARNING("User lockout for TG %d was applied, but the return-to-CC cleanup tune was not accepted.\n", tg);
+        ui_set_toast(state, 4, "TG %d locked out; return-to-CC tune failed", tg);
+    }
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 static int

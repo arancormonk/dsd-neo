@@ -2026,6 +2026,14 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
 }
 
 static void
+no_carrier_retire_inactive_tune_failures(const dsd_opts* opts) {
+    if (!opts || opts->p25_trunk == 1 || opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1) {
+        return;
+    }
+    dsd_trunk_tuning_retire_failed_requests();
+}
+
+static void
 no_carrier_clear_stale_follow_state_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
     const int trunking_enabled = (opts->p25_trunk == 1 || opts->trunk_enable == 1) ? 1 : 0;
     const int voice_tuned = (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) ? 1 : 0;
@@ -2138,6 +2146,8 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
 void
 noCarrier(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
+
+    no_carrier_retire_inactive_tune_failures(opts);
 
 #ifdef USE_RADIO
     maybe_request_rtl_fsk_reacquire_on_no_sync(opts, state, now);

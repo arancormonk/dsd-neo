@@ -181,6 +181,23 @@ dsd_trunk_tuning_requests_reset(void) {
 }
 
 void
+dsd_trunk_tuning_retire_failed_requests(void) {
+    if (atomic_load(&g_trunk_tuning_unresolved_count) == 0) {
+        return;
+    }
+
+    dsd_trunk_tuning_requests_lock();
+    for (int i = 0; i < DSD_TRUNK_TUNING_REQUEST_HISTORY; i++) {
+        dsd_trunk_tuning_request_record* record = &g_trunk_tuning_requests[i];
+        if (record->state == DSD_TRUNK_TUNING_REQUEST_FAILED_GATED) {
+            record->state = DSD_TRUNK_TUNING_REQUEST_FINISHED;
+            (void)atomic_fetch_add(&g_trunk_tuning_unresolved_count, -1);
+        }
+    }
+    dsd_trunk_tuning_requests_unlock();
+}
+
+void
 dsd_trunk_tuning_request_publish(uint64_t request_id, dsd_trunk_tune_result result) {
     if (request_id == 0U || result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         return;

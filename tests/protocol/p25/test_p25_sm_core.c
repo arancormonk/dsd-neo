@@ -1445,6 +1445,79 @@ main(void) {
     assert(ctx23.state == P25_SM_ON_CC);
     g_result_hook_commits_decoder_state = 1;
 
+    // 32) Externally cleared tune state still needs the complete decoder-side
+    // release teardown, but it must not issue another CC retune or reset stats.
+    static dsd_opts o24;
+    static dsd_state s24;
+    DSD_MEMSET(&o24, 0, sizeof(o24));
+    DSD_MEMSET(&s24, 0, sizeof(s24));
+    o24.p25_trunk = 1;
+    s24.p25_cc_freq = 851000000;
+    s24.trunk_cc_freq = 851000000;
+    s24.last_cc_sync_time_m = dsd_time_now_monotonic_s();
+
+    p25_sm_ctx_t ctx24;
+    p25_sm_init_ctx(&ctx24, &o24, &s24);
+    ctx24.state = P25_SM_TUNED;
+    ctx24.vc_freq_hz = 851125000;
+    ctx24.vc_channel = ch9;
+    ctx24.vc_tg = 6201;
+    ctx24.slots[0].grant_active = 1;
+    ctx24.slots[0].tg = 6201;
+    ctx24.tune_count = 23;
+    ctx24.release_count = 29;
+    ctx24.grant_count = 30;
+    ctx24.cc_return_count = 31;
+    s24.p25_sm_release_count = 37;
+    s24.p25_p2_audio_allowed[0] = 1;
+    s24.p25_p2_audio_allowed[1] = 1;
+    s24.p25_p2_active_slot = 0;
+    s24.payload_algid = 0x80;
+    s24.payload_algidR = 0x81;
+    s24.payload_keyid = 0x1234;
+    s24.payload_keyidR = 0x5678;
+    s24.dmr_so = 0x40;
+    s24.dmr_soR = 0x41;
+    s24.p25_service_options_valid[0] = 1;
+    s24.p25_service_options_valid[1] = 1;
+    s24.p25_p2_enc_lockout_muted[0] = 1;
+    s24.p25_p2_enc_lockout_muted[1] = 1;
+    s24.p25_policy_tg[0] = 6201;
+    s24.p25_policy_tg[1] = 6202;
+
+    dsd_tg_policy_call_route active_route = {6201U, 7201U, 851125000L, 1, 0, 0};
+    dsd_tg_policy_decision active_decision = {0};
+    active_decision.priority = 10;
+    active_decision.tune_allowed = 1;
+    assert(dsd_tg_policy_note_active_call(&s24, &active_route, &active_decision, 1.0) == 0);
+    dsd_tg_policy_call_route candidate_route = {6202U, 7202U, 851250000L, 2, 0, 1};
+    dsd_tg_policy_decision candidate_decision = {0};
+    candidate_decision.priority = 20;
+    candidate_decision.tune_allowed = 1;
+    candidate_decision.preempt_requested = 1;
+    assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 1);
+
+    g_result_return_to_cc_calls = 0;
+    p25_sm_release(&ctx24, &o24, &s24, "external-return-stale-context");
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx24.state == P25_SM_ON_CC);
+    assert(ctx24.vc_freq_hz == 0 && ctx24.vc_channel == 0 && ctx24.vc_tg == 0);
+    assert(ctx24.slots[0].grant_active == 0);
+    assert(ctx24.tune_count == 23);
+    assert(ctx24.release_count == 30);
+    assert(ctx24.grant_count == 30);
+    assert(ctx24.cc_return_count == 32);
+    assert(s24.p25_sm_release_count == 38);
+    assert(s24.p25_p2_audio_allowed[0] == 0 && s24.p25_p2_audio_allowed[1] == 0);
+    assert(s24.p25_p2_active_slot == -1);
+    assert(s24.payload_algid == 0 && s24.payload_algidR == 0);
+    assert(s24.payload_keyid == 0 && s24.payload_keyidR == 0);
+    assert(s24.dmr_so == 0 && s24.dmr_soR == 0);
+    assert(s24.p25_service_options_valid[0] == 0 && s24.p25_service_options_valid[1] == 0);
+    assert(s24.p25_p2_enc_lockout_muted[0] == 0 && s24.p25_p2_enc_lockout_muted[1] == 0);
+    assert(s24.p25_policy_tg[0] == 0 && s24.p25_policy_tg[1] == 0);
+    assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 0);
+
     install_trunk_tuning_hooks();
 
     DSD_FPRINTF(stderr, "P25 SM core tests passed\n");

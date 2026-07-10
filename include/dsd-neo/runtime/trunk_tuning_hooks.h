@@ -93,6 +93,17 @@ uint64_t dsd_trunk_tuning_request_begin(void);
 void dsd_trunk_tuning_requests_reset(void);
 
 /**
+ * @brief Retire terminal failed requests after correlated recovery is abandoned.
+ *
+ * Mode-exit paths call this after trunking ownership has been released so a
+ * failed request cannot keep the process-wide frame gate closed indefinitely.
+ * In-flight requests are left untouched; a later successful completion still
+ * establishes a tuner boundary, while a later failure may be retired by a
+ * subsequent call.
+ */
+void dsd_trunk_tuning_retire_failed_requests(void);
+
+/**
  * @brief Publish backend completion for an exact tune transition.
  *
  * Successful completion commits the generation after the owner has marked its
@@ -122,7 +133,8 @@ void dsd_trunk_tuning_request_mark_ready(uint64_t request_id);
  * Failure normally clears the transition without publishing a completed
  * generation; callers must first restore or replace any staged decoder state.
  * A safety gate inherited from bounded-history recovery remains closed until a
- * later successful tune. Stale and duplicate request IDs are ignored.
+ * later successful tune or explicit mode-exit retirement. Stale and duplicate
+ * request IDs are ignored.
  *
  * @param request_id Request ID returned by dsd_trunk_tuning_request_begin().
  * @param result Terminal result; PENDING is ignored.

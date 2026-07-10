@@ -12,6 +12,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -1078,7 +1079,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("deferred lockout queued", dsd_app_command_set_u8_tracked(DSD_APP_CMD_LOCKOUT_SLOT, 0U, &token),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("deferred lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("deferred lockout tune failed", token, DSD_APP_COMMAND_RESULT_FAILED);
+    rc |= expect_command_status("deferred lockout policy completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_int("deferred lockout tune calls", g_io_control_tune_calls, 1);
     rc |= expect_int("deferred lockout keeps P25 tuned", opts.p25_is_tuned, 1);
     rc |= expect_int("deferred lockout keeps trunk tuned", opts.trunk_is_tuned, 1);
@@ -1086,6 +1087,16 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("deferred lockout keeps VC", state.p25_vc_freq[0] == 854000000L);
     rc |= expect_true("deferred lockout keeps CC sync", state.last_cc_sync_time_m == 42.0);
     rc |= expect_int("deferred lockout keeps SPS", state.samplesPerSymbol, 7);
+    char lockout_mode[8] = {0};
+    char lockout_name[50] = {0};
+    rc |= expect_int("deferred lockout policy installed",
+                     dsd_tg_policy_lookup_label(&state, 2201U, lockout_mode, sizeof(lockout_mode), lockout_name,
+                                                sizeof(lockout_name)),
+                     1);
+    rc |= expect_str("deferred lockout policy mode", lockout_mode, "B");
+    rc |= expect_str("deferred lockout policy name", lockout_name, "LOCKOUT");
+    rc |= expect_true("deferred lockout reports cleanup separately",
+                      strstr(state.ui_msg, "TG 2201 locked out; return-to-CC tune failed") != NULL);
     freeState(&state);
 
     init_test_context(&opts, &state);
