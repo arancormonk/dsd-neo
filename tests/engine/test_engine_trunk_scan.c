@@ -1904,12 +1904,26 @@ test_p25_pending_retune_holds_scan_dwell(void) {
 
     if (ctx && ctx->cc_tune_request_id != 0U) {
         dsd_trunk_tuning_request_complete(ctx->cc_tune_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+        /* This fixture stubs the P25 SM, so model the live-loop ordering where
+         * its tick observes completion before the scan coordinator runs. */
         (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 2.0, "test-complete");
     }
+    if (ctx && ctx->cc_tune_pending) {
+        DSD_FPRINTF(stderr, "P25 tick did not resolve completed scan retune\n");
+        test_rc = 1;
+    }
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
-    dsd_engine_trunk_scan_test_set_now(2.10);
+    dsd_engine_trunk_scan_test_set_now(10.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    dsd_engine_trunk_scan_test_set_now(2.36);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "P25 pending completion consumed scan dwell active=%zu calls=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_test_set_now(10.20);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_engine_trunk_scan_test_set_now(10.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_calls != 2) {
         DSD_FPRINTF(stderr, "scan dwell did not restart after pending completion active=%zu calls=%d\n",

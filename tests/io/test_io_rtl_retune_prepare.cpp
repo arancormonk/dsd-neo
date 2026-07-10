@@ -271,6 +271,16 @@ main(void) {
     failed |= expect_int_eq("timeout tune leaves cache for controller boundary", cache_pending, 3);
     failed |= expect_generation_eq("timeout tune defers output generation", generation_before, generation_after);
 
+    int read_while_pending = -1;
+    int read_after_completion = -1;
+    size_t used_while_pending = 0U;
+    rc = rtl_stream_test_untagged_timeout_read_gate(5U, &read_while_pending, &used_while_pending,
+                                                    &read_after_completion);
+    failed |= expect_int_eq("untagged timeout read gate helper rc", rc, 0);
+    failed |= expect_int_eq("untagged timeout blocks queued output", read_while_pending, 0);
+    failed |= expect_size_eq("untagged timeout preserves queued output", used_while_pending, 5U);
+    failed |= expect_int_eq("untagged completion reopens queued output", read_after_completion, 1);
+
     cache_pending = -1;
     rc = rtl_stream_test_tune_result_output_drain(RTL_STREAM_TUNE_DEFERRED, 5U, 3, &used_after, &cache_pending,
                                                   &generation_before, &generation_after);

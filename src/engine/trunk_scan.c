@@ -1554,7 +1554,13 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
         if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
             (void)p25_sm_await_pending_cc_tune(&rt->p25_ctx, opts, state, tune_request_id, "scan-retune");
+            /* The P25 SM can observe completion before the scan coordinator's
+             * next tick. Track the same request here so dwell still restarts. */
+            rt->tune_request_id = tune_request_id;
+            rt->tune_pending = 1;
         } else {
+            rt->tune_request_id = 0U;
+            rt->tune_pending = 0;
             double completed_m = 0.0;
             (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
             if (completed_m <= 0.0) {

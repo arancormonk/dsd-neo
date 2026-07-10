@@ -445,6 +445,12 @@ int rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samp
                                              uint32_t* out_generation_before, uint32_t* out_generation_after);
 
 /**
+ * @brief Verify an untagged timeout blocks queued output until controller completion.
+ */
+int rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
+                                               size_t* out_used_while_pending, int* out_read_after_completion);
+
+/**
  * @brief Seed output/cache counts, clear output, and report the resulting state.
  */
 int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,

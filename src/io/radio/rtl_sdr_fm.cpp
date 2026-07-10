@@ -265,6 +265,10 @@ struct controller_state {
     /* Request ID for matching completion signals to requests (prevents stale wakeups) */
     std::atomic<uint32_t> retune_request_id{0U};
     std::atomic<uint32_t> retune_complete_id{0U};
+    /* Untagged calls have no asynchronous callback. If their synchronous wait
+     * times out, keep consumer reads closed until this request completes. */
+    std::atomic<uint32_t> untagged_timeout_gate_request_id{0U};
+    std::atomic<int> live_output_read_active{0};
     uint32_t retune_complete_result_ids[kRetuneCompletionResultSlots]{};
     int retune_complete_results[kRetuneCompletionResultSlots]{};
     /* Last center frequency successfully applied by the controller thread. */
@@ -4195,8 +4199,31 @@ controller_signal_manual_retune_complete(struct controller_state* s, int result)
     uint32_t request_id = s->retune_complete_id.load(std::memory_order_acquire) + 1U;
     controller_store_retune_completion_result_locked(s, request_id, result);
     s->retune_complete_id.store(request_id, std::memory_order_release);
+    uint32_t gated_request_id = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire);
+    if (gated_request_id != 0U && request_id >= gated_request_id) {
+        s->untagged_timeout_gate_request_id.store(0U, std::memory_order_release);
+    }
     dsd_cond_broadcast(&s->retune_done_cond);
     dsd_mutex_unlock(&s->retune_done_m);
+}
+
+static void
+controller_gate_untagged_timeout(struct controller_state* s, uint32_t request_id) {
+    if (!s || request_id == 0U) {
+        return;
+    }
+
+    /* Preserve a newer gate if multiple untagged callers time out while
+     * requests are queued. The active-reader handshake guarantees that once
+     * this function returns, no pre-gate read can still reach its caller. */
+    uint32_t gated_request_id = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire);
+    while ((gated_request_id == 0U || request_id > gated_request_id)
+           && !s->untagged_timeout_gate_request_id.compare_exchange_weak(
+               gated_request_id, request_id, std::memory_order_acq_rel, std::memory_order_acquire)) {}
+    rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
+    while (s->live_output_read_active.load(std::memory_order_acquire)) {
+        dsd_sleep_ms(1);
+    }
 }
 
 static int
@@ -4981,6 +5008,8 @@ controller_init(struct controller_state* s) {
     s->retune_done_flag.store(0);
     s->retune_request_id.store(0);
     s->retune_complete_id.store(0);
+    s->untagged_timeout_gate_request_id.store(0);
+    s->live_output_read_active.store(0);
     controller_clear_retune_completion_results(s);
     s->last_applied_freq_hz.store(0, std::memory_order_release);
     s->reconfigure_seq.store(0, std::memory_order_release);
@@ -6695,6 +6724,62 @@ rtl_stream_replay_mark_output_drained(void) {
 }
 
 static int
+rtl_stream_read_live_available(struct controller_state* s, struct output_state* outp, float* out, size_t count,
+                               int* out_gated) {
+    if (!s || !outp || !out_gated) {
+        return -1;
+    }
+
+    *out_gated = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
+    if (*out_gated) {
+        return 0;
+    }
+
+    s->live_output_read_active.fetch_add(1, std::memory_order_acq_rel);
+    uint32_t generation_before = g_rtl_output_generation.load(std::memory_order_acquire);
+    *out_gated = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
+    int got = *out_gated ? 0 : ring_read_available(outp, out, count);
+    uint32_t generation_after = g_rtl_output_generation.load(std::memory_order_acquire);
+    *out_gated = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
+    if (*out_gated || generation_after != generation_before) {
+        got = 0;
+    }
+    s->live_output_read_active.fetch_sub(1, std::memory_order_acq_rel);
+    return got;
+}
+
+static int
+rtl_stream_read_live_samples(float* out, size_t count) {
+    for (;;) {
+        if (!output.buffer || exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+            return -1;
+        }
+
+        int gated = 0;
+        int got = rtl_stream_read_live_available(&controller, &output, out, count, &gated);
+        if (got != 0) {
+            return got;
+        }
+
+        if (gated) {
+            dsd_mutex_lock(&controller.retune_done_m);
+            if (controller.untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U) {
+                (void)dsd_cond_timedwait(&controller.retune_done_cond, &controller.retune_done_m, 10);
+            }
+            dsd_mutex_unlock(&controller.retune_done_m);
+            continue;
+        }
+
+        dsd_mutex_lock(&output.ready_m);
+        int wait_rc = dsd_cond_timedwait(&output.ready, &output.ready_m, 10);
+        dsd_mutex_unlock(&output.ready_m);
+        if (wait_rc != 0) {
+            output.read_timeouts.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+}
+
+static int
 rtl_stream_read_live(float* out, size_t count, dsd_opts* opts, const dsd_state* state) {
     sync_requested_ppm_after_failed_apply(opts);
     auto_ppm_maybe_adjust(opts, state);
@@ -6702,7 +6787,7 @@ rtl_stream_read_live(float* out, size_t count, dsd_opts* opts, const dsd_state* 
 
     int perf_on = rtl_perf_enabled();
     uint64_t perf_read_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
-    int got = ring_read_batch(&output, out, count);
+    int got = rtl_stream_read_live_samples(out, count);
     if (got <= 0) {
         return -1;
     }
@@ -7670,6 +7755,9 @@ rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq
         uint64_t now_ns = dsd_time_monotonic_ns();
         if (now_ns >= deadline_ns) {
             rtl_stream_log_tune_warning(requested_freq, "timeout");
+            if (!tagged_request) {
+                controller_gate_untagged_timeout(&controller, request_id);
+            }
             rc = RTL_STREAM_TUNE_TIMEOUT;
             break;
         }
@@ -7984,6 +8072,43 @@ dsd_rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samp
         output_cleanup(&output);
     }
     return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
+                                               size_t* out_used_while_pending, int* out_read_after_completion) {
+    if (queued_samples == 0U || !out_read_while_pending || !out_used_while_pending || !out_read_after_completion) {
+        return -1;
+    }
+
+    output_state test_output = {};
+    output_init(&test_output);
+    if (!test_output.buffer || queued_samples >= test_output.capacity) {
+        if (test_output.buffer) {
+            output_cleanup(&test_output);
+        }
+        return -2;
+    }
+
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    test_output.tail.store(0U, std::memory_order_release);
+    test_output.head.store(queued_samples, std::memory_order_release);
+
+    controller_gate_untagged_timeout(&test_controller, 1U);
+    float sample = 0.0f;
+    int gated = 0;
+    *out_read_while_pending = rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated);
+    *out_used_while_pending = ring_used(&test_output);
+
+    controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_OK);
+    int gated_after_completion = 0;
+    *out_read_after_completion =
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated_after_completion);
+
+    controller_cleanup(&test_controller);
+    output_cleanup(&test_output);
+    return (gated && !gated_after_completion) ? 0 : -3;
 }
 
 extern "C" int

@@ -6500,7 +6500,7 @@ add_executable(
 )
 target_compile_definitions(
     dsd-neo_test_io_rigctl_control
-    PRIVATE DSD_NEO_TEST_HOOKS
+    PRIVATE DSD_NEO_TEST_HOOKS USE_RADIO
 )
 target_include_directories(
     dsd-neo_test_io_rigctl_control

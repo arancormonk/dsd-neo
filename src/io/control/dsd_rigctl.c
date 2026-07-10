@@ -494,7 +494,7 @@ dsd_rigctl_test_rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequenc
  * @param opts Decoder options with tuning configuration.
  * @param state Decoder state (required for RTL tuning, may be NULL for rigctl-only).
  * @param freq Target frequency in Hz.
- * @return 0 on success, -1 on error.
+ * @return 0 on success, 1 when an RTL tune is deferred, or a negative error/timeout code.
  */
 int
 io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
@@ -507,9 +507,6 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
 
     LOG_INFO("io_control: tune to %ld Hz\n", freq);
 
-    // Update cached frequency for display/tracking
-    opts->rtlsdr_center_freq = (uint32_t)freq;
-
     if (opts->use_rigctl == 1) {
         if (opts->setmod_bw != 0) {
             SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
@@ -518,9 +515,14 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
         if (state && state->rtl_ctx) {
-            rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+            int tune_result = rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+            if (tune_result != RTL_STREAM_TUNE_OK) {
+                return tune_result;
+            }
         }
 #endif
     }
+    // Update cached frequency only after the selected backend accepts the request.
+    opts->rtlsdr_center_freq = (uint32_t)freq;
     return 0;
 }

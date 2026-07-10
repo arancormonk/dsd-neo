@@ -617,6 +617,35 @@ main(void) {
     reset_rtl_profile_fakes();
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->scanner_mode = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 773456250;
+    state->lcn_freq_count = 1;
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    const time_t deferred_scan_time = state->last_cc_sync_time;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("rtl-scanner-deferred-attempt", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 773456250U);
+    rc |= expect_true("rtl-scanner-deferred-keeps-candidate", state->lcn_freq_roll == 0);
+    rc |= expect_true("rtl-scanner-deferred-keeps-deadline", state->last_cc_sync_time == deferred_scan_time);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    noCarrier(opts, state);
+
+    rc |= expect_true("rtl-scanner-deferred-retries", g_rtl_tune_calls == 2 && g_rtl_tune_freq == 773456250U);
+    rc |= expect_true("rtl-scanner-retry-advances-candidate", state->lcn_freq_roll == 1);
+    rc |= expect_true("rtl-scanner-retry-restarts-deadline", state->last_cc_sync_time > deferred_scan_time);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    reset_rtl_profile_fakes();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
     opts->p25_trunk = 1;
     opts->trunk_enable = 1;
     opts->p25_is_tuned = 1;

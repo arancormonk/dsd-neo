@@ -20,6 +20,10 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Tune the configured control backend without trunking bookkeeping.
+ * @return 0 on success, 1 when an RTL request is deferred, or a negative error/timeout code.
+ */
 int io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
 void resumeScan(dsd_opts* opts, dsd_state* state);
 void openSerial(dsd_opts* opts, dsd_state* state);

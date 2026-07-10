@@ -1235,22 +1235,22 @@ no_carrier_tune_rigctl_if_needed(const dsd_opts* opts, long int freq) {
     }
 }
 
-static void
-no_carrier_tune_rtl_if_needed(const dsd_opts* opts, dsd_state* state, uint32_t rf) {
 #ifdef USE_RADIO
+static int
+no_carrier_tune_rtl_if_needed(const dsd_opts* opts, dsd_state* state, uint32_t rf) {
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
-        return;
+        return 1;
     }
     if (rf != s_last_rtl_freq) {
-        rtl_stream_tune(state->rtl_ctx, rf);
+        int tune_result = rtl_stream_tune(state->rtl_ctx, rf);
+        if (tune_result == RTL_STREAM_TUNE_DEFERRED) {
+            return 0;
+        }
         s_last_rtl_freq = rf;
     }
-#else
-    UNUSED(opts);
-    UNUSED(state);
-    UNUSED(rf);
-#endif
+    return 1;
 }
+#endif
 
 static void
 no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, time_t now) {
@@ -1267,7 +1267,11 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
     if (freq != 0) {
         no_carrier_tune_rigctl_if_needed(opts, freq);
         if (opts->audio_in_type == AUDIO_IN_RTL) {
-            no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq);
+#ifdef USE_RADIO
+            if (!no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq)) {
+                return;
+            }
+#endif
         }
     }
     state->lcn_freq_roll++;
@@ -1620,8 +1624,10 @@ no_carrier_apply_legacy_cc_return(const dsd_opts* opts, dsd_state* state, long c
     }
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (!helper_attempted) {
-            no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)cc);
 #ifdef USE_RADIO
+            if (!no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)cc)) {
+                return 0;
+            }
             state->dmr_rest_channel = -1;
 #endif
             return 1;
