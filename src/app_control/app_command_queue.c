@@ -1708,23 +1708,38 @@ try_manual_candidate_cycle(dsd_opts* opts, dsd_state* state) {
 
 static int
 apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
-    if (state->lcn_freq_count <= 0) {
+    const int lcn_capacity = (int)(sizeof(state->trunk_lcn_freq) / sizeof(state->trunk_lcn_freq[0]));
+    int count = state->lcn_freq_count;
+    if (count <= 0) {
         return UI_CMD_APPLY_COMPLETED;
+    }
+    if (count > lcn_capacity) {
+        count = lcn_capacity;
     }
 
     int next = state->lcn_freq_roll;
-    if (next < 0 || next >= state->lcn_freq_count) {
+    if (next < 0 || next >= count) {
         next = 0;
     }
-    if (next != 0 && state->trunk_lcn_freq[next - 1] == state->trunk_lcn_freq[next]) {
+    const int start = next;
+    long freq = 0;
+    for (int examined = 0; examined < count; examined++) {
+        freq = state->trunk_lcn_freq[next];
+        if (freq != 0 && (next == 0 || state->trunk_lcn_freq[next - 1] != freq)) {
+            break;
+        }
         next++;
-        if (next >= state->lcn_freq_count) {
+        if (next >= count) {
             next = 0;
         }
+        freq = 0;
     }
 
-    const long freq = state->trunk_lcn_freq[next];
     if (freq == 0) {
+        state->lcn_freq_roll = start + 1;
+        if (state->lcn_freq_roll >= count) {
+            state->lcn_freq_roll = 0;
+        }
         return UI_CMD_APPLY_COMPLETED;
     }
     if (!request_manual_tune(opts, state, freq, "Channel cycle")) {

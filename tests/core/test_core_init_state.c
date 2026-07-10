@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,6 +89,8 @@ main(void) {
     state->ess_b_llr[1][95] = 123;
     state->fourv_counter[0] = 2;
     state->p25_p1_soft_hamming_ok = 77U;
+    state->p25_last_cc_msg_time = 1234567890;
+    state->p25_last_cc_msg_time_m = 12345.5;
     state->K = 42;
     state->R = 0x1234567891ULL;
     state->RR = 0x1234567892ULL;
@@ -245,6 +248,13 @@ main(void) {
         freeState(state);
         free(state);
         return 12;
+    }
+    if (state->p25_last_cc_msg_time != 0 || !isfinite(state->p25_last_cc_msg_time_m)
+        || fabs(state->p25_last_cc_msg_time_m) > 1e-12) {
+        DSD_FPRINTF(stderr, "initState did not clear P25 decoded control-channel timestamps\n");
+        freeState(state);
+        free(state);
+        return 27;
     }
     for (int i = 0; i < 2; i++) {
         if (state->p25_mac_frag[i].active != 0U || state->p25_mac_frag[i].opcode != 0U

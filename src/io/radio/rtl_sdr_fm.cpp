@@ -4200,7 +4200,7 @@ controller_signal_manual_retune_complete(struct controller_state* s, int result)
     controller_store_retune_completion_result_locked(s, request_id, result);
     s->retune_complete_id.store(request_id, std::memory_order_release);
     uint32_t gated_request_id = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire);
-    if (gated_request_id != 0U && request_id >= gated_request_id) {
+    if (result == RTL_STREAM_TUNE_OK && gated_request_id != 0U && request_id >= gated_request_id) {
         s->untagged_timeout_gate_request_id.store(0U, std::memory_order_release);
     }
     dsd_cond_broadcast(&s->retune_done_cond);
@@ -4214,12 +4214,22 @@ controller_gate_untagged_timeout(struct controller_state* s, uint32_t request_id
     }
 
     /* Preserve a newer gate if multiple untagged callers time out while
-     * requests are queued. The active-reader handshake guarantees that once
-     * this function returns, no pre-gate read can still reach its caller. */
+     * requests are queued. Advancing the output generation invalidates both
+     * decoder-owned caches and a read that has copied samples but has not yet
+     * completed its consumer-side handoff. The active-reader handshake then
+     * waits for any in-progress ring copy to leave the shared output. */
     uint32_t gated_request_id = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire);
-    while ((gated_request_id == 0U || request_id > gated_request_id)
-           && !s->untagged_timeout_gate_request_id.compare_exchange_weak(
-               gated_request_id, request_id, std::memory_order_acq_rel, std::memory_order_acquire)) {}
+    int gate_advanced = 0;
+    while (gated_request_id == 0U || request_id > gated_request_id) {
+        if (s->untagged_timeout_gate_request_id.compare_exchange_weak(
+                gated_request_id, request_id, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            gate_advanced = 1;
+            break;
+        }
+    }
+    if (gate_advanced) {
+        rtl_stream_bump_output_generation();
+    }
     rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
     while (s->live_output_read_active.load(std::memory_order_acquire)) {
         dsd_sleep_ms(1);
@@ -6745,6 +6755,14 @@ rtl_stream_read_live_available(struct controller_state* s, struct output_state* 
         got = 0;
     }
     s->live_output_read_active.fetch_sub(1, std::memory_order_acq_rel);
+    /* The timeout thread may install its gate after the pre-release checks but
+     * before observing the reader count reach zero. Reject that handoff here;
+     * the orchestrator also validates this generation after the call returns. */
+    *out_gated = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
+    generation_after = g_rtl_output_generation.load(std::memory_order_acquire);
+    if (*out_gated || generation_after != generation_before) {
+        got = 0;
+    }
     return got;
 }
 
@@ -8076,8 +8094,11 @@ dsd_rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samp
 
 extern "C" int
 dsd_rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
-                                               size_t* out_used_while_pending, int* out_read_after_completion) {
-    if (queued_samples == 0U || !out_read_while_pending || !out_used_while_pending || !out_read_after_completion) {
+                                               size_t* out_used_while_pending, int* out_read_after_failed_completion,
+                                               int* out_read_after_recovery, uint32_t* out_generation_before,
+                                               uint32_t* out_generation_after_gate) {
+    if (queued_samples == 0U || !out_read_while_pending || !out_used_while_pending || !out_read_after_failed_completion
+        || !out_read_after_recovery || !out_generation_before || !out_generation_after_gate) {
         return -1;
     }
 
@@ -8095,20 +8116,32 @@ dsd_rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_r
     test_output.tail.store(0U, std::memory_order_release);
     test_output.head.store(queued_samples, std::memory_order_release);
 
+    *out_generation_before = dsd_rtl_stream_output_generation();
     controller_gate_untagged_timeout(&test_controller, 1U);
+    *out_generation_after_gate = dsd_rtl_stream_output_generation();
     float sample = 0.0f;
     int gated = 0;
     *out_read_while_pending = rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated);
     *out_used_while_pending = ring_used(&test_output);
 
+    controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_FAILED);
+    int gated_after_failure = 0;
+    *out_read_after_failed_completion =
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated_after_failure);
+
+    /* A successful controller boundary drains the stale ring before reopening
+     * reads. Seed one replacement sample to verify that fresh output is live. */
+    ring_clear(&test_output);
+    test_output.tail.store(0U, std::memory_order_release);
+    test_output.head.store(1U, std::memory_order_release);
     controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_OK);
-    int gated_after_completion = 0;
-    *out_read_after_completion =
-        rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated_after_completion);
+    int gated_after_recovery = 0;
+    *out_read_after_recovery =
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated_after_recovery);
 
     controller_cleanup(&test_controller);
     output_cleanup(&test_output);
-    return (gated && !gated_after_completion) ? 0 : -3;
+    return (gated && gated_after_failure && !gated_after_recovery) ? 0 : -3;
 }
 
 extern "C" int

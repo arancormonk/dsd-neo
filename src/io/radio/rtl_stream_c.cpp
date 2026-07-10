@@ -102,7 +102,10 @@ int dsd_rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_
                                                  size_t* out_used_after, int* out_cache_pending_after,
                                                  uint32_t* out_generation_before, uint32_t* out_generation_after);
 int dsd_rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
-                                                   size_t* out_used_while_pending, int* out_read_after_completion);
+                                                   size_t* out_used_while_pending,
+                                                   int* out_read_after_failed_completion, int* out_read_after_recovery,
+                                                   uint32_t* out_generation_before,
+                                                   uint32_t* out_generation_after_gate);
 int dsd_rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                      int* out_cache_pending_after, uint32_t* out_generation_before,
                                      uint32_t* out_generation_after);
@@ -306,9 +309,12 @@ rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samples,
 
 extern "C" int
 rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
-                                           size_t* out_used_while_pending, int* out_read_after_completion) {
-    return dsd_rtl_stream_test_untagged_timeout_read_gate(queued_samples, out_read_while_pending,
-                                                          out_used_while_pending, out_read_after_completion);
+                                           size_t* out_used_while_pending, int* out_read_after_failed_completion,
+                                           int* out_read_after_recovery, uint32_t* out_generation_before,
+                                           uint32_t* out_generation_after_gate) {
+    return dsd_rtl_stream_test_untagged_timeout_read_gate(
+        queued_samples, out_read_while_pending, out_used_while_pending, out_read_after_failed_completion,
+        out_read_after_recovery, out_generation_before, out_generation_after_gate);
 }
 
 extern "C" int

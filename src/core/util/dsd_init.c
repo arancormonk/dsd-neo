@@ -917,6 +917,8 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
 
     //values displayed in ncurses terminal
     state->p25_cc_freq = 0;
+    state->p25_last_cc_msg_time = 0;
+    state->p25_last_cc_msg_time_m = 0.0;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
 

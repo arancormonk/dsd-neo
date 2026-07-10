@@ -1076,10 +1076,12 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
 
     init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 855000000L, 856000000L, 3201);
-    state.lcn_freq_count = 2;
+    state.lcn_freq_count = 4;
     state.lcn_freq_roll = 0;
-    state.trunk_lcn_freq[0] = 857000000L;
-    state.trunk_lcn_freq[1] = 858000000L;
+    state.trunk_lcn_freq[0] = 0L;
+    state.trunk_lcn_freq[1] = 857000000L;
+    state.trunk_lcn_freq[2] = 0L;
+    state.trunk_lcn_freq[3] = 858000000L;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
     token = 0;
     rc |= expect_int("deferred channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
@@ -1100,11 +1102,27 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("accepted channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_command_status("accepted channel cycle completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
-    rc |= expect_int("accepted channel cycle advances roll", state.lcn_freq_roll, 1);
+    rc |= expect_int("accepted channel cycle skips empty entry", state.lcn_freq_roll, 2);
     rc |= expect_int("accepted channel cycle clears tuned", opts.p25_is_tuned, 0);
     rc |= expect_int("accepted channel cycle clears TG", state.lasttg, 0);
     rc |= expect_true("accepted channel cycle clears P25 VC", state.p25_vc_freq[0] == 0L);
     rc |= expect_true("accepted channel cycle refreshes CC sync", state.last_cc_sync_time_m > 42.0);
+
+    token = 0;
+    rc |= expect_int("later channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("later channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("later channel cycle completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_true("later channel cycle reaches frequency after empty entry", g_io_control_tune_freq == 858000000L);
+    rc |= expect_int("later channel cycle advances past second frequency", state.lcn_freq_roll, 4);
+
+    token = 0;
+    rc |= expect_int("wrapped channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("wrapped channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("wrapped channel cycle completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_true("wrapped channel cycle skips leading empty entry", g_io_control_tune_freq == 857000000L);
+    rc |= expect_int("wrapped channel cycle advances from recovered entry", state.lcn_freq_roll, 2);
     freeState(&state);
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);

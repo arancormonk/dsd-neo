@@ -25,6 +25,7 @@ extern "C" {
 int dsd_rtl_stream_open(dsd_opts* opts);
 void dsd_rtl_stream_close(void);
 int dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state);
+uint32_t dsd_rtl_stream_output_generation(void);
 int dsd_rtl_stream_tune(dsd_opts* opts, long int frequency);
 int dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t token);
 unsigned int dsd_rtl_stream_output_rate(void);
@@ -217,14 +218,20 @@ RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
         last_error_code_ = -2;
         return last_error_code_;
     }
-    int got = dsd_rtl_stream_read(out, count, opts_, nullptr);
-    if (got < 0) {
-        last_error_code_ = got;
-        return got;
+    for (;;) {
+        const uint32_t generation_before = dsd_rtl_stream_output_generation();
+        int got = dsd_rtl_stream_read(out, count, opts_, nullptr);
+        if (got < 0) {
+            last_error_code_ = got;
+            return got;
+        }
+        if (dsd_rtl_stream_output_generation() != generation_before) {
+            continue;
+        }
+        out_got = got;
+        last_error_code_ = 0;
+        return 0;
     }
-    out_got = got;
-    last_error_code_ = 0;
-    return 0;
 }
 
 /**

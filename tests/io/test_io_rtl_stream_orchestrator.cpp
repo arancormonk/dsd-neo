@@ -18,6 +18,8 @@ struct StubState {
     int tune_rc;
     int read_rc;
     unsigned int output_rate;
+    uint32_t output_generation;
+    int invalidate_first_read;
     int requested_ppm;
     int open_calls;
     int soft_stop_calls;
@@ -43,6 +45,7 @@ static void
 reset_stubs(void) {
     g_stub = {};
     g_stub.output_rate = 48000U;
+    g_stub.output_generation = 1U;
 }
 
 static std::unique_ptr<dsd_opts>
@@ -108,7 +111,15 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* s
     g_stub.read_calls++;
     g_stub.last_open_opts = opts;
     g_stub.last_read_count = count;
+    if (g_stub.invalidate_first_read && g_stub.read_calls == 1) {
+        g_stub.output_generation++;
+    }
     return g_stub.read_rc;
+}
+
+extern "C" uint32_t
+dsd_rtl_stream_output_generation(void) {
+    return g_stub.output_generation;
 }
 
 extern "C" int
@@ -285,6 +296,14 @@ test_tune_read_and_ppm_error_propagation(void) {
     rc |= expect_int_eq("read success", stream.read(samples, 4U, got), 0);
     rc |= expect_int_eq("read returns got count", got, 3);
     rc |= expect_int_eq("read records count", (int)g_stub.last_read_count, 4);
+
+    g_stub.read_calls = 0;
+    g_stub.invalidate_first_read = 1;
+    rc |= expect_int_eq("read retries an invalidated handoff", stream.read(samples, 4U, got), 0);
+    rc |= expect_int_eq("invalidated handoff reads a fresh batch", g_stub.read_calls, 2);
+    rc |= expect_int_eq("fresh handoff returns got count", got, 3);
+    g_stub.invalidate_first_read = 0;
+
     g_stub.read_rc = -9;
     rc |= expect_int_eq("read propagates failure", stream.read(samples, 4U, got), -9);
     rc |= expect_int_eq("read failure last error", stream.last_error_code(), -9);
