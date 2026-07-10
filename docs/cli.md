@@ -248,7 +248,23 @@ Notes
 
 Notes
 
-- All frame types are auto-detectable with `-fa` (multi-rate SPS hunting).
+- `-fa` enables the complete digital candidate set and hunts these profiles in order, skipping any profile that has no
+  enabled candidate:
+
+  | Hunt profile | Symbol rate | Levels | Enabled candidates |
+  | --- | ---: | ---: | --- |
+  | 0 | 4800 | 4 | P25 Phase 1 (C4FM/CQPSK), DMR, NXDN96, YSF, M17 |
+  | 1 | 2400 | 4 | NXDN48, dPMR |
+  | 2 | 9600 | 2 | ProVoice, EDACS |
+  | 3 | 6000 | 4 | P25 Phase 2 (CQPSK), X2-TDMA |
+  | 4 | 4800 | 2 | D-STAR |
+
+  A detected sync locks the active rate, level count, timing, and RTL-family channel profile. Passive analog monitoring
+  (`-fA`) and already-framed M17 UDP input (`-fU`) are not frame-sync hunt candidates.
+- The three Auto entry points intentionally differ: CLI `-fa` installs the complete matrix above; config
+  `decode = "auto"` preserves the protocol flags established during initialization or by the current overlay; and the
+  interactive Auto choice preserves the current candidate set. This lets configs and interactive setup retain a
+  deliberately narrowed scanner while `-fa` remains the explicit full-search preset.
 - In TCP PCM mode, SPS hunting still runs when no signal is present, but repeated idle `Sync: no sync` and `SPS hunt`
   console diagnostics are suppressed.
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.

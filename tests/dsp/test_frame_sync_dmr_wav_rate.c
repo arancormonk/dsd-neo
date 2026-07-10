@@ -207,6 +207,7 @@ init_state_buffers(dsd_state* state) {
 typedef struct {
     const char* label;
     const char* pattern;
+    const char* expected_ftype;
     int frame_dmr;
     int frame_dstar;
     int frame_provoice;
@@ -217,9 +218,9 @@ typedef struct {
     int frame_nxdn96;
     int inverted_x2tdma;
     int inverted_dpmr;
+    int profile_index;
     int initial_lastsynctype;
     int expected_sync;
-    const char* expected_ftype;
     int expected_inverted_ysf;
 } SymbolSyncCase;
 
@@ -246,6 +247,17 @@ init_common_wav_opts_state(dsd_opts* opts, dsd_state* state) {
     opts->mod_gfsk = 1;
     opts->msize = 1;
     opts->ssize = 128;
+    opts->frame_dstar = 1;
+    opts->frame_x2tdma = 1;
+    opts->frame_p25p1 = 1;
+    opts->frame_p25p2 = 1;
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 1;
+    opts->frame_dmr = 1;
+    opts->frame_dpmr = 1;
+    opts->frame_provoice = 1;
+    opts->frame_ysf = 1;
+    opts->frame_m17 = 1;
 
     state->rf_mod = 2;
     state->samplesPerSymbol = 20;
@@ -271,16 +283,9 @@ run_symbol_sync_case(const SymbolSyncCase* tc) {
         return 1;
     }
 
-    opts.frame_dmr = tc->frame_dmr;
-    opts.frame_dstar = tc->frame_dstar;
-    opts.frame_provoice = tc->frame_provoice;
-    opts.frame_x2tdma = tc->frame_x2tdma;
-    opts.frame_ysf = tc->frame_ysf;
-    opts.frame_dpmr = tc->frame_dpmr;
-    opts.frame_nxdn48 = tc->frame_nxdn48;
-    opts.frame_nxdn96 = tc->frame_nxdn96;
     opts.inverted_x2tdma = tc->inverted_x2tdma;
     opts.inverted_dpmr = tc->inverted_dpmr;
+    state.sps_hunt_idx = tc->profile_index;
     state.lastsynctype = tc->initial_lastsynctype;
     g_symbol_index = 0U;
     g_sync_pattern = tc->pattern;
@@ -484,9 +489,34 @@ static int
 run_wav_protocol_sync_matrix(void) {
     static const SymbolSyncCase cases[] = {
         {
+            .label = "P25 Phase 1 positive",
+            .pattern = P25P1_SYNC,
+            .expected_sync = DSD_SYNC_P25P1_POS,
+            .expected_ftype = "P25 Phase 1",
+        },
+        {
+            .label = "P25 Phase 1 negative",
+            .pattern = INV_P25P1_SYNC,
+            .expected_sync = DSD_SYNC_P25P1_NEG,
+            .expected_ftype = "P25 Phase 1",
+        },
+        {
+            .label = "P25 Phase 2 positive",
+            .pattern = P25P2_SYNC,
+            .profile_index = 3,
+            .expected_sync = DSD_SYNC_P25P2_POS,
+        },
+        {
+            .label = "P25 Phase 2 negative",
+            .pattern = INV_P25P2_SYNC,
+            .profile_index = 3,
+            .expected_sync = DSD_SYNC_P25P2_NEG,
+        },
+        {
             .label = "DSTAR voice positive",
             .pattern = DSTAR_SYNC,
             .frame_dstar = 1,
+            .profile_index = 4,
             .expected_sync = DSD_SYNC_DSTAR_VOICE_POS,
             .expected_ftype = "DSTAR ",
         },
@@ -494,6 +524,7 @@ run_wav_protocol_sync_matrix(void) {
             .label = "DSTAR voice negative",
             .pattern = INV_DSTAR_SYNC,
             .frame_dstar = 1,
+            .profile_index = 4,
             .expected_sync = DSD_SYNC_DSTAR_VOICE_NEG,
             .expected_ftype = "DSTAR ",
         },
@@ -501,6 +532,7 @@ run_wav_protocol_sync_matrix(void) {
             .label = "DSTAR header positive",
             .pattern = DSTAR_HD,
             .frame_dstar = 1,
+            .profile_index = 4,
             .expected_sync = DSD_SYNC_DSTAR_HD_POS,
             .expected_ftype = "DSTAR_HD ",
         },
@@ -508,6 +540,7 @@ run_wav_protocol_sync_matrix(void) {
             .label = "DSTAR header negative",
             .pattern = INV_DSTAR_HD,
             .frame_dstar = 1,
+            .profile_index = 4,
             .expected_sync = DSD_SYNC_DSTAR_HD_NEG,
             .expected_ftype = " DSTAR_HD",
         },
@@ -515,6 +548,7 @@ run_wav_protocol_sync_matrix(void) {
             .label = "ProVoice positive",
             .pattern = PROVOICE_SYNC,
             .frame_provoice = 1,
+            .profile_index = 2,
             .expected_sync = DSD_SYNC_PROVOICE_POS,
             .expected_ftype = "ProVoice ",
         },
@@ -522,6 +556,7 @@ run_wav_protocol_sync_matrix(void) {
             .label = "ProVoice negative",
             .pattern = INV_PROVOICE_SYNC,
             .frame_provoice = 1,
+            .profile_index = 2,
             .expected_sync = DSD_SYNC_PROVOICE_NEG,
             .expected_ftype = "ProVoice ",
         },
@@ -529,12 +564,14 @@ run_wav_protocol_sync_matrix(void) {
             .label = "EDACS positive",
             .pattern = INV_EDACS_SYNC,
             .frame_provoice = 1,
+            .profile_index = 2,
             .expected_sync = DSD_SYNC_EDACS_POS,
         },
         {
             .label = "EDACS negative",
             .pattern = EDACS_SYNC,
             .frame_provoice = 1,
+            .profile_index = 2,
             .expected_sync = DSD_SYNC_EDACS_NEG,
         },
     };
@@ -553,6 +590,7 @@ run_wav_protocol_extended_sync_matrix(void) {
             .label = "X2-TDMA BS data",
             .pattern = X2TDMA_BS_DATA_SYNC,
             .frame_x2tdma = 1,
+            .profile_index = 3,
             .expected_sync = DSD_SYNC_X2TDMA_DATA_POS,
             .expected_ftype = "X2-TDMA",
         },
@@ -561,6 +599,7 @@ run_wav_protocol_extended_sync_matrix(void) {
             .pattern = X2TDMA_BS_VOICE_SYNC,
             .frame_x2tdma = 1,
             .inverted_x2tdma = 1,
+            .profile_index = 3,
             .expected_sync = DSD_SYNC_X2TDMA_DATA_NEG,
             .expected_ftype = "X2-TDMA",
         },
@@ -584,6 +623,7 @@ run_wav_protocol_extended_sync_matrix(void) {
             .label = "dPMR FS2 positive",
             .pattern = DPMR_FRAME_SYNC_2,
             .frame_dpmr = 1,
+            .profile_index = 1,
             .expected_sync = DSD_SYNC_DPMR_FS2_POS,
             .expected_ftype = "dPMR ",
         },
@@ -592,6 +632,7 @@ run_wav_protocol_extended_sync_matrix(void) {
             .pattern = INV_DPMR_FRAME_SYNC_2,
             .frame_dpmr = 1,
             .inverted_dpmr = 1,
+            .profile_index = 1,
             .expected_sync = DSD_SYNC_DPMR_FS2_NEG,
             .expected_ftype = "dPMR ",
         },
@@ -615,8 +656,7 @@ run_nxdn_two_pass_case(const char* label, const char* pattern, int frame_nxdn48,
         return 1;
     }
 
-    opts.frame_nxdn48 = frame_nxdn48;
-    opts.frame_nxdn96 = frame_nxdn96;
+    state.sps_hunt_idx = frame_nxdn48 ? 1 : (frame_nxdn96 ? 0 : state.sps_hunt_idx);
     dsd_frame_sync_reset_mod_state();
 
     g_symbol_index = 0U;

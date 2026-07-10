@@ -28,7 +28,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
@@ -60,6 +59,34 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
+
+enum {
+    FRAME_SYNC_SPS_PROFILE_4800_4 = 0,
+    FRAME_SYNC_SPS_PROFILE_2400_4 = 1,
+    FRAME_SYNC_SPS_PROFILE_9600_2 = 2,
+    FRAME_SYNC_SPS_PROFILE_6000_4 = 3,
+    FRAME_SYNC_SPS_PROFILE_4800_2 = 4,
+    FRAME_SYNC_SPS_PROFILE_COUNT = 5,
+    FRAME_SYNC_HISTORY_CAPACITY = 48,
+};
+
+typedef struct {
+    int symbol_rate_hz;
+    int levels;
+} frame_sync_sps_profile;
+
+/* Keep this order in sync with dsd_state::sps_hunt_idx. */
+static const frame_sync_sps_profile k_frame_sync_sps_profiles[FRAME_SYNC_SPS_PROFILE_COUNT] = {
+    {4800, 4}, {2400, 4}, {9600, 2}, {6000, 4}, {4800, 2},
+};
+
+static const frame_sync_sps_profile*
+frame_sync_sps_profile_for_index(int index) {
+    if (index < 0 || index >= FRAME_SYNC_SPS_PROFILE_COUNT) {
+        return &k_frame_sync_sps_profiles[FRAME_SYNC_SPS_PROFILE_4800_4];
+    }
+    return &k_frame_sync_sps_profiles[index];
+}
 
 static int
 frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
@@ -112,16 +139,6 @@ dmr_best_sync_hamming(const char* window, const char** out_name) {
 }
 
 static int
-rtl_opts_has_any_four_level_mode(const dsd_opts* opts) {
-    if (!opts) {
-        return 0;
-    }
-    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1
-            || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1 || opts->frame_dpmr == 1
-            || opts->frame_m17 == 1);
-}
-
-static int
 rtl_opts_has_4800_wide_four_level_mode(const dsd_opts* opts) {
     if (!opts) {
         return 0;
@@ -130,124 +147,45 @@ rtl_opts_has_4800_wide_four_level_mode(const dsd_opts* opts) {
 }
 
 static int
-rtl_p25_profile_for_state(const dsd_state* state) {
-    return (state && state->rf_mod == 1) ? DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK
-                                         : DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
-}
-
-static int
-rtl_fallback_profile_for_symbol_rate(int sym_rate_hz) {
-    if (sym_rate_hz == 2400) {
+rtl_profile_for_sps_profile(const dsd_opts* opts, const dsd_state* state, const frame_sync_sps_profile* profile) {
+    if (!profile) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
+    }
+    if (profile->symbol_rate_hz == 2400 || (profile->symbol_rate_hz == 4800 && profile->levels == 2)) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
     }
-    if (sym_rate_hz == 9600) {
+    if (profile->symbol_rate_hz == 9600) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
     }
-    return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
-}
-
-static int
-rtl_profile_for_explicit_symbol_rate(const dsd_opts* opts, int sym_rate_hz, int preferred_levels) {
-    if (sym_rate_hz == 4800 && preferred_levels == 2 && opts->frame_dstar == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
-    }
-    if (sym_rate_hz == 9600 && opts->frame_provoice == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
-    }
-    if (sym_rate_hz == 2400 && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1)) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
-    }
-    if (sym_rate_hz == 6000 && opts->frame_p25p2 == 1) {
+    if (state && state->rf_mod == 1) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
     }
-    if (sym_rate_hz == 6000 && opts->frame_x2tdma == 1) {
+    if (profile->symbol_rate_hz == 6000 || (state && state->rf_mod == 2)
+        || rtl_opts_has_4800_wide_four_level_mode(opts)) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
     }
-    return -1;
-}
-
-static int
-rtl_profile_for_enabled_protocols(const dsd_opts* opts, const dsd_state* state) {
-    if (rtl_opts_has_4800_wide_four_level_mode(opts)) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
-    }
-    if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
-        return rtl_p25_profile_for_state(state);
-    }
-    if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
-    }
-    if (opts->frame_x2tdma == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
-    }
-    if (opts->frame_provoice == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
-    }
-    return -1;
-}
-
-static int
-rtl_profile_for_symbol_rate(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz, int preferred_levels) {
-    if (opts) {
-        int profile = rtl_profile_for_explicit_symbol_rate(opts, sym_rate_hz, preferred_levels);
-        if (profile >= 0) {
-            return profile;
-        }
-        profile = rtl_profile_for_enabled_protocols(opts, state);
-        if (profile >= 0) {
-            return profile;
-        }
-    }
-    return rtl_fallback_profile_for_symbol_rate(sym_rate_hz);
-}
-
-static int
-rtl_levels_for_symbol_rate(const dsd_opts* opts, int sym_rate_hz, int preferred_levels) {
-    if (preferred_levels == 2 || preferred_levels == 4) {
-        return preferred_levels;
-    }
-    if (!opts) {
-        return 4;
-    }
-    if (sym_rate_hz == 9600 && opts->frame_provoice == 1) {
-        return 2;
-    }
-    if (sym_rate_hz == 4800 && opts->frame_dstar == 1 && !frame_sync_opts_has_4800_four_level_mode(opts)) {
-        return 2;
-    }
-    if ((opts->frame_dstar == 1 || opts->frame_provoice == 1) && !rtl_opts_has_any_four_level_mode(opts)) {
-        return 2;
-    }
-    return 4;
+    return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
 int
-dsd_frame_sync_test_rtl_profile_for_symbol_rate(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz,
-                                                int preferred_levels) {
-    return rtl_profile_for_symbol_rate(opts, state, sym_rate_hz, preferred_levels);
-}
-
-int
-dsd_frame_sync_test_rtl_levels_for_symbol_rate(const dsd_opts* opts, int sym_rate_hz, int preferred_levels) {
-    return rtl_levels_for_symbol_rate(opts, sym_rate_hz, preferred_levels);
+dsd_frame_sync_test_rtl_profile_for_sps_index(const dsd_opts* opts, const dsd_state* state, int profile_index) {
+    return rtl_profile_for_sps_profile(opts, state, frame_sync_sps_profile_for_index(profile_index));
 }
 #endif
 
 static void
-rtl_maybe_update_symbol_profile_with_hint(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz,
-                                          int preferred_levels) {
-    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx || sym_rate_hz <= 0) {
+rtl_maybe_update_sps_profile(const dsd_opts* opts, const dsd_state* state, const frame_sync_sps_profile* profile) {
+    if (!opts || !state || !profile || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return;
     }
-    (void)dsd_rtl_stream_metrics_hook_set_symbol_profile(
-        sym_rate_hz, rtl_levels_for_symbol_rate(opts, sym_rate_hz, preferred_levels),
-        rtl_profile_for_symbol_rate(opts, state, sym_rate_hz, preferred_levels));
+    (void)dsd_rtl_stream_metrics_hook_set_symbol_profile(profile->symbol_rate_hz, profile->levels,
+                                                         rtl_profile_for_sps_profile(opts, state, profile));
 }
 
 static void
-rtl_maybe_update_symbol_profile(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz) {
-    rtl_maybe_update_symbol_profile_with_hint(opts, state, sym_rate_hz, 0);
+rtl_maybe_update_active_sps_profile(const dsd_opts* opts, const dsd_state* state) {
+    rtl_maybe_update_sps_profile(opts, state, frame_sync_sps_profile_for_index(state->sps_hunt_idx));
 }
 #endif
 
@@ -270,7 +208,7 @@ dmr_set_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 #ifdef USE_RADIO
-    rtl_maybe_update_symbol_profile(opts, state, 4800);
+    rtl_maybe_update_active_sps_profile(opts, state);
 #endif
 }
 
@@ -373,6 +311,17 @@ printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* framety
     /* stack buffer; no free */
 }
 
+enum {
+    FRAME_SYNC_WINDOW_8 = 1u << 0,
+    FRAME_SYNC_WINDOW_10 = 1u << 1,
+    FRAME_SYNC_WINDOW_12 = 1u << 2,
+    FRAME_SYNC_WINDOW_16 = 1u << 3,
+    FRAME_SYNC_WINDOW_20 = 1u << 4,
+    FRAME_SYNC_WINDOW_24 = 1u << 5,
+    FRAME_SYNC_WINDOW_32 = 1u << 6,
+    FRAME_SYNC_WINDOW_48 = 1u << 7,
+};
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -381,8 +330,8 @@ typedef struct {
     int synctest_pos;
     float lmax;
     float lmin;
+    unsigned int ready_windows;
     char* modulation;
-    char* synctest_p;
     char* synctest;
     char* synctest8;
     char* synctest10;
@@ -393,7 +342,34 @@ typedef struct {
     char* synctest48;
 } frame_sync_match_ctx;
 
+static unsigned int
+frame_sync_window_flag(int length) {
+    switch (length) {
+        case 8: return FRAME_SYNC_WINDOW_8;
+        case 10: return FRAME_SYNC_WINDOW_10;
+        case 12: return FRAME_SYNC_WINDOW_12;
+        case 16: return FRAME_SYNC_WINDOW_16;
+        case 20: return FRAME_SYNC_WINDOW_20;
+        case 24: return FRAME_SYNC_WINDOW_24;
+        case 32: return FRAME_SYNC_WINDOW_32;
+        case 48: return FRAME_SYNC_WINDOW_48;
+        default: return 0;
+    }
+}
+
+static int
+frame_sync_match_window_ready(const frame_sync_match_ctx* ctx, int length) {
+    const unsigned int flag = frame_sync_window_flag(length);
+    return ctx && flag != 0 && (ctx->ready_windows & flag) != 0;
+}
+
+static int
+frame_sync_match_profile_active(const frame_sync_match_ctx* ctx, int profile_index) {
+    return ctx && ctx->state && ctx->state->sps_hunt_idx == profile_index;
+}
+
 static int frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state);
+static int frame_sync_active_profile_modulation(const dsd_state* state);
 
 static inline void
 frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
@@ -651,6 +627,12 @@ frame_sync_accept_p25p2(frame_sync_match_ctx* ctx, int synctype, int inverted, c
                         int set_last_before_info, frame_sync_p25_center_mode_t center_mode) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
+    if (!opts->mod_cli_lock) {
+        state->rf_mod = 1;
+#ifdef USE_RADIO
+        rtl_maybe_update_active_sps_profile(opts, state);
+#endif
+    }
     frame_sync_set_basic_lock(ctx);
     opts->inverted_p2 = inverted;
     if (set_last_before_info) {
@@ -670,9 +652,41 @@ frame_sync_accept_p25p2(frame_sync_match_ctx* ctx, int synctype, int inverted, c
     }
 }
 
+#ifdef USE_RADIO
+static int
+frame_sync_try_rotated_p25(frame_sync_match_ctx* ctx, const char* symbols, const char* pattern, int pattern_len,
+                           int synctype, int inverted, const char* label, int phase2, int set_last_before_info) {
+    const dsd_opts* opts = ctx->opts;
+    const dsd_state* state = ctx->state;
+    uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
+    if (!frame_sync_cqpsk_4level_enabled(opts, state)
+        || !frame_sync_find_rotated_p25_cqpsk_map(symbols, pattern, &map_idx)) {
+        return DSD_SYNC_NONE;
+    }
+
+    frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
+    dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, symbols, pattern_len, &fit);
+    if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
+        return DSD_SYNC_NONE;
+    }
+
+    frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
+    if (phase2) {
+        frame_sync_accept_p25p2(ctx, synctype, inverted, label, set_last_before_info, FRAME_SYNC_P25_CENTER_SKIP);
+    } else {
+        frame_sync_accept_p25p1(ctx, synctype, label, FRAME_SYNC_P25_CENTER_SKIP);
+    }
+    if (center_result == DSD_WARM_START_OK) {
+        frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
+    }
+    return synctype;
+}
+#endif
+
 static int
 frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
-    if (ctx->opts->frame_p25p1 != 1) {
+    if (ctx->opts->frame_p25p1 != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_4800_4)
+        || !frame_sync_match_window_ready(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -689,93 +703,54 @@ frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
     }
 
 #ifdef USE_RADIO
-    const dsd_opts* opts = ctx->opts;
-    const dsd_state* state = ctx->state;
-    uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
-    if (frame_sync_cqpsk_4level_enabled(opts, state)
-        && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest, P25P1_SYNC, &map_idx)) {
-        frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
-        dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, ctx->synctest, 24, &fit);
-        if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
-            return DSD_SYNC_NONE;
-        }
-        frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
-        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_POS, "+P25p1", FRAME_SYNC_P25_CENTER_SKIP);
-        if (center_result == DSD_WARM_START_OK) {
-            frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
-        }
-        return DSD_SYNC_P25P1_POS;
+    int sync_type =
+        frame_sync_try_rotated_p25(ctx, ctx->synctest, P25P1_SYNC, 24, DSD_SYNC_P25P1_POS, 0, "+P25p1", 0, 0);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
     }
-
-    if (frame_sync_cqpsk_4level_enabled(opts, state)
-        && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest, INV_P25P1_SYNC, &map_idx)) {
-        frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
-        dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, ctx->synctest, 24, &fit);
-        if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
-            return DSD_SYNC_NONE;
-        }
-        frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
-        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_NEG, "-P25p1 ", FRAME_SYNC_P25_CENTER_SKIP);
-        if (center_result == DSD_WARM_START_OK) {
-            frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
-        }
-        return DSD_SYNC_P25P1_NEG;
-    }
-#endif
-
+    return frame_sync_try_rotated_p25(ctx, ctx->synctest, INV_P25P1_SYNC, 24, DSD_SYNC_P25P1_NEG, 0, "-P25p1 ", 0, 0);
+#else
     return DSD_SYNC_NONE;
+#endif
+}
+
+static int
+frame_sync_accept_x2tdma(frame_sync_match_ctx* ctx, int synctype, const char* label, int marks_first_frame) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    frame_sync_set_basic_lock(ctx);
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
+    if (opts->errorbars == 1) {
+        printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    }
+    if (marks_first_frame && state->lastsynctype != synctype) {
+        state->firstframe = 1;
+    }
+    state->lastsynctype = synctype;
+    dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
+    return synctype;
 }
 
 static int
 frame_sync_try_x2tdma(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
-    dsd_state* state = ctx->state;
-    if (opts->frame_x2tdma != 1) {
+    if (opts->frame_x2tdma != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_6000_4)
+        || !frame_sync_match_window_ready(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
     if ((strcmp(ctx->synctest, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(ctx->synctest, X2TDMA_MS_DATA_SYNC) == 0)) {
-        frame_sync_set_basic_lock(ctx);
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
         if (opts->inverted_x2tdma == 0) {
-            if (opts->errorbars == 1) {
-                printFrameSync(opts, state, "+X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
-            }
-            state->lastsynctype = DSD_SYNC_X2TDMA_DATA_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-            return DSD_SYNC_X2TDMA_DATA_POS;
+            return frame_sync_accept_x2tdma(ctx, DSD_SYNC_X2TDMA_DATA_POS, "+X2-TDMA ", 0);
         }
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "-X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        if (state->lastsynctype != DSD_SYNC_X2TDMA_VOICE_NEG) {
-            state->firstframe = 1;
-        }
-        state->lastsynctype = DSD_SYNC_X2TDMA_VOICE_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-        return DSD_SYNC_X2TDMA_VOICE_NEG;
+        return frame_sync_accept_x2tdma(ctx, DSD_SYNC_X2TDMA_VOICE_NEG, "-X2-TDMA ", 1);
     }
 
     if ((strcmp(ctx->synctest, X2TDMA_BS_VOICE_SYNC) == 0) || (strcmp(ctx->synctest, X2TDMA_MS_VOICE_SYNC) == 0)) {
-        frame_sync_set_basic_lock(ctx);
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
         if (opts->inverted_x2tdma == 0) {
-            if (opts->errorbars == 1) {
-                printFrameSync(opts, state, "+X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
-            }
-            if (state->lastsynctype != DSD_SYNC_X2TDMA_VOICE_POS) {
-                state->firstframe = 1;
-            }
-            state->lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-            return DSD_SYNC_X2TDMA_VOICE_POS;
+            return frame_sync_accept_x2tdma(ctx, DSD_SYNC_X2TDMA_VOICE_POS, "+X2-TDMA ", 1);
         }
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "-X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        state->lastsynctype = DSD_SYNC_X2TDMA_DATA_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-        return DSD_SYNC_X2TDMA_DATA_NEG;
+        return frame_sync_accept_x2tdma(ctx, DSD_SYNC_X2TDMA_DATA_NEG, "-X2-TDMA ", 0);
     }
 
     return DSD_SYNC_NONE;
@@ -785,8 +760,8 @@ static int
 frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    dsd_strncpy_s(ctx->synctest20, 21, (ctx->synctest_p - 19), 20);
-    if (opts->frame_ysf != 1 || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
+    if (opts->frame_ysf != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_4800_4)
+        || !frame_sync_match_window_ready(ctx, 20) || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
         return DSD_SYNC_NONE;
     }
 
@@ -813,8 +788,8 @@ frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
-    dsd_strncpy_s(ctx->synctest20, 21, (ctx->synctest_p - 19), 20);
-    if (ctx->opts->frame_p25p2 != 1) {
+    if (ctx->opts->frame_p25p2 != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_6000_4)
+        || !frame_sync_match_window_ready(ctx, 20)) {
         return DSD_SYNC_NONE;
     }
 
@@ -831,50 +806,23 @@ frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
     }
 
 #ifdef USE_RADIO
-    const dsd_opts* opts = ctx->opts;
-    const dsd_state* state = ctx->state;
-    uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
-    if (frame_sync_cqpsk_4level_enabled(opts, state)
-        && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest20, P25P2_SYNC, &map_idx)) {
-        frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
-        dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, ctx->synctest20, 20, &fit);
-        if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
-            return DSD_SYNC_NONE;
-        }
-        frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
-        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_POS, 0, "+P25p2", 1, FRAME_SYNC_P25_CENTER_SKIP);
-        if (center_result == DSD_WARM_START_OK) {
-            frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
-        }
-        return DSD_SYNC_P25P2_POS;
+    int sync_type =
+        frame_sync_try_rotated_p25(ctx, ctx->synctest20, P25P2_SYNC, 20, DSD_SYNC_P25P2_POS, 0, "+P25p2", 1, 1);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
     }
-
-    if (frame_sync_cqpsk_4level_enabled(opts, state)
-        && frame_sync_find_rotated_p25_cqpsk_map(ctx->synctest20, INV_P25P2_SYNC, &map_idx)) {
-        frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
-        dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, ctx->synctest20, 20, &fit);
-        if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
-            return DSD_SYNC_NONE;
-        }
-        frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
-        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_NEG, 1, "-P25p2", 0, FRAME_SYNC_P25_CENTER_SKIP);
-        if (center_result == DSD_WARM_START_OK) {
-            frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
-        }
-        return DSD_SYNC_P25P2_NEG;
-    }
-#endif
-
+    return frame_sync_try_rotated_p25(ctx, ctx->synctest20, INV_P25P2_SYNC, 20, DSD_SYNC_P25P2_NEG, 1, "-P25p2", 1, 0);
+#else
     return DSD_SYNC_NONE;
+#endif
 }
 
 static int
 frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    dsd_strncpy_s(ctx->synctest, 25, (ctx->synctest_p - 23), 24);
-    dsd_strncpy_s(ctx->synctest12, 13, (ctx->synctest_p - 11), 12);
-    if (opts->frame_dpmr != 1) {
+    if (opts->frame_dpmr != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_2400_4)
+        || !frame_sync_match_window_ready(ctx, 12)) {
         return DSD_SYNC_NONE;
     }
 
@@ -907,8 +855,14 @@ static int
 frame_sync_try_m17_preamble(frame_sync_match_ctx* ctx, int ham_pre, int ham_piv) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
+    /* An 8-symbol one-error preamble is ambiguous with several 4800/4 sync prefixes.
+     * Keep the legacy tolerance in forced M17 mode, but require the exact marker
+     * when the full profile has other candidates. */
+    const int other_4800_candidate =
+        opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1;
+    const int max_hamming = other_4800_candidate ? 0 : 1;
 
-    if (ham_pre <= 1) {
+    if (ham_pre <= max_hamming) {
         state->m17_polarity = 1;
         printFrameSync(opts, state, "+M17 PREAMBLE", ctx->synctest_pos + 1, ctx->modulation);
         frame_sync_set_basic_lock(ctx);
@@ -918,7 +872,7 @@ frame_sync_try_m17_preamble(frame_sync_match_ctx* ctx, int ham_pre, int ham_piv)
         return DSD_SYNC_M17_PRE_POS;
     }
 
-    if (ham_piv <= 1) {
+    if (ham_piv <= max_hamming) {
         state->m17_polarity = 2;
         printFrameSync(opts, state, "-M17 PREAMBLE", ctx->synctest_pos + 1, ctx->modulation);
         frame_sync_set_basic_lock(ctx);
@@ -1088,12 +1042,11 @@ static int
 frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     const dsd_state* state = ctx->state;
-    if (opts->frame_m17 != 1) {
+    if (opts->frame_m17 != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_4800_4)
+        || !frame_sync_match_window_ready(ctx, 8)) {
         return DSD_SYNC_NONE;
     }
 
-    dsd_strncpy_s(ctx->synctest16, 17, (ctx->synctest_p - 15), 16);
-    dsd_strncpy_s(ctx->synctest8, 9, (ctx->synctest_p - 7), 8);
     int ham_pre = dsd_sync_hamming_distance(ctx->synctest8, M17_PRE, 8);
     int ham_piv = dsd_sync_hamming_distance(ctx->synctest8, M17_PIV, 8);
     int ham_lsf = dsd_sync_hamming_distance(ctx->synctest8, M17_LSF, 8);
@@ -1344,7 +1297,8 @@ frame_sync_try_dmr_dm_ts2_voice(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_try_dmr(frame_sync_match_ctx* ctx) {
-    if (ctx->opts->frame_dmr != 1) {
+    if (ctx->opts->frame_dmr != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_4800_4)
+        || !frame_sync_match_window_ready(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -1380,59 +1334,72 @@ frame_sync_try_dmr(frame_sync_match_ctx* ctx) {
 }
 
 static int
-frame_sync_try_provoice(frame_sync_match_ctx* ctx) {
+frame_sync_symbols_match_either(const char* symbols, const char* pattern_a, const char* pattern_b) {
+    return strcmp(symbols, pattern_a) == 0 || strcmp(symbols, pattern_b) == 0;
+}
+
+static int
+frame_sync_accept_provoice(frame_sync_match_ctx* ctx, int synctype, const char* label, int always_print) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    frame_sync_note_cc_sync(ctx);
+    frame_sync_set_basic_lock(ctx);
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
+    if (always_print || opts->errorbars == 1) {
+        printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    }
+    state->lastsynctype = synctype;
+    dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
+    return synctype;
+}
+
+static int
+frame_sync_accept_edacs(frame_sync_match_ctx* ctx, int synctype, const char* label) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    dsd_mark_cc_sync(state);
+    frame_sync_set_basic_lock(ctx);
+    printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    state->lastsynctype = synctype;
+    dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
+    return synctype;
+}
+
+static void
+frame_sync_handle_edacs_dotting(frame_sync_match_ctx* ctx) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_provoice != 1) {
+    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
+        printFrameSync(opts, state, " EDACS  DOTTING SEQUENCE: ", ctx->synctest_pos + 1, ctx->modulation);
+        dsd_frame_sync_hook_eot_cc(opts, state);
+    }
+}
+
+static int
+frame_sync_try_provoice(frame_sync_match_ctx* ctx) {
+    const dsd_opts* opts = ctx->opts;
+    if (opts->frame_provoice != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_9600_2)) {
         return DSD_SYNC_NONE;
     }
 
-    dsd_strncpy_s(ctx->synctest32, 33, (ctx->synctest_p - 31), 32);
-    dsd_strncpy_s(ctx->synctest48, 49, (ctx->synctest_p - 47), 48);
-    if ((strcmp(ctx->synctest32, PROVOICE_SYNC) == 0) || (strcmp(ctx->synctest32, PROVOICE_EA_SYNC) == 0)) {
-        frame_sync_note_cc_sync(ctx);
-        frame_sync_set_basic_lock(ctx);
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "+PV   ", ctx->synctest_pos + 1, ctx->modulation);
+    if (frame_sync_match_window_ready(ctx, 32)) {
+        if (frame_sync_symbols_match_either(ctx->synctest32, PROVOICE_SYNC, PROVOICE_EA_SYNC)) {
+            return frame_sync_accept_provoice(ctx, DSD_SYNC_PROVOICE_POS, "+PV   ", 0);
         }
-        state->lastsynctype = DSD_SYNC_PROVOICE_POS;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
-        return DSD_SYNC_PROVOICE_POS;
+        if (frame_sync_symbols_match_either(ctx->synctest32, INV_PROVOICE_SYNC, INV_PROVOICE_EA_SYNC)) {
+            return frame_sync_accept_provoice(ctx, DSD_SYNC_PROVOICE_NEG, "-PV   ", 1);
+        }
     }
 
-    if ((strcmp(ctx->synctest32, INV_PROVOICE_SYNC) == 0) || (strcmp(ctx->synctest32, INV_PROVOICE_EA_SYNC) == 0)) {
-        frame_sync_note_cc_sync(ctx);
-        frame_sync_set_basic_lock(ctx);
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
-        printFrameSync(opts, state, "-PV   ", ctx->synctest_pos + 1, ctx->modulation);
-        state->lastsynctype = DSD_SYNC_PROVOICE_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
-        return DSD_SYNC_PROVOICE_NEG;
-    }
-
-    if (strcmp(ctx->synctest48, EDACS_SYNC) == 0) {
-        dsd_mark_cc_sync(state);
-        frame_sync_set_basic_lock(ctx);
-        printFrameSync(opts, state, "-EDACS", ctx->synctest_pos + 1, ctx->modulation);
-        state->lastsynctype = DSD_SYNC_EDACS_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
-        return DSD_SYNC_EDACS_NEG;
-    }
-
-    if (strcmp(ctx->synctest48, INV_EDACS_SYNC) == 0) {
-        dsd_mark_cc_sync(state);
-        frame_sync_set_basic_lock(ctx);
-        printFrameSync(opts, state, "+EDACS", ctx->synctest_pos + 1, ctx->modulation);
-        state->lastsynctype = DSD_SYNC_EDACS_POS;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
-        return DSD_SYNC_EDACS_POS;
-    }
-
-    if ((strcmp(ctx->synctest48, DOTTING_SEQUENCE_A) == 0) || (strcmp(ctx->synctest48, DOTTING_SEQUENCE_B) == 0)) {
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            printFrameSync(opts, state, " EDACS  DOTTING SEQUENCE: ", ctx->synctest_pos + 1, ctx->modulation);
-            dsd_frame_sync_hook_eot_cc(opts, state);
+    if (frame_sync_match_window_ready(ctx, 48)) {
+        if (strcmp(ctx->synctest48, EDACS_SYNC) == 0) {
+            return frame_sync_accept_edacs(ctx, DSD_SYNC_EDACS_NEG, "-EDACS");
+        }
+        if (strcmp(ctx->synctest48, INV_EDACS_SYNC) == 0) {
+            return frame_sync_accept_edacs(ctx, DSD_SYNC_EDACS_POS, "+EDACS");
+        }
+        if (frame_sync_symbols_match_either(ctx->synctest48, DOTTING_SEQUENCE_A, DOTTING_SEQUENCE_B)) {
+            frame_sync_handle_edacs_dotting(ctx);
         }
     }
 
@@ -1443,7 +1410,8 @@ static int
 frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_dstar != 1 || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
+    if (opts->frame_dstar != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_4800_2)
+        || !frame_sync_match_window_ready(ctx, 24) || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
         return DSD_SYNC_NONE;
     }
 
@@ -1495,43 +1463,47 @@ frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
 }
 
 static int
+frame_sync_nxdn_sync_type(const char* symbols) {
+    static const char* const positive_patterns[] = {"3131331131", "3331331131", "3131331111", "3331331111",
+                                                    "3131311131"};
+    static const char* const negative_patterns[] = {"1313113313", "1113113313", "1313113333", "1113113333",
+                                                    "1313133313"};
+    for (size_t i = 0; i < sizeof(positive_patterns) / sizeof(positive_patterns[0]); i++) {
+        if (strcmp(symbols, positive_patterns[i]) == 0) {
+            return DSD_SYNC_NXDN_POS;
+        }
+        if (strcmp(symbols, negative_patterns[i]) == 0) {
+            return DSD_SYNC_NXDN_NEG;
+        }
+    }
+    return DSD_SYNC_NONE;
+}
+
+static int
 frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if ((opts->frame_nxdn96 != 1) && (opts->frame_nxdn48 != 1)) {
+    const int nxdn_profile_enabled =
+        (opts->frame_nxdn96 == 1 && frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_4800_4))
+        || (opts->frame_nxdn48 == 1 && frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_2400_4));
+    if (!nxdn_profile_enabled || !frame_sync_match_window_ready(ctx, 10)) {
         return DSD_SYNC_NONE;
     }
 
-    dsd_strncpy_s(ctx->synctest10, 11, (ctx->synctest_p - 9), 10);
-    if ((strcmp(ctx->synctest10, "3131331131") == 0) || (strcmp(ctx->synctest10, "3331331131") == 0)
-        || (strcmp(ctx->synctest10, "3131331111") == 0) || (strcmp(ctx->synctest10, "3331331111") == 0)
-        || (strcmp(ctx->synctest10, "3131311131") == 0)) {
-        state->offset = ctx->synctest_pos;
-        state->max = ((state->max) + ctx->lmax) / 2;
-        state->min = ((state->min) + ctx->lmin) / 2;
-        if (state->lastsynctype == DSD_SYNC_NXDN_POS) {
-            frame_sync_note_cc_sync(ctx);
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
-            return DSD_SYNC_NXDN_POS;
-        }
-        state->lastsynctype = DSD_SYNC_NXDN_POS;
+    const int synctype = frame_sync_nxdn_sync_type(ctx->synctest10);
+    if (synctype == DSD_SYNC_NONE) {
         return DSD_SYNC_NONE;
     }
 
-    if ((strcmp(ctx->synctest10, "1313113313") == 0) || (strcmp(ctx->synctest10, "1113113313") == 0)
-        || (strcmp(ctx->synctest10, "1313113333") == 0) || (strcmp(ctx->synctest10, "1113113333") == 0)
-        || (strcmp(ctx->synctest10, "1313133313") == 0)) {
-        state->offset = ctx->synctest_pos;
-        state->max = ((state->max) + ctx->lmax) / 2;
-        state->min = ((state->min) + ctx->lmin) / 2;
-        if (state->lastsynctype == DSD_SYNC_NXDN_NEG) {
-            frame_sync_note_cc_sync(ctx);
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
-            return DSD_SYNC_NXDN_NEG;
-        }
-        state->lastsynctype = DSD_SYNC_NXDN_NEG;
+    state->offset = ctx->synctest_pos;
+    state->max = ((state->max) + ctx->lmax) / 2;
+    state->min = ((state->min) + ctx->lmin) / 2;
+    if (state->lastsynctype == synctype) {
+        frame_sync_note_cc_sync(ctx);
+        dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
+        return synctype;
     }
-
+    state->lastsynctype = synctype;
     return DSD_SYNC_NONE;
 }
 
@@ -1543,10 +1515,10 @@ frame_sync_pvconv_decode_addrs(const frame_sync_match_ctx* ctx, char one_symbol,
     for (int bit = 0; bit < 8; bit++) {
         *tx_addr = (uint8_t)(*tx_addr << 1);
         *rx_addr = (uint8_t)(*rx_addr << 1);
-        if (*(ctx->synctest_p - 15 + bit) == one_symbol) {
+        if (ctx->synctest16[bit] == one_symbol) {
             *tx_addr = (uint8_t)(*tx_addr + 1);
         }
-        if (*(ctx->synctest_p - 7 + bit) == one_symbol) {
+        if (ctx->synctest16[8 + bit] == one_symbol) {
             *rx_addr = (uint8_t)(*rx_addr + 1);
         }
     }
@@ -1556,13 +1528,12 @@ static int
 frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_provoice != 1) {
+    if (opts->frame_provoice != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_9600_2)
+        || !frame_sync_match_window_ready(ctx, 32)) {
         return DSD_SYNC_NONE;
     }
 
-    DSD_MEMSET(ctx->synctest32, 0, 33);
-    dsd_strncpy_s(ctx->synctest32, 33, (ctx->synctest_p - 31), 16);
-    if (strcmp(ctx->synctest32, INV_PROVOICE_CONV_SHORT) == 0) {
+    if (strncmp(ctx->synctest32, INV_PROVOICE_CONV_SHORT, 16) == 0) {
         if (state->lastsynctype == DSD_SYNC_PROVOICE_NEG) {
             frame_sync_set_basic_lock(ctx);
             DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
@@ -1583,7 +1554,7 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
 
-    if (strcmp(ctx->synctest32, PROVOICE_CONV_SHORT) == 0) {
+    if (strncmp(ctx->synctest32, PROVOICE_CONV_SHORT, 16) == 0) {
         if (state->lastsynctype == DSD_SYNC_PROVOICE_POS) {
             frame_sync_set_basic_lock(ctx);
             DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
@@ -1650,13 +1621,17 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
         return sync_type;
     }
 
-    if (ctx->opts->frame_provoice == 1) {
-        sync_type = frame_sync_try_provoice(ctx);
-    } else if (ctx->opts->frame_dstar == 1) {
-        sync_type = frame_sync_try_dstar(ctx);
-    } else if (ctx->opts->frame_nxdn96 == 1 || ctx->opts->frame_nxdn48 == 1) {
-        sync_type = frame_sync_try_nxdn(ctx);
+    sync_type = frame_sync_try_provoice(ctx);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
     }
+
+    sync_type = frame_sync_try_dstar(ctx);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
+    }
+
+    sync_type = frame_sync_try_nxdn(ctx);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
@@ -1708,27 +1683,29 @@ frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
 
 static int
 frame_sync_select_t_max(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) {
-        return 10;
+    switch (state->sps_hunt_idx) {
+        case FRAME_SYNC_SPS_PROFILE_2400_4: return 12;
+        case FRAME_SYNC_SPS_PROFILE_6000_4:
+            if (state->rf_mod == 1 && opts->frame_p25p2 == 1) {
+                return 19;
+            }
+            return 24;
+        case FRAME_SYNC_SPS_PROFILE_4800_4:
+            if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
+                return 20;
+            }
+            return 24;
+        default: return 24;
     }
-    if (opts->frame_dpmr == 1) {
-        return 12;
-    }
-    if (opts->frame_m17 == 1) {
-        return 8;
-    }
-    if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
-        return 20;
-    }
-    if (DSD_SYNC_IS_P25P2(state->lastsynctype) || (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1)) {
-        return 19;
-    }
-    return 24;
 }
 
 static inline void
-frame_sync_update_symbol_ring(const dsd_opts* opts, dsd_state* state, float symbol, float* lbuf, int* lidx, int t_max) {
+frame_sync_update_symbol_ring(const dsd_opts* opts, dsd_state* state, float symbol, float* lbuf, int* lidx,
+                              int* level_count, int t_max) {
     lbuf[*lidx] = symbol;
+    if (*level_count < t_max) {
+        (*level_count)++;
+    }
     state->sbuf[state->sidx] = symbol;
     if (*lidx == (t_max - 1)) {
         *lidx = 0;
@@ -1745,6 +1722,9 @@ frame_sync_update_symbol_ring(const dsd_opts* opts, dsd_state* state, float symb
 static int
 frame_sync_bias_want_mod_with_snr(const dsd_state* state, int want_mod) {
 #ifdef USE_RADIO
+    if (want_mod == 2) {
+        return want_mod;
+    }
     double snr_c = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
     double snr_q = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
     if (snr_c <= -50.0) {
@@ -1808,23 +1788,41 @@ frame_sync_ham_for_mod(int mod, int ham_c4fm, int ham_qpsk, int ham_gfsk) {
 }
 
 static int
-frame_sync_override_want_mod_with_hamming(const dsd_opts* opts, int want_mod) {
+frame_sync_c4fm_ham_candidate_enabled(const dsd_opts* opts, const dsd_state* state) {
+    return state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1;
+}
+
+static int
+frame_sync_qpsk_ham_candidate_enabled(const dsd_opts* opts, const dsd_state* state) {
+    return (state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1)
+           || (state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_6000_4 && opts->frame_p25p2 == 1);
+}
+
+static int
+frame_sync_gfsk_ham_candidate_enabled(const dsd_opts* opts, const dsd_state* state) {
+    return (state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_4800_4 && (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1))
+           || (state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_2400_4
+               && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1))
+           || frame_sync_sps_profile_for_index(state->sps_hunt_idx)->levels == 2;
+}
+
+static int
+frame_sync_override_want_mod_with_hamming(const dsd_opts* opts, const dsd_state* state, int want_mod) {
     int ham_c4fm = frame_sync_decay_recent_ham(&g_ham_c4fm_recent);
     int ham_qpsk = frame_sync_decay_recent_ham(&g_ham_qpsk_recent);
     int ham_gfsk = frame_sync_decay_recent_ham(&g_ham_gfsk_recent);
 
     int best_mod = want_mod;
     int best_ham = frame_sync_ham_for_mod(want_mod, ham_c4fm, ham_qpsk, ham_gfsk);
-    if (ham_c4fm < best_ham) {
+    if (frame_sync_c4fm_ham_candidate_enabled(opts, state) && ham_c4fm < best_ham) {
         best_ham = ham_c4fm;
         best_mod = 0;
     }
-    int qpsk_enabled = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1);
-    if (qpsk_enabled && ham_qpsk < best_ham) {
+    if (frame_sync_qpsk_ham_candidate_enabled(opts, state) && ham_qpsk < best_ham) {
         best_ham = ham_qpsk;
         best_mod = 1;
     }
-    if (ham_gfsk < best_ham) {
+    if (frame_sync_gfsk_ham_candidate_enabled(opts, state) && ham_gfsk < best_ham) {
         best_ham = ham_gfsk;
         best_mod = 2;
     }
@@ -1881,7 +1879,7 @@ frame_sync_decide_mod_switch(const dsd_state* state, int want_mod) {
 }
 
 static void
-frame_sync_apply_mod_switch(dsd_state* state, int do_switch) {
+frame_sync_apply_mod_switch(const dsd_opts* opts, dsd_state* state, int do_switch) {
     if (do_switch < 0) {
         return;
     }
@@ -1891,6 +1889,11 @@ frame_sync_apply_mod_switch(dsd_state* state, int do_switch) {
         atomic_store(&g_qpsk_dwell_enter_ms, 0);
     }
     state->rf_mod = do_switch;
+#ifdef USE_RADIO
+    rtl_maybe_update_active_sps_profile(opts, state);
+#else
+    UNUSED(opts);
+#endif
     atomic_store(&g_ham_c4fm_recent, 24);
     atomic_store(&g_ham_qpsk_recent, 24);
     atomic_store(&g_ham_gfsk_recent, 24);
@@ -1898,8 +1901,10 @@ frame_sync_apply_mod_switch(dsd_state* state, int do_switch) {
 
 static void
 frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt) {
-    if (*lastt != t_max) {
+    if (*lastt < t_max) {
         (*lastt)++;
+    }
+    if (*lastt < t_max) {
         return;
     }
 
@@ -1911,11 +1916,11 @@ frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, 
         return;
     }
 
-    int want_mod = state->rf_mod;
+    int want_mod = frame_sync_active_profile_modulation(state);
     want_mod = frame_sync_bias_want_mod_with_snr(state, want_mod);
-    want_mod = frame_sync_override_want_mod_with_hamming(opts, want_mod);
+    want_mod = frame_sync_override_want_mod_with_hamming(opts, state, want_mod);
     frame_sync_update_mod_votes(want_mod);
-    frame_sync_apply_mod_switch(state, frame_sync_decide_mod_switch(state, want_mod));
+    frame_sync_apply_mod_switch(opts, state, frame_sync_decide_mod_switch(state, want_mod));
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -2164,7 +2169,11 @@ typedef struct {
     int synctest_pos;
     int lastt;
     int lidx;
+    int level_count;
     int t_max;
+    int history_head;
+    int history_count;
+    unsigned int ready_windows;
     float symbol;
     float lmin;
     float lmax;
@@ -2177,21 +2186,20 @@ typedef struct {
     char synctest8[9];
     char synctest16[17];
     char modulation[8];
-    char* synctest_p;
-    char synctest_buf[10240];
+    char symbol_history[FRAME_SYNC_HISTORY_CAPACITY];
     float lbuf[48];
     float lbuf2[48];
 } frame_sync_runtime_ctx;
 
 static void
 frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const dsd_state* state) {
-    rt->t = 0;
-    rt->synctest_pos = 0;
-    rt->lastt = 0;
-    rt->lidx = 0;
+    DSD_MEMSET(rt, 0, sizeof(*rt));
     rt->t_max = frame_sync_select_t_max(opts, state);
-    DSD_MEMSET(rt->lbuf, 0, sizeof(rt->lbuf));
-    DSD_MEMSET(rt->lbuf2, 0, sizeof(rt->lbuf2));
+    if (rt->t_max < 1 || rt->t_max > (int)(sizeof(rt->lbuf) / sizeof(rt->lbuf[0]))) {
+        rt->t_max = 24;
+    }
+    rt->lmin = state->min;
+    rt->lmax = state->max;
     rt->synctest[24] = 0;
     rt->synctest12[12] = 0;
     rt->synctest10[10] = 0;
@@ -2201,7 +2209,63 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->synctest8[8] = 0;
     rt->synctest16[16] = 0;
     rt->modulation[7] = 0;
-    rt->synctest_p = rt->synctest_buf + 10;
+}
+
+static void
+frame_sync_history_push(frame_sync_runtime_ctx* rt, char symbol) {
+    rt->symbol_history[rt->history_head] = symbol;
+    rt->history_head = (rt->history_head + 1) % FRAME_SYNC_HISTORY_CAPACITY;
+    if (rt->history_count < FRAME_SYNC_HISTORY_CAPACITY) {
+        rt->history_count++;
+    }
+}
+
+static int
+frame_sync_history_materialize(const frame_sync_runtime_ctx* rt, int length, char* out, size_t out_size) {
+    if (!rt || !out || length <= 0 || length > FRAME_SYNC_HISTORY_CAPACITY || out_size <= (size_t)length
+        || rt->history_count < length) {
+        return 0;
+    }
+
+    int index = rt->history_head - length;
+    if (index < 0) {
+        index += FRAME_SYNC_HISTORY_CAPACITY;
+    }
+    for (int i = 0; i < length; i++) {
+        out[i] = rt->symbol_history[index];
+        index = (index + 1) % FRAME_SYNC_HISTORY_CAPACITY;
+    }
+    out[length] = '\0';
+    return 1;
+}
+
+static void
+frame_sync_materialize_ready_windows(frame_sync_runtime_ctx* rt) {
+    rt->ready_windows = 0;
+    if (frame_sync_history_materialize(rt, 8, rt->synctest8, sizeof(rt->synctest8))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_8;
+    }
+    if (frame_sync_history_materialize(rt, 10, rt->synctest10, sizeof(rt->synctest10))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_10;
+    }
+    if (frame_sync_history_materialize(rt, 12, rt->synctest12, sizeof(rt->synctest12))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_12;
+    }
+    if (frame_sync_history_materialize(rt, 16, rt->synctest16, sizeof(rt->synctest16))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_16;
+    }
+    if (frame_sync_history_materialize(rt, 20, rt->synctest20, sizeof(rt->synctest20))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_20;
+    }
+    if (frame_sync_history_materialize(rt, 24, rt->synctest, sizeof(rt->synctest))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_24;
+    }
+    if (frame_sync_history_materialize(rt, 32, rt->synctest32, sizeof(rt->synctest32))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_32;
+    }
+    if (frame_sync_history_materialize(rt, 48, rt->synctest48, sizeof(rt->synctest48))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_48;
+    }
 }
 
 static void
@@ -2225,28 +2289,44 @@ frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runt
 }
 
 static int
-frame_sync_should_skip_snr_or_power_gate(const dsd_opts* opts) {
-    int is_gfsk_mode =
-        (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
+frame_sync_active_profile_modulation(const dsd_state* state) {
+    if (state && state->rf_mod == 1) {
+        return 1;
+    }
+    const frame_sync_sps_profile* profile =
+        frame_sync_sps_profile_for_index(state ? state->sps_hunt_idx : FRAME_SYNC_SPS_PROFILE_4800_4);
+    if (profile->levels == 2 || (state && state->rf_mod == 2)) {
+        return 2;
+    }
+    return 0;
+}
+
+#ifdef USE_RADIO
+static double
+frame_sync_active_profile_snr_db(const dsd_state* state) {
+    switch (frame_sync_active_profile_modulation(state)) {
+        case 1: return dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
+        case 2: return dsd_rtl_stream_metrics_hook_snr_gfsk_db();
+        default: return dsd_rtl_stream_metrics_hook_snr_c4fm_db();
+    }
+}
+#endif
+
+static int
+frame_sync_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state) {
+    const int active_modulation = frame_sync_active_profile_modulation(state);
 #ifdef USE_RADIO
     {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (cfg && cfg->snr_sql_is_set) {
-            double snr_db = -200.0;
-            if (opts->frame_p25p1 == 1) {
-                snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
-            } else if (opts->frame_p25p2 == 1) {
-                snr_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
-            } else if (is_gfsk_mode) {
-                snr_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
-            }
+            double snr_db = frame_sync_active_profile_snr_db(state);
             if (snr_db > -150.0 && snr_db < (double)cfg->snr_sql_db) {
                 return 1;
             }
         }
     }
 #endif
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_pwr < opts->rtl_squelch_level && is_gfsk_mode) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_pwr < opts->rtl_squelch_level && active_modulation == 2) {
         return 1;
     }
     return 0;
@@ -2266,14 +2346,15 @@ frame_sync_hamming_distance_pattern(const char* symbols, const char* pattern, in
 }
 
 static void
-frame_sync_update_c4fm_hamming(const dsd_opts* opts, const char* synctest) {
-    if (!(opts->frame_p25p1 == 1 && !opts->mod_cli_lock)) {
+frame_sync_update_c4fm_hamming(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if (!(opts->frame_p25p1 == 1 && !opts->mod_cli_lock) || state->sps_hunt_idx != FRAME_SYNC_SPS_PROFILE_4800_4
+        || (rt->ready_windows & FRAME_SYNC_WINDOW_24) == 0) {
         return;
     }
     int ham_norm = 0;
     int ham_inv = 0;
     for (int k = 0; k < 24; k++) {
-        int d = (unsigned char)synctest[k] - '0';
+        int d = (unsigned char)rt->synctest[k] - '0';
         int expect_n = P25P1_SYNC[k] - '0';
         int expect_i = INV_P25P1_SYNC[k] - '0';
         if (d != expect_n) {
@@ -2291,21 +2372,29 @@ frame_sync_update_c4fm_hamming(const dsd_opts* opts, const char* synctest) {
 }
 
 static void
-frame_sync_update_qpsk_hamming(const dsd_opts* opts, const char* synctest, const char* synctest20) {
+frame_sync_update_qpsk_hamming(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
     if (!((opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) && !opts->mod_cli_lock)) {
         return;
     }
 
     int best_qpsk_ham = 24;
-    if (opts->frame_p25p1 == 1) {
-        best_qpsk_ham = dsd_qpsk_sync_hamming_with_remaps(synctest, P25P1_SYNC, INV_P25P1_SYNC, 24);
+    int compared = 0;
+    if (state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1
+        && (rt->ready_windows & FRAME_SYNC_WINDOW_24) != 0) {
+        best_qpsk_ham = dsd_qpsk_sync_hamming_with_remaps(rt->synctest, P25P1_SYNC, INV_P25P1_SYNC, 24);
+        compared = 1;
     }
-    if (opts->frame_p25p2 == 1) {
-        int ham_p2 = dsd_qpsk_sync_hamming_with_remaps(synctest20, P25P2_SYNC, INV_P25P2_SYNC, 20);
+    if (state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_6000_4 && opts->frame_p25p2 == 1
+        && (rt->ready_windows & FRAME_SYNC_WINDOW_20) != 0) {
+        int ham_p2 = dsd_qpsk_sync_hamming_with_remaps(rt->synctest20, P25P2_SYNC, INV_P25P2_SYNC, 20);
         int ham_p2_scaled = (ham_p2 * 24 + 19) / 20;
-        if (ham_p2_scaled < best_qpsk_ham || opts->frame_p25p1 == 0) {
+        if (ham_p2_scaled < best_qpsk_ham || !compared) {
             best_qpsk_ham = ham_p2_scaled;
         }
+        compared = 1;
+    }
+    if (!compared) {
+        return;
     }
     int ham_qpsk_cur = atomic_load(&g_ham_qpsk_recent);
     if (best_qpsk_ham < ham_qpsk_cur) {
@@ -2327,18 +2416,51 @@ frame_sync_best_ham_for_patterns(const char* symbols, const char* const patterns
 }
 
 static int
-frame_sync_best_nxdn_scaled_ham(frame_sync_runtime_ctx* rt, int best_start) {
-    DSD_STRNCPY(rt->synctest10, (rt->synctest_p - 9), 10);
+frame_sync_best_nxdn_scaled_ham(const char* symbols10, int best_start) {
     const char* nxdn_patterns[] = {"3131331131", "1313113313"};
     int best = best_start;
     for (int p = 0; p < 2; p++) {
-        int ham = frame_sync_hamming_distance_pattern(rt->synctest10, nxdn_patterns[p], 10);
+        int ham = frame_sync_hamming_distance_pattern(symbols10, nxdn_patterns[p], 10);
         int scaled_ham = (ham * 24 + 9) / 10;
         if (scaled_ham < best) {
             best = scaled_ham;
         }
     }
     return best;
+}
+
+static int
+frame_sync_dmr_gfsk_ham(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if (state->sps_hunt_idx != FRAME_SYNC_SPS_PROFILE_4800_4 || opts->frame_dmr != 1
+        || (rt->ready_windows & FRAME_SYNC_WINDOW_24) == 0) {
+        return 24;
+    }
+    const char* dmr_patterns[] = {DMR_BS_DATA_SYNC, DMR_BS_VOICE_SYNC, DMR_MS_DATA_SYNC, DMR_MS_VOICE_SYNC};
+    return frame_sync_best_ham_for_patterns(rt->synctest, dmr_patterns, 4, 24, 24);
+}
+
+static int
+frame_sync_dpmr_gfsk_ham(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if (state->sps_hunt_idx != FRAME_SYNC_SPS_PROFILE_2400_4 || opts->frame_dpmr != 1
+        || (rt->ready_windows & FRAME_SYNC_WINDOW_24) == 0) {
+        return 24;
+    }
+    const char* dpmr_patterns[] = {DPMR_FRAME_SYNC_1, DPMR_FRAME_SYNC_4, INV_DPMR_FRAME_SYNC_1, INV_DPMR_FRAME_SYNC_4};
+    return frame_sync_best_ham_for_patterns(rt->synctest, dpmr_patterns, 4, 24, 24);
+}
+
+static int
+frame_sync_nxdn_gfsk_ham(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if ((rt->ready_windows & FRAME_SYNC_WINDOW_10) == 0) {
+        return 24;
+    }
+    if (state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_nxdn96 == 1) {
+        return frame_sync_best_nxdn_scaled_ham(rt->synctest10, 24);
+    }
+    if (state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_2400_4 && opts->frame_nxdn48 == 1) {
+        return frame_sync_best_nxdn_scaled_ham(rt->synctest10, 24);
+    }
+    return 24;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -2355,35 +2477,24 @@ dsd_frame_sync_test_best_ham_for_patterns(const char* symbols, const char* const
 
 int
 dsd_frame_sync_test_best_nxdn_scaled_ham(const char* symbols10, int best_start) {
-    frame_sync_runtime_ctx rt;
-    DSD_MEMSET(&rt, 0, sizeof(rt));
-    if (symbols10) {
-        DSD_STRNCPY(rt.synctest_buf, symbols10, 10);
-    }
-    rt.synctest_p = rt.synctest_buf + 9;
-    return frame_sync_best_nxdn_scaled_ham(&rt, best_start);
+    return symbols10 ? frame_sync_best_nxdn_scaled_ham(symbols10, best_start) : best_start;
 }
 #endif
 
 static void
-frame_sync_update_gfsk_hamming(const dsd_opts* opts, frame_sync_runtime_ctx* rt) {
-    if (!((opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1)
-          && !opts->mod_cli_lock)) {
+frame_sync_update_gfsk_hamming(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if (opts->mod_cli_lock) {
         return;
     }
 
-    int best_gfsk_ham = 24;
-    if (opts->frame_dmr == 1) {
-        const char* dmr_patterns[] = {DMR_BS_DATA_SYNC, DMR_BS_VOICE_SYNC, DMR_MS_DATA_SYNC, DMR_MS_VOICE_SYNC};
-        best_gfsk_ham = frame_sync_best_ham_for_patterns(rt->synctest, dmr_patterns, 4, 24, best_gfsk_ham);
+    int best_gfsk_ham = frame_sync_dmr_gfsk_ham(opts, state, rt);
+    int candidate_ham = frame_sync_dpmr_gfsk_ham(opts, state, rt);
+    if (candidate_ham < best_gfsk_ham) {
+        best_gfsk_ham = candidate_ham;
     }
-    if (opts->frame_dpmr == 1) {
-        const char* dpmr_patterns[] = {DPMR_FRAME_SYNC_1, DPMR_FRAME_SYNC_4, INV_DPMR_FRAME_SYNC_1,
-                                       INV_DPMR_FRAME_SYNC_4};
-        best_gfsk_ham = frame_sync_best_ham_for_patterns(rt->synctest, dpmr_patterns, 4, 24, best_gfsk_ham);
-    }
-    if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) {
-        best_gfsk_ham = frame_sync_best_nxdn_scaled_ham(rt, best_gfsk_ham);
+    candidate_ham = frame_sync_nxdn_gfsk_ham(opts, state, rt);
+    if (candidate_ham < best_gfsk_ham) {
+        best_gfsk_ham = candidate_ham;
     }
     int ham_gfsk_cur = atomic_load(&g_ham_gfsk_recent);
     if (best_gfsk_ham < ham_gfsk_cur) {
@@ -2471,18 +2582,20 @@ frame_sync_debug_sync_window(dsd_opts* opts, dsd_state* state, const frame_sync_
 
 static int
 frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, time_t now, double nowm) {
-    frame_sync_window_levels(opts, state, rt);
-    if (frame_sync_should_skip_snr_or_power_gate(opts)) {
+    if (rt->level_count >= rt->t_max) {
+        frame_sync_window_levels(opts, state, rt);
+    }
+    frame_sync_materialize_ready_windows(rt);
+    if (frame_sync_should_skip_snr_or_power_gate(opts, state)) {
         return DSD_SYNC_NONE;
     }
 
-    DSD_STRNCPY(rt->synctest, (rt->synctest_p - 23), 24);
-    DSD_STRNCPY(rt->synctest20, (rt->synctest_p - 19), 20);
-
-    frame_sync_debug_sync_window(opts, state, rt);
-    frame_sync_update_c4fm_hamming(opts, rt->synctest);
-    frame_sync_update_qpsk_hamming(opts, rt->synctest, rt->synctest20);
-    frame_sync_update_gfsk_hamming(opts, rt);
+    if ((rt->ready_windows & FRAME_SYNC_WINDOW_24) != 0) {
+        frame_sync_debug_sync_window(opts, state, rt);
+    }
+    frame_sync_update_c4fm_hamming(opts, state, rt);
+    frame_sync_update_qpsk_hamming(opts, state, rt);
+    frame_sync_update_gfsk_hamming(opts, state, rt);
 
     frame_sync_match_ctx match_ctx = {
         .opts = opts,
@@ -2492,8 +2605,8 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
         .synctest_pos = rt->synctest_pos,
         .lmax = rt->lmax,
         .lmin = rt->lmin,
+        .ready_windows = rt->ready_windows,
         .modulation = rt->modulation,
-        .synctest_p = rt->synctest_p,
         .synctest = rt->synctest,
         .synctest8 = rt->synctest8,
         .synctest10 = rt->synctest10,
@@ -2506,59 +2619,150 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
     return frame_sync_try_protocol_matches(&match_ctx);
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_history_window(const char* symbols, int symbol_count, int window_length, char* out, int out_size) {
+    if (!symbols || symbol_count < 0 || !out || out_size < 0) {
+        return 0;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    frame_sync_runtime_ctx rt;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    frame_sync_runtime_init(&rt, &opts, &state);
+    for (int i = 0; i < symbol_count; i++) {
+        frame_sync_history_push(&rt, symbols[i]);
+    }
+    return frame_sync_history_materialize(&rt, window_length, out, (size_t)out_size);
+}
+
+int
+dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const char* symbols, int symbol_count) {
+    if (!opts || !state || !symbols || symbol_count < 0) {
+        return DSD_SYNC_NONE;
+    }
+    frame_sync_runtime_ctx rt;
+    frame_sync_runtime_init(&rt, opts, state);
+    for (int i = 0; i < symbol_count; i++) {
+        frame_sync_history_push(&rt, symbols[i]);
+    }
+    frame_sync_materialize_ready_windows(&rt);
+    frame_sync_match_ctx match_ctx = {
+        .opts = opts,
+        .state = state,
+        .now = 0,
+        .nowm = 0.0,
+        .synctest_pos = symbol_count > 0 ? symbol_count - 1 : 0,
+        .lmax = state->max,
+        .lmin = state->min,
+        .ready_windows = rt.ready_windows,
+        .modulation = rt.modulation,
+        .synctest = rt.synctest,
+        .synctest8 = rt.synctest8,
+        .synctest10 = rt.synctest10,
+        .synctest12 = rt.synctest12,
+        .synctest16 = rt.synctest16,
+        .synctest20 = rt.synctest20,
+        .synctest32 = rt.synctest32,
+        .synctest48 = rt.synctest48,
+    };
+    return frame_sync_try_protocol_matches(&match_ctx);
+}
+
+int
+dsd_frame_sync_test_active_profile_modulation(const dsd_state* state) {
+    return frame_sync_active_profile_modulation(state);
+}
+
+int
+dsd_frame_sync_test_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state) {
+    return frame_sync_should_skip_snr_or_power_gate(opts, state);
+}
+
+#ifdef USE_RADIO
+double
+dsd_frame_sync_test_active_profile_snr_db(const dsd_state* state) {
+    return frame_sync_active_profile_snr_db(state);
+}
+#endif
+#endif
+
 static void
 frame_sync_advance_sync_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt) {
     if (rt->synctest_pos < 10200) {
         rt->synctest_pos++;
-        rt->synctest_p++;
         return;
     }
     rt->synctest_pos = 0;
-    rt->synctest_p = rt->synctest_buf;
     dsd_frame_sync_hook_no_carrier(opts, state);
 }
 
 static int
-frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state, const int* sym_rate_cycle,
-                               const int* levels_cycle, int cycle_count) {
-    int has_4800_four_level = frame_sync_opts_has_4800_four_level_mode(opts);
-    int has_4800_binary = (opts->frame_dstar == 1);
-    int has_2400 = (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1);
-    int has_9600 = (opts->frame_provoice == 1);
-    int has_6000 = (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1);
-
-    int next_idx = (state->sps_hunt_idx + 1) % cycle_count;
-    for (int tries = 0; tries < cycle_count; tries++) {
-        int sym_rate = sym_rate_cycle[next_idx];
-        int skip =
-            (sym_rate == 2400 && !has_2400) || (sym_rate == 9600 && !has_9600) || (sym_rate == 6000 && !has_6000);
-        if (sym_rate == 4800) {
-            int levels = levels_cycle[next_idx];
-            skip = skip || ((levels == 2) ? !has_4800_binary : !has_4800_four_level);
-        }
-        if (!skip) {
-            break;
-        }
-        next_idx = (next_idx + 1) % cycle_count;
+frame_sync_sps_profile_has_candidate(const dsd_opts* opts, int profile_index) {
+    if (!opts) {
+        return 0;
     }
-    return next_idx;
+    switch (profile_index) {
+        case FRAME_SYNC_SPS_PROFILE_4800_4: return frame_sync_opts_has_4800_four_level_mode(opts);
+        case FRAME_SYNC_SPS_PROFILE_2400_4: return opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1;
+        case FRAME_SYNC_SPS_PROFILE_9600_2: return opts->frame_provoice == 1;
+        case FRAME_SYNC_SPS_PROFILE_6000_4: return opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1;
+        case FRAME_SYNC_SPS_PROFILE_4800_2: return opts->frame_dstar == 1;
+        default: return 0;
+    }
+}
+
+static int
+frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    int current = state->sps_hunt_idx;
+    if (current < 0 || current >= FRAME_SYNC_SPS_PROFILE_COUNT) {
+        current = FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    int next_idx = (current + 1) % FRAME_SYNC_SPS_PROFILE_COUNT;
+    for (int tries = 0; tries < FRAME_SYNC_SPS_PROFILE_COUNT; tries++) {
+        if (frame_sync_sps_profile_has_candidate(opts, next_idx)) {
+            return next_idx;
+        }
+        next_idx = (next_idx + 1) % FRAME_SYNC_SPS_PROFILE_COUNT;
+    }
+    return current;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
 int
-dsd_frame_sync_test_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state, const int* sym_rate_cycle,
-                                        const int* levels_cycle, int cycle_count) {
-    return frame_sync_sps_hunt_next_index(opts, state, sym_rate_cycle, levels_cycle, cycle_count);
+dsd_frame_sync_test_sps_hunt_profile_count(void) {
+    return FRAME_SYNC_SPS_PROFILE_COUNT;
+}
+
+int
+dsd_frame_sync_test_sps_hunt_profile_rate(int profile_index) {
+    return frame_sync_sps_profile_for_index(profile_index)->symbol_rate_hz;
+}
+
+int
+dsd_frame_sync_test_sps_hunt_profile_levels(int profile_index) {
+    return frame_sync_sps_profile_for_index(profile_index)->levels;
+}
+
+int
+dsd_frame_sync_test_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
+    return frame_sync_sps_hunt_next_index(opts, state);
 }
 #endif
 
 static void
-frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx, const int* sym_rate_cycle,
-                                  const int* levels_cycle) {
-    if (next_idx == state->sps_hunt_idx) {
+frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx) {
+    if (!opts || !state || next_idx < 0 || next_idx >= FRAME_SYNC_SPS_PROFILE_COUNT
+        || next_idx == state->sps_hunt_idx) {
         return;
     }
     state->sps_hunt_idx = next_idx;
+    dsd_frame_sync_reset_mod_state();
+    const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
 
 #ifdef USE_RADIO
     int demod_rate = 0;
@@ -2569,15 +2773,14 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
         demod_rate = dsd_opts_current_input_timing_rate(opts);
     }
 #else
-    UNUSED(levels_cycle);
     int demod_rate = dsd_opts_current_input_timing_rate(opts);
 #endif
 
-    int sym_rate = sym_rate_cycle[next_idx];
+    int sym_rate = profile->symbol_rate_hz;
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 #ifdef USE_RADIO
-    rtl_maybe_update_symbol_profile_with_hint(opts, state, sym_rate, levels_cycle[next_idx]);
+    rtl_maybe_update_sps_profile(opts, state, profile);
 #endif
     if (opts->verbose > 1 && !dsd_frame_sync_suppress_tcp_no_signal_console(opts, state)) {
         DSD_FPRINTF(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol, sym_rate,
@@ -2587,11 +2790,23 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
 
 #ifdef DSD_NEO_TEST_HOOKS
 void
-dsd_frame_sync_test_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx,
-                                           const int* sym_rate_cycle, const int* levels_cycle) {
-    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, sym_rate_cycle, levels_cycle);
+dsd_frame_sync_test_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx) {
+    frame_sync_apply_sps_hunt_profile(opts, state, next_idx);
 }
 #endif
+
+static void
+frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || frame_sync_sps_profile_has_candidate(opts, state->sps_hunt_idx)) {
+        return;
+    }
+    for (int profile_index = 0; profile_index < FRAME_SYNC_SPS_PROFILE_COUNT; profile_index++) {
+        if (frame_sync_sps_profile_has_candidate(opts, profile_index)) {
+            frame_sync_apply_sps_hunt_profile(opts, state, profile_index);
+            return;
+        }
+    }
+}
 
 static void
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
@@ -2604,12 +2819,16 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     }
     state->sps_hunt_counter = 0;
 
-    static const int sym_rate_cycle[] = {4800, 2400, 9600, 6000, 4800};
-    static const int levels_cycle[] = {4, 4, 2, 4, 2};
-    const int cycle_count = (int)(sizeof(sym_rate_cycle) / sizeof(sym_rate_cycle[0]));
-    int next_idx = frame_sync_sps_hunt_next_index(opts, state, sym_rate_cycle, levels_cycle, cycle_count);
-    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, sym_rate_cycle, levels_cycle);
+    int next_idx = frame_sync_sps_hunt_next_index(opts, state);
+    frame_sync_apply_sps_hunt_profile(opts, state, next_idx);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
+    frame_sync_no_sync_sps_hunt(opts, state);
+}
+#endif
 
 static double
 frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp) {
@@ -2713,6 +2932,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     const double nowm = dsd_time_now_monotonic_s();
     frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
     frame_sync_apply_cli_mod_lock(opts, state);
+    frame_sync_ensure_enabled_sps_profile(opts, state);
 
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
@@ -2730,12 +2950,12 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
 
         rt.symbol = getSymbol(opts, state, 0);
-        frame_sync_update_symbol_ring(opts, state, rt.symbol, rt.lbuf, &rt.lidx, rt.t_max);
+        frame_sync_update_symbol_ring(opts, state, rt.symbol, rt.lbuf, &rt.lidx, &rt.level_count, rt.t_max);
         frame_sync_maybe_auto_switch_modulation(opts, state, rt.t_max, &rt.lastt);
         rt.dibit = frame_sync_process_dibit_and_payload(opts, state, rt.symbol);
-        *rt.synctest_p = (char)('0' + (rt.dibit & 0x3));
+        frame_sync_history_push(&rt, (char)('0' + (rt.dibit & 0x3)));
 
-        if (rt.t >= rt.t_max) {
+        if (rt.history_count >= 8) {
             int sync_type = frame_sync_eval_window(opts, state, &rt, now, nowm);
             if (sync_type != DSD_SYNC_NONE) {
                 return sync_type;

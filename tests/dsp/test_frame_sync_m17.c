@@ -290,6 +290,16 @@ init_m17_sync_case(dsd_opts* opts, dsd_state* state, int* fake_rtl_context) {
     }
 
     opts->audio_in_type = AUDIO_IN_RTL;
+    opts->frame_dstar = 1;
+    opts->frame_x2tdma = 1;
+    opts->frame_p25p1 = 1;
+    opts->frame_p25p2 = 1;
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 1;
+    opts->frame_dmr = 1;
+    opts->frame_dpmr = 1;
+    opts->frame_provoice = 1;
+    opts->frame_ysf = 1;
     opts->frame_m17 = 1;
     opts->mod_cli_lock = 1;
     opts->mod_gfsk = 1;
