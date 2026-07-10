@@ -15,6 +15,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -590,6 +591,10 @@ p25p2_xcch_validate_sacch_crc(const dsd_opts* opts, dsd_state* state, const int 
             }
             state->p2_is_lcch = 0;
             *abort_processing = 1;
+        }
+
+        if (err == 0) {
+            p25_sm_note_cc_activity(opts, state, "p25p2-lcch");
         }
     }
 

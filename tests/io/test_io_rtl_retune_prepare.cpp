@@ -7,7 +7,10 @@
 #error "DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS must be enabled for this test."
 #endif
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -15,6 +18,8 @@
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <mutex>
+#include <thread>
 #include "dsd-neo/core/safe_api.h"
 
 extern "C" uint64_t rtl_device_test_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes,
@@ -89,6 +94,69 @@ dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz,
                                                      uint32_t* out_partial_rate_hz, int* out_partial_rate_out_hz);
 extern "C" int dsd_rtl_stream_test_ppm_store_if_applied(int ppm_rc, int requested_ppm, int* out_ppm_error);
 extern "C" int dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, int* out_second_result);
+extern "C" int dsd_rtl_stream_test_cancel_queued_tagged_retune(uint64_t token, int* out_pending_after,
+                                                               int* out_completion_result);
+extern "C" int dsd_rtl_stream_test_cancel_queued_tagged_retune_order(uint64_t active_token, uint64_t queued_token,
+                                                                     int* out_active_result, int* out_cancelled_result);
+extern "C" int dsd_rtl_stream_test_tune_completion_callback_registered(void);
+extern "C" int dsd_rtl_stream_test_retune_without_controller_rejected(void);
+
+namespace {
+struct TaggedTuneCompletionState {
+    int calls;
+    uint64_t token;
+    rtl_stream_tune_result result;
+    uint32_t output_generation;
+};
+
+static void
+tagged_tune_completion(uint64_t token, rtl_stream_tune_result result, void* user_data) {
+    auto* state = static_cast<TaggedTuneCompletionState*>(user_data);
+    if (!state) {
+        return;
+    }
+    state->calls++;
+    state->token = token;
+    state->result = result;
+    state->output_generation = rtl_stream_output_generation();
+}
+
+struct BlockingTuneCompletionState {
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool entered = false;
+    bool release = false;
+    int calls = 0;
+};
+
+static void
+blocking_tune_completion(uint64_t token, rtl_stream_tune_result result, void* user_data) {
+    (void)token;
+    (void)result;
+    auto* state = static_cast<BlockingTuneCompletionState*>(user_data);
+    std::unique_lock<std::mutex> lock(state->mutex);
+    state->calls++;
+    state->entered = true;
+    state->ready.notify_all();
+    state->ready.wait(lock, [state] { return state->release; });
+}
+
+struct OrderedTuneCompletionState {
+    int calls = 0;
+    uint64_t tokens[2] = {};
+    rtl_stream_tune_result results[2] = {};
+};
+
+static void
+ordered_tune_completion(uint64_t token, rtl_stream_tune_result result, void* user_data) {
+    auto* state = static_cast<OrderedTuneCompletionState*>(user_data);
+    if (state->calls < 2) {
+        state->tokens[state->calls] = token;
+        state->results[state->calls] = result;
+    }
+    state->calls++;
+}
+} // namespace
 
 static int
 expect_int_eq(const char* label, int got, int want) {
@@ -103,6 +171,15 @@ static int
 expect_size_eq(const char* label, size_t got, size_t want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "FAIL: %s got=%zu want=%zu\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_u64_eq(const char* label, uint64_t got, uint64_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "FAIL: %s got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
         return 1;
     }
     return 0;
@@ -190,9 +267,26 @@ main(void) {
     rc = rtl_stream_test_tune_result_output_drain(RTL_STREAM_TUNE_TIMEOUT, 5U, 3, &used_after, &cache_pending,
                                                   &generation_before, &generation_after);
     failed |= expect_int_eq("timeout tune drain helper rc", rc, 0);
-    failed |= expect_size_eq("timeout tune drains queued output", used_after, 0U);
-    failed |= expect_int_eq("timeout tune clears cached symbols", cache_pending, 0);
-    failed |= expect_generation_changed("timeout tune bumps output generation", generation_before, generation_after);
+    failed |= expect_size_eq("timeout tune leaves output for controller boundary", used_after, 5U);
+    failed |= expect_int_eq("timeout tune leaves cache for controller boundary", cache_pending, 3);
+    failed |= expect_generation_eq("timeout tune defers output generation", generation_before, generation_after);
+
+    int read_while_pending = -1;
+    int read_after_failed_completion = -1;
+    int read_after_recovery = -1;
+    size_t used_while_pending = 0U;
+    generation_before = 0U;
+    generation_after = 0U;
+    rc = rtl_stream_test_untagged_timeout_read_gate(5U, &read_while_pending, &used_while_pending,
+                                                    &read_after_failed_completion, &read_after_recovery,
+                                                    &generation_before, &generation_after);
+    failed |= expect_int_eq("untagged timeout read gate helper rc", rc, 0);
+    failed |= expect_int_eq("untagged timeout blocks queued output", read_while_pending, 0);
+    failed |= expect_size_eq("untagged timeout preserves queued output", used_while_pending, 5U);
+    failed |= expect_generation_changed("untagged timeout invalidates handed-off samples", generation_before,
+                                        generation_after);
+    failed |= expect_int_eq("failed untagged completion reopens recovered output", read_after_failed_completion, 1);
+    failed |= expect_int_eq("successful recovery reopens queued output", read_after_recovery, 1);
 
     cache_pending = -1;
     rc = rtl_stream_test_tune_result_output_drain(RTL_STREAM_TUNE_DEFERRED, 5U, 3, &used_after, &cache_pending,
@@ -239,6 +333,144 @@ main(void) {
     failed |= expect_int_eq("retune completion result binding helper rc", rc, 0);
     failed |= expect_int_eq("first completion keeps failed result", first_completion_result, RTL_STREAM_TUNE_FAILED);
     failed |= expect_int_eq("second completion keeps ok result", second_completion_result, RTL_STREAM_TUNE_OK);
+
+    TaggedTuneCompletionState tagged_completion = {};
+    uint64_t coalesced_token = 0U;
+    rtl_stream_register_tune_completion_callback(tagged_tune_completion, &tagged_completion);
+    rc = rtl_stream_test_tagged_completion_boundary(UINT64_C(0x1111222233334444), UINT64_C(0xAAAABBBBCCCCDDDD), 5U,
+                                                    &coalesced_token, &generation_before, &generation_after);
+    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
+    failed |= expect_int_eq("tagged completion boundary helper rc", rc, 0);
+    failed |= expect_u64_eq("conflicting tagged tune keeps owner", coalesced_token, UINT64_C(0x1111222233334444));
+    failed |= expect_int_eq("conflicting tagged tune publishes owner completion", tagged_completion.calls, 1);
+    failed |= expect_u64_eq("tagged owner callback token", tagged_completion.token, UINT64_C(0x1111222233334444));
+    failed |= expect_int_eq("tagged owner callback result", tagged_completion.result, RTL_STREAM_TUNE_OK);
+    failed |=
+        expect_generation_changed("completion follows output generation boundary", generation_before, generation_after);
+    failed |= expect_generation_eq("callback observes drained output generation", tagged_completion.output_generation,
+                                   generation_after);
+
+    tagged_completion = {};
+    coalesced_token = UINT64_MAX;
+    rtl_stream_register_tune_completion_callback(tagged_tune_completion, &tagged_completion);
+    rc = rtl_stream_test_tagged_completion_boundary(UINT64_C(0x1020304050607080), 0U, 5U, &coalesced_token,
+                                                    &generation_before, &generation_after);
+    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
+    failed |= expect_int_eq("untagged conflict boundary helper rc", rc, 0);
+    failed |= expect_u64_eq("untagged conflict keeps tagged owner", coalesced_token, UINT64_C(0x1020304050607080));
+    failed |= expect_int_eq("untagged conflict publishes owner completion", tagged_completion.calls, 1);
+    failed |= expect_u64_eq("untagged conflict callback token", tagged_completion.token, UINT64_C(0x1020304050607080));
+    failed |= expect_int_eq("untagged conflict callback result", tagged_completion.result, RTL_STREAM_TUNE_OK);
+    failed |= expect_generation_changed("untagged conflict drains owner output", generation_before, generation_after);
+    failed |= expect_generation_eq("untagged conflict callback follows output boundary",
+                                   tagged_completion.output_generation, generation_after);
+
+    tagged_completion = {};
+    coalesced_token = 0U;
+    rtl_stream_register_tune_completion_callback(tagged_tune_completion, &tagged_completion);
+    rc = rtl_stream_test_tagged_completion_boundary(0U, UINT64_C(0x5566778899AABBCC), 5U, &coalesced_token,
+                                                    &generation_before, &generation_after);
+    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
+    failed |= expect_int_eq("tagged upgrade boundary helper rc", rc, 0);
+    failed |= expect_u64_eq("tagged request upgrades untagged work", coalesced_token, UINT64_C(0x5566778899AABBCC));
+    failed |= expect_int_eq("tagged upgrade publishes one completion", tagged_completion.calls, 1);
+    failed |= expect_u64_eq("tagged upgrade callback token", tagged_completion.token, UINT64_C(0x5566778899AABBCC));
+    failed |= expect_int_eq("tagged upgrade callback result", tagged_completion.result, RTL_STREAM_TUNE_OK);
+    failed |= expect_generation_changed("tagged upgrade drains output", generation_before, generation_after);
+    failed |= expect_generation_eq("tagged upgrade callback follows output boundary",
+                                   tagged_completion.output_generation, generation_after);
+
+    tagged_completion = {};
+    int pending_after_cancel = -1;
+    int cancelled_completion_result = RTL_STREAM_TUNE_OK;
+    rtl_stream_register_tune_completion_callback(tagged_tune_completion, &tagged_completion);
+    rc = dsd_rtl_stream_test_cancel_queued_tagged_retune(UINT64_C(0xCAFEBABE11223344), &pending_after_cancel,
+                                                         &cancelled_completion_result);
+    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
+    failed |= expect_int_eq("queued tagged cancellation helper rc", rc, 0);
+    failed |= expect_int_eq("queued tagged cancellation clears pending work", pending_after_cancel, 0);
+    failed |= expect_int_eq("queued tagged cancellation records failed result", cancelled_completion_result,
+                            RTL_STREAM_TUNE_FAILED);
+    failed |= expect_int_eq("queued tagged cancellation publishes once", tagged_completion.calls, 1);
+    failed |= expect_u64_eq("queued tagged cancellation preserves token", tagged_completion.token,
+                            UINT64_C(0xCAFEBABE11223344));
+    failed |=
+        expect_int_eq("queued tagged cancellation callback result", tagged_completion.result, RTL_STREAM_TUNE_FAILED);
+
+    OrderedTuneCompletionState ordered_completion = {};
+    int active_completion_result = RTL_STREAM_TUNE_FAILED;
+    cancelled_completion_result = RTL_STREAM_TUNE_OK;
+    rtl_stream_register_tune_completion_callback(ordered_tune_completion, &ordered_completion);
+    rc = dsd_rtl_stream_test_cancel_queued_tagged_retune_order(UINT64_C(0x1010101010101010),
+                                                               UINT64_C(0x2020202020202020), &active_completion_result,
+                                                               &cancelled_completion_result);
+    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
+    failed |= expect_int_eq("active and queued cancellation order helper rc", rc, 0);
+    failed |= expect_int_eq("active request keeps its completion result", active_completion_result, RTL_STREAM_TUNE_OK);
+    failed |= expect_int_eq("queued request keeps its cancellation result", cancelled_completion_result,
+                            RTL_STREAM_TUNE_FAILED);
+    failed |= expect_int_eq("ordered cancellation publishes both completions", ordered_completion.calls, 2);
+    failed |= expect_u64_eq("active completion retains first token", ordered_completion.tokens[0],
+                            UINT64_C(0x1010101010101010));
+    failed |= expect_int_eq("active completion is successful", ordered_completion.results[0], RTL_STREAM_TUNE_OK);
+    failed |= expect_u64_eq("cancelled completion retains queued token", ordered_completion.tokens[1],
+                            UINT64_C(0x2020202020202020));
+    failed |= expect_int_eq("queued completion failed", ordered_completion.results[1], RTL_STREAM_TUNE_FAILED);
+    failed |= expect_int_eq("retune without controller is rejected",
+                            dsd_rtl_stream_test_retune_without_controller_rejected(), 1);
+
+    BlockingTuneCompletionState blocking_completion = {};
+    std::atomic<int> unregister_returned{0};
+    int blocking_publish_rc = -1;
+    uint64_t blocking_token = 0U;
+    uint32_t blocking_generation_before = 0U;
+    uint32_t blocking_generation_after = 0U;
+    rtl_stream_register_tune_completion_callback(blocking_tune_completion, &blocking_completion);
+    std::thread publisher([&] {
+        blocking_publish_rc = rtl_stream_test_tagged_completion_boundary(
+            UINT64_C(0x3030303030303030), UINT64_C(0x3030303030303030), 5U, &blocking_token,
+            &blocking_generation_before, &blocking_generation_after);
+    });
+    bool callback_entered = false;
+    {
+        std::unique_lock<std::mutex> lock(blocking_completion.mutex);
+        callback_entered = blocking_completion.ready.wait_for(
+            lock, std::chrono::seconds(1), [&blocking_completion] { return blocking_completion.entered; });
+        if (!callback_entered) {
+            blocking_completion.release = true;
+        }
+    }
+    blocking_completion.ready.notify_all();
+    failed |= expect_int_eq("blocking completion callback entered", callback_entered ? 1 : 0, 1);
+    if (callback_entered) {
+        std::thread unregister_thread([&] {
+            rtl_stream_register_tune_completion_callback(nullptr, nullptr);
+            unregister_returned.store(1, std::memory_order_release);
+        });
+        int callback_still_registered = 1;
+        for (int i = 0; i < 1000 && callback_still_registered; i++) {
+            callback_still_registered = dsd_rtl_stream_test_tune_completion_callback_registered();
+            if (callback_still_registered) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        failed |= expect_int_eq("unregister removes callback before waiting", callback_still_registered, 0);
+        failed |= expect_int_eq("unregister waits for in-flight callback",
+                                unregister_returned.load(std::memory_order_acquire), 0);
+        {
+            std::lock_guard<std::mutex> lock(blocking_completion.mutex);
+            blocking_completion.release = true;
+        }
+        blocking_completion.ready.notify_all();
+        unregister_thread.join();
+        failed |= expect_int_eq("unregister returns after callback exits",
+                                unregister_returned.load(std::memory_order_acquire), 1);
+    } else {
+        rtl_stream_register_tune_completion_callback(nullptr, nullptr);
+    }
+    publisher.join();
+    failed |= expect_int_eq("blocking completion publish helper rc", blocking_publish_rc, 0);
+    failed |= expect_int_eq("blocking completion invoked once", blocking_completion.calls, 1);
 
     uint32_t full_restore_freq_hz = 0U;
     uint32_t full_restore_rate_hz = 0U;
@@ -554,6 +786,12 @@ main(void) {
                             rtl_device_test_replay_event_boundary_drained(2U, 3U, 3U), 0);
     failed |= expect_int_eq("reset event waits for reserved demod generation",
                             rtl_device_test_replay_event_boundary_drained(0U, 3U, 2U), 0);
+    uint64_t discarded_span_consumed = rtl_stream_test_replay_acknowledge_discarded_span(3U, 2U);
+    failed |= expect_u64_eq("discarded replay span acknowledges submit generation", discarded_span_consumed, 3U);
+    failed |= expect_int_eq("rewind boundary accepts acknowledged discarded span",
+                            rtl_device_test_replay_event_boundary_drained(0U, 3U, discarded_span_consumed), 1);
+    failed |= expect_u64_eq("discarded replay acknowledgment remains monotonic",
+                            rtl_stream_test_replay_acknowledge_discarded_span(3U, 4U), 4U);
     failed |=
         expect_int_eq("reset event boundary drained", rtl_device_test_replay_event_boundary_drained(0U, 3U, 3U), 1);
 

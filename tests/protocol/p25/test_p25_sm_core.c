@@ -11,15 +11,20 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <math.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -42,7 +47,17 @@ static dsd_trunk_tune_result g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESUL
 static int g_result_tune_to_freq_calls = 0;
 static int g_result_tune_to_cc_calls = 0;
 static int g_result_return_to_cc_calls = 0;
+static int g_result_hook_commits_decoder_state = 1;
 static long g_rigctl_current_freq = 0;
+static atomic_int g_release_hook_block = 0;
+static dsd_mutex_t g_release_hook_mutex;
+static dsd_cond_t g_release_hook_cond;
+static int g_release_hook_entered = 0;
+
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+} release_thread_args;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -86,7 +101,7 @@ trunk_tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int t
     (void)ted_sps;
     g_result_tune_to_freq_calls++;
     g_last_tuned_vc = freq;
-    if (g_result_tune_to_freq_result == DSD_TRUNK_TUNE_RESULT_OK) {
+    if (g_result_tune_to_freq_result == DSD_TRUNK_TUNE_RESULT_OK && g_result_hook_commits_decoder_state) {
         if (opts) {
             opts->p25_is_tuned = 1;
             opts->trunk_is_tuned = 1;
@@ -114,10 +129,43 @@ trunk_tune_to_cc_result(dsd_opts* opts, dsd_state* state, long int freq, int ted
 
 static dsd_trunk_tune_result
 return_to_cc_result(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
     g_result_return_to_cc_calls++;
+    if (atomic_load(&g_release_hook_block)) {
+        int sync_rc = 0;
+        if (opts) {
+            opts->p25_is_tuned = 0;
+            opts->trunk_is_tuned = 0;
+        }
+        if (state) {
+            state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+            state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+        }
+        sync_rc = dsd_mutex_lock(&g_release_hook_mutex);
+        if (sync_rc != 0) {
+            atomic_store(&g_release_hook_block, 0);
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
+        }
+        g_release_hook_entered = 1;
+        sync_rc = dsd_cond_signal(&g_release_hook_cond);
+        while (sync_rc == 0 && atomic_load(&g_release_hook_block)) {
+            sync_rc = dsd_cond_wait(&g_release_hook_cond, &g_release_hook_mutex);
+        }
+        if (dsd_mutex_unlock(&g_release_hook_mutex) != 0 || sync_rc != 0) {
+            atomic_store(&g_release_hook_block, 0);
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
+        }
+    }
     return g_result_return_to_cc_result;
+}
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    release_wrapper_thread(void* arg) {
+    release_thread_args* args = (release_thread_args*)arg;
+    p25_sm_on_release(args ? args->opts : NULL, args ? args->state : NULL);
+    DSD_THREAD_RETURN;
 }
 
 static void
@@ -607,6 +655,7 @@ main(void) {
     o14b.audio_in_type = AUDIO_IN_RTL;
     o14b.rtlsdr_center_freq = 851012500U;
     s14b.synctype = DSD_SYNC_P25P2_POS;
+    s14b.p25_cc_is_tdma = 2;
     s14b.p25_iden_fdma[id9].base_freq = 851000000 / 5;
     s14b.p25_iden_fdma[id9].chan_type = 1;
     s14b.p25_iden_fdma[id9].chan_spac = 100;
@@ -623,7 +672,7 @@ main(void) {
     assert(s14b.p25_cc_freq == 851012500);
     assert(s14b.trunk_cc_freq == 851012500);
     assert(s14b.trunk_lcn_freq[0] == 851012500);
-    assert(s14b.p25_cc_is_tdma == 1);
+    assert(s14b.p25_cc_is_tdma == 2);
     assert(o14b.p25_is_tuned == 0);
     assert(s14b.p25_sm_tune_count == 0);
     assert(ctx14b.state == P25_SM_ON_CC);
@@ -775,7 +824,277 @@ main(void) {
     assert(ctx18.state == P25_SM_ON_CC);
     assert(g_result_tune_to_cc_calls == cc_calls_before_seeded_release_tick);
 
-    // 20) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
+    // 20) Grants observed before decoded CC activity after a CC retune must not pull us back to a VC.
+    static dsd_opts o18aa;
+    static dsd_state s18aa;
+    DSD_MEMSET(&o18aa, 0, sizeof(o18aa));
+    DSD_MEMSET(&s18aa, 0, sizeof(s18aa));
+    o18aa.p25_trunk = 1;
+    o18aa.trunk_tune_group_calls = 1;
+    s18aa.p25_cc_freq = 851000000;
+    s18aa.trunk_cc_freq = 851000000;
+    s18aa.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s18aa.p25_iden_fdma[id9].chan_type = 1;
+    s18aa.p25_iden_fdma[id9].chan_spac = 100;
+    s18aa.p25_iden_fdma[id9].trust = 2;
+    s18aa.p25_iden_fdma[id9].populated = 1;
+    s18aa.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx18aa;
+    p25_sm_init_ctx(&ctx18aa, &o18aa, &s18aa);
+    const double pending_grant_cc_tune_m = dsd_time_now_monotonic_s();
+    ctx18aa.state = P25_SM_ON_CC;
+    ctx18aa.t_cc_sync_m = pending_grant_cc_tune_m - 0.25;
+    ctx18aa.t_cc_tune_m = pending_grant_cc_tune_m;
+    ctx18aa.cc_sync_pending = 1;
+    s18aa.last_cc_sync_time_m = pending_grant_cc_tune_m - 0.10;
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18aa.state == P25_SM_ON_CC);
+    assert(ctx18aa.cc_sync_pending == 1);
+
+    s18aa.last_cc_sync_time_m = pending_grant_cc_tune_m;
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18aa.state == P25_SM_ON_CC);
+    assert(ctx18aa.cc_sync_pending == 1);
+
+    s18aa.last_cc_sync_time_m = pending_grant_cc_tune_m + 0.25;
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18aa.state == P25_SM_ON_CC);
+    assert(ctx18aa.cc_sync_pending == 1);
+
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &(p25_sm_event_t){.type = P25_SM_EV_CC_SYNC});
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18aa.state == P25_SM_ON_CC);
+    assert(ctx18aa.cc_sync_pending == 1);
+
+    s18aa.p25_last_cc_msg_time = time(NULL);
+    s18aa.p25_last_cc_msg_time_m = pending_grant_cc_tune_m + 0.25;
+    p25_sm_event(&ctx18aa, &o18aa, &s18aa, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx18aa.state == P25_SM_TUNED);
+    assert(ctx18aa.cc_sync_pending == 0);
+
+    // 21) A CC retune that does not produce decoded CC activity should hunt before full stale-CC grace.
+    static dsd_opts o18b;
+    static dsd_state s18b;
+    DSD_MEMSET(&o18b, 0, sizeof(o18b));
+    DSD_MEMSET(&s18b, 0, sizeof(s18b));
+    o18b.p25_trunk = 1;
+    o18b.p25_prefer_candidates = 1;
+    s18b.p25_cc_freq = 851000000;
+    s18b.trunk_cc_freq = 851000000;
+    (void)dsd_trunk_cc_candidates_add(&s18b, 852000000, 0);
+    p25_sm_ctx_t ctx18b;
+    p25_sm_init_ctx(&ctx18b, &o18b, &s18b);
+    ctx18b.config.cc_grace_s = 5.0;
+    const double pending_cc_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    ctx18b.t_cc_sync_m = pending_cc_tune_m;
+    ctx18b.t_cc_tune_m = pending_cc_tune_m;
+    ctx18b.cc_sync_pending = 1;
+    s18b.last_cc_sync_time = time(NULL) - 3;
+    s18b.last_cc_sync_time_m = pending_cc_tune_m;
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_cc_calls = 0;
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(&ctx18b, &o18b, &s18b);
+    assert(g_result_tune_to_cc_calls == 1);
+    assert(g_last_tuned_cc == 852000000);
+    assert(ctx18b.state == P25_SM_ON_CC);
+
+    // 22) HUNTING must keep grants blocked until decoded CC activity proves reacquisition,
+    // then recover even when that activity is not a grant.
+    static dsd_opts o18c;
+    static dsd_state s18c;
+    DSD_MEMSET(&o18c, 0, sizeof(o18c));
+    DSD_MEMSET(&s18c, 0, sizeof(s18c));
+    o18c.p25_trunk = 1;
+    o18c.trunk_tune_group_calls = 1;
+    s18c.p25_cc_freq = 851000000;
+    s18c.trunk_cc_freq = 851000000;
+    s18c.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s18c.p25_iden_fdma[id9].chan_type = 1;
+    s18c.p25_iden_fdma[id9].chan_spac = 100;
+    s18c.p25_iden_fdma[id9].trust = 2;
+    s18c.p25_iden_fdma[id9].populated = 1;
+    s18c.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx18c;
+    p25_sm_init_ctx(&ctx18c, &o18c, &s18c);
+    ctx18c.config.cc_grace_s = 5.0;
+    const double hunting_pending_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    ctx18c.t_cc_sync_m = hunting_pending_tune_m;
+    ctx18c.t_cc_tune_m = hunting_pending_tune_m;
+    ctx18c.cc_sync_pending = 1;
+    s18c.last_cc_sync_time = time(NULL) - 3;
+    s18c.last_cc_sync_time_m = hunting_pending_tune_m;
+    s18c.p25_last_cc_msg_time_m = hunting_pending_tune_m - 0.25;
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    g_result_tune_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx18c, &o18c, &s18c);
+    assert(g_result_tune_to_cc_calls == 1);
+    assert(ctx18c.state == P25_SM_HUNTING);
+    assert(ctx18c.cc_sync_pending == 1);
+
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+    p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18c.state == P25_SM_HUNTING);
+    assert(ctx18c.cc_sync_pending == 1);
+
+    s18c.last_cc_sync_time_m = hunting_pending_tune_m + 0.25;
+    p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18c.state == P25_SM_HUNTING);
+    assert(ctx18c.cc_sync_pending == 1);
+
+    int cc_calls_before_hunt_recovery = g_result_tune_to_cc_calls;
+    p25_sm_tick_ctx(&ctx18c, &o18c, &s18c);
+    assert(g_result_tune_to_cc_calls == cc_calls_before_hunt_recovery);
+    assert(ctx18c.state == P25_SM_HUNTING);
+    assert(ctx18c.cc_sync_pending == 1);
+
+    s18c.p25_last_cc_msg_time = time(NULL);
+    s18c.p25_last_cc_msg_time_m = hunting_pending_tune_m + 0.25;
+    ctx18c.t_hunt_try_m = 0.0;
+    p25_sm_tick_ctx(&ctx18c, &o18c, &s18c);
+    assert(g_result_tune_to_cc_calls == cc_calls_before_hunt_recovery);
+    assert(g_result_tune_to_freq_calls == 0);
+    assert(ctx18c.state == P25_SM_ON_CC);
+    assert(ctx18c.cc_sync_pending == 0);
+    assert(ctx18c.t_cc_tune_m == 0.0);
+    assert(fabs(ctx18c.t_cc_sync_m - s18c.p25_last_cc_msg_time_m) <= cc_sync_epsilon_s);
+
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx18c.state == P25_SM_ON_CC);
+
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    p25_sm_event(&ctx18c, &o18c, &s18c, &ev9);
+    assert(g_result_tune_to_freq_calls == 2);
+    assert(ctx18c.state == P25_SM_TUNED);
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    // 23) An accepted external CC retune restarts pending acquisition in ON_CC.
+    static dsd_opts o18d;
+    static dsd_state s18d;
+    DSD_MEMSET(&o18d, 0, sizeof(o18d));
+    DSD_MEMSET(&s18d, 0, sizeof(s18d));
+    o18d.p25_trunk = 1;
+    s18d.p25_cc_freq = 851000000;
+    s18d.trunk_cc_freq = 851000000;
+    p25_sm_ctx_t ctx18d;
+    p25_sm_init_ctx(&ctx18d, &o18d, &s18d);
+    const double external_cc_tune_m = 100.0;
+    const double external_decoded_cc_m = external_cc_tune_m - 2.0;
+    ctx18d.state = P25_SM_HUNTING;
+    ctx18d.cc_sync_pending = 1;
+    ctx18d.t_cc_sync_m = external_cc_tune_m - 3.0;
+    ctx18d.t_cc_tune_m = external_cc_tune_m - 3.0;
+    ctx18d.t_hunt_try_m = external_cc_tune_m - 1.0;
+    s18d.p25_sm_mode = DSD_P25_SM_MODE_HUNTING;
+    s18d.p25_cc_eval_freq = 852000000;
+    s18d.p25_cc_eval_start_m = external_cc_tune_m - 3.0;
+    s18d.last_cc_sync_time_m = external_cc_tune_m - 3.0;
+    s18d.p25_last_cc_msg_time_m = external_decoded_cc_m;
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18d, &o18d, &s18d, external_cc_tune_m, "test-retune") == 1);
+    assert(ctx18d.state == P25_SM_ON_CC);
+    assert(ctx18d.cc_sync_pending == 1);
+    assert(fabs(ctx18d.t_cc_sync_m - external_cc_tune_m) <= cc_sync_epsilon_s);
+    assert(fabs(ctx18d.t_cc_tune_m - external_cc_tune_m) <= cc_sync_epsilon_s);
+    assert(ctx18d.t_hunt_try_m == 0.0);
+    assert(s18d.p25_sm_mode == DSD_P25_SM_MODE_ON_CC);
+    assert(s18d.p25_cc_eval_freq == 852000000);
+    assert(fabs(s18d.p25_cc_eval_start_m - ctx18d.t_cc_tune_m) <= cc_sync_epsilon_s);
+    assert(fabs(s18d.last_cc_sync_time_m - external_cc_tune_m) <= cc_sync_epsilon_s);
+    assert(fabs(s18d.p25_last_cc_msg_time_m - external_decoded_cc_m) <= cc_sync_epsilon_s);
+
+    // 24) The first decoded grant after asynchronous completion must satisfy CC reacquisition.
+    static dsd_opts o18e;
+    static dsd_state s18e;
+    DSD_MEMSET(&o18e, 0, sizeof(o18e));
+    DSD_MEMSET(&s18e, 0, sizeof(s18e));
+    o18e.p25_trunk = 1;
+    o18e.trunk_tune_group_calls = 1;
+    s18e.p25_cc_freq = 851000000;
+    s18e.trunk_cc_freq = 851000000;
+    s18e.p25_iden_fdma[id9] = s9.p25_iden_fdma[id9];
+    s18e.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx18e;
+    p25_sm_init_ctx(&ctx18e, &o18e, &s18e);
+    ctx18e.state = P25_SM_ON_CC;
+    s18e.p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
+
+    const uint64_t early_grant_request_id = dsd_trunk_tuning_request_begin();
+    assert(early_grant_request_id != 0U);
+    dsd_trunk_tuning_request_mark_ready(early_grant_request_id);
+    assert(p25_sm_await_pending_cc_tune(&ctx18e, &o18e, &s18e, early_grant_request_id, "test-early-grant") == 1);
+    dsd_trunk_tuning_request_publish(early_grant_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+
+    double early_grant_completion_m = 0.0;
+    assert(dsd_trunk_tuning_request_status(early_grant_request_id, &early_grant_completion_m)
+           == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(early_grant_completion_m > 0.0);
+    const double early_grant_decoded_m = early_grant_completion_m + 0.001;
+    s18e.last_cc_sync_time = time(NULL);
+    s18e.last_cc_sync_time_m = early_grant_decoded_m;
+    s18e.p25_last_cc_msg_time = s18e.last_cc_sync_time;
+    s18e.p25_last_cc_msg_time_m = early_grant_decoded_m;
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+
+    p25_sm_event(&ctx18e, &o18e, &s18e, &ev9);
+    assert(ctx18e.cc_tune_pending == 0);
+    assert(ctx18e.cc_sync_pending == 0);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx18e.state == P25_SM_TUNED);
+
+    // A later raw frame sync must not move the tune boundary past decoded CC
+    // activity that arrived after asynchronous completion but before SM resolution.
+    static dsd_opts o18f;
+    static dsd_state s18f;
+    DSD_MEMSET(&o18f, 0, sizeof(o18f));
+    DSD_MEMSET(&s18f, 0, sizeof(s18f));
+    o18f.p25_trunk = 1;
+    s18f.p25_cc_freq = 851000000;
+    s18f.trunk_cc_freq = 851000000;
+    p25_sm_ctx_t ctx18f;
+    p25_sm_init_ctx(&ctx18f, &o18f, &s18f);
+    ctx18f.state = P25_SM_ON_CC;
+    s18f.p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
+
+    const uint64_t decoded_before_resolution_request_id = dsd_trunk_tuning_request_begin();
+    assert(decoded_before_resolution_request_id != 0U);
+    dsd_trunk_tuning_request_mark_ready(decoded_before_resolution_request_id);
+    assert(p25_sm_await_pending_cc_tune(&ctx18f, &o18f, &s18f, decoded_before_resolution_request_id,
+                                        "test-decoded-before-resolution")
+           == 1);
+    dsd_trunk_tuning_request_publish(decoded_before_resolution_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+
+    double decoded_before_resolution_completion_m = 0.0;
+    assert(
+        dsd_trunk_tuning_request_status(decoded_before_resolution_request_id, &decoded_before_resolution_completion_m)
+        == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(decoded_before_resolution_completion_m > 0.0);
+    const double decoded_before_resolution_m = decoded_before_resolution_completion_m + 0.001;
+    const double later_raw_sync_m = decoded_before_resolution_m + 0.001;
+    s18f.p25_last_cc_msg_time = time(NULL);
+    s18f.p25_last_cc_msg_time_m = decoded_before_resolution_m;
+    s18f.last_cc_sync_time = s18f.p25_last_cc_msg_time;
+    s18f.last_cc_sync_time_m = later_raw_sync_m;
+
+    p25_sm_tick_ctx(&ctx18f, &o18f, &s18f);
+    assert(ctx18f.cc_tune_pending == 0);
+    assert(ctx18f.cc_sync_pending == 0);
+    assert(ctx18f.t_cc_tune_m == 0.0);
+    assert(fabs(ctx18f.t_cc_sync_m - decoded_before_resolution_m) <= cc_sync_epsilon_s);
+    assert(ctx18f.state == P25_SM_ON_CC);
+
+    // 25) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
     static dsd_opts o19a;
     static dsd_state s19a;
     DSD_MEMSET(&o19a, 0, sizeof(o19a));
@@ -811,7 +1130,7 @@ main(void) {
     assert(ctx19a.state == P25_SM_TUNED);
     assert(ctx19a.slots[1].grant_active == 1);
 
-    // 21) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
+    // 26) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
     static dsd_opts o19b;
     static dsd_state s19b;
     DSD_MEMSET(&o19b, 0, sizeof(o19b));
@@ -851,7 +1170,7 @@ main(void) {
     assert(s19b.p25_p2_enc_lockout_muted[0] == 1);
 
 #ifdef USE_RADIO
-    // 22) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
+    // 27) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
     static dsd_opts o19;
     static dsd_state s19;
     DSD_MEMSET(&o19, 0, sizeof(o19));
@@ -899,7 +1218,7 @@ main(void) {
     assert(ctx19.state == P25_SM_TUNED);
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 23) A successful CQPSK retry refreshes the TDMA grant timeout window.
+    // 28) A successful CQPSK retry refreshes the TDMA grant timeout window.
     static dsd_opts o20;
     static dsd_state s20;
     DSD_MEMSET(&o20, 0, sizeof(o20));
@@ -948,6 +1267,256 @@ main(void) {
     assert(ctx20.slots[0].grant_active == 1);
     assert(s20.p25_retune_block_until == 0);
 #endif
+
+    // 29) A concurrent stale-context release must not reset a release already in progress.
+    static dsd_opts o21;
+    static dsd_state s21;
+    DSD_MEMSET(&o21, 0, sizeof(o21));
+    DSD_MEMSET(&s21, 0, sizeof(s21));
+    o21.p25_trunk = 1;
+    o21.p25_is_tuned = 1;
+    o21.trunk_is_tuned = 1;
+    s21.p25_cc_freq = 851000000;
+    s21.trunk_cc_freq = 851000000;
+    s21.p25_vc_freq[0] = s21.p25_vc_freq[1] = 851125000;
+    s21.trunk_vc_freq[0] = s21.trunk_vc_freq[1] = 851125000;
+
+    p25_sm_ctx_t* release_ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(release_ctx, &o21, &s21);
+    release_ctx->state = P25_SM_TUNED;
+    release_ctx->vc_freq_hz = 851125000;
+    release_ctx->vc_channel = ch9;
+    release_ctx->vc_tg = 6101;
+    release_ctx->tune_count = 41;
+    release_ctx->release_count = 13;
+    release_ctx->cc_return_count = 17;
+    release_ctx->config.cc_grace_s = 9.0;
+
+    int release_sync_rc = dsd_mutex_init(&g_release_hook_mutex);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race mutex init failed: %d\n", release_sync_rc);
+        return 1;
+    }
+    release_sync_rc = dsd_cond_init(&g_release_hook_cond);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race condition init failed: %d\n", release_sync_rc);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+    g_release_hook_entered = 0;
+    g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_return_to_cc_calls = 0;
+    atomic_store(&g_release_hook_block, 1);
+
+    release_thread_args release_args = {&o21, &s21};
+    dsd_thread_t release_thread = (dsd_thread_t)0;
+    release_sync_rc = dsd_thread_create(&release_thread, release_wrapper_thread, &release_args);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race thread create failed: %d\n", release_sync_rc);
+        atomic_store(&g_release_hook_block, 0);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+    release_sync_rc = dsd_mutex_lock(&g_release_hook_mutex);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race mutex lock failed: %d\n", release_sync_rc);
+        atomic_store(&g_release_hook_block, 0);
+        (void)dsd_cond_signal(&g_release_hook_cond);
+        (void)dsd_thread_join(release_thread);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+    int release_wait_rc = 0;
+    while (!g_release_hook_entered && release_wait_rc == 0) {
+        release_wait_rc = dsd_cond_timedwait(&g_release_hook_cond, &g_release_hook_mutex, 10000);
+    }
+    if (release_wait_rc != 0 || !g_release_hook_entered) {
+        DSD_FPRINTF(stderr, "release race hook wait failed: %d\n", release_wait_rc);
+        atomic_store(&g_release_hook_block, 0);
+        (void)dsd_cond_signal(&g_release_hook_cond);
+        (void)dsd_mutex_unlock(&g_release_hook_mutex);
+        (void)dsd_thread_join(release_thread);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+    release_sync_rc = dsd_mutex_unlock(&g_release_hook_mutex);
+    if (release_sync_rc != 0) {
+        DSD_FPRINTF(stderr, "release race mutex unlock failed: %d\n", release_sync_rc);
+        atomic_store(&g_release_hook_block, 0);
+        (void)dsd_cond_signal(&g_release_hook_cond);
+        (void)dsd_thread_join(release_thread);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+
+    p25_sm_on_release(&o21, &s21);
+    assert(g_result_return_to_cc_calls == 1);
+    assert(release_ctx->state == P25_SM_TUNED);
+    assert(release_ctx->tune_count == 41);
+    assert(release_ctx->release_count == 13);
+    assert(release_ctx->cc_return_count == 17);
+    assert(release_ctx->config.cc_grace_s == 9.0);
+
+    release_sync_rc = dsd_mutex_lock(&g_release_hook_mutex);
+    atomic_store(&g_release_hook_block, 0);
+    int release_signal_rc = dsd_cond_signal(&g_release_hook_cond);
+    int release_unlock_rc = (release_sync_rc == 0) ? dsd_mutex_unlock(&g_release_hook_mutex) : release_sync_rc;
+    int release_join_rc = dsd_thread_join(release_thread);
+    if (release_sync_rc != 0 || release_signal_rc != 0 || release_unlock_rc != 0 || release_join_rc != 0) {
+        DSD_FPRINTF(stderr, "release race resume failed: lock=%d signal=%d unlock=%d join=%d\n", release_sync_rc,
+                    release_signal_rc, release_unlock_rc, release_join_rc);
+        (void)dsd_cond_destroy(&g_release_hook_cond);
+        (void)dsd_mutex_destroy(&g_release_hook_mutex);
+        return 1;
+    }
+
+    assert(g_result_return_to_cc_calls == 1);
+    assert(release_ctx->state == P25_SM_ON_CC);
+    assert(release_ctx->cc_sync_pending == 1);
+    assert(release_ctx->t_cc_tune_m > 0.0);
+    assert(release_ctx->tune_count == 41);
+    assert(release_ctx->release_count == 14);
+    assert(release_ctx->cc_return_count == 18);
+    assert(release_ctx->config.cc_grace_s == 9.0);
+    int release_cond_destroy_rc = dsd_cond_destroy(&g_release_hook_cond);
+    int release_mutex_destroy_rc = dsd_mutex_destroy(&g_release_hook_mutex);
+    if (release_cond_destroy_rc != 0 || release_mutex_destroy_rc != 0) {
+        DSD_FPRINTF(stderr, "release race sync destroy failed: cond=%d mutex=%d\n", release_cond_destroy_rc,
+                    release_mutex_destroy_rc);
+        return 1;
+    }
+
+    // 30) Hardware-only legacy VC hooks still receive their return callback.
+    install_trunk_tuning_hooks();
+    static dsd_opts o22;
+    static dsd_state s22;
+    DSD_MEMSET(&o22, 0, sizeof(o22));
+    DSD_MEMSET(&s22, 0, sizeof(s22));
+    o22.p25_trunk = 1;
+    o22.trunk_tune_group_calls = 1;
+    s22.p25_cc_freq = 851000000;
+    s22.trunk_cc_freq = 851000000;
+    s22.p25_iden_fdma[id9].base_freq = 851000000 / 5;
+    s22.p25_iden_fdma[id9].chan_type = 1;
+    s22.p25_iden_fdma[id9].chan_spac = 100;
+    s22.p25_iden_fdma[id9].trust = 2;
+    s22.p25_iden_fdma[id9].populated = 1;
+    s22.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx22;
+    p25_sm_init_ctx(&ctx22, &o22, &s22);
+    g_return_to_cc_called = 0;
+    p25_sm_event(&ctx22, &o22, &s22, &ev9);
+    assert(ctx22.state == P25_SM_TUNED);
+    assert(o22.p25_is_tuned == 1 && o22.trunk_is_tuned == 1);
+    assert(s22.p25_vc_freq[0] == ctx22.vc_freq_hz && s22.trunk_vc_freq[0] == ctx22.vc_freq_hz);
+    assert(s22.last_vc_sync_time_m > 0.0 && s22.p25_last_vc_tune_time_m > 0.0);
+    p25_sm_release(&ctx22, &o22, &s22, "legacy-hook-release");
+    assert(g_return_to_cc_called == 1);
+    assert(ctx22.state == P25_SM_ON_CC);
+
+    // 31) Result hooks may control hardware without duplicating decoder bookkeeping.
+    install_result_tuning_hooks();
+    static dsd_opts o23;
+    static dsd_state s23;
+    DSD_MEMSET(&o23, 0, sizeof(o23));
+    DSD_MEMSET(&s23, 0, sizeof(s23));
+    o23.p25_trunk = 1;
+    o23.trunk_tune_group_calls = 1;
+    s23.p25_cc_freq = 851000000;
+    s23.trunk_cc_freq = 851000000;
+    s23.p25_iden_fdma[id9] = s22.p25_iden_fdma[id9];
+    s23.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx23;
+    p25_sm_init_ctx(&ctx23, &o23, &s23);
+    g_result_hook_commits_decoder_state = 0;
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_event(&ctx23, &o23, &s23, &ev9);
+    assert(ctx23.state == P25_SM_TUNED);
+    assert(o23.p25_is_tuned == 1 && o23.trunk_is_tuned == 1);
+    assert(s23.p25_vc_freq[0] == ctx23.vc_freq_hz && s23.trunk_vc_freq[0] == ctx23.vc_freq_hz);
+    p25_sm_release(&ctx23, &o23, &s23, "result-hook-release");
+    assert(g_result_return_to_cc_calls == 1);
+    assert(ctx23.state == P25_SM_ON_CC);
+    g_result_hook_commits_decoder_state = 1;
+
+    // 32) Externally cleared tune state still needs the complete decoder-side
+    // release teardown, but it must not issue another CC retune or reset stats.
+    static dsd_opts o24;
+    static dsd_state s24;
+    DSD_MEMSET(&o24, 0, sizeof(o24));
+    DSD_MEMSET(&s24, 0, sizeof(s24));
+    o24.p25_trunk = 1;
+    s24.p25_cc_freq = 851000000;
+    s24.trunk_cc_freq = 851000000;
+    s24.last_cc_sync_time_m = dsd_time_now_monotonic_s();
+
+    p25_sm_ctx_t ctx24;
+    p25_sm_init_ctx(&ctx24, &o24, &s24);
+    ctx24.state = P25_SM_TUNED;
+    ctx24.vc_freq_hz = 851125000;
+    ctx24.vc_channel = ch9;
+    ctx24.vc_tg = 6201;
+    ctx24.slots[0].grant_active = 1;
+    ctx24.slots[0].tg = 6201;
+    ctx24.tune_count = 23;
+    ctx24.release_count = 29;
+    ctx24.grant_count = 30;
+    ctx24.cc_return_count = 31;
+    s24.p25_sm_release_count = 37;
+    s24.p25_p2_audio_allowed[0] = 1;
+    s24.p25_p2_audio_allowed[1] = 1;
+    s24.p25_p2_active_slot = 0;
+    s24.payload_algid = 0x80;
+    s24.payload_algidR = 0x81;
+    s24.payload_keyid = 0x1234;
+    s24.payload_keyidR = 0x5678;
+    s24.dmr_so = 0x40;
+    s24.dmr_soR = 0x41;
+    s24.p25_service_options_valid[0] = 1;
+    s24.p25_service_options_valid[1] = 1;
+    s24.p25_p2_enc_lockout_muted[0] = 1;
+    s24.p25_p2_enc_lockout_muted[1] = 1;
+    s24.p25_policy_tg[0] = 6201;
+    s24.p25_policy_tg[1] = 6202;
+
+    dsd_tg_policy_call_route active_route = {6201U, 7201U, 851125000L, 1, 0, 0};
+    dsd_tg_policy_decision active_decision = {0};
+    active_decision.priority = 10;
+    active_decision.tune_allowed = 1;
+    assert(dsd_tg_policy_note_active_call(&s24, &active_route, &active_decision, 1.0) == 0);
+    dsd_tg_policy_call_route candidate_route = {6202U, 7202U, 851250000L, 2, 0, 1};
+    dsd_tg_policy_decision candidate_decision = {0};
+    candidate_decision.priority = 20;
+    candidate_decision.tune_allowed = 1;
+    candidate_decision.preempt_requested = 1;
+    assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 1);
+
+    g_result_return_to_cc_calls = 0;
+    p25_sm_release(&ctx24, &o24, &s24, "external-return-stale-context");
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx24.state == P25_SM_ON_CC);
+    assert(ctx24.vc_freq_hz == 0 && ctx24.vc_channel == 0 && ctx24.vc_tg == 0);
+    assert(ctx24.slots[0].grant_active == 0);
+    assert(ctx24.tune_count == 23);
+    assert(ctx24.release_count == 30);
+    assert(ctx24.grant_count == 30);
+    assert(ctx24.cc_return_count == 32);
+    assert(s24.p25_sm_release_count == 38);
+    assert(s24.p25_p2_audio_allowed[0] == 0 && s24.p25_p2_audio_allowed[1] == 0);
+    assert(s24.p25_p2_active_slot == -1);
+    assert(s24.payload_algid == 0 && s24.payload_algidR == 0);
+    assert(s24.payload_keyid == 0 && s24.payload_keyidR == 0);
+    assert(s24.dmr_so == 0 && s24.dmr_soR == 0);
+    assert(s24.p25_service_options_valid[0] == 0 && s24.p25_service_options_valid[1] == 0);
+    assert(s24.p25_p2_enc_lockout_muted[0] == 0 && s24.p25_p2_enc_lockout_muted[1] == 0);
+    assert(s24.p25_policy_tg[0] == 0 && s24.p25_policy_tg[1] == 0);
+    assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 0);
 
     install_trunk_tuning_hooks();
 

@@ -2956,6 +2956,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_prepare_retune_profile_for_target_with_gain"
             "-Wl,--wrap=rtl_stream_request_fsk_reacquire"
             "-Wl,--wrap=rtl_stream_tune"
+            "-Wl,--wrap=rtl_stream_tune_tagged"
+            "-Wl,--wrap=p25_sm_await_pending_cc_tune"
             ${LIBS}
             dsd-neo_feature_radio
             dsd-neo_test_support
@@ -3212,6 +3214,16 @@ else()
     target_link_libraries(
         dsd-neo_test_app_command_queue
         PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_app_command_queue
+        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_app_command_queue
+        PRIVATE "LINKER:--wrap=io_control_set_freq"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
@@ -6498,7 +6510,7 @@ add_executable(
 )
 target_compile_definitions(
     dsd-neo_test_io_rigctl_control
-    PRIVATE DSD_NEO_TEST_HOOKS
+    PRIVATE DSD_NEO_TEST_HOOKS USE_RADIO
 )
 target_include_directories(
     dsd-neo_test_io_rigctl_control

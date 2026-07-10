@@ -73,6 +73,9 @@ static int g_trunk_scan_saved_autogain_on = 0;
 static int g_trunk_scan_active_p25_cqpsk_is_set = 0;
 static int g_trunk_scan_active_p25_cqpsk_enable = 0;
 static int g_runtime_config_is_set = 0;
+static int g_tune_generation_advance_calls = 0;
+static uint64_t g_tune_request_next = 0U;
+static uint64_t g_tune_request_pending = 0U;
 static dsdneoRuntimeConfig g_runtime_config;
 
 void
@@ -98,6 +101,53 @@ int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_sm_in_tick(void) {
     return 0;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_trunk_tuning_generation_advance(void) {
+    g_tune_generation_advance_calls++;
+}
+
+uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_trunk_tuning_request_begin(void) {
+    g_tune_request_pending = ++g_tune_request_next;
+    return g_tune_request_pending;
+}
+
+uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_trunk_tuning_pending_request(void) {
+    return g_tune_request_pending;
+}
+
+dsd_trunk_tune_result
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_trunk_tuning_request_status(uint64_t request_id, double* out_completed_m) {
+    if (out_completed_m) {
+        *out_completed_m = 0.0;
+    }
+    return request_id != 0U && request_id == g_tune_request_pending ? DSD_TRUNK_TUNE_RESULT_PENDING
+                                                                    : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_trunk_tuning_request_complete(uint64_t request_id, dsd_trunk_tune_result result) {
+    if (request_id == 0U || request_id != g_tune_request_pending || result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        return;
+    }
+    g_tune_request_pending = 0U;
+    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
+        dsd_trunk_tuning_generation_advance();
+    }
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_trunk_tuning_request_mark_ready(uint64_t request_id) {
+    (void)request_id;
 }
 
 void
@@ -190,6 +240,12 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
         apply_pending_retune_profile(center_freq_hz);
     }
     return g_rtl_tune_result;
+}
+
+int
+rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t token) {
+    (void)token;
+    return rtl_stream_tune(ctx, center_freq_hz);
 }
 
 void
@@ -480,7 +536,32 @@ main(void) {
     assert(g_frame_sync_reset_calls == 1);
     assert(g_p25p2_frame_reset_calls == 1);
 
+    /* Direct conventional scan retunes publish a new generation only after
+     * the backend completes the target. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    g_tune_generation_advance_calls = 0;
+    g_setfreq_result = true;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853700000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_tune_generation_advance_calls == 1);
+    g_setfreq_result = false;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853800000, 0) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_tune_generation_advance_calls == 1);
+
 #ifdef USE_RADIO
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853900000, 0) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(g_tune_generation_advance_calls == 1);
+    assert(g_tune_request_pending != 0U);
+    dsd_trunk_tuning_request_complete(g_tune_request_pending, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_tune_generation_advance_calls == 2);
+
     /* RTL audio retuned by rigctl has no native RTL controller boundary, so the
      * queued P25 VC demod profile must be applied after SetFreq succeeds. */
     DSD_MEMSET(opts, 0, sizeof(*opts));

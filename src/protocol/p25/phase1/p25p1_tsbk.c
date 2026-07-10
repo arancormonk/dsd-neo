@@ -11,7 +11,6 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -19,6 +18,7 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -151,11 +151,9 @@ tsbk_decode_block(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_
 }
 
 static void
-tsbk_update_fec_counters(dsd_state* state, int err) {
+tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
     if (err == 0) {
-        // Refresh CC activity on any good TSBK decode to avoid premature hunting.
-        state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+        p25_sm_note_cc_activity(opts, state, "p25p1-tsbk");
         state->p25_p1_fec_ok++;
 #ifdef USE_RTLSDR
         dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
@@ -1088,7 +1086,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         DSD_MEMSET(PDU, 0, sizeof(PDU));
 
         int err = tsbk_decode_block(opts, state, &skipdibit, &ctx);
-        tsbk_update_fec_counters(state, err);
+        tsbk_update_fec_counters(opts, state, err);
 
         int MFID = ctx.tsbk_byte[1];
         int protectbit = (ctx.tsbk_byte[0] >> 6) & 0x1;

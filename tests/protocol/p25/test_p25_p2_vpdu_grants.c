@@ -1424,7 +1424,7 @@ main(void) {
         rc |= expect_true("0x40 tuned same-carrier remains tuned", opts.p25_is_tuned == 1 && opts.trunk_is_tuned == 1);
     }
 
-    // Case F: first live VPDU grant seeds an unknown CC from the current RTL tuner.
+    // Case F: an LCCH VPDU grant seeds the current tuner as a recoverable CC before retuning.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -1437,6 +1437,46 @@ main(void) {
         opts.trunk_tune_group_calls = 1;
         opts.audio_in_type = AUDIO_IN_RTL;
         opts.rtlsdr_center_freq = (uint32_t)cc;
+        state.synctype = DSD_SYNC_P25P2_POS;
+        state.p2_is_lcch = 1;
+        state.p25_cc_is_tdma = 2;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x40; // Group Voice Channel Grant
+        MAC[2] = 0x00; // svc
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A; // channel 0x100A -> 851.125 MHz
+        MAC[5] = 0x12;
+        MAC[6] = 0x34; // group
+        MAC[7] = 0x00;
+        MAC[8] = 0x00;
+        MAC[9] = 0x02; // source
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x40 LCCH grant tuned", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x40 LCCH grant seeded CC", state.p25_cc_freq, cc);
+        rc |= expect_eq_long("0x40 LCCH grant seeded trunk CC", state.trunk_cc_freq, cc);
+        rc |= expect_eq_long("0x40 LCCH grant seeded LCN0", state.trunk_lcn_freq[0], cc);
+        rc |= expect_true("0x40 LCCH grant marks TDMA CC", state.p25_cc_is_tdma == 1);
+        rc |= expect_eq_long("0x40 LCCH grant vc", state.p25_vc_freq[0], 851125000);
+    }
+
+    // Case F2: an LCCH grant without a known or discoverable CC return target must not dispatch.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
         state.synctype = DSD_SYNC_P25P2_POS;
         state.p2_is_lcch = 1;
         state.p25_iden_fdma[iden].base_freq = base;
@@ -1456,12 +1496,18 @@ main(void) {
         MAC[8] = 0x00;
         MAC[9] = 0x02; // source
 
+        reset_group_grant_capture();
+        p25_sm_api api = {0};
+        api.on_group_grant = sm_on_group_grant_capture;
+        p25_sm_set_api(&api);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x40 seeded CC tuned", opts.p25_is_tuned == 1);
-        rc |= expect_eq_long("0x40 seeded CC", state.p25_cc_freq, cc);
-        rc |= expect_eq_long("0x40 seeded trunk CC", state.trunk_cc_freq, cc);
-        rc |= expect_true("0x40 seeded TDMA CC hint", state.p25_cc_is_tdma == 1);
-        rc |= expect_eq_long("0x40 seeded vc", state.p25_vc_freq[0], 851125000);
+        p25_sm_reset_api();
+
+        rc |= expect_eq_long("0x40 unseeded LCCH grant not dispatched", g_group_grant_called, 0);
+        rc |= expect_true("0x40 unseeded LCCH grant not tuned", opts.p25_is_tuned == 0 && opts.trunk_is_tuned == 0);
+        rc |= expect_eq_long("0x40 unseeded LCCH no p25 CC", state.p25_cc_freq, 0);
+        rc |= expect_eq_long("0x40 unseeded LCCH no trunk CC", state.trunk_cc_freq, 0);
+        rc |= expect_eq_long("0x40 unseeded LCCH no vc", state.p25_vc_freq[0], 0);
     }
 
     // Case G: traffic-channel MACs must not learn the current VC tuner frequency as the CC.

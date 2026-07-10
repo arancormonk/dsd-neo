@@ -19,6 +19,7 @@
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdint.h>
@@ -629,6 +630,13 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
+    int result = 0;
+
+    /* Tagged P25 retunes hold this guard through their synchronous wait and
+     * orchestrator bookkeeping. Quiesce them before destroying the stream's
+     * wait primitives or replacing the context they use. */
+    p25_sm_tick_guard_enter();
+
     /* Stop and destroy any existing stream context. */
     if (state->rtl_ctx) {
         rtl_stream_soft_stop(state->rtl_ctx);
@@ -642,17 +650,22 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
        so changes take effect as soon as the user confirms the setting. */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (rtl_stream_create_mirrored(opts, &state->rtl_ctx) < 0) {
-            return -1;
+            result = -1;
+            goto done;
         }
         if (rtl_stream_start(state->rtl_ctx) < 0) {
             rtl_stream_destroy(state->rtl_ctx);
             state->rtl_ctx = NULL;
-            return -1;
+            result = -1;
+            goto done;
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
     }
-    return 0;
+
+done:
+    p25_sm_tick_guard_leave();
+    return result;
 }
 
 int

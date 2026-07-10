@@ -303,13 +303,15 @@ struct dsd_state {
     long int p25_cc_freq;   //cc freq from net_stat
     long int trunk_cc_freq; //protocol-agnostic alias (kept in sync with p25_cc_freq)
     unsigned long long int edacs_site_id;
-    time_t last_cc_sync_time; //use this to start hunting for CC after signal lost
-    time_t last_vc_sync_time; //flag for voice activity bursts, tune back on con+ after more than x seconds no voice
+    time_t last_cc_sync_time;    //use this to start hunting for CC after signal lost
+    time_t p25_last_cc_msg_time; //last decoded P25 control-channel message
+    time_t last_vc_sync_time;    //flag for voice activity bursts, tune back on con+ after more than x seconds no voice
     // Timestamp of last tune to a VC (used to provide a short startup grace
     // window so we don't bounce back to CC before MAC_PTT/ACTIVE/audio arrives)
     time_t p25_last_vc_tune_time;
     // Monotonic twins for SM timing (seconds)
     double last_cc_sync_time_m;
+    double p25_last_cc_msg_time_m;
     double last_vc_sync_time_m;
     double p25_last_vc_tune_time_m;
     time_t rtl_fsk_reacquire_last_sync_time;

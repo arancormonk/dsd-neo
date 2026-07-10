@@ -300,7 +300,7 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
 }
 
 static dsd_trunk_tune_result
-dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int freq) {
+dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
     if (opts->use_rigctl == 1) {
         if (opts->setmod_bw != 0) {
             if (!SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
@@ -323,7 +323,8 @@ dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int fr
     }
 #ifdef USE_RADIO
     if (state->rtl_ctx) {
-        int rc = rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+        int rc = request_id != 0U ? rtl_stream_tune_tagged(state->rtl_ctx, (uint32_t)freq, request_id)
+                                  : rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
         if (rc == RTL_STREAM_TUNE_OK) {
             return DSD_TRUNK_TUNE_RESULT_OK;
         }
@@ -344,6 +345,7 @@ dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int fr
     return DSD_TRUNK_TUNE_RESULT_FAILED;
 #else
     (void)state;
+    (void)request_id;
     return DSD_TRUNK_TUNE_RESULT_FAILED;
 #endif
 }
@@ -430,7 +432,7 @@ dsd_engine_log_queued_ted_override(const dsd_opts* opts, const dsd_state* state,
  * @param state Decoder state to reset.
  */
 dsd_trunk_tune_result
-dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
+dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     if (!opts || !state) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -445,7 +447,7 @@ dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
     const int trunk_enabled = (opts->trunk_enable == 1 || opts->p25_trunk == 1);
     if (trunk_enabled && cc != 0) {
         const int cc_sps = dsd_engine_compute_cc_sps(opts, state);
-        tune_result = dsd_engine_trunk_tune_to_cc(opts, state, cc, cc_sps);
+        tune_result = dsd_engine_trunk_tune_to_cc_request(opts, state, cc, cc_sps, request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             return tune_result;
         }
@@ -456,6 +458,11 @@ dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
     /* Keep symbol timing aligned with the current control-channel mode. */
     dsd_engine_apply_cc_symbol_timing(opts, state);
     return tune_result;
+}
+
+dsd_trunk_tune_result
+dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
+    return dsd_engine_return_to_cc_request(opts, state, 0U);
 }
 
 /**
@@ -470,7 +477,8 @@ dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
  * @param ted_sps TED samples-per-symbol to set (0 = no override).
  */
 dsd_trunk_tune_result
-dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                      uint64_t request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot rtl_snapshot;
@@ -517,7 +525,7 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);
-    result = dsd_engine_tune_with_backend(opts, state, freq);
+    result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
     if (!dsd_trunk_tune_result_is_ok(result)) {
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
@@ -542,6 +550,11 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
     return result;
 }
 
+dsd_trunk_tune_result
+dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    return dsd_engine_trunk_tune_to_freq_request(opts, state, freq, ted_sps, 0U);
+}
+
 /**
  * @brief Tune to a P25 control channel candidate without marking as tuned.
  *
@@ -555,7 +568,7 @@ dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, i
  *        pass the CC SPS (4 for P25P2 TDMA CC, 5 for P25P1 CC).
  */
 dsd_trunk_tune_result
-dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot rtl_snapshot;
@@ -578,7 +591,7 @@ dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int
         dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
 #endif
     }
-    result = dsd_engine_tune_with_backend(opts, state, freq);
+    result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
     if (!dsd_trunk_tune_result_is_ok(result)) {
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
@@ -595,13 +608,31 @@ dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int
 }
 
 dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    return dsd_engine_trunk_tune_to_cc_request(opts, state, freq, ted_sps, 0U);
+}
+
+dsd_trunk_tune_result
+dsd_engine_scan_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                     uint64_t* out_request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
+    uint64_t tune_request_id = 0U;
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot rtl_snapshot;
 #endif
+    if (out_request_id) {
+        *out_request_id = 0U;
+    }
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+
+    tune_request_id = dsd_trunk_tuning_request_begin();
+    if (tune_request_id == 0U) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    if (out_request_id) {
+        *out_request_id = tune_request_id;
     }
 #ifndef USE_RADIO
     (void)ted_sps;
@@ -613,11 +644,12 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);
-    result = dsd_engine_tune_with_backend(opts, state, freq);
+    result = dsd_engine_tune_with_backend(opts, state, freq, tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(result)) {
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
 #endif
+        dsd_trunk_tuning_request_complete(tune_request_id, result);
         return result;
     }
 
@@ -628,5 +660,18 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     state->last_vc_sync_time_m = 0.0;
     opts->p25_is_tuned = 0;
     opts->trunk_is_tuned = 0;
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        dsd_trunk_tuning_request_mark_ready(tune_request_id);
+        if (dsd_trunk_tuning_request_status(tune_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_OK) {
+            result = DSD_TRUNK_TUNE_RESULT_OK;
+        }
+    } else {
+        dsd_trunk_tuning_request_complete(tune_request_id, result);
+    }
     return result;
+}
+
+dsd_trunk_tune_result
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    return dsd_engine_scan_tune_to_freq_with_id(opts, state, freq, ted_sps, NULL);
 }

@@ -494,21 +494,20 @@ dsd_rigctl_test_rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequenc
  * @param opts Decoder options with tuning configuration.
  * @param state Decoder state (required for RTL tuning, may be NULL for rigctl-only).
  * @param freq Target frequency in Hz.
- * @return 0 on success, -1 on error.
+ * @return 0 on success, 1 when an RTL tune is deferred, or a negative error/timeout code. An RTL timeout leaves an
+ *         accepted request active and retains its target in opts->rtlsdr_center_freq.
  */
 int
 io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || freq <= 0) {
         return -1;
     }
+    uint32_t applied_freq = (uint32_t)freq;
 #ifndef USE_RADIO
     (void)state;
 #endif
 
     LOG_INFO("io_control: tune to %ld Hz\n", freq);
-
-    // Update cached frequency for display/tracking
-    opts->rtlsdr_center_freq = (uint32_t)freq;
 
     if (opts->use_rigctl == 1) {
         if (opts->setmod_bw != 0) {
@@ -518,9 +517,25 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     } else if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
         if (state && state->rtl_ctx) {
-            rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+            int tune_result = rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+            if (tune_result != RTL_STREAM_TUNE_OK) {
+                if (tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+                    // The untagged controller request remains accepted and may
+                    // complete after the synchronous wait expires.
+                    opts->rtlsdr_center_freq = applied_freq;
+                }
+                return tune_result;
+            }
+            // Untagged controller requests can coalesce, so cache the target
+            // that actually completed rather than this caller's requested one.
+            uint32_t controller_freq = 0U;
+            if (rtl_stream_get_last_applied_freq(&controller_freq) == 0 && controller_freq != 0U) {
+                applied_freq = controller_freq;
+            }
         }
 #endif
     }
+    // Update cached frequency only after the selected backend accepts the request.
+    opts->rtlsdr_center_freq = applied_freq;
     return 0;
 }

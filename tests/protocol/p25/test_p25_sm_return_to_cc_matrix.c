@@ -20,6 +20,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -206,12 +207,30 @@ matrix_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) 
     return result;
 }
 
+static dsd_trunk_tune_result
+matrix_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
+    return matrix_tune_to_freq(opts, state, freq, ted_sps);
+}
+
+static dsd_trunk_tune_result
+matrix_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    return matrix_return_to_cc(opts, state);
+}
+
+static dsd_trunk_tune_result
+matrix_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
+    return matrix_tune_to_cc(opts, state, freq, ted_sps);
+}
+
 static void
 matrix_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = matrix_tune_to_freq;
-    hooks.return_to_cc_result = matrix_return_to_cc;
-    hooks.tune_to_cc_result = matrix_tune_to_cc;
+    hooks.tune_to_freq_request = matrix_tune_to_freq_request;
+    hooks.return_to_cc_request = matrix_return_to_cc_request;
+    hooks.tune_to_cc_request = matrix_tune_to_cc_request;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -285,6 +304,8 @@ matrix_setup_fixture(matrix_fixture* fixture, const matrix_mode_case* mode) {
     fixture->state->trunk_cc_freq = MATRIX_BASE_CC_HZ;
     fixture->state->last_cc_sync_time = time(NULL);
     fixture->state->last_cc_sync_time_m = now_m;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m;
     fixture->state->nac = 0x293;
     fixture->state->p2_cc = 0x293;
     fixture->state->synctype = mode->synctype;
@@ -377,6 +398,23 @@ matrix_stale_cc_timers(matrix_fixture* fixture) {
     fixture->ctx.t_cc_sync_m = now_m - 10.0;
     fixture->state->last_cc_sync_time = time(NULL) - 10;
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m - 10.0;
+}
+
+static void
+matrix_mark_cc_reacquired(matrix_fixture* fixture) {
+    if (!fixture || !fixture->state) {
+        return;
+    }
+    double now_m = dsd_time_now_monotonic_s();
+    if (now_m <= fixture->state->last_cc_sync_time_m) {
+        now_m = fixture->state->last_cc_sync_time_m + 0.001;
+    }
+    fixture->state->last_cc_sync_time = time(NULL);
+    fixture->state->last_cc_sync_time_m = now_m;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m;
 }
 
 static int
@@ -388,6 +426,15 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
     }
 
     int rc = 0;
+    if (fixture->ctx.cc_tune_pending) {
+        const uint64_t request_id = fixture->ctx.cc_tune_request_id;
+        rc |= matrix_expect(request_id != 0U && fixture->ctx.t_cc_tune_m == 0.0, mode->name, flow->name, script->name,
+                            "pending return holds acquisition timer");
+        dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+        p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+        rc |= matrix_expect(fixture->ctx.cc_tune_pending == 0 && fixture->ctx.t_cc_tune_m > 0.0, mode->name, flow->name,
+                            script->name, "completed return starts acquisition timer");
+    }
     rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, flow->name, script->name, "returned to ON_CC");
     rc |= matrix_expect(fixture->opts->p25_is_tuned == 0 && fixture->opts->trunk_is_tuned == 0, mode->name, flow->name,
                         script->name, "tuned flags cleared");
@@ -410,6 +457,7 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
                         "post-return tick remains ON_CC");
     rc |= matrix_expect(g_hooks.cc_calls == cc_calls_before_post_return_tick, mode->name, flow->name, script->name,
                         "post-return tick does not hunt CC");
+    matrix_mark_cc_reacquired(fixture);
     return rc;
 }
 
@@ -697,6 +745,8 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
     (void)dsd_trunk_cc_candidates_add(fixture->state, candidate, 0);
     fixture->state->last_cc_sync_time = time(NULL) - 10;
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m - 10.0;
     fixture->ctx.t_cc_sync_m = now_m - 10.0;
 
     p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
@@ -710,6 +760,16 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
                             "accepted cc hunt returns ON_CC");
         rc |= matrix_expect(fixture->state->p25_cc_eval_freq == candidate, mode->name, "cc-hunt", result_name,
                             "accepted candidate is under evaluation");
+        if (first_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+            const uint64_t request_id = fixture->ctx.cc_tune_request_id;
+            rc |=
+                matrix_expect(fixture->ctx.cc_tune_pending == 1 && request_id != 0U && fixture->ctx.t_cc_tune_m == 0.0,
+                              mode->name, "cc-hunt", result_name, "pending hunt holds acquisition timer");
+            dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+            p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+            rc |= matrix_expect(fixture->ctx.cc_tune_pending == 0 && fixture->ctx.t_cc_tune_m > 0.0, mode->name,
+                                "cc-hunt", result_name, "completed hunt starts acquisition timer");
+        }
         return rc;
     }
 

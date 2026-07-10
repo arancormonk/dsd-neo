@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -54,12 +55,14 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <errno.h>
 #include <limits.h>
+#include <memory>
 #include <mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <utility>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -221,8 +224,10 @@ struct controller_state {
     dsd_cond_t hop{};
     dsd_mutex_t hop_m{};
     /* Marshalled retune request from external threads (UDP/API). */
+    int manual_retunes_accepting = 0;
     std::atomic<int> manual_retune_pending{0};
     uint32_t manual_retune_freq = 0U;
+    uint64_t manual_retune_token = 0U;
     RtlRetuneProfile manual_retune_profile{};
     /* Marshalled PPM correction updates stay on the controller thread so
      * device controls remain serialized with retunes/hops. */
@@ -260,6 +265,10 @@ struct controller_state {
     /* Request ID for matching completion signals to requests (prevents stale wakeups) */
     std::atomic<uint32_t> retune_request_id{0U};
     std::atomic<uint32_t> retune_complete_id{0U};
+    /* Untagged calls have no asynchronous callback. If their synchronous wait
+     * times out, keep consumer reads closed until this request completes. */
+    std::atomic<uint32_t> untagged_timeout_gate_request_id{0U};
+    std::atomic<int> live_output_read_active{0};
     uint32_t retune_complete_result_ids[kRetuneCompletionResultSlots]{};
     int retune_complete_results[kRetuneCompletionResultSlots]{};
     /* Last center frequency successfully applied by the controller thread. */
@@ -278,6 +287,24 @@ static struct dongle_state dongle;
 static struct output_state output;
 static struct output_state monitor_output;
 static struct controller_state controller;
+
+namespace {
+struct RtlTuneCompletionRegistration {
+    RtlTuneCompletionRegistration(rtl_stream_tune_completion_callback callback_in, void* user_data_in)
+        : callback(callback_in), user_data(user_data_in) {}
+
+    rtl_stream_tune_completion_callback callback;
+    void* user_data;
+    std::mutex in_flight_mutex;
+    std::condition_variable idle;
+    size_t in_flight = 0U;
+};
+} // namespace
+
+static std::mutex g_tune_completion_callback_mutex;
+static std::mutex g_tune_completion_callback_update_mutex;
+static std::shared_ptr<RtlTuneCompletionRegistration> g_tune_completion_registration;
+static thread_local const RtlTuneCompletionRegistration* g_active_tune_completion_registration = nullptr;
 static struct input_ring_state input_ring;
 static dsd_iq_capture_writer* g_iq_capture_writer = NULL;
 /* Controller can request a ring purge; consumer/demod performs the discard safely. */
@@ -695,14 +722,35 @@ rtl_replay_on_input_drained(void* user) {
     safe_cond_signal(&output.ready, &output.ready_m);
 }
 
+static uint64_t
+replay_acknowledge_consumed_generation(std::atomic<uint64_t>* last_consume_gen, uint64_t consumed_gen) {
+    if (!last_consume_gen) {
+        return 0U;
+    }
+
+    uint64_t acknowledged = last_consume_gen->load(std::memory_order_acquire);
+    while (acknowledged < consumed_gen
+           && !last_consume_gen->compare_exchange_weak(acknowledged, consumed_gen, std::memory_order_release,
+                                                       std::memory_order_acquire)) {}
+    return acknowledged < consumed_gen ? consumed_gen : acknowledged;
+}
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" uint64_t
+rtl_stream_test_replay_acknowledge_discarded_span(uint64_t submitted_gen, uint64_t consumed_gen) {
+    std::atomic<uint64_t> acknowledged{consumed_gen};
+    return replay_acknowledge_consumed_generation(&acknowledged, submitted_gen);
+}
+#endif
+
 static void
 replay_note_input_purge_consumed(void) {
     if (!stream_is_replay_active() || !g_stream) {
         return;
     }
 
-    uint64_t consumed_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
-    g_stream->replay_last_consume_gen.store(consumed_gen, std::memory_order_release);
+    uint64_t submitted_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
+    uint64_t consumed_gen = replay_acknowledge_consumed_generation(&g_stream->replay_last_consume_gen, submitted_gen);
     if (!g_stream->replay_input_eof.load(std::memory_order_acquire) || input_ring_used(&input_ring) != 0U) {
         return;
     }
@@ -3078,7 +3126,7 @@ demod_update_replay_drain_state(int replay_active, uint64_t consumed_gen) {
     if (!replay_active || !g_stream) {
         return;
     }
-    g_stream->replay_last_consume_gen.store(consumed_gen, std::memory_order_release);
+    uint64_t consumed_at = replay_acknowledge_consumed_generation(&g_stream->replay_last_consume_gen, consumed_gen);
     if (g_stream->replay_demod_drained.load(std::memory_order_acquire)) {
         return;
     }
@@ -3093,7 +3141,6 @@ demod_update_replay_drain_state(int replay_active, uint64_t consumed_gen) {
             dsd_mutex_unlock(&g_stream->replay_eof_m);
         }
     }
-    uint64_t consumed_at = g_stream->replay_last_consume_gen.load(std::memory_order_acquire);
     uint64_t eof_gen = g_stream->replay_last_submit_gen_at_eof.load(std::memory_order_acquire);
     if (input_drained && consumed_at >= eof_gen) {
         g_stream->replay_demod_drained.store(1, std::memory_order_release);
@@ -3104,6 +3151,21 @@ demod_update_replay_drain_state(int replay_active, uint64_t consumed_gen) {
         }
         safe_cond_signal(&output.ready, &output.ready_m);
     }
+}
+
+static void
+demod_discard_iteration_input(DemodInputSpan* span) {
+    demod_input_span_commit_reserved(span);
+    if (!stream_is_replay_active() || !g_stream) {
+        return;
+    }
+
+    /* Rewind/RESET boundaries wait for both an empty ring and the submitted
+     * generation to be acknowledged. A controller gate can discard the final
+     * reserved span, so publish that consumption even though it produced no
+     * demodulated output. */
+    uint64_t submitted_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
+    demod_update_replay_drain_state(1, submitted_gen);
 }
 
 static void
@@ -3273,16 +3335,17 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
         return 0;
     }
     if (!demod_enter_processing_block(&controller)) {
-        demod_input_span_commit_reserved(span);
+        demod_discard_iteration_input(span);
         return 0;
     }
     if (!demod_prepare_input_block(d, span)) {
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }
     if (controller.retune_in_progress.load(std::memory_order_acquire)
         || g_ring_purge_pending.load(std::memory_order_acquire)) {
-        demod_input_span_commit_direct(span);
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }
@@ -3291,19 +3354,19 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
     float input_max_abs = 0.0f;
     iq_block_abs_stats(span->input_block, span->got, &input_mean_abs, &input_max_abs, &input_pairs);
     if (retune_settle_should_discard(d, input_mean_abs, input_max_abs, input_pairs)) {
-        demod_input_span_commit_direct(span);
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }
     *retune_diag = demod_capture_retune_diag(input_mean_abs, input_max_abs, input_pairs);
     demod_autogain_update(d, input_mean_abs, input_max_abs);
     if (!controller.cold_start_ready.load(std::memory_order_acquire)) {
-        demod_input_span_commit_direct(span);
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }
     if (controller.retune_in_progress.load(std::memory_order_acquire)) {
-        demod_input_span_commit_direct(span);
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }
@@ -3361,7 +3424,6 @@ static DSD_THREAD_RETURN_TYPE
         rtl_monitor_side_tap_process(d);
         demod_log_retune_diag_block(d, span.got, &retune_diag);
         demod_input_span_release_direct(d, &span);
-        demod_update_replay_drain_state(replay_active, consumed_gen);
         uint64_t perf_metrics_ns = demod_metrics_process(d, perf_on);
         if (d->exit_flag) {
             exitflag = 1;
@@ -3370,6 +3432,11 @@ static DSD_THREAD_RETURN_TYPE
         uint64_t perf_output_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
         size_t perf_output_samples =
             controller.retune_in_progress.load(std::memory_order_acquire) ? 0U : demod_write_output_block(d, o);
+        /* A replay generation is consumed only after its demodulated output is
+         * committed. RESET/rewind boundaries use this generation to avoid
+         * entering the reconfigure gate between DSP processing and the output
+         * write, which would silently discard every pass of a short loop. */
+        demod_update_replay_drain_state(replay_active, consumed_gen);
         demod_perf_log_block(perf_on, perf_output_start_ns, perf_full_demod_ns, perf_metrics_ns, span.got,
                              perf_output_samples, d);
         demod_leave_processing_block(&controller);
@@ -3854,6 +3921,16 @@ replay_wait_for_input_purge_applied(void) {
     while (g_ring_purge_pending.load(std::memory_order_acquire) && !exitflag
            && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))
            && dsd_time_monotonic_ns() < deadline_ns) {
+        /* Replay callbacks run on the sole producer after the controller has
+         * waited for demod processing to go idle. If the ring is already
+         * empty, there is no consumer-owned tail to advance and no producer
+         * reservation that can race this acknowledgement. Waking a consumer
+         * blocked on an empty-ring predicate cannot make it observe the purge,
+         * so complete it here instead of paying the full timeout every loop. */
+        if (input_ring_used(&input_ring) == 0U && g_ring_purge_pending.exchange(0, std::memory_order_acq_rel)) {
+            replay_note_input_purge_consumed();
+            break;
+        }
         safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
         dsd_sleep_ms(1);
     }
@@ -3896,6 +3973,11 @@ rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
     uint32_t previous_center_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     int previous_rate_out_hz = demod.rate_out;
     DemodRetuneResetReason reset_reason = retune_reset_reason_from_name(event->reason);
+    /* Replay data before a RESET is already fully demodulated. Preserve that
+     * ordered output before the reconfigure gate clears the ring; otherwise a
+     * short fast-mode loop can continually erase its own output before the
+     * consumer gets scheduled. */
+    drain_output_on_retune();
     store_dongle_frequency(capture_hz);
     store_dongle_rate(event->sample_rate_hz);
     controller_enter_reconfigure_gate(&controller);
@@ -3904,7 +3986,6 @@ rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
                                     previous_center_hz, previous_rate_out_hz, NULL);
     controller_end_reconfigure(&controller);
     replay_wait_for_input_purge_applied();
-    drain_output_on_retune();
     g_replay_event_last_reset_reason.store((int)reset_reason, std::memory_order_release);
     g_replay_event_last_frequency_hz.store(center_hz, std::memory_order_release);
     g_replay_event_reset_count.fetch_add(1U, std::memory_order_acq_rel);
@@ -3916,12 +3997,14 @@ rtl_replay_on_loop_restart(const dsd_iq_replay_config* cfg, void* user) {
     if (!cfg) {
         return;
     }
+    /* Rewind is an ordered replay boundary. Let the consumer take the final
+     * output from this pass before restoring the capture's initial settings. */
+    drain_output_on_retune();
     controller_enter_reconfigure_gate(&controller);
     controller_request_input_purge();
     (void)controller_apply_replay_settings(&controller, g_stream ? g_stream->opts : NULL, cfg);
     controller_end_reconfigure(&controller);
     replay_wait_for_input_purge_applied();
-    drain_output_on_retune();
     g_replay_loop_restart_last_frequency_hz.store(controller.last_applied_freq_hz.load(std::memory_order_acquire),
                                                   std::memory_order_release);
     g_replay_loop_restart_count.fetch_add(1U, std::memory_order_acq_rel);
@@ -4063,12 +4146,19 @@ namespace {
 struct ControllerRetuneWork {
     int manual_pending = 0;
     uint32_t manual_freq_hz = 0U;
+    uint64_t manual_token = 0U;
     RtlRetuneProfile manual_profile{};
     int requested_ppm = 0;
     uint32_t requested_ppm_request_id = 0U;
     int ppm_pending = 0;
     int current_ppm = 0;
     int ppm_changed = 0;
+};
+
+struct ControllerRetuneCancellation {
+    int pending = 0;
+    uint32_t request_id = 0U;
+    uint64_t token = 0U;
 };
 } // namespace
 
@@ -4089,6 +4179,7 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     }
     work->manual_pending = 0;
     work->manual_freq_hz = 0;
+    work->manual_token = 0U;
     rtl_stream_clear_retune_profile(&work->manual_profile);
     dsd_mutex_lock(&s->hop_m);
     while (!s->manual_retune_pending.load(std::memory_order_acquire)
@@ -4103,7 +4194,10 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     work->manual_pending = s->manual_retune_pending.exchange(0, std::memory_order_acq_rel);
     if (work->manual_pending) {
         work->manual_freq_hz = s->manual_retune_freq;
+        work->manual_token = s->manual_retune_token;
         work->manual_profile = s->manual_retune_profile;
+        s->manual_retune_freq = 0U;
+        s->manual_retune_token = 0U;
         rtl_stream_clear_retune_profile(&s->manual_retune_profile);
     }
     work->requested_ppm = s->pending_ppm_error.load(std::memory_order_acquire);
@@ -4161,8 +4255,46 @@ controller_signal_manual_retune_complete(struct controller_state* s, int result)
     uint32_t request_id = s->retune_complete_id.load(std::memory_order_acquire) + 1U;
     controller_store_retune_completion_result_locked(s, request_id, result);
     s->retune_complete_id.store(request_id, std::memory_order_release);
+    uint32_t gated_request_id = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire);
+    /* Every terminal completion closes the timed-out request's read gate. A
+     * failed apply has already restored the prior capture settings and crossed
+     * the controller reconfigure/output boundary before completion is
+     * published, so retaining the gate cannot protect any additional state and
+     * would permanently block legacy decoder-driven tune paths. */
+    if (gated_request_id != 0U && request_id >= gated_request_id) {
+        s->untagged_timeout_gate_request_id.store(0U, std::memory_order_release);
+    }
     dsd_cond_broadcast(&s->retune_done_cond);
     dsd_mutex_unlock(&s->retune_done_m);
+}
+
+static void
+controller_gate_untagged_timeout(struct controller_state* s, uint32_t request_id) {
+    if (!s || request_id == 0U) {
+        return;
+    }
+
+    /* Preserve a newer gate if multiple untagged callers time out while
+     * requests are queued. Advancing the output generation invalidates both
+     * decoder-owned caches and a read that has copied samples but has not yet
+     * completed its consumer-side handoff. The active-reader handshake then
+     * waits for any in-progress ring copy to leave the shared output. */
+    uint32_t gated_request_id = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire);
+    int gate_advanced = 0;
+    while (gated_request_id == 0U || request_id > gated_request_id) {
+        if (s->untagged_timeout_gate_request_id.compare_exchange_weak(
+                gated_request_id, request_id, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            gate_advanced = 1;
+            break;
+        }
+    }
+    if (gate_advanced) {
+        rtl_stream_bump_output_generation();
+    }
+    rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
+    while (s->live_output_read_active.load(std::memory_order_acquire)) {
+        dsd_sleep_ms(1);
+    }
 }
 
 static int
@@ -4175,6 +4307,96 @@ controller_manual_retune_completion_result(int retune_rc, int reconfigured, uint
         return RTL_STREAM_TUNE_OK;
     }
     return RTL_STREAM_TUNE_FAILED;
+}
+
+static void
+rtl_stream_publish_tune_completion(uint64_t token, int result) {
+    if (token == 0U) {
+        return;
+    }
+    std::shared_ptr<RtlTuneCompletionRegistration> registration;
+    {
+        std::lock_guard<std::mutex> lock(g_tune_completion_callback_mutex);
+        registration = g_tune_completion_registration;
+        if (registration) {
+            std::lock_guard<std::mutex> in_flight_lock(registration->in_flight_mutex);
+            registration->in_flight++;
+        }
+    }
+    if (!registration) {
+        return;
+    }
+
+    const RtlTuneCompletionRegistration* previous_registration = g_active_tune_completion_registration;
+    g_active_tune_completion_registration = registration.get();
+    registration->callback(token, static_cast<rtl_stream_tune_result>(result), registration->user_data);
+    g_active_tune_completion_registration = previous_registration;
+
+    {
+        std::lock_guard<std::mutex> in_flight_lock(registration->in_flight_mutex);
+        registration->in_flight--;
+        if (registration->in_flight == 0U) {
+            registration->idle.notify_all();
+        }
+    }
+}
+
+static void
+controller_finish_manual_retune(struct controller_state* s, const ControllerRetuneWork* work, int result,
+                                int drain_output) {
+    if (!s || !work) {
+        return;
+    }
+    if (drain_output) {
+        drain_output_on_retune();
+    }
+    rtl_stream_publish_tune_completion(work->manual_token, result);
+    controller_signal_manual_retune_complete(s, result);
+}
+
+static ControllerRetuneCancellation
+controller_detach_queued_manual_retune(struct controller_state* s) {
+    ControllerRetuneCancellation cancelled = {};
+    if (!s) {
+        return cancelled;
+    }
+
+    dsd_mutex_lock(&s->hop_m);
+    s->manual_retunes_accepting = 0;
+    cancelled.pending = s->manual_retune_pending.exchange(0, std::memory_order_acq_rel);
+    if (cancelled.pending) {
+        cancelled.request_id = s->retune_request_id.load(std::memory_order_acquire);
+        cancelled.token = s->manual_retune_token;
+        s->manual_retune_freq = 0U;
+        s->manual_retune_token = 0U;
+        rtl_stream_clear_retune_profile(&s->manual_retune_profile);
+    }
+    dsd_mutex_unlock(&s->hop_m);
+    return cancelled;
+}
+
+static void
+controller_wake_retune_waiters(struct controller_state* s) {
+    if (!s) {
+        return;
+    }
+    dsd_mutex_lock(&s->retune_done_m);
+    dsd_cond_broadcast(&s->retune_done_cond);
+    dsd_mutex_unlock(&s->retune_done_m);
+}
+
+static void
+controller_finish_cancelled_manual_retune(struct controller_state* s, const ControllerRetuneCancellation* cancelled) {
+    if (!s || !cancelled || !cancelled->pending) {
+        return;
+    }
+    uint32_t next_completion_id = s->retune_complete_id.load(std::memory_order_acquire) + 1U;
+    if (next_completion_id != cancelled->request_id) {
+        LOG_ERROR("Cancelled retune completion out of order: request=%u next=%u.\n", cancelled->request_id,
+                  next_completion_id);
+    }
+    rtl_stream_publish_tune_completion(cancelled->token, RTL_STREAM_TUNE_FAILED);
+    controller_signal_manual_retune_complete(s, RTL_STREAM_TUNE_FAILED);
 }
 
 static int
@@ -4195,10 +4417,7 @@ controller_process_manual_retune(struct controller_state* s, const ControllerRet
     uint32_t applied_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
     int completion_result =
         controller_manual_retune_completion_result(retune_rc, reconfigured, target_hz, applied_freq_hz);
-    controller_signal_manual_retune_complete(s, completion_result);
-    if (retune_rc == 0 || reconfigured) {
-        drain_output_on_retune();
-    }
+    controller_finish_manual_retune(s, work, completion_result, retune_rc == 0 || reconfigured);
     if (retune_rc != 0 && completion_result == RTL_STREAM_TUNE_OK) {
         LOG_NOTICE("Retune applied with warning: %u Hz (rc=%d).\n", target_hz, retune_rc);
     } else if (retune_rc != 0) {
@@ -4836,8 +5055,10 @@ controller_init(struct controller_state* s) {
     s->wb_mode = 0;
     dsd_cond_init(&s->hop);
     dsd_mutex_init(&s->hop_m);
+    s->manual_retunes_accepting = 1;
     s->manual_retune_pending.store(0);
     s->manual_retune_freq = 0;
+    s->manual_retune_token = 0U;
     rtl_stream_clear_retune_profile(&s->manual_retune_profile);
     s->ppm_change_pending.store(0);
     s->pending_ppm_error.store(0);
@@ -4858,6 +5079,8 @@ controller_init(struct controller_state* s) {
     s->retune_done_flag.store(0);
     s->retune_request_id.store(0);
     s->retune_complete_id.store(0);
+    s->untagged_timeout_gate_request_id.store(0);
+    s->live_output_read_active.store(0);
     controller_clear_retune_completion_results(s);
     s->last_applied_freq_hz.store(0, std::memory_order_release);
     s->reconfigure_seq.store(0, std::memory_order_release);
@@ -4945,23 +5168,33 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
 /**
  * @brief Enqueue a manual retune on the controller thread and return its request ID.
  *
- * Coalesces callers when a retune is already pending (controller has not yet
- * consumed the request) so that completion IDs track the number of retunes
- * actually executed. This prevents synchronous waiters from timing out when
- * multiple retune requests arrive faster than the controller loop can service
- * them.
+ * Coalesces compatible callers when a retune is already pending (controller
+ * has not yet consumed the request) so completion IDs track the number of
+ * retunes actually executed. A queued tagged request rejects a different
+ * owner instead of losing its completion token.
  *
  * @param target_freq_hz Desired center frequency in Hz.
- * @return Request ID that will be completed once the queued retune finishes.
+ * @return Request ID completed after the queued retune, or zero when deferred.
  */
 static uint32_t
-schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target_freq_hz) {
+schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target_freq_hz, uint64_t caller_token = 0U) {
     if (!s) {
         return 0U;
     }
+    if (s == &controller && g_stream && !g_stream->controller_thread_started.load(std::memory_order_acquire)) {
+        return 0U;
+    }
     dsd_mutex_lock(&s->hop_m);
+    if (!s->manual_retunes_accepting) {
+        dsd_mutex_unlock(&s->hop_m);
+        return 0U;
+    }
     uint32_t request_id = s->retune_request_id.load(std::memory_order_acquire);
     int pending = s->manual_retune_pending.load(std::memory_order_acquire);
+    if (pending && s->manual_retune_token != 0U && s->manual_retune_token != caller_token) {
+        dsd_mutex_unlock(&s->hop_m);
+        return 0U;
+    }
     if (!pending) {
         request_id = s->retune_request_id.fetch_add(1, std::memory_order_acq_rel) + 1;
         s->manual_retune_pending.store(1, std::memory_order_release);
@@ -4969,6 +5202,7 @@ schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target
     }
     /* Update/override target frequency even when coalescing into an existing pending retune. */
     s->manual_retune_freq = target_freq_hz;
+    s->manual_retune_token = caller_token;
     (void)rtl_stream_take_pending_retune_profile(&s->manual_retune_profile, request_id, target_freq_hz);
     dsd_cond_signal(&s->hop);
     dsd_mutex_unlock(&s->hop_m);
@@ -4978,6 +5212,11 @@ schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target
 static uint32_t
 schedule_manual_retune(uint32_t target_freq_hz) {
     return schedule_manual_retune_on_controller(&controller, target_freq_hz);
+}
+
+static uint32_t
+schedule_manual_retune_tagged(uint32_t target_freq_hz, uint64_t caller_token) {
+    return schedule_manual_retune_on_controller(&controller, target_freq_hz, caller_token);
 }
 
 static void
@@ -6224,6 +6463,7 @@ dsd_rtl_stream_open(dsd_opts* opts) {
 extern "C" void
 dsd_rtl_stream_close(void) {
     LOG_INFO("cleaning up...\n");
+    ControllerRetuneCancellation cancelled_retune = {};
     rtl_stream_bump_output_generation();
     if (g_stream) {
         g_stream->replay_forced_stop.store(1, std::memory_order_release);
@@ -6232,6 +6472,10 @@ dsd_rtl_stream_close(void) {
             dsd_opts* mutable_opts = const_cast<dsd_opts*>(g_stream->opts);
             mutable_opts->iq_replay_active = 0;
         }
+    }
+    if (g_stream) {
+        cancelled_retune = controller_detach_queued_manual_retune(&controller);
+        controller_wake_retune_waiters(&controller);
     }
     LOG_INFO("Output ring: write_timeouts=%llu read_timeouts=%llu\n", (unsigned long long)output.write_timeouts.load(),
              (unsigned long long)output.read_timeouts.load());
@@ -6266,6 +6510,7 @@ dsd_rtl_stream_close(void) {
         dsd_thread_join(controller.thread);
         g_stream->controller_thread_started.store(0, std::memory_order_release);
     }
+    controller_finish_cancelled_manual_retune(&controller, &cancelled_retune);
     stream_close_capture_writer();
 
     rtl_demod_cleanup(&demod);
@@ -6292,6 +6537,7 @@ dsd_rtl_stream_close(void) {
 extern "C" int
 dsd_rtl_stream_soft_stop(void) {
     LOG_INFO("soft stopping...\n");
+    ControllerRetuneCancellation cancelled_retune = {};
     rtl_stream_bump_output_generation();
     if (g_stream) {
         g_stream->replay_forced_stop.store(1, std::memory_order_release);
@@ -6300,6 +6546,10 @@ dsd_rtl_stream_soft_stop(void) {
             dsd_opts* mutable_opts = const_cast<dsd_opts*>(g_stream->opts);
             mutable_opts->iq_replay_active = 0;
         }
+    }
+    if (g_stream) {
+        cancelled_retune = controller_detach_queued_manual_retune(&controller);
+        controller_wake_retune_waiters(&controller);
     }
     if (g_udp_ctrl) {
         udp_control_stop(g_udp_ctrl);
@@ -6328,6 +6578,7 @@ dsd_rtl_stream_soft_stop(void) {
         dsd_thread_join(controller.thread);
         g_stream->controller_thread_started.store(0, std::memory_order_release);
     }
+    controller_finish_cancelled_manual_retune(&controller, &cancelled_retune);
     stream_close_capture_writer();
 
     rtl_demod_cleanup(&demod);
@@ -6544,6 +6795,70 @@ rtl_stream_replay_mark_output_drained(void) {
 }
 
 static int
+rtl_stream_read_live_available(struct controller_state* s, struct output_state* outp, float* out, size_t count,
+                               int* out_gated) {
+    if (!s || !outp || !out_gated) {
+        return -1;
+    }
+
+    *out_gated = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
+    if (*out_gated) {
+        return 0;
+    }
+
+    s->live_output_read_active.fetch_add(1, std::memory_order_acq_rel);
+    uint32_t generation_before = g_rtl_output_generation.load(std::memory_order_acquire);
+    *out_gated = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
+    int got = *out_gated ? 0 : ring_read_available(outp, out, count);
+    uint32_t generation_after = g_rtl_output_generation.load(std::memory_order_acquire);
+    *out_gated = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
+    if (*out_gated || generation_after != generation_before) {
+        got = 0;
+    }
+    s->live_output_read_active.fetch_sub(1, std::memory_order_acq_rel);
+    /* The timeout thread may install its gate after the pre-release checks but
+     * before observing the reader count reach zero. Reject that handoff here;
+     * the orchestrator also validates this generation after the call returns. */
+    *out_gated = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U;
+    generation_after = g_rtl_output_generation.load(std::memory_order_acquire);
+    if (*out_gated || generation_after != generation_before) {
+        got = 0;
+    }
+    return got;
+}
+
+static int
+rtl_stream_read_live_samples(float* out, size_t count) {
+    for (;;) {
+        if (!output.buffer || exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+            return -1;
+        }
+
+        int gated = 0;
+        int got = rtl_stream_read_live_available(&controller, &output, out, count, &gated);
+        if (got != 0) {
+            return got;
+        }
+
+        if (gated) {
+            dsd_mutex_lock(&controller.retune_done_m);
+            if (controller.untagged_timeout_gate_request_id.load(std::memory_order_acquire) != 0U) {
+                (void)dsd_cond_timedwait(&controller.retune_done_cond, &controller.retune_done_m, 10);
+            }
+            dsd_mutex_unlock(&controller.retune_done_m);
+            continue;
+        }
+
+        dsd_mutex_lock(&output.ready_m);
+        int wait_rc = dsd_cond_timedwait(&output.ready, &output.ready_m, 10);
+        dsd_mutex_unlock(&output.ready_m);
+        if (wait_rc != 0) {
+            output.read_timeouts.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+}
+
+static int
 rtl_stream_read_live(float* out, size_t count, dsd_opts* opts, const dsd_state* state) {
     sync_requested_ppm_after_failed_apply(opts);
     auto_ppm_maybe_adjust(opts, state);
@@ -6551,7 +6866,7 @@ rtl_stream_read_live(float* out, size_t count, dsd_opts* opts, const dsd_state* 
 
     int perf_on = rtl_perf_enabled();
     uint64_t perf_read_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
-    int got = ring_read_batch(&output, out, count);
+    int got = rtl_stream_read_live_samples(out, count);
     if (got <= 0) {
         return -1;
     }
@@ -7505,15 +7820,23 @@ rtl_stream_tune_apply_completion_result(int rc, int completion, uint32_t request
 }
 
 static int
-rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq) {
+rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq, int tagged_request) {
     int rc = RTL_STREAM_TUNE_OK;
     int completion = RTL_STREAM_TUNE_OK;
     const uint64_t deadline_ns = dsd_time_monotonic_ns() + 500000000ULL;
     dsd_mutex_lock(&controller.retune_done_m);
     while (controller.retune_complete_id.load(std::memory_order_acquire) < request_id) {
+        if (!tagged_request && (exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire)))) {
+            rtl_stream_log_tune_warning(requested_freq, "shutdown");
+            rc = RTL_STREAM_TUNE_FAILED;
+            break;
+        }
         uint64_t now_ns = dsd_time_monotonic_ns();
         if (now_ns >= deadline_ns) {
             rtl_stream_log_tune_warning(requested_freq, "timeout");
+            if (!tagged_request) {
+                controller_gate_untagged_timeout(&controller, request_id);
+            }
             rc = RTL_STREAM_TUNE_TIMEOUT;
             break;
         }
@@ -7526,11 +7849,6 @@ rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq
         if (wait_rc != 0) {
             continue;
         }
-        if (exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_relaxed))) {
-            rtl_stream_log_tune_warning(requested_freq, "shutdown");
-            rc = RTL_STREAM_TUNE_FAILED;
-            break;
-        }
     }
     if (rc == RTL_STREAM_TUNE_OK
         && !controller_load_retune_completion_result_locked(&controller, request_id, &completion)) {
@@ -7539,11 +7857,6 @@ rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq
     }
     dsd_mutex_unlock(&controller.retune_done_m);
     return rtl_stream_tune_apply_completion_result(rc, completion, requested_freq);
-}
-
-static int
-rtl_stream_tune_result_needs_output_drain(int rc) {
-    return rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT;
 }
 
 static void
@@ -7580,8 +7893,11 @@ rtl_stream_tune_reconcile_result(dsd_opts* opts, uint32_t requested_freq, int rc
     }
 }
 
-extern "C" int
-dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
+static int
+rtl_stream_tune_impl(dsd_opts* opts, long int frequency, uint64_t caller_token) {
+    if (!opts) {
+        return RTL_STREAM_TUNE_FAILED;
+    }
     if (stream_is_replay_active()) {
         static std::atomic<uint64_t> s_last_notice_ns{0};
         uint64_t now_ns = dsd_time_monotonic_ns();
@@ -7600,25 +7916,64 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
         LOG_INFO("\nTuning to %ld Hz.", frequency);
     }
     uint32_t requested_freq = (uint32_t)frequency;
-    opts->rtlsdr_center_freq = frequency;
-    store_dongle_frequency(requested_freq);
 
     /* Enqueue retune, coalescing with any already-pending request so completion IDs
      * stay aligned with the number of retunes the controller will actually execute. */
-    uint32_t my_request_id = schedule_manual_retune(requested_freq);
+    uint32_t my_request_id = (caller_token != 0U) ? schedule_manual_retune_tagged(requested_freq, caller_token)
+                                                  : schedule_manual_retune(requested_freq);
+    if (my_request_id == 0U) {
+        return RTL_STREAM_TUNE_DEFERRED;
+    }
+    opts->rtlsdr_center_freq = frequency;
 
     if (opts->payload == 1) {
         LOG_INFO(" (Center Frequency: %u Hz.) \n", requested_freq);
     }
 
-    int rc = rtl_stream_tune_wait_for_completion(my_request_id, requested_freq);
+    int rc = rtl_stream_tune_wait_for_completion(my_request_id, requested_freq, caller_token != 0U);
 
     rtl_stream_tune_reconcile_result(opts, requested_freq, rc);
-    if (rtl_stream_tune_result_needs_output_drain(rc)) {
-        /* Honor drain/clear policy for API-triggered tunes and accepted-but-pending timeout paths. */
-        drain_output_on_retune();
-    }
     return rc;
+}
+
+extern "C" int
+dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
+    return rtl_stream_tune_impl(opts, frequency, 0U);
+}
+
+extern "C" int
+dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t token) {
+    if (token == 0U) {
+        return RTL_STREAM_TUNE_FAILED;
+    }
+    return rtl_stream_tune_impl(opts, frequency, token);
+}
+
+extern "C" void
+dsd_rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data) {
+    /* Serialize replacement through prior-registration quiescence so a later
+     * registrar cannot overtake one that is still waiting on an older callback. */
+    std::lock_guard<std::mutex> update_lock(g_tune_completion_callback_update_mutex);
+    std::shared_ptr<RtlTuneCompletionRegistration> replacement;
+    if (callback) {
+        replacement = std::make_shared<RtlTuneCompletionRegistration>(callback, user_data);
+    }
+
+    std::shared_ptr<RtlTuneCompletionRegistration> previous;
+    {
+        std::lock_guard<std::mutex> lock(g_tune_completion_callback_mutex);
+        previous = std::move(g_tune_completion_registration);
+        g_tune_completion_registration = std::move(replacement);
+    }
+
+    /* A completion callback must not register or unregister callbacks. Avoid
+     * self-deadlock if a client violates that contract; the current callback
+     * still owns its user_data until it returns. */
+    if (!previous || g_active_tune_completion_registration == previous.get()) {
+        return;
+    }
+    std::unique_lock<std::mutex> in_flight_lock(previous->in_flight_mutex);
+    previous->idle.wait(in_flight_lock, [&previous] { return previous->in_flight == 0U; });
 }
 
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
@@ -7782,9 +8137,10 @@ dsd_rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samp
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
 
     *out_generation_before = dsd_rtl_stream_output_generation();
-    if (rtl_stream_tune_result_needs_output_drain(tune_result)) {
-        drain_output_on_retune();
-    }
+    /* Tune callers never own this boundary, including after a synchronous
+     * wait timeout. The controller drains output before it publishes the
+     * terminal completion for the queued request. */
+    (void)tune_result;
     *out_generation_after = dsd_rtl_stream_output_generation();
     *out_used_after = ring_used(&output);
     *out_cache_pending_after = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
@@ -7795,6 +8151,65 @@ dsd_rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samp
         output_cleanup(&output);
     }
     return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
+                                               size_t* out_used_while_pending, int* out_read_after_failed_completion,
+                                               int* out_read_after_recovery, uint32_t* out_generation_before,
+                                               uint32_t* out_generation_after_gate) {
+    if (queued_samples == 0U || !out_read_while_pending || !out_used_while_pending || !out_read_after_failed_completion
+        || !out_read_after_recovery || !out_generation_before || !out_generation_after_gate) {
+        return -1;
+    }
+
+    output_state test_output = {};
+    output_init(&test_output);
+    if (!test_output.buffer || queued_samples >= test_output.capacity) {
+        if (test_output.buffer) {
+            output_cleanup(&test_output);
+        }
+        return -2;
+    }
+
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    test_output.tail.store(0U, std::memory_order_release);
+    test_output.head.store(queued_samples, std::memory_order_release);
+
+    *out_generation_before = dsd_rtl_stream_output_generation();
+    controller_gate_untagged_timeout(&test_controller, 1U);
+    *out_generation_after_gate = dsd_rtl_stream_output_generation();
+    float sample = 0.0f;
+    int gated = 0;
+    *out_read_while_pending = rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated);
+    *out_used_while_pending = ring_used(&test_output);
+
+    controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_FAILED);
+    /* A failed controller apply has restored the previous capture state and
+     * cleared the pre-apply output boundary. Model fresh output produced after
+     * that recovery rather than exposing the pre-timeout samples. */
+    ring_clear(&test_output);
+    test_output.tail.store(0U, std::memory_order_release);
+    test_output.head.store(1U, std::memory_order_release);
+    int gated_after_failure = 0;
+    *out_read_after_failed_completion =
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated_after_failure);
+
+    /* A later timed-out request can install a fresh gate. Its successful
+     * controller boundary reopens reads for replacement output. */
+    controller_gate_untagged_timeout(&test_controller, 2U);
+    ring_clear(&test_output);
+    test_output.tail.store(0U, std::memory_order_release);
+    test_output.head.store(1U, std::memory_order_release);
+    controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_OK);
+    int gated_after_recovery = 0;
+    *out_read_after_recovery =
+        rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated_after_recovery);
+
+    controller_cleanup(&test_controller);
+    output_cleanup(&test_output);
+    return (gated && !gated_after_failure && !gated_after_recovery) ? 0 : -3;
 }
 
 extern "C" int
@@ -8648,6 +9063,159 @@ dsd_rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int ca
     fsk_reacquire_test_reset_output_state();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return 0;
+}
+
+static int
+rtl_stream_tagged_completion_test_args_valid(uint64_t first_token, uint64_t second_token,
+                                             const uint64_t* out_coalesced_token, const uint32_t* out_generation_before,
+                                             const uint32_t* out_generation_after) {
+    return (first_token != 0U || second_token != 0U) && out_coalesced_token && out_generation_before
+           && out_generation_after;
+}
+
+static int
+rtl_stream_tagged_completion_test_result_valid(uint64_t first_token, uint64_t second_token, uint32_t first_request_id,
+                                               uint32_t second_request_id, uint64_t completed_token,
+                                               int completion_found, int completion_result) {
+    const int second_is_conflict = first_token != 0U && first_token != second_token;
+    const uint32_t expected_second_request_id = second_is_conflict ? 0U : first_request_id;
+    const uint64_t expected_token = second_is_conflict ? first_token : second_token;
+    return first_request_id != 0U && second_request_id == expected_second_request_id
+           && completed_token == expected_token && completion_found && completion_result == RTL_STREAM_TUNE_OK;
+}
+
+extern "C" int
+dsd_rtl_stream_test_tagged_completion_boundary(uint64_t first_token, uint64_t second_token, size_t queued_samples,
+                                               uint64_t* out_coalesced_token, uint32_t* out_generation_before,
+                                               uint32_t* out_generation_after) {
+    if (!rtl_stream_tagged_completion_test_args_valid(first_token, second_token, out_coalesced_token,
+                                                      out_generation_before, out_generation_after)) {
+        return -1;
+    }
+
+    int initialized_output = 0;
+    int prepare_rc = fsk_reacquire_test_prepare_output_ring(queued_samples, &initialized_output);
+    if (prepare_rc != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return prepare_rc;
+    }
+
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    uint32_t first_request_id = schedule_manual_retune_on_controller(&test_controller, 855000000U, first_token);
+    uint32_t second_request_id = schedule_manual_retune_on_controller(&test_controller, 851000000U, second_token);
+    ControllerRetuneWork work = {};
+    if (!controller_wait_for_retune_work(&test_controller, &work) || !work.manual_pending) {
+        controller_cleanup(&test_controller);
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+
+    ring_clear(&output);
+    output.tail.store(0U, std::memory_order_release);
+    output.head.store(queued_samples, std::memory_order_release);
+    *out_coalesced_token = work.manual_token;
+    *out_generation_before = dsd_rtl_stream_output_generation();
+    controller_finish_manual_retune(&test_controller, &work, RTL_STREAM_TUNE_OK, 1);
+    *out_generation_after = dsd_rtl_stream_output_generation();
+
+    int completion_result = RTL_STREAM_TUNE_FAILED;
+    dsd_mutex_lock(&test_controller.retune_done_m);
+    int completion_found =
+        controller_load_retune_completion_result_locked(&test_controller, first_request_id, &completion_result);
+    dsd_mutex_unlock(&test_controller.retune_done_m);
+
+    controller_cleanup(&test_controller);
+    ring_clear(&output);
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    if (!rtl_stream_tagged_completion_test_result_valid(first_token, second_token, first_request_id, second_request_id,
+                                                        work.manual_token, completion_found, completion_result)) {
+        return -3;
+    }
+    return 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_cancel_queued_tagged_retune(uint64_t token, int* out_pending_after, int* out_completion_result) {
+    if (token == 0U || !out_pending_after || !out_completion_result) {
+        return -1;
+    }
+
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    uint32_t request_id = schedule_manual_retune_on_controller(&test_controller, 855000000U, token);
+    ControllerRetuneCancellation cancelled = controller_detach_queued_manual_retune(&test_controller);
+    uint32_t rejected_request_id = schedule_manual_retune_on_controller(&test_controller, 851000000U, token + 1U);
+    *out_pending_after = test_controller.manual_retune_pending.load(std::memory_order_acquire);
+    controller_finish_cancelled_manual_retune(&test_controller, &cancelled);
+
+    int completion_found = 0;
+    dsd_mutex_lock(&test_controller.retune_done_m);
+    completion_found =
+        controller_load_retune_completion_result_locked(&test_controller, request_id, out_completion_result);
+    dsd_mutex_unlock(&test_controller.retune_done_m);
+    controller_cleanup(&test_controller);
+
+    return (request_id != 0U && cancelled.pending && cancelled.request_id == request_id && rejected_request_id == 0U
+            && completion_found)
+               ? 0
+               : -2;
+}
+
+extern "C" int
+dsd_rtl_stream_test_cancel_queued_tagged_retune_order(uint64_t active_token, uint64_t queued_token,
+                                                      int* out_active_result, int* out_cancelled_result) {
+    if (active_token == 0U || queued_token == 0U || active_token == queued_token || !out_active_result
+        || !out_cancelled_result) {
+        return -1;
+    }
+
+    controller_state test_controller = {};
+    controller_init(&test_controller);
+    uint32_t active_request_id = schedule_manual_retune_on_controller(&test_controller, 855000000U, active_token);
+    ControllerRetuneWork active = {};
+    if (!controller_wait_for_retune_work(&test_controller, &active) || !active.manual_pending) {
+        controller_cleanup(&test_controller);
+        return -2;
+    }
+    uint32_t queued_request_id = schedule_manual_retune_on_controller(&test_controller, 851000000U, queued_token);
+    ControllerRetuneCancellation cancelled = controller_detach_queued_manual_retune(&test_controller);
+    uint32_t rejected_request_id = schedule_manual_retune_on_controller(&test_controller, 852000000U, queued_token);
+
+    controller_finish_manual_retune(&test_controller, &active, RTL_STREAM_TUNE_OK, 0);
+    controller_finish_cancelled_manual_retune(&test_controller, &cancelled);
+
+    int active_found = 0;
+    int cancelled_found = 0;
+    dsd_mutex_lock(&test_controller.retune_done_m);
+    active_found =
+        controller_load_retune_completion_result_locked(&test_controller, active_request_id, out_active_result);
+    cancelled_found =
+        controller_load_retune_completion_result_locked(&test_controller, queued_request_id, out_cancelled_result);
+    dsd_mutex_unlock(&test_controller.retune_done_m);
+    controller_cleanup(&test_controller);
+
+    return (active_request_id != 0U && queued_request_id == active_request_id + 1U && cancelled.pending
+            && cancelled.request_id == queued_request_id && rejected_request_id == 0U && active_found
+            && cancelled_found)
+               ? 0
+               : -3;
+}
+
+extern "C" int
+dsd_rtl_stream_test_tune_completion_callback_registered(void) {
+    std::lock_guard<std::mutex> lock(g_tune_completion_callback_mutex);
+    return g_tune_completion_registration ? 1 : 0;
+}
+
+extern "C" int
+dsd_rtl_stream_test_retune_without_controller_rejected(void) {
+    RtlSdrInternals* previous_stream = g_stream;
+    g_cqpsk_toggle_test_stream.controller_thread_started.store(0, std::memory_order_release);
+    g_stream = &g_cqpsk_toggle_test_stream;
+    uint32_t request_id = schedule_manual_retune_on_controller(&controller, 855000000U, UINT64_C(0x1234));
+    g_stream = previous_stream;
+    return request_id == 0U ? 1 : 0;
 }
 
 extern "C" int

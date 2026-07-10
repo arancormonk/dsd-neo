@@ -49,6 +49,19 @@ typedef enum DSD_ATTR_PACKED rtl_stream_tune_result {
     RTL_STREAM_TUNE_TIMEOUT = -2,
 } rtl_stream_tune_result;
 
+/**
+ * @brief Completion notification for a tagged RTL tune request.
+ *
+ * The callback runs on the RTL controller thread after the hardware/DSP
+ * reconfigure and configured output drain have completed. Implementations
+ * must not block or call back into the RTL tuning API.
+ *
+ * @param token Caller-provided token from rtl_stream_tune_tagged().
+ * @param result Final result of the coalesced controller request.
+ * @param user_data Opaque pointer supplied at registration time.
+ */
+typedef void (*rtl_stream_tune_completion_callback)(uint64_t token, rtl_stream_tune_result result, void* user_data);
+
 /* Lifecycle */
 /**
  * @brief Create a new RTL-SDR stream context from an immutable options snapshot.
@@ -113,6 +126,36 @@ int rtl_stream_destroy(RtlSdrContext* ctx);
  * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
  */
 int rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz);
+
+/**
+ * @brief Tune to a new center frequency and tag its asynchronous completion.
+ *
+ * A queued tagged tune owns its controller request until completion. Another
+ * tune with a different token, including an untagged tune, is deferred instead
+ * of replacing that request. Untagged queued work may still be upgraded to a
+ * tagged request. A token of zero is reserved for untagged requests and is
+ * rejected by this entry point.
+ *
+ * @param ctx Stream context.
+ * @param center_freq_hz New center frequency in Hz.
+ * @param token Non-zero caller token returned unchanged to the completion callback.
+ * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
+ */
+int rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t token);
+
+/**
+ * @brief Register the process-wide tagged tune completion callback.
+ *
+ * Replaces any prior registration. Pass NULL to clear the callback. Replacement
+ * and unregistration wait for invocations of the previous callback to finish,
+ * so its user_data may be released after this function returns. A completion
+ * callback must not call this function or another RTL tuning entry point.
+ *
+ * @param callback Completion callback, or NULL to unregister.
+ * @param user_data Opaque callback context.
+ */
+void rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data);
+
 /**
  * @brief Publish a live RTL PPM request and assign it a fresh request generation.
  *
@@ -402,6 +445,14 @@ int rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samp
                                              uint32_t* out_generation_before, uint32_t* out_generation_after);
 
 /**
+ * @brief Verify an untagged timeout invalidates stale reads and reopens after terminal completion.
+ */
+int rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
+                                               size_t* out_used_while_pending, int* out_read_after_failed_completion,
+                                               int* out_read_after_recovery, uint32_t* out_generation_before,
+                                               uint32_t* out_generation_after_gate);
+
+/**
  * @brief Seed output/cache counts, clear output, and report the resulting state.
  */
 int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
@@ -438,6 +489,15 @@ int rtl_stream_test_mode_policy_matrix(int* out_values, size_t count);
 int rtl_stream_test_fsk_profile_policy_matrix(int* out_profiles, size_t count);
 
 /**
+ * @brief Acknowledge the submit generation of a replay span discarded by the demodulator.
+ *
+ * Returns the resulting monotonic consume generation. This models the
+ * generation side of a RESET/rewind boundary after the discarded span has
+ * emptied the input ring.
+ */
+uint64_t rtl_stream_test_replay_acknowledge_discarded_span(uint64_t submitted_gen, uint64_t consumed_gen);
+
+/**
  * @brief Seed output/cache state, request FSK reacquire, and consume pending reset.
  */
 int rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols, size_t* out_used_after,
@@ -457,6 +517,17 @@ int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* 
 int rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
                                                         uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
                                                         uint32_t* out_coalesced_request_id);
+
+/**
+ * @brief Exercise tagged/untagged queued-retune ownership and completion.
+ *
+ * The helper seeds queued output so tests can verify callback publication
+ * happens after the output generation boundary. A zero token simulates an
+ * untagged request; a queued tagged request rejects a different owner.
+ */
+int rtl_stream_test_tagged_completion_boundary(uint64_t first_token, uint64_t second_token, size_t queued_samples,
+                                               uint64_t* out_coalesced_token, uint32_t* out_generation_before,
+                                               uint32_t* out_generation_after);
 
 /**
  * @brief Verify queued retune gain settings are copied onto their scheduled request.

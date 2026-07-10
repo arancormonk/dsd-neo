@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/rtl_stream.h>
 #include <memory>
+#include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -17,6 +18,8 @@ struct StubState {
     int tune_rc;
     int read_rc;
     unsigned int output_rate;
+    uint32_t output_generation;
+    int invalidate_first_read;
     int requested_ppm;
     int open_calls;
     int soft_stop_calls;
@@ -32,6 +35,7 @@ struct StubState {
     dsd_opts* last_unregistered_active;
     dsd_opts* last_unregistered_caller;
     long int last_tune_hz;
+    uint64_t last_tune_token;
     size_t last_read_count;
 };
 
@@ -41,6 +45,7 @@ static void
 reset_stubs(void) {
     g_stub = {};
     g_stub.output_rate = 48000U;
+    g_stub.output_generation = 1U;
 }
 
 static std::unique_ptr<dsd_opts>
@@ -106,7 +111,15 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* s
     g_stub.read_calls++;
     g_stub.last_open_opts = opts;
     g_stub.last_read_count = count;
+    if (g_stub.invalidate_first_read && g_stub.read_calls == 1) {
+        g_stub.output_generation++;
+    }
     return g_stub.read_rc;
+}
+
+extern "C" uint32_t
+dsd_rtl_stream_output_generation(void) {
+    return g_stub.output_generation;
 }
 
 extern "C" int
@@ -114,6 +127,15 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
     g_stub.tune_calls++;
     g_stub.last_open_opts = opts;
     g_stub.last_tune_hz = frequency;
+    return g_stub.tune_rc;
+}
+
+extern "C" int
+dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t token) {
+    g_stub.tune_calls++;
+    g_stub.last_open_opts = opts;
+    g_stub.last_tune_hz = frequency;
+    g_stub.last_tune_token = token;
     return g_stub.tune_rc;
 }
 
@@ -233,6 +255,8 @@ test_start_failure_and_prestart_errors(void) {
     rc |= expect_int_eq("failed start does not soft stop", g_stub.soft_stop_calls, 0);
     rc |= expect_int_eq("prestart tune rejected", stream.tune(851000000U), -1);
     rc |= expect_int_eq("prestart tune does not call legacy tune", g_stub.tune_calls, 0);
+    rc |= expect_int_eq("prestart tagged tune rejected", stream.tune_tagged(851000000U, 41U), -1);
+    rc |= expect_int_eq("prestart tagged tune does not call legacy tune", g_stub.tune_calls, 0);
 
     float sample = 0.0f;
     int got = 123;
@@ -257,6 +281,14 @@ test_tune_read_and_ppm_error_propagation(void) {
     g_stub.tune_rc = 0;
     rc |= expect_int_eq("tune success clears last error", stream.tune(851025000U), 0);
     rc |= expect_int_eq("tune success last error", stream.last_error_code(), 0);
+    rc |= expect_int_eq("tagged tune rejects zero token", stream.tune_tagged(851037500U, 0U), -1);
+    rc |= expect_int_eq("tagged tune forwards result", stream.tune_tagged(851050000U, UINT64_C(0x123456789ABC)), 0);
+    rc |= expect_int_eq("tagged tune records frequency", (int)g_stub.last_tune_hz, 851050000);
+    if (g_stub.last_tune_token != UINT64_C(0x123456789ABC)) {
+        DSD_FPRINTF(stderr, "tagged tune token: got=%llu want=%llu\n", (unsigned long long)g_stub.last_tune_token,
+                    (unsigned long long)UINT64_C(0x123456789ABC));
+        rc = 1;
+    }
 
     float samples[4] = {};
     int got = 0;
@@ -264,6 +296,14 @@ test_tune_read_and_ppm_error_propagation(void) {
     rc |= expect_int_eq("read success", stream.read(samples, 4U, got), 0);
     rc |= expect_int_eq("read returns got count", got, 3);
     rc |= expect_int_eq("read records count", (int)g_stub.last_read_count, 4);
+
+    g_stub.read_calls = 0;
+    g_stub.invalidate_first_read = 1;
+    rc |= expect_int_eq("read retries an invalidated handoff", stream.read(samples, 4U, got), 0);
+    rc |= expect_int_eq("invalidated handoff reads a fresh batch", g_stub.read_calls, 2);
+    rc |= expect_int_eq("fresh handoff returns got count", got, 3);
+    g_stub.invalidate_first_read = 0;
+
     g_stub.read_rc = -9;
     rc |= expect_int_eq("read propagates failure", stream.read(samples, 4U, got), -9);
     rc |= expect_int_eq("read failure last error", stream.last_error_code(), -9);
