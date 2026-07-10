@@ -1028,6 +1028,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     static dsd_state state;
     dsd_app_command_token token = 0;
 
+#ifdef USE_RADIO
     init_test_context(&opts, &state);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
     rc |= expect_int("accepted RTL frequency timeout queued",
@@ -1039,6 +1040,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
                       strstr(state.ui_msg, "Accepted: RTL frequency -> 851500000 Hz (pending)") != NULL);
     rc |= expect_int("accepted RTL frequency timeout tune calls", g_io_control_tune_calls, 1);
     freeState(&state);
+#endif
 
     init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);

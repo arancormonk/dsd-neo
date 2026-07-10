@@ -48,7 +48,6 @@ fake_rtl_fsk_output_kind(void) {
 
 #if defined(DSD_NEO_TEST_RTL_WRAP)
 static int g_check_p25_tick_guard = 0;
-static int g_p25_tick_guard_held_during_tune = 0;
 static int g_p25_tick_guard_held_during_context_update = 0;
 
 static int
@@ -78,6 +77,7 @@ __wrap_p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state
 #endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+static int g_p25_tick_guard_held_during_tune = 0;
 static int g_rtl_tune_calls = 0;
 static uint32_t g_rtl_tune_freq = 0;
 static uint64_t g_rtl_tune_token = 0U;
