@@ -22,7 +22,8 @@ extern "C" {
 
 /**
  * @brief Tune the configured control backend without trunking bookkeeping.
- * @return 0 on success, 1 when an RTL request is deferred, or a negative error/timeout code.
+ * @return 0 on success, 1 when an RTL request is deferred, or a negative error/timeout code. An RTL timeout leaves an
+ *         accepted request active and retains its target in opts->rtlsdr_center_freq.
  */
 int io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
 void resumeScan(dsd_opts* opts, dsd_state* state);

@@ -85,6 +85,7 @@ void codec2_destroy(struct CODEC2* codec2_state);
 static long int s_last_rigctl_freq = -1;
 static int s_last_rigctl_bw = -12345;
 static uint64_t s_no_carrier_generic_recovery_request_id = 0U;
+static uint64_t s_no_carrier_generic_recovery_expected_generation = 0U;
 static const dsd_state* s_no_carrier_generic_recovery_state = NULL;
 static long s_no_carrier_generic_recovery_cc = 0;
 #ifdef USE_RADIO
@@ -92,12 +93,18 @@ static uint32_t s_last_rtl_freq = 0;
 #endif
 
 static void
+no_carrier_clear_generic_recovery_tracking(void) {
+    s_no_carrier_generic_recovery_request_id = 0U;
+    s_no_carrier_generic_recovery_expected_generation = 0U;
+    s_no_carrier_generic_recovery_state = NULL;
+    s_no_carrier_generic_recovery_cc = 0;
+}
+
+static void
 reset_device_io_caches(void) {
     s_last_rigctl_freq = -1;
     s_last_rigctl_bw = -12345;
-    s_no_carrier_generic_recovery_request_id = 0U;
-    s_no_carrier_generic_recovery_state = NULL;
-    s_no_carrier_generic_recovery_cc = 0;
+    no_carrier_clear_generic_recovery_tracking();
     dsd_trunk_tuning_requests_reset();
 #ifdef USE_RADIO
     s_last_rtl_freq = 0;
@@ -1531,10 +1538,15 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
 }
 
 static int
+no_carrier_generic_recovery_is_current(const dsd_state* state, long cc, dsd_trunk_tune_result status) {
+    return status == DSD_TRUNK_TUNE_RESULT_OK && s_no_carrier_generic_recovery_state == state
+           && s_no_carrier_generic_recovery_cc == cc
+           && s_no_carrier_generic_recovery_expected_generation == dsd_trunk_tuning_generation();
+}
+
+static int
 no_carrier_accept_generic_gate_recovery(const dsd_opts* opts, dsd_state* state, long cc) {
-    s_no_carrier_generic_recovery_request_id = 0U;
-    s_no_carrier_generic_recovery_state = NULL;
-    s_no_carrier_generic_recovery_cc = 0;
+    no_carrier_clear_generic_recovery_tracking();
     no_carrier_sync_helper_tune_cache(opts, state, cc);
     state->edacs_tuned_lcn = -1;
     state->dmr_rest_channel = -1;
@@ -1557,12 +1569,11 @@ no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, 
         }
         const uint64_t unresolved_request_id = dsd_trunk_tuning_pending_request();
         if (unresolved_request_id == 0U) {
-            if (status == DSD_TRUNK_TUNE_RESULT_OK && s_no_carrier_generic_recovery_state == state
-                && s_no_carrier_generic_recovery_cc == cc) {
+            if (no_carrier_generic_recovery_is_current(state, cc, status)) {
                 return no_carrier_accept_generic_gate_recovery(opts, state, cc);
             }
-            /* The old target failed or decoder ownership moved while it was
-             * in flight. Establish a fresh boundary for the current CC. */
+            /* The old target failed, changed, or was superseded by a newer
+             * completed tune. Establish a fresh boundary for the current CC. */
         }
         if (unresolved_request_id != 0U
             && dsd_trunk_tuning_request_status(unresolved_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
@@ -1589,9 +1600,11 @@ no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, 
     const long old_trunk_cc_freq = state->trunk_cc_freq;
     no_carrier_sync_selected_control_channel(state, cc, 0, clear_generic_p25_alias);
 
+    const uint64_t tune_generation = dsd_trunk_tuning_generation();
     uint64_t tune_request_id = 0U;
     const dsd_trunk_tune_result tune_result = no_carrier_return_to_cc_correlated(opts, state, &tune_request_id);
     s_no_carrier_generic_recovery_request_id = tune_request_id;
+    s_no_carrier_generic_recovery_expected_generation = tune_request_id != 0U ? tune_generation + 1U : 0U;
     s_no_carrier_generic_recovery_state = state;
     s_no_carrier_generic_recovery_cc = cc;
     if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {

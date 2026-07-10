@@ -9,6 +9,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -1123,12 +1124,47 @@ main(void) {
                       recovery_generation == failed_generation + 3U && dsd_trunk_tuning_pending_request() == 0U
                           && dsd_trunk_tuning_frame_is_current(recovery_generation));
 
+    // A legacy VC tune after recovery completion supersedes the saved request.
+    // The next no-carrier pass must issue a new correlated CC return instead
+    // of clearing VC state while the hardware remains on the newer target.
+    dsd_trunk_tuning_hooks legacy_vc_hooks = {0};
+    legacy_vc_hooks.tune_to_freq_result = dsd_engine_trunk_tune_to_freq;
+    dsd_trunk_tuning_hooks_set(legacy_vc_hooks);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    const long superseding_vc_freq = 937500000;
+    rc |= expect_true("generic-rtl-recovery-newer-legacy-vc-tune",
+                      dsd_trunk_tuning_hook_tune_to_freq(opts, state, superseding_vc_freq, 0)
+                          == DSD_TRUNK_TUNE_RESULT_OK);
+    const uint64_t superseding_vc_generation = dsd_trunk_tuning_generation();
+    rc |= expect_true("generic-rtl-recovery-newer-legacy-vc-owns-generation",
+                      g_rtl_tune_calls == 4 && g_rtl_tune_freq == (uint32_t)superseding_vc_freq
+                          && superseding_vc_generation == recovery_generation + 1U && opts->trunk_is_tuned == 1);
+
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time_m = dsd_time_now_monotonic_s() - 11.0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     noCarrier(opts, state);
-    rc |= expect_true("generic-rtl-recovery-success-commits-without-retune",
-                      g_rtl_tune_calls == 3 && opts->trunk_is_tuned == 0 && state->trunk_vc_freq[0] == 0
+
+    const uint64_t superseding_recovery_request_id = g_rtl_tune_token;
+    rc |= expect_true(
+        "generic-rtl-recovery-superseded-success-retunes",
+        g_rtl_tune_calls == 5 && g_rtl_tune_freq == 937000000U && superseding_recovery_request_id > switched_request_id
+            && dsd_trunk_tuning_request_status(superseding_recovery_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING
+            && opts->trunk_is_tuned == 1);
+
+    dsd_trunk_tuning_request_publish(superseding_recovery_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    const uint64_t superseding_recovery_generation = dsd_trunk_tuning_generation();
+    rc |= expect_true("generic-rtl-recovery-superseded-recovery-commits",
+                      superseding_recovery_generation == superseding_vc_generation + 1U
+                          && dsd_trunk_tuning_pending_request() == 0U);
+
+    noCarrier(opts, state);
+    rc |= expect_true("generic-rtl-recovery-current-success-commits-without-retune",
+                      g_rtl_tune_calls == 5 && opts->trunk_is_tuned == 0 && state->trunk_vc_freq[0] == 0
                           && state->trunk_cc_freq == 937000000);
 
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;

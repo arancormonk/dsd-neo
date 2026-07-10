@@ -416,6 +416,26 @@ test_io_control_set_freq_caches_applied_rtl_frequency(void) {
 }
 
 static int
+test_io_control_set_freq_retains_accepted_rtl_timeout_target(void) {
+    reset_stubs();
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851000000U;
+    state.rtl_ctx = (RtlSdrContext*)&state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    g_rtl_last_applied_freq = 851000000U;
+
+    assert(io_control_set_freq(&opts, &state, 851125000L) == RTL_STREAM_TUNE_TIMEOUT);
+    assert(g_rtl_tune_calls == 1);
+    assert(g_rtl_tune_freq == 851125000U);
+    assert(opts.rtlsdr_center_freq == 851125000U);
+    return 0;
+}
+
+static int
 test_signal_and_squelch_helpers(void) {
     reset_stubs();
     double value = -999.0;
@@ -527,6 +547,7 @@ main(void) {
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_propagates_rtl_deferred();
     rc |= test_io_control_set_freq_caches_applied_rtl_frequency();
+    rc |= test_io_control_set_freq_retains_accepted_rtl_timeout_target();
     rc |= test_signal_and_squelch_helpers();
     rc |= test_signal_level_average_tolerates_failed_samples();
     rc |= test_legacy_udp_tune_payload_and_cache();

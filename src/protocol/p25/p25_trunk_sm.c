@@ -317,9 +317,12 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
             state->last_cc_sync_time = time(NULL);
             state->last_cc_sync_time_m = tune_start_m;
         }
-        if (state->last_cc_sync_time_m > ctx->t_cc_sync_m) {
-            // CC retune hooks update this as tune metadata before any CC frame decodes.
-            // Absorb that timestamp now so the next watchdog tick does not relatch NAC from it.
+        if (state->last_cc_sync_time_m > ctx->t_cc_sync_m
+            && state->last_cc_sync_time_m > state->p25_last_cc_msg_time_m) {
+            // Absorb only tune metadata that is newer than decoded CC activity.
+            // A block decoded before asynchronous completion is resolved writes
+            // both timestamps; keeping the tune boundary intact lets that block
+            // satisfy the strict decoded-after-tune check below.
             ctx->t_cc_sync_m = state->last_cc_sync_time_m;
         }
     }

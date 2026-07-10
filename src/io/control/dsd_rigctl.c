@@ -494,7 +494,8 @@ dsd_rigctl_test_rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequenc
  * @param opts Decoder options with tuning configuration.
  * @param state Decoder state (required for RTL tuning, may be NULL for rigctl-only).
  * @param freq Target frequency in Hz.
- * @return 0 on success, 1 when an RTL tune is deferred, or a negative error/timeout code.
+ * @return 0 on success, 1 when an RTL tune is deferred, or a negative error/timeout code. An RTL timeout leaves an
+ *         accepted request active and retains its target in opts->rtlsdr_center_freq.
  */
 int
 io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
@@ -518,6 +519,11 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
         if (state && state->rtl_ctx) {
             int tune_result = rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
             if (tune_result != RTL_STREAM_TUNE_OK) {
+                if (tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+                    // The untagged controller request remains accepted and may
+                    // complete after the synchronous wait expires.
+                    opts->rtlsdr_center_freq = applied_freq;
+                }
                 return tune_result;
             }
             // Untagged controller requests can coalesce, so cache the target

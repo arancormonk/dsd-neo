@@ -24,6 +24,7 @@
 #endif
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -1012,7 +1013,47 @@ main(void) {
     assert(fabs(s18d.last_cc_sync_time_m - external_cc_tune_m) <= cc_sync_epsilon_s);
     assert(fabs(s18d.p25_last_cc_msg_time_m - external_decoded_cc_m) <= cc_sync_epsilon_s);
 
-    // 24) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
+    // 24) The first decoded grant after asynchronous completion must satisfy CC reacquisition.
+    static dsd_opts o18e;
+    static dsd_state s18e;
+    DSD_MEMSET(&o18e, 0, sizeof(o18e));
+    DSD_MEMSET(&s18e, 0, sizeof(s18e));
+    o18e.p25_trunk = 1;
+    o18e.trunk_tune_group_calls = 1;
+    s18e.p25_cc_freq = 851000000;
+    s18e.trunk_cc_freq = 851000000;
+    s18e.p25_iden_fdma[id9] = s9.p25_iden_fdma[id9];
+    s18e.p25_chan_tdma_explicit[id9] = 1;
+    p25_sm_ctx_t ctx18e;
+    p25_sm_init_ctx(&ctx18e, &o18e, &s18e);
+    ctx18e.state = P25_SM_ON_CC;
+    s18e.p25_sm_mode = DSD_P25_SM_MODE_ON_CC;
+
+    const uint64_t early_grant_request_id = dsd_trunk_tuning_request_begin();
+    assert(early_grant_request_id != 0U);
+    dsd_trunk_tuning_request_mark_ready(early_grant_request_id);
+    assert(p25_sm_await_pending_cc_tune(&ctx18e, &o18e, &s18e, early_grant_request_id, "test-early-grant") == 1);
+    dsd_trunk_tuning_request_publish(early_grant_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+
+    double early_grant_completion_m = 0.0;
+    assert(dsd_trunk_tuning_request_status(early_grant_request_id, &early_grant_completion_m)
+           == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(early_grant_completion_m > 0.0);
+    const double early_grant_decoded_m = early_grant_completion_m + 0.001;
+    s18e.last_cc_sync_time = time(NULL);
+    s18e.last_cc_sync_time_m = early_grant_decoded_m;
+    s18e.p25_last_cc_msg_time = s18e.last_cc_sync_time;
+    s18e.p25_last_cc_msg_time_m = early_grant_decoded_m;
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_tune_to_freq_calls = 0;
+
+    p25_sm_event(&ctx18e, &o18e, &s18e, &ev9);
+    assert(ctx18e.cc_tune_pending == 0);
+    assert(ctx18e.cc_sync_pending == 0);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx18e.state == P25_SM_TUNED);
+
+    // 25) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
     static dsd_opts o19a;
     static dsd_state s19a;
     DSD_MEMSET(&o19a, 0, sizeof(o19a));
@@ -1048,7 +1089,7 @@ main(void) {
     assert(ctx19a.state == P25_SM_TUNED);
     assert(ctx19a.slots[1].grant_active == 1);
 
-    // 25) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
+    // 26) ENC lockout must keep a clear opposite-slot grant pending on the same TDMA carrier.
     static dsd_opts o19b;
     static dsd_state s19b;
     DSD_MEMSET(&o19b, 0, sizeof(o19b));
@@ -1088,7 +1129,7 @@ main(void) {
     assert(s19b.p25_p2_enc_lockout_muted[0] == 1);
 
 #ifdef USE_RADIO
-    // 26) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
+    // 27) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
     static dsd_opts o19;
     static dsd_state s19;
     DSD_MEMSET(&o19, 0, sizeof(o19));
@@ -1136,7 +1177,7 @@ main(void) {
     assert(ctx19.state == P25_SM_TUNED);
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    // 27) A successful CQPSK retry refreshes the TDMA grant timeout window.
+    // 28) A successful CQPSK retry refreshes the TDMA grant timeout window.
     static dsd_opts o20;
     static dsd_state s20;
     DSD_MEMSET(&o20, 0, sizeof(o20));
@@ -1186,7 +1227,7 @@ main(void) {
     assert(s20.p25_retune_block_until == 0);
 #endif
 
-    // 28) A concurrent stale-context release must not reset a release already in progress.
+    // 29) A concurrent stale-context release must not reset a release already in progress.
     static dsd_opts o21;
     static dsd_state s21;
     DSD_MEMSET(&o21, 0, sizeof(o21));
@@ -1308,7 +1349,7 @@ main(void) {
         return 1;
     }
 
-    // 29) Hardware-only legacy VC hooks still receive their return callback.
+    // 30) Hardware-only legacy VC hooks still receive their return callback.
     install_trunk_tuning_hooks();
     static dsd_opts o22;
     static dsd_state s22;
@@ -1336,7 +1377,7 @@ main(void) {
     assert(g_return_to_cc_called == 1);
     assert(ctx22.state == P25_SM_ON_CC);
 
-    // 30) Result hooks may control hardware without duplicating decoder bookkeeping.
+    // 31) Result hooks may control hardware without duplicating decoder bookkeeping.
     install_result_tuning_hooks();
     static dsd_opts o23;
     static dsd_state s23;
