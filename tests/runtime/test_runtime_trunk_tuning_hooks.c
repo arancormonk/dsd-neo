@@ -175,6 +175,29 @@ main(void) {
     assert(dsd_trunk_tuning_generation() == tune_generation);
     assert(dsd_trunk_tuning_frame_is_current(tune_generation));
 
+    hooks.tune_to_cc_request = fake_tune_to_cc_request;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_tune_to_cc_request_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_last_request_id = 0U;
+    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851675000, 0) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    tune_generation++;
+    assert(g_last_request_id == 0U);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+
+    pending_request = 0U;
+    assert(dsd_trunk_tuning_hook_tune_to_cc_with_id(&opts, &state, 851700000, 0, &pending_request)
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(pending_request != 0U && g_last_request_id == pending_request);
+    assert(dsd_trunk_tuning_pending_request() == pending_request);
+    assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
+    dsd_trunk_tuning_request_publish(pending_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    dsd_trunk_tuning_request_complete(pending_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_pending_request() == 0U);
+    assert(dsd_trunk_tuning_frame_is_current(tune_generation));
+
     hooks = (dsd_trunk_tuning_hooks){0};
     hooks.tune_to_cc_request = fake_tune_to_cc_request;
     dsd_trunk_tuning_hooks_set(hooks);

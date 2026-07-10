@@ -32,6 +32,9 @@ dsd_engine_rtl_tune_completion(uint64_t request_id, rtl_stream_tune_result resul
 void
 dsd_engine_trunk_tuning_hooks_install(void) {
     dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_result = dsd_engine_trunk_tune_to_freq;
+    hooks.tune_to_cc_result = dsd_engine_trunk_tune_to_cc;
+    hooks.return_to_cc_result = dsd_engine_return_to_cc;
     hooks.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request;
     hooks.tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request;
     hooks.return_to_cc_request = dsd_engine_return_to_cc_request;

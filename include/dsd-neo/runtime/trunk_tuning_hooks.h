@@ -152,7 +152,8 @@ int dsd_trunk_tuning_frame_is_current(uint64_t frame_generation);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_return_to_cc(dsd_opts* opts, dsd_state* state);
-/* The _with_id wrappers return zero when dispatching through a legacy result hook. */
+/* When both hook variants are installed, the _with_id wrappers use the request-aware hook when an output pointer is
+ * supplied. They return zero when dispatching through a legacy result hook. */
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, long int freq,
                                                                  int ted_sps, uint64_t* out_request_id);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc_with_id(dsd_opts* opts, dsd_state* state, long int freq,

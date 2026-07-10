@@ -501,6 +501,7 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
     if (!opts || freq <= 0) {
         return -1;
     }
+    uint32_t applied_freq = (uint32_t)freq;
 #ifndef USE_RADIO
     (void)state;
 #endif
@@ -519,10 +520,16 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
             if (tune_result != RTL_STREAM_TUNE_OK) {
                 return tune_result;
             }
+            // Untagged controller requests can coalesce, so cache the target
+            // that actually completed rather than this caller's requested one.
+            uint32_t controller_freq = 0U;
+            if (rtl_stream_get_last_applied_freq(&controller_freq) == 0 && controller_freq != 0U) {
+                applied_freq = controller_freq;
+            }
         }
 #endif
     }
     // Update cached frequency only after the selected backend accepts the request.
-    opts->rtlsdr_center_freq = (uint32_t)freq;
+    opts->rtlsdr_center_freq = applied_freq;
     return 0;
 }

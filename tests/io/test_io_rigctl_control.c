@@ -60,6 +60,7 @@ static int g_last_sendto_port;
 static int g_rtl_tune_calls;
 static uint32_t g_rtl_tune_freq;
 static int g_rtl_tune_result;
+static uint32_t g_rtl_last_applied_freq;
 static dsdneoRuntimeConfig g_config;
 
 bool dsd_rigctl_test_get_signal_level(dsd_socket_t sockfd, double* dB);
@@ -93,6 +94,7 @@ reset_stubs(void) {
     g_rtl_tune_calls = 0;
     g_rtl_tune_freq = 0U;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_last_applied_freq = 0U;
     DSD_MEMSET(&g_config, 0, sizeof(g_config));
     g_config.rigctl_rcvtimeo_ms = 1500;
 }
@@ -103,6 +105,15 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     g_rtl_tune_calls++;
     g_rtl_tune_freq = center_freq_hz;
     return g_rtl_tune_result;
+}
+
+int
+rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
+    if (!out_freq_hz) {
+        return -1;
+    }
+    *out_freq_hz = g_rtl_last_applied_freq;
+    return 0;
 }
 
 static void
@@ -378,9 +389,29 @@ test_io_control_set_freq_propagates_rtl_deferred(void) {
     assert(opts.rtlsdr_center_freq == 851000000U);
 
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_last_applied_freq = 851075000U;
     assert(io_control_set_freq(&opts, &state, 851075000L) == RTL_STREAM_TUNE_OK);
     assert(g_rtl_tune_calls == 2);
     assert(opts.rtlsdr_center_freq == 851075000U);
+    return 0;
+}
+
+static int
+test_io_control_set_freq_caches_applied_rtl_frequency(void) {
+    reset_stubs();
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851000000U;
+    state.rtl_ctx = (RtlSdrContext*)&state;
+    g_rtl_last_applied_freq = 851100000U;
+
+    assert(io_control_set_freq(&opts, &state, 851075000L) == RTL_STREAM_TUNE_OK);
+    assert(g_rtl_tune_calls == 1);
+    assert(g_rtl_tune_freq == 851075000U);
+    assert(opts.rtlsdr_center_freq == 851100000U);
     return 0;
 }
 
@@ -495,6 +526,7 @@ main(void) {
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_propagates_rtl_deferred();
+    rc |= test_io_control_set_freq_caches_applied_rtl_frequency();
     rc |= test_signal_and_squelch_helpers();
     rc |= test_signal_level_average_tolerates_failed_samples();
     rc |= test_legacy_udp_tune_payload_and_cache();

@@ -1084,6 +1084,14 @@ main(void) {
                       dsd_trunk_tuning_request_status(recovery_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED
                           && !dsd_trunk_tuning_frame_is_current(failed_generation));
 
+    // A newer unrelated success can retire the failed gate, but it must not
+    // make the failed saved recovery request acceptable for this control channel.
+    const uint64_t unrelated_request_id = dsd_trunk_tuning_request_begin();
+    dsd_trunk_tuning_request_complete(unrelated_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("generic-rtl-recovery-unrelated-success-opens-gate",
+                      unrelated_request_id > recovery_request_id && dsd_trunk_tuning_pending_request() == 0U
+                          && dsd_trunk_tuning_frame_is_current(failed_generation + 1U));
+
     noCarrier(opts, state);
 
     const uint64_t retry_request_id = g_rtl_tune_token;
@@ -1095,7 +1103,7 @@ main(void) {
     dsd_trunk_tuning_request_publish(retry_request_id, DSD_TRUNK_TUNE_RESULT_OK);
     const uint64_t first_recovery_generation = dsd_trunk_tuning_generation();
     rc |= expect_true("generic-rtl-recovery-success-retires-failed-gate",
-                      first_recovery_generation == failed_generation + 1U && dsd_trunk_tuning_pending_request() == 0U
+                      first_recovery_generation == failed_generation + 2U && dsd_trunk_tuning_pending_request() == 0U
                           && dsd_trunk_tuning_frame_is_current(first_recovery_generation));
 
     // A target switch while the recovery was in flight must establish a new
@@ -1112,7 +1120,7 @@ main(void) {
     dsd_trunk_tuning_request_publish(switched_request_id, DSD_TRUNK_TUNE_RESULT_OK);
     const uint64_t recovery_generation = dsd_trunk_tuning_generation();
     rc |= expect_true("generic-rtl-recovery-target-switch-commits",
-                      recovery_generation == failed_generation + 2U && dsd_trunk_tuning_pending_request() == 0U
+                      recovery_generation == failed_generation + 3U && dsd_trunk_tuning_pending_request() == 0U
                           && dsd_trunk_tuning_frame_is_current(recovery_generation));
 
     noCarrier(opts, state);

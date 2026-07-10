@@ -1557,11 +1557,12 @@ no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, 
         }
         const uint64_t unresolved_request_id = dsd_trunk_tuning_pending_request();
         if (unresolved_request_id == 0U) {
-            if (s_no_carrier_generic_recovery_state == state && s_no_carrier_generic_recovery_cc == cc) {
+            if (status == DSD_TRUNK_TUNE_RESULT_OK && s_no_carrier_generic_recovery_state == state
+                && s_no_carrier_generic_recovery_cc == cc) {
                 return no_carrier_accept_generic_gate_recovery(opts, state, cc);
             }
-            /* The old target completed, but decoder ownership moved while it
-             * was in flight. Establish a fresh boundary for the current CC. */
+            /* The old target failed or decoder ownership moved while it was
+             * in flight. Establish a fresh boundary for the current CC. */
         }
         if (unresolved_request_id != 0U
             && dsd_trunk_tuning_request_status(unresolved_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
