@@ -13,6 +13,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -68,6 +69,7 @@ init_basic(dsd_opts* o, dsd_state* s) {
 
 int
 main(void) {
+    const double timestamp_epsilon_s = 1.0e-9;
     static dsd_opts o;
     static dsd_state st;
     install_trunk_tuning_hooks();
@@ -154,7 +156,7 @@ main(void) {
     assert(ctx->cc_tune_pending == 0);
     assert(ctx->cc_sync_pending == 1);
     assert(ctx->t_cc_tune_m > 0.0);
-    assert(st3.p25_cc_eval_start_m == ctx->t_cc_tune_m);
+    assert(fabs(st3.p25_cc_eval_start_m - ctx->t_cc_tune_m) <= timestamp_epsilon_s);
 
     // Only the post-completion acquisition window can fail A and advance to B.
     pending_m = dsd_time_now_monotonic_s() - 2.5;
@@ -212,7 +214,7 @@ main(void) {
     assert(ctx->cc_tune_pending == 0);
     assert(ctx->cc_tune_request_id == 0U);
     assert(ctx->t_cc_tune_m > 0.0);
-    assert(st4.p25_cc_eval_start_m == ctx->t_cc_tune_m);
+    assert(fabs(st4.p25_cc_eval_start_m - ctx->t_cc_tune_m) <= timestamp_epsilon_s);
     assert(dsd_trunk_tuning_pending_request() == 0U);
     assert(dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
     return 0;
