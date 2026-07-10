@@ -161,6 +161,18 @@ dsd_trunk_tune_result dsd_trunk_tuning_request_status(uint64_t request_id, doubl
  */
 int dsd_trunk_tuning_frame_is_current(uint64_t frame_generation);
 
+/**
+ * @brief Test whether a collected frame may be dispatched for the active mode.
+ *
+ * When no trunking or trunk-scan tuner owns frame dispatch, terminal failed
+ * requests are retired before checking the generation. In-flight requests
+ * remain gated until their backend publishes a terminal result.
+ *
+ * @param frame_generation Tune generation captured before frame sync.
+ * @param tune_owner_active Non-zero while trunking or trunk scan owns tuning.
+ */
+int dsd_trunk_tuning_frame_is_dispatchable(uint64_t frame_generation, int tune_owner_active);
+
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
 dsd_trunk_tune_result dsd_trunk_tuning_hook_return_to_cc(dsd_opts* opts, dsd_state* state);

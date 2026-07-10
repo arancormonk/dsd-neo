@@ -344,6 +344,14 @@ dsd_trunk_tuning_frame_is_current(uint64_t frame_generation) {
     return frame_generation == dsd_trunk_tuning_generation();
 }
 
+int
+dsd_trunk_tuning_frame_is_dispatchable(uint64_t frame_generation, int tune_owner_active) {
+    if (!tune_owner_active) {
+        dsd_trunk_tuning_retire_failed_requests();
+    }
+    return dsd_trunk_tuning_frame_is_current(frame_generation);
+}
+
 static dsd_trunk_tune_result
 dsd_trunk_tuning_note_result(uint64_t request_id, dsd_trunk_tune_result result) {
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {

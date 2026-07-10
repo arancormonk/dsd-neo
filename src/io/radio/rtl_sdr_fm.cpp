@@ -722,14 +722,35 @@ rtl_replay_on_input_drained(void* user) {
     safe_cond_signal(&output.ready, &output.ready_m);
 }
 
+static uint64_t
+replay_acknowledge_consumed_generation(std::atomic<uint64_t>* last_consume_gen, uint64_t consumed_gen) {
+    if (!last_consume_gen) {
+        return 0U;
+    }
+
+    uint64_t acknowledged = last_consume_gen->load(std::memory_order_acquire);
+    while (acknowledged < consumed_gen
+           && !last_consume_gen->compare_exchange_weak(acknowledged, consumed_gen, std::memory_order_release,
+                                                       std::memory_order_acquire)) {}
+    return acknowledged < consumed_gen ? consumed_gen : acknowledged;
+}
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" uint64_t
+rtl_stream_test_replay_acknowledge_discarded_span(uint64_t submitted_gen, uint64_t consumed_gen) {
+    std::atomic<uint64_t> acknowledged{consumed_gen};
+    return replay_acknowledge_consumed_generation(&acknowledged, submitted_gen);
+}
+#endif
+
 static void
 replay_note_input_purge_consumed(void) {
     if (!stream_is_replay_active() || !g_stream) {
         return;
     }
 
-    uint64_t consumed_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
-    g_stream->replay_last_consume_gen.store(consumed_gen, std::memory_order_release);
+    uint64_t submitted_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
+    uint64_t consumed_gen = replay_acknowledge_consumed_generation(&g_stream->replay_last_consume_gen, submitted_gen);
     if (!g_stream->replay_input_eof.load(std::memory_order_acquire) || input_ring_used(&input_ring) != 0U) {
         return;
     }
@@ -3105,7 +3126,7 @@ demod_update_replay_drain_state(int replay_active, uint64_t consumed_gen) {
     if (!replay_active || !g_stream) {
         return;
     }
-    g_stream->replay_last_consume_gen.store(consumed_gen, std::memory_order_release);
+    uint64_t consumed_at = replay_acknowledge_consumed_generation(&g_stream->replay_last_consume_gen, consumed_gen);
     if (g_stream->replay_demod_drained.load(std::memory_order_acquire)) {
         return;
     }
@@ -3120,7 +3141,6 @@ demod_update_replay_drain_state(int replay_active, uint64_t consumed_gen) {
             dsd_mutex_unlock(&g_stream->replay_eof_m);
         }
     }
-    uint64_t consumed_at = g_stream->replay_last_consume_gen.load(std::memory_order_acquire);
     uint64_t eof_gen = g_stream->replay_last_submit_gen_at_eof.load(std::memory_order_acquire);
     if (input_drained && consumed_at >= eof_gen) {
         g_stream->replay_demod_drained.store(1, std::memory_order_release);
@@ -3131,6 +3151,21 @@ demod_update_replay_drain_state(int replay_active, uint64_t consumed_gen) {
         }
         safe_cond_signal(&output.ready, &output.ready_m);
     }
+}
+
+static void
+demod_discard_iteration_input(DemodInputSpan* span) {
+    demod_input_span_commit_reserved(span);
+    if (!stream_is_replay_active() || !g_stream) {
+        return;
+    }
+
+    /* Rewind/RESET boundaries wait for both an empty ring and the submitted
+     * generation to be acknowledged. A controller gate can discard the final
+     * reserved span, so publish that consumption even though it produced no
+     * demodulated output. */
+    uint64_t submitted_gen = g_stream->replay_last_submit_gen.load(std::memory_order_acquire);
+    demod_update_replay_drain_state(1, submitted_gen);
 }
 
 static void
@@ -3300,16 +3335,17 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
         return 0;
     }
     if (!demod_enter_processing_block(&controller)) {
-        demod_input_span_commit_reserved(span);
+        demod_discard_iteration_input(span);
         return 0;
     }
     if (!demod_prepare_input_block(d, span)) {
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }
     if (controller.retune_in_progress.load(std::memory_order_acquire)
         || g_ring_purge_pending.load(std::memory_order_acquire)) {
-        demod_input_span_commit_direct(span);
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }
@@ -3318,19 +3354,19 @@ demod_prepare_iteration_input(struct demod_state* d, int is_rtltcp_input, DemodI
     float input_max_abs = 0.0f;
     iq_block_abs_stats(span->input_block, span->got, &input_mean_abs, &input_max_abs, &input_pairs);
     if (retune_settle_should_discard(d, input_mean_abs, input_max_abs, input_pairs)) {
-        demod_input_span_commit_direct(span);
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }
     *retune_diag = demod_capture_retune_diag(input_mean_abs, input_max_abs, input_pairs);
     demod_autogain_update(d, input_mean_abs, input_max_abs);
     if (!controller.cold_start_ready.load(std::memory_order_acquire)) {
-        demod_input_span_commit_direct(span);
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }
     if (controller.retune_in_progress.load(std::memory_order_acquire)) {
-        demod_input_span_commit_direct(span);
+        demod_discard_iteration_input(span);
         demod_leave_processing_block(&controller);
         return 0;
     }

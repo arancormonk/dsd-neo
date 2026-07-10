@@ -489,6 +489,15 @@ int rtl_stream_test_mode_policy_matrix(int* out_values, size_t count);
 int rtl_stream_test_fsk_profile_policy_matrix(int* out_profiles, size_t count);
 
 /**
+ * @brief Acknowledge the submit generation of a replay span discarded by the demodulator.
+ *
+ * Returns the resulting monotonic consume generation. This models the
+ * generation side of a RESET/rewind boundary after the discarded span has
+ * emptied the input ring.
+ */
+uint64_t rtl_stream_test_replay_acknowledge_discarded_span(uint64_t submitted_gen, uint64_t consumed_gen);
+
+/**
  * @brief Seed output/cache state, request FSK reacquire, and consume pending reset.
  */
 int rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols, size_t* out_used_after,

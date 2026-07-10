@@ -294,7 +294,9 @@ main(void) {
     dsd_trunk_tuning_request_publish(mode_exit_failure, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_trunk_tuning_pending_request() == mode_exit_failure);
     assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
-    dsd_trunk_tuning_retire_failed_requests();
+    assert(!dsd_trunk_tuning_frame_is_dispatchable(tune_generation, 1));
+    assert(dsd_trunk_tuning_pending_request() == mode_exit_failure);
+    assert(dsd_trunk_tuning_frame_is_dispatchable(tune_generation, 0));
     assert(dsd_trunk_tuning_pending_request() == 0U);
     assert(dsd_trunk_tuning_generation() == tune_generation);
     assert(dsd_trunk_tuning_frame_is_current(tune_generation));
@@ -302,11 +304,11 @@ main(void) {
     uint64_t mode_exit_pending = dsd_trunk_tuning_request_begin();
     assert(mode_exit_pending != 0U);
     dsd_trunk_tuning_request_mark_ready(mode_exit_pending);
-    dsd_trunk_tuning_retire_failed_requests();
+    assert(!dsd_trunk_tuning_frame_is_dispatchable(tune_generation, 0));
     assert(dsd_trunk_tuning_pending_request() == mode_exit_pending);
     assert(!dsd_trunk_tuning_frame_is_current(tune_generation));
     dsd_trunk_tuning_request_publish(mode_exit_pending, DSD_TRUNK_TUNE_RESULT_FAILED);
-    dsd_trunk_tuning_retire_failed_requests();
+    assert(dsd_trunk_tuning_frame_is_dispatchable(tune_generation, 0));
     assert(dsd_trunk_tuning_pending_request() == 0U);
     assert(dsd_trunk_tuning_generation() == tune_generation);
     assert(dsd_trunk_tuning_frame_is_current(tune_generation));

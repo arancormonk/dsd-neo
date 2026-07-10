@@ -2025,12 +2025,16 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
     no_carrier_reset_p25_cc_cache(state);
 }
 
+static int
+engine_trunk_tuning_owner_active(const dsd_opts* opts) {
+    return opts && (opts->p25_trunk == 1 || opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1);
+}
+
 static void
 no_carrier_retire_inactive_tune_failures(const dsd_opts* opts) {
-    if (!opts || opts->p25_trunk == 1 || opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1) {
-        return;
+    if (!engine_trunk_tuning_owner_active(opts)) {
+        dsd_trunk_tuning_retire_failed_requests();
     }
-    dsd_trunk_tuning_retire_failed_requests();
 }
 
 static void
@@ -2312,7 +2316,11 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
                                    uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
         p25_sm_tick_guard_enter();
-        if (!frame_tune_generation || dsd_trunk_tuning_frame_is_current(*frame_tune_generation)) {
+        const uint64_t dispatch_generation =
+            frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();
+        const int frame_dispatchable =
+            dsd_trunk_tuning_frame_is_dispatchable(dispatch_generation, engine_trunk_tuning_owner_active(opts));
+        if (!frame_tune_generation || frame_dispatchable) {
             processFrame(opts, state);
         }
         p25_sm_tick_guard_leave();

@@ -786,6 +786,12 @@ main(void) {
                             rtl_device_test_replay_event_boundary_drained(2U, 3U, 3U), 0);
     failed |= expect_int_eq("reset event waits for reserved demod generation",
                             rtl_device_test_replay_event_boundary_drained(0U, 3U, 2U), 0);
+    uint64_t discarded_span_consumed = rtl_stream_test_replay_acknowledge_discarded_span(3U, 2U);
+    failed |= expect_u64_eq("discarded replay span acknowledges submit generation", discarded_span_consumed, 3U);
+    failed |= expect_int_eq("rewind boundary accepts acknowledged discarded span",
+                            rtl_device_test_replay_event_boundary_drained(0U, 3U, discarded_span_consumed), 1);
+    failed |= expect_u64_eq("discarded replay acknowledgment remains monotonic",
+                            rtl_stream_test_replay_acknowledge_discarded_span(3U, 4U), 4U);
     failed |=
         expect_int_eq("reset event boundary drained", rtl_device_test_replay_event_boundary_drained(0U, 3U, 3U), 1);
 
