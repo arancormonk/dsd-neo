@@ -1309,7 +1309,7 @@ main(void) {
     atomic_store(&g_release_hook_block, 1);
 
     release_thread_args release_args = {&o21, &s21};
-    dsd_thread_t release_thread;
+    dsd_thread_t release_thread = (dsd_thread_t)0;
     release_sync_rc = dsd_thread_create(&release_thread, release_wrapper_thread, &release_args);
     if (release_sync_rc != 0) {
         DSD_FPRINTF(stderr, "release race thread create failed: %d\n", release_sync_rc);
