@@ -1690,7 +1690,7 @@ apply_lockout_decoder_transition(dsd_opts* opts, dsd_state* state) {
     long cc_freq = 0;
     if (opts->p25_trunk == 1) {
         cc_freq = current_cc_freq(state);
-        if (!request_manual_tune(opts, state, cc_freq, "Lockout return-to-CC")) {
+        if (cc_freq != 0 && !request_manual_tune(opts, state, cc_freq, "Lockout return-to-CC")) {
             return UI_CMD_APPLY_FAILED;
         }
     }

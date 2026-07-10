@@ -1089,6 +1089,25 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     freeState(&state);
 
     init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 0L, 854500000L, 2202);
+    state.carrier = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
+    token = 0;
+    rc |= expect_int("no-CC lockout queued", dsd_app_command_set_u8_tracked(DSD_APP_CMD_LOCKOUT_SLOT, 0U, &token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("no-CC lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("no-CC lockout completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_int("no-CC lockout skips tune", g_io_control_tune_calls, 0);
+    rc |= expect_int("no-CC lockout clears P25 tuned", opts.p25_is_tuned, 0);
+    rc |= expect_int("no-CC lockout clears trunk tuned", opts.trunk_is_tuned, 0);
+    rc |= expect_int("no-CC lockout clears TG", state.lasttg, 0);
+    rc |= expect_true("no-CC lockout clears P25 VC", state.p25_vc_freq[0] == 0L);
+    rc |= expect_true("no-CC lockout clears trunk VC", state.trunk_vc_freq[0] == 0L);
+    rc |= expect_int("no-CC lockout runs no-carrier cleanup", state.carrier, 0);
+    rc |= expect_true("no-CC lockout keeps CC unknown", state.trunk_cc_freq == 0L && state.p25_cc_freq == 0L);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 855000000L, 856000000L, 3201);
     state.lcn_freq_count = 4;
     state.lcn_freq_roll = 0;
