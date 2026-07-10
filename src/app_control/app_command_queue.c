@@ -291,6 +291,19 @@ ui_cmd_apply_status_from_service_rc(int rc) {
     return UI_CMD_APPLY_FAILED;
 }
 
+#ifdef USE_RADIO
+static int
+ui_cmd_apply_status_from_tune_rc(int rc) {
+    if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+        /* The controller accepted the tune and will publish its terminal
+         * result after the synchronous wait expires. Command completion here
+         * means the request was accepted, not that hardware already moved. */
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+#endif
+
 struct UiVisibilityToggleSpec {
     int cmd_id;
     size_t opts_offset;
@@ -1012,9 +1025,11 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_u32_payload(c, &v)) {
         int rc = svc_rtl_set_freq(opts, state, v);
-        result = ui_cmd_apply_status_from_service_rc(rc);
+        result = ui_cmd_apply_status_from_tune_rc(rc);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz", v);
+        } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+            ui_set_toast(state, 3, "Accepted: RTL frequency -> %u Hz (pending)", v);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
         } else {

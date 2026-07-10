@@ -445,7 +445,7 @@ int rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samp
                                              uint32_t* out_generation_before, uint32_t* out_generation_after);
 
 /**
- * @brief Verify an untagged timeout invalidates stale reads and stays gated through failure.
+ * @brief Verify an untagged timeout invalidates stale reads and reopens after terminal completion.
  */
 int rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
                                                size_t* out_used_while_pending, int* out_read_after_failed_completion,

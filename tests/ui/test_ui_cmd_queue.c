@@ -1029,6 +1029,18 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     dsd_app_command_token token = 0;
 
     init_test_context(&opts, &state);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    rc |= expect_int("accepted RTL frequency timeout queued",
+                     dsd_app_command_set_u32_tracked(DSD_APP_CMD_RTL_SET_FREQ, 851500000U, &token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("accepted RTL frequency timeout drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("accepted RTL frequency timeout completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_true("accepted RTL frequency timeout reports pending",
+                      strstr(state.ui_msg, "Accepted: RTL frequency -> 851500000 Hz (pending)") != NULL);
+    rc |= expect_int("accepted RTL frequency timeout tune calls", g_io_control_tune_calls, 1);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
     rc |= expect_int("deferred return-to-CC queued", dsd_app_command_action_tracked(DSD_APP_CMD_RETURN_CC, &token),

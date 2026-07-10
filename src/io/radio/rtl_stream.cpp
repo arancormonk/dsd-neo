@@ -218,6 +218,7 @@ RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
         last_error_code_ = -2;
         return last_error_code_;
     }
+    const bool replay_active = opts_->iq_replay_active != 0;
     for (;;) {
         const uint32_t generation_before = dsd_rtl_stream_output_generation();
         int got = dsd_rtl_stream_read(out, count, opts_, nullptr);
@@ -225,7 +226,14 @@ RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
             last_error_code_ = got;
             return got;
         }
-        if (dsd_rtl_stream_output_generation() != generation_before) {
+        /* Replay RESET/rewind boundaries wait for the submitted demod
+         * generation before advancing the timeline. The final pre-boundary
+         * output batch is therefore valid even when the replay thread advances
+         * the output generation immediately after the read. Retrying that
+         * batch can starve forever on a short looping capture. Live retunes do
+         * not have this ordering guarantee and must still reject a stale
+         * handoff. */
+        if (!replay_active && dsd_rtl_stream_output_generation() != generation_before) {
             continue;
         }
         out_got = got;

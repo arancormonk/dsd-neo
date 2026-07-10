@@ -3388,7 +3388,6 @@ static DSD_THREAD_RETURN_TYPE
         rtl_monitor_side_tap_process(d);
         demod_log_retune_diag_block(d, span.got, &retune_diag);
         demod_input_span_release_direct(d, &span);
-        demod_update_replay_drain_state(replay_active, consumed_gen);
         uint64_t perf_metrics_ns = demod_metrics_process(d, perf_on);
         if (d->exit_flag) {
             exitflag = 1;
@@ -3397,6 +3396,11 @@ static DSD_THREAD_RETURN_TYPE
         uint64_t perf_output_start_ns = perf_on ? rtl_perf_now_ns() : 0ULL;
         size_t perf_output_samples =
             controller.retune_in_progress.load(std::memory_order_acquire) ? 0U : demod_write_output_block(d, o);
+        /* A replay generation is consumed only after its demodulated output is
+         * committed. RESET/rewind boundaries use this generation to avoid
+         * entering the reconfigure gate between DSP processing and the output
+         * write, which would silently discard every pass of a short loop. */
+        demod_update_replay_drain_state(replay_active, consumed_gen);
         demod_perf_log_block(perf_on, perf_output_start_ns, perf_full_demod_ns, perf_metrics_ns, span.got,
                              perf_output_samples, d);
         demod_leave_processing_block(&controller);
@@ -3881,6 +3885,16 @@ replay_wait_for_input_purge_applied(void) {
     while (g_ring_purge_pending.load(std::memory_order_acquire) && !exitflag
            && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))
            && dsd_time_monotonic_ns() < deadline_ns) {
+        /* Replay callbacks run on the sole producer after the controller has
+         * waited for demod processing to go idle. If the ring is already
+         * empty, there is no consumer-owned tail to advance and no producer
+         * reservation that can race this acknowledgement. Waking a consumer
+         * blocked on an empty-ring predicate cannot make it observe the purge,
+         * so complete it here instead of paying the full timeout every loop. */
+        if (input_ring_used(&input_ring) == 0U && g_ring_purge_pending.exchange(0, std::memory_order_acq_rel)) {
+            replay_note_input_purge_consumed();
+            break;
+        }
         safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
         dsd_sleep_ms(1);
     }
@@ -3923,6 +3937,11 @@ rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
     uint32_t previous_center_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     int previous_rate_out_hz = demod.rate_out;
     DemodRetuneResetReason reset_reason = retune_reset_reason_from_name(event->reason);
+    /* Replay data before a RESET is already fully demodulated. Preserve that
+     * ordered output before the reconfigure gate clears the ring; otherwise a
+     * short fast-mode loop can continually erase its own output before the
+     * consumer gets scheduled. */
+    drain_output_on_retune();
     store_dongle_frequency(capture_hz);
     store_dongle_rate(event->sample_rate_hz);
     controller_enter_reconfigure_gate(&controller);
@@ -3931,7 +3950,6 @@ rtl_replay_on_reset_event(const dsd_iq_event* event, void* user) {
                                     previous_center_hz, previous_rate_out_hz, NULL);
     controller_end_reconfigure(&controller);
     replay_wait_for_input_purge_applied();
-    drain_output_on_retune();
     g_replay_event_last_reset_reason.store((int)reset_reason, std::memory_order_release);
     g_replay_event_last_frequency_hz.store(center_hz, std::memory_order_release);
     g_replay_event_reset_count.fetch_add(1U, std::memory_order_acq_rel);
@@ -3943,12 +3961,14 @@ rtl_replay_on_loop_restart(const dsd_iq_replay_config* cfg, void* user) {
     if (!cfg) {
         return;
     }
+    /* Rewind is an ordered replay boundary. Let the consumer take the final
+     * output from this pass before restoring the capture's initial settings. */
+    drain_output_on_retune();
     controller_enter_reconfigure_gate(&controller);
     controller_request_input_purge();
     (void)controller_apply_replay_settings(&controller, g_stream ? g_stream->opts : NULL, cfg);
     controller_end_reconfigure(&controller);
     replay_wait_for_input_purge_applied();
-    drain_output_on_retune();
     g_replay_loop_restart_last_frequency_hz.store(controller.last_applied_freq_hz.load(std::memory_order_acquire),
                                                   std::memory_order_release);
     g_replay_loop_restart_count.fetch_add(1U, std::memory_order_acq_rel);
@@ -4200,7 +4220,12 @@ controller_signal_manual_retune_complete(struct controller_state* s, int result)
     controller_store_retune_completion_result_locked(s, request_id, result);
     s->retune_complete_id.store(request_id, std::memory_order_release);
     uint32_t gated_request_id = s->untagged_timeout_gate_request_id.load(std::memory_order_acquire);
-    if (result == RTL_STREAM_TUNE_OK && gated_request_id != 0U && request_id >= gated_request_id) {
+    /* Every terminal completion closes the timed-out request's read gate. A
+     * failed apply has already restored the prior capture settings and crossed
+     * the controller reconfigure/output boundary before completion is
+     * published, so retaining the gate cannot protect any additional state and
+     * would permanently block legacy decoder-driven tune paths. */
+    if (gated_request_id != 0U && request_id >= gated_request_id) {
         s->untagged_timeout_gate_request_id.store(0U, std::memory_order_release);
     }
     dsd_cond_broadcast(&s->retune_done_cond);
@@ -8125,12 +8150,19 @@ dsd_rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_r
     *out_used_while_pending = ring_used(&test_output);
 
     controller_signal_manual_retune_complete(&test_controller, RTL_STREAM_TUNE_FAILED);
+    /* A failed controller apply has restored the previous capture state and
+     * cleared the pre-apply output boundary. Model fresh output produced after
+     * that recovery rather than exposing the pre-timeout samples. */
+    ring_clear(&test_output);
+    test_output.tail.store(0U, std::memory_order_release);
+    test_output.head.store(1U, std::memory_order_release);
     int gated_after_failure = 0;
     *out_read_after_failed_completion =
         rtl_stream_read_live_available(&test_controller, &test_output, &sample, 1U, &gated_after_failure);
 
-    /* A successful controller boundary drains the stale ring before reopening
-     * reads. Seed one replacement sample to verify that fresh output is live. */
+    /* A later timed-out request can install a fresh gate. Its successful
+     * controller boundary reopens reads for replacement output. */
+    controller_gate_untagged_timeout(&test_controller, 2U);
     ring_clear(&test_output);
     test_output.tail.store(0U, std::memory_order_release);
     test_output.head.store(1U, std::memory_order_release);
@@ -8141,7 +8173,7 @@ dsd_rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_r
 
     controller_cleanup(&test_controller);
     output_cleanup(&test_output);
-    return (gated && gated_after_failure && !gated_after_recovery) ? 0 : -3;
+    return (gated && !gated_after_failure && !gated_after_recovery) ? 0 : -3;
 }
 
 extern "C" int

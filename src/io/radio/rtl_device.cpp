@@ -2068,6 +2068,14 @@ replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64
         replay_handle_eof_sequence(s);
         return 0;
     }
+    /* A rewind is a replay timeline boundary just like RESET. Do not restore
+     * the initial capture state while the demodulator still owns samples from
+     * the completed pass; the reconfigure callback would otherwise purge that
+     * work and a short fast-mode capture could loop without ever publishing
+     * output. */
+    if (!replay_wait_for_event_boundary_drain(s)) {
+        return 0;
+    }
     if (dsd_iq_replay_rewind(s->replay_src) != DSD_IQ_OK) {
         return 0;
     }

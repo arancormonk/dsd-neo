@@ -285,7 +285,7 @@ main(void) {
     failed |= expect_size_eq("untagged timeout preserves queued output", used_while_pending, 5U);
     failed |= expect_generation_changed("untagged timeout invalidates handed-off samples", generation_before,
                                         generation_after);
-    failed |= expect_int_eq("failed untagged completion keeps output gated", read_after_failed_completion, 0);
+    failed |= expect_int_eq("failed untagged completion reopens recovered output", read_after_failed_completion, 1);
     failed |= expect_int_eq("successful recovery reopens queued output", read_after_recovery, 1);
 
     cache_pending = -1;
