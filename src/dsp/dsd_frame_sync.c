@@ -396,6 +396,7 @@ frame_sync_p25p2_profile_active(const frame_sync_match_ctx* ctx) {
 }
 
 static int frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state);
+static int frame_sync_profile_uses_gfsk_exclusively(const dsd_opts* opts, int profile_index);
 static int frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);
 
 static inline void
@@ -1760,10 +1761,17 @@ frame_sync_update_symbol_ring(const dsd_opts* opts, dsd_state* state, float symb
     }
 }
 
-static int
-frame_sync_bias_want_mod_with_snr(const dsd_state* state, int want_mod) {
 #ifdef USE_RADIO
-    if (want_mod == 2) {
+static int
+frame_sync_should_bypass_c4fm_qpsk_snr_bias(const dsd_opts* opts, const dsd_state* state, int want_mod) {
+    return want_mod == 2 && frame_sync_profile_uses_gfsk_exclusively(opts, state->sps_hunt_idx);
+}
+#endif
+
+static int
+frame_sync_bias_want_mod_with_snr(const dsd_opts* opts, const dsd_state* state, int want_mod) {
+#ifdef USE_RADIO
+    if (frame_sync_should_bypass_c4fm_qpsk_snr_bias(opts, state, want_mod)) {
         return want_mod;
     }
     double snr_c = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
@@ -1802,6 +1810,7 @@ frame_sync_bias_want_mod_with_snr(const dsd_state* state, int want_mod) {
         return 1;
     }
 #else
+    UNUSED(opts);
     UNUSED(state);
 #endif
     return want_mod;
@@ -1958,7 +1967,7 @@ frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, 
     }
 
     int want_mod = frame_sync_active_profile_modulation(opts, state);
-    want_mod = frame_sync_bias_want_mod_with_snr(state, want_mod);
+    want_mod = frame_sync_bias_want_mod_with_snr(opts, state, want_mod);
     want_mod = frame_sync_override_want_mod_with_hamming(opts, state, want_mod);
     frame_sync_update_mod_votes(want_mod);
     frame_sync_apply_mod_switch(opts, state, frame_sync_decide_mod_switch(state, want_mod));
@@ -2330,7 +2339,10 @@ frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runt
 }
 
 static int
-frame_sync_active_profile_is_gfsk_only(const dsd_opts* opts, int profile_index) {
+frame_sync_profile_uses_gfsk_exclusively(const dsd_opts* opts, int profile_index) {
+    if (frame_sync_sps_profile_for_index(profile_index)->levels == 2) {
+        return 1;
+    }
     if (!opts) {
         return 0;
     }
@@ -2352,9 +2364,7 @@ frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* stat
     if (profile_index < 0 || profile_index >= FRAME_SYNC_SPS_PROFILE_COUNT) {
         profile_index = FRAME_SYNC_SPS_PROFILE_4800_4;
     }
-    const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(profile_index);
-    if ((!opts || !opts->mod_cli_lock)
-        && (profile->levels == 2 || frame_sync_active_profile_is_gfsk_only(opts, profile_index))) {
+    if ((!opts || !opts->mod_cli_lock) && frame_sync_profile_uses_gfsk_exclusively(opts, profile_index)) {
         return 2;
     }
     if (state && state->rf_mod == 1) {
@@ -2381,7 +2391,7 @@ static int
 frame_sync_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state) {
     const int active_modulation = frame_sync_active_profile_modulation(opts, state);
 #ifdef USE_RADIO
-    {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (cfg && cfg->snr_sql_is_set) {
             double snr_db = frame_sync_active_profile_snr_db(opts, state);
