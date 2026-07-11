@@ -1278,6 +1278,47 @@ main(void) {
     assert(s19g.p25_p2_audio_ring_count[0] == 1);
     assert(s19g.s_l4[0][0] == 321);
 
+    // Phase 1 grants use logical slot 0 for service-option history. Repeating
+    // an unchanged clear grant must preserve the active call's audio state.
+    static dsd_opts o19h;
+    static dsd_state s19h;
+    DSD_MEMSET(&o19h, 0, sizeof(o19h));
+    DSD_MEMSET(&s19h, 0, sizeof(s19h));
+    o19h.p25_trunk = 1;
+    o19h.trunk_tune_group_calls = 1;
+    o19h.trunk_tune_enc_calls = 0;
+    s19h.p25_cc_freq = 851000000;
+    s19h.p25_iden_fdma[id9] = s9.p25_iden_fdma[id9];
+    s19h.p25_chan_tdma_explicit[id9] = 1;
+
+    p25_sm_ctx_t ctx19h;
+    p25_sm_init_ctx(&ctx19h, &o19h, &s19h);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_hook_commits_decoder_state = 1;
+    g_result_tune_to_freq_calls = 0;
+
+    p25_sm_event_t duplicate_fdma_clear = p25_sm_ev_group_grant(ch9, 0, 5601, 6601, 0x00);
+    p25_sm_event(&ctx19h, &o19h, &s19h, &duplicate_fdma_clear);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19h.state == P25_SM_TUNED);
+    assert(ctx19h.vc_is_tdma == 0);
+    assert(ctx19h.grant_count == 1U);
+    assert(ctx19h.slots[0].grant_active == 1);
+    assert(ctx19h.slots[0].svc_bits == 0x00);
+    assert(s19h.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+
+    s19h.p25_p2_audio_allowed[0] = 1;
+    s19h.p25_p2_audio_ring_count[0] = 1;
+    s19h.s_l4[0][0] = 654;
+    p25_sm_event(&ctx19h, &o19h, &s19h, &duplicate_fdma_clear);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19h.grant_count == 1U);
+    assert(ctx19h.slots[0].svc_bits == 0x00);
+    assert(s19h.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+    assert(s19h.p25_p2_audio_allowed[0] == 1);
+    assert(s19h.p25_p2_audio_ring_count[0] == 1);
+    assert(s19h.s_l4[0][0] == 654);
+
     // Encrypted-follow mode tracks muted activity and never applies the
     // lockout-only classification timeout.
     static dsd_opts o19f;

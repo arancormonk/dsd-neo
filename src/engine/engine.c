@@ -39,6 +39,7 @@
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/cli.h>
@@ -1895,6 +1896,12 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
 }
 
 static void
+no_carrier_reset_p25_crypto_state(dsd_state* state) {
+    p25_crypto_reset_slot(state, 0);
+    p25_crypto_reset_slot(state, 1);
+}
+
+static void
 no_carrier_reset_dmr_data_blocks(dsd_state* state) {
     state->dmr_lrrp_source[0] = 0;
     state->dmr_lrrp_source[1] = 0;
@@ -2180,6 +2187,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     no_carrier_reset_last_call_display(state);
     no_carrier_reset_voice_and_audio_metrics(state);
     no_carrier_reset_payload_and_keystream_state(state);
+    no_carrier_reset_p25_crypto_state(state);
     no_carrier_reset_dmr_data_blocks(state);
     no_carrier_reset_nxdn_alias_state(state);
     no_carrier_unload_keys_if_needed(state);

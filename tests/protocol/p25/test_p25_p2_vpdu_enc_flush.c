@@ -256,11 +256,18 @@ main(void) {
     MAC[7] = 0x03;
     opts.p25_is_tuned = 1;
     st.currentslot = 0;
-    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     st.p25_p2_enc_lockout_muted[0] = 0;
+    st.p25_p2_audio_allowed[0] = 0;
+    st.p25_p2_audio_ring_count[0] = 0;
+
+    process_MAC_VPDU(&opts, &st, 0, MAC);
+
+    rc |= expect_eq("late clear regroup member classified", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_eq("late clear regroup member marker clear", st.p25_p2_enc_lockout_muted[0], 0);
+
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_ring_count[0] = 2;
-
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     rc |= expect_eq("clear regroup member remains clear", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);

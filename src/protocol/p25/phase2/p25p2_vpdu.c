@@ -955,6 +955,10 @@ static void
 p25p2_vpdu_handle_group_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot, int talkgroup) {
     UNUSED(opts);
     if (p25_patch_tg_key_is_clear(state, talkgroup) || p25_patch_sg_key_is_clear(state, talkgroup)) {
+        const int slot_idx = slot & 1;
+        if (!p25_crypto_audio_ready(state, slot_idx)) {
+            p25_crypto_begin_voice_call(state, DSD_P25_CRYPTO_PHASE2, slot_idx, 0x40, 1);
+        }
         return;
     }
     p25_crypto_mark_encrypted_pending(state, slot & 1);

@@ -1245,6 +1245,14 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long f
     slot_ctx->tg = target_id;
 }
 
+static int
+p25_grant_logical_slot(const p25_sm_ctx_t* ctx, int slot) {
+    if (!ctx) {
+        return -1;
+    }
+    return ctx->vc_is_tdma ? slot : 0;
+}
+
 static void
 p25_grant_refresh_reused_carrier_watchdogs(dsd_state* state, double now_m) {
     if (!state) {
@@ -1324,7 +1332,7 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     const int data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     ctx->vc_data_call = data_call;
     p25_grant_initialize_timing(ctx, state, now_m, reused_carrier, data_call);
-    p25_grant_store_slot_context(ctx, ev, freq, target_id, eval_ctx, slot, now_m);
+    p25_grant_store_slot_context(ctx, ev, freq, target_id, eval_ctx, p25_grant_logical_slot(ctx, slot), now_m);
     p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, slot, data_call);
     // Clear any stale one-shot VC CQPSK override from a previous attempt.
     p25_grant_clear_stale_cqpsk_override(state, reused_carrier);
@@ -1520,17 +1528,13 @@ p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p2
         return;
     }
 
-    int previous_svc = P25_SM_SVC_UNKNOWN;
-    if (route->slot >= 0 && route->slot <= 1) {
-        previous_svc = ctx->slots[route->slot].svc_bits;
-        ctx->slots[route->slot].svc_bits = ev->svc_bits;
-    }
-    if (data_call) {
+    const int crypto_slot = p25_grant_logical_slot(ctx, route->slot);
+    if (crypto_slot < 0 || crypto_slot > 1) {
         return;
     }
-
-    const int crypto_slot = ctx->vc_is_tdma ? route->slot : 0;
-    if (crypto_slot < 0 || crypto_slot > 1) {
+    const int previous_svc = ctx->slots[crypto_slot].svc_bits;
+    ctx->slots[crypto_slot].svc_bits = ev->svc_bits;
+    if (data_call) {
         return;
     }
 
@@ -1716,10 +1720,21 @@ typedef struct {
 } p25_grant_route_ctx_t;
 
 static int
+p25_grant_is_sticky_block_candidate(const p25_sm_ctx_t* ctx, const dsd_state* state,
+                                    const p25_grant_eval_ctx_t* eval_ctx, const p25_grant_route_ctx_t* grant) {
+    if (!ctx || !state || !eval_ctx || !grant) {
+        return 0;
+    }
+    if (ctx->state != P25_SM_TUNED || grant->slot < 0 || grant->slot > 1) {
+        return 0;
+    }
+    return eval_ctx->probe_call && state->p25_crypto_state[grant->slot] == DSD_P25_CRYPTO_BLOCKED;
+}
+
+static int
 p25_grant_matches_sticky_block(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev,
                                const p25_grant_eval_ctx_t* eval_ctx, const p25_grant_route_ctx_t* grant) {
-    if (!ctx || !state || !ev || !eval_ctx || !grant || ctx->state != P25_SM_TUNED || grant->slot < 0 || grant->slot > 1
-        || !eval_ctx->probe_call || state->p25_crypto_state[grant->slot] != DSD_P25_CRYPTO_BLOCKED) {
+    if (!ev || !p25_grant_is_sticky_block_candidate(ctx, state, eval_ctx, grant)) {
         return 0;
     }
 
