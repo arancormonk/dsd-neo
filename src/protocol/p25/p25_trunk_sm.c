@@ -1153,6 +1153,7 @@ p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     ctx->slots[slot].data_call = 0;
     ctx->slots[slot].svc_bits = P25_SM_SVC_UNKNOWN;
     ctx->slots[slot].last_grant_m = 0.0;
+    ctx->slots[slot].crypto_attempt_m = 0.0;
 }
 
 static void
@@ -1301,14 +1302,19 @@ p25_grant_initialize_timing(p25_sm_ctx_t* ctx, dsd_state* state, double now_m, i
 
 static void
 p25_grant_begin_crypto_classification(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev,
-                                      const p25_grant_eval_ctx_t* eval_ctx, int slot, int data_call) {
-    if (!state || data_call) {
+                                      const p25_grant_eval_ctx_t* eval_ctx, int slot, int data_call, double now_m) {
+    if (!ctx || !state || !ev || data_call) {
         return;
     }
     const int crypto_slot = ctx->vc_is_tdma ? slot : 0;
+    if (crypto_slot < 0 || crypto_slot > 1) {
+        return;
+    }
     const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
     p25_crypto_begin_voice_call(state, ctx->vc_is_tdma ? DSD_P25_CRYPTO_PHASE2 : DSD_P25_CRYPTO_PHASE1, crypto_slot,
                                 ev->svc_bits, force_clear);
+    ctx->slots[crypto_slot].crypto_attempt_m =
+        state->p25_crypto_state[crypto_slot] == DSD_P25_CRYPTO_ENCRYPTED_PENDING ? now_m : 0.0;
 }
 
 static void
@@ -1333,7 +1339,7 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     ctx->vc_data_call = data_call;
     p25_grant_initialize_timing(ctx, state, now_m, reused_carrier, data_call);
     p25_grant_store_slot_context(ctx, ev, freq, target_id, eval_ctx, p25_grant_logical_slot(ctx, slot), now_m);
-    p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, slot, data_call);
+    p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, slot, data_call, now_m);
     // Clear any stale one-shot VC CQPSK override from a previous attempt.
     p25_grant_clear_stale_cqpsk_override(state, reused_carrier);
 }
@@ -1523,7 +1529,7 @@ p25_grant_service_options_are_explicit_clear(int svc_bits) {
 static void
 p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev,
                                    const dsd_tg_policy_call_route* route, const p25_grant_eval_ctx_t* eval_ctx,
-                                   int data_call) {
+                                   int data_call, double now_m) {
     if (!ctx || !state || !ev || !route) {
         return;
     }
@@ -1544,7 +1550,7 @@ p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p2
     const int classification_changed = !force_clear && was_explicit_clear != is_explicit_clear;
     const int unapplied_clear_override = force_clear && !p25_crypto_audio_ready(state, crypto_slot);
     if (classification_changed || unapplied_clear_override) {
-        p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, route->slot, 0);
+        p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, route->slot, 0, now_m);
     }
 }
 
@@ -1566,7 +1572,7 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
     }
 
     p25_grant_refresh_duplicate_slot(ctx, state, route, now_m, data_call);
-    p25_grant_refresh_duplicate_crypto(ctx, state, ev, route, eval_ctx, data_call);
+    p25_grant_refresh_duplicate_crypto(ctx, state, ev, route, eval_ctx, data_call, now_m);
     if (data_call) {
         ctx->t_tune_m = now_m;
         ctx->t_voice_m = 0.0;
@@ -2109,6 +2115,7 @@ p25_enc_lockout_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) 
         return;
     }
     ctx->slots[slot].grant_active = 0;
+    ctx->slots[slot].crypto_attempt_m = 0.0;
     (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
     state->p25_policy_tg[slot] = 0;
 }
@@ -3164,8 +3171,15 @@ p25_sm_tick_try_cqpsk_retry(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
         return;
     }
     ctx->vc_cqpsk_retry_done = 1;
-    // Restart the tune timer for retry to avoid immediate timeout from the new attempt.
+    // Restart the tune and per-slot classification timers for the new attempt.
     ctx->t_tune_m = now_m;
+    const int slot_count = ctx->vc_is_tdma ? 2 : 1;
+    for (int slot = 0; slot < slot_count; slot++) {
+        if (ctx->slots[slot].grant_active && !ctx->slots[slot].data_call
+            && state->p25_crypto_state[slot] == DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+            ctx->slots[slot].crypto_attempt_m = now_m;
+        }
+    }
     ctx->t_voice_m = 0.0;
     p25_sm_clear_slot_activity(ctx);
     sm_log(opts, state, "cqpsk-retry-on");
@@ -3179,13 +3193,21 @@ p25_sm_tick_try_cqpsk_retry(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
 }
 
 static void
+p25_sm_tick_tuned_try_cqpsk_retry(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!ctx || ctx->t_tune_m <= 0.0 || ctx->slots[0].voice_active || ctx->slots[1].voice_active) {
+        return;
+    }
+    if (ctx->t_voice_m > 0.0 && !p25_sm_has_pending_voice_grant(ctx, state) && !p25_sm_has_pending_data_grant(ctx)) {
+        return;
+    }
+    p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, now_m - ctx->t_tune_m);
+}
+
+static void
 p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double grant_timeout) {
     double timeout_start_m = 0.0;
     if (!ctx) {
         return;
-    }
-    if (ctx->t_tune_m > 0.0) {
-        p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, now_m - ctx->t_tune_m);
     }
 
     timeout_start_m = p25_sm_pending_voice_grant_timeout_start_m(ctx, state);
@@ -3209,7 +3231,7 @@ p25_sm_crypto_slot_expired(const p25_sm_ctx_t* ctx, const dsd_state* state, int 
     if (ctx->vc_is_tdma && !ctx->slots[slot].grant_active) {
         return 0;
     }
-    const double started_m = ctx->vc_is_tdma ? ctx->slots[slot].last_grant_m : ctx->t_tune_m;
+    const double started_m = ctx->slots[slot].crypto_attempt_m;
     return started_m > 0.0 && (now_m - started_m) >= grant_timeout;
 }
 
@@ -3275,6 +3297,7 @@ p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
     if (!ctx) {
         return;
     }
+    p25_sm_tick_tuned_try_cqpsk_retry(ctx, opts, state, now_m);
     if (p25_sm_tick_crypto_classification(ctx, opts, state, now_m, grant_timeout)) {
         return;
     }

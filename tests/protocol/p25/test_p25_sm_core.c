@@ -1258,13 +1258,20 @@ main(void) {
     assert(ctx19g.grant_count == 1U);
     assert(ctx19g.slots[0].grant_active == 1);
     assert(ctx19g.slots[0].svc_bits == 0x40);
+    assert(ctx19g.slots[0].crypto_attempt_m > 0.0);
     assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    const double stale_crypto_attempt_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx19g.slots[0].crypto_attempt_m = stale_crypto_attempt_m;
+    p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_encrypted);
+    assert(ctx19g.slots[0].last_grant_m > stale_crypto_attempt_m);
+    assert(ctx19g.slots[0].crypto_attempt_m == stale_crypto_attempt_m);
 
     p25_sm_event_t duplicate_clear = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5501, 6501, 0x00);
     p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_clear);
     assert(g_result_tune_to_freq_calls == 1);
     assert(ctx19g.grant_count == 1U);
     assert(ctx19g.slots[0].svc_bits == 0x00);
+    assert(ctx19g.slots[0].crypto_attempt_m == 0.0);
     assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
     assert(s19g.p25_p2_enc_lockout_muted[0] == 0U);
 
@@ -1402,7 +1409,8 @@ main(void) {
     ctx19c.config.grant_timeout_s = 0.1;
     ctx19c.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
     ctx19c.slots[0].grant_active = 1;
-    ctx19c.slots[0].last_grant_m = ctx19c.t_tune_m;
+    ctx19c.slots[0].last_grant_m = dsd_time_now_monotonic_s();
+    ctx19c.slots[0].crypto_attempt_m = ctx19c.t_tune_m;
     ctx19c.slots[1].grant_active = 1;
     ctx19c.slots[1].voice_active = 1;
     ctx19c.slots[1].last_grant_m = dsd_time_now_monotonic_s();
@@ -1449,6 +1457,7 @@ main(void) {
     ctx19i.t_tune_m = dsd_time_now_monotonic_s();
     ctx19i.slots[0].grant_active = 1;
     ctx19i.slots[0].last_grant_m = ctx19i.t_tune_m - 1.0;
+    ctx19i.slots[0].crypto_attempt_m = ctx19i.t_tune_m - 1.0;
     ctx19i.slots[1].grant_active = 1;
     ctx19i.slots[1].data_call = 1;
     ctx19i.slots[1].last_grant_m = ctx19i.t_tune_m;
@@ -1491,6 +1500,7 @@ main(void) {
     ctx19d.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
     ctx19d.slots[0].grant_active = 1;
     ctx19d.slots[0].last_grant_m = ctx19d.t_tune_m;
+    ctx19d.slots[0].crypto_attempt_m = ctx19d.t_tune_m;
     g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
     g_result_return_to_cc_calls = 0;
     p25_sm_tick_ctx(&ctx19d, &o19d, &s19d);
@@ -1579,7 +1589,8 @@ main(void) {
     p25_sm_init_ctx(&ctx20, &o20, &s20);
     g_result_tune_to_freq_calls = 0;
     g_result_return_to_cc_calls = 0;
-    p25_sm_event(&ctx20, &o20, &s20, &ev9);
+    p25_sm_event_t retry_encrypted = p25_sm_ev_group_grant(ch9, 0, 1234, 42, 0x40);
+    p25_sm_event(&ctx20, &o20, &s20, &retry_encrypted);
     assert(g_result_tune_to_freq_calls == 1);
     assert(ctx20.state == P25_SM_TUNED);
     assert(ctx20.vc_is_tdma == 1);
@@ -1590,14 +1601,17 @@ main(void) {
     ctx20.t_tune_m = stale_grant_m;
     ctx20.t_voice_m = 0.0;
     ctx20.slots[0].last_grant_m = stale_grant_m;
+    ctx20.slots[0].crypto_attempt_m = stale_grant_m;
     p25_sm_tick_ctx(&ctx20, &o20, &s20);
     assert(g_result_tune_to_freq_calls == 2);
     assert(g_result_return_to_cc_calls == 0);
     assert(ctx20.vc_cqpsk_retry_done == 1);
     assert(ctx20.t_tune_m > stale_grant_m);
+    assert(ctx20.slots[0].crypto_attempt_m == ctx20.t_tune_m);
     assert(ctx20.state == P25_SM_TUNED);
     assert(o20.p25_is_tuned == 1);
     assert(ctx20.slots[0].grant_active == 1);
+    assert(s20.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     assert(s20.p25_retune_block_until == 0);
 #endif
 

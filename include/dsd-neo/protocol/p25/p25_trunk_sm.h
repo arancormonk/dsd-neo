@@ -107,22 +107,23 @@ typedef struct {
  * ============================================================================ */
 
 typedef struct {
-    double last_active_m; // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
-    int voice_active;     // 1 if voice is currently active on this slot
-    int algid;            // Current algorithm ID for this slot
-    int keyid;            // Current key ID for this slot
-    int tg;               // Current talkgroup for this slot
-    int grant_active;     // 1 if this TDMA slot has an accepted grant context
-    long freq_hz;         // Accepted grant RF frequency
-    int channel;          // Accepted grant channel number
-    int target_id;        // Policy-selected target ID, or OTA target when no policy remap
-    int ota_tg;           // OTA talkgroup for group grants
-    int src;              // Source RID
-    int dst;              // Destination RID for individual grants
-    int is_group;         // 1 for group call, 0 for individual/private
-    int data_call;        // 1 for data grant, 0 for voice
-    int svc_bits;         // Service options, or P25_SM_SVC_UNKNOWN when absent
-    double last_grant_m;  // Monotonic timestamp of last accepted grant for this slot
+    double last_active_m;    // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
+    int voice_active;        // 1 if voice is currently active on this slot
+    int algid;               // Current algorithm ID for this slot
+    int keyid;               // Current key ID for this slot
+    int tg;                  // Current talkgroup for this slot
+    int grant_active;        // 1 if this TDMA slot has an accepted grant context
+    long freq_hz;            // Accepted grant RF frequency
+    int channel;             // Accepted grant channel number
+    int target_id;           // Policy-selected target ID, or OTA target when no policy remap
+    int ota_tg;              // OTA talkgroup for group grants
+    int src;                 // Source RID
+    int dst;                 // Destination RID for individual grants
+    int is_group;            // 1 for group call, 0 for individual/private
+    int data_call;           // 1 for data grant, 0 for voice
+    int svc_bits;            // Service options, or P25_SM_SVC_UNKNOWN when absent
+    double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
+    double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
 } p25_sm_slot_ctx_t;
 
 /* ============================================================================
