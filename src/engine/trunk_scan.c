@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -1266,6 +1267,9 @@ trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_
         return;
     }
     if (trunk_scan_target_is_p25(target)) {
+        state->sps_hunt_idx =
+            state->p25_cc_is_tdma == 1 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+        state->sps_hunt_counter = 0;
         int p25_sps = trunk_scan_p25_cc_sps(opts, state);
         state->samplesPerSymbol = p25_sps;
         state->symbolCenter = dsd_opts_symbol_center(p25_sps);
@@ -1281,6 +1285,8 @@ trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_
     if (!trunk_scan_target_is_dmr(target)) {
         return;
     }
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->sps_hunt_counter = 0;
     int dmr_sps = trunk_scan_dmr_sps(opts, state);
     state->samplesPerSymbol = dmr_sps;
     state->symbolCenter = dsd_opts_symbol_center(dmr_sps);
