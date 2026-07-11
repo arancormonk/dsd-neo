@@ -290,9 +290,14 @@ dsd_nxdn_can_decrypt(const dsd_state* state) {
 }
 
 static int
+dsd_p25p1_live_crypto_gate_applies(const dsd_state* state) {
+    return DSD_SYNC_IS_P25P1(state->synctype) && state->mbe_file_type != 3;
+}
+
+static int
 dsd_fdma_crypto_muted(const dsd_state* state, int include_nxdn) {
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
-        return p25_crypto_audio_ready(state, 0) ? 0 : 1;
+        return dsd_p25p1_live_crypto_gate_applies(state) && !p25_crypto_audio_ready(state, 0);
     }
 
     int muted = dsd_p25_algid_is_encrypted(state) || (include_nxdn && state->nxdn_cipher_type != 0);
@@ -307,7 +312,7 @@ dsd_fdma_crypto_muted(const dsd_state* state, int include_nxdn) {
 static int
 dsd_fdma_apply_group_gate(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int muted) {
     (void)dsd_audio_group_gate_mono(opts, state, tg, muted, &muted);
-    if (DSD_SYNC_IS_P25P1(state->synctype) && !p25_crypto_audio_ready(state, 0)) {
+    if (dsd_p25p1_live_crypto_gate_applies(state) && !p25_crypto_audio_ready(state, 0)) {
         return 1;
     }
     return muted;

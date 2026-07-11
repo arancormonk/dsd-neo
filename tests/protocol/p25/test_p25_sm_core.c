@@ -1233,6 +1233,51 @@ main(void) {
     assert(ctx19e.slots[1].voice_active == 1);
     assert(s19e.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
 
+    // A true duplicate grant must refresh crypto classification when its
+    // service options change from encrypted to explicit clear.
+    static dsd_opts o19g;
+    static dsd_state s19g;
+    DSD_MEMSET(&o19g, 0, sizeof(o19g));
+    DSD_MEMSET(&s19g, 0, sizeof(s19g));
+    o19g.p25_trunk = 1;
+    o19g.trunk_tune_group_calls = 1;
+    o19g.trunk_tune_enc_calls = 0;
+    s19g.p25_cc_freq = 851000000;
+    setup_tdma_iden(&s19g, 2);
+
+    p25_sm_ctx_t ctx19g;
+    p25_sm_init_ctx(&ctx19g, &o19g, &s19g);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_hook_commits_decoder_state = 1;
+    g_result_tune_to_freq_calls = 0;
+
+    p25_sm_event_t duplicate_encrypted = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5501, 6501, 0x40);
+    p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_encrypted);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19g.state == P25_SM_TUNED);
+    assert(ctx19g.grant_count == 1U);
+    assert(ctx19g.slots[0].grant_active == 1);
+    assert(ctx19g.slots[0].svc_bits == 0x40);
+    assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+
+    p25_sm_event_t duplicate_clear = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5501, 6501, 0x00);
+    p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_clear);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19g.grant_count == 1U);
+    assert(ctx19g.slots[0].svc_bits == 0x00);
+    assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+    assert(s19g.p25_p2_enc_lockout_muted[0] == 0U);
+
+    s19g.p25_p2_audio_allowed[0] = 1;
+    s19g.p25_p2_audio_ring_count[0] = 1;
+    s19g.s_l4[0][0] = 321;
+    p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_clear);
+    assert(ctx19g.grant_count == 1U);
+    assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+    assert(s19g.p25_p2_audio_allowed[0] == 1);
+    assert(s19g.p25_p2_audio_ring_count[0] == 1);
+    assert(s19g.s_l4[0][0] == 321);
+
     // Encrypted-follow mode tracks muted activity and never applies the
     // lockout-only classification timeout.
     static dsd_opts o19f;

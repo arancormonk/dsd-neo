@@ -1508,6 +1508,43 @@ p25_grant_refresh_duplicate_slot(p25_sm_ctx_t* ctx, dsd_state* state, const dsd_
 }
 
 static int
+p25_grant_service_options_are_explicit_clear(int svc_bits) {
+    return svc_bits >= 0 && (svc_bits & 0x40) == 0;
+}
+
+static void
+p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev,
+                                   const dsd_tg_policy_call_route* route, const p25_grant_eval_ctx_t* eval_ctx,
+                                   int data_call) {
+    if (!ctx || !state || !ev || !route) {
+        return;
+    }
+
+    int previous_svc = P25_SM_SVC_UNKNOWN;
+    if (route->slot >= 0 && route->slot <= 1) {
+        previous_svc = ctx->slots[route->slot].svc_bits;
+        ctx->slots[route->slot].svc_bits = ev->svc_bits;
+    }
+    if (data_call) {
+        return;
+    }
+
+    const int crypto_slot = ctx->vc_is_tdma ? route->slot : 0;
+    if (crypto_slot < 0 || crypto_slot > 1) {
+        return;
+    }
+
+    const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
+    const int was_explicit_clear = p25_grant_service_options_are_explicit_clear(previous_svc);
+    const int is_explicit_clear = p25_grant_service_options_are_explicit_clear(ev->svc_bits);
+    const int classification_changed = !force_clear && was_explicit_clear != is_explicit_clear;
+    const int unapplied_clear_override = force_clear && !p25_crypto_audio_ready(state, crypto_slot);
+    if (classification_changed || unapplied_clear_override) {
+        p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, route->slot, 0);
+    }
+}
+
+static int
 p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                            const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision, long freq,
                            int target_id, const p25_grant_eval_ctx_t* eval_ctx, double now_m) {
@@ -1525,6 +1562,7 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
     }
 
     p25_grant_refresh_duplicate_slot(ctx, state, route, now_m, data_call);
+    p25_grant_refresh_duplicate_crypto(ctx, state, ev, route, eval_ctx, data_call);
     if (data_call) {
         ctx->t_tune_m = now_m;
         ctx->t_voice_m = 0.0;

@@ -11,6 +11,7 @@
  * 2022-10 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -953,7 +954,9 @@ p25p2_vpdu_update_private_last_ids(dsd_state* state, int slot, int talkgroup, in
 static void
 p25p2_vpdu_handle_group_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot, int talkgroup) {
     UNUSED(opts);
-    UNUSED(talkgroup);
+    if (p25_patch_tg_key_is_clear(state, talkgroup) || p25_patch_sg_key_is_clear(state, talkgroup)) {
+        return;
+    }
     p25_crypto_mark_encrypted_pending(state, slot & 1);
 }
 
@@ -3425,6 +3428,7 @@ p25p2_vpdu_iter_block_44(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "TGT: %d; ", add);
         DSD_FPRINTF(stderr, "CC: %03X; ", cc);
 
+        dsd_p25p2_flush_partial_audio_slot(opts, state, eslot & 1);
         p25p2_vpdu_gate_slot_audio(state, eslot);
         p25_crypto_reset_slot(state, eslot & 1);
         other_audio = p25p2_vpdu_other_slot_audio_with_history(state, eslot, mac_hold, voice_hold);

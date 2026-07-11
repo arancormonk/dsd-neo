@@ -974,6 +974,25 @@ p25p2_emit_voice_activity(dsd_opts* opts, dsd_state* state) {
     state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
 }
 
+static int
+p25p2_voice_crypto_is_authoritatively_clear(const dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+
+    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    if (algid == 0x80) {
+        return 1;
+    }
+
+#if !defined(DSD_NEO_P25P2_TEST_STUB)
+    const int talkgroup = (slot == 0) ? state->lasttg : state->lasttgR;
+    return p25_patch_tg_key_is_clear(state, talkgroup) || p25_patch_sg_key_is_clear(state, talkgroup);
+#else
+    return 0;
+#endif
+}
+
 static void
 p25p2_prepare_voice_crypto(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->trunk_tune_enc_calls != 0) {
@@ -984,7 +1003,7 @@ p25p2_prepare_voice_crypto(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     const int svc = (slot == 0) ? state->dmr_so : state->dmr_soR;
-    if ((svc & 0x40) != 0) {
+    if ((svc & 0x40) != 0 && !p25p2_voice_crypto_is_authoritatively_clear(state, slot)) {
         p25p2_frame_mark_encrypted_pending(state, slot);
     }
 }

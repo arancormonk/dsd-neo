@@ -747,9 +747,11 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
+    state.dmrburstR = 21;
     state.p25_p2_audio_allowed[1] = 1;
-    state.p25_p2_enc_lockout_muted[1] = 1;
-    state.p25_crypto_state[1] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
+    state.voice_counter[1] = 3;
+    state.s_r4[0][0] = 654;
     state.p25_call_is_packet[1] = 1;
     state.p25_policy_tg[1] = 0x5678;
     state.p25_service_options_valid[1] = 1;
@@ -769,6 +771,12 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch idle service clear", state.dmr_soR, 0);
     rc |= expect_int("sacch idle mute clear", state.p25_p2_enc_lockout_muted[1], 0);
     rc |= expect_int("sacch idle call blank", strncmp(state.call_string[1], P25P2_EMPTY_CALL_STRING, 21), 0);
+    rc |= expect_int("sacch idle tail flush", g_flush_count, 1);
+    rc |= expect_int("sacch idle tail flush slot", g_flush_slot, 1);
+    rc |= expect_int("sacch idle tail flush before burst reset", g_flush_burst_r, 21);
+    rc |= expect_int("sacch idle tail flush before crypto reset", g_flush_crypto_state, DSD_P25_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("sacch idle tail flush sees gate", g_flush_gate_r, 1);
+    rc |= expect_int("sacch idle tail sample drained", state.s_r4[0][0], 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -900,6 +908,28 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch end close left", g_close_l_count, 1);
     rc |= expect_int("facch end key clear", (int)state.R, 0);
     rc |= expect_int("facch end call blank", strncmp(state.call_string[0], P25P2_EMPTY_CALL_STRING, 21), 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    state.currentslot = 0;
+    state.dmrburstL = 21;
+    state.payload_algid = 0x80;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.voice_counter[0] = 4;
+    state.s_l4[0][0] = 987;
+    pack_payload_from_mac(payload, 156, mac, 0x3, 0, 0);
+
+    process_FACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("facch idle emitted", g_idle_count[0], 1);
+    rc |= expect_int("facch idle tail flush", g_flush_count, 1);
+    rc |= expect_int("facch idle tail flush slot", g_flush_slot, 0);
+    rc |= expect_int("facch idle tail flush before burst reset", g_flush_burst_l, 21);
+    rc |= expect_int("facch idle tail flush before crypto reset", g_flush_crypto_state, DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("facch idle tail flush sees gate", g_flush_gate_l, 1);
+    rc |= expect_int("facch idle crypto reset", state.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
+    rc |= expect_int("facch idle tail sample drained", state.s_l4[0][0], 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));

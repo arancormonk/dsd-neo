@@ -602,6 +602,7 @@ static void
 p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot, unsigned long long int smac[24]) {
     double idle_observed_m = dsd_time_now_monotonic_s();
 
+    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 24);
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
@@ -693,6 +694,7 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     double idle_observed_m = dsd_time_now_monotonic_s();
 
+    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_snapshot_slot_ids(state, slot, &idle_ids);
     p25p2_xcch_reset_idle_slot_facch(state, slot);
     p25p2_xcch_clear_slot_call_ids(state, slot);

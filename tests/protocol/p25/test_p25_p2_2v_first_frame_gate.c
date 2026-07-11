@@ -460,6 +460,21 @@ main(void) {
     rc |= expect_eq("slot0 clear-to-encrypted: companion ring preserved", st.p25_p2_audio_ring_count[1], 3);
     rc |= expect_eq("slot0 clear-to-encrypted: companion int16 preserved", st.s_r4[0][0], 22);
 
+    // Definitive clear metadata remains authoritative when the cached service
+    // options still carry the encrypted bit on a later voice burst.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.payload_algid = 0x80;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot0 definitive clear: mbe calls", g_mbe_calls, 1);
+    rc |= expect_eq("slot0 definitive clear: crypto state", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_eq("slot0 definitive clear: gate remains open", st.p25_p2_audio_allowed[0], 1);
+
     reset_state(&opts, &st);
     st.currentslot = 0;
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;

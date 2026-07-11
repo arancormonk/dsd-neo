@@ -837,6 +837,30 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     rc |= expect_float("fs encrypted path clears temp buffer", state.audio_out_temp_buf[0], 0.0f);
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.mbe_file_type = 3;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
+    state.f_l[0] = 0.625f;
+    reset_sink_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("sdrtrunk json P25 playback bypasses live crypto state", g_udp_blast_calls, 1);
+    rc |= expect_size("sdrtrunk json P25 playback bytes", g_udp_blast_bytes, 160U * sizeof(float));
+    rc |= expect_float("sdrtrunk json P25 playback sample", ((const float*)g_udp_blast_data)[0], 0.625f);
+
+    state.payload_algid = 0x81;
+    state.f_l[0] = -0.5f;
+    reset_sink_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("sdrtrunk json decrypted P25 bypasses live ALGID gate", g_udp_blast_calls, 1);
+    rc |= expect_float("sdrtrunk json decrypted P25 sample", ((const float*)g_udp_blast_data)[0], -0.5f);
+
+    state.mbe_file_type = 0;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("live P25 unknown crypto remains muted", g_udp_blast_calls, 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
     opts.pulse_digi_out_channels = 1;
     state.f_l4[0][0] = 0.25f;
     state.f_r4[0][0] = 0.75f;

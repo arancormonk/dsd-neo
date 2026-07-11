@@ -227,6 +227,29 @@ test_pre_ess_opposite_clear_slot_stays_tuned(void) {
 }
 
 static int
+test_clear_regroup_override_survives_voice_burst(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    state.currentslot = 0;
+    state.dmr_so = 0x40;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+    p25_patch_update(&state, state.lasttg, /*is_patch*/ 1, /*active*/ 1);
+    p25_patch_set_kas(&state, state.lasttg, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
+
+    process_2V(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_eq("clear regroup: crypto remains clear", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_eq("clear regroup: audio gate remains open", state.p25_p2_audio_allowed[0], 1);
+    rc |= expect_eq("clear regroup: lockout marker remains clear", state.p25_p2_enc_lockout_muted[0], 0);
+    rc |= expect_eq("clear regroup: voice activity emitted", ctx->slots[0].voice_active, 1);
+    return rc;
+}
+
+static int
 test_encrypted_follow_tracks_activity_while_media_is_muted(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -262,6 +285,7 @@ main(void) {
     int rc = 0;
     rc |= test_pre_ess_single_slot_stays_tuned();
     rc |= test_pre_ess_opposite_clear_slot_stays_tuned();
+    rc |= test_clear_regroup_override_survives_voice_burst();
     rc |= test_encrypted_follow_tracks_activity_while_media_is_muted();
     return rc;
 }
