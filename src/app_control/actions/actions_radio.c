@@ -110,8 +110,11 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     }
 #ifdef USE_RADIO
     if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        int channel_profile =
-            state->rf_mod == 1 ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_12K5;
+        int cqpsk = state->rf_mod == 1;
+        int channel_profile = cqpsk ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_12K5;
+        rtl_stream_toggle_cqpsk(cqpsk);
+        rtl_stream_clear_ted_sps_override();
+        rtl_stream_set_ted_sps_no_override(sps);
         (void)rtl_stream_set_symbol_profile(6000, 4, channel_profile);
     }
 #endif
