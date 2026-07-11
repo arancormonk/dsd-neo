@@ -272,6 +272,16 @@ init_common_wav_opts_state(dsd_opts* opts, dsd_state* state) {
     state->maxref = 2.4f;
 }
 
+static void
+set_profile_timing(const dsd_opts* opts, dsd_state* state, int profile_index) {
+    static const int symbol_rates[] = {4800, 2400, 9600, 6000, 4800};
+    const int profile_count = (int)(sizeof(symbol_rates) / sizeof(symbol_rates[0]));
+    const int safe_profile_index = (profile_index >= 0 && profile_index < profile_count) ? profile_index : 0;
+    const int demod_rate = dsd_opts_current_input_timing_rate(opts);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, symbol_rates[safe_profile_index], demod_rate);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+}
+
 static int
 run_symbol_sync_case(const SymbolSyncCase* tc) {
     static dsd_opts opts;
@@ -286,6 +296,7 @@ run_symbol_sync_case(const SymbolSyncCase* tc) {
     opts.inverted_x2tdma = tc->inverted_x2tdma;
     opts.inverted_dpmr = tc->inverted_dpmr;
     state.sps_hunt_idx = tc->profile_index;
+    set_profile_timing(&opts, &state, tc->profile_index);
     state.lastsynctype = tc->initial_lastsynctype;
     g_symbol_index = 0U;
     g_sync_pattern = tc->pattern;
@@ -657,6 +668,7 @@ run_nxdn_two_pass_case(const char* label, const char* pattern, int frame_nxdn48,
     }
 
     state.sps_hunt_idx = frame_nxdn48 ? 1 : (frame_nxdn96 ? 0 : state.sps_hunt_idx);
+    set_profile_timing(&opts, &state, state.sps_hunt_idx);
     dsd_frame_sync_reset_mod_state();
 
     g_symbol_index = 0U;

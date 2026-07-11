@@ -239,6 +239,20 @@ test_sps_hunt_profile_updates_timing(void) {
     assert(state.sps_hunt_idx == 4);
     assert(state.samplesPerSymbol == 10);
     assert(state.symbolCenter == 4);
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 96000;
+    opts.frame_p25p2 = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 1;
+    state.sps_hunt_idx = 0;
+    state.samplesPerSymbol = 20;
+    state.symbolCenter = 8;
+    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    assert(state.sps_hunt_idx == 3);
+    assert(state.samplesPerSymbol == 20);
+    assert(state.symbolCenter == 8);
 }
 
 static void
@@ -281,6 +295,25 @@ test_sps_hunt_reconciles_external_timing(void) {
     assert(state.sps_hunt_idx == 0);
     assert(state.samplesPerSymbol == 7);
     assert(state.symbolCenter == 3);
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_dstar = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 1;
+    state.rf_mod = 0;
+    state.sps_hunt_idx = 3;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    assert(state.sps_hunt_idx == 0);
+    assert(state.samplesPerSymbol == 10);
+    assert(state.symbolCenter == 4);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
 }
 
 static void
@@ -367,6 +400,29 @@ test_provoice_candidate_does_not_shadow_dstar_or_nxdn(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+}
+
+static void
+test_symbol_replay_bypasses_sps_profile_gating(void) {
+    static const int symbol_input_types[] = {AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT};
+    static dsd_opts opts;
+    static dsd_state state;
+
+    for (size_t i = 0; i < sizeof(symbol_input_types) / sizeof(symbol_input_types[0]); i++) {
+        reset(&opts, &state);
+        opts.audio_in_type = symbol_input_types[i];
+        opts.frame_p25p2 = 1;
+        state.sps_hunt_idx = 0;
+        state.min = -3.0f;
+        state.max = 3.0f;
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+    }
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.frame_p25p2 = 1;
+    state.sps_hunt_idx = 0;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_NONE);
 }
 
 static void
@@ -848,6 +904,7 @@ main(void) {
     test_binary_profiles_override_unlocked_qpsk();
     test_bounded_symbol_history_readiness_and_wrap();
     test_provoice_candidate_does_not_shadow_dstar_or_nxdn();
+    test_symbol_replay_bypasses_sps_profile_gating();
     test_m17_auto_preamble_disambiguation_preserves_forced_tolerance();
     test_elapsed_seconds_prefers_monotonic_then_wall_time();
     test_p25_slot_activity_honors_ring_and_hangtime();

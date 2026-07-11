@@ -372,7 +372,14 @@ frame_sync_match_window_ready(const frame_sync_match_ctx* ctx, int length) {
 
 static int
 frame_sync_match_profile_active(const frame_sync_match_ctx* ctx, int profile_index) {
-    return ctx && ctx->state && ctx->state->sps_hunt_idx == profile_index;
+    if (!ctx || !ctx->opts || !ctx->state) {
+        return 0;
+    }
+    /* Stored symbols cannot be revisited after an SPS hunt profile advances. */
+    if (ctx->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || ctx->opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
+        return 1;
+    }
+    return ctx->state->sps_hunt_idx == profile_index;
 }
 
 static int frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state);
@@ -2765,6 +2772,24 @@ dsd_frame_sync_test_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* s
 #endif
 
 static void
+frame_sync_apply_sps_profile_timing(const dsd_opts* opts, dsd_state* state, const frame_sync_sps_profile* profile) {
+    /* Locked modulation modes may also carry manual timing, notably the experimental -m3 path. */
+    if (opts->mod_cli_lock && state->samplesPerSymbol > 0 && state->symbolCenter >= 0
+        && state->symbolCenter < state->samplesPerSymbol) {
+        return;
+    }
+
+    int demod_rate = frame_sync_current_demod_rate(opts, state);
+    int sym_rate = profile->symbol_rate_hz;
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    if (opts->verbose > 1 && !dsd_frame_sync_suppress_tcp_no_signal_console(opts, state)) {
+        DSD_FPRINTF(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol, sym_rate,
+                    demod_rate);
+    }
+}
+
+static void
 frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx) {
     if (!opts || !state || next_idx < 0 || next_idx >= FRAME_SYNC_SPS_PROFILE_COUNT) {
         return;
@@ -2784,14 +2809,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
     dsd_frame_sync_reset_mod_state();
 
     if (profile_changed) {
-        int demod_rate = frame_sync_current_demod_rate(opts, state);
-        int sym_rate = profile->symbol_rate_hz;
-        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
-        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-        if (opts->verbose > 1 && !dsd_frame_sync_suppress_tcp_no_signal_console(opts, state)) {
-            DSD_FPRINTF(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol, sym_rate,
-                        demod_rate);
-        }
+        frame_sync_apply_sps_profile_timing(opts, state, profile);
     }
 
 #ifdef USE_RADIO
@@ -2814,6 +2832,8 @@ frame_sync_sps_profile_matching_timing(const dsd_opts* opts, const dsd_state* st
 
     const int demod_rate = frame_sync_current_demod_rate(opts, state);
     int matching_profile = -1;
+    int matching_level_profile = -1;
+    const int current_levels = frame_sync_sps_profile_for_index(state->sps_hunt_idx)->levels;
     for (int profile_index = 0; profile_index < FRAME_SYNC_SPS_PROFILE_COUNT; profile_index++) {
         if (!frame_sync_sps_profile_has_candidate(opts, profile_index)) {
             continue;
@@ -2826,13 +2846,15 @@ frame_sync_sps_profile_matching_timing(const dsd_opts* opts, const dsd_state* st
         if (profile_index == state->sps_hunt_idx) {
             return profile_index;
         }
-        if (matching_profile >= 0) {
-            /* 4800-symbol profiles can share timing; keep the existing level selection when timing is ambiguous. */
-            return -1;
+        if (matching_profile < 0) {
+            matching_profile = profile_index;
         }
-        matching_profile = profile_index;
+        if (matching_level_profile < 0 && profile->levels == current_levels) {
+            /* Shared-rate profiles can have identical timing; retain the current symbol-level selection. */
+            matching_level_profile = profile_index;
+        }
     }
-    return matching_profile;
+    return matching_level_profile >= 0 ? matching_level_profile : matching_profile;
 }
 
 static void
