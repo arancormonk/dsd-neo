@@ -267,7 +267,21 @@ main(void) {
     // source may be 0 unless prior LCW set it
     rc |= expect_eq_int("src default", g_last_src, 0);
 
-    // Subcase C: LCW traffic frames must not infer a CC from live tuner metadata.
+    // Subcase C: encrypted grants must reach the trunk SM under lockout so its
+    // key-aware policy can classify and follow calls with usable keys.
+    const int encrypted_svc = 0x40;
+    set_bits_msb(lcw, 16, 8, (unsigned)encrypted_svc);
+    g_called = 0;
+    g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
+    p25_test_invoke_lcw(lcw, 72, /*enable_retune*/ 1, /*cc*/ 851000000);
+    rc |= expect_eq_int("encrypted lockout dispatch called", g_called, 1);
+    rc |= expect_eq_int("encrypted lockout channel", g_last_channel, ch);
+    rc |= expect_eq_int("encrypted lockout svc", g_last_svc, encrypted_svc);
+    rc |= expect_eq_int("encrypted lockout tg", g_last_tg, tg);
+
+    set_bits_msb(lcw, 16, 8, (unsigned)svc);
+
+    // Subcase D: LCW traffic frames must not infer a CC from live tuner metadata.
     g_called = 0;
     g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
     p25_test_invoke_lcw_with_tuner(lcw, 72, /*enable_retune*/ 1, /*cc*/ 0, /*tuner_freq*/ 851012500);

@@ -1446,11 +1446,9 @@ mbe_post_apply_reverse_mute(dsd_opts* opts, int16_t* enc, int16_t* mute_flag) {
     }
     if (*enc == 0) {
         *enc = 1;
-        opts->unmute_encrypted_p25 = 0;
         *mute_flag = 1;
     } else {
         *enc = 0;
-        opts->unmute_encrypted_p25 = 1;
         *mute_flag = 0;
     }
 }

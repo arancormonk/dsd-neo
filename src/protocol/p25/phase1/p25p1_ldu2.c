@@ -306,14 +306,13 @@ ldu2_decode_post_fec_fields(const dsd_state* state, Ldu2Frame* frame) {
 }
 
 static void
-ldu2_apply_unmute_policy(dsd_opts* opts, const dsd_state* state) {
+ldu2_report_decryption_key(const dsd_opts* opts, const dsd_state* state) {
     if (state->p25_crypto_state[0] == DSD_P25_CRYPTO_DECRYPTABLE
         && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
         const unsigned int key_width = (state->payload_algid == 0xAA) ? 10U : 16U;
         char key_text[17];
         DSD_FPRINTF(stderr, " Key: %s",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, key_width, 0));
-        opts->unmute_encrypted_p25 = 1;
         return;
     }
     if (state->p25_crypto_state[0] == DSD_P25_CRYPTO_DECRYPTABLE
@@ -328,11 +327,6 @@ ldu2_apply_unmute_policy(dsd_opts* opts, const dsd_state* state) {
             stderr, "Key: %s ",
             dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments, segment_count));
         DSD_FPRINTF(stderr, "%s ", KNRM);
-        opts->unmute_encrypted_p25 = 1;
-        return;
-    }
-    if (state->payload_algid != 0 && state->payload_algid != 0x80) {
-        opts->unmute_encrypted_p25 = 0;
     }
 }
 
@@ -502,7 +496,7 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
 
     state->xl_is_hdu = 0;
     ldu2_maybe_enc_lockout(opts, state, frame.irrecoverable_errors);
-    ldu2_apply_unmute_policy(opts, state);
+    ldu2_report_decryption_key(opts, state);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     if (frame.irrecoverable_errors != 0 && state->payload_algid != 0x80 && state->payload_keyid != 0

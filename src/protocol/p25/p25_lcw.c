@@ -309,15 +309,8 @@ p25_lcw_update_primary_control_channel(p25_lcw_ctx* ctx, uint32_t wacn, uint16_t
 }
 
 static int
-p25_lcw_format_44_skip_grant(const p25_lcw_ctx* ctx, uint16_t group) {
-    if (ctx->state->tg_hold != 0 && ctx->state->tg_hold != group) {
-        return 1;
-    }
-    if ((ctx->lc_svcopt & 0x40) && ctx->opts->trunk_tune_enc_calls == 0
-        && !p25_patch_tg_key_is_clear(ctx->state, group)) {
-        return 1;
-    }
-    return 0;
+p25_lcw_format_44_hold_blocks_grant(const p25_lcw_ctx* ctx, uint16_t group) {
+    return ctx->state->tg_hold != 0 && ctx->state->tg_hold != group;
 }
 
 static void
@@ -341,7 +334,7 @@ p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t g
         return;
     }
     if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
-        && !p25_lcw_format_44_skip_grant(ctx, group)) {
+        && !p25_lcw_format_44_hold_blocks_grant(ctx, group)) {
         p25_sm_on_group_grant(ctx->opts, ctx->state, channel, ctx->lc_svcopt, group, (int)ctx->state->lastsrc);
     }
 }

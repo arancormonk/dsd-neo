@@ -325,14 +325,13 @@ hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-hdu_apply_unmute_policy(dsd_opts* opts, const dsd_state* state) {
+hdu_report_decryption_key(const dsd_opts* opts, const dsd_state* state) {
     if (state->p25_crypto_state[0] == DSD_P25_CRYPTO_DECRYPTABLE
         && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
         const unsigned int key_width = (state->payload_algid == 0xAA) ? 10U : 16U;
         char key_text[17];
         DSD_FPRINTF(stderr, " Key: %s",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, key_width, 0));
-        opts->unmute_encrypted_p25 = 1;
         return;
     }
 
@@ -348,12 +347,6 @@ hdu_apply_unmute_policy(dsd_opts* opts, const dsd_state* state) {
             stderr, "Key: %s ",
             dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments, segment_count));
         DSD_FPRINTF(stderr, "%s ", KNRM);
-        opts->unmute_encrypted_p25 = 1;
-        return;
-    }
-
-    if (state->payload_algid != 0 && state->payload_algid != 0x80) {
-        opts->unmute_encrypted_p25 = 0;
     }
 }
 
@@ -379,7 +372,7 @@ hdu_handle_good_decode(dsd_opts* opts, dsd_state* state, int algidhex, int kidhe
 
     state->xl_is_hdu = 1;
     hdu_maybe_enc_lockout(opts, state);
-    hdu_apply_unmute_policy(opts, state);
+    hdu_report_decryption_key(opts, state);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {

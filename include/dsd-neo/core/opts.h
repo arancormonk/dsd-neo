@@ -155,6 +155,7 @@ struct dsd_opts {
     int m17decoderip;
     int delay;
     int use_cosine_filter;
+    // User override for undeciphered P25 audio; crypto resolution must not mutate it.
     int unmute_encrypted_p25;
     int rtl_dev_index;
     int rtl_gain_value;

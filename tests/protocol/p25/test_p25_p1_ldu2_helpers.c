@@ -702,7 +702,7 @@ test_ldu2_capture_lsd_reads_soft_octets_and_updates_counters(void) {
 }
 
 static int
-test_ldu2_decode_unmute_and_lsd_alias_state(void) {
+test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     static dsd_opts opts;
     static dsd_state state;
     Ldu2Frame frame;
@@ -726,7 +726,7 @@ test_ldu2_decode_unmute_and_lsd_alias_state(void) {
     ldu2_decode_post_fec_fields(&state, &frame);
     ldu2_print_decode_result(&state, &frame);
     ldu2_maybe_enc_lockout(&opts, &state, 0);
-    ldu2_apply_unmute_policy(&opts, &state);
+    ldu2_report_decryption_key(&opts, &state);
     ldu2_handle_lsd_alias(&opts, &state, &frame);
 
     rc |= expect_int("decoded ALGID", state.payload_algid, 0x84);
@@ -734,7 +734,8 @@ test_ldu2_decode_unmute_and_lsd_alias_state(void) {
     rc |= expect_u64("decoded MI", state.payload_miP, 0x123456789ABCDEF0ULL);
     rc |= expect_u8("decoded LSD1", frame.lsd_hex1, 0x41U);
     rc |= expect_u8("decoded LSD2", frame.lsd_hex2, 0x42U);
-    rc |= expect_int("AES LDU2 unmute", opts.unmute_encrypted_p25, 1);
+    rc |= expect_int("AES LDU2 preserves user mute", opts.unmute_encrypted_p25, 0);
+    rc |= expect_int("AES LDU2 classification permits audio", p25_crypto_audio_permitted(&opts, &state, 0), 1);
     rc |= expect_int("alias finalized resets format", state.dmr_alias_format[0], 0);
     rc |= expect_int("alias policy make count", g_policy_make_calls, 1);
     rc |= expect_int("alias policy upsert count", g_policy_upsert_calls, 2);
@@ -777,7 +778,7 @@ test_ldu2_decode_post_fec_rejects_malformed_ess_bits(void) {
 }
 
 static int
-test_ldu2_unmute_policy_variants(void) {
+test_ldu2_key_reporting_preserves_user_unmute(void) {
     static dsd_opts opts;
     static dsd_state state;
     int rc = 0;
@@ -787,16 +788,16 @@ test_ldu2_unmute_policy_variants(void) {
     state.payload_algid = 0x81;
     state.R = 0x123456789ABCDEF0ULL;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
-    ldu2_apply_unmute_policy(&opts, &state);
-    rc |= expect_int("RC4 0x81 key unmutes", opts.unmute_encrypted_p25, 1);
+    ldu2_report_decryption_key(&opts, &state);
+    rc |= expect_int("RC4 0x81 reporting preserves user mute", opts.unmute_encrypted_p25, 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_algid = 0x9F;
     state.R = 0x123456789ABCDEF0ULL;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
-    ldu2_apply_unmute_policy(&opts, &state);
-    rc |= expect_int("RC4 0x9F key unmutes", opts.unmute_encrypted_p25, 1);
+    ldu2_report_decryption_key(&opts, &state);
+    rc |= expect_int("RC4 0x9F reporting preserves user mute", opts.unmute_encrypted_p25, 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -806,8 +807,8 @@ test_ldu2_unmute_policy_variants(void) {
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     state.A1[0] = 0x0011223344556677ULL;
     state.A2[0] = 0x8899AABBCCDDEEFFULL;
-    ldu2_apply_unmute_policy(&opts, &state);
-    rc |= expect_int("AES-128 key unmutes", opts.unmute_encrypted_p25, 1);
+    ldu2_report_decryption_key(&opts, &state);
+    rc |= expect_int("AES-128 reporting preserves user mute", opts.unmute_encrypted_p25, 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -815,16 +816,16 @@ test_ldu2_unmute_policy_variants(void) {
     state.aes_key_loaded[0] = 1;
     state.aes_key_segments[0] = 3U;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
-    ldu2_apply_unmute_policy(&opts, &state);
-    rc |= expect_int("TDEA key unmutes", opts.unmute_encrypted_p25, 1);
+    ldu2_report_decryption_key(&opts, &state);
+    rc |= expect_int("TDEA reporting preserves user mute", opts.unmute_encrypted_p25, 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.unmute_encrypted_p25 = 1;
     state.payload_algid = 0x82;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
-    ldu2_apply_unmute_policy(&opts, &state);
-    rc |= expect_int("unsupported encrypted ALGID mutes", opts.unmute_encrypted_p25, 0);
+    ldu2_report_decryption_key(&opts, &state);
+    rc |= expect_int("unsupported ALGID preserves explicit unmute", opts.unmute_encrypted_p25, 1);
     return rc;
 }
 
@@ -902,9 +903,9 @@ main(void) {
     rc |= test_ldu2_activity_is_independent_of_media_gate();
     rc |= test_ldu2_consume_trailing_status_feeds_classifier();
     rc |= test_ldu2_capture_lsd_reads_soft_octets_and_updates_counters();
-    rc |= test_ldu2_decode_unmute_and_lsd_alias_state();
+    rc |= test_ldu2_decode_key_reporting_and_lsd_alias_state();
     rc |= test_ldu2_decode_post_fec_rejects_malformed_ess_bits();
-    rc |= test_ldu2_unmute_policy_variants();
+    rc |= test_ldu2_key_reporting_preserves_user_unmute();
     rc |= test_ldu2_lsd_alias_begin_clamps_length();
     rc |= test_ldu2_encrypted_trunk_lockout_state();
     return rc;

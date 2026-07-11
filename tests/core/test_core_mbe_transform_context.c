@@ -1680,7 +1680,7 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
 }
 
 static int
-test_process_mbe_frame_dmr_reverse_mute_toggles_slot_flags(void) {
+test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -1710,7 +1710,7 @@ test_process_mbe_frame_dmr_reverse_mute_toggles_slot_flags(void) {
 
     rc |= expect_eq_int("reverse-mute-left-enc", state.dmr_encL, 1);
     rc |= expect_eq_int("reverse-mute-left-mute", opts.dmr_mute_encL, 1);
-    rc |= expect_eq_int("reverse-mute-left-unmute-p25", opts.unmute_encrypted_p25, 0);
+    rc |= expect_eq_int("reverse-mute-left-preserves-p25-override", opts.unmute_encrypted_p25, 1);
     rc |= expect_eq_mem("reverse-mute-left-staged", state.f_l, state.audio_out_temp_buf, sizeof(state.f_l));
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1726,7 +1726,7 @@ test_process_mbe_frame_dmr_reverse_mute_toggles_slot_flags(void) {
 
     rc |= expect_eq_int("reverse-mute-right-enc", state.dmr_encR, 0);
     rc |= expect_eq_int("reverse-mute-right-mute", opts.dmr_mute_encR, 0);
-    rc |= expect_eq_int("reverse-mute-right-unmute-p25", opts.unmute_encrypted_p25, 1);
+    rc |= expect_eq_int("reverse-mute-right-preserves-p25-override", opts.unmute_encrypted_p25, 0);
     rc |= expect_eq_mem("reverse-mute-right-staged", state.f_r, state.audio_out_temp_bufR, sizeof(state.f_r));
 
     return rc;
@@ -2276,7 +2276,7 @@ main(void) {
     rc |= test_process_mbe_frame_hard_dstar_stages_audio();
     rc |= test_process_mbe_frame_hard_dmr_left_stages_audio();
     rc |= test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots();
-    rc |= test_process_mbe_frame_dmr_reverse_mute_toggles_slot_flags();
+    rc |= test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override();
     rc |= test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots();
     rc |= test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags();
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();

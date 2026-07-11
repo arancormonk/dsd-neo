@@ -57,7 +57,7 @@ sm_on_group_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc
     g_src = src;
     // Model the synchronous crypto classification performed by the default
     // state-machine grant handler.
-    state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state->p25_crypto_state[0] = (svc_bits & 0x40) != 0 ? DSD_P25_CRYPTO_ENCRYPTED_PENDING : DSD_P25_CRYPTO_CLEAR;
 }
 
 static void
@@ -480,13 +480,16 @@ main(void) {
     processTDULC(&opts, &state);
     rc |= expect_eq_int("retune disabled", g_called, 0);
 
-    // Case 3: Encrypted svc, enc tuning disabled → no grant
+    // Case 3: Encrypted svc under lockout reaches key-aware grant classification.
     build_lcw_words(0x44, 0x00, 0x40 /*ENC*/, 0x2222, 0x100A, 0x0000);
     opts.p25_lcw_retune = 1;
     opts.trunk_tune_enc_calls = 0;
     g_called = 0;
     processTDULC(&opts, &state);
-    rc |= expect_eq_int("enc gating", g_called, 0);
+    rc |= expect_eq_int("encrypted grant dispatched", g_called, 1);
+    rc |= expect_eq_int("encrypted grant svc", g_svc, 0x40);
+    rc |= expect_eq_int("encrypted grant tg", g_tg, 0x2222);
+    rc |= expect_eq_int("encrypted grant classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
     // Case 4: Malformed/unsupported format (0x00) → no grant
     build_lcw_words(0x00, 0x00, 0x00, 0x3333, 0x100A, 0x0000);

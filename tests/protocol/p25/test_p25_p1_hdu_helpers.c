@@ -655,7 +655,7 @@ test_hdu_read_and_fec_updates_rs_success_soft_success_and_failure_state(void) {
 }
 
 static int
-test_hdu_unmute_policy_and_good_decode_state(void) {
+test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -665,15 +665,16 @@ test_hdu_unmute_policy_and_good_decode_state(void) {
     state.payload_algid = 0xAA;
     state.R = 0x12345U;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
-    hdu_apply_unmute_policy(&opts, &state);
-    rc |= expect_int("rc4 key unmutes encrypted p25", opts.unmute_encrypted_p25, 1);
+    hdu_report_decryption_key(&opts, &state);
+    rc |= expect_int("rc4 key reporting preserves user mute", opts.unmute_encrypted_p25, 0);
+    rc |= expect_int("rc4 classification permits audio", p25_crypto_audio_permitted(&opts, &state, 0), 1);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.unmute_encrypted_p25 = 1;
     state.payload_algid = 0xAA;
-    hdu_apply_unmute_policy(&opts, &state);
-    rc |= expect_int("missing rc4 key mutes encrypted p25", opts.unmute_encrypted_p25, 0);
+    hdu_report_decryption_key(&opts, &state);
+    rc |= expect_int("missing rc4 key preserves explicit unmute", opts.unmute_encrypted_p25, 1);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -685,8 +686,9 @@ test_hdu_unmute_policy_and_good_decode_state(void) {
     state.A2[0] = 0x2222222222222222ULL;
     state.A3[0] = 0x3333333333333333ULL;
     state.A4[0] = 0x4444444444444444ULL;
-    hdu_apply_unmute_policy(&opts, &state);
-    rc |= expect_int("aes key unmutes encrypted p25", opts.unmute_encrypted_p25, 1);
+    hdu_report_decryption_key(&opts, &state);
+    rc |= expect_int("aes key reporting preserves user mute", opts.unmute_encrypted_p25, 0);
+    rc |= expect_int("aes classification permits audio", p25_crypto_audio_permitted(&opts, &state, 0), 1);
 
     reset_hook_counters();
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -746,7 +748,7 @@ main(void) {
     rc |= test_hdu_soft_dibit_reader_contracts();
     rc |= test_hdu_fec_helpers_account_for_hard_soft_and_failed_corrections();
     rc |= test_hdu_read_and_fec_updates_rs_success_soft_success_and_failure_state();
-    rc |= test_hdu_unmute_policy_and_good_decode_state();
+    rc |= test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state();
     rc |= test_hdu_encrypted_trunk_lockout_state();
     return rc;
 }

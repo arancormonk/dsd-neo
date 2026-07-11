@@ -51,9 +51,9 @@ p25_crypto_companion_suppressed(const dsd_state* state, int slot) {
  * Return non-zero when a P25 voice frame may reach the vocoder.
  *
  * Clear and decryptable calls are always permitted. During encrypted-call
- * following, the existing P25 unmute control and reverse mute may explicitly
- * permit undeciphered audio. Encryption lockout takes precedence so classification
- * probes remain silent until a key or clear metadata resolves.
+ * following, the user-controlled P25 unmute override and reverse mute may
+ * explicitly permit undeciphered audio. Encryption lockout takes precedence so
+ * classification probes remain silent until a key or clear metadata resolves.
  */
 static inline int
 p25_crypto_audio_permitted(const dsd_opts* opts, const dsd_state* state, int slot) {

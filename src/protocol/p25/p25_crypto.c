@@ -191,9 +191,6 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     }
     p25_crypto_set_state(state, slot, resolved);
 
-    if (phase == DSD_P25_CRYPTO_PHASE1 && opts) {
-        opts->unmute_encrypted_p25 = (resolved == DSD_P25_CRYPTO_DECRYPTABLE) ? 1 : 0;
-    }
     if (algid != 0x80 && opts) {
         p25_sm_emit_enc(opts, state, slot, algid, keyid, talkgroup);
     }

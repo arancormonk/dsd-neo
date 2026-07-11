@@ -84,6 +84,39 @@ test_explicit_audio_unmute_respects_lockout(void) {
 }
 
 static int
+test_phase1_resolution_does_not_override_phase2_gate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture(&opts, &state);
+
+    int rc = 0;
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x40, 0);
+    state.R = 0x0102030405060708ULL;
+    rc |= expect_int("P1 DES key decryptable",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x1001, 1, 101),
+                     DSD_P25_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("P1 resolution preserves user unmute", opts.unmute_encrypted_p25, 0);
+    rc |= expect_int("P1 decryptable audio permitted", p25_crypto_audio_permitted(&opts, &state, 0), 1);
+
+    p25_crypto_reset_slot(&state, 0);
+    state.R = 0ULL;
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE2, 0, 0x40, 0);
+    rc |= expect_int("P2 missing DES key blocked",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x1002, 2, 102),
+                     DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("P1 resolution cannot permit P2 blocked audio", p25_crypto_audio_permitted(&opts, &state, 0), 0);
+
+    reset_fixture(&opts, &state);
+    opts.unmute_encrypted_p25 = 1;
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x40, 0);
+    rc |= expect_int("P1 missing key blocked",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x1003, 3, 103),
+                     DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("P1 blocked resolution preserves explicit unmute", opts.unmute_encrypted_p25, 1);
+    return rc;
+}
+
+static int
 test_begin_and_sticky_unknown(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -143,7 +176,7 @@ test_algorithm_and_manual_key_resolution(void) {
         expect_int("definitive clear ALGID",
                    p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, 101), DSD_P25_CRYPTO_CLEAR);
     rc |= expect_int("clear marker removed", state.p25_p2_enc_lockout_muted[0], 0);
-    rc |= expect_int("clear resets P1 compatibility unmute", opts.unmute_encrypted_p25, 0);
+    rc |= expect_int("clear preserves user mute setting", opts.unmute_encrypted_p25, 0);
     state.p25_p2_audio_allowed[0] = 1;
     rc |= expect_int("ALGID zero preserves definitive clear",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0, 0, 0, 101), DSD_P25_CRYPTO_CLEAR);
@@ -201,7 +234,7 @@ test_algorithm_and_manual_key_resolution(void) {
     rc |= expect_int("P1 DES-XL decryptable",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x9F, 0x1005, 9, 101),
                      DSD_P25_CRYPTO_DECRYPTABLE);
-    rc |= expect_int("P1 decryptable compatibility unmute", opts.unmute_encrypted_p25, 1);
+    rc |= expect_int("P1 decryptable preserves user mute setting", opts.unmute_encrypted_p25, 0);
 
     state.aes_key_loaded[0] = 1;
     state.aes_key_segments[0] = 3U;
@@ -385,6 +418,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_explicit_audio_unmute_respects_lockout();
+    rc |= test_phase1_resolution_does_not_override_phase2_gate();
     rc |= test_begin_and_sticky_unknown();
     rc |= test_algorithm_and_manual_key_resolution();
     rc |= test_imported_key_activation_is_slot_aware();
