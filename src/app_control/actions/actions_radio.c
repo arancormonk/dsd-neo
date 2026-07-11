@@ -93,8 +93,6 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     int center = dsd_opts_symbol_center(sps);
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
     state->sps_hunt_counter = 0;
-    /* The hotkey is an explicit selection; acquisition must not restore auto QPSK. */
-    opts->mod_cli_lock = 1;
     if (state->rf_mod == 0) {
         opts->mod_c4fm = 0;
         opts->mod_qpsk = 1;
@@ -110,6 +108,15 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         state->samplesPerSymbol = sps;
         state->symbolCenter = center;
     }
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        int channel_profile =
+            state->rf_mod == 1 ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_12K5;
+        (void)rtl_stream_set_symbol_profile(6000, 4, channel_profile);
+    }
+#endif
+    /* Lock only after the decoder and any RTL backend share the P25p2 profile. */
+    opts->mod_cli_lock = 1;
     return 1;
 }
 

@@ -1294,6 +1294,24 @@ target_include_directories(
 add_test(NAME APP_CONTROL_ACTIONS COMMAND dsd-neo_test_app_control_actions)
 
 add_executable(
+    dsd-neo_test_app_control_actions_rtl
+    ui/test_ui_radio_actions_rtl.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_actions_rtl
+    PRIVATE USE_RADIO
+)
+target_include_directories(
+    dsd-neo_test_app_control_actions_rtl
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+add_test(
+    NAME APP_CONTROL_ACTIONS_RTL
+    COMMAND dsd-neo_test_app_control_actions_rtl
+)
+
+add_executable(
     dsd-neo_test_ui_menu_services
     ui/test_ui_menu_services.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
