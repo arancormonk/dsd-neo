@@ -14,6 +14,7 @@
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -573,6 +574,8 @@ main(void) {
     state->rf_mod = 1;
     state->p25_p2_active_slot = 0;
     state->p25_vc_cqpsk_override = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state->sps_hunt_counter = 11;
     g_setfreq_calls = 0;
     g_last_setfreq_hz = 0;
     g_setfreq_result = true;
@@ -594,6 +597,8 @@ main(void) {
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
     assert(g_rtl_ted_sps == 8);
     assert(g_rtl_ted_sps_override == 8);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state->sps_hunt_counter == 0);
 #endif
 
     /* If the frequency command itself fails, the decoder must not advance state
@@ -742,6 +747,8 @@ main(void) {
     state->rf_mod = 1;
     state->p25_p2_active_slot = 0;
     state->p25_vc_cqpsk_override = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state->sps_hunt_counter = 11;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     g_rtl_cqpsk_enable = 0;
     g_rtl_symbol_rate_hz = 4800;
@@ -756,6 +763,8 @@ main(void) {
     assert(opts->trunk_is_tuned == 1);
     assert(state->trunk_vc_freq[0] == 855000000);
     assert(state->p25_vc_cqpsk_override == -1);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state->sps_hunt_counter == 0);
     assert(g_rtl_cqpsk_enable == 0);
     assert(g_rtl_symbol_rate_hz == 4800);
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
@@ -780,6 +789,8 @@ main(void) {
     state->rf_mod = 0;
     state->p25_cc_is_tdma = 1;
     state->trunk_cc_freq = 851000000;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state->sps_hunt_counter = 13;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     g_rtl_cqpsk_enable = 0;
     g_rtl_symbol_rate_hz = 4800;
@@ -792,6 +803,8 @@ main(void) {
     assert(dsd_engine_trunk_tune_to_cc(opts, state, 852000000, 4) == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(state->rf_mod == 1);
     assert(state->trunk_cc_freq == 852000000);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state->sps_hunt_counter == 0);
     assert(g_rtl_cqpsk_enable == 0);
     assert(g_rtl_symbol_rate_hz == 4800);
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
@@ -930,6 +943,8 @@ main(void) {
     state->p25_cc_is_tdma = 0;
     state->p25_p2_active_slot = 0;
     state->rf_mod = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state->sps_hunt_counter = 19;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_cqpsk_enable = 1;
     g_rtl_symbol_rate_hz = 6000;
@@ -944,6 +959,8 @@ main(void) {
     assert(opts->p25_is_tuned == 0);
     assert(state->rf_mod == 1);
     assert(state->samplesPerSymbol == 10);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state->sps_hunt_counter == 0);
     assert(g_rtl_pending_active == 0);
     assert(g_rtl_cqpsk_enable == 1);
     assert(g_rtl_symbol_rate_hz == 4800);

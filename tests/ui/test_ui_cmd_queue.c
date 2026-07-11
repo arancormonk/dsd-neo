@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -1020,6 +1021,8 @@ seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_fr
     state->last_cc_sync_time_m = 42.0;
     state->samplesPerSymbol = 7;
     state->symbolCenter = 3;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state->sps_hunt_counter = 17;
 }
 
 static int
@@ -1058,6 +1061,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("deferred return-to-CC keeps VC", state.p25_vc_freq[0] == 852000000L);
     rc |= expect_true("deferred return-to-CC keeps CC sync", state.last_cc_sync_time_m == 42.0);
     rc |= expect_int("deferred return-to-CC keeps SPS", state.samplesPerSymbol, 7);
+    rc |= expect_int("deferred return-to-CC keeps SPS profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    rc |= expect_int("deferred return-to-CC keeps SPS hunt counter", state.sps_hunt_counter, 17);
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
     token = 0;
@@ -1070,6 +1075,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("accepted timeout clears TG", state.lasttg, 0);
     rc |= expect_true("accepted timeout clears VC", state.p25_vc_freq[0] == 0L);
     rc |= expect_true("accepted timeout refreshes CC sync", state.last_cc_sync_time_m > 42.0);
+    rc |= expect_int("accepted timeout selects P25 SPS profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    rc |= expect_int("accepted timeout resets SPS hunt counter", state.sps_hunt_counter, 0);
     freeState(&state);
 
     init_test_context(&opts, &state);
@@ -1151,6 +1158,9 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("accepted channel cycle clears TG", state.lasttg, 0);
     rc |= expect_true("accepted channel cycle clears P25 VC", state.p25_vc_freq[0] == 0L);
     rc |= expect_true("accepted channel cycle refreshes CC sync", state.last_cc_sync_time_m > 42.0);
+    rc |= expect_int("accepted channel cycle selects P25 SPS profile", state.sps_hunt_idx,
+                     DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    rc |= expect_int("accepted channel cycle resets SPS hunt counter", state.sps_hunt_counter, 0);
 
     token = 0;
     rc |= expect_int("later channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),

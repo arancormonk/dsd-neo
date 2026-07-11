@@ -23,6 +23,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -1655,6 +1656,8 @@ set_cc_symbol_timing(const dsd_opts* opts, dsd_state* state, int fdma_only) {
     }
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, current_demod_rate(opts, state));
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    state->sps_hunt_idx = sym_rate == 6000 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->sps_hunt_counter = 0;
 }
 
 static void
@@ -1718,6 +1721,7 @@ try_manual_candidate_cycle(dsd_opts* opts, dsd_state* state) {
     reset_call_tracking(opts, state, 0);
     LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
     mark_cc_sync(state, 1);
+    set_cc_symbol_timing(opts, state, 0);
     return UI_CMD_APPLY_COMPLETED;
 }
 
