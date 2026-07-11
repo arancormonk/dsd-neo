@@ -426,6 +426,38 @@ test_symbol_replay_bypasses_sps_profile_gating(void) {
 }
 
 static void
+test_manual_p25p2_c4fm_bypasses_profile_gating(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 96000;
+    opts.frame_dstar = 1;
+    opts.frame_x2tdma = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_ysf = 1;
+    opts.mod_c4fm = 1;
+    opts.mod_cli_lock = 1;
+    state.sps_hunt_idx = 0;
+    state.samplesPerSymbol = 20;
+    state.symbolCenter = 8;
+    state.min = -3.0f;
+    state.max = 3.0f;
+
+    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    assert(state.sps_hunt_idx == 0);
+    assert(state.samplesPerSymbol == 20);
+    assert(state.symbolCenter == 8);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_NONE);
+
+    opts.mod_p25p2_c4fm = 1;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+}
+
+static void
 test_m17_auto_preamble_disambiguation_preserves_forced_tolerance(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -905,6 +937,7 @@ main(void) {
     test_bounded_symbol_history_readiness_and_wrap();
     test_provoice_candidate_does_not_shadow_dstar_or_nxdn();
     test_symbol_replay_bypasses_sps_profile_gating();
+    test_manual_p25p2_c4fm_bypasses_profile_gating();
     test_m17_auto_preamble_disambiguation_preserves_forced_tolerance();
     test_elapsed_seconds_prefers_monotonic_then_wall_time();
     test_p25_slot_activity_honors_ring_and_hangtime();

@@ -5229,6 +5229,59 @@ test_s_8000_keeps_valid_symbol_timing_for_provoice(void) {
 }
 
 static int
+test_standalone_m3_marks_manual_p25p2_c4fm_path(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-m3";
+    char arg2[] = "-s";
+    char arg3[] = "96000";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(4, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    int test_rc = 0;
+    if (!(opts->frame_p25p1 == 1 && opts->frame_p25p2 == 1 && opts->frame_dmr == 1 && opts->frame_ysf == 1)) {
+        DSD_FPRINTF(stderr, "standalone -m3 should preserve the default frame candidates\n");
+        test_rc = 1;
+    }
+    if (!(opts->mod_p25p2_c4fm == 1 && opts->mod_cli_lock == 1 && opts->mod_c4fm == 1 && opts->mod_qpsk == 0
+          && opts->mod_gfsk == 0 && state->rf_mod == 0)) {
+        DSD_FPRINTF(stderr, "standalone -m3 did not retain the manual P25p2 C4FM mode\n");
+        test_rc = 1;
+    }
+    if (state->samplesPerSymbol != 20 || state->symbolCenter != 8) {
+        DSD_FPRINTF(stderr, "expected standalone -m3 timing to rescale to 20/8 at 96 kHz, got sps=%d center=%d\n",
+                    state->samplesPerSymbol, state->symbolCenter);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_m3_override_survives_file_rate_rescale_after_f2(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -6094,6 +6147,7 @@ main(void) {
     rc |= test_bootstrap_config_file_rate_survives_cli_provoice_preset();
     rc |= test_bootstrap_compact_s_rate_override_clears_config_file_rate();
     rc |= test_s_8000_keeps_valid_symbol_timing_for_provoice();
+    rc |= test_standalone_m3_marks_manual_p25p2_c4fm_path();
     rc |= test_m3_override_survives_file_rate_rescale_after_f2();
     rc |= test_bootstrap_config_file_rate_rescales_manual_m3_override();
     rc |= test_bootstrap_cli_pulse_override_ignores_config_file_rate_timing();

@@ -382,6 +382,19 @@ frame_sync_match_profile_active(const frame_sync_match_ctx* ctx, int profile_ind
     return ctx->state->sps_hunt_idx == profile_index;
 }
 
+static int
+frame_sync_p25p2_profile_active(const frame_sync_match_ctx* ctx) {
+    if (frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_6000_4)) {
+        return 1;
+    }
+    if (!ctx || !ctx->opts || !ctx->state) {
+        return 0;
+    }
+    /* -m3 deliberately retains 10-SPS C4FM timing, which otherwise maps to profile 0. */
+    return ctx->opts->mod_p25p2_c4fm == 1 && ctx->opts->mod_cli_lock && ctx->opts->mod_c4fm == 1
+           && ctx->opts->mod_qpsk == 0 && ctx->opts->mod_gfsk == 0 && ctx->state->rf_mod == 0;
+}
+
 static int frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state);
 static int frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);
 
@@ -802,7 +815,7 @@ frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
-    if (ctx->opts->frame_p25p2 != 1 || !frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_6000_4)
+    if (ctx->opts->frame_p25p2 != 1 || !frame_sync_p25p2_profile_active(ctx)
         || !frame_sync_match_window_ready(ctx, 20)) {
         return DSD_SYNC_NONE;
     }
