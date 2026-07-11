@@ -2830,6 +2830,33 @@ frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
     return current;
 }
 
+static int
+frame_sync_sps_hunt_next_index_matching_timing(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+
+    int current = state->sps_hunt_idx;
+    if (current < 0 || current >= FRAME_SYNC_SPS_PROFILE_COUNT) {
+        current = FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    if (state->samplesPerSymbol <= 0) {
+        return current;
+    }
+
+    const int demod_rate = frame_sync_current_demod_rate(opts, state);
+    int next_idx = (current + 1) % FRAME_SYNC_SPS_PROFILE_COUNT;
+    for (int tries = 0; tries < FRAME_SYNC_SPS_PROFILE_COUNT; tries++) {
+        const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
+        const int expected_sps = dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, demod_rate);
+        if (frame_sync_sps_profile_has_candidate(opts, next_idx) && expected_sps == state->samplesPerSymbol) {
+            return next_idx;
+        }
+        next_idx = (next_idx + 1) % FRAME_SYNC_SPS_PROFILE_COUNT;
+    }
+    return current;
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 int
 dsd_frame_sync_test_sps_hunt_profile_count(void) {
@@ -2973,7 +3000,8 @@ dsd_frame_sync_test_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* 
 
 static void
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
-    if (!(state->carrier == 0 && !opts->mod_cli_lock)) {
+    const int gfsk_cli_lock = opts->mod_cli_lock && opts->mod_gfsk == 1 && opts->mod_c4fm == 0 && opts->mod_qpsk == 0;
+    if (state->carrier != 0 || (opts->mod_cli_lock && !gfsk_cli_lock)) {
         return;
     }
     state->sps_hunt_counter++;
@@ -2982,8 +3010,10 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     }
     state->sps_hunt_counter = 0;
 
-    int next_idx = frame_sync_sps_hunt_next_index(opts, state);
-    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, 0);
+    /* A GFSK lock pins the demodulator, not protocol gates that share the selected timing. */
+    int next_idx = gfsk_cli_lock ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
+                                 : frame_sync_sps_hunt_next_index(opts, state);
+    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, gfsk_cli_lock);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS

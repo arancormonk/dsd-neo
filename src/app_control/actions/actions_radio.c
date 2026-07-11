@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <stdint.h>
 #include <string.h>
@@ -90,6 +91,8 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 #endif
     int sps = dsd_opts_compute_sps_rate(opts, 6000, demod_rate);
     int center = dsd_opts_symbol_center(sps);
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    state->sps_hunt_counter = 0;
     if (state->rf_mod == 0) {
         opts->mod_c4fm = 0;
         opts->mod_qpsk = 1;

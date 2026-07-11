@@ -11,6 +11,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -380,16 +381,34 @@ test_radio_actions(void) {
     rc |= expect_int("mod toggle clears qpsk", opts.mod_qpsk, 0);
     rc |= expect_int("mod toggle clears rf_mod", state.rf_mod, 0);
 
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = 11;
     cmd.id = DSD_APP_CMD_MOD_P2_TOGGLE;
     dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
     rc |= expect_int("mod p2 toggle selects qpsk", opts.mod_qpsk, 1);
     rc |= expect_int("mod p2 toggle sets rf_mod", state.rf_mod, 1);
     rc |= expect_int("mod p2 toggle qpsk sps", state.samplesPerSymbol, 8);
     rc |= expect_int("mod p2 toggle qpsk center", state.symbolCenter, 3);
+    rc |= expect_int("mod p2 toggle selects profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    rc |= expect_int("mod p2 toggle resets profile dwell", state.sps_hunt_counter, 0);
     dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
     rc |= expect_int("mod p2 toggle returns c4fm", opts.mod_c4fm, 1);
     rc |= expect_int("mod p2 toggle p25p2 sps", state.samplesPerSymbol, 8);
     rc |= expect_int("mod p2 toggle p25p2 center", state.symbolCenter, 3);
+
+    /* At low rates P25P1 and P25P2 can round to the same SPS, so the explicit
+     * profile selection—not timing inference—must carry the hotkey choice. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.rtl_dsp_bw_khz = 16;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = 7;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("low-rate mod p2 toggle sps", state.samplesPerSymbol, 3);
+    rc |= expect_int("low-rate mod p2 toggle profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    rc |= expect_int("low-rate mod p2 toggle dwell", state.sps_hunt_counter, 0);
 
     return rc;
 }

@@ -537,6 +537,28 @@ main(void) {
     assert(g_frame_sync_reset_calls == 1);
     assert(g_p25p2_frame_reset_calls == 1);
 
+    /* Legacy -T keeps p25_trunk set for NXDN, but protocol-agnostic retunes
+     * carry no P25 TED timing and must preserve the active NXDN48 profile. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
+    opts->frame_nxdn48 = 1;
+    state->p25_p2_active_slot = -1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state->sps_hunt_counter = 17;
+    g_setfreq_result = true;
+    assert(dsd_engine_trunk_tune_to_cc(opts, state, 451000000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state->sps_hunt_counter == 17);
+
+    state->sps_hunt_counter = 23;
+    assert(dsd_engine_trunk_tune_to_freq(opts, state, 451500000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state->sps_hunt_counter == 23);
+
     /* Direct conventional scan retunes publish a new generation only after
      * the backend completes the target. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
