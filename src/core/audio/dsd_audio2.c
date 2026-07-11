@@ -19,6 +19,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -289,6 +290,30 @@ dsd_nxdn_can_decrypt(const dsd_state* state) {
 }
 
 static int
+dsd_fdma_crypto_muted(const dsd_state* state, int include_nxdn) {
+    if (DSD_SYNC_IS_P25P1(state->synctype)) {
+        return p25_crypto_audio_ready(state, 0) ? 0 : 1;
+    }
+
+    int muted = dsd_p25_algid_is_encrypted(state) || (include_nxdn && state->nxdn_cipher_type != 0);
+    if (!muted) {
+        return 0;
+    }
+
+    const int can_p25 = dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->R != 0);
+    return (can_p25 || (include_nxdn && dsd_nxdn_can_decrypt(state))) ? 0 : 1;
+}
+
+static int
+dsd_fdma_apply_group_gate(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int muted) {
+    (void)dsd_audio_group_gate_mono(opts, state, tg, muted, &muted);
+    if (DSD_SYNC_IS_P25P1(state->synctype) && !p25_crypto_audio_ready(state, 0)) {
+        return 1;
+    }
+    return muted;
+}
+
+static int
 p25p2_s16_frames_have_audio(short frames[18][160]) {
     for (int j = 0; j < 18; j++) {
         for (int i = 0; i < 160; i++) {
@@ -354,51 +379,20 @@ dsd_apply_dual_tg_audio_gate(const dsd_opts* opts, const dsd_state* state, int* 
     unsigned long TGL = (unsigned long)state->lasttg;
     unsigned long TGR = (unsigned long)state->lasttgR;
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, *encL, *encR, encL, encR);
-}
-
-static int
-dsd_p25p2_slot_marked_encrypted(const dsd_state* state, int slot) {
-    int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
-    if (algid == 0x80) {
-        return 0;
+    if (!p25_crypto_audio_ready(state, 0)) {
+        *encL = 1;
     }
-    if (algid != 0) {
-        return 1;
+    if (!p25_crypto_audio_ready(state, 1)) {
+        *encR = 1;
     }
-    int svc = (slot == 0) ? state->dmr_so : state->dmr_soR;
-    return (svc & 0x40) != 0;
-}
-
-static int
-dsd_p25p2_slot_has_decrypt_key(const dsd_state* state, int slot) {
-    if (!state || slot < 0 || slot > 1) {
-        return 0;
-    }
-
-    int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
-    if (algid == 0 || algid == 0x80) {
-        return 0;
-    }
-
-    unsigned long long key = (slot == 0) ? state->R : state->RR;
-    if ((algid == 0xAA || algid == 0x81 || algid == 0x9F) && key != 0ULL) {
-        return 1;
-    }
-    if ((algid == 0x84 || algid == 0x89) && state->aes_key_loaded[slot] == 1) {
-        return 1;
-    }
-    return 0;
 }
 
 DSD_AUDIO2_INTERNAL int
 dsd_p25p2_encrypted_lockout_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, int muted) {
-    if (!opts || !state || slot < 0 || slot > 1 || !muted || opts->trunk_tune_enc_calls != 0) {
+    if (!opts || !state || slot < 0 || slot > 1 || !muted) {
         return 0;
     }
-    if (state->p25_p2_enc_lockout_muted[slot] != 0) {
-        return 1;
-    }
-    return dsd_p25p2_slot_marked_encrypted(state, slot) && !dsd_p25p2_slot_has_decrypt_key(state, slot);
+    return p25_crypto_companion_suppressed(state, slot);
 }
 
 static void
@@ -911,11 +905,13 @@ END_FS4:
 //float stereo mix -- when using Float Stereo Output, we need to send P25p1, DMR MS/Simplex, DStar, and YSF here
 void
 playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
-    int encL = dsd_p25_algid_is_encrypted(state) ? 1 : 0;
+    const int is_p25p1 = DSD_SYNC_IS_P25P1(state->synctype);
+    int encL = is_p25p1 ? (p25_crypto_audio_ready(state, 0) ? 0 : 1) : (dsd_p25_algid_is_encrypted(state) ? 1 : 0);
     float stereo_samp1[320]; //8k 2-channel stereo interleave mix
 
     DSD_MEMSET(stereo_samp1, 0.0f, sizeof(stereo_samp1));
-    if (encL && (dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->aes_key_loaded[0] == 1))) {
+    if (!is_p25p1 && encL
+        && (dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->aes_key_loaded[0] == 1))) {
         encL = 0;
     }
 
@@ -925,6 +921,9 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
 
     unsigned long TGL = (unsigned long)state->lasttg;
     (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
+    if (is_p25p1 && !p25_crypto_audio_ready(state, 0)) {
+        encL = 1;
+    }
 
     agf(opts, state, state->f_l, 0);
     if (!encL) {
@@ -938,23 +937,14 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
 void
 playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     agf(opts, state, state->f_l, 0);
-    int encL = 0;
-    if (dsd_p25_algid_is_encrypted(state) || state->nxdn_cipher_type != 0) {
-        encL = 1;
-    }
-    if (encL) {
-        int can_p25 = dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->R != 0);
-        if (can_p25 || dsd_nxdn_can_decrypt(state)) {
-            encL = 0;
-        }
-    }
+    int encL = dsd_fdma_crypto_muted(state, 1);
 
     unsigned long TGL = (unsigned long)state->lasttg;
     if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) {
         TGL = (unsigned long)state->nxdn_last_tg;
     }
 
-    (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
+    encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
     if (!encL && opts->slot1_on != 0) {
         dsd_output_float_block(opts, state, state->f_l, 160, 1);
@@ -990,12 +980,9 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
 //Stereo Mix - Short (SB16LE) -- When Playing Short FDMA samples when setup for stereo output
 void
 playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
-    int encL = dsd_p25_algid_is_encrypted(state) ? 1 : 0;
+    int encL = dsd_fdma_crypto_muted(state, 0);
     short stereo_samp1[320]; //8k 2-channel stereo interleave mix
     DSD_MEMSET(stereo_samp1, 0, sizeof(stereo_samp1));
-    if (encL && (dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->R != 0))) {
-        encL = 0;
-    }
 
     if (opts->slot1_on == 0) {
         encL = 1;
@@ -1003,7 +990,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
 
     unsigned long TGL = (unsigned long)state->lasttg;
 
-    (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
+    encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
     if (opts->use_hpf_d == 1) {
         hpf_dL(state, state->s_l, 160);
@@ -1095,6 +1082,12 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     unsigned long TGR = (unsigned long)state->lasttgR;
 
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
+    if (!p25_crypto_audio_ready(state, 0)) {
+        encL = 1;
+    }
+    if (!p25_crypto_audio_ready(state, 1)) {
+        encR = 1;
+    }
 
     dsd_p25p2_apply_slot_preference_ss18(opts, state, TGL, TGR);
     dsd_hpf_short_18_if_enabled(opts, state);

@@ -26,6 +26,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/protocol/p25/p25_crypto.h"
 #include "dsd-neo/protocol/p25/p25p1_soft.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -274,6 +275,7 @@ dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, d
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_p25_optional_hook_watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
@@ -282,6 +284,7 @@ dsd_p25_optional_hook_watchdog_event_current(dsd_opts* opts, dsd_state* state, u
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_p25_optional_hook_write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
                                               char* event_string) {
     (void)opts;
@@ -293,17 +296,43 @@ dsd_p25_optional_hook_write_event_to_log_file(dsd_opts* opts, dsd_state* state, 
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_p25_optional_hook_push_event_history(Event_History_I* event_struct) {
     (void)event_struct;
     g_push_event_calls++;
 }
 
 void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_p25_optional_hook_init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
     (void)event_struct;
     (void)start;
     (void)stop;
     g_init_event_calls++;
+}
+
+dsd_p25_crypto_state
+p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
+                   uint64_t mi, int talkgroup) {
+    (void)opts;
+    (void)phase;
+    (void)slot;
+    (void)keyid;
+    (void)mi;
+    (void)talkgroup;
+    dsd_p25_crypto_state resolved = DSD_P25_CRYPTO_CLEAR;
+    if (algid != 0x80) {
+        int scalar_key = (algid == 0xAA || algid == 0x81 || algid == 0x9F) && state->R != 0;
+        int aes_key = state->aes_key_loaded[0] == 1
+                      && ((algid == 0x89 && state->aes_key_segments[0] >= 2U)
+                          || (algid == 0x83 && state->aes_key_segments[0] >= 3U)
+                          || (algid == 0x84 && state->aes_key_segments[0] >= 4U));
+        resolved = (scalar_key || aes_key) ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_BLOCKED;
+    }
+    state->p25_crypto_state[0] = resolved;
+    state->p25_p2_enc_lockout_muted[0] = (resolved == DSD_P25_CRYPTO_BLOCKED) ? 1U : 0U;
+    state->p25_p2_audio_allowed[0] = 0;
+    return resolved;
 }
 
 #include "../../../src/protocol/p25/phase1/p25p1_ldu2.c"
@@ -463,28 +492,6 @@ test_ldu2_rs_reliability_uses_wire_order(void) {
     return rc;
 }
 
-static int
-test_ldu2_decrypt_key_gate(void) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
-    int rc = 0;
-
-    state.payload_algid = 0xAA;
-    rc |= expect_int("ADP without key", ldu2_payload_has_decrypt_key(&state), 0);
-    state.R = 0x1234U;
-    rc |= expect_int("ADP with key", ldu2_payload_has_decrypt_key(&state), 1);
-
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.payload_algid = 0x84;
-    rc |= expect_int("AES without key", ldu2_payload_has_decrypt_key(&state), 0);
-    state.aes_key_loaded[0] = 1;
-    rc |= expect_int("AES with key", ldu2_payload_has_decrypt_key(&state), 1);
-
-    state.payload_algid = 0x80;
-    rc |= expect_int("clear voice is not decrypt-keyed", ldu2_payload_has_decrypt_key(&state), 0);
-    return rc;
-}
-
 static void
 fill_ess_fields(char hex_data[16][6], unsigned long long mi_hi64, uint8_t mi_tail8, uint8_t algid, uint16_t kid) {
     char mi_bits[72];
@@ -524,35 +531,6 @@ fill_lsd_byte(uint8_t bits16[16], uint8_t value) {
 }
 
 static int
-test_ldu2_early_unmute_policy(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    char hex_data[16][6] = {{0}};
-    int rc = 0;
-
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    fill_ess_fields(hex_data, 0x0102030405060708ULL, 0x09U, 0xAAU, 0x1234U);
-    state.R = 0x55AAU;
-    ldu2_maybe_apply_early_unmute(&opts, &state, (const char (*)[6])hex_data);
-    rc |= expect_int("RC4 early unmute with key", opts.unmute_encrypted_p25, 1);
-
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    opts.unmute_encrypted_p25 = 1;
-    ldu2_maybe_apply_early_unmute(&opts, &state, (const char (*)[6])hex_data);
-    rc |= expect_int("RC4 early mute without key", opts.unmute_encrypted_p25, 0);
-
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    opts.unmute_encrypted_p25 = 7;
-    fill_ess_fields(hex_data, 0x0102030405060708ULL, 0x09U, 0x84U, 0x1234U);
-    ldu2_maybe_apply_early_unmute(&opts, &state, (const char (*)[6])hex_data);
-    rc |= expect_int("AES early policy leaves mute state for key check", opts.unmute_encrypted_p25, 7);
-    return rc;
-}
-
-static int
 test_ldu2_fec_outcomes(void) {
     static dsd_state state;
     char hex_data[16][6] = {{0}};
@@ -579,9 +557,19 @@ test_ldu2_fec_outcomes(void) {
     reset_hook_counters();
     g_hard_rs_result = 1;
     g_soft_rs_result = 1;
+    state.payload_algid = 0x81;
+    state.payload_keyid = 0x2468;
+    state.payload_miP = 0x1122334455667788ULL;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    state.p25_p2_enc_lockout_muted[0] = 1U;
     rc |= expect_int("RS failure result", ldu2_run_fec(&state, hex_data, hex_parity, soft_dibits), 1);
     rc |= expect_int("RS failure err count", state.p25_p1_voice_fec_err, 1);
     rc |= expect_int("RS failure critical count", state.debug_header_critical_errors, 1);
+    rc |= expect_int("RS failure preserves blocked state", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("RS failure preserves lockout marker", state.p25_p2_enc_lockout_muted[0], 1);
+    rc |= expect_int("RS failure preserves ALGID", state.payload_algid, 0x81);
+    rc |= expect_int("RS failure preserves KID", state.payload_keyid, 0x2468);
+    rc |= expect_u64("RS failure preserves MI", state.payload_miP, 0x1122334455667788ULL);
     return rc;
 }
 
@@ -695,12 +683,15 @@ test_ldu2_decode_unmute_and_lsd_alias_state(void) {
     fill_lsd_byte(frame.lowspeeddata + 16, 0x42U);
     state.payload_algid = 0x80;
     state.aes_key_loaded[0] = 1;
+    state.aes_key_segments[0] = 4U;
     state.dmr_alias_format[0] = 0x02;
     state.dmr_alias_block_len[0] = 2;
     state.lastsrc = 77;
 
     ldu2_decode_post_fec_fields(&state, &frame);
-    ldu2_print_decode_result(&opts, &state, &frame);
+    ldu2_print_decode_result(&state, &frame);
+    ldu2_maybe_enc_lockout(&opts, &state, 0);
+    ldu2_apply_unmute_policy(&opts, &state);
     ldu2_handle_lsd_alias(&opts, &state, &frame);
 
     rc |= expect_int("decoded ALGID", state.payload_algid, 0x84);
@@ -760,6 +751,7 @@ test_ldu2_unmute_policy_variants(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_algid = 0x81;
     state.R = 0x123456789ABCDEF0ULL;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     ldu2_apply_unmute_policy(&opts, &state);
     rc |= expect_int("RC4 0x81 key unmutes", opts.unmute_encrypted_p25, 1);
 
@@ -767,6 +759,7 @@ test_ldu2_unmute_policy_variants(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_algid = 0x9F;
     state.R = 0x123456789ABCDEF0ULL;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     ldu2_apply_unmute_policy(&opts, &state);
     rc |= expect_int("RC4 0x9F key unmutes", opts.unmute_encrypted_p25, 1);
 
@@ -774,6 +767,8 @@ test_ldu2_unmute_policy_variants(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_algid = 0x89;
     state.aes_key_loaded[0] = 1;
+    state.aes_key_segments[0] = 2U;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     state.A1[0] = 0x0011223344556677ULL;
     state.A2[0] = 0x8899AABBCCDDEEFFULL;
     ldu2_apply_unmute_policy(&opts, &state);
@@ -781,10 +776,20 @@ test_ldu2_unmute_policy_variants(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.unmute_encrypted_p25 = 1;
     state.payload_algid = 0x83;
+    state.aes_key_loaded[0] = 1;
+    state.aes_key_segments[0] = 3U;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     ldu2_apply_unmute_policy(&opts, &state);
-    rc |= expect_int("unknown encrypted ALGID mutes", opts.unmute_encrypted_p25, 0);
+    rc |= expect_int("TDEA key unmutes", opts.unmute_encrypted_p25, 1);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.unmute_encrypted_p25 = 1;
+    state.payload_algid = 0x82;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    ldu2_apply_unmute_policy(&opts, &state);
+    rc |= expect_int("unsupported encrypted ALGID mutes", opts.unmute_encrypted_p25, 0);
     return rc;
 }
 
@@ -831,14 +836,14 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
 
     ldu2_maybe_enc_lockout(&opts, &state, 0);
 
-    rc |= expect_int("lockout release", g_release_calls, 1);
-    rc |= expect_int("lockout force release", state.p25_sm_force_release, 1);
+    rc |= expect_int("lockout direct helper does not release", g_release_calls, 0);
+    rc |= expect_int("lockout state", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("lockout marker", state.p25_p2_enc_lockout_muted[0], 1);
+    rc |= expect_int("lockout preserves algid", state.payload_algid, 0xAA);
+    rc |= expect_int("lockout preserves kid", state.payload_keyid, 0x2A2A);
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
     rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
-    rc |= expect_int("lockout watchdog", g_watchdog_calls, 1);
-    rc |= expect_int("lockout write event", g_write_event_calls, 1);
-    rc |= expect_int("lockout push event", g_push_event_calls, 1);
-    rc |= expect_int("lockout init event", g_init_event_calls, 1);
+    rc |= expect_int("lockout logging delegated", g_watchdog_calls, 0);
 
     reset_hook_counters();
     state.p25_sm_force_release = 0;
@@ -847,50 +852,7 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     rc |= expect_int("lockout skipped with key", g_release_calls, 0);
     rc |= expect_int("lockout skipped force release", state.p25_sm_force_release, 0);
     rc |= expect_int("lockout skipped policy", g_policy_make_calls, 0);
-    return rc;
-}
-
-static int
-test_ldu2_lockout_suppression_variants(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    int rc = 0;
-
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_MEMSET(g_event_history, 0, sizeof(g_event_history));
-    reset_hook_counters();
-
-    state.event_history_s = g_event_history;
-    ldu2_record_enc_lockout(&opts, &state, 0);
-    rc |= expect_int("zero talkgroup skips policy", g_policy_make_calls, 0);
-    rc |= expect_int("zero talkgroup skips release", g_release_calls, 0);
-
-    reset_hook_counters();
-    g_lookup_label = "Known ENC";
-    ldu2_record_enc_lockout(&opts, &state, 2468);
-    rc |= expect_int("labeled lockout does not make runtime policy", g_policy_make_calls, 0);
-    rc |= expect_int("labeled lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
-    rc |= expect_int("labeled lockout still logs event", g_watchdog_calls, 1);
-
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_MEMSET(g_event_history, 0, sizeof(g_event_history));
-    reset_hook_counters();
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
-    state.event_history_s = g_event_history;
-    state.payload_algid = 0xAA;
-    state.lasttg = 2468;
-    (void)DSD_SNPRINTF(state.event_history_s[0].Event_History_Items[1].internal_str,
-                       sizeof state.event_history_s[0].Event_History_Items[1].internal_str,
-                       "Target: %d; has been locked out; Encryption Lock Out Enabled.", state.lasttg);
-
-    ldu2_maybe_enc_lockout(&opts, &state, 0);
-    rc |= expect_int("duplicate lockout still releases", g_release_calls, 1);
-    rc |= expect_int("duplicate lockout watchdog", g_watchdog_calls, 1);
-    rc |= expect_int("duplicate lockout no history push", g_push_event_calls, 0);
-    rc |= expect_int("duplicate lockout no history init", g_init_event_calls, 0);
+    rc |= expect_int("matching key decryptable", state.p25_crypto_state[0], DSD_P25_CRYPTO_DECRYPTABLE);
     return rc;
 }
 
@@ -900,8 +862,6 @@ main(void) {
     rc |= test_ldu2_extracts_ess_fields();
     rc |= test_lsd_corrected_byte();
     rc |= test_ldu2_rs_reliability_uses_wire_order();
-    rc |= test_ldu2_decrypt_key_gate();
-    rc |= test_ldu2_early_unmute_policy();
     rc |= test_ldu2_fec_outcomes();
     rc |= test_ldu2_hold_hysteresis_refreshes_only_recent_activity();
     rc |= test_ldu2_consume_trailing_status_feeds_classifier();
@@ -911,7 +871,6 @@ main(void) {
     rc |= test_ldu2_unmute_policy_variants();
     rc |= test_ldu2_lsd_alias_begin_clamps_length();
     rc |= test_ldu2_encrypted_trunk_lockout_state();
-    rc |= test_ldu2_lockout_suppression_variants();
     return rc;
 }
 

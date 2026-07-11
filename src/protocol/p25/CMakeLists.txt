@@ -6,6 +6,8 @@ target_sources(
         p25_12.c
         p25_callsign.c
         p25_crc.c
+        p25_crypto.c
+        p25_crypto_state.c
         p25_frequency.c
         p25_lfsr.c
         p25_lcw.c

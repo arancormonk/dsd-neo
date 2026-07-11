@@ -288,7 +288,13 @@ Notes
 - Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns): `-G <file>`
 - CSV formats and examples: `docs/csv-formats.md` and `examples/`
 - Use group list as allow/whitelist: `-W`
-- Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout` do not tune encrypted P25 calls, `--enc-follow` allow encrypted (default)
+- Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout`
+  enable key-aware P25 encryption lockout, `--enc-follow` follow encrypted grants without lockout (default)
+  - With `--enc-lockout`, otherwise allowed P25 voice grants whose encryption is set or not yet known are tuned briefly
+    as silent classification probes. Voice is not decoded, played, recorded, or streamed during classification.
+  - HDU/LDU2 (Phase 1) or MAC_PTT/ESS (Phase 2) metadata confirms whether the call is clear or has a matching,
+    complete key for a supported algorithm. Clear and decryptable calls continue; missing-key and unsupported calls
+    are suppressed. On Phase 2, a clear companion slot remains active and on its original stereo side.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)

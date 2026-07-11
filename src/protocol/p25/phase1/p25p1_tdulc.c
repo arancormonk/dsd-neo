@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -357,4 +358,5 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
         state->aout_gain = opts->audio_gain;
     }
     p25_status_accum_classify(state, opts);
+    p25_crypto_reset_slot(state, 0);
 }

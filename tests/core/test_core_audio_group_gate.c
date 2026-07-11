@@ -294,6 +294,7 @@ main(void) {
     st->lastsrc = 701;
     st->gi[0] = 0;
     st->tg_hold = 700U;
+    st->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     rc |= expect_eq("case7-held-decode", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 1);
     st->tg_hold = 702U;
     rc |= expect_eq("case7-nonheld-decode", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
@@ -306,6 +307,7 @@ main(void) {
     st->gi[0] = 1;
     st->lasttg = 9001;
     st->lastsrc = 9002;
+    st->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     rc |= expect_eq("case8-src-allow", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 1);
     st->lastsrc = 9003;
     rc |= expect_eq("case8-unknown-private-block", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
@@ -347,6 +349,7 @@ main(void) {
     st->lastsrc = 777001;
     st->p25_policy_tg[0] = 9401U;
     st->p25_p2_audio_allowed[0] = 1U;
+    st->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     seed_active_patch_member(st, 9400U, 9401U);
     {
         int out = -1;

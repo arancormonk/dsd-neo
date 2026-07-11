@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -267,21 +268,11 @@ dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR) {
 
 static int
 dsd_p25p2_slot_can_decrypt(const dsd_state* state, int slot, int alg) {
-    unsigned long long key = 0;
+    (void)alg;
     if (!state || slot < 0 || slot > 1) {
         return 0;
     }
-    if (alg == 0 || alg == 0x80) {
-        return 1;
-    }
-    key = (slot == 0) ? state->R : state->RR;
-    if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && key != 0ULL) {
-        return 1;
-    }
-    if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[slot] == 1) {
-        return 1;
-    }
-    return 0;
+    return p25_crypto_audio_ready(state, slot);
 }
 
 static int

@@ -424,6 +424,8 @@ test_tdma_enc_lockout_slot_does_not_block_release(void) {
     g_state.p25_p2_audio_allowed[0] = 1;
     g_state.p25_p2_audio_allowed[1] = 1;
 
+    g_state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
+    g_state.p25_p2_enc_lockout_muted[1] = 1U;
     ev = p25_sm_ev_enc(1, 0x84, 0x1234, 1001);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
@@ -535,6 +537,8 @@ test_tdma_enc_respects_media_policy(void) {
     g_state.lastsrc = 123;
     g_state.gi[0] = 0;
     g_state.aes_key_loaded[0] = 1;
+    g_state.aes_key_segments[0] = 4U;
+    g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     g_state.p25_p2_audio_allowed[0] = 0;
 
     ev = p25_sm_ev_enc(0, 0x84, 0x1234, 1001);
@@ -561,6 +565,8 @@ test_tdma_enc_respects_media_policy(void) {
     g_state.lastsrc = 123;
     g_state.gi[0] = 0;
     g_state.aes_key_loaded[0] = 1;
+    g_state.aes_key_segments[0] = 4U;
+    g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     g_state.p25_p2_audio_allowed[0] = 0;
 
     ev = p25_sm_ev_enc(0, 0x84, 0x1234, 2001);
@@ -591,6 +597,8 @@ test_tdma_enc_respects_media_policy(void) {
     g_state.lastsrc = 123;
     g_state.gi[0] = 0;
     g_state.aes_key_loaded[0] = 1;
+    g_state.aes_key_segments[0] = 4U;
+    g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     g_state.p25_p2_audio_allowed[0] = 0;
 
     ev = p25_sm_ev_enc(0, 0x84, 0x1234, 3000);

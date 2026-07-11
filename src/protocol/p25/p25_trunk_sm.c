@@ -14,6 +14,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_ui.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -673,6 +674,7 @@ typedef struct {
     int data_call;
     int encrypted_call;
     int enc_override_clear;
+    int probe_call;
     int is_indiv;
     int tg;
 } p25_grant_eval_ctx_t;
@@ -823,6 +825,16 @@ p25_grant_apply_clear_override(const dsd_opts* opts, const dsd_state* state, p25
     }
 }
 
+static void
+p25_grant_apply_crypto_probe(const dsd_opts* opts, p25_grant_eval_ctx_t* eval_ctx) {
+    if (!opts || !eval_ctx || eval_ctx->data_call || eval_ctx->enc_override_clear || opts->trunk_tune_enc_calls != 0) {
+        return;
+    }
+    if (!eval_ctx->svc_valid || eval_ctx->encrypted_call) {
+        eval_ctx->probe_call = 1;
+    }
+}
+
 static int
 p25_grant_uses_voice_enc_cache(const p25_grant_eval_ctx_t* eval_ctx) {
     return (eval_ctx && !eval_ctx->data_call) ? 1 : 0;
@@ -945,12 +957,16 @@ p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm
     if (!opts || !state || !ev || !eval_ctx || !out_decision) {
         return -1;
     }
-    if (eval_ctx->is_indiv) {
+    p25_grant_eval_ctx_t policy_ctx = *eval_ctx;
+    if (policy_ctx.probe_call) {
+        policy_ctx.encrypted_call = 0;
+    }
+    if (policy_ctx.is_indiv) {
         return dsd_tg_policy_evaluate_private_call(
-            opts, state, (uint32_t)ev->src, (uint32_t)ev->dst, eval_ctx->encrypted_call, eval_ctx->data_call,
+            opts, state, (uint32_t)ev->src, (uint32_t)ev->dst, policy_ctx.encrypted_call, policy_ctx.data_call,
             DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW, DSD_TG_POLICY_HOLD_COMPAT_GRANT, out_decision);
     }
-    return p25_grant_eval_group_policy(opts, state, ev, eval_ctx, out_decision);
+    return p25_grant_eval_group_policy(opts, state, ev, &policy_ctx, out_decision);
 }
 
 static int
@@ -994,6 +1010,7 @@ grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg
 
     eval_ctx = p25_grant_eval_ctx_from_event(ev);
     p25_grant_apply_clear_override(opts, state, &eval_ctx);
+    p25_grant_apply_crypto_probe(opts, &eval_ctx);
     p25_grant_clear_transient_cache_if_clear(state, &eval_ctx);
     if (p25_grant_eval_policy(opts, state, ev, &eval_ctx, &decision) != 0) {
         return 0;
@@ -1009,7 +1026,7 @@ grant_allowed(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, dsd_tg
         return 0;
     }
 
-    if (p25_grant_transient_enc_cache_blocks(opts, state, &eval_ctx)) {
+    if (!eval_ctx.probe_call && p25_grant_transient_enc_cache_blocks(opts, state, &eval_ctx)) {
         if (out_eval_ctx) {
             *out_eval_ctx = eval_ctx;
         }
@@ -1201,8 +1218,8 @@ p25_grant_clear_moved_target_slots(p25_sm_ctx_t* ctx, dsd_state* state, int keep
         p25_grant_clear_policy_slot(state, s);
         if (state) {
             state->p25_p2_audio_allowed[s] = 0;
-            state->p25_p2_enc_lockout_muted[s] = 0;
             p25_p2_audio_ring_reset(state, s);
+            p25_crypto_reset_slot(state, s);
         }
     }
 }
@@ -1258,6 +1275,42 @@ p25_grant_commit_decoder_tune(dsd_opts* opts, dsd_state* state, long freq) {
 }
 
 static void
+p25_grant_initialize_timing(p25_sm_ctx_t* ctx, dsd_state* state, double now_m, int reused_carrier, int data_call) {
+    // Data grants do not use per-slot pending voice timing, so reused carrier
+    // data grants need their own timeout window.
+    if (!reused_carrier || ctx->t_tune_m <= 0.0 || data_call) {
+        ctx->t_tune_m = now_m;
+    }
+    if (!reused_carrier || ctx->t_voice_m <= 0.0 || data_call) {
+        ctx->t_voice_m = 0.0;
+    }
+    if (reused_carrier) {
+        p25_grant_refresh_reused_carrier_watchdogs(state, now_m);
+    } else {
+        ctx->vc_cqpsk_retry_done = 0;
+    }
+}
+
+static void
+p25_grant_begin_crypto_classification(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev,
+                                      const p25_grant_eval_ctx_t* eval_ctx, int slot, int data_call) {
+    if (!state || data_call) {
+        return;
+    }
+    const int crypto_slot = ctx->vc_is_tdma ? slot : 0;
+    const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
+    p25_crypto_begin_voice_call(state, ctx->vc_is_tdma ? DSD_P25_CRYPTO_PHASE2 : DSD_P25_CRYPTO_PHASE1, crypto_slot,
+                                ev->svc_bits, force_clear);
+}
+
+static void
+p25_grant_clear_stale_cqpsk_override(dsd_state* state, int reused_carrier) {
+    if (state && !reused_carrier) {
+        state->p25_vc_cqpsk_override = -1;
+    }
+}
+
+static void
 p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev, long freq, int target_id,
                            const p25_grant_eval_ctx_t* eval_ctx, double now_m, int slot, int reused_carrier) {
     if (!ctx || !ev) {
@@ -1270,25 +1323,11 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
     const int data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     ctx->vc_data_call = data_call;
-    // Data grants do not use per-slot pending voice timing, so reused carrier
-    // data grants need their own timeout window.
-    if (!reused_carrier || ctx->t_tune_m <= 0.0 || data_call) {
-        ctx->t_tune_m = now_m;
-    }
-    if (!reused_carrier || ctx->t_voice_m <= 0.0 || data_call) {
-        ctx->t_voice_m = 0.0;
-    }
-    if (reused_carrier) {
-        p25_grant_refresh_reused_carrier_watchdogs(state, now_m);
-    }
-    if (!reused_carrier) {
-        ctx->vc_cqpsk_retry_done = 0;
-    }
+    p25_grant_initialize_timing(ctx, state, now_m, reused_carrier, data_call);
     p25_grant_store_slot_context(ctx, ev, freq, target_id, eval_ctx, slot, now_m);
-    if (state && !reused_carrier) {
-        // Clear any stale one-shot VC CQPSK override from a previous attempt.
-        state->p25_vc_cqpsk_override = -1;
-    }
+    p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, slot, data_call);
+    // Clear any stale one-shot VC CQPSK override from a previous attempt.
+    p25_grant_clear_stale_cqpsk_override(state, reused_carrier);
 }
 
 static int
@@ -1638,6 +1677,22 @@ typedef struct {
     double now_m;
 } p25_grant_route_ctx_t;
 
+static int
+p25_grant_matches_sticky_block(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev,
+                               const p25_grant_eval_ctx_t* eval_ctx, const p25_grant_route_ctx_t* grant) {
+    if (!ctx || !state || !ev || !eval_ctx || !grant || ctx->state != P25_SM_TUNED || grant->slot < 0 || grant->slot > 1
+        || state->p25_crypto_state[grant->slot] != DSD_P25_CRYPTO_BLOCKED) {
+        return 0;
+    }
+
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[grant->slot];
+    if (slot_ctx->freq_hz != grant->freq || slot_ctx->channel != ev->channel || slot_ctx->target_id != grant->target_id
+        || slot_ctx->data_call != (eval_ctx->data_call ? 1 : 0)) {
+        return 0;
+    }
+    return p25_grant_slot_call_identity_matches(slot_ctx, ev);
+}
+
 static void
 p25_grant_log_freq(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq,
                    const p25_freq_trace_t* freq_trace) {
@@ -1750,6 +1805,12 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     if (p25_grant_blocked_by_pending_cc(ctx, opts, state, ev, &grant)) {
         return;
     }
+    if (p25_grant_matches_sticky_block(ctx, state, ev, &eval_ctx, &grant)) {
+        p25_sm_diagf(opts, state, ctx, "grant_crypto_sticky_block", "ch=0x%04X freq=%ld slot=%d target=%d",
+                     ev->channel & 0xFFFF, grant.freq, grant.slot, grant.target_id);
+        sm_log(opts, state, "grant-crypto-sticky-block");
+        return;
+    }
 
     // Skip only true duplicate grants; same-RF grants for a different call context
     // still need normal grant handling so the slot context is replaced.
@@ -1812,23 +1873,6 @@ p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, i
     }
 }
 
-// Helper to check if slot has decryption capability
-static int
-slot_can_decrypt(const dsd_state* state, int slot, int algid) {
-    if (!state || algid == 0 || algid == 0x80) {
-        return 1; // Clear or no encryption
-    }
-    unsigned long long key = (slot == 0) ? state->R : state->RR;
-    int aes_loaded = state->aes_key_loaded[slot];
-    if ((algid == 0xAA || algid == 0x81 || algid == 0x9F) && key != 0) {
-        return 1;
-    }
-    if ((algid == 0x84 || algid == 0x89) && aes_loaded == 1) {
-        return 1;
-    }
-    return 0;
-}
-
 static void
 handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot, const char* why) {
     if (!ctx) {
@@ -1837,6 +1881,12 @@ handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, in
 
     double now_m = now_monotonic();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
+
+    if (state && p25_crypto_companion_suppressed(state, s)) {
+        p25_sm_diagf((dsd_opts*)opts, state, ctx, "voice_classification_wait", "kind=%s slot=%d crypto_state=%d", why,
+                     s, (int)state->p25_crypto_state[s]);
+        return;
+    }
 
     // Update slot activity
     ctx->slots[s].voice_active = 1;
@@ -2021,6 +2071,53 @@ p25_enc_lockout_other_slot_active(const p25_sm_ctx_t* ctx, const dsd_state* stat
                : 0;
 }
 
+static int
+p25_enc_lockout_precheck(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot, int allow_audio,
+                         dsd_p25_crypto_state crypto_state) {
+    if (opts->trunk_tune_enc_calls != 0) {
+        state->p25_p2_audio_allowed[slot] = allow_audio;
+        return 1;
+    }
+    if (opts->p25_trunk != 1 || ctx->state != P25_SM_TUNED) {
+        return 1;
+    }
+    if (p25_crypto_audio_ready(state, slot)) {
+        state->p25_p2_audio_allowed[slot] = allow_audio;
+        return 1;
+    }
+    if (crypto_state != DSD_P25_CRYPTO_BLOCKED) {
+        state->p25_p2_audio_allowed[slot] = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static void
+p25_enc_lockout_clear_slot_burst(dsd_state* state, int slot) {
+    if (slot == 0) {
+        state->dmrburstL = 0;
+    } else {
+        state->dmrburstR = 0;
+    }
+}
+
+static void
+p25_enc_lockout_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+    if (!ctx->vc_is_tdma) {
+        do_release(ctx, opts, state, "enc-lockout", 0, 0);
+        return;
+    }
+
+    const int other = slot ^ 1;
+    if (!p25_enc_lockout_other_slot_active(ctx, state, other)) {
+        do_release(ctx, opts, state, "enc-lockout", 0, 0);
+        return;
+    }
+
+    p25_sm_diagf(opts, state, ctx, "enc_lockout_slot_only", "slot=%d other=%d", slot, other);
+    sm_log(opts, state, "enc-lockout-slot-only");
+}
+
 static void
 handle_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
@@ -2056,42 +2153,23 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     int slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
     int algid = ev->algid;
     int tg = ev->tg;
-    int can_decrypt = 0;
     int allow_audio = 0;
+    dsd_p25_crypto_state crypto_state = state->p25_crypto_state[slot];
 
     // Store encryption params in slot context
     ctx->slots[slot].algid = algid;
     ctx->slots[slot].keyid = ev->keyid;
     ctx->slots[slot].tg = tg;
-    can_decrypt = slot_can_decrypt(state, slot, algid);
     allow_audio = dsd_p25p2_decode_audio_allowed(opts, state, slot, algid);
 
-    // Skip lockout processing if encryption lockout is disabled
-    if (opts->trunk_tune_enc_calls != 0) {
-        // Even when encrypted calls are permitted, keep the gate aligned with
-        // the current media policy so allow-list/TG-hold blocks are not reopened.
-        state->p25_p2_audio_allowed[slot] = allow_audio;
-        state->p25_p2_enc_lockout_muted[slot] = 0;
-        return;
-    }
-
-    // Skip if we're not currently tuned to a voice channel
-    if (ctx->state != P25_SM_TUNED) {
-        return;
-    }
-
-    // Decryptable encrypted calls still need to respect the current media
-    // policy; do not reopen slots that the caller already blocked.
-    if (can_decrypt) {
-        state->p25_p2_audio_allowed[slot] = allow_audio;
-        state->p25_p2_enc_lockout_muted[slot] = 0;
+    if (p25_enc_lockout_precheck(ctx, opts, state, slot, allow_audio, crypto_state)) {
         return;
     }
 
     // Single-indication lockout: trigger immediately on encrypted stream
     p25_sm_diagf(opts, state, ctx, "enc_lockout",
-                 "slot=%d algid=0x%02X keyid=0x%04X tg=%d can_decrypt=%d allow_audio=%d", slot, algid, ev->keyid, tg,
-                 can_decrypt, allow_audio);
+                 "slot=%d algid=0x%02X keyid=0x%04X tg=%d crypto_state=%d allow_audio=%d", slot, algid, ev->keyid, tg,
+                 (int)crypto_state, allow_audio);
     sm_log(opts, state, "enc-lockout");
 
     if (tg > 0) {
@@ -2100,39 +2178,13 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
 
     // Gate audio for this slot
     state->p25_p2_audio_allowed[slot] = 0;
-    state->p25_p2_enc_lockout_muted[slot] = 1;
-    p25_p2_audio_ring_reset(state, slot);
 
     // Clear voice activity indicator to prevent audio routing logic from
     // treating this locked-out slot as having active voice
     ctx->slots[slot].voice_active = 0;
     p25_enc_lockout_clear_slot_grant(ctx, state, slot);
-    if (slot == 0) {
-        state->dmrburstL = 0;
-        // Reset voice counters to prevent stale state from affecting later calls
-        state->fourv_counter[0] = 0;
-        state->voice_counter[0] = 0;
-        state->DMRvcL = 0;
-        state->dropL = 256;
-    } else {
-        state->dmrburstR = 0;
-        // Reset voice counters to prevent stale state from affecting later calls
-        state->fourv_counter[1] = 0;
-        state->voice_counter[1] = 0;
-        state->DMRvcR = 0;
-        state->dropR = 256;
-    }
-
-    // Check if opposite slot is active - only release if both slots are quiet
-    int other = slot ^ 1;
-    int other_active = p25_enc_lockout_other_slot_active(ctx, state, other);
-
-    if (!other_active) {
-        do_release(ctx, opts, state, "enc-lockout", 0, 0);
-    } else {
-        p25_sm_diagf(opts, state, ctx, "enc_lockout_slot_only", "slot=%d other=%d", slot, other);
-        sm_log(opts, state, "enc-lockout-slot-only");
-    }
+    p25_enc_lockout_clear_slot_burst(state, slot);
+    p25_enc_lockout_release_or_preserve_companion(ctx, opts, state, slot);
 }
 
 /* ============================================================================
@@ -2335,8 +2387,8 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->dmr_soR = 0;
         state->p25_service_options_valid[0] = 0;
         state->p25_service_options_valid[1] = 0;
-        state->p25_p2_enc_lockout_muted[0] = 0;
-        state->p25_p2_enc_lockout_muted[1] = 0;
+        p25_crypto_reset_slot(state, 0);
+        p25_crypto_reset_slot(state, 1);
         state->p25_policy_tg[0] = 0;
         state->p25_policy_tg[1] = 0;
         state->p25_sm_release_count++;
@@ -3095,10 +3147,82 @@ p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
     }
 }
 
+static int
+p25_sm_crypto_slot_expired(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, double now_m,
+                           double grant_timeout) {
+    if (state->p25_crypto_state[slot] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+        return 0;
+    }
+    if (ctx->vc_is_tdma && !ctx->slots[slot].grant_active) {
+        return 0;
+    }
+    const double started_m = ctx->vc_is_tdma ? ctx->slots[slot].last_grant_m : ctx->t_tune_m;
+    return started_m > 0.0 && (now_m - started_m) >= grant_timeout;
+}
+
+static void
+p25_sm_block_expired_crypto_slot(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+    p25_crypto_block_pending(state, slot);
+    ctx->slots[slot].voice_active = 0;
+    if (ctx->vc_is_tdma) {
+        p25_enc_lockout_clear_slot_grant(ctx, state, slot);
+    }
+    p25_sm_diagf(opts, state, ctx, "crypto_classification_timeout", "slot=%d freq=%ld tg=%d", slot, ctx->vc_freq_hz,
+                 ctx->vc_tg);
+    sm_log(opts, state, "crypto-classify-timeout");
+}
+
+static int
+p25_sm_expired_slot_has_active_companion(const p25_sm_ctx_t* ctx, const dsd_state* state, const int expired[2]) {
+    if (!ctx->vc_is_tdma) {
+        return 0;
+    }
+    for (int slot = 0; slot < 2; slot++) {
+        if (expired[slot] && p25_enc_lockout_other_slot_active(ctx, state, slot ^ 1)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m,
+                                  double grant_timeout) {
+    if (!ctx || !state || ctx->vc_data_call) {
+        return 0;
+    }
+
+    int expired[2] = {0, 0};
+    int expired_any = 0;
+    const int slot_count = ctx->vc_is_tdma ? 2 : 1;
+    for (int slot = 0; slot < slot_count; slot++) {
+        if (!p25_sm_crypto_slot_expired(ctx, state, slot, now_m, grant_timeout)) {
+            continue;
+        }
+
+        expired[slot] = 1;
+        expired_any = 1;
+        p25_sm_block_expired_crypto_slot(ctx, opts, state, slot);
+    }
+
+    if (!expired_any) {
+        return 0;
+    }
+    if (p25_sm_expired_slot_has_active_companion(ctx, state, expired)) {
+        return 0;
+    }
+
+    do_release(ctx, opts, state, "grant-timeout", 1, 0);
+    return 1;
+}
+
 static void
 p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, double hangtime,
                   double grant_timeout) {
     if (!ctx) {
+        return;
+    }
+    if (p25_sm_tick_crypto_classification(ctx, opts, state, now_m, grant_timeout)) {
         return;
     }
     if (ctx->slots[0].voice_active || ctx->slots[1].voice_active) {
@@ -3331,10 +3455,7 @@ p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algi
     ctx->slots[s].keyid = keyid;
 
     // Update audio gating in state (single source of truth)
-    state->p25_p2_audio_allowed[s] = slot_can_decrypt(state, s, algid) ? 1 : 0;
-    if (state->p25_p2_audio_allowed[s] != 0) {
-        state->p25_p2_enc_lockout_muted[s] = 0;
-    }
+    state->p25_p2_audio_allowed[s] = p25_crypto_audio_ready(state, s) ? 1 : 0;
 }
 
 /* ============================================================================
@@ -3353,12 +3474,16 @@ p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg
     // still need ALG/KID/MI after this helper returns to keep audio gates closed.
     if ((slot & 1) == 0) {
         state->lasttg = (uint32_t)tg;
-        state->dmr_so = (uint16_t)svc_bits;
-        state->p25_service_options_valid[0] = (svc_bits != 0) ? 1U : 0U;
+        if (svc_bits != 0) {
+            state->dmr_so = (uint16_t)svc_bits;
+            state->p25_service_options_valid[0] = 1U;
+        }
     } else {
         state->lasttgR = (uint32_t)tg;
-        state->dmr_soR = (uint16_t)svc_bits;
-        state->p25_service_options_valid[1] = (svc_bits != 0) ? 1U : 0U;
+        if (svc_bits != 0) {
+            state->dmr_soR = (uint16_t)svc_bits;
+            state->p25_service_options_valid[1] = 1U;
+        }
     }
     state->p25_policy_tg[slot & 1] = 0;
     state->gi[slot & 1] = 0;

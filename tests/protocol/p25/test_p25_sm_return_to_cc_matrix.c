@@ -558,6 +558,8 @@ matrix_flow_enc_lockout(matrix_fixture* fixture, int event_slot) {
     p25_sm_event_t ev = p25_sm_ev_ptt(event_slot);
     matrix_send_event(fixture, &ev);
     fixture->state->p25_p2_audio_allowed[event_slot] = 1;
+    fixture->state->p25_crypto_state[event_slot] = DSD_P25_CRYPTO_BLOCKED;
+    fixture->state->p25_p2_enc_lockout_muted[event_slot] = 1U;
     ev = p25_sm_ev_enc(event_slot, 0x84, 0x1234, 2000);
     matrix_send_event(fixture, &ev);
 }

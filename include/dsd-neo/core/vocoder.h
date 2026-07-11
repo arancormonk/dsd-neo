@@ -44,6 +44,9 @@ void processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit 
 void soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]);
 void playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv);
 
+/** Purge queued/working audio and vocoder history for one logical voice slot. */
+void dsd_mbe_purge_slot_audio(dsd_state* state, int slot);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1372,6 +1372,8 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(dsd_opts* opts, d
     state->p25_p2_active_slot = -1;
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_p2_enc_lockout_muted[0] = 0;
     state->p25_p2_enc_lockout_muted[1] = 0;
     state->p25_call_is_packet[0] = 0;
@@ -1456,6 +1458,8 @@ no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_active_slot = -1;
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_p2_enc_lockout_muted[0] = 0;
     state->p25_p2_enc_lockout_muted[1] = 0;
     state->p25_call_is_packet[0] = 0;

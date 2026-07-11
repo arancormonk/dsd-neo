@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
@@ -101,6 +102,16 @@ p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state) {
     ++g_sm_tdu_calls;
 }
 
+void
+p25_crypto_reset_slot(dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1) {
+        return;
+    }
+    state->p25_crypto_state[slot] = DSD_P25_CRYPTO_UNKNOWN;
+    state->p25_p2_audio_allowed[slot] = 0;
+    state->p25_p2_enc_lockout_muted[slot] = 0U;
+}
+
 static void
 reset_harness(void) {
     g_read_zeros_calls = 0;
@@ -126,6 +137,7 @@ seed_active_call_state(dsd_opts* opts, dsd_state* state) {
     state->payload_miP = 0x112233445566ULL;
     state->payload_algid = 0x80;
     state->payload_keyid = 0x1234;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     state->p25_call_emergency[0] = 1;
     state->p25_call_priority[0] = 1;
     state->p25_call_is_packet[0] = 1;
@@ -152,6 +164,7 @@ assert_common_tdu_state(const dsd_opts* opts, const dsd_state* state) {
     assert(state->payload_miP == 0);
     assert(state->payload_algid == 0);
     assert(state->payload_keyid == 0);
+    assert(state->p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
     assert(state->p25_call_emergency[0] == 0);
     assert(state->p25_call_priority[0] == 0);
     assert(state->p25_call_is_packet[0] == 0);

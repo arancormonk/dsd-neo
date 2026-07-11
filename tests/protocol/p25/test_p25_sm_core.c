@@ -1157,6 +1157,8 @@ main(void) {
     ctx19b.slots[1].target_id = 5102;
     ctx19b.slots[1].last_grant_m = dsd_time_now_monotonic_s();
     s19b.p25_p2_audio_allowed[0] = 1;
+    s19b.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    s19b.p25_p2_enc_lockout_muted[0] = 1U;
 
     p25_sm_event_t enc_slot0 = p25_sm_ev_enc(0, 0x84, 0x1234, 5101);
     g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -1169,8 +1171,96 @@ main(void) {
     assert(s19b.p25_p2_audio_allowed[0] == 0);
     assert(s19b.p25_p2_enc_lockout_muted[0] == 1);
 
+    // 27) A Phase 2 classification timeout blocks and purges only the
+    // unresolved slot while retaining an active clear companion.
+    static dsd_opts o19c;
+    static dsd_state s19c;
+    DSD_MEMSET(&o19c, 0, sizeof(o19c));
+    DSD_MEMSET(&s19c, 0, sizeof(s19c));
+    o19c.p25_trunk = 1;
+    o19c.p25_is_tuned = 1;
+    o19c.trunk_is_tuned = 1;
+    o19c.trunk_tune_enc_calls = 0;
+    s19c.p25_cc_freq = 851000000;
+    s19c.p25_vc_freq[0] = s19c.p25_vc_freq[1] = 851000000;
+    s19c.trunk_vc_freq[0] = s19c.trunk_vc_freq[1] = 851000000;
+    s19c.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    s19c.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    s19c.p25_p2_enc_lockout_muted[0] = 1U;
+    s19c.p25_p2_audio_allowed[1] = 1;
+    s19c.p25_p2_audio_ring_count[0] = 2;
+    s19c.p25_p2_audio_ring_count[1] = 3;
+    s19c.s_l4[0][0] = 111;
+    s19c.s_r4[0][0] = 222;
+
+    p25_sm_ctx_t ctx19c;
+    p25_sm_init_ctx(&ctx19c, &o19c, &s19c);
+    ctx19c.state = P25_SM_TUNED;
+    ctx19c.vc_is_tdma = 1;
+    ctx19c.vc_freq_hz = 851000000;
+    ctx19c.vc_channel = tdma_slot0_ch;
+    ctx19c.vc_tg = 5201;
+    ctx19c.config.grant_timeout_s = 0.1;
+    ctx19c.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx19c.slots[0].grant_active = 1;
+    ctx19c.slots[0].last_grant_m = ctx19c.t_tune_m;
+    ctx19c.slots[1].grant_active = 1;
+    ctx19c.slots[1].voice_active = 1;
+    ctx19c.slots[1].last_grant_m = dsd_time_now_monotonic_s();
+    g_result_return_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx19c, &o19c, &s19c);
+    assert(ctx19c.state == P25_SM_TUNED);
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx19c.slots[0].grant_active == 0);
+    assert(ctx19c.slots[1].voice_active == 1);
+    assert(s19c.p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
+    assert(s19c.p25_p2_enc_lockout_muted[0] == 1U);
+    assert(s19c.p25_p2_audio_ring_count[0] == 0);
+    assert(s19c.p25_p2_audio_ring_count[1] == 3);
+    assert(s19c.s_l4[0][0] == 0);
+    assert(s19c.s_r4[0][0] == 222);
+
+    // 28) A Phase 1 classification timeout with no companion returns to the
+    // control channel and resets the call classification at teardown.
+    static dsd_opts o19d;
+    static dsd_state s19d;
+    DSD_MEMSET(&o19d, 0, sizeof(o19d));
+    DSD_MEMSET(&s19d, 0, sizeof(s19d));
+    o19d.p25_trunk = 1;
+    o19d.p25_is_tuned = 1;
+    o19d.trunk_is_tuned = 1;
+    o19d.trunk_tune_enc_calls = 0;
+    s19d.p25_cc_freq = 851000000;
+    s19d.p25_vc_freq[0] = s19d.p25_vc_freq[1] = 851125000;
+    s19d.trunk_vc_freq[0] = s19d.trunk_vc_freq[1] = 851125000;
+    s19d.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    s19d.p25_p2_enc_lockout_muted[0] = 1U;
+    s19d.p25_p2_audio_ring_count[0] = 2;
+    s19d.s_l4[0][0] = 111;
+
+    p25_sm_ctx_t ctx19d;
+    p25_sm_init_ctx(&ctx19d, &o19d, &s19d);
+    ctx19d.state = P25_SM_TUNED;
+    ctx19d.vc_is_tdma = 0;
+    ctx19d.vc_freq_hz = 851125000;
+    ctx19d.vc_tg = 5301;
+    ctx19d.config.grant_timeout_s = 0.1;
+    ctx19d.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx19d.slots[0].grant_active = 1;
+    ctx19d.slots[0].last_grant_m = ctx19d.t_tune_m;
+    g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx19d, &o19d, &s19d);
+    assert(g_result_return_to_cc_calls == 1);
+    assert(ctx19d.state == P25_SM_ON_CC);
+    assert(o19d.p25_is_tuned == 0 && o19d.trunk_is_tuned == 0);
+    assert(s19d.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
+    assert(s19d.p25_p2_enc_lockout_muted[0] == 0U);
+    assert(s19d.p25_p2_audio_ring_count[0] == 0);
+    assert(s19d.s_l4[0][0] == 0);
+
 #ifdef USE_RADIO
-    // 27) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
+    // 29) A failed CQPSK retry must roll back the one-shot override and TDMA timing.
     static dsd_opts o19;
     static dsd_state s19;
     DSD_MEMSET(&o19, 0, sizeof(o19));

@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
@@ -33,6 +34,7 @@ static int g_status_add_count;
 static int g_get_dibit_soft_count;
 static int g_dibit_sequence_len;
 static int g_dibit_sequence[80];
+static int g_open_mbe_calls;
 static int g_vocoder_calls;
 static dsd_vocoder_soft_bit g_last_imbe_soft[8][23];
 static int g_hard_hamming_result;
@@ -40,6 +42,13 @@ static int g_soft_hamming_result;
 static char g_read_word_bits[6];
 static char g_read_parity_bits[4];
 static char g_soft_hamming_output[10];
+
+void
+openMbeOutFile(dsd_opts* opts, dsd_state* state) {
+    (void)state;
+    g_open_mbe_calls++;
+    opts->mbe_out_f = stdout;
+}
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -292,17 +301,27 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     }
 
     g_vocoder_calls = 0;
+    g_open_mbe_calls = 0;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     int rc = 0;
     rc |= expect_int("non-standard c0 skipped", g_vocoder_calls, 0);
     imbe_fr[0][0] = 1;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
+    rc |= expect_int("pending crypto does not open recording", g_open_mbe_calls, 0);
+    rc |= expect_int("pending crypto does not dispatch vocoder", g_vocoder_calls, 0);
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     rc |= expect_int("standard c0 dispatched", g_vocoder_calls, 1);
+    rc |= expect_int("classified voice opens recording", g_open_mbe_calls, 1);
 
     state.payload_algid = 0x80;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     update_ldu_encryption_flag(&state);
     rc |= expect_int("clear algid not encrypted", state.dmr_encL, 0);
     state.payload_algid = 0x00;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
     update_ldu_encryption_flag(&state);
     rc |= expect_int("unknown algid encrypted until confirmed", state.dmr_encL, 1);
     return rc;
@@ -327,6 +346,7 @@ test_ldu_process_imbe_status_cadence_and_soft_dispatch(void) {
     g_dibit_sequence[70] = 3;
 
     state.payload_algid = 0x80;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     int status_count = 1;
     process_IMBE(&opts, &state, &status_count);
 

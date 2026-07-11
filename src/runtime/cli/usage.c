@@ -395,8 +395,8 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("  -e            Enable Tune to Data Calls (DMR TIII, Cap+, NXDN Type-C)\n");
     printf("                 (NOTE: No Clear Distinction between Cap+ Private Voice Calls and Data Calls -- Both "
            "enabled with Data Calls)\n");
-    printf("      --enc-lockout          P25: Do not tune encrypted calls (ENC lockout On)\n");
-    printf("      --enc-follow           P25: Allow encrypted calls (ENC lockout Off; default)\n");
+    printf("      --enc-lockout          P25: Silently classify voice; follow only calls with usable keys\n");
+    printf("      --enc-follow           P25: Follow encrypted grants without key lockout (default)\n");
     printf("  -I <dec>      Specify TG to Hold During Trunking (DMR, P25, NXDN Type-C Trunking)\n");
     printf("  -U <port>     Enable RIGCTL/TCP; Set TCP Port for RIGCTL. (4532 on SDR++)\n");
     printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");

@@ -222,7 +222,8 @@ main(void) {
     p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1103, /*src*/ 2103);
     rc |= expect_true("group mode DE blocked", st.p25_sm_tune_count == before);
 
-    // Runtime encrypted-call lockout must not persist as a TG policy block.
+    // Runtime encryption lockout uses a silent probe and must not persist as a
+    // TG policy block for a later clear call.
     rc |= expect_true("seed mixed-mode group", seed_exact(&st, 1104, "A", "MIXED", 0, 0) == 0);
     p25_sm_on_release(&opts, &st);
     mark_cc_reacquired(&st);
@@ -230,13 +231,19 @@ main(void) {
     opts.p25_is_tuned = 0;
     before = st.p25_sm_tune_count;
     p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x40, /*tg*/ 1104, /*src*/ 2104);
-    rc |= expect_true("encrypted mixed-mode grant blocked", st.p25_sm_tune_count == before);
+    rc |= expect_true("encrypted mixed-mode grant probes", st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("encrypted mixed-mode probe is pending",
+                      st.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    p25_sm_on_release(&opts, &st);
+    mark_cc_reacquired(&st);
+    before = st.p25_sm_tune_count;
     opts.p25_is_tuned = 0;
     p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 1104, /*src*/ 2105);
     rc |= expect_true("later clear mixed-mode grant tunes", st.p25_sm_tune_count == before + 1);
     opts.trunk_tune_enc_calls = 1;
 
-    // Transient encrypted-call memory blocks only ambiguous no-SVC grants and never writes TG policy.
+    // Ambiguous voice grants are re-probed even when transient encrypted-call
+    // memory exists; the cache remains policy metadata, not a tune veto.
     {
         static dsd_opts cache_opts;
         static dsd_state cache_st;
@@ -261,9 +268,13 @@ main(void) {
         before = cache_st.p25_sm_tune_count;
         cache_opts.p25_is_tuned = 0;
         p25_sm_on_group_grant(&cache_opts, &cache_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 1300, /*src*/ 2301);
-        rc |= expect_true("unknown-svc grant skipped by transient enc cache", cache_st.p25_sm_tune_count == before);
+        rc |= expect_true("unknown-svc grant re-probed despite transient enc cache",
+                          cache_st.p25_sm_tune_count == before + 1);
         rc |= expect_true("transient enc cache does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
 
+        p25_sm_on_release(&cache_opts, &cache_st);
+        mark_cc_reacquired(&cache_st);
+        before = cache_st.p25_sm_tune_count;
         cache_opts.p25_is_tuned = 0;
         p25_sm_on_group_grant(&cache_opts, &cache_st, ch, /*svc*/ 0x00, /*tg*/ 1300, /*src*/ 2302);
         rc |=
@@ -371,8 +382,8 @@ main(void) {
         rc |= expect_true("clear group data grant blocked when data disabled", data_st.p25_sm_tune_count == before);
         rc |= expect_true("clear group data grant preserves voice enc cache", !enc_tg_cache_is_absent(&data_st, 3105U));
         p25_sm_on_group_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 3105, /*src*/ 4108);
-        rc |= expect_true("svc-less voice grant still skipped after clear data grant",
-                          data_st.p25_sm_tune_count == before);
+        rc |= expect_true("svc-less voice grant re-probes after clear data grant",
+                          data_st.p25_sm_tune_count == before + 1);
         p25_sm_init(&opts, &st);
     }
 

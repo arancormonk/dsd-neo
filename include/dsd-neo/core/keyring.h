@@ -20,6 +20,10 @@
 extern "C" {
 #endif
 
+/** Activate imported key material for an explicit decoder slot. */
+void keyring_activate_slot(dsd_opts* opts, dsd_state* state, int slot);
+
+/** Compatibility wrapper that activates state->currentslot. */
 void keyring(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus

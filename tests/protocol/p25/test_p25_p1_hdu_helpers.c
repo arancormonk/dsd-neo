@@ -24,6 +24,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/core/talkgroup_policy.h"
 #include "dsd-neo/platform/timing.h"
+#include "dsd-neo/protocol/p25/p25_crypto.h"
 #include "dsd-neo/protocol/p25/p25_lfsr.h"
 #include "dsd-neo/protocol/p25/p25_status_symbol.h"
 #include "dsd-neo/protocol/p25/p25_trunk_sm.h"
@@ -63,6 +64,30 @@ ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
         out = (out << 1U) | (uint64_t)(BufferIn[i] & 1U);
     }
     return out;
+}
+
+dsd_p25_crypto_state
+p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
+                   uint64_t mi, int talkgroup) {
+    (void)opts;
+    (void)phase;
+    (void)slot;
+    (void)keyid;
+    (void)mi;
+    (void)talkgroup;
+    dsd_p25_crypto_state resolved = DSD_P25_CRYPTO_CLEAR;
+    if (algid != 0x80) {
+        int scalar_key = (algid == 0xAA || algid == 0x81 || algid == 0x9F) && state->R != 0;
+        int aes_key = state->aes_key_loaded[0] == 1
+                      && ((algid == 0x89 && state->aes_key_segments[0] >= 2U)
+                          || (algid == 0x83 && state->aes_key_segments[0] >= 3U)
+                          || (algid == 0x84 && state->aes_key_segments[0] >= 4U));
+        resolved = (scalar_key || aes_key) ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_BLOCKED;
+    }
+    state->p25_crypto_state[0] = resolved;
+    state->p25_p2_enc_lockout_muted[0] = (resolved == DSD_P25_CRYPTO_BLOCKED) ? 1U : 0U;
+    state->p25_p2_audio_allowed[0] = 0;
+    return resolved;
 }
 
 #include "../../../src/protocol/p25/phase1/p25p1_hdu.c"
@@ -639,6 +664,7 @@ test_hdu_unmute_policy_and_good_decode_state(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_algid = 0xAA;
     state.R = 0x12345U;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     hdu_apply_unmute_policy(&opts, &state);
     rc |= expect_int("rc4 key unmutes encrypted p25", opts.unmute_encrypted_p25, 1);
 
@@ -653,6 +679,8 @@ test_hdu_unmute_policy_and_good_decode_state(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_algid = 0x84;
     state.aes_key_loaded[0] = 1;
+    state.aes_key_segments[0] = 4U;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     state.A1[0] = 0x1111111111111111ULL;
     state.A2[0] = 0x2222222222222222ULL;
     state.A3[0] = 0x3333333333333333ULL;
@@ -664,6 +692,7 @@ test_hdu_unmute_policy_and_good_decode_state(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.aes_key_loaded[0] = 1;
+    state.aes_key_segments[0] = 4U;
     hdu_handle_good_decode(&opts, &state, 0x84, 0x1234, 0x01020304ULL, 0x05060708ULL, 0x09ULL);
     rc |= expect_int("good hdu algid", state.payload_algid, 0x84);
     rc |= expect_int("good hdu kid", state.payload_keyid, 0x1234);
@@ -694,18 +723,15 @@ test_hdu_encrypted_trunk_lockout_state(void) {
 
     hdu_handle_good_decode(&opts, &state, 0xAA, 0x2A2A, 0xAABBCCDDULL, 0x10203040ULL, 0ULL);
 
-    rc |= expect_int("lockout clears algid", state.payload_algid, 0);
-    rc |= expect_int("lockout clears kid", state.payload_keyid, 0);
-    rc |= expect_u64("lockout clears mi", state.payload_miP, 0ULL);
-    rc |= expect_int("lockout force release", state.p25_sm_force_release, 1);
-    rc |= expect_int("lockout release hook", g_release_calls, 1);
+    rc |= expect_int("lockout preserves algid", state.payload_algid, 0xAA);
+    rc |= expect_int("lockout preserves kid", state.payload_keyid, 0x2A2A);
+    rc |= expect_u64("lockout preserves mi", state.payload_miP, 0xAABBCCDD10203040ULL);
+    rc |= expect_int("lockout crypto state", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("lockout marker", state.p25_p2_enc_lockout_muted[0], 1);
+    rc |= expect_int("lockout direct helper does not release", g_release_calls, 0);
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
     rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
-    rc |= expect_int("lockout watchdog", g_watchdog_calls, 1);
-    rc |= expect_int("lockout event write", g_write_event_calls, 1);
-    rc |= expect_int("lockout event push", g_push_event_calls, 1);
-    rc |= expect_int("lockout event init", g_init_event_calls, 1);
-    rc |= expect_int("lockout call string cleared", state.call_string[0][0] == ' ', 1);
+    rc |= expect_int("lockout logging delegated", g_watchdog_calls, 0);
 
     return rc;
 }

@@ -22,7 +22,6 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/cleanup.h>
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/mbe_api.h>
@@ -37,6 +36,7 @@
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <mbelib.h>
@@ -320,77 +320,6 @@ process_ambe2450_params(const mbe_process_params* params, const char ambe_d[49],
     (void)dsd_mbe_process_ambe2450_dataf(params->aout_buf, params->errs, params->errs2, params->err_str,
                                          params->err_str_size, ambe_d, params->cur_mp, params->prev_mp,
                                          params->prev_mp_enhanced, have_result ? result : NULL);
-}
-
-static int
-keyring_rkey_index_valid(const dsd_state* state, int index) {
-    return state != NULL && index >= 0 && (size_t)index < (sizeof(state->rkey_array) / sizeof(state->rkey_array[0]));
-}
-
-static uint8_t
-keyring_aes_segment_count(const dsd_state* state, int key_id) {
-    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
-    uint8_t present = 0U;
-    uint8_t nonzero = 0U;
-
-    for (size_t i = 0; i < 4U; i++) {
-        const int index = key_id + offsets[i];
-        if (!keyring_rkey_index_valid(state, index)) {
-            continue;
-        }
-        if (state->rkey_array_loaded[index] != 0U) {
-            present++;
-        }
-        if (state->rkey_array[index] != 0ULL) {
-            nonzero++;
-        }
-    }
-
-    return present != 0U ? present : nonzero;
-}
-
-void
-keyring(dsd_opts* opts, dsd_state* state) {
-    UNUSED(opts);
-
-    if (state->currentslot == 0) {
-        state->R = state->rkey_array[state->payload_keyid];
-    }
-
-    if (state->currentslot == 1) {
-        state->RR = state->rkey_array[state->payload_keyidR];
-    }
-
-    //load any large keys (AES)
-    if (state->currentslot == 0) {
-        state->A1[0] = state->rkey_array[state->payload_keyid + 0x000];
-        state->A2[0] = state->rkey_array[state->payload_keyid + 0x101];
-        state->A3[0] = state->rkey_array[state->payload_keyid + 0x201];
-        state->A4[0] = state->rkey_array[state->payload_keyid + 0x301];
-        state->aes_key_segments[0] = keyring_aes_segment_count(state, state->payload_keyid);
-
-        //check to see if there is a value loaded or not
-        if (state->A1[0] == 0 && state->A2[0] == 0 && state->A3[0] == 0 && state->A4[0] == 0) {
-            state->aes_key_loaded[0] = 0;
-        } else {
-            state->aes_key_loaded[0] = 1;
-        }
-    }
-
-    if (state->currentslot == 1) {
-        state->A1[1] = state->rkey_array[state->payload_keyidR + 0x000];
-        state->A2[1] = state->rkey_array[state->payload_keyidR + 0x101];
-        state->A3[1] = state->rkey_array[state->payload_keyidR + 0x201];
-        state->A4[1] = state->rkey_array[state->payload_keyidR + 0x301];
-        state->aes_key_segments[1] = keyring_aes_segment_count(state, state->payload_keyidR);
-
-        //check to see if there is a value loaded or not
-        if (state->A1[1] == 0 && state->A2[1] == 0 && state->A3[1] == 0 && state->A4[1] == 0) {
-            state->aes_key_loaded[1] = 0;
-        } else {
-            state->aes_key_loaded[1] = 1;
-        }
-    }
 }
 
 static void
@@ -1629,6 +1558,9 @@ mbe_post_other_process_audio(const dsd_opts* opts, dsd_state* state, int is_p25p
 static int
 mbe_post_other_is_allowed(const dsd_opts* opts, const dsd_state* state, int is_p25p2) {
     if (!is_p25p2) {
+        if (DSD_SYNC_IS_P25P1(state->synctype)) {
+            return p25_crypto_audio_ready(state, 0);
+        }
         return (opts->unmute_encrypted_p25 == 1 || state->dmr_encL == 0);
     }
 

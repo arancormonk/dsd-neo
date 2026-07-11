@@ -553,6 +553,13 @@ add_test(
 )
 
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_protocol_p25_crypto
+  HEADERS_PUBLIC_PROTOCOL_P25_CRYPTO
+  dsd-neo/protocol/p25/p25_crypto.h
+  C
+)
+
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_protocol_p25_trunk_sm_api
   HEADERS_PUBLIC_PROTOCOL_P25_TRUNK_SM_API
   dsd-neo/protocol/p25/p25_trunk_sm_api.h
@@ -5845,6 +5852,18 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_fec_bch_63_16_unit PRIVATE dsd-neo_fec)
 add_test(NAME FEC_BCH_63_16_UNIT COMMAND dsd-neo_test_fec_bch_63_16_unit)
+
+# Shared P25 crypto resolution, imported-key activation, and slot-local purge
+add_executable(
+    dsd-neo_test_p25_crypto_state
+    protocol/p25/test_p25_crypto_state.c
+)
+target_include_directories(
+    dsd-neo_test_p25_crypto_state
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_p25_crypto_state PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_CRYPTO_STATE COMMAND dsd-neo_test_p25_crypto_state)
 
 # P25 SM core behaviors (monotonic/backoff/cc-hunt)
 add_executable(dsd-neo_test_p25_sm_core protocol/p25/test_p25_sm_core.c)

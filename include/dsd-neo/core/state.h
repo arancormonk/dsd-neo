@@ -38,6 +38,15 @@ enum DSD_ATTR_PACKED {
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
 
+/** Authoritative per-slot P25 voice crypto classification. */
+typedef enum DSD_ATTR_PACKED {
+    DSD_P25_CRYPTO_UNKNOWN = 0,
+    DSD_P25_CRYPTO_CLEAR = 1,
+    DSD_P25_CRYPTO_ENCRYPTED_PENDING = 2,
+    DSD_P25_CRYPTO_DECRYPTABLE = 3,
+    DSD_P25_CRYPTO_BLOCKED = 4,
+} dsd_p25_crypto_state;
+
 typedef struct {
     uint8_t active;
     uint8_t opcode;
@@ -671,9 +680,11 @@ struct dsd_state {
     int fourv_counter[2]; //external reference counter for ESS_B fragment collection
     int voice_counter[2]; //external reference counter for 18V x 2 P25p2 Superframe
     int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
+    // Authoritative P25 voice crypto classification. Slot 0 is also used by P25 Phase 1.
+    dsd_p25_crypto_state p25_crypto_state[2];
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
-    // P25p2 per-slot encrypted lockout mute marker for mixer suppression after service bits are cleared.
+    // Compatibility marker derived from p25_crypto_state (pending/blocked => muted).
     uint8_t p25_p2_enc_lockout_muted[2];
     // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
     // Depth DSD_P25_P2_AUDIO_RING_DEPTH to match drain behavior (~80 ms max at depth=4)

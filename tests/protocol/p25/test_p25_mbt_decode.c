@@ -17,7 +17,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -287,18 +286,6 @@ expect_not_contains_text(const char* tag, const char* text, const char* needle) 
         return 1;
     }
     return 0;
-}
-
-static int
-expect_enc_tg_cache_contains(const char* tag, const dsd_state* state, uint32_t tg) {
-    time_t now = time(NULL);
-    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (state->p25_enc_tg_cache_tg[i] == tg && state->p25_enc_tg_cache_until[i] > now) {
-            return 0;
-        }
-    }
-    DSD_FPRINTF(stderr, "%s: missing active encrypted TG cache entry for %u\n", tag, tg);
-    return 1;
 }
 
 static void
@@ -644,7 +631,8 @@ main(void) {
         rc |= expect_eq_int("mbt mfid90 patch member hold src", g_last_group_src, 0x010204);
     }
 
-    // Encrypted AMBTC group grants still arm lockout/cache policy when their channel is unresolved.
+    // An unresolved encrypted AMBTC channel cannot be classified and must not
+    // create a synthetic active-call/cache entry.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -656,13 +644,13 @@ main(void) {
         reset_indiv_grants();
         p25_decode_pdu_trunking(&opts, &state, grant);
         rc |= expect_eq_int("mbt group unresolved enc no grant", g_group_grant_count, 0);
-        rc |= expect_enc_tg_cache_contains("mbt group unresolved enc cache", &state, 0x2345);
-        rc |= expect_eq_long("mbt group unresolved enc lasttg", (long)state.lasttg, 0x2345);
-        rc |= expect_eq_int("mbt group unresolved enc svc valid", state.p25_service_options_valid[0], 1);
+        rc |= expect_eq_long("mbt group unresolved enc lasttg unchanged", (long)state.lasttg, 0);
+        rc |= expect_eq_int("mbt group unresolved enc svc recorded", state.p25_service_options_valid[0], 1);
         rc |= expect_eq_int("mbt group unresolved enc svc stored", state.dmr_so, 0x40);
     }
 
-    // Encrypted MFID90 regroup grants keep the same policy side effects when the CC is unknown.
+    // A missing control-channel return target likewise prevents a classification
+    // probe and leaves the live call context untouched.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -676,10 +664,9 @@ main(void) {
         reset_indiv_grants();
         p25_decode_pdu_trunking(&opts, &state, grant);
         rc |= expect_eq_int("mbt mfid90 no cc enc no grant", g_group_grant_count, 0);
-        rc |= expect_enc_tg_cache_contains("mbt mfid90 no cc enc cache", &state, 0x3456);
-        rc |= expect_eq_long("mbt mfid90 no cc enc lasttg", (long)state.lasttg, 0x3456);
-        rc |= expect_eq_int("mbt mfid90 no cc enc svc valid", state.p25_service_options_valid[0], 1);
-        rc |= expect_eq_int("mbt mfid90 no cc enc svc stored", state.dmr_so, 0x40);
+        rc |= expect_eq_long("mbt mfid90 no cc enc lasttg unchanged", (long)state.lasttg, 0);
+        rc |= expect_eq_int("mbt mfid90 no cc enc svc remains invalid", state.p25_service_options_valid[0], 0);
+        rc |= expect_eq_int("mbt mfid90 no cc enc svc remains empty", state.dmr_so, 0);
     }
 
     // AMBTC Unit-to-Unit Voice Channel Grant (0x04): resolved FDMA channel dispatches one private grant.

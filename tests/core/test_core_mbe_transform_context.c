@@ -1006,6 +1006,7 @@ test_process_mbe_frame_soft_p25p1_copies_soft_imbe_audio(void) {
     opts.floating_point = 1;
     init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
 
     processMbeFrameSoft(&opts, &state, imbe_soft, NULL, NULL);
 

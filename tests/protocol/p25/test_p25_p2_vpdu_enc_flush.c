@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Validate P25p2 VPDU SVC encrypted gating flushes only the encrypted slot
- * and preserves the clear slot, and triggers release only if the other slot
- * is inactive.
+ * Validate P25p2 VPDU SVC encrypted gating starts a silent classification,
+ * flushes only the encrypted slot, and preserves the clear slot.
  */
 
 #include <dsd-neo/core/dsd_time.h>
@@ -177,19 +176,22 @@ main(void) {
     rc |= expect_eq("slot1 ring kept", st.p25_p2_audio_ring_count[1], 1);
     rc |= expect_eq("no release", g_return_to_cc_called, 0);
 
-    // Scenario 2: other slot idle. ENC should gate current slot and release to CC.
+    // Scenario 2: a repeated indication cannot reopen the pending slot. Release
+    // is deferred until definitive crypto resolution or classification timeout.
     st.currentslot = 0;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 0; // other idle
-    st.p25_p2_audio_ring_count[0] = 1;
+    st.p25_p2_audio_ring_count[0] = 0;
     st.p25_p2_audio_ring_count[1] = 0;
     g_return_to_cc_called = 0;
 
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     rc |= expect_eq("slot0 muted again", st.p25_p2_audio_allowed[0], 0);
-    rc |= expect_eq("slot0 ring flushed again", st.p25_p2_audio_ring_count[0], 0);
-    rc |= expect_eq("released to CC", g_return_to_cc_called, 1);
+    rc |= expect_eq("slot0 ring remains empty", st.p25_p2_audio_ring_count[0], 0);
+    rc |= expect_eq("classification does not release early", g_return_to_cc_called, 0);
+    rc |= expect_eq("slot0 remains pending", st.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("slot0 pending marker remains set", st.p25_p2_enc_lockout_muted[0], 1);
 
     // Scenario 3: unit-to-unit encrypted fallback should honor recent opposite-slot MAC activity,
     // matching the group-call fallback and avoiding a premature CC return while the other slot is active.
@@ -204,6 +206,8 @@ main(void) {
     MAC[8] = 0x02; // SRC low
     opts.p25_is_tuned = 1;
     st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
+    st.p25_p2_enc_lockout_muted[0] = 0;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 0;
     st.p25_p2_audio_ring_count[0] = 1;

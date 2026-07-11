@@ -218,13 +218,6 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state, char duid[3]) {
 }
 
 static void
-p25p1_open_mbe_out_if_needed(dsd_opts* opts, dsd_state* state) {
-    if (opts->mbe_out_f == NULL) {
-        openMbeOutFile(opts, state);
-    }
-}
-
-static void
 p25p1_close_mbe_out_if_open(dsd_opts* opts, dsd_state* state) {
     if (opts->mbe_out_f != NULL) {
         closeMbeOutFile(opts, state);
@@ -255,7 +248,6 @@ p25p1_handle_hdu(dsd_opts* opts, dsd_state* state) {
     }
     if (opts->mbe_out_dir[0] != 0) {
         p25p1_close_mbe_out_if_open(opts, state);
-        p25p1_open_mbe_out_if_needed(opts, state);
     }
 
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
@@ -272,10 +264,6 @@ p25p1_handle_ldu1(dsd_opts* opts, dsd_state* state) {
         printFrameInfo(opts, state);
         DSD_FPRINTF(stderr, " LDU1  ");
     }
-    if (opts->mbe_out_dir[0] != 0) {
-        p25p1_open_mbe_out_if_needed(opts, state);
-    }
-
     state->lastp25type = 1;
     state->dmrburstL = 26;
     state->currentslot = 0;
@@ -297,10 +285,6 @@ p25p1_handle_ldu2(dsd_opts* opts, dsd_state* state) {
             DSD_FPRINTF(stderr, " LDU2  ");
         }
     }
-    if (opts->mbe_out_dir[0] != 0) {
-        p25p1_open_mbe_out_if_needed(opts, state);
-    }
-
     state->lastp25type = 2;
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " LDU2         ");
     state->numtdulc = 0;

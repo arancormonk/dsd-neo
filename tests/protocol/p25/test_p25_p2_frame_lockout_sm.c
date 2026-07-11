@@ -189,9 +189,11 @@ test_pre_ess_single_slot_stays_tuned(void) {
     int rc = 0;
     rc |= expect_eq("pre-ess single slot: no return", g_return_to_cc_called, 0);
     rc |= expect_eq("pre-ess single slot: still tuned", ctx->state == P25_SM_TUNED, 1);
-    rc |= expect_eq("pre-ess single slot: voice remains active", ctx->slots[0].voice_active, 1);
+    rc |= expect_eq("pre-ess single slot: pending voice stays inactive", ctx->slots[0].voice_active, 0);
     rc |= expect_eq("pre-ess single slot: gate closed", state.p25_p2_audio_allowed[0], 0);
-    rc |= expect_eq("pre-ess single slot: marker clear", state.p25_p2_enc_lockout_muted[0], 0);
+    rc |= expect_eq("pre-ess single slot: pending marker set", state.p25_p2_enc_lockout_muted[0], 1);
+    rc |= expect_eq("pre-ess single slot: pending crypto state", state.p25_crypto_state[0],
+                    DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     return rc;
 }
 
@@ -204,6 +206,7 @@ test_pre_ess_opposite_clear_slot_stays_tuned(void) {
     state.currentslot = 1;
     state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     state.dmr_soR = 0x40;
     p25_sm_emit_active(&opts, &state, 0);
     g_return_to_cc_called = 0;
@@ -214,10 +217,12 @@ test_pre_ess_opposite_clear_slot_stays_tuned(void) {
     rc |= expect_eq("opposite clear slot: no return", g_return_to_cc_called, 0);
     rc |= expect_eq("opposite clear slot: still tuned", ctx->state == P25_SM_TUNED, 1);
     rc |= expect_eq("opposite clear slot: clear active", ctx->slots[0].voice_active, 1);
-    rc |= expect_eq("opposite clear slot: pending ess active", ctx->slots[1].voice_active, 1);
+    rc |= expect_eq("opposite clear slot: pending ess voice inactive", ctx->slots[1].voice_active, 0);
     rc |= expect_eq("opposite clear slot: clear gate open", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_eq("opposite clear slot: locked gate closed", state.p25_p2_audio_allowed[1], 0);
-    rc |= expect_eq("opposite clear slot: marker clear", state.p25_p2_enc_lockout_muted[1], 0);
+    rc |= expect_eq("opposite clear slot: pending marker set", state.p25_p2_enc_lockout_muted[1], 1);
+    rc |= expect_eq("opposite clear slot: pending crypto state", state.p25_crypto_state[1],
+                    DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     return rc;
 }
 
