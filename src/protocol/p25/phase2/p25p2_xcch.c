@@ -440,6 +440,7 @@ p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear
     if (slot < 0 || slot >= 2) {
         return;
     }
+    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     state->fourv_counter[slot] = 0;
     state->voice_counter[slot] = 0;
     p25p2_xcch_set_slot_drop(state, slot, 256);
@@ -723,9 +724,7 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     process_MAC_VPDU(opts, state, 0, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    if (p25_crypto_audio_ready(state, slot)) {
-        p25_sm_emit_active(opts, state, slot);
-    }
+    p25_sm_emit_active(opts, state, slot);
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(state, slot, allow_audio);

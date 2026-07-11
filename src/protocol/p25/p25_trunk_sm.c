@@ -1681,7 +1681,7 @@ static int
 p25_grant_matches_sticky_block(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev,
                                const p25_grant_eval_ctx_t* eval_ctx, const p25_grant_route_ctx_t* grant) {
     if (!ctx || !state || !ev || !eval_ctx || !grant || ctx->state != P25_SM_TUNED || grant->slot < 0 || grant->slot > 1
-        || state->p25_crypto_state[grant->slot] != DSD_P25_CRYPTO_BLOCKED) {
+        || !eval_ctx->probe_call || state->p25_crypto_state[grant->slot] != DSD_P25_CRYPTO_BLOCKED) {
         return 0;
     }
 
@@ -1882,7 +1882,7 @@ handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, in
     double now_m = now_monotonic();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
 
-    if (state && p25_crypto_companion_suppressed(state, s)) {
+    if (opts && state && opts->trunk_tune_enc_calls == 0 && p25_crypto_companion_suppressed(state, s)) {
         p25_sm_diagf((dsd_opts*)opts, state, ctx, "voice_classification_wait", "kind=%s slot=%d crypto_state=%d", why,
                      s, (int)state->p25_crypto_state[s]);
         return;
@@ -3188,7 +3188,7 @@ p25_sm_expired_slot_has_active_companion(const p25_sm_ctx_t* ctx, const dsd_stat
 static int
 p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m,
                                   double grant_timeout) {
-    if (!ctx || !state || ctx->vc_data_call) {
+    if (!ctx || !opts || !state || opts->trunk_tune_enc_calls != 0 || ctx->vc_data_call) {
         return 0;
     }
 

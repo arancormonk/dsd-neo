@@ -961,12 +961,12 @@ p25p2_test_process_isch(dsd_opts* opts, dsd_state* state, int framing_index) {
 #endif
 
 static void DSD_ATTR_USED
-p25p2_emit_active_if_allowed(dsd_opts* opts, dsd_state* state) {
+p25p2_emit_voice_activity(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
     int slot = state->currentslot & 1;
-    if (!state->p25_p2_audio_allowed[slot]) {
+    if (opts && opts->trunk_tune_enc_calls == 0 && p25_crypto_companion_suppressed(state, slot)) {
         return;
     }
     p25_sm_emit_active(opts, state, slot);
@@ -1156,7 +1156,7 @@ process_4V(dsd_opts* opts, dsd_state* state) {
     dsd_vocoder_soft_bit ambe_soft[4][4][24] = {{{{0}}}};
 
     p25p2_prepare_voice_crypto(opts, state);
-    p25p2_emit_active_if_allowed(opts, state);
+    p25p2_emit_voice_activity(opts, state);
     p25p2_unpack_voice_frames(4, ambe_soft);
     p25p2_collect_ess_b_fragment(state);
     p25p2_increment_fourv_counter(state);
@@ -1463,7 +1463,7 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     dsd_vocoder_soft_bit ambe_soft[4][4][24] = {{{{0}}}};
 
     p25p2_prepare_voice_crypto(opts, state);
-    p25p2_emit_active_if_allowed(opts, state);
+    p25p2_emit_voice_activity(opts, state);
     p25p2_unpack_voice_frames(2, ambe_soft);
     p25p2_collect_ess_a(state);
 

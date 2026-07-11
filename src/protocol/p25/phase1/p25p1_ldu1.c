@@ -128,7 +128,7 @@ p25p1_ldu1_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_coun
     UNUSED(trace_digit);
 #endif
     process_IMBE(opts, state, status_count);
-    if (emit_active && p25_crypto_audio_ready(state, 0)) {
+    if (emit_active) {
         // SM event: ACTIVE (P1 uses slot 0).
         p25_sm_emit_active(opts, state, 0);
     }

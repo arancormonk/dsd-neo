@@ -124,7 +124,7 @@ ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, cha
     if (p25_crypto_audio_ready(state, 0)) {
         p25p1_play_imbe_audio(opts, state);
     }
-    if (emit_active != 0 && p25_crypto_audio_ready(state, 0)) {
+    if (emit_active != 0) {
         p25_sm_emit_active(opts, state, 0);
     }
 }

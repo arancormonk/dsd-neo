@@ -72,6 +72,8 @@ static int g_read_dibit_soft_calls;
 static int g_read_dibit_soft_values[16];
 static int g_status_add_calls;
 static int g_status_classify_calls;
+static int g_audio_play_calls;
+static int g_active_calls;
 static int g_last_status_dibit;
 static const dsd_opts* g_last_classify_opts;
 static uint32_t g_last_policy_id;
@@ -195,13 +197,16 @@ void
 p25p1_play_imbe_audio(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_audio_play_calls++;
 }
 
 void
 p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
     (void)state;
-    (void)slot;
+    if (slot == 0) {
+        g_active_calls++;
+    }
 }
 
 void
@@ -367,6 +372,8 @@ reset_hook_counters(void) {
     DSD_MEMSET(g_read_dibit_soft_values, 0, sizeof g_read_dibit_soft_values);
     g_status_add_calls = 0;
     g_status_classify_calls = 0;
+    g_audio_play_calls = 0;
+    g_active_calls = 0;
     g_last_status_dibit = -1;
     g_last_classify_opts = NULL;
     g_last_policy_id = 0U;
@@ -596,6 +603,34 @@ test_ldu2_hold_hysteresis_refreshes_only_recent_activity(void) {
 
     ldu2_refresh_hold_hysteresis(&opts, &state);
     rc |= expect_int("stale VC monotonic preserved", (int)state.last_vc_sync_time_m, 19);
+    return rc;
+}
+
+static int
+test_ldu2_activity_is_independent_of_media_gate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int status_count = 0;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_hook_counters();
+    opts.trunk_tune_enc_calls = 1;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+
+    ldu2_process_imbe_frame(&opts, &state, &status_count, '0', 1);
+    rc |= expect_int("blocked follow call emits activity", g_active_calls, 1);
+    rc |= expect_int("blocked follow call keeps media muted", g_audio_play_calls, 0);
+
+    ldu2_process_imbe_frame(&opts, &state, &status_count, '1', 0);
+    rc |= expect_int("non-activity frame does not emit", g_active_calls, 1);
+    rc |= expect_int("blocked non-activity frame stays muted", g_audio_play_calls, 0);
+
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    ldu2_process_imbe_frame(&opts, &state, &status_count, '2', 1);
+    rc |= expect_int("clear frame emits activity", g_active_calls, 2);
+    rc |= expect_int("clear frame plays audio", g_audio_play_calls, 1);
     return rc;
 }
 
@@ -864,6 +899,7 @@ main(void) {
     rc |= test_ldu2_rs_reliability_uses_wire_order();
     rc |= test_ldu2_fec_outcomes();
     rc |= test_ldu2_hold_hysteresis_refreshes_only_recent_activity();
+    rc |= test_ldu2_activity_is_independent_of_media_gate();
     rc |= test_ldu2_consume_trailing_status_feeds_classifier();
     rc |= test_ldu2_capture_lsd_reads_soft_octets_and_updates_counters();
     rc |= test_ldu2_decode_unmute_and_lsd_alias_state();

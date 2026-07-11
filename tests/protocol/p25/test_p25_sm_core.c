@@ -1171,6 +1171,119 @@ main(void) {
     assert(s19b.p25_p2_audio_allowed[0] == 0);
     assert(s19b.p25_p2_enc_lockout_muted[0] == 1);
 
+    // A retained sticky block suppresses only encrypted/unknown re-probes;
+    // an explicit-clear grant on the same slot starts a new clear call.
+    static dsd_opts o19e;
+    static dsd_state s19e;
+    DSD_MEMSET(&o19e, 0, sizeof(o19e));
+    DSD_MEMSET(&s19e, 0, sizeof(s19e));
+    o19e.p25_trunk = 1;
+    o19e.p25_is_tuned = 1;
+    o19e.trunk_is_tuned = 1;
+    o19e.trunk_tune_group_calls = 1;
+    o19e.trunk_tune_enc_calls = 0;
+    s19e.p25_cc_freq = 851000000;
+    s19e.p25_vc_freq[0] = s19e.p25_vc_freq[1] = 851000000;
+    s19e.trunk_vc_freq[0] = s19e.trunk_vc_freq[1] = 851000000;
+    setup_tdma_iden(&s19e, 2);
+
+    p25_sm_ctx_t ctx19e;
+    p25_sm_init_ctx(&ctx19e, &o19e, &s19e);
+    ctx19e.state = P25_SM_TUNED;
+    ctx19e.vc_is_tdma = 1;
+    ctx19e.vc_freq_hz = 851000000;
+    ctx19e.vc_channel = tdma_slot0_ch;
+    ctx19e.vc_tg = 5401;
+    ctx19e.slots[0].freq_hz = 851000000;
+    ctx19e.slots[0].channel = tdma_slot0_ch;
+    ctx19e.slots[0].target_id = 5401;
+    ctx19e.slots[0].ota_tg = 5401;
+    ctx19e.slots[0].src = 6401;
+    ctx19e.slots[0].is_group = 1;
+    ctx19e.slots[0].svc_bits = 0x40;
+    ctx19e.slots[0].last_grant_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx19e.slots[1].grant_active = 1;
+    ctx19e.slots[1].voice_active = 1;
+    ctx19e.slots[1].freq_hz = 851000000;
+    ctx19e.slots[1].channel = tdma_slot1_ch;
+    ctx19e.slots[1].target_id = 5402;
+    ctx19e.slots[1].ota_tg = 5402;
+    ctx19e.slots[1].is_group = 1;
+    s19e.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    s19e.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+
+    const unsigned sticky_grants_before = ctx19e.grant_count;
+    p25_sm_event_t sticky_encrypted = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5401, 6402, 0x40);
+    p25_sm_event(&ctx19e, &o19e, &s19e, &sticky_encrypted);
+    assert(ctx19e.grant_count == sticky_grants_before);
+    assert(ctx19e.slots[0].src == 6401);
+    assert(s19e.p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
+
+    p25_sm_event_t sticky_unknown = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5401, 6403, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx19e, &o19e, &s19e, &sticky_unknown);
+    assert(ctx19e.grant_count == sticky_grants_before);
+    assert(ctx19e.slots[0].src == 6401);
+
+    p25_sm_event_t replacement_clear = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5401, 6404, 0x00);
+    p25_sm_event(&ctx19e, &o19e, &s19e, &replacement_clear);
+    assert(ctx19e.grant_count == sticky_grants_before + 1U);
+    assert(ctx19e.slots[0].grant_active == 1);
+    assert(ctx19e.slots[0].src == 6404);
+    assert(ctx19e.slots[0].svc_bits == 0x00);
+    assert(ctx19e.slots[1].voice_active == 1);
+    assert(s19e.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+
+    // Encrypted-follow mode tracks muted activity and never applies the
+    // lockout-only classification timeout.
+    static dsd_opts o19f;
+    static dsd_state s19f;
+    DSD_MEMSET(&o19f, 0, sizeof(o19f));
+    DSD_MEMSET(&s19f, 0, sizeof(s19f));
+    o19f.p25_trunk = 1;
+    o19f.p25_is_tuned = 1;
+    o19f.trunk_is_tuned = 1;
+    o19f.trunk_tune_enc_calls = 1;
+    s19f.p25_cc_freq = 851000000;
+    s19f.p25_vc_freq[0] = s19f.p25_vc_freq[1] = 851000000;
+    s19f.trunk_vc_freq[0] = s19f.trunk_vc_freq[1] = 851000000;
+    s19f.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+
+    p25_sm_ctx_t ctx19f;
+    p25_sm_init_ctx(&ctx19f, &o19f, &s19f);
+    ctx19f.state = P25_SM_TUNED;
+    ctx19f.vc_is_tdma = 1;
+    ctx19f.vc_freq_hz = 851000000;
+    ctx19f.vc_channel = tdma_slot0_ch;
+    ctx19f.vc_tg = 5501;
+    ctx19f.config.grant_timeout_s = 0.1;
+    ctx19f.slots[0].grant_active = 1;
+    ctx19f.slots[0].freq_hz = 851000000;
+    ctx19f.slots[0].channel = tdma_slot0_ch;
+    ctx19f.slots[0].target_id = 5501;
+
+    p25_sm_event_t follow_ptt = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx19f, &o19f, &s19f, &follow_ptt);
+    assert(ctx19f.slots[0].voice_active == 1);
+    assert(ctx19f.t_voice_m > 0.0);
+
+    ctx19f.slots[0].voice_active = 0;
+    s19f.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    p25_sm_event_t follow_active = p25_sm_ev_active(0);
+    p25_sm_event(&ctx19f, &o19f, &s19f, &follow_active);
+    assert(ctx19f.slots[0].voice_active == 1);
+
+    const double stale_follow_grant_m = dsd_time_now_monotonic_s() - 1.0;
+    ctx19f.t_tune_m = stale_follow_grant_m;
+    ctx19f.slots[0].last_grant_m = stale_follow_grant_m;
+    s19f.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx19f, &o19f, &s19f);
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx19f.state == P25_SM_TUNED);
+    assert(ctx19f.slots[0].grant_active == 1);
+    assert(ctx19f.slots[0].voice_active == 1);
+    assert(s19f.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+
     // 27) A Phase 2 classification timeout blocks and purges only the
     // unresolved slot while retaining an active clear companion.
     static dsd_opts o19c;

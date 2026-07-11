@@ -49,6 +49,7 @@ static int g_flush_burst_r;
 static int g_flush_gate_l;
 static int g_flush_gate_r;
 static int g_flush_slot;
+static int g_flush_crypto_state;
 static int g_flush_close_l_count;
 static int g_flush_close_r_count;
 static int g_ring_reset_count[2];
@@ -320,6 +321,7 @@ dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
     g_flush_burst_r = (int)state->dmrburstR;
     g_flush_gate_l = state->p25_p2_audio_allowed[0];
     g_flush_gate_r = state->p25_p2_audio_allowed[1];
+    g_flush_crypto_state = state->p25_crypto_state[slot];
     g_flush_close_l_count = g_close_l_count;
     g_flush_close_r_count = g_close_r_count;
 
@@ -365,6 +367,7 @@ reset_stubs(void) {
     g_flush_gate_l = -1;
     g_flush_gate_r = -1;
     g_flush_slot = -1;
+    g_flush_crypto_state = -1;
     g_flush_close_l_count = -1;
     g_flush_close_r_count = -1;
     DSD_MEMSET(g_ring_reset_count, 0, sizeof(g_ring_reset_count));
@@ -502,7 +505,8 @@ test_slot_ptt_and_end_helpers(void) {
     reset_stubs();
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.floating_point = 1;
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
     opts.audio_gain = 4;
     opts.mbe_out_f = (FILE*)0x1;
     state.keyloader = 1;
@@ -520,8 +524,10 @@ test_slot_ptt_and_end_helpers(void) {
     state.aes_key_segments[0] = 4;
     state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_enc_lockout_muted[0] = 1;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     state.fourv_counter[0] = 8;
     state.voice_counter[0] = 6;
+    state.s_l4[0][0] = 321;
     DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "active call");
     DSD_SNPRINTF(state.dmr_embedded_gps[0], sizeof(state.dmr_embedded_gps[0]), "%s", "gps");
     DSD_SNPRINTF(state.dmr_lrrp_gps[0], sizeof(state.dmr_lrrp_gps[0]), "%s", "lrrp");
@@ -534,6 +540,12 @@ test_slot_ptt_and_end_helpers(void) {
     rc |= expect_int("end slot0 drop", state.dropL, 256);
     rc |= expect_int("end slot0 burst", (int)state.dmrburstL, 23);
     rc |= expect_int("end slot0 audio clear", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_int("end slot0 tail flush", g_flush_count, 1);
+    rc |= expect_int("end slot0 tail flush slot", g_flush_slot, 0);
+    rc |= expect_int("end slot0 tail flush before crypto reset", g_flush_crypto_state, DSD_P25_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("end slot0 tail flush before close", g_flush_close_l_count, 0);
+    rc |= expect_int("end slot0 tail flush sees gate", g_flush_gate_l, 1);
+    rc |= expect_int("end slot0 tail sample drained", state.s_l4[0][0], 0);
     rc |= expect_int("end slot0 close", g_close_l_count, 1);
     rc |= expect_int("end slot0 key clear", (int)state.R, 0);
     rc |= expect_int("end slot0 aes clear", state.aes_key_loaded[0], 0);
@@ -984,7 +996,7 @@ test_encrypted_voice_user_stays_locked_through_mac_active(void) {
         rc |= expect_int("facch encrypted user gate stays closed", state.p25_p2_audio_allowed[slot], 0);
         rc |= expect_int("facch encrypted user marker stays set", state.p25_p2_enc_lockout_muted[slot], 1);
         rc |= expect_int("facch encrypted user ring purged", state.p25_p2_audio_ring_count[slot], 0);
-        rc |= expect_int("facch encrypted user cannot emit active", g_active_count[slot], 0);
+        rc |= expect_int("facch encrypted user still emits activity", g_active_count[slot], 1);
         rc |= expect_int("facch companion gate preserved", state.p25_p2_audio_allowed[slot ^ 1], 1);
         rc |= expect_int("facch companion ring preserved", state.p25_p2_audio_ring_count[slot ^ 1], 3);
         rc |= expect_u64("facch encrypted user MI preserved", slot == 0 ? state.payload_miP : state.payload_miN,

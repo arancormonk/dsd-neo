@@ -226,6 +226,35 @@ test_pre_ess_opposite_clear_slot_stays_tuned(void) {
     return rc;
 }
 
+static int
+test_encrypted_follow_tracks_activity_while_media_is_muted(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    opts.trunk_tune_enc_calls = 1;
+    state.currentslot = 0;
+    state.dmr_so = 0x40;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    state.p25_p2_enc_lockout_muted[0] = 1;
+    state.p25_p2_audio_allowed[0] = 0;
+
+    p25_sm_emit_ptt(&opts, &state, 0);
+
+    int rc = 0;
+    rc |= expect_eq("encrypted follow PTT marks activity", ctx->slots[0].voice_active, 1);
+    rc |= expect_eq("encrypted follow PTT keeps media muted", state.p25_p2_audio_allowed[0], 0);
+
+    ctx->slots[0].voice_active = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    process_2V(&opts, &state);
+
+    rc |= expect_eq("encrypted follow voice frame marks activity", ctx->slots[0].voice_active, 1);
+    rc |= expect_eq("encrypted follow voice frame keeps media muted", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("encrypted follow voice frame stays tuned", ctx->state == P25_SM_TUNED, 1);
+    return rc;
+}
+
 int
 main(void) {
     install_trunk_tuning_hooks();
@@ -233,5 +262,6 @@ main(void) {
     int rc = 0;
     rc |= test_pre_ess_single_slot_stays_tuned();
     rc |= test_pre_ess_opposite_clear_slot_stays_tuned();
+    rc |= test_encrypted_follow_tracks_activity_while_media_is_muted();
     return rc;
 }
