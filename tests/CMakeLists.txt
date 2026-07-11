@@ -1041,6 +1041,7 @@ add_test(NAME NXDN_MESSAGE_CRC32 COMMAND dsd-neo_test_nxdn_message_crc32)
 add_executable(
     dsd-neo_test_nxdn_element_bounds
     protocol/nxdn/test_nxdn_element_bounds.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_element_bounds

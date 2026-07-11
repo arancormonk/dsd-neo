@@ -884,12 +884,20 @@ frame_sync_try_m17_preamble(frame_sync_match_ctx* ctx, int ham_pre, int ham_piv)
     dsd_state* state = ctx->state;
     /* An 8-symbol one-error preamble is ambiguous with several 4800/4 sync prefixes.
      * Keep the legacy tolerance in forced M17 mode, but require the exact marker
-     * when the full profile has other candidates. */
+     * when the full profile has other candidates. D-STAR starts with an exact M17
+     * marker, so require a second marker before accepting M17 when D-STAR is enabled. */
     const int other_4800_candidate =
         opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1;
     const int max_hamming = other_4800_candidate ? 0 : 1;
+    const int require_repeated_marker = opts->frame_dstar == 1;
+    const int repeated_pre = !require_repeated_marker
+                             || (frame_sync_match_window_ready(ctx, 16)
+                                 && dsd_sync_hamming_distance(ctx->synctest16, M17_PRE, 8) <= max_hamming);
+    const int repeated_piv = !require_repeated_marker
+                             || (frame_sync_match_window_ready(ctx, 16)
+                                 && dsd_sync_hamming_distance(ctx->synctest16, M17_PIV, 8) <= max_hamming);
 
-    if (ham_pre <= max_hamming) {
+    if (ham_pre <= max_hamming && repeated_pre) {
         state->m17_polarity = 1;
         printFrameSync(opts, state, "+M17 PREAMBLE", ctx->synctest_pos + 1, ctx->modulation);
         frame_sync_set_basic_lock(ctx);
@@ -899,7 +907,7 @@ frame_sync_try_m17_preamble(frame_sync_match_ctx* ctx, int ham_pre, int ham_piv)
         return DSD_SYNC_M17_PRE_POS;
     }
 
-    if (ham_piv <= max_hamming) {
+    if (ham_piv <= max_hamming && repeated_piv) {
         state->m17_polarity = 2;
         printFrameSync(opts, state, "-M17 PREAMBLE", ctx->synctest_pos + 1, ctx->modulation);
         frame_sync_set_basic_lock(ctx);
@@ -1510,9 +1518,15 @@ static int
 frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    const int nxdn_profile_enabled =
-        (opts->frame_nxdn96 == 1 && frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_4800_4))
-        || (opts->frame_nxdn48 == 1 && frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_2400_4));
+    int nxdn_profile_enabled = 0;
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
+        /* Symbol captures carry no rate metadata, so an enabled variant must be unambiguous. */
+        nxdn_profile_enabled = (opts->frame_nxdn48 == 1) != (opts->frame_nxdn96 == 1);
+    } else {
+        nxdn_profile_enabled =
+            (opts->frame_nxdn96 == 1 && frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_4800_4))
+            || (opts->frame_nxdn48 == 1 && frame_sync_match_profile_active(ctx, FRAME_SYNC_SPS_PROFILE_2400_4));
+    }
     if (!nxdn_profile_enabled || !frame_sync_match_window_ready(ctx, 10)) {
         return DSD_SYNC_NONE;
     }
@@ -2803,7 +2817,7 @@ frame_sync_apply_sps_profile_timing(const dsd_opts* opts, dsd_state* state, cons
 }
 
 static void
-frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx) {
+frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx, int preserve_modulation) {
     if (!opts || !state || next_idx < 0 || next_idx >= FRAME_SYNC_SPS_PROFILE_COUNT) {
         return;
     }
@@ -2811,8 +2825,9 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
     const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
     const int profile_changed = next_idx != state->sps_hunt_idx;
     const int profile_default_modulation = profile->levels == 2 ? 2 : 0;
-    const int normalize_profile_modulation =
-        !opts->mod_cli_lock && state->rf_mod != profile_default_modulation && (profile_changed || profile->levels == 2);
+    const int normalize_profile_modulation = !preserve_modulation && !opts->mod_cli_lock
+                                             && state->rf_mod != profile_default_modulation
+                                             && (profile_changed || profile->levels == 2);
     if (!profile_changed && !normalize_profile_modulation) {
         return;
     }
@@ -2835,7 +2850,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
 #ifdef DSD_NEO_TEST_HOOKS
 void
 dsd_frame_sync_test_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx) {
-    frame_sync_apply_sps_hunt_profile(opts, state, next_idx);
+    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, 0);
 }
 #endif
 
@@ -2880,15 +2895,16 @@ frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state) {
 
     const int timing_profile = frame_sync_sps_profile_matching_timing(opts, state);
     if (timing_profile >= 0 && timing_profile != state->sps_hunt_idx) {
-        frame_sync_apply_sps_hunt_profile(opts, state, timing_profile);
+        /* Presets may select both timing and modulation before frame sync starts. */
+        frame_sync_apply_sps_hunt_profile(opts, state, timing_profile, 1);
     }
     if (frame_sync_sps_profile_has_candidate(opts, state->sps_hunt_idx)) {
-        frame_sync_apply_sps_hunt_profile(opts, state, state->sps_hunt_idx);
+        frame_sync_apply_sps_hunt_profile(opts, state, state->sps_hunt_idx, 0);
         return;
     }
     for (int profile_index = 0; profile_index < FRAME_SYNC_SPS_PROFILE_COUNT; profile_index++) {
         if (frame_sync_sps_profile_has_candidate(opts, profile_index)) {
-            frame_sync_apply_sps_hunt_profile(opts, state, profile_index);
+            frame_sync_apply_sps_hunt_profile(opts, state, profile_index, 0);
             return;
         }
     }
@@ -2913,7 +2929,7 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     state->sps_hunt_counter = 0;
 
     int next_idx = frame_sync_sps_hunt_next_index(opts, state);
-    frame_sync_apply_sps_hunt_profile(opts, state, next_idx);
+    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, 0);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS

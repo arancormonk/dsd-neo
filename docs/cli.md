@@ -182,7 +182,9 @@ Windows console runs:
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload
 - `-r <files>` Play saved MBE files
 - `-c <file>` Save symbol captures to a .bin file
-- `--symbol-capture-format <soft|legacy>` Select symbol capture format. `soft` is the default and preserves dibit reliability, bit LLRs, and raw symbol values for replay; `legacy` writes the historical one-byte hard dibit stream.
+- `--symbol-capture-format <soft|legacy>` Select symbol capture format. `soft` is the default and preserves dibit
+  reliability, bit LLRs, and raw symbol values for replay; `legacy` writes the historical one-byte hard dibit stream.
+  Neither format stores the NXDN symbol rate, so NXDN capture replay requires `-fi` or `-fn` instead of `-fa`.
 - `-d <dir>` Save raw MBE vocoder frames in this folder
 - `-J <file>` Append event log output
 - `--frame-log <file>` Append frame-level one-line timestamped traces

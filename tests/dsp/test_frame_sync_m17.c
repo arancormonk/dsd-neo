@@ -383,17 +383,21 @@ run_m17_two_step_case(const char* first_pattern, int first_expected, const char*
 int
 main(void) {
     int rc = 0;
-    rc |= run_m17_two_step_case(M17_PRE, DSD_SYNC_M17_PRE_POS, M17_LSF, DSD_SYNC_M17_LSF_POS, "M17 preamble to LSF");
+    rc |= run_m17_two_step_case(M17_PRE M17_PRE, DSD_SYNC_M17_PRE_POS, M17_LSF, DSD_SYNC_M17_LSF_POS,
+                                "M17 preamble to LSF");
     rc |= run_m17_sync_case(DSD_SYNC_M17_LSF_POS, 1U, M17_STR, DSD_SYNC_M17_STR_POS, "M17 LSF to stream");
     rc |= run_m17_sync_case(DSD_SYNC_M17_LSF_POS, 1U, M17_PKT, DSD_SYNC_M17_PKT_POS, "M17 LSF to packet");
-    rc |= run_m17_two_step_case(M17_PRE, DSD_SYNC_M17_PRE_POS, M17_BRT, DSD_SYNC_M17_BRT_POS, "M17 preamble to BERT");
+    rc |= run_m17_two_step_case(M17_PRE M17_PRE, DSD_SYNC_M17_PRE_POS, M17_BRT, DSD_SYNC_M17_BRT_POS,
+                                "M17 preamble to BERT");
     rc |= run_m17_sync_case(DSD_SYNC_M17_BRT_POS, 1U, M17_BRT, DSD_SYNC_M17_BRT_POS, "M17 BERT to BERT");
     rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_STR, DSD_SYNC_M17_STR_POS, "M17 stream to stream");
     rc |= run_m17_sync_case(DSD_SYNC_M17_PKT_POS, 1U, M17_PKT, DSD_SYNC_M17_PKT_POS, "M17 packet to packet");
     rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT, DSD_SYNC_M17_EOT_POS, "M17 stream to EOT");
     rc |= run_m17_sync_case(DSD_SYNC_NONE, 0U, M17_EOT, -1, "M17 rejects cold EOT");
-    rc |= run_m17_two_step_case(M17_PRE, DSD_SYNC_M17_PRE_POS, M17_STR, -1, "M17 rejects stream after preamble");
-    rc |= run_m17_two_step_case(M17_PRE, DSD_SYNC_M17_PRE_POS, M17_PKT, -1, "M17 rejects packet after preamble");
+    rc |=
+        run_m17_two_step_case(M17_PRE M17_PRE, DSD_SYNC_M17_PRE_POS, M17_STR, -1, "M17 rejects stream after preamble");
+    rc |=
+        run_m17_two_step_case(M17_PRE M17_PRE, DSD_SYNC_M17_PRE_POS, M17_PKT, -1, "M17 rejects packet after preamble");
     return rc;
 }
 
