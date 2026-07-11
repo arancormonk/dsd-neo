@@ -612,6 +612,24 @@ test_manual_p25p2_c4fm_bypasses_profile_gating(void) {
 }
 
 static void
+test_locked_p25p2_c4fm_survives_sync(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_p25p2 = 1;
+    opts.mod_c4fm = 1;
+    opts.mod_cli_lock = 1;
+    state.rf_mod = 0;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+    assert(state.rf_mod == 0);
+}
+
+static void
 test_m17_auto_preamble_disambiguation_preserves_forced_tolerance(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1329,6 +1347,7 @@ main(void) {
     test_symbol_replay_bypasses_sps_profile_gating();
     test_symbol_replay_requires_explicit_nxdn_variant();
     test_manual_p25p2_c4fm_bypasses_profile_gating();
+    test_locked_p25p2_c4fm_survives_sync();
     test_m17_auto_preamble_disambiguation_preserves_forced_tolerance();
     test_short_m17_window_estimates_levels_without_warm_start_history();
     test_m17_preamble_requires_context_when_dstar_is_enabled();

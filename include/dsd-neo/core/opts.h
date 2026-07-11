@@ -143,8 +143,9 @@ struct dsd_opts {
     int mod_gfsk;
     /* Legacy/manual -m3 P25p2 C4FM path; keeps its 10-SPS timing eligible for P25p2 sync. */
     int mod_p25p2_c4fm;
-    /* When set by CLI (-mc/-mg/-mq/-m2/-m3), pin demod path and disable
-       auto modulation switching/overrides. 0=auto (default), 1=locked. */
+    /* When set by an explicit modulation selection (CLI -mc/-mg/-mq/-m2/-m3 or the
+       interactive P25p2 helper), pin the demod path and disable auto modulation
+       switching/overrides. 0=auto (default), 1=locked. */
     int mod_cli_lock;
     int inverted_x2tdma;
     int inverted_dmr;

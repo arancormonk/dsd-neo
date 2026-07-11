@@ -387,12 +387,15 @@ test_radio_actions(void) {
     dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
     rc |= expect_int("mod p2 toggle selects qpsk", opts.mod_qpsk, 1);
     rc |= expect_int("mod p2 toggle sets rf_mod", state.rf_mod, 1);
+    rc |= expect_int("mod p2 toggle locks explicit qpsk", opts.mod_cli_lock, 1);
     rc |= expect_int("mod p2 toggle qpsk sps", state.samplesPerSymbol, 8);
     rc |= expect_int("mod p2 toggle qpsk center", state.symbolCenter, 3);
     rc |= expect_int("mod p2 toggle selects profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     rc |= expect_int("mod p2 toggle resets profile dwell", state.sps_hunt_counter, 0);
+    opts.mod_cli_lock = 0;
     dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
     rc |= expect_int("mod p2 toggle returns c4fm", opts.mod_c4fm, 1);
+    rc |= expect_int("mod p2 toggle locks explicit c4fm", opts.mod_cli_lock, 1);
     rc |= expect_int("mod p2 toggle p25p2 sps", state.samplesPerSymbol, 8);
     rc |= expect_int("mod p2 toggle p25p2 center", state.symbolCenter, 3);
 

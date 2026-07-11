@@ -93,6 +93,8 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     int center = dsd_opts_symbol_center(sps);
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
     state->sps_hunt_counter = 0;
+    /* The hotkey is an explicit selection; acquisition must not restore auto QPSK. */
+    opts->mod_cli_lock = 1;
     if (state->rf_mod == 0) {
         opts->mod_c4fm = 0;
         opts->mod_qpsk = 1;
