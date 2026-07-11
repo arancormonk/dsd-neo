@@ -2311,12 +2311,12 @@ frame_sync_materialize_ready_windows(frame_sync_runtime_ctx* rt) {
 
 static void
 frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt) {
-    int i;
-    for (i = 0; i < rt->t_max; i++) {
+    const int level_count = rt->level_count;
+    for (int i = 0; i < level_count; i++) {
         rt->lbuf2[i] = rt->lbuf[i];
     }
-    qsort(rt->lbuf2, rt->t_max, sizeof(float), comp);
-    dsd_frame_sync_estimate_sorted_window_levels(rt->lbuf2, rt->t_max, &rt->lmin, &rt->lmax);
+    qsort(rt->lbuf2, level_count, sizeof(float), comp);
+    dsd_frame_sync_estimate_sorted_window_levels(rt->lbuf2, level_count, &rt->lmin, &rt->lmax);
 
     if (frame_sync_active_profile_modulation(opts, state) == 1) {
         dsd_state_push_minmax_window(state, opts->msize, rt->lmin, rt->lmax);
@@ -2330,10 +2330,31 @@ frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runt
 }
 
 static int
+frame_sync_active_profile_is_gfsk_only(const dsd_opts* opts, int profile_index) {
+    if (!opts) {
+        return 0;
+    }
+
+    switch (profile_index) {
+        case FRAME_SYNC_SPS_PROFILE_4800_4: {
+            const int has_gfsk = opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_m17 == 1;
+            const int has_other_modulation = opts->frame_p25p1 == 1 || opts->frame_ysf == 1;
+            return has_gfsk && !has_other_modulation;
+        }
+        case FRAME_SYNC_SPS_PROFILE_2400_4: return opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1;
+        default: return 0;
+    }
+}
+
+static int
 frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state) {
-    const frame_sync_sps_profile* profile =
-        frame_sync_sps_profile_for_index(state ? state->sps_hunt_idx : FRAME_SYNC_SPS_PROFILE_4800_4);
-    if ((!opts || !opts->mod_cli_lock) && profile->levels == 2) {
+    int profile_index = state ? state->sps_hunt_idx : FRAME_SYNC_SPS_PROFILE_4800_4;
+    if (profile_index < 0 || profile_index >= FRAME_SYNC_SPS_PROFILE_COUNT) {
+        profile_index = FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(profile_index);
+    if ((!opts || !opts->mod_cli_lock)
+        && (profile->levels == 2 || frame_sync_active_profile_is_gfsk_only(opts, profile_index))) {
         return 2;
     }
     if (state && state->rf_mod == 1) {
@@ -2626,7 +2647,9 @@ frame_sync_debug_sync_window(dsd_opts* opts, dsd_state* state, const frame_sync_
 
 static int
 frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, time_t now, double nowm) {
-    if (rt->level_count >= rt->t_max) {
+    /* Some matchers accept windows shorter than the profile's level ring. Estimate
+     * from every sample gathered so far before one of those matchers can return. */
+    if (rt->level_count > 0) {
         frame_sync_window_levels(opts, state, rt);
     }
     frame_sync_materialize_ready_windows(rt);
@@ -2712,6 +2735,27 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
         .synctest48 = rt.synctest48,
     };
     return frame_sync_try_protocol_matches(&match_ctx);
+}
+
+int
+dsd_frame_sync_test_eval_window(dsd_opts* opts, dsd_state* state, const char* symbols, const float* levels,
+                                int symbol_count) {
+    if (!opts || !state || !symbols || !levels || symbol_count < 0) {
+        return DSD_SYNC_NONE;
+    }
+
+    frame_sync_runtime_ctx rt;
+    frame_sync_runtime_init(&rt, opts, state);
+    for (int i = 0; i < symbol_count; i++) {
+        rt.lbuf[rt.lidx] = levels[i];
+        if (rt.level_count < rt.t_max) {
+            rt.level_count++;
+        }
+        rt.lidx = (rt.lidx + 1) % rt.t_max;
+        frame_sync_history_push(&rt, symbols[i]);
+    }
+    rt.synctest_pos = symbol_count > 0 ? symbol_count - 1 : 0;
+    return frame_sync_eval_window(opts, state, &rt, 0, 0.0);
 }
 
 int

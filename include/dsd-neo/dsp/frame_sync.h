@@ -87,6 +87,8 @@ void dsd_frame_sync_test_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state
 int dsd_frame_sync_test_history_window(const char* symbols, int symbol_count, int window_length, char* out,
                                        int out_size);
 int dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const char* symbols, int symbol_count);
+int dsd_frame_sync_test_eval_window(dsd_opts* opts, dsd_state* state, const char* symbols, const float* levels,
+                                    int symbol_count);
 int dsd_frame_sync_test_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);
 int dsd_frame_sync_test_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state);
 double dsd_frame_sync_test_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);

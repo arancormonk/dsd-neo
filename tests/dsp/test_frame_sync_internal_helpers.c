@@ -13,7 +13,9 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -589,6 +591,26 @@ test_m17_auto_preamble_disambiguation_preserves_forced_tolerance(void) {
 }
 
 static void
+test_short_m17_window_estimates_levels_without_warm_start_history(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    float levels[8];
+
+    reset(&opts, &state);
+    opts.frame_m17 = 1;
+    opts.msize = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    for (int i = 0; i < 8; i++) {
+        levels[i] = M17_PRE[i] == '3' ? -3.0f : 3.0f;
+    }
+
+    assert(state.dmr_sample_history == NULL);
+    assert(dsd_frame_sync_test_eval_window(&opts, &state, M17_PRE, levels, 8) == DSD_SYNC_M17_PRE_POS);
+    assert(fabsf(state.min - (-1.5f)) < 0.0001f);
+    assert(fabsf(state.max - 1.5f) < 0.0001f);
+}
+
+static void
 test_m17_preamble_requires_context_when_dstar_is_enabled(void) {
     static const char* const dstar_patterns[] = {DSTAR_SYNC, INV_DSTAR_SYNC, DSTAR_HD, INV_DSTAR_HD};
     static const char repeated_pre[] = M17_PRE M17_PRE;
@@ -983,6 +1005,54 @@ test_active_profile_metrics_power_gate_and_votes(void) {
 }
 
 static void
+test_nxdn_only_profiles_use_gfsk_snr_gate(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    install_fake_snr_hooks();
+    (void)dsd_setenv("DSD_NEO_SNR_SQL_DB", "10", 1);
+    dsd_neo_config_init(NULL);
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 0;
+    g_snr_c4fm = 0.0;
+    g_snr_gfsk = 20.0;
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
+    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 20.0);
+    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.rf_mod = 0;
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
+    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 20.0);
+    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+
+    g_snr_c4fm = 20.0;
+    g_snr_gfsk = 0.0;
+    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 1);
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_p25p1 = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 0;
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 0);
+    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 20.0);
+    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+
+    (void)dsd_unsetenv("DSD_NEO_SNR_SQL_DB");
+    dsd_neo_config_init(NULL);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+static void
 test_modulation_snr_fallback_votes_and_dwell(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1114,6 +1184,7 @@ main(void) {
     test_symbol_replay_requires_explicit_nxdn_variant();
     test_manual_p25p2_c4fm_bypasses_profile_gating();
     test_m17_auto_preamble_disambiguation_preserves_forced_tolerance();
+    test_short_m17_window_estimates_levels_without_warm_start_history();
     test_m17_preamble_requires_context_when_dstar_is_enabled();
     test_elapsed_seconds_prefers_monotonic_then_wall_time();
     test_p25_slot_activity_honors_ring_and_hangtime();
@@ -1124,6 +1195,7 @@ main(void) {
     test_rtl_sps_profiles_apply_and_lock_on_sync();
     test_dmr_sync_applies_gfsk_rtl_profile();
     test_active_profile_metrics_power_gate_and_votes();
+    test_nxdn_only_profiles_use_gfsk_snr_gate();
     test_modulation_snr_fallback_votes_and_dwell();
     test_modulation_cli_lock_prevents_votes();
     test_hamming_override_can_select_qpsk();
