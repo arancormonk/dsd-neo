@@ -288,6 +288,50 @@ run_fs4_clear_plus_blocked_mono_case(int clear_slot, int matching_hold) {
 }
 
 static int
+run_fs4_reverse_mute_case(dsd_p25_crypto_state crypto_state, int expect_audio) {
+    static dsd_opts opts;
+    static dsd_state st;
+    float frame[160];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.pulse_digi_out_channels = 2;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.trunk_tune_enc_calls = 1;
+    opts.reverse_mute = 1;
+    opts.audio_gain = 25;
+    st.synctype = DSD_SYNC_P25P2_POS;
+    st.aout_gain = 49.0f;
+    st.aout_gainR = 49.0f;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_crypto_state[0] = crypto_state;
+    st.p25_p2_enc_lockout_muted[0] =
+        (uint8_t)(crypto_state == DSD_P25_CRYPTO_ENCRYPTED_PENDING || crypto_state == DSD_P25_CRYPTO_BLOCKED);
+
+    fill_f32_frame(frame, 384.0f);
+    rc |= expect_eq("fs4 reverse mute push", p25_p2_audio_ring_push(&st, 0, frame), 1);
+    playSynthesizedVoiceFS4(&opts, &st);
+
+    rc |= expect_eq("fs4 reverse mute output state", g_audio_capture_calls >= 1, expect_audio);
+    if (expect_audio) {
+        float out[160 * 2] = {0.0f};
+        const size_t expected_bytes = (size_t)160 * 2U * sizeof(out[0]);
+        int copied = copy_capture_bytes("fs4 reverse mute captured bytes", out, expected_bytes);
+        rc |= copied;
+        if (copied == 0) {
+            rc |= expect_true("fs4 reverse mute encrypted audio audible", out[0] != 0.0f);
+        }
+    }
+    return rc;
+}
+
+static int
 run_ss18_clear_plus_blocked_hold_case(int clear_slot) {
     static dsd_opts opts;
     static dsd_state st;
@@ -911,6 +955,8 @@ main(void) {
     rc |= run_fs4_clear_plus_blocked_mono_case(/*clear_slot*/ 1, /*matching_hold*/ 0);
     rc |= run_fs4_clear_plus_blocked_mono_case(/*clear_slot*/ 0, /*matching_hold*/ 1);
     rc |= run_fs4_clear_plus_blocked_mono_case(/*clear_slot*/ 1, /*matching_hold*/ 1);
+    rc |= run_fs4_reverse_mute_case(DSD_P25_CRYPTO_CLEAR, /*expect_audio*/ 0);
+    rc |= run_fs4_reverse_mute_case(DSD_P25_CRYPTO_BLOCKED, /*expect_audio*/ 1);
     rc |= run_ss18_left_active_case(/*enc_lockout_enabled*/ 1, /*expect_right_silent*/ 1, /*muted_slot_algid*/ 0,
                                     /*muted_slot_aes_loaded*/ 0, /*muted_slot_key*/ 0ULL);
     rc |= run_ss18_left_active_case_ext(/*enc_lockout_enabled*/ 1, /*expect_right_silent*/ 1,

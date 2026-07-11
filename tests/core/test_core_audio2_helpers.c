@@ -827,6 +827,13 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     rc |= expect_float("fs stereo next left scaled", fs_stereo[2], -0.125f);
     rc |= expect_float("fs clears temp working buffer", state.audio_out_temp_buf[0], 0.0f);
 
+    opts.reverse_mute = 1;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS(&opts, &state);
+    rc |= expect_int("fs reverse mute suppresses clear P25", g_udp_blast_calls, 0);
+    opts.reverse_mute = 0;
+
     state.f_l[0] = 0.75f;
     state.payload_algid = 0x81;
     state.R = 0;
@@ -850,6 +857,24 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     rc |= expect_int("fs P25 lockout probe overrides explicit unmute", g_udp_blast_calls, 0);
     opts.unmute_encrypted_p25 = 0;
     opts.trunk_tune_enc_calls = 1;
+
+    opts.reverse_mute = 1;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS(&opts, &state);
+    rc |= expect_int("fs reverse mute emits encrypted P25", g_udp_blast_calls, 1);
+    opts.reverse_mute = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.pulse_digi_out_channels = 1;
+    opts.reverse_mute = 1;
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.f_l[0] = 0.625f;
+    reset_sink_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("fm reverse mute suppresses clear P25", g_udp_blast_calls, 0);
+    opts.reverse_mute = 0;
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.synctype = DSD_SYNC_P25P1_POS;

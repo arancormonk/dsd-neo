@@ -1419,6 +1419,50 @@ main(void) {
     assert(s19c.s_l4[0][0] == 0);
     assert(s19c.s_r4[0][0] == 222);
 
+    // A fresh data grant on the companion slot must not hide an expired voice
+    // classification probe on this mixed Phase 2 carrier.
+    static dsd_opts o19i;
+    static dsd_state s19i;
+    DSD_MEMSET(&o19i, 0, sizeof(o19i));
+    DSD_MEMSET(&s19i, 0, sizeof(s19i));
+    o19i.p25_trunk = 1;
+    o19i.p25_is_tuned = 1;
+    o19i.trunk_is_tuned = 1;
+    o19i.trunk_tune_enc_calls = 0;
+    s19i.p25_cc_freq = 851000000;
+    s19i.p25_vc_freq[0] = s19i.p25_vc_freq[1] = 851000000;
+    s19i.trunk_vc_freq[0] = s19i.trunk_vc_freq[1] = 851000000;
+    s19i.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    s19i.p25_p2_enc_lockout_muted[0] = 1U;
+    s19i.p25_p2_audio_ring_count[0] = 2;
+    s19i.s_l4[0][0] = 333;
+
+    p25_sm_ctx_t ctx19i;
+    p25_sm_init_ctx(&ctx19i, &o19i, &s19i);
+    ctx19i.state = P25_SM_TUNED;
+    ctx19i.vc_is_tdma = 1;
+    ctx19i.vc_data_call = 1;
+    ctx19i.vc_freq_hz = 851000000;
+    ctx19i.vc_channel = tdma_slot1_ch;
+    ctx19i.vc_tg = 5202;
+    ctx19i.config.grant_timeout_s = 0.1;
+    ctx19i.t_tune_m = dsd_time_now_monotonic_s();
+    ctx19i.slots[0].grant_active = 1;
+    ctx19i.slots[0].last_grant_m = ctx19i.t_tune_m - 1.0;
+    ctx19i.slots[1].grant_active = 1;
+    ctx19i.slots[1].data_call = 1;
+    ctx19i.slots[1].last_grant_m = ctx19i.t_tune_m;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx19i, &o19i, &s19i);
+    assert(ctx19i.state == P25_SM_TUNED);
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx19i.slots[0].grant_active == 0);
+    assert(ctx19i.slots[1].grant_active == 1);
+    assert(ctx19i.slots[1].data_call == 1);
+    assert(s19i.p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
+    assert(s19i.p25_p2_audio_ring_count[0] == 0);
+    assert(s19i.s_l4[0][0] == 0);
+
     // 28) A Phase 1 classification timeout with no companion returns to the
     // control channel and resets the call classification at teardown.
     static dsd_opts o19d;

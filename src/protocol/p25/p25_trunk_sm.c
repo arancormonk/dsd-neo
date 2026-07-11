@@ -3203,7 +3203,7 @@ p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
 static int
 p25_sm_crypto_slot_expired(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, double now_m,
                            double grant_timeout) {
-    if (state->p25_crypto_state[slot] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+    if (ctx->slots[slot].data_call || state->p25_crypto_state[slot] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
         return 0;
     }
     if (ctx->vc_is_tdma && !ctx->slots[slot].grant_active) {
@@ -3241,7 +3241,7 @@ p25_sm_expired_slot_has_active_companion(const p25_sm_ctx_t* ctx, const dsd_stat
 static int
 p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m,
                                   double grant_timeout) {
-    if (!ctx || !opts || !state || opts->trunk_tune_enc_calls != 0 || ctx->vc_data_call) {
+    if (!ctx || !opts || !state || opts->trunk_tune_enc_calls != 0) {
         return 0;
     }
 

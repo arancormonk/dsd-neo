@@ -4,7 +4,6 @@
  */
 
 #include <dsd-neo/core/keyring.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -181,7 +180,10 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     const int key_identity_changed = previous->algid != algid || previous->keyid != keyid;
     const int state_changed = previous->state != resolved;
     const int purge_audio = state_changed || (previous->state == DSD_P25_CRYPTO_DECRYPTABLE && key_identity_changed);
-    const int reset_stream = state_changed || key_identity_changed || previous->mi != mi;
+    // Phase 2 ESS is resolved before the final two 2V frames. Its MI-only
+    // stream reset is applied by the frame decoder after those frames.
+    const int reset_stream =
+        state_changed || key_identity_changed || (phase == DSD_P25_CRYPTO_PHASE1 && previous->mi != mi);
 
     if (purge_audio) {
         dsd_mbe_purge_slot_audio(state, slot);

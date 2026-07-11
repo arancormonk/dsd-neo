@@ -390,19 +390,35 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
     state.s_l4[0][0] = 13;
     state.DMRvcL = 14;
     state.bit_counterL = 15;
+    state.dropL = 333;
+    state.ks_octetL[0] = 0xA5;
     rc |= expect_int("MI refresh remains decryptable",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x4000, 0x5001, 300),
                      DSD_P25_CRYPTO_DECRYPTABLE);
     rc |= expect_int("MI refresh preserves queued ring", state.p25_p2_audio_ring_count[0], 2);
     rc |= expect_int("MI refresh preserves voice cadence", state.voice_counter[0], 7);
     rc |= expect_int("MI refresh preserves int16 audio", state.s_l4[0][0], 13);
-    rc |= expect_int("MI refresh resets crypto voice counter", state.DMRvcL, 0);
-    rc |= expect_int("MI refresh resets crypto bit counter", state.bit_counterL, 0);
+    rc |= expect_int("P2 MI refresh preserves crypto voice counter", state.DMRvcL, 14);
+    rc |= expect_int("P2 MI refresh preserves crypto bit counter", state.bit_counterL, 15);
+    rc |= expect_int("P2 MI refresh preserves RC4 position", state.dropL, 333);
+    rc |= expect_int("P2 MI refresh preserves keystream", state.ks_octetL[0], 0xA5);
+
+    state.DMRvcL = 16;
+    state.bit_counterL = 17;
+    state.dropL = 444;
+    state.ks_octetL[0] = 0x5A;
+    rc |= expect_int("P1 MI refresh remains decryptable",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x4000, 0x5002, 300),
+                     DSD_P25_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("P1 MI refresh resets crypto voice counter", state.DMRvcL, 0);
+    rc |= expect_int("P1 MI refresh resets crypto bit counter", state.bit_counterL, 0);
+    rc |= expect_int("P1 MI refresh resets RC4 position", state.dropL, 267);
+    rc |= expect_int("P1 MI refresh clears keystream", state.ks_octetL[0], 0);
 
     state.p25_p2_audio_ring_count[0] = 1;
     state.s_l4[0][0] = 14;
     rc |= expect_int("key identity change remains decryptable",
-                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x4001, 0x5002, 300),
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x4001, 0x5003, 300),
                      DSD_P25_CRYPTO_DECRYPTABLE);
     rc |= expect_int("key identity change purges ring", state.p25_p2_audio_ring_count[0], 0);
     rc |= expect_int("key identity change purges int16 tail", state.s_l4[0][0], 0);
