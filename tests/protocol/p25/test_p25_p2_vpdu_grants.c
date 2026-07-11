@@ -661,6 +661,40 @@ main(void) {
         rc |= expect_eq_long("UU vc", vc, 851125000);
     }
 
+    // Case B2: Service-option-unknown private grants must reach the centralized
+    // silent probe policy when encrypted-call lockout is enabled.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_private_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x44;
+        MAC[2] = 0x10;
+        MAC[3] = 0x0A;
+        MAC[6] = 0x01;
+        MAC[9] = 0x02;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("UU unknown-service probe tunes", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("UU unknown-service probe vc", state.p25_vc_freq[0], 851125000);
+        rc |= expect_eq_long("UU unknown-service probe pending", state.p25_crypto_state[0],
+                             DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    }
+
     // Case C: Group Voice Channel Grant Update Multiple - Explicit (opcode 0x25)
     {
         unsigned char mac[24];

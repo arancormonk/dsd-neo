@@ -761,7 +761,8 @@ main(void) {
         rc |= expect_contains_text("mbt 0x04 tdma suffix", state.active_channel[0], "(FDMA 0005 S2)");
     }
 
-    // Existing private-call policy blocks encrypted or held-off individual grants before SM dispatch.
+    // Encrypted private voice grants reach the centralized classification-probe
+    // policy, while unrelated private-call hold filtering remains local.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -772,7 +773,7 @@ main(void) {
         build_ambtc_unit_to_unit(uu, 0x04, 0x40, 0x100A, 0x100A);
         reset_indiv_grants();
         p25_decode_pdu_trunking(&opts, &state, uu);
-        rc |= expect_eq_int("mbt 0x04 enc lockout no grant", g_indiv_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x04 enc lockout probe grant", g_indiv_grant_count, 1);
         rc |= expect_eq_int("mbt 0x04 encrypted service valid", state.p25_service_options_valid[0], 1);
         rc |= expect_eq_int("mbt 0x04 encrypted svc stored", state.dmr_so, 0x40);
 

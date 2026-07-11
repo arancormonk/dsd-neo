@@ -267,12 +267,12 @@ dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR) {
 }
 
 static int
-dsd_p25p2_slot_can_decrypt(const dsd_state* state, int slot, int alg) {
+dsd_p25p2_slot_crypto_permits_audio(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
     (void)alg;
     if (!state || slot < 0 || slot > 1) {
         return 0;
     }
-    return p25_crypto_audio_ready(state, slot);
+    return p25_crypto_audio_permitted(opts, state, slot);
 }
 
 static int
@@ -300,7 +300,7 @@ dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int
     if (!state || slot < 0 || slot > 1) {
         return 0;
     }
-    if (!dsd_p25p2_slot_can_decrypt(state, slot, alg)) {
+    if (!dsd_p25p2_slot_crypto_permits_audio(opts, state, slot, alg)) {
         return 0;
     }
 

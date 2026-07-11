@@ -212,7 +212,7 @@ static int DSD_ATTR_USED
 p25p2_frame_slot_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
 #if defined(DSD_NEO_P25P2_TEST_STUB)
     (void)alg;
-    return p25_crypto_audio_ready(state, slot) && p25p2_frame_test_stub_media_allowed(opts, state, slot);
+    return p25_crypto_audio_permitted(opts, state, slot) && p25p2_frame_test_stub_media_allowed(opts, state, slot);
 #else
     return dsd_p25p2_decode_audio_allowed(opts, state, slot, alg);
 #endif
@@ -995,7 +995,7 @@ p25p2_voice_crypto_is_authoritatively_clear(const dsd_state* state, int slot) {
 
 static void
 p25p2_prepare_voice_crypto(const dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state || opts->trunk_tune_enc_calls != 0) {
+    if (!opts || !state) {
         return;
     }
     const int slot = state->currentslot;
@@ -1003,8 +1003,13 @@ p25p2_prepare_voice_crypto(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     const int svc = (slot == 0) ? state->dmr_so : state->dmr_soR;
-    if ((svc & 0x40) != 0 && !p25p2_voice_crypto_is_authoritatively_clear(state, slot)) {
+    if (opts->trunk_tune_enc_calls == 0 && (svc & 0x40) != 0
+        && !p25p2_voice_crypto_is_authoritatively_clear(state, slot)) {
         p25p2_frame_mark_encrypted_pending(state, slot);
+    }
+    if (p25_crypto_audio_permitted(opts, state, slot)) {
+        const int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
+        state->p25_p2_audio_allowed[slot] = p25p2_frame_slot_audio_allowed(opts, state, slot, alg);
     }
 }
 
@@ -1132,7 +1137,7 @@ p25p2_zero_voice_frame(dsd_state* state, int frame_index) {
 
 static void
 p25p2_open_mbe_for_ready_slot(dsd_opts* opts, dsd_state* state, int slot) {
-    if (!opts || !state || slot < 0 || slot > 1 || !p25_crypto_audio_ready(state, slot)
+    if (!opts || !state || slot < 0 || slot > 1 || !p25_crypto_audio_permitted(opts, state, slot)
         || !state->p25_p2_audio_allowed[slot] || opts->mbe_out_dir[0] == 0) {
         return;
     }
@@ -1152,7 +1157,7 @@ p25p2_decode_and_store_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder
         p25p2_zero_voice_frame(state, frame_index);
         return;
     }
-    if (!p25_crypto_audio_ready(state, slot) || !state->p25_p2_audio_allowed[slot]) {
+    if (!p25_crypto_audio_permitted(opts, state, slot) || !state->p25_p2_audio_allowed[slot]) {
         p25p2_zero_voice_frame(state, frame_index);
         return;
     }
@@ -1283,7 +1288,7 @@ p25p2_frame_vc_grace_s(const dsd_state* state, double fallback) {
 
 static void
 p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int slot, int alg, int burst) {
-    if (!p25_crypto_audio_ready(state, slot)) {
+    if (!p25_crypto_audio_permitted(opts, state, slot)) {
         state->p25_p2_audio_allowed[slot] = 0;
         return;
     }

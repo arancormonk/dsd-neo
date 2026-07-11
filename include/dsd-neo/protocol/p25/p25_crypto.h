@@ -11,10 +11,11 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CRYPTO_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CRYPTO_H_H
 
-#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef __cplusplus
@@ -44,6 +45,29 @@ p25_crypto_companion_suppressed(const dsd_state* state, int slot) {
     }
     return state->p25_crypto_state[slot] == DSD_P25_CRYPTO_ENCRYPTED_PENDING
            || state->p25_crypto_state[slot] == DSD_P25_CRYPTO_BLOCKED;
+}
+
+/**
+ * Return non-zero when a P25 voice frame may reach the vocoder.
+ *
+ * Clear and decryptable calls are always permitted. During encrypted-call
+ * following, the existing P25 unmute control and reverse mute may explicitly
+ * permit undeciphered audio. Encryption lockout takes precedence so classification
+ * probes remain silent until a key or clear metadata resolves.
+ */
+static inline int
+p25_crypto_audio_permitted(const dsd_opts* opts, const dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+    if (p25_crypto_audio_ready(state, slot)) {
+        return 1;
+    }
+    if (!opts || opts->trunk_tune_enc_calls == 0) {
+        return 0;
+    }
+
+    return opts->unmute_encrypted_p25 == 1 || opts->reverse_mute == 1;
 }
 
 /** Start a voice-call classification window from grant service options. */

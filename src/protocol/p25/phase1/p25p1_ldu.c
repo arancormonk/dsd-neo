@@ -149,7 +149,7 @@ process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr
         }
         return;
     }
-    if (!p25_crypto_audio_ready(state, 0)) {
+    if (!p25_crypto_audio_permitted(opts, state, 0)) {
         DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));
         return;
     }

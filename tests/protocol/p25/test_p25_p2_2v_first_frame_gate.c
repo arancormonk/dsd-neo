@@ -338,6 +338,8 @@ reset_state(dsd_opts* opts, dsd_state* st) {
     DSD_MEMSET(st, 0, sizeof *st);
     // Ensure deterministic behavior
     opts->floating_point = 0;
+    opts->dmr_mute_encL = 1;
+    opts->dmr_mute_encR = 1;
 }
 
 static void
@@ -526,6 +528,45 @@ main(void) {
     reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot0 unresolved encrypted follow: mbe calls", g_mbe_calls, 0);
+
+    // Explicit encrypted-audio unmute restores the legacy undeciphered-audio
+    // path while encrypted calls are being followed.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    opts.unmute_encrypted_p25 = 1;
+    opts.dmr_mute_encL = 0;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    st.dmr_so = 0x40;
+    st.dmrburstL = 21;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 explicit encrypted unmute: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot0 explicit encrypted unmute: gate open", st.p25_p2_audio_allowed[0], 1);
+
+    // Reverse mute also requests encrypted audio, but lockout probes remain a
+    // hard-suppressed classification path even when both controls are active.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    opts.reverse_mute = 1;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    st.dmr_so = 0x40;
+    st.dmrburstL = 21;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 reverse mute encrypted follow: mbe calls", g_mbe_calls, 2);
+
+    opts.trunk_tune_enc_calls = 0;
+    opts.unmute_encrypted_p25 = 1;
+    opts.dmr_mute_encL = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 explicit unmute lockout probe: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 explicit unmute lockout probe: gate closed", st.p25_p2_audio_allowed[0], 0);
 
     // Slot 0: encrypted lockout enabled but decryptable audio remains allowed.
     reset_state(&opts, &st);

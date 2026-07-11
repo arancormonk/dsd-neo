@@ -386,6 +386,12 @@ p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_s
     }
     enc_for_policy = p25p2_mac_policy_flag(svc_bits, policy_encrypted_override, 0x40);
     data_for_policy = p25p2_mac_policy_flag(svc_bits, policy_data_override, 0x10);
+    // Preserve the production parser's private-call allow-list prefilter, but
+    // let the trunk state machine convert encrypted/unknown voice grants into
+    // silent key-classification probes when encryption lockout is enabled.
+    if (!data_for_policy && opts->trunk_tune_enc_calls == 0) {
+        enc_for_policy = 0;
+    }
     if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, enc_for_policy,
                                             data_for_policy, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
                                             DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)

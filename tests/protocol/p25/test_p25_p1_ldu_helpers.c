@@ -294,6 +294,8 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     dsd_vocoder_soft_bit imbe_soft_fr[8][23] = {{{0}}};
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_tune_enc_calls = 1;
+    opts.dmr_mute_encL = 1;
 
     static const int non_standard_ones[] = {15, 16, 17};
     for (unsigned int idx = 0; idx < sizeof(non_standard_ones) / sizeof(non_standard_ones[0]); idx++) {
@@ -311,9 +313,28 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     rc |= expect_int("pending crypto does not open recording", g_open_mbe_calls, 0);
     rc |= expect_int("pending crypto does not dispatch vocoder", g_vocoder_calls, 0);
+
+    opts.unmute_encrypted_p25 = 1;
+    process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
+    rc |= expect_int("explicit P25 unmute dispatches pending crypto", g_vocoder_calls, 1);
+
+    opts.unmute_encrypted_p25 = 0;
+    opts.reverse_mute = 1;
+    process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
+    rc |= expect_int("reverse mute dispatches pending crypto", g_vocoder_calls, 2);
+
+    opts.reverse_mute = 0;
+    opts.unmute_encrypted_p25 = 1;
+    opts.trunk_tune_enc_calls = 0;
+    process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
+    rc |= expect_int("lockout probe remains silent", g_vocoder_calls, 2);
+
+    opts.unmute_encrypted_p25 = 0;
+    opts.dmr_mute_encL = 1;
+    opts.trunk_tune_enc_calls = 1;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
-    rc |= expect_int("standard c0 dispatched", g_vocoder_calls, 1);
+    rc |= expect_int("standard c0 dispatched", g_vocoder_calls, 3);
     rc |= expect_int("classified voice opens recording", g_open_mbe_calls, 1);
 
     state.payload_algid = 0x80;

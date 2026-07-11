@@ -132,7 +132,7 @@ p25p1_ldu1_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_coun
         // SM event: ACTIVE (P1 uses slot 0).
         p25_sm_emit_active(opts, state, 0);
     }
-    if (p25_crypto_audio_ready(state, 0)) {
+    if (p25_crypto_audio_permitted(opts, state, 0)) {
         p25p1_play_imbe_audio(opts, state);
     }
 }

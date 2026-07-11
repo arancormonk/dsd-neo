@@ -51,6 +51,36 @@ static void
 reset_fixture(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_tune_enc_calls = 1;
+    opts->dmr_mute_encL = 1;
+    opts->dmr_mute_encR = 1;
+}
+
+static int
+test_explicit_audio_unmute_respects_lockout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture(&opts, &state);
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+
+    int rc = 0;
+    rc |= expect_int("encrypted follow defaults to muted", p25_crypto_audio_permitted(&opts, &state, 0), 0);
+
+    opts.unmute_encrypted_p25 = 1;
+    rc |= expect_int("P25 explicit unmute permits blocked audio", p25_crypto_audio_permitted(&opts, &state, 0), 1);
+
+    opts.unmute_encrypted_p25 = 0;
+    opts.reverse_mute = 1;
+    rc |= expect_int("reverse mute permits blocked audio", p25_crypto_audio_permitted(&opts, &state, 0), 1);
+
+    opts.unmute_encrypted_p25 = 1;
+    opts.trunk_tune_enc_calls = 0;
+    rc |= expect_int("lockout probe overrides explicit unmute", p25_crypto_audio_permitted(&opts, &state, 0), 0);
+
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    rc |= expect_int("lockout still permits classified clear audio", p25_crypto_audio_permitted(&opts, &state, 0), 1);
+    return rc;
 }
 
 static int
@@ -354,6 +384,7 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_explicit_audio_unmute_respects_lockout();
     rc |= test_begin_and_sticky_unknown();
     rc |= test_algorithm_and_manual_key_resolution();
     rc |= test_imported_key_activation_is_slot_aware();

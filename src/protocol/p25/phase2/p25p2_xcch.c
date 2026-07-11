@@ -45,11 +45,11 @@ p25p2_xcch_slot_valid(int slot) {
 }
 
 static void
-p25p2_xcch_set_slot_audio_allowed(dsd_state* state, int slot, int allow_audio) {
+p25p2_xcch_set_slot_audio_allowed(const dsd_opts* opts, dsd_state* state, int slot, int allow_audio) {
     if (!state || slot < 0 || slot > 1) {
         return;
     }
-    state->p25_p2_audio_allowed[slot] = (allow_audio != 0 && p25_crypto_audio_ready(state, slot)) ? 1 : 0;
+    state->p25_p2_audio_allowed[slot] = (allow_audio != 0 && p25_crypto_audio_permitted(opts, state, slot)) ? 1 : 0;
 }
 
 static int
@@ -428,7 +428,7 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
     p25p2_xcch_reset_slot_gain(opts, state, slot);
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, allow_audio);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
 
     if (!always_set_burst && allow_audio) {
         p25p2_xcch_set_slot_burst(state, slot, 20);
@@ -457,7 +457,7 @@ p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear
         p25p2_xcch_blank_slot_call_string(state, slot);
     }
 
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
     p25p2_xcch_reset_slot_gain(opts, state, slot);
     p25p2_xcch_clear_slot_gps(state, slot);
     p25_crypto_reset_slot(state, slot);
@@ -521,7 +521,7 @@ p25p2_xcch_validate_sacch_crc(const dsd_opts* opts, dsd_state* state, const int 
         if (err != 0 && smac[1] != 0x0 && opts->aggressive_framesync == 1) {
             DSD_FPRINTF(stderr, " CRC16 ERR L");
             if (opcode == 0x0) {
-                p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+                p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
                 p25_p2_audio_ring_reset(state, slot);
             }
             state->p2_is_lcch = 0;
@@ -593,7 +593,7 @@ p25p2_xcch_handle_sacch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot) 
     p25_sm_emit_end(opts, state, slot);
     state->p25_p2_last_end_ptt[slot] = time(NULL);
     p25p2_xcch_handle_end_slot(opts, state, slot, 1);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
@@ -615,7 +615,7 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     if (!p25_sm_slot_grant_newer_than(slot, idle_observed_m)) {
         p25_crypto_reset_slot(state, slot);
     }
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
 }
 
 static void
@@ -632,7 +632,7 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, allow_audio);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
     if (allow_audio) {
         p25p2_xcch_set_slot_burst(state, slot, 21);
     }
@@ -679,7 +679,7 @@ p25p2_xcch_handle_facch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot) 
 
     p25_sm_emit_end(opts, state, slot);
     p25p2_xcch_handle_end_slot(opts, state, slot, state->currentslot == 0);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
@@ -707,7 +707,7 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 1);
     p25p2_xcch_restore_slot_ids_for_new_grant(state, slot, idle_observed_m, &idle_ids);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
     p25_p2_audio_ring_reset(state, slot);
 }
 
@@ -729,7 +729,7 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     p25_sm_emit_active(opts, state, slot);
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, allow_audio);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
 }
 
 static void

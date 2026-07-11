@@ -836,6 +836,21 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     rc |= expect_int("fs encrypted without key skips output", g_udp_blast_calls, 0);
     rc |= expect_float("fs encrypted path clears temp buffer", state.audio_out_temp_buf[0], 0.0f);
 
+    opts.trunk_tune_enc_calls = 1;
+    opts.unmute_encrypted_p25 = 1;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS(&opts, &state);
+    rc |= expect_int("fs explicit P25 unmute emits undeciphered audio", g_udp_blast_calls, 1);
+
+    opts.trunk_tune_enc_calls = 0;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS(&opts, &state);
+    rc |= expect_int("fs P25 lockout probe overrides explicit unmute", g_udp_blast_calls, 0);
+    opts.unmute_encrypted_p25 = 0;
+    opts.trunk_tune_enc_calls = 1;
+
     DSD_MEMSET(&state, 0, sizeof(state));
     state.synctype = DSD_SYNC_P25P1_POS;
     state.mbe_file_type = 3;

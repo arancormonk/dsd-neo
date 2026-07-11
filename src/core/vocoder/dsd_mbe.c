@@ -1559,7 +1559,7 @@ static int
 mbe_post_other_is_allowed(const dsd_opts* opts, const dsd_state* state, int is_p25p2) {
     if (!is_p25p2) {
         if (DSD_SYNC_IS_P25P1(state->synctype)) {
-            return p25_crypto_audio_ready(state, 0);
+            return p25_crypto_audio_permitted(opts, state, 0);
         }
         return (opts->unmute_encrypted_p25 == 1 || state->dmr_encL == 0);
     }

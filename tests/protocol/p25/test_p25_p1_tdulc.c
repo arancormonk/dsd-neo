@@ -50,12 +50,14 @@ sm_noop_init(dsd_opts* opts, dsd_state* state) {
 static void
 sm_on_group_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
     (void)opts;
-    (void)state;
     g_called++;
     g_channel = channel;
     g_svc = svc_bits;
     g_tg = tg;
     g_src = src;
+    // Model the synchronous crypto classification performed by the default
+    // state-machine grant handler.
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
 }
 
 static void
@@ -469,6 +471,7 @@ main(void) {
     rc |= expect_true("tdulc wall time recorded", state.p25_p1_last_tdu != 0);
     rc |= expect_true("tdulc monotonic time recorded", state.p25_p1_last_tdu_m > 0.0);
     rc |= expect_true("tdulc vc sync time refreshed", state.last_vc_sync_time_m > 0.0);
+    rc |= expect_eq_int("tdulc preserves dispatched grant crypto", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
 
     // Case 2: Retune disabled → no grant
     build_lcw_words(0x44, 0x00, 0x00, 0x1234, 0x100A, 0x0000);
