@@ -329,7 +329,7 @@ nxdn_print_lich_debug_payload(const dsd_opts* opts, const nxdn_frame_ctx* ctx) {
 
 static void
 nxdn_print_idas_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (opts->frame_nxdn48 == 1) {
+    if (dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         printFrameSync(opts, state, "IDAS D ", 0, "-");
     }
     nxdn_print_lich_debug_payload(opts, ctx);
@@ -337,7 +337,7 @@ nxdn_print_idas_sync_banner(const dsd_opts* opts, const dsd_state* state, const 
 
 static void
 nxdn_print_dcr_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (opts->frame_nxdn48 == 1) {
+    if (dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         printFrameSync(opts, state, "JPN DCR", 0, "-");
     }
     nxdn_print_lich_debug_payload(opts, ctx);
@@ -345,7 +345,7 @@ nxdn_print_dcr_sync_banner(const dsd_opts* opts, const dsd_state* state, const n
 
 static void
 nxdn_print_normal_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (opts->frame_nxdn48 == 1) {
+    if (dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         printFrameSync(opts, state, "NXDN48 ", 0, "-");
     } else {
         printFrameSync(opts, state, "NXDN96 ", 0, "-");
@@ -619,10 +619,11 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
     if (opts->mbe_out_f == NULL) {
         return;
     }
-    if (opts->frame_nxdn96 == 1 && (time(NULL) - state->last_vc_sync_time) > 1) {
+    const dsd_nxdn_variant variant = dsd_frame_sync_active_nxdn_variant(opts, state);
+    if (variant == DSD_NXDN_VARIANT_96 && (time(NULL) - state->last_vc_sync_time) > 1) {
         closeMbeOutFile(opts, state);
     }
-    if (opts->frame_nxdn48 == 1) {
+    if (variant == DSD_NXDN_VARIANT_48) {
         closeMbeOutFile(opts, state);
     }
 }

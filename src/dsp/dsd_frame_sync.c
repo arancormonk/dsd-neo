@@ -61,12 +61,12 @@
 #endif
 
 enum {
-    FRAME_SYNC_SPS_PROFILE_4800_4 = 0,
-    FRAME_SYNC_SPS_PROFILE_2400_4 = 1,
-    FRAME_SYNC_SPS_PROFILE_9600_2 = 2,
-    FRAME_SYNC_SPS_PROFILE_6000_4 = 3,
-    FRAME_SYNC_SPS_PROFILE_4800_2 = 4,
-    FRAME_SYNC_SPS_PROFILE_COUNT = 5,
+    FRAME_SYNC_SPS_PROFILE_4800_4 = DSD_FRAME_SYNC_SPS_PROFILE_4800_4,
+    FRAME_SYNC_SPS_PROFILE_2400_4 = DSD_FRAME_SYNC_SPS_PROFILE_2400_4,
+    FRAME_SYNC_SPS_PROFILE_9600_2 = DSD_FRAME_SYNC_SPS_PROFILE_9600_2,
+    FRAME_SYNC_SPS_PROFILE_6000_4 = DSD_FRAME_SYNC_SPS_PROFILE_6000_4,
+    FRAME_SYNC_SPS_PROFILE_4800_2 = DSD_FRAME_SYNC_SPS_PROFILE_4800_2,
+    FRAME_SYNC_SPS_PROFILE_COUNT = DSD_FRAME_SYNC_SPS_PROFILE_COUNT,
     FRAME_SYNC_HISTORY_CAPACITY = 48,
 };
 
@@ -2810,14 +2810,16 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
 
     const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
     const int profile_changed = next_idx != state->sps_hunt_idx;
-    const int force_binary_modulation = !opts->mod_cli_lock && profile->levels == 2 && state->rf_mod != 2;
-    if (!profile_changed && !force_binary_modulation) {
+    const int profile_default_modulation = profile->levels == 2 ? 2 : 0;
+    const int normalize_profile_modulation =
+        !opts->mod_cli_lock && state->rf_mod != profile_default_modulation && (profile_changed || profile->levels == 2);
+    if (!profile_changed && !normalize_profile_modulation) {
         return;
     }
 
     state->sps_hunt_idx = next_idx;
-    if (force_binary_modulation) {
-        state->rf_mod = 2;
+    if (normalize_profile_modulation) {
+        state->rf_mod = profile_default_modulation;
     }
     dsd_frame_sync_reset_mod_state();
 

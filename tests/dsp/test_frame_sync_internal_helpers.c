@@ -354,6 +354,61 @@ test_binary_profiles_override_unlocked_qpsk(void) {
 }
 
 static void
+test_four_level_profiles_reset_inherited_modulation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dstar = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.rf_mod = 2;
+    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.rf_mod == 0);
+
+    reset(&opts, &state);
+    opts.frame_p25p2 = 1;
+    opts.frame_provoice = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
+    state.rf_mod = 2;
+    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state.rf_mod == 0);
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 2;
+    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.rf_mod == 2);
+}
+
+static void
+test_nxdn_variant_follows_active_profile(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    assert(dsd_frame_sync_active_nxdn_variant(&opts, &state) == DSD_NXDN_VARIANT_NONE);
+    assert(dsd_frame_sync_active_nxdn_variant(NULL, &state) == DSD_NXDN_VARIANT_NONE);
+
+    opts.frame_nxdn48 = 1;
+    assert(dsd_frame_sync_active_nxdn_variant(&opts, NULL) == DSD_NXDN_VARIANT_48);
+    opts.frame_nxdn48 = 0;
+    opts.frame_nxdn96 = 1;
+    assert(dsd_frame_sync_active_nxdn_variant(&opts, NULL) == DSD_NXDN_VARIANT_96);
+
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    assert(dsd_frame_sync_active_nxdn_variant(&opts, &state) == DSD_NXDN_VARIANT_96);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    assert(dsd_frame_sync_active_nxdn_variant(&opts, &state) == DSD_NXDN_VARIANT_48);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    assert(dsd_frame_sync_active_nxdn_variant(&opts, &state) == DSD_NXDN_VARIANT_NONE);
+}
+
+static void
 test_bounded_symbol_history_readiness_and_wrap(void) {
     static const int window_lengths[] = {8, 10, 12, 16, 20, 24, 32, 48};
     char symbols[80];
@@ -934,6 +989,8 @@ main(void) {
     test_sps_hunt_profile_updates_timing();
     test_sps_hunt_reconciles_external_timing();
     test_binary_profiles_override_unlocked_qpsk();
+    test_four_level_profiles_reset_inherited_modulation();
+    test_nxdn_variant_follows_active_profile();
     test_bounded_symbol_history_readiness_and_wrap();
     test_provoice_candidate_does_not_shadow_dstar_or_nxdn();
     test_symbol_replay_bypasses_sps_profile_gating();

@@ -17,6 +17,8 @@
 #include <dsd-neo/protocol/nxdn/nxdn_voice.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -43,6 +45,8 @@ static uint8_t g_last_facch_bit;
 static uint8_t g_last_facch_reliab;
 static uint8_t g_last_cac_bit;
 static uint8_t g_last_cac_reliab;
+static dsd_nxdn_variant g_active_nxdn_variant;
+static char g_last_frame_type[16];
 
 static int
 expect_int(const char* label, int got, int want) {
@@ -57,6 +61,15 @@ static int
 expect_u64(const char* label, unsigned long long got, unsigned long long want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %llu want %llu\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_string(const char* label, const char* got, const char* want) {
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", label, got, want);
         return 1;
     }
     return 0;
@@ -89,6 +102,8 @@ reset_state(void) {
     g_last_facch_reliab = 0;
     g_last_cac_bit = 0;
     g_last_cac_reliab = 0;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_NONE;
+    g_last_frame_type[0] = '\0';
 }
 
 static void
@@ -145,14 +160,21 @@ dsd_time_monotonic_ns(void) {
     return 42000000000ULL;
 }
 
+dsd_nxdn_variant
+dsd_frame_sync_active_nxdn_variant(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_active_nxdn_variant;
+}
+
 void
 printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* frametype, int offset,
                const char* modulation) {
     (void)opts;
     (void)state;
-    (void)frametype;
     (void)offset;
     (void)modulation;
+    DSD_SNPRINTF(g_last_frame_type, sizeof(g_last_frame_type), "%s", frametype);
 }
 
 void
@@ -401,6 +423,24 @@ test_public_frame_entry_lich_collection(void) {
 
     reset_state();
     g_opts.frame_nxdn48 = 1;
+    g_opts.frame_nxdn96 = 1;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_96;
+    prepare_frame_stream(0x01U, 0);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_string("full-auto NXDN96 banner", g_last_frame_type, "NXDN96 ");
+
+    reset_state();
+    g_opts.frame_nxdn48 = 1;
+    g_opts.frame_nxdn96 = 1;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
+    prepare_frame_stream(0x01U, 0);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_string("full-auto NXDN48 banner", g_last_frame_type, "NXDN48 ");
+
+    reset_state();
+    g_opts.frame_nxdn48 = 1;
     prepare_frame_stream(0x08U, 0);
     nxdn_frame(&g_opts, &g_state);
     rc |= expect_int("frame special parity accepted", g_sacch2_calls, 1);
@@ -456,12 +496,18 @@ test_lfsr_and_scanner_state(void) {
     rc |= expect_int("voice opens mbe file route", route(0x32U, bits, reliab), 1);
     rc |= expect_int("voice opened mbe file", g_opts.mbe_out_f == stdout, 1);
     g_opts.frame_nxdn48 = 1;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
     rc |= expect_int("nxdn48 data closes mbe file route", route(0x01U, bits, reliab), 1);
     rc |= expect_int("nxdn48 data closed mbe file", g_opts.mbe_out_f == NULL, 1);
 
     reset_state();
     g_opts.mbe_out_f = stdout;
+    g_opts.frame_nxdn48 = 1;
     g_opts.frame_nxdn96 = 1;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_96;
+    g_state.last_vc_sync_time = time(NULL);
+    rc |= expect_int("full-auto NXDN96 recent data keeps mbe file route", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("full-auto NXDN96 recent data keeps mbe file", g_opts.mbe_out_f == stdout, 1);
     g_state.last_vc_sync_time = 0;
     rc |= expect_int("nxdn96 stale data closes mbe file route", route(0x01U, bits, reliab), 1);
     rc |= expect_int("nxdn96 stale data closed mbe file", g_opts.mbe_out_f == NULL, 1);
