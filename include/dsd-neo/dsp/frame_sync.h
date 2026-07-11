@@ -60,11 +60,12 @@ int dsd_frame_sync_test_sps_hunt_profile_rate(int profile_index);
 int dsd_frame_sync_test_sps_hunt_profile_levels(int profile_index);
 int dsd_frame_sync_test_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state);
 void dsd_frame_sync_test_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx);
+void dsd_frame_sync_test_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_test_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
 int dsd_frame_sync_test_history_window(const char* symbols, int symbol_count, int window_length, char* out,
                                        int out_size);
 int dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const char* symbols, int symbol_count);
-int dsd_frame_sync_test_active_profile_modulation(const dsd_state* state);
+int dsd_frame_sync_test_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);
 int dsd_frame_sync_test_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state);
 double dsd_frame_sync_test_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);
 void dsd_frame_sync_test_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm,
@@ -81,7 +82,7 @@ void dsd_frame_sync_test_reset_p25_trunk_tick_state(void);
 void dsd_frame_sync_test_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now);
 #ifdef USE_RADIO
 int dsd_frame_sync_test_rtl_profile_for_sps_index(const dsd_opts* opts, const dsd_state* state, int profile_index);
-double dsd_frame_sync_test_active_profile_snr_db(const dsd_state* state);
+double dsd_frame_sync_test_active_profile_snr_db(const dsd_opts* opts, const dsd_state* state);
 #endif
 #endif
 

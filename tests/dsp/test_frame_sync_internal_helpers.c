@@ -242,6 +242,85 @@ test_sps_hunt_profile_updates_timing(void) {
 }
 
 static void
+test_sps_hunt_reconciles_external_timing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 1;
+    state.sps_hunt_idx = 0;
+    state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 48000);
+    state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
+
+    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    assert(state.sps_hunt_idx == 3);
+    assert(state.samplesPerSymbol == 8);
+    assert(state.symbolCenter == 3);
+    assert(state.rf_mod == 1);
+    state.p2_wacn = 1;
+    state.p2_cc = 1;
+    state.p2_sysid = 1;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    state.sps_hunt_idx = 0;
+    state.samplesPerSymbol = 7;
+    state.symbolCenter = 3;
+    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    assert(state.sps_hunt_idx == 0);
+    assert(state.samplesPerSymbol == 7);
+    assert(state.symbolCenter == 3);
+}
+
+static void
+test_binary_profiles_override_unlocked_qpsk(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_provoice = 1;
+    state.sps_hunt_idx = 0;
+    state.rf_mod = 1;
+    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, 2);
+    assert(state.sps_hunt_idx == 2);
+    assert(state.rf_mod == 2);
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
+
+    reset(&opts, &state);
+    opts.frame_dstar = 1;
+    state.sps_hunt_idx = 4;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    state.rf_mod = 1;
+    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    assert(state.sps_hunt_idx == 4);
+    assert(state.rf_mod == 2);
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
+
+    reset(&opts, &state);
+    opts.frame_dstar = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    state.sps_hunt_idx = 0;
+    state.rf_mod = 1;
+    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, 4);
+    assert(state.sps_hunt_idx == 4);
+    assert(state.rf_mod == 1);
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 1);
+}
+
+static void
 test_bounded_symbol_history_readiness_and_wrap(void) {
     static const int window_lengths[] = {8, 10, 12, 16, 20, 24, 32, 48};
     char symbols[80];
@@ -547,6 +626,41 @@ test_rtl_sps_profiles_apply_and_lock_on_sync(void) {
 }
 
 static void
+test_dmr_sync_applies_gfsk_rtl_profile(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_dmr = 1;
+    state.sps_hunt_idx = 0;
+    state.rf_mod = 1;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.min = -3.0f;
+    state.max = 3.0f;
+
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .set_symbol_profile = fake_set_symbol_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_profile_set_calls = 0;
+    g_profile_rate = 0;
+    g_profile_levels = 0;
+    g_profile_channel = 0;
+
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DMR_BS_DATA_SYNC, 24) == DSD_SYNC_DMR_BS_DATA_POS);
+    assert(state.rf_mod == 2);
+    assert(g_profile_set_calls == 1);
+    assert(g_profile_rate == 4800);
+    assert(g_profile_levels == 4);
+    assert(g_profile_channel == DSD_RTL_STREAM_CHANNEL_PROFILE_12K5);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+static void
 test_active_profile_metrics_power_gate_and_votes(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -573,20 +687,28 @@ test_active_profile_metrics_power_gate_and_votes(void) {
 
     state.sps_hunt_idx = 0;
     state.rf_mod = 0;
-    assert(dsd_frame_sync_test_active_profile_modulation(&state) == 0);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&state) == 101.0);
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 0);
+    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 101.0);
     assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
 
     state.rf_mod = 1;
-    assert(dsd_frame_sync_test_active_profile_modulation(&state) == 1);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&state) == 102.0);
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 1);
+    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 102.0);
     assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
 
     state.sps_hunt_idx = 4;
-    state.rf_mod = 0;
-    assert(dsd_frame_sync_test_active_profile_modulation(&state) == 2);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&state) == 103.0);
+    state.rf_mod = 1;
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
+    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 103.0);
     assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 1);
+
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 1);
+    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 102.0);
+    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+    opts.mod_cli_lock = 0;
+    opts.mod_qpsk = 0;
 
     opts.audio_in_type = AUDIO_IN_WAV;
     dsd_frame_sync_reset_mod_state();
@@ -722,6 +844,8 @@ int
 main(void) {
     test_sps_hunt_skips_disabled_protocol_rates();
     test_sps_hunt_profile_updates_timing();
+    test_sps_hunt_reconciles_external_timing();
+    test_binary_profiles_override_unlocked_qpsk();
     test_bounded_symbol_history_readiness_and_wrap();
     test_provoice_candidate_does_not_shadow_dstar_or_nxdn();
     test_m17_auto_preamble_disambiguation_preserves_forced_tolerance();
@@ -731,6 +855,7 @@ main(void) {
 #ifdef USE_RADIO
     test_rtl_symbol_profile_selection();
     test_rtl_sps_profiles_apply_and_lock_on_sync();
+    test_dmr_sync_applies_gfsk_rtl_profile();
     test_active_profile_metrics_power_gate_and_votes();
     test_modulation_snr_fallback_votes_and_dwell();
     test_modulation_cli_lock_prevents_votes();

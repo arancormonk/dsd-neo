@@ -189,22 +189,29 @@ rtl_maybe_update_active_sps_profile(const dsd_opts* opts, const dsd_state* state
 }
 #endif
 
+static int
+frame_sync_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
+    int demod_rate = dsd_opts_current_input_timing_rate(opts);
+#ifdef USE_RADIO
+    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        int rtl_demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+        if (rtl_demod_rate > 0) {
+            demod_rate = rtl_demod_rate;
+        }
+    }
+#else
+    UNUSED(state);
+#endif
+    return demod_rate;
+}
+
 static inline void
 dmr_set_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
 
-    int demod_rate = dsd_opts_current_input_timing_rate(opts);
-#ifdef USE_RADIO
-    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        int rtl_demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
-        if (rtl_demod_rate > 0) {
-            demod_rate = rtl_demod_rate;
-        }
-    }
-#endif
-
+    int demod_rate = frame_sync_current_demod_rate(opts, state);
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 #ifdef USE_RADIO
@@ -369,7 +376,7 @@ frame_sync_match_profile_active(const frame_sync_match_ctx* ctx, int profile_ind
 }
 
 static int frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state);
-static int frame_sync_active_profile_modulation(const dsd_state* state);
+static int frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);
 
 static inline void
 frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
@@ -1082,8 +1089,8 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
 static inline void
 frame_sync_prepare_dmr_sync(frame_sync_match_ctx* ctx) {
     frame_sync_set_basic_lock(ctx);
-    dmr_set_symbol_timing(ctx->opts, ctx->state);
     frame_sync_maybe_force_dmr_gfsk(ctx->opts, ctx->state);
+    dmr_set_symbol_timing(ctx->opts, ctx->state);
 }
 
 static int
@@ -1916,7 +1923,7 @@ frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, 
         return;
     }
 
-    int want_mod = frame_sync_active_profile_modulation(state);
+    int want_mod = frame_sync_active_profile_modulation(opts, state);
     want_mod = frame_sync_bias_want_mod_with_snr(state, want_mod);
     want_mod = frame_sync_override_want_mod_with_hamming(opts, state, want_mod);
     frame_sync_update_mod_votes(want_mod);
@@ -2277,7 +2284,7 @@ frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runt
     qsort(rt->lbuf2, rt->t_max, sizeof(float), comp);
     dsd_frame_sync_estimate_sorted_window_levels(rt->lbuf2, rt->t_max, &rt->lmin, &rt->lmax);
 
-    if (state->rf_mod == 1) {
+    if (frame_sync_active_profile_modulation(opts, state) == 1) {
         dsd_state_push_minmax_window(state, opts->msize, rt->lmin, rt->lmax);
         state->center = ((state->max) + (state->min)) / 2.0f;
         state->maxref = (state->max) * 0.80F;
@@ -2289,13 +2296,16 @@ frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runt
 }
 
 static int
-frame_sync_active_profile_modulation(const dsd_state* state) {
+frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state) {
+    const frame_sync_sps_profile* profile =
+        frame_sync_sps_profile_for_index(state ? state->sps_hunt_idx : FRAME_SYNC_SPS_PROFILE_4800_4);
+    if ((!opts || !opts->mod_cli_lock) && profile->levels == 2) {
+        return 2;
+    }
     if (state && state->rf_mod == 1) {
         return 1;
     }
-    const frame_sync_sps_profile* profile =
-        frame_sync_sps_profile_for_index(state ? state->sps_hunt_idx : FRAME_SYNC_SPS_PROFILE_4800_4);
-    if (profile->levels == 2 || (state && state->rf_mod == 2)) {
+    if (state && state->rf_mod == 2) {
         return 2;
     }
     return 0;
@@ -2303,8 +2313,8 @@ frame_sync_active_profile_modulation(const dsd_state* state) {
 
 #ifdef USE_RADIO
 static double
-frame_sync_active_profile_snr_db(const dsd_state* state) {
-    switch (frame_sync_active_profile_modulation(state)) {
+frame_sync_active_profile_snr_db(const dsd_opts* opts, const dsd_state* state) {
+    switch (frame_sync_active_profile_modulation(opts, state)) {
         case 1: return dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
         case 2: return dsd_rtl_stream_metrics_hook_snr_gfsk_db();
         default: return dsd_rtl_stream_metrics_hook_snr_c4fm_db();
@@ -2314,12 +2324,12 @@ frame_sync_active_profile_snr_db(const dsd_state* state) {
 
 static int
 frame_sync_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state) {
-    const int active_modulation = frame_sync_active_profile_modulation(state);
+    const int active_modulation = frame_sync_active_profile_modulation(opts, state);
 #ifdef USE_RADIO
     {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (cfg && cfg->snr_sql_is_set) {
-            double snr_db = frame_sync_active_profile_snr_db(state);
+            double snr_db = frame_sync_active_profile_snr_db(opts, state);
             if (snr_db > -150.0 && snr_db < (double)cfg->snr_sql_db) {
                 return 1;
             }
@@ -2671,8 +2681,8 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
 }
 
 int
-dsd_frame_sync_test_active_profile_modulation(const dsd_state* state) {
-    return frame_sync_active_profile_modulation(state);
+dsd_frame_sync_test_active_profile_modulation(const dsd_opts* opts, const dsd_state* state) {
+    return frame_sync_active_profile_modulation(opts, state);
 }
 
 int
@@ -2682,8 +2692,8 @@ dsd_frame_sync_test_should_skip_snr_or_power_gate(const dsd_opts* opts, const ds
 
 #ifdef USE_RADIO
 double
-dsd_frame_sync_test_active_profile_snr_db(const dsd_state* state) {
-    return frame_sync_active_profile_snr_db(state);
+dsd_frame_sync_test_active_profile_snr_db(const dsd_opts* opts, const dsd_state* state) {
+    return frame_sync_active_profile_snr_db(opts, state);
 }
 #endif
 #endif
@@ -2756,36 +2766,37 @@ dsd_frame_sync_test_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* s
 
 static void
 frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx) {
-    if (!opts || !state || next_idx < 0 || next_idx >= FRAME_SYNC_SPS_PROFILE_COUNT
-        || next_idx == state->sps_hunt_idx) {
+    if (!opts || !state || next_idx < 0 || next_idx >= FRAME_SYNC_SPS_PROFILE_COUNT) {
         return;
     }
-    state->sps_hunt_idx = next_idx;
-    dsd_frame_sync_reset_mod_state();
+
     const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
-
-#ifdef USE_RADIO
-    int demod_rate = 0;
-    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+    const int profile_changed = next_idx != state->sps_hunt_idx;
+    const int force_binary_modulation = !opts->mod_cli_lock && profile->levels == 2 && state->rf_mod != 2;
+    if (!profile_changed && !force_binary_modulation) {
+        return;
     }
-    if (demod_rate <= 0) {
-        demod_rate = dsd_opts_current_input_timing_rate(opts);
-    }
-#else
-    int demod_rate = dsd_opts_current_input_timing_rate(opts);
-#endif
 
-    int sym_rate = profile->symbol_rate_hz;
-    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
-    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    state->sps_hunt_idx = next_idx;
+    if (force_binary_modulation) {
+        state->rf_mod = 2;
+    }
+    dsd_frame_sync_reset_mod_state();
+
+    if (profile_changed) {
+        int demod_rate = frame_sync_current_demod_rate(opts, state);
+        int sym_rate = profile->symbol_rate_hz;
+        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
+        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+        if (opts->verbose > 1 && !dsd_frame_sync_suppress_tcp_no_signal_console(opts, state)) {
+            DSD_FPRINTF(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol, sym_rate,
+                        demod_rate);
+        }
+    }
+
 #ifdef USE_RADIO
     rtl_maybe_update_sps_profile(opts, state, profile);
 #endif
-    if (opts->verbose > 1 && !dsd_frame_sync_suppress_tcp_no_signal_console(opts, state)) {
-        DSD_FPRINTF(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol, sym_rate,
-                    demod_rate);
-    }
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -2795,9 +2806,47 @@ dsd_frame_sync_test_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* stat
 }
 #endif
 
+static int
+frame_sync_sps_profile_matching_timing(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || state->samplesPerSymbol <= 0) {
+        return -1;
+    }
+
+    const int demod_rate = frame_sync_current_demod_rate(opts, state);
+    int matching_profile = -1;
+    for (int profile_index = 0; profile_index < FRAME_SYNC_SPS_PROFILE_COUNT; profile_index++) {
+        if (!frame_sync_sps_profile_has_candidate(opts, profile_index)) {
+            continue;
+        }
+        const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(profile_index);
+        const int expected_sps = dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, demod_rate);
+        if (expected_sps != state->samplesPerSymbol) {
+            continue;
+        }
+        if (profile_index == state->sps_hunt_idx) {
+            return profile_index;
+        }
+        if (matching_profile >= 0) {
+            /* 4800-symbol profiles can share timing; keep the existing level selection when timing is ambiguous. */
+            return -1;
+        }
+        matching_profile = profile_index;
+    }
+    return matching_profile;
+}
+
 static void
 frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state || frame_sync_sps_profile_has_candidate(opts, state->sps_hunt_idx)) {
+    if (!opts || !state) {
+        return;
+    }
+
+    const int timing_profile = frame_sync_sps_profile_matching_timing(opts, state);
+    if (timing_profile >= 0 && timing_profile != state->sps_hunt_idx) {
+        frame_sync_apply_sps_hunt_profile(opts, state, timing_profile);
+    }
+    if (frame_sync_sps_profile_has_candidate(opts, state->sps_hunt_idx)) {
+        frame_sync_apply_sps_hunt_profile(opts, state, state->sps_hunt_idx);
         return;
     }
     for (int profile_index = 0; profile_index < FRAME_SYNC_SPS_PROFILE_COUNT; profile_index++) {
@@ -2807,6 +2856,13 @@ frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state) {
         }
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state) {
+    frame_sync_ensure_enabled_sps_profile(opts, state);
+}
+#endif
 
 static void
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
