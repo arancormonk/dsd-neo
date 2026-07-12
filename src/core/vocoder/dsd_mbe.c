@@ -1440,7 +1440,7 @@ mbe_process_slot_traffic(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24],
 }
 
 static void
-mbe_post_apply_reverse_mute(dsd_opts* opts, int16_t* enc, int16_t* mute_flag) {
+mbe_post_apply_reverse_mute(const dsd_opts* opts, int16_t* enc, int16_t* mute_flag) {
     if (opts->reverse_mute != 1) {
         return;
     }
