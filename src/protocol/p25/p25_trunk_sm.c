@@ -2094,7 +2094,7 @@ p25_sm_has_pending_data_grant(const p25_sm_ctx_t* ctx) {
 
 static double
 p25_sm_pending_voice_grant_timeout_start_m(const p25_sm_ctx_t* ctx, const dsd_state* state) {
-    double latest_grant_m = 0.0;
+    double latest_wait_m = 0.0;
     if (!ctx || !ctx->vc_is_tdma) {
         return 0.0;
     }
@@ -2102,11 +2102,17 @@ p25_sm_pending_voice_grant_timeout_start_m(const p25_sm_ctx_t* ctx, const dsd_st
         if (!p25_sm_slot_waiting_for_voice(ctx, state, s)) {
             continue;
         }
-        if (ctx->slots[s].last_grant_m > latest_grant_m) {
-            latest_grant_m = ctx->slots[s].last_grant_m;
+        if (ctx->slots[s].last_grant_m > latest_wait_m) {
+            latest_wait_m = ctx->slots[s].last_grant_m;
+        }
+        // An in-band crypto transition starts a new wait window even when the
+        // original grant and tune are older than the configured timeout.
+        if (state && state->p25_crypto_state[s] == DSD_P25_CRYPTO_ENCRYPTED_PENDING
+            && ctx->slots[s].crypto_attempt_m > latest_wait_m) {
+            latest_wait_m = ctx->slots[s].crypto_attempt_m;
         }
     }
-    return latest_grant_m;
+    return latest_wait_m;
 }
 
 static void
@@ -2222,7 +2228,14 @@ handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const
         return;
     }
 
-    ctx->slots[slot].crypto_attempt_m = now_monotonic();
+    const double now_m = now_monotonic();
+    ctx->slots[slot].crypto_attempt_m = now_m;
+    if (opts && opts->trunk_tune_enc_calls == 0) {
+        // Pending metadata suppresses voice events under lockout. Discard the
+        // preceding clear-voice hangtime so this new deadline owns the wait.
+        ctx->slots[slot].last_active_m = 0.0;
+        ctx->t_voice_m = 0.0;
+    }
     p25_sm_diagf(opts, state, ctx, "crypto_classification_start", "slot=%d previous=%d freq=%ld tg=%d", slot,
                  (int)previous, ctx->vc_freq_hz, ctx->vc_tg);
     sm_log(opts, state, "crypto-classify-start");

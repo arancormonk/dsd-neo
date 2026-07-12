@@ -1346,10 +1346,16 @@ main(void) {
     ctx19j.vc_freq_hz = 851000000;
     ctx19j.vc_channel = tdma_slot0_ch;
     ctx19j.vc_tg = 5701;
+    ctx19j.config.hangtime_s = 0.1;
+    ctx19j.config.grant_timeout_s = 1.0;
+    const double stale_inband_activity_m = dsd_time_now_monotonic_s() - 0.2;
+    ctx19j.t_tune_m = stale_inband_activity_m - 1.0;
+    ctx19j.t_voice_m = stale_inband_activity_m;
     ctx19j.slots[0].grant_active = 1;
     ctx19j.slots[0].voice_active = 1;
-    ctx19j.slots[0].last_active_m = dsd_time_now_monotonic_s();
-    const double stale_inband_attempt_m = ctx19j.slots[0].last_active_m - 5.0;
+    ctx19j.slots[0].last_grant_m = ctx19j.t_tune_m;
+    ctx19j.slots[0].last_active_m = stale_inband_activity_m;
+    const double stale_inband_attempt_m = stale_inband_activity_m - 5.0;
     ctx19j.slots[0].crypto_attempt_m = stale_inband_attempt_m;
 
     p25_sm_event_t inband_encrypted = p25_sm_ev_crypto_pending(0);
@@ -1358,9 +1364,20 @@ main(void) {
     assert(s19j.p25_p2_audio_allowed[0] == 0);
     assert(s19j.p25_p2_enc_lockout_muted[0] == 1U);
     assert(ctx19j.slots[0].voice_active == 0);
+    assert(ctx19j.slots[0].last_active_m == 0.0);
+    assert(ctx19j.t_voice_m == 0.0);
     assert(ctx19j.slots[0].crypto_attempt_m > stale_inband_attempt_m);
 
     const double fresh_inband_attempt_m = ctx19j.slots[0].crypto_attempt_m;
+    // The fresh crypto deadline must outlive stale tune, grant, and hangtime
+    // timestamps from the preceding clear voice.
+    g_result_return_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx19j, &o19j, &s19j);
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx19j.state == P25_SM_TUNED);
+    assert(ctx19j.slots[0].grant_active == 1);
+    assert(ctx19j.slots[0].crypto_attempt_m == fresh_inband_attempt_m);
+
     ctx19j.slots[0].voice_active = 1;
     p25_sm_event(&ctx19j, &o19j, &s19j, &inband_encrypted);
     assert(ctx19j.slots[0].voice_active == 0);
