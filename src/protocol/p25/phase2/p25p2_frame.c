@@ -1038,6 +1038,9 @@ p25p2_voice_crypto_is_authoritatively_clear(const dsd_state* state, int slot) {
     }
 
 #if !defined(DSD_NEO_P25P2_TEST_STUB)
+    if (state->gi[slot] == 1) {
+        return 0;
+    }
     const int talkgroup = (slot == 0) ? state->lasttg : state->lasttgR;
     return p25_patch_tg_key_is_clear(state, talkgroup) || p25_patch_sg_key_is_clear(state, talkgroup);
 #else

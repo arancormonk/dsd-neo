@@ -283,6 +283,32 @@ test_clear_regroup_override_survives_voice_burst(void) {
 }
 
 static int
+test_private_voice_ignores_regroup_clear_key_collision(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    state.currentslot = 0;
+    state.gi[0] = 1;
+    state.lasttg = 0x123456;
+    state.dmr_so = 0x40;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+    p25_patch_add_wgid(&state, 0x2222, 0x3456);
+    p25_patch_set_kas(&state, 0x2222, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
+
+    process_2V(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_eq("private patch collision: crypto pending", state.p25_crypto_state[0],
+                    DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("private patch collision: audio gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("private patch collision: lockout marker set", state.p25_p2_enc_lockout_muted[0], 1);
+    rc |= expect_eq("private patch collision: voice activity suppressed", ctx->slots[0].voice_active, 0);
+    return rc;
+}
+
+static int
 test_encrypted_follow_tracks_activity_while_media_is_muted(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -320,6 +346,7 @@ main(void) {
     rc |= test_clear_voice_to_encrypted_restarts_deadline();
     rc |= test_pre_ess_opposite_clear_slot_stays_tuned();
     rc |= test_clear_regroup_override_survives_voice_burst();
+    rc |= test_private_voice_ignores_regroup_clear_key_collision();
     rc |= test_encrypted_follow_tracks_activity_while_media_is_muted();
     return rc;
 }

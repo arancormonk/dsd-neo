@@ -1007,8 +1007,8 @@ p25p2_vpdu_handle_group_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int
 }
 
 static void
-p25p2_vpdu_handle_unit_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot, int talkgroup) {
-    p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, talkgroup);
+p25p2_vpdu_handle_unit_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot) {
+    p25_sm_emit_crypto_pending(opts, state, slot & 1);
 }
 
 static long int
@@ -3588,7 +3588,7 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_update_private_last_ids(state, slot, gr, src);
 
         if ((svc & 0x40) && opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
-            p25p2_vpdu_handle_unit_voice_enc_fallback(opts, state, slot, gr);
+            p25p2_vpdu_handle_unit_voice_enc_fallback(opts, state, slot);
         }
     }
 

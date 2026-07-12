@@ -646,6 +646,57 @@ test_inband_encrypted_voice_starts_classification_deadline(void) {
     return rc;
 }
 
+static int
+test_private_voice_ignores_regroup_clear_key_collision(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+
+    p25_sm_init(&opts, &state);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    ctx->state = P25_SM_TUNED;
+    ctx->vc_is_tdma = 1;
+    ctx->vc_freq_hz = 851000000;
+    ctx->vc_tg = 0x123456;
+    ctx->slots[0].grant_active = 1;
+    ctx->slots[0].voice_active = 1;
+
+    p25_patch_add_wgid(&state, 0x2222, 0x3456);
+    p25_patch_set_kas(&state, 0x2222, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
+
+    MAC[1] = 0x02;
+    MAC[2] = 0x40;
+    MAC[3] = 0x12;
+    MAC[4] = 0x34;
+    MAC[5] = 0x56;
+    MAC[6] = 0x01;
+    MAC[7] = 0x02;
+    MAC[8] = 0x03;
+
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    rc |= expect_eq_long("private patch collision call type", state.gi[0], 1);
+    rc |= expect_eq_long("private patch collision target", state.lasttg, 0x123456);
+    rc |=
+        expect_eq_long("private patch collision pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq_long("private patch collision gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq_long("private patch collision activity cleared", ctx->slots[0].voice_active, 0);
+    rc |= expect_true("private patch collision deadline started", ctx->slots[0].crypto_attempt_m > 0.0);
+
+    p25_sm_init(&opts, &state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -660,6 +711,7 @@ main(void) {
     rc |= test_harris_a4_grg_state_management();
     rc |= test_motorola_extended_function_supergroup_state();
     rc |= test_inband_encrypted_voice_starts_classification_deadline();
+    rc |= test_private_voice_ignores_regroup_clear_key_collision();
 
     // Case A: MFID 0x90, opcode A3 (Group Regroup Channel Grant - Implicit)
     {
