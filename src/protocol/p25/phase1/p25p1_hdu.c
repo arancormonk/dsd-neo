@@ -26,14 +26,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
-#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -320,99 +319,48 @@ hdu_read_and_fec(dsd_opts* opts, dsd_state* state, char hex_data[20][6], char he
 }
 
 static void
-hdu_record_enc_lockout(dsd_opts* opts, dsd_state* state, int ttg) {
-    if (ttg == 0) {
-        return;
-    }
-
-    p25_sm_note_encrypted_call(opts, state, ttg);
-
-    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
-                 sizeof(state->event_history_s[0].Event_History_Items[0].internal_str),
-                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", ttg);
-    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
-    if (opts->event_out_file[0] != 0) {
-        dsd_p25_optional_hook_write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
-                                                      state->event_history_s[0].Event_History_Items[0].event_string);
-    }
-    dsd_p25_optional_hook_push_event_history(&state->event_history_s[0]);
-    dsd_p25_optional_hook_init_event_history(&state->event_history_s[0], 0, 1);
+hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, uint64_t mi) {
+    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, state->lasttg);
 }
 
 static void
-hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state) {
-    if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0)) {
-        return;
-    }
-
-    int alg = state->payload_algid;
-    int have_key = 0;
-    if (((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0)
-        || ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1)) {
-        have_key = 1;
-    }
-    int enc_suspect = (alg != 0 && alg != 0x80 && have_key == 0);
-    if (!enc_suspect) {
-        return;
-    }
-
-    state->payload_algid = 0;
-    state->payload_keyid = 0;
-    state->payload_miP = 0ULL;
-
-    hdu_record_enc_lockout(opts, state, state->lasttg);
-
-    DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
-    DSD_FPRINTF(stderr, " No Enc Following on P25p1 Trunking (HDU); Return to CC; \n");
-    state->p25_sm_force_release = 1;
-    p25_sm_on_release(opts, state);
-}
-
-static void
-hdu_apply_unmute_policy(dsd_opts* opts, const dsd_state* state) {
-    if (state->R != 0
+hdu_report_decryption_key(const dsd_opts* opts, const dsd_state* state) {
+    if (state->p25_crypto_state[0] == DSD_P25_CRYPTO_DECRYPTABLE
         && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
         const unsigned int key_width = (state->payload_algid == 0xAA) ? 10U : 16U;
         char key_text[17];
         DSD_FPRINTF(stderr, " Key: %s",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, key_width, 0));
-        opts->unmute_encrypted_p25 = 1;
         return;
     }
 
-    if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
+    if (state->p25_crypto_state[0] == DSD_P25_CRYPTO_DECRYPTABLE
+        && (state->payload_algid == 0x83 || state->payload_algid == 0x84 || state->payload_algid == 0x89)) {
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         const unsigned long long segments[4] = {state->A1[0], state->A2[0], state->A3[0], state->A4[0]};
         char key_text[68];
-        DSD_FPRINTF(stderr, "Key: %s ",
-                    dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments,
-                                                   (state->payload_algid == 0x84) ? 4U : 2U));
+        const unsigned int segment_count =
+            (state->payload_algid == 0x83) ? 3U : ((state->payload_algid == 0x84) ? 4U : 2U);
+        DSD_FPRINTF(
+            stderr, "Key: %s ",
+            dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments, segment_count));
         DSD_FPRINTF(stderr, "%s ", KNRM);
-        opts->unmute_encrypted_p25 = 1;
-        return;
-    }
-
-    if (state->payload_algid != 0 && state->payload_algid != 0x80) {
-        opts->unmute_encrypted_p25 = 0;
     }
 }
 
 static void
 hdu_handle_good_decode(dsd_opts* opts, dsd_state* state, int algidhex, int kidhex, unsigned long long int mihex1,
                        unsigned long long int mihex2, unsigned long long int mihex3) {
+    const uint64_t mi = (mihex1 << 32) | mihex2;
+
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " HDU  ALG ID: 0x%02X KEY ID: 0x%04X MI: 0x%08llX%08llX", algidhex, kidhex, mihex1, mihex2);
-    state->payload_algid = algidhex;
-    state->payload_keyid = kidhex;
     if (mihex3) {
         DSD_FPRINTF(stderr, "-%02llX", mihex3);
     }
-    hdu_apply_unmute_policy(opts, state);
-    DSD_FPRINTF(stderr, "%s", KNRM);
-    state->payload_miP = (mihex1 << 32) | (mihex2);
 
-    if (state->payload_algid != 0x80 && state->payload_algid != 0x0) {
+    if (algidhex != 0x80 && algidhex != 0x0) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " ENC");
         DSD_FPRINTF(stderr, "%s", KNRM);
@@ -420,13 +368,15 @@ hdu_handle_good_decode(dsd_opts* opts, dsd_state* state, int algidhex, int kidhe
 
     DSD_FPRINTF(stderr, "\n");
 
+    state->xl_is_hdu = 1;
+    hdu_maybe_enc_lockout(opts, state, algidhex, kidhex, mi);
+    hdu_report_decryption_key(opts, state);
+    DSD_FPRINTF(stderr, "%s", KNRM);
+
     if (state->payload_algid == 0x84 || state->payload_algid == 0x89) {
         LFSR128(state);
         DSD_FPRINTF(stderr, "\n");
     }
-
-    state->xl_is_hdu = 1;
-    hdu_maybe_enc_lockout(opts, state);
 }
 
 /**

@@ -11,6 +11,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
@@ -76,6 +77,23 @@ fill_f32_frame(float frame[160], float value) {
     }
 }
 
+static void
+seed_companion_crypto_state(dsd_state* state, int slot, int lockout_enabled, int expect_silent, int algid,
+                            int aes_loaded, unsigned long long scalar_key, int marker) {
+    dsd_p25_crypto_state crypto_state = DSD_P25_CRYPTO_UNKNOWN;
+    if (marker || (lockout_enabled && expect_silent)) {
+        crypto_state = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    } else if (algid == 0x80) {
+        crypto_state = DSD_P25_CRYPTO_CLEAR;
+    } else if (algid != 0 && (aes_loaded || scalar_key != 0ULL)) {
+        crypto_state = DSD_P25_CRYPTO_DECRYPTABLE;
+    }
+    state->p25_crypto_state[slot] = crypto_state;
+    state->p25_p2_enc_lockout_muted[slot] =
+        (uint8_t)((crypto_state == DSD_P25_CRYPTO_ENCRYPTED_PENDING || crypto_state == DSD_P25_CRYPTO_BLOCKED) ? 1U
+                                                                                                               : 0U);
+}
+
 static int
 short_18_blocks_are_clear(short frames[18][160]) {
     for (int frame = 0; frame < 18; frame++) {
@@ -128,15 +146,19 @@ run_fs4_left_active_case_ext(int enc_lockout_enabled, int expect_right_silent, i
     opts.slot2_on = 1;
     opts.trunk_tune_enc_calls = enc_lockout_enabled ? 0 : 1;
     opts.audio_gain = 25;
+    st.synctype = DSD_SYNC_NONE;
     st.aout_gain = 49.0f;
     st.aout_gainR = 49.0f;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     st.dmr_soR = muted_slot_svc;
     st.payload_algidR = muted_slot_algid;
     st.aes_key_loaded[1] = muted_slot_aes_loaded;
+    st.aes_key_segments[1] = muted_slot_aes_loaded ? 4U : 0U;
     st.RR = muted_slot_key;
-    st.p25_p2_enc_lockout_muted[1] = (uint8_t)(muted_slot_marker ? 1U : 0U);
+    seed_companion_crypto_state(&st, 1, enc_lockout_enabled, expect_right_silent, muted_slot_algid,
+                                muted_slot_aes_loaded, muted_slot_key, muted_slot_marker);
 
     fill_f32_frame(frame, 384.0f);
     rc |= expect_eq("fs4 push left", p25_p2_audio_ring_push(&st, 0, frame), 1);
@@ -185,11 +207,14 @@ run_fs4_right_active_case_ext(int enc_lockout_enabled, int expect_left_silent, i
     st.aout_gainR = 49.0f;
     st.p25_p2_audio_allowed[0] = 0;
     st.p25_p2_audio_allowed[1] = 1;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     st.dmr_so = muted_slot_svc;
     st.payload_algid = muted_slot_algid;
     st.aes_key_loaded[0] = muted_slot_aes_loaded;
+    st.aes_key_segments[0] = muted_slot_aes_loaded ? 4U : 0U;
     st.R = muted_slot_key;
-    st.p25_p2_enc_lockout_muted[0] = (uint8_t)(muted_slot_marker ? 1U : 0U);
+    seed_companion_crypto_state(&st, 0, enc_lockout_enabled, expect_left_silent, muted_slot_algid,
+                                muted_slot_aes_loaded, muted_slot_key, muted_slot_marker);
 
     fill_f32_frame(frame, 384.0f);
     rc |= expect_eq("fs4 push right", p25_p2_audio_ring_push(&st, 1, frame), 1);
@@ -215,6 +240,141 @@ run_fs4_right_active_case(int enc_lockout_enabled, int expect_left_silent, int m
 }
 
 static int
+run_fs4_clear_plus_blocked_mono_case(int clear_slot, int matching_hold) {
+    static dsd_opts opts;
+    static dsd_state st;
+    float clear_frame[160];
+    float blocked_frame[160];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.pulse_digi_out_channels = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.trunk_tune_enc_calls = 0;
+    opts.audio_gain = 25;
+    st.aout_gain = 49.0f;
+    st.aout_gainR = 49.0f;
+    st.p25_p2_audio_allowed[clear_slot] = 1;
+    st.p25_p2_audio_allowed[clear_slot ^ 1] = 0;
+    st.p25_crypto_state[clear_slot] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_crypto_state[clear_slot ^ 1] = DSD_P25_CRYPTO_BLOCKED;
+    st.p25_p2_enc_lockout_muted[clear_slot ^ 1] = 1U;
+    if (matching_hold) {
+        st.lasttg = 100;
+        st.lasttgR = 100;
+        st.tg_hold = 100;
+    }
+
+    fill_f32_frame(clear_frame, 384.0f);
+    fill_f32_frame(blocked_frame, -4096.0f);
+    rc |= expect_eq("mono push clear", p25_p2_audio_ring_push(&st, clear_slot, clear_frame), 1);
+    rc |= expect_eq("mono seed blocked tail", p25_p2_audio_ring_push(&st, clear_slot ^ 1, blocked_frame), 1);
+    playSynthesizedVoiceFS4(&opts, &st);
+
+    float out[160] = {0.0f};
+    rc |= expect_eq("mono captured calls", g_audio_capture_calls >= 1, 1);
+    int copied = copy_capture_bytes("mono captured bytes", out, sizeof(out));
+    rc |= copied;
+    if (copied == 0) {
+        rc |= expect_true("mono clear sample audible", out[0] > 0.0f);
+    }
+    return rc;
+}
+
+static int
+run_fs4_reverse_mute_case(dsd_p25_crypto_state crypto_state, int expect_audio) {
+    static dsd_opts opts;
+    static dsd_state st;
+    float frame[160];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.pulse_digi_out_channels = 2;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.trunk_tune_enc_calls = 1;
+    opts.reverse_mute = 1;
+    opts.audio_gain = 25;
+    st.synctype = DSD_SYNC_P25P2_POS;
+    st.aout_gain = 49.0f;
+    st.aout_gainR = 49.0f;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_crypto_state[0] = crypto_state;
+    st.p25_p2_enc_lockout_muted[0] =
+        (uint8_t)(crypto_state == DSD_P25_CRYPTO_ENCRYPTED_PENDING || crypto_state == DSD_P25_CRYPTO_BLOCKED);
+
+    fill_f32_frame(frame, 384.0f);
+    rc |= expect_eq("fs4 reverse mute push", p25_p2_audio_ring_push(&st, 0, frame), 1);
+    playSynthesizedVoiceFS4(&opts, &st);
+
+    rc |= expect_eq("fs4 reverse mute output state", g_audio_capture_calls >= 1, expect_audio);
+    if (expect_audio) {
+        float out[160 * 2] = {0.0f};
+        const size_t expected_bytes = (size_t)160 * 2U * sizeof(out[0]);
+        int copied = copy_capture_bytes("fs4 reverse mute captured bytes", out, expected_bytes);
+        rc |= copied;
+        if (copied == 0) {
+            rc |= expect_true("fs4 reverse mute encrypted audio audible", out[0] != 0.0f);
+        }
+    }
+    return rc;
+}
+
+static int
+run_ss18_clear_plus_blocked_hold_case(int clear_slot) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.trunk_tune_enc_calls = 0;
+    st.lasttg = 100;
+    st.lasttgR = 100;
+    st.tg_hold = 100;
+    st.dmrburstL = 21;
+    st.dmrburstR = 21;
+    st.p25_p2_audio_allowed[clear_slot] = 1;
+    st.p25_p2_audio_allowed[clear_slot ^ 1] = 0;
+    st.p25_crypto_state[clear_slot] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_crypto_state[clear_slot ^ 1] = DSD_P25_CRYPTO_BLOCKED;
+    st.p25_p2_enc_lockout_muted[clear_slot ^ 1] = 1U;
+
+    for (int i = 0; i < 160; i++) {
+        st.s_l4[0][i] = (clear_slot == 0) ? 100 : -3000;
+        st.s_r4[0][i] = (clear_slot == 1) ? 100 : -3000;
+    }
+    playSynthesizedVoiceSS18(&opts, &st);
+
+    short out[160 * 2] = {0};
+    rc |= expect_eq("ss18 hold captured calls", g_audio_capture_calls >= 1, 1);
+    int copied = copy_capture_bytes("ss18 hold captured bytes", out, sizeof(out));
+    rc |= copied;
+    if (copied == 0) {
+        rc |= expect_eq("ss18 hold left output", out[0], (clear_slot == 0) ? 100 : 0);
+        rc |= expect_eq("ss18 hold right output", out[1], (clear_slot == 1) ? 100 : 0);
+    }
+    return rc;
+}
+
+static int
 run_ss18_left_active_case_ext(int enc_lockout_enabled, int expect_right_silent, int muted_slot_algid,
                               int muted_slot_aes_loaded, unsigned long long muted_slot_key, int muted_slot_svc,
                               int muted_slot_marker) {
@@ -233,13 +393,16 @@ run_ss18_left_active_case_ext(int enc_lockout_enabled, int expect_right_silent, 
     opts.trunk_tune_enc_calls = enc_lockout_enabled ? 0 : 1;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     st.dmrburstL = 21;
     st.dmrburstR = 0;
     st.dmr_soR = muted_slot_svc;
     st.payload_algidR = muted_slot_algid;
     st.aes_key_loaded[1] = muted_slot_aes_loaded;
+    st.aes_key_segments[1] = muted_slot_aes_loaded ? 4U : 0U;
     st.RR = muted_slot_key;
-    st.p25_p2_enc_lockout_muted[1] = (uint8_t)(muted_slot_marker ? 1U : 0U);
+    seed_companion_crypto_state(&st, 1, enc_lockout_enabled, expect_right_silent, muted_slot_algid,
+                                muted_slot_aes_loaded, muted_slot_key, muted_slot_marker);
 
     for (int i = 0; i < 160; i++) {
         st.s_l4[0][i] = 100;
@@ -284,13 +447,16 @@ run_ss18_right_active_case_ext(int enc_lockout_enabled, int expect_left_silent, 
     opts.trunk_tune_enc_calls = enc_lockout_enabled ? 0 : 1;
     st.p25_p2_audio_allowed[0] = 0;
     st.p25_p2_audio_allowed[1] = 1;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     st.dmrburstL = 0;
     st.dmrburstR = 21;
     st.dmr_so = muted_slot_svc;
     st.payload_algid = muted_slot_algid;
     st.aes_key_loaded[0] = muted_slot_aes_loaded;
+    st.aes_key_segments[0] = muted_slot_aes_loaded ? 4U : 0U;
     st.R = muted_slot_key;
-    st.p25_p2_enc_lockout_muted[0] = (uint8_t)(muted_slot_marker ? 1U : 0U);
+    seed_companion_crypto_state(&st, 0, enc_lockout_enabled, expect_left_silent, muted_slot_algid,
+                                muted_slot_aes_loaded, muted_slot_key, muted_slot_marker);
 
     for (int i = 0; i < 160; i++) {
         st.s_r4[0][i] = 100;
@@ -338,6 +504,8 @@ run_ss18_partial_flush_case(void) {
     st.voice_counter[1] = 8;
     st.p25_p2_audio_allowed[0] = 0;
     st.p25_p2_audio_allowed[1] = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
 
     dsd_p25p2_flush_partial_audio(&opts, &st);
 
@@ -416,6 +584,8 @@ run_ss18_partial_flush_slot_case(void) {
     st.voice_counter[1] = 8;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 1;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
 
     dsd_p25p2_flush_partial_audio_slot(&opts, &st, 0);
 
@@ -446,6 +616,8 @@ run_ss18_partial_flush_slot_case(void) {
     st.voice_counter[1] = 4;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 1;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
 
     dsd_p25p2_flush_partial_audio_slot(&opts, &st, 1);
 
@@ -479,6 +651,7 @@ run_short_mono_playback_case(void) {
     opts.audio_out = 1;
     opts.audio_out_type = 8;
     opts.slot1_on = 1;
+    st.synctype = DSD_SYNC_NONE;
     st.audio_out_idx = 160;
     st.audio_out_idx2 = 800000;
     st.audio_out_buf_p = st.audio_out_buf + 100;
@@ -519,6 +692,7 @@ run_float_mono_playback_case(void) {
     opts.audio_out_type = 8;
     opts.slot1_on = 1;
     opts.audio_gain = 25;
+    st.synctype = DSD_SYNC_NONE;
     st.aout_gain = 49.0f;
     st.audio_out_idx2 = 800000;
     st.audio_out_buf_p = st.audio_out_buf + 100;
@@ -554,6 +728,7 @@ run_short_stereo_fdma_playback_case(void) {
     opts.audio_out = 1;
     opts.audio_out_type = 8;
     opts.slot1_on = 1;
+    st.synctype = DSD_SYNC_NONE;
     st.audio_out_idx = 160;
     st.audio_out_idxR = 160;
     st.audio_out_idx2 = 800000;
@@ -776,6 +951,12 @@ main(void) {
                                     /*muted_slot_aes_loaded*/ 1, /*muted_slot_key*/ 0ULL);
     rc |= run_fs4_right_active_case(/*enc_lockout_enabled*/ 1, /*expect_left_silent*/ 0, /*muted_slot_algid*/ 0x81,
                                     /*muted_slot_aes_loaded*/ 0, /*muted_slot_key*/ 1ULL);
+    rc |= run_fs4_clear_plus_blocked_mono_case(/*clear_slot*/ 0, /*matching_hold*/ 0);
+    rc |= run_fs4_clear_plus_blocked_mono_case(/*clear_slot*/ 1, /*matching_hold*/ 0);
+    rc |= run_fs4_clear_plus_blocked_mono_case(/*clear_slot*/ 0, /*matching_hold*/ 1);
+    rc |= run_fs4_clear_plus_blocked_mono_case(/*clear_slot*/ 1, /*matching_hold*/ 1);
+    rc |= run_fs4_reverse_mute_case(DSD_P25_CRYPTO_CLEAR, /*expect_audio*/ 0);
+    rc |= run_fs4_reverse_mute_case(DSD_P25_CRYPTO_BLOCKED, /*expect_audio*/ 1);
     rc |= run_ss18_left_active_case(/*enc_lockout_enabled*/ 1, /*expect_right_silent*/ 1, /*muted_slot_algid*/ 0,
                                     /*muted_slot_aes_loaded*/ 0, /*muted_slot_key*/ 0ULL);
     rc |= run_ss18_left_active_case_ext(/*enc_lockout_enabled*/ 1, /*expect_right_silent*/ 1,
@@ -802,6 +983,8 @@ main(void) {
                                      /*muted_slot_aes_loaded*/ 1, /*muted_slot_key*/ 0ULL);
     rc |= run_ss18_right_active_case(/*enc_lockout_enabled*/ 1, /*expect_left_silent*/ 0, /*muted_slot_algid*/ 0x81,
                                      /*muted_slot_aes_loaded*/ 0, /*muted_slot_key*/ 1ULL);
+    rc |= run_ss18_clear_plus_blocked_hold_case(/*clear_slot*/ 0);
+    rc |= run_ss18_clear_plus_blocked_hold_case(/*clear_slot*/ 1);
     rc |= run_ss18_partial_flush_case();
     rc |= run_ss18_partial_flush_guard_case();
     rc |= run_ss18_partial_flush_slot_case();

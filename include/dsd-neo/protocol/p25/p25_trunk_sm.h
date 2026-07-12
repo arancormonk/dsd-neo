@@ -64,16 +64,17 @@ enum {
  * ============================================================================ */
 
 typedef enum {
-    P25_SM_EV_GRANT = 0, // Channel grant received (channel, freq, tg, src, svc_bits)
-    P25_SM_EV_PTT,       // MAC_PTT on slot
-    P25_SM_EV_ACTIVE,    // MAC_ACTIVE on slot
-    P25_SM_EV_END,       // MAC_END on slot
-    P25_SM_EV_IDLE,      // MAC_IDLE on slot
-    P25_SM_EV_TDU,       // P1 Terminator Data Unit
-    P25_SM_EV_CC_SYNC,   // Control channel sync acquired
-    P25_SM_EV_VC_SYNC,   // Voice channel sync acquired
-    P25_SM_EV_SYNC_LOST, // Sync lost
-    P25_SM_EV_ENC,       // Encryption params detected on slot (algid, keyid)
+    P25_SM_EV_GRANT = 0,      // Channel grant received (channel, freq, tg, src, svc_bits)
+    P25_SM_EV_PTT,            // MAC_PTT on slot
+    P25_SM_EV_ACTIVE,         // MAC_ACTIVE on slot
+    P25_SM_EV_END,            // MAC_END on slot
+    P25_SM_EV_IDLE,           // MAC_IDLE on slot
+    P25_SM_EV_TDU,            // P1 Terminator Data Unit
+    P25_SM_EV_CC_SYNC,        // Control channel sync acquired
+    P25_SM_EV_VC_SYNC,        // Voice channel sync acquired
+    P25_SM_EV_SYNC_LOST,      // Sync lost
+    P25_SM_EV_ENC,            // Encryption params detected on slot (algid, keyid)
+    P25_SM_EV_CRYPTO_PENDING, // In-band encrypted indication awaiting definitive metadata
 } p25_sm_event_type_e;
 
 typedef struct {
@@ -107,22 +108,24 @@ typedef struct {
  * ============================================================================ */
 
 typedef struct {
-    double last_active_m; // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
-    int voice_active;     // 1 if voice is currently active on this slot
-    int algid;            // Current algorithm ID for this slot
-    int keyid;            // Current key ID for this slot
-    int tg;               // Current talkgroup for this slot
-    int grant_active;     // 1 if this TDMA slot has an accepted grant context
-    long freq_hz;         // Accepted grant RF frequency
-    int channel;          // Accepted grant channel number
-    int target_id;        // Policy-selected target ID, or OTA target when no policy remap
-    int ota_tg;           // OTA talkgroup for group grants
-    int src;              // Source RID
-    int dst;              // Destination RID for individual grants
-    int is_group;         // 1 for group call, 0 for individual/private
-    int data_call;        // 1 for data grant, 0 for voice
-    int svc_bits;         // Service options, or P25_SM_SVC_UNKNOWN when absent
-    double last_grant_m;  // Monotonic timestamp of last accepted grant for this slot
+    double last_active_m;    // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
+    int voice_active;        // 1 if voice is currently active on this slot
+    int algid;               // Current algorithm ID for this slot
+    int keyid;               // Current key ID for this slot
+    int tg;                  // Current talkgroup for this slot
+    int grant_active;        // 1 if this TDMA slot has an accepted grant context
+    long freq_hz;            // Accepted grant RF frequency
+    int channel;             // Accepted grant channel number
+    int target_id;           // Policy-selected target ID, or OTA target when no policy remap
+    int ota_tg;              // OTA talkgroup for group grants
+    int src;                 // Source RID
+    int dst;                 // Destination RID for individual grants
+    int is_group;            // 1 for group call, 0 for individual/private
+    int data_call;           // 1 for data grant, 0 for voice
+    int svc_bits;            // Service options, or P25_SM_SVC_UNKNOWN when absent
+    int enc_override_clear;  // 1 when regroup KEY=0 supplied the current clear classification
+    double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
+    double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
 } p25_sm_slot_ctx_t;
 
 /* ============================================================================
@@ -400,6 +403,15 @@ void p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state);
  */
 void p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid, int tg);
 
+/**
+ * @brief Emit an in-band encrypted indication that requires classification.
+ *
+ * A new transition closes the slot's media gate, clears stale voice activity,
+ * and starts a fresh classification deadline. Repeated pending indications do
+ * not extend an existing deadline.
+ */
+void p25_sm_emit_crypto_pending(dsd_opts* opts, dsd_state* state, int slot);
+
 /* ============================================================================
  * Public API - Neighbor/CC Candidate Management
  * ============================================================================ */
@@ -669,6 +681,14 @@ p25_sm_ev_enc(int slot, int algid, int keyid, int tg) {
     return ev;
 }
 
+static inline p25_sm_event_t
+p25_sm_ev_crypto_pending(int slot) {
+    p25_sm_event_t ev = {0};
+    ev.type = P25_SM_EV_CRYPTO_PENDING;
+    ev.slot = slot;
+    return ev;
+}
+
 /* ============================================================================
  * Patch group (P25 regroup/patch) tracking helpers
  * ============================================================================ */
@@ -889,6 +909,16 @@ void p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, i
  * @param tg Talkgroup proven encrypted.
  */
 void p25_sm_note_encrypted_call(dsd_opts* opts, dsd_state* state, int tg);
+
+/**
+ * @brief Clear all transient blocked-call classifications.
+ *
+ * Runtime key-management paths call this after successfully changing key
+ * material so the next encrypted grant can be classified with the new keys.
+ *
+ * @param state Decoder state.
+ */
+void p25_sm_clear_encrypted_call_cache(dsd_state* state);
 
 #ifdef __cplusplus
 }

@@ -238,6 +238,18 @@ p25p1_pdu_dispatch_group_grant(dsd_opts* opts, dsd_state* state, int channel, in
     }
 }
 
+static int
+p25p1_pdu_private_prefilter_encrypted(const dsd_opts* opts, int svc) {
+    // The trunk state machine converts encrypted voice grants into silent
+    // classification probes under lockout. Keep the parser prefilter focused
+    // on private-call membership and let the centralized policy own that
+    // encryption decision.
+    if (opts && opts->trunk_tune_enc_calls == 0 && (svc & 0x10) == 0) {
+        return 0;
+    }
+    return (svc & 0x40) ? 1 : 0;
+}
+
 static void DSD_ATTR_USED
 p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                 const p25p1_mbt_fields* fields) {
@@ -546,8 +558,9 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     p25p1_pdu_print_group_label(state, (uint32_t)target);
 
     dsd_tg_policy_decision decision;
-    if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, (svc & 0x40) ? 1 : 0,
-                                            (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+    if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target,
+                                            p25p1_pdu_private_prefilter_encrypted(opts, svc), (svc & 0x10) ? 1 : 0,
+                                            DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
                                             DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
             != 0
         || !decision.tune_allowed) {
@@ -707,8 +720,8 @@ p25_handle_mbt_group_data_channel_grant(dsd_opts* opts, dsd_state* state, const 
 static int DSD_ATTR_USED
 p25_telephone_call_policy_allows(const dsd_opts* opts, const dsd_state* state, uint32_t target, int svc) {
     dsd_tg_policy_decision decision;
-    return dsd_tg_policy_evaluate_private_call(opts, state, 0, target, (svc & 0x40) ? 1 : 0, (svc & 0x10) ? 1 : 0,
-                                               DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
+    return dsd_tg_policy_evaluate_private_call(opts, state, 0, target, p25p1_pdu_private_prefilter_encrypted(opts, svc),
+                                               (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
                                                DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
                == 0
            && decision.tune_allowed;

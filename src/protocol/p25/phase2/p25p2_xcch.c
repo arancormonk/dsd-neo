@@ -17,6 +17,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -39,19 +40,16 @@ typedef struct {
 } p25p2_xcch_slot_ids_snapshot;
 
 static int
-p25p2_xcch_slot_valid(uint8_t slot) {
-    return slot <= 1;
+p25p2_xcch_slot_valid(int slot) {
+    return slot >= 0 && slot <= 1;
 }
 
 static void
-p25p2_xcch_set_slot_audio_allowed(dsd_state* state, int slot, int allow_audio) {
+p25p2_xcch_set_slot_audio_allowed(const dsd_opts* opts, dsd_state* state, int slot, int allow_audio) {
     if (!state || slot < 0 || slot > 1) {
         return;
     }
-    state->p25_p2_audio_allowed[slot] = allow_audio;
-    if (allow_audio != 0) {
-        state->p25_p2_enc_lockout_muted[slot] = 0;
-    }
+    state->p25_p2_audio_allowed[slot] = (allow_audio != 0 && p25_crypto_audio_permitted(opts, state, slot)) ? 1 : 0;
 }
 
 static int
@@ -154,33 +152,6 @@ p25p2_xcch_get_slot_tg(const dsd_state* state, int slot) {
 static int
 p25p2_xcch_get_slot_src(const dsd_state* state, int slot) {
     return (slot == 0) ? state->lastsrc : state->lastsrcR;
-}
-
-static void
-p25p2_xcch_set_slot_algid(dsd_state* state, int slot, int algid) {
-    if (slot == 0) {
-        state->payload_algid = algid;
-    } else {
-        state->payload_algidR = algid;
-    }
-}
-
-static void
-p25p2_xcch_set_slot_keyid(dsd_state* state, int slot, int keyid) {
-    if (slot == 0) {
-        state->payload_keyid = keyid;
-    } else {
-        state->payload_keyidR = keyid;
-    }
-}
-
-static void
-p25p2_xcch_set_slot_mi(dsd_state* state, int slot, unsigned long long int mi) {
-    if (slot == 0) {
-        state->payload_miP = mi;
-    } else {
-        state->payload_miN = mi;
-    }
 }
 
 static void
@@ -372,43 +343,24 @@ p25p2_xcch_restore_slot_ids_for_new_grant(dsd_state* state, uint8_t slot, double
 }
 
 static void
-p25p2_xcch_clear_slot_keys(dsd_state* state, int slot) {
-    if (state->keyloader != 1) {
-        return;
-    }
-
-    if (slot == 0) {
-        state->R = 0;
-    } else {
-        state->RR = 0;
-    }
-
-    state->A1[slot] = 0;
-    state->A2[slot] = 0;
-    state->A3[slot] = 0;
-    state->A4[slot] = 0;
-    state->aes_key_loaded[slot] = 0;
-    state->aes_key_segments[slot] = 0U;
-}
-
-static void
 p25p2_xcch_clear_slot_gps(dsd_state* state, int slot) {
     state->dmr_embedded_gps[slot][0] = '\0';
     state->dmr_lrrp_gps[slot][0] = '\0';
 }
 
 static void
-p25p2_xcch_set_slot_crypto_from_mac(dsd_state* state, int slot, const unsigned long long int mac[24]) {
-    p25p2_xcch_set_slot_algid(state, slot, (int)mac[10]);
-    p25p2_xcch_set_slot_keyid(state, slot, (int)((mac[11] << 8) | mac[12]));
-    p25p2_xcch_set_slot_mi(state, slot, p25p2_xcch_build_mi(mac));
+p25p2_xcch_set_slot_crypto_from_mac(dsd_opts* opts, dsd_state* state, int slot, const unsigned long long int mac[24]) {
+    const int algid = (int)mac[10];
+    const int keyid = (int)((mac[11] << 8) | mac[12]);
+    const uint64_t mi = p25p2_xcch_build_mi(mac);
+    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, slot, algid, keyid, mi,
+                             p25p2_xcch_get_slot_tg(state, slot));
 }
 
 static void
-p25p2_xcch_log_slot_encryption(dsd_opts* opts, dsd_state* state, int slot) {
+p25p2_xcch_log_slot_encryption(const dsd_opts* opts, dsd_state* state, int slot) {
     int algid = p25p2_xcch_get_slot_algid(state, slot);
     int keyid = p25p2_xcch_get_slot_keyid(state, slot);
-    int tg = p25p2_xcch_get_slot_tg(state, slot);
     unsigned long long int mi = p25p2_xcch_get_slot_mi(state, slot);
     unsigned long long int key = (slot == 0) ? state->R : state->RR;
 
@@ -443,23 +395,10 @@ p25p2_xcch_log_slot_encryption(dsd_opts* opts, dsd_state* state, int slot) {
     if (algid == 0x84 || algid == 0x89) {
         p25_lfsr128_slot(state, slot);
     }
-
-    p25_sm_emit_enc(opts, state, slot, algid, keyid, tg);
-}
-
-static void
-p25p2_xcch_emit_enc_if_encrypted(dsd_opts* opts, dsd_state* state, int slot) {
-    int algid = p25p2_xcch_get_slot_algid(state, slot);
-
-    if (algid != 0 && algid != 0x80) {
-        p25_sm_emit_enc(opts, state, slot, algid, p25p2_xcch_get_slot_keyid(state, slot),
-                        p25p2_xcch_get_slot_tg(state, slot));
-    }
 }
 
 static void
 p25p2_xcch_reset_ptt_slot_state(dsd_state* state, int slot) {
-    state->p25_p2_enc_lockout_muted[slot] = 0;
     state->fourv_counter[slot] = 0;
     state->voice_counter[slot] = 0;
     p25p2_xcch_set_slot_drop(state, slot, 256);
@@ -484,12 +423,12 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
     DSD_FPRINTF(stderr, "TG %d ", p25p2_xcch_get_slot_tg(state, slot));
     DSD_FPRINTF(stderr, "SRC %d ", src);
 
-    p25p2_xcch_set_slot_crypto_from_mac(state, slot, mac);
+    p25p2_xcch_set_slot_crypto_from_mac(opts, state, slot, mac);
     p25p2_xcch_log_slot_encryption(opts, state, slot);
     p25p2_xcch_reset_slot_gain(opts, state, slot);
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, allow_audio);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
 
     if (!always_set_burst && allow_audio) {
         p25p2_xcch_set_slot_burst(state, slot, 20);
@@ -501,13 +440,11 @@ p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear
     if (slot < 0 || slot >= 2) {
         return;
     }
-    state->p25_p2_enc_lockout_muted[slot] = 0;
+    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     state->fourv_counter[slot] = 0;
     state->voice_counter[slot] = 0;
     p25p2_xcch_set_slot_drop(state, slot, 256);
     p25p2_xcch_set_slot_burst(state, slot, 23);
-    p25p2_xcch_set_slot_algid(state, slot, 0);
-    p25p2_xcch_set_slot_keyid(state, slot, 0);
 
     DSD_FPRINTF(stderr, "\n VCH %d - ", slot + 1);
     DSD_FPRINTF(stderr, "TG %d ", p25p2_xcch_get_slot_tg(state, slot));
@@ -520,10 +457,10 @@ p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear
         p25p2_xcch_blank_slot_call_string(state, slot);
     }
 
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
     p25p2_xcch_reset_slot_gain(opts, state, slot);
-    p25p2_xcch_clear_slot_keys(state, slot);
     p25p2_xcch_clear_slot_gps(state, slot);
+    p25_crypto_reset_slot(state, slot);
 }
 
 static void
@@ -553,10 +490,8 @@ p25p2_xcch_reset_ptt_voice_counter_facch(dsd_state* state) {
 }
 
 static void
-p25p2_xcch_reset_idle_slot_facch(dsd_state* state, int slot) {
-    state->p25_p2_enc_lockout_muted[slot] = 0;
-    p25p2_xcch_set_slot_algid(state, slot, 0);
-    p25p2_xcch_set_slot_keyid(state, slot, 0);
+p25p2_xcch_reset_idle_slot_facch(dsd_state* state, uint8_t slot) {
+    p25_crypto_reset_slot(state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 24);
     state->fourv_counter[slot] = 0;
     state->voice_counter[slot] = 0;
@@ -586,7 +521,7 @@ p25p2_xcch_validate_sacch_crc(const dsd_opts* opts, dsd_state* state, const int 
         if (err != 0 && smac[1] != 0x0 && opts->aggressive_framesync == 1) {
             DSD_FPRINTF(stderr, " CRC16 ERR L");
             if (opcode == 0x0) {
-                p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+                p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
                 p25_p2_audio_ring_reset(state, slot);
             }
             state->p2_is_lcch = 0;
@@ -639,7 +574,6 @@ p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     p25_sm_emit_ptt(opts, state, slot);
     state->p25_p2_last_mac_active[slot] = time(NULL);
     state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
-    state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
 
     p25p2_xcch_handle_ptt_slot(opts, state, smac, slot, 0);
 
@@ -659,7 +593,7 @@ p25p2_xcch_handle_sacch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot) 
     p25_sm_emit_end(opts, state, slot);
     state->p25_p2_last_end_ptt[slot] = time(NULL);
     p25p2_xcch_handle_end_slot(opts, state, slot, 1);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
@@ -668,6 +602,7 @@ static void
 p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot, unsigned long long int smac[24]) {
     double idle_observed_m = dsd_time_now_monotonic_s();
 
+    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_set_slot_burst(state, slot, 24);
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
@@ -676,9 +611,11 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
-    state->p25_p2_enc_lockout_muted[slot] = 0;
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 0);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    if (!p25_sm_slot_grant_newer_than(slot, idle_observed_m)) {
+        p25_crypto_reset_slot(state, slot);
+    }
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
 }
 
 static void
@@ -695,12 +632,10 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, allow_audio);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
     if (allow_audio) {
         p25p2_xcch_set_slot_burst(state, slot, 21);
     }
-
-    p25p2_xcch_emit_enc_if_encrypted(opts, state, slot);
 }
 
 static void
@@ -744,7 +679,7 @@ p25p2_xcch_handle_facch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot) 
 
     p25_sm_emit_end(opts, state, slot);
     p25p2_xcch_handle_end_slot(opts, state, slot, state->currentslot == 0);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
@@ -759,6 +694,7 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     double idle_observed_m = dsd_time_now_monotonic_s();
 
+    dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_snapshot_slot_ids(state, slot, &idle_ids);
     p25p2_xcch_reset_idle_slot_facch(state, slot);
     p25p2_xcch_clear_slot_call_ids(state, slot);
@@ -771,7 +707,7 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 1);
     p25p2_xcch_restore_slot_ids_for_new_grant(state, slot, idle_observed_m, &idle_ids);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, 0);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
     p25_p2_audio_ring_reset(state, slot);
 }
 
@@ -793,9 +729,7 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     p25_sm_emit_active(opts, state, slot);
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
-    p25p2_xcch_set_slot_audio_allowed(state, slot, allow_audio);
-
-    p25p2_xcch_emit_enc_if_encrypted(opts, state, slot);
+    p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
 }
 
 static void

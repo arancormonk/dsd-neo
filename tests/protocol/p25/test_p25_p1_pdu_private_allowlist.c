@@ -382,6 +382,17 @@ main(void) {
     p25_decode_pdu_trunking(&opts, &st, mpdu);
     rc |= expect_true("p1 pdu private known target tunes", st.p25_sm_tune_count == before + 1);
 
+    // The parser's private-call allow-list prefilter must not consume the
+    // centralized state machine's encrypted-voice classification probe.
+    mpdu[8] = 0x40;
+    opts.trunk_tune_enc_calls = 0;
+    before = st.p25_sm_tune_count;
+    opts.p25_is_tuned = 0;
+    p25_decode_pdu_trunking(&opts, &st, mpdu);
+    rc |= expect_true("p1 pdu encrypted private grant reaches probe policy", st.p25_sm_tune_count == before + 1);
+    mpdu[8] = 0x00;
+    opts.trunk_tune_enc_calls = 1;
+
     rc |= expect_true("policy seed group grant", seed_policy_group(&st, 0x1234u, "A", "TG-ALLOW") == 0);
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x37; // outbound ALT MBT

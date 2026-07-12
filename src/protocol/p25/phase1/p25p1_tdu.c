@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
@@ -76,6 +77,7 @@ processTDU(dsd_opts* opts, dsd_state* state) {
 
     // SM event: TDU (P1 terminator)
     p25_sm_emit_tdu(opts, state);
+    p25_crypto_reset_slot(state, 0);
 
     // Clear call flags for single-carrier channel
     state->p25_call_emergency[0] = 0;

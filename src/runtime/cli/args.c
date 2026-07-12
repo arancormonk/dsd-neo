@@ -1006,7 +1006,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         }                                                                                                              \
         if (strcmp(argv[i], "--enc-lockout") == 0) {                                                                   \
             opts->trunk_tune_enc_calls = 0;                                                                            \
-            LOG_NOTICE("P25: Encrypted call lockout: On (skip encrypted).\n");                                         \
+            LOG_NOTICE("P25: Encrypted call lockout: On (silently classify and follow usable keys).\n");               \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--enc-follow") == 0) {                                                                    \

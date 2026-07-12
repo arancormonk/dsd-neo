@@ -327,7 +327,7 @@ small subset is exposed as config keys for convenience (for example
 | `tune_group_calls` | BOOL | Follow group calls | `true` |
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
-| `tune_enc_calls` | BOOL | Follow encrypted calls | `true` |
+| `tune_enc_calls` | BOOL | Follow P25 encrypted grants without key-aware lockout; `false` silently classifies and follows only usable matching keys | `true` |
 
 **[trunk_scan] section:**
 | Key | Type | Description | Default |

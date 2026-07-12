@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,10 +23,20 @@
 #include "dsd-neo/core/state_fwd.h"
 
 struct RtlSdrContext;
+static int g_open_mbe_calls[2];
+static int g_fs4_calls = 0;
+static int g_fs4_pending_at_call = 0;
+static int g_fs4_keyid_at_call = 0;
+static int g_fs4_ring_count_at_call = 0;
+static int g_ss18_calls = 0;
+static int g_ss18_pending_at_call = 0;
+static int g_ss18_keyid_at_call = 0;
+static int g_ss18_voice_count_at_call = 0;
 
 // Expose the P25p2 2V handler under test
 void process_2V(dsd_opts* opts, dsd_state* state);
 void p25p2_test_decode_voice_frame_for_lockout(dsd_opts* opts, dsd_state* state);
+void p25p2_test_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status);
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 bool SetFreq(int sockfd, long int freq);
@@ -110,14 +121,16 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 // MBE file stubs referenced by XCCH path
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
     (void)state;
+    g_open_mbe_calls[0]++;
+    opts->mbe_out_f = stdout;
 }
 
 void
 openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
     (void)state;
+    g_open_mbe_calls[1]++;
+    opts->mbe_out_fR = stdout;
 }
 
 void
@@ -143,13 +156,20 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 void
 playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    g_fs4_calls++;
+    g_fs4_pending_at_call = state->p25_p2_rekey[0].pending;
+    g_fs4_keyid_at_call = state->payload_keyid;
+    g_fs4_ring_count_at_call = state->p25_p2_audio_ring_count[0];
+    p25_p2_audio_ring_reset(state, -1);
 }
 
 void
 playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    g_ss18_calls++;
+    g_ss18_pending_at_call = state->p25_p2_rekey[0].pending;
+    g_ss18_keyid_at_call = state->payload_keyid;
+    g_ss18_voice_count_at_call = state->voice_counter[0];
 }
 
 void
@@ -296,6 +316,8 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 static int g_mbe_calls = 0;
 static int g_mbe_hard_calls = 0;
 static int g_mbe_soft_calls = 0;
+static int g_mbe_algid[2];
+static int g_mbe_keyid[2];
 
 void
 processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
@@ -316,6 +338,11 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
     (void)imbe_fr;
     (void)ambe_fr;
     (void)imbe7100_fr;
+    if (g_mbe_calls < 2) {
+        const int slot = state->currentslot & 1;
+        g_mbe_algid[g_mbe_calls] = slot == 0 ? state->payload_algid : state->payload_algidR;
+        g_mbe_keyid[g_mbe_calls] = slot == 0 ? state->payload_keyid : state->payload_keyidR;
+    }
     g_mbe_calls++;
     g_mbe_soft_calls++;
 }
@@ -335,6 +362,8 @@ reset_state(dsd_opts* opts, dsd_state* st) {
     DSD_MEMSET(st, 0, sizeof *st);
     // Ensure deterministic behavior
     opts->floating_point = 0;
+    opts->dmr_mute_encL = 1;
+    opts->dmr_mute_encR = 1;
 }
 
 static void
@@ -342,12 +371,36 @@ reset_mbe_calls(void) {
     g_mbe_calls = 0;
     g_mbe_hard_calls = 0;
     g_mbe_soft_calls = 0;
+    DSD_MEMSET(g_mbe_algid, 0, sizeof(g_mbe_algid));
+    DSD_MEMSET(g_mbe_keyid, 0, sizeof(g_mbe_keyid));
+    g_open_mbe_calls[0] = 0;
+    g_open_mbe_calls[1] = 0;
+    g_fs4_calls = 0;
+    g_fs4_pending_at_call = 0;
+    g_fs4_keyid_at_call = 0;
+    g_fs4_ring_count_at_call = 0;
+    g_ss18_calls = 0;
+    g_ss18_pending_at_call = 0;
+    g_ss18_keyid_at_call = 0;
+    g_ss18_voice_count_at_call = 0;
 }
 
 static void
 set_ess_algid(dsd_state* st, int slot, uint8_t algid) {
     for (int i = 0; i < 8; i++) {
         st->ess_b[slot][i] = (algid >> (7 - i)) & 1;
+    }
+}
+
+static void
+set_ess_metadata(dsd_state* st, int slot, uint8_t algid, uint16_t keyid, uint64_t mi) {
+    const uint64_t essb_hex1 = ((uint64_t)algid << 24) | ((uint64_t)keyid << 8) | (mi >> 56);
+    const uint64_t essb_hex2 = mi << 8;
+    for (int i = 0; i < 32; i++) {
+        st->ess_b[slot][i] = (int)((essb_hex1 >> (31 - i)) & 1U);
+    }
+    for (int i = 0; i < 64; i++) {
+        st->ess_b[slot][i + 32] = (int)((essb_hex2 >> (63 - i)) & 1U);
     }
 }
 
@@ -371,6 +424,7 @@ main(void) {
     reset_state(&opts, &st);
     st.currentslot = 0;
     st.p25_p2_audio_allowed[0] = 1;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot0 allowed: mbe calls", g_mbe_calls, 2);
@@ -391,11 +445,93 @@ main(void) {
     reset_state(&opts, &st);
     st.currentslot = 1;
     st.p25_p2_audio_allowed[1] = 1;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
     reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot1 allowed: mbe calls", g_mbe_calls, 2);
     rc |= expect_eq("slot1 allowed: soft mbe calls", g_mbe_soft_calls, 2);
     rc |= expect_eq("slot1 allowed: hard mbe calls", g_mbe_hard_calls, 0);
+
+    // A decryptable Phase 2 identity change belongs to the next crypto
+    // stream. The final two frames and the completed output superframe must
+    // retain the current tuple until the paired-timeslot drain has run.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    opts.floating_point = 1;
+    opts.pulse_digi_rate_out = 8000;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.payload_algid = 0x81;
+    st.payload_keyid = 0x1001;
+    st.payload_miP = 0x0102030405060708ULL;
+    st.R = 0x1122334455667788ULL;
+    st.dmr_so = 0x40;
+    st.dmrburstL = 21;
+    st.voice_counter[0] = 16;
+    st.p25_p2_audio_ring_count[0] = 2;
+    st.s_l4[0][0] = 101;
+    st.s_l[0] = 202;
+    set_ess_metadata(&st, 0, 0xAA, 0x1002, 0x1112131415161718ULL);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 rekey boundary: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot0 rekey boundary: first frame old algid", g_mbe_algid[0], 0x81);
+    rc |= expect_eq("slot0 rekey boundary: second frame old algid", g_mbe_algid[1], 0x81);
+    rc |= expect_eq("slot0 rekey boundary: first frame old keyid", g_mbe_keyid[0], 0x1001);
+    rc |= expect_eq("slot0 rekey boundary: second frame old keyid", g_mbe_keyid[1], 0x1001);
+    rc |= expect_eq("slot0 rekey boundary: metadata held", st.payload_keyid, 0x1001);
+    rc |= expect_eq("slot0 rekey boundary: transition pending", st.p25_p2_rekey[0].pending, 1);
+    rc |= expect_eq("slot0 rekey boundary: superframe completed", st.voice_counter[0], 18);
+    rc |= expect_eq("slot0 rekey boundary: prior int16 preserved", st.s_l4[0][0], 101);
+    rc |= expect_eq("slot0 rekey boundary: queued audio preserved", st.p25_p2_audio_ring_count[0], 3);
+
+    p25p2_test_post_timeslot(&opts, &st, 1, 1);
+    rc |= expect_eq("slot0 rekey SACCH drain: fs4 calls", g_fs4_calls, 1);
+    rc |= expect_eq("slot0 rekey SACCH drain: pending during output", g_fs4_pending_at_call, 1);
+    rc |= expect_eq("slot0 rekey SACCH drain: old key during output", g_fs4_keyid_at_call, 0x1001);
+    rc |= expect_eq("slot0 rekey SACCH drain: queued boundary audio", g_fs4_ring_count_at_call, 3);
+    rc |= expect_eq("slot0 rekey commit: transition cleared", st.p25_p2_rekey[0].pending, 0);
+    rc |= expect_eq("slot0 rekey commit: algid promoted", st.payload_algid, 0xAA);
+    rc |= expect_eq("slot0 rekey commit: keyid promoted", st.payload_keyid, 0x1002);
+    rc |= expect_eq("slot0 rekey commit: mi promoted", st.payload_miP == 0x1112131415161718ULL, 1);
+    rc |= expect_eq("slot0 rekey commit: queued audio purged", st.p25_p2_audio_ring_count[0], 0);
+    rc |= expect_eq("slot0 rekey commit: int16 state purged", st.s_l4[0][0], 0);
+
+    // The int16 output path must also drain a partial superframe before a
+    // deferred identity is promoted. A missed 4V burst can leave only the two
+    // terminal 2V frames buffered here.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.payload_algid = 0x81;
+    st.payload_keyid = 0x2001;
+    st.payload_miP = 0x2122232425262728ULL;
+    st.R = 0x1122334455667788ULL;
+    st.dmr_so = 0x40;
+    st.dmrburstL = 21;
+    st.s_l[0] = 303;
+    set_ess_metadata(&st, 0, 0xAA, 0x2002, 0x3132333435363738ULL);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 partial int16 rekey: transition pending", st.p25_p2_rekey[0].pending, 1);
+    rc |= expect_eq("slot0 partial int16 rekey: two frames buffered", st.voice_counter[0], 2);
+    rc |= expect_eq("slot0 partial int16 rekey: metadata held", st.payload_keyid, 0x2001);
+
+    p25p2_test_post_timeslot(&opts, &st, 1, 1);
+    rc |= expect_eq("slot0 partial int16 drain: SS18 calls", g_ss18_calls, 1);
+    rc |= expect_eq("slot0 partial int16 drain: pending during output", g_ss18_pending_at_call, 1);
+    rc |= expect_eq("slot0 partial int16 drain: old key during output", g_ss18_keyid_at_call, 0x2001);
+    rc |= expect_eq("slot0 partial int16 drain: buffered frame count", g_ss18_voice_count_at_call, 2);
+    rc |= expect_eq("slot0 partial int16 commit: transition cleared", st.p25_p2_rekey[0].pending, 0);
+    rc |= expect_eq("slot0 partial int16 commit: algid promoted", st.payload_algid, 0xAA);
+    rc |= expect_eq("slot0 partial int16 commit: keyid promoted", st.payload_keyid, 0x2002);
+    rc |= expect_eq("slot0 partial int16 commit: counter reset", st.voice_counter[0], 0);
+    rc |= expect_eq("slot0 partial int16 commit: old buffer purged", st.s_l4[0][0], 0);
 
     // Slot 0: stale allowed gate, encrypted/no key, lockout enabled -> no decode.
     reset_state(&opts, &st);
@@ -422,10 +558,98 @@ main(void) {
     rc |= expect_eq("slot0 pre-ess lockout: mbe calls", g_mbe_calls, 0);
     rc |= expect_eq("slot0 pre-ess lockout: gate closed", st.p25_p2_audio_allowed[0], 0);
     rc |= expect_eq("slot0 pre-ess lockout: fourv preserved", st.fourv_counter[0], 2);
-    rc |= expect_eq("slot0 pre-ess lockout: marker clear", st.p25_p2_enc_lockout_muted[0], 0);
+    rc |= expect_eq("slot0 pre-ess lockout: pending marker set", st.p25_p2_enc_lockout_muted[0], 1);
+    rc |= expect_eq("slot0 pre-ess lockout: pending state", st.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
-    // Slot 0: lockout must clear stale crypto metadata so later clear service
-    // options on this slot are not misclassified before the next ESS refresh.
+    // A mid-call encrypted service transition must revoke a stale clear gate
+    // and purge only the affected slot before another voice frame is decoded.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_p2_audio_allowed[1] = 1;
+    st.p25_p2_audio_ring_count[0] = 2;
+    st.p25_p2_audio_ring_count[1] = 3;
+    st.s_l4[0][0] = 11;
+    st.s_r4[0][0] = 22;
+    st.dmr_so = 0x40;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot0 clear-to-encrypted: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 clear-to-encrypted: recording stays closed", g_open_mbe_calls[0], 0);
+    rc |=
+        expect_eq("slot0 clear-to-encrypted: pending state", st.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("slot0 clear-to-encrypted: gate closed", st.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("slot0 clear-to-encrypted: ring purged", st.p25_p2_audio_ring_count[0], 0);
+    rc |= expect_eq("slot0 clear-to-encrypted: int16 purged", st.s_l4[0][0], 0);
+    rc |= expect_eq("slot0 clear-to-encrypted: companion gate preserved", st.p25_p2_audio_allowed[1], 1);
+    rc |= expect_eq("slot0 clear-to-encrypted: companion ring preserved", st.p25_p2_audio_ring_count[1], 3);
+    rc |= expect_eq("slot0 clear-to-encrypted: companion int16 preserved", st.s_r4[0][0], 22);
+
+    // Follow mode still classifies an in-band encrypted indication before ESS.
+    // Without the explicit unmute override, a stale clear grant must not pass
+    // ciphertext to either the vocoder or recording path.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot0 encrypted follow muted: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 encrypted follow muted: recording stays closed", g_open_mbe_calls[0], 0);
+    rc |= expect_eq("slot0 encrypted follow muted: pending state", st.p25_crypto_state[0],
+                    DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("slot0 encrypted follow muted: gate closed", st.p25_p2_audio_allowed[0], 0);
+
+    // The same pending classification may pass undeciphered audio only when
+    // the user explicitly enables the encrypted-audio unmute policy.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    opts.unmute_encrypted_p25 = 1;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot0 encrypted follow unmuted: mbe calls", g_mbe_calls, 1);
+    rc |= expect_eq("slot0 encrypted follow unmuted: pending state", st.p25_crypto_state[0],
+                    DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("slot0 encrypted follow unmuted: gate open", st.p25_p2_audio_allowed[0], 1);
+
+    // Definitive clear metadata remains authoritative when the cached service
+    // options still carry the encrypted bit on a later voice burst.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.payload_algid = 0x80;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot0 definitive clear: mbe calls", g_mbe_calls, 1);
+    rc |= expect_eq("slot0 definitive clear: crypto state", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_eq("slot0 definitive clear: gate remains open", st.p25_p2_audio_allowed[0], 1);
+
+    reset_state(&opts, &st);
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_audio_allowed[0] = 1;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot0 classified voice: mbe calls", g_mbe_calls, 1);
+    rc |= expect_eq("slot0 classified voice: recording opens", g_open_mbe_calls[0], 1);
+
+    // Slot 0: definitive encrypted ESS remains authoritative until a later
+    // definitive clear ESS indication arrives.
     reset_state(&opts, &st);
     opts.p25_trunk = 1;
     opts.p25_is_tuned = 1;
@@ -442,7 +666,7 @@ main(void) {
     reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot0 stale algid cleanup: encrypted mbe calls", g_mbe_calls, 0);
-    rc |= expect_eq("slot0 stale algid cleanup: algid cleared", st.payload_algid, 0);
+    rc |= expect_eq("slot0 encrypted metadata: algid retained", st.payload_algid, 0x84);
     rc |= expect_eq("slot0 stale algid cleanup: keyid cleared", st.payload_keyid, 0);
     rc |= expect_eq("slot0 stale algid cleanup: mi cleared", st.payload_miP == 0ULL, 1);
     rc |= expect_eq("slot0 stale algid cleanup: marker set", st.p25_p2_enc_lockout_muted[0], 1);
@@ -455,7 +679,8 @@ main(void) {
     rc |= expect_eq("slot0 stale algid cleanup: clear gate open", st.p25_p2_audio_allowed[0], 1);
     rc |= expect_eq("slot0 stale algid cleanup: marker cleared", st.p25_p2_enc_lockout_muted[0], 0);
 
-    // Slot 0: follow encrypted preserves prior behavior even without a key.
+    // Slot 0: even when encrypted calls are followed, unresolved frames do not
+    // reach the vocoder before definitive crypto metadata arrives.
     reset_state(&opts, &st);
     opts.trunk_tune_enc_calls = 1;
     st.currentslot = 0;
@@ -463,7 +688,46 @@ main(void) {
     st.dmr_so = 0x40;
     reset_mbe_calls();
     process_2V(&opts, &st);
-    rc |= expect_eq("slot0 encrypted follow: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot0 unresolved encrypted follow: mbe calls", g_mbe_calls, 0);
+
+    // Explicit encrypted-audio unmute restores the legacy undeciphered-audio
+    // path while encrypted calls are being followed.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    opts.unmute_encrypted_p25 = 1;
+    opts.dmr_mute_encL = 0;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    st.dmr_so = 0x40;
+    st.dmrburstL = 21;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 explicit encrypted unmute: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot0 explicit encrypted unmute: gate open", st.p25_p2_audio_allowed[0], 1);
+
+    // Reverse mute also requests encrypted audio, but lockout probes remain a
+    // hard-suppressed classification path even when both controls are active.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    opts.reverse_mute = 1;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    st.dmr_so = 0x40;
+    st.dmrburstL = 21;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 reverse mute encrypted follow: mbe calls", g_mbe_calls, 2);
+
+    opts.trunk_tune_enc_calls = 0;
+    opts.unmute_encrypted_p25 = 1;
+    opts.dmr_mute_encL = 0;
+    st.p25_p2_audio_allowed[0] = 1;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 explicit unmute lockout probe: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 explicit unmute lockout probe: gate closed", st.p25_p2_audio_allowed[0], 0);
 
     // Slot 0: encrypted lockout enabled but decryptable audio remains allowed.
     reset_state(&opts, &st);
@@ -471,7 +735,9 @@ main(void) {
     st.currentslot = 0;
     st.p25_p2_audio_allowed[0] = 1;
     st.dmr_so = 0x40;
+    st.dmrburstL = 21;
     st.aes_key_loaded[0] = 1;
+    st.aes_key_segments[0] = 4U;
     set_ess_algid(&st, 0, 0x84);
     reset_mbe_calls();
     process_2V(&opts, &st);
@@ -488,6 +754,7 @@ main(void) {
     st.dmr_so = 0x40;
     st.dmrburstL = 21;
     st.aes_key_loaded[0] = 1;
+    st.aes_key_segments[0] = 4U;
     set_ess_algid(&st, 0, 0x84);
     reset_mbe_calls();
     process_2V(&opts, &st);
@@ -501,6 +768,7 @@ main(void) {
     st.currentslot = 0;
     st.p25_p2_audio_allowed[0] = 1;
     st.dmr_so = 0x40;
+    st.dmrburstL = 21;
     set_ess_algid(&st, 0, 0x80);
     reset_mbe_calls();
     process_2V(&opts, &st);
@@ -531,9 +799,10 @@ main(void) {
     rc |= expect_eq("slot1 pre-ess lockout: mbe calls", g_mbe_calls, 0);
     rc |= expect_eq("slot1 pre-ess lockout: gate closed", st.p25_p2_audio_allowed[1], 0);
     rc |= expect_eq("slot1 pre-ess lockout: fourv preserved", st.fourv_counter[1], 3);
-    rc |= expect_eq("slot1 pre-ess lockout: marker clear", st.p25_p2_enc_lockout_muted[1], 0);
+    rc |= expect_eq("slot1 pre-ess lockout: pending marker set", st.p25_p2_enc_lockout_muted[1], 1);
+    rc |= expect_eq("slot1 pre-ess lockout: pending state", st.p25_crypto_state[1], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
-    // Slot 1: same stale-ALGID cleanup as slot 0.
+    // Slot 1: same sticky encrypted metadata behavior as slot 0.
     reset_state(&opts, &st);
     opts.p25_trunk = 1;
     opts.p25_is_tuned = 1;
@@ -550,7 +819,7 @@ main(void) {
     reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot1 stale algid cleanup: encrypted mbe calls", g_mbe_calls, 0);
-    rc |= expect_eq("slot1 stale algid cleanup: algid cleared", st.payload_algidR, 0);
+    rc |= expect_eq("slot1 encrypted metadata: algid retained", st.payload_algidR, 0x84);
     rc |= expect_eq("slot1 stale algid cleanup: keyid cleared", st.payload_keyidR, 0);
     rc |= expect_eq("slot1 stale algid cleanup: mi cleared", st.payload_miN == 0ULL, 1);
     rc |= expect_eq("slot1 stale algid cleanup: marker set", st.p25_p2_enc_lockout_muted[1], 1);
@@ -563,7 +832,7 @@ main(void) {
     rc |= expect_eq("slot1 stale algid cleanup: clear gate open", st.p25_p2_audio_allowed[1], 1);
     rc |= expect_eq("slot1 stale algid cleanup: marker cleared", st.p25_p2_enc_lockout_muted[1], 0);
 
-    // Slot 1: follow encrypted preserves prior behavior even without a key.
+    // Slot 1: unresolved followed encryption is also gated before the vocoder.
     reset_state(&opts, &st);
     opts.trunk_tune_enc_calls = 1;
     st.currentslot = 1;
@@ -571,7 +840,7 @@ main(void) {
     st.dmr_soR = 0x40;
     reset_mbe_calls();
     process_2V(&opts, &st);
-    rc |= expect_eq("slot1 encrypted follow: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot1 unresolved encrypted follow: mbe calls", g_mbe_calls, 0);
 
     // Slot 1: encrypted lockout enabled but decryptable audio remains allowed.
     reset_state(&opts, &st);
@@ -579,7 +848,9 @@ main(void) {
     st.currentslot = 1;
     st.p25_p2_audio_allowed[1] = 1;
     st.dmr_soR = 0x40;
+    st.dmrburstR = 21;
     st.aes_key_loaded[1] = 1;
+    st.aes_key_segments[1] = 4U;
     set_ess_algid(&st, 1, 0x84);
     reset_mbe_calls();
     process_2V(&opts, &st);
@@ -596,6 +867,7 @@ main(void) {
     st.dmr_soR = 0x40;
     st.dmrburstR = 21;
     st.aes_key_loaded[1] = 1;
+    st.aes_key_segments[1] = 4U;
     set_ess_algid(&st, 1, 0x84);
     reset_mbe_calls();
     process_2V(&opts, &st);
@@ -609,6 +881,7 @@ main(void) {
     st.currentslot = 1;
     st.p25_p2_audio_allowed[1] = 1;
     st.dmr_soR = 0x40;
+    st.dmrburstR = 21;
     set_ess_algid(&st, 1, 0x80);
     reset_mbe_calls();
     process_2V(&opts, &st);

@@ -26,6 +26,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -131,7 +132,9 @@ p25p1_ldu1_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_coun
         // SM event: ACTIVE (P1 uses slot 0).
         p25_sm_emit_active(opts, state, 0);
     }
-    p25p1_play_imbe_audio(opts, state);
+    if (p25_crypto_audio_permitted(opts, state, 0)) {
+        p25p1_play_imbe_audio(opts, state);
+    }
 }
 
 static void

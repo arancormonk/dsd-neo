@@ -740,6 +740,9 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->fourv_counter[1] = 0;
     state->voice_counter[0] = 0;
     state->voice_counter[1] = 0;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
+    DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));
     state->p25_p2_enc_lockout_muted[0] = 0;
     state->p25_p2_enc_lockout_muted[1] = 0;
 
@@ -863,6 +866,7 @@ init_state_p25_retune_backoff_defaults(dsd_state* state) {
     }
     DSD_MEMSET(state->p25_enc_tg_cache_until, 0, sizeof(state->p25_enc_tg_cache_until));
     DSD_MEMSET(state->p25_enc_tg_cache_tg, 0, sizeof(state->p25_enc_tg_cache_tg));
+    DSD_MEMSET(state->p25_enc_tg_cache_is_group, 0, sizeof(state->p25_enc_tg_cache_is_group));
     state->p25_enc_tg_cache_next = 0;
 }
 

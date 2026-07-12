@@ -326,6 +326,10 @@ main(void) {
     state->rtl_fsk_sps_num = 48000;
     state->rtl_fsk_sps_den = 4800;
     state->rtl_fsk_sps_accum = 2400;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
+    state->p25_p2_audio_allowed[0] = 1;
+    state->p25_p2_audio_allowed[1] = 1;
 
     noCarrier(opts, state);
 
@@ -340,6 +344,10 @@ main(void) {
                           && state->p25_mac_frag[1].collected == 0U && state->p25_mac_frag[1].data[5] == 0U);
     rc |= expect_true("rtl-fsk-sps-cache-reset",
                       state->rtl_fsk_sps_num == 0 && state->rtl_fsk_sps_den == 0 && state->rtl_fsk_sps_accum == 0);
+    rc |= expect_true("p25-crypto-readiness-reset", state->p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN
+                                                        && state->p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN);
+    rc |= expect_true("p25-crypto-audio-gates-reset",
+                      state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
 
     for (int i = 0; i < 200; i++) {
         if (state->dmr_payload_buf[i] != 0) {

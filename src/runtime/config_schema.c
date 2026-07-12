@@ -76,7 +76,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunking", "tune_group_calls", "Tune to group voice calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
     {"trunking", "tune_private_calls", "Tune to private/individual calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
     {"trunking", "tune_data_calls", "Tune to data channel grants", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"trunking", "tune_enc_calls", "Tune to encrypted calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"trunking", "tune_enc_calls", "Follow P25 encrypted grants without key lockout", "true", NULL, DSDCFG_TYPE_BOOL, 0,
+     0, 0},
 
     /* [trunk_scan] section */
     {"trunk_scan", "enabled", "Enable single-tuner trunk scan mode", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},

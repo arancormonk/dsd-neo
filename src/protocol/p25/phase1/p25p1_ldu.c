@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
@@ -121,8 +123,7 @@ debug_write_imbe_c0_bits(dsd_state* state, const int* w, const int* x, const int
 
 static void
 update_ldu_encryption_flag(dsd_state* state) {
-    // ALGID 0x00 is unknown until HDU/LDU2 confirms clear 0x80.
-    state->dmr_encL = (state->payload_algid != 0x80) ? 1 : 0;
+    state->dmr_encL = p25_crypto_audio_ready(state, 0) ? 0 : 1;
 }
 
 static int
@@ -147,6 +148,13 @@ process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr
             DSD_FPRINTF(stderr, "\n IMBE Non-standard c0 detected, skipped;");
         }
         return;
+    }
+    if (!p25_crypto_audio_permitted(opts, state, 0)) {
+        DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));
+        return;
+    }
+    if (opts->mbe_out_dir[0] != 0 && opts->mbe_out_f == NULL) {
+        openMbeOutFile(opts, state);
     }
     processMbeFrameSoft(opts, state, imbe_soft_fr, NULL, NULL);
 }

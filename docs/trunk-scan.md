@@ -137,6 +137,11 @@ idle_dwell_ms = 3000
 activity_hold_ms = 1200
 ```
 
+Set `tune_enc_calls = false` to enable key-aware P25 encryption lockout. Otherwise eligible encrypted or
+encryption-unknown P25 voice grants are visited briefly and classified silently; only clear calls or calls with a
+complete matching key for a supported algorithm continue. Missing-key calls remain silent and are released at
+classification or grant timeout, while a clear companion Phase 2 slot is preserved.
+
 Validate the config before using it:
 
 ```sh

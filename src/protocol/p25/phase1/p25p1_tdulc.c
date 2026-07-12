@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -340,6 +341,9 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     tdulc_apply_recovery_result(state, irrecoverable_errors);
     tdulc_finalize_tail_symbols(opts, state, &status_count);
     tdulc_build_lcw_payload((const char (*)[12])dodeca_data, LCW_bytes, LCW_bits);
+    // End the current call before LCW dispatch. A valid grant can synchronously
+    // initialize the next call's crypto classification and must survive TDULC.
+    p25_crypto_reset_slot(state, 0);
 
     if (irrecoverable_errors == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);

@@ -675,17 +675,23 @@ test_p25p2_encrypted_lockout_slot_helper(void) {
 
     int rc = 0;
     state.payload_algidR = 0x81;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
+    state.p25_p2_enc_lockout_muted[1] = 1U;
     rc |= expect_int("p25p2 right encrypted without key locks out",
                      dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1), 1);
     state.RR = 0x1234;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
+    state.p25_p2_enc_lockout_muted[1] = 0U;
     rc |= expect_int("p25p2 right key suppresses lockout", dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1),
                      0);
     state.RR = 0;
     opts.trunk_tune_enc_calls = 1;
-    rc |= expect_int("p25p2 trunk encrypted tuning suppresses lockout",
-                     dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1), 0);
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    state.p25_p2_enc_lockout_muted[1] = 1U;
+    rc |= expect_int("p25p2 pending state remains slot-suppressed",
+                     dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1), 1);
     opts.trunk_tune_enc_calls = 0;
-    state.p25_p2_enc_lockout_muted[1] = 1;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     rc |= expect_int("p25p2 existing lockout label stays muted",
                      dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1), 1);
     rc |=
@@ -725,6 +731,7 @@ test_p25p2_ss18_slot_preference_and_copy_policy_helpers(void) {
     opts.slot1_on = 0;
     opts.slot2_on = 1;
     state.payload_algid = 0x81;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 1, 0);
     rc |= expect_int("ss18 encrypted left lockout blocks right-to-left copy", state.s_l4[0][0], 0);
     rc |= expect_int("ss18 right retained when left lockout", state.s_r4[0][0], 20);
@@ -732,6 +739,7 @@ test_p25p2_ss18_slot_preference_and_copy_policy_helpers(void) {
     state.s_l4[0][0] = 10;
     state.s_r4[0][0] = 20;
     state.R = 0x12345678ULL;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 1, 0);
     rc |= expect_int("ss18 keyed left allows right-to-left copy", state.s_l4[0][0], 20);
 
@@ -741,12 +749,14 @@ test_p25p2_ss18_slot_preference_and_copy_policy_helpers(void) {
     opts.slot2_on = 0;
     state.payload_algidR = 0x84;
     state.aes_key_loaded[1] = 0;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 0, 1);
     rc |= expect_int("ss18 encrypted right lockout blocks left-to-right copy", state.s_r4[0][1], 0);
 
     state.s_l4[0][1] = 30;
     state.s_r4[0][1] = 40;
     state.aes_key_loaded[1] = 1;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
     dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 0, 1);
     rc |= expect_int("ss18 keyed right allows left-to-right copy", state.s_r4[0][1], 30);
 
@@ -802,6 +812,7 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     opts.dmr_mute_encR = 1;
     opts.pulse_digi_out_channels = 2;
     state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     state.f_l[0] = 0.5f;
     state.f_l[1] = -0.25f;
 
@@ -816,13 +827,78 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     rc |= expect_float("fs stereo next left scaled", fs_stereo[2], -0.125f);
     rc |= expect_float("fs clears temp working buffer", state.audio_out_temp_buf[0], 0.0f);
 
+    opts.reverse_mute = 1;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS(&opts, &state);
+    rc |= expect_int("fs reverse mute suppresses clear P25", g_udp_blast_calls, 0);
+    opts.reverse_mute = 0;
+
     state.f_l[0] = 0.75f;
     state.payload_algid = 0x81;
     state.R = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     reset_sink_capture();
     playSynthesizedVoiceFS(&opts, &state);
     rc |= expect_int("fs encrypted without key skips output", g_udp_blast_calls, 0);
     rc |= expect_float("fs encrypted path clears temp buffer", state.audio_out_temp_buf[0], 0.0f);
+
+    opts.trunk_tune_enc_calls = 1;
+    opts.unmute_encrypted_p25 = 1;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS(&opts, &state);
+    rc |= expect_int("fs explicit P25 unmute emits undeciphered audio", g_udp_blast_calls, 1);
+
+    opts.trunk_tune_enc_calls = 0;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS(&opts, &state);
+    rc |= expect_int("fs P25 lockout probe overrides explicit unmute", g_udp_blast_calls, 0);
+    opts.unmute_encrypted_p25 = 0;
+    opts.trunk_tune_enc_calls = 1;
+
+    opts.reverse_mute = 1;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS(&opts, &state);
+    rc |= expect_int("fs reverse mute emits encrypted P25", g_udp_blast_calls, 1);
+    opts.reverse_mute = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.pulse_digi_out_channels = 1;
+    opts.reverse_mute = 1;
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.f_l[0] = 0.625f;
+    reset_sink_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("fm reverse mute suppresses clear P25", g_udp_blast_calls, 0);
+    opts.reverse_mute = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.mbe_file_type = 3;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
+    state.f_l[0] = 0.625f;
+    reset_sink_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("sdrtrunk json P25 playback bypasses live crypto state", g_udp_blast_calls, 1);
+    rc |= expect_size("sdrtrunk json P25 playback bytes", g_udp_blast_bytes, 160U * sizeof(float));
+    rc |= expect_float("sdrtrunk json P25 playback sample", ((const float*)g_udp_blast_data)[0], 0.625f);
+
+    state.payload_algid = 0x81;
+    state.f_l[0] = -0.5f;
+    reset_sink_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("sdrtrunk json decrypted P25 bypasses live ALGID gate", g_udp_blast_calls, 1);
+    rc |= expect_float("sdrtrunk json decrypted P25 sample", ((const float*)g_udp_blast_data)[0], -0.5f);
+
+    state.mbe_file_type = 0;
+    state.f_l[0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("live P25 unknown crypto remains muted", g_udp_blast_calls, 0);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.pulse_digi_out_channels = 1;

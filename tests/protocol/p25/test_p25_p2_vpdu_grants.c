@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -591,6 +592,111 @@ test_motorola_extended_function_supergroup_state(void) {
     return rc;
 }
 
+static int
+test_inband_encrypted_voice_starts_classification_deadline(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+
+    p25_sm_init(&opts, &state);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    ctx->state = P25_SM_TUNED;
+    ctx->vc_is_tdma = 1;
+    ctx->vc_freq_hz = 851000000;
+    ctx->vc_tg = 0x3456;
+    ctx->slots[0].grant_active = 1;
+    ctx->slots[0].voice_active = 1;
+    ctx->slots[0].last_active_m = 2.0;
+    ctx->slots[0].crypto_attempt_m = 1.0;
+
+    MAC[1] = 0x80;
+    MAC[2] = 0x90;
+    MAC[3] = 0x40;
+    MAC[4] = 0x34;
+    MAC[5] = 0x56;
+    MAC[6] = 0x01;
+    MAC[7] = 0x02;
+    MAC[8] = 0x03;
+
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    rc |=
+        expect_eq_long("in-band encrypted voice pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq_long("in-band encrypted voice gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq_long("in-band encrypted voice activity cleared", ctx->slots[0].voice_active, 0);
+    rc |= expect_true("in-band encrypted voice deadline refreshed", ctx->slots[0].crypto_attempt_m > 1.0);
+
+    const double started_m = ctx->slots[0].crypto_attempt_m;
+    ctx->slots[0].voice_active = 1;
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    rc |= expect_eq_long("repeated in-band encrypted voice activity cleared", ctx->slots[0].voice_active, 0);
+    rc |= expect_true("repeated in-band encrypted voice keeps deadline",
+                      fabs(ctx->slots[0].crypto_attempt_m - started_m) <= 1.0e-9);
+    p25_sm_init(&opts, &state);
+    return rc;
+}
+
+static int
+test_private_voice_ignores_regroup_clear_key_collision(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.p25_trunk = 1;
+    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+
+    p25_sm_init(&opts, &state);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    ctx->state = P25_SM_TUNED;
+    ctx->vc_is_tdma = 1;
+    ctx->vc_freq_hz = 851000000;
+    ctx->vc_tg = 0x123456;
+    ctx->slots[0].grant_active = 1;
+    ctx->slots[0].voice_active = 1;
+
+    p25_patch_add_wgid(&state, 0x2222, 0x3456);
+    p25_patch_set_kas(&state, 0x2222, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
+
+    MAC[1] = 0x02;
+    MAC[2] = 0x40;
+    MAC[3] = 0x12;
+    MAC[4] = 0x34;
+    MAC[5] = 0x56;
+    MAC[6] = 0x01;
+    MAC[7] = 0x02;
+    MAC[8] = 0x03;
+
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+    rc |= expect_eq_long("private patch collision call type", state.gi[0], 1);
+    rc |= expect_eq_long("private patch collision target", state.lasttg, 0x123456);
+    rc |=
+        expect_eq_long("private patch collision pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq_long("private patch collision gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq_long("private patch collision activity cleared", ctx->slots[0].voice_active, 0);
+    rc |= expect_true("private patch collision deadline started", ctx->slots[0].crypto_attempt_m > 0.0);
+
+    p25_sm_init(&opts, &state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -604,6 +710,8 @@ main(void) {
 
     rc |= test_harris_a4_grg_state_management();
     rc |= test_motorola_extended_function_supergroup_state();
+    rc |= test_inband_encrypted_voice_starts_classification_deadline();
+    rc |= test_private_voice_ignores_regroup_clear_key_collision();
 
     // Case A: MFID 0x90, opcode A3 (Group Regroup Channel Grant - Implicit)
     {
@@ -659,6 +767,40 @@ main(void) {
         p25_test_invoke_mac_vpdu_capture(mac, 24, 1, cc, &cfg, &vc, &tuned);
         rc |= expect_true("UU tuned", tuned == 1);
         rc |= expect_eq_long("UU vc", vc, 851125000);
+    }
+
+    // Case B2: Service-option-unknown private grants must reach the centralized
+    // silent probe policy when encrypted-call lockout is enabled.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_private_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x44;
+        MAC[2] = 0x10;
+        MAC[3] = 0x0A;
+        MAC[6] = 0x01;
+        MAC[9] = 0x02;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("UU unknown-service probe tunes", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("UU unknown-service probe vc", state.p25_vc_freq[0], 851125000);
+        rc |= expect_eq_long("UU unknown-service probe pending", state.p25_crypto_state[0],
+                             DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     }
 
     // Case C: Group Voice Channel Grant Update Multiple - Explicit (opcode 0x25)
@@ -1105,7 +1247,8 @@ main(void) {
         rc |= expect_eq_long("0xA3 SACCH slot1 emergency unchanged", state.p25_call_emergency[1], 0);
     }
 
-    // Case D5d: encrypted MFID90 0xA3 grants are blocked when encrypted following is disabled.
+    // Case D5d: encrypted MFID90 0xA3 grants become silent classification probes
+    // when encrypted following is disabled.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -1132,9 +1275,10 @@ main(void) {
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
 
-        rc |= expect_true("0xA3 encrypted blocked no tune", opts.p25_is_tuned == 0);
-        rc |= expect_eq_long("0xA3 encrypted cache tg", state.p25_enc_tg_cache_tg[0], 0x2222);
-        rc |= expect_true("0xA3 encrypted cache armed", state.p25_enc_tg_cache_until[0] > time(NULL));
+        rc |= expect_true("0xA3 encrypted probe tunes", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0xA3 encrypted probe gate closed", state.p25_p2_audio_allowed[0], 0);
+        rc |=
+            expect_eq_long("0xA3 encrypted probe pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
         rc |= expect_contains("0xA3 encrypted active", state.active_channel[0], "MFID90 Active Ch: 100A");
     }
 
@@ -1195,6 +1339,7 @@ main(void) {
         process_MAC_VPDU(&opts, &state, 0, MAC);
         rc |= expect_eq_long("0x80 policy member last tg", state.lasttg, 0x3456);
         rc |= expect_eq_long("0x80 policy member preserved", state.p25_policy_tg[0], 0x1234);
+        state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
         rc |= expect_eq_long("0x80 policy member audio", dsd_p25p2_decode_audio_allowed(&opts, &state, 0, 0), 1);
 
         state.p25_policy_tg[0] = 0x7777;
@@ -1622,7 +1767,7 @@ main(void) {
         rc |= expect_eq_long("0x42 blocked vc", state.p25_vc_freq[0], 0);
     }
 
-    // Case J: no-SVC 0x42 grants honor transient encrypted-call memory after a proven VC lockout.
+    // Case J: no-SVC 0x42 grants are suppressed after a proven encrypted call.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -1654,8 +1799,8 @@ main(void) {
         MAC[9] = 0x35; // group2
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x42 blocked by transient enc cache", opts.p25_is_tuned == 0);
-        rc |= expect_eq_long("0x42 transient enc cache vc", state.p25_vc_freq[0], 0);
+        rc |= expect_true("0x42 suppressed by transient enc cache", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0x42 transient enc cache no vc", state.p25_vc_freq[0], 0);
     }
 
     // Case K: rejected P2 NSBs still prove the system carries TDMA voice without changing return CC metadata.
@@ -1953,8 +2098,8 @@ main(void) {
         rc |= expect_eq_long("p2 rejected voice nsb-ext preserves lra valid", state.p25_site_lra_valid, 1);
     }
 
-    // Case O: encrypted explicit multi-grants should publish channel state but
-    // suppress retune when encrypted following is disabled and no clear key is known.
+    // Case O: encrypted explicit multi-grants publish channel state and tune the
+    // selected candidate as a silent classification probe.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -1991,8 +2136,10 @@ main(void) {
         MAC[15] = 0x78;
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x25 encrypted multi suppressed tune", opts.p25_is_tuned == 0);
-        rc |= expect_eq_long("0x25 encrypted multi no vc", state.p25_vc_freq[0], 0);
+        rc |= expect_true("0x25 encrypted multi probe tunes", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x25 encrypted multi probe vc", state.p25_vc_freq[0], 851125000);
+        rc |= expect_eq_long("0x25 encrypted multi probe pending", state.p25_crypto_state[0],
+                             DSD_P25_CRYPTO_ENCRYPTED_PENDING);
         rc |= expect_contains("0x25 encrypted multi active ch1", state.active_channel[0], "Active Ch: 100A");
         rc |= expect_contains("0x25 encrypted multi active ch2", state.active_channel[0], "Ch: 100B");
         rc |= expect_contains("0x25 encrypted multi active ch group1", state.active_channel[0], "TG: 4660");
@@ -2043,8 +2190,89 @@ main(void) {
         rc |= expect_contains("0x25 octet clamp group2", state.active_channel[0], "TG: 62");
     }
 
-    // Case Q: encrypted implicit triple updates are also blocked before candidate
-    // tuning while still refreshing active-channel state.
+    // Case O2: a clear explicit grant must be selected before an earlier
+    // encrypted grant can tune a different carrier as a silent probe.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x25;
+        MAC[2] = 0x40; // encrypted probe listed first
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[7] = 0x12;
+        MAC[8] = 0x34;
+        MAC[9] = 0x00; // eligible clear call on another carrier
+        MAC[10] = 0x10;
+        MAC[11] = 0x0B;
+        MAC[14] = 0x56;
+        MAC[15] = 0x78;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x25 mixed update tunes", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x25 mixed update prefers clear vc", state.p25_vc_freq[0], 851137500);
+        rc |= expect_eq_long("0x25 mixed update clear classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    }
+
+    // Case O3: rejecting a cached encrypted candidate must not stop the
+    // multi-grant decoder from selecting a later uncached probe.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+        p25_sm_init(&opts, &state);
+        p25_emit_enc_lockout_once(&opts, &state, 0, 0x1234, /*svc_bits*/ 0x40);
+
+        MAC[1] = 0x25;
+        MAC[2] = 0x40; // cached encrypted group
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[7] = 0x12;
+        MAC[8] = 0x34;
+        MAC[9] = 0x40; // uncached encrypted group
+        MAC[10] = 0x10;
+        MAC[11] = 0x0B;
+        MAC[14] = 0x56;
+        MAC[15] = 0x78;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x25 cached first candidate falls through", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x25 later uncached probe selected", state.p25_vc_freq[0], 851137500);
+        rc |= expect_eq_long("0x25 later uncached probe pending", state.p25_crypto_state[0],
+                             DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    }
+
+    // Case Q: encrypted implicit triple updates also tune one silent probe while
+    // refreshing all active-channel state.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -2082,8 +2310,10 @@ main(void) {
         MAC[16] = 0xBC;
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x05 encrypted triple suppressed tune", opts.p25_is_tuned == 0);
-        rc |= expect_eq_long("0x05 encrypted triple no vc", state.p25_vc_freq[0], 0);
+        rc |= expect_true("0x05 encrypted triple probe tunes", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x05 encrypted triple probe vc", state.p25_vc_freq[0], 851125000);
+        rc |= expect_eq_long("0x05 encrypted triple probe pending", state.p25_crypto_state[0],
+                             DSD_P25_CRYPTO_ENCRYPTED_PENDING);
         rc |= expect_contains("0x05 encrypted triple active group1", state.active_channel[0], "TG: 4660");
         rc |= expect_contains("0x05 encrypted triple active group2", state.active_channel[0], "TG: 22136");
         rc |= expect_contains("0x05 encrypted triple active group3", state.active_channel[0], "TG: 39612");
@@ -2144,6 +2374,50 @@ main(void) {
             expect_contains("0x05 output is grant update", out, "Group Voice Channel Grant Update Multiple - Implicit");
         rc |= expect_not_contains("0x05 output is not BSI", out, "System Broadcast (BSI)");
         rc |= expect_contains("0x05 svc 0x90 active group1", state.active_channel[0], "TG: 4660");
+    }
+
+    // Case Q3: implicit multi-grants likewise select a later clear call before
+    // considering an encrypted silent probe on another carrier.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x05;
+        MAC[2] = 0x40; // encrypted probe listed first
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[5] = 0x12;
+        MAC[6] = 0x34;
+        MAC[7] = 0x00; // eligible clear call on another carrier
+        MAC[8] = 0x10;
+        MAC[9] = 0x0B;
+        MAC[10] = 0x56;
+        MAC[11] = 0x78;
+        MAC[12] = 0x40;
+        MAC[13] = 0x10;
+        MAC[14] = 0x0C;
+        MAC[15] = 0x9A;
+        MAC[16] = 0xBC;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x05 mixed update tunes", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x05 mixed update prefers clear vc", state.p25_vc_freq[0], 851137500);
+        rc |= expect_eq_long("0x05 mixed update clear classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     }
 
     // Case R: telephone interconnect grants carry service state and tune like

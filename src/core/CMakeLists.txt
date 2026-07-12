@@ -10,8 +10,10 @@ target_sources(
         audio/mix.c
         audio/convert.c
         audio/dsd_upsample.c
+        vocoder/keyring.c
         vocoder/dsd_mbe.c
         vocoder/dsd_mbe2.c
+        vocoder/dsd_mbe_purge.c
         frames/dsd_frame.c
         frames/dsd_dibit.c
         time/dsd_time.c

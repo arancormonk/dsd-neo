@@ -175,6 +175,18 @@ p25_lcw_print_service_options(const p25_lcw_ctx* ctx) {
 }
 
 static void
+p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_regroup_clear_override) {
+    if (!ctx || !ctx->opts || !ctx->state || (ctx->lc_svcopt & 0x40) == 0) {
+        return;
+    }
+    if (allow_regroup_clear_override && talkgroup > 0
+        && (p25_patch_tg_key_is_clear(ctx->state, talkgroup) || p25_patch_sg_key_is_clear(ctx->state, talkgroup))) {
+        return;
+    }
+    p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
+}
+
+static void
 p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel User");
     uint8_t res = (uint8_t)ConvertBitIntoBytes(&ctx->bits[24], 7);
@@ -200,6 +212,7 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 
+    p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
     p25_lcw_set_call_string_prefix(ctx->state, "   Group ", ctx->lc_svcopt);
 }
 
@@ -222,6 +235,7 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     ctx->state->dmr_so = ctx->lc_svcopt;
     ctx->state->p25_service_options_valid[0] = 1;
 
+    p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
     p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
 }
 
@@ -309,15 +323,8 @@ p25_lcw_update_primary_control_channel(p25_lcw_ctx* ctx, uint32_t wacn, uint16_t
 }
 
 static int
-p25_lcw_format_44_skip_grant(const p25_lcw_ctx* ctx, uint16_t group) {
-    if (ctx->state->tg_hold != 0 && ctx->state->tg_hold != group) {
-        return 1;
-    }
-    if ((ctx->lc_svcopt & 0x40) && ctx->opts->trunk_tune_enc_calls == 0
-        && !p25_patch_tg_key_is_clear(ctx->state, group)) {
-        return 1;
-    }
-    return 0;
+p25_lcw_format_44_hold_blocks_grant(const p25_lcw_ctx* ctx, uint16_t group) {
+    return ctx->state->tg_hold != 0 && ctx->state->tg_hold != group;
 }
 
 static void
@@ -341,7 +348,7 @@ p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t g
         return;
     }
     if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
-        && !p25_lcw_format_44_skip_grant(ctx, group)) {
+        && !p25_lcw_format_44_hold_blocks_grant(ctx, group)) {
         p25_sm_on_group_grant(ctx->opts, ctx->state, channel, ctx->lc_svcopt, group, (int)ctx->state->lastsrc);
     }
 }

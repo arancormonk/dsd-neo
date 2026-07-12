@@ -87,14 +87,20 @@ main(void) {
     p25_sm_on_indiv_grant(&opts, &st, ch, /*svc*/ 0x10, /*dst*/ 1001, /*src*/ 1002);
     rc |= expect_true("data off", st.p25_sm_tune_count == before);
 
-    // Case C: private on, data on but ENC disabled → block when 0x40 set
+    // Case C: with ENC lockout enabled, an otherwise allowed encrypted private
+    // grant tunes as a silent classification probe.
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 0;
     before = st.p25_sm_tune_count;
     p25_sm_on_indiv_grant(&opts, &st, ch, /*svc*/ 0x40, /*dst*/ 1001, /*src*/ 1002);
-    rc |= expect_true("enc off", st.p25_sm_tune_count == before);
+    rc |= expect_true("enc lockout probes", st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("enc lockout probe pending", st.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
     // Case D: all enabled → tune
+    p25_sm_on_release(&opts, &st);
+    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
+    p25_sm_init(&opts, &st);
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;

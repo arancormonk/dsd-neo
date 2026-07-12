@@ -11,6 +11,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -294,6 +295,47 @@ main(void) {
         rc |= expect_eq_int("unmanaged vc-lcw no p25 cc seed", (int)vc_st.p25_cc_freq, 0);
         rc |= expect_eq_int("unmanaged vc-lcw no trunk cc seed", (int)vc_st.trunk_cc_freq, 0);
         rc |= expect_eq_int("unmanaged vc-lcw no lcn0 seed", (int)vc_st.trunk_lcn_freq[0], 0);
+    }
+
+    // In-band voice-user LCWs arrive before the next LDU's voice frames. An
+    // encrypted indication must revoke a grant-derived clear classification,
+    // except when an active regroup explicitly declares KEY=0.
+    {
+        uint8_t voice_lcw[72];
+        const int voice_tg = 0x3456;
+        DSD_MEMSET(voice_lcw, 0, sizeof(voice_lcw));
+        set_bits_msb(voice_lcw, 0, 8, 0x00);
+        set_bits_msb(voice_lcw, 16, 8, 0x40);
+        set_bits_msb(voice_lcw, 32, 16, (unsigned)voice_tg);
+        set_bits_msb(voice_lcw, 48, 24, 0x123456U);
+
+        st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        st.p25_p2_audio_allowed[0] = 1;
+        p25_lcw(&opts, &st, voice_lcw, 0);
+        rc |= expect_eq_int("encrypted group user revokes clear state", st.p25_crypto_state[0],
+                            DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+        rc |= expect_eq_int("encrypted group user closes audio gate", st.p25_p2_audio_allowed[0], 0);
+
+        p25_patch_update(&st, 69, 1, 1);
+        p25_patch_add_wgid(&st, 69, voice_tg);
+        p25_patch_set_kas(&st, 69, 0, 0x84, 17);
+        st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        st.p25_p2_audio_allowed[0] = 1;
+        p25_lcw(&opts, &st, voice_lcw, 0);
+        rc |= expect_eq_int("regroup KEY=0 preserves group clear state", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+        rc |= expect_eq_int("regroup KEY=0 preserves group audio gate", st.p25_p2_audio_allowed[0], 1);
+
+        DSD_MEMSET(voice_lcw, 0, sizeof(voice_lcw));
+        set_bits_msb(voice_lcw, 0, 8, 0x03);
+        set_bits_msb(voice_lcw, 16, 8, 0x40);
+        set_bits_msb(voice_lcw, 24, 24, 0x234567U);
+        set_bits_msb(voice_lcw, 48, 24, 0x123456U);
+        st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        st.p25_p2_audio_allowed[0] = 1;
+        p25_lcw(&opts, &st, voice_lcw, 0);
+        rc |= expect_eq_int("encrypted unit user revokes clear state", st.p25_crypto_state[0],
+                            DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+        rc |= expect_eq_int("encrypted unit user closes audio gate", st.p25_p2_audio_allowed[0], 0);
     }
 
     return rc;

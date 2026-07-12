@@ -364,8 +364,8 @@ test_p25p1_mbe_output_and_resume_side_effects(void) {
     dsd_dispatch_handle_p25p1(&opts, &state);
 
     assert(g_close_mbe_calls == 1);
-    assert(g_open_mbe_calls == 1);
-    assert(opts.mbe_out_f == stdout);
+    assert(g_open_mbe_calls == 0);
+    assert(opts.mbe_out_f == NULL);
     assert(state.lastp25type == 2);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));

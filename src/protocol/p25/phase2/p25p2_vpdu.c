@@ -11,6 +11,7 @@
  * 2022-10 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -384,6 +386,12 @@ p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_s
     }
     enc_for_policy = p25p2_mac_policy_flag(svc_bits, policy_encrypted_override, 0x40);
     data_for_policy = p25p2_mac_policy_flag(svc_bits, policy_data_override, 0x10);
+    // Preserve the production parser's private-call allow-list prefilter, but
+    // let the trunk state machine convert encrypted/unknown voice grants into
+    // silent key-classification probes when encryption lockout is enabled.
+    if (!data_for_policy && opts->trunk_tune_enc_calls == 0) {
+        enc_for_policy = 0;
+    }
     if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, enc_for_policy,
                                             data_for_policy, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
                                             DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
@@ -745,6 +753,19 @@ typedef struct {
 } p25p2_vpdu_candidate_policy;
 
 static int
+p25p2_vpdu_candidate_is_silent_probe(const dsd_opts* opts, const dsd_state* state,
+                                     const p25p2_vpdu_group_candidate* candidate) {
+    if (!opts || !candidate || opts->trunk_tune_enc_calls != 0
+        || (candidate->svc_bits >= 0 && (candidate->svc_bits & 0x10) != 0)) {
+        return 0;
+    }
+    if (p25_patch_tg_key_is_clear(state, candidate->group) || p25_patch_sg_key_is_clear(state, candidate->group)) {
+        return 0;
+    }
+    return candidate->svc_bits < 0 || (candidate->svc_bits & 0x40) != 0;
+}
+
+static int
 p25p2_vpdu_try_group_candidate(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
                                const p25p2_vpdu_group_candidate* candidate, const p25p2_vpdu_candidate_policy* policy) {
     int tuned = 0;
@@ -759,6 +780,30 @@ p25p2_vpdu_try_group_candidate(const struct p25p2_mac_result* mac_res, dsd_opts*
     }
     p25p2_vpdu_update_playback_if_match(opts, state, candidate->group, candidate->freq);
     return tuned;
+}
+
+static int
+p25p2_vpdu_try_group_candidates(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
+                                const p25p2_vpdu_group_candidate* candidates, int candidate_count,
+                                const p25p2_vpdu_candidate_policy* policy) {
+    if (!candidates || candidate_count <= 0 || !policy) {
+        return 0;
+    }
+
+    // Silent probes are policy-admissible under encrypted-call lockout. Try
+    // every audible candidate first so a probe cannot claim another carrier
+    // and make a later clear grant in the same update undispatchable.
+    for (int probe_rank = 0; probe_rank < 2; probe_rank++) {
+        for (int j = 0; j < candidate_count; j++) {
+            if (p25p2_vpdu_candidate_is_silent_probe(opts, state, &candidates[j]) != probe_rank) {
+                continue;
+            }
+            if (p25p2_vpdu_try_group_candidate(mac_res, opts, state, &candidates[j], policy)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 static void
@@ -853,15 +898,6 @@ p25p2_vpdu_force_release_after_grace(dsd_opts* opts, dsd_state* state) {
     state->p25_sm_force_release = 1;
     p25_sm_on_release(opts, state);
     return 1;
-}
-
-static void
-p25p2_vpdu_mark_enc_lockout(dsd_opts* opts, dsd_state* state, int slot, int talkgroup) {
-    if (talkgroup == 0 || p25_patch_tg_key_is_clear(state, talkgroup) || p25_patch_sg_key_is_clear(state, talkgroup)) {
-        return;
-    }
-    p25_emit_enc_lockout_once(opts, state, (uint8_t)slot, talkgroup, /*svc_bits*/ 0);
-    state->p25_p2_enc_lockout_muted[slot & 1] = 1;
 }
 
 static void
@@ -960,46 +996,19 @@ p25p2_vpdu_update_private_last_ids(dsd_state* state, int slot, int talkgroup, in
 
 static void
 p25p2_vpdu_handle_group_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot, int talkgroup) {
-    double mac_hold = p25p2_vpdu_cfg_mac_hold_s(state, 0.75);
-    double voice_hold = p25p2_vpdu_cfg_voice_hold_s(0.6);
-    int other_audio = 0;
-
-    p25p2_vpdu_mark_enc_lockout(opts, state, slot, talkgroup);
-    p25p2_vpdu_gate_slot_audio(state, slot);
-    other_audio = p25p2_vpdu_other_slot_audio_with_history(state, slot, mac_hold, voice_hold);
-    if (!other_audio) {
-        DSD_FPRINTF(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); ");
-        if (p25p2_vpdu_force_release_after_grace(opts, state)) {
-            DSD_FPRINTF(stderr, "Return to CC; \n");
-        } else {
-            DSD_FPRINTF(stderr, "Defer (VC grace); stay on VC. \n");
+    if (p25_patch_tg_key_is_clear(state, talkgroup) || p25_patch_sg_key_is_clear(state, talkgroup)) {
+        const int slot_idx = slot & 1;
+        if (state->p25_crypto_state[slot_idx] != DSD_P25_CRYPTO_CLEAR) {
+            p25_crypto_begin_voice_call(state, DSD_P25_CRYPTO_PHASE2, slot_idx, 0x40, 1);
         }
         return;
     }
-    DSD_FPRINTF(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");
-    p25p2_vpdu_clear_slot_banner(state, slot);
+    p25_sm_emit_crypto_pending(opts, state, slot & 1);
 }
 
 static void
-p25p2_vpdu_handle_unit_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot, int talkgroup) {
-    double mac_hold = p25p2_vpdu_cfg_mac_hold_s(state, 0.75);
-    double voice_hold = p25p2_vpdu_cfg_voice_hold_s(0.6);
-    int other_audio = 0;
-
-    p25p2_vpdu_mark_enc_lockout(opts, state, slot, talkgroup);
-    p25p2_vpdu_gate_slot_audio(state, slot);
-    other_audio = p25p2_vpdu_other_slot_audio_with_history(state, slot, mac_hold, voice_hold);
-    if (!other_audio) {
-        DSD_FPRINTF(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); ");
-        if (p25p2_vpdu_force_release_after_grace(opts, state)) {
-            DSD_FPRINTF(stderr, "Return to CC; \n");
-        } else {
-            DSD_FPRINTF(stderr, "Defer (VC grace); stay on VC. \n");
-        }
-        return;
-    }
-    DSD_FPRINTF(stderr, " No Enc Following on P25p2 Trunking (VCH SVC ENC); Other slot active; stay on VC. \n");
-    p25p2_vpdu_clear_slot_banner(state, slot);
+p25p2_vpdu_handle_unit_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot) {
+    p25_sm_emit_crypto_pending(opts, state, slot & 1);
 }
 
 static long int
@@ -1064,35 +1073,12 @@ p25p2_vpdu_handle_group_explicit_grant(const struct p25p2_mac_result* mac_res, d
     p25p2_vpdu_update_playback_if_match(opts, state, grant->group, freq_t);
 }
 
-static int
-p25p2_vpdu_groups_clear_for_enc(const dsd_state* state, const int* groups, int count) {
-    for (int i = 0; i < count; i++) {
-        if (p25_patch_tg_key_is_clear(state, groups[i]) || p25_patch_sg_key_is_clear(state, groups[i])) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int
-p25p2_vpdu_block07_enc_blocked(const dsd_opts* opts, const dsd_state* state, int svc1, int svc2, int group1,
-                               int group2) {
-    const int groups[2] = {group1, group2};
-    if (!(svc1 & 0x40) || !(svc2 & 0x40) || opts->trunk_tune_enc_calls != 0) {
-        return 0;
-    }
-    return !p25p2_vpdu_groups_clear_for_enc(state, groups, 2);
-}
-
 static void
 p25p2_vpdu_block07_try_candidates(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
                                   const p25p2_vpdu_group_candidate candidates[2]) {
     int loop = (candidates[0].channel == candidates[1].channel) ? 1 : 2;
     const p25p2_vpdu_candidate_policy policy = {-1, -1, 1, 0};
-
-    for (int j = 0; j < loop; j++) {
-        (void)p25p2_vpdu_try_group_candidate(mac_res, opts, state, &candidates[j], &policy);
-    }
+    (void)p25p2_vpdu_try_group_candidates(mac_res, opts, state, candidates, loop, &policy);
 }
 
 static void
@@ -1103,27 +1089,15 @@ p25p2_vpdu_block08_print_entry(const dsd_opts* opts, dsd_state* state, int index
     *out_freq = process_channel_to_freq(opts, state, channel);
 }
 
-static int
-p25p2_vpdu_block08_enc_blocked(const dsd_opts* opts, const dsd_state* state, int so1, int so2, int so3, int group1,
-                               int group2, int group3) {
-    const int groups[3] = {group1, group2, group3};
-    if (!(so1 & 0x40) || !(so2 & 0x40) || !(so3 & 0x40) || opts->trunk_tune_enc_calls != 0) {
-        return 0;
-    }
-    return !p25p2_vpdu_groups_clear_for_enc(state, groups, 3);
-}
-
 static void
 p25p2_vpdu_block08_try_candidates(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
                                   const int* channels, const int* groups, const long int* freqs, const int* svcs) {
+    p25p2_vpdu_group_candidate candidates[3];
     for (int j = 0; j < 3; j++) {
-        p25p2_vpdu_group_candidate candidate = {channels[j], groups[j], freqs[j], svcs[j]};
-        const p25p2_vpdu_candidate_policy policy = {-1, -1, 1, 1};
-        int tuned = p25p2_vpdu_try_group_candidate(mac_res, opts, state, &candidate, &policy);
-        if (tuned) {
-            break;
-        }
+        candidates[j] = (p25p2_vpdu_group_candidate){channels[j], groups[j], freqs[j], svcs[j]};
     }
+    const p25p2_vpdu_candidate_policy policy = {-1, -1, 1, 1};
+    (void)p25p2_vpdu_try_group_candidates(mac_res, opts, state, candidates, 3, &policy);
 }
 
 //MAC PDU 3-bit Opcodes BBAC (8.4.1) p 123:
@@ -1582,10 +1556,6 @@ p25p2_vpdu_iter_block_07(p25p2_vpdu_ctx* ctx) {
             ctx->skip_rest = 1;
             goto BLOCK_END;
         }
-        if (p25p2_vpdu_block07_enc_blocked(opts, state, svc1, svc2, group1, group2)) {
-            ctx->skip_rest = 1;
-            goto BLOCK_END;
-        }
         p25p2_vpdu_group_candidate candidates[2] = {{channelt1, group1, freq1t, svc1},
                                                     {channelt2, group2, freq2t, svc2}};
         p25p2_vpdu_block07_try_candidates(&mac_res, opts, state, candidates);
@@ -1644,11 +1614,6 @@ p25p2_vpdu_iter_block_08(p25p2_vpdu_ctx* ctx) {
             ctx->skip_rest = 1;
             goto BLOCK_END;
         }
-        if (p25p2_vpdu_block08_enc_blocked(opts, state, so1, so2, so3, group1, group2, group3)) {
-            ctx->skip_rest = 1;
-            goto BLOCK_END;
-        }
-
         const int channels[3] = {channel1, channel2, channel3};
         const int groups[3] = {group1, group2, group3};
         const long int freqs[3] = {freq1, freq2, freq3};
@@ -3504,8 +3469,9 @@ p25p2_vpdu_iter_block_44(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "TGT: %d; ", add);
         DSD_FPRINTF(stderr, "CC: %03X; ", cc);
 
+        dsd_p25p2_flush_partial_audio_slot(opts, state, eslot & 1);
         p25p2_vpdu_gate_slot_audio(state, eslot);
-        state->p25_p2_enc_lockout_muted[eslot & 1] = 0;
+        p25_crypto_reset_slot(state, eslot & 1);
         other_audio = p25p2_vpdu_other_slot_audio_with_history(state, eslot, mac_hold, voice_hold);
         if (!other_audio) {
             (void)p25p2_vpdu_force_release_after_grace(opts, state);
@@ -3622,7 +3588,7 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_update_private_last_ids(state, slot, gr, src);
 
         if ((svc & 0x40) && opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
-            p25p2_vpdu_handle_unit_voice_enc_fallback(opts, state, slot, gr);
+            p25p2_vpdu_handle_unit_voice_enc_fallback(opts, state, slot);
         }
     }
 

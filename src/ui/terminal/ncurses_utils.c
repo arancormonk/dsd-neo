@@ -115,21 +115,26 @@ compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95) {
 }
 
 static int
-ui_extract_target_id_from_label(const char* label, uint32_t* out_id) {
+ui_extract_target_id_from_label(const char* label, uint32_t* out_id, int* out_is_group) {
     if (!label || !*label) {
         return 0;
     }
     /* Try group, generic target, then MFID90 regroup supergroup labels. */
     const char* pos = strstr(label, "TG:");
     size_t prefix_len = 3;
+    int is_group = 1;
     if (!pos) {
         /* Fallback to generic target ("TGT:") often used for private/data */
         pos = strstr(label, "TGT:");
-        prefix_len = 4;
+        if (pos) {
+            prefix_len = 4;
+            is_group = 0;
+        }
     }
     if (!pos) {
         pos = strstr(label, "SG:");
         prefix_len = 3;
+        is_group = 1;
     }
     if (!pos) {
         return 0;
@@ -146,6 +151,9 @@ ui_extract_target_id_from_label(const char* label, uint32_t* out_id) {
     if (out_id) {
         *out_id = (uint32_t)id;
     }
+    if (out_is_group) {
+        *out_is_group = is_group;
+    }
     return 1;
 }
 
@@ -159,7 +167,7 @@ ui_is_locked_from_label(const dsd_state* state, const char* label) {
         return 0;
     }
     uint32_t id = 0;
-    if (!ui_extract_target_id_from_label(label, &id)) {
+    if (!ui_extract_target_id_from_label(label, &id, NULL)) {
         return 0;
     }
     char mode[8];
@@ -178,13 +186,18 @@ ui_is_transient_enc_locked_from_label(const dsd_state* state, const char* label)
              || DSD_SYNC_IS_P25P1(state->lastsynctype) || DSD_SYNC_IS_P25P2(state->lastsynctype))) {
         return 0;
     }
+    if (label && strstr(label, "Data") != NULL) {
+        return 0;
+    }
     uint32_t id = 0;
-    if (!ui_extract_target_id_from_label(label, &id)) {
+    int is_group = 1;
+    if (!ui_extract_target_id_from_label(label, &id, &is_group)) {
         return 0;
     }
     const time_t now = time(NULL);
     for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (state->p25_enc_tg_cache_tg[i] == id && state->p25_enc_tg_cache_until[i] > now) {
+        if (state->p25_enc_tg_cache_tg[i] == id && state->p25_enc_tg_cache_is_group[i] == (uint8_t)(is_group ? 1 : 0)
+            && state->p25_enc_tg_cache_until[i] > now) {
             return 1;
         }
     }
