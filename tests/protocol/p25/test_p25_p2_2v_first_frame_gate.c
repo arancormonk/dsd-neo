@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -23,11 +24,15 @@
 
 struct RtlSdrContext;
 static int g_open_mbe_calls[2];
+static int g_fs4_calls = 0;
+static int g_fs4_pending_at_call = 0;
+static int g_fs4_keyid_at_call = 0;
+static int g_fs4_ring_count_at_call = 0;
 
 // Expose the P25p2 2V handler under test
 void process_2V(dsd_opts* opts, dsd_state* state);
 void p25p2_test_decode_voice_frame_for_lockout(dsd_opts* opts, dsd_state* state);
-void p25p2_test_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state);
+void p25p2_test_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status);
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 bool SetFreq(int sockfd, long int freq);
@@ -147,7 +152,11 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 void
 playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    g_fs4_calls++;
+    g_fs4_pending_at_call = state->p25_p2_rekey[0].pending;
+    g_fs4_keyid_at_call = state->payload_keyid;
+    g_fs4_ring_count_at_call = state->p25_p2_audio_ring_count[0];
+    p25_p2_audio_ring_reset(state, -1);
 }
 
 void
@@ -359,6 +368,10 @@ reset_mbe_calls(void) {
     DSD_MEMSET(g_mbe_keyid, 0, sizeof(g_mbe_keyid));
     g_open_mbe_calls[0] = 0;
     g_open_mbe_calls[1] = 0;
+    g_fs4_calls = 0;
+    g_fs4_pending_at_call = 0;
+    g_fs4_keyid_at_call = 0;
+    g_fs4_ring_count_at_call = 0;
 }
 
 static void
@@ -433,6 +446,8 @@ main(void) {
     // retain the current tuple until the paired-timeslot drain has run.
     reset_state(&opts, &st);
     opts.trunk_tune_enc_calls = 0;
+    opts.floating_point = 1;
+    opts.pulse_digi_rate_out = 8000;
     st.currentslot = 0;
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     st.p25_p2_audio_allowed[0] = 1;
@@ -460,7 +475,11 @@ main(void) {
     rc |= expect_eq("slot0 rekey boundary: prior int16 preserved", st.s_l4[0][0], 101);
     rc |= expect_eq("slot0 rekey boundary: queued audio preserved", st.p25_p2_audio_ring_count[0], 3);
 
-    p25p2_test_commit_deferred_rekeys(&opts, &st);
+    p25p2_test_post_timeslot(&opts, &st, 1, 1);
+    rc |= expect_eq("slot0 rekey SACCH drain: fs4 calls", g_fs4_calls, 1);
+    rc |= expect_eq("slot0 rekey SACCH drain: pending during output", g_fs4_pending_at_call, 1);
+    rc |= expect_eq("slot0 rekey SACCH drain: old key during output", g_fs4_keyid_at_call, 0x1001);
+    rc |= expect_eq("slot0 rekey SACCH drain: queued boundary audio", g_fs4_ring_count_at_call, 3);
     rc |= expect_eq("slot0 rekey commit: transition cleared", st.p25_p2_rekey[0].pending, 0);
     rc |= expect_eq("slot0 rekey commit: algid promoted", st.payload_algid, 0xAA);
     rc |= expect_eq("slot0 rekey commit: keyid promoted", st.payload_keyid, 0x1002);

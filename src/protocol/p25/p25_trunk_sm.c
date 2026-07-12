@@ -1548,7 +1548,7 @@ p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p2
     const int was_explicit_clear = p25_grant_service_options_are_explicit_clear(previous_svc);
     const int is_explicit_clear = p25_grant_service_options_are_explicit_clear(ev->svc_bits);
     const int classification_changed = !force_clear && was_explicit_clear != is_explicit_clear;
-    const int unapplied_clear_override = force_clear && !p25_crypto_audio_ready(state, crypto_slot);
+    const int unapplied_clear_override = force_clear && state->p25_crypto_state[crypto_slot] != DSD_P25_CRYPTO_CLEAR;
     if (classification_changed || unapplied_clear_override) {
         p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, route->slot, 0, now_m);
     }

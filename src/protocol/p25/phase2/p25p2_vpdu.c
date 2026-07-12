@@ -753,6 +753,19 @@ typedef struct {
 } p25p2_vpdu_candidate_policy;
 
 static int
+p25p2_vpdu_candidate_is_silent_probe(const dsd_opts* opts, const dsd_state* state,
+                                     const p25p2_vpdu_group_candidate* candidate) {
+    if (!opts || !candidate || opts->trunk_tune_enc_calls != 0
+        || (candidate->svc_bits >= 0 && (candidate->svc_bits & 0x10) != 0)) {
+        return 0;
+    }
+    if (p25_patch_tg_key_is_clear(state, candidate->group) || p25_patch_sg_key_is_clear(state, candidate->group)) {
+        return 0;
+    }
+    return candidate->svc_bits < 0 || (candidate->svc_bits & 0x40) != 0;
+}
+
+static int
 p25p2_vpdu_try_group_candidate(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
                                const p25p2_vpdu_group_candidate* candidate, const p25p2_vpdu_candidate_policy* policy) {
     int tuned = 0;
@@ -767,6 +780,30 @@ p25p2_vpdu_try_group_candidate(const struct p25p2_mac_result* mac_res, dsd_opts*
     }
     p25p2_vpdu_update_playback_if_match(opts, state, candidate->group, candidate->freq);
     return tuned;
+}
+
+static int
+p25p2_vpdu_try_group_candidates(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
+                                const p25p2_vpdu_group_candidate* candidates, int candidate_count,
+                                const p25p2_vpdu_candidate_policy* policy) {
+    if (!candidates || candidate_count <= 0 || !policy) {
+        return 0;
+    }
+
+    // Silent probes are policy-admissible under encrypted-call lockout. Try
+    // every audible candidate first so a probe cannot claim another carrier
+    // and make a later clear grant in the same update undispatchable.
+    for (int probe_rank = 0; probe_rank < 2; probe_rank++) {
+        for (int j = 0; j < candidate_count; j++) {
+            if (p25p2_vpdu_candidate_is_silent_probe(opts, state, &candidates[j]) != probe_rank) {
+                continue;
+            }
+            if (p25p2_vpdu_try_group_candidate(mac_res, opts, state, &candidates[j], policy)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 static void
@@ -961,7 +998,7 @@ static void
 p25p2_vpdu_handle_group_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot, int talkgroup) {
     if (p25_patch_tg_key_is_clear(state, talkgroup) || p25_patch_sg_key_is_clear(state, talkgroup)) {
         const int slot_idx = slot & 1;
-        if (!p25_crypto_audio_ready(state, slot_idx)) {
+        if (state->p25_crypto_state[slot_idx] != DSD_P25_CRYPTO_CLEAR) {
             p25_crypto_begin_voice_call(state, DSD_P25_CRYPTO_PHASE2, slot_idx, 0x40, 1);
         }
         return;
@@ -1041,10 +1078,7 @@ p25p2_vpdu_block07_try_candidates(const struct p25p2_mac_result* mac_res, dsd_op
                                   const p25p2_vpdu_group_candidate candidates[2]) {
     int loop = (candidates[0].channel == candidates[1].channel) ? 1 : 2;
     const p25p2_vpdu_candidate_policy policy = {-1, -1, 1, 0};
-
-    for (int j = 0; j < loop; j++) {
-        (void)p25p2_vpdu_try_group_candidate(mac_res, opts, state, &candidates[j], &policy);
-    }
+    (void)p25p2_vpdu_try_group_candidates(mac_res, opts, state, candidates, loop, &policy);
 }
 
 static void
@@ -1058,14 +1092,12 @@ p25p2_vpdu_block08_print_entry(const dsd_opts* opts, dsd_state* state, int index
 static void
 p25p2_vpdu_block08_try_candidates(const struct p25p2_mac_result* mac_res, dsd_opts* opts, dsd_state* state,
                                   const int* channels, const int* groups, const long int* freqs, const int* svcs) {
+    p25p2_vpdu_group_candidate candidates[3];
     for (int j = 0; j < 3; j++) {
-        p25p2_vpdu_group_candidate candidate = {channels[j], groups[j], freqs[j], svcs[j]};
-        const p25p2_vpdu_candidate_policy policy = {-1, -1, 1, 1};
-        int tuned = p25p2_vpdu_try_group_candidate(mac_res, opts, state, &candidate, &policy);
-        if (tuned) {
-            break;
-        }
+        candidates[j] = (p25p2_vpdu_group_candidate){channels[j], groups[j], freqs[j], svcs[j]};
     }
+    const p25p2_vpdu_candidate_policy policy = {-1, -1, 1, 1};
+    (void)p25p2_vpdu_try_group_candidates(mac_res, opts, state, candidates, 3, &policy);
 }
 
 //MAC PDU 3-bit Opcodes BBAC (8.4.1) p 123:

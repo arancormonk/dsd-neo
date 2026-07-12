@@ -2139,6 +2139,45 @@ main(void) {
         rc |= expect_contains("0x25 octet clamp group2", state.active_channel[0], "TG: 62");
     }
 
+    // Case O2: a clear explicit grant must be selected before an earlier
+    // encrypted grant can tune a different carrier as a silent probe.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x25;
+        MAC[2] = 0x40; // encrypted probe listed first
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[7] = 0x12;
+        MAC[8] = 0x34;
+        MAC[9] = 0x00; // eligible clear call on another carrier
+        MAC[10] = 0x10;
+        MAC[11] = 0x0B;
+        MAC[14] = 0x56;
+        MAC[15] = 0x78;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x25 mixed update tunes", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x25 mixed update prefers clear vc", state.p25_vc_freq[0], 851137500);
+        rc |= expect_eq_long("0x25 mixed update clear classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    }
+
     // Case Q: encrypted implicit triple updates also tune one silent probe while
     // refreshing all active-channel state.
     {
@@ -2242,6 +2281,50 @@ main(void) {
             expect_contains("0x05 output is grant update", out, "Group Voice Channel Grant Update Multiple - Implicit");
         rc |= expect_not_contains("0x05 output is not BSI", out, "System Broadcast (BSI)");
         rc |= expect_contains("0x05 svc 0x90 active group1", state.active_channel[0], "TG: 4660");
+    }
+
+    // Case Q3: implicit multi-grants likewise select a later clear call before
+    // considering an encrypted silent probe on another carrier.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+
+        MAC[1] = 0x05;
+        MAC[2] = 0x40; // encrypted probe listed first
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[5] = 0x12;
+        MAC[6] = 0x34;
+        MAC[7] = 0x00; // eligible clear call on another carrier
+        MAC[8] = 0x10;
+        MAC[9] = 0x0B;
+        MAC[10] = 0x56;
+        MAC[11] = 0x78;
+        MAC[12] = 0x40;
+        MAC[13] = 0x10;
+        MAC[14] = 0x0C;
+        MAC[15] = 0x9A;
+        MAC[16] = 0xBC;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x05 mixed update tunes", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x05 mixed update prefers clear vc", state.p25_vc_freq[0], 851137500);
+        rc |= expect_eq_long("0x05 mixed update clear classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     }
 
     // Case R: telephone interconnect grants carry service state and tune like

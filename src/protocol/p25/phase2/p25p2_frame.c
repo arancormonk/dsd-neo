@@ -212,7 +212,7 @@ void p25p2_test_teardown_call(dsd_opts* opts, dsd_state* state);
 void p25p2_test_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 void p25p2_test_process_isch(dsd_opts* opts, dsd_state* state, int framing_index);
 void p25p2_test_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
-void p25p2_test_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state);
+void p25p2_test_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status);
 #endif
 
 #if !defined(DSD_NEO_P25P2_TEST_STUB)
@@ -1513,12 +1513,10 @@ p25p2_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-#if defined(DSD_NEO_P25P2_TEST_STUB)
-void
-p25p2_test_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state) {
-    p25p2_commit_deferred_rekeys(opts, state);
+static int
+p25p2_has_deferred_rekeys(const dsd_state* state) {
+    return state && (state->p25_p2_rekey[0].pending || state->p25_p2_rekey[1].pending);
 }
-#endif
 
 static void
 p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
@@ -1798,6 +1796,9 @@ p25p2_duid_should_abort(dsd_state* state, int err_counter) {
 
 static void
 p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch_status) {
+    int audio_drained = 0;
+    const int output_pair = (ts_counter & 1) != 0;
+
     if (dsd_opts_frontend_active(opts)) {
         dsd_telemetry_publish_both_and_redraw(opts, state);
     }
@@ -1809,16 +1810,19 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch_status) {
 
     vc_counter = vc_counter + 360;
 
-    if (sacch_status == 0 && ts_counter & 1 && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000) {
+    if (output_pair && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000
+        && (sacch_status == 0 || p25p2_has_deferred_rekeys(state))) {
         playSynthesizedVoiceFS4(opts, state);
+        audio_drained = 1;
     }
     if ((state->voice_counter[0] >= 18 || state->voice_counter[1] >= 18) && opts->floating_point == 0
-        && opts->pulse_digi_rate_out == 8000 && ts_counter & 1) {
+        && opts->pulse_digi_rate_out == 8000 && output_pair) {
         playSynthesizedVoiceSS18(opts, state);
         state->voice_counter[0] = 0;
         state->voice_counter[1] = 0;
+        audio_drained = 1;
     }
-    if (ts_counter & 1) {
+    if (audio_drained) {
         // Both logical slots have reached the output stage. Promote any ESS
         // identity changes only now so their purge cannot discard or decrypt
         // the completed boundary superframe with the next stream.
@@ -1834,6 +1838,14 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch_status) {
         voice = 0;
     }
 }
+
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+void
+p25p2_test_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status) {
+    ts_counter = timeslot_index;
+    p25p2_duid_post_timeslot(opts, state, sacch_status);
+}
+#endif
 
 static void DSD_ATTR_USED
 p25p2_duid_fallback_release(dsd_opts* opts, dsd_state* state) {

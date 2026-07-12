@@ -1285,6 +1285,51 @@ main(void) {
     assert(s19g.p25_p2_audio_ring_count[0] == 1);
     assert(s19g.s_l4[0][0] == 321);
 
+    // A regroup KAS transition to explicit KEY=0 must replace an already
+    // decryptable crypto stream even when the duplicate grant retains ENC.
+    static dsd_opts o19k;
+    static dsd_state s19k;
+    DSD_MEMSET(&o19k, 0, sizeof(o19k));
+    DSD_MEMSET(&s19k, 0, sizeof(s19k));
+    o19k.p25_trunk = 1;
+    o19k.trunk_tune_group_calls = 1;
+    o19k.trunk_tune_enc_calls = 0;
+    s19k.p25_cc_freq = 851000000;
+    setup_tdma_iden(&s19k, 2);
+    p25_patch_set_kas(&s19k, 5701, 0x1001, 0x81, 1);
+
+    p25_sm_ctx_t ctx19k;
+    p25_sm_init_ctx(&ctx19k, &o19k, &s19k);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_hook_commits_decoder_state = 1;
+    g_result_tune_to_freq_calls = 0;
+
+    p25_sm_event_t duplicate_regroup_encrypted = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5701, 6701, 0x40);
+    p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_encrypted);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19k.grant_count == 1U);
+    assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+
+    s19k.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    s19k.payload_algid = 0x81;
+    s19k.payload_keyid = 0x1001;
+    s19k.payload_miP = 0x0102030405060708ULL;
+    s19k.p25_p2_audio_allowed[0] = 1;
+    s19k.p25_p2_audio_ring_count[0] = 1;
+    s19k.s_l4[0][0] = 987;
+    p25_patch_set_kas(&s19k, 5701, 0, 0x81, 1);
+
+    p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_encrypted);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19k.grant_count == 1U);
+    assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+    assert(s19k.payload_algid == 0);
+    assert(s19k.payload_keyid == 0);
+    assert(s19k.payload_miP == 0ULL);
+    assert(s19k.p25_p2_audio_allowed[0] == 0);
+    assert(s19k.p25_p2_audio_ring_count[0] == 0);
+    assert(s19k.s_l4[0][0] == 0);
+
     // Phase 1 grants use logical slot 0 for service-option history. Repeating
     // an unchanged clear grant must preserve the active call's audio state.
     static dsd_opts o19h;
