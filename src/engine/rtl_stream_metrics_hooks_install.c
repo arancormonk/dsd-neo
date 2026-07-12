@@ -17,6 +17,17 @@ static int
 rtl_stream_metrics_cqpsk_timing_bias(void) {
     return rtl_stream_cqpsk_timing_bias(NULL);
 }
+
+static int
+rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                       int ted_sps) {
+    rtl_stream_toggle_cqpsk(cqpsk_enable);
+    rtl_stream_clear_ted_sps_override();
+    if (ted_sps > 0) {
+        rtl_stream_set_ted_sps_no_override(ted_sps);
+    }
+    return rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+}
 #endif
 
 void
@@ -28,6 +39,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.symbol_profile = rtl_stream_get_symbol_profile_full;
     hooks.stream_generation = rtl_stream_output_generation;
     hooks.set_symbol_profile = rtl_stream_set_symbol_profile;
+    hooks.apply_demod_profile = rtl_stream_metrics_apply_demod_profile;
     hooks.cqpsk_status = rtl_stream_get_cqpsk_status;
     hooks.cqpsk_timing_bias = rtl_stream_metrics_cqpsk_timing_bias;
     hooks.snr_bias_evm = rtl_stream_get_snr_bias_evm;

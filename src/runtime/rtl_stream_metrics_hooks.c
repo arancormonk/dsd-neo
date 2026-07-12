@@ -90,6 +90,18 @@ dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, i
 }
 
 int
+dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                                int ted_sps) {
+    if (g_rtl_stream_metrics_hooks.apply_demod_profile) {
+        return g_rtl_stream_metrics_hooks.apply_demod_profile(cqpsk_enable, symbol_rate_hz, levels, channel_profile,
+                                                              ted_sps);
+    }
+    (void)cqpsk_enable;
+    (void)ted_sps;
+    return dsd_rtl_stream_metrics_hook_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+}
+
+int
 dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
     if (g_rtl_stream_metrics_hooks.cqpsk_status) {
         return g_rtl_stream_metrics_hooks.cqpsk_status(out_cqpsk_enable, out_cqpsk_timing_active);

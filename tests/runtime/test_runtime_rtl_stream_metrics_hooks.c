@@ -16,6 +16,7 @@ static int g_symbol_profile_calls = 0;
 static int g_stream_generation_calls = 0;
 static int g_stream_active_calls = 0;
 static int g_set_symbol_profile_calls = 0;
+static int g_apply_demod_profile_calls = 0;
 static int g_cqpsk_status_calls = 0;
 static int g_cqpsk_timing_bias_calls = 0;
 static int g_snr_bias_calls = 0;
@@ -35,6 +36,11 @@ static int g_p25p1_err_delta = 0;
 static int g_set_symbol_rate_hz = 0;
 static int g_set_symbol_levels = 0;
 static int g_set_symbol_channel_profile = 0;
+static int g_apply_cqpsk_enable = 0;
+static int g_apply_symbol_rate_hz = 0;
+static int g_apply_symbol_levels = 0;
+static int g_apply_symbol_channel_profile = 0;
+static int g_apply_ted_sps = 0;
 
 static int g_p25p2_slot = 0;
 static int g_p25p2_facch_ok_delta = 0;
@@ -89,6 +95,17 @@ fake_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
     g_set_symbol_levels = levels;
     g_set_symbol_channel_profile = channel_profile;
     return 6;
+}
+
+static int
+fake_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+    g_apply_demod_profile_calls++;
+    g_apply_cqpsk_enable = cqpsk_enable;
+    g_apply_symbol_rate_hz = symbol_rate_hz;
+    g_apply_symbol_levels = levels;
+    g_apply_symbol_channel_profile = channel_profile;
+    g_apply_ted_sps = ted_sps;
+    return 8;
 }
 
 static int
@@ -222,6 +239,7 @@ main(void) {
     assert(input_level.source == DSD_INPUT_LEVEL_SOURCE_UNKNOWN);
     assert(input_level.sample_count == 0U);
     assert(dsd_rtl_stream_metrics_hook_set_symbol_profile(2400, 2, 1) == 0);
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == 0);
 
     int cqpsk = -1;
     int timing = -1;
@@ -259,6 +277,7 @@ main(void) {
     g_stream_generation_calls = 0;
     g_stream_active_calls = 0;
     g_set_symbol_profile_calls = 0;
+    g_apply_demod_profile_calls = 0;
     g_cqpsk_status_calls = 0;
     g_cqpsk_timing_bias_calls = 0;
     g_snr_bias_calls = 0;
@@ -274,6 +293,11 @@ main(void) {
     g_set_symbol_rate_hz = 0;
     g_set_symbol_levels = 0;
     g_set_symbol_channel_profile = 0;
+    g_apply_cqpsk_enable = 0;
+    g_apply_symbol_rate_hz = 0;
+    g_apply_symbol_levels = 0;
+    g_apply_symbol_channel_profile = 0;
+    g_apply_ted_sps = 0;
 
     dsd_rtl_stream_metrics_hooks hooks = {0};
     hooks.output_rate_hz = fake_output_rate_hz;
@@ -282,6 +306,7 @@ main(void) {
     hooks.stream_generation = fake_stream_generation;
     hooks.stream_active = fake_stream_active;
     hooks.set_symbol_profile = fake_set_symbol_profile;
+    hooks.apply_demod_profile = fake_apply_demod_profile;
     hooks.cqpsk_status = fake_cqpsk_status;
     hooks.cqpsk_timing_bias = fake_cqpsk_timing_bias;
     hooks.snr_bias_evm = fake_snr_bias_evm;
@@ -326,6 +351,14 @@ main(void) {
     assert(g_set_symbol_rate_hz == 6000);
     assert(g_set_symbol_levels == 4);
     assert(g_set_symbol_channel_profile == 5);
+
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == 8);
+    assert(g_apply_demod_profile_calls == 1);
+    assert(g_apply_cqpsk_enable == 1);
+    assert(g_apply_symbol_rate_hz == 6000);
+    assert(g_apply_symbol_levels == 4);
+    assert(g_apply_symbol_channel_profile == 5);
+    assert(g_apply_ted_sps == 8);
 
     // Out-parameter hooks must report both call counts and returned values.
     cqpsk = timing = 0;

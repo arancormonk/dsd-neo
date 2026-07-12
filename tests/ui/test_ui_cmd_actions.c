@@ -433,6 +433,21 @@ test_radio_actions(void) {
     rc |= expect_int("low-rate mod p2 toggle profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     rc |= expect_int("low-rate mod p2 toggle dwell", state.sps_hunt_counter, 0);
 
+    /* The generic modulation hotkey fully exits the P25p2 helper. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    cmd.id = DSD_APP_CMD_MOD_P2_TOGGLE;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    cmd.id = DSD_APP_CMD_MOD_TOGGLE;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("generic toggle exits p25p2 helper lock", opts.mod_cli_lock, 0);
+    rc |= expect_int("generic toggle exits p25p2 helper profile lock", opts.mod_p25p2_profile_lock, 0);
+    rc |= expect_int("generic toggle exits p25p2 c4fm helper", opts.mod_p25p2_c4fm, 0);
+    rc |= expect_int("generic toggle restores p25p1 profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    rc |= expect_int("generic toggle restores p25p1 timing", state.samplesPerSymbol, 10);
+    rc |= expect_int("generic toggle restores p25p1 center", state.symbolCenter, 4);
+    rc |= expect_int("generic toggle restores c4fm", state.rf_mod, 0);
+
     return rc;
 }
 

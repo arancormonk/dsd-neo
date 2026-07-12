@@ -97,6 +97,8 @@ frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
             || opts->frame_m17 == 1);
 }
 
+static int frame_sync_current_demod_rate(const dsd_opts* opts, const dsd_state* state);
+
 #ifdef USE_RADIO
 static int
 dmr_best_sync_hamming(const char* window, const char** out_name) {
@@ -175,17 +177,19 @@ dsd_frame_sync_test_rtl_profile_for_sps_index(const dsd_opts* opts, const dsd_st
 #endif
 
 static void
-rtl_maybe_update_sps_profile(const dsd_opts* opts, const dsd_state* state, const frame_sync_sps_profile* profile) {
+rtl_maybe_apply_demod_profile(const dsd_opts* opts, const dsd_state* state, const frame_sync_sps_profile* profile) {
     if (!opts || !state || !profile || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return;
     }
-    (void)dsd_rtl_stream_metrics_hook_set_symbol_profile(profile->symbol_rate_hz, profile->levels,
-                                                         rtl_profile_for_sps_profile(opts, state, profile));
+    const int ted_sps =
+        dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, frame_sync_current_demod_rate(opts, state));
+    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile->symbol_rate_hz, profile->levels,
+                                                          rtl_profile_for_sps_profile(opts, state, profile), ted_sps);
 }
 
 static void
-rtl_maybe_update_active_sps_profile(const dsd_opts* opts, const dsd_state* state) {
-    rtl_maybe_update_sps_profile(opts, state, frame_sync_sps_profile_for_index(state->sps_hunt_idx));
+rtl_maybe_apply_active_demod_profile(const dsd_opts* opts, const dsd_state* state) {
+    rtl_maybe_apply_demod_profile(opts, state, frame_sync_sps_profile_for_index(state->sps_hunt_idx));
 }
 #endif
 
@@ -215,7 +219,7 @@ dmr_set_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 #ifdef USE_RADIO
-    rtl_maybe_update_active_sps_profile(opts, state);
+    rtl_maybe_apply_active_demod_profile(opts, state);
 #endif
 }
 
@@ -658,7 +662,7 @@ frame_sync_accept_p25p2(frame_sync_match_ctx* ctx, int synctype, int inverted, c
     if (!opts->mod_cli_lock) {
         state->rf_mod = 1;
 #ifdef USE_RADIO
-        rtl_maybe_update_active_sps_profile(opts, state);
+        rtl_maybe_apply_active_demod_profile(opts, state);
 #endif
     }
     frame_sync_set_basic_lock(ctx);
@@ -1940,7 +1944,7 @@ frame_sync_apply_mod_switch(const dsd_opts* opts, dsd_state* state, int do_switc
     }
     state->rf_mod = do_switch;
 #ifdef USE_RADIO
-    rtl_maybe_update_active_sps_profile(opts, state);
+    rtl_maybe_apply_active_demod_profile(opts, state);
 #else
     UNUSED(opts);
 #endif
@@ -2924,7 +2928,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
     }
 
 #ifdef USE_RADIO
-    rtl_maybe_update_sps_profile(opts, state, profile);
+    rtl_maybe_apply_demod_profile(opts, state, profile);
 #endif
 }
 
@@ -3011,11 +3015,15 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     state->sps_hunt_counter = 0;
 
     /* Generic modulation locks retain their demodulator while rotating equal-timing protocol gates. A P25p2-specific
-     * selection instead pins profile 3 because rounded low-rate timing cannot identify the requested matcher gate. */
-    const int pin_p25p2_profile = preserve_modulation && opts->mod_p25p2_profile_lock == 1 && opts->frame_p25p2 == 1
-                                  && state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_6000_4;
-    int next_idx = pin_p25p2_profile
-                       ? FRAME_SYNC_SPS_PROFILE_6000_4
+     * lock retains whichever P25 profile was selected explicitly by the helper or by a CC retune. This keeps a known
+     * FDMA return on profile 0 even when 4800 and 6000 symbols/s round to the same timing. */
+    const int pin_selected_p25_profile = preserve_modulation && opts->mod_p25p2_profile_lock == 1
+                                         && opts->frame_p25p2 == 1
+                                         && (state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_4800_4
+                                             || state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_6000_4)
+                                         && frame_sync_sps_profile_has_candidate(opts, state->sps_hunt_idx);
+    int next_idx = pin_selected_p25_profile
+                       ? state->sps_hunt_idx
                        : (preserve_modulation ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
                                               : frame_sync_sps_hunt_next_index(opts, state));
     frame_sync_apply_sps_hunt_profile(opts, state, next_idx, preserve_modulation);

@@ -193,6 +193,47 @@ test_p25p2_toggle_applies_rtl_profile_before_lock(void) {
 }
 
 static int
+test_generic_toggle_restores_rtl_after_p25p2_helper(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    struct dsd_app_command cmd;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&cmd, 0, sizeof(cmd));
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)&state;
+    cmd.id = DSD_APP_CMD_MOD_P2_TOGGLE;
+    reset_profile_capture(&opts);
+    rc |= expect_int("p25p2 helper setup dispatch", dispatch_one(&opts, &state, &cmd), 1);
+
+    cmd.id = DSD_APP_CMD_MOD_TOGGLE;
+    reset_profile_capture(&opts);
+    rc |= expect_int("generic helper exit dispatch", dispatch_one(&opts, &state, &cmd), 1);
+    rc |= expect_int("generic helper exit family call", g_family_calls, 1);
+    rc |= expect_int("generic helper exit family", g_family_cqpsk, 0);
+    rc |= expect_int("generic helper exit family order", g_family_order, 1);
+    rc |= expect_int("generic helper exit family retains lock during transition", g_lock_at_family_apply, 1);
+    rc |= expect_int("generic helper exit TED override clear", g_ted_clear_calls, 1);
+    rc |= expect_int("generic helper exit TED override clear order", g_ted_clear_order, 2);
+    rc |= expect_int("generic helper exit TED call", g_ted_calls, 1);
+    rc |= expect_int("generic helper exit TED SPS", g_ted_sps, 10);
+    rc |= expect_int("generic helper exit TED order", g_ted_order, 3);
+    rc |= expect_int("generic helper exit profile call", g_profile_calls, 1);
+    rc |= expect_int("generic helper exit profile rate", g_profile_rate, 4800);
+    rc |= expect_int("generic helper exit profile levels", g_profile_levels, 4);
+    rc |= expect_int("generic helper exit channel profile", g_channel_profile, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    rc |= expect_int("generic helper exit profile order", g_profile_order, 4);
+    rc |= expect_int("generic helper exit releases lock", opts.mod_cli_lock, 0);
+    rc |= expect_int("generic helper exit clears profile pin", opts.mod_p25p2_profile_lock, 0);
+    rc |= expect_int("generic helper exit selects profile 0", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    rc |= expect_int("generic helper exit decoder SPS", state.samplesPerSymbol, 10);
+    rc |= expect_int("generic helper exit decoder center", state.symbolCenter, 4);
+    return rc;
+}
+
+static int
 test_p25p2_toggle_ignores_non_rtl_input(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -220,6 +261,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_p25p2_toggle_applies_rtl_profile_before_lock();
+    rc |= test_generic_toggle_restores_rtl_after_p25p2_helper();
     rc |= test_p25p2_toggle_ignores_non_rtl_input();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "APP CONTROL RTL ACTION TESTS PASSED\n");

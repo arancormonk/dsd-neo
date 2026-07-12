@@ -23,6 +23,9 @@ static int g_output_kind_calls;
 static int g_symbol_profile_calls;
 static int g_generation_calls;
 static int g_set_symbol_profile_calls;
+static int g_family_calls;
+static int g_ted_clear_calls;
+static int g_ted_set_calls;
 static int g_cqpsk_status_calls;
 static int g_cqpsk_timing_bias_calls;
 static int g_snr_bias_calls;
@@ -40,6 +43,13 @@ static int g_input_level_calls;
 static int g_last_symbol_rate;
 static int g_last_symbol_levels;
 static int g_last_symbol_profile;
+static int g_last_cqpsk_enable;
+static int g_last_ted_sps;
+static int g_apply_order;
+static int g_family_order;
+static int g_ted_clear_order;
+static int g_ted_set_order;
+static int g_symbol_profile_order;
 static int g_last_p25p1_ok;
 static int g_last_p25p1_err;
 static int g_last_p25p2_slot;
@@ -85,10 +95,31 @@ rtl_stream_output_generation(void) {
 int
 rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
     ++g_set_symbol_profile_calls;
+    g_symbol_profile_order = ++g_apply_order;
     g_last_symbol_rate = symbol_rate_hz;
     g_last_symbol_levels = levels;
     g_last_symbol_profile = channel_profile;
     return 7;
+}
+
+void
+rtl_stream_toggle_cqpsk(int onoff) {
+    ++g_family_calls;
+    g_family_order = ++g_apply_order;
+    g_last_cqpsk_enable = onoff;
+}
+
+void
+rtl_stream_clear_ted_sps_override(void) {
+    ++g_ted_clear_calls;
+    g_ted_clear_order = ++g_apply_order;
+}
+
+void
+rtl_stream_set_ted_sps_no_override(int sps) {
+    ++g_ted_set_calls;
+    g_ted_set_order = ++g_apply_order;
+    g_last_ted_sps = sps;
 }
 
 int
@@ -214,6 +245,29 @@ main(void) {
     assert(g_last_symbol_rate == 4800);
     assert(g_last_symbol_levels == 2);
     assert(g_last_symbol_profile == 4);
+
+    g_family_calls = 0;
+    g_ted_clear_calls = 0;
+    g_ted_set_calls = 0;
+    g_apply_order = 0;
+    g_family_order = 0;
+    g_ted_clear_order = 0;
+    g_ted_set_order = 0;
+    g_symbol_profile_order = 0;
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == 7);
+    assert(g_family_calls == 1);
+    assert(g_last_cqpsk_enable == 1);
+    assert(g_family_order == 1);
+    assert(g_ted_clear_calls == 1);
+    assert(g_ted_clear_order == 2);
+    assert(g_ted_set_calls == 1);
+    assert(g_last_ted_sps == 8);
+    assert(g_ted_set_order == 3);
+    assert(g_set_symbol_profile_calls == 2);
+    assert(g_last_symbol_rate == 6000);
+    assert(g_last_symbol_levels == 4);
+    assert(g_last_symbol_profile == 5);
+    assert(g_symbol_profile_order == 4);
 
     int cqpsk_enable = -1;
     int cqpsk_timing = -1;
