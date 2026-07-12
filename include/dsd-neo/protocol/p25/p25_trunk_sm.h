@@ -123,6 +123,7 @@ typedef struct {
     int is_group;            // 1 for group call, 0 for individual/private
     int data_call;           // 1 for data grant, 0 for voice
     int svc_bits;            // Service options, or P25_SM_SVC_UNKNOWN when absent
+    int enc_override_clear;  // 1 when regroup KEY=0 supplied the current clear classification
     double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
     double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
 } p25_sm_slot_ctx_t;

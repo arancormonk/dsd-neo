@@ -175,6 +175,18 @@ p25_lcw_print_service_options(const p25_lcw_ctx* ctx) {
 }
 
 static void
+p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_regroup_clear_override) {
+    if (!ctx || !ctx->opts || !ctx->state || (ctx->lc_svcopt & 0x40) == 0) {
+        return;
+    }
+    if (allow_regroup_clear_override && talkgroup > 0
+        && (p25_patch_tg_key_is_clear(ctx->state, talkgroup) || p25_patch_sg_key_is_clear(ctx->state, talkgroup))) {
+        return;
+    }
+    p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
+}
+
+static void
 p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel User");
     uint8_t res = (uint8_t)ConvertBitIntoBytes(&ctx->bits[24], 7);
@@ -200,6 +212,7 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 
+    p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
     p25_lcw_set_call_string_prefix(ctx->state, "   Group ", ctx->lc_svcopt);
 }
 
@@ -222,6 +235,7 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     ctx->state->dmr_so = ctx->lc_svcopt;
     ctx->state->p25_service_options_valid[0] = 1;
 
+    p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
     p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
 }
 

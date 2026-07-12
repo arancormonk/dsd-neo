@@ -79,6 +79,9 @@ static uint8_t g_isch_last_reliab[40] = {0};
 static int g_ss18_calls = 0;
 static int g_ss18_allowed_l = -1;
 static int g_ss18_allowed_r = -1;
+static int g_ss18_pending_at_call = -1;
+static int g_ss18_keyid_at_call = -1;
+static int g_ss18_voice_count_at_call = -1;
 
 bool
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -179,6 +182,9 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     g_ss18_calls++;
     g_ss18_allowed_l = state ? state->p25_p2_audio_allowed[0] : -1;
     g_ss18_allowed_r = state ? state->p25_p2_audio_allowed[1] : -1;
+    g_ss18_pending_at_call = state ? state->p25_p2_rekey[0].pending : -1;
+    g_ss18_keyid_at_call = state ? state->payload_keyid : -1;
+    g_ss18_voice_count_at_call = state ? state->voice_counter[0] : -1;
 }
 
 void
@@ -414,6 +420,9 @@ reset_playback_stub(void) {
     g_ss18_calls = 0;
     g_ss18_allowed_l = -1;
     g_ss18_allowed_r = -1;
+    g_ss18_pending_at_call = -1;
+    g_ss18_keyid_at_call = -1;
+    g_ss18_voice_count_at_call = -1;
 }
 
 static void
@@ -1078,6 +1087,61 @@ test_duid_invalid_burst_aborts_without_reopening_crypto(void) {
     return rc;
 }
 
+static int
+test_duid_abort_resolves_staged_rekey(void) {
+    printf("Test 28: DUID abort drains and resolves a staged rekey... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+    reset_ess_stubs();
+    reset_xcch_stubs();
+    reset_playback_stub();
+
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+    state.p2_wacn = 1;
+    state.p2_cc = 0x123;
+    state.p2_sysid = 1;
+    state.payload_algid = 0x81;
+    state.payload_keyid = 0x2468;
+    state.payload_miP = 0x1122334455667788ULL;
+    state.R = 0x0102030405060708ULL;
+    state.dmr_so = 0x40;
+    state.dmrburstL = 21;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.s_l[0] = 321;
+    set_ess_payload_bits(&state, 0, 0xAA, 0x1357, 0x8877665544332211ULL);
+
+    seed_duid_bits(0, 0x03U); // first invalid DUID
+    seed_duid_bits(1, 0x39U); // SACCHs keeps processing the frame
+    seed_duid_bits(2, 0x65U); // 2V stages the new ESS identity
+    seed_duid_bits(3, 0x03U); // second invalid DUID aborts before post-timeslot
+
+    p25p2_test_process_p2_duid(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("abort rekey partial drain calls", g_ss18_calls, 1);
+    rc |= expect_int("abort rekey pending during drain", g_ss18_pending_at_call, 1);
+    rc |= expect_int("abort rekey old key during drain", g_ss18_keyid_at_call, 0x2468);
+    rc |= expect_int("abort rekey partial frame count", g_ss18_voice_count_at_call, 2);
+    rc |= expect_int("abort rekey transition cleared", state.p25_p2_rekey[0].pending, 0);
+    rc |= expect_int("abort rekey alg promoted", state.payload_algid, 0xAA);
+    rc |= expect_int("abort rekey key promoted", state.payload_keyid, 0x1357);
+    rc |= expect_int("abort rekey voice left reset", state.voice_counter[0], 0);
+    rc |= expect_int("abort rekey voice right reset", state.voice_counter[1], 0);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
 static void
 prepare_lcch_release_duids(void) {
     p25_p2_frame_reset();
@@ -1089,7 +1153,7 @@ prepare_lcch_release_duids(void) {
 
 static int
 test_duid_lcch_release_defers_during_vc_grace(void) {
-    printf("Test 28: DUID LCCH release defers during VC grace... ");
+    printf("Test 29: DUID LCCH release defers during VC grace... ");
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1125,7 +1189,7 @@ test_duid_lcch_release_defers_during_vc_grace(void) {
 
 static int
 test_duid_lcch_release_tears_down_after_vc_grace(void) {
-    printf("Test 29: DUID LCCH release tears down after VC grace... ");
+    printf("Test 30: DUID LCCH release tears down after VC grace... ");
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1346,6 +1410,7 @@ main(void) {
     failures += test_teardown_flushes_partial_int16_audio_and_resets_call_state();
     failures += test_teardown_without_partial_int16_audio_skips_playback_but_clears_state();
     failures += test_duid_invalid_burst_aborts_without_reopening_crypto();
+    failures += test_duid_abort_resolves_staged_rekey();
     failures += test_duid_lcch_release_defers_during_vc_grace();
     failures += test_duid_lcch_release_tears_down_after_vc_grace();
 

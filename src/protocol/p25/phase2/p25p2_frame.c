@@ -1519,6 +1519,27 @@ p25p2_has_deferred_rekeys(const dsd_state* state) {
 }
 
 static void
+p25p2_resolve_deferred_rekeys_on_abort(dsd_opts* opts, dsd_state* state) {
+    if (!p25p2_has_deferred_rekeys(state)) {
+        return;
+    }
+
+    if (opts && opts->pulse_digi_rate_out == 8000) {
+        if (opts->floating_point == 1) {
+            playSynthesizedVoiceFS4(opts, state);
+        } else if (opts->floating_point == 0) {
+            playSynthesizedVoiceSS18(opts, state);
+            state->voice_counter[0] = 0;
+            state->voice_counter[1] = 0;
+        }
+    }
+
+    // If no output path is active, applying the identity still purges the
+    // abandoned old-key buffers before subsequent voice can be decoded.
+    p25p2_commit_deferred_rekeys(opts, state);
+}
+
+static void
 p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
     const p25p2_ess_result result = p25p2_ess_decode(state);
 
@@ -1781,11 +1802,12 @@ p25p2_duid_dispatch(dsd_opts* opts, dsd_state* state, time_t now, int p2_pending
 }
 
 static int
-p25p2_duid_should_abort(dsd_state* state, int err_counter) {
+p25p2_duid_should_abort(dsd_opts* opts, dsd_state* state, int err_counter) {
     if (err_counter <= 1) {
         return 0;
     }
 
+    p25p2_resolve_deferred_rekeys_on_abort(opts, state);
     state->p2_is_lcch = 0;
     state->fourv_counter[0] = 0;
     state->fourv_counter[1] = 0;
@@ -1815,8 +1837,8 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch_status) {
         playSynthesizedVoiceFS4(opts, state);
         audio_drained = 1;
     }
-    if ((state->voice_counter[0] >= 18 || state->voice_counter[1] >= 18) && opts->floating_point == 0
-        && opts->pulse_digi_rate_out == 8000 && output_pair) {
+    if ((state->voice_counter[0] >= 18 || state->voice_counter[1] >= 18 || p25p2_has_deferred_rekeys(state))
+        && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000 && output_pair) {
         playSynthesizedVoiceSS18(opts, state);
         state->voice_counter[0] = 0;
         state->voice_counter[1] = 0;
@@ -1880,7 +1902,7 @@ process_P2_DUID(dsd_opts* opts, dsd_state* state) {
         int p2_pending_release = p25p2_duid_compute_pending_release(opts, state, now);
         p25p2_duid_clear_idle_state(opts, state, now);
         p25p2_duid_dispatch(opts, state, now, p2_pending_release, &err_counter);
-        if (p25p2_duid_should_abort(state, err_counter)) {
+        if (p25p2_duid_should_abort(opts, state, err_counter)) {
             goto END;
         }
 

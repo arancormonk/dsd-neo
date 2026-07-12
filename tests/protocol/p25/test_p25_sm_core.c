@@ -1322,6 +1322,7 @@ main(void) {
     p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_encrypted);
     assert(g_result_tune_to_freq_calls == 1);
     assert(ctx19k.grant_count == 1U);
+    assert(ctx19k.slots[0].enc_override_clear == 1);
     assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
     assert(s19k.payload_algid == 0);
     assert(s19k.payload_keyid == 0);
@@ -1329,6 +1330,42 @@ main(void) {
     assert(s19k.p25_p2_audio_allowed[0] == 0);
     assert(s19k.p25_p2_audio_ring_count[0] == 0);
     assert(s19k.s_l4[0][0] == 0);
+
+    // The same encrypted duplicate must return to pending if KEY=0 is
+    // replaced by a non-clear regroup key. Service options alone cannot
+    // reveal this transition, so retain and compare override provenance.
+    s19k.p25_p2_audio_allowed[0] = 1;
+    s19k.p25_p2_audio_ring_count[0] = 1;
+    s19k.s_l4[0][0] = 789;
+    p25_patch_set_kas(&s19k, 5701, 0x2002, 0x81, 2);
+    p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_encrypted);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19k.grant_count == 1U);
+    assert(ctx19k.slots[0].enc_override_clear == 0);
+    assert(ctx19k.slots[0].crypto_attempt_m > 0.0);
+    assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    assert(s19k.p25_p2_audio_allowed[0] == 0);
+    assert(s19k.p25_p2_audio_ring_count[0] == 0);
+    assert(s19k.s_l4[0][0] == 0);
+
+    // Expiry of the KEY=0 entry is the same provenance transition even when
+    // no replacement KAS arrives.
+    p25_patch_set_kas(&s19k, 5701, 0, 0x81, 3);
+    p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_encrypted);
+    assert(ctx19k.slots[0].enc_override_clear == 1);
+    assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+    int clear_patch_idx = -1;
+    for (int i = 0; i < s19k.p25_patch_count; i++) {
+        if (s19k.p25_patch_sgid[i] == 5701) {
+            clear_patch_idx = i;
+            break;
+        }
+    }
+    assert(clear_patch_idx >= 0);
+    s19k.p25_patch_last_update[clear_patch_idx] = time(NULL) - 60;
+    p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_encrypted);
+    assert(ctx19k.slots[0].enc_override_clear == 0);
+    assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
     // Phase 1 grants use logical slot 0 for service-option history. Repeating
     // an unchanged clear grant must preserve the active call's audio state.

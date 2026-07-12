@@ -1152,6 +1152,7 @@ p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     ctx->slots[slot].is_group = 0;
     ctx->slots[slot].data_call = 0;
     ctx->slots[slot].svc_bits = P25_SM_SVC_UNKNOWN;
+    ctx->slots[slot].enc_override_clear = 0;
     ctx->slots[slot].last_grant_m = 0.0;
     ctx->slots[slot].crypto_attempt_m = 0.0;
 }
@@ -1242,6 +1243,7 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long f
     slot_ctx->is_group = ev->is_group ? 1 : 0;
     slot_ctx->data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     slot_ctx->svc_bits = ev->svc_bits;
+    slot_ctx->enc_override_clear = (eval_ctx && eval_ctx->enc_override_clear) ? 1 : 0;
     slot_ctx->last_grant_m = now_m;
     slot_ctx->tg = target_id;
 }
@@ -1538,18 +1540,22 @@ p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p2
     if (crypto_slot < 0 || crypto_slot > 1) {
         return;
     }
-    const int previous_svc = ctx->slots[crypto_slot].svc_bits;
-    ctx->slots[crypto_slot].svc_bits = ev->svc_bits;
+    p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[crypto_slot];
+    const int previous_svc = slot_ctx->svc_bits;
+    const int previous_clear_override = slot_ctx->enc_override_clear;
+    const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
+    slot_ctx->svc_bits = ev->svc_bits;
+    slot_ctx->enc_override_clear = force_clear ? 1 : 0;
     if (data_call) {
         return;
     }
 
-    const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
     const int was_explicit_clear = p25_grant_service_options_are_explicit_clear(previous_svc);
     const int is_explicit_clear = p25_grant_service_options_are_explicit_clear(ev->svc_bits);
     const int classification_changed = !force_clear && was_explicit_clear != is_explicit_clear;
+    const int clear_override_removed = previous_clear_override && !force_clear && !is_explicit_clear;
     const int unapplied_clear_override = force_clear && state->p25_crypto_state[crypto_slot] != DSD_P25_CRYPTO_CLEAR;
-    if (classification_changed || unapplied_clear_override) {
+    if (classification_changed || clear_override_removed || unapplied_clear_override) {
         p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, route->slot, 0, now_m);
     }
 }

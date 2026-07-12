@@ -28,6 +28,10 @@ static int g_fs4_calls = 0;
 static int g_fs4_pending_at_call = 0;
 static int g_fs4_keyid_at_call = 0;
 static int g_fs4_ring_count_at_call = 0;
+static int g_ss18_calls = 0;
+static int g_ss18_pending_at_call = 0;
+static int g_ss18_keyid_at_call = 0;
+static int g_ss18_voice_count_at_call = 0;
 
 // Expose the P25p2 2V handler under test
 void process_2V(dsd_opts* opts, dsd_state* state);
@@ -162,7 +166,10 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 void
 playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    g_ss18_calls++;
+    g_ss18_pending_at_call = state->p25_p2_rekey[0].pending;
+    g_ss18_keyid_at_call = state->payload_keyid;
+    g_ss18_voice_count_at_call = state->voice_counter[0];
 }
 
 void
@@ -372,6 +379,10 @@ reset_mbe_calls(void) {
     g_fs4_pending_at_call = 0;
     g_fs4_keyid_at_call = 0;
     g_fs4_ring_count_at_call = 0;
+    g_ss18_calls = 0;
+    g_ss18_pending_at_call = 0;
+    g_ss18_keyid_at_call = 0;
+    g_ss18_voice_count_at_call = 0;
 }
 
 static void
@@ -486,6 +497,41 @@ main(void) {
     rc |= expect_eq("slot0 rekey commit: mi promoted", st.payload_miP == 0x1112131415161718ULL, 1);
     rc |= expect_eq("slot0 rekey commit: queued audio purged", st.p25_p2_audio_ring_count[0], 0);
     rc |= expect_eq("slot0 rekey commit: int16 state purged", st.s_l4[0][0], 0);
+
+    // The int16 output path must also drain a partial superframe before a
+    // deferred identity is promoted. A missed 4V burst can leave only the two
+    // terminal 2V frames buffered here.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.payload_algid = 0x81;
+    st.payload_keyid = 0x2001;
+    st.payload_miP = 0x2122232425262728ULL;
+    st.R = 0x1122334455667788ULL;
+    st.dmr_so = 0x40;
+    st.dmrburstL = 21;
+    st.s_l[0] = 303;
+    set_ess_metadata(&st, 0, 0xAA, 0x2002, 0x3132333435363738ULL);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 partial int16 rekey: transition pending", st.p25_p2_rekey[0].pending, 1);
+    rc |= expect_eq("slot0 partial int16 rekey: two frames buffered", st.voice_counter[0], 2);
+    rc |= expect_eq("slot0 partial int16 rekey: metadata held", st.payload_keyid, 0x2001);
+
+    p25p2_test_post_timeslot(&opts, &st, 1, 1);
+    rc |= expect_eq("slot0 partial int16 drain: SS18 calls", g_ss18_calls, 1);
+    rc |= expect_eq("slot0 partial int16 drain: pending during output", g_ss18_pending_at_call, 1);
+    rc |= expect_eq("slot0 partial int16 drain: old key during output", g_ss18_keyid_at_call, 0x2001);
+    rc |= expect_eq("slot0 partial int16 drain: buffered frame count", g_ss18_voice_count_at_call, 2);
+    rc |= expect_eq("slot0 partial int16 commit: transition cleared", st.p25_p2_rekey[0].pending, 0);
+    rc |= expect_eq("slot0 partial int16 commit: algid promoted", st.payload_algid, 0xAA);
+    rc |= expect_eq("slot0 partial int16 commit: keyid promoted", st.payload_keyid, 0x2002);
+    rc |= expect_eq("slot0 partial int16 commit: counter reset", st.voice_counter[0], 0);
+    rc |= expect_eq("slot0 partial int16 commit: old buffer purged", st.s_l4[0][0], 0);
 
     // Slot 0: stale allowed gate, encrypted/no key, lockout enabled -> no decode.
     reset_state(&opts, &st);
