@@ -1528,16 +1528,33 @@ p25_grant_service_options_are_explicit_clear(int svc_bits) {
     return svc_bits >= 0 && (svc_bits & 0x40) == 0;
 }
 
+static int
+p25_grant_duplicate_crypto_slot(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev,
+                                const dsd_tg_policy_call_route* route) {
+    if (!ctx || !state || !ev || !route) {
+        return -1;
+    }
+    const int slot = p25_grant_logical_slot(ctx, route->slot);
+    return slot >= 0 && slot <= 1 ? slot : -1;
+}
+
+static int
+p25_grant_duplicate_crypto_needs_restart(int previous_svc, int current_svc, int previous_clear_override,
+                                         int force_clear, dsd_p25_crypto_state crypto_state) {
+    const int was_explicit_clear = p25_grant_service_options_are_explicit_clear(previous_svc);
+    const int is_explicit_clear = p25_grant_service_options_are_explicit_clear(current_svc);
+    const int classification_changed = !force_clear && was_explicit_clear != is_explicit_clear;
+    const int clear_override_removed = previous_clear_override && !force_clear && !is_explicit_clear;
+    const int unapplied_clear_override = force_clear && crypto_state != DSD_P25_CRYPTO_CLEAR;
+    return classification_changed || clear_override_removed || unapplied_clear_override;
+}
+
 static void
 p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev,
                                    const dsd_tg_policy_call_route* route, const p25_grant_eval_ctx_t* eval_ctx,
                                    int data_call, double now_m) {
-    if (!ctx || !state || !ev || !route) {
-        return;
-    }
-
-    const int crypto_slot = p25_grant_logical_slot(ctx, route->slot);
-    if (crypto_slot < 0 || crypto_slot > 1) {
+    const int crypto_slot = p25_grant_duplicate_crypto_slot(ctx, state, ev, route);
+    if (crypto_slot < 0) {
         return;
     }
     p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[crypto_slot];
@@ -1550,12 +1567,8 @@ p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p2
         return;
     }
 
-    const int was_explicit_clear = p25_grant_service_options_are_explicit_clear(previous_svc);
-    const int is_explicit_clear = p25_grant_service_options_are_explicit_clear(ev->svc_bits);
-    const int classification_changed = !force_clear && was_explicit_clear != is_explicit_clear;
-    const int clear_override_removed = previous_clear_override && !force_clear && !is_explicit_clear;
-    const int unapplied_clear_override = force_clear && state->p25_crypto_state[crypto_slot] != DSD_P25_CRYPTO_CLEAR;
-    if (classification_changed || clear_override_removed || unapplied_clear_override) {
+    if (p25_grant_duplicate_crypto_needs_restart(previous_svc, ev->svc_bits, previous_clear_override, force_clear,
+                                                 state->p25_crypto_state[crypto_slot])) {
         p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, route->slot, 0, now_m);
     }
 }

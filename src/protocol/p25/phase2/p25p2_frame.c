@@ -111,6 +111,51 @@ p25p2_frame_test_stub_purge_slot(dsd_state* state, int slot) {
 }
 
 static dsd_p25_crypto_state
+p25p2_frame_test_stub_resolve_algid_zero(dsd_state* state, int slot) {
+    const dsd_p25_crypto_state current = state->p25_crypto_state[slot];
+    if (current == DSD_P25_CRYPTO_UNKNOWN) {
+        state->p25_crypto_state[slot] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    }
+    if (current == DSD_P25_CRYPTO_UNKNOWN || current == DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || current == DSD_P25_CRYPTO_BLOCKED) {
+        state->p25_p2_enc_lockout_muted[slot] = 1U;
+        state->p25_p2_audio_allowed[slot] = 0;
+    }
+    return state->p25_crypto_state[slot];
+}
+
+static void
+p25p2_frame_test_stub_store_metadata(dsd_state* state, int slot, int algid, int keyid, uint64_t mi) {
+    if (slot == 0) {
+        state->payload_algid = algid;
+        state->payload_keyid = keyid;
+        state->payload_miP = mi;
+        return;
+    }
+    state->payload_algidR = algid;
+    state->payload_keyidR = keyid;
+    state->payload_miN = mi;
+}
+
+static void
+p25p2_frame_test_stub_reset_stream(dsd_state* state, int slot) {
+    if (slot == 0) {
+        state->DMRvcL = 0;
+        state->bit_counterL = 0;
+        state->dropL = 256;
+        return;
+    }
+    state->DMRvcR = 0;
+    state->bit_counterR = 0;
+    state->dropR = 256;
+}
+
+static int
+p25p2_frame_test_stub_should_purge(dsd_p25_crypto_state previous, dsd_p25_crypto_state resolved, int identity_changed) {
+    return previous != resolved || (previous == DSD_P25_CRYPTO_DECRYPTABLE && identity_changed);
+}
+
+static dsd_p25_crypto_state
 p25p2_frame_resolve_crypto(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid, uint64_t mi,
                            int talkgroup) {
     (void)opts;
@@ -119,48 +164,23 @@ p25p2_frame_resolve_crypto(dsd_opts* opts, dsd_state* state, int slot, int algid
         return DSD_P25_CRYPTO_UNKNOWN;
     }
     if (algid == 0) {
-        dsd_p25_crypto_state current = state->p25_crypto_state[slot];
-        if (current == DSD_P25_CRYPTO_UNKNOWN || current == DSD_P25_CRYPTO_ENCRYPTED_PENDING
-            || current == DSD_P25_CRYPTO_BLOCKED) {
-            if (current == DSD_P25_CRYPTO_UNKNOWN) {
-                state->p25_crypto_state[slot] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-            }
-            state->p25_p2_enc_lockout_muted[slot] = 1U;
-            state->p25_p2_audio_allowed[slot] = 0;
-        }
-        return state->p25_crypto_state[slot];
+        return p25p2_frame_test_stub_resolve_algid_zero(state, slot);
     }
     const int previous_algid = slot == 0 ? state->payload_algid : state->payload_algidR;
     const int previous_keyid = slot == 0 ? state->payload_keyid : state->payload_keyidR;
     const dsd_p25_crypto_state previous_state = state->p25_crypto_state[slot];
-    if (slot == 0) {
-        state->payload_algid = algid;
-        state->payload_keyid = keyid;
-        state->payload_miP = mi;
-    } else {
-        state->payload_algidR = algid;
-        state->payload_keyidR = keyid;
-        state->payload_miN = mi;
-    }
+    p25p2_frame_test_stub_store_metadata(state, slot, algid, keyid, mi);
     const dsd_p25_crypto_state resolved =
         (algid == 0x80) ? DSD_P25_CRYPTO_CLEAR
                         : (p25p2_frame_test_stub_can_decrypt(state, slot, algid) ? DSD_P25_CRYPTO_DECRYPTABLE
                                                                                  : DSD_P25_CRYPTO_BLOCKED);
     const int identity_changed = previous_algid != algid || previous_keyid != keyid;
     const int state_changed = previous_state != resolved;
-    if (state_changed || (previous_state == DSD_P25_CRYPTO_DECRYPTABLE && identity_changed)) {
+    if (p25p2_frame_test_stub_should_purge(previous_state, resolved, identity_changed)) {
         p25p2_frame_test_stub_purge_slot(state, slot);
     }
     if (state_changed || identity_changed) {
-        if (slot == 0) {
-            state->DMRvcL = 0;
-            state->bit_counterL = 0;
-            state->dropL = 256;
-        } else {
-            state->DMRvcR = 0;
-            state->bit_counterR = 0;
-            state->dropR = 256;
-        }
+        p25p2_frame_test_stub_reset_stream(state, slot);
     }
     state->p25_crypto_state[slot] = resolved;
     state->p25_p2_enc_lockout_muted[slot] = (uint8_t)(p25_crypto_companion_suppressed(state, slot) ? 1U : 0U);
@@ -1816,9 +1836,31 @@ p25p2_duid_should_abort(dsd_opts* opts, dsd_state* state, int err_counter) {
     return 1;
 }
 
+static int
+p25p2_duid_output_float_pair(dsd_opts* opts, dsd_state* state, int sacch_status, int output_pair) {
+    if (!output_pair || opts->floating_point != 1 || opts->pulse_digi_rate_out != 8000
+        || (sacch_status != 0 && !p25p2_has_deferred_rekeys(state))) {
+        return 0;
+    }
+    playSynthesizedVoiceFS4(opts, state);
+    return 1;
+}
+
+static int
+p25p2_duid_output_short_pair(dsd_opts* opts, dsd_state* state, int output_pair) {
+    const int output_ready =
+        state->voice_counter[0] >= 18 || state->voice_counter[1] >= 18 || p25p2_has_deferred_rekeys(state);
+    if (!output_pair || !output_ready || opts->floating_point != 0 || opts->pulse_digi_rate_out != 8000) {
+        return 0;
+    }
+    playSynthesizedVoiceSS18(opts, state);
+    state->voice_counter[0] = 0;
+    state->voice_counter[1] = 0;
+    return 1;
+}
+
 static void
 p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch_status) {
-    int audio_drained = 0;
     const int output_pair = (ts_counter & 1) != 0;
 
     if (dsd_opts_frontend_active(opts)) {
@@ -1832,18 +1874,8 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch_status) {
 
     vc_counter = vc_counter + 360;
 
-    if (output_pair && opts->floating_point == 1 && opts->pulse_digi_rate_out == 8000
-        && (sacch_status == 0 || p25p2_has_deferred_rekeys(state))) {
-        playSynthesizedVoiceFS4(opts, state);
-        audio_drained = 1;
-    }
-    if ((state->voice_counter[0] >= 18 || state->voice_counter[1] >= 18 || p25p2_has_deferred_rekeys(state))
-        && opts->floating_point == 0 && opts->pulse_digi_rate_out == 8000 && output_pair) {
-        playSynthesizedVoiceSS18(opts, state);
-        state->voice_counter[0] = 0;
-        state->voice_counter[1] = 0;
-        audio_drained = 1;
-    }
+    int audio_drained = p25p2_duid_output_float_pair(opts, state, sacch_status, output_pair);
+    audio_drained |= p25p2_duid_output_short_pair(opts, state, output_pair);
     if (audio_drained) {
         // Both logical slots have reached the output stage. Promote any ESS
         // identity changes only now so their purge cannot discard or decrypt
