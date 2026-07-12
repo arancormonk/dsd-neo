@@ -1715,8 +1715,7 @@ main(void) {
         rc |= expect_eq_long("0x42 blocked vc", state.p25_vc_freq[0], 0);
     }
 
-    // Case J: no-SVC 0x42 grants are silently re-probed even after a proven
-    // encrypted call; transient memory is not a tune veto.
+    // Case J: no-SVC 0x42 grants are suppressed after a proven encrypted call.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -1748,10 +1747,8 @@ main(void) {
         MAC[9] = 0x35; // group2
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x42 re-probed despite transient enc cache", opts.p25_is_tuned == 1);
-        rc |= expect_eq_long("0x42 transient enc cache probe vc", state.p25_vc_freq[0], 851125000);
-        rc |= expect_eq_long("0x42 transient enc cache probe pending", state.p25_crypto_state[0],
-                             DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+        rc |= expect_true("0x42 suppressed by transient enc cache", opts.p25_is_tuned == 0);
+        rc |= expect_eq_long("0x42 transient enc cache no vc", state.p25_vc_freq[0], 0);
     }
 
     // Case K: rejected P2 NSBs still prove the system carries TDMA voice without changing return CC metadata.
@@ -2178,6 +2175,48 @@ main(void) {
         rc |= expect_true("0x25 mixed update tunes", opts.p25_is_tuned == 1);
         rc |= expect_eq_long("0x25 mixed update prefers clear vc", state.p25_vc_freq[0], 851137500);
         rc |= expect_eq_long("0x25 mixed update clear classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    }
+
+    // Case O3: rejecting a cached encrypted candidate must not stop the
+    // multi-grant decoder from selecting a later uncached probe.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_on_release(&opts, &state);
+
+        opts.p25_trunk = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 0;
+        state.p25_cc_freq = cc;
+        state.p25_iden_fdma[iden].base_freq = base;
+        state.p25_iden_fdma[iden].chan_type = type;
+        state.p25_iden_fdma[iden].chan_spac = spac;
+        state.p25_iden_fdma[iden].trust = 2;
+        state.p25_iden_fdma[iden].populated = 1;
+        state.p25_chan_tdma_explicit[iden] = 1;
+        p25_sm_init(&opts, &state);
+        p25_emit_enc_lockout_once(&opts, &state, 0, 0x1234, /*svc_bits*/ 0x40);
+
+        MAC[1] = 0x25;
+        MAC[2] = 0x40; // cached encrypted group
+        MAC[3] = 0x10;
+        MAC[4] = 0x0A;
+        MAC[7] = 0x12;
+        MAC[8] = 0x34;
+        MAC[9] = 0x40; // uncached encrypted group
+        MAC[10] = 0x10;
+        MAC[11] = 0x0B;
+        MAC[14] = 0x56;
+        MAC[15] = 0x78;
+
+        process_MAC_VPDU(&opts, &state, 0, MAC);
+        rc |= expect_true("0x25 cached first candidate falls through", opts.p25_is_tuned == 1);
+        rc |= expect_eq_long("0x25 later uncached probe selected", state.p25_vc_freq[0], 851137500);
+        rc |= expect_eq_long("0x25 later uncached probe pending", state.p25_crypto_state[0],
+                             DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     }
 
     // Case Q: encrypted implicit triple updates also tune one silent probe while

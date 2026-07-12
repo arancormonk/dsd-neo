@@ -263,7 +263,8 @@ main(void) {
     assert(s4.payload_miP == 0x1122334455667788ULL);
     int enc_cache_seen = 0;
     for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (s4.p25_enc_tg_cache_tg[i] == 1234U && s4.p25_enc_tg_cache_until[i] > time(NULL)) {
+        if (s4.p25_enc_tg_cache_tg[i] == 1234U && s4.p25_enc_tg_cache_is_group[i] == 1U
+            && s4.p25_enc_tg_cache_until[i] > time(NULL)) {
             enc_cache_seen = 1;
         }
     }

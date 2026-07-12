@@ -147,6 +147,20 @@ expect_true(const char* tag, int cond) {
     return 0;
 }
 
+static int
+p25_encrypted_call_cache_empty(const dsd_state* state) {
+    if (!state || state->p25_enc_tg_cache_next != 0U) {
+        return 0;
+    }
+    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
+        if (state->p25_enc_tg_cache_until[i] != 0 || state->p25_enc_tg_cache_tg[i] != 0U
+            || state->p25_enc_tg_cache_is_group[i] != 0U) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static size_t
 expected_descriptor_payload_size(const dsd_app_command_descriptor* desc) {
     switch (desc->payload_kind) {
@@ -432,6 +446,10 @@ test_typed_command_api_wrappers(void) {
     dsd_app_hytera_key_payload hytera = {0xAU, 1U, 2U, 3U, 4U};
     dsd_app_aes_key_payload aes = {9U, 10U, 11U, 12U};
     dsd_app_dsp_payload dsp = {0};
+    state.p25_enc_tg_cache_until[0] = 1234567890;
+    state.p25_enc_tg_cache_tg[0] = 2468U;
+    state.p25_enc_tg_cache_is_group[0] = 1U;
+    state.p25_enc_tg_cache_next = 1U;
 
     rc |= expect_int("typed action posts", dsd_app_command_action(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE), 0);
     rc |= expect_int("typed gain posts", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 5), 0);
@@ -467,6 +485,27 @@ test_typed_command_api_wrappers(void) {
     rc |= expect_u64("typed p2 cc set", state.p2_cc, 0x456ULL);
     rc |= expect_u64("typed aes key loaded", state.A1[0], 9ULL);
     rc |= expect_int("typed aes key load flag", state.aes_key_loaded[0], 1);
+    rc |=
+        expect_true("manual RC4/AES key changes clear P25 blocked-call cache", p25_encrypted_call_cache_empty(&state));
+
+    state.p25_enc_tg_cache_until[0] = 1234567890;
+    state.p25_enc_tg_cache_tg[0] = 9753U;
+    state.p25_enc_tg_cache_is_group[0] = 0U;
+    state.p25_enc_tg_cache_next = 2U;
+    rc |= expect_int("standalone AES key change posts", dsd_app_command_set_aes_key(&aes), 0);
+    rc |= expect_int("standalone AES key change applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_true("standalone AES key change clears P25 blocked-call cache", p25_encrypted_call_cache_empty(&state));
+
+    state.p25_enc_tg_cache_until[0] = 1234567890;
+    state.p25_enc_tg_cache_tg[0] = 8642U;
+    state.p25_enc_tg_cache_is_group[0] = 1U;
+    state.p25_enc_tg_cache_next = 3U;
+    rc |= expect_int("standalone RC4/DES key change posts", dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, 0xAAU),
+                     0);
+    rc |= expect_int("standalone RC4/DES key change applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("standalone RC4/DES key change clears P25 blocked-call cache",
+                      p25_encrypted_call_cache_empty(&state));
 
     freeState(&state);
     return rc;
@@ -810,15 +849,19 @@ test_file_network_and_import_commands(void) {
     const char* symbol_out = "ui_cmd_queue_symbols_out.bin";
     const char* symbol_in = "ui_cmd_queue_symbols_in.bin";
     const char* missing_csv = "ui_cmd_queue_missing.csv";
+    const char* key_csv = "ui_cmd_queue_keys.csv";
     const unsigned char symbol_data[] = {0x12U, 0x34U, 0x56U, 0x78U};
+    static const unsigned char key_data[] = "Key ID,Key\n1,12345\n";
 
     remove(symbol_out);
     remove(symbol_in);
     remove(missing_csv);
+    remove(key_csv);
 
     init_test_context(&opts, &state);
 
     rc |= write_file_bytes(symbol_in, symbol_data, sizeof(symbol_data));
+    rc |= write_file_bytes(key_csv, key_data, sizeof(key_data) - 1U);
 
     post_string(DSD_APP_CMD_DSP_OUT_SET, "stream.float");
     post_string(DSD_APP_CMD_SYMCAP_OPEN, symbol_out);
@@ -883,6 +926,15 @@ test_file_network_and_import_commands(void) {
     rc |= expect_str("key import path copied", opts.key_in_file, missing_csv);
     rc |= expect_contains("key import failure toast", state.ui_msg, "Failed: Keys (HEX)");
 
+    state.p25_enc_tg_cache_until[0] = 1234567890;
+    state.p25_enc_tg_cache_tg[0] = 3579U;
+    state.p25_enc_tg_cache_is_group[0] = 0U;
+    state.p25_enc_tg_cache_next = 4U;
+    post_string(DSD_APP_CMD_IMPORT_KEYS_DEC, key_csv);
+    rc |= expect_int("successful runtime key import applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("successful runtime key import clears P25 blocked-call cache",
+                      p25_encrypted_call_cache_empty(&state));
+
     post_string(DSD_APP_CMD_EVENT_LOG_SET, "events.log");
     rc |= expect_int("event log set applied", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_str("event log path set", opts.event_out_file, "events.log");
@@ -892,6 +944,7 @@ test_file_network_and_import_commands(void) {
 
     remove(symbol_out);
     remove(symbol_in);
+    remove(key_csv);
     freeState(&state);
     return rc;
 }

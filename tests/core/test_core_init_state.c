@@ -70,6 +70,7 @@ main(void) {
     for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
         state->p25_enc_tg_cache_until[i] = 1234567890 + i;
         state->p25_enc_tg_cache_tg[i] = (uint32_t)(2400 + i);
+        state->p25_enc_tg_cache_is_group[i] = (uint8_t)(i % 2);
     }
     state->rtl_symbol_cache[0] = 1234.0f;
     state->rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP - 1] = 5678.0f;
@@ -299,7 +300,8 @@ main(void) {
         return 24;
     }
     for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (state->p25_enc_tg_cache_until[i] != 0 || state->p25_enc_tg_cache_tg[i] != 0U) {
+        if (state->p25_enc_tg_cache_until[i] != 0 || state->p25_enc_tg_cache_tg[i] != 0U
+            || state->p25_enc_tg_cache_is_group[i] != 0U) {
             DSD_FPRINTF(stderr, "initState did not reset P25 encrypted TG cache\n");
             freeState(state);
             free(state);

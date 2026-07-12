@@ -148,6 +148,7 @@ test_lockout_label_policy_lookup(void) {
     const time_t now = time(NULL);
     state->p25_enc_tg_cache_tg[0] = 21001U;
     state->p25_enc_tg_cache_until[0] = now + 10;
+    state->p25_enc_tg_cache_is_group[0] = 1U;
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
     rc |= expect_int_eq("transient cache requires p25 sync",
@@ -157,6 +158,15 @@ test_lockout_label_policy_lookup(void) {
                         ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 1);
     rc |= expect_int_eq("transient enc cache locks active SG",
                         ui_is_transient_enc_locked_from_label(state, "MFID90 GRG Grant: 82F2 SG: 21001;"), 1);
+    rc |= expect_int_eq("group transient cache does not lock same numeric private target",
+                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TGT: 21001;"), 0);
+    state->p25_enc_tg_cache_tg[1] = 21001U;
+    state->p25_enc_tg_cache_until[1] = now + 10;
+    state->p25_enc_tg_cache_is_group[1] = 0U;
+    rc |= expect_int_eq("private transient cache locks active TGT",
+                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TGT: 21001;"), 1);
+    rc |= expect_int_eq("private voice cache does not color data target",
+                        ui_is_transient_enc_locked_from_label(state, "Active Data Ch: 82F2 TGT: 21001;"), 0);
     rc |= expect_int_eq("transient enc cache does not mutate policy lock helper",
                         ui_is_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
     state->p25_enc_tg_cache_until[0] = now - 1;

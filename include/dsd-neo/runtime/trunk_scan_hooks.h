@@ -28,6 +28,7 @@ typedef struct {
     void (*tick)(dsd_opts* opts, dsd_state* state);
     void (*dmr_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                       int is_private, int encrypted, int data_call);
+    void (*p25_encrypted_call_cache_clear)(dsd_state* state);
 } dsd_trunk_scan_hooks;
 
 void dsd_trunk_scan_hooks_set(dsd_trunk_scan_hooks hooks);
@@ -37,6 +38,7 @@ void* dsd_trunk_scan_hook_dmr_ctx(void);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                    uint32_t source, int is_private, int encrypted, int data_call);
+void dsd_trunk_scan_hook_p25_encrypted_call_cache_clear(dsd_state* state);
 
 #ifdef __cplusplus
 }

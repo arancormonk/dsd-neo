@@ -910,6 +910,16 @@ void p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, i
  */
 void p25_sm_note_encrypted_call(dsd_opts* opts, dsd_state* state, int tg);
 
+/**
+ * @brief Clear all transient blocked-call classifications.
+ *
+ * Runtime key-management paths call this after successfully changing key
+ * material so the next encrypted grant can be classified with the new keys.
+ *
+ * @param state Decoder state.
+ */
+void p25_sm_clear_encrypted_call_cache(dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

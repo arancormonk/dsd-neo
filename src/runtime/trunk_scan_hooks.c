@@ -38,3 +38,10 @@ dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_st
         g_trunk_scan_hooks.dmr_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
     }
 }
+
+void
+dsd_trunk_scan_hook_p25_encrypted_call_cache_clear(dsd_state* state) {
+    if (g_trunk_scan_hooks.p25_encrypted_call_cache_clear) {
+        g_trunk_scan_hooks.p25_encrypted_call_cache_clear(state);
+    }
+}

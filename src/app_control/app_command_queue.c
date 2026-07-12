@@ -416,6 +416,7 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct ds
                 state->R = v;
                 state->RR = v;
                 ui_cmd_reset_key_mute_state(opts, state);
+                p25_sm_clear_encrypted_call_cache(state);
             }
             return 1;
         }
@@ -480,6 +481,7 @@ apply_cmd_key_aes_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     state->K4 = 0ULL;
     state->hytera_key_segments = 0U;
     ui_cmd_reset_key_mute_state(opts, state);
+    p25_sm_clear_encrypted_call_cache(state);
     return 1;
 }
 
@@ -1479,6 +1481,7 @@ ui_cmd_handle_import_keys_dec(dsd_opts* opts, dsd_state* state, const struct dsd
             int rc = svc_import_keys_dec(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
+                p25_sm_clear_encrypted_call_cache(state);
                 ui_set_toast(state, 3, "Applied: Keys (DEC) imported -> %s", path);
             } else {
                 ui_set_toast(state, 4, "Failed: Keys (DEC) import -> %s", path);
@@ -1497,6 +1500,7 @@ ui_cmd_handle_import_keys_hex(dsd_opts* opts, dsd_state* state, const struct dsd
             int rc = svc_import_keys_hex(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
+                p25_sm_clear_encrypted_call_cache(state);
                 ui_set_toast(state, 3, "Applied: Keys (HEX) imported -> %s", path);
             } else {
                 ui_set_toast(state, 4, "Failed: Keys (HEX) import -> %s", path);

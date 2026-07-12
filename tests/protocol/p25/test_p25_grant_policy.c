@@ -12,6 +12,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -121,13 +122,32 @@ tg_policy_is_absent(const dsd_state* st, uint32_t tg) {
 }
 
 static int
-enc_tg_cache_is_absent(const dsd_state* st, uint32_t tg) {
+enc_call_cache_index(const dsd_state* st, uint32_t target, int is_group) {
+    if (!st) {
+        return -1;
+    }
     for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (st->p25_enc_tg_cache_tg[i] == tg && st->p25_enc_tg_cache_until[i] > 0) {
-            return 0;
+        if (st->p25_enc_tg_cache_tg[i] == target && st->p25_enc_tg_cache_is_group[i] == (uint8_t)(is_group ? 1 : 0)
+            && st->p25_enc_tg_cache_until[i] > 0) {
+            return i;
         }
     }
-    return 1;
+    return -1;
+}
+
+static int
+enc_call_cache_is_absent(const dsd_state* st, uint32_t target, int is_group) {
+    return enc_call_cache_index(st, target, is_group) < 0;
+}
+
+static int
+enc_tg_cache_is_absent(const dsd_state* st, uint32_t tg) {
+    return enc_call_cache_is_absent(st, tg, 1);
+}
+
+static dsd_p25_crypto_state
+classify_current_call_without_key(dsd_opts* opts, dsd_state* state, int target) {
+    return p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x2714, 0x0123456789ABCDEFULL, target);
 }
 
 int
@@ -234,6 +254,7 @@ main(void) {
     rc |= expect_true("encrypted mixed-mode grant probes", st.p25_sm_tune_count == before + 1);
     rc |= expect_true("encrypted mixed-mode probe is pending",
                       st.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_true("encrypted grant alone does not arm blocked-call cache", enc_tg_cache_is_absent(&st, 1104U));
     p25_sm_on_release(&opts, &st);
     mark_cc_reacquired(&st);
     before = st.p25_sm_tune_count;
@@ -242,8 +263,8 @@ main(void) {
     rc |= expect_true("later clear mixed-mode grant tunes", st.p25_sm_tune_count == before + 1);
     opts.trunk_tune_enc_calls = 1;
 
-    // Ambiguous voice grants are re-probed even when transient encrypted-call
-    // memory exists; the cache remains policy metadata, not a tune veto.
+    // A target is probed once, retained only after authoritative crypto
+    // metadata proves it cannot be decrypted, and recovered by a clear grant.
     {
         static dsd_opts cache_opts;
         static dsd_state cache_st;
@@ -254,6 +275,7 @@ main(void) {
         cache_opts.trunk_tune_private_calls = 1;
         cache_opts.trunk_tune_data_calls = 1;
         cache_opts.trunk_tune_enc_calls = 0;
+        cache_opts.p25_retune_backoff_s = 10.0;
         cache_st.p25_cc_freq = 851000000;
         seed_fdma_iden(&cache_st, id);
         p25_sm_init(&cache_opts, &cache_st);
@@ -261,26 +283,101 @@ main(void) {
         before = cache_st.p25_sm_tune_count;
         p25_sm_on_group_grant(&cache_opts, &cache_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 1300, /*src*/ 2300);
         rc |= expect_true("unknown-svc grant initially tunes", cache_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("unknown-svc probe starts pending",
+                          cache_st.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+        rc |= expect_true("pending probe does not arm cache", enc_tg_cache_is_absent(&cache_st, 1300U));
 
-        p25_emit_enc_lockout_once(&cache_opts, &cache_st, 0, 1300, /*svc*/ 0);
-        p25_sm_on_release(&cache_opts, &cache_st);
+        rc |= expect_true("missing AES key classifies probe blocked",
+                          classify_current_call_without_key(&cache_opts, &cache_st, 1300) == DSD_P25_CRYPTO_BLOCKED);
+        int cache_idx = enc_call_cache_index(&cache_st, 1300U, 1);
+        rc |= expect_true("blocked group probe arms typed cache", cache_idx >= 0);
         mark_cc_reacquired(&cache_st);
+        if (cache_idx >= 0) {
+            cache_st.p25_enc_tg_cache_until[cache_idx] = time(NULL) + 1;
+        }
+        time_t short_until = (cache_idx >= 0) ? cache_st.p25_enc_tg_cache_until[cache_idx] : 0;
         before = cache_st.p25_sm_tune_count;
         cache_opts.p25_is_tuned = 0;
         p25_sm_on_group_grant(&cache_opts, &cache_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 1300, /*src*/ 2301);
-        rc |= expect_true("unknown-svc grant re-probed despite transient enc cache",
-                          cache_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("unknown-svc grant suppressed by blocked-call cache", cache_st.p25_sm_tune_count == before);
+        rc |= expect_true("suppressed grant refreshes blocked-call expiry",
+                          cache_idx >= 0 && cache_st.p25_enc_tg_cache_until[cache_idx] > short_until);
+        p25_sm_on_group_grant(&cache_opts, &cache_st, ch, /*svc*/ 0x40, /*tg*/ 1300, /*src*/ 2301);
+        rc |= expect_true("explicit encrypted grant suppressed by blocked-call cache",
+                          cache_st.p25_sm_tune_count == before);
         rc |= expect_true("transient enc cache does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
 
-        p25_sm_on_release(&cache_opts, &cache_st);
-        mark_cc_reacquired(&cache_st);
-        before = cache_st.p25_sm_tune_count;
         cache_opts.p25_is_tuned = 0;
         p25_sm_on_group_grant(&cache_opts, &cache_st, ch, /*svc*/ 0x00, /*tg*/ 1300, /*src*/ 2302);
         rc |=
             expect_true("explicit clear grant bypasses transient enc cache", cache_st.p25_sm_tune_count == before + 1);
         rc |= expect_true("explicit clear grant clears transient enc cache", enc_tg_cache_is_absent(&cache_st, 1300U));
         rc |= expect_true("explicit clear grant does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
+        p25_sm_on_release(&cache_opts, &cache_st);
+        mark_cc_reacquired(&cache_st);
+
+        p25_sm_note_encrypted_call(&cache_opts, &cache_st, 1301);
+        cache_idx = enc_call_cache_index(&cache_st, 1301U, 1);
+        rc |= expect_true("seed expiring group cache", cache_idx >= 0);
+        if (cache_idx >= 0) {
+            cache_st.p25_enc_tg_cache_until[cache_idx] = time(NULL) - 1;
+        }
+        before = cache_st.p25_sm_tune_count;
+        p25_sm_on_group_grant(&cache_opts, &cache_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 1301, /*src*/ 2303);
+        rc |= expect_true("expired blocked-call cache permits new probe", cache_st.p25_sm_tune_count == before + 1);
+        p25_sm_on_release(&cache_opts, &cache_st);
+        mark_cc_reacquired(&cache_st);
+
+        p25_sm_note_encrypted_call(&cache_opts, &cache_st, 1302);
+        cache_opts.trunk_tune_enc_calls = 1;
+        before = cache_st.p25_sm_tune_count;
+        p25_sm_on_group_grant(&cache_opts, &cache_st, ch, /*svc*/ 0x40, /*tg*/ 1302, /*src*/ 2304);
+        rc |= expect_true("encrypted-follow mode ignores blocked-call cache", cache_st.p25_sm_tune_count == before + 1);
+        p25_sm_on_release(&cache_opts, &cache_st);
+        mark_cc_reacquired(&cache_st);
+        cache_opts.trunk_tune_enc_calls = 0;
+
+        p25_sm_note_encrypted_call(&cache_opts, &cache_st, 1303);
+        p25_patch_set_kas(&cache_st, 1303, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
+        before = cache_st.p25_sm_tune_count;
+        p25_sm_on_group_grant(&cache_opts, &cache_st, ch, /*svc*/ 0x40, /*tg*/ 1303, /*src*/ 2305);
+        rc |=
+            expect_true("regroup clear override bypasses blocked-call cache", cache_st.p25_sm_tune_count == before + 1);
+        rc |=
+            expect_true("regroup clear override clears matching cache entry", enc_tg_cache_is_absent(&cache_st, 1303U));
+        p25_sm_on_release(&cache_opts, &cache_st);
+        mark_cc_reacquired(&cache_st);
+
+        // Group and private calls with the same numeric target retain separate
+        // identities, and clear grants remove only the matching type.
+        p25_sm_note_encrypted_call(&cache_opts, &cache_st, 1400);
+        before = cache_st.p25_sm_tune_count;
+        p25_sm_on_indiv_grant(&cache_opts, &cache_st, ch, P25_SM_SVC_UNKNOWN, /*dst*/ 1400, /*src*/ 2400);
+        rc |= expect_true("group cache does not suppress same-ID private probe",
+                          cache_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("private probe classifies blocked",
+                          classify_current_call_without_key(&cache_opts, &cache_st, 1400) == DSD_P25_CRYPTO_BLOCKED);
+        rc |= expect_true("group same-ID cache retained", !enc_call_cache_is_absent(&cache_st, 1400U, 1));
+        rc |= expect_true("private same-ID cache armed", !enc_call_cache_is_absent(&cache_st, 1400U, 0));
+        mark_cc_reacquired(&cache_st);
+
+        before = cache_st.p25_sm_tune_count;
+        p25_sm_on_indiv_grant(&cache_opts, &cache_st, ch, /*svc*/ 0x40, /*dst*/ 1400, /*src*/ 2401);
+        rc |= expect_true("private encrypted grant suppressed by private cache", cache_st.p25_sm_tune_count == before);
+        p25_sm_on_group_grant(&cache_opts, &cache_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 1400, /*src*/ 2402);
+        rc |= expect_true("group unknown grant suppressed by group cache", cache_st.p25_sm_tune_count == before);
+
+        p25_sm_on_indiv_grant(&cache_opts, &cache_st, ch, /*svc*/ 0x00, /*dst*/ 1400, /*src*/ 2403);
+        rc |= expect_true("private clear grant recovers private call", cache_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("private clear removes only private cache", enc_call_cache_is_absent(&cache_st, 1400U, 0));
+        rc |=
+            expect_true("private clear preserves same-ID group cache", !enc_call_cache_is_absent(&cache_st, 1400U, 1));
+        p25_sm_on_release(&cache_opts, &cache_st);
+        mark_cc_reacquired(&cache_st);
+        before = cache_st.p25_sm_tune_count;
+        p25_sm_on_group_grant(&cache_opts, &cache_st, ch, /*svc*/ 0x00, /*tg*/ 1400, /*src*/ 2404);
+        rc |= expect_true("group clear grant recovers group call", cache_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("group clear removes group cache", enc_call_cache_is_absent(&cache_st, 1400U, 1));
         p25_sm_on_release(&cache_opts, &cache_st);
         mark_cc_reacquired(&cache_st);
         p25_sm_init(&opts, &st);
@@ -382,8 +479,8 @@ main(void) {
         rc |= expect_true("clear group data grant blocked when data disabled", data_st.p25_sm_tune_count == before);
         rc |= expect_true("clear group data grant preserves voice enc cache", !enc_tg_cache_is_absent(&data_st, 3105U));
         p25_sm_on_group_grant(&data_opts, &data_st, ch, P25_SM_SVC_UNKNOWN, /*tg*/ 3105, /*src*/ 4108);
-        rc |= expect_true("svc-less voice grant re-probes after clear data grant",
-                          data_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("svc-less voice grant remains suppressed after clear data grant",
+                          data_st.p25_sm_tune_count == before);
         p25_sm_init(&opts, &st);
     }
 

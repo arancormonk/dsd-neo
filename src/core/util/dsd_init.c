@@ -866,6 +866,7 @@ init_state_p25_retune_backoff_defaults(dsd_state* state) {
     }
     DSD_MEMSET(state->p25_enc_tg_cache_until, 0, sizeof(state->p25_enc_tg_cache_until));
     DSD_MEMSET(state->p25_enc_tg_cache_tg, 0, sizeof(state->p25_enc_tg_cache_tg));
+    DSD_MEMSET(state->p25_enc_tg_cache_is_group, 0, sizeof(state->p25_enc_tg_cache_is_group));
     state->p25_enc_tg_cache_next = 0;
 }
 

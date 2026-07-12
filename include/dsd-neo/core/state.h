@@ -816,9 +816,10 @@ struct dsd_state {
     time_t p25_retune_block_history_until[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
     long p25_retune_block_history_freq[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
     int p25_retune_block_history_slot[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH]; // -1 when N/A
-    // Transient encrypted-call cache: blocks ambiguous no-SVC grants after proven ENC lockout.
+    // Transient encrypted-call cache: blocks encrypted/ambiguous voice grants after proven ENC lockout.
     time_t p25_enc_tg_cache_until[DSD_P25_ENC_TG_CACHE_DEPTH];
     uint32_t p25_enc_tg_cache_tg[DSD_P25_ENC_TG_CACHE_DEPTH];
+    uint8_t p25_enc_tg_cache_is_group[DSD_P25_ENC_TG_CACHE_DEPTH]; // 1=group/SG, 0=private destination
     unsigned int p25_enc_tg_cache_next;
     // Cached P25 SM tunables (seconds), resolved once at p25_sm_init()
     double p25_cfg_vc_grace_s;
