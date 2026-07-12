@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -39,6 +40,7 @@ static int g_p25p1_ber_calls;
 static int g_p25p2_err_calls;
 static int g_stream_active_calls;
 static int g_input_level_calls;
+static dsdneoRuntimeConfig g_runtime_config;
 
 static int g_last_symbol_rate;
 static int g_last_symbol_levels;
@@ -58,6 +60,11 @@ static int g_last_p25p2_facch_err;
 static int g_last_p25p2_sacch_ok;
 static int g_last_p25p2_sacch_err;
 static int g_last_p25p2_voice_err;
+
+const dsdneoRuntimeConfig*
+dsd_neo_get_config(void) {
+    return &g_runtime_config;
+}
 
 unsigned int
 dsd_rtl_stream_output_rate(void) {
@@ -268,6 +275,22 @@ main(void) {
     assert(g_last_symbol_levels == 4);
     assert(g_last_symbol_profile == 5);
     assert(g_symbol_profile_order == 4);
+
+    g_runtime_config.cqpsk_is_set = 1;
+    g_runtime_config.cqpsk_enable = 0;
+    g_family_calls = 0;
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == 7);
+    assert(g_family_calls == 0);
+    assert(g_ted_clear_calls == 2);
+    assert(g_ted_set_calls == 2);
+    assert(g_set_symbol_profile_calls == 3);
+
+    g_runtime_config.cqpsk_enable = 1;
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(0, 4800, 4, 3, 10) == 7);
+    assert(g_family_calls == 0);
+    assert(g_ted_clear_calls == 3);
+    assert(g_ted_set_calls == 3);
+    assert(g_set_symbol_profile_calls == 4);
 
     int cqpsk_enable = -1;
     int cqpsk_timing = -1;

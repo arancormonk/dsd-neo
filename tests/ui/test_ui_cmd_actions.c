@@ -398,6 +398,19 @@ test_radio_actions(void) {
     rc |= expect_int("generic mod toggle clears p25p2 c4fm mode", opts.mod_p25p2_c4fm, 0);
     rc |= expect_int("generic mod toggle clears p25p2 profile lock", opts.mod_p25p2_profile_lock, 0);
 
+    /* Generic modulation transitions must retain timing from the active PCM source. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 96000;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 1;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("96k WAV generic toggle returns c4fm", opts.mod_c4fm, 1);
+    rc |= expect_int("96k WAV generic toggle timing", state.samplesPerSymbol, 20);
+    rc |= expect_int("96k WAV generic toggle center", state.symbolCenter, 9);
+
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
@@ -423,6 +436,7 @@ test_radio_actions(void) {
      * profile selection—not timing inference—must carry the hotkey choice. */
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_dsp_bw_khz = 16;
     opts.frame_p25p1 = 1;
     opts.frame_p25p2 = 1;

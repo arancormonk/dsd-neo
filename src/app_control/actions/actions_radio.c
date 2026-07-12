@@ -18,15 +18,19 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static int
-ui_modulation_demod_rate(const dsd_state* state) {
+ui_modulation_demod_rate(const dsd_opts* opts, const dsd_state* state) {
+    int demod_rate = dsd_opts_current_input_timing_rate(opts);
 #ifdef USE_RADIO
-    if (state && state->rtl_ctx) {
-        return (int)rtl_stream_output_rate(state->rtl_ctx);
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx) {
+        const int rtl_rate = (int)rtl_stream_output_rate(state->rtl_ctx);
+        if (rtl_rate > 0) {
+            demod_rate = rtl_rate;
+        }
     }
 #else
     (void)state;
 #endif
-    return 0;
+    return demod_rate;
 }
 
 #ifdef USE_RADIO
@@ -91,7 +95,7 @@ static int
 ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     const int leaving_p25p2_helper = opts->mod_p25p2_c4fm == 1 || opts->mod_p25p2_profile_lock == 1;
-    const int sps = dsd_opts_compute_sps_rate(opts, 4800, ui_modulation_demod_rate(state));
+    const int sps = dsd_opts_compute_sps_rate(opts, 4800, ui_modulation_demod_rate(opts, state));
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 0;
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
@@ -123,7 +127,7 @@ static int
 ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     // P25P2 TDMA: 6000 sym/s - compute SPS from actual demod rate
-    int sps = dsd_opts_compute_sps_rate(opts, 6000, ui_modulation_demod_rate(state));
+    int sps = dsd_opts_compute_sps_rate(opts, 6000, ui_modulation_demod_rate(opts, state));
     int center = dsd_opts_symbol_center(sps);
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 1;

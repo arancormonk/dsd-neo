@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
 
@@ -21,7 +22,10 @@ rtl_stream_metrics_cqpsk_timing_bias(void) {
 static int
 rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                        int ted_sps) {
-    rtl_stream_toggle_cqpsk(cqpsk_enable);
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg || !cfg->cqpsk_is_set) {
+        rtl_stream_toggle_cqpsk(cqpsk_enable);
+    }
     rtl_stream_clear_ted_sps_override();
     if (ted_sps > 0) {
         rtl_stream_set_ted_sps_no_override(ted_sps);
