@@ -66,15 +66,26 @@ ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
     return out;
 }
 
+static int g_resolve_entry_algid;
+static int g_resolve_entry_keyid;
+static uint64_t g_resolve_entry_mi;
+
 dsd_p25_crypto_state
 p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
                    uint64_t mi, int talkgroup) {
     (void)opts;
     (void)phase;
     (void)slot;
-    (void)keyid;
-    (void)mi;
     (void)talkgroup;
+    g_resolve_entry_algid = state->payload_algid;
+    g_resolve_entry_keyid = state->payload_keyid;
+    g_resolve_entry_mi = state->payload_miP;
+    if (algid == 0) {
+        return state->p25_crypto_state[0];
+    }
+    state->payload_algid = algid;
+    state->payload_keyid = keyid;
+    state->payload_miP = mi;
     dsd_p25_crypto_state resolved = DSD_P25_CRYPTO_CLEAR;
     if (algid != 0x80) {
         int scalar_key = (algid == 0xAA || algid == 0x81 || algid == 0x9F) && state->R != 0;
@@ -336,6 +347,9 @@ reset_hook_counters(void) {
     g_last_policy_source = 0U;
     g_last_policy_upsert_mode = 0;
     g_lookup_label = NULL;
+    g_resolve_entry_algid = 0;
+    g_resolve_entry_keyid = 0;
+    g_resolve_entry_mi = 0ULL;
 }
 
 static void
@@ -699,10 +713,40 @@ test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state(void) {
     rc |= expect_int("good hdu algid", state.payload_algid, 0x84);
     rc |= expect_int("good hdu kid", state.payload_keyid, 0x1234);
     rc |= expect_u64("good hdu mi", state.payload_miP, 0x0102030405060708ULL);
+    rc |= expect_int("hdu resolver sees prior ALGID", g_resolve_entry_algid, 0);
+    rc |= expect_int("hdu resolver sees prior KID", g_resolve_entry_keyid, 0);
+    rc |= expect_u64("hdu resolver sees prior MI", g_resolve_entry_mi, 0ULL);
     rc |= expect_int("good hdu xl flag", state.xl_is_hdu, 1);
     rc |= expect_int("good hdu aes lfsr", g_lfsr128_calls, 1);
     rc |= expect_int("good hdu no lockout release", g_release_calls, 0);
 
+    return rc;
+}
+
+static int
+test_hdu_nondefinitive_metadata_preserves_prior_tuple(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset_hook_counters();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.payload_algid = 0x84;
+    state.payload_keyid = 0x3456;
+    state.payload_miP = 0x8877665544332211ULL;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+
+    hdu_handle_good_decode(&opts, &state, 0, 0, 0ULL, 0ULL, 0ULL);
+
+    rc |= expect_int("nondefinitive HDU resolver sees prior ALGID", g_resolve_entry_algid, 0x84);
+    rc |= expect_int("nondefinitive HDU resolver sees prior KID", g_resolve_entry_keyid, 0x3456);
+    rc |= expect_u64("nondefinitive HDU resolver sees prior MI", g_resolve_entry_mi, 0x8877665544332211ULL);
+    rc |= expect_int("nondefinitive HDU preserves ALGID", state.payload_algid, 0x84);
+    rc |= expect_int("nondefinitive HDU preserves KID", state.payload_keyid, 0x3456);
+    rc |= expect_u64("nondefinitive HDU preserves MI", state.payload_miP, 0x8877665544332211ULL);
+    rc |=
+        expect_int("nondefinitive HDU preserves classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_DECRYPTABLE);
     return rc;
 }
 
@@ -749,6 +793,7 @@ main(void) {
     rc |= test_hdu_fec_helpers_account_for_hard_soft_and_failed_corrections();
     rc |= test_hdu_read_and_fec_updates_rs_success_soft_success_and_failure_state();
     rc |= test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state();
+    rc |= test_hdu_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_hdu_encrypted_trunk_lockout_state();
     return rc;
 }

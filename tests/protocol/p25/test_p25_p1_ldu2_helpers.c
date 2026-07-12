@@ -81,6 +81,9 @@ static uint8_t g_last_policy_source;
 static dsd_tg_policy_upsert_mode g_last_policy_upsert_mode;
 static const char* g_lookup_label;
 static Event_History_I g_event_history[2];
+static int g_resolve_entry_algid;
+static int g_resolve_entry_keyid;
+static uint64_t g_resolve_entry_mi;
 
 int
 check_and_fix_reedsolomon_24_16_9(char* data, const char* parity) {
@@ -322,9 +325,16 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
     (void)opts;
     (void)phase;
     (void)slot;
-    (void)keyid;
-    (void)mi;
     (void)talkgroup;
+    g_resolve_entry_algid = state->payload_algid;
+    g_resolve_entry_keyid = state->payload_keyid;
+    g_resolve_entry_mi = state->payload_miP;
+    if (algid == 0) {
+        return state->p25_crypto_state[0];
+    }
+    state->payload_algid = algid;
+    state->payload_keyid = keyid;
+    state->payload_miP = mi;
     dsd_p25_crypto_state resolved = DSD_P25_CRYPTO_CLEAR;
     if (algid != 0x80) {
         int scalar_key = (algid == 0xAA || algid == 0x81 || algid == 0x9F) && state->R != 0;
@@ -380,6 +390,9 @@ reset_hook_counters(void) {
     g_last_policy_source = 0U;
     g_last_policy_upsert_mode = 0;
     g_lookup_label = NULL;
+    g_resolve_entry_algid = 0;
+    g_resolve_entry_keyid = 0;
+    g_resolve_entry_mi = 0ULL;
 }
 
 static int
@@ -724,14 +737,17 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     state.lastsrc = 77;
 
     ldu2_decode_post_fec_fields(&state, &frame);
-    ldu2_print_decode_result(&state, &frame);
-    ldu2_maybe_enc_lockout(&opts, &state, 0);
+    ldu2_print_decode_result(&frame);
+    ldu2_maybe_enc_lockout(&opts, &state, &frame);
     ldu2_report_decryption_key(&opts, &state);
     ldu2_handle_lsd_alias(&opts, &state, &frame);
 
     rc |= expect_int("decoded ALGID", state.payload_algid, 0x84);
     rc |= expect_int("decoded KID", state.payload_keyid, 0x1234);
     rc |= expect_u64("decoded MI", state.payload_miP, 0x123456789ABCDEF0ULL);
+    rc |= expect_int("resolver sees prior ALGID", g_resolve_entry_algid, 0x80);
+    rc |= expect_int("resolver sees prior KID", g_resolve_entry_keyid, 0);
+    rc |= expect_u64("resolver sees prior MI", g_resolve_entry_mi, 0ULL);
     rc |= expect_u8("decoded LSD1", frame.lsd_hex1, 0x41U);
     rc |= expect_u8("decoded LSD2", frame.lsd_hex2, 0x42U);
     rc |= expect_int("AES LDU2 preserves user mute", opts.unmute_encrypted_p25, 0);
@@ -743,6 +759,37 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     rc |= expect_int("alias policy source", (int)g_last_policy_source, (int)DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
     rc |=
         expect_int("alias last upsert mode", (int)g_last_policy_upsert_mode, (int)DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
+    return rc;
+}
+
+static int
+test_ldu2_nondefinitive_metadata_preserves_prior_tuple(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    Ldu2Frame frame;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&frame, 0, sizeof(frame));
+    reset_hook_counters();
+
+    state.payload_algid = 0x81;
+    state.payload_keyid = 0x2345;
+    state.payload_miP = 0x1122334455667788ULL;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+
+    ldu2_print_decode_result(&frame);
+    ldu2_maybe_enc_lockout(&opts, &state, &frame);
+
+    rc |= expect_int("nondefinitive resolver sees prior ALGID", g_resolve_entry_algid, 0x81);
+    rc |= expect_int("nondefinitive resolver sees prior KID", g_resolve_entry_keyid, 0x2345);
+    rc |= expect_u64("nondefinitive resolver sees prior MI", g_resolve_entry_mi, 0x1122334455667788ULL);
+    rc |= expect_int("nondefinitive LDU2 preserves ALGID", state.payload_algid, 0x81);
+    rc |= expect_int("nondefinitive LDU2 preserves KID", state.payload_keyid, 0x2345);
+    rc |= expect_u64("nondefinitive LDU2 preserves MI", state.payload_miP, 0x1122334455667788ULL);
+    rc |= expect_int("nondefinitive LDU2 preserves classification", state.p25_crypto_state[0],
+                     DSD_P25_CRYPTO_DECRYPTABLE);
     return rc;
 }
 
@@ -854,10 +901,12 @@ static int
 test_ldu2_encrypted_trunk_lockout_state(void) {
     static dsd_opts opts;
     static dsd_state state;
+    Ldu2Frame frame;
     int rc = 0;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&frame, 0, sizeof(frame));
     DSD_MEMSET(g_event_history, 0, sizeof(g_event_history));
     reset_hook_counters();
 
@@ -869,8 +918,10 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     state.payload_algid = 0xAA;
     state.payload_keyid = 0x2A2A;
     state.lasttg = 2468;
+    frame.algidhex = 0xAA;
+    frame.kidhex = 0x2A2A;
 
-    ldu2_maybe_enc_lockout(&opts, &state, 0);
+    ldu2_maybe_enc_lockout(&opts, &state, &frame);
 
     rc |= expect_int("lockout direct helper does not release", g_release_calls, 0);
     rc |= expect_int("lockout state", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
@@ -884,7 +935,7 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     reset_hook_counters();
     state.p25_sm_force_release = 0;
     state.R = 0x1234U;
-    ldu2_maybe_enc_lockout(&opts, &state, 0);
+    ldu2_maybe_enc_lockout(&opts, &state, &frame);
     rc |= expect_int("lockout skipped with key", g_release_calls, 0);
     rc |= expect_int("lockout skipped force release", state.p25_sm_force_release, 0);
     rc |= expect_int("lockout skipped policy", g_policy_make_calls, 0);
@@ -904,6 +955,7 @@ main(void) {
     rc |= test_ldu2_consume_trailing_status_feeds_classifier();
     rc |= test_ldu2_capture_lsd_reads_soft_octets_and_updates_counters();
     rc |= test_ldu2_decode_key_reporting_and_lsd_alias_state();
+    rc |= test_ldu2_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_ldu2_decode_post_fec_rejects_malformed_ess_bits();
     rc |= test_ldu2_key_reporting_preserves_user_unmute();
     rc |= test_ldu2_lsd_alias_begin_clamps_length();

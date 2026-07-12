@@ -959,7 +959,6 @@ p25p2_vpdu_update_private_last_ids(dsd_state* state, int slot, int talkgroup, in
 
 static void
 p25p2_vpdu_handle_group_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int slot, int talkgroup) {
-    UNUSED(opts);
     if (p25_patch_tg_key_is_clear(state, talkgroup) || p25_patch_sg_key_is_clear(state, talkgroup)) {
         const int slot_idx = slot & 1;
         if (!p25_crypto_audio_ready(state, slot_idx)) {
@@ -967,7 +966,7 @@ p25p2_vpdu_handle_group_voice_enc_fallback(dsd_opts* opts, dsd_state* state, int
         }
         return;
     }
-    p25_crypto_mark_encrypted_pending(state, slot & 1);
+    p25_sm_emit_crypto_pending(opts, state, slot & 1);
 }
 
 static void

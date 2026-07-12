@@ -2205,6 +2205,30 @@ handle_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
+handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    if (!ctx || !state || !ev || ev->slot < 0 || ev->slot > 1) {
+        return;
+    }
+
+    const int slot = ev->slot;
+    const dsd_p25_crypto_state previous = state->p25_crypto_state[slot];
+    p25_crypto_mark_encrypted_pending(state, slot);
+    if (state->p25_crypto_state[slot] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+        return;
+    }
+
+    ctx->slots[slot].voice_active = 0;
+    if (previous == DSD_P25_CRYPTO_ENCRYPTED_PENDING && ctx->slots[slot].crypto_attempt_m > 0.0) {
+        return;
+    }
+
+    ctx->slots[slot].crypto_attempt_m = now_monotonic();
+    p25_sm_diagf(opts, state, ctx, "crypto_classification_start", "slot=%d previous=%d freq=%ld tg=%d", slot,
+                 (int)previous, ctx->vc_freq_hz, ctx->vc_tg);
+    sm_log(opts, state, "crypto-classify-start");
+}
+
+static void
 handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     if (!ctx || !ev || !opts || !state) {
         return;
@@ -2886,14 +2910,26 @@ p25_sm_handle_event_enc(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* stat
     handle_enc(ctx, (dsd_opts*)opts, state, ev);
 }
 
+static void
+p25_sm_handle_event_crypto_pending(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state,
+                                   const p25_sm_event_t* ev) {
+    handle_crypto_pending(ctx, (dsd_opts*)opts, state, ev);
+}
+
 typedef void (*p25_sm_event_handler_fn)(p25_sm_ctx_t*, const dsd_opts*, dsd_state*, const p25_sm_event_t*);
 
 static const p25_sm_event_handler_fn g_p25_sm_event_handlers[] = {
-    [P25_SM_EV_GRANT] = p25_sm_handle_event_grant,         [P25_SM_EV_PTT] = p25_sm_handle_event_ptt,
-    [P25_SM_EV_ACTIVE] = p25_sm_handle_event_active,       [P25_SM_EV_END] = p25_sm_handle_event_end,
-    [P25_SM_EV_IDLE] = p25_sm_handle_event_idle,           [P25_SM_EV_TDU] = p25_sm_handle_event_tdu,
-    [P25_SM_EV_CC_SYNC] = p25_sm_handle_event_cc_sync,     [P25_SM_EV_VC_SYNC] = p25_sm_handle_event_vc_sync,
-    [P25_SM_EV_SYNC_LOST] = p25_sm_handle_event_sync_lost, [P25_SM_EV_ENC] = p25_sm_handle_event_enc,
+    [P25_SM_EV_GRANT] = p25_sm_handle_event_grant,
+    [P25_SM_EV_PTT] = p25_sm_handle_event_ptt,
+    [P25_SM_EV_ACTIVE] = p25_sm_handle_event_active,
+    [P25_SM_EV_END] = p25_sm_handle_event_end,
+    [P25_SM_EV_IDLE] = p25_sm_handle_event_idle,
+    [P25_SM_EV_TDU] = p25_sm_handle_event_tdu,
+    [P25_SM_EV_CC_SYNC] = p25_sm_handle_event_cc_sync,
+    [P25_SM_EV_VC_SYNC] = p25_sm_handle_event_vc_sync,
+    [P25_SM_EV_SYNC_LOST] = p25_sm_handle_event_sync_lost,
+    [P25_SM_EV_ENC] = p25_sm_handle_event_enc,
+    [P25_SM_EV_CRYPTO_PENDING] = p25_sm_handle_event_crypto_pending,
 };
 
 static int
@@ -3368,7 +3404,7 @@ p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         p25_sm_init_ctx(ctx, opts, state);
     }
 
-    if ((unsigned)ev->type > (unsigned)P25_SM_EV_ENC) {
+    if ((unsigned)ev->type > (unsigned)P25_SM_EV_CRYPTO_PENDING) {
         return;
     }
     handler = g_p25_sm_event_handlers[(unsigned)ev->type];
@@ -3488,6 +3524,12 @@ p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state) {
 void
 p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid, int tg) {
     p25_sm_event_t ev = p25_sm_ev_enc(slot, algid, keyid, tg);
+    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+}
+
+void
+p25_sm_emit_crypto_pending(dsd_opts* opts, dsd_state* state, int slot) {
+    p25_sm_event_t ev = p25_sm_ev_crypto_pending(slot);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 

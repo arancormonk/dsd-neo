@@ -194,6 +194,37 @@ test_pre_ess_single_slot_stays_tuned(void) {
     rc |= expect_eq("pre-ess single slot: pending marker set", state.p25_p2_enc_lockout_muted[0], 1);
     rc |= expect_eq("pre-ess single slot: pending crypto state", state.p25_crypto_state[0],
                     DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("pre-ess single slot: deadline started", ctx->slots[0].crypto_attempt_m > 0.0, 1);
+    return rc;
+}
+
+static int
+test_clear_voice_to_encrypted_restarts_deadline(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    state.currentslot = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.dmr_so = 0x40;
+    ctx->slots[0].grant_active = 1;
+    ctx->slots[0].voice_active = 1;
+    ctx->slots[0].last_active_m = 2.0;
+    ctx->slots[0].crypto_attempt_m = 1.0;
+
+    process_2V(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_eq("clear-to-encrypted: pending crypto state", state.p25_crypto_state[0],
+                    DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("clear-to-encrypted: gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_eq("clear-to-encrypted: voice activity cleared", ctx->slots[0].voice_active, 0);
+    rc |= expect_eq("clear-to-encrypted: stale deadline replaced", ctx->slots[0].crypto_attempt_m > 1.0, 1);
+
+    const double started_m = ctx->slots[0].crypto_attempt_m;
+    process_2V(&opts, &state);
+    rc |= expect_eq("clear-to-encrypted: repeated SVC keeps deadline", ctx->slots[0].crypto_attempt_m == started_m, 1);
     return rc;
 }
 
@@ -284,6 +315,7 @@ main(void) {
 
     int rc = 0;
     rc |= test_pre_ess_single_slot_stays_tuned();
+    rc |= test_clear_voice_to_encrypted_restarts_deadline();
     rc |= test_pre_ess_opposite_clear_slot_stays_tuned();
     rc |= test_clear_regroup_override_survives_voice_burst();
     rc |= test_encrypted_follow_tracks_activity_while_media_is_muted();

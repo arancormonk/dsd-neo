@@ -1326,6 +1326,52 @@ main(void) {
     assert(s19h.p25_p2_audio_ring_count[0] == 1);
     assert(s19h.s_l4[0][0] == 654);
 
+    // An in-band encrypted indication after clear voice starts a fresh,
+    // non-sliding classification attempt and clears stale voice activity.
+    static dsd_opts o19j;
+    static dsd_state s19j;
+    DSD_MEMSET(&o19j, 0, sizeof(o19j));
+    DSD_MEMSET(&s19j, 0, sizeof(s19j));
+    o19j.p25_trunk = 1;
+    o19j.p25_is_tuned = 1;
+    o19j.trunk_is_tuned = 1;
+    o19j.trunk_tune_enc_calls = 0;
+    s19j.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    s19j.p25_p2_audio_allowed[0] = 1;
+
+    p25_sm_ctx_t ctx19j;
+    p25_sm_init_ctx(&ctx19j, &o19j, &s19j);
+    ctx19j.state = P25_SM_TUNED;
+    ctx19j.vc_is_tdma = 1;
+    ctx19j.vc_freq_hz = 851000000;
+    ctx19j.vc_channel = tdma_slot0_ch;
+    ctx19j.vc_tg = 5701;
+    ctx19j.slots[0].grant_active = 1;
+    ctx19j.slots[0].voice_active = 1;
+    ctx19j.slots[0].last_active_m = dsd_time_now_monotonic_s();
+    const double stale_inband_attempt_m = ctx19j.slots[0].last_active_m - 5.0;
+    ctx19j.slots[0].crypto_attempt_m = stale_inband_attempt_m;
+
+    p25_sm_event_t inband_encrypted = p25_sm_ev_crypto_pending(0);
+    p25_sm_event(&ctx19j, &o19j, &s19j, &inband_encrypted);
+    assert(s19j.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    assert(s19j.p25_p2_audio_allowed[0] == 0);
+    assert(s19j.p25_p2_enc_lockout_muted[0] == 1U);
+    assert(ctx19j.slots[0].voice_active == 0);
+    assert(ctx19j.slots[0].crypto_attempt_m > stale_inband_attempt_m);
+
+    const double fresh_inband_attempt_m = ctx19j.slots[0].crypto_attempt_m;
+    ctx19j.slots[0].voice_active = 1;
+    p25_sm_event(&ctx19j, &o19j, &s19j, &inband_encrypted);
+    assert(ctx19j.slots[0].voice_active == 0);
+    assert(ctx19j.slots[0].crypto_attempt_m == fresh_inband_attempt_m);
+
+    ctx19j.slots[0].crypto_attempt_m = 0.0;
+    ctx19j.slots[0].voice_active = 1;
+    p25_sm_event(&ctx19j, &o19j, &s19j, &inband_encrypted);
+    assert(ctx19j.slots[0].voice_active == 0);
+    assert(ctx19j.slots[0].crypto_attempt_m > 0.0);
+
     // Encrypted-follow mode tracks muted activity and never applies the
     // lockout-only classification timeout.
     static dsd_opts o19f;

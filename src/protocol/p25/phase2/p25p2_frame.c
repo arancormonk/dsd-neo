@@ -57,7 +57,9 @@ extern int16_t ess_a_llr[2][168];
 #if defined(DSD_NEO_P25P2_TEST_STUB)
 #define p25_sm_emit_active(opts, state, slot) ((void)(opts), (void)(state), (void)(slot))
 #define p25_sm_emit_idle(opts, state, slot)   ((void)(opts), (void)(state), (void)(slot))
-#define p25_sm_on_release(opts, state)        ((void)(opts), (void)(state))
+#define p25_sm_emit_crypto_pending(opts, state, slot)                                                                  \
+    ((void)(opts), p25p2_frame_mark_encrypted_pending((state), (slot)))
+#define p25_sm_on_release(opts, state) ((void)(opts), (void)(state))
 #endif
 
 static void process_P2_DUID(dsd_opts* opts, dsd_state* state);
@@ -186,13 +188,6 @@ p25p2_frame_resolve_crypto(dsd_opts* opts, dsd_state* state, int slot, int algid
 static void
 p25p2_frame_reset_crypto_slot(dsd_state* state, int slot) {
     p25_crypto_reset_slot(state, slot);
-}
-
-static void
-p25p2_frame_mark_encrypted_pending(dsd_state* state, int slot) {
-    if (state && slot >= 0 && slot <= 1) {
-        p25_crypto_mark_encrypted_pending(state, slot);
-    }
 }
 #endif
 
@@ -994,7 +989,7 @@ p25p2_voice_crypto_is_authoritatively_clear(const dsd_state* state, int slot) {
 }
 
 static void
-p25p2_prepare_voice_crypto(const dsd_opts* opts, dsd_state* state) {
+p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
@@ -1003,9 +998,8 @@ p25p2_prepare_voice_crypto(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     const int svc = (slot == 0) ? state->dmr_so : state->dmr_soR;
-    if (opts->trunk_tune_enc_calls == 0 && (svc & 0x40) != 0
-        && !p25p2_voice_crypto_is_authoritatively_clear(state, slot)) {
-        p25p2_frame_mark_encrypted_pending(state, slot);
+    if ((svc & 0x40) != 0 && !p25p2_voice_crypto_is_authoritatively_clear(state, slot)) {
+        p25_sm_emit_crypto_pending(opts, state, slot);
     }
     if (p25_crypto_audio_permitted(opts, state, slot)) {
         const int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;

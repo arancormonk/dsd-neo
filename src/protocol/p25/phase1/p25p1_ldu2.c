@@ -331,7 +331,7 @@ ldu2_report_decryption_key(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static void
-ldu2_print_decode_result(dsd_state* state, const Ldu2Frame* frame) {
+ldu2_print_decode_result(const Ldu2Frame* frame) {
     if (frame->irrecoverable_errors != 0) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " LDU2 FEC ERR ");
@@ -342,14 +342,11 @@ ldu2_print_decode_result(dsd_state* state, const Ldu2Frame* frame) {
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " LDU2 ALG ID: 0x%02X KEY ID: 0x%04X MI: 0x%08llX%08llX", frame->algidhex, frame->kidhex,
                 frame->mihex1, frame->mihex2);
-    state->payload_algid = frame->algidhex;
-    state->payload_keyid = frame->kidhex;
     if (frame->mihex3 != 0ULL) {
         DSD_FPRINTF(stderr, "-%02llX", frame->mihex3);
     }
 
-    state->payload_miP = (frame->mihex1 << 32) | frame->mihex2;
-    if (state->payload_algid != 0x80 && state->payload_algid != 0) {
+    if (frame->algidhex != 0x80 && frame->algidhex != 0) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " ENC");
         DSD_FPRINTF(stderr, "%s", KNRM);
@@ -466,12 +463,13 @@ ldu2_handle_lsd_alias(const dsd_opts* opts, dsd_state* state, const Ldu2Frame* f
 }
 
 static void
-ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_errors) {
-    if (irrecoverable_errors != 0) {
+ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame) {
+    const uint64_t mi = (frame->mihex1 << 32) | frame->mihex2;
+
+    if (frame->irrecoverable_errors != 0) {
         return;
     }
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, state->payload_algid, state->payload_keyid,
-                             state->payload_miP, state->lasttg);
+    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, frame->algidhex, frame->kidhex, mi, state->lasttg);
 }
 
 void
@@ -488,14 +486,14 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     frame.irrecoverable_errors = ldu2_run_fec(state, frame.hex_data, frame.hex_parity, frame.soft_dibits);
 
     ldu2_decode_post_fec_fields(state, &frame);
-    ldu2_print_decode_result(state, &frame);
+    ldu2_print_decode_result(&frame);
+    ldu2_maybe_enc_lockout(opts, state, &frame);
     ldu2_print_payload_lsd(opts, &frame);
     DSD_FPRINTF(stderr, "\n");
 
     ldu2_handle_lsd_alias(opts, state, &frame);
 
     state->xl_is_hdu = 0;
-    ldu2_maybe_enc_lockout(opts, state, frame.irrecoverable_errors);
     ldu2_report_decryption_key(opts, state);
     DSD_FPRINTF(stderr, "%s", KNRM);
 

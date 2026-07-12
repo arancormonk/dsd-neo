@@ -64,16 +64,17 @@ enum {
  * ============================================================================ */
 
 typedef enum {
-    P25_SM_EV_GRANT = 0, // Channel grant received (channel, freq, tg, src, svc_bits)
-    P25_SM_EV_PTT,       // MAC_PTT on slot
-    P25_SM_EV_ACTIVE,    // MAC_ACTIVE on slot
-    P25_SM_EV_END,       // MAC_END on slot
-    P25_SM_EV_IDLE,      // MAC_IDLE on slot
-    P25_SM_EV_TDU,       // P1 Terminator Data Unit
-    P25_SM_EV_CC_SYNC,   // Control channel sync acquired
-    P25_SM_EV_VC_SYNC,   // Voice channel sync acquired
-    P25_SM_EV_SYNC_LOST, // Sync lost
-    P25_SM_EV_ENC,       // Encryption params detected on slot (algid, keyid)
+    P25_SM_EV_GRANT = 0,      // Channel grant received (channel, freq, tg, src, svc_bits)
+    P25_SM_EV_PTT,            // MAC_PTT on slot
+    P25_SM_EV_ACTIVE,         // MAC_ACTIVE on slot
+    P25_SM_EV_END,            // MAC_END on slot
+    P25_SM_EV_IDLE,           // MAC_IDLE on slot
+    P25_SM_EV_TDU,            // P1 Terminator Data Unit
+    P25_SM_EV_CC_SYNC,        // Control channel sync acquired
+    P25_SM_EV_VC_SYNC,        // Voice channel sync acquired
+    P25_SM_EV_SYNC_LOST,      // Sync lost
+    P25_SM_EV_ENC,            // Encryption params detected on slot (algid, keyid)
+    P25_SM_EV_CRYPTO_PENDING, // In-band encrypted indication awaiting definitive metadata
 } p25_sm_event_type_e;
 
 typedef struct {
@@ -401,6 +402,15 @@ void p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state);
  */
 void p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid, int tg);
 
+/**
+ * @brief Emit an in-band encrypted indication that requires classification.
+ *
+ * A new transition closes the slot's media gate, clears stale voice activity,
+ * and starts a fresh classification deadline. Repeated pending indications do
+ * not extend an existing deadline.
+ */
+void p25_sm_emit_crypto_pending(dsd_opts* opts, dsd_state* state, int slot);
+
 /* ============================================================================
  * Public API - Neighbor/CC Candidate Management
  * ============================================================================ */
@@ -667,6 +677,14 @@ p25_sm_ev_enc(int slot, int algid, int keyid, int tg) {
     ev.algid = algid;
     ev.keyid = keyid;
     ev.tg = tg;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_crypto_pending(int slot) {
+    p25_sm_event_t ev = {0};
+    ev.type = P25_SM_EV_CRYPTO_PENDING;
+    ev.slot = slot;
     return ev;
 }
 

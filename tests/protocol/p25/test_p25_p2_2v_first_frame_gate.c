@@ -462,6 +462,40 @@ main(void) {
     rc |= expect_eq("slot0 clear-to-encrypted: companion ring preserved", st.p25_p2_audio_ring_count[1], 3);
     rc |= expect_eq("slot0 clear-to-encrypted: companion int16 preserved", st.s_r4[0][0], 22);
 
+    // Follow mode still classifies an in-band encrypted indication before ESS.
+    // Without the explicit unmute override, a stale clear grant must not pass
+    // ciphertext to either the vocoder or recording path.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot0 encrypted follow muted: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 encrypted follow muted: recording stays closed", g_open_mbe_calls[0], 0);
+    rc |= expect_eq("slot0 encrypted follow muted: pending state", st.p25_crypto_state[0],
+                    DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("slot0 encrypted follow muted: gate closed", st.p25_p2_audio_allowed[0], 0);
+
+    // The same pending classification may pass undeciphered audio only when
+    // the user explicitly enables the encrypted-audio unmute policy.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 1;
+    opts.unmute_encrypted_p25 = 1;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.dmr_so = 0x40;
+    reset_mbe_calls();
+    p25p2_test_decode_voice_frame_for_lockout(&opts, &st);
+    rc |= expect_eq("slot0 encrypted follow unmuted: mbe calls", g_mbe_calls, 1);
+    rc |= expect_eq("slot0 encrypted follow unmuted: pending state", st.p25_crypto_state[0],
+                    DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("slot0 encrypted follow unmuted: gate open", st.p25_p2_audio_allowed[0], 1);
+
     // Definitive clear metadata remains authoritative when the cached service
     // options still carry the encrypted bit on a later voice burst.
     reset_state(&opts, &st);

@@ -319,9 +319,8 @@ hdu_read_and_fec(dsd_opts* opts, dsd_state* state, char hex_data[20][6], char he
 }
 
 static void
-hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state) {
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, state->payload_algid, state->payload_keyid,
-                             state->payload_miP, state->lasttg);
+hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, uint64_t mi) {
+    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, state->lasttg);
 }
 
 static void
@@ -353,16 +352,15 @@ hdu_report_decryption_key(const dsd_opts* opts, const dsd_state* state) {
 static void
 hdu_handle_good_decode(dsd_opts* opts, dsd_state* state, int algidhex, int kidhex, unsigned long long int mihex1,
                        unsigned long long int mihex2, unsigned long long int mihex3) {
+    const uint64_t mi = (mihex1 << 32) | mihex2;
+
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " HDU  ALG ID: 0x%02X KEY ID: 0x%04X MI: 0x%08llX%08llX", algidhex, kidhex, mihex1, mihex2);
-    state->payload_algid = algidhex;
-    state->payload_keyid = kidhex;
     if (mihex3) {
         DSD_FPRINTF(stderr, "-%02llX", mihex3);
     }
-    state->payload_miP = (mihex1 << 32) | (mihex2);
 
-    if (state->payload_algid != 0x80 && state->payload_algid != 0x0) {
+    if (algidhex != 0x80 && algidhex != 0x0) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " ENC");
         DSD_FPRINTF(stderr, "%s", KNRM);
@@ -371,7 +369,7 @@ hdu_handle_good_decode(dsd_opts* opts, dsd_state* state, int algidhex, int kidhe
     DSD_FPRINTF(stderr, "\n");
 
     state->xl_is_hdu = 1;
-    hdu_maybe_enc_lockout(opts, state);
+    hdu_maybe_enc_lockout(opts, state, algidhex, kidhex, mi);
     hdu_report_decryption_key(opts, state);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
