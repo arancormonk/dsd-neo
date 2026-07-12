@@ -1143,7 +1143,32 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     freeState(&state);
 
     init_test_context(&opts, &state);
-    seed_active_p25_voice(&opts, &state, 0L, 854500000L, 2202);
+    seed_active_p25_voice(&opts, &state, 853500000L, 854500000L, 2202);
+    state.p25_cc_is_tdma = 2;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    state.sps_hunt_counter = 19;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    token = 0;
+    rc |=
+        expect_int("profile-neutral lockout queued",
+                   dsd_app_command_set_u8_tracked(DSD_APP_CMD_LOCKOUT_SLOT, 0U, &token), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("profile-neutral lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("profile-neutral lockout completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_int("profile-neutral lockout raw tune calls", g_io_control_tune_calls, 1);
+    rc |= expect_true("profile-neutral lockout frequency", g_io_control_tune_freq == 853500000L);
+    rc |= expect_int("profile-neutral lockout CC tune calls", g_cc_tune_calls, 0);
+    rc |= expect_int("profile-neutral lockout keeps SPS", state.samplesPerSymbol, 8);
+    rc |= expect_int("profile-neutral lockout keeps symbol center", state.symbolCenter, 3);
+    rc |=
+        expect_int("profile-neutral lockout keeps SPS profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    rc |= expect_int("profile-neutral lockout keeps SPS hunt counter", state.sps_hunt_counter, 19);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 0L, 854500000L, 2203);
     state.carrier = 1;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
@@ -1171,14 +1196,16 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     state.trunk_lcn_freq[1] = 857000000L;
     state.trunk_lcn_freq[2] = 0L;
     state.trunk_lcn_freq[3] = 858000000L;
-    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     token = 0;
     rc |= expect_int("deferred channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("deferred channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_command_status("deferred channel cycle failed", token, DSD_APP_COMMAND_RESULT_FAILED);
-    rc |= expect_int("deferred channel cycle tune calls", g_cc_tune_calls, 1);
-    rc |= expect_true("deferred channel cycle frequency", g_cc_tune_freq == 857000000L);
+    rc |= expect_int("deferred channel cycle raw tune calls", g_io_control_tune_calls, 1);
+    rc |= expect_true("deferred channel cycle frequency", g_io_control_tune_freq == 857000000L);
+    rc |= expect_int("deferred channel cycle CC tune calls", g_cc_tune_calls, 0);
     rc |= expect_int("deferred channel cycle keeps roll", state.lcn_freq_roll, 0);
     rc |= expect_int("deferred channel cycle keeps tuned", opts.p25_is_tuned, 1);
     rc |= expect_int("deferred channel cycle keeps TG", state.lasttg, 3201);
@@ -1189,7 +1216,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     state.symbolCenter = 3;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
     state.sps_hunt_counter = 23;
-    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
     token = 0;
     rc |= expect_int("accepted channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -1200,19 +1228,20 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("accepted channel cycle clears TG", state.lasttg, 0);
     rc |= expect_true("accepted channel cycle clears P25 VC", state.p25_vc_freq[0] == 0L);
     rc |= expect_true("accepted channel cycle refreshes CC sync", state.last_cc_sync_time_m > 42.0);
-    rc |= expect_int("accepted channel cycle selects P25 SPS profile", state.sps_hunt_idx,
-                     DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
-    rc |= expect_int("accepted channel cycle resets SPS hunt counter", state.sps_hunt_counter, 0);
-    rc |= expect_int("accepted channel cycle TED SPS", g_cc_tune_ted_sps, 10);
-    rc |= expect_int("accepted channel cycle profile staged before commit", g_cc_profile_at_tune,
-                     DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    rc |= expect_int("accepted channel cycle uses raw tune", g_io_control_tune_calls, 1);
+    rc |= expect_true("accepted channel cycle frequency", g_io_control_tune_freq == 857000000L);
+    rc |= expect_int("accepted channel cycle skips CC tune", g_cc_tune_calls, 0);
+    rc |= expect_int("accepted channel cycle keeps SPS", state.samplesPerSymbol, 8);
+    rc |= expect_int("accepted channel cycle keeps symbol center", state.symbolCenter, 3);
+    rc |= expect_int("accepted channel cycle keeps SPS profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    rc |= expect_int("accepted channel cycle keeps SPS hunt counter", state.sps_hunt_counter, 23);
 
     token = 0;
     rc |= expect_int("later channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("later channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_command_status("later channel cycle completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
-    rc |= expect_true("later channel cycle reaches frequency after empty entry", g_cc_tune_freq == 858000000L);
+    rc |= expect_true("later channel cycle reaches frequency after empty entry", g_io_control_tune_freq == 858000000L);
     rc |= expect_int("later channel cycle advances past second frequency", state.lcn_freq_roll, 4);
 
     token = 0;
@@ -1220,7 +1249,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("wrapped channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_command_status("wrapped channel cycle completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
-    rc |= expect_true("wrapped channel cycle skips leading empty entry", g_cc_tune_freq == 857000000L);
+    rc |= expect_true("wrapped channel cycle skips leading empty entry", g_io_control_tune_freq == 857000000L);
     rc |= expect_int("wrapped channel cycle advances from recovered entry", state.lcn_freq_roll, 2);
     freeState(&state);
 

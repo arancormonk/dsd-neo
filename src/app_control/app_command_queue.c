@@ -25,6 +25,7 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_input.h>
@@ -1628,16 +1629,18 @@ current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
 
 static int
 cc_symbol_rate(const dsd_state* state, int fdma_only) {
-    if (fdma_only) {
-        // In FDMA-only retune paths, keep existing SPS unless CC type is explicitly FDMA.
-        return state->p25_cc_is_tdma == 0 ? 4800 : 0;
+    if (state->p25_cc_is_tdma == 0) {
+        return 4800;
     }
-    return state->p25_cc_is_tdma == 1 ? 6000 : 4800;
+    if (!fdma_only && state->p25_cc_is_tdma == 1) {
+        return 6000;
+    }
+    // Keep the retune profile-neutral unless the P25 CC type is known and allowed by the action.
+    return 0;
 }
 
 static void
-set_cc_symbol_timing(const dsd_opts* opts, dsd_state* state, int fdma_only) {
-    const int sym_rate = cc_symbol_rate(state, fdma_only);
+set_cc_symbol_timing(const dsd_opts* opts, dsd_state* state, int sym_rate) {
     if (sym_rate == 0) {
         return;
     }
@@ -1648,15 +1651,24 @@ set_cc_symbol_timing(const dsd_opts* opts, dsd_state* state, int fdma_only) {
 }
 
 static int
-request_manual_cc_tune(dsd_opts* opts, dsd_state* state, long int freq, int fdma_only, const char* action) {
-    const int sym_rate = cc_symbol_rate(state, fdma_only);
-    const int ted_sps = sym_rate > 0 ? dsd_opts_compute_sps_rate(opts, sym_rate, current_demod_rate(opts, state)) : 0;
-    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, ted_sps);
-    if (dsd_trunk_tune_result_is_ok(result)) {
+request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_symbol_rate, const char* action) {
+    int result = 0;
+    int accepted = 0;
+    if (p25_cc_symbol_rate != 0) {
+        const int ted_sps = dsd_opts_compute_sps_rate(opts, p25_cc_symbol_rate, current_demod_rate(opts, state));
+        const dsd_trunk_tune_result cc_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, ted_sps);
+        result = (int)cc_result;
+        accepted = dsd_trunk_tune_result_is_ok(cc_result);
+    } else {
+        /* Generic LCN actions and unknown CC types must not stage a P25 RTL profile. */
+        result = io_control_set_freq(opts, state, freq);
+        accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
+    }
+    if (accepted) {
         return 1;
     }
     LOG_WARNING("%s tune to %ld Hz was not accepted (result=%d); preserving decoder state\n",
-                action ? action : "Manual", freq, (int)result);
+                action ? action : "Manual", freq, result);
     return 0;
 }
 
@@ -1678,12 +1690,13 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     }
 
     const long freq = current_cc_freq(state);
-    if (!request_manual_cc_tune(opts, state, freq, 0, "Return-to-CC")) {
+    const int sym_rate = cc_symbol_rate(state, 0);
+    if (!request_manual_tune(opts, state, freq, sym_rate, "Return-to-CC")) {
         return UI_CMD_APPLY_FAILED;
     }
     reset_call_tracking(opts, state, 1);
     mark_cc_sync(state, 1);
-    set_cc_symbol_timing(opts, state, 0);
+    set_cc_symbol_timing(opts, state, sym_rate);
     LOG_INFO("User Activated Return to CC\n");
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -1691,9 +1704,10 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
 static int
 apply_lockout_decoder_transition(dsd_opts* opts, dsd_state* state) {
     long cc_freq = 0;
+    const int sym_rate = cc_symbol_rate(state, 1);
     if (opts->p25_trunk == 1) {
         cc_freq = current_cc_freq(state);
-        if (cc_freq != 0 && !request_manual_cc_tune(opts, state, cc_freq, 1, "Lockout return-to-CC")) {
+        if (cc_freq != 0 && !request_manual_tune(opts, state, cc_freq, sym_rate, "Lockout return-to-CC")) {
             return UI_CMD_APPLY_FAILED;
         }
     }
@@ -1704,7 +1718,7 @@ apply_lockout_decoder_transition(dsd_opts* opts, dsd_state* state) {
         state->trunk_cc_freq = cc_freq;
     }
     mark_cc_sync(state, 0);
-    set_cc_symbol_timing(opts, state, 1);
+    set_cc_symbol_timing(opts, state, sym_rate);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -1714,14 +1728,15 @@ try_manual_candidate_cycle(dsd_opts* opts, dsd_state* state) {
     if (opts->p25_prefer_candidates != 1 || !p25_sm_next_cc_candidate(state, &cand)) {
         return UI_CMD_APPLY_UNHANDLED;
     }
-    if (!request_manual_cc_tune(opts, state, cand, 0, "Candidate cycle")) {
+    const int sym_rate = cc_symbol_rate(state, 0);
+    if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle")) {
         return UI_CMD_APPLY_FAILED;
     }
 
     reset_call_tracking(opts, state, 0);
     LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
     mark_cc_sync(state, 1);
-    set_cc_symbol_timing(opts, state, 0);
+    set_cc_symbol_timing(opts, state, sym_rate);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -1761,7 +1776,7 @@ apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
         }
         return UI_CMD_APPLY_COMPLETED;
     }
-    if (!request_manual_cc_tune(opts, state, freq, 0, "Channel cycle")) {
+    if (!request_manual_tune(opts, state, freq, 0, "Channel cycle")) {
         return UI_CMD_APPLY_FAILED;
     }
 
@@ -1769,7 +1784,6 @@ apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
     state->lcn_freq_roll = next + 1;
     mark_cc_sync(state, 1);
-    set_cc_symbol_timing(opts, state, 0);
     return UI_CMD_APPLY_COMPLETED;
 }
 
