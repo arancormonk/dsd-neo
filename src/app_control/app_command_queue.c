@@ -20,6 +20,7 @@
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -1628,7 +1629,25 @@ current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static int
-cc_symbol_rate(const dsd_state* state, int fdma_only) {
+cc_has_active_p25_context(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || (opts->frame_p25p1 != 1 && opts->frame_p25p2 != 1)) {
+        return 0;
+    }
+    if (state->synctype != DSD_SYNC_NONE) {
+        return DSD_SYNC_IS_P25(state->synctype) ? 1 : 0;
+    }
+    if (state->lastsynctype != DSD_SYNC_NONE) {
+        return DSD_SYNC_IS_P25(state->lastsynctype) ? 1 : 0;
+    }
+    /* A P25 voice tune remains authoritative while frame sync is temporarily absent. */
+    return opts->p25_is_tuned == 1 && (state->p25_vc_freq[0] != 0 || state->p25_vc_freq[1] != 0);
+}
+
+static int
+cc_symbol_rate(const dsd_opts* opts, const dsd_state* state, int fdma_only) {
+    if (!cc_has_active_p25_context(opts, state)) {
+        return 0;
+    }
     if (state->p25_cc_is_tdma == 0) {
         return 4800;
     }
@@ -1690,7 +1709,7 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     }
 
     const long freq = current_cc_freq(state);
-    const int sym_rate = cc_symbol_rate(state, 0);
+    const int sym_rate = cc_symbol_rate(opts, state, 0);
     if (!request_manual_tune(opts, state, freq, sym_rate, "Return-to-CC")) {
         return UI_CMD_APPLY_FAILED;
     }
@@ -1704,7 +1723,7 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
 static int
 apply_lockout_decoder_transition(dsd_opts* opts, dsd_state* state) {
     long cc_freq = 0;
-    const int sym_rate = cc_symbol_rate(state, 1);
+    const int sym_rate = cc_symbol_rate(opts, state, 1);
     if (opts->p25_trunk == 1) {
         cc_freq = current_cc_freq(state);
         if (cc_freq != 0 && !request_manual_tune(opts, state, cc_freq, sym_rate, "Lockout return-to-CC")) {
@@ -1728,7 +1747,7 @@ try_manual_candidate_cycle(dsd_opts* opts, dsd_state* state) {
     if (opts->p25_prefer_candidates != 1 || !p25_sm_next_cc_candidate(state, &cand)) {
         return UI_CMD_APPLY_UNHANDLED;
     }
-    const int sym_rate = cc_symbol_rate(state, 0);
+    const int sym_rate = cc_symbol_rate(opts, state, 0);
     if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle")) {
         return UI_CMD_APPLY_FAILED;
     }

@@ -268,6 +268,32 @@ test_sps_hunt_profile_updates_timing(void) {
     assert(state.rf_mod == 2);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DSTAR_SYNC, 24) == DSD_SYNC_DSTAR_VOICE_POS);
 
+    /* -mc likewise preserves the C4FM demodulator while exposing D-STAR's
+     * same-rate binary matcher gate. */
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_dstar = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 1;
+    state.rf_mod = 0;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) - 1;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    dsd_frame_sync_test_no_sync_sps_hunt(&opts, &state);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    assert(state.sps_hunt_counter == 0);
+    assert(state.samplesPerSymbol == 10);
+    assert(state.symbolCenter == 4);
+    assert(state.rf_mod == 0);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DSTAR_SYNC, 24) == DSD_SYNC_DSTAR_VOICE_POS);
+
     reset(&opts, &state);
     opts.audio_in_type = AUDIO_IN_WAV;
     opts.wav_sample_rate = 96000;

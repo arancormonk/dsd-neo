@@ -3000,8 +3000,8 @@ dsd_frame_sync_test_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* 
 
 static void
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
-    const int gfsk_cli_lock = opts->mod_cli_lock && opts->mod_gfsk == 1 && opts->mod_c4fm == 0 && opts->mod_qpsk == 0;
-    if (state->carrier != 0 || (opts->mod_cli_lock && !gfsk_cli_lock)) {
+    const int preserve_modulation = opts->mod_cli_lock ? 1 : 0;
+    if (state->carrier != 0) {
         return;
     }
     state->sps_hunt_counter++;
@@ -3010,10 +3010,10 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     }
     state->sps_hunt_counter = 0;
 
-    /* A GFSK lock pins the demodulator, not protocol gates that share the selected timing. */
-    int next_idx = gfsk_cli_lock ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
-                                 : frame_sync_sps_hunt_next_index(opts, state);
-    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, gfsk_cli_lock);
+    /* An explicit modulation lock pins the demodulator, not protocol gates that share its timing. */
+    int next_idx = preserve_modulation ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
+                                       : frame_sync_sps_hunt_next_index(opts, state);
+    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, preserve_modulation);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS

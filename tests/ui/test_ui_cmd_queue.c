@@ -12,6 +12,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -1036,6 +1037,7 @@ static void
 seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_freq, int tg) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->p25_trunk = 1;
+    opts->frame_p25p1 = 1;
     opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     state->p25_cc_freq = cc_freq;
@@ -1046,6 +1048,8 @@ seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_fr
     state->lastsrc = tg + 1;
     state->last_cc_sync_time = 123;
     state->last_cc_sync_time_m = 42.0;
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
     state->samplesPerSymbol = 7;
     state->symbolCenter = 3;
     state->p25_cc_is_tdma = 0;
@@ -1113,6 +1117,32 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("accepted timeout used profile-aware CC tune", g_cc_tune_calls, 1);
     rc |= expect_int("accepted timeout profile was staged before commit", g_cc_profile_at_tune,
                      DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 852500000L, 853500000L, 1202);
+    opts.frame_nxdn48 = 1;
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.lastsynctype = DSD_SYNC_NXDN_POS;
+    state.p25_cc_is_tdma = 1;
+    state.samplesPerSymbol = 20;
+    state.symbolCenter = 9;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.sps_hunt_counter = 29;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    token = 0;
+    rc |= expect_int("generic return-to-CC queued", dsd_app_command_action_tracked(DSD_APP_CMD_RETURN_CC, &token),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("generic return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_command_status("generic return-to-CC completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
+    rc |= expect_int("generic return-to-CC raw tune calls", g_io_control_tune_calls, 1);
+    rc |= expect_true("generic return-to-CC frequency", g_io_control_tune_freq == 852500000L);
+    rc |= expect_int("generic return-to-CC CC tune calls", g_cc_tune_calls, 0);
+    rc |= expect_int("generic return-to-CC keeps SPS", state.samplesPerSymbol, 20);
+    rc |= expect_int("generic return-to-CC keeps symbol center", state.symbolCenter, 9);
+    rc |= expect_int("generic return-to-CC keeps SPS profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    rc |= expect_int("generic return-to-CC keeps SPS hunt counter", state.sps_hunt_counter, 29);
     freeState(&state);
 
     init_test_context(&opts, &state);
