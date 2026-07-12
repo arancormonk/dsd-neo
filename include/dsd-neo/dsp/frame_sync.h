@@ -19,10 +19,32 @@
 extern "C" {
 #endif
 
+/** @brief Stable indices stored in @c dsd_state::sps_hunt_idx. */
+typedef enum {
+    DSD_FRAME_SYNC_SPS_PROFILE_4800_4 = 0,
+    DSD_FRAME_SYNC_SPS_PROFILE_2400_4 = 1,
+    DSD_FRAME_SYNC_SPS_PROFILE_9600_2 = 2,
+    DSD_FRAME_SYNC_SPS_PROFILE_6000_4 = 3,
+    DSD_FRAME_SYNC_SPS_PROFILE_4800_2 = 4,
+    DSD_FRAME_SYNC_SPS_PROFILE_COUNT = 5,
+} dsd_frame_sync_sps_profile_index;
+
+/** @brief NXDN air-interface variant selected by frame-sync profile matching. */
+typedef enum {
+    DSD_NXDN_VARIANT_NONE = 0,
+    DSD_NXDN_VARIANT_48 = 48,
+    DSD_NXDN_VARIANT_96 = 96,
+} dsd_nxdn_variant;
+
 /**
  * @brief Reset modulation auto-detect state used by frame sync.
  */
 void dsd_frame_sync_reset_mod_state(void);
+
+/**
+ * @brief Return the NXDN variant selected by the enabled mode and active SPS hunt profile.
+ */
+dsd_nxdn_variant dsd_frame_sync_active_nxdn_variant(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Return non-zero when alternate-protocol sync should be suppressed during active P25 trunking.
@@ -55,10 +77,20 @@ void printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* fr
                     const char* modulation);
 
 #ifdef DSD_NEO_TEST_HOOKS
-int dsd_frame_sync_test_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state, const int* sym_rate_cycle,
-                                            const int* levels_cycle, int cycle_count);
-void dsd_frame_sync_test_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx,
-                                                const int* sym_rate_cycle, const int* levels_cycle);
+int dsd_frame_sync_test_sps_hunt_profile_count(void);
+int dsd_frame_sync_test_sps_hunt_profile_rate(int profile_index);
+int dsd_frame_sync_test_sps_hunt_profile_levels(int profile_index);
+int dsd_frame_sync_test_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state);
+void dsd_frame_sync_test_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx);
+void dsd_frame_sync_test_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state);
+void dsd_frame_sync_test_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
+int dsd_frame_sync_test_history_window(const char* symbols, int symbol_count, int window_length, char* out,
+                                       int out_size);
+int dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const char* symbols, int symbol_count);
+int dsd_frame_sync_test_eval_window(dsd_opts* opts, dsd_state* state, const char* symbols, const float* levels,
+                                    int symbol_count);
+int dsd_frame_sync_test_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);
+int dsd_frame_sync_test_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state);
 double dsd_frame_sync_test_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);
 void dsd_frame_sync_test_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm,
                                            double mac_hold, double ring_hold, double dt, int* left_active,
@@ -73,9 +105,8 @@ void dsd_frame_sync_test_auto_switch_modulation(const dsd_opts* opts, dsd_state*
 void dsd_frame_sync_test_reset_p25_trunk_tick_state(void);
 void dsd_frame_sync_test_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now);
 #ifdef USE_RADIO
-int dsd_frame_sync_test_rtl_profile_for_symbol_rate(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz,
-                                                    int preferred_levels);
-int dsd_frame_sync_test_rtl_levels_for_symbol_rate(const dsd_opts* opts, int sym_rate_hz, int preferred_levels);
+int dsd_frame_sync_test_rtl_profile_for_sps_index(const dsd_opts* opts, const dsd_state* state, int profile_index);
+double dsd_frame_sync_test_active_profile_snr_db(const dsd_opts* opts, const dsd_state* state);
 #endif
 #endif
 

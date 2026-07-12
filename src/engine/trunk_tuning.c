@@ -59,6 +59,21 @@ dsd_engine_compute_cc_sps(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static void DSD_ATTR_USED
+dsd_engine_select_p25_sps_profile(dsd_state* state, int is_tdma) {
+    if (!state) {
+        return;
+    }
+    state->sps_hunt_idx = is_tdma ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->sps_hunt_counter = 0;
+}
+
+static int
+dsd_engine_is_p25_profile_retune(const dsd_opts* opts, int ted_sps) {
+    /* Legacy -T also sets p25_trunk for non-P25 protocols, whose generic retunes do not carry P25 timing. */
+    return opts && opts->p25_trunk == 1 && ted_sps > 0;
+}
+
+static void DSD_ATTR_USED
 dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || state->p25_cc_freq == 0) {
         return;
@@ -67,6 +82,7 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, dsd_engine_current_demod_rate(opts, state));
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : ((opts->mod_qpsk == 1) ? 1 : 0);
+    dsd_engine_select_p25_sps_profile(state, state->p25_cc_is_tdma == 1);
 }
 
 static void DSD_ATTR_USED
@@ -538,6 +554,9 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
 
     // Reset modulation auto-detect state (ham tracking, vote counters) after a
     // confirmed tune so the decoder and tuner state do not diverge on failure.
+    if (dsd_engine_is_p25_profile_retune(opts, ted_sps)) {
+        dsd_engine_select_p25_sps_profile(state, state->p25_p2_active_slot != -1);
+    }
     dsd_frame_sync_reset_mod_state();
 
     // Reset P25P2 frame processing state when tuning to a voice channel.
@@ -602,6 +621,9 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
         return result;
     }
     // Reset modulation auto-detect state for fresh acquisition after a confirmed tune.
+    if (dsd_engine_is_p25_profile_retune(opts, ted_sps)) {
+        dsd_engine_select_p25_sps_profile(state, state->p25_cc_is_tdma == 1);
+    }
     dsd_frame_sync_reset_mod_state();
     // Do not set p25_is_tuned/trunk_is_tuned here; this is a CC hunt action.
     state->trunk_cc_freq = (long int)freq;

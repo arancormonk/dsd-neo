@@ -15,6 +15,8 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -42,6 +44,8 @@ void dsd_symbol_test_select_window(int rf_mod, int synctype, int lastsynctype, i
 int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, int rf_mod, int jitter,
                                         int have_sync, int symbol_span, int start_i, int* jitter_after);
 int dsd_symbol_test_is_m17_sync(int lastsynctype);
+float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
+                                           int rtl_symbol_rate_output, int cqpsk_symbol_rate);
 unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);
 #ifdef USE_RADIO
 int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
@@ -475,6 +479,44 @@ test_symbol_helper_analog_i16_conversion_contract(void) {
 }
 
 static void
+test_symbol_matched_filter_uses_active_nxdn_variant(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const float sample = 1.0f;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.use_cosine_filter = 1;
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    state.lastsynctype = DSD_SYNC_NXDN_POS;
+    state.samplesPerSymbol = 10;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+
+    init_rrc_filter_memory();
+    const float expected_nxdn96 = dmr_filter(sample, state.samplesPerSymbol);
+    init_rrc_filter_memory();
+    const float actual_nxdn96 = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
+    assert(fabsf(actual_nxdn96 - expected_nxdn96) < 1e-6f);
+
+    state.samplesPerSymbol = 20;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    init_rrc_filter_memory();
+    const float expected_nxdn48 = nxdn_filter(sample, state.samplesPerSymbol);
+    init_rrc_filter_memory();
+    const float actual_nxdn48 = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
+    assert(fabsf(actual_nxdn48 - expected_nxdn48) < 1e-6f);
+
+    opts.frame_dpmr = 1;
+    state.lastsynctype = DSD_SYNC_DPMR_FS1_POS;
+    init_rrc_filter_memory();
+    const float expected_dpmr = dpmr_filter(sample, state.samplesPerSymbol);
+    init_rrc_filter_memory();
+    const float actual_dpmr = dsd_symbol_test_apply_matched_filter(&opts, &state, sample, 0, 0);
+    assert(fabsf(actual_dpmr - expected_dpmr) < 1e-6f);
+}
+
+static void
 test_symbol_helper_rtl_cache_and_center_contract(void) {
 #ifdef USE_RADIO
     int values[10] = {0};
@@ -534,6 +576,7 @@ main(void) {
     test_float_symbol_replay_eof_sets_exitflag();
     test_symbol_helper_window_sync_and_timing_contracts();
     test_symbol_helper_analog_i16_conversion_contract();
+    test_symbol_matched_filter_uses_active_nxdn_variant();
     test_symbol_helper_rtl_cache_and_center_contract();
     return 0;
 }

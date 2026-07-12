@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -201,6 +202,8 @@ typedef struct {
     int saved_mod_c4fm;
     int saved_mod_qpsk;
     int saved_mod_gfsk;
+    int saved_mod_p25p2_c4fm;
+    int saved_mod_p25p2_profile_lock;
     int saved_mod_cli_lock;
     int saved_rtl_gain_value;
     int saved_tuner_autogain_on;
@@ -1266,6 +1269,9 @@ trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_
         return;
     }
     if (trunk_scan_target_is_p25(target)) {
+        state->sps_hunt_idx =
+            state->p25_cc_is_tdma == 1 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+        state->sps_hunt_counter = 0;
         int p25_sps = trunk_scan_p25_cc_sps(opts, state);
         state->samplesPerSymbol = p25_sps;
         state->symbolCenter = dsd_opts_symbol_center(p25_sps);
@@ -1281,6 +1287,8 @@ trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_
     if (!trunk_scan_target_is_dmr(target)) {
         return;
     }
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->sps_hunt_counter = 0;
     int dmr_sps = trunk_scan_dmr_sps(opts, state);
     state->samplesPerSymbol = dmr_sps;
     state->symbolCenter = dsd_opts_symbol_center(dmr_sps);
@@ -1298,6 +1306,8 @@ trunk_scan_restore_saved_mod_gain_opts(dsd_opts* opts, const dsd_trunk_scan_coor
     opts->mod_c4fm = coord->saved_mod_c4fm;
     opts->mod_qpsk = coord->saved_mod_qpsk;
     opts->mod_gfsk = coord->saved_mod_gfsk;
+    opts->mod_p25p2_c4fm = coord->saved_mod_p25p2_c4fm;
+    opts->mod_p25p2_profile_lock = coord->saved_mod_p25p2_profile_lock;
     opts->mod_cli_lock = coord->saved_mod_cli_lock;
     opts->rtl_gain_value = coord->saved_rtl_gain_value;
 }
@@ -1307,6 +1317,8 @@ trunk_scan_apply_target_mod_opts(dsd_opts* opts, const dsd_trunk_scan_target* ta
     if (!opts || !target || target->modulation == DSD_TRUNK_SCAN_MODULATION_UNSET) {
         return;
     }
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
     switch (target->modulation) {
         case DSD_TRUNK_SCAN_MODULATION_AUTO:
             if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
@@ -1670,6 +1682,8 @@ trunk_scan_capture_saved_opts(dsd_trunk_scan_coord* coord, const dsd_opts* opts)
     coord->saved_mod_c4fm = opts->mod_c4fm;
     coord->saved_mod_qpsk = opts->mod_qpsk;
     coord->saved_mod_gfsk = opts->mod_gfsk;
+    coord->saved_mod_p25p2_c4fm = opts->mod_p25p2_c4fm;
+    coord->saved_mod_p25p2_profile_lock = opts->mod_p25p2_profile_lock;
     coord->saved_mod_cli_lock = opts->mod_cli_lock;
     coord->saved_rtl_gain_value = opts->rtl_gain_value;
 #ifdef USE_RADIO

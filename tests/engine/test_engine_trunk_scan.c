@@ -9,6 +9,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -2653,6 +2654,56 @@ test_locked_demod_mode_preserved_when_seeding_targets(void) {
 }
 
 static int
+test_target_retunes_select_four_level_sps_profile(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, header,
+                                          "p25,p25-trunk,851000000,,250,,P25 forced,c4fm\n"
+                                          "dmr,dmr-trunk,452000000,,250,,DMR forced,gfsk\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.sps_hunt_counter = 17;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    dsd_engine_trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0
+        || state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4 || state.sps_hunt_counter != 0) {
+        DSD_FPRINTF(stderr, "P25 target retained stale SPS profile rc=%d active=%zu profile=%d counter=%d err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), state.sps_hunt_idx, state.sps_hunt_counter, err);
+        test_rc = 1;
+    }
+
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.sps_hunt_counter = 23;
+    dsd_engine_trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4
+        || state.sps_hunt_counter != 0) {
+        DSD_FPRINTF(stderr, "DMR target retained stale SPS profile active=%zu profile=%d counter=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.sps_hunt_idx, state.sps_hunt_counter);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_per_target_modulation_overrides_global_lock(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
@@ -3321,6 +3372,7 @@ main(void) {
     rc |= test_p25_retune_backoff_state_isolated_per_target();
     rc |= test_trunk_targets_reuse_restored_control_channel();
     rc |= test_locked_demod_mode_preserved_when_seeding_targets();
+    rc |= test_target_retunes_select_four_level_sps_profile();
     rc |= test_per_target_modulation_overrides_global_lock();
     rc |= test_active_p25_cqpsk_request_tracks_target_modulation();
     rc |= test_per_target_rtl_gain_overrides_and_restores_global_default();

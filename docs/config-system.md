@@ -508,6 +508,25 @@ Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `nxdn48`, `nxdn96`,
 Compatibility aliases are also accepted: `p25p1_only`, `p25p2_only`,
 `edacs`, `provoice`, and `analog_monitor`.
 
+`decode = "auto"` preserves the protocol candidates already established by
+initialization and any active configuration/profile overlay; it does not replace
+them with the CLI full-search preset. Interactive Auto has the same preservation
+semantics. In contrast, CLI `-fa` explicitly enables every digital candidate in
+the five-profile hunt matrix:
+
+| Hunt profile | Symbol rate | Levels | Candidates |
+| --- | ---: | ---: | --- |
+| 0 | 4800 | 4 | P25 Phase 1 (C4FM/CQPSK), DMR, NXDN96, YSF, M17 |
+| 1 | 2400 | 4 | NXDN48, dPMR |
+| 2 | 9600 | 2 | ProVoice, EDACS |
+| 3 | 6000 | 4 | P25 Phase 2 (CQPSK), X2-TDMA |
+| 4 | 4800 | 2 | D-STAR |
+
+Profiles without an enabled candidate are skipped. A successful sync retains
+the active rate, level count, symbol timing, and RTL-family channel profile.
+Passive analog monitoring and already-framed M17 UDP input are outside this
+frame-sync hunt.
+
 The optional `demod` key selects a demodulator path (`auto`, `c4fm`, `gfsk`,
 `qpsk`). When set, it locks demodulator selection similarly to the `-m*`
 CLI modulation options.

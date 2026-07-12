@@ -1048,6 +1048,7 @@ add_test(NAME NXDN_MESSAGE_CRC32 COMMAND dsd-neo_test_nxdn_message_crc32)
 add_executable(
     dsd-neo_test_nxdn_element_bounds
     protocol/nxdn/test_nxdn_element_bounds.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_element_bounds
@@ -1298,6 +1299,24 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
 )
 add_test(NAME APP_CONTROL_ACTIONS COMMAND dsd-neo_test_app_control_actions)
+
+add_executable(
+    dsd-neo_test_app_control_actions_rtl
+    ui/test_ui_radio_actions_rtl.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_actions_rtl
+    PRIVATE USE_RADIO
+)
+target_include_directories(
+    dsd-neo_test_app_control_actions_rtl
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+add_test(
+    NAME APP_CONTROL_ACTIONS_RTL
+    COMMAND dsd-neo_test_app_control_actions_rtl
+)
 
 add_executable(
     dsd-neo_test_ui_menu_services
@@ -3230,7 +3249,9 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_link_options(
         dsd-neo_test_app_command_queue
-        PRIVATE "LINKER:--wrap=io_control_set_freq"
+        PRIVATE
+            "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
+            "LINKER:--wrap=io_control_set_freq"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)

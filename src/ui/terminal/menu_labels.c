@@ -79,7 +79,7 @@ ui_current_mod(const void* v) {
     UiCtx* c = (UiCtx*)v;
     int mod = -1;
 
-    // Honor CLI-locked demod selection when present
+    // Honor an explicitly locked demod selection when present
     if (c && c->opts && c->opts->mod_cli_lock) {
         if (c->opts->mod_qpsk) {
             mod = 1;

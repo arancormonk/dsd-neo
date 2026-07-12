@@ -380,8 +380,17 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
     }
 
     opts.audio_in_type = AUDIO_IN_RTL;
-    opts.frame_p25p1 = frame_p25p1;
-    opts.frame_p25p2 = frame_p25p2;
+    opts.frame_dstar = 1;
+    opts.frame_x2tdma = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_dpmr = 1;
+    opts.frame_provoice = 1;
+    opts.frame_ysf = 1;
+    opts.frame_m17 = 1;
     opts.mod_cli_lock = 1;
     opts.mod_qpsk = 1;
     opts.p25_trunk = 1;
@@ -389,6 +398,7 @@ run_p25_sync_case(const char* pattern, int frame_p25p1, int frame_p25p2, int exp
     opts.ssize = 36;
 
     state.rf_mod = 1;
+    state.sps_hunt_idx = frame_p25p2 ? 3 : (frame_p25p1 ? 0 : state.sps_hunt_idx);
     state.p25_p2_active_slot = 1;
     state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
     state.center = 0.0f;

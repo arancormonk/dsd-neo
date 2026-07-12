@@ -143,7 +143,7 @@ trunking/scanner to be enabled, and RTL controls require RTL input).
 | `{` / `}` | RTL PPM down/up |
 | `i` | Toggle inversion |
 | `m` | Cycle modulation optimization mode |
-| `M` | Toggle P25 Phase 2 modulation helper |
+| `M` | Toggle and retain the P25 Phase 2 C4FM/QPSK modulation selection |
 | `F` | Toggle aggressive sync/CRC relax helpers |
 | `D` | DMR reset (useful when a system goes off the rails) |
 | `A` | Toggle ProVoice ESK mask (ProVoice modes) |

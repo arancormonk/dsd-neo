@@ -1703,6 +1703,8 @@ no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
     }
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, no_carrier_current_demod_rate(opts, state));
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    state->sps_hunt_idx = sym_rate == 6000 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->sps_hunt_counter = 0;
     no_carrier_enable_p25_cc_slots(opts);
 }
 
