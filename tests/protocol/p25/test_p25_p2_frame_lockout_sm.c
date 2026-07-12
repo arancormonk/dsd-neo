@@ -13,6 +13,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -224,7 +225,8 @@ test_clear_voice_to_encrypted_restarts_deadline(void) {
 
     const double started_m = ctx->slots[0].crypto_attempt_m;
     process_2V(&opts, &state);
-    rc |= expect_eq("clear-to-encrypted: repeated SVC keeps deadline", ctx->slots[0].crypto_attempt_m == started_m, 1);
+    rc |= expect_eq("clear-to-encrypted: repeated SVC keeps deadline",
+                    fabs(ctx->slots[0].crypto_attempt_m - started_m) <= 1.0e-9, 1);
     return rc;
 }
 

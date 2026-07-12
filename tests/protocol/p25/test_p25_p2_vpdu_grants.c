@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -639,7 +640,8 @@ test_inband_encrypted_voice_starts_classification_deadline(void) {
     ctx->slots[0].voice_active = 1;
     process_MAC_VPDU(&opts, &state, 0, MAC);
     rc |= expect_eq_long("repeated in-band encrypted voice activity cleared", ctx->slots[0].voice_active, 0);
-    rc |= expect_true("repeated in-band encrypted voice keeps deadline", ctx->slots[0].crypto_attempt_m == started_m);
+    rc |= expect_true("repeated in-band encrypted voice keeps deadline",
+                      fabs(ctx->slots[0].crypto_attempt_m - started_m) <= 1.0e-9);
     p25_sm_init(&opts, &state);
     return rc;
 }

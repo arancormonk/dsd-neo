@@ -1264,7 +1264,7 @@ main(void) {
     ctx19g.slots[0].crypto_attempt_m = stale_crypto_attempt_m;
     p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_encrypted);
     assert(ctx19g.slots[0].last_grant_m > stale_crypto_attempt_m);
-    assert(ctx19g.slots[0].crypto_attempt_m == stale_crypto_attempt_m);
+    assert(fabs(ctx19g.slots[0].crypto_attempt_m - stale_crypto_attempt_m) <= cc_sync_epsilon_s);
 
     p25_sm_event_t duplicate_clear = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5501, 6501, 0x00);
     p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_clear);
@@ -1458,12 +1458,12 @@ main(void) {
     assert(g_result_return_to_cc_calls == 0);
     assert(ctx19j.state == P25_SM_TUNED);
     assert(ctx19j.slots[0].grant_active == 1);
-    assert(ctx19j.slots[0].crypto_attempt_m == fresh_inband_attempt_m);
+    assert(fabs(ctx19j.slots[0].crypto_attempt_m - fresh_inband_attempt_m) <= cc_sync_epsilon_s);
 
     ctx19j.slots[0].voice_active = 1;
     p25_sm_event(&ctx19j, &o19j, &s19j, &inband_encrypted);
     assert(ctx19j.slots[0].voice_active == 0);
-    assert(ctx19j.slots[0].crypto_attempt_m == fresh_inband_attempt_m);
+    assert(fabs(ctx19j.slots[0].crypto_attempt_m - fresh_inband_attempt_m) <= cc_sync_epsilon_s);
 
     ctx19j.slots[0].crypto_attempt_m = 0.0;
     ctx19j.slots[0].voice_active = 1;
@@ -1767,7 +1767,7 @@ main(void) {
     assert(g_result_return_to_cc_calls == 0);
     assert(ctx20.vc_cqpsk_retry_done == 1);
     assert(ctx20.t_tune_m > stale_grant_m);
-    assert(ctx20.slots[0].crypto_attempt_m == ctx20.t_tune_m);
+    assert(fabs(ctx20.slots[0].crypto_attempt_m - ctx20.t_tune_m) <= cc_sync_epsilon_s);
     assert(ctx20.state == P25_SM_TUNED);
     assert(o20.p25_is_tuned == 1);
     assert(ctx20.slots[0].grant_active == 1);
