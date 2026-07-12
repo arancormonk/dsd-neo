@@ -47,6 +47,14 @@ typedef enum DSD_ATTR_PACKED {
     DSD_P25_CRYPTO_BLOCKED = 4,
 } dsd_p25_crypto_state;
 
+/** Phase 2 ESS identity change held until boundary voice has drained. */
+typedef struct {
+    uint64_t mi;
+    uint16_t keyid;
+    uint8_t algid;
+    uint8_t pending;
+} dsd_p25_p2_rekey_state;
+
 typedef struct {
     uint8_t active;
     uint8_t opcode;
@@ -682,6 +690,8 @@ struct dsd_state {
     int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
     // Authoritative P25 voice crypto classification. Slot 0 is also used by P25 Phase 1.
     dsd_p25_crypto_state p25_crypto_state[2];
+    // ESS identity changes staged until the paired-timeslot audio drain completes.
+    dsd_p25_p2_rekey_state p25_p2_rekey[2];
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
     // Compatibility marker derived from p25_crypto_state (pending/blocked => muted).

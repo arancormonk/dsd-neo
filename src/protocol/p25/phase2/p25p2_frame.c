@@ -95,6 +95,21 @@ p25p2_frame_test_stub_can_decrypt(const dsd_state* state, int slot, int alg) {
     return 0;
 }
 
+static void
+p25p2_frame_test_stub_purge_slot(dsd_state* state, int slot) {
+    p25_p2_audio_ring_reset(state, slot);
+    state->voice_counter[slot] = 0;
+    if (slot == 0) {
+        DSD_MEMSET(state->f_l4, 0, sizeof(state->f_l4));
+        DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+        DSD_MEMSET(state->s_l4u, 0, sizeof(state->s_l4u));
+    } else {
+        DSD_MEMSET(state->f_r4, 0, sizeof(state->f_r4));
+        DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+        DSD_MEMSET(state->s_r4u, 0, sizeof(state->s_r4u));
+    }
+}
+
 static dsd_p25_crypto_state
 p25p2_frame_resolve_crypto(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid, uint64_t mi,
                            int talkgroup) {
@@ -115,6 +130,9 @@ p25p2_frame_resolve_crypto(dsd_opts* opts, dsd_state* state, int slot, int algid
         }
         return state->p25_crypto_state[slot];
     }
+    const int previous_algid = slot == 0 ? state->payload_algid : state->payload_algidR;
+    const int previous_keyid = slot == 0 ? state->payload_keyid : state->payload_keyidR;
+    const dsd_p25_crypto_state previous_state = state->p25_crypto_state[slot];
     if (slot == 0) {
         state->payload_algid = algid;
         state->payload_keyid = keyid;
@@ -124,10 +142,27 @@ p25p2_frame_resolve_crypto(dsd_opts* opts, dsd_state* state, int slot, int algid
         state->payload_keyidR = keyid;
         state->payload_miN = mi;
     }
-    state->p25_crypto_state[slot] =
+    const dsd_p25_crypto_state resolved =
         (algid == 0x80) ? DSD_P25_CRYPTO_CLEAR
                         : (p25p2_frame_test_stub_can_decrypt(state, slot, algid) ? DSD_P25_CRYPTO_DECRYPTABLE
                                                                                  : DSD_P25_CRYPTO_BLOCKED);
+    const int identity_changed = previous_algid != algid || previous_keyid != keyid;
+    const int state_changed = previous_state != resolved;
+    if (state_changed || (previous_state == DSD_P25_CRYPTO_DECRYPTABLE && identity_changed)) {
+        p25p2_frame_test_stub_purge_slot(state, slot);
+    }
+    if (state_changed || identity_changed) {
+        if (slot == 0) {
+            state->DMRvcL = 0;
+            state->bit_counterL = 0;
+            state->dropL = 256;
+        } else {
+            state->DMRvcR = 0;
+            state->bit_counterR = 0;
+            state->dropR = 256;
+        }
+    }
+    state->p25_crypto_state[slot] = resolved;
     state->p25_p2_enc_lockout_muted[slot] = (uint8_t)(p25_crypto_companion_suppressed(state, slot) ? 1U : 0U);
     return state->p25_crypto_state[slot];
 }
@@ -147,6 +182,7 @@ p25p2_frame_reset_crypto_slot(dsd_state* state, int slot) {
         state->payload_miN = 0ULL;
     }
     state->p25_crypto_state[slot] = DSD_P25_CRYPTO_UNKNOWN;
+    DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
     state->p25_p2_audio_allowed[slot] = 0;
     state->p25_p2_enc_lockout_muted[slot] = 0U;
 }
@@ -176,6 +212,7 @@ void p25p2_test_teardown_call(dsd_opts* opts, dsd_state* state);
 void p25p2_test_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 void p25p2_test_process_isch(dsd_opts* opts, dsd_state* state, int framing_index);
 void p25p2_test_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
+void p25p2_test_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state);
 #endif
 
 #if !defined(DSD_NEO_P25P2_TEST_STUB)
@@ -1256,6 +1293,31 @@ p25p2_ess_payload_to_hex(const int payload[96], unsigned long long int* essb_hex
     }
 }
 
+typedef struct {
+    unsigned long long int essb_hex1;
+    unsigned long long int essb_hex2;
+    uint64_t mi;
+    int algid;
+    int keyid;
+    int corrections;
+    int accepted;
+} p25p2_ess_result;
+
+static p25p2_ess_result
+p25p2_ess_decode(dsd_state* state) {
+    int payload[96] = {0};
+    int parity[168] = {0};
+    p25p2_ess_load_payload_and_parity(state, payload, parity);
+
+    p25p2_ess_result result = {.corrections = 69};
+    result.accepted = p25p2_ess_decode_with_soft_erasures(state, payload, parity, &result.corrections);
+    result.algid = p25p2_ess_algid_from_payload(payload);
+    p25p2_ess_payload_to_hex(payload, &result.essb_hex1, &result.essb_hex2);
+    result.keyid = (int)((result.essb_hex1 >> 8) & 0xFFFF);
+    result.mi = ((result.essb_hex1 & 0xFF) << 56) | ((result.essb_hex2 & 0xFFFFFFFFFFFFFF00) >> 8);
+    return result;
+}
+
 static double
 p25p2_frame_mac_hold_s(const dsd_state* state, double fallback) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
@@ -1297,12 +1359,8 @@ p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int sl
 }
 
 static void
-p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, unsigned long long int essb_hex1,
-                      unsigned long long int essb_hex2) {
-    const int algid = (int)((essb_hex1 >> 24) & 0xFF);
-    const int keyid = (int)((essb_hex1 >> 8) & 0xFFFF);
-    const uint64_t mi = ((essb_hex1 & 0xFF) << 56) | ((essb_hex2 & 0xFFFFFFFFFFFFFF00) >> 8);
-    (void)p25p2_frame_resolve_crypto(opts, state, 0, algid, keyid, mi, state->lasttg);
+p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
+    (void)p25p2_frame_resolve_crypto(opts, state, 0, result->algid, result->keyid, result->mi, state->lasttg);
     p25p2_ess_maybe_enable_audio_slot(opts, state, 0, state->payload_algid, state->dmrburstL);
 
     if (state->payload_algid == 0x80 || state->payload_algid == 0x0) {
@@ -1341,12 +1399,8 @@ p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, unsigned long long int e
 }
 
 static void
-p25p2_ess_apply_slot1(dsd_opts* opts, dsd_state* state, unsigned long long int essb_hex1,
-                      unsigned long long int essb_hex2) {
-    const int algid = (int)((essb_hex1 >> 24) & 0xFF);
-    const int keyid = (int)((essb_hex1 >> 8) & 0xFFFF);
-    const uint64_t mi = ((essb_hex1 & 0xFF) << 56) | ((essb_hex2 & 0xFFFFFFFFFFFFFF00) >> 8);
-    (void)p25p2_frame_resolve_crypto(opts, state, 1, algid, keyid, mi, state->lasttgR);
+p25p2_ess_apply_slot1(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
+    (void)p25p2_frame_resolve_crypto(opts, state, 1, result->algid, result->keyid, result->mi, state->lasttgR);
     p25p2_ess_maybe_enable_audio_slot(opts, state, 1, state->payload_algidR, state->dmrburstR);
 
     if (state->payload_algidR == 0x80 || state->payload_algidR == 0x0) {
@@ -1404,44 +1458,97 @@ p25p2_ess_handle_decode_failure(dsd_state* state) {
     }
 }
 
-void
-process_ESS(dsd_opts* opts, dsd_state* state) {
-    int payload[96] = {0};
-    int parity[168] = {0};
-    p25p2_ess_load_payload_and_parity(state, payload, parity);
+static int
+p25p2_ess_stage_rekey(dsd_state* state, const p25p2_ess_result* result) {
+    const int slot = state->currentslot;
+    if (slot < 0 || slot > 1 || result->algid == 0 || state->p25_crypto_state[slot] != DSD_P25_CRYPTO_DECRYPTABLE) {
+        return 0;
+    }
 
-    int ec = 69;
-    int ess_accept = p25p2_ess_decode_with_soft_erasures(state, payload, parity, &ec);
-    int algid = p25p2_ess_algid_from_payload(payload);
-    unsigned long long int essb_hex1 = 0;
-    unsigned long long int essb_hex2 = 0;
-    p25p2_ess_payload_to_hex(payload, &essb_hex1, &essb_hex2);
+    const int current_algid = slot == 0 ? state->payload_algid : state->payload_algidR;
+    const int current_keyid = slot == 0 ? state->payload_keyid : state->payload_keyidR;
+    if (current_algid == result->algid && current_keyid == result->keyid) {
+        return 0;
+    }
+
+    state->p25_p2_rekey[slot].algid = (uint8_t)result->algid;
+    state->p25_p2_rekey[slot].keyid = (uint16_t)result->keyid;
+    state->p25_p2_rekey[slot].mi = result->mi;
+    state->p25_p2_rekey[slot].pending = 1U;
+    return 1;
+}
+
+static void
+p25p2_ess_apply_result(dsd_opts* opts, dsd_state* state, int slot, const p25p2_ess_result* result) {
+    if (slot < 0 || slot > 1) {
+        return;
+    }
+    DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
+    if (slot == 0) {
+        p25p2_ess_apply_slot0(opts, state, result);
+    } else {
+        p25p2_ess_apply_slot1(opts, state, result);
+    }
+}
+
+static void
+p25p2_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    for (int slot = 0; slot < 2; slot++) {
+        const dsd_p25_p2_rekey_state rekey = state->p25_p2_rekey[slot];
+        if (!rekey.pending) {
+            continue;
+        }
+        const p25p2_ess_result result = {
+            .mi = rekey.mi,
+            .algid = rekey.algid,
+            .keyid = rekey.keyid,
+            .accepted = 1,
+        };
+        DSD_FPRINTF(stderr, "%s", KYEL);
+        p25p2_ess_apply_result(opts, state, slot, &result);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+}
+
+#if defined(DSD_NEO_P25P2_TEST_STUB)
+void
+p25p2_test_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state) {
+    p25p2_commit_deferred_rekeys(opts, state);
+}
+#endif
+
+static void
+p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
+    const p25p2_ess_result result = p25p2_ess_decode(state);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, " VCH %d - ESS_B %08llX%016llX ERR = %02d", state->currentslot + 1, essb_hex1, essb_hex2,
-                    ec);
+        DSD_FPRINTF(stderr, " VCH %d - ESS_B %08llX%016llX ERR = %02d", state->currentslot + 1, result.essb_hex1,
+                    result.essb_hex2, result.corrections);
     }
 
-    if (ess_accept) {
+    if (result.accepted) {
         state->p25_p2_rs_ess_ok++;
-        state->p25_p2_rs_ess_corr += (unsigned int)ec;
-        if (state->currentslot == 0) {
-            p25p2_ess_apply_slot0(opts, state, essb_hex1, essb_hex2);
+        state->p25_p2_rs_ess_corr += (unsigned int)result.corrections;
+        if (!defer_rekey || !p25p2_ess_stage_rekey(state, &result)) {
+            p25p2_ess_apply_result(opts, state, state->currentslot, &result);
         }
-        if (state->currentslot == 1) {
-            p25p2_ess_apply_slot1(opts, state, essb_hex1, essb_hex2);
-        }
-
     } else {
         p25p2_ess_handle_decode_failure(state);
     }
 
-    UNUSED(algid);
     DSD_FPRINTF(stderr, "%s", KNRM);
     if (state->currentslot >= 0 && state->currentslot < 2) {
         state->fourv_counter[state->currentslot] = 0;
     }
+}
+
+void
+process_ESS(dsd_opts* opts, dsd_state* state) {
+    p25p2_process_ess(opts, state, 0);
 }
 
 static void
@@ -1485,7 +1592,7 @@ process_2V(dsd_opts* opts, dsd_state* state) {
     p25p2_unpack_voice_frames(2, ambe_soft);
     p25p2_collect_ess_a(state);
 
-    process_ESS(opts, state);
+    p25p2_process_ess(opts, state, 1);
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n");
     }
@@ -1710,6 +1817,12 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int sacch_status) {
         playSynthesizedVoiceSS18(opts, state);
         state->voice_counter[0] = 0;
         state->voice_counter[1] = 0;
+    }
+    if (ts_counter & 1) {
+        // Both logical slots have reached the output stage. Promote any ESS
+        // identity changes only now so their purge cannot discard or decrypt
+        // the completed boundary superframe with the next stream.
+        p25p2_commit_deferred_rekeys(opts, state);
     }
 
     if (state->currentslot == 0) {

@@ -180,8 +180,9 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     const int key_identity_changed = previous->algid != algid || previous->keyid != keyid;
     const int state_changed = previous->state != resolved;
     const int purge_audio = state_changed || (previous->state == DSD_P25_CRYPTO_DECRYPTABLE && key_identity_changed);
-    // Phase 2 ESS is resolved before the final two 2V frames. Its MI-only
-    // stream reset is applied by the frame decoder after those frames.
+    // Phase 2 MI-only ESS updates resolve before the final two 2V frames and
+    // are reset by the frame decoder afterward. Identity changes are staged
+    // by that decoder until the boundary audio has drained.
     const int reset_stream =
         state_changed || key_identity_changed || (phase == DSD_P25_CRYPTO_PHASE1 && previous->mi != mi);
 
@@ -207,6 +208,7 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
         slot = 0;
     }
 
+    DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
     dsd_mbe_purge_slot_audio(state, slot);
     p25_crypto_store_metadata(state, slot, 0, 0, 0ULL);
     p25_crypto_reset_stream_state(state, phase, slot);
@@ -246,6 +248,9 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
 
     if (algid == 0) {
         return p25_crypto_resolve_algid_zero(state, slot);
+    }
+    if (phase == DSD_P25_CRYPTO_PHASE2) {
+        DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
     }
 
     const p25_crypto_snapshot previous = p25_crypto_capture_snapshot(state, slot);

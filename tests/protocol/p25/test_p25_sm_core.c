@@ -1440,6 +1440,21 @@ main(void) {
     assert(ctx19f.slots[0].voice_active == 1);
     assert(s19f.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
+    // Enabling lockout during a followed missing-key call must retire the
+    // activity that follow mode recorded. Later blocked voice indications
+    // cannot keep sliding the hangtime deadline indefinitely.
+    o19f.trunk_tune_enc_calls = 0;
+    s19f.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    ctx19f.t_voice_m = dsd_time_now_monotonic_s() - 10.0;
+    p25_sm_event(&ctx19f, &o19f, &s19f, &follow_active);
+    assert(ctx19f.slots[0].voice_active == 0);
+
+    g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx19f, &o19f, &s19f);
+    assert(g_result_return_to_cc_calls == 1);
+    assert(ctx19f.state == P25_SM_ON_CC);
+
     // 27) A Phase 2 classification timeout blocks and purges only the
     // unresolved slot while retaining an active clear companion.
     static dsd_opts o19c;

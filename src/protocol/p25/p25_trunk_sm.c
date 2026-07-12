@@ -1942,6 +1942,10 @@ handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, in
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
 
     if (opts && state && opts->trunk_tune_enc_calls == 0 && p25_crypto_companion_suppressed(state, s)) {
+        // The lockout policy may have been enabled after follow mode marked
+        // this blocked slot active. Clear that stale activity before ignoring
+        // subsequent voice indications so the tuned timer can release it.
+        ctx->slots[s].voice_active = 0;
         p25_sm_diagf((dsd_opts*)opts, state, ctx, "voice_classification_wait", "kind=%s slot=%d crypto_state=%d", why,
                      s, (int)state->p25_crypto_state[s]);
         return;

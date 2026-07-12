@@ -27,6 +27,7 @@ static int g_open_mbe_calls[2];
 // Expose the P25p2 2V handler under test
 void process_2V(dsd_opts* opts, dsd_state* state);
 void p25p2_test_decode_voice_frame_for_lockout(dsd_opts* opts, dsd_state* state);
+void p25p2_test_commit_deferred_rekeys(dsd_opts* opts, dsd_state* state);
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 bool SetFreq(int sockfd, long int freq);
@@ -299,6 +300,8 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 static int g_mbe_calls = 0;
 static int g_mbe_hard_calls = 0;
 static int g_mbe_soft_calls = 0;
+static int g_mbe_algid[2];
+static int g_mbe_keyid[2];
 
 void
 processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
@@ -319,6 +322,11 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
     (void)imbe_fr;
     (void)ambe_fr;
     (void)imbe7100_fr;
+    if (g_mbe_calls < 2) {
+        const int slot = state->currentslot & 1;
+        g_mbe_algid[g_mbe_calls] = slot == 0 ? state->payload_algid : state->payload_algidR;
+        g_mbe_keyid[g_mbe_calls] = slot == 0 ? state->payload_keyid : state->payload_keyidR;
+    }
     g_mbe_calls++;
     g_mbe_soft_calls++;
 }
@@ -347,6 +355,8 @@ reset_mbe_calls(void) {
     g_mbe_calls = 0;
     g_mbe_hard_calls = 0;
     g_mbe_soft_calls = 0;
+    DSD_MEMSET(g_mbe_algid, 0, sizeof(g_mbe_algid));
+    DSD_MEMSET(g_mbe_keyid, 0, sizeof(g_mbe_keyid));
     g_open_mbe_calls[0] = 0;
     g_open_mbe_calls[1] = 0;
 }
@@ -355,6 +365,18 @@ static void
 set_ess_algid(dsd_state* st, int slot, uint8_t algid) {
     for (int i = 0; i < 8; i++) {
         st->ess_b[slot][i] = (algid >> (7 - i)) & 1;
+    }
+}
+
+static void
+set_ess_metadata(dsd_state* st, int slot, uint8_t algid, uint16_t keyid, uint64_t mi) {
+    const uint64_t essb_hex1 = ((uint64_t)algid << 24) | ((uint64_t)keyid << 8) | (mi >> 56);
+    const uint64_t essb_hex2 = mi << 8;
+    for (int i = 0; i < 32; i++) {
+        st->ess_b[slot][i] = (int)((essb_hex1 >> (31 - i)) & 1U);
+    }
+    for (int i = 0; i < 64; i++) {
+        st->ess_b[slot][i + 32] = (int)((essb_hex2 >> (63 - i)) & 1U);
     }
 }
 
@@ -405,6 +427,46 @@ main(void) {
     rc |= expect_eq("slot1 allowed: mbe calls", g_mbe_calls, 2);
     rc |= expect_eq("slot1 allowed: soft mbe calls", g_mbe_soft_calls, 2);
     rc |= expect_eq("slot1 allowed: hard mbe calls", g_mbe_hard_calls, 0);
+
+    // A decryptable Phase 2 identity change belongs to the next crypto
+    // stream. The final two frames and the completed output superframe must
+    // retain the current tuple until the paired-timeslot drain has run.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    st.p25_p2_audio_allowed[0] = 1;
+    st.payload_algid = 0x81;
+    st.payload_keyid = 0x1001;
+    st.payload_miP = 0x0102030405060708ULL;
+    st.R = 0x1122334455667788ULL;
+    st.dmr_so = 0x40;
+    st.dmrburstL = 21;
+    st.voice_counter[0] = 16;
+    st.p25_p2_audio_ring_count[0] = 2;
+    st.s_l4[0][0] = 101;
+    st.s_l[0] = 202;
+    set_ess_metadata(&st, 0, 0xAA, 0x1002, 0x1112131415161718ULL);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 rekey boundary: mbe calls", g_mbe_calls, 2);
+    rc |= expect_eq("slot0 rekey boundary: first frame old algid", g_mbe_algid[0], 0x81);
+    rc |= expect_eq("slot0 rekey boundary: second frame old algid", g_mbe_algid[1], 0x81);
+    rc |= expect_eq("slot0 rekey boundary: first frame old keyid", g_mbe_keyid[0], 0x1001);
+    rc |= expect_eq("slot0 rekey boundary: second frame old keyid", g_mbe_keyid[1], 0x1001);
+    rc |= expect_eq("slot0 rekey boundary: metadata held", st.payload_keyid, 0x1001);
+    rc |= expect_eq("slot0 rekey boundary: transition pending", st.p25_p2_rekey[0].pending, 1);
+    rc |= expect_eq("slot0 rekey boundary: superframe completed", st.voice_counter[0], 18);
+    rc |= expect_eq("slot0 rekey boundary: prior int16 preserved", st.s_l4[0][0], 101);
+    rc |= expect_eq("slot0 rekey boundary: queued audio preserved", st.p25_p2_audio_ring_count[0], 3);
+
+    p25p2_test_commit_deferred_rekeys(&opts, &st);
+    rc |= expect_eq("slot0 rekey commit: transition cleared", st.p25_p2_rekey[0].pending, 0);
+    rc |= expect_eq("slot0 rekey commit: algid promoted", st.payload_algid, 0xAA);
+    rc |= expect_eq("slot0 rekey commit: keyid promoted", st.payload_keyid, 0x1002);
+    rc |= expect_eq("slot0 rekey commit: mi promoted", st.payload_miP == 0x1112131415161718ULL, 1);
+    rc |= expect_eq("slot0 rekey commit: queued audio purged", st.p25_p2_audio_ring_count[0], 0);
+    rc |= expect_eq("slot0 rekey commit: int16 state purged", st.s_l4[0][0], 0);
 
     // Slot 0: stale allowed gate, encrypted/no key, lockout enabled -> no decode.
     reset_state(&opts, &st);
