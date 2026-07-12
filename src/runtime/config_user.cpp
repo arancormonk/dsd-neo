@@ -1148,6 +1148,8 @@ apply_demod_mode(dsd_opts* opts, dsd_state* state, int mod_c4fm, int mod_qpsk, i
     opts->mod_c4fm = mod_c4fm;
     opts->mod_qpsk = mod_qpsk;
     opts->mod_gfsk = mod_gfsk;
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
     opts->mod_cli_lock = mod_cli_lock;
     state->rf_mod = rf_mod;
 }

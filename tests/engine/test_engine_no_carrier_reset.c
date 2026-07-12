@@ -8,6 +8,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -553,6 +554,8 @@ main(void) {
     state->samplesPerSymbol = 8;
     state->symbolCenter = 3;
     state->rf_mod = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state->sps_hunt_counter = 23;
 
     noCarrier(opts, state);
 
@@ -565,6 +568,8 @@ main(void) {
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-ted", g_rtl_ted_sps == 20 && g_rtl_ted_sps_override == 0);
     rc |= expect_true("p25-rtl-nocarrier-dynamic-symbol-timing",
                       state->samplesPerSymbol == 20 && state->symbolCenter == 9);
+    rc |= expect_true("p25-rtl-nocarrier-selects-four-level-profile",
+                      state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && state->sps_hunt_counter == 0);
     rc |= expect_true("p25-rtl-nocarrier-reenables-slots", opts->slot1_on == 1 && opts->slot2_on == 1);
     rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->p25_is_tuned == 0 && opts->trunk_is_tuned == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);

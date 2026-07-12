@@ -27,6 +27,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
@@ -73,6 +74,8 @@ void dsd_symbol_test_select_window(int rf_mod, int synctype, int lastsynctype, i
 int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, int rf_mod, int jitter,
                                         int have_sync, int symbol_span, int start_i, int* jitter_after);
 int dsd_symbol_test_is_m17_sync(int lastsynctype);
+float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
+                                           int rtl_symbol_rate_output, int cqpsk_symbol_rate);
 unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);
 #ifdef USE_RADIO
 int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
@@ -304,12 +307,19 @@ symbol_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float 
     if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
         return p25_filter(sample, state->samplesPerSymbol);
     }
-    if (DSD_SYNC_IS_DPMR(state->lastsynctype) || DSD_SYNC_IS_NXDN(state->lastsynctype)) {
-        if (opts->frame_nxdn48 == 1) {
-            return nxdn_filter(sample, state->samplesPerSymbol);
-        }
+    if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
         if (opts->frame_dpmr == 1) {
             return dpmr_filter(sample, state->samplesPerSymbol);
+        }
+        return sample;
+    }
+    if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+        const dsd_nxdn_variant variant = dsd_frame_sync_active_nxdn_variant(opts, state);
+        if (variant == DSD_NXDN_VARIANT_48) {
+            return nxdn_filter(sample, state->samplesPerSymbol);
+        }
+        if (variant != DSD_NXDN_VARIANT_96) {
+            return sample;
         }
         if (state->samplesPerSymbol == 8) {
             return sample;
@@ -318,6 +328,14 @@ symbol_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float 
     }
     return sample;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+float
+dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
+                                     int rtl_symbol_rate_output, int cqpsk_symbol_rate) {
+    return symbol_apply_matched_filter(opts, state, sample, rtl_symbol_rate_output, cqpsk_symbol_rate);
+}
+#endif
 
 static inline float
 symbol_apply_sync_clip(const dsd_state* state, int have_sync, float sample) {

@@ -11,6 +11,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -380,16 +381,86 @@ test_radio_actions(void) {
     rc |= expect_int("mod toggle clears qpsk", opts.mod_qpsk, 0);
     rc |= expect_int("mod toggle clears rf_mod", state.rf_mod, 0);
 
+    /* The generic hotkey must leave D-STAR's same-rate binary gate immediately. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.mod_gfsk = 1;
+    opts.mod_p25p2_c4fm = 1;
+    opts.mod_p25p2_profile_lock = 1;
+    state.rf_mod = 2;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.sps_hunt_counter = 9;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("generic mod toggle returns c4fm", opts.mod_c4fm, 1);
+    rc |= expect_int("generic mod toggle selects four-level profile", state.sps_hunt_idx,
+                     DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    rc |= expect_int("generic mod toggle resets profile dwell", state.sps_hunt_counter, 0);
+    rc |= expect_int("generic mod toggle clears p25p2 c4fm mode", opts.mod_p25p2_c4fm, 0);
+    rc |= expect_int("generic mod toggle clears p25p2 profile lock", opts.mod_p25p2_profile_lock, 0);
+
+    /* Generic modulation transitions must retain timing from the active PCM source. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 96000;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 1;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("96k WAV generic toggle returns c4fm", opts.mod_c4fm, 1);
+    rc |= expect_int("96k WAV generic toggle timing", state.samplesPerSymbol, 20);
+    rc |= expect_int("96k WAV generic toggle center", state.symbolCenter, 9);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = 11;
     cmd.id = DSD_APP_CMD_MOD_P2_TOGGLE;
     dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
     rc |= expect_int("mod p2 toggle selects qpsk", opts.mod_qpsk, 1);
     rc |= expect_int("mod p2 toggle sets rf_mod", state.rf_mod, 1);
+    rc |= expect_int("mod p2 toggle locks explicit qpsk", opts.mod_cli_lock, 1);
+    rc |= expect_int("mod p2 toggle locks p25p2 profile", opts.mod_p25p2_profile_lock, 1);
     rc |= expect_int("mod p2 toggle qpsk sps", state.samplesPerSymbol, 8);
     rc |= expect_int("mod p2 toggle qpsk center", state.symbolCenter, 3);
+    rc |= expect_int("mod p2 toggle selects profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    rc |= expect_int("mod p2 toggle resets profile dwell", state.sps_hunt_counter, 0);
+    opts.mod_cli_lock = 0;
     dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
     rc |= expect_int("mod p2 toggle returns c4fm", opts.mod_c4fm, 1);
+    rc |= expect_int("mod p2 toggle locks explicit c4fm", opts.mod_cli_lock, 1);
     rc |= expect_int("mod p2 toggle p25p2 sps", state.samplesPerSymbol, 8);
     rc |= expect_int("mod p2 toggle p25p2 center", state.symbolCenter, 3);
+
+    /* At low rates P25P1 and P25P2 can round to the same SPS, so the explicit
+     * profile selection—not timing inference—must carry the hotkey choice. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dsp_bw_khz = 16;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = 7;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("low-rate mod p2 toggle sps", state.samplesPerSymbol, 3);
+    rc |= expect_int("low-rate mod p2 toggle profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    rc |= expect_int("low-rate mod p2 toggle dwell", state.sps_hunt_counter, 0);
+
+    /* The generic modulation hotkey fully exits the P25p2 helper. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    cmd.id = DSD_APP_CMD_MOD_P2_TOGGLE;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    cmd.id = DSD_APP_CMD_MOD_TOGGLE;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("generic toggle exits p25p2 helper lock", opts.mod_cli_lock, 0);
+    rc |= expect_int("generic toggle exits p25p2 helper profile lock", opts.mod_p25p2_profile_lock, 0);
+    rc |= expect_int("generic toggle exits p25p2 c4fm helper", opts.mod_p25p2_c4fm, 0);
+    rc |= expect_int("generic toggle restores p25p1 profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    rc |= expect_int("generic toggle restores p25p1 timing", state.samplesPerSymbol, 10);
+    rc |= expect_int("generic toggle restores p25p1 center", state.symbolCenter, 4);
+    rc |= expect_int("generic toggle restores c4fm", state.rf_mod, 0);
 
     return rc;
 }

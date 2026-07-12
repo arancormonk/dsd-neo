@@ -26,6 +26,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
@@ -2165,7 +2166,7 @@ nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vc
     if (state->keyloader != 1) {
         return;
     }
-    if (info->cipher_type == 1U && opts->frame_nxdn48 == 1 && opts->frame_nxdn96 == 0) {
+    if (info->cipher_type == 1U && dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         if (state->rkey_array[info->key_id] != 0) {
             state->R = state->rkey_array[info->key_id];
         } else if (state->rkey_array[info->destination_id] != 0) {

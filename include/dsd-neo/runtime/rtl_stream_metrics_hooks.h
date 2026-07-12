@@ -44,6 +44,7 @@ typedef struct {
     void (*p25p2_err_update)(int slot, int facch_ok, int facch_err, int sacch_ok, int sacch_err, int voice_err);
     int (*stream_active)(void);
     int (*input_level)(dsd_input_level_snapshot* out);
+    int (*apply_demod_profile)(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps);
 } dsd_rtl_stream_metrics_hooks;
 
 typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
@@ -64,6 +65,15 @@ uint32_t dsd_rtl_stream_metrics_hook_stream_generation(void);
 int dsd_rtl_stream_metrics_hook_stream_active(void);
 int dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out);
 int dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
+/**
+ * @brief Synchronize the RTL demodulator family, symbol profile, and timing recovery rate.
+ *
+ * The engine implementation applies the family transition before updating TED timing and the
+ * symbol/channel profile. When the complete transition hook is unavailable, the wrapper falls
+ * back to the symbol-profile hook so non-RTL test and embedding configurations remain usable.
+ */
+int dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
+                                                    int channel_profile, int ted_sps);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);
 double dsd_rtl_stream_metrics_hook_snr_bias_evm(void);

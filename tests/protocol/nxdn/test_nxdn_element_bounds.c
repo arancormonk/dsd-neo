@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1334,6 +1335,41 @@ test_vcall_des_keyloader_and_iv_signal(void) {
 }
 
 static int
+test_vcall_scrambler_keyloader_uses_active_nxdn48_profile(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    const uint8_t key_id = 0x2AU;
+    const uint64_t scrambler_key = 0x5A5AU;
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state->keyloader = 1;
+    state->rkey_array[key_id] = scrambler_key;
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 1U, key_id);
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    int rc = 0;
+    rc |= expect_int("vcall-scrambler-active-variant", dsd_frame_sync_active_nxdn_variant(opts, state),
+                     DSD_NXDN_VARIANT_48);
+    rc |= expect_int("vcall-scrambler-cipher", state->nxdn_cipher_type, 1);
+    rc |= expect_u64("vcall-scrambler-key", (uint64_t)state->R, scrambler_key);
+    rc |= expect_int("vcall-scrambler-unmutes-loaded-key", state->dmr_encL, 0);
+
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
 test_vcall_aes_keyloader_and_iv_signal(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -1562,6 +1598,7 @@ main(void) {
     rc |= test_arib_vcall_uses_shifted_fields();
     rc |= test_bad_crc_encrypted_vcall_records_metadata();
     rc |= test_vcall_des_keyloader_and_iv_signal();
+    rc |= test_vcall_scrambler_keyloader_uses_active_nxdn48_profile();
     rc |= test_vcall_aes_keyloader_and_iv_signal();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
     rc |= test_assignment_group_grant_anchors_tunes_and_loads_scrambler();

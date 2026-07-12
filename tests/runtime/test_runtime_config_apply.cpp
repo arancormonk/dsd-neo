@@ -29,6 +29,7 @@
 #endif
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -2223,8 +2224,11 @@ test_return_cc_uses_pulse_rate_not_stale_file_rate(void) {
     opts->pulse_digi_rate_in = 48000;
     opts->wav_sample_rate = 96000;
     opts->p25_trunk = 1;
+    opts->frame_p25p1 = 1;
     state->trunk_cc_freq = 851012500;
     state->p25_cc_is_tdma = 0;
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
     state->samplesPerSymbol = 20;
     state->symbolCenter = 9;
 

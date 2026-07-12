@@ -41,6 +41,32 @@ test_auto_profile_differences(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
+    opts.frame_p25p2 = 1;
+    opts.frame_nxdn48 = 1;
+    opts.frame_dstar = 0;
+    opts.frame_provoice = 0;
+    opts.pulse_digi_out_channels = 3;
+    state.rf_mod = 2;
+    state.samplesPerSymbol = 17;
+    state.symbolCenter = 7;
+    state.sps_hunt_idx = 3;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CONFIG, &opts, &state) != 0) {
+        DSD_FPRINTF(stderr, "config AUTO apply failed\n");
+        return 1;
+    }
+    if (!(opts.frame_p25p2 == 1 && opts.frame_nxdn48 == 1 && opts.frame_dstar == 0 && opts.frame_provoice == 0
+          && opts.pulse_digi_out_channels == 3 && state.rf_mod == 2 && state.samplesPerSymbol == 17
+          && state.symbolCenter == 7 && state.sps_hunt_idx == 3)) {
+        DSD_FPRINTF(stderr, "config AUTO should preserve initialized protocol, modulation, and timing state\n");
+        return 1;
+    }
+    if (strcmp(opts.output_name, "AUTO") != 0) {
+        DSD_FPRINTF(stderr, "config AUTO output_name mismatch: %s\n", opts.output_name);
+        return 1;
+    }
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
     opts.frame_dstar = 0;
     opts.frame_dmr = 0;
     opts.frame_ysf = 0;

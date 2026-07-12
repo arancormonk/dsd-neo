@@ -12,6 +12,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/audio.h>
@@ -2394,6 +2395,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         }                                                                                                              \
         case 'm':                                                                                                      \
+            opts->mod_p25p2_c4fm = 0;                                                                                  \
+            opts->mod_p25p2_profile_lock = 0;                                                                          \
             if (optarg[0] == 'a') {                                                                                    \
                 opts->mod_c4fm = 1;                                                                                    \
                 opts->mod_qpsk = 1;                                                                                    \
@@ -2429,6 +2432,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 state->rf_mod = 1;                                                                                     \
                 state->samplesPerSymbol = 8;                                                                           \
                 state->symbolCenter = 3;                                                                               \
+                state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;                                               \
+                opts->mod_p25p2_profile_lock = 1;                                                                      \
                 opts->mod_cli_lock = 1;                                                                                \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;                                                   \
@@ -2442,6 +2447,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 state->rf_mod = 0;                                                                                     \
                 state->samplesPerSymbol = 10;                                                                          \
                 state->symbolCenter = 4;                                                                               \
+                state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;                                               \
+                opts->mod_p25p2_c4fm = 1;                                                                              \
                 opts->mod_cli_lock = 1;                                                                                \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;                                                   \
@@ -2455,6 +2462,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 state->rf_mod = 0;                                                                                     \
                 state->samplesPerSymbol = 8;                                                                           \
                 state->symbolCenter = 3;                                                                               \
+                state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;                                               \
                 opts->mod_cli_lock = 0;                                                                                \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;                                                   \

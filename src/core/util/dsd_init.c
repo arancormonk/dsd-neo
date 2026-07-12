@@ -159,6 +159,8 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->mod_c4fm = 1;
     opts->mod_qpsk = 0;
     opts->mod_gfsk = 0;
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
     opts->mod_cli_lock = 0;    // by default, allow auto modulation selection
     opts->inverted_x2tdma = 1; // most transmitter + scanner + sound card combinations show inverted signals for this
     opts->inverted_dmr = 0; // most transmitter + scanner + sound card combinations show non-inverted signals for this
