@@ -164,6 +164,7 @@ test_p25p2_toggle_applies_rtl_profile_before_lock(void) {
     rc |= expect_int("p25p2 qpsk profile order", g_profile_order, 4);
     rc |= expect_int("p25p2 qpsk profile precedes lock", g_lock_at_profile_apply, 0);
     rc |= expect_int("p25p2 qpsk enables lock", opts.mod_cli_lock, 1);
+    rc |= expect_int("p25p2 qpsk pins profile", opts.mod_p25p2_profile_lock, 1);
     rc |= expect_int("p25p2 qpsk selects hunt profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
 
     opts.mod_cli_lock = 0;

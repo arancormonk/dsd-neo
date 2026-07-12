@@ -51,6 +51,10 @@ ui_handle_invert_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 static int
 ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->sps_hunt_counter = 0;
     if (state->rf_mod == 0) {
         opts->mod_c4fm = 0;
         opts->mod_qpsk = 1;
@@ -91,6 +95,8 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 #endif
     int sps = dsd_opts_compute_sps_rate(opts, 6000, demod_rate);
     int center = dsd_opts_symbol_center(sps);
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 1;
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
     state->sps_hunt_counter = 0;
     if (state->rf_mod == 0) {

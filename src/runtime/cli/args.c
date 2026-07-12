@@ -2396,6 +2396,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }                                                                                                              \
         case 'm':                                                                                                      \
             opts->mod_p25p2_c4fm = 0;                                                                                  \
+            opts->mod_p25p2_profile_lock = 0;                                                                          \
             if (optarg[0] == 'a') {                                                                                    \
                 opts->mod_c4fm = 1;                                                                                    \
                 opts->mod_qpsk = 1;                                                                                    \
@@ -2432,6 +2433,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 state->samplesPerSymbol = 8;                                                                           \
                 state->symbolCenter = 3;                                                                               \
                 state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;                                               \
+                opts->mod_p25p2_profile_lock = 1;                                                                      \
                 opts->mod_cli_lock = 1;                                                                                \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_MANUAL;                                                   \

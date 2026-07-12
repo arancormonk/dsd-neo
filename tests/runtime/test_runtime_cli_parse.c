@@ -5265,8 +5265,8 @@ test_m2_low_rate_preserves_p25p2_profile(void) {
         DSD_FPRINTF(stderr, "standalone -m2 should preserve the default frame candidates\n");
         test_rc = 1;
     }
-    if (!(opts->mod_cli_lock == 1 && opts->mod_qpsk == 1 && opts->mod_c4fm == 0 && opts->mod_gfsk == 0
-          && state->rf_mod == 1)) {
+    if (!(opts->mod_cli_lock == 1 && opts->mod_p25p2_profile_lock == 1 && opts->mod_qpsk == 1 && opts->mod_c4fm == 0
+          && opts->mod_gfsk == 0 && state->rf_mod == 1)) {
         DSD_FPRINTF(stderr, "standalone -m2 did not retain the manual P25p2 QPSK mode\n");
         test_rc = 1;
     }

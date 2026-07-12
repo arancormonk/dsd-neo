@@ -381,6 +381,25 @@ test_radio_actions(void) {
     rc |= expect_int("mod toggle clears qpsk", opts.mod_qpsk, 0);
     rc |= expect_int("mod toggle clears rf_mod", state.rf_mod, 0);
 
+    /* The generic hotkey must leave D-STAR's same-rate binary gate immediately. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.mod_gfsk = 1;
+    opts.mod_p25p2_c4fm = 1;
+    opts.mod_p25p2_profile_lock = 1;
+    state.rf_mod = 2;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.sps_hunt_counter = 9;
+    dispatch_one(dsd_app_actions_radio, &opts, &state, &cmd);
+    rc |= expect_int("generic mod toggle returns c4fm", opts.mod_c4fm, 1);
+    rc |= expect_int("generic mod toggle selects four-level profile", state.sps_hunt_idx,
+                     DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    rc |= expect_int("generic mod toggle resets profile dwell", state.sps_hunt_counter, 0);
+    rc |= expect_int("generic mod toggle clears p25p2 c4fm mode", opts.mod_p25p2_c4fm, 0);
+    rc |= expect_int("generic mod toggle clears p25p2 profile lock", opts.mod_p25p2_profile_lock, 0);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state.sps_hunt_counter = 11;
     cmd.id = DSD_APP_CMD_MOD_P2_TOGGLE;
@@ -388,6 +407,7 @@ test_radio_actions(void) {
     rc |= expect_int("mod p2 toggle selects qpsk", opts.mod_qpsk, 1);
     rc |= expect_int("mod p2 toggle sets rf_mod", state.rf_mod, 1);
     rc |= expect_int("mod p2 toggle locks explicit qpsk", opts.mod_cli_lock, 1);
+    rc |= expect_int("mod p2 toggle locks p25p2 profile", opts.mod_p25p2_profile_lock, 1);
     rc |= expect_int("mod p2 toggle qpsk sps", state.samplesPerSymbol, 8);
     rc |= expect_int("mod p2 toggle qpsk center", state.symbolCenter, 3);
     rc |= expect_int("mod p2 toggle selects profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);

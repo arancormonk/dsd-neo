@@ -294,6 +294,48 @@ test_sps_hunt_profile_updates_timing(void) {
     assert(state.rf_mod == 0);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DSTAR_SYNC, 24) == DSD_SYNC_DSTAR_VOICE_POS);
 
+    /* At 16 kHz, 4800 and 6000 symbols/s both round to 3 SPS. Generic demodulator
+     * locks still rotate gates, but the profile-specific -m2/M selection must not. */
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dsp_bw_khz = 16;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    opts.mod_p25p2_profile_lock = 1;
+    state.rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) - 1;
+    state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 0);
+    state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.p2_wacn = 1;
+    state.p2_cc = 1;
+    state.p2_sysid = 1;
+    assert(dsd_opts_compute_sps_rate(&opts, 4800, 0) == state.samplesPerSymbol);
+    dsd_frame_sync_test_no_sync_sps_hunt(&opts, &state);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state.sps_hunt_counter == 0);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dsp_bw_khz = 16;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) - 1;
+    state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 0);
+    state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
+    dsd_frame_sync_test_no_sync_sps_hunt(&opts, &state);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.sps_hunt_counter == 0);
+
     reset(&opts, &state);
     opts.audio_in_type = AUDIO_IN_WAV;
     opts.wav_sample_rate = 96000;

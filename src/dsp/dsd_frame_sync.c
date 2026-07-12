@@ -3010,9 +3010,14 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     }
     state->sps_hunt_counter = 0;
 
-    /* An explicit modulation lock pins the demodulator, not protocol gates that share its timing. */
-    int next_idx = preserve_modulation ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
-                                       : frame_sync_sps_hunt_next_index(opts, state);
+    /* Generic modulation locks retain their demodulator while rotating equal-timing protocol gates. A P25p2-specific
+     * selection instead pins profile 3 because rounded low-rate timing cannot identify the requested matcher gate. */
+    const int pin_p25p2_profile = preserve_modulation && opts->mod_p25p2_profile_lock == 1 && opts->frame_p25p2 == 1
+                                  && state->sps_hunt_idx == FRAME_SYNC_SPS_PROFILE_6000_4;
+    int next_idx = pin_p25p2_profile
+                       ? FRAME_SYNC_SPS_PROFILE_6000_4
+                       : (preserve_modulation ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
+                                              : frame_sync_sps_hunt_next_index(opts, state));
     frame_sync_apply_sps_hunt_profile(opts, state, next_idx, preserve_modulation);
 }
 

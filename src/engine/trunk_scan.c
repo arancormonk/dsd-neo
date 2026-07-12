@@ -202,6 +202,8 @@ typedef struct {
     int saved_mod_c4fm;
     int saved_mod_qpsk;
     int saved_mod_gfsk;
+    int saved_mod_p25p2_c4fm;
+    int saved_mod_p25p2_profile_lock;
     int saved_mod_cli_lock;
     int saved_rtl_gain_value;
     int saved_tuner_autogain_on;
@@ -1304,6 +1306,8 @@ trunk_scan_restore_saved_mod_gain_opts(dsd_opts* opts, const dsd_trunk_scan_coor
     opts->mod_c4fm = coord->saved_mod_c4fm;
     opts->mod_qpsk = coord->saved_mod_qpsk;
     opts->mod_gfsk = coord->saved_mod_gfsk;
+    opts->mod_p25p2_c4fm = coord->saved_mod_p25p2_c4fm;
+    opts->mod_p25p2_profile_lock = coord->saved_mod_p25p2_profile_lock;
     opts->mod_cli_lock = coord->saved_mod_cli_lock;
     opts->rtl_gain_value = coord->saved_rtl_gain_value;
 }
@@ -1313,6 +1317,8 @@ trunk_scan_apply_target_mod_opts(dsd_opts* opts, const dsd_trunk_scan_target* ta
     if (!opts || !target || target->modulation == DSD_TRUNK_SCAN_MODULATION_UNSET) {
         return;
     }
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
     switch (target->modulation) {
         case DSD_TRUNK_SCAN_MODULATION_AUTO:
             if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
@@ -1676,6 +1682,8 @@ trunk_scan_capture_saved_opts(dsd_trunk_scan_coord* coord, const dsd_opts* opts)
     coord->saved_mod_c4fm = opts->mod_c4fm;
     coord->saved_mod_qpsk = opts->mod_qpsk;
     coord->saved_mod_gfsk = opts->mod_gfsk;
+    coord->saved_mod_p25p2_c4fm = opts->mod_p25p2_c4fm;
+    coord->saved_mod_p25p2_profile_lock = opts->mod_p25p2_profile_lock;
     coord->saved_mod_cli_lock = opts->mod_cli_lock;
     coord->saved_rtl_gain_value = opts->rtl_gain_value;
 #ifdef USE_RADIO
