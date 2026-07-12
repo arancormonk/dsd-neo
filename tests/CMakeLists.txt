@@ -3242,7 +3242,9 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_link_options(
         dsd-neo_test_app_command_queue
-        PRIVATE "LINKER:--wrap=io_control_set_freq"
+        PRIVATE
+            "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
+            "LINKER:--wrap=io_control_set_freq"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
