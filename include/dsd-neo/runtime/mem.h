@@ -21,9 +21,7 @@ extern "C" {
 #endif
 
 /* Default alignment for hot DSP buffers */
-#ifndef DSD_NEO_ALIGN
 #define DSD_NEO_ALIGN 64
-#endif
 
 /**
  * @brief Allocate memory aligned to `DSD_NEO_ALIGN`.

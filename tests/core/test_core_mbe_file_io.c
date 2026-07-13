@@ -6,17 +6,17 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
-
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/fec/block_codes.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>
+#include <dsd-neo/fec/dmr_late_entry.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <sndfile.h>
@@ -498,7 +498,7 @@ test_ambe_save_read_roundtrip_and_slot2(void) {
 }
 
 static int
-test_bit_packing_helpers_roundtrip_and_partial_bytes(void) {
+test_bit_packing_helpers_roundtrip(void) {
     int rc = 0;
     const uint8_t bits[16] = {1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 1, 0};
     const uint8_t want_bytes[2] = {0xA5, 0x5A};
@@ -514,11 +514,9 @@ test_bit_packing_helpers_roundtrip_and_partial_bytes(void) {
     unpack_byte_array_into_bit_array(packed, unpacked, 2);
     rc |= expect_u8_bits("unpack byte bits", unpacked, bits, sizeof bits);
 
-    const uint8_t partial_bits[10] = {1, 0, 1, 1, 0, 0, 1, 0, 1, 1};
-    uint8_t partial[2] = {0};
-    pack_bit_array_into_byte_array_asym(partial_bits, partial, (int)(sizeof partial_bits / sizeof partial_bits[0]));
-    rc |= expect_byte("partial byte 0", partial[0], 0xB2);
-    rc |= expect_byte("partial byte 1", partial[1], 0xC0);
+    rc |= expect_u64("CRC-CCITT bit array", dsd_crc_ccitt16_bits(bits, sizeof bits), 0xE6CBU);
+    rc |= expect_u64("CRC-CCITT empty bit array", dsd_crc_ccitt16_bits(bits, 0U), 0xFFFFU);
+    rc |= expect_u64("CRC-CCITT null input", dsd_crc_ccitt16_bits(NULL, sizeof bits), 0U);
 
     return rc;
 }
@@ -941,7 +939,7 @@ fill_sdrtrunk_dmr_le_fragments(dsd_state* state, uint32_t mi32) {
     for (int i = 0; i < 32; i++) {
         mi_bits32[i] = (uint8_t)((mi32 >> (31 - i)) & 1U);
     }
-    const uint8_t crc = crc4(mi_bits32, 32);
+    const uint8_t crc = dsd_dmr_crc4(mi_bits32, 32);
 
     unsigned char msg36[36];
     unsigned char go36[36];
@@ -977,25 +975,10 @@ fill_sdrtrunk_dmr_le_fragments(dsd_state* state, uint32_t mi32) {
     }
 }
 
-static unsigned long long
-dmr_lfsr32_once(unsigned long long mi) {
-    unsigned long long lfsr = mi;
-    for (uint8_t cnt = 0; cnt < 32; cnt++) {
-        const unsigned long long bit = ((lfsr >> 31U) ^ (lfsr >> 3U) ^ (lfsr >> 1U)) & 0x1U;
-        lfsr = (lfsr << 1U) | bit;
-    }
-    return lfsr & 0xFFFFFFFFULL;
-}
-
 static uint8_t
 hex_char_to_nibble(char c) {
-    if (c >= '0' && c <= '9') {
-        return (uint8_t)(c - '0');
-    }
-    if (c >= 'A' && c <= 'F') {
-        return (uint8_t)(10 + c - 'A');
-    }
-    return 0;
+    const int parsed = dsd_hex_nibble_value((unsigned char)c);
+    return (parsed < 0) ? 0U : (uint8_t)parsed;
 }
 
 static void
@@ -1003,8 +986,9 @@ set_sdrtrunk_dmr_hex_nibble_bit(char hex[19], int row, int col, uint8_t bit) {
     if ((bit & 1U) == 0U) {
         return;
     }
-    for (int map_idx = 0; map_idx < 36; map_idx++) {
-        if (dmr_ambe_interleave_y[map_idx] == row && dmr_ambe_interleave_z[map_idx] == col) {
+    for (int map_idx = 0; map_idx < DSD_AMBE_2450_DIBITS; map_idx++) {
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[map_idx];
+        if (map->low_row == row && map->low_col == col) {
             const int hex_idx = map_idx / 2;
             const uint8_t mask = (map_idx % 2 == 0) ? 0x4U : 0x1U;
             const uint8_t nibble = hex_char_to_nibble(hex[hex_idx]);
@@ -1063,7 +1047,7 @@ test_sdrtrunk_json_dmr_late_entry_updates_mi(void) {
     rc |= run_sdrtrunk_json(json, &opts, &state);
     rc |= expect_int("sdrtrunk dmr late entry synctype", state.synctype, DSD_SYNC_DMR_BS_DATA_POS);
     rc |= expect_int("sdrtrunk dmr late entry algid", state.payload_algid, 0x21);
-    rc |= expect_u64("sdrtrunk dmr late entry mi", state.payload_mi, dmr_lfsr32_once(mi));
+    rc |= expect_u64("sdrtrunk dmr late entry mi", state.payload_mi, 0xDAB4A1A7ULL);
     return rc;
 }
 
@@ -1261,7 +1245,7 @@ test_open_mbe_in_file_classifies_cookies(void) {
         {"mbe_in_amb", {'.', 'a', 'm', 'b'}, 1},
         {"mbe_in_imb", {'.', 'i', 'm', 'b'}, 0},
         {"mbe_in_dmb", {'.', 'd', 'm', 'b'}, 2},
-        {"mbe_in_bad", {'n', 'o', 'p', 'e'}, 3},
+        {"mbe_in_bad", {'n', 'o', 'p', 'e'}, -1},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -1279,6 +1263,9 @@ test_open_mbe_in_file_classifies_cookies(void) {
 
         openMbeInFile(&opts, &state);
         rc |= expect_int(cases[i].prefix, state.mbe_file_type, cases[i].want_type);
+        if (cases[i].want_type < 0) {
+            rc |= expect_true("mbe bad cookie closes handle", opts.mbe_in_f == NULL);
+        }
 
         if (opts.mbe_in_f) {
             fclose(opts.mbe_in_f);
@@ -1287,6 +1274,54 @@ test_open_mbe_in_file_classifies_cookies(void) {
         (void)remove(path);
     }
 
+    return rc;
+}
+
+static int
+test_open_mbe_in_file_accepts_sdrtrunk_extension(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_sdrtrunk_input")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    if (dsd_test_path_join(path, sizeof path, dir, "call.mbe") != 0) {
+        (void)remove_dir(dir);
+        return 1;
+    }
+    FILE* f = fopen(path, "wb");
+    if (!f) {
+        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
+        (void)remove_dir(dir);
+        return 1;
+    }
+    if (fwrite("{}\n", 1, 3, f) != 3) {
+        DSD_FPRINTF(stderr, "fwrite(%s) failed\n", path);
+        fclose(f);
+        (void)remove(path);
+        (void)remove_dir(dir);
+        return 1;
+    }
+    fclose(f);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_SNPRINTF(opts.mbe_in_file, sizeof opts.mbe_in_file, "%s", path);
+
+    openMbeInFile(&opts, &state);
+    rc |= expect_int("sdrtrunk mbe extension", state.mbe_file_type, 3);
+    rc |= expect_true("sdrtrunk mbe handle remains open", opts.mbe_in_f != NULL);
+
+    if (opts.mbe_in_f) {
+        fclose(opts.mbe_in_f);
+        opts.mbe_in_f = NULL;
+    }
+    (void)remove(path);
+    (void)remove_dir(dir);
     return rc;
 }
 
@@ -1750,7 +1785,7 @@ main(void) {
 
     rc |= test_imbe_save_read_roundtrip();
     rc |= test_ambe_save_read_roundtrip_and_slot2();
-    rc |= test_bit_packing_helpers_roundtrip_and_partial_bytes();
+    rc |= test_bit_packing_helpers_roundtrip();
     rc |= test_ambe_pack_unpack_49_bits_roundtrip();
     rc |= test_parse_raw_user_string_guards_and_bounds();
     rc |= test_sdrtrunk_json_metadata_protocols_and_time();
@@ -1764,6 +1799,7 @@ main(void) {
     rc |= test_open_mbe_out_file_creates_slot_files_and_closes();
     rc |= test_truncated_reads_fail();
     rc |= test_open_mbe_in_file_classifies_cookies();
+    rc |= test_open_mbe_in_file_accepts_sdrtrunk_extension();
     rc |= test_open_mbe_in_file_rejects_short_cookie_without_handle();
     rc |= test_symbol_capture_open_writes_expected_headers();
     rc |= test_symbol_capture_auto_rotation_reopens_and_logs_event();

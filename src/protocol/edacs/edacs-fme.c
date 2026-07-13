@@ -214,15 +214,17 @@ edacs_fill_analog_block_tcp(dsd_opts* opts, dsd_state* state, short* block) {
     return 1;
 }
 
-static void
-edacs_fill_analog_block_udp(dsd_opts* opts, short* block) {
+static int
+edacs_fill_analog_block_udp(dsd_opts* opts, dsd_state* state, short* block) {
     short sample = 0;
     for (int i = 0; i < 960; i++) {
         if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&sample)) {
-            sample = 0;
+            dsd_request_shutdown(opts, state);
+            return 0;
         }
         block[i] = edacs_apply_input_volume(opts, sample);
     }
+    return 1;
 }
 
 #ifdef USE_RADIO
@@ -261,6 +263,17 @@ edacs_collect_pulse_triplet(dsd_opts* opts, short* analog1, short* analog2, shor
 }
 
 static int
+edacs_collect_udp_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
+                          double* pwr) {
+    if (!edacs_fill_analog_block_udp(opts, state, analog1) || !edacs_fill_analog_block_udp(opts, state, analog2)
+        || !edacs_fill_analog_block_udp(opts, state, analog3)) {
+        return 0;
+    }
+    *pwr = raw_pwr(analog3, 960, 1);
+    return 1;
+}
+
+static int
 edacs_collect_tcp_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
                           double* pwr) {
     if (!edacs_fill_analog_block_tcp(opts, state, analog1)) {
@@ -274,14 +287,6 @@ edacs_collect_tcp_triplet(dsd_opts* opts, dsd_state* state, short* analog1, shor
     }
     *pwr = raw_pwr(analog3, 960, 1);
     return 1;
-}
-
-static void
-edacs_collect_udp_triplet(dsd_opts* opts, short* analog1, short* analog2, short* analog3, double* pwr) {
-    edacs_fill_analog_block_udp(opts, analog1);
-    edacs_fill_analog_block_udp(opts, analog2);
-    edacs_fill_analog_block_udp(opts, analog3);
-    *pwr = raw_pwr(analog3, 960, 1);
 }
 
 #ifdef USE_RADIO
@@ -312,14 +317,14 @@ edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, s
     switch (opts->audio_in_type) {
         case AUDIO_IN_PULSE: edacs_collect_pulse_triplet(opts, analog1, analog2, analog3, pwr); return 1;
         case AUDIO_IN_TCP: return edacs_collect_tcp_triplet(opts, state, analog1, analog2, analog3, pwr);
-        case AUDIO_IN_UDP: edacs_collect_udp_triplet(opts, analog1, analog2, analog3, pwr); return 1;
+        case AUDIO_IN_UDP: return edacs_collect_udp_triplet(opts, state, analog1, analog2, analog3, pwr);
         case AUDIO_IN_RTL:
 #ifdef USE_RADIO
             return edacs_collect_rtl_triplet(opts, state, analog1, analog2, analog3, pwr);
 #else
             return 0;
 #endif
-        default: return 1;
+        default: return 0;
     }
 }
 
@@ -396,7 +401,7 @@ edacs_should_emit_udp_audio(const dsd_opts* opts) {
 }
 
 static void
-edacs_emit_udp_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
+edacs_emit_udp_audio(const dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
                      const short* analog3) {
     dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog1);
     dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog2);
@@ -589,7 +594,7 @@ edacs_tune_to_lcn(dsd_opts* opts, dsd_state* state, int lcn) {
 static void
 edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digital, int call_target,
                           int tune_allowed) {
-    if (!tune_allowed || opts->p25_trunk != 1 || !edacs_lcn_is_tunable(state, lcn)) {
+    if (!tune_allowed || opts->trunk_enable != 1 || !edacs_lcn_is_tunable(state, lcn)) {
         return;
     }
 
@@ -602,38 +607,6 @@ edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digi
     }
 }
 
-#ifdef DEBUG_ANALOG
-static void
-edacs_collect_debug_digitized(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
-                              const short* analog3, uint8_t* d1, uint8_t* d2, uint8_t* d3) {
-    UNUSED(opts);
-    for (int i = 0; i < 192; i++) {
-        d1[i] = digitize(opts, state, (float)analog1[i * 5]);
-        d2[i] = digitize(opts, state, (float)analog2[i * 5]);
-        d3[i] = digitize(opts, state, (float)analog3[i * 5]);
-    }
-}
-
-static void
-edacs_debug_dump_digitized(const dsd_opts* opts, uint8_t* d1, uint8_t* d2, uint8_t* d3) {
-    if (opts->payload != 1) {
-        return;
-    }
-    DSD_FPRINTF(stderr, "\n A_DUMP: ");
-    for (int i = 0; i < 24; i++) {
-        DSD_FPRINTF(stderr, "%02X", (uint8_t)convert_bits_into_output(&d1[i * 8], 8));
-    }
-    DSD_FPRINTF(stderr, "\n         ");
-    for (int i = 0; i < 24; i++) {
-        DSD_FPRINTF(stderr, "%02X", (uint8_t)convert_bits_into_output(&d2[i * 8], 8));
-    }
-    DSD_FPRINTF(stderr, "\n         ");
-    for (int i = 0; i < 24; i++) {
-        DSD_FPRINTF(stderr, "%02X", (uint8_t)convert_bits_into_output(&d3[i * 8], 8));
-    }
-}
-#endif
-
 //listening to and playing back analog audio
 static void
 edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
@@ -644,12 +617,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     short analog2[960];
     short analog3[960];
 
-#ifdef DEBUG_ANALOG
-    uint8_t d1[192];
-    uint8_t d2[192];
-    uint8_t d3[192];
-#endif
-
     state->last_cc_sync_time = now;
     state->last_vc_sync_time = now;
     state->last_cc_sync_time_m = nowm;
@@ -658,12 +625,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     DSD_MEMSET(analog1, 0, sizeof(analog1));
     DSD_MEMSET(analog2, 0, sizeof(analog2));
     DSD_MEMSET(analog3, 0, sizeof(analog3));
-
-#ifdef DEBUG_ANALOG
-    DSD_MEMSET(d1, 0, sizeof(d1));
-    DSD_MEMSET(d2, 0, sizeof(d2));
-    DSD_MEMSET(d3, 0, sizeof(d3));
-#endif
 
     double pwr = opts->rtl_squelch_level + 1e-3; // small offset for initial loop phase
     double sql = opts->rtl_squelch_level;
@@ -682,10 +643,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
         unsigned long long int sr = edacs_build_symbol_register(opts, state, analog1);
 
-#ifdef DEBUG_ANALOG
-        edacs_collect_debug_digitized(opts, state, analog1, analog2, analog3, d1, d2, d3);
-#endif
-
         edacs_reset_digitize_overflow(state);
         edacs_process_analog_triplet(opts, state, analog1, analog2, analog3);
         edacs_emit_analog_audio(opts, state, analog1, analog2, analog3);
@@ -701,10 +658,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
         DSD_FPRINTF(stderr, "%s", KNRM);
         edacs_print_sql_hit_counter(count);
-
-#ifdef DEBUG_ANALOG
-        edacs_debug_dump_digitized(opts, d1, d2, d3);
-#endif
 
         if (count > 0) {
             DSD_FPRINTF(stderr, "\n");
@@ -754,8 +707,7 @@ edacs_capture_current_lcn_frequency(const dsd_opts* opts, dsd_state* state, int 
 
 static void
 edacs_update_trunk_cc_frequency(const dsd_opts* opts, dsd_state* state, int lcn) {
-    if ((opts->trunk_enable != 1 && opts->p25_trunk != 1) || lcn <= 0 || lcn > 25
-        || state->trunk_lcn_freq[lcn - 1] == 0) {
+    if ((opts->trunk_enable != 1) || lcn <= 0 || lcn > 25 || state->trunk_lcn_freq[lcn - 1] == 0) {
         return;
     }
 
@@ -1092,9 +1044,7 @@ edacs_handle_extended_mt1_voice_group_call(dsd_opts* opts, dsd_state* state, uns
     int policy_ok;
 
     edacs_print_group_label(state, (uint32_t)group);
-    policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, 0, 0,
-                                                   DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                     == 0
+    policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, 0, 0, &decision) == 0
                  && decision.tune_allowed);
 
     edacs_try_tune_voice_call(opts, state, lcn, is_digital, group, opts->trunk_tune_group_calls == 1 && policy_ok);
@@ -1163,11 +1113,9 @@ edacs_handle_extended_mt1_icall_update(dsd_opts* opts, dsd_state* state, unsigne
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     dsd_tg_policy_decision decision;
-    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0,
-                                                         DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                         DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok =
+        (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0, &decision) == 0
+         && decision.tune_allowed);
 
     edacs_try_tune_voice_call(opts, state, lcn, is_digital, target, opts->trunk_tune_private_calls == 1 && policy_ok);
 }
@@ -1232,9 +1180,7 @@ edacs_handle_extended_mt1_system_all_call(dsd_opts* opts, dsd_state* state, unsi
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     dsd_tg_policy_decision decision;
-    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)source, 0, 0,
-                                                       DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
+    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)source, 0, 0, &decision) == 0
                      && decision.tune_allowed);
     if (!policy_ok && opts->trunk_use_allow_list == 1) {
         policy_ok = 1;
@@ -1371,10 +1317,9 @@ edacs_handle_standard_mt_a_voice_group_assignment(dsd_opts* opts, dsd_state* sta
                                               is_fleet_call);
 
     dsd_tg_policy_decision decision;
-    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)lid, 0, 0,
-                                                       DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok =
+        (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)lid, 0, 0, &decision) == 0
+         && decision.tune_allowed);
 
     edacs_try_tune_voice_call(opts, state, lcn, is_digital, group, opts->trunk_tune_group_calls == 1 && policy_ok);
 }
@@ -1515,17 +1460,12 @@ edacs_standard_channel_update_policy_ok(const dsd_opts* opts, const dsd_state* s
     dsd_tg_policy_decision decision;
 
     if (is_individual == 0) {
-        return (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, 0, 0, 0,
-                                                  DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                    == 0
+        return (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, 0, 0, 0, &decision) == 0
                 && decision.tune_allowed);
     }
 
-    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, 0, (uint32_t)target, 0, 0,
-                                                         DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                         DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok = dsd_tg_policy_evaluate_private_call(opts, state, 0, (uint32_t)target, 0, 0, &decision) == 0
+                    && decision.tune_allowed;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 0;
     }
@@ -1681,11 +1621,9 @@ edacs_handle_standard_mt_b_individual_assignment(dsd_opts* opts, dsd_state* stat
     dsd_tg_policy_decision decision;
     uint32_t saved_tg_hold = state->tg_hold;
     state->tg_hold = 0;
-    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0,
-                                                         DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                         DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok =
+        (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0, &decision) == 0
+         && decision.tune_allowed);
     state->tg_hold = saved_tg_hold;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 0;
@@ -1869,10 +1807,8 @@ edacs_handle_standard_mt_d_system_all_call(dsd_opts* opts, dsd_state* state, uns
     dsd_tg_policy_decision decision;
     uint32_t saved_tg_hold = state->tg_hold;
     state->tg_hold = 0;
-    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)lid, 0, 0,
-                                                       DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok =
+        dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)lid, 0, 0, &decision) == 0 && decision.tune_allowed;
     state->tg_hold = saved_tg_hold;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 1;
@@ -2080,7 +2016,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
     // If we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel
     //this is a simple quick and dirty solution to fix setting the lastsrc value to something that we don't want in event history
-    if (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1) {
         goto EDACS_END;
     }
 
@@ -2150,14 +2086,12 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
 
     //jump back to CC here
     long int cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-    if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && cc != 0
-        && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+    if ((opts->trunk_enable == 1) && cc != 0 && (opts->trunk_is_tuned == 1)) {
         // Use centralized io/control tuning API
         dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             return;
         }
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
 
         // EDACS-specific state cleanup

@@ -78,22 +78,13 @@ int check_and_fix_golay_24_12_soft(char* data, const char* parity, const int* re
 uint8_t p25p1_llr_reliability(const int16_t* llr, int bit_count);
 
 /**
- * Build a Reed-Solomon erasure list from P25P1 data/parity symbol reliabilities.
- *
- * Reed-Solomon wrappers use parity-first codeword positions, so returned erasures
- * are 0..parity_symbols-1 for parity and parity_symbols..parity_symbols+data_symbols-1 for data.
- *
- * @return Number of erasures written.
- */
-int p25p1_build_rs_erasures(const uint8_t* data_reliab, int data_symbols, const uint8_t* parity_reliab,
-                            int parity_symbols, int* erasures, int max_erasures);
-
-/**
  * Build a weakest-first Reed-Solomon erasure list from P25P1 data/parity reliabilities.
  *
- * Unlike p25p1_build_rs_erasures(), this fills from the globally weakest symbols even when
- * they are above the configured erasure threshold. The caller chooses how many prefixes of
- * the returned list to try.
+ * The P25 Reed-Solomon decoders use parity-first codeword positions, so returned erasures
+ * are 0..parity_symbols-1 for parity and parity_symbols..parity_symbols+data_symbols-1 for data.
+ * The list includes every symbol below the configured erasure threshold, then fills to
+ * min_erasures from the globally weakest remaining symbols. The caller chooses how many
+ * prefixes of the returned list to try.
  *
  * @param min_erasures Minimum number of weakest symbols to return when available.
  * @return Number of ranked erasures written, capped by max_erasures.

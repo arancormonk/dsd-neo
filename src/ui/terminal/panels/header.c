@@ -37,7 +37,7 @@ ui_panel_header_render(const dsd_opts* opts, dsd_state* state) {
         attron(COLOR_PAIR(4));
     }
     // fix color/pair issue when compact and trunking enabled
-    if (opts->frontend_terminal_display.terminal_compact == 1 && opts->p25_trunk == 1) {
+    if (opts->frontend_terminal_display.terminal_compact == 1 && opts->trunk_enable == 1) {
         attron(COLOR_PAIR(4));
     }
 }

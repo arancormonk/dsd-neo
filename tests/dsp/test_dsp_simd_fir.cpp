@@ -21,6 +21,7 @@
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/simd_fir.h>
 #include "dsd-neo/core/safe_api.h"
+#include "dsp/simd_fir_internal.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
 #if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
@@ -63,224 +64,6 @@ arrays_close(const float* a, const float* b, int n, float tol) {
         }
     }
     return true;
-}
-
-/* Scalar reference for complex symmetric FIR (no decimation) */
-static void
-fir_complex_scalar_ref(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
-                       int taps_len) {
-    if (taps_len < 3 || (taps_len & 1) == 0 || in_len < 2) {
-        return;
-    }
-
-    const int N = in_len >> 1;
-    const int hist_len = taps_len - 1;
-    const int center = (taps_len - 1) >> 1;
-
-    float lastI = in[(N - 1) << 1];
-    float lastQ = in[((N - 1) << 1) + 1];
-
-    auto get_iq = [&](int src_idx, float& xi, float& xq) {
-        if (src_idx < hist_len) {
-            xi = hist_i[src_idx];
-            xq = hist_q[src_idx];
-        } else {
-            int rel = src_idx - hist_len;
-            if (rel < N) {
-                xi = in[rel << 1];
-                xq = in[(rel << 1) + 1];
-            } else {
-                xi = lastI;
-                xq = lastQ;
-            }
-        }
-    };
-
-    for (int n = 0; n < N; n++) {
-        int center_idx = hist_len + n;
-        float accI = 0.0f;
-        float accQ = 0.0f;
-
-        float ci, cq;
-        get_iq(center_idx, ci, cq);
-        accI += taps[center] * ci;
-        accQ += taps[center] * cq;
-
-        for (int k = 0; k < center; k++) {
-            float ce = taps[k];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int d = center - k;
-            float xmI, xmQ, xpI, xpQ;
-            get_iq(center_idx - d, xmI, xmQ);
-            get_iq(center_idx + d, xpI, xpQ);
-            accI += ce * (xmI + xpI);
-            accQ += ce * (xmQ + xpQ);
-        }
-
-        out[n << 1] = accI;
-        out[(n << 1) + 1] = accQ;
-    }
-
-    /* Update history */
-    if (N >= hist_len) {
-        for (int k = 0; k < hist_len; k++) {
-            int rel = N - hist_len + k;
-            hist_i[k] = in[rel << 1];
-            hist_q[k] = in[(rel << 1) + 1];
-        }
-    } else {
-        int need = hist_len - N;
-        if (need > 0) {
-            DSD_MEMMOVE(hist_i, hist_i + (hist_len - need), (size_t)need * sizeof(float));
-            DSD_MEMMOVE(hist_q, hist_q + (hist_len - need), (size_t)need * sizeof(float));
-        }
-        for (int k = 0; k < N; k++) {
-            hist_i[need + k] = in[k << 1];
-            hist_q[need + k] = in[(k << 1) + 1];
-        }
-    }
-}
-
-/* Scalar reference for complex half-band decimator */
-static int
-hb_decim2_complex_scalar_ref(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
-                             int taps_len) {
-    if (taps_len < 3 || (taps_len & 1) == 0) {
-        return 0;
-    }
-
-    int ch_len = in_len >> 1;
-    if (ch_len <= 0) {
-        return 0;
-    }
-    int out_ch_len = ch_len >> 1;
-
-    const int center = (taps_len - 1) >> 1;
-    const int left_len = taps_len - 1;
-    float lastI = in[in_len - 2];
-    float lastQ = in[in_len - 1];
-
-    auto get_iq = [&](int src_idx, float& xi, float& xq) {
-        if (src_idx < left_len) {
-            xi = hist_i[src_idx];
-            xq = hist_q[src_idx];
-        } else {
-            int rel = src_idx - left_len;
-            if (rel < ch_len) {
-                xi = in[rel << 1];
-                xq = in[(rel << 1) + 1];
-            } else {
-                xi = lastI;
-                xq = lastQ;
-            }
-        }
-    };
-
-    for (int n = 0; n < out_ch_len; n++) {
-        int center_idx = left_len + (n << 1);
-        float accI = 0.0f;
-        float accQ = 0.0f;
-
-        float ci, cq;
-        get_iq(center_idx, ci, cq);
-        accI += taps[center] * ci;
-        accQ += taps[center] * cq;
-
-        for (int e = 0; e < center; e += 2) {
-            float ce = taps[e];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int d = center - e;
-            float xmI, xmQ, xpI, xpQ;
-            get_iq(center_idx - d, xmI, xmQ);
-            get_iq(center_idx + d, xpI, xpQ);
-            accI += ce * (xmI + xpI);
-            accQ += ce * (xmQ + xpQ);
-        }
-
-        out[n << 1] = accI;
-        out[(n << 1) + 1] = accQ;
-    }
-
-    /* Update history */
-    if (ch_len >= left_len) {
-        int start = ch_len - left_len;
-        for (int k = 0; k < left_len; k++) {
-            int rel = start + k;
-            hist_i[k] = in[rel << 1];
-            hist_q[k] = in[(rel << 1) + 1];
-        }
-    } else {
-        int keep = left_len - ch_len;
-        DSD_MEMMOVE(hist_i, hist_i + ch_len, (size_t)keep * sizeof(float));
-        DSD_MEMMOVE(hist_q, hist_q + ch_len, (size_t)keep * sizeof(float));
-        for (int k = 0; k < ch_len; k++) {
-            hist_i[keep + k] = in[k << 1];
-            hist_q[keep + k] = in[(k << 1) + 1];
-        }
-    }
-
-    return out_ch_len << 1;
-}
-
-/* Scalar reference for real half-band decimator */
-static int
-hb_decim2_real_scalar_ref(const float* in, int in_len, float* out, float* hist, const float* taps, int taps_len) {
-    if (taps_len < 3 || (taps_len & 1) == 0) {
-        return 0;
-    }
-    if (in_len <= 0) {
-        return 0;
-    }
-
-    const int hist_len = taps_len - 1;
-    const int center = (taps_len - 1) >> 1;
-    int out_len = in_len >> 1;
-
-    float last = in[in_len - 1];
-
-    auto get_sample = [&](int src_idx) -> float {
-        if (src_idx < hist_len) {
-            return hist[src_idx];
-        } else {
-            int rel = src_idx - hist_len;
-            return (rel < in_len) ? in[rel] : last;
-        }
-    };
-
-    for (int n = 0; n < out_len; n++) {
-        int center_idx = hist_len + (n << 1);
-        float acc = 0.0f;
-
-        acc += taps[center] * get_sample(center_idx);
-
-        for (int e = 0; e < center; e += 2) {
-            float ce = taps[e];
-            if (ce == 0.0f) {
-                continue;
-            }
-            int d = center - e;
-            acc += ce * (get_sample(center_idx - d) + get_sample(center_idx + d));
-        }
-
-        out[n] = acc;
-    }
-
-    /* Update history */
-    if (in_len >= hist_len) {
-        DSD_MEMCPY(hist, in + (in_len - hist_len), (size_t)hist_len * sizeof(float));
-    } else {
-        int need = hist_len - in_len;
-        if (need > 0) {
-            DSD_MEMMOVE(hist, hist + in_len, (size_t)need * sizeof(float));
-        }
-        DSD_MEMCPY(hist + need, in, (size_t)in_len * sizeof(float));
-    }
-
-    return out_len;
 }
 
 /* Generate pseudo-random float in [-1, 1] */
@@ -334,7 +117,7 @@ test_direct_complex_fir_backend(const char* name, complex_fir_backend_fn fn) {
     }
 
     fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, taps_len);
-    fir_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
+    simd_fir_complex_apply_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
 
     if (!arrays_close(out_simd, out_ref, N * 2, kTolerance)) {
         DSD_FPRINTF(stderr, "  FAIL: Output mismatch\n");
@@ -379,7 +162,7 @@ test_direct_complex_hb_backend(const char* name, complex_hb_backend_fn fn) {
     }
 
     int len_simd = fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
-    int len_ref = hb_decim2_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+    int len_ref = simd_hb_decim2_complex_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
 
     if (len_simd != len_ref) {
         DSD_FPRINTF(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
@@ -424,7 +207,7 @@ test_direct_real_hb_backend(const char* name, real_hb_backend_fn fn) {
     }
 
     int len_simd = fn(in, N, out_simd, hist_simd, hb_q15_taps, taps_len);
-    int len_ref = hb_decim2_real_scalar_ref(in, N, out_ref, hist_ref, hb_q15_taps, taps_len);
+    int len_ref = simd_hb_decim2_real_scalar(in, N, out_ref, hist_ref, hb_q15_taps, taps_len);
 
     if (len_simd != len_ref) {
         DSD_FPRINTF(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
@@ -475,7 +258,7 @@ test_direct_backend_tail_mix(const char* name, complex_fir_backend_fn fir_fn, co
         }
 
         fir_fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, taps_len);
-        fir_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
+        simd_fir_complex_apply_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
         if (!arrays_close(out_simd, out_ref, N * 2, kTolerance)
             || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
             || !arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
@@ -506,7 +289,7 @@ test_direct_backend_tail_mix(const char* name, complex_fir_backend_fn fir_fn, co
         }
 
         int len_simd = hb_complex_fn(in, N * 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
-        int len_ref = hb_decim2_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+        int len_ref = simd_hb_decim2_complex_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
         if (len_simd != len_ref || !arrays_close(out_simd, out_ref, len_simd, kTolerance)
             || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
             || !arrays_close(hist_q_simd, hist_q_ref, hist_len, kTolerance)) {
@@ -533,7 +316,7 @@ test_direct_backend_tail_mix(const char* name, complex_fir_backend_fn fir_fn, co
         }
 
         int len_simd = hb_real_fn(in, N, out_simd, hist_simd, hb_q15_taps, taps_len);
-        int len_ref = hb_decim2_real_scalar_ref(in, N, out_ref, hist_ref, hb_q15_taps, taps_len);
+        int len_ref = simd_hb_decim2_real_scalar(in, N, out_ref, hist_ref, hb_q15_taps, taps_len);
         if (len_simd != len_ref || !arrays_close(out_simd, out_ref, len_simd, kTolerance)
             || !arrays_close(hist_simd, hist_ref, hist_len, kTolerance)) {
             DSD_FPRINTF(stderr, "  FAIL: real HB vector/tail mix mismatch\n");
@@ -623,7 +406,7 @@ test_complex_fir_63tap() {
 
     /* Run both implementations */
     simd_fir_complex_apply(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, taps_len);
-    fir_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
+    simd_fir_complex_apply_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, taps_len);
 
     if (!arrays_close(out_simd, out_ref, N * 2, kTolerance)) {
         DSD_FPRINTF(stderr, "  FAIL: Output mismatch\n");
@@ -672,7 +455,7 @@ test_complex_hb_decim(const float* taps, const char* name) {
     }
 
     int len_simd = simd_hb_decim2_complex(in, N * 2, out_simd, hist_i_simd, hist_q_simd, taps, TapsLen);
-    int len_ref = hb_decim2_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, TapsLen);
+    int len_ref = simd_hb_decim2_complex_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, taps, TapsLen);
 
     if (len_simd != len_ref) {
         DSD_FPRINTF(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
@@ -722,7 +505,7 @@ test_real_hb_decim(const float* taps, const char* name) {
     }
 
     int len_simd = simd_hb_decim2_real(in, N, out_simd, hist_simd, taps, TapsLen);
-    int len_ref = hb_decim2_real_scalar_ref(in, N, out_ref, hist_ref, taps, TapsLen);
+    int len_ref = simd_hb_decim2_real_scalar(in, N, out_ref, hist_ref, taps, TapsLen);
 
     if (len_simd != len_ref) {
         DSD_FPRINTF(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
@@ -775,7 +558,7 @@ test_history_continuity() {
         int len_simd =
             simd_hb_decim2_complex(in, block_size * 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
         int len_ref =
-            hb_decim2_complex_scalar_ref(in, block_size * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+            simd_hb_decim2_complex_scalar(in, block_size * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
 
         if (len_simd != len_ref) {
             DSD_FPRINTF(stderr, "  FAIL: Block %d length mismatch\n", blk);
@@ -830,7 +613,7 @@ test_small_blocks() {
         }
 
         int len_simd = simd_hb_decim2_complex(in, N * 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
-        int len_ref = hb_decim2_complex_scalar_ref(in, N * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+        int len_ref = simd_hb_decim2_complex_scalar(in, N * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
 
         if (len_simd != len_ref) {
             DSD_FPRINTF(stderr, "  FAIL: Size %d length mismatch\n", N);
@@ -874,7 +657,7 @@ test_complex_short_block_history() {
     }
 
     int len_simd = simd_hb_decim2_complex(in, ch_len * 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
-    int len_ref = hb_decim2_complex_scalar_ref(in, ch_len * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+    int len_ref = simd_hb_decim2_complex_scalar(in, ch_len * 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
 
     if (len_simd != len_ref) {
         DSD_FPRINTF(stderr, "  FAIL: Output length mismatch (%d vs %d)\n", len_simd, len_ref);
@@ -921,7 +704,7 @@ test_zero_output_history_updates() {
 
         int len_simd = simd_hb_decim2_complex(in_complex, 2, out_simd, hist_i_simd, hist_q_simd, hb_q15_taps, taps_len);
         int len_ref =
-            hb_decim2_complex_scalar_ref(in_complex, 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
+            simd_hb_decim2_complex_scalar(in_complex, 2, out_ref, hist_i_ref, hist_q_ref, hb_q15_taps, taps_len);
 
         if (len_simd != len_ref) {
             DSD_FPRINTF(stderr, "  FAIL: Complex zero-output length mismatch (%d vs %d)\n", len_simd, len_ref);
@@ -949,7 +732,7 @@ test_zero_output_history_updates() {
         }
 
         int len_simd = simd_hb_decim2_real(in_real, 1, out_simd, hist_simd, hb_q15_taps, taps_len);
-        int len_ref = hb_decim2_real_scalar_ref(in_real, 1, out_ref, hist_ref, hb_q15_taps, taps_len);
+        int len_ref = simd_hb_decim2_real_scalar(in_real, 1, out_ref, hist_ref, hb_q15_taps, taps_len);
 
         if (len_simd != len_ref) {
             DSD_FPRINTF(stderr, "  FAIL: Real zero-output length mismatch (%d vs %d)\n", len_simd, len_ref);
@@ -989,7 +772,7 @@ test_public_scalar_fallback_edges() {
         }
 
         simd_fir_complex_apply(in, 8, out_simd, hist_i_simd, hist_q_simd, sparse_taps, taps_len);
-        fir_complex_scalar_ref(in, 8, out_ref, hist_i_ref, hist_q_ref, sparse_taps, taps_len);
+        simd_fir_complex_apply_scalar(in, 8, out_ref, hist_i_ref, hist_q_ref, sparse_taps, taps_len);
 
         if (!arrays_close(out_simd, out_ref, 8, kTolerance)
             || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
@@ -1015,7 +798,7 @@ test_public_scalar_fallback_edges() {
         }
 
         int len_simd = simd_hb_decim2_complex(in, 8, out_simd, hist_i_simd, hist_q_simd, sparse_taps, taps_len);
-        int len_ref = hb_decim2_complex_scalar_ref(in, 8, out_ref, hist_i_ref, hist_q_ref, sparse_taps, taps_len);
+        int len_ref = simd_hb_decim2_complex_scalar(in, 8, out_ref, hist_i_ref, hist_q_ref, sparse_taps, taps_len);
 
         if (len_simd != len_ref || !arrays_close(out_simd, out_ref, len_simd, kTolerance)
             || !arrays_close(hist_i_simd, hist_i_ref, hist_len, kTolerance)
@@ -1038,7 +821,7 @@ test_public_scalar_fallback_edges() {
         }
 
         int len_simd = simd_hb_decim2_real(in, 4, out_simd, hist_simd, sparse_taps, taps_len);
-        int len_ref = hb_decim2_real_scalar_ref(in, 4, out_ref, hist_ref, sparse_taps, taps_len);
+        int len_ref = simd_hb_decim2_real_scalar(in, 4, out_ref, hist_ref, sparse_taps, taps_len);
 
         if (len_simd != len_ref || !arrays_close(out_simd, out_ref, len_simd, kTolerance)
             || !arrays_close(hist_simd, hist_ref, hist_len, kTolerance)) {
@@ -1090,12 +873,10 @@ main(void) {
 
     /* Test complex half-band decimators with different tap lengths */
     failures += test_complex_hb_decim<15>(hb_q15_taps, "15-tap");
-    failures += test_complex_hb_decim<23>(hb23_q15_taps, "23-tap");
     failures += test_complex_hb_decim<31>(hb31_q15_taps, "31-tap");
 
     /* Test real half-band decimators */
     failures += test_real_hb_decim<15>(hb_q15_taps, "15-tap");
-    failures += test_real_hb_decim<23>(hb23_q15_taps, "23-tap");
     failures += test_real_hb_decim<31>(hb31_q15_taps, "31-tap");
 
     /* Test history continuity */

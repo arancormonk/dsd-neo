@@ -19,6 +19,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/bp.h>
@@ -26,7 +27,6 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
-#include <dsd-neo/core/mbe_api.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
@@ -35,18 +35,18 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
-#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/fec/dmr_late_entry.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/platform/posix_compat.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <limits.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -293,14 +293,14 @@ PrintAMBEData(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
 
     if (opts->payload == 1) {
         //preceeding line break, if required
-        if (opts->dmr_stereo == 0 && opts->dmr_mono == 0) {
+        if (opts->dmr_stereo == 0) {
             DSD_FPRINTF(stderr, "\n");
         }
 
         DSD_FPRINTF(stderr, " AMBE %014llX err = [%X] [%X] ", ambe, errs, errs2);
 
         //trailing line break, if required
-        if (opts->dmr_stereo == 1 || opts->dmr_mono == 1) {
+        if (opts->dmr_stereo == 1) {
             DSD_FPRINTF(stderr, "\n");
         }
     }
@@ -495,9 +495,8 @@ openMbeInFile(dsd_opts* opts, dsd_state* state) {
     } else {
         state->mbe_file_type = -1;
         LOG_ERROR("Error - unrecognized file type\n");
-
-        //try SDRTrunk JSON format as last resort
-        state->mbe_file_type = 3;
+        fclose(opts->mbe_in_f);
+        opts->mbe_in_f = NULL;
     }
 }
 
@@ -922,45 +921,6 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-void
-pack_bit_array_into_byte_array(const uint8_t* input, uint8_t* output, int len) {
-    int i;
-    for (i = 0; i < len; i++) {
-        output[i] = (uint8_t)convert_bits_into_output(&input[(size_t)i * 8u], 8);
-    }
-}
-
-//take len amount of bits and pack into x amount of bytes (asymmetrical)
-void
-pack_bit_array_into_byte_array_asym(const uint8_t* input, uint8_t* output, int len) {
-    int i = 0;
-    int k = len % 8;
-    for (i = 0; i < len; i++) {
-        output[i / 8] <<= 1;
-        output[i / 8] |= input[i];
-    }
-    // If any leftover bits that don't flush the last byte fully packed, shift them over left
-    if (k) {
-        output[i / 8] <<= 8 - k;
-    }
-}
-
-//take len amount of bytes and unpack back into a bit array
-void
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    int i = 0, k = 0;
-    for (i = 0; i < len; i++) {
-        output[k++] = (input[i] >> 7) & 1;
-        output[k++] = (input[i] >> 6) & 1;
-        output[k++] = (input[i] >> 5) & 1;
-        output[k++] = (input[i] >> 4) & 1;
-        output[k++] = (input[i] >> 3) & 1;
-        output[k++] = (input[i] >> 2) & 1;
-        output[k++] = (input[i] >> 1) & 1;
-        output[k++] = (input[i] >> 0) & 1;
-    }
-}
-
 //take len amount of bits and pack into x amount of bytes (asymmetrical)
 void
 pack_ambe(const char* input, uint8_t* output, int len) {
@@ -979,17 +939,7 @@ pack_ambe(const char* input, uint8_t* output, int len) {
 //unpack byte array with ambe data into a 49-bit bitwise array
 void
 unpack_ambe(const uint8_t* input, char* ambe) {
-    int i = 0, k = 0;
-    for (i = 0; i < 6; i++) {
-        ambe[k++] = (input[i] >> 7) & 1;
-        ambe[k++] = (input[i] >> 6) & 1;
-        ambe[k++] = (input[i] >> 5) & 1;
-        ambe[k++] = (input[i] >> 4) & 1;
-        ambe[k++] = (input[i] >> 3) & 1;
-        ambe[k++] = (input[i] >> 2) & 1;
-        ambe[k++] = (input[i] >> 1) & 1;
-        ambe[k++] = (input[i] >> 0) & 1;
-    }
+    unpack_byte_array_into_bit_array(input, (uint8_t*)ambe, 6);
     ambe[48] = input[6] >> 7;
 }
 
@@ -1065,37 +1015,17 @@ sdrtrunk_u64_from_be8(const uint8_t* v) {
            | ((unsigned long long)v[6] << 8ULL) | ((unsigned long long)v[7] << 0ULL);
 }
 
-static int
-hex_nibble_to_u8(char c, uint8_t* out) {
-    if (!out) {
-        return 0;
-    }
-    if (c >= '0' && c <= '9') {
-        *out = (uint8_t)(c - '0');
-        return 1;
-    }
-    if (c >= 'a' && c <= 'f') {
-        *out = (uint8_t)(10 + (c - 'a'));
-        return 1;
-    }
-    if (c >= 'A' && c <= 'F') {
-        *out = (uint8_t)(10 + (c - 'A'));
-        return 1;
-    }
-    return 0;
-}
-
 static uint8_t
 hex_pair_to_u8_or_zero(const char* in) {
-    uint8_t hi = 0;
-    uint8_t lo = 0;
     if (!in) {
         return 0;
     }
-    if (!hex_nibble_to_u8(in[0], &hi) || !hex_nibble_to_u8(in[1], &lo)) {
+    const int hi = dsd_hex_nibble_value((unsigned char)in[0]);
+    const int lo = dsd_hex_nibble_value((unsigned char)in[1]);
+    if (hi < 0 || lo < 0) {
         return 0;
     }
-    return (uint8_t)((hi << 4) | lo);
+    return (uint8_t)(((uint8_t)hi << 4U) | (uint8_t)lo);
 }
 
 //convert a user string into a uint8_t array
@@ -1176,7 +1106,7 @@ sdrtrunk_build_rc4_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
     rc4_kiv[3] = (uint8_t)((rc4_key >> 8ULL) & 0xFFULL);
     rc4_kiv[4] = (uint8_t)((rc4_key >> 0ULL) & 0xFFULL);
     DSD_MEMCPY(rc4_kiv + 5, iv64, 8);
-    // codeql[cpp/weak-cryptographic-algorithm] RC4 is required for legacy radio protocol interoperability.
+    // codeql[cpp/weak-cryptographic-algorithm] RC4 is required for active radio protocol interoperability.
     rc4_block_output(rc4_db, rc4_mod, SDRTRUNK_KS_BYTES, rc4_kiv, ks_bytes);
     return 1;
 }
@@ -1197,8 +1127,8 @@ sdrtrunk_build_des_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
     }
 
     unsigned long long int iv_u64 = sdrtrunk_u64_from_be8(iv64);
-    // codeql[cpp/weak-cryptographic-algorithm] DES is required for legacy radio protocol interoperability.
-    des_multi_keystream_output(iv_u64, des_key, ks_bytes, 1, SDRTRUNK_KS_BYTES / 8);
+    // codeql[cpp/weak-cryptographic-algorithm] DES is required for active radio protocol interoperability.
+    des_ofb_keystream_output(iv_u64, des_key, ks_bytes, SDRTRUNK_KS_BYTES / 8);
     *skip_bytes = (protocol == 1) ? 19u : 8u;
     return 1;
 }
@@ -1238,8 +1168,8 @@ sdrtrunk_build_aes_keystream_bytes(const dsd_state* state, uint16_t key_id, uint
     DSD_MEMSET(aes_iv, 0, sizeof(aes_iv));
     DSD_MEMCPY(aes_iv, iv64, 8);
     sdrtrunk_lfsr_64_to_128(aes_iv);
-    const int aes_type = (alg_id == 0x84) ? 2 : 0; // 256/128
-    aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, aes_type, SDRTRUNK_KS_BYTES / 16);
+    const dsd_aes_key_size key_size = (alg_id == 0x84) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+    aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, key_size, SDRTRUNK_KS_BYTES / 16);
     *skip_bytes = (protocol == 1) ? 27u : 16u;
     return 1;
 }
@@ -1295,35 +1225,12 @@ sdrtrunk_build_voice_keystream_bits(const dsd_state* state, uint8_t alg_id, uint
 }
 
 static void
-sdrtrunk_unpack_interleaved_voice_frame(const char* input, size_t input_nibbles, char* frame, size_t frame_stride,
-                                        const int* w_map, const int* x_map, const int* y_map, const int* z_map) {
-    const int* w = w_map;
-    const int* x = x_map;
-    const int* y = y_map;
-    const int* z = z_map;
-
+sdrtrunk_decode_voice_dibits(const char* input, size_t input_nibbles, uint8_t* dibits) {
     for (size_t i = 0; i < input_nibbles; i++) {
-        uint8_t nibble = 0;
-        if (!hex_nibble_to_u8(input[i], &nibble)) {
-            nibble = 0;
-        }
-
-        uint8_t dibit1 = (nibble >> 2) & 0x3;
-        uint8_t dibit2 = (nibble >> 0) & 0x3;
-
-        frame[((size_t)(*w) * frame_stride) + (size_t)(*x)] = (char)(1 & (dibit1 >> 1));
-        frame[((size_t)(*y) * frame_stride) + (size_t)(*z)] = (char)(1 & (dibit1 >> 0));
-        w++;
-        x++;
-        y++;
-        z++;
-
-        frame[((size_t)(*w) * frame_stride) + (size_t)(*x)] = (char)(1 & (dibit2 >> 1));
-        frame[((size_t)(*y) * frame_stride) + (size_t)(*z)] = (char)(1 & (dibit2 >> 0));
-        w++;
-        x++;
-        y++;
-        z++;
+        const int parsed = dsd_hex_nibble_value((unsigned char)input[i]);
+        const uint8_t nibble = (parsed < 0) ? 0U : (uint8_t)parsed;
+        dibits[(i * 2U) + 0U] = (nibble >> 2) & 0x3U;
+        dibits[(i * 2U) + 1U] = nibble & 0x3U;
     }
 }
 
@@ -1333,102 +1240,6 @@ sdrtrunk_apply_keystream(char* frame_bits, size_t frame_bits_len, const uint8_t*
         frame_bits[i] ^= ks[(ks_idx++) % 3000];
     }
     return ks_idx;
-}
-
-static uint8_t
-sdrtrunk_dmr_crc4_inverted(const uint8_t* bits, unsigned int len) {
-    enum {
-        CRC_BITS = 4U,
-    };
-
-    static const uint8_t poly[CRC_BITS + 1U] = {1, 0, 0, 1, 1};
-    uint8_t work[256];
-    if (!bits || len + CRC_BITS > sizeof(work)) {
-        return 0;
-    }
-
-    DSD_MEMSET(work, 0, sizeof(work));
-    DSD_MEMCPY(work, bits, len);
-    for (unsigned int i = 0; i < len; i++) {
-        if (work[i] == 0) {
-            continue;
-        }
-        for (unsigned int j = 0; j <= CRC_BITS; j++) {
-            work[i + j] ^= poly[j];
-        }
-    }
-
-    uint8_t crc = 0;
-    for (unsigned int i = 0; i < CRC_BITS; i++) {
-        crc = (uint8_t)((crc << 1U) | work[len + i]);
-    }
-    return (uint8_t)(crc ^ 0x0FU);
-}
-
-static unsigned long long
-sdrtrunk_dmr_lfsr32(unsigned long long mi) {
-    unsigned long long lfsr = mi;
-    for (uint8_t cnt = 0; cnt < 32; cnt++) {
-        const unsigned long long bit = ((lfsr >> 31U) ^ (lfsr >> 3U) ^ (lfsr >> 1U)) & 0x1U;
-        lfsr = (lfsr << 1U) | bit;
-    }
-    return lfsr & 0xFFFFFFFFULL;
-}
-
-static uint64_t
-sdrtrunk_dmr_pack_le_fragments(const dsd_state* state, uint8_t slot_idx, uint8_t vc_base) {
-    static const uint8_t shifts[9] = {32, 28, 24, 20, 16, 12, 8, 4, 0};
-    uint64_t packed = 0;
-    uint8_t shift_idx = 0;
-
-    for (uint8_t frag_col = 0; frag_col < 3; frag_col++) {
-        for (uint8_t frag_row = 0; frag_row < 3; frag_row++) {
-            packed |= (uint64_t)state->late_entry_mi_fragment[slot_idx][vc_base + frag_row][frag_col]
-                      << shifts[shift_idx++];
-        }
-    }
-
-    return packed;
-}
-
-static int
-sdrtrunk_dmr_decode_le_mi(const dsd_state* state, uint8_t slot_idx, unsigned long long* mi_final, uint8_t* mi_crc_ok) {
-    if (!state || !mi_final || !mi_crc_ok) {
-        return 0;
-    }
-
-    uint64_t mi_test = sdrtrunk_dmr_pack_le_fragments(state, slot_idx, 1);
-    uint64_t go_test = sdrtrunk_dmr_pack_le_fragments(state, slot_idx, 4);
-    uint64_t mi_corrected = 0;
-    uint64_t go_corrected = 0;
-    uint8_t mi_bits[36];
-    DSD_MEMSET(mi_bits, 0, sizeof(mi_bits));
-
-    int golay_all_pass = 1;
-    for (int triplet = 0; triplet < 3; triplet++) {
-        unsigned char mi_go_bits[24];
-        DSD_MEMSET(mi_go_bits, 0, sizeof(mi_go_bits));
-        for (int bit_idx = 0; bit_idx < 12; bit_idx++) {
-            mi_go_bits[bit_idx] = (unsigned char)(((mi_test << (bit_idx + triplet * 12)) & 0x800000000ULL) >> 35U);
-            mi_go_bits[bit_idx + 12] = (unsigned char)(((go_test << (bit_idx + triplet * 12)) & 0x800000000ULL) >> 35U);
-        }
-
-        if (!Golay_24_12_decode(mi_go_bits)) {
-            golay_all_pass = 0;
-        }
-        for (int bit_idx = 0; bit_idx < 12; bit_idx++) {
-            mi_corrected = (mi_corrected << 1U) | mi_go_bits[bit_idx];
-            go_corrected = (go_corrected << 1U) | mi_go_bits[bit_idx + 12];
-            mi_bits[bit_idx + (triplet * 12)] = mi_go_bits[bit_idx];
-        }
-    }
-
-    (void)go_corrected;
-    *mi_final = (mi_corrected >> 4U) & 0xFFFFFFFFULL;
-    const uint8_t mi_crc_ext = (uint8_t)convert_bits_into_output(&mi_bits[32], 4);
-    const uint8_t mi_crc_cmp = sdrtrunk_dmr_crc4_inverted(mi_bits, 32);
-    *mi_crc_ok = (uint8_t)(mi_crc_ext == mi_crc_cmp);
-    return golay_all_pass;
 }
 
 static void
@@ -1443,21 +1254,19 @@ sdrtrunk_dmr_process_late_entry_mi(dsd_state* state) {
     }
 
     if (state->payload_mi != 0) {
-        state->payload_mi = sdrtrunk_dmr_lfsr32(state->payload_mi);
+        state->payload_mi = dmr_mi_advance32((uint32_t)state->payload_mi);
     }
 
-    unsigned long long mi_final = 0;
-    uint8_t mi_crc_ok = 0;
-    const int golay_all_pass = sdrtrunk_dmr_decode_le_mi(state, slot_idx, &mi_final, &mi_crc_ok);
-    if (!golay_all_pass) {
+    dsd_dmr_late_entry_result result = {0};
+    if (!dsd_dmr_late_entry_decode(&state->late_entry_mi_fragment[slot_idx][0][0], &result)) {
         return;
     }
 
-    if (state->payload_mi != mi_final && mi_crc_ok == 1U) {
-        state->payload_mi = mi_final;
+    if (state->payload_mi != result.mi && result.crc_ok) {
+        state->payload_mi = result.mi;
     }
     if (state->payload_algid == 0x21) {
-        state->payload_mi = sdrtrunk_dmr_lfsr32(state->payload_mi);
+        state->payload_mi = dmr_mi_advance32((uint32_t)state->payload_mi);
     }
 }
 
@@ -1504,13 +1313,42 @@ decode_audio_is_allowed(uint8_t is_enc, uint8_t ks_available) {
     return (is_enc == 0 || ks_available == 1) ? 1 : 0;
 }
 
+static void
+store_sdrtrunk_decode_result(dsd_state* state, int ret, const mbe_process_result* result) {
+    if (ret < 0) {
+        state->errs = 0;
+        state->errs2 = 0;
+        return;
+    }
+    state->errs = ((result->flags & MBE_PROCESS_FLAG_C0_VALID) != 0u) ? result->c0_errors : result->total_errors;
+    state->errs2 = result->total_errors;
+}
+
+static void
+store_sdrtrunk_process_result(dsd_state* state, int ret, const mbe_process_result* result) {
+    if (ret < 0) {
+        mbe_synthesizeSilencef(state->audio_out_temp_buf);
+        state->errs = 0;
+        state->errs2 = 0;
+        state->err_str[0] = '\0';
+        return;
+    }
+    store_sdrtrunk_decode_result(state, ret, result);
+    mbe_formatProcessResult(state->err_str, sizeof(state->err_str), result);
+}
+
 static uint16_t
 ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, const uint8_t* ks, uint16_t ks_idx,
                     uint8_t dmra, uint8_t dmra_le, const int* ambe2_counter, uint8_t is_enc, uint8_t ks_available) {
     char ambe_fr[4][24];
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
-    sdrtrunk_unpack_interleaved_voice_frame(ambe_str, 18, &ambe_fr[0][0], 24, dmr_ambe_interleave_w,
-                                            dmr_ambe_interleave_x, dmr_ambe_interleave_y, dmr_ambe_interleave_z);
+    uint8_t dibits[DSD_AMBE_2450_DIBITS];
+    sdrtrunk_decode_voice_dibits(ambe_str, 18U, dibits);
+    for (size_t i = 0U; i < DSD_AMBE_2450_DIBITS; i++) {
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
+        ambe_fr[map->high_row][map->high_col] = (char)((dibits[i] >> 1U) & 1U);
+        ambe_fr[map->low_row][map->low_col] = (char)(dibits[i] & 1U);
+    }
 
     if (dmra_le != 0 && ambe2_counter != NULL) {
         uint8_t c3[24];
@@ -1531,8 +1369,8 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
     char ambe_d[49];
     DSD_MEMSET(ambe_d, 0, sizeof(ambe_d));
     mbe_process_result result;
-    int decode_ret =
-        dsd_mbe_decode_ambe2450_frame(&state->errs, &state->errs2, (const char (*)[24])ambe_fr, ambe_d, &result);
+    int decode_ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, &result);
+    store_sdrtrunk_decode_result(state, decode_ret, &result);
     if (decode_ret >= 0) {
         state->debug_audio_errors += state->errs2;
     }
@@ -1556,9 +1394,9 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
 
     (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, ambe_d, &result);
 
-    (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
-                                         sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
-                                         state->prev_mp_enhanced, &result);
+    int process_ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp,
+                                               state->prev_mp, state->prev_mp_enhanced);
+    store_sdrtrunk_process_result(state, process_ret, &result);
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
@@ -1579,14 +1417,18 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
                    uint8_t is_enc, uint8_t ks_available) {
     char imbe_fr[8][23];
     DSD_MEMSET(imbe_fr, 0, sizeof(imbe_fr));
-    sdrtrunk_unpack_interleaved_voice_frame(imbe_str, 36, &imbe_fr[0][0], 23, p25p1_imbe_interleave_w,
-                                            p25p1_imbe_interleave_x, p25p1_imbe_interleave_y, p25p1_imbe_interleave_z);
+    uint8_t dibits[72];
+    sdrtrunk_decode_voice_dibits(imbe_str, 36U, dibits);
+    for (size_t i = 0U; i < 72U; i++) {
+        imbe_fr[p25p1_imbe_interleave_w[i]][p25p1_imbe_interleave_x[i]] = (char)((dibits[i] >> 1U) & 1U);
+        imbe_fr[p25p1_imbe_interleave_y[i]][p25p1_imbe_interleave_z[i]] = (char)(dibits[i] & 1U);
+    }
 
     char imbe_d[88];
     DSD_MEMSET(imbe_d, 0, sizeof(imbe_d));
     mbe_process_result result;
-    int decode_ret =
-        dsd_mbe_decode_imbe7200_frame(&state->errs, &state->errs2, (const char (*)[23])imbe_fr, imbe_d, &result);
+    int decode_ret = mbe_decodeImbe7200x4400Frame((const char (*)[23])imbe_fr, imbe_d, &result);
+    store_sdrtrunk_decode_result(state, decode_ret, &result);
     if (decode_ret >= 0) {
         state->debug_audio_errors += state->errs2;
     }
@@ -1605,9 +1447,9 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
 
     (void)dsd_mbe_strip_imbe_context_if_changed(decoded_imbe_d, imbe_d, &result);
 
-    (void)dsd_mbe_process_imbe4400_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
-                                         sizeof(state->err_str), imbe_d, state->cur_mp, state->prev_mp,
-                                         state->prev_mp_enhanced, &result);
+    int process_ret = mbe_processImbe4400Dataf(state->audio_out_temp_buf, &result, imbe_d, state->cur_mp,
+                                               state->prev_mp, state->prev_mp_enhanced);
+    store_sdrtrunk_process_result(state, process_ret, &result);
 
     if (dsd_frame_detail_enabled(opts)) {
         PrintIMBEData(opts, state, imbe_d);

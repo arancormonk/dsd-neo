@@ -20,6 +20,24 @@ p25_crypto_slot_valid(int slot) {
     return slot == 0 || slot == 1;
 }
 
+const char*
+p25_algid_name(uint8_t algid) {
+    switch (algid) {
+        case 0x80: return "UNENCRYPTED";
+        case 0x81: return "DES-OFB";
+        case 0x82: return "2-KEY 3DES";
+        case 0x83: return "3-KEY 3DES";
+        case 0x84: return "AES-256";
+        case 0x85: return "AES-128";
+        case 0x88: return "AES-CBC";
+        case 0x89: return "AES-128-OFB";
+        case 0x9F: return "DES-XL";
+        case 0xAA: return "ADP/RC4";
+        case 0xAF: return "AES-256-GCM";
+        default: return NULL;
+    }
+}
+
 static int
 p25_crypto_slot_algid(const dsd_state* state, int slot) {
     return slot == 0 ? state->payload_algid : state->payload_algidR;
@@ -93,22 +111,6 @@ p25_crypto_algorithm_supported(dsd_p25_crypto_phase phase, int algid) {
 }
 
 static int
-p25_crypto_imported_aes_segments_complete(const dsd_state* state, int slot, unsigned int required_segments) {
-    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
-    const int key_id = p25_crypto_slot_keyid(state, slot);
-    const size_t rkey_count = sizeof(state->rkey_array) / sizeof(state->rkey_array[0]);
-
-    for (unsigned int i = 0; i < required_segments; i++) {
-        const int index = key_id + offsets[i];
-        if (index < 0 || (size_t)index >= rkey_count
-            || (state->rkey_array_loaded[index] == 0U && state->rkey_array[index] == 0ULL)) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int
 p25_crypto_has_complete_key(const dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid) {
     if (!p25_crypto_algorithm_supported(phase, algid)) {
         return 0;
@@ -126,7 +128,8 @@ p25_crypto_has_complete_key(const dsd_state* state, dsd_p25_crypto_phase phase, 
     if (state->aes_key_segments[slot] < required_segments) {
         return 0;
     }
-    return state->keyloader != 1 || p25_crypto_imported_aes_segments_complete(state, slot, required_segments);
+    return state->keyloader != 1
+           || keyring_aes_segments_complete(state, p25_crypto_slot_keyid(state, slot), required_segments);
 }
 
 typedef struct {

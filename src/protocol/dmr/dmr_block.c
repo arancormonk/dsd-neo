@@ -33,8 +33,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 
-#define DMR_PDU_DECRYPTION //disable to skip attempting to decrypt DMR PDUs
-
 // Bounded string append helper (implemented later in file)
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
@@ -622,20 +620,6 @@ typedef struct {
     char udt_string[500];
 } dmr_udt_ctx;
 
-static void
-dmr_unpack_bytes_to_bits(const uint8_t* src, int src_len, uint8_t* dst) {
-    for (int i = 0, j = 0; i < src_len; i++, j += 8) {
-        dst[j + 0] = (src[i] >> 7) & 0x01;
-        dst[j + 1] = (src[i] >> 6) & 0x01;
-        dst[j + 2] = (src[i] >> 5) & 0x01;
-        dst[j + 3] = (src[i] >> 4) & 0x01;
-        dst[j + 4] = (src[i] >> 3) & 0x01;
-        dst[j + 5] = (src[i] >> 2) & 0x01;
-        dst[j + 6] = (src[i] >> 1) & 0x01;
-        dst[j + 7] = (src[i] >> 0) & 0x01;
-    }
-}
-
 static int DSD_ATTR_USED
 dmr_udt_payload_bits(dsd_state* state, uint8_t slot, uint8_t udt_padnib) {
     int app_blocks = state->data_block_counter[slot];
@@ -677,7 +661,7 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     ctx->state = state;
     ctx->block_bytes = block_bytes;
     ctx->slot = state->currentslot;
-    dmr_unpack_bytes_to_bits(block_bytes, 60, ctx->cs_bits);
+    unpack_byte_array_into_bit_array(block_bytes, ctx->cs_bits, 60);
     udt_ig = ctx->cs_bits[0];
     udt_a = ctx->cs_bits[1];
     udt_res = (uint8_t)convert_bits_into_output(&ctx->cs_bits[2], 2);
@@ -991,21 +975,12 @@ dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, ui
 static void DSD_ATTR_USED
 dmr_block_type1_decrypt_pdu(const dsd_opts* opts, dsd_state* state, uint8_t slot, int blocks, uint8_t block_len,
                             uint8_t* decrypted_pdu) {
-#ifdef DMR_PDU_DECRYPTION
     dmr_block_crypto_ctx ctx;
 
     dmr_block_crypto_load_ctx(state, slot, blocks, block_len, &ctx);
     dmr_block_crypto_print_info(&ctx, opts ? opts->show_keys : 0);
 
     *decrypted_pdu = dmr_block_crypto_decrypt_payload(state, slot, &ctx, opts ? opts->show_keys : 0);
-#else
-    UNUSED(opts);
-    UNUSED(state);
-    UNUSED(slot);
-    UNUSED(blocks);
-    UNUSED(block_len);
-    UNUSED(decrypted_pdu);
-#endif
 }
 
 //assemble the blocks as they come in, shuffle them into the unified dmr_pdu_sf
@@ -1132,7 +1107,7 @@ static void
 dmr_block_type1_update_crc(dmr_block_assembler_ctx* ctx, uint16_t ctr, int offset) {
     uint8_t slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
 
-    dmr_unpack_bytes_to_bits(ctx->state->dmr_pdu_sf[slot_idx], ctr, ctx->dmr_pdu_sf_bits);
+    unpack_byte_array_into_bit_array(ctx->state->dmr_pdu_sf[slot_idx], ctx->dmr_pdu_sf_bits, ctr);
     ctx->crc_extracted = dmr_block_type1_extract_crc32(ctx->state, slot_idx, ctr);
     dmr_block_type1_pack_crc_bits(ctx->state, ctx->slot, ctx->block_len, ctr, offset, ctx->dmr_pdu_sf_bits);
     ctx->crc_computed = (uint32_t)ComputeCrc32Bit(ctx->dmr_pdu_sf_bits, (ctr * 8) - 32);
@@ -1389,13 +1364,13 @@ dmr_block_type2_set_lb_pf(dmr_block_assembler_ctx* ctx) {
         }
 
         DSD_MEMSET(ctx->dmr_pdu_sf_bits, 0, sizeof(ctx->dmr_pdu_sf_bits));
-        dmr_unpack_bytes_to_bits(ctx->state->dmr_pdu_sf[ctx->slot], msg_bytes, ctx->dmr_pdu_sf_bits);
+        unpack_byte_array_into_bit_array(ctx->state->dmr_pdu_sf[ctx->slot], ctx->dmr_pdu_sf_bits, msg_bytes);
         ctx->crc_extracted = dmr_block_extract_crc16(ctx->dmr_pdu_sf_bits, 96 * (1 + ctx->blockcounter));
         DSD_MEMSET(mbc_block_bits, 0, sizeof(mbc_block_bits));
         for (int i = 0; i < mbits; i++) {
             mbc_block_bits[i] = ctx->dmr_pdu_sf_bits[i + 96];
         }
-        ctx->crc_computed = ComputeCrcCCITT16d(mbc_block_bits, (uint16_t)(mbits - 16));
+        ctx->crc_computed = dsd_crc_ccitt16_bits(mbc_block_bits, (size_t)(mbits - 16));
         if (ctx->crc_computed == ctx->crc_extracted) {
             ctx->lb = 1;
             ctx->blocks = ctx->blockcounter;
@@ -1429,7 +1404,7 @@ dmr_block_type2_unpack_bits(dmr_block_assembler_ctx* ctx) {
     }
 
     DSD_MEMSET(ctx->dmr_pdu_sf_bits, 0, sizeof(ctx->dmr_pdu_sf_bits));
-    dmr_unpack_bytes_to_bits(ctx->state->dmr_pdu_sf[ctx->slot], total_bytes, ctx->dmr_pdu_sf_bits);
+    unpack_byte_array_into_bit_array(ctx->state->dmr_pdu_sf[ctx->slot], ctx->dmr_pdu_sf_bits, total_bytes);
     if (ctx->is_udt) {
         ctx->pf = ctx->dmr_pdu_sf_bits[73];
     }
@@ -1454,7 +1429,7 @@ dmr_block_type2_update_crc(dmr_block_assembler_ctx* ctx) {
         }
     }
 
-    ctx->crc_computed = ComputeCrcCCITT16d(mbc_block_bits, ((ctx->blocks + 0) * 96) - 16);
+    ctx->crc_computed = dsd_crc_ccitt16_bits(mbc_block_bits, (size_t)((ctx->blocks * 96) - 16));
     if (ctx->crc_computed == ctx->crc_extracted) {
         ctx->mbc_crc_good[1] = 1;
     }

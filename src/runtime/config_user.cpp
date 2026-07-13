@@ -12,6 +12,7 @@
  */
 
 #include <cmath>
+#include <ctype.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
@@ -41,6 +42,98 @@
 #endif
 
 // Internal helpers ------------------------------------------------------------
+
+void
+user_config_strip_inline_comment(char* line) {
+    if (!line) {
+        return;
+    }
+    int in_quote = 0;
+    for (char* p = line; *p; ++p) {
+        if (*p == '"') {
+            in_quote = !in_quote;
+            continue;
+        }
+        if (!in_quote && (*p == '#' || *p == ';')) {
+            *p = '\0';
+            break;
+        }
+    }
+}
+
+int
+user_config_parse_bool_value(const char* val, int* out_value) {
+    if (!val || !*val || !out_value) {
+        return -1;
+    }
+    if (dsd_strcasecmp(val, "1") == 0 || dsd_strcasecmp(val, "true") == 0 || dsd_strcasecmp(val, "yes") == 0
+        || dsd_strcasecmp(val, "on") == 0) {
+        *out_value = 1;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "0") == 0 || dsd_strcasecmp(val, "false") == 0 || dsd_strcasecmp(val, "no") == 0
+        || dsd_strcasecmp(val, "off") == 0) {
+        *out_value = 0;
+        return 0;
+    }
+    return -1;
+}
+
+int
+user_config_parse_int_value(const char* val, int* out_value) {
+    if (!val || !*val || !out_value) {
+        return -1;
+    }
+    errno = 0;
+    char* end = NULL;
+    long parsed = strtol(val, &end, 10);
+    if (errno == ERANGE || end == val || (end && *end != '\0') || parsed < INT_MIN || parsed > INT_MAX) {
+        return -1;
+    }
+    *out_value = (int)parsed;
+    return 0;
+}
+
+char*
+user_config_trim_ascii_whitespace(char* text) {
+    if (!text) {
+        return text;
+    }
+    const char* first = text;
+    while (*first && isspace((unsigned char)*first)) {
+        first++;
+    }
+    if (first != text) {
+        DSD_MEMMOVE(text, first, strlen(first) + 1U);
+    }
+    size_t text_len = strlen(text);
+    while (text_len > 0U && isspace((unsigned char)text[text_len - 1U])) {
+        text[--text_len] = '\0';
+    }
+    return text;
+}
+
+void
+user_config_lowercase_ascii(char* text) {
+    if (!text) {
+        return;
+    }
+    for (char* p = text; *p; ++p) {
+        *p = (char)tolower((unsigned char)*p);
+    }
+}
+
+void
+user_config_strip_wrapping_quotes(char* val) {
+    if (!val) {
+        return;
+    }
+    size_t val_len = strlen(val);
+    if (val_len >= 2U && val[0] == '"' && val[val_len - 1U] == '"') {
+        DSD_MEMMOVE(val, val + 1, val_len - 2U);
+        val[val_len - 2U] = '\0';
+    }
+}
 
 // Local helper to convert linear power to dB (avoids dependency on dsd_misc.c)
 static double
@@ -84,7 +177,6 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
         return;
     }
     DSD_MEMSET(cfg, 0, sizeof(*cfg));
-    cfg->version = 1;
     // Set trunking tune defaults to match main.c init defaults
     cfg->trunk_tune_group_calls = 1;
     cfg->trunk_tune_private_calls = 1;
@@ -609,7 +701,6 @@ static const char*
 frontend_kind_to_ini_name(dsd_frontend_kind frontend) {
     switch (frontend) {
         case DSD_FRONTEND_TERMINAL: return "terminal";
-        case DSD_FRONTEND_NATIVE: return "native";
         case DSD_FRONTEND_NONE:
         default: return "none";
     }
@@ -894,7 +985,6 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
         return;
     }
 
-    DSD_FPRINTF(stream, "version = %d\n\n", cfg->version > 0 ? cfg->version : 1);
     if (cfg->has_input) {
         render_input_section(stream, cfg);
     }
@@ -1121,7 +1211,6 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
         return;
     }
     if (cfg->trunk_enabled) {
-        opts->p25_trunk = 1;
         opts->trunk_enable = 1;
     }
     if (cfg->trunk_chan_csv[0]) {
@@ -1422,7 +1511,7 @@ snapshot_demod_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 static void
 snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_trunking = 1;
-    cfg->trunk_enabled = (opts->p25_trunk || opts->trunk_enable) ? 1 : 0;
+    cfg->trunk_enabled = (opts->trunk_enable) ? 1 : 0;
     DSD_SNPRINTF(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, "%s", opts->chan_in_file);
     cfg->trunk_chan_csv[sizeof cfg->trunk_chan_csv - 1] = '\0';
     DSD_SNPRINTF(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s", opts->group_in_file);
@@ -1530,7 +1619,6 @@ render_template_intro(FILE* stream) {
     DSD_FPRINTF(stream, "# User-config precedence: defaults < config file < CLI arguments\n");
     DSD_FPRINTF(stream, "# Selected DSD_NEO_* environment variables are separate runtime overrides.\n");
     DSD_FPRINTF(stream, "\n");
-    DSD_FPRINTF(stream, "version = 1\n\n");
 }
 
 static void

@@ -24,7 +24,6 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -37,53 +36,11 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
-// --- IO control stubs (rigctl/RTL) ---
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
-
+// Canonical trunk-tuning hooks used by the test.
 static long g_last_tuned_vc = 0;
 static int g_tune_to_freq_calls = 0;
 static int g_return_to_cc_calls = 0;
 static dsd_trunk_tune_result g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    if (opts) {
-        opts->p25_is_tuned = 0;
-        opts->trunk_is_tuned = 0;
-    }
-    if (state) {
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
-    }
-}
 
 static dsd_trunk_tune_result
 tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
@@ -92,7 +49,6 @@ tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
     g_tune_to_freq_calls++;
     g_last_tuned_vc = freq;
     if (opts) {
-        opts->p25_is_tuned = 1;
         opts->trunk_is_tuned = 1;
     }
     if (state) {
@@ -109,7 +65,13 @@ return_to_cc_result(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     if (!dsd_trunk_tune_result_is_ok(g_return_to_cc_result)) {
         return g_return_to_cc_result;
     }
-    return_to_cc(opts, state);
+    if (opts) {
+        opts->trunk_is_tuned = 0;
+    }
+    if (state) {
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    }
     return g_return_to_cc_result;
 }
 
@@ -207,7 +169,7 @@ main(void) {
     install_tuning_hooks();
 
     // Enable trunking and seed a CC
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_group_calls = 1;
     opts.trunk_hangtime = 0.2f;
     opts.p25_grant_voice_to_s = 0.5; // apply backoff when dt_since_tune >= 0.5s
@@ -237,25 +199,26 @@ main(void) {
     // 1) Grant on slot 1 -> tune
     p25_sm_event_t ev_slot1 = p25_sm_ev_group_grant(ch_slot1, 0, 1001, 2002, 0);
     p25_sm_event(&ctx, &opts, &st, &ev_slot1);
-    rc |= expect_true("initial tune", st.p25_sm_tune_count == 1 && opts.p25_is_tuned == 1 && g_tune_to_freq_calls == 1);
+    rc |=
+        expect_true("initial tune", st.p25_sm_tune_count == 1 && opts.trunk_is_tuned == 1 && g_tune_to_freq_calls == 1);
 
     // 2) Let the grant timeout without any voice/VC sync; this arms backoff for slot 1.
     age_pending_grants(&ctx, 1.0);
     ctx.t_voice_m = 0.0;
     p25_sm_tick_ctx(&ctx, &opts, &st);
-    rc |= expect_true("returned", opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && ctx.state == P25_SM_ON_CC);
+    rc |= expect_true("returned", opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 1 && ctx.state == P25_SM_ON_CC);
     rc |= expect_true("backoff armed", st.p25_retune_block_freq == g_last_tuned_vc && st.p25_retune_block_slot == 1
                                            && st.p25_retune_block_until > time(NULL));
     mark_cc_reacquired(&st);
 
     // 3) Same-slot repeat grant on the same RF should be blocked during backoff.
     p25_sm_event(&ctx, &opts, &st, &ev_slot1);
-    rc |= expect_true("same-slot blocked", g_tune_to_freq_calls == 1 && opts.p25_is_tuned == 0);
+    rc |= expect_true("same-slot blocked", g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0);
 
     // 4) Opposite-slot grant on the same RF should be allowed immediately.
     p25_sm_event_t ev_slot0 = p25_sm_ev_group_grant(ch_slot0, 0, 1001, 2002, 0);
     p25_sm_event(&ctx, &opts, &st, &ev_slot0);
-    rc |= expect_true("other-slot allowed", g_tune_to_freq_calls == 2 && opts.p25_is_tuned == 1);
+    rc |= expect_true("other-slot allowed", g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1);
 
     // 5) When the second slot also fails before voice, both recent failures
     // should remain blocked. This catches single-entry backoff regressions.
@@ -263,16 +226,16 @@ main(void) {
     ctx.t_voice_m = 0.0;
     p25_sm_tick_ctx(&ctx, &opts, &st);
     rc |= expect_true("second returned",
-                      opts.p25_is_tuned == 0 && g_return_to_cc_calls == 2 && ctx.state == P25_SM_ON_CC);
+                      opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 2 && ctx.state == P25_SM_ON_CC);
     rc |=
         expect_true("second backoff armed", st.p25_retune_block_freq == g_last_tuned_vc && st.p25_retune_block_slot == 0
                                                 && st.p25_retune_block_until > time(NULL));
     mark_cc_reacquired(&st);
 
     p25_sm_event(&ctx, &opts, &st, &ev_slot1);
-    rc |= expect_true("first failed slot still blocked", g_tune_to_freq_calls == 2 && opts.p25_is_tuned == 0);
+    rc |= expect_true("first failed slot still blocked", g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 0);
     p25_sm_event(&ctx, &opts, &st, &ev_slot0);
-    rc |= expect_true("second failed slot blocked", g_tune_to_freq_calls == 2 && opts.p25_is_tuned == 0);
+    rc |= expect_true("second failed slot blocked", g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 0);
 
     // 5b) Channel 0 is a valid IDEN 0 TDMA slot. When both slots on the same
     // RF fail together, channel 0/slot 0 must remain in the per-slot backoff.
@@ -281,7 +244,7 @@ main(void) {
         static dsd_state zero_st;
         DSD_MEMSET(&zero_opts, 0, sizeof zero_opts);
         DSD_MEMSET(&zero_st, 0, sizeof zero_st);
-        zero_opts.p25_trunk = 1;
+        zero_opts.trunk_enable = 1;
         zero_opts.trunk_tune_group_calls = 1;
         zero_opts.trunk_hangtime = 0.2f;
         zero_opts.p25_grant_voice_to_s = 0.5;
@@ -304,7 +267,7 @@ main(void) {
         p25_sm_event_t zero_ev_slot1 = p25_sm_ev_group_grant(0x0001, 0, 3001, 4001, 0);
         p25_sm_event_t zero_ev_slot0 = p25_sm_ev_group_grant(0x0000, 0, 3000, 4000, 0);
         p25_sm_event(&zero_ctx, &zero_opts, &zero_st, &zero_ev_slot1);
-        rc |= expect_true("zero channel initial tune", g_tune_to_freq_calls == 1 && zero_opts.p25_is_tuned == 1);
+        rc |= expect_true("zero channel initial tune", g_tune_to_freq_calls == 1 && zero_opts.trunk_is_tuned == 1);
         p25_sm_event(&zero_ctx, &zero_opts, &zero_st, &zero_ev_slot0);
         rc |= expect_true("zero channel same-carrier no retune", g_tune_to_freq_calls == 1);
         rc |= expect_true("zero channel both slots active",
@@ -314,7 +277,7 @@ main(void) {
         zero_ctx.t_voice_m = 0.0;
         p25_sm_tick_ctx(&zero_ctx, &zero_opts, &zero_st);
         rc |= expect_true("zero channel returned",
-                          zero_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && zero_ctx.state == P25_SM_ON_CC);
+                          zero_opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 1 && zero_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("zero channel slot0 backoff remembered",
                           retune_backoff_history_has_slot(&zero_st, g_last_tuned_vc, 0));
         rc |= expect_true("zero channel slot1 backoff remembered",
@@ -322,9 +285,9 @@ main(void) {
         mark_cc_reacquired(&zero_st);
 
         p25_sm_event(&zero_ctx, &zero_opts, &zero_st, &zero_ev_slot0);
-        rc |= expect_true("zero channel slot0 blocked", g_tune_to_freq_calls == 1 && zero_opts.p25_is_tuned == 0);
+        rc |= expect_true("zero channel slot0 blocked", g_tune_to_freq_calls == 1 && zero_opts.trunk_is_tuned == 0);
         p25_sm_event(&zero_ctx, &zero_opts, &zero_st, &zero_ev_slot1);
-        rc |= expect_true("zero channel slot1 blocked", g_tune_to_freq_calls == 1 && zero_opts.p25_is_tuned == 0);
+        rc |= expect_true("zero channel slot1 blocked", g_tune_to_freq_calls == 1 && zero_opts.trunk_is_tuned == 0);
 
         dsd_state_ext_free_all(&zero_st);
     }
@@ -335,7 +298,7 @@ main(void) {
     static dsd_state forced_st;
     DSD_MEMSET(&forced_opts, 0, sizeof forced_opts);
     DSD_MEMSET(&forced_st, 0, sizeof forced_st);
-    forced_opts.p25_trunk = 1;
+    forced_opts.trunk_enable = 1;
     forced_opts.trunk_tune_group_calls = 1;
     forced_opts.trunk_hangtime = 0.2f;
     forced_opts.p25_grant_voice_to_s = 10.0;
@@ -352,14 +315,14 @@ main(void) {
     g_return_to_cc_calls = 0;
     p25_sm_event(&forced_ctx, &forced_opts, &forced_st, &ev_slot1);
     rc |= expect_true("forced initial tune",
-                      forced_st.p25_sm_tune_count == 1 && forced_opts.p25_is_tuned == 1 && g_tune_to_freq_calls == 1);
+                      forced_st.p25_sm_tune_count == 1 && forced_opts.trunk_is_tuned == 1 && g_tune_to_freq_calls == 1);
 
     age_pending_grants(&forced_ctx, 1.0);
     forced_ctx.t_voice_m = 0.0;
     forced_st.p25_sm_force_release = 1;
     p25_sm_release(&forced_ctx, &forced_opts, &forced_st, "explicit-release");
     rc |= expect_true("forced returned",
-                      forced_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && forced_ctx.state == P25_SM_ON_CC);
+                      forced_opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 1 && forced_ctx.state == P25_SM_ON_CC);
     rc |= expect_true("forced backoff armed", forced_st.p25_retune_block_freq == g_last_tuned_vc
                                                   && forced_st.p25_retune_block_slot == 1
                                                   && forced_st.p25_retune_block_until > time(NULL));
@@ -369,7 +332,7 @@ main(void) {
     static dsd_state data_st;
     DSD_MEMSET(&data_opts, 0, sizeof data_opts);
     DSD_MEMSET(&data_st, 0, sizeof data_st);
-    data_opts.p25_trunk = 1;
+    data_opts.trunk_enable = 1;
     data_opts.trunk_tune_group_calls = 1;
     data_opts.trunk_tune_data_calls = 1;
     data_opts.trunk_hangtime = 0.2f;
@@ -387,7 +350,7 @@ main(void) {
     g_return_to_cc_calls = 0;
     p25_sm_event_t data_ev_slot1 = p25_sm_ev_group_data_grant(ch_slot1, 0, 1001, 2002, P25_SM_SVC_UNKNOWN);
     p25_sm_event(&data_ctx, &data_opts, &data_st, &data_ev_slot1);
-    rc |= expect_true("data initial tune", data_st.p25_sm_tune_count == 1 && data_opts.p25_is_tuned == 1
+    rc |= expect_true("data initial tune", data_st.p25_sm_tune_count == 1 && data_opts.trunk_is_tuned == 1
                                                && g_tune_to_freq_calls == 1 && data_ctx.vc_data_call == 1);
 
     double stale_data_tune_m = dsd_time_now_monotonic_s() - 1.0;
@@ -395,29 +358,29 @@ main(void) {
     data_ctx.t_voice_m = 0.0;
     p25_sm_event(&data_ctx, &data_opts, &data_st, &data_ev_slot1);
     rc |= expect_true("data duplicate refreshed tune timer", g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 0
-                                                                 && data_opts.p25_is_tuned == 1
+                                                                 && data_opts.trunk_is_tuned == 1
                                                                  && data_ctx.t_tune_m > stale_data_tune_m);
     p25_sm_tick_ctx(&data_ctx, &data_opts, &data_st);
     rc |= expect_true("data duplicate avoids stale timeout",
-                      data_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 0 && data_ctx.state == P25_SM_TUNED);
+                      data_opts.trunk_is_tuned == 1 && g_return_to_cc_calls == 0 && data_ctx.state == P25_SM_TUNED);
 
     data_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
     data_ctx.t_voice_m = 0.0;
     p25_sm_tick_ctx(&data_ctx, &data_opts, &data_st);
     rc |= expect_true("data returned",
-                      data_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && data_ctx.state == P25_SM_ON_CC);
+                      data_opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 1 && data_ctx.state == P25_SM_ON_CC);
     rc |= expect_true("data timeout does not arm backoff", retune_backoff_empty(&data_st));
     mark_cc_reacquired(&data_st);
 
     p25_sm_event(&data_ctx, &data_opts, &data_st, &ev_slot1);
     rc |= expect_true("voice grant after data timeout allowed",
-                      g_tune_to_freq_calls == 2 && data_opts.p25_is_tuned == 1 && data_ctx.vc_data_call == 0);
+                      g_tune_to_freq_calls == 2 && data_opts.trunk_is_tuned == 1 && data_ctx.vc_data_call == 0);
 
     static dsd_opts data_forced_opts;
     static dsd_state data_forced_st;
     DSD_MEMSET(&data_forced_opts, 0, sizeof data_forced_opts);
     DSD_MEMSET(&data_forced_st, 0, sizeof data_forced_st);
-    data_forced_opts.p25_trunk = 1;
+    data_forced_opts.trunk_enable = 1;
     data_forced_opts.trunk_tune_group_calls = 1;
     data_forced_opts.trunk_tune_data_calls = 1;
     data_forced_opts.trunk_hangtime = 0.2f;
@@ -434,15 +397,15 @@ main(void) {
     g_tune_to_freq_calls = 0;
     g_return_to_cc_calls = 0;
     p25_sm_event(&data_forced_ctx, &data_forced_opts, &data_forced_st, &data_ev_slot1);
-    rc |= expect_true("forced data initial tune", data_forced_st.p25_sm_tune_count == 1
-                                                      && data_forced_opts.p25_is_tuned == 1 && g_tune_to_freq_calls == 1
-                                                      && data_forced_ctx.vc_data_call == 1);
+    rc |= expect_true("forced data initial tune",
+                      data_forced_st.p25_sm_tune_count == 1 && data_forced_opts.trunk_is_tuned == 1
+                          && g_tune_to_freq_calls == 1 && data_forced_ctx.vc_data_call == 1);
 
     data_forced_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
     data_forced_ctx.t_voice_m = 0.0;
     data_forced_st.p25_sm_force_release = 1;
     p25_sm_release(&data_forced_ctx, &data_forced_opts, &data_forced_st, "explicit-data-release");
-    rc |= expect_true("forced data returned", data_forced_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1
+    rc |= expect_true("forced data returned", data_forced_opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 1
                                                   && data_forced_ctx.state == P25_SM_ON_CC);
     rc |= expect_true("forced data does not arm backoff", retune_backoff_empty(&data_forced_st));
 
@@ -452,7 +415,7 @@ main(void) {
     static dsd_state mixed_st;
     DSD_MEMSET(&mixed_opts, 0, sizeof mixed_opts);
     DSD_MEMSET(&mixed_st, 0, sizeof mixed_st);
-    mixed_opts.p25_trunk = 1;
+    mixed_opts.trunk_enable = 1;
     mixed_opts.trunk_tune_group_calls = 1;
     mixed_opts.trunk_tune_data_calls = 1;
     mixed_opts.trunk_hangtime = 0.2f;
@@ -469,14 +432,14 @@ main(void) {
     g_tune_to_freq_calls = 0;
     g_return_to_cc_calls = 0;
     p25_sm_event(&mixed_ctx, &mixed_opts, &mixed_st, &ev_slot1);
-    rc |= expect_true("mixed voice initial tune", mixed_st.p25_sm_tune_count == 1 && mixed_opts.p25_is_tuned == 1
+    rc |= expect_true("mixed voice initial tune", mixed_st.p25_sm_tune_count == 1 && mixed_opts.trunk_is_tuned == 1
                                                       && g_tune_to_freq_calls == 1 && mixed_ctx.vc_data_call == 0);
 
     age_pending_grants(&mixed_ctx, 1.0);
     mixed_ctx.t_voice_m = 0.0;
     p25_sm_tick_ctx(&mixed_ctx, &mixed_opts, &mixed_st);
     rc |= expect_true("mixed voice returned",
-                      mixed_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1 && mixed_ctx.state == P25_SM_ON_CC);
+                      mixed_opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 1 && mixed_ctx.state == P25_SM_ON_CC);
     rc |= expect_true("mixed voice backoff armed", mixed_st.p25_retune_block_freq == g_last_tuned_vc
                                                        && mixed_st.p25_retune_block_slot == 1
                                                        && mixed_st.p25_retune_block_until > time(NULL));
@@ -484,7 +447,7 @@ main(void) {
 
     p25_sm_event(&mixed_ctx, &mixed_opts, &mixed_st, &data_ev_slot1);
     rc |= expect_true("data grant bypasses voice backoff",
-                      g_tune_to_freq_calls == 2 && mixed_opts.p25_is_tuned == 1 && mixed_ctx.vc_data_call == 1);
+                      g_tune_to_freq_calls == 2 && mixed_opts.trunk_is_tuned == 1 && mixed_ctx.vc_data_call == 1);
 
     // 9) A same-carrier data grant gets a fresh timeout window without hiding a
     // pending failed voice grant on the other TDMA slot when the carrier returns
@@ -494,7 +457,7 @@ main(void) {
         static dsd_state mixed_data_st;
         DSD_MEMSET(&mixed_data_opts, 0, sizeof mixed_data_opts);
         DSD_MEMSET(&mixed_data_st, 0, sizeof mixed_data_st);
-        mixed_data_opts.p25_trunk = 1;
+        mixed_data_opts.trunk_enable = 1;
         mixed_data_opts.trunk_tune_group_calls = 1;
         mixed_data_opts.trunk_tune_data_calls = 1;
         mixed_data_opts.trunk_hangtime = 0.2f;
@@ -514,7 +477,7 @@ main(void) {
         p25_sm_event_t mixed_data_slot1 = p25_sm_ev_group_data_grant(ch_slot1, 0, 3302, 4302, P25_SM_SVC_UNKNOWN);
 
         p25_sm_event(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st, &mixed_voice_slot0);
-        rc |= expect_true("mixed data voice tune", g_tune_to_freq_calls == 1 && mixed_data_opts.p25_is_tuned == 1
+        rc |= expect_true("mixed data voice tune", g_tune_to_freq_calls == 1 && mixed_data_opts.trunk_is_tuned == 1
                                                        && mixed_data_ctx.slots[0].grant_active
                                                        && mixed_data_ctx.vc_data_call == 0);
         double stale_grant_m = dsd_time_now_monotonic_s() - 1.0;
@@ -537,12 +500,12 @@ main(void) {
                               && mixed_data_st.last_vc_sync_time_m > stale_grant_m
                               && mixed_data_st.p25_last_vc_tune_time_m > stale_grant_m);
         p25_sm_tick_ctx(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st);
-        rc |= expect_true("mixed data timeout window retained", mixed_data_opts.p25_is_tuned == 1
+        rc |= expect_true("mixed data timeout window retained", mixed_data_opts.trunk_is_tuned == 1
                                                                     && g_return_to_cc_calls == 0
                                                                     && mixed_data_ctx.state == P25_SM_TUNED);
         mixed_data_ctx.t_tune_m = stale_grant_m;
         p25_sm_tick_ctx(&mixed_data_ctx, &mixed_data_opts, &mixed_data_st);
-        rc |= expect_true("mixed data returned", mixed_data_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1
+        rc |= expect_true("mixed data returned", mixed_data_opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 1
                                                      && mixed_data_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("mixed data voice slot backoff",
                           retune_backoff_history_has_slot(&mixed_data_st, g_last_tuned_vc, 0));
@@ -558,7 +521,7 @@ main(void) {
         static dsd_state pending_data_st;
         DSD_MEMSET(&pending_data_opts, 0, sizeof pending_data_opts);
         DSD_MEMSET(&pending_data_st, 0, sizeof pending_data_st);
-        pending_data_opts.p25_trunk = 1;
+        pending_data_opts.trunk_enable = 1;
         pending_data_opts.trunk_tune_group_calls = 1;
         pending_data_opts.trunk_tune_data_calls = 1;
         pending_data_opts.trunk_hangtime = 0.2f;
@@ -580,8 +543,9 @@ main(void) {
         p25_sm_event_t pending_data_end_slot0 = p25_sm_ev_end(0);
 
         p25_sm_event(&pending_data_ctx, &pending_data_opts, &pending_data_st, &pending_data_voice_slot0);
-        rc |= expect_true("pending data initial tune", g_tune_to_freq_calls == 1 && pending_data_opts.p25_is_tuned == 1
-                                                           && pending_data_ctx.slots[0].grant_active);
+        rc |=
+            expect_true("pending data initial tune", g_tune_to_freq_calls == 1 && pending_data_opts.trunk_is_tuned == 1
+                                                         && pending_data_ctx.slots[0].grant_active);
         p25_sm_event(&pending_data_ctx, &pending_data_opts, &pending_data_st, &pending_data_ptt_slot0);
         pending_data_st.p25_p2_audio_allowed[0] = 1;
         rc |= expect_true("pending data voice active", pending_data_ctx.slots[0].voice_active == 1);
@@ -593,12 +557,12 @@ main(void) {
                               && pending_data_ctx.slots[0].voice_active);
 
         p25_sm_tick_ctx(&pending_data_ctx, &pending_data_opts, &pending_data_st);
-        rc |= expect_true("pending data voice tick retained", pending_data_opts.p25_is_tuned == 1
+        rc |= expect_true("pending data voice tick retained", pending_data_opts.trunk_is_tuned == 1
                                                                   && g_return_to_cc_calls == 0
                                                                   && pending_data_ctx.t_voice_m > 0.0);
         p25_sm_event(&pending_data_ctx, &pending_data_opts, &pending_data_st, &pending_data_end_slot0);
         rc |= expect_true("pending data blocks explicit voice release",
-                          pending_data_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 0
+                          pending_data_opts.trunk_is_tuned == 1 && g_return_to_cc_calls == 0
                               && pending_data_ctx.state == P25_SM_TUNED && pending_data_ctx.slots[0].grant_active == 0
                               && pending_data_ctx.slots[1].grant_active && pending_data_ctx.slots[1].data_call);
 
@@ -607,14 +571,14 @@ main(void) {
         pending_data_ctx.t_tune_m = now_m - 0.2;
         p25_sm_tick_ctx(&pending_data_ctx, &pending_data_opts, &pending_data_st);
         rc |= expect_true("pending data not released on ended-slot hangtime",
-                          pending_data_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 0
+                          pending_data_opts.trunk_is_tuned == 1 && g_return_to_cc_calls == 0
                               && pending_data_ctx.state == P25_SM_TUNED && pending_data_ctx.t_voice_m == 0.0
                               && pending_data_ctx.slots[1].grant_active);
 
         now_m = dsd_time_now_monotonic_s();
         pending_data_ctx.t_tune_m = now_m - 1.0;
         p25_sm_tick_ctx(&pending_data_ctx, &pending_data_opts, &pending_data_st);
-        rc |= expect_true("pending data grant timeout returned", pending_data_opts.p25_is_tuned == 0
+        rc |= expect_true("pending data grant timeout returned", pending_data_opts.trunk_is_tuned == 0
                                                                      && g_return_to_cc_calls == 1
                                                                      && pending_data_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("pending data timeout does not arm backoff", retune_backoff_empty(&pending_data_st));
@@ -631,7 +595,7 @@ main(void) {
         static dsd_state data_after_cancel_st;
         DSD_MEMSET(&data_after_cancel_opts, 0, sizeof data_after_cancel_opts);
         DSD_MEMSET(&data_after_cancel_st, 0, sizeof data_after_cancel_st);
-        data_after_cancel_opts.p25_trunk = 1;
+        data_after_cancel_opts.trunk_enable = 1;
         data_after_cancel_opts.trunk_tune_group_calls = 1;
         data_after_cancel_opts.trunk_tune_data_calls = 1;
         data_after_cancel_opts.trunk_hangtime = 0.2f;
@@ -653,7 +617,7 @@ main(void) {
 
         p25_sm_event(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st, &data_after_cancel_data);
         rc |= expect_true("data-after-cancel data tuned", g_tune_to_freq_calls == 1
-                                                              && data_after_cancel_opts.p25_is_tuned == 1
+                                                              && data_after_cancel_opts.trunk_is_tuned == 1
                                                               && data_after_cancel_ctx.slots[1].grant_active
                                                               && data_after_cancel_ctx.slots[1].data_call);
 
@@ -665,7 +629,7 @@ main(void) {
                             && data_after_cancel_ctx.slots[1].grant_active && data_after_cancel_ctx.slots[1].data_call);
 
         p25_sm_event(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st, &data_after_cancel_end);
-        rc |= expect_true("data-after-cancel data remains", data_after_cancel_opts.p25_is_tuned == 1
+        rc |= expect_true("data-after-cancel data remains", data_after_cancel_opts.trunk_is_tuned == 1
                                                                 && g_return_to_cc_calls == 0
                                                                 && data_after_cancel_ctx.slots[0].grant_active == 0
                                                                 && data_after_cancel_ctx.slots[1].grant_active
@@ -674,7 +638,7 @@ main(void) {
         data_after_cancel_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
         data_after_cancel_ctx.t_voice_m = 0.0;
         p25_sm_tick_ctx(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st);
-        rc |= expect_true("data-after-cancel returned", data_after_cancel_opts.p25_is_tuned == 0
+        rc |= expect_true("data-after-cancel returned", data_after_cancel_opts.trunk_is_tuned == 0
                                                             && g_return_to_cc_calls == 1
                                                             && data_after_cancel_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("data-after-cancel no fallback backoff", retune_backoff_empty(&data_after_cancel_st));
@@ -682,7 +646,7 @@ main(void) {
 
         p25_sm_event(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st, &data_after_cancel_voice);
         rc |= expect_true("data-after-cancel follow-up voice allowed", g_tune_to_freq_calls == 2
-                                                                           && data_after_cancel_opts.p25_is_tuned == 1
+                                                                           && data_after_cancel_opts.trunk_is_tuned == 1
                                                                            && data_after_cancel_ctx.vc_data_call == 0);
 
         dsd_state_ext_free_all(&data_after_cancel_st);
@@ -695,7 +659,7 @@ main(void) {
         static dsd_state same_target_st;
         DSD_MEMSET(&same_target_opts, 0, sizeof same_target_opts);
         DSD_MEMSET(&same_target_st, 0, sizeof same_target_st);
-        same_target_opts.p25_trunk = 1;
+        same_target_opts.trunk_enable = 1;
         same_target_opts.trunk_tune_group_calls = 1;
         same_target_opts.trunk_tune_data_calls = 1;
         same_target_opts.trunk_hangtime = 0.2f;
@@ -716,7 +680,7 @@ main(void) {
         p25_sm_event_t same_target_ptt = p25_sm_ev_ptt(0);
 
         p25_sm_event(&same_target_ctx, &same_target_opts, &same_target_st, &same_target_voice);
-        rc |= expect_true("same-target voice tuned", g_tune_to_freq_calls == 1 && same_target_opts.p25_is_tuned == 1
+        rc |= expect_true("same-target voice tuned", g_tune_to_freq_calls == 1 && same_target_opts.trunk_is_tuned == 1
                                                          && same_target_ctx.slots[0].grant_active
                                                          && same_target_ctx.slots[0].target_id == 3601
                                                          && !same_target_ctx.slots[0].data_call);
@@ -745,7 +709,7 @@ main(void) {
         static dsd_state pending_st;
         DSD_MEMSET(&pending_opts, 0, sizeof pending_opts);
         DSD_MEMSET(&pending_st, 0, sizeof pending_st);
-        pending_opts.p25_trunk = 1;
+        pending_opts.trunk_enable = 1;
         pending_opts.trunk_tune_group_calls = 1;
         pending_opts.trunk_hangtime = 0.2f;
         pending_opts.p25_grant_voice_to_s = 0.8;
@@ -766,7 +730,7 @@ main(void) {
         p25_sm_event_t end_slot0 = p25_sm_ev_end(0);
 
         p25_sm_event(&pending_ctx, &pending_opts, &pending_st, &pending_active_slot0);
-        rc |= expect_true("pending initial tune", g_tune_to_freq_calls == 1 && pending_opts.p25_is_tuned == 1);
+        rc |= expect_true("pending initial tune", g_tune_to_freq_calls == 1 && pending_opts.trunk_is_tuned == 1);
         p25_sm_event(&pending_ctx, &pending_opts, &pending_st, &ptt_slot0);
         pending_st.p25_p2_audio_allowed[0] = 1;
         double stale_watchdog_m = dsd_time_now_monotonic_s() - 3.0;
@@ -791,15 +755,16 @@ main(void) {
         pending_ctx.slots[1].last_grant_m = pending_ctx.t_tune_m;
         p25_sm_tick_ctx(&pending_ctx, &pending_opts, &pending_st);
         rc |= expect_true("pending grant not released on ended-slot hangtime",
-                          pending_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 0
+                          pending_opts.trunk_is_tuned == 1 && g_return_to_cc_calls == 0
                               && pending_ctx.state == P25_SM_TUNED && pending_ctx.slots[1].grant_active);
 
         now_m = dsd_time_now_monotonic_s();
         pending_ctx.t_tune_m = now_m - 1.0;
         pending_ctx.slots[1].last_grant_m = pending_ctx.t_tune_m;
         p25_sm_tick_ctx(&pending_ctx, &pending_opts, &pending_st);
-        rc |= expect_true("pending grant timeout returned", pending_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1
-                                                                && pending_ctx.state == P25_SM_ON_CC);
+        rc |=
+            expect_true("pending grant timeout returned", pending_opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 1
+                                                              && pending_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("pending grant timeout backoff",
                           retune_backoff_history_has_slot(&pending_st, g_last_tuned_vc, 1));
         rc |= expect_true("active slot not marked failed",
@@ -815,7 +780,7 @@ main(void) {
         static dsd_state idle_payload_st;
         DSD_MEMSET(&idle_payload_opts, 0, sizeof idle_payload_opts);
         DSD_MEMSET(&idle_payload_st, 0, sizeof idle_payload_st);
-        idle_payload_opts.p25_trunk = 1;
+        idle_payload_opts.trunk_enable = 1;
         idle_payload_opts.trunk_tune_group_calls = 1;
         idle_payload_opts.trunk_hangtime = 0.2f;
         idle_payload_opts.p25_grant_voice_to_s = 0.8;
@@ -836,8 +801,8 @@ main(void) {
         p25_sm_event_t end_slot0 = p25_sm_ev_end(0);
 
         p25_sm_event(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st, &active_slot0);
-        rc |=
-            expect_true("idle-payload initial tune", g_tune_to_freq_calls == 1 && idle_payload_opts.p25_is_tuned == 1);
+        rc |= expect_true("idle-payload initial tune",
+                          g_tune_to_freq_calls == 1 && idle_payload_opts.trunk_is_tuned == 1);
         p25_sm_event(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st, &ptt_slot0);
         idle_payload_st.p25_p2_audio_allowed[0] = 1;
 
@@ -854,7 +819,7 @@ main(void) {
 
         p25_sm_event(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st, &end_slot0);
         rc |= expect_true("idle-payload pending grant blocks explicit release",
-                          idle_payload_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 0
+                          idle_payload_opts.trunk_is_tuned == 1 && g_return_to_cc_calls == 0
                               && idle_payload_ctx.state == P25_SM_TUNED && idle_payload_ctx.slots[1].grant_active);
 
         double now_m = dsd_time_now_monotonic_s();
@@ -862,7 +827,7 @@ main(void) {
         idle_payload_ctx.t_tune_m = now_m - 1.0;
         idle_payload_ctx.slots[1].last_grant_m = idle_payload_ctx.t_tune_m;
         p25_sm_tick_ctx(&idle_payload_ctx, &idle_payload_opts, &idle_payload_st);
-        rc |= expect_true("idle-payload grant timeout returned", idle_payload_opts.p25_is_tuned == 0
+        rc |= expect_true("idle-payload grant timeout returned", idle_payload_opts.trunk_is_tuned == 0
                                                                      && g_return_to_cc_calls == 1
                                                                      && idle_payload_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("idle-payload slot backoff",
@@ -878,7 +843,7 @@ main(void) {
         static dsd_state repeat_st;
         DSD_MEMSET(&repeat_opts, 0, sizeof repeat_opts);
         DSD_MEMSET(&repeat_st, 0, sizeof repeat_st);
-        repeat_opts.p25_trunk = 1;
+        repeat_opts.trunk_enable = 1;
         repeat_opts.trunk_tune_group_calls = 1;
         repeat_opts.trunk_hangtime = 2.0f;
         repeat_opts.p25_grant_voice_to_s = 0.8;
@@ -902,7 +867,7 @@ main(void) {
         p25_sm_event_t repeat_idle = p25_sm_ev_idle(0);
 
         p25_sm_event(&repeat_ctx, &repeat_opts, &repeat_st, &repeat_grant);
-        rc |= expect_true("repeat initial tune", g_tune_to_freq_calls == 1 && repeat_opts.p25_is_tuned == 1
+        rc |= expect_true("repeat initial tune", g_tune_to_freq_calls == 1 && repeat_opts.trunk_is_tuned == 1
                                                      && repeat_ctx.slots[0].grant_active);
         p25_sm_event(&repeat_ctx, &repeat_opts, &repeat_st, &repeat_ptt);
         repeat_st.p25_p2_audio_allowed[0] = 1;
@@ -918,7 +883,7 @@ main(void) {
 
         p25_sm_event(&repeat_ctx, &repeat_opts, &repeat_st, &repeat_alt_id_grant);
         rc |= expect_true("repeat hangtime alt id grant accepted",
-                          g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 0 && repeat_opts.p25_is_tuned == 1
+                          g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 0 && repeat_opts.trunk_is_tuned == 1
                               && repeat_ctx.state == P25_SM_TUNED && repeat_ctx.slots[0].grant_active);
         rc |= expect_true("repeat hangtime alt id grant refreshed",
                           repeat_ctx.slots[0].last_grant_m > old_last_grant_m
@@ -935,7 +900,7 @@ main(void) {
         static dsd_state collision_st;
         DSD_MEMSET(&collision_opts, 0, sizeof collision_opts);
         DSD_MEMSET(&collision_st, 0, sizeof collision_st);
-        collision_opts.p25_trunk = 1;
+        collision_opts.trunk_enable = 1;
         collision_opts.trunk_tune_group_calls = 1;
         collision_opts.trunk_tune_private_calls = 1;
         collision_opts.trunk_hangtime = 0.2f;
@@ -955,7 +920,7 @@ main(void) {
         p25_sm_event_t group_grant = p25_sm_ev_group_grant(ch_slot0, 0, 3661, 5661, 0);
 
         p25_sm_event(&collision_ctx, &collision_opts, &collision_st, &private_grant);
-        rc |= expect_true("namespace private tuned", g_tune_to_freq_calls == 1 && collision_opts.p25_is_tuned == 1
+        rc |= expect_true("namespace private tuned", g_tune_to_freq_calls == 1 && collision_opts.trunk_is_tuned == 1
                                                          && collision_ctx.slots[0].grant_active
                                                          && !collision_ctx.slots[0].is_group
                                                          && collision_ctx.slots[0].dst == 3661);
@@ -977,7 +942,7 @@ main(void) {
         static dsd_state forced_pending_st;
         DSD_MEMSET(&forced_pending_opts, 0, sizeof forced_pending_opts);
         DSD_MEMSET(&forced_pending_st, 0, sizeof forced_pending_st);
-        forced_pending_opts.p25_trunk = 1;
+        forced_pending_opts.trunk_enable = 1;
         forced_pending_opts.trunk_tune_group_calls = 1;
         forced_pending_opts.trunk_hangtime = 0.2f;
         forced_pending_opts.p25_grant_voice_to_s = 10.0;
@@ -998,7 +963,7 @@ main(void) {
 
         p25_sm_event(&forced_pending_ctx, &forced_pending_opts, &forced_pending_st, &forced_pending_active);
         rc |= expect_true("forced-pending initial tune", g_tune_to_freq_calls == 1
-                                                             && forced_pending_opts.p25_is_tuned == 1
+                                                             && forced_pending_opts.trunk_is_tuned == 1
                                                              && forced_pending_ctx.slots[0].grant_active);
         p25_sm_event(&forced_pending_ctx, &forced_pending_opts, &forced_pending_st, &forced_pending_ptt);
         forced_pending_st.p25_p2_audio_allowed[0] = 1;
@@ -1012,8 +977,9 @@ main(void) {
 
         forced_pending_st.p25_sm_force_release = 1;
         p25_sm_release(&forced_pending_ctx, &forced_pending_opts, &forced_pending_st, "forced-pending-release");
-        rc |= expect_true("forced-pending returned", forced_pending_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 1
-                                                         && forced_pending_ctx.state == P25_SM_ON_CC);
+        rc |=
+            expect_true("forced-pending returned", forced_pending_opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 1
+                                                       && forced_pending_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("forced-pending slot1 backoff",
                           retune_backoff_history_has_slot(&forced_pending_st, g_last_tuned_vc, 1));
         rc |= expect_true("forced-pending active slot not failed",
@@ -1034,7 +1000,7 @@ main(void) {
         static dsd_state transient_st;
         DSD_MEMSET(&transient_opts, 0, sizeof transient_opts);
         DSD_MEMSET(&transient_st, 0, sizeof transient_st);
-        transient_opts.p25_trunk = 1;
+        transient_opts.trunk_enable = 1;
         transient_opts.trunk_tune_group_calls = 1;
         transient_opts.trunk_hangtime = 0.2f;
         transient_opts.p25_grant_voice_to_s = 0.5;
@@ -1051,21 +1017,22 @@ main(void) {
         g_return_to_cc_calls = 0;
         g_return_to_cc_result = transient_returns[i];
         p25_sm_event(&transient_ctx, &transient_opts, &transient_st, &ev_slot1);
-        rc |=
-            expect_true("transient initial tune", transient_st.p25_sm_tune_count == 1
-                                                      && transient_opts.p25_is_tuned == 1 && g_tune_to_freq_calls == 1);
+        rc |= expect_true("transient initial tune", transient_st.p25_sm_tune_count == 1
+                                                        && transient_opts.trunk_is_tuned == 1
+                                                        && g_tune_to_freq_calls == 1);
 
         age_pending_grants(&transient_ctx, 1.0);
         transient_ctx.t_voice_m = 0.0;
         p25_sm_tick_ctx(&transient_ctx, &transient_opts, &transient_st);
-        rc |= expect_true("transient return preserved vc", transient_opts.p25_is_tuned == 1 && g_return_to_cc_calls == 1
-                                                               && transient_ctx.state == P25_SM_TUNED);
+        rc |=
+            expect_true("transient return preserved vc", transient_opts.trunk_is_tuned == 1 && g_return_to_cc_calls == 1
+                                                             && transient_ctx.state == P25_SM_TUNED);
         rc |= expect_true("transient return did not arm backoff",
                           transient_st.p25_retune_block_until == 0 && transient_st.p25_retune_block_freq == 0);
 
         g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
         p25_sm_tick_ctx(&transient_ctx, &transient_opts, &transient_st);
-        rc |= expect_true("transient retry returned", transient_opts.p25_is_tuned == 0 && g_return_to_cc_calls == 2
+        rc |= expect_true("transient retry returned", transient_opts.trunk_is_tuned == 0 && g_return_to_cc_calls == 2
                                                           && transient_ctx.state == P25_SM_ON_CC);
         rc |= expect_true("transient retry backoff armed", transient_st.p25_retune_block_freq == g_last_tuned_vc
                                                                && transient_st.p25_retune_block_slot == 1
@@ -1081,7 +1048,7 @@ main(void) {
         static dsd_state preempt_st;
         DSD_MEMSET(&preempt_opts, 0, sizeof preempt_opts);
         DSD_MEMSET(&preempt_st, 0, sizeof preempt_st);
-        preempt_opts.p25_trunk = 1;
+        preempt_opts.trunk_enable = 1;
         preempt_opts.trunk_tune_group_calls = 1;
         preempt_opts.trunk_hangtime = 0.2f;
         preempt_opts.p25_retune_backoff_s = 2.0;
@@ -1105,7 +1072,7 @@ main(void) {
         p25_sm_event_t preempt_candidate = p25_sm_ev_group_grant(ch_slot0, 0, 4002, 5002, 0);
 
         p25_sm_event(&preempt_ctx, &preempt_opts, &preempt_st, &preempt_active);
-        rc |= expect_true("preempt active tuned", g_tune_to_freq_calls == 1 && preempt_opts.p25_is_tuned == 1
+        rc |= expect_true("preempt active tuned", g_tune_to_freq_calls == 1 && preempt_opts.trunk_is_tuned == 1
                                                       && preempt_ctx.state == P25_SM_TUNED);
         preempt_ctx.slots[0].voice_active = 1;
         preempt_ctx.slots[0].last_active_m = dsd_time_now_monotonic_s();
@@ -1114,7 +1081,7 @@ main(void) {
 
         p25_sm_event(&preempt_ctx, &preempt_opts, &preempt_st, &preempt_candidate);
         rc |= expect_true("preempt returned to cc first", g_return_to_cc_calls == 1);
-        rc |= expect_true("preempt retuned vc", g_tune_to_freq_calls == 2 && preempt_opts.p25_is_tuned == 1
+        rc |= expect_true("preempt retuned vc", g_tune_to_freq_calls == 2 && preempt_opts.trunk_is_tuned == 1
                                                     && preempt_st.p25_sm_tune_count == 2);
         rc |= expect_true("preempt replacement active", preempt_ctx.state == P25_SM_TUNED && preempt_ctx.vc_tg == 4002
                                                             && preempt_ctx.slots[0].grant_active
@@ -1139,7 +1106,7 @@ main(void) {
             static dsd_state failed_preempt_st;
             DSD_MEMSET(&failed_preempt_opts, 0, sizeof failed_preempt_opts);
             DSD_MEMSET(&failed_preempt_st, 0, sizeof failed_preempt_st);
-            failed_preempt_opts.p25_trunk = 1;
+            failed_preempt_opts.trunk_enable = 1;
             failed_preempt_opts.trunk_tune_group_calls = 1;
             failed_preempt_opts.trunk_hangtime = 0.2f;
             failed_preempt_opts.p25_retune_backoff_s = 2.0;
@@ -1164,7 +1131,7 @@ main(void) {
             p25_sm_event_t failed_preempt_candidate = p25_sm_ev_group_grant(ch_slot0, 0, 4102, 5102, 0);
             p25_sm_event(&failed_preempt_ctx, &failed_preempt_opts, &failed_preempt_st, &failed_preempt_active);
             rc |= expect_true("failed-preempt active tuned", g_tune_to_freq_calls == 1
-                                                                 && failed_preempt_opts.p25_is_tuned == 1
+                                                                 && failed_preempt_opts.trunk_is_tuned == 1
                                                                  && failed_preempt_ctx.state == P25_SM_TUNED);
             failed_preempt_ctx.slots[0].voice_active = 1;
             failed_preempt_ctx.slots[0].last_active_m = dsd_time_now_monotonic_s();
@@ -1177,7 +1144,7 @@ main(void) {
                               g_tune_to_freq_calls == 1 && failed_preempt_st.p25_sm_tune_count == 1
                                   && failed_preempt_ctx.vc_tg == 4101 && failed_preempt_ctx.slots[0].target_id == 4101);
             rc |= expect_true("failed-preempt preserved active call",
-                              failed_preempt_opts.p25_is_tuned == 1 && failed_preempt_ctx.state == P25_SM_TUNED
+                              failed_preempt_opts.trunk_is_tuned == 1 && failed_preempt_ctx.state == P25_SM_TUNED
                                   && failed_preempt_ctx.slots[0].voice_active == 1);
 
             dsd_state_ext_free_all(&failed_preempt_st);

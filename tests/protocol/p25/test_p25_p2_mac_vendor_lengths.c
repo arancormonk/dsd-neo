@@ -13,7 +13,6 @@
 
 #include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,20 +31,12 @@ typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
-void dsd_neo_config_init(const dsd_opts* opts);
+void dsd_neo_config_init(void);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
-void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len);
+void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
 
-// Stubs for alias helpers and rigctl/rtl hooks referenced in linked objects
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
+// Alias helpers referenced by linked objects.
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -82,39 +73,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)input;
     (void)src;
     (void)slot;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
 }
 
 static int
@@ -167,7 +125,7 @@ static int
 run_one(uint8_t mfid, uint8_t opcode, uint8_t len_octet, int want_lenB) {
     // Enable JSON
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_mac_json_vendor") != 0) {
@@ -180,7 +138,7 @@ run_one(uint8_t mfid, uint8_t opcode, uint8_t len_octet, int want_lenB) {
     mac[1] = opcode;
     mac[2] = mfid;
     mac[3] = len_octet;
-    p25_test_process_mac_vpdu(1 /* SACCH */, mac, 24);
+    p25_test_process_mac_vpdu_ex(1 /* SACCH */, mac, 24, 0, 0);
 
     dsd_test_capture_stderr_end(&cap);
 

@@ -103,11 +103,12 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) { /
 }
 
 void
-write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol) {
+write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol, const dsd_dibit_soft_t* soft) {
     (void)opts;
     (void)state;
     (void)dibit;
     (void)symbol;
+    (void)soft;
 }
 
 uint8_t
@@ -1297,7 +1298,7 @@ test_snr_squelch_only_applies_to_rtl_input(void) {
     set_fake_snr(-100.0, -100.0, -100.0, -100.0);
     install_fake_snr_hooks();
     (void)dsd_setenv("DSD_NEO_SNR_SQL_DB", "10", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     for (size_t i = 0; i < sizeof(non_radio_inputs) / sizeof(non_radio_inputs[0]); i++) {
         reset(&opts, &state);
@@ -1320,7 +1321,7 @@ test_snr_squelch_only_applies_to_rtl_input(void) {
     assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 1);
 
     (void)dsd_unsetenv("DSD_NEO_SNR_SQL_DB");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
@@ -1331,7 +1332,7 @@ test_nxdn_only_profiles_use_gfsk_snr_gate(void) {
 
     install_fake_snr_hooks();
     (void)dsd_setenv("DSD_NEO_SNR_SQL_DB", "10", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     reset(&opts, &state);
     opts.audio_in_type = AUDIO_IN_RTL;
@@ -1368,7 +1369,7 @@ test_nxdn_only_profiles_use_gfsk_snr_gate(void) {
     assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
 
     (void)dsd_unsetenv("DSD_NEO_SNR_SQL_DB");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
@@ -1462,7 +1463,7 @@ test_p25_trunk_tick_recency(void) {
     static dsd_state state;
 
     reset(&opts, &state);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     state.p25_p2_active_slot = -1;
     state.lastsynctype = DSD_SYNC_P25P1_POS;
     g_frame_sync_tick_calls = 0;

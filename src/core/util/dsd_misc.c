@@ -238,8 +238,8 @@ viterbi_decode_bit(uint16_t s0, uint16_t s1, const size_t pos) {
 */
 uint32_t
 viterbi_chainback(uint8_t* out, size_t pos, uint16_t len) {
-    /* This decoder path assumes a terminated trellis (tail bits), so traceback
-     * starts from state 0 for protocol compatibility. */
+    /* This decoder path assumes a terminated trellis (tail bits), whose final
+     * encoder state is zero. */
     uint8_t state = 0;
     size_t bitPos = len + 4;
 
@@ -545,51 +545,12 @@ pbf_f(dsd_state* state, float* input, int len) {
     }
 }
 
-//Generic RMS function derived from RTL_FM (RTL_SDR) RMS code (doesnt' really work correctly outside of RTL)
-double
-raw_rms(const short* samples, int len, int step) //use samplespersymbol as len
-{
-    double mp = raw_pwr(samples, len, step);
-    if (mp < 0.0) {
-        mp = 0.0;
-    }
-    return sqrt(mp);
-}
-
 /*
  * Mean power (RMS^2 proxy) without sqrt, modeled after mean_power() in rtl_sdr_fm.cpp.
  * Computes a DC-corrected average of squares to avoid costly sqrt operations.
  */
 double
 raw_pwr(const short* samples, int len, int step) {
-    double p = 0.0;
-    double t = 0.0;
-    int count = 0;
-    const double kScale = 1.0 / 32768.0;
-    for (int i = 0; i < len; i += step) {
-        double s = (double)samples[i] * kScale;
-        t += s;
-        p += s * s;
-        count++;
-    }
-    if (count == 0) {
-        return 0.0;
-    }
-    /* DC-corrected energy ≈ p - (t^2)/count */
-    double dc_corr = (t * t) / (double)count;
-    double energy = p - dc_corr;
-    if (energy < 0.0) {
-        energy = 0.0;
-    }
-    return energy / (double)count;
-}
-
-/*
- * Mean power for float samples (native float path for analog monitor).
- * Input samples are expected to be in int16 scale (±32768 range).
- */
-double
-raw_pwr_f(const float* samples, int len, int step) {
     double p = 0.0;
     double t = 0.0;
     int count = 0;

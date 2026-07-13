@@ -10,6 +10,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -48,31 +50,10 @@ static long int g_mapped_channel_freq;
  */
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (input == NULL || output == NULL || len <= 0) {
-        return;
-    }
-    const int bit_len = len * 8;
-    DSD_MEMSET(output, 0, (size_t)bit_len * sizeof(uint8_t));
-    for (int i = 0; i < bit_len; i++) {
-        output[i] = (uint8_t)((input[i / 8] >> (7 - (i % 8))) & 1U);
-    }
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     (void)opts;
     (void)state;
     (void)MessageType;
-}
-
-uint32_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_message_crc32(const uint8_t* input, int len) {
-    (void)input;
-    (void)len;
-    return 0U;
 }
 
 void
@@ -171,11 +152,10 @@ static int g_des_calls;
 static int g_aes_calls;
 static unsigned long long g_des_mi;
 static unsigned long long g_des_key;
-static int g_des_type;
 static int g_des_len;
 static uint8_t g_aes_iv[16];
 static uint8_t g_aes_key[32];
-static int g_aes_type;
+static dsd_aes_key_size g_aes_key_size;
 static int g_aes_blocks;
 static int g_tune_cc_calls;
 static long int g_tune_cc_freq;
@@ -211,11 +191,10 @@ reset_crypto_stub_capture(void) {
     g_aes_calls = 0;
     g_des_mi = 0ULL;
     g_des_key = 0ULL;
-    g_des_type = 0;
     g_des_len = 0;
     DSD_MEMSET(g_aes_iv, 0, sizeof(g_aes_iv));
     DSD_MEMSET(g_aes_key, 0, sizeof(g_aes_key));
-    g_aes_type = 0;
+    g_aes_key_size = DSD_AES_KEY_128;
     g_aes_blocks = 0;
 }
 
@@ -256,17 +235,15 @@ LFSR128n(dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
-                           int len) {
+des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int nblocks) {
     g_des_calls++;
     g_des_mi = mi;
     g_des_key = key_ulli;
-    g_des_type = type;
-    g_des_len = len;
-    if (output == NULL || len <= 0 || g_des_fill_enabled == 0) {
+    g_des_len = nblocks;
+    if (output == NULL || nblocks <= 0 || g_des_fill_enabled == 0) {
         return;
     }
-    const size_t output_len = (size_t)len * 8U;
+    const size_t output_len = (size_t)nblocks * 8U;
     for (size_t i = 0U; i < output_len; i++) {
         output[i] = des_stub_byte(i);
     }
@@ -274,9 +251,10 @@ des_multi_keystream_output(unsigned long long int mi, unsigned long long int key
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, dsd_aes_key_size key_size,
+                         int nblocks) {
     g_aes_calls++;
-    g_aes_type = type;
+    g_aes_key_size = key_size;
     g_aes_blocks = nblocks;
     if (iv != NULL) {
         DSD_MEMCPY(g_aes_iv, iv, sizeof(g_aes_iv));
@@ -333,7 +311,7 @@ dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int fr
     g_tune_freq_freq = freq;
     g_tune_freq_ted_sps = ted_sps;
     if (opts != NULL) {
-        opts->p25_is_tuned = 1;
+        opts->trunk_is_tuned = 1;
     }
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
@@ -601,7 +579,6 @@ test_disc_trunk_return_clears_call_state(void) {
     set_message_type(bits, 0x11U);
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
-    opts->p25_is_tuned = 1;
     state->p25_cc_freq = 851012500L;
     state->nxdn_last_rid = 0x1234;
     state->nxdn_last_tg = 0x4567;
@@ -630,7 +607,6 @@ test_disc_trunk_return_clears_call_state(void) {
     rc |= expect_int("disc-tune-cc-freq", (int)g_tune_cc_freq, (int)851012500L);
     rc |= expect_int("disc-tune-cc-sps", g_tune_cc_ted_sps, 0);
     rc |= expect_int("disc-trunk-cleared", opts->trunk_is_tuned, 0);
-    rc |= expect_int("disc-p25-cleared", opts->p25_is_tuned, 0);
     rc |= expect_int("disc-rid-reset", state->nxdn_last_rid, 0);
     rc |= expect_int("disc-tg-reset", state->nxdn_last_tg, 0);
     rc |= expect_int("disc-cipher-reset", state->nxdn_cipher_type, 0);
@@ -1008,7 +984,7 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     uint8_t final_bits[80];
     uint8_t encrypted[16];
     static const uint8_t plain[16] = {
-        0x12U, 0x34U, 0x56U, 0x78U, 0x9AU, 0xBCU, 0xDEU, 0xF0U, 0x10U, 0x32U, 0x54U, 0x76U, 0x00U, 0x00U, 0x00U, 0x00U,
+        0x12U, 0x34U, 0x56U, 0x78U, 0x9AU, 0xBCU, 0xDEU, 0xF0U, 0x10U, 0x32U, 0x54U, 0x76U, 0x22U, 0x4EU, 0x9CU, 0xA1U,
     };
     const uint8_t key_id = 0x05U;
     const uint64_t des_key = 0x0123456789ABCDEFULL;
@@ -1048,7 +1024,6 @@ test_sdcall_des_data_decrypts_and_resets(void) {
     rc |= expect_int("sdcall-des-calls", g_des_calls, 1);
     rc |= expect_u64("sdcall-des-mi", (uint64_t)g_des_mi, 0ULL);
     rc |= expect_u64("sdcall-des-key", (uint64_t)g_des_key, des_key);
-    rc |= expect_int("sdcall-des-type", g_des_type, 1);
     rc |= expect_int("sdcall-des-len", g_des_len, 2);
     rc |= expect_string("sdcall-des-event", state->event_history_s[0].Event_History_Items[0].text_message,
                         "Unknown Data Call Format: 1234;");
@@ -1079,7 +1054,7 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     char output[512];
     dsd_test_capture_stderr cap;
     static const uint8_t plain[16] = {
-        0xABU, 0xCDU, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x66U, 0x77U, 0x88U, 0x99U, 0xAAU, 0x00U, 0x00U, 0x00U, 0x00U,
+        0xABU, 0xCDU, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x66U, 0x77U, 0x88U, 0x99U, 0xAAU, 0x3BU, 0x9BU, 0x17U, 0xDDU,
     };
     static const uint8_t expected_key[32] = {
         0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U, 0x08U, 0x11U, 0x12U, 0x13U, 0x14U, 0x15U, 0x16U, 0x17U, 0x18U,
@@ -1143,7 +1118,7 @@ test_dcall_aes_data_decrypts_with_manual_key_and_iv(void) {
     const uint8_t zero_iv[16] = {0};
     int rc = 0;
     rc |= expect_int("dcall-aes-calls", g_aes_calls, 1);
-    rc |= expect_int("dcall-aes-type", g_aes_type, 2);
+    rc |= expect_int("dcall-aes-key-size", g_aes_key_size, DSD_AES_KEY_256);
     rc |= expect_int("dcall-aes-blocks", g_aes_blocks, 1);
     rc |= expect_bytes("dcall-aes-key", g_aes_key, expected_key, sizeof(expected_key));
     rc |= expect_contains("dcall-aes-reveal-full-key", output,
@@ -1466,7 +1441,7 @@ test_assignment_group_grant_anchors_tunes_and_loads_scrambler(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     reset_assignment_capture();
 
-    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
     opts->trunk_tune_group_calls = 1;
     opts->use_rigctl = 1;
     state->lastsynctype = DSD_SYNC_NXDN_POS;
@@ -1524,7 +1499,7 @@ test_assignment_data_gate_and_duplicate_release(void) {
     DSD_MEMSET(dup_bits, 0, sizeof(dup_bits));
     reset_assignment_capture();
 
-    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_data_calls = 0;
     state->p25_cc_freq = 851012500L;
@@ -1543,7 +1518,7 @@ test_assignment_data_gate_and_duplicate_release(void) {
 
     reset_assignment_capture();
     opts->trunk_tune_data_calls = 1;
-    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
     opts->trunk_hangtime = 0;
     state->last_vc_sync_time = 0;
     state->lastsynctype = DSD_SYNC_NXDN_NEG;

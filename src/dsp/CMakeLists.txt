@@ -10,6 +10,7 @@ target_sources(
         costas.cpp
         resampler.cpp
         halfband.cpp
+        mmse_interp.cpp
         ted.cpp
         fsk_modem.c
         firdes.cpp

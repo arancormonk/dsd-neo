@@ -8,19 +8,17 @@
 
 /*
  * P25 regroup/patch tracking tests.
- * Covers: add/update, dedup, membership counts, summary/details formatting,
+ * Covers: add/update, dedup, membership counts, details formatting,
  * TTL sweep of stale entries, and clear/remove deactivation.
  */
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <errno.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -28,51 +26,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-struct RtlSdrContext;
-
-// Stubs for external hooks referenced in the linked library
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-static int
-expect_eq_str(const char* tag, const char* got, const char* want) {
-    if (strcmp(got, want) != 0) {
-        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
-        return 1;
-    }
-    return 0;
-}
 
 static int
 expect_true(const char* tag, int cond) {
@@ -113,12 +66,8 @@ test_guard_replacement_and_policy_edges(void) {
     p25_patch_add_wgid(NULL, 1, 1);
     p25_patch_add_wuid(NULL, 1, 1);
     p25_patch_remove_wgid(NULL, 1, 1);
-    p25_patch_remove_wuid(NULL, 1, 1);
     p25_patch_clear_sg(NULL, 1);
     p25_patch_set_kas(NULL, 1, 0, 0, 0);
-    rc |= expect_eq_int("summary null out", p25_patch_compose_summary(&st, NULL, sizeof out), 0);
-    rc |= expect_eq_int("summary zero cap", p25_patch_compose_summary(&st, out, 0), 0);
-    rc |= expect_eq_int("summary null state", p25_patch_compose_summary(NULL, out, sizeof out), 0);
     rc |= expect_eq_int("details null out", p25_patch_compose_details(&st, NULL, sizeof out), 0);
     rc |= expect_eq_int("details zero cap", p25_patch_compose_details(&st, out, 0), 0);
     rc |= expect_eq_int("details null state", p25_patch_compose_details(NULL, out, sizeof out), 0);
@@ -201,17 +150,6 @@ test_guard_replacement_and_policy_edges(void) {
     rc |= expect_eq_int("sweep preserves active member", st.p25_patch_wgid[0][0], 222);
 
     DSD_MEMSET(&st, 0, sizeof st);
-    p25_patch_add_wuid(&st, 77, 1001);
-    p25_patch_add_wuid(&st, 77, 1002);
-    p25_patch_remove_wuid(&st, 77, 1001);
-    rc |= expect_eq_int("remove wuid keeps one", st.p25_patch_wuid_count[0], 1);
-    rc |= expect_eq_int("remove wuid swaps tail", (int)st.p25_patch_wuid[0][0], 1002);
-    rc |= expect_eq_int("remove wuid stays active", st.p25_patch_active[0], 1);
-    p25_patch_remove_wuid(&st, 77, 1002);
-    rc |= expect_eq_int("remove final wuid clears count", st.p25_patch_wuid_count[0], 0);
-    rc |= expect_eq_int("remove final wuid deactivates", st.p25_patch_active[0], 0);
-
-    DSD_MEMSET(&st, 0, sizeof st);
     p25_patch_add_wgid(&st, 69, 0x2345);
     p25_patch_set_kas(&st, 69, 0, 0x84, 17);
     rc |= expect_eq_int("clear tg policy active", p25_patch_tg_key_is_clear(&st, 0x2345), 1);
@@ -284,11 +222,6 @@ main(void) {
     // Create another patch SG=142 with no membership
     p25_patch_update(&st, 142, /*is_patch*/ 1, /*active*/ 1);
 
-    char sum[64];
-    int sl = p25_patch_compose_summary(&st, sum, sizeof sum);
-    rc |= expect_true("summary len>0", sl > 0);
-    rc |= expect_eq_str("summary content", sum, "P: 069,142");
-
     char det[256];
     int dl = p25_patch_compose_details(&st, det, sizeof det);
     rc |= expect_true("details len>0", dl > 0);
@@ -296,32 +229,28 @@ main(void) {
     rc |= expect_true("details includes SG069[P]", strstr(det, "SG069[P]") != NULL);
     rc |= expect_true("details includes WG list", strstr(det, "WG:0837,1929,2748") != NULL);
     rc |= expect_true("details includes crypt", strstr(det, "K:1234 A:84 S:17") != NULL);
-    // SG077 simulselect appears with U:3 (but not in summary)
+    // SG077 simulselect appears with U:3
     rc |= expect_true("details includes SG077[S]", strstr(det, "SG077[S]") != NULL);
     rc |= expect_true("details includes U:3", strstr(det, " U:3") != NULL);
     // SG142 shows as patch with no WG/U context
     rc |= expect_true("details includes SG142[P]", strstr(det, "SG142[P]") != NULL);
 
-    // Add a 4th WGID to SG069 to trigger compact summary form WG:4(a,b+)
+    // Add a 4th WGID to SG069 to trigger compact details form WG:4(a,b+)
     p25_patch_add_wgid(&st, 69, 0x0DEF);
     (void)p25_patch_compose_details(&st, det, sizeof det);
     rc |= expect_true("details compact WG", strstr(det, "WG:4(0837,1929+") != NULL);
 
-    // TTL sweep: mark SG142 stale, ensure it disappears from summary/details
+    // TTL sweep: mark SG142 stale, ensure it disappears from details
     // (op25 uses 20s PATCH_EXPIRY_TIME)
     int idx142 = find_idx(&st, 142);
     if (idx142 >= 0) {
         st.p25_patch_last_update[idx142] = time(NULL) - 21; // >20s ago (op25 aligned)
     }
-    (void)p25_patch_compose_summary(&st, sum, sizeof sum);
-    rc |= expect_eq_str("summary after TTL", sum, "P: 069");
     (void)p25_patch_compose_details(&st, det, sizeof det);
     rc |= expect_true("details dropped SG142", strstr(det, "SG142[") == NULL);
 
-    // Clear SG069; expect no summary and SG069 inactive
+    // Clear SG069; expect SG069 inactive
     p25_patch_clear_sg(&st, 69);
-    sl = p25_patch_compose_summary(&st, sum, sizeof sum);
-    rc |= expect_true("summary empty after clear", sl == 0 || sum[0] == '\0');
 
     // Removal makes entry inactive when last member removed
     // Re-add as patch and remove members one-by-one

@@ -312,11 +312,16 @@ test_m17_connect_failures(void) {
     g_setsockopt_result = 9;
     assert(udp_socket_connectM17(&opts, &state) == 9);
     assert(g_resolve_count == 0);
+    assert(g_close_count == 1);
+    assert(opts.m17_udp_sock == DSD_INVALID_SOCKET);
 
     reset_stubs();
+    init_opts(&opts);
     g_resolve_result = -1;
     assert(udp_socket_connectM17(&opts, &state) == -1);
     assert(g_resolve_count == 1);
+    assert(g_close_count == 1);
+    assert(opts.m17_udp_sock == DSD_INVALID_SOCKET);
     return 0;
 }
 

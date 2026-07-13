@@ -25,7 +25,7 @@ extern "C" {
  * context API. */
 double dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_cqpsk_timing_bias(void);
-int dsd_rtl_stream_set_rtltcp_autotune(int onoff);
+unsigned int dsd_rtl_stream_output_rate(void);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -34,8 +34,15 @@ struct RtlSdrContext {
     RtlSdrOrchestrator* stream;
 };
 
-static int
-rtl_stream_create_impl(const dsd_opts* opts, dsd_opts* mirrored_opts, RtlSdrContext** out_ctx) {
+/**
+ * @brief Create a new RTL-SDR stream context mirrored to caller-owned options.
+ *
+ * @param opts Mutable caller-owned decoder options. Must not be NULL.
+ * @param out_ctx [out] On success, receives an opaque context pointer.
+ * @return 0 on success; otherwise <0 on error.
+ */
+extern "C" int
+rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     if (!out_ctx || !opts) {
         return -1;
     }
@@ -43,7 +50,7 @@ rtl_stream_create_impl(const dsd_opts* opts, dsd_opts* mirrored_opts, RtlSdrCont
     if (!*out_ctx) {
         return -1;
     }
-    (*out_ctx)->stream = new (std::nothrow) RtlSdrOrchestrator(*opts, mirrored_opts);
+    (*out_ctx)->stream = new (std::nothrow) RtlSdrOrchestrator(*opts);
     if (!(*out_ctx)->stream) {
         free(*out_ctx);
         *out_ctx = NULL;
@@ -53,33 +60,9 @@ rtl_stream_create_impl(const dsd_opts* opts, dsd_opts* mirrored_opts, RtlSdrCont
 }
 
 /**
- * @brief Create a new RTL-SDR stream context from an immutable options snapshot.
- *
- * @param opts Decoder options snapshot used to configure the stream. Must not be NULL.
- * @param out_ctx [out] On success, receives an opaque context pointer.
- * @return 0 on success; otherwise <0 on error.
- */
-extern "C" int
-rtl_stream_create(const dsd_opts* opts, RtlSdrContext** out_ctx) {
-    return rtl_stream_create_impl(opts, NULL, out_ctx);
-}
-
-/**
- * @brief Create a new RTL-SDR stream context mirrored to caller-owned options.
- *
- * @param opts Mutable caller-owned decoder options to mirror. Must not be NULL.
- * @param out_ctx [out] On success, receives an opaque context pointer.
- * @return 0 on success; otherwise <0 on error.
- */
-extern "C" int
-rtl_stream_create_mirrored(dsd_opts* opts, RtlSdrContext** out_ctx) {
-    return rtl_stream_create_impl(opts, opts, out_ctx);
-}
-
-/**
  * @brief Start the stream threads and device I/O.
  *
- * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
+ * @param ctx Stream context created by rtl_stream_create().
  * @return 0 on success; otherwise <0 on error.
  */
 extern "C" int
@@ -95,7 +78,7 @@ rtl_stream_start(RtlSdrContext* ctx) {
  *
  * Safe to call multiple times; subsequent calls are no-ops.
  *
- * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
+ * @param ctx Stream context created by rtl_stream_create().
  * @return 0 on success; otherwise <0 on error.
  */
 extern "C" int
@@ -104,14 +87,6 @@ rtl_stream_stop(RtlSdrContext* ctx) {
         return -1;
     }
     return ctx->stream->stop();
-}
-
-extern "C" int
-rtl_stream_soft_stop(RtlSdrContext* ctx) {
-    if (!ctx || !ctx->stream) {
-        return -1;
-    }
-    return ctx->stream->soft_stop();
 }
 
 /**
@@ -151,14 +126,6 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
     return ctx->stream->tune(center_freq_hz);
 }
 
-extern "C" int
-rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t token) {
-    if (!ctx || !ctx->stream || token == 0U) {
-        return RTL_STREAM_TUNE_FAILED;
-    }
-    return ctx->stream->tune_tagged(center_freq_hz, token);
-}
-
 /**
  * @brief Read up to `count` interleaved audio samples into `out`.
  *
@@ -187,7 +154,7 @@ rtl_stream_output_rate(const RtlSdrContext* ctx) {
     if (!ctx || !ctx->stream) {
         return 0U;
     }
-    return ctx->stream->output_rate();
+    return dsd_rtl_stream_output_rate();
 }
 
 /**
@@ -208,9 +175,4 @@ extern "C" int
 rtl_stream_cqpsk_timing_bias(const RtlSdrContext* ctx) {
     (void)ctx;
     return dsd_rtl_stream_cqpsk_timing_bias();
-}
-
-extern "C" void
-rtl_stream_set_rtltcp_autotune(int onoff) {
-    (void)dsd_rtl_stream_set_rtltcp_autotune(onoff);
 }

@@ -13,7 +13,7 @@
 
 static inline int
 p25_cc_update_is_voice_tuned(const dsd_opts* opts) {
-    return opts && (opts->p25_is_tuned != 0 || opts->trunk_is_tuned != 0);
+    return opts && (opts->trunk_is_tuned != 0);
 }
 
 static inline int

@@ -372,7 +372,8 @@ bench_rtl_output(const BenchOptions& opts) {
 
     ran += run_case(opts, "rtl_symbol_output_read_batch_512", "sample", (double)kBlock, [&]() -> float {
         ring_clear(&ring);
-        ring_write_no_signal(&ring, in.data(), kBlock);
+        DSD_MEMCPY(ring.buffer, in.data(), kBlock * sizeof(float));
+        ring.head.store(kBlock);
         int got = ring_read_batch(&ring, out.data(), kBlock);
         return out[0] + out[(got > 0) ? (size_t)got - 1U : 0U] + (float)got;
     });

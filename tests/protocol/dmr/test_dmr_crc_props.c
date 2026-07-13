@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/fec/dmr_late_entry.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -98,13 +99,13 @@ test_crc4_append_property(void) {
     for (unsigned i = 0; i < L; i++) {
         bits[i] = (i ^ 3) & 1U;
     }
-    uint8_t c_inv = crc4(bits, L);       // function returns inverted remainder
-    uint8_t c = (uint8_t)(c_inv ^ 0x0F); // get actual remainder
+    uint8_t c_inv = dsd_dmr_crc4(bits, L); // function returns inverted remainder
+    uint8_t c = (uint8_t)(c_inv ^ 0x0F);   // get actual remainder
     uint8_t aug[40];
     DSD_MEMCPY(aug, bits, L);
     append_bits(aug, L, c, 4);
     // Over augmented message, remainder is 0, function returns 0^0xF = 0xF
-    assert(crc4(aug, L + 4) == 0x0F);
+    assert(dsd_dmr_crc4(aug, L + 4) == 0x0F);
 }
 
 static void

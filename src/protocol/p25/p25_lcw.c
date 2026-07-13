@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -66,7 +67,7 @@ p25_lcw_store_fdma_iden(const dsd_opts* opts, dsd_state* state, int iden, long i
     e->chan_spac = chan_spac;
     e->trans_off = trans_off;
     e->bw_vu = bw_vu;
-    e->trust = (state->p25_cc_freq != 0 && opts && opts->p25_is_tuned == 0) ? 2 : 1;
+    e->trust = (state->p25_cc_freq != 0 && opts && opts->trunk_is_tuned == 0) ? 2 : 1;
     e->populated = 1;
     e->wacn = state->p2_wacn;
     e->sysid = state->p2_sysid;
@@ -74,34 +75,6 @@ p25_lcw_store_fdma_iden(const dsd_opts* opts, dsd_state* state, int iden, long i
     e->site = state->p2_siteid;
     state->p25_chan_tdma_explicit[iden] |= 1;
     p25_resolve_pending_announcements(opts, state);
-}
-
-/**
- * @brief Resolve a P25 Algorithm ID to a human-readable name.
- *
- * Common APCO P25 ALGIDs used by the voice/ESS paths:
- *   0x80 = unencrypted, 0x81 = DES-OFB, 0x84 = AES-256,
- *   0x89 = AES-128-OFB, 0x9F = DES-XL, 0xAA = ADP/RC4
- *
- * @param algid The 8-bit algorithm identifier.
- * @return Static string with algorithm name, or NULL if unrecognized.
- */
-static const char*
-p25_algid_name(uint8_t algid) {
-    switch (algid) {
-        case 0x80: return "UNENCRYPTED";
-        case 0x81: return "DES-OFB";
-        case 0x82: return "2-KEY 3DES";
-        case 0x83: return "3-KEY 3DES";
-        case 0x84: return "AES-256";
-        case 0x85: return "AES-128";
-        case 0x88: return "AES-CBC";
-        case 0x89: return "AES-128-OFB";
-        case 0x9F: return "DES-XL";
-        case 0xAA: return "ADP/RC4";
-        case 0xAF: return "AES-256-GCM";
-        default: return NULL;
-    }
 }
 
 //new p25_lcw function here -- TIA-102.AABF-D LCW Format Messages (if anybody wants to fill the rest out)
@@ -269,7 +242,7 @@ p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
 
 static int
 p25_lcw_trunk_cc_ready_for_grant(p25_lcw_ctx* ctx) {
-    if (ctx->opts->p25_trunk != 1) {
+    if (ctx->opts->trunk_enable != 1) {
         return 0;
     }
     return ctx->state->p25_cc_freq != 0 || ctx->state->trunk_cc_freq > 0;
@@ -335,8 +308,8 @@ p25_lcw_warn_format_44_retune_disabled(p25_lcw_ctx* ctx) {
     }
     ctx->state->p25_lcw_retune_disabled_warned = 1;
     DSD_FPRINTF(stderr,
-                " [WARN: P25 LCW explicit retune is disabled; 0x44 grants may not be followed. Enable with -j or "
-                "menu.] ");
+                " [WARN: P25 LCW explicit retune is disabled; 0x44 grants may not be followed. Enable it from the "
+                "terminal menu.] ");
 }
 
 static void
@@ -696,7 +669,7 @@ p25_lcw_handle_call_termination(p25_lcw_ctx* ctx) {
     uint32_t tgt = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " Call Termination; TGT: %d;", tgt);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    if (ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->p25_is_tuned == 1) {
+    if (ctx->opts->trunk_enable == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->trunk_is_tuned == 1) {
         ctx->state->p25_sm_force_release = 1;
         p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "explicit-release");
     }
@@ -847,7 +820,7 @@ p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
     uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    if (ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->p25_is_tuned == 1) {
+    if (ctx->opts->trunk_enable == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->trunk_is_tuned == 1) {
         ctx->state->p25_sm_force_release = 1;
         p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "explicit-release");
     }

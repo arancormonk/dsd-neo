@@ -18,41 +18,18 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
-#define RS_12_9_DATASIZE     9
-#define RS_12_9_CHECKSUMSIZE 3
-
-typedef struct {
-    uint8_t data[RS_12_9_DATASIZE + RS_12_9_CHECKSUMSIZE];
-} rs_12_9_codeword_t;
-
-typedef struct {
-    uint8_t bytes[3];
-} rs_12_9_checksum_t;
-
-rs_12_9_checksum_t* rs_12_9_calc_checksum(const rs_12_9_codeword_t* codeword);
-
 // Forward declaration of LC CRC helper
 uint32_t ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t* CRCComputed,
                                              uint32_t CRCMask);
 
 static void
-build_masked_lc_codeword(rs_12_9_codeword_t* cw, uint32_t mask24, uint32_t* parity_unmasked) {
-    // Build a 12-byte LC codeword with valid RS(12,9) parity, then mask it.
-    DSD_MEMSET(cw, 0, sizeof(*cw));
-
-    // Deterministic 9-byte LC payload
-    for (int i = 0; i < RS_12_9_DATASIZE; i++) {
-        cw->data[i] = (uint8_t)(0x10 + i * 7);
-    }
-
-    rs_12_9_checksum_t* chk = rs_12_9_calc_checksum(cw);
-    // Save unmasked parity for later comparison
-    *parity_unmasked = ((uint32_t)chk->bytes[0] << 16) | ((uint32_t)chk->bytes[1] << 8) | ((uint32_t)chk->bytes[2]);
-
-    // Write masked parity into cw
-    cw->data[9] = (uint8_t)(chk->bytes[0] ^ (uint8_t)(mask24 >> 16));
-    cw->data[10] = (uint8_t)(chk->bytes[1] ^ (uint8_t)(mask24 >> 8));
-    cw->data[11] = (uint8_t)(chk->bytes[2] ^ (uint8_t)(mask24 >> 0));
+build_masked_lc_codeword(uint8_t cw[12], uint32_t mask24, uint32_t* parity_unmasked) {
+    static const uint8_t reference[12] = {0x10, 0x17, 0x1E, 0x25, 0x2C, 0x33, 0x3A, 0x41, 0x48, 0x90, 0x6C, 0x2C};
+    DSD_MEMCPY(cw, reference, sizeof(reference));
+    *parity_unmasked = 0x906C2CU;
+    cw[9] ^= (uint8_t)(mask24 >> 16);
+    cw[10] ^= (uint8_t)(mask24 >> 8);
+    cw[11] ^= (uint8_t)mask24;
 }
 
 static void
@@ -66,51 +43,50 @@ append_bits(uint8_t* dst, unsigned start, uint32_t val, unsigned k) {
 
 static void
 test_lc_crc24_mask(uint32_t mask24) {
-    rs_12_9_codeword_t cw;
+    uint8_t cw[12];
     uint32_t parity_unmasked = 0;
-    build_masked_lc_codeword(&cw, mask24, &parity_unmasked);
+    build_masked_lc_codeword(cw, mask24, &parity_unmasked);
 
     // Feed into CRC check/correct with the same mask
     uint32_t crc_computed = 0;
-    uint32_t ok = ComputeAndCorrectFullLinkControlCrc(cw.data, &crc_computed, mask24);
+    uint32_t ok = ComputeAndCorrectFullLinkControlCrc(cw, &crc_computed, mask24);
     assert(ok == 1);
     assert(crc_computed == parity_unmasked);
 
-    // Ensure output remains masked
-    rs_12_9_checksum_t* chk = rs_12_9_calc_checksum(&cw);
-    assert(cw.data[9] == (uint8_t)(chk->bytes[0] ^ (uint8_t)(mask24 >> 16)));
-    assert(cw.data[10] == (uint8_t)(chk->bytes[1] ^ (uint8_t)(mask24 >> 8)));
-    assert(cw.data[11] == (uint8_t)(chk->bytes[2] ^ (uint8_t)(mask24 >> 0)));
+    // Ensure output remains masked.
+    assert(cw[9] == (uint8_t)(0x90U ^ (uint8_t)(mask24 >> 16)));
+    assert(cw[10] == (uint8_t)(0x6CU ^ (uint8_t)(mask24 >> 8)));
+    assert(cw[11] == (uint8_t)(0x2CU ^ (uint8_t)mask24));
 }
 
 static void
 test_lc_crc24_corrects_single_byte_error(void) {
-    rs_12_9_codeword_t cw;
-    rs_12_9_codeword_t expected;
+    uint8_t cw[12];
+    uint8_t expected[12];
     uint32_t parity_unmasked = 0;
     const uint32_t mask24 = 0x969696U;
-    build_masked_lc_codeword(&cw, mask24, &parity_unmasked);
-    DSD_MEMCPY(&expected, &cw, sizeof(expected));
+    build_masked_lc_codeword(cw, mask24, &parity_unmasked);
+    DSD_MEMCPY(expected, cw, sizeof(expected));
 
-    cw.data[2] ^= 0x55U;
+    cw[2] ^= 0x55U;
     uint32_t crc_computed = 0;
-    uint32_t ok = ComputeAndCorrectFullLinkControlCrc(cw.data, &crc_computed, mask24);
+    uint32_t ok = ComputeAndCorrectFullLinkControlCrc(cw, &crc_computed, mask24);
     assert(ok == 1);
     assert(crc_computed == parity_unmasked);
-    assert(memcmp(cw.data, expected.data, sizeof(cw.data)) == 0);
+    assert(memcmp(cw, expected, sizeof(cw)) == 0);
 }
 
 static void
 test_lc_crc24_rejects_uncorrectable_error(void) {
-    rs_12_9_codeword_t cw;
+    uint8_t cw[12];
     uint32_t parity_unmasked = 0;
     const uint32_t mask24 = 0x999999U;
-    build_masked_lc_codeword(&cw, mask24, &parity_unmasked);
+    build_masked_lc_codeword(cw, mask24, &parity_unmasked);
 
-    cw.data[1] ^= 0x22U;
-    cw.data[7] ^= 0x11U;
+    cw[1] ^= 0x22U;
+    cw[7] ^= 0x11U;
     uint32_t crc_computed = 0;
-    uint32_t ok = ComputeAndCorrectFullLinkControlCrc(cw.data, &crc_computed, mask24);
+    uint32_t ok = ComputeAndCorrectFullLinkControlCrc(cw, &crc_computed, mask24);
     assert(ok == 0);
 }
 

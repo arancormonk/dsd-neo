@@ -494,7 +494,7 @@ p25_mpdu_handle_trunking(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) 
     }
 
     if (ctx->err[0] == 0 && ctx->err[1] == 0) {
-        p25_decode_pdu_trunking(opts, state, ctx->mpdu_byte);
+        (void)p25_decode_pdu_trunking(opts, state, ctx->mpdu_byte, (size_t)len);
     }
 
     p25_mpdu_print_trunking_payload(opts, ctx, crc_extracted, crc_computed);
@@ -700,5 +700,5 @@ processMPDU(dsd_opts* opts, dsd_state* state) {
     p25_mpdu_decode_header_if_usable(opts, state, &ctx);
     p25_mpdu_log_header_crc_error(&ctx);
     p25_mpdu_dispatch_payload(opts, state, &ctx);
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 }

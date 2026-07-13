@@ -217,7 +217,7 @@ test_nsb_cc_update_rejects_different_freq_while_voice_tuned(void) {
     assert(opts != NULL);
     assert(st != NULL);
 
-    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
     st->p25_cc_freq = 769768750;
     st->trunk_cc_freq = 769768750;
 
@@ -258,7 +258,6 @@ test_nsb_cc_update_rejects_stale_p25_alias_while_voice_tuned(void) {
     assert(opts != NULL);
     assert(st != NULL);
 
-    opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     st->p25_cc_freq = 769768750;
     st->trunk_cc_freq = 769868750;
@@ -279,7 +278,6 @@ test_nsb_cc_update_accepts_trunk_alias_while_voice_tuned(void) {
     assert(opts != NULL);
     assert(st != NULL);
 
-    opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     st->p25_cc_freq = 769768750;
     st->trunk_cc_freq = 769868750;

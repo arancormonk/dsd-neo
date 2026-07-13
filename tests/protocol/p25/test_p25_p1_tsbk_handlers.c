@@ -128,14 +128,6 @@ p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_patch_remove_wuid(dsd_state* state, int sgid, uint32_t wuid) {
-    (void)state;
-    (void)sgid;
-    (void)wuid;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_patch_clear_sg(dsd_state* state, int sgid) {
     (void)state;
     g_clear_count++;
@@ -341,9 +333,8 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     (void)state;
-    (void)opts;
 }
 
 int
@@ -395,10 +386,8 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
-                                    int encrypted, int data_call, dsd_tg_policy_private_allowlist_mode allowlist_mode,
-                                    dsd_tg_policy_hold_behavior hold_behavior, dsd_tg_policy_decision* out) {
+                                    int encrypted, int data_call, dsd_tg_policy_decision* out) {
     (void)state;
-    (void)hold_behavior;
     if (!out) {
         return -1;
     }
@@ -424,7 +413,7 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
     }
-    if (opts && opts->trunk_use_allow_list == 1 && allowlist_mode == DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK) {
+    if (opts && opts->trunk_use_allow_list == 1) {
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ALLOWLIST;
     }
@@ -851,6 +840,8 @@ test_standard_isp_metadata_logging_and_no_retune(void) {
         return 1;
     }
     rc |= expect_contains("isp emergency label", out, "Emergency Alarm Request");
+    rc |= expect_contains("isp emergency source", out, "Source [74565]");
+    rc |= expect_contains("isp emergency group", out, "Group [4660][1234]");
     rc |= expect_contains("isp emergency marker", out, "** EMERGENCY **");
 
     DSD_MEMSET(tsbk, 0, sizeof(tsbk));
@@ -1029,7 +1020,7 @@ test_standard_osp_data_channel_metadata_and_dispatch(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_calls();
     g_channel_freq = 851012500;
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -1151,7 +1142,7 @@ test_standard_osp_data_grants_require_control_channel(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -1208,7 +1199,7 @@ test_standard_osp_data_grants_allow_channel_zero(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -1273,7 +1264,7 @@ test_standard_osp_individual_data_allowlist_blocks_unknown(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_calls();
     g_channel_freq = 851012500;
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -1423,7 +1414,7 @@ test_mfid90_grant_seeds_trunk_state(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
 
     uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
     tsbk[2] = 0xA5;
@@ -1460,7 +1451,7 @@ test_mfid90_grant_update_trunk_dispatch(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
 
     uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
     tsbk[2] = 0x11;
@@ -1600,7 +1591,7 @@ test_mfid90_tdma_data_channel_display_only(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
 
     uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
     tsbk[0] = 0x16;
@@ -1656,7 +1647,7 @@ test_network_status_state_policy(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.p25_cc_freq = 860012500;
     state.trunk_cc_freq = 860012500;
     state.p25_cc_is_tdma = 1;

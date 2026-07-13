@@ -43,7 +43,6 @@ static int g_r34_list_status;
 static int g_r34_list_count;
 static uint8_t g_r34_soft_bytes[18];
 static uint8_t g_r34_hard_bytes[18];
-static uint8_t g_r34_legacy_bytes[18];
 static dmr_r34_candidate g_r34_candidates[4];
 
 static void
@@ -71,7 +70,6 @@ reset_handler_counters(void) {
     g_r34_list_count = 0;
     DSD_MEMSET(g_r34_soft_bytes, 0, sizeof(g_r34_soft_bytes));
     DSD_MEMSET(g_r34_hard_bytes, 0, sizeof(g_r34_hard_bytes));
-    DSD_MEMSET(g_r34_legacy_bytes, 0, sizeof(g_r34_legacy_bytes));
     DSD_MEMSET(g_r34_candidates, 0, sizeof(g_r34_candidates));
 }
 
@@ -81,21 +79,6 @@ dsd_fopen_private(const char* path, const char* mode) {
     (void)path;
     (void)mode;
     return NULL;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-pack_bit_array_into_byte_array(const uint8_t* bits, uint8_t* bytes, int len) {
-    if (len <= 0) {
-        return;
-    }
-    const size_t byte_count = (size_t)len;
-    DSD_MEMSET(bytes, 0, byte_count * sizeof(uint8_t));
-    for (size_t byte = 0U; byte < byte_count; byte++) {
-        for (size_t bit = 0U; bit < 8U; bit++) {
-            bytes[byte] = (uint8_t)((bytes[byte] << 1U) | (bits[(byte * 8U) + bit] & 1U));
-        }
-    }
 }
 
 uint16_t
@@ -197,13 +180,6 @@ dmr_r34_viterbi_decode_list(const uint8_t* dibits, const uint8_t* reliab, dmr_r3
         *out_count = g_r34_list_count;
     }
     return g_r34_list_status;
-}
-
-uint32_t
-dmr_34(const uint8_t* input, uint8_t treturn[18]) {
-    (void)input;
-    DSD_MEMCPY(treturn, g_r34_legacy_bytes, 18U);
-    return 0;
 }
 
 void

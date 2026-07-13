@@ -28,17 +28,6 @@ typedef enum {
 } dsd_tg_policy_match_type;
 
 typedef enum {
-    DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW = 0,
-    DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK = 1,
-} dsd_tg_policy_private_allowlist_mode;
-
-typedef enum {
-    DSD_TG_POLICY_HOLD_COMPAT_GRANT = 0,
-    DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY = 1,
-    DSD_TG_POLICY_HOLD_FORCE_TUNE_AND_MEDIA = 2,
-} dsd_tg_policy_hold_behavior;
-
-typedef enum {
     DSD_TG_POLICY_SOURCE_IMPORTED = 0,
     DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS = 1,
     DSD_TG_POLICY_SOURCE_USER_LOCKOUT = 2,
@@ -64,6 +53,9 @@ typedef enum {
     DSD_TG_POLICY_BLOCK_RECORD = 1u << 8,
     DSD_TG_POLICY_BLOCK_STREAM = 1u << 9,
 } dsd_tg_policy_block_reason;
+
+/** @brief Return the highest-priority diagnostic label for a block-reason mask. */
+const char* dsd_tg_policy_block_reason_label(uint32_t block_reasons);
 
 typedef struct {
     uint32_t id_start;
@@ -122,12 +114,9 @@ int dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, 
                                size_t name_sz);
 int dsd_tg_policy_copy_snapshot(dsd_state* dst, const dsd_state* src);
 int dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
-                                      int encrypted, int data_call, dsd_tg_policy_hold_behavior hold_behavior,
-                                      dsd_tg_policy_decision* out);
+                                      int encrypted, int data_call, dsd_tg_policy_decision* out);
 int dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
-                                        int encrypted, int data_call,
-                                        dsd_tg_policy_private_allowlist_mode allowlist_mode,
-                                        dsd_tg_policy_hold_behavior hold_behavior, dsd_tg_policy_decision* out);
+                                        int encrypted, int data_call, dsd_tg_policy_decision* out);
 int dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
 int dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode);
 int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata);
@@ -138,7 +127,6 @@ int dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
 int dsd_tg_policy_note_active_call(dsd_state* state, const dsd_tg_policy_call_route* route,
                                    const dsd_tg_policy_decision* decision, double now_mono_s);
 int dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
-int dsd_tg_policy_clear_active_call_route(dsd_state* state, const dsd_tg_policy_call_route* route);
 
 int dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state);
 

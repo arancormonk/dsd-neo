@@ -6,12 +6,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
-
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/fec/dmr_late_entry.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,7 +34,7 @@ fill_le_fragments_for_mi(dsd_state* state, uint8_t slot, uint32_t mi32) {
     for (int i = 0; i < 32; i++) {
         mi_bits32[i] = (uint8_t)((mi32 >> (31 - i)) & 1U);
     }
-    const uint8_t crc = crc4(mi_bits32, 32);
+    const uint8_t crc = dsd_dmr_crc4(mi_bits32, 32);
 
     unsigned char msg36[36];
     DSD_MEMSET(msg36, 0, sizeof(msg36));

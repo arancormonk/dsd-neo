@@ -7,8 +7,7 @@
  * @file
  * @brief Unit tests for tcp_metrics_init() and tcp_metrics_reset().
  *
- * Verifies that init zeroes counters, sets sample_rate and default smoothing
- * correctly, and that reset re-initialises while preserving sample_rate.
+ * Verifies watchdog initialization and reset behavior.
  */
 
 #include <dsd-neo/io/tcp_quality_metrics.h>
@@ -44,16 +43,6 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 }
 
 static int
-expect_float(const char* label, float got, float want) {
-    float diff = got - want;
-    if (diff < -1.0e-6f || diff > 1.0e-6f) {
-        DSD_FPRINTF(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
-        return 1;
-    }
-    return 0;
-}
-
-static int
 expect_nonzero_u64(const char* label, uint64_t val) {
     if (val == 0) {
         DSD_FPRINTF(stderr, "FAIL: %s: expected non-zero, got 0\n", label);
@@ -66,7 +55,7 @@ int
 main(void) {
     int rc = 0;
 
-    /* --- init zeroes counters and sets sample_rate/default smoothing --- */
+    /* --- init zeroes watchdog counters and sets sample rate --- */
     {
         struct tcp_quality_metrics m;
         /* Fill with garbage first to ensure init clears everything */
@@ -75,22 +64,10 @@ main(void) {
         tcp_metrics_init(&m, 1536000);
 
         rc |= expect_u32("init sample_rate", m.sample_rate, 1536000);
-        rc |= expect_u64("init window_bytes", m.window_bytes, 0);
-        rc |= expect_u64("init last_recv_ns", m.last_recv_ns, 0);
-        rc |= expect_u32("init jitter_count", m.jitter_count, 0);
-        rc |= expect_float("init jitter_ewma_alpha", m.jitter_ewma_alpha, 0.2f);
-        rc |= expect_int("init jitter_ewma_inited", m.jitter_ewma_inited, 0);
         rc |= expect_u64("init watchdog_bytes", m.watchdog_bytes, 0);
-        rc |= expect_int("init watchdog_active", m.watchdog_active, 0);
         rc |= expect_int("init watchdog_trigger_latched", m.watchdog_trigger_latched, 0);
-        rc |= expect_float("init snapshot.throughput_ratio", m.snapshot.throughput_ratio, 0.0f);
-        rc |= expect_float("init snapshot.jitter_variance_us2", m.snapshot.jitter_variance_us2, 0.0f);
-        rc |= expect_float("init snapshot.input_ring_fill_pct", m.snapshot.input_ring_fill_pct, 0.0f);
-        rc |= expect_u64("init snapshot.producer_drops", m.snapshot.producer_drops, 0);
-        rc |= expect_int("init snapshot.watchdog_triggered", m.snapshot.watchdog_triggered, 0);
 
         /* Timestamps should be set to current time (non-zero) */
-        rc |= expect_nonzero_u64("init window_start_ns", m.window_start_ns);
         rc |= expect_nonzero_u64("init watchdog_start_ns", m.watchdog_start_ns);
         rc |= expect_nonzero_u64("init connection_established_ns", m.connection_established_ns);
     }
@@ -101,19 +78,14 @@ main(void) {
         tcp_metrics_init(&m, 48000);
 
         /* Dirty some fields to simulate usage */
-        m.window_bytes = 99999;
-        m.jitter_count = 42;
         m.watchdog_bytes = 12345;
-        m.snapshot.throughput_ratio = 0.75f;
+        m.watchdog_trigger_latched = 1;
 
         tcp_metrics_reset(&m, 48000);
 
         rc |= expect_u32("reset sample_rate", m.sample_rate, 48000);
-        rc |= expect_u64("reset window_bytes", m.window_bytes, 0);
-        rc |= expect_u32("reset jitter_count", m.jitter_count, 0);
         rc |= expect_u64("reset watchdog_bytes", m.watchdog_bytes, 0);
-        rc |= expect_int("reset watchdog_trigger_latched", m.watchdog_trigger_latched, 0);
-        rc |= expect_float("reset snapshot.throughput_ratio", m.snapshot.throughput_ratio, 0.0f);
+        rc |= expect_int("reset preserves watchdog event", m.watchdog_trigger_latched, 1);
     }
 
     /* --- reset with different sample_rate --- */

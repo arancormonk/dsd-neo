@@ -18,11 +18,7 @@
 extern "C" {
 #endif
 
-typedef enum DSD_ATTR_PACKED {
-    DSD_FRONTEND_NONE = 0,
-    DSD_FRONTEND_TERMINAL = 1,
-    DSD_FRONTEND_NATIVE = 2
-} dsd_frontend_kind;
+typedef enum DSD_ATTR_PACKED { DSD_FRONTEND_NONE = 0, DSD_FRONTEND_TERMINAL = 1 } dsd_frontend_kind;
 
 typedef struct dsd_frontend_common_display_opts {
     int constellation;

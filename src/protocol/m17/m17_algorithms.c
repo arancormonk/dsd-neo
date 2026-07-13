@@ -165,16 +165,6 @@ m17_prbs9_rx_push_bit(m17_prbs9_rx_state* rx, uint8_t bit) {
     return 0;
 }
 
-uint8_t
-m17_scrambler_key_bits_for_subtype(uint8_t subtype) {
-    switch (subtype) {
-        case 0U: return 8U;
-        case 1U: return 16U;
-        case 2U: return 24U;
-        default: return 0U;
-    }
-}
-
 uint32_t
 m17_scrambler_mask_for_subtype(uint8_t subtype) {
     switch (subtype) {
@@ -700,23 +690,6 @@ m17_stream_combine_frame_bits(const uint8_t* lich_bits, const uint8_t* stream_pu
     }
 }
 
-void
-m17_bert_build_type1_bits(const uint8_t* bert_payload_bits, uint8_t* type1_flush_bits) {
-    if (type1_flush_bits == NULL) {
-        return;
-    }
-
-    for (int i = 0; i < M17_BERT_TYPE1_FLUSH_BITS; i++) {
-        type1_flush_bits[i] = 0U;
-    }
-    if (bert_payload_bits == NULL) {
-        return;
-    }
-    for (int i = 0; i < M17_BERT_PAYLOAD_BITS; i++) {
-        type1_flush_bits[i] = (uint8_t)(bert_payload_bits[i] & 1U);
-    }
-}
-
 uint16_t
 m17_bert_encode_type1_bits(const uint8_t* type1_flush_bits, uint8_t* randomized_bits, uint16_t* consumed_bits) {
     if (type1_flush_bits == NULL || randomized_bits == NULL) {
@@ -792,11 +765,6 @@ int
 m17_symbol_from_dibit(uint8_t dibit) {
     static const int symbol_map[4] = {+1, +3, -1, -3};
     return symbol_map[dibit & 0x3U];
-}
-
-int
-m17_deviation_hz_from_dibit(uint8_t dibit) {
-    return m17_symbol_from_dibit(dibit) * M17_DEVIATION_STEP_HZ;
 }
 
 static uint8_t

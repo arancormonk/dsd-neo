@@ -59,16 +59,6 @@ fsk_modem_apply_config(struct demod_state* s) {
 }
 
 static int
-opts_is_digital_mode(const dsd_opts* opts) {
-    if (!opts) {
-        return 0;
-    }
-    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
-            || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
-            || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
-}
-
-static int
 opts_flag_is_set(int flag) {
     return (flag == 1) ? 1 : 0;
 }
@@ -119,14 +109,6 @@ opts_has_4800_four_level_mode(const dsd_opts* opts) {
     }
     return (opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
             || opts->frame_m17 == 1);
-}
-
-static int
-opts_has_4800_wide_four_level_mode(const dsd_opts* opts) {
-    if (!opts) {
-        return 0;
-    }
-    return (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1);
 }
 
 static int
@@ -225,7 +207,7 @@ opts_channel_profile_for_rate(const dsd_opts* opts, const demod_state* demod, in
             break;
         default: break;
     }
-    if (opts_has_4800_wide_four_level_mode(opts)) {
+    if (dsd_opts_uses_wide_4800_profile(opts)) {
         return DSD_CH_LPF_PROFILE_12K5;
     }
     if (opts_has_p25_mode(opts)) {
@@ -251,7 +233,7 @@ demod_apply_output_kind(struct demod_state* s, const dsd_opts* opts) {
     s->symbol_rate_hz = opts_symbol_rate_hz(opts);
     s->symbol_levels = opts_symbol_levels_for_rate(opts, s->symbol_rate_hz);
 
-    if (!opts_is_digital_mode(opts) || opts->analog_only == 1 || opts->m17encoder == 1) {
+    if (!dsd_opts_has_digital_decode_mode(opts) || opts->analog_only == 1 || opts->m17encoder == 1) {
         s->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
     } else if (s->cqpsk_enable) {
         s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
@@ -580,7 +562,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, const dsd_opts* op
         return;
     }
 
-    dsd_neo_config_init(opts);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
         return;
@@ -737,7 +719,7 @@ rtl_demod_select_defaults_for_mode(struct demod_state* demod, const dsd_opts* op
     }
 
     int ted_gain_is_set = (demod->ted_gain_is_set || cfg->ted_gain_is_set) ? 1 : 0;
-    if (opts_is_digital_mode(opts)) {
+    if (dsd_opts_has_digital_decode_mode(opts)) {
         rtl_demod_apply_digital_default_tracking(demod, opts, output, ted_gain_is_set);
     }
 }

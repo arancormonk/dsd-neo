@@ -19,12 +19,14 @@
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
 //first 24-bits of the larger scramble table
-static const uint8_t sd_d[48] = {0, 0, 0, 0,  //0
-                                 1, 1, 1, 0,  //E
-                                 1, 1, 1, 1,  //F
-                                 0, 0, 1, 0,  //2
-                                 1, 1, 0, 0,  //C
-                                 1, 0, 0, 1}; //9
+enum { DSTAR_SLOW_DATA_SCRAMBLER_BITS = 24 };
+
+static const uint8_t sd_d[DSTAR_SLOW_DATA_SCRAMBLER_BITS] = {0, 0, 0, 0,  //0
+                                                             1, 1, 1, 0,  //E
+                                                             1, 1, 1, 1,  //F
+                                                             0, 0, 1, 0,  //2
+                                                             1, 1, 0, 0,  //C
+                                                             1, 0, 0, 1}; //9
 
 typedef struct dstar_sd_ctx_s {
     uint8_t sd_bytes[60];
@@ -56,7 +58,7 @@ static void
 dstar_sd_apply_descrambler(uint8_t* sd) {
     int i;
     for (i = 0; i < 480; i++) {
-        sd[i] ^= sd_d[i % 24];
+        sd[i] ^= sd_d[i % DSTAR_SLOW_DATA_SCRAMBLER_BITS];
     }
 }
 

@@ -172,9 +172,8 @@ p25_status_accum_ensure_started(dsd_state* state) {
 }
 
 void
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     (void)state;
-    (void)opts;
 }
 
 uint64_t
@@ -732,8 +731,8 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(g_event_history, 0, sizeof(g_event_history));
     state.event_history_s = g_event_history;
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     DSD_SNPRINTF(opts.event_out_file, sizeof(opts.event_out_file), "%s", "events.log");
     state.lasttg = 1234;
     g_lookup_label = "Secure TG";

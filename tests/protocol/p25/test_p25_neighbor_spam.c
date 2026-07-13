@@ -14,7 +14,6 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -28,43 +27,9 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
 #define setenv dsd_test_setenv
 
 // Stubs for radio control
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return true;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return true;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
 
 static int
 expect_true(const char* tag, int cond) {
@@ -82,12 +47,12 @@ main(void) {
     static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     // Set system identity so SM can label candidates; disable on-disk cache via env
     st.p2_wacn = 0xABCDE;
     st.p2_sysid = 0x123;
     setenv("DSD_NEO_CC_CACHE", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     // Timing start for rough performance guard
     double elapsed_ms = 0.0;

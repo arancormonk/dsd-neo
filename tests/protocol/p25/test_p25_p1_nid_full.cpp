@@ -8,18 +8,17 @@
  * @brief Unit tests for p25p1_nid_decode() with full BCH correction,
  *        DUID validation, and parity override logic.
  *
- * This file is C++ because it uses the BCH encoder (BCH_63_16.hpp) to generate
- * valid codewords as test vectors. It includes both the C header for NID
- * decoding and the C++ BCH class.
+ * This file is C++ because its valid-codeword fixtures use a test-only P25
+ * generator matrix independent from the production BCH decoder.
  *
  * Validates: Requirements 3.3, 4.1, 4.2, 4.3, 7.1, 7.2
  */
 
 #include <cstdint>
 #include <cstdio>
-#include <dsd-neo/fec/BCH_63_16.hpp>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include "dsd-neo/core/safe_api.h"
+#include "p25_nid_generator.hpp"
 
 static void
 make_info_word(int nac, int duid, char info[16]) {
@@ -52,14 +51,13 @@ expected_parity(int duid) {
 /**
  * @brief Verify that p25p1_nid_decode accepts all 7 valid DUID values.
  *
- * For each valid DUID, encode a codeword with NAC=0x123, call p25p1_nid_decode
+ * For each valid DUID, generate a codeword with NAC=0x123, call p25p1_nid_decode
  * with the correct parity, and verify NID_OK is returned.
  *
  * Validates: Requirements 4.1, 4.2
  */
 static int
 test_duid_validation_all_valid(void) {
-    BCH_63_16_11 bch;
     int valid_duids[] = {0x0, 0x3, 0x5, 0x7, 0xA, 0xC, 0xF};
     int nac = 0x123;
 
@@ -69,7 +67,7 @@ test_duid_validation_all_valid(void) {
         char codeword[63];
 
         make_info_word(nac, duid, info);
-        bch.encode(info, codeword);
+        p25_test_generate_nid_codeword(info, codeword);
 
         unsigned char parity = expected_parity(duid);
 
@@ -111,14 +109,13 @@ test_duid_validation_all_valid(void) {
 /**
  * @brief Verify that p25p1_nid_decode rejects all 9 invalid DUID values.
  *
- * For each invalid DUID, encode a codeword with NAC=0x456, call p25p1_nid_decode
+ * For each invalid DUID, generate a codeword with NAC=0x456, call p25p1_nid_decode
  * with parity=0, and verify NID_DECODE_FAIL is returned.
  *
  * Validates: Requirements 4.3
  */
 static int
 test_duid_validation_all_invalid(void) {
-    BCH_63_16_11 bch;
     int invalid_duids[] = {0x1, 0x2, 0x4, 0x6, 0x8, 0x9, 0xB, 0xD, 0xE};
     int nac = 0x456;
 
@@ -128,7 +125,7 @@ test_duid_validation_all_invalid(void) {
         char codeword[63];
 
         make_info_word(nac, duid, info);
-        bch.encode(info, codeword);
+        p25_test_generate_nid_codeword(info, codeword);
 
         // Use parity=0 (doesn't matter since DUID validation happens first)
         struct p25p1_nid_result result = p25p1_nid_decode(codeword, nullptr, 0, 0, 0);
@@ -167,7 +164,6 @@ test_duid_validation_all_invalid(void) {
  */
 static int
 test_parity_table_values(void) {
-    BCH_63_16_11 bch;
     int valid_duids[] = {0x0, 0x3, 0x5, 0x7, 0xA, 0xC, 0xF};
     int nac = 0x789;
 
@@ -177,7 +173,7 @@ test_parity_table_values(void) {
         char codeword[63];
 
         make_info_word(nac, duid, info);
-        bch.encode(info, codeword);
+        p25_test_generate_nid_codeword(info, codeword);
 
         // Call with parity=1 for all DUIDs
         struct p25p1_nid_result result = p25p1_nid_decode(codeword, nullptr, 0, 1, 0);
@@ -221,8 +217,6 @@ test_parity_table_values(void) {
  */
 static int
 test_parity_override_correctable_range(void) {
-    BCH_63_16_11 bch;
-
     // NAC=0x293, DUID=0x5 (LDU1) - expected parity is 1
     int nac = 0x293;
     int duid = 0x5;
@@ -230,7 +224,7 @@ test_parity_override_correctable_range(void) {
     char codeword[63];
 
     make_info_word(nac, duid, info);
-    bch.encode(info, codeword);
+    p25_test_generate_nid_codeword(info, codeword);
 
     int counts[] = {0, 6, 7, 11};
     int flip_positions[11] = {16, 22, 28, 34, 40, 46, 52, 18, 24, 30, 36};
@@ -287,8 +281,6 @@ test_parity_override_correctable_range(void) {
  */
 static int
 test_decode_failure_no_error_count(void) {
-    BCH_63_16_11 bch;
-
     // Encode a valid codeword, then corrupt 12 bits (beyond t=11)
     int nac = 0x100;
     int duid = 0x3; // TDU
@@ -296,7 +288,7 @@ test_decode_failure_no_error_count(void) {
     char codeword[63];
 
     make_info_word(nac, duid, info);
-    bch.encode(info, codeword);
+    p25_test_generate_nid_codeword(info, codeword);
 
     char corrupted[63];
     DSD_MEMCPY(corrupted, codeword, 63);
@@ -336,15 +328,13 @@ test_decode_failure_no_error_count(void) {
  */
 static int
 test_observed_nac_retry_after_bch_failure(void) {
-    BCH_63_16_11 bch;
-
     int nac = 0x293;
     int duid = 0x5; // LDU1
     char info[16];
     char codeword[63];
 
     make_info_word(nac, duid, info);
-    bch.encode(info, codeword);
+    p25_test_generate_nid_codeword(info, codeword);
 
     char corrupted[63];
     DSD_MEMCPY(corrupted, codeword, 63);
@@ -390,15 +380,13 @@ test_observed_nac_retry_after_bch_failure(void) {
  */
 static int
 test_soft_nid_low_reliability_recovery(void) {
-    BCH_63_16_11 bch;
-
     int nac = 0x293;
     int duid = 0x5; // LDU1
     char info[16];
     char codeword[63];
 
     make_info_word(nac, duid, info);
-    bch.encode(info, codeword);
+    p25_test_generate_nid_codeword(info, codeword);
 
     char corrupted[63];
     DSD_MEMCPY(corrupted, codeword, 63);
@@ -443,15 +431,13 @@ test_soft_nid_low_reliability_recovery(void) {
  */
 static int
 test_soft_nid_high_reliability_rejected(void) {
-    BCH_63_16_11 bch;
-
     int nac = 0x293;
     int duid = 0x5;
     char info[16];
     char codeword[63];
 
     make_info_word(nac, duid, info);
-    bch.encode(info, codeword);
+    p25_test_generate_nid_codeword(info, codeword);
 
     char corrupted[63];
     DSD_MEMCPY(corrupted, codeword, 63);
@@ -481,15 +467,13 @@ test_soft_nid_high_reliability_rejected(void) {
  */
 static int
 test_soft_observed_nac_retry_exempts_forced_nac_bits(void) {
-    BCH_63_16_11 bch;
-
     int nac = 0x293;
     int duid = 0x5;
     char info[16];
     char codeword[63];
 
     make_info_word(nac, duid, info);
-    bch.encode(info, codeword);
+    p25_test_generate_nid_codeword(info, codeword);
 
     char corrupted[63];
     DSD_MEMCPY(corrupted, codeword, 63);

@@ -39,24 +39,10 @@ test_double_env_defaults_and_validation(void) {
     (void)dsd_unsetenv("DSD_NEO_TEST_MENU_DOUBLE");
 }
 
-static void
-test_hex_u64_parser(void) {
-    unsigned long long out = 0;
-
-    assert(parse_hex_u64(NULL, &out) == 0);
-    assert(parse_hex_u64("", &out) == 0);
-    assert(parse_hex_u64("1234", NULL) == 0);
-    assert(parse_hex_u64("12xx", &out) == 0);
-
-    assert(parse_hex_u64("1A2b", &out) == 1);
-    assert(out == 0x1A2bULL);
-}
-
 int
 main(void) {
     test_int_env_defaults_and_validation();
     test_double_env_defaults_and_validation();
-    test_hex_u64_parser();
     printf("UI_MENU_ENV: OK\n");
     return 0;
 }

@@ -7,8 +7,6 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 
-#include <stdlib.h>
-
 #if defined(__SSE__) || defined(__SSE2__)
 #include <xmmintrin.h>
 #endif
@@ -18,7 +16,7 @@ dsd_bootstrap_enable_ftz_daz_if_enabled(void) {
 #if defined(__SSE__) || defined(__SSE2__)
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     if (!cfg || !cfg->ftz_daz_enable) {

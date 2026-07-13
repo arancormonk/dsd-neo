@@ -491,21 +491,6 @@ expect_rtl_metrics_exports_and_toggles(void) {
         rc = 1;
     }
 
-    // Resetting Costas state clears phase/error accumulators but preserves tuned frequency.
-    rtl_stream_reset_costas();
-    rc |= expect_double_near("RTL reset Costas preserves frequency", demod.costas_state.freq, 0.020, 1e-6);
-    rc |= expect_double_near("RTL reset Costas clears phase", demod.costas_state.phase, 0.0, 1e-6);
-    rc |= expect_double_near("RTL reset Costas clears error", demod.costas_state.error, 0.0, 1e-6);
-    rc |= expect_double_near("RTL reset Costas clears smoothed error", demod.costas_state.error_smooth, 0.0, 1e-6);
-    rc |= expect_double_near("RTL reset Costas diff prev real", demod.cqpsk_diff_prev_r, 1.0, 1e-6);
-    rc |= expect_double_near("RTL reset Costas diff prev imag", demod.cqpsk_diff_prev_j, 0.0, 1e-6);
-    rc |= expect_int_eq("RTL reset Costas clears exported error", rtl_stream_get_costas_err_q14(), 0);
-    rc |= expect_int_eq("RTL reset Costas metrics snapshot", rtl_stream_get_costas_metrics(&metrics), 0);
-    rc |= expect_int_eq("RTL reset Costas smooth metric", metrics.err_smooth_avg_q14, 0);
-    rc |= expect_int_eq("RTL reset Costas raw metric", metrics.err_raw_avg_q14, 0);
-    rc |= expect_int_eq("RTL reset Costas confidence metric", metrics.confidence_avg_q14, 0);
-    rc |= expect_int_eq("RTL reset Costas zero confidence metric", metrics.zero_conf_pct, 0);
-
     g_snr_c4fm_db.store(11.25, std::memory_order_relaxed);
     g_snr_qpsk_db.store(12.50, std::memory_order_relaxed);
     g_snr_gfsk_db.store(13.75, std::memory_order_relaxed);

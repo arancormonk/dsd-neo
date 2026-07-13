@@ -34,7 +34,7 @@ Path handling:
 
 Metadata is JSON with `format: "dsd-neo-iq"`.
 
-- `version: 1` is used for legacy single-segment captures with no replay event timeline.
+- `version: 1` identifies historical single-segment captures with no replay event timeline.
 - `version: 2` is used when the capture contains a replay event timeline.
 
 The writer records:
@@ -61,7 +61,7 @@ Event objects contain:
 - `duration_bytes`: required for `MUTE`; omitted muted data duration in capture-data bytes.
 - `center_frequency_hz`, `capture_center_frequency_hz`, and `sample_rate_hz`: required for `RETUNE` and `RESET`.
 
-The legacy summary fields remain present. `contains_retunes` and `capture_retune_count` summarize retune activity, while
+The integrity summary fields remain present. `contains_retunes` and `capture_retune_count` summarize retune activity, while
 the v2 `events` array provides the ordering needed for replay.
 
 `--iq-info` reports:

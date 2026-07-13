@@ -161,7 +161,7 @@ dsd_app_request_redraw(void) {
 }
 
 int
-dsd_app_consume_redraw_requested(void) {
+dsd_app_frontend_redraw_consume(void) {
     int requested = g_redraw_requested;
     g_redraw_requested = 0;
     return requested;

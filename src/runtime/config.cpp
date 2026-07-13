@@ -146,8 +146,6 @@ config_snapshot_equals_block_b(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(cqpsk_sync_inv);
     CONFIG_EQ_FIELD(cqpsk_sync_neg_is_set);
     CONFIG_EQ_FIELD(cqpsk_sync_neg);
-    CONFIG_EQ_FIELD(sync_warmstart_is_set);
-    CONFIG_EQ_FIELD(sync_warmstart_enable);
     CONFIG_EQ_FIELD(dmr_hangtime_is_set);
     CONFIG_EQ_FIELD(dmr_grant_timeout_is_set);
     CONFIG_EQ_FIELD(p25_hangtime_is_set);
@@ -512,8 +510,6 @@ default_cache_dir(char* dst, size_t dst_size) {
 static void
 config_init_defaults(dsdneoRuntimeConfig& c) {
     /* Defaults for centralized knobs (may be overridden by env parsing below). */
-    c.sync_warmstart_enable = 1;
-
     c.dmr_hangtime_s = 2.0;
     c.dmr_grant_timeout_s = 4.0;
 
@@ -658,21 +654,10 @@ config_init_cqpsk_sync(dsdneoRuntimeConfig& c) {
 }
 
 static void
-config_init_sync_warmstart(dsdneoRuntimeConfig& c) {
-    /* Sync warm-start (kill-switch): DSD_NEO_SYNC_WARMSTART=0 disables. */
-    const char* sw = getenv("DSD_NEO_SYNC_WARMSTART");
-    c.sync_warmstart_is_set = env_is_set(sw);
-    if (c.sync_warmstart_is_set && strcmp(sw, "0") == 0) {
-        c.sync_warmstart_enable = 0;
-    }
-}
-
-static void
 config_init_cqpsk(dsdneoRuntimeConfig& c) {
     /* CQPSK runtime toggles */
     config_init_cqpsk_toggle(c);
     config_init_cqpsk_sync(c);
-    config_init_sync_warmstart(c);
 }
 
 static void
@@ -1226,16 +1211,10 @@ config_init_iq_and_channel_lpf(dsdneoRuntimeConfig& c) {
 /**
  * @brief Parse environment variables and initialize the runtime configuration.
  *
- * Precedence note: future CLI/opts may override env values; currently opts
- * are not applied beyond presence for future extension.
- *
- * @param opts Decoder options for potential precedence overrides.
  * @note Safe to call multiple times; the most recent call wins.
  */
 void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts; /* precedence hook reserved for future CLI/opts overrides */
-
+dsd_neo_config_init(void) {
     dsdneoRuntimeConfig c{};
     config_init_defaults(c);
     config_init_paths_and_cache(c);

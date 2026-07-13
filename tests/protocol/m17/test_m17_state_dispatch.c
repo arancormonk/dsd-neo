@@ -13,12 +13,16 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/m17/m17.h>
+#include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/platform/sockets.h"
 #include "dsd-neo/protocol/m17/m17_parse.h"
 #include "dsd-neo/protocol/m17/m17_tables.h"
 #include "m17_algorithms.h"
@@ -28,6 +32,7 @@ struct CODEC2;
 
 static dsd_opts g_opts;
 static dsd_state g_state;
+#ifdef USE_CODEC2
 static int g_codec2_decode_calls;
 static unsigned char g_codec2_last_bits[8];
 static int g_udp_audio_calls;
@@ -35,10 +40,14 @@ static size_t g_udp_audio_last_nsam;
 static const dsd_opts* g_udp_audio_last_opts;
 static dsd_state* g_udp_audio_last_state;
 static short g_udp_audio_last_first_sample;
+#endif
 static int g_conv_start_calls;
 static int g_conv_decode_calls;
 static int g_conv_chainback_calls;
 static unsigned int g_conv_chainback_bits;
+static int g_m17_connect_calls;
+static int g_m17_connect_result;
+static int g_m17_receiver_calls;
 static uint8_t g_conv_first_symbols[8];
 
 enum { TEST_M17_LSF_BITS = M17_LSF_BYTES * 8U };
@@ -49,16 +58,16 @@ void CNXDNConvolution_start(void);
 void CNXDNConvolution_decode(uint8_t s0, uint8_t s1);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void CNXDNConvolution_chainback(unsigned char* out, unsigned int nBits);
+#ifdef USE_CODEC2
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void codec2_decode(struct CODEC2* codec2_state, short speech[], const unsigned char* bits);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void codec2_encode(struct CODEC2* codec2_state, unsigned char* bits, short speech[]);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 int codec2_samples_per_frame(struct CODEC2* codec2_state);
+#endif
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-uint16_t ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 int Connect(char* hostname, int portno);
 
@@ -89,6 +98,7 @@ CNXDNConvolution_chainback(unsigned char* out, unsigned int nBits) {
     }
 }
 
+#ifdef USE_CODEC2
 void
 codec2_decode(struct CODEC2* codec2_state, short speech[], const unsigned char* bits) {
     (void)codec2_state;
@@ -115,19 +125,13 @@ codec2_samples_per_frame(struct CODEC2* codec2_state) {
     (void)codec2_state;
     return 0;
 }
+#endif
 
 void
 LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
     (void)BufferIn;
     (void)BufferOut;
     (void)state;
-}
-
-uint16_t
-ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
-    (void)buf;
-    (void)len;
-    return 0U;
 }
 
 int
@@ -137,6 +141,37 @@ Connect(char* hostname, int portno) {
     return -1;
 }
 
+static int
+fake_m17_connect_failure(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_m17_connect_calls++;
+    return g_m17_connect_result;
+}
+
+static dsd_socket_t
+fake_m17_bind_failure(char* hostname, int portno) {
+    (void)hostname;
+    (void)portno;
+    return DSD_INVALID_SOCKET;
+}
+
+static dsd_socket_t
+fake_m17_bind_success(char* hostname, int portno) {
+    (void)hostname;
+    (void)portno;
+    return (dsd_socket_t)17;
+}
+
+static int
+fake_m17_receiver_failure(const dsd_opts* opts, void* data) {
+    (void)opts;
+    (void)data;
+    g_m17_receiver_calls++;
+    return -1;
+}
+
+#ifdef USE_CODEC2
 static void
 fake_udp_audio_blast(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
     g_udp_audio_calls++;
@@ -158,6 +193,7 @@ reset_audio_fakes(void) {
     g_udp_audio_last_state = NULL;
     g_udp_audio_last_first_sample = 0;
 }
+#endif
 
 static void
 reset_convolution_fake(void) {
@@ -168,12 +204,14 @@ reset_convolution_fake(void) {
     DSD_MEMSET(g_conv_first_symbols, 0, sizeof(g_conv_first_symbols));
 }
 
+#ifdef USE_CODEC2
 static void
 install_fake_udp_audio(void) {
     dsd_udp_audio_hooks hooks = {0};
     hooks.blast = fake_udp_audio_blast;
     dsd_udp_audio_hooks_set(hooks);
 }
+#endif
 
 static void
 bytes_to_bits(const uint8_t* bytes, uint8_t* bits, size_t byte_count) {
@@ -652,35 +690,6 @@ test_stream_dispatch_can_filter_and_aes_gates(void) {
 }
 
 static int
-test_stream_dispatch_legacy_aes_key_segments(void) {
-    dsd_opts* opts = &g_opts;
-    dsd_state* state = &g_state;
-    uint8_t payload_bits[128];
-    uint8_t processed_bits[128];
-    uint8_t plaintext_bits[128];
-    DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
-
-    bytes_to_bits(M17_REF_AES_CIPHERTEXT, payload_bits, sizeof(M17_REF_AES_CIPHERTEXT));
-    bytes_to_bits(M17_REF_AES_PLAINTEXT, plaintext_bits, sizeof(M17_REF_AES_PLAINTEXT));
-    DSD_MEMCPY(state->m17_meta, M17_REF_AES_NONCE, sizeof(M17_REF_AES_NONCE));
-    state->m17_str_dt = 1U;
-    state->m17_can_en = -1;
-    state->m17_enc = 2U;
-    state->m17_enc_st = 0U;
-    state->K1 = 0x0001020304050607ULL;
-    state->K2 = 0x08090A0B0C0D0E0FULL;
-
-    int err = 0;
-    err |=
-        expect_int("legacy AES key dispatches",
-                   m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
-                   M17_STREAM_ENCRYPTED_DISPATCHED);
-    err |= expect_bytes("legacy AES key plaintext bits", processed_bits, plaintext_bits, sizeof(plaintext_bits));
-    return err;
-}
-
-static int
 test_stream_dispatch_rejects_invalid_arguments_and_unknown_encryption(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
@@ -746,35 +755,6 @@ test_stream_dispatch_scrambler_decrypts_with_seed_and_subtype(void) {
                       M17_STREAM_ENCRYPTED_DISPATCHED);
     err |= expect_bytes("scrambler stream output", processed_bits, expected_bits, sizeof(expected_bits));
     err |= expect_u8("scrambler transient decrypt flag restored", state->m17_payload_decrypted, 9U);
-    return err;
-}
-
-static int
-test_stream_dispatch_legacy_aes_array_key_segments(void) {
-    dsd_opts* opts = &g_opts;
-    dsd_state* state = &g_state;
-    uint8_t payload_bits[128];
-    uint8_t processed_bits[128];
-    uint8_t plaintext_bits[128];
-    DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
-
-    bytes_to_bits(M17_REF_AES_CIPHERTEXT, payload_bits, sizeof(M17_REF_AES_CIPHERTEXT));
-    bytes_to_bits(M17_REF_AES_PLAINTEXT, plaintext_bits, sizeof(M17_REF_AES_PLAINTEXT));
-    DSD_MEMCPY(state->m17_meta, M17_REF_AES_NONCE, sizeof(M17_REF_AES_NONCE));
-    state->m17_str_dt = 1U;
-    state->m17_can_en = -1;
-    state->m17_enc = 2U;
-    state->m17_enc_st = 0U;
-    state->A1[0] = 0x0001020304050607ULL;
-    state->A2[0] = 0x08090A0B0C0D0E0FULL;
-
-    int err = 0;
-    err |=
-        expect_int("legacy AES array key dispatches",
-                   m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
-                   M17_STREAM_ENCRYPTED_DISPATCHED);
-    err |= expect_bytes("legacy AES array key plaintext bits", processed_bits, plaintext_bits, sizeof(plaintext_bits));
     return err;
 }
 
@@ -1026,8 +1006,6 @@ test_bert_hard_payload_decode_primitives(void) {
     uint8_t input_bits[M17_PAYLOAD_BITS];
     uint8_t depunc[M17_BERT_TYPE2_BITS];
     uint8_t expected_depunc[M17_BERT_TYPE2_BITS];
-    uint8_t unpacked[24];
-    uint8_t expected_unpacked[16];
     uint8_t bert_bits[M17_BERT_PAYLOAD_BITS];
     uint8_t chainback_bytes[25];
     uint8_t expected_bert_bits[200];
@@ -1053,16 +1031,6 @@ test_bert_hard_payload_decode_primitives(void) {
     DSD_MEMSET(depunc, 0x5A, sizeof(depunc));
     m17_depuncture_p2_hard(input_bits, depunc, -1);
     err |= expect_u8("BERT depuncture negative guard preserves output", depunc[0], 0x5AU);
-
-    static const uint8_t packed[2] = {0xA5U, 0x3CU};
-    static const uint8_t unpacked_expected[16] = {1U, 0U, 1U, 0U, 0U, 1U, 0U, 1U, 0U, 0U, 1U, 1U, 1U, 1U, 0U, 0U};
-    DSD_MEMSET(unpacked, 0xCC, sizeof(unpacked));
-    DSD_MEMCPY(expected_unpacked, unpacked_expected, sizeof(expected_unpacked));
-    m17_unpack_bytes_to_bits(packed, 2, unpacked);
-    err |= expect_bytes("BERT byte unpack MSB first", unpacked, expected_unpacked, sizeof(expected_unpacked));
-    err |= expect_u8("BERT byte unpack does not overrun", unpacked[16], 0xCCU);
-    m17_unpack_bytes_to_bits(NULL, 2, unpacked);
-    err |= expect_u8("BERT byte unpack null guard preserves output", unpacked[0], 1U);
 
     reset_convolution_fake();
     DSD_MEMSET(bert_bits, 0x5A, sizeof(bert_bits));
@@ -1384,15 +1352,11 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
     uint8_t eotx[10];
     uint8_t lsf_bits[240];
     uint8_t lsf_packed[30];
-    uint8_t dibits[M17_FRAME_SYMBOLS];
-    uint8_t payload_bits[M17_PAYLOAD_BITS];
     DSD_MEMSET(conn, 0xA5, sizeof(conn));
     DSD_MEMSET(disc, 0xA5, sizeof(disc));
     DSD_MEMSET(eotx, 0xA5, sizeof(eotx));
     DSD_MEMSET(lsf_bits, 0, sizeof(lsf_bits));
     DSD_MEMSET(lsf_packed, 0, sizeof(lsf_packed));
-    DSD_MEMSET(dibits, 0, sizeof(dibits));
-    DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
 
     m17_setup_conn_disc_eotx(0x0123456789ABULL, 'Z', conn, disc, eotx);
 
@@ -1417,32 +1381,6 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
     err |= expect_int("LSF type word", (int)bits_to_u64(lsf_bits + 96, 16U), type_word);
     err |= expect_int("LSF packed CRC", crc, m17_crc16(lsf_packed, M17_LSF_LSD_BYTES));
     err |= expect_int("LSF CRC bits", (int)bits_to_u64(lsf_bits + M17_LSF_LSD_BITS, M17_LSF_CRC_BITS), crc);
-
-    m17_apply_frame_prefix_dibits(2, dibits);
-    uint8_t want_sync[M17_SYNC_SYMBOLS];
-    DSD_MEMSET(want_sync, 0, sizeof(want_sync));
-    m17_fill_sync_dibits_from_word(M17_SYNC_STREAM_WORD, want_sync);
-    err |= expect_bytes("stream sync prefix", dibits, want_sync, sizeof(want_sync));
-    for (int i = M17_SYNC_SYMBOLS; i < M17_FRAME_SYMBOLS; i++) {
-        err |= expect_u8("stream prefix leaves payload clear", dibits[i], 0U);
-    }
-
-    DSD_MEMSET(dibits, 0, sizeof(dibits));
-    m17_apply_frame_prefix_dibits(55, dibits);
-    uint8_t want_eot_dibits[M17_FRAME_SYMBOLS];
-    DSD_MEMSET(want_eot_dibits, 0, sizeof(want_eot_dibits));
-    m17_fill_repeating_16bit_dibits(M17_EOT_MARKER_WORD, want_eot_dibits);
-    err |= expect_bytes("EOT repeating prefix", dibits, want_eot_dibits, sizeof(want_eot_dibits));
-
-    for (int i = 0; i < M17_PAYLOAD_BITS; i++) {
-        payload_bits[i] = (uint8_t)(i & 1);
-    }
-    DSD_MEMSET(dibits, 0xEE, sizeof(dibits));
-    m17_load_payload_dibits(payload_bits, dibits);
-    err |= expect_u8("payload helper preserves prefix byte", dibits[0], 0xEEU);
-    for (int i = 0; i < M17_PAYLOAD_SYMBOLS; i++) {
-        err |= expect_u8("payload dibit mapping", dibits[i + M17_SYNC_SYMBOLS], 1U);
-    }
 
     err |= expect_int("clip high", m17_clip_float_to_short(40000.0f), 32767);
     err |= expect_int("clip low", m17_clip_float_to_short(-40000.0f), -32768);
@@ -1517,74 +1455,6 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
     }
     err |= expect_u8("BERT reverse trailing zero", reversed[200], 0U);
 
-    err |= expect_int("strlen null", (int)m17_strlen_limit(NULL, 9U), 0);
-    err |= expect_int("strlen full", (int)m17_strlen_limit("abc", 9U), 3);
-    err |= expect_int("strlen capped", (int)m17_strlen_limit("abcdef", 3U), 3);
-    err |= expect_int("strlen zero cap", (int)m17_strlen_limit("abcdef", 0U), 0);
-
-    return err;
-}
-
-static int
-test_encoder_packet_payload_layout(void) {
-    uint8_t packed[M17_PACKET_MAX_TOTAL_BYTES];
-    uint8_t full_bits[M17_PACKET_MAX_FRAMES * M17_PACKET_CHUNK_BITS];
-    uint16_t app_len = 0;
-    int block = 0;
-    uint8_t lst = 0;
-    uint16_t crc = 0;
-    int err = 0;
-
-    DSD_MEMSET(packed, 0xA5, sizeof(packed));
-    DSD_MEMSET(full_bits, 0xA5, sizeof(full_bits));
-    err |= expect_int("packet layout null guard",
-                      m17_prepare_packet_payload("x", NULL, full_bits, &app_len, &block, &lst, &crc), -1);
-    err |= expect_int("packet layout null bits guard",
-                      m17_prepare_packet_payload("x", packed, NULL, &app_len, &block, &lst, &crc), -1);
-    err |= expect_int("packet layout null app-len guard",
-                      m17_prepare_packet_payload("x", packed, full_bits, NULL, &block, &lst, &crc), -1);
-    err |= expect_int("packet layout null block guard",
-                      m17_prepare_packet_payload("x", packed, full_bits, &app_len, NULL, &lst, &crc), -1);
-    err |= expect_int("packet layout null last-count guard",
-                      m17_prepare_packet_payload("x", packed, full_bits, &app_len, &block, NULL, &crc), -1);
-    err |= expect_int("packet layout null crc guard",
-                      m17_prepare_packet_payload("x", packed, full_bits, &app_len, &block, &lst, NULL), -1);
-
-    err |= expect_int("packet layout short text",
-                      m17_prepare_packet_payload("hi", packed, full_bits, &app_len, &block, &lst, &crc), 0);
-    err |= expect_int("packet short app len", app_len, 4);
-    err |= expect_int("packet short block count", block, 1);
-    err |= expect_u8("packet short last frame bytes", lst, 6U);
-    err |= expect_u8("packet protocol SMS", packed[0], 0x05U);
-    err |= expect_u8("packet text h", packed[1], 'h');
-    err |= expect_u8("packet text i", packed[2], 'i');
-    err |= expect_u8("packet text terminator", packed[3], 0U);
-    err |= expect_int("packet short crc", crc, m17_crc16(packed, app_len));
-    err |= expect_u8("packet crc high", packed[app_len], (uint8_t)(crc >> 8U));
-    err |= expect_u8("packet crc low", packed[app_len + 1U], (uint8_t)(crc & 0xFFU));
-    err |= expect_u8("packet first bit", full_bits[0], 0U);
-    err |= expect_u8("packet protocol low bit", full_bits[7], 1U);
-    err |= expect_u8("packet h high bit", full_bits[8], 0U);
-    err |= expect_u8("packet h bit 1", full_bits[9], 1U);
-
-    char long_text[M17_PACKET_MAX_APPLICATION_BYTES + 64U];
-    for (size_t i = 0U; i < sizeof(long_text) - 1U; i++) {
-        long_text[i] = (char)('A' + (i % 26U));
-    }
-    long_text[sizeof(long_text) - 1U] = '\0';
-    DSD_MEMSET(packed, 0, sizeof(packed));
-    DSD_MEMSET(full_bits, 0, sizeof(full_bits));
-    err |= expect_int("packet layout max text",
-                      m17_prepare_packet_payload(long_text, packed, full_bits, &app_len, &block, &lst, &crc), 0);
-    err |= expect_int("packet max app len", app_len, M17_PACKET_MAX_APPLICATION_BYTES);
-    err |= expect_int("packet max block count", block, M17_PACKET_MAX_FRAMES);
-    err |= expect_u8("packet max last frame bytes", lst, M17_PACKET_CHUNK_BYTES);
-    err |= expect_u8("packet max protocol", packed[0], 0x05U);
-    err |= expect_u8("packet max last text", packed[M17_PACKET_MAX_APPLICATION_BYTES - 2U],
-                     (uint8_t)long_text[M17_PACKET_MAX_APPLICATION_BYTES - 3U]);
-    err |= expect_u8("packet max terminator", packed[M17_PACKET_MAX_APPLICATION_BYTES - 1U], 0U);
-    err |= expect_int("packet max crc", crc, m17_crc16(packed, app_len));
-
     return err;
 }
 
@@ -1625,91 +1495,17 @@ test_packet_protocol_identifier_utf8_boundaries(void) {
 }
 
 static int
-test_encoder_packet_state_overrides_prepare_lsf_and_payload(void) {
-    static dsd_state state;
-    uint8_t lsf_bits[240];
-    uint8_t packed[M17_PACKET_MAX_TOTAL_BYTES];
-    uint16_t app_len = 0U;
-    uint16_t lsf_crc = 0U;
-    uint8_t can = 0U;
-    unsigned long long dst = 0ULL;
-    unsigned long long src = 0ULL;
-    int err = 0;
-
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.m17_can_en = -1;
-    DSD_MEMSET(lsf_bits, 0xA5, sizeof(lsf_bits));
-    DSD_MEMSET(packed, 0xA5, sizeof(packed));
-    err |= expect_int("packet state helper null guard",
-                      m17_prepare_packet_from_state(NULL, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), -1);
-    err |= expect_int("packet state helper null LSF guard",
-                      m17_prepare_packet_from_state(&state, NULL, packed, &app_len, &lsf_crc, &can, &dst, &src), -1);
-    err |= expect_int("packet state helper null packet guard",
-                      m17_prepare_packet_from_state(&state, lsf_bits, NULL, &app_len, &lsf_crc, &can, &dst, &src), -1);
-    err |= expect_int("packet state helper null app-len guard",
-                      m17_prepare_packet_from_state(&state, lsf_bits, packed, NULL, &lsf_crc, &can, &dst, &src), -1);
-    err |= expect_int("packet state helper null LSF CRC guard",
-                      m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, NULL, &can, &dst, &src), -1);
-    err |=
-        expect_int("packet state helper null CAN guard",
-                   m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, NULL, &dst, &src), -1);
-    err |=
-        expect_int("packet state helper null dst guard",
-                   m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, NULL, &src), -1);
-    err |=
-        expect_int("packet state helper null src guard",
-                   m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, NULL), -1);
-    err |= expect_int("packet default state helper",
-                      m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), 0);
-    err |= expect_u8("packet default CAN", can, 7U);
-    err |= expect_u64("packet default dst broadcast", dst, 0xFFFFFFFFFFFFULL);
-    err |= expect_u64("packet default src", src, m17_encode_b40_callsign(0ULL, "DSD-neo  "));
-    err |= expect_int("packet default LSF type", (int)bits_to_u64(lsf_bits + 96, 16U),
-                      m17_compose_frame_info(0U, 0U, 0U, 0U, 7U, 0U, 0U));
-    err |= expect_int("packet default LSF CRC bits", (int)bits_to_u64(lsf_bits + M17_LSF_LSD_BITS, M17_LSF_CRC_BITS),
-                      lsf_crc);
-    err |= expect_int("packet default app length", app_len, 447);
-    err |= expect_u8("packet default protocol", packed[0], 0x05U);
-
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.m17_can_en = 3;
-    DSD_SNPRINTF(state.str50c, sizeof(state.str50c), "%s", "N0CALL");
-    DSD_SNPRINTF(state.str50b, sizeof(state.str50b), "%s", "ALL");
-    DSD_SNPRINTF(state.m17sms, sizeof(state.m17sms), "%s", "override");
-    DSD_MEMSET(lsf_bits, 0, sizeof(lsf_bits));
-    DSD_MEMSET(packed, 0, sizeof(packed));
-
-    err |= expect_int("packet override state helper",
-                      m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), 0);
-    err |= expect_u8("packet override CAN", can, 3U);
-    err |= expect_u64("packet ALL dst broadcast", dst, 0xFFFFFFFFFFFFULL);
-    err |= expect_u64("packet override src", src, m17_encode_b40_callsign(0ULL, "N0CALL"));
-    err |= expect_int("packet override LSF type", (int)bits_to_u64(lsf_bits + 96, 16U),
-                      m17_compose_frame_info(0U, 0U, 0U, 0U, 3U, 0U, 0U));
-    err |= expect_int("packet override LSF CRC bits", (int)bits_to_u64(lsf_bits + M17_LSF_LSD_BITS, M17_LSF_CRC_BITS),
-                      lsf_crc);
-    err |= expect_int("packet override app len", app_len, 10);
-    err |= expect_u8("packet override protocol", packed[0], 0x05U);
-    err |= expect_bytes("packet override text", packed + 1, (const uint8_t*)"override", 8U);
-    err |= expect_u8("packet override terminator", packed[9], 0U);
-
-    return err;
-}
-
-static int
 test_m17_hook_argument_guards(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
     uint8_t bits[M17_LICH_BITS];
     uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
-    uint8_t full_payload_bits[M17_PAYLOAD_BITS];
     uint8_t processed_bits[M17_STREAM_PAYLOAD_BITS];
     uint8_t lsf_bits[TEST_M17_LSF_BITS];
     uint8_t lsf_packed[M17_LSF_BYTES];
     uint8_t conn[11];
     uint8_t disc[10];
     uint8_t eotx[10];
-    uint8_t dibits[M17_FRAME_SYMBOLS];
     uint8_t reversed[208];
     uint8_t bert_bits[M17_BERT_PAYLOAD_BITS];
     int err = 0;
@@ -1718,14 +1514,12 @@ test_m17_hook_argument_guards(void) {
     DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(bits, 0, sizeof(bits));
     DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
-    DSD_MEMSET(full_payload_bits, 0, sizeof(full_payload_bits));
     DSD_MEMSET(processed_bits, 0x5A, sizeof(processed_bits));
     DSD_MEMSET(lsf_bits, 0xA5, sizeof(lsf_bits));
     DSD_MEMSET(lsf_packed, 0x5A, sizeof(lsf_packed));
     DSD_MEMSET(conn, 0x11, sizeof(conn));
     DSD_MEMSET(disc, 0x22, sizeof(disc));
     DSD_MEMSET(eotx, 0x33, sizeof(eotx));
-    DSD_MEMSET(dibits, 0x44, sizeof(dibits));
     DSD_MEMSET(reversed, 0x66, sizeof(reversed));
     DSD_MEMSET(bert_bits, 0, sizeof(bert_bits));
 
@@ -1764,13 +1558,96 @@ test_m17_hook_argument_guards(void) {
     err |= expect_int("attach LSF CRC rejects null LSF", m17_attach_lsf_crc(NULL, lsf_packed), 0);
     err |= expect_int("attach LSF CRC rejects null packed", m17_attach_lsf_crc(lsf_bits, NULL), 0);
     m17_load_lsf_callsigns(NULL, 1ULL, 2ULL);
-    m17_apply_frame_prefix_dibits(2, NULL);
-    m17_load_payload_dibits(NULL, dibits);
-    err |= expect_u8("payload dibits null input preserves output", dibits[M17_SYNC_SYMBOLS], 0x44U);
-    m17_load_payload_dibits(full_payload_bits, NULL);
     m17_reverse_brt_bits(NULL, reversed);
     err |= expect_u8("reverse BRT null input preserves output", reversed[0], 0x66U);
 
+    return err;
+}
+
+static int
+test_encoders_propagate_requested_udp_setup_failure(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.m17_use_ip = 1;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.m17_rate = 48000;
+    g_m17_connect_calls = 0;
+    g_m17_connect_result = -1;
+    dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){
+        .connect = fake_m17_connect_failure,
+    });
+
+    int err = 0;
+    err |= expect_int("stream encoder reports requested UDP failure", encodeM17STR(&opts, &state), -1);
+    err |= expect_int("packet encoder reports requested UDP failure", encodeM17PKT(&opts, &state), -1);
+    err |= expect_int("requested UDP state is preserved", opts.m17_use_ip, 1);
+    err |= expect_int("each encoder attempted UDP setup", g_m17_connect_calls, 2);
+    g_m17_connect_result = 9;
+    err |= expect_int("stream encoder reports positive UDP setup error", encodeM17STR(&opts, &state), -1);
+    err |= expect_int("positive UDP setup error attempted once", g_m17_connect_calls, 3);
+    dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){0});
+    return err;
+}
+
+static int
+test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t expected_lsf[TEST_M17_LSF_BITS];
+    uint8_t expected_packed[M17_LSF_BYTES];
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(expected_lsf, 0, sizeof(expected_lsf));
+    DSD_MEMSET(expected_packed, 0, sizeof(expected_packed));
+
+    state->m17_can_en = -1;
+    DSD_SNPRINTF(state->m17sms, sizeof(state->m17sms), "%s", "OK");
+    const unsigned long long dst = 0xFFFFFFFFFFFFULL;
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, "DSD-neo  ");
+    m17_load_lsf_callsigns(expected_lsf, dst, src);
+    write_bits_from_u64(expected_lsf + 96, m17_compose_frame_info(0U, 0U, 0U, 0U, 7U, 0U, 0U), 16U);
+    (void)m17_attach_lsf_crc(expected_lsf, expected_packed);
+
+    reset_convolution_fake();
+    exitflag = 0;
+    const int encode_rc = encodeM17PKT(opts, state);
+    exitflag = 0;
+
+    int err = 0;
+    err |= expect_int("packet encoder completes", encode_rc, 0);
+    err |= expect_int("packet LSF monitor bypasses NXDN decoder start", g_conv_start_calls, 0);
+    err |= expect_int("packet LSF monitor bypasses NXDN decoder symbols", g_conv_decode_calls, 0);
+    err |= expect_int("packet LSF monitor bypasses NXDN decoder chainback", g_conv_chainback_calls, 0);
+    err |= expect_bytes("packet LSF monitor exact roundtrip", state->m17_lsf, expected_lsf, sizeof(expected_lsf));
+    err |= expect_u64("packet LSF monitor destination", state->m17_dst, dst);
+    err |= expect_u64("packet LSF monitor source", state->m17_src, src);
+    err |= expect_u8("packet LSF monitor CAN", state->m17_can, 7U);
+    return err;
+}
+
+static int
+test_ip_decoder_propagates_udp_backend_failure(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){
+        .udp_bind = fake_m17_bind_failure,
+    });
+
+    int err = 0;
+    err |= expect_int("IP decoder reports UDP bind failure", processM17IPF(&opts, &state), -1);
+
+    g_m17_receiver_calls = 0;
+    dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){
+        .udp_bind = fake_m17_bind_success,
+        .receiver = fake_m17_receiver_failure,
+    });
+    err |= expect_int("IP decoder reports UDP receive failure", processM17IPF(&opts, &state), -1);
+    err |= expect_int("IP decoder stops after receive failure", g_m17_receiver_calls, 1);
+    dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){0});
     return err;
 }
 
@@ -1784,10 +1661,8 @@ main(void) {
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();
     err |= test_lsf_null_meta_decodes_text_and_honors_can_filter();
     err |= test_stream_dispatch_can_filter_and_aes_gates();
-    err |= test_stream_dispatch_legacy_aes_key_segments();
     err |= test_stream_dispatch_rejects_invalid_arguments_and_unknown_encryption();
     err |= test_stream_dispatch_scrambler_decrypts_with_seed_and_subtype();
-    err |= test_stream_dispatch_legacy_aes_array_key_segments();
     err |= test_stream_signature_frames_are_consumed_and_verify_without_key();
     err |= test_stream_signature_out_of_order_marks_sequence_error();
     err |= test_clear_signed_payload_updates_digest_and_dispatches();
@@ -1804,10 +1679,11 @@ main(void) {
     err |= test_ip_mpkt_frames_apply_crc_gated_packet_state();
     err |= test_packet_eot_finalization_crc_gates_decode_and_clears_state();
     err |= test_encoder_control_lsf_and_dibit_helpers();
-    err |= test_encoder_packet_payload_layout();
     err |= test_packet_protocol_identifier_utf8_boundaries();
-    err |= test_encoder_packet_state_overrides_prepare_lsf_and_payload();
     err |= test_m17_hook_argument_guards();
+    err |= test_encoders_propagate_requested_udp_setup_failure();
+    err |= test_packet_encoder_monitors_lsf_with_canonical_viterbi();
+    err |= test_ip_decoder_propagates_udp_backend_failure();
 
     if (err == 0) {
         printf("M17_STATE_DISPATCH: OK\n");

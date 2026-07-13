@@ -208,7 +208,7 @@ main(void) {
     run_dispatch_case(DSD_SYNC_DMR_BS_VOICE_POS, TEST_HANDLER_DMR);
     run_dispatch_case(DSD_SYNC_DPMR_FS1_POS, TEST_HANDLER_DPMR);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);
-    run_dispatch_case(-1, TEST_HANDLER_P25P1);
+    run_dispatch_case(-1, TEST_HANDLER_NONE);
 
     printf("ENGINE_PROTOCOL_DISPATCH: OK\n");
     return 0;

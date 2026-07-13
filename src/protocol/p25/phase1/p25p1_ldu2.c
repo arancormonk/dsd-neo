@@ -21,7 +21,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
-#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
@@ -115,15 +115,10 @@ ldu2_refresh_hold_hysteresis(const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, char debug_prefix, int emit_active) {
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = debug_prefix;
-#else
-    UNUSED(debug_prefix);
-#endif
+ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, int emit_active) {
     process_IMBE(opts, state, status_count);
     if (p25_crypto_audio_permitted(opts, state, 0)) {
-        p25p1_play_imbe_audio(opts, state);
+        dsd_play_synthesized_voice(opts, state);
     }
     if (emit_active != 0) {
         p25_sm_emit_active(opts, state, 0);
@@ -212,14 +207,12 @@ ldu2_capture_lsd(dsd_opts* opts, dsd_state* state, Ldu2Frame* frame) {
 
 static void
 ldu2_collect_voice_symbols(dsd_opts* opts, dsd_state* state, Ldu2Frame* frame) {
-    static const char trace_prefix[9] = {'0', '1', '2', '3', '4', '5', '6', '7', '8'};
-
     frame->status_count = 21;
     frame->soft_dibit_index = 0;
     state->p25vc = 9;
 
     for (int imbe = 0; imbe < 9; imbe++) {
-        ldu2_process_imbe_frame(opts, state, &frame->status_count, trace_prefix[imbe], (imbe == 0));
+        ldu2_process_imbe_frame(opts, state, &frame->status_count, (imbe == 0));
         if (imbe >= 1 && imbe <= 4) {
             int start = 15 - ((imbe - 1) * 4);
             ldu2_read_hex_word_block(opts, state, frame->hex_data, start, 4, frame);
@@ -255,7 +248,7 @@ ldu2_consume_trailing_status(dsd_opts* opts, dsd_state* state) {
     dsd_dibit_soft_t status_soft;
     int ss = getDibitSoft(opts, state, &status_soft);
     p25_status_accum_add(state, ss);
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 }
 
 static int

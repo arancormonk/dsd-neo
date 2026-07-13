@@ -27,9 +27,6 @@ void nxdn_depuncture_12_group_rel(const uint8_t* deperm, const uint8_t* deperm_r
                                   uint8_t* depunc_rel);
 
 int nxdn_dcr_is_sb0_message_type(uint8_t message_type);
-void nxdn_unpack_bytes_msb(const uint8_t* bytes, size_t byte_count, uint8_t* bits);
-void nxdn_pack_bits_msb(const uint8_t* bits, size_t byte_count, uint8_t* bytes);
-uint16_t nxdn_bits_to_u16(const uint8_t* bits, int len);
 int nxdn_sacch_part_of_frame(uint8_t sf);
 int nxdn_ran_from_trellis(const uint8_t* trellis_buf);
 void nxdn_reset_payload_seed_if_forced(dsd_state* state);
@@ -56,9 +53,6 @@ void nxdn_store_facch3_udch2_block(struct nxdn_facch3_udch2_message* message, si
                                    const uint8_t* m_data);
 void nxdn_handle_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message,
                                    uint8_t type);
-
-int nxdn_route_decoded_lich(dsd_opts* opts, dsd_state* state, uint8_t lich, const uint8_t bits[364],
-                            const uint8_t reliab[364]);
 
 #ifdef __cplusplus
 }

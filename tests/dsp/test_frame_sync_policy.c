@@ -29,7 +29,7 @@ main(void) {
     state.carrier = 1;
     assert(dsd_frame_sync_suppress_p25_alt_sync(&opts, &state) == 0);
 
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     assert(dsd_frame_sync_suppress_p25_alt_sync(&opts, &state) == 1);
 
     state.carrier = 0;
@@ -62,13 +62,13 @@ main(void) {
     opts.frame_p25p1 = 1;
     assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
 
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 5);
 
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
 
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     opts.frame_p25p1 = 0;
     opts.frame_p25p2 = 0;
     assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);

@@ -14,23 +14,14 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-struct RtlSdrContext;
-
 void process_2V(dsd_opts* opts, dsd_state* state);
 
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-bool SetFreq(int sockfd, long int freq);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-bool SetModulation(int sockfd, int bandwidth);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_socket_t Connect(char* hostname, int portno);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -43,34 +34,7 @@ void l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, i
 void nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-uint16_t ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len);
-
 static int g_return_to_cc_called = 0;
-
-bool
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
 
 dsd_socket_t
 Connect(char* hostname, int portno) {
@@ -136,13 +100,6 @@ LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) {
     (void)state;
 }
 
-uint16_t
-ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
-    (void)buf;
-    (void)len;
-    return 0;
-}
-
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {
@@ -156,8 +113,7 @@ static void
 setup_tuned_tdma(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t** ctx) {
     DSD_MEMSET(opts, 0, sizeof *opts);
     DSD_MEMSET(state, 0, sizeof *state);
-    opts->p25_trunk = 1;
-    opts->p25_is_tuned = 1;
+    opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
     opts->trunk_tune_enc_calls = 0;
     state->currentslot = 0;

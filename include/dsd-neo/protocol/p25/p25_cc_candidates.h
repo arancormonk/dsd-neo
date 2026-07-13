@@ -9,8 +9,8 @@
 
 /*
  * Control-channel candidates and neighbor list helpers for P25.
- * Provides small utilities to track announced neighbors, load/persist a
- * per-system current-site candidate list, and expire stale entries.
+ * Provides small utilities to track announced neighbors, load a historical
+ * read-only per-system candidate cache, and expire stale entries.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_P25_P25_CC_CANDIDATES_H_H
@@ -38,10 +38,8 @@ extern "C" {
 /**
  * @brief Per-neighbor entry with site metadata.
  *
- * Replaces the former parallel arrays (p25_nb_freq / p25_nb_last_seen) with a
- * single struct that carries CFVA status and site identity alongside the
- * frequency. This enables downstream CFVA filtering and site-scoping
- * to operate on structured data.
+ * Carries CFVA status and site identity alongside the frequency so downstream
+ * filtering and site scoping operate on one structured record.
  */
 typedef struct {
     long freq;          /**< Frequency in Hz (0 = empty slot). */
@@ -113,16 +111,6 @@ typedef struct {
 } p25_neighbor_record_update_t;
 
 /**
- * @brief Build a per-system cache path for CC candidates.
- *
- * @param state Decoder state containing system identifiers.
- * @param out Destination buffer for the path.
- * @param out_len Capacity of the destination buffer.
- * @return 1 on success; 0 on error.
- */
-int p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len);
-
-/**
  * @brief Add a validated current-site control channel candidate (Hz).
  *
  * @param state Decoder state containing candidate list.
@@ -137,21 +125,6 @@ void p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, 
 
 /** Return the next eligible current-site control-channel candidate. */
 int p25_cc_next_candidate(dsd_state* state, long* out_freq);
-
-/**
- * @brief Attempt to load a persisted candidate CC list (best-effort).
- *
- * @param opts Decoder options (used for logging/context).
- * @param state Decoder state to populate.
- */
-void p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state);
-/**
- * @brief Persist the current candidate CC list (best-effort).
- *
- * @param opts Decoder options (used for logging/context).
- * @param state Decoder state containing candidates.
- */
-void p25_cc_persist_cache(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * Apply a resolved neighbor update. An update with only @ref p25_neighbor_record_update_t.freq set refreshes the

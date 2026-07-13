@@ -57,7 +57,7 @@ typedef enum {
     EDACS_GUARD_ALLOWLIST_BLOCK,
     EDACS_GUARD_MISSING_FREQUENCY,
     EDACS_GUARD_MISSING_CC_LCN,
-    EDACS_GUARD_P25_TRUNK_DISABLED,
+    EDACS_GUARD_TRUNK_DISABLED,
 } edacs_no_tune_guard;
 
 static dsd_opts g_opts;
@@ -123,7 +123,6 @@ edacs_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted
     g_last_vc_freq = freq;
     if (dsd_trunk_tune_result_is_ok(g_vc_result)) {
         if (opts) {
-            opts->p25_is_tuned = 1;
             opts->trunk_is_tuned = 1;
         }
         if (state) {
@@ -470,7 +469,6 @@ edacs_setup_fixture(const edacs_grant_case* test_case) {
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
 
-    g_opts.p25_trunk = 1;
     g_opts.trunk_enable = 1;
     g_opts.trunk_tune_group_calls = 1;
     g_opts.trunk_tune_private_calls = 1;
@@ -496,7 +494,6 @@ edacs_setup_state_fixture(int ea_mode) {
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
 
-    g_opts.p25_trunk = 1;
     g_opts.trunk_enable = 1;
     g_state.ea_mode = ea_mode;
     g_state.edacs_cc_lcn = 1;
@@ -541,15 +538,14 @@ edacs_run_grant_result_case(const edacs_grant_case* test_case, dsd_trunk_tune_re
     if (accepted) {
         rc |= edacs_expect(g_state.edacs_tuned_lcn == test_case->lcn, test_case->name, result_name,
                            "accepted tune set tuned LCN");
-        rc |= edacs_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, test_case->name, result_name,
-                           "accepted tune set tuned flags");
+        rc |= edacs_expect(g_opts.trunk_is_tuned == 1, test_case->name, result_name, "accepted tune set tuned flags");
         rc |=
             edacs_expect(g_state.trunk_vc_freq[0] == test_case->freq_hz && g_state.p25_vc_freq[0] == test_case->freq_hz,
                          test_case->name, result_name, "accepted tune set VC frequencies");
     } else {
         rc |= edacs_expect(g_state.edacs_tuned_lcn == -1, test_case->name, result_name,
                            "rejected tune left tuned LCN clear");
-        rc |= edacs_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, test_case->name, result_name,
+        rc |= edacs_expect(g_opts.trunk_is_tuned == 0, test_case->name, result_name,
                            "rejected tune left tuned flags clear");
         rc |= edacs_expect(g_state.trunk_vc_freq[0] == 0 && g_state.p25_vc_freq[0] == 0, test_case->name, result_name,
                            "rejected tune left VC frequencies clear");
@@ -565,7 +561,7 @@ edacs_apply_no_tune_guard(const edacs_grant_case* test_case, edacs_no_tune_guard
         case EDACS_GUARD_ALLOWLIST_BLOCK: g_opts.trunk_use_allow_list = 1; break;
         case EDACS_GUARD_MISSING_FREQUENCY: g_state.trunk_lcn_freq[test_case->lcn - 1] = 0; break;
         case EDACS_GUARD_MISSING_CC_LCN: g_state.edacs_cc_lcn = 0; break;
-        case EDACS_GUARD_P25_TRUNK_DISABLED: g_opts.p25_trunk = 0; break;
+        case EDACS_GUARD_TRUNK_DISABLED: g_opts.trunk_enable = 0; break;
     }
 }
 
@@ -585,8 +581,7 @@ edacs_run_no_tune_guard_case(const edacs_grant_case* test_case, edacs_no_tune_gu
     rc |= edacs_expect(g_state.edacs_vc_lcn == test_case->lcn, test_case->name, guard_name,
                        "guard still tracked parsed VC LCN");
     rc |= edacs_expect(g_state.edacs_tuned_lcn == -1, test_case->name, guard_name, "guard left tuned LCN clear");
-    rc |= edacs_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, test_case->name, guard_name,
-                       "guard left tuned flags clear");
+    rc |= edacs_expect(g_opts.trunk_is_tuned == 0, test_case->name, guard_name, "guard left tuned flags clear");
     rc |= edacs_expect(g_state.trunk_vc_freq[0] == 0 && g_state.p25_vc_freq[0] == 0, test_case->name, guard_name,
                        "guard left VC frequencies clear");
     rc |= edacs_expect(g_state.lasttg == test_case->expected_lasttg && g_state.lastsrc == test_case->expected_lastsrc,
@@ -610,8 +605,8 @@ edacs_run_retry_after_reject_case(const edacs_grant_case* test_case, dsd_trunk_t
     rc |= edacs_expect(g_vc_tune_count == 1, test_case->name, result_name, "rejected tune attempted once");
     rc |=
         edacs_expect(g_state.edacs_tuned_lcn == -1, test_case->name, result_name, "rejected tune left tuned LCN clear");
-    rc |= edacs_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, test_case->name, result_name,
-                       "rejected tune left tuned flags clear");
+    rc |=
+        edacs_expect(g_opts.trunk_is_tuned == 0, test_case->name, result_name, "rejected tune left tuned flags clear");
 
     g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
     edacs_process_valid_frame(&g_opts, &g_state, test_case->msg_1, test_case->msg_2);
@@ -621,8 +616,7 @@ edacs_run_retry_after_reject_case(const edacs_grant_case* test_case, dsd_trunk_t
                        "retried tune frequency matches LCN map");
     rc |= edacs_expect(g_state.edacs_tuned_lcn == test_case->lcn, test_case->name, result_name,
                        "retried tune set tuned LCN");
-    rc |= edacs_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, test_case->name, result_name,
-                       "retried tune set tuned flags");
+    rc |= edacs_expect(g_opts.trunk_is_tuned == 1, test_case->name, result_name, "retried tune set tuned flags");
     rc |= edacs_expect(g_state.trunk_vc_freq[0] == test_case->freq_hz && g_state.p25_vc_freq[0] == test_case->freq_hz,
                        test_case->name, result_name, "retried tune set VC frequencies");
     return rc;
@@ -633,9 +627,7 @@ edacs_setup_eot_fixture(void) {
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
 
-    g_opts.p25_trunk = 1;
     g_opts.trunk_enable = 1;
-    g_opts.p25_is_tuned = 1;
     g_opts.trunk_is_tuned = 1;
     g_state.p25_cc_freq = 851012500L;
     g_state.trunk_cc_freq = 851012500L;
@@ -675,8 +667,7 @@ edacs_run_eot_result_case(dsd_trunk_tune_result result, const char* result_name)
     rc |= edacs_expect(g_skip_dibit_count == (240 * 8), "eot-cc", result_name, "EOT dibit skip was bounded");
 
     if (accepted) {
-        rc |= edacs_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, "eot-cc", result_name,
-                           "accepted CC return cleared tuned flags");
+        rc |= edacs_expect(g_opts.trunk_is_tuned == 0, "eot-cc", result_name, "accepted CC return cleared tuned flags");
         rc |=
             edacs_expect(g_state.edacs_tuned_lcn == -1, "eot-cc", result_name, "accepted CC return cleared tuned LCN");
         rc |= edacs_expect(g_state.p25_vc_freq[0] == 0 && g_state.trunk_vc_freq[0] == 0, "eot-cc", result_name,
@@ -688,8 +679,8 @@ edacs_run_eot_result_case(dsd_trunk_tune_result result, const char* result_name)
         rc |= edacs_expect(g_state.active_channel[0][0] == '\0', "eot-cc", result_name,
                            "accepted CC return cleared active display");
     } else {
-        rc |= edacs_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, "eot-cc", result_name,
-                           "rejected CC return preserved tuned flags");
+        rc |=
+            edacs_expect(g_opts.trunk_is_tuned == 1, "eot-cc", result_name, "rejected CC return preserved tuned flags");
         rc |=
             edacs_expect(g_state.edacs_tuned_lcn == 5, "eot-cc", result_name, "rejected CC return preserved tuned LCN");
         rc |= edacs_expect(g_state.p25_vc_freq[0] == 852012500L && g_state.trunk_vc_freq[0] == 852012500L, "eot-cc",
@@ -714,16 +705,14 @@ edacs_run_eot_retry_after_reject_case(dsd_trunk_tune_result first_result, const 
 
     int rc = 0;
     rc |= edacs_expect(g_cc_tune_count == 1, "eot-retry", result_name, "rejected CC tune attempted once");
-    rc |= edacs_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, "eot-retry", result_name,
-                       "rejected CC tune preserved tuned flags");
+    rc |= edacs_expect(g_opts.trunk_is_tuned == 1, "eot-retry", result_name, "rejected CC tune preserved tuned flags");
     rc |= edacs_expect(g_state.edacs_tuned_lcn == 5, "eot-retry", result_name, "rejected CC tune preserved tuned LCN");
 
     g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
     eot_cc(&g_opts, &g_state);
 
     rc |= edacs_expect(g_cc_tune_count == 2, "eot-retry", result_name, "later EOT retried CC tune");
-    rc |= edacs_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, "eot-retry", result_name,
-                       "retried CC tune cleared tuned flags");
+    rc |= edacs_expect(g_opts.trunk_is_tuned == 0, "eot-retry", result_name, "retried CC tune cleared tuned flags");
     rc |= edacs_expect(g_state.edacs_tuned_lcn == -1, "eot-retry", result_name, "retried CC tune cleared tuned LCN");
     rc |= edacs_expect(g_state.p25_vc_freq[0] == 0 && g_state.trunk_vc_freq[0] == 0, "eot-retry", result_name,
                        "retried CC tune cleared VC frequencies");
@@ -746,16 +735,15 @@ edacs_run_retune_after_eot_case(const edacs_grant_case* test_case) {
 
     eot_cc(&g_opts, &g_state);
     rc |= edacs_expect(g_cc_tune_count == 1, test_case->name, "retune-after-eot", "EOT returned to CC once");
-    rc |= edacs_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, test_case->name, "retune-after-eot",
-                       "EOT cleared tuned flags");
+    rc |= edacs_expect(g_opts.trunk_is_tuned == 0, test_case->name, "retune-after-eot", "EOT cleared tuned flags");
     rc |= edacs_expect(g_state.edacs_tuned_lcn == -1, test_case->name, "retune-after-eot", "EOT cleared tuned LCN");
 
     edacs_process_valid_frame(&g_opts, &g_state, test_case->msg_1, test_case->msg_2);
     rc |= edacs_expect(g_vc_tune_count == 2, test_case->name, "retune-after-eot", "post-EOT grant retuned");
     rc |= edacs_expect(g_last_vc_freq == test_case->freq_hz, test_case->name, "retune-after-eot",
                        "post-EOT tune frequency matches LCN map");
-    rc |= edacs_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, test_case->name, "retune-after-eot",
-                       "post-EOT grant set tuned flags");
+    rc |=
+        edacs_expect(g_opts.trunk_is_tuned == 1, test_case->name, "retune-after-eot", "post-EOT grant set tuned flags");
     rc |= edacs_expect(g_state.edacs_tuned_lcn == test_case->lcn, test_case->name, "retune-after-eot",
                        "post-EOT grant set tuned LCN");
     return rc;
@@ -1151,15 +1139,40 @@ edacs_run_analog_loop_helper_cases(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.audio_in_type = AUDIO_IN_UDP;
-    g_udp_fail_every = 4;
     edacs_install_net_audio_hooks();
     pwr = -1.0;
     rc |= edacs_expect(edacs_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 1,
-                       "analog-helpers", "udp-collect", "UDP triplet collection tolerates dropped samples");
+                       "analog-helpers", "udp-collect", "UDP triplet collection succeeded");
     rc |= edacs_expect(g_udp_read_count == 2880, "analog-helpers", "udp-collect", "UDP read exactly three blocks");
-    rc |= edacs_expect(analog1[0] == 0 && analog1[1] == 2001 && analog1[4] == 0 && analog2[0] == 0, "analog-helpers",
-                       "udp-collect", "UDP failed reads become zero samples");
+    rc |= edacs_expect(analog1[0] == 2000 && analog1[1] == 2001 && analog2[0] == 2960, "analog-helpers", "udp-collect",
+                       "UDP samples preserve block ordering");
     rc |= edacs_expect(pwr > 0.0, "analog-helpers", "udp-collect", "UDP collection updated power");
+
+    edacs_reset_audio_hook_state();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_UDP;
+    g_udp_fail_every = 4;
+    edacs_install_net_audio_hooks();
+    pwr = -1.0;
+    rc |= edacs_expect(edacs_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 0,
+                       "analog-helpers", "udp-stop", "stopped UDP input is rejected");
+    rc |= edacs_expect(g_udp_read_count == 1 && dsd_exitflag_load() != 0, "analog-helpers", "udp-stop",
+                       "stopped UDP input requests shutdown immediately");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    for (size_t i = 0; i < 960U; i++) {
+        analog1[i] = 111;
+        analog2[i] = 222;
+        analog3[i] = 333;
+    }
+    opts.audio_in_type = AUDIO_IN_WAV;
+    pwr = -1.0;
+    rc |= edacs_expect(edacs_collect_analog_triplet(&opts, &state, analog1, analog2, analog3, &pwr) == 0,
+                       "analog-helpers", "unsupported-input", "unsupported input is rejected");
+    rc |= edacs_expect(analog1[0] == 111 && analog2[0] == 222 && analog3[0] == 333 && pwr == -1.0, "analog-helpers",
+                       "unsupported-input", "rejected input leaves outputs unchanged");
 
 #ifdef USE_RADIO
     edacs_reset_audio_hook_state();
@@ -1355,7 +1368,7 @@ main(void) {
         {3U, EDACS_GUARD_ALLOWLIST_BLOCK, "ea-private-allowlist-block"},
         {2U, EDACS_GUARD_MISSING_FREQUENCY, "missing-frequency"},
         {2U, EDACS_GUARD_MISSING_CC_LCN, "missing-cc-lcn"},
-        {3U, EDACS_GUARD_P25_TRUNK_DISABLED, "p25-trunk-disabled"},
+        {3U, EDACS_GUARD_TRUNK_DISABLED, "trunk-disabled"},
     };
 
     for (size_t g = 0; g < sizeof(guard_cases) / sizeof(guard_cases[0]); g++) {

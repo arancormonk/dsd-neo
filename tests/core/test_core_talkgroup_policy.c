@@ -79,6 +79,35 @@ policy_count(const dsd_state* st) {
 }
 
 static int
+test_block_reason_labels(void) {
+    static const struct {
+        uint32_t reason;
+        const char* label;
+    } cases[] = {
+        {DSD_TG_POLICY_BLOCK_NONE, "policy"},
+        {DSD_TG_POLICY_BLOCK_GROUP_DISABLED, "group-disabled"},
+        {DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED, "private-disabled"},
+        {DSD_TG_POLICY_BLOCK_DATA_DISABLED, "data-disabled"},
+        {DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED, "enc-disabled"},
+        {DSD_TG_POLICY_BLOCK_ALLOWLIST, "allowlist"},
+        {DSD_TG_POLICY_BLOCK_MODE, "mode"},
+        {DSD_TG_POLICY_BLOCK_HOLD, "hold"},
+        {DSD_TG_POLICY_BLOCK_AUDIO, "audio"},
+        {DSD_TG_POLICY_BLOCK_RECORD, "record"},
+        {DSD_TG_POLICY_BLOCK_STREAM, "stream"},
+        {DSD_TG_POLICY_BLOCK_HOLD | DSD_TG_POLICY_BLOCK_ALLOWLIST, "hold"},
+    };
+
+    int rc = 0;
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        rc |=
+            expect_true(cases[i].label, strcmp(dsd_tg_policy_block_reason_label(cases[i].reason), cases[i].label) == 0);
+    }
+    return rc;
+}
+
+static int
 test_snapshot_reclones_recreated_context(void) {
     int rc = 0;
     dsd_state* live = (dsd_state*)calloc(1, sizeof(*live));
@@ -322,69 +351,40 @@ test_evaluator_behaviors(void) {
     e.preempt = 1;
     rc |= expect_true("append eval row", dsd_tg_policy_append_exact(st, &e) == 0);
 
-    rc |= expect_true(
-        "allowlist miss eval",
-        dsd_tg_policy_evaluate_group_call(opts, st, 701, 0, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0);
+    rc |= expect_true("allowlist miss eval", dsd_tg_policy_evaluate_group_call(opts, st, 701, 0, 0, 0, &decision) == 0);
     rc |= expect_true("allowlist miss blocks tune", decision.tune_allowed == 0);
     rc |= expect_true("allowlist block bit", (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
 
-    rc |= expect_true(
-        "known eval",
-        dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0);
+    rc |= expect_true("known eval", dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 0, 0, &decision) == 0);
     rc |= expect_true("known tune allowed", decision.tune_allowed == 1);
     rc |= expect_true("known record blocked", decision.record_allowed == 0);
     rc |= expect_true("record block reason", (decision.block_reasons & DSD_TG_POLICY_BLOCK_RECORD) != 0);
     rc |= expect_true("priority preserved", decision.priority == 10 && decision.preempt_requested == 1);
 
     opts->trunk_tune_group_calls = 0;
-    rc |= expect_true(
-        "group toggle block",
-        dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0);
+    rc |= expect_true("group toggle block", dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 0, 0, &decision) == 0);
     rc |= expect_true("group disabled bit", (decision.block_reasons & DSD_TG_POLICY_BLOCK_GROUP_DISABLED) != 0);
     opts->trunk_tune_group_calls = 1;
 
     opts->trunk_tune_data_calls = 0;
-    rc |= expect_true(
-        "data toggle block",
-        dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 0, 1, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0);
+    rc |= expect_true("data toggle block", dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 0, 1, &decision) == 0);
     rc |= expect_true("data disabled bit", (decision.block_reasons & DSD_TG_POLICY_BLOCK_DATA_DISABLED) != 0);
     opts->trunk_tune_data_calls = 1;
 
     opts->trunk_tune_enc_calls = 0;
-    rc |= expect_true(
-        "enc toggle block",
-        dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 1, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0);
+    rc |= expect_true("enc toggle block", dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 1, 0, &decision) == 0);
     rc |= expect_true("enc disabled bit", (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) != 0);
     opts->trunk_tune_enc_calls = 1;
 
     init_entry(&e, 702, "DE", "ENC-LO", DSD_TG_POLICY_SOURCE_IMPORTED);
     rc |= expect_true("append de row", dsd_tg_policy_append_exact(st, &e) == 0);
     st->tg_hold = 702;
-    rc |= expect_true(
-        "hold compat keeps mode block",
-        dsd_tg_policy_evaluate_group_call(opts, st, 702, 0, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0);
-    rc |= expect_true("hold compat tune blocked", decision.tune_allowed == 0);
-    rc |= expect_true("hold compat audio blocked", decision.audio_allowed == 0);
+    rc |= expect_true("matching hold keeps mode block",
+                      dsd_tg_policy_evaluate_group_call(opts, st, 702, 0, 0, 0, &decision) == 0);
+    rc |= expect_true("matching hold tune blocked", decision.tune_allowed == 0);
+    rc |= expect_true("matching hold audio blocked", decision.audio_allowed == 0);
 
-    rc |= expect_true(
-        "hold media-only force",
-        dsd_tg_policy_evaluate_group_call(opts, st, 702, 0, 0, 0, DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY, &decision) == 0);
-    rc |= expect_true("hold media-only keeps tune blocked", decision.tune_allowed == 0);
-    rc |= expect_true("hold media-only unblocks media",
-                      decision.audio_allowed == 1 && decision.record_allowed == 1 && decision.stream_allowed == 1);
-    rc |= expect_true(
-        "hold force tune+media",
-        dsd_tg_policy_evaluate_group_call(opts, st, 702, 0, 0, 0, DSD_TG_POLICY_HOLD_FORCE_TUNE_AND_MEDIA, &decision)
-            == 0);
-    rc |= expect_true("hold force tune+media allows all", decision.tune_allowed == 1 && decision.audio_allowed == 1
-                                                              && decision.record_allowed == 1
-                                                              && decision.stream_allowed == 1);
-    rc |= expect_true("hold force tune+media clears mode/hold bits",
-                      (decision.block_reasons & (DSD_TG_POLICY_BLOCK_MODE | DSD_TG_POLICY_BLOCK_HOLD)) == 0);
-
-    rc |= expect_true(
-        "hold mismatch block",
-        dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0);
+    rc |= expect_true("hold mismatch block", dsd_tg_policy_evaluate_group_call(opts, st, 700, 0, 0, 0, &decision) == 0);
     rc |= expect_true("hold mismatch reason", (decision.block_reasons & DSD_TG_POLICY_BLOCK_HOLD) != 0);
     rc |= expect_true("hold mismatch mutes media", decision.audio_allowed == 0);
 
@@ -394,46 +394,21 @@ test_evaluator_behaviors(void) {
     opts->trunk_use_allow_list = 1;
     st->tg_hold = 0;
     // Private allowlist behavior can match either endpoint before mode gates run.
-    rc |= expect_true("private unknown block", dsd_tg_policy_evaluate_private_call(
-                                                   opts, st, 1, 2, 0, 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                   DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                                                   == 0);
+    rc |=
+        expect_true("private unknown block", dsd_tg_policy_evaluate_private_call(opts, st, 1, 2, 0, 0, &decision) == 0);
     rc |= expect_true("private allowlist blocked",
                       decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
 
     rc |= expect_true("private with known src",
-                      dsd_tg_policy_evaluate_private_call(opts, st, 900, 901, 0, 0,
-                                                          DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                          DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                          == 0);
+                      dsd_tg_policy_evaluate_private_call(opts, st, 900, 901, 0, 0, &decision) == 0);
     rc |= expect_true("private known src allowed", decision.tune_allowed == 1);
 
     init_entry(&e, 901, "B", "DST-BLOCK", DSD_TG_POLICY_SOURCE_IMPORTED);
     rc |= expect_true("append private dst block", dsd_tg_policy_append_exact(st, &e) == 0);
-    rc |= expect_true("private mode block", dsd_tg_policy_evaluate_private_call(
-                                                opts, st, 900, 901, 0, 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_ALLOW,
-                                                DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                                                == 0);
+    rc |= expect_true("private mode block",
+                      dsd_tg_policy_evaluate_private_call(opts, st, 900, 901, 0, 0, &decision) == 0);
     rc |= expect_true("private mode block reason",
                       decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0);
-
-    st->tg_hold = 0;
-    rc |= expect_true("private unknown blocked (force tune/media)",
-                      dsd_tg_policy_evaluate_private_call(opts, st, 1000, 1001, 0, 0,
-                                                          DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                          DSD_TG_POLICY_HOLD_FORCE_TUNE_AND_MEDIA, &decision)
-                          == 0);
-    rc |= expect_true("private unknown blocked reason (force tune/media)",
-                      decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
-    st->tg_hold = 1001;
-    rc |= expect_true("private hold override (force tune/media)",
-                      dsd_tg_policy_evaluate_private_call(opts, st, 1000, 1001, 0, 0,
-                                                          DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                          DSD_TG_POLICY_HOLD_FORCE_TUNE_AND_MEDIA, &decision)
-                          == 0);
-    rc |= expect_true("private hold override enables tune/media",
-                      decision.tune_allowed == 1 && decision.audio_allowed == 1 && decision.record_allowed == 1
-                          && decision.stream_allowed == 1);
 
     free_test_state(st);
     free(opts);
@@ -752,28 +727,18 @@ test_preemption_helpers(void) {
     init_route(&cand, 5001, 10, 854000000L, 30, 0, 0);
 
     st->tg_hold = 5999;
-    rc |= expect_true(
-        "hold mismatch blocks tune",
-        dsd_tg_policy_evaluate_group_call(opts, st, 5001, 10, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &cand_dec) == 0
-            && cand_dec.tune_allowed == 0 && (cand_dec.block_reasons & DSD_TG_POLICY_BLOCK_HOLD) != 0);
+    rc |= expect_true("hold mismatch blocks tune",
+                      dsd_tg_policy_evaluate_group_call(opts, st, 5001, 10, 0, 0, &cand_dec) == 0
+                          && cand_dec.tune_allowed == 0 && (cand_dec.block_reasons & DSD_TG_POLICY_BLOCK_HOLD) != 0);
     rc |= expect_true("hold mismatch blocks preempt",
                       dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 11.5) == 0);
 
     st->tg_hold = 5001;
-    rc |= expect_true(
-        "hold compat keeps mode block",
-        dsd_tg_policy_evaluate_group_call(opts, st, 5001, 10, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &cand_dec) == 0
-            && cand_dec.tune_allowed == 0 && (cand_dec.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0);
-    rc |=
-        expect_true("hold compat blocks preempt", dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 11.5) == 0);
-
-    rc |= expect_true(
-        "hold force tune/media allows candidate",
-        dsd_tg_policy_evaluate_group_call(opts, st, 5001, 10, 0, 0, DSD_TG_POLICY_HOLD_FORCE_TUNE_AND_MEDIA, &cand_dec)
-                == 0
-            && cand_dec.tune_allowed == 1 && cand_dec.preempt_requested == 1);
-    rc |= expect_true("hold force tune/media allows preempt",
-                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 11.5) == 1);
+    rc |= expect_true("matching hold keeps mode block",
+                      dsd_tg_policy_evaluate_group_call(opts, st, 5001, 10, 0, 0, &cand_dec) == 0
+                          && cand_dec.tune_allowed == 0 && (cand_dec.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0);
+    rc |= expect_true("matching hold blocks preempt",
+                      dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 11.5) == 0);
     st->tg_hold = 0;
 
     init_entry(&e, 5002, "A", "ENC-CAND", DSD_TG_POLICY_SOURCE_IMPORTED);
@@ -782,15 +747,14 @@ test_preemption_helpers(void) {
     rc |= expect_true("seed encrypted candidate row", dsd_tg_policy_append_exact(st, &e) == 0);
     init_route(&cand, 5002, 11, 854000000L, 30, 0, 0);
     opts->trunk_tune_enc_calls = 0;
-    rc |= expect_true(
-        "encrypted candidate tune blocked",
-        dsd_tg_policy_evaluate_group_call(opts, st, 5002, 11, 1, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &cand_dec) == 0
-            && cand_dec.tune_allowed == 0 && (cand_dec.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) != 0);
+    rc |= expect_true("encrypted candidate tune blocked",
+                      dsd_tg_policy_evaluate_group_call(opts, st, 5002, 11, 1, 0, &cand_dec) == 0
+                          && cand_dec.tune_allowed == 0
+                          && (cand_dec.block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) != 0);
     rc |= expect_true("encrypted candidate blocked preempt",
                       dsd_tg_policy_should_preempt(opts, st, &cand, &cand_dec, 12.0) == 0);
     opts->trunk_tune_enc_calls = 1;
 
-    rc |= expect_true("clear route by tg/channel", dsd_tg_policy_clear_active_call_route(st, &active0) == 0);
     rc |= expect_true("clear slot0", dsd_tg_policy_clear_active_call(st, 0) == 0);
     rc |= expect_true("clear slot1", dsd_tg_policy_clear_active_call(st, 1) == 0);
     rc |= expect_true("reject invalid slot clear", dsd_tg_policy_clear_active_call(st, 2) == 1);
@@ -894,6 +858,7 @@ test_reload_group_file(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_block_reason_labels();
     rc |= test_snapshot_reclones_recreated_context();
     rc |= test_snapshot_reclones_recreated_empty_reload_context();
     rc |= test_lookup_and_precedence();

@@ -21,7 +21,6 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -33,47 +32,25 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
-// Strong stubs for I/O hooks to keep tests hermetic
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return true;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return true;
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
+// Canonical trunk-tuning hooks keep the test hermetic.
 static int g_return_to_cc_called = 0;
 
-dsd_trunk_tune_result
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)request_id;
     g_return_to_cc_called++;
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
@@ -85,9 +62,11 @@ return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
 
 static void
 install_trunk_tuning_hooks(void) {
-    dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc_request = return_to_cc;
-    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
 }
 
 // Minimal utility used by TDULC path (MSB-first)
@@ -159,13 +138,6 @@ check_and_fix_golay_24_12(char* dodeca, char* parity, int* fixed_errors) {
     return 0;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-encode_golay_24_12(char* data, char* parity) {
-    (void)data;
-    (void)parity;
-}
-
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 check_and_fix_reedsolomon_24_12_13(char* data, char* parity) {
@@ -184,13 +156,6 @@ check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* era
     return 1;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-encode_reedsolomon_24_12_13(char* data, char* parity) {
-    (void)data;
-    (void)parity;
-}
-
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
@@ -203,29 +168,17 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     return 0;
 }
 
-// TDULC word reader stubs (all zeros)
+// Canonical TDULC dibit-reader fixture (all zeros).
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int* status_count,
-          P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
+read_dibit_update_soft_data(dsd_opts* opts, dsd_state* state, char* buffer, unsigned int count, int* status_count,
+                            P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
     (void)opts;
     (void)state;
     (void)status_count;
     (void)soft_dibits;
     (void)soft_dibit_index;
-    DSD_MEMSET(word, 0, length);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count, P25P1SoftDibit* soft_dibits,
-                    int* soft_dibit_index) {
-    (void)opts;
-    (void)state;
-    (void)status_count;
-    (void)soft_dibits;
-    (void)soft_dibit_index;
-    DSD_MEMSET(parity, 0, 12);
+    DSD_MEMSET(buffer, 0, count);
 }
 
 static int
@@ -248,7 +201,7 @@ main(void) {
     DSD_MEMSET(&state, 0, sizeof state);
 
     // Enable trunking and allow group-call tuning
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_enc_calls = 1;
     opts.verbose = 0;
@@ -277,14 +230,15 @@ main(void) {
                                    .src = 5678,
                                    .svc_bits = 0,
                                    .is_group = 1});
-    rc |= expect_eq_int("tuned after grant", opts.p25_is_tuned, 1);
+    rc |= expect_eq_int("tuned after grant", opts.trunk_is_tuned, 1);
 
     // TDULC should not immediately bounce back to CC
     g_return_to_cc_called = 0;
     processTDULC(&opts, &state);
     rc |= expect_eq_int("return_to_cc not called", g_return_to_cc_called, 0);
-    rc |= expect_eq_int("still tuned after TDULC", opts.p25_is_tuned, 1);
+    rc |= expect_eq_int("still tuned after TDULC", opts.trunk_is_tuned, 1);
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

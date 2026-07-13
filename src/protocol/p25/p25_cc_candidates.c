@@ -13,12 +13,10 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +24,9 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static int p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len);
+static void p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state);
 
 int
 p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
@@ -35,7 +36,7 @@ p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
     if (freq_hz == state->p25_cc_freq) {
         return 0;
     }
-    return dsd_trunk_cc_candidates_add_with_flags(state, freq_hz, bump_added, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    return dsd_trunk_cc_candidates_add(state, freq_hz, bump_added, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
 }
 
 void
@@ -65,11 +66,11 @@ p25_cc_next_candidate(dsd_state* state, long* out_freq) {
     if (!state || !out_freq) {
         return 0;
     }
-    return dsd_trunk_cc_candidates_next_with_flags(state, dsd_time_now_monotonic_s(),
-                                                   DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, out_freq);
+    return dsd_trunk_cc_candidates_next(state, dsd_time_now_monotonic_s(), DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE,
+                                        out_freq);
 }
 
-int
+static int
 p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
     if (!state || !out || out_len == 0) {
         return 0;
@@ -82,11 +83,6 @@ p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     const char* root = (cfg && cfg->cache_dir[0] != '\0') ? cfg->cache_dir : ".dsdneo_cache";
     DSD_SNPRINTF(path, sizeof(path), "%s", root);
-
-    dsd_stat_t st;
-    if (dsd_stat_path(path, &st) != 0) {
-        (void)dsd_mkdir(path, 0700);
-    }
 
     int n = 0;
     if (state->p2_rfssid > 0 && state->p2_siteid > 0) {
@@ -166,7 +162,7 @@ p25_cc_log_cache_load(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
-void
+static void
 p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state) {
     if (!state || state->p25_cc_cache_loaded) {
         return;
@@ -190,37 +186,6 @@ p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state) {
     fclose(fp);
     state->p25_cc_cache_loaded = 1;
     p25_cc_log_cache_load(opts, state);
-}
-
-void
-p25_cc_persist_cache(const dsd_opts* opts, const dsd_state* state) {
-    if (!state) {
-        return;
-    }
-    if (!p25_cc_cache_enabled()) {
-        return;
-    }
-
-    char fpath[1024];
-    if (!p25_cc_build_cache_path(state, fpath, sizeof(fpath))) {
-        return;
-    }
-    FILE* fp = dsd_fopen_private(fpath, "w");
-    if (!fp) {
-        if (opts && opts->verbose > 1) {
-            DSD_FPRINTF(stderr, "\n  P25 SM: Failed to open CC cache for write: %s (errno=%d)\n", fpath, errno);
-        }
-        return;
-    }
-
-    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
-    const int count = (cc && cc->count > 0 && cc->count <= DSD_TRUNK_CC_CANDIDATES_MAX) ? cc->count : 0;
-    for (int i = 0; i < count; i++) {
-        if (cc->candidates[i] != 0 && (cc->flags[i] & DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) != 0) {
-            DSD_FPRINTF(fp, "cc %ld\n", cc->candidates[i]);
-        }
-    }
-    fclose(fp);
 }
 
 #define P25_NB_TTL_SEC ((time_t)30 * 60)

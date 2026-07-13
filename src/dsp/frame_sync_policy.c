@@ -16,7 +16,7 @@ dsd_frame_sync_suppress_p25_alt_sync(const dsd_opts* opts, const dsd_state* stat
     if (!opts || !state) {
         return 0;
     }
-    return opts->p25_trunk == 1 && state->carrier == 1 && DSD_SYNC_IS_P25(state->lastsynctype);
+    return opts->trunk_enable == 1 && state->carrier == 1 && DSD_SYNC_IS_P25(state->lastsynctype);
 }
 
 int
@@ -32,7 +32,7 @@ dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* stat
     if (!opts || !state) {
         return 3;
     }
-    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 0 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
+    if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 0 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
         return 5;
     }
     return 3;

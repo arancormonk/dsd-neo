@@ -123,7 +123,7 @@ void
 demod_mt_init(struct demod_state* s) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     bool enable = (cfg && cfg->mt_is_set && cfg->mt_enable) ? true : false;

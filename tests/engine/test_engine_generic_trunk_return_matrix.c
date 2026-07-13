@@ -115,10 +115,8 @@ setup_generic_fixture(dsd_opts** opts_out, dsd_state** state_out, const generic_
     const time_t now = time(NULL);
 
     opts->trunk_enable = 1;
-    opts->p25_trunk = 0;
     opts->trunk_hangtime = 1.0f;
     opts->trunk_is_tuned = 1;
-    opts->p25_is_tuned = 1;
     opts->audio_in_type = AUDIO_IN_PULSE;
 
     state->synctype = test_case->synctype;
@@ -168,7 +166,6 @@ run_recent_vc_case(const generic_return_case* test_case) {
     noCarrier(opts, state);
 
     rc |= expect_true(test_case->name, "recent-vc", "generic tuned flag preserved", opts->trunk_is_tuned == 1);
-    rc |= expect_true(test_case->name, "recent-vc", "p25 alias tuned flag cleared", opts->p25_is_tuned == 0);
     rc |= expect_true(test_case->name, "recent-vc", "generic VC frequency preserved",
                       state->trunk_vc_freq[0] == GENERIC_TRUNK_VC_HZ && state->trunk_vc_freq[1] == GENERIC_TRUNK_VC_HZ);
     rc |= expect_true(test_case->name, "recent-vc", "p25 VC alias cleared",
@@ -194,8 +191,7 @@ run_stale_vc_with_cc_case(const generic_return_case* test_case) {
 
     noCarrier(opts, state);
 
-    rc |= expect_true(test_case->name, "stale-vc-with-cc", "tuned flags cleared",
-                      opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0);
+    rc |= expect_true(test_case->name, "stale-vc-with-cc", "tuned flags cleared", opts->trunk_is_tuned == 0);
     rc |= expect_true(test_case->name, "stale-vc-with-cc", "generic VC frequencies cleared",
                       state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
     rc |= expect_true(test_case->name, "stale-vc-with-cc", "p25 VC aliases cleared",
@@ -226,7 +222,7 @@ run_stale_vc_without_cc_case(const generic_return_case* test_case) {
     noCarrier(opts, state);
 
     rc |= expect_true(test_case->name, "stale-vc-without-cc", "unreturnable tuned flags cleared",
-                      opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0);
+                      opts->trunk_is_tuned == 0);
     rc |= expect_true(test_case->name, "stale-vc-without-cc", "unreturnable generic VC cleared",
                       state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
     rc |= expect_true(test_case->name, "stale-vc-without-cc", "control channels remain empty",
@@ -256,8 +252,8 @@ run_stale_vc_with_matching_p25_cc_alias_case(const generic_return_case* test_cas
     rc |= expect_true(test_case->name, "stale-vc-matching-p25-cc", "matching p25 CC alias retained",
                       state->trunk_cc_freq == GENERIC_TRUNK_CC_HZ && state->p25_cc_freq == GENERIC_TRUNK_CC_HZ);
     rc |= expect_true(test_case->name, "stale-vc-matching-p25-cc", "voice state cleared",
-                      opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0 && state->trunk_vc_freq[0] == 0
-                          && state->p25_vc_freq[0] == 0 && p25_p2_voice_aliases_cleared(state));
+                      opts->trunk_is_tuned == 0 && state->trunk_vc_freq[0] == 0 && state->p25_vc_freq[0] == 0
+                          && p25_p2_voice_aliases_cleared(state));
 
     free_test_runtime(opts, state);
     return rc;
@@ -283,8 +279,8 @@ run_mapped_rest_channel_case(const generic_return_case* test_case) {
     rc |= expect_true(test_case->name, "mapped-rest-channel", "mapped rest channel consumed",
                       state->dmr_rest_channel == -1);
     rc |= expect_true(test_case->name, "mapped-rest-channel", "voice state cleared",
-                      opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0 && state->trunk_vc_freq[0] == 0
-                          && state->p25_vc_freq[0] == 0 && p25_p2_voice_aliases_cleared(state));
+                      opts->trunk_is_tuned == 0 && state->trunk_vc_freq[0] == 0 && state->p25_vc_freq[0] == 0
+                          && p25_p2_voice_aliases_cleared(state));
 
     free_test_runtime(opts, state);
     return rc;
@@ -298,17 +294,17 @@ run_generic_overrides_p25_helper_case(const generic_return_case* test_case) {
     if (rc != 0) {
         return rc;
     }
-    opts->p25_trunk = 1;
-    opts->p25_is_tuned = 1;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
     install_return_to_cc_guard();
 
     noCarrier(opts, state);
 
     rc |= expect_true(test_case->name, "generic-overrides-p25-helper", "p25 helper not called",
                       g_return_to_cc_calls == 0);
-    rc |= expect_true(test_case->name, "generic-overrides-p25-helper", "generic legacy return accepted",
-                      opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0
-                          && state->trunk_cc_freq == GENERIC_TRUNK_CC_HZ && state->p25_cc_freq == 0);
+    rc |= expect_true(test_case->name, "generic-overrides-p25-helper", "generic return accepted",
+                      opts->trunk_is_tuned == 0 && state->trunk_cc_freq == GENERIC_TRUNK_CC_HZ
+                          && state->p25_cc_freq == 0);
     rc |= expect_true(test_case->name, "generic-overrides-p25-helper", "p25 hints cleared",
                       state->p25_vc_freq[0] == 0 && state->p2_cc == 0 && state->p25_sys_is_tdma == 0
                           && p25_p2_voice_aliases_cleared(state));
@@ -336,8 +332,8 @@ run_sync_source_case(const generic_return_case* test_case, int current_only) {
     noCarrier(opts, state);
 
     rc |= expect_true(test_case->name, scenario, "generic sync source selected generic path",
-                      opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0
-                          && state->trunk_cc_freq == GENERIC_TRUNK_CC_HZ && state->p25_cc_freq == 0);
+                      opts->trunk_is_tuned == 0 && state->trunk_cc_freq == GENERIC_TRUNK_CC_HZ
+                          && state->p25_cc_freq == 0);
     rc |= expect_true(test_case->name, scenario, "p25 aliases cleared",
                       state->p25_vc_freq[0] == 0 && state->p2_cc == 0 && p25_p2_voice_aliases_cleared(state));
 

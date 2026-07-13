@@ -18,7 +18,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
 #include <stdint.h>
@@ -345,7 +344,7 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     uint16_t crc_ext = (uint16_t)convert_bits_into_output(&input[(72 + num_bits - 16)], 16);
 
     //compute CRC
-    uint16_t crc_cmp = ComputeCrcCCITT16d(&input[72], num_bits - 16);
+    uint16_t crc_cmp = dsd_crc_ccitt16_bits(&input[72], (size_t)(num_bits - 16));
 
     //print comparison
     if (crc_ext != crc_cmp) {
@@ -912,7 +911,6 @@ dmr_talker_alias_lc_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
 
 void
 dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, const uint8_t* lc_bits) {
-    UNUSED(opts); //delete if we don't use this, but may want it if we dump alias to a file later on
     uint8_t char_size = state->dmr_alias_char_size[slot];
     uint16_t ptr = 0;
 

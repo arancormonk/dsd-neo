@@ -72,7 +72,6 @@ dsd_input_level_source_is_rf(dsd_input_level_source source) {
         case DSD_INPUT_LEVEL_SOURCE_RTL_TCP_CU8:
         case DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16:
         case DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32: return 1;
-        case DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL:
         case DSD_INPUT_LEVEL_SOURCE_PCM:
         case DSD_INPUT_LEVEL_SOURCE_UNKNOWN:
         default: return 0;
@@ -133,10 +132,6 @@ dsd_input_level_classify(dsd_input_level_snapshot* snapshot, double low_warn_db)
         if (snapshot) {
             snapshot->status = DSD_INPUT_LEVEL_UNKNOWN;
         }
-        return;
-    }
-    if (snapshot->source == DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL) {
-        snapshot->status = DSD_INPUT_LEVEL_UNKNOWN;
         return;
     }
     if (snapshot->clip_pct >= DSD_INPUT_LEVEL_CLIP_PCT) {
@@ -330,21 +325,6 @@ dsd_input_level_metrics_from_cf32(const float* samples, size_t count, dsd_input_
     }
     mean_power /= (double)count;
     input_level_fill(out, source, mean_power, peak, clipped, (uint64_t)count);
-    return 0;
-}
-
-int
-dsd_input_level_metrics_from_fsk_clip(float clip_pct, uint64_t symbols, dsd_input_level_snapshot* out) {
-    if (!out || symbols == 0U || !isfinite((double)clip_pct)) {
-        return -1;
-    }
-    out->status = DSD_INPUT_LEVEL_UNKNOWN;
-    out->source = DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL;
-    out->rms_dbfs = -120.0;
-    out->peak_dbfs = -120.0;
-    out->clip_pct = clip_pct < 0.0f ? 0.0 : (double)clip_pct;
-    out->sample_count = symbols;
-    out->updated = time(NULL);
     return 0;
 }
 

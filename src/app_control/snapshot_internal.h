@@ -21,7 +21,6 @@ void dsd_app_telemetry_publish_snapshot(const dsd_state* state);
 void dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
 
 void dsd_app_request_redraw(void);
-int dsd_app_consume_redraw_requested(void);
 
 #ifdef __cplusplus
 }

@@ -165,6 +165,10 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing commented voice_start key\n");
         rc = 1;
     }
+    if (strstr(content, "version =") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: template must not emit the persisted version marker\n");
+        rc = 1;
+    }
 
     free(content);
     return rc;

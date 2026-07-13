@@ -66,32 +66,8 @@ struct dsd_state;
 /* ─────────────────────────────────────────────────────────────────────────────
  * Symbol History Management
  *
- * Generic APIs for managing a circular buffer of recent symbol values.
+ * Accessors for the circular buffer owned by the decoder state lifecycle.
  * ───────────────────────────────────────────────────────────────────────────── */
-
-/**
- * @brief Initialize symbol history buffer.
- *
- * Allocates a circular buffer to store recent symbol values for retrospective
- * analysis at sync detection.
- *
- * @param state Decoder state
- * @param symbols Buffer size in symbols (use DSD_SYMBOL_HISTORY_SIZE for default)
- * @return 0 on success, -1 on allocation failure
- */
-int dsd_symbol_history_init(struct dsd_state* state, int symbols);
-
-/**
- * @brief Free symbol history buffer.
- * @param state Decoder state
- */
-void dsd_symbol_history_free(struct dsd_state* state);
-
-/**
- * @brief Reset symbol history (clear buffer, reset indices).
- * @param state Decoder state
- */
-void dsd_symbol_history_reset(struct dsd_state* state);
 
 /**
  * @brief Store a symbol in the history buffer.
@@ -130,10 +106,9 @@ int dsd_symbol_history_count(const struct dsd_state* state);
  */
 typedef enum {
     DSD_WARM_START_OK = 0,         /**< Warm-start applied successfully */
-    DSD_WARM_START_DISABLED = 1,   /**< Warm-start disabled via env var */
-    DSD_WARM_START_NO_HISTORY = 2, /**< Not enough symbols in history */
-    DSD_WARM_START_DEGENERATE = 3, /**< Span too small (degenerate signal) */
-    DSD_WARM_START_NULL_STATE = 4, /**< NULL state pointer */
+    DSD_WARM_START_NO_HISTORY = 1, /**< Not enough symbols in history */
+    DSD_WARM_START_DEGENERATE = 2, /**< Span too small (degenerate signal) */
+    DSD_WARM_START_NULL_STATE = 3, /**< NULL state pointer */
 } dsd_warm_start_result_t;
 
 /**
@@ -166,8 +141,6 @@ typedef enum {
  * @param state Decoder state to update
  * @param sync_len Number of symbols in sync pattern
  * @return Result code indicating success or reason for skip
- *
- * @note Can be disabled at runtime via DSD_NEO_SYNC_WARMSTART=0 env var.
  */
 dsd_warm_start_result_t dsd_sync_warm_start_thresholds_outer_only(const struct dsd_opts* opts, struct dsd_state* state,
                                                                   int sync_len);
@@ -186,23 +159,11 @@ dsd_warm_start_result_t dsd_sync_warm_start_thresholds_outer_only(const struct d
  *
  * It does not modify state->min/max/lmid/umid or reference values.
  *
- * @param opts Decoder options (unused today; may be NULL)
  * @param state Decoder state to update
  * @param sync_len Number of symbols in sync pattern
  * @return Result code indicating success or reason for skip
  */
-dsd_warm_start_result_t dsd_sync_warm_start_center_outer_only(struct dsd_opts* opts, struct dsd_state* state,
-                                                              int sync_len);
-
-/**
- * @brief Check if warm-start is enabled.
- *
- * Warm-start can be disabled via DSD_NEO_SYNC_WARMSTART=0 environment variable
- * for debugging and safe rollout.
- *
- * @return 1 if enabled (default), 0 if disabled
- */
-int dsd_sync_warm_start_enabled(void);
+dsd_warm_start_result_t dsd_sync_warm_start_center_outer_only(struct dsd_state* state, int sync_len);
 
 #ifdef __cplusplus
 }

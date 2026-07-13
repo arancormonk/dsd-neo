@@ -140,8 +140,3 @@ widen_rotate90_u8_to_f32_bias127_phase(const unsigned char* src, float* dst, uin
     }
     return g_widen_rot_phase_impl(src, dst, len, phase);
 }
-
-void
-widen_rotate90_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len) {
-    (void)widen_rotate90_u8_to_f32_bias127_phase(src, dst, len, 0U);
-}

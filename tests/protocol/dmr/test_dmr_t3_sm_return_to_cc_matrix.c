@@ -772,10 +772,6 @@ dmr_run_global_emit_and_scan_hook_case(void) {
     dmr_sm_emit_data_sync(&g_opts, &g_state, 1);
     rc |= dmr_expect(g_ctx.slots[1].last_active_m > 0.0, grant, flow, script, "global data-sync emit delivered slot");
 
-    g_ctx.state = DMR_SM_HUNTING;
-    dmr_sm_emit_cc_sync(&g_opts, &g_state);
-    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC, grant, flow, script, "global cc-sync emit reacquires");
-
     dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
     return rc;
 }
@@ -793,7 +789,7 @@ dmr_run_config_override_case(void) {
     rc |= dmr_expect(dsd_setenv("DSD_NEO_DMR_HANGTIME", "1.25", 1) == 0, grant, flow, script, "set hangtime env");
     rc |= dmr_expect(dsd_setenv("DSD_NEO_DMR_GRANT_TIMEOUT", "6.5", 1) == 0, grant, flow, script,
                      "set grant-timeout env");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     dmr_sm_init_ctx(&g_ctx, &g_opts, &g_state);
     rc |= dmr_expect_close(g_ctx.hangtime_s, 1.25, 1e-9, grant, flow, script, "config hangtime overrides opts");
     rc |= dmr_expect_close(g_ctx.grant_timeout_s, 6.5, 1e-9, grant, flow, script,
@@ -802,7 +798,7 @@ dmr_run_config_override_case(void) {
 
     dsd_unsetenv("DSD_NEO_DMR_HANGTIME");
     dsd_unsetenv("DSD_NEO_DMR_GRANT_TIMEOUT");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     return rc;
 }
 

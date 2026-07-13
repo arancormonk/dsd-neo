@@ -58,9 +58,7 @@ ui_fdma_denom(const dsd_state* state, int iden) {
 
 static int
 ui_tdma_denom(const p25_iden_entry_t* tdma) {
-    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-    int type = tdma->chan_type & 0xF;
-    int denom = slots_per_carrier[type];
+    int denom = p25_channel_type_slots_per_carrier(tdma->chan_type);
     return (denom > 0) ? denom : 1;
 }
 
@@ -597,7 +595,7 @@ ui_print_p2_rs_metric(const dsd_state* state) {
 
 static int
 ui_print_p25p2_metrics(const dsd_opts* opts, const dsd_state* state, int is_p25p1, int is_p25p2) {
-    if (!is_p25p2 && !(is_p25p1 && opts && opts->p25_trunk == 1)) {
+    if (!is_p25p2 && !(is_p25p1 && opts && opts->trunk_enable == 1)) {
         return 0;
     }
     int lines = 0;
@@ -912,7 +910,7 @@ ui_print_p25_service_metric(const dsd_state* state) {
 
 static int
 ui_print_p25_trunk_metrics(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || opts->p25_trunk != 1) {
+    if (!opts || opts->trunk_enable != 1) {
         return 0;
     }
     int lines = 0;
@@ -1027,7 +1025,7 @@ ui_print_p25p1_sm_timers_metric(const dsd_state* state) {
 
 static int
 ui_print_p25p1_sm_flags_metric(const dsd_opts* opts, const dsd_state* state) {
-    int tuned = (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) ? 1 : 0;
+    int tuned = (opts->trunk_is_tuned == 1) ? 1 : 0;
     int tick = p25_sm_in_tick();
     const char* hold = (state->tg_hold != 0) ? "on" : "-";
     printw("| SM Flags: tuned:%d force_rel:%d tick:%d hold:%s\n", tuned, state->p25_sm_force_release ? 1 : 0, tick,
@@ -1046,7 +1044,7 @@ ui_print_p25p1_policy_metric(const dsd_opts* opts) {
 
 static int
 ui_print_p25p1_sm_metrics(const dsd_opts* opts, const dsd_state* state, int is_p25p1) {
-    if (!is_p25p1 || !opts || opts->p25_trunk != 1) {
+    if (!is_p25p1 || !opts || opts->trunk_enable != 1) {
         return 0;
     }
     int lines = 0;
@@ -1093,7 +1091,7 @@ ui_print_p25_cc_candidates(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
@@ -1130,7 +1128,7 @@ ui_print_p25_secondary_ccs(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
     if (state->p25_secondary_cc_count <= 0) {

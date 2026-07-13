@@ -10,8 +10,6 @@
  * byte coincidentally matches a known token id (eg 0x66), producing an incorrect position decode.
  */
 
-#include <dsd-neo/core/bit_packing.h>
-
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -41,14 +39,6 @@ dsd_degrees_glyph(void) {
 int
 dsd_unicode_supported(void) {
     return 0;
-}
-
-void
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    if (len > 0) {
-        DSD_MEMSET(output, 0, (size_t)len);
-    }
 }
 
 void

@@ -52,9 +52,7 @@ dsd_sleep_us(uint64_t us) {
 }
 
 void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts;
-}
+dsd_neo_config_init(void) {}
 
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
@@ -119,6 +117,22 @@ dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_t
 
 int
 main(void) {
+    static const struct {
+        float symbol;
+        uint8_t expected_min;
+        uint8_t expected_max;
+        const char* description;
+    } cqpsk_cases[] = {
+        {1.0f, 250U, 255U, "perfect +1"},       {3.0f, 250U, 255U, "perfect +3"},
+        {-1.0f, 250U, 255U, "perfect -1"},      {-3.0f, 250U, 255U, "perfect -3"},
+        {1.1f, 220U, 245U, "+1 with error"},    {0.9f, 220U, 245U, "+1 with negative error"},
+        {1.9f, 10U, 40U, "near +2 boundary"},   {2.1f, 10U, 40U, "above +2 boundary"},
+        {0.1f, 10U, 40U, "near zero boundary"}, {-0.1f, 10U, 40U, "below zero boundary"},
+        {2.0f, 0U, 5U, "at +2 boundary"},       {0.0f, 0U, 5U, "at zero boundary"},
+        {-2.0f, 0U, 5U, "at -2 boundary"},      {4.0f, 0U, 5U, "clipped positive"},
+        {-4.0f, 0U, 5U, "clipped negative"},
+    };
+
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.rf_mod = 0;
@@ -133,6 +147,17 @@ main(void) {
     if (reliability < 200U) {
         DSD_FPRINTF(stderr, "RTL FSK discriminator reliability clipped to %u\n", reliability);
         return 1;
+    }
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.rf_mod = 1;
+    for (size_t i = 0; i < sizeof(cqpsk_cases) / sizeof(cqpsk_cases[0]); i++) {
+        reliability = dmr_compute_reliability(&state, cqpsk_cases[i].symbol);
+        if (reliability < cqpsk_cases[i].expected_min || reliability > cqpsk_cases[i].expected_max) {
+            DSD_FPRINTF(stderr, "CQPSK reliability %s: got %u, expected [%u,%u]\n", cqpsk_cases[i].description,
+                        reliability, cqpsk_cases[i].expected_min, cqpsk_cases[i].expected_max);
+            return 1;
+        }
     }
     return 0;
 }

@@ -7,7 +7,7 @@ For CLI flags and inputs/outputs, see `docs/cli.md`.
 
 ## Start the UI
 
-- Enable UI: `dsd-neo --frontend terminal ...` (`-N` is the short CLI alias)
+- Enable UI: `dsd-neo --frontend terminal ...`
 - Quit: `q`
 - Open the menu overlay: `Enter`
 

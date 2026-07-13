@@ -383,7 +383,7 @@ test_edacs_service_string_appends_past_pointer_size(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.lastsrc = 1201;
     state.lasttg = 0x0123;
@@ -700,7 +700,7 @@ test_edacs_ea_mode_current_event_and_unknown_lid(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.lastsrc = 0x800U;
     state.lasttg = 0x0123U;
@@ -721,7 +721,7 @@ test_edacs_ea_mode_current_event_and_unknown_lid(void) {
                             "LID: __UNK;");
 
     reset_fixture(&opts, &state, event_history);
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.ea_mode = 1;
     state.lastsrc = 77001U;

@@ -570,8 +570,8 @@ start_replay_stream(const char* metadata_path, std::unique_ptr<dsd_opts>* out_op
     prepare_replay_opts(out_opts->get(), metadata_path);
 
     RtlSdrContext* ctx = NULL;
-    if (rtl_stream_create_mirrored(out_opts->get(), &ctx) != 0 || !ctx) {
-        DSD_FPRINTF(stderr, "FAIL: rtl_stream_create_mirrored failed\n");
+    if (rtl_stream_create(out_opts->get(), &ctx) != 0 || !ctx) {
+        DSD_FPRINTF(stderr, "FAIL: rtl_stream_create failed\n");
         return 1;
     }
     if (rtl_stream_start(ctx) != 0) {
@@ -593,8 +593,8 @@ start_replay_stream_with_loop_and_rate(const char* metadata_path, int loop, int 
     prepare_replay_opts_with_loop_and_rate(out_opts->get(), metadata_path, loop, realtime);
 
     RtlSdrContext* ctx = NULL;
-    if (rtl_stream_create_mirrored(out_opts->get(), &ctx) != 0 || !ctx) {
-        DSD_FPRINTF(stderr, "FAIL: rtl_stream_create_mirrored failed\n");
+    if (rtl_stream_create(out_opts->get(), &ctx) != 0 || !ctx) {
+        DSD_FPRINTF(stderr, "FAIL: rtl_stream_create failed\n");
         return 1;
     }
     if (rtl_stream_start(ctx) != 0) {

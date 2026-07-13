@@ -54,20 +54,10 @@ read_dibit_soft(dsd_opts* opts, dsd_state* state, char* output, int* status_coun
 
     if (*status_count == 35) {
 
-#ifdef TRACE_DSD
-        char prev_prefix = state->debug_prefix;
-        state->debug_prefix = 's';
-#endif
-
         dsd_dibit_soft_t status_soft;
         int status_dibit = getDibitSoft(opts, state, &status_soft);
         p25_status_accum_add(state, status_dibit);
         *status_count = 1;
-
-#ifdef TRACE_DSD
-        state->debug_prefix = prev_prefix;
-#endif
-
     } else {
         (*status_count)++;
     }
@@ -99,25 +89,6 @@ read_dibit_update_soft_data(dsd_opts* opts, dsd_state* state, char* buffer, unsi
             (*soft_dibit_index)++;
         }
     }
-}
-
-void
-read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int* status_count,
-          P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
-    read_dibit_update_soft_data(opts, state, word, length, status_count, soft_dibits, soft_dibit_index);
-}
-
-void
-read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count, P25P1SoftDibit* soft_dibits,
-                    int* soft_dibit_index) {
-    read_dibit_update_soft_data(opts, state, parity, 12, status_count, soft_dibits, soft_dibit_index);
-}
-
-void
-read_hamm_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count, P25P1SoftDibit* soft_dibits,
-                 int* soft_dibit_index) {
-    // Read 2 dibits = read 4 bits.
-    read_dibit_update_soft_data(opts, state, parity, 4, status_count, soft_dibits, soft_dibit_index);
 }
 
 /**
@@ -221,10 +192,8 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
     /* Remember where this hex word's soft dibits start */
     int start_index = *soft_dibit_index;
 
-    // Read the hex word
-    read_word(opts, state, hex, 6, status_count, soft_dibits, soft_dibit_index);
-    // Read the parity
-    read_golay24_parity(opts, state, parity, status_count, soft_dibits, soft_dibit_index);
+    read_dibit_update_soft_data(opts, state, hex, 6, status_count, soft_dibits, soft_dibit_index);
+    read_dibit_update_soft_data(opts, state, parity, 12, status_count, soft_dibits, soft_dibit_index);
 
     // Use the Golay24 FEC to correct it. This call modifies the content of hex to fix it, hopefully.
     // Pass the soft dibit array starting at this hex word for soft decode support.
@@ -450,7 +419,7 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     }
 
     // Classify accumulated status symbols and set advisory AFC gate flag.
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 
     //reset gain
     if (opts->floating_point == 1) {

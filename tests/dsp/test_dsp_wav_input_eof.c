@@ -66,15 +66,6 @@ dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
 
 double
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-raw_pwr_f(const float* samples, int len, int step) {
-    (void)samples;
-    (void)len;
-    (void)step;
-    return 0.0;
-}
-
-double
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 pwr_to_dB(double mean_power) {
     (void)mean_power;
     return 0.0;

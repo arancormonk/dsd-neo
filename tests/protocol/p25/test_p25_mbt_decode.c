@@ -13,70 +13,48 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_test_shim.h"
 #include "test_support.h"
-
-struct RtlSdrContext;
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Test shim wrapper: decode one MBT using seeded IDEN table and return fields
-int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
-                                  int spac, long* out_cc, long* out_wacn, int* out_sysid);
-int p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len);
-
-// Additional stubs referenced by linked objects (rigctl/rtl streaming)
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
 
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
 }
 
 // Alias decode helpers stubbed as they may be referenced by linked objects
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -177,7 +155,7 @@ static void
 init_private_trunking(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
-    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     opts->trunk_tune_data_calls = 1;
@@ -412,7 +390,7 @@ capture_mbt_output(const char* name, const uint8_t* mbt, size_t mbt_len, char* o
     if (dsd_test_capture_stderr_begin(&cap, name) != 0) {
         return -1;
     }
-    (void)p25_decode_pdu_trunking_bounded(&opts, &state, mbt, mbt_len);
+    (void)p25_decode_pdu_trunking(&opts, &state, mbt, mbt_len);
     dsd_test_capture_stderr_end(&cap);
 
     int rc = read_capture_file(cap.path, out, out_sz);
@@ -423,6 +401,7 @@ capture_mbt_output(const char* name, const uint8_t* mbt, size_t mbt_len, char* o
 int
 main(void) {
     int rc = 0;
+    install_trunk_tuning_hooks();
 
     // Craft ALT MBT: NET_STS_BCST (0x3B), channelt=0x100A (iden=1, ch=10), WACN=0xABCDE, SYSID=0x123
     uint8_t mbt[48];
@@ -443,8 +422,20 @@ main(void) {
 
     long cc = 0, wacn = 0;
     int sysid = 0;
-    int sh = p25_test_decode_mbt_with_iden(mbt, (int)sizeof(mbt), /*iden*/ 1, /*type*/ 1, /*tdma*/ 0,
-                                           /*base*/ 851000000 / 5, /*spac*/ 100, &cc, &wacn, &sysid);
+    const p25_test_iden_config iden_cfg = {
+        .iden = 1,
+        .type = 1,
+        .tdma = 0,
+        .base = 851000000 / 5,
+        .spac = 100,
+    };
+    const p25_test_mbt_outputs outputs = {
+        .cc = &cc,
+        .wacn = &wacn,
+        .sysid = &sysid,
+        .inspect_iden = -1,
+    };
+    int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &iden_cfg, &outputs);
     if (sh != 0) {
         DSD_FPRINTF(stderr, "shim invocation failed (%d)\n", sh);
         return 99;
@@ -466,7 +457,7 @@ main(void) {
         p25_patch_add_wgid(&state, 0x2222, 0x3333);
         build_ambtc_group_voice(grant, 0x00, 0x100A, 0x100A, 0x2222, 0x010203);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_decode_pdu_trunking(&opts, &state, grant);
+        (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
         p25_sm_ctx_t* ctx = p25_sm_get_ctx();
         rc |= expect_eq_int("mbt group patch member hold count", (int)ctx->grant_count, 1);
         rc |= expect_eq_int("mbt group patch member hold channel", ctx->vc_channel, 0x100A);
@@ -485,7 +476,7 @@ main(void) {
         p25_patch_add_wgid(&state, 0x5555, 0x4444);
         build_ambtc_mfid90_group_regroup(grant, 0x00, 0x100A, 0x100B, 0x5555, 0x010204);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_decode_pdu_trunking(&opts, &state, grant);
+        (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
         p25_sm_ctx_t* ctx = p25_sm_get_ctx();
         rc |= expect_eq_int("mbt mfid90 patch member hold count", (int)ctx->grant_count, 1);
         rc |= expect_eq_int("mbt mfid90 patch member hold channel", ctx->vc_channel, 0x100A);
@@ -504,7 +495,7 @@ main(void) {
         opts.p25_retune_backoff_s = 5.0;
         build_ambtc_group_voice(grant, 0x40, 0x200A, 0x200A, 0x2345, 0x010205);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_decode_pdu_trunking(&opts, &state, grant);
+        (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
         rc |= expect_eq_int("mbt group unresolved enc no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_eq_long("mbt group unresolved enc lasttg unchanged", (long)state.lasttg, 0);
         rc |= expect_eq_int("mbt group unresolved enc svc recorded", state.p25_service_options_valid[0], 1);
@@ -524,7 +515,7 @@ main(void) {
         opts.p25_retune_backoff_s = 5.0;
         build_ambtc_mfid90_group_regroup(grant, 0x40, 0x100A, 0x100B, 0x3456, 0x010206);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_decode_pdu_trunking(&opts, &state, grant);
+        (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
         rc |= expect_eq_int("mbt mfid90 no cc enc no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_eq_long("mbt mfid90 no cc enc lasttg unchanged", (long)state.lasttg, 0);
         rc |= expect_eq_int("mbt mfid90 no cc enc svc remains invalid", state.p25_service_options_valid[0], 0);
@@ -545,7 +536,7 @@ main(void) {
         if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_uu_0x04") != 0) {
             return 104;
         }
-        p25_decode_pdu_trunking(&opts, &state, uu);
+        (void)p25_decode_pdu_trunking(&opts, &state, uu, sizeof uu);
         dsd_test_capture_stderr_end(&cap);
 
         char out[4096];
@@ -582,7 +573,7 @@ main(void) {
         if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_uu_0x06") != 0) {
             return 106;
         }
-        p25_decode_pdu_trunking(&opts, &state, uu);
+        (void)p25_decode_pdu_trunking(&opts, &state, uu, sizeof uu);
         dsd_test_capture_stderr_end(&cap);
 
         char out[4096];
@@ -606,7 +597,7 @@ main(void) {
         init_private_trunking(&opts, &state);
         build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x200A, 0x200A);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_decode_pdu_trunking(&opts, &state, uu);
+        (void)p25_decode_pdu_trunking(&opts, &state, uu, sizeof uu);
         rc |= expect_eq_int("mbt 0x04 unresolved no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_contains_text("mbt 0x04 unresolved active", state.active_channel[0], "Active UU Ch: 200A");
     }
@@ -620,7 +611,7 @@ main(void) {
         seed_tdma_iden(&state, 1);
         build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x100B, 0x100B);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_decode_pdu_trunking(&opts, &state, uu);
+        (void)p25_decode_pdu_trunking(&opts, &state, uu, sizeof uu);
         rc |= expect_eq_int("mbt 0x04 tdma grant", (int)p25_sm_get_ctx()->grant_count, 1);
         rc |= expect_contains_text("mbt 0x04 tdma suffix", state.active_channel[0], "(FDMA 0005 S2)");
     }
@@ -636,7 +627,7 @@ main(void) {
         opts.trunk_tune_enc_calls = 0;
         build_ambtc_unit_to_unit(uu, 0x04, 0x40, 0x100A, 0x100A);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_decode_pdu_trunking(&opts, &state, uu);
+        (void)p25_decode_pdu_trunking(&opts, &state, uu, sizeof uu);
         rc |= expect_eq_int("mbt 0x04 enc lockout probe grant", (int)p25_sm_get_ctx()->grant_count, 1);
         rc |= expect_eq_int("mbt 0x04 encrypted service valid", state.p25_service_options_valid[0], 1);
         rc |= expect_eq_int("mbt 0x04 encrypted svc stored", state.dmr_so, 0x40);
@@ -645,7 +636,7 @@ main(void) {
         state.tg_hold = 0x222222;
         build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x100A, 0x100A);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_decode_pdu_trunking(&opts, &state, uu);
+        (void)p25_decode_pdu_trunking(&opts, &state, uu, sizeof uu);
         rc |= expect_eq_int("mbt 0x04 hold mismatch no grant", (int)p25_sm_get_ctx()->grant_count, 0);
     }
 
@@ -663,7 +654,7 @@ main(void) {
         if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_uu_short") != 0) {
             return 108;
         }
-        (void)p25_decode_pdu_trunking_bounded(&opts, &state, uu, 12U);
+        (void)p25_decode_pdu_trunking(&opts, &state, uu, 12U);
         dsd_test_capture_stderr_end(&cap);
 
         char out[2048];
@@ -672,33 +663,6 @@ main(void) {
         }
         rc |= expect_eq_int("mbt 0x04 short no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_contains_text("mbt 0x04 short log", out, "short payload");
-    }
-
-    // Legacy MBT entry point clamps to the declared BLKS count before decoding.
-    {
-        static dsd_opts opts;
-        static dsd_state state;
-        uint8_t uu[48];
-        init_private_trunking(&opts, &state);
-        seed_fdma_iden(&state, 1);
-        build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x100A, 0x100A);
-        uu[6] = 0x00;
-        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-
-        dsd_test_capture_stderr cap;
-        if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_uu_legacy_declared_short") != 0) {
-            return 110;
-        }
-        p25_decode_pdu_trunking(&opts, &state, uu);
-        dsd_test_capture_stderr_end(&cap);
-
-        char out[2048];
-        if (read_capture_file(cap.path, out, sizeof out) != 0) {
-            return 111;
-        }
-        rc |= expect_eq_int("mbt 0x04 legacy declared short no grant", (int)p25_sm_get_ctx()->grant_count, 0);
-        rc |= expect_eq_int("mbt 0x04 legacy declared short inactive", state.active_channel[0][0] == '\0', 1);
-        rc |= expect_contains_text("mbt 0x04 legacy declared short log", out, "short payload");
     }
 
     // AMBTC metadata-only decoders log useful fields and do not dispatch voice grants.
@@ -920,7 +884,7 @@ main(void) {
         if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_aff_rsp") != 0) {
             return 100;
         }
-        p25_decode_pdu_trunking(&opts, &state, aff);
+        (void)p25_decode_pdu_trunking(&opts, &state, aff, sizeof aff);
         dsd_test_capture_stderr_end(&cap);
 
         char out[2048];
@@ -964,7 +928,7 @@ main(void) {
         aff[19] = 0x67;
         aff[20] = 0x02; // GAV=2 rejected
 
-        p25_decode_pdu_trunking(&opts, &state, aff);
+        (void)p25_decode_pdu_trunking(&opts, &state, aff, sizeof aff);
         rc |= expect_eq_int("mbt 0x28 rejected aff count", state.p25_aff_count, 0);
         rc |= expect_eq_int("mbt 0x28 rejected ga count", state.p25_ga_count, 0);
     }
@@ -1003,7 +967,7 @@ main(void) {
         if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_unit_reg_rsp") != 0) {
             return 102;
         }
-        p25_decode_pdu_trunking(&opts, &state, reg);
+        (void)p25_decode_pdu_trunking(&opts, &state, reg, sizeof reg);
         dsd_test_capture_stderr_end(&cap);
 
         char out[2048];
@@ -1040,11 +1004,12 @@ main(void) {
         reg[7] = 0x2C;
         reg[17] = 0x02; // RV=2 denied
 
-        p25_decode_pdu_trunking(&opts, &state, reg);
+        (void)p25_decode_pdu_trunking(&opts, &state, reg, sizeof reg);
         rc |= expect_eq_int("mbt 0x2C rejected aff count", state.p25_aff_count, 0);
         rc |= expect_eq_int("mbt 0x2C rejected ga count", state.p25_ga_count, 0);
     }
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

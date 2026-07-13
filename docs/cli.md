@@ -9,7 +9,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
-- Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`, `-nm`
+- Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
 - Modes: `-fa | -fs | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`
@@ -60,6 +60,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - PulseAudio: `-i pulse` (default). List sources/sinks: `-O`.
 - PulseAudio by name/index: `-i pulse:<index|name>` (use `-O` to discover values)
 - WAV file: `-i file.wav` (48 kHz mono). For other rates (e.g., DSDPlus 96 kHz): add `-s 96000`.
+  Persisted discriminator captures that were historically saved as headerless PCM16LE with a `.wav` suffix remain
+  replayable at the configured rate. Remove that mislabeled-file fallback after those captures are migrated or their
+  support window ends; explicitly raw stream and file inputs remain supported independently.
 - OP25/FME capture BIN: `-i file.bin`.
 - RTL‑SDR (USB): `-i rtl` or advanced string:
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
@@ -101,7 +104,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 ## Display & UI
 
-- `--frontend terminal` Use the terminal UI (`-N` is the short CLI alias)
+- `--frontend terminal` Use the terminal UI
 - `-Z` Log MBE/PDU payloads to the console (verbose)
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
@@ -113,7 +116,6 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - For RTL-family inputs, the optional DSP panel shows post-channel-filter `Squelch` power against the SQL threshold.
   This is separate from the raw receiver `RF Level` health line.
 - UI hotkeys and menu navigation: `docs/ui-terminal.md`
-- `-j` P25: force-enable LCW explicit retune (format 0x44; enabled by default)
 - `-^` P25: prefer CC candidates during control channel hunt
 
 ### P25 Follower (Advanced)
@@ -182,10 +184,11 @@ Windows console runs:
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload
 - `-r <files>` Play saved MBE files
 - `-c <file>` Save symbol captures to a .bin file
-- `--symbol-capture-format <soft|legacy>` Select symbol capture format. New captures use the soft format, which
-  preserves dibit reliability, bit LLRs, and raw symbol values for replay. The `legacy` value remains accepted as an
-  alias for `soft`, so existing command lines continue to work without creating new headerless captures.
-  Neither format stores the NXDN symbol rate, so NXDN capture replay requires `-fi` or `-fn` instead of `-fa`.
+  The current writer emits `DSDNSYM2` version 2 records with soft-decision metrics. The reader also accepts historical
+  headerless dibit captures so persisted files remain replayable; a file carrying `DSDNSYM2` magic with an unsupported
+  version or record size is rejected rather than reinterpreted as headerless data. Remove the headerless reader after
+  those captures are migrated or their support window ends. Neither stored format carries the NXDN symbol rate, so NXDN
+  capture replay requires `-fi` or `-fn` instead of `-fa`.
 - `-d <dir>` Save raw MBE vocoder frames in this folder
 - `-J <file>` Append event log output
 - `--frame-log <file>` Append frame-level one-line timestamped traces
@@ -222,7 +225,6 @@ Notes
 
 - `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
 - `-n <num>` Analog output gain (0–100%)
-- `-nm` Enable the DMR mono audio path (does not change which frames are decoded)
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
 - `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3)
@@ -234,7 +236,7 @@ Notes
 - Auto: `-fa`
 - Passive analog monitor: `-fA`
 - Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
-- DMR simplex (BS/MS): `-fs` (stereo output), `-fr` (mono alias)
+- DMR simplex (BS/MS): `-fs`
 - P25 Phase 1 only: `-f1`
 - P25 Phase 2 only (6000 sps): `-f2`
 - D‑STAR: `-fd`
@@ -578,8 +580,8 @@ P25 trunking timing
 - `DSD_NEO_P25_WD_MS=<ms>` — P25 state machine watchdog interval (20–2000)
 - `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` — extend hangtime when P25p1 IMBE error % exceeds threshold (default 0 = off)
 - `DSD_NEO_P25P1_ERR_HOLD_S=<seconds>` — additional hold seconds when threshold exceeded (default 0 = off)
-- `DSD_NEO_CC_CACHE=0|1` — enable/disable control channel frequency caching
-- `DSD_NEO_CACHE_DIR=<path>` — override cache directory for CC frequency cache
+- `DSD_NEO_CC_CACHE=0|1` — enable/disable loading historical control-channel cache files
+- `DSD_NEO_CACHE_DIR=<path>` — locate historical control-channel cache files written by older releases
 
 DMR Tier III (env helpers for `--calc-lcn`)
 
@@ -594,7 +596,6 @@ Debug (verbose/developer)
 
 - `DSD_NEO_DEBUG_SYNC=1` — verbose sync detection output
 - `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK Gardner/Costas/FLL-band-edge state output
-- `DSD_NEO_SYNC_WARMSTART=0` — disable sync warm‑start
 
 ## Handy Examples
 

@@ -3,17 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * Unit tests for P25P2 soft metric buffer handling.
- *
- * Validates that:
- * 1. p25_p2_frame_reset() clears soft-decision buffers
- * 2. Buffer sizes are consistent with 700-dibit/1400-bit capture scope
- * 3. Soft-decision buffers are distinct from bit buffers
- *
- * This test compiles p25p2_frame.c directly with stubs to avoid
- * dragging in full library dependencies.
- */
+/* Unit tests for P25P2 frame reset and soft-decision recovery paths. */
 
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
@@ -23,7 +13,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/config.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -39,7 +29,31 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+}
 
 /* External declarations matching p25p2_frame.c */
 extern int p2bit[4320];
@@ -77,37 +91,6 @@ static int g_ss18_allowed_r = -1;
 static int g_ss18_pending_at_call = -1;
 static int g_ss18_keyid_at_call = -1;
 static int g_ss18_voice_count_at_call = -1;
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -223,16 +206,6 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc) {
-    (void)opts;
-    (void)state;
-    (void)slot;
-    (void)tg;
-    (void)svc;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 LFSRP(dsd_state* state) {
     (void)state;
     g_lfsrp_calls++;
@@ -343,22 +316,12 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     return 0;
 }
 
-int
-getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
-    (void)opts;
-    (void)state;
-    if (out_reliability) {
-        *out_reliability = 128;
-    }
-    return 0;
-}
-
 static void
 set_p25p2_threshold(int threshold) {
     char value[16];
     DSD_SNPRINTF(value, sizeof(value), "%d", threshold);
     dsd_setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 }
 
 static void
@@ -549,8 +512,8 @@ test_ess_des_manual_key_preserves_audio_gate(void) {
     reset_ess_stubs();
     set_p25p2_threshold(64);
 
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     opts.trunk_tune_enc_calls = 0;
     state.lasttg = 1234;
     state.R = 0x0123456789ABCDEFULL;
@@ -580,8 +543,8 @@ test_ess_aes_slot1_loaded_key_preserves_audio_gate(void) {
     reset_ess_stubs();
     set_p25p2_threshold(64);
 
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     opts.trunk_tune_enc_calls = 0;
     state.currentslot = 1;
     state.lasttgR = 5678;
@@ -1137,8 +1100,8 @@ test_duid_lcch_release_defers_during_vc_grace(void) {
     time_t now = time(NULL);
     opts.floating_point = 0;
     opts.pulse_digi_rate_out = 8000;
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     opts.trunk_hangtime = 1;
     state.currentslot = 0;
     state.last_vc_sync_time = now - 10;
@@ -1149,7 +1112,7 @@ test_duid_lcch_release_defers_during_vc_grace(void) {
 
     int rc = 0;
     rc |= expect_int("grace release force", state.p25_sm_force_release, 0);
-    rc |= expect_int("grace tuned remains", opts.p25_is_tuned, 1);
+    rc |= expect_int("grace tuned remains", opts.trunk_is_tuned, 1);
     rc |= expect_int("grace lcch seen", state.p2_is_lcch, 1);
     rc |= expect_int("grace sacch dispatches", g_sacch_mac_calls, 4);
     if (rc == 0) {
@@ -1174,8 +1137,8 @@ test_duid_lcch_release_tears_down_after_vc_grace(void) {
     time_t now = time(NULL);
     opts.floating_point = 0;
     opts.pulse_digi_rate_out = 8000;
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     opts.trunk_hangtime = 1;
     state.currentslot = 0;
     state.last_vc_sync_time = now - 10;
@@ -1189,7 +1152,8 @@ test_duid_lcch_release_tears_down_after_vc_grace(void) {
     p25p2_process_duid(&opts, &state);
 
     int rc = 0;
-    rc |= expect_int("post-grace release force", state.p25_sm_force_release, 1);
+    rc |= expect_int("post-grace release consumed", state.p25_sm_force_release, 0);
+    rc |= expect_int("post-grace tuned cleared", opts.trunk_is_tuned, 0);
     rc |= expect_teardown_common_reset(&state);
     rc |= expect_int("post-grace sacch dispatches", g_sacch_mac_calls >= 1, 1);
     if (rc == 0) {
@@ -1203,11 +1167,12 @@ test_duid_lcch_release_tears_down_after_vc_grace(void) {
 int
 main(void) {
     int failures = 0;
+    install_trunk_tuning_hooks();
     reset_ess_stubs();
     set_p25p2_threshold(64);
 
-    printf("P25P2 Soft Metric Buffer Tests\n");
-    printf("===============================\n\n");
+    printf("P25P2 Frame and Soft-Decision Tests\n");
+    printf("===================================\n\n");
 
     /* Test 1: Reset clears soft-decision buffers */
     printf("Test 1: Reset clears soft-decision buffers... ");
@@ -1233,62 +1198,8 @@ main(void) {
         failures++;
     }
 
-    /* Test 2: Buffer sizes are consistent with 700-dibit/1400-bit capture scope */
-    printf("Test 2: Buffer size consistency... ");
-    size_t p2bit_size = sizeof(p2bit) / sizeof(p2bit[0]);
-    size_t p2llr_size = sizeof(p2llr) / sizeof(p2llr[0]);
-    size_t p2xllr_size = sizeof(p2xllr) / sizeof(p2xllr[0]);
-
-    if (p2bit_size == 4320 && p2llr_size == 1400 && p2xllr_size == 1400) {
-        printf("PASS (p2bit=4320 bits, llr=1400 bits)\n");
-    } else {
-        printf("FAIL (p2bit=%zu, p2llr=%zu, p2xllr=%zu)\n", p2bit_size, p2llr_size, p2xllr_size);
-        failures++;
-    }
-
-    /* Test 3: Soft-decision buffers are distinct from bit buffers */
-    printf("Test 3: Buffer address separation... ");
-    void* p_p2bit = (void*)p2bit;
-    void* p_p2llr = (void*)p2llr;
-    void* p_p2xllr = (void*)p2xllr;
-    if (p_p2bit != p_p2llr && p_p2bit != p_p2xllr && p_p2llr != p_p2xllr) {
-        printf("PASS\n");
-    } else {
-        printf("FAIL (overlapping buffers)\n");
-        failures++;
-    }
-
-    /* Test 4: LLR descramble preserves confidence magnitudes */
-    printf("Test 4: LLR descramble preserves magnitudes... ");
-    p25_p2_frame_reset();
-
-    /* Simulate soft values from dibit capture */
-    for (int i = 0; i < 1400; i++) {
-        p2llr[i] = (int16_t)((i & 1) ? -(100 + (i % 50)) : (100 + (i % 50)));
-    }
-
-    /* Manually transform to p2xllr as process_Frame_Scramble would. */
-    for (int i = 0; i < 1400; i++) {
-        p2xllr[i] = (i % 3) == 0 ? (int16_t)-p2llr[i] : p2llr[i];
-    }
-
-    int mismatch = 0;
-    for (int i = 0; i < 1400; i++) {
-        int p2_mag = p2llr[i] < 0 ? -p2llr[i] : p2llr[i];
-        int p2x_mag = p2xllr[i] < 0 ? -p2xllr[i] : p2xllr[i];
-        if (p2x_mag != p2_mag) {
-            mismatch++;
-        }
-    }
-    if (mismatch == 0) {
-        printf("PASS\n");
-    } else {
-        printf("FAIL (%d mismatches)\n", mismatch);
-        failures++;
-    }
-
-    /* Test 5: P2 DUID soft fallback only recovers invalid hard decisions */
-    printf("Test 5: DUID soft fallback preserves valid hard decisions... ");
+    /* Test 2: P2 DUID soft fallback only recovers invalid hard decisions */
+    printf("Test 2: DUID soft fallback preserves valid hard decisions... ");
     uint8_t duid_reliab[8] = {200, 200, 200, 200, 200, 200, 200, 5};
     int valid_decoded = p25p2_duid_lookup_soft(0x07U, duid_reliab);
     if (valid_decoded == 1) {
@@ -1298,7 +1209,7 @@ main(void) {
         failures++;
     }
 
-    printf("Test 6: DUID soft fallback uses weakest invalid bits... ");
+    printf("Test 3: DUID soft fallback uses weakest invalid bits... ");
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[6] = 5;
     duid_reliab[7] = 5; /* 0x03 -> 0x00 is the cheapest canonical candidate. */
@@ -1310,7 +1221,7 @@ main(void) {
         failures++;
     }
 
-    printf("Test 7: DUID soft fallback rejects high-confidence invalid bits... ");
+    printf("Test 4: DUID soft fallback rejects high-confidence invalid bits... ");
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     int high_confidence_decoded = p25p2_duid_lookup_soft(0x03U, duid_reliab);
     if (high_confidence_decoded == -1) {
@@ -1320,7 +1231,7 @@ main(void) {
         failures++;
     }
 
-    printf("Test 8: DUID soft fallback recovers weak 0x80 MSB... ");
+    printf("Test 5: DUID soft fallback recovers weak 0x80 MSB... ");
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[0] = 5;
     int sentinel_decoded = p25p2_duid_lookup_soft(0x80U, duid_reliab);
@@ -1331,7 +1242,7 @@ main(void) {
         failures++;
     }
 
-    printf("Test 9: DUID soft fallback preserves high-confidence 0x80 guard... ");
+    printf("Test 6: DUID soft fallback preserves high-confidence 0x80 guard... ");
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     sentinel_decoded = p25p2_duid_lookup_soft(0x80U, duid_reliab);
     if (sentinel_decoded == -1) {
@@ -1341,7 +1252,7 @@ main(void) {
         failures++;
     }
 
-    printf("Test 10: DUID soft fallback rejects weak non-MSB 0x80 guard... ");
+    printf("Test 7: DUID soft fallback rejects weak non-MSB 0x80 guard... ");
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[0] = 5;
     duid_reliab[1] = 5;
@@ -1353,7 +1264,7 @@ main(void) {
         failures++;
     }
 
-    printf("Test 11: DUID soft fallback rejects tied frame candidates... ");
+    printf("Test 8: DUID soft fallback rejects tied frame candidates... ");
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[3] = 5; /* 0x03 -> 0x17 decodes to 1. */
     duid_reliab[5] = 5;
@@ -1388,6 +1299,7 @@ main(void) {
     failures += test_duid_lcch_release_tears_down_after_vc_grace();
 
     printf("\n%d test(s) failed\n", failures);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return failures > 0 ? 1 : 0;
 }
 #if defined(__GNUC__) && !defined(__cplusplus)

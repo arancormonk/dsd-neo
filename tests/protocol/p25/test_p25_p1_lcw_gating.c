@@ -13,7 +13,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -25,8 +24,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-struct RtlSdrContext;
 
 // Strong stub to capture VC tuning attempts from the SM path
 static int g_tunes = 0;
@@ -44,31 +41,6 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
 }
 
 // No-op stubs to satisfy link of LCW path helpers
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
 
 dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -170,7 +142,7 @@ main(void) {
     install_trunk_tuning_hooks();
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.p25_lcw_retune = 1;
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_enc_calls = 0;
@@ -203,11 +175,11 @@ main(void) {
 
     // Trunking disabled: a decoded 0x44 grant may update display state, but it
     // must not be treated as a trunking grant.
-    opts.p25_trunk = 0;
+    opts.trunk_enable = 0;
     g_tunes = 0;
     p25_lcw(&opts, &st, lcw, 0);
     rc |= expect_eq_int("no trunk->no-tune", g_tunes, 0);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
 
     // Retune disabled should warn only once and never dispatch a grant.
     opts.p25_lcw_retune = 0;
@@ -256,9 +228,8 @@ main(void) {
         static dsd_state vc_st;
         DSD_MEMSET(&vc_opts, 0, sizeof vc_opts);
         DSD_MEMSET(&vc_st, 0, sizeof vc_st);
-        vc_opts.p25_trunk = 1;
+        vc_opts.trunk_enable = 1;
         vc_opts.p25_lcw_retune = 0;
-        vc_opts.p25_is_tuned = 1;
         vc_opts.trunk_is_tuned = 1;
         vc_opts.audio_in_type = AUDIO_IN_RTL;
         vc_opts.rtlsdr_center_freq = 852112500U;
@@ -277,7 +248,7 @@ main(void) {
         static dsd_state vc_st;
         DSD_MEMSET(&vc_opts, 0, sizeof vc_opts);
         DSD_MEMSET(&vc_st, 0, sizeof vc_st);
-        vc_opts.p25_trunk = 1;
+        vc_opts.trunk_enable = 1;
         vc_opts.p25_lcw_retune = 1;
         vc_opts.trunk_tune_group_calls = 1;
         vc_opts.audio_in_type = AUDIO_IN_RTL;

@@ -41,9 +41,6 @@ soft_abs_i16(int16_t v) {
     return v < 0 ? -(int)v : (int)v;
 }
 
-// Uncomment for some verbose debug info
-//#define TDULC_DEBUG
-
 /**
  * Reverse the order of bits in a 12-bit word. We need this to accommodate to the expected bit order in
  * some algorithms.
@@ -77,8 +74,8 @@ swap_hex_words(char* dodeca_data, char* dodeca_parity) {
 static void
 tdulc_read_word_with_parity(dsd_opts* opts, dsd_state* state, char* dodeca, char parity[12], int* status_count,
                             P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
-    read_word(opts, state, dodeca, 12, status_count, soft_dibits, soft_dibit_index);
-    read_golay24_parity(opts, state, parity, status_count, soft_dibits, soft_dibit_index);
+    read_dibit_update_soft_data(opts, state, dodeca, 12, status_count, soft_dibits, soft_dibit_index);
+    read_dibit_update_soft_data(opts, state, parity, 12, status_count, soft_dibits, soft_dibit_index);
 }
 
 static void
@@ -139,18 +136,6 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
     DSD_MEMCPY(raw_dodeca, dodeca, sizeof(raw_dodeca));
     DSD_MEMCPY(raw_parity, parity, sizeof(raw_parity));
 
-#ifdef TDULC_DEBUG
-    DSD_FPRINTF(stderr, "[");
-    for (int i = 0; i < 12; i++) {
-        DSD_FPRINTF(stderr, "%c", (dodeca[i] == 1) ? 'X' : ' ');
-    }
-    DSD_FPRINTF(stderr, "-");
-    for (int i = 0; i < 12; i++) {
-        DSD_FPRINTF(stderr, "%c", (parity[i] == 1) ? 'X' : ' ');
-    }
-    DSD_FPRINTF(stderr, "]");
-#endif
-
     // Use extended golay to error correct the dodeca word
     irrecoverable_errors = check_and_fix_golay_24_12(dodeca, parity, &fixed_errors);
 
@@ -163,24 +148,6 @@ read_and_correct_dodeca_word(dsd_opts* opts, dsd_state* state, char* dodeca, int
     if (irrecoverable_errors != 0) {
         state->debug_header_critical_errors++;
     }
-
-#ifdef TDULC_DEBUG
-    DSD_FPRINTF(stderr, " -> [");
-    for (int i = 0; i < 12; i++) {
-        DSD_FPRINTF(stderr, "%c", (dodeca[i] == 1) ? 'X' : ' ');
-    }
-    DSD_FPRINTF(stderr, "]");
-    if (irrecoverable_errors == 0) {
-        if (fixed_errors > 0) {
-            DSD_FPRINTF(stderr, " fixed!");
-        }
-    } else {
-        DSD_FPRINTF(stderr, "%s", KRED);
-        DSD_FPRINTF(stderr, " IRRECOVERABLE");
-        DSD_FPRINTF(stderr, "%s", KNRM);
-    }
-    DSD_FPRINTF(stderr, "\n");
-#endif
 }
 
 static uint8_t
@@ -358,5 +325,5 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     if (opts->floating_point == 1) {
         state->aout_gain = opts->audio_gain;
     }
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 }

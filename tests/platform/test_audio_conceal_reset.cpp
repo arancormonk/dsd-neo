@@ -49,25 +49,6 @@ expect_i16(const char* label, int16_t got, int16_t want) {
 }
 
 /**
- * @brief Compute the expected attenuated sample for repeat k.
- */
-static int16_t
-expected_sample(int16_t original, int k) {
-    float gain = 1.0f;
-    for (int i = 0; i < k; i++) {
-        gain *= AUDIO_CONCEAL_ATTEN_PER_REPEAT;
-    }
-    float sample = (float)original * gain;
-    if (sample > 32767.0f) {
-        sample = 32767.0f;
-    }
-    if (sample < -32768.0f) {
-        sample = -32768.0f;
-    }
-    return (int16_t)sample;
-}
-
-/**
  * @brief After 1 underrun, call good_buffer, verify next underrun uses k=1.
  */
 static int
@@ -103,9 +84,8 @@ test_reset_after_one_underrun(void) {
     DSD_MEMSET(out, 0xAA, sizeof(out));
     audio_conceal_on_underrun(&cs, out, FRAMES);
 
-    int16_t want = expected_sample(2000, 1);
-    rc |= expect_i16("sample[0] after reset (k=1)", out[0], want);
-    rc |= expect_i16("sample[127] after reset (k=1)", out[127], want);
+    rc |= expect_i16("sample[0] after reset (k=1)", out[0], 1000);
+    rc |= expect_i16("sample[127] after reset (k=1)", out[127], 1000);
 
     audio_conceal_destroy(&cs);
     return rc;
@@ -150,8 +130,7 @@ test_reset_after_max_underruns(void) {
     DSD_MEMSET(out, 0xAA, sizeof(out));
     audio_conceal_on_underrun(&cs, out, FRAMES);
 
-    int16_t want = expected_sample(8000, 1);
-    rc |= expect_i16("sample[0] after max reset (k=1)", out[0], want);
+    rc |= expect_i16("sample[0] after max reset (k=1)", out[0], 4000);
 
     audio_conceal_destroy(&cs);
     return rc;
@@ -202,6 +181,7 @@ test_multiple_reset_cycles(void) {
     rc |= expect_int("init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
 
     int16_t out[SAMPLES];
+    static const int16_t expected_second_repeat[5] = {250, 500, 750, 1000, 1250};
 
     for (int cycle = 0; cycle < 5; cycle++) {
         /* Feed a good buffer with a distinct value per cycle. */
@@ -219,7 +199,7 @@ test_multiple_reset_cycles(void) {
         audio_conceal_on_underrun(&cs, out, FRAMES);
 
         /* Verify k=2 attenuation on this cycle's buffer. */
-        int16_t want = expected_sample(val, 2);
+        int16_t want = expected_second_repeat[cycle];
         if (out[0] != want) {
             DSD_FPRINTF(stderr, "FAIL: cycle=%d k=2 sample[0]: got=%d want=%d\n", cycle, (int)out[0], (int)want);
             rc = 1;

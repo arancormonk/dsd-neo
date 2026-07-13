@@ -28,6 +28,41 @@ typedef struct {
     unsigned int generation;
 } dsd_tg_policy_table;
 
+const char*
+dsd_tg_policy_block_reason_label(uint32_t block_reasons) {
+    if (block_reasons & DSD_TG_POLICY_BLOCK_HOLD) {
+        return "hold";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED) {
+        return "private-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_GROUP_DISABLED) {
+        return "group-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_DATA_DISABLED) {
+        return "data-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
+        return "enc-disabled";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) {
+        return "allowlist";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_MODE) {
+        return "mode";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_AUDIO) {
+        return "audio";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_RECORD) {
+        return "record";
+    }
+    if (block_reasons & DSD_TG_POLICY_BLOCK_STREAM) {
+        return "stream";
+    }
+    return "policy";
+}
+
 typedef struct {
     uint8_t valid;
     uint32_t tg;
@@ -689,27 +724,6 @@ tg_policy_init_decision(dsd_tg_policy_decision* out, uint32_t target_id, uint32_
 }
 
 static void
-tg_policy_apply_hold_overrides(dsd_tg_policy_decision* out, dsd_tg_policy_hold_behavior hold_behavior) {
-    if (!out || !out->tg_hold_active || !out->tg_hold_match) {
-        return;
-    }
-    if (hold_behavior == DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY) {
-        out->audio_allowed = 1;
-        out->record_allowed = 1;
-        out->stream_allowed = 1;
-    } else if (hold_behavior == DSD_TG_POLICY_HOLD_FORCE_TUNE_AND_MEDIA) {
-        out->tune_allowed = 1;
-        out->audio_allowed = 1;
-        out->record_allowed = 1;
-        out->stream_allowed = 1;
-        out->block_reasons &= ~(DSD_TG_POLICY_BLOCK_ALLOWLIST | DSD_TG_POLICY_BLOCK_MODE | DSD_TG_POLICY_BLOCK_HOLD
-                                | DSD_TG_POLICY_BLOCK_GROUP_DISABLED | DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED
-                                | DSD_TG_POLICY_BLOCK_DATA_DISABLED | DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED
-                                | DSD_TG_POLICY_BLOCK_AUDIO | DSD_TG_POLICY_BLOCK_RECORD | DSD_TG_POLICY_BLOCK_STREAM);
-    }
-}
-
-static void
 tg_policy_decision_apply_entry(dsd_tg_policy_decision* out, const dsd_tg_policy_entry* entry,
                                dsd_tg_policy_match_type match) {
     if (!out || !entry) {
@@ -856,8 +870,7 @@ tg_policy_apply_group_tune_blocks(const dsd_opts* opts, int encrypted, int data_
 }
 
 static void DSD_ATTR_USED
-tg_policy_apply_private_tune_blocks(const dsd_opts* opts, int encrypted, int data_call,
-                                    dsd_tg_policy_private_allowlist_mode allowlist_mode, int src_match, int dst_match,
+tg_policy_apply_private_tune_blocks(const dsd_opts* opts, int encrypted, int data_call, int src_match, int dst_match,
                                     dsd_tg_policy_decision* out) {
     if (!out) {
         return;
@@ -874,8 +887,7 @@ tg_policy_apply_private_tune_blocks(const dsd_opts* opts, int encrypted, int dat
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
     }
-    if (opts && opts->trunk_use_allow_list == 1 && allowlist_mode == DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK
-        && !src_match && !dst_match) {
+    if (opts && opts->trunk_use_allow_list == 1 && !src_match && !dst_match) {
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ALLOWLIST;
     }
@@ -902,8 +914,7 @@ tg_policy_private_mode_is_blocking(int src_match, const dsd_tg_policy_entry* src
 
 int
 dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
-                                  int encrypted, int data_call, dsd_tg_policy_hold_behavior hold_behavior,
-                                  dsd_tg_policy_decision* out) {
+                                  int encrypted, int data_call, dsd_tg_policy_decision* out) {
     int mode_blocking = 0;
     int explicit_audio_block = 0;
     int explicit_record_block = 0;
@@ -931,14 +942,12 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
         tg_policy_apply_explicit_media_blocks(out, explicit_audio_block, explicit_record_block, explicit_stream_block);
     }
 
-    tg_policy_apply_hold_overrides(out, hold_behavior);
     return 0;
 }
 
 int
 dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
-                                    int encrypted, int data_call, dsd_tg_policy_private_allowlist_mode allowlist_mode,
-                                    dsd_tg_policy_hold_behavior hold_behavior, dsd_tg_policy_decision* out) {
+                                    int encrypted, int data_call, dsd_tg_policy_decision* out) {
     dsd_tg_policy_entry src_entry;
     dsd_tg_policy_entry dst_entry;
     const dsd_tg_policy_entry* chosen = NULL;
@@ -961,7 +970,7 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
 
     mode_blocking = tg_policy_private_mode_is_blocking(src_match, &src_entry, dst_match, &dst_entry);
     tg_policy_private_set_hold_state(state, src, dst, out, &hold_mismatch);
-    tg_policy_apply_private_tune_blocks(opts, encrypted, data_call, allowlist_mode, src_match, dst_match, out);
+    tg_policy_apply_private_tune_blocks(opts, encrypted, data_call, src_match, dst_match, out);
     if (mode_blocking) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_MODE);
     }
@@ -973,7 +982,6 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
                                               chosen->audio != 0u && chosen->stream == 0u);
     }
 
-    tg_policy_apply_hold_overrides(out, hold_behavior);
     return 0;
 }
 
@@ -1444,26 +1452,6 @@ dsd_tg_policy_clear_active_call(dsd_state* state, int slot) {
         return 1;
     }
     DSD_MEMSET(&ctx->active.calls[slot], 0, sizeof(ctx->active.calls[slot]));
-    return 0;
-}
-
-int
-dsd_tg_policy_clear_active_call_route(dsd_state* state, const dsd_tg_policy_call_route* route) {
-    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
-    if (!ctx || !route) {
-        return 0;
-    }
-    for (int i = 0; i < 2; i++) {
-        dsd_tg_policy_active_call* c = &ctx->active.calls[i];
-        if (!c->valid) {
-            continue;
-        }
-        if (c->tg == route->target_id
-            && ((route->channel > 0 && c->channel == route->channel)
-                || (route->channel <= 0 && route->freq_hz > 0 && c->freq_hz == route->freq_hz))) {
-            DSD_MEMSET(c, 0, sizeof(*c));
-        }
-    }
     return 0;
 }
 

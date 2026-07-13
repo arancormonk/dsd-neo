@@ -15,11 +15,11 @@ target_sources(
         p25_cc_candidates.c
         p25_extended_function.c
         p25_mfid90_utils.c
+        p25_response_reason.c
         p25_sm_ui.c
         p25_sm_watchdog.c
         p25_patch.c
         phase1/p25p1_hdu.c
-        phase1/p25p1_audio_dispatch.c
         phase1/p25p1_ldu.c
         phase1/p25p1_ldu1.c
         phase1/p25p1_ldu2.c
@@ -35,10 +35,11 @@ target_sources(
         phase1/p25p1_check_nid.cpp
         phase1/p25p1_rs_soft_reliability.cpp
         phase1/p25p1_soft.cpp
-        # New scaffolding modules
+        # Shared protocol modules
         p25_lsd.c
         phase1/p25p1_mbf34.c
         phase2/p25p2_frame.c
+        phase2/p25p2_scramble.c
         phase2/p25p2_mac_tables.c
         phase2/p25p2_mac_parse.c
         phase2/p25p2_vpdu.c

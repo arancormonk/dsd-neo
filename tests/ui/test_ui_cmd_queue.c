@@ -8,7 +8,6 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
-#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -17,7 +16,6 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -101,44 +99,6 @@ expect_u64(const char* tag, uint64_t got, uint64_t want) {
 }
 
 static int
-expect_command_status(const char* tag, dsd_app_command_token token, dsd_app_command_result_status want) {
-    dsd_app_command_result result;
-    DSD_MEMSET(&result, 0, sizeof(result));
-    if (dsd_app_command_result_get(token, &result) != 0) {
-        DSD_FPRINTF(stderr, "%s: result for token %llu not found\n", tag, (unsigned long long)token);
-        return 1;
-    }
-    if (result.status != want) {
-        DSD_FPRINTF(stderr, "%s: got status %d want %d (%s)\n", tag, (int)result.status, (int)want, result.message);
-        return 1;
-    }
-    return 0;
-}
-
-static int
-expect_command_result_stable(const char* tag, dsd_app_command_token token, dsd_app_command_result_status want) {
-    dsd_app_command_result first;
-    dsd_app_command_result second;
-    DSD_MEMSET(&first, 0, sizeof(first));
-    DSD_MEMSET(&second, 0, sizeof(second));
-    if (dsd_app_command_result_get(token, &first) != 0 || dsd_app_command_result_get(token, &second) != 0) {
-        DSD_FPRINTF(stderr, "%s: result for token %llu not found\n", tag, (unsigned long long)token);
-        return 1;
-    }
-    if (first.status != want) {
-        DSD_FPRINTF(stderr, "%s: got status %d want %d (%s)\n", tag, (int)first.status, (int)want, first.message);
-        return 1;
-    }
-    if (first.token != second.token || first.coalesced_to != second.coalesced_to
-        || first.command_id != second.command_id || first.status != second.status
-        || first.detail_code != second.detail_code || strcmp(first.message, second.message) != 0) {
-        DSD_FPRINTF(stderr, "%s: repeated result reads were not stable\n", tag);
-        return 1;
-    }
-    return 0;
-}
-
-static int
 expect_true(const char* tag, int cond) {
     if (!cond) {
         DSD_FPRINTF(stderr, "%s: expectation failed\n", tag);
@@ -159,99 +119,6 @@ p25_encrypted_call_cache_empty(const dsd_state* state) {
         }
     }
     return 1;
-}
-
-static size_t
-expected_descriptor_payload_size(const dsd_app_command_descriptor* desc) {
-    switch (desc->payload_kind) {
-        case DSD_APP_COMMAND_PAYLOAD_NONE: return 0U;
-        case DSD_APP_COMMAND_PAYLOAD_I32: return sizeof(int32_t);
-        case DSD_APP_COMMAND_PAYLOAD_U8: return sizeof(uint8_t);
-        case DSD_APP_COMMAND_PAYLOAD_U32: return sizeof(uint32_t);
-        case DSD_APP_COMMAND_PAYLOAD_U64: return sizeof(uint64_t);
-        case DSD_APP_COMMAND_PAYLOAD_DOUBLE: return sizeof(double);
-        case DSD_APP_COMMAND_PAYLOAD_FLOAT: return sizeof(float);
-        case DSD_APP_COMMAND_PAYLOAD_STRING: return desc->payload_size;
-        case DSD_APP_COMMAND_PAYLOAD_ENDPOINT:
-            if (desc->command_id == DSD_APP_CMD_UDP_INPUT_CFG) {
-                const size_t udp_size = sizeof(dsd_app_udp_input_payload);
-                return udp_size;
-            }
-            return sizeof(dsd_app_endpoint_payload);
-        case DSD_APP_COMMAND_PAYLOAD_STRUCT:
-            switch (desc->command_id) {
-                case DSD_APP_CMD_P25_P2_PARAMS_SET: return sizeof(dsd_app_p25_p2_params_payload);
-                case DSD_APP_CMD_KEY_HYTERA_SET: return sizeof(dsd_app_hytera_key_payload);
-                case DSD_APP_CMD_KEY_AES_SET: return sizeof(dsd_app_aes_key_payload);
-                case DSD_APP_CMD_DSP_OP: return sizeof(dsd_app_dsp_payload);
-                case DSD_APP_CMD_CONFIG_APPLY: return sizeof(dsdneoUserConfig);
-                case DSD_APP_CMD_CONFIG_METADATA_SET: return sizeof(dsd_app_config_metadata_payload);
-                default: return 0U;
-            }
-        default: return 0U;
-    }
-}
-
-static int
-expect_descriptor_metadata(const dsd_app_command_descriptor* desc) {
-    int rc = 0;
-    const unsigned int known_availability = DSD_APP_COMMAND_AVAIL_RADIO | DSD_APP_COMMAND_AVAIL_REQUIRES_ACTIVE_RUNTIME;
-    if (!desc) {
-        return 1;
-    }
-    if (!desc->name || desc->name[0] == '\0' || !desc->label || desc->label[0] == '\0' || !desc->description
-        || desc->description[0] == '\0') {
-        DSD_FPRINTF(stderr, "descriptor %d missing text metadata\n", desc->command_id);
-        rc = 1;
-    }
-    if (desc->name && strcmp(desc->name, "app_command") == 0) {
-        DSD_FPRINTF(stderr, "descriptor %d uses generic command name\n", desc->command_id);
-        rc = 1;
-    }
-    if (desc->label && strcmp(desc->label, "App Command") == 0) {
-        DSD_FPRINTF(stderr, "descriptor %d uses generic command label\n", desc->command_id);
-        rc = 1;
-    }
-    if ((desc->availability_flags & ~known_availability) != 0U) {
-        DSD_FPRINTF(stderr, "descriptor %d has unknown availability flags 0x%x\n", desc->command_id,
-                    desc->availability_flags);
-        rc = 1;
-    }
-    const size_t expected_size = expected_descriptor_payload_size(desc);
-    if (desc->payload_kind == DSD_APP_COMMAND_PAYLOAD_STRING) {
-        if (desc->payload_size == 0U) {
-            DSD_FPRINTF(stderr, "descriptor %d string payload size is empty\n", desc->command_id);
-            rc = 1;
-        }
-    } else if (desc->payload_size != expected_size) {
-        DSD_FPRINTF(stderr, "descriptor %d payload size got %zu want %zu\n", desc->command_id, desc->payload_size,
-                    expected_size);
-        rc = 1;
-    }
-    if (desc->enum_option_count > 0U) {
-        if (!desc->enum_options) {
-            DSD_FPRINTF(stderr, "descriptor %d has enum count without enum options\n", desc->command_id);
-            rc = 1;
-        } else {
-            for (size_t i = 0; i < desc->enum_option_count; i++) {
-                if (!desc->enum_options[i].label || desc->enum_options[i].label[0] == '\0') {
-                    DSD_FPRINTF(stderr, "descriptor %d enum option %zu missing label\n", desc->command_id, i);
-                    rc = 1;
-                }
-            }
-        }
-    }
-    return rc;
-}
-
-static const dsd_app_command_descriptor*
-find_descriptor(const dsd_app_command_descriptor* descs, size_t count, int command_id) {
-    for (size_t i = 0; i < count; i++) {
-        if (descs[i].command_id == command_id) {
-            return &descs[i];
-        }
-    }
-    return NULL;
 }
 
 static int
@@ -304,37 +171,37 @@ init_test_context(dsd_opts* opts, dsd_state* state) {
 
 static int
 post_empty(int id) {
-    return dsd_app_post_cmd(id, NULL, 0U);
+    return dsd_app_command_submit(id, NULL, 0U);
 }
 
 static int
 post_i32(int id, int32_t value) {
-    return dsd_app_post_cmd(id, &value, sizeof(value));
+    return dsd_app_command_submit(id, &value, sizeof(value));
 }
 
 static int
 post_u32(int id, uint32_t value) {
-    return dsd_app_post_cmd(id, &value, sizeof(value));
+    return dsd_app_command_submit(id, &value, sizeof(value));
 }
 
 static int
 post_u64(int id, uint64_t value) {
-    return dsd_app_post_cmd(id, &value, sizeof(value));
+    return dsd_app_command_submit(id, &value, sizeof(value));
 }
 
 static int
 post_double(int id, double value) {
-    return dsd_app_post_cmd(id, &value, sizeof(value));
+    return dsd_app_command_submit(id, &value, sizeof(value));
 }
 
 static int
 post_float(int id, float value) {
-    return dsd_app_post_cmd(id, &value, sizeof(value));
+    return dsd_app_command_submit(id, &value, sizeof(value));
 }
 
 static int
 post_string(int id, const char* value) {
-    return dsd_app_post_cmd(id, value, strlen(value) + 1U);
+    return dsd_app_command_submit(id, value, strlen(value) + 1U);
 }
 
 static int
@@ -343,7 +210,7 @@ post_host_port(int id, const char* host, int32_t port) {
     DSD_MEMSET(payload, 0, sizeof(payload));
     DSD_SNPRINTF((char*)payload, 256U, "%s", host);
     DSD_MEMCPY(payload + 256U, &port, sizeof(port));
-    return dsd_app_post_cmd(id, payload, sizeof(payload));
+    return dsd_app_command_submit(id, payload, sizeof(payload));
 }
 
 static int
@@ -361,7 +228,7 @@ post_hytera_key(uint64_t h, uint64_t k1, uint64_t k2, uint64_t k3, uint64_t k4) 
     payload.K2 = k2;
     payload.K3 = k3;
     payload.K4 = k4;
-    return dsd_app_post_cmd(DSD_APP_CMD_KEY_HYTERA_SET, &payload, sizeof(payload));
+    return dsd_app_command_submit(DSD_APP_CMD_KEY_HYTERA_SET, &payload, sizeof(payload));
 }
 
 static int
@@ -377,7 +244,7 @@ post_aes_key(uint64_t k1, uint64_t k2, uint64_t k3, uint64_t k4) {
     payload.K2 = k2;
     payload.K3 = k3;
     payload.K4 = k4;
-    return dsd_app_post_cmd(DSD_APP_CMD_KEY_AES_SET, &payload, sizeof(payload));
+    return dsd_app_command_submit(DSD_APP_CMD_KEY_AES_SET, &payload, sizeof(payload));
 }
 
 static int
@@ -391,35 +258,34 @@ post_p2_params(uint64_t wacn, uint64_t sysid, uint64_t cc) {
     payload.w = wacn;
     payload.s = sysid;
     payload.n = cc;
-    return dsd_app_post_cmd(DSD_APP_CMD_P25_P2_PARAMS_SET, &payload, sizeof(payload));
+    return dsd_app_command_submit(DSD_APP_CMD_P25_P2_PARAMS_SET, &payload, sizeof(payload));
 }
 
 static int
 post_call_alert_events(uint8_t events) {
-    return dsd_app_post_cmd(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, &events, sizeof(events));
+    return dsd_app_command_submit(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, &events, sizeof(events));
 }
 
 static int
-test_tracked_command_api(void) {
+test_command_api(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
     init_test_context(&opts, &state);
 
-    rc |= expect_int("typed action rejects setter", dsd_app_command_action_tracked(DSD_APP_CMD_GAIN_SET, NULL), -1);
-    rc |= expect_int("typed i32 rejects action", dsd_app_command_set_i32_tracked(DSD_APP_CMD_TOGGLE_MUTE, 1, NULL), -1);
-    rc |= expect_int("typed rtl frequency rejects i32",
-                     dsd_app_command_set_i32_tracked(DSD_APP_CMD_RTL_SET_FREQ, 1, NULL), -1);
-    rc |= expect_int("typed string rejects null",
-                     dsd_app_command_set_string_tracked(DSD_APP_CMD_INPUT_WAV_SET, NULL, NULL), -1);
+    rc |= expect_int("typed action rejects setter", dsd_app_command_action(DSD_APP_CMD_GAIN_SET), -1);
+    rc |= expect_int("typed i32 rejects action", dsd_app_command_set_i32(DSD_APP_CMD_TOGGLE_MUTE, 1), -1);
+    rc |= expect_int("typed rtl frequency rejects i32", dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_FREQ, 1), -1);
+    rc |= expect_int("typed string rejects null", dsd_app_command_set_string(DSD_APP_CMD_INPUT_WAV_SET, NULL), -1);
     rc |= expect_int("typed endpoint rejects action",
-                     dsd_app_command_set_endpoint_tracked(DSD_APP_CMD_TOGGLE_MUTE, "127.0.0.1", -1, NULL), -1);
-    rc |= expect_int("typed udp input rejects null", dsd_app_command_set_udp_input_tracked(NULL, 0, NULL), -1);
-    rc |= expect_int("typed p25 payload rejects null", dsd_app_command_set_p25_p2_params_tracked(NULL, NULL), -1);
-    rc |= expect_int("typed hytera payload rejects null", dsd_app_command_set_hytera_key_tracked(NULL, NULL), -1);
-    rc |= expect_int("typed aes payload rejects null", dsd_app_command_set_aes_key_tracked(NULL, NULL), -1);
-    rc |= expect_int("typed dsp payload rejects null", dsd_app_command_dsp_op_tracked(NULL, NULL), -1);
-    rc |= expect_int("typed config payload rejects null", dsd_app_command_apply_config_tracked(NULL, NULL), -1);
+                     dsd_app_command_set_endpoint(DSD_APP_CMD_TOGGLE_MUTE, "127.0.0.1", -1), -1);
+    rc |= expect_int("typed udp input rejects null", dsd_app_command_set_endpoint(DSD_APP_CMD_UDP_INPUT_CFG, NULL, 0),
+                     -1);
+    rc |= expect_int("typed p25 payload rejects null", dsd_app_command_set_p25_p2_params(NULL), -1);
+    rc |= expect_int("typed hytera payload rejects null", dsd_app_command_set_hytera_key(NULL), -1);
+    rc |= expect_int("typed aes payload rejects null", dsd_app_command_set_aes_key(NULL), -1);
+    rc |= expect_int("typed dsp payload rejects null", dsd_app_command_dsp_op(NULL), -1);
+    rc |= expect_int("typed config payload rejects null", dsd_app_command_apply_config(NULL), -1);
 
     dsd_app_p25_p2_params_payload p2 = {0xABCDEU, 0x123U, 0x456U};
     dsd_app_hytera_key_payload hytera = {0xAU, 1U, 2U, 3U, 4U};
@@ -430,42 +296,37 @@ test_tracked_command_api(void) {
     state.p25_enc_tg_cache_is_group[0] = 1U;
     state.p25_enc_tg_cache_next = 1U;
 
-    rc |= expect_int("typed action posts", dsd_app_command_action_tracked(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE, NULL),
+    rc |= expect_int("typed action posts", dsd_app_command_action(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed gain posts", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 5, NULL),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed gain coalesces to latest", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 9, NULL),
+    rc |=
+        expect_int("typed gain posts", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 5), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("typed gain coalesces to latest", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 9),
                      DSD_APP_COMMAND_SUBMIT_COALESCED);
-    rc |= expect_int("typed u8 posts", dsd_app_command_set_u8_tracked(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, 3U, NULL),
+    rc |= expect_int("typed u8 posts", dsd_app_command_set_u8(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, 3U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed u32 posts", dsd_app_command_set_u32_tracked(DSD_APP_CMD_TG_HOLD_SET, 2468U, NULL),
+    rc |= expect_int("typed u32 posts", dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, 2468U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed rtl frequency u32 posts",
-                     dsd_app_command_set_u32_tracked(DSD_APP_CMD_RTL_SET_FREQ, 3000000000U, NULL),
+    rc |= expect_int("typed rtl frequency u32 posts", dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 3000000000U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed u64 posts", dsd_app_command_set_u64_tracked(DSD_APP_CMD_KEY_RC4DES_SET, 0x55U, NULL),
+    rc |= expect_int("typed u64 posts", dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, 0x55U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed double posts", dsd_app_command_set_double_tracked(DSD_APP_CMD_HANGTIME_SET, 3.5, NULL),
+    rc |= expect_int("typed double posts", dsd_app_command_set_double(DSD_APP_CMD_HANGTIME_SET, 3.5),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed float posts", dsd_app_command_set_float_tracked(DSD_APP_CMD_CONST_GATE_DELTA, 1.0f, NULL),
+    rc |= expect_int("typed float posts", dsd_app_command_set_float(DSD_APP_CMD_CONST_GATE_DELTA, 1.0f),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed string posts",
-                     dsd_app_command_set_string_tracked(DSD_APP_CMD_M17_USER_DATA_SET, "0,DST,SRC", NULL),
+    rc |= expect_int("typed string posts", dsd_app_command_set_string(DSD_APP_CMD_M17_USER_DATA_SET, "0,DST,SRC"),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("typed endpoint posts",
-                     dsd_app_command_set_endpoint_tracked(DSD_APP_CMD_RIGCTL_CONNECT_CFG, "127.0.0.1", -1, NULL),
+                     dsd_app_command_set_endpoint(DSD_APP_CMD_RIGCTL_CONNECT_CFG, "127.0.0.1", -1),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("typed udp input endpoint posts",
-                     dsd_app_command_set_endpoint_tracked(DSD_APP_CMD_UDP_INPUT_CFG, "0.0.0.0", 7355, NULL),
+                     dsd_app_command_set_endpoint(DSD_APP_CMD_UDP_INPUT_CFG, "0.0.0.0", 7355),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed p25 payload posts", dsd_app_command_set_p25_p2_params_tracked(&p2, NULL),
+    rc |= expect_int("typed p25 payload posts", dsd_app_command_set_p25_p2_params(&p2), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("typed hytera payload posts", dsd_app_command_set_hytera_key(&hytera),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed hytera payload posts", dsd_app_command_set_hytera_key_tracked(&hytera, NULL),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed aes payload posts", dsd_app_command_set_aes_key_tracked(&aes, NULL),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("typed dsp payload posts", dsd_app_command_dsp_op_tracked(&dsp, NULL),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("typed aes payload posts", dsd_app_command_set_aes_key(&aes), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("typed dsp payload posts", dsd_app_command_dsp_op(&dsp), DSD_APP_COMMAND_SUBMIT_QUEUED);
 
     rc |= expect_int("typed commands applied with coalescing", dsd_app_drain_cmds(&opts, &state), 15);
     rc |= expect_int("typed action toggled channels", opts.frontend_display.show_channels, 1);
@@ -481,6 +342,8 @@ test_tracked_command_api(void) {
     rc |= expect_u64("typed p2 cc set", state.p2_cc, 0x456ULL);
     rc |= expect_u64("typed aes key loaded", state.A1[0], 9ULL);
     rc |= expect_int("typed aes key load flag", state.aes_key_loaded[0], 1);
+    rc |= expect_int("typed canonical aes key byte 7", state.aes_key[7], 9);
+    rc |= expect_int("typed canonical aes key byte 15", state.aes_key[15], 10);
     rc |=
         expect_true("manual RC4/AES key changes clear P25 blocked-call cache", p25_encrypted_call_cache_empty(&state));
 
@@ -488,8 +351,8 @@ test_tracked_command_api(void) {
     state.p25_enc_tg_cache_tg[0] = 9753U;
     state.p25_enc_tg_cache_is_group[0] = 0U;
     state.p25_enc_tg_cache_next = 2U;
-    rc |= expect_int("standalone AES key change posts", dsd_app_command_set_aes_key_tracked(&aes, NULL),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |=
+        expect_int("standalone AES key change posts", dsd_app_command_set_aes_key(&aes), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("standalone AES key change applied", dsd_app_drain_cmds(&opts, &state), 1);
     rc |=
         expect_true("standalone AES key change clears P25 blocked-call cache", p25_encrypted_call_cache_empty(&state));
@@ -498,8 +361,7 @@ test_tracked_command_api(void) {
     state.p25_enc_tg_cache_tg[0] = 8642U;
     state.p25_enc_tg_cache_is_group[0] = 1U;
     state.p25_enc_tg_cache_next = 3U;
-    rc |= expect_int("standalone RC4/DES key change posts",
-                     dsd_app_command_set_u64_tracked(DSD_APP_CMD_KEY_RC4DES_SET, 0xAAU, NULL),
+    rc |= expect_int("standalone RC4/DES key change posts", dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, 0xAAU),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("standalone RC4/DES key change applied", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_true("standalone RC4/DES key change clears P25 blocked-call cache",
@@ -516,214 +378,15 @@ test_setter_coalescing_preserves_fifo_boundaries(void) {
     static dsd_state state;
     init_test_context(&opts, &state);
 
-    dsd_app_command_token first = 0;
-    dsd_app_command_token second = 0;
-    rc |= expect_int("fifo first gain queued", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 5, &first),
+    rc |= expect_int("fifo first gain queued", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 5),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("fifo gain delta queued", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_DELTA, +1, NULL),
+    rc |= expect_int("fifo gain delta queued", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, +1),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("fifo second gain queued", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 11, &second),
+    rc |= expect_int("fifo second gain queued", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 11),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
 
     rc |= expect_int("fifo-separated setters drain independently", dsd_app_drain_cmds(&opts, &state), 3);
     rc |= expect_int("fifo-separated setters preserve final gain", (int)opts.audio_gain, 11);
-    rc |= expect_command_status("fifo first gain completed", first, DSD_APP_COMMAND_RESULT_COMPLETED);
-    rc |= expect_command_status("fifo second gain completed", second, DSD_APP_COMMAND_RESULT_COMPLETED);
-
-    freeState(&state);
-    return rc;
-}
-
-static int
-test_tracked_command_results(void) {
-    int rc = 0;
-    static dsd_opts opts;
-    static dsd_state state;
-    init_test_context(&opts, &state);
-
-    dsd_app_command_token gain_first = 0;
-    dsd_app_command_token gain_second = 0;
-    rc |= expect_int("tracked gain queued", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 5, &gain_first),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_command_status("tracked gain first queued", gain_first, DSD_APP_COMMAND_RESULT_QUEUED);
-    rc |= expect_int("tracked gain coalesced", dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, 9, &gain_second),
-                     DSD_APP_COMMAND_SUBMIT_COALESCED);
-    rc |= expect_command_status("tracked gain second coalesced", gain_second, DSD_APP_COMMAND_RESULT_COALESCED);
-    rc |= expect_int("tracked coalesced drain count", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("tracked coalesced latest value", (int)opts.audio_gain, 9);
-    rc |= expect_command_status("tracked gain first completed", gain_first, DSD_APP_COMMAND_RESULT_COMPLETED);
-    rc |= expect_command_status("tracked gain second remains coalesced", gain_second, DSD_APP_COMMAND_RESULT_COALESCED);
-    rc |= expect_command_result_stable("tracked gain first stable", gain_first, DSD_APP_COMMAND_RESULT_COMPLETED);
-    rc |= expect_command_result_stable("tracked gain second stable", gain_second, DSD_APP_COMMAND_RESULT_COALESCED);
-
-    uint8_t short_payload = 0xAAU;
-    dsd_app_command_token invalid = 0;
-    rc |= expect_int(
-        "tracked invalid raw queued",
-        dsd_app_command_submit_tracked(DSD_APP_CMD_KEY_AES_SET, &short_payload, sizeof short_payload, &invalid),
-        DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("tracked invalid drain count", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("tracked invalid payload result", invalid, DSD_APP_COMMAND_RESULT_INVALID_PAYLOAD);
-    rc |=
-        expect_command_result_stable("tracked invalid payload stable", invalid, DSD_APP_COMMAND_RESULT_INVALID_PAYLOAD);
-
-    dsd_app_command_token unsupported = 0;
-    rc |= expect_int("tracked unsupported raw queued", dsd_app_command_submit_tracked(999999, NULL, 0U, &unsupported),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("tracked unsupported drain count", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("tracked unsupported result", unsupported, DSD_APP_COMMAND_RESULT_UNSUPPORTED);
-    rc |= expect_command_result_stable("tracked unsupported stable", unsupported, DSD_APP_COMMAND_RESULT_UNSUPPORTED);
-
-    dsd_app_command_token backend_fail = 0;
-    rc |=
-        expect_int("tracked backend failure queued",
-                   dsd_app_command_set_endpoint_tracked(DSD_APP_CMD_RIGCTL_CONNECT_CFG, "127.0.0.1", -1, &backend_fail),
-                   DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("tracked backend failure drain count", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("tracked backend failure result", backend_fail, DSD_APP_COMMAND_RESULT_FAILED);
-    rc |= expect_command_result_stable("tracked backend failure stable", backend_fail, DSD_APP_COMMAND_RESULT_FAILED);
-
-    dsd_app_command_descriptor descs[160];
-    size_t desc_count = 0;
-    rc |= expect_int("descriptor count query", dsd_app_command_descriptors_get(NULL, 0U, &desc_count), 0);
-    rc |= expect_true("descriptor count nonzero", desc_count > 8U);
-    rc |= expect_true("descriptor test buffer large enough", desc_count <= sizeof descs / sizeof descs[0]);
-    rc |= expect_int("descriptor full query", dsd_app_command_descriptors_get(descs, desc_count, &desc_count), 0);
-    const dsd_app_command_descriptor* gain_desc = NULL;
-    const dsd_app_command_descriptor* rtl_gain_desc = NULL;
-    const dsd_app_command_descriptor* ppm_desc = NULL;
-    const dsd_app_command_descriptor* freq_desc = NULL;
-    const dsd_app_command_descriptor* input_warn_desc = NULL;
-    const dsd_app_command_descriptor* hangtime_desc = NULL;
-    const dsd_app_command_descriptor* bw_desc = NULL;
-    const dsd_app_command_descriptor* slot_pref_desc = NULL;
-    const dsd_app_command_descriptor* config_desc = NULL;
-    const dsd_app_command_descriptor* metadata_desc = NULL;
-    for (size_t i = 0; i < desc_count; i++) {
-        rc |= expect_descriptor_metadata(&descs[i]);
-        if (descs[i].command_id == DSD_APP_CMD_GAIN_SET) {
-            gain_desc = &descs[i];
-        } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_GAIN) {
-            rtl_gain_desc = &descs[i];
-        } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_PPM) {
-            ppm_desc = &descs[i];
-        } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_FREQ) {
-            freq_desc = &descs[i];
-        } else if (descs[i].command_id == DSD_APP_CMD_INPUT_WARN_DB_SET) {
-            input_warn_desc = &descs[i];
-        } else if (descs[i].command_id == DSD_APP_CMD_HANGTIME_SET) {
-            hangtime_desc = &descs[i];
-        } else if (descs[i].command_id == DSD_APP_CMD_RTL_SET_BW) {
-            bw_desc = &descs[i];
-        } else if (descs[i].command_id == DSD_APP_CMD_SLOT_PREF_SET) {
-            slot_pref_desc = &descs[i];
-        } else if (descs[i].command_id == DSD_APP_CMD_CONFIG_APPLY) {
-            config_desc = &descs[i];
-        } else if (descs[i].command_id == DSD_APP_CMD_CONFIG_METADATA_SET) {
-            metadata_desc = &descs[i];
-        }
-    }
-    rc |= expect_true("gain descriptor present", gain_desc != NULL);
-    if (gain_desc) {
-        rc |= expect_true("gain descriptor range", gain_desc->min_value == 0.0 && gain_desc->max_value == 50.0);
-        rc |= expect_true("gain descriptor step", gain_desc->step_value == 1.0);
-    }
-    rc |= expect_true("rtl gain descriptor present", rtl_gain_desc != NULL);
-    if (rtl_gain_desc) {
-        rc |= expect_true("rtl gain descriptor range",
-                          rtl_gain_desc->min_value == 0.0 && rtl_gain_desc->max_value == 49.0);
-        rc |= expect_true("rtl gain descriptor step", rtl_gain_desc->step_value == 1.0);
-        rc |= expect_int("rtl gain restart hint", rtl_gain_desc->may_require_restart, 1);
-    }
-    rc |= expect_true("rtl ppm descriptor present", ppm_desc != NULL);
-    if (ppm_desc) {
-        rc |= expect_true("rtl ppm descriptor range", ppm_desc->min_value == -200.0 && ppm_desc->max_value == 200.0);
-        rc |= expect_true("rtl ppm descriptor units", ppm_desc->units != NULL && strcmp(ppm_desc->units, "ppm") == 0);
-    }
-    rc |= expect_true("rtl frequency descriptor present", freq_desc != NULL);
-    if (freq_desc) {
-        rc |= expect_int("rtl frequency descriptor payload kind", freq_desc->payload_kind, DSD_APP_COMMAND_PAYLOAD_U32);
-        rc |= expect_true("rtl frequency descriptor range",
-                          freq_desc->min_value == 0.0 && freq_desc->max_value == 3000000000.0);
-        rc |= expect_true("rtl frequency descriptor range fits u32", freq_desc->max_value <= (double)UINT32_MAX);
-        rc |= expect_true("rtl frequency descriptor units",
-                          freq_desc->units != NULL && strcmp(freq_desc->units, "Hz") == 0);
-    }
-    rc |= expect_true("input warn descriptor present", input_warn_desc != NULL);
-    if (input_warn_desc) {
-        rc |= expect_true("input warn descriptor range",
-                          input_warn_desc->min_value == -120.0 && input_warn_desc->max_value == 0.0);
-        rc |= expect_true("input warn descriptor units",
-                          input_warn_desc->units != NULL && strcmp(input_warn_desc->units, "dBFS") == 0);
-    }
-    rc |= expect_true("hangtime descriptor present", hangtime_desc != NULL);
-    if (hangtime_desc) {
-        rc |= expect_true("hangtime descriptor range",
-                          hangtime_desc->min_value == 0.0 && hangtime_desc->max_value == 3600.0);
-        rc |= expect_true("hangtime descriptor units",
-                          hangtime_desc->units != NULL && strcmp(hangtime_desc->units, "seconds") == 0);
-    }
-    rc |= expect_true("rtl bandwidth descriptor present", bw_desc != NULL);
-    if (bw_desc) {
-        rc |= expect_true("rtl bandwidth enum options", bw_desc->enum_option_count >= 7U);
-        rc |= expect_true("rtl bandwidth radio availability",
-                          (bw_desc->availability_flags & DSD_APP_COMMAND_AVAIL_RADIO) != 0U);
-        rc |= expect_int("rtl bandwidth restart hint", bw_desc->may_require_restart, 1);
-    }
-    rc |= expect_true("slot preference descriptor present", slot_pref_desc != NULL);
-    if (slot_pref_desc) {
-        rc |= expect_true("slot preference enum option count", slot_pref_desc->enum_option_count == 3U);
-        if (slot_pref_desc->enum_options && slot_pref_desc->enum_option_count == 3U) {
-            rc |= expect_int("slot preference option slot1", slot_pref_desc->enum_options[0].value, 0);
-            rc |= expect_str("slot preference option slot1 label", slot_pref_desc->enum_options[0].label, "Slot 1");
-            rc |= expect_int("slot preference option slot2", slot_pref_desc->enum_options[1].value, 1);
-            rc |= expect_str("slot preference option slot2 label", slot_pref_desc->enum_options[1].label, "Slot 2");
-            rc |= expect_int("slot preference option auto", slot_pref_desc->enum_options[2].value, 2);
-            rc |= expect_str("slot preference option auto label", slot_pref_desc->enum_options[2].label, "Auto");
-        }
-    }
-    rc |= expect_true("config descriptor present", config_desc != NULL);
-    if (config_desc) {
-        rc |= expect_int("config restart hint", config_desc->may_require_restart, 1);
-    }
-    rc |= expect_true("config metadata descriptor present", metadata_desc != NULL);
-    if (metadata_desc) {
-        rc |= expect_int("config metadata payload kind", metadata_desc->payload_kind, DSD_APP_COMMAND_PAYLOAD_STRUCT);
-        rc |= expect_true("config metadata payload size",
-                          metadata_desc->payload_size == sizeof(dsd_app_config_metadata_payload));
-    }
-    rc |= expect_true("descriptor lookup helper",
-                      find_descriptor(descs, desc_count, DSD_APP_CMD_RTL_SET_AUTO_PPM) != NULL);
-
-    dsd_app_config_metadata_payload metadata;
-    DSD_MEMSET(&metadata, 0, sizeof metadata);
-    metadata.autosave_enabled = 1;
-    DSD_SNPRINTF(metadata.path, sizeof metadata.path, "%s", "/tmp/queued-config.toml");
-    dsd_app_command_token metadata_token = 0;
-    rc |= expect_int("tracked config metadata queued",
-                     dsd_app_command_set_config_metadata_tracked(&metadata, &metadata_token),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("tracked config metadata drain count", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("tracked config metadata enabled", state.config_autosave_enabled, 1);
-    rc |= expect_str("tracked config metadata path", state.config_autosave_path, "/tmp/queued-config.toml");
-    rc |= expect_command_status("tracked config metadata result", metadata_token, DSD_APP_COMMAND_RESULT_COMPLETED);
-    rc |= expect_command_result_stable("tracked config metadata stable", metadata_token,
-                                       DSD_APP_COMMAND_RESULT_COMPLETED);
-
-    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
-    dsdneoUserConfig cfg;
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.frontend_kind = DSD_FRONTEND_NATIVE;
-    cfg.frontend_kind_is_set = 1;
-    dsd_app_command_token restart = 0;
-    rc |= expect_int("tracked config restart queued", dsd_app_command_apply_config_tracked(&cfg, &restart),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("tracked config restart drain count", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("tracked config preserves active frontend", opts.frontend_kind, DSD_FRONTEND_TERMINAL);
-    rc |= expect_command_status("tracked config restart result", restart, DSD_APP_COMMAND_RESULT_RESTART_REQUIRED);
-    rc |=
-        expect_command_result_stable("tracked config restart stable", restart, DSD_APP_COMMAND_RESULT_RESTART_REQUIRED);
-
     freeState(&state);
     return rc;
 }
@@ -801,6 +464,8 @@ test_key_and_runtime_state_commands(void) {
     rc |= expect_int("payload key reset right", state.payload_keyidR, 0);
     rc |= expect_u64("aes key loaded", state.A1[0], 3ULL);
     rc |= expect_int("aes key load flag left", state.aes_key_loaded[0], 1);
+    rc |= expect_int("canonical aes key byte 7", state.aes_key[7], 3);
+    rc |= expect_int("canonical aes key byte 31", state.aes_key[31], 6);
     rc |= expect_int("aes key segments left", state.aes_key_segments[0], 4);
     rc |= expect_u64("hytera state cleared by aes", state.H, 0ULL);
     rc |= expect_int("m17 user data copied", strncmp(state.m17dat, "0,DEST,SOURCE", sizeof(state.m17dat)), 0);
@@ -823,7 +488,7 @@ test_key_and_runtime_state_commands(void) {
     state.K = 0x99999999U;
     state.A1[0] = 0x55U;
     post_u32(DSD_APP_CMD_KEY_BASIC_SET, 0x01020304U);
-    dsd_app_post_cmd(DSD_APP_CMD_KEY_AES_SET, &short_payload, sizeof(short_payload));
+    dsd_app_command_submit(DSD_APP_CMD_KEY_AES_SET, &short_payload, sizeof(short_payload));
     post_string(DSD_APP_CMD_M17_USER_DATA_SET, "");
     rc |= expect_int("short key payload commands applied", dsd_app_drain_cmds(&opts, &state), 3);
     rc |= expect_u64("basic key still updates before short aes", state.K, 0x01020304ULL);
@@ -888,7 +553,7 @@ test_file_network_and_import_commands(void) {
 
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "unchanged");
     opts.audio_in_type = AUDIO_IN_STDIN;
-    dsd_app_post_cmd(DSD_APP_CMD_UDP_INPUT_CFG, NULL, 0U);
+    dsd_app_command_submit(DSD_APP_CMD_UDP_INPUT_CFG, NULL, 0U);
     rc |= expect_int("malformed udp input command applied", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_str("malformed udp input leaves device", opts.audio_in_dev, "unchanged");
     rc |= expect_int("malformed udp input leaves type", opts.audio_in_type, AUDIO_IN_STDIN);
@@ -948,6 +613,7 @@ test_io_and_state_commands(void) {
     static dsd_opts opts;
     static dsd_state state;
     init_test_context(&opts, &state);
+    const int compact_before = opts.frontend_terminal_display.terminal_compact;
 
     opts.slot1_on = 1;
     opts.slot2_on = 1;
@@ -996,7 +662,6 @@ test_io_and_state_commands(void) {
     post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE);
     post_empty(DSD_APP_CMD_CALL_ALERT_TOGGLE);
     post_call_alert_events(0U);
-    post_empty(DSD_APP_CMD_CRC_RELAX_TOGGLE);
     post_empty(DSD_APP_CMD_LCW_RETUNE_TOGGLE);
     post_empty(DSD_APP_CMD_P25_CC_CAND_TOGGLE);
     post_empty(DSD_APP_CMD_REVERSE_MUTE_TOGGLE);
@@ -1014,12 +679,12 @@ test_io_and_state_commands(void) {
     post_empty(DSD_APP_CMD_LRRP_DISABLE);
     post_empty(DSD_APP_CMD_DMR_RESET);
 
-    rc |= expect_int("io/state commands applied", dsd_app_drain_cmds(&opts, &state), 38);
+    rc |= expect_int("io/state commands applied", dsd_app_drain_cmds(&opts, &state), 37);
     rc |= expect_str("udp input selected", opts.audio_in_dev, "udp");
     rc |= expect_int("udp input type", opts.audio_in_type, AUDIO_IN_UDP);
     rc |= expect_str("udp bind copied", opts.udp_in_bindaddr, "0.0.0.0");
     rc |= expect_int("udp port copied", opts.udp_in_portno, 7355);
-    rc |= expect_int("compact toggled", opts.frontend_terminal_display.terminal_compact, 1);
+    rc |= expect_int("compact toggled", opts.frontend_terminal_display.terminal_compact, !compact_before);
     rc |= expect_int("slot1 disabled", opts.slot1_on, 0);
     rc |= expect_int("slot2 disabled", opts.slot2_on, 0);
     rc |= expect_int("slot preference cycled", opts.slot_preference, 1);
@@ -1029,7 +694,7 @@ test_io_and_state_commands(void) {
     rc |= expect_int("hpf toggled", opts.use_hpf, 1);
     rc |= expect_int("pbf toggled", opts.use_pbf, 1);
     rc |= expect_int("hpf-d toggled", opts.use_hpf_d, 1);
-    rc |= expect_int("aggressive sync toggled twice", opts.aggressive_framesync, 0);
+    rc |= expect_int("aggressive sync toggled", opts.aggressive_framesync, 1);
     rc |= expect_int("call alert disabled by empty event mask", opts.call_alert, 0);
     rc |= expect_int("call alert events masked to zero", opts.call_alert_events, 0);
     rc |= expect_int("lcw retune toggled", opts.p25_lcw_retune, 1);
@@ -1082,9 +747,8 @@ test_io_and_state_commands(void) {
 static void
 seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_freq, int tg) {
     opts->audio_in_type = AUDIO_IN_RTL;
-    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
     opts->frame_p25p1 = 1;
-    opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     state->p25_cc_freq = cc_freq;
     state->trunk_cc_freq = cc_freq;
@@ -1108,16 +772,13 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
-    dsd_app_command_token token = 0;
 
 #ifdef USE_RADIO
     init_test_context(&opts, &state);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
     rc |= expect_int("accepted RTL frequency timeout queued",
-                     dsd_app_command_set_u32_tracked(DSD_APP_CMD_RTL_SET_FREQ, 851500000U, &token),
-                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+                     dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 851500000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("accepted RTL frequency timeout drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("accepted RTL frequency timeout completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_true("accepted RTL frequency timeout reports pending",
                       strstr(state.ui_msg, "Accepted: RTL frequency -> 851500000 Hz (pending)") != NULL);
     rc |= expect_int("accepted RTL frequency timeout tune calls", g_io_control_tune_calls, 1);
@@ -1128,17 +789,15 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
-    rc |= expect_int("deferred return-to-CC queued", dsd_app_command_action_tracked(DSD_APP_CMD_RETURN_CC, &token),
+    rc |= expect_int("deferred return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("deferred return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("deferred return-to-CC failed", token, DSD_APP_COMMAND_RESULT_FAILED);
     rc |= expect_int("deferred return-to-CC CC tune calls", g_cc_tune_calls, 1);
     rc |= expect_int("deferred return-to-CC raw tune calls", g_io_control_tune_calls, 0);
     rc |= expect_true("deferred return-to-CC frequency", g_cc_tune_freq == 851000000L);
     rc |= expect_int("deferred return-to-CC TED SPS", g_cc_tune_ted_sps, 10);
     rc |= expect_int("deferred return-to-CC profile staged before commit", g_cc_profile_at_tune,
                      DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
-    rc |= expect_int("deferred return-to-CC keeps P25 tuned", opts.p25_is_tuned, 1);
     rc |= expect_int("deferred return-to-CC keeps trunk tuned", opts.trunk_is_tuned, 1);
     rc |= expect_int("deferred return-to-CC keeps TG", state.lasttg, 1201);
     rc |= expect_true("deferred return-to-CC keeps VC", state.p25_vc_freq[0] == 852000000L);
@@ -1148,12 +807,9 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("deferred return-to-CC keeps SPS hunt counter", state.sps_hunt_counter, 17);
 
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_PENDING);
-    token = 0;
-    rc |= expect_int("accepted timeout return-to-CC queued",
-                     dsd_app_command_action_tracked(DSD_APP_CMD_RETURN_CC, &token), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("accepted timeout return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("accepted timeout return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("accepted timeout return-to-CC completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
-    rc |= expect_int("accepted timeout clears P25 tuned", opts.p25_is_tuned, 0);
     rc |= expect_int("accepted timeout clears trunk tuned", opts.trunk_is_tuned, 0);
     rc |= expect_int("accepted timeout clears TG", state.lasttg, 0);
     rc |= expect_true("accepted timeout clears VC", state.p25_vc_freq[0] == 0L);
@@ -1177,11 +833,9 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     state.sps_hunt_counter = 29;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
-    token = 0;
-    rc |= expect_int("generic return-to-CC queued", dsd_app_command_action_tracked(DSD_APP_CMD_RETURN_CC, &token),
+    rc |= expect_int("generic return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("generic return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("generic return-to-CC completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_int("generic return-to-CC raw tune calls", g_io_control_tune_calls, 1);
     rc |= expect_true("generic return-to-CC frequency", g_io_control_tune_freq == 852500000L);
     rc |= expect_int("generic return-to-CC CC tune calls", g_cc_tune_calls, 0);
@@ -1194,13 +848,10 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 853000000L, 854000000L, 2201);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
-    token = 0;
-    rc |= expect_int("deferred lockout queued", dsd_app_command_set_u8_tracked(DSD_APP_CMD_LOCKOUT_SLOT, 0U, &token),
+    rc |= expect_int("deferred lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("deferred lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("deferred lockout policy completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_int("deferred lockout tune calls", g_cc_tune_calls, 1);
-    rc |= expect_int("deferred lockout keeps P25 tuned", opts.p25_is_tuned, 1);
     rc |= expect_int("deferred lockout keeps trunk tuned", opts.trunk_is_tuned, 1);
     rc |= expect_int("deferred lockout keeps TG", state.lasttg, 2201);
     rc |= expect_true("deferred lockout keeps VC", state.p25_vc_freq[0] == 854000000L);
@@ -1227,12 +878,9 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     state.sps_hunt_counter = 19;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
-    token = 0;
-    rc |=
-        expect_int("profile-neutral lockout queued",
-                   dsd_app_command_set_u8_tracked(DSD_APP_CMD_LOCKOUT_SLOT, 0U, &token), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("profile-neutral lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("profile-neutral lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("profile-neutral lockout completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_int("profile-neutral lockout raw tune calls", g_io_control_tune_calls, 1);
     rc |= expect_true("profile-neutral lockout frequency", g_io_control_tune_freq == 853500000L);
     rc |= expect_int("profile-neutral lockout CC tune calls", g_cc_tune_calls, 0);
@@ -1248,14 +896,11 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     state.carrier = 1;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
-    token = 0;
-    rc |= expect_int("no-CC lockout queued", dsd_app_command_set_u8_tracked(DSD_APP_CMD_LOCKOUT_SLOT, 0U, &token),
+    rc |= expect_int("no-CC lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("no-CC lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("no-CC lockout completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_int("no-CC lockout skips raw tune", g_io_control_tune_calls, 0);
     rc |= expect_int("no-CC lockout skips CC tune", g_cc_tune_calls, 0);
-    rc |= expect_int("no-CC lockout clears P25 tuned", opts.p25_is_tuned, 0);
     rc |= expect_int("no-CC lockout clears trunk tuned", opts.trunk_is_tuned, 0);
     rc |= expect_int("no-CC lockout clears TG", state.lasttg, 0);
     rc |= expect_true("no-CC lockout clears P25 VC", state.p25_vc_freq[0] == 0L);
@@ -1274,16 +919,14 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     state.trunk_lcn_freq[3] = 858000000L;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_DEFERRED);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
-    token = 0;
-    rc |= expect_int("deferred channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
+    rc |= expect_int("deferred channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("deferred channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("deferred channel cycle failed", token, DSD_APP_COMMAND_RESULT_FAILED);
     rc |= expect_int("deferred channel cycle raw tune calls", g_io_control_tune_calls, 1);
     rc |= expect_true("deferred channel cycle frequency", g_io_control_tune_freq == 857000000L);
     rc |= expect_int("deferred channel cycle CC tune calls", g_cc_tune_calls, 0);
     rc |= expect_int("deferred channel cycle keeps roll", state.lcn_freq_roll, 0);
-    rc |= expect_int("deferred channel cycle keeps tuned", opts.p25_is_tuned, 1);
+    rc |= expect_int("deferred channel cycle keeps tuned", opts.trunk_is_tuned, 1);
     rc |= expect_int("deferred channel cycle keeps TG", state.lasttg, 3201);
     rc |= expect_true("deferred channel cycle keeps VC", state.p25_vc_freq[0] == 856000000L);
     rc |= expect_true("deferred channel cycle keeps CC sync", state.last_cc_sync_time_m == 42.0);
@@ -1294,13 +937,11 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     state.sps_hunt_counter = 23;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
-    token = 0;
-    rc |= expect_int("accepted channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
+    rc |= expect_int("accepted channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("accepted channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("accepted channel cycle completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_int("accepted channel cycle skips empty entry", state.lcn_freq_roll, 2);
-    rc |= expect_int("accepted channel cycle clears tuned", opts.p25_is_tuned, 0);
+    rc |= expect_int("accepted channel cycle clears tuned", opts.trunk_is_tuned, 0);
     rc |= expect_int("accepted channel cycle clears TG", state.lasttg, 0);
     rc |= expect_true("accepted channel cycle clears P25 VC", state.p25_vc_freq[0] == 0L);
     rc |= expect_true("accepted channel cycle refreshes CC sync", state.last_cc_sync_time_m > 42.0);
@@ -1312,19 +953,15 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("accepted channel cycle keeps SPS profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     rc |= expect_int("accepted channel cycle keeps SPS hunt counter", state.sps_hunt_counter, 23);
 
-    token = 0;
-    rc |= expect_int("later channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
+    rc |= expect_int("later channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("later channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("later channel cycle completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_true("later channel cycle reaches frequency after empty entry", g_io_control_tune_freq == 858000000L);
     rc |= expect_int("later channel cycle advances past second frequency", state.lcn_freq_roll, 4);
 
-    token = 0;
-    rc |= expect_int("wrapped channel cycle queued", dsd_app_command_action_tracked(DSD_APP_CMD_CHANNEL_CYCLE, &token),
+    rc |= expect_int("wrapped channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("wrapped channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_command_status("wrapped channel cycle completed", token, DSD_APP_COMMAND_RESULT_COMPLETED);
     rc |= expect_true("wrapped channel cycle skips leading empty entry", g_io_control_tune_freq == 857000000L);
     rc |= expect_int("wrapped channel cycle advances from recovered entry", state.lcn_freq_roll, 2);
     freeState(&state);
@@ -1338,9 +975,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
 int
 main(void) {
     int rc = 0;
-    rc |= test_tracked_command_api();
+    rc |= test_command_api();
     rc |= test_setter_coalescing_preserves_fifo_boundaries();
-    rc |= test_tracked_command_results();
     rc |= test_visibility_and_queue_overflow();
     rc |= test_key_and_runtime_state_commands();
     rc |= test_file_network_and_import_commands();

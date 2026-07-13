@@ -50,11 +50,6 @@ m17_packet_protocol_name_u32(uint32_t protocol) {
 }
 
 int
-m17_stream_frame_is_signature(uint16_t frame_number) {
-    return m17_stream_signature_frame_index(frame_number) >= 0;
-}
-
-int
 m17_stream_signature_frame_index(uint16_t frame_number) {
     switch (frame_number) {
         case M17_STREAM_SIGNATURE_FN0: return 0;
@@ -63,14 +58,6 @@ m17_stream_signature_frame_index(uint16_t frame_number) {
         case M17_STREAM_SIGNATURE_FN3: return 3;
         default: return -1;
     }
-}
-
-void
-m17_signature_digest_init(uint8_t digest[M17_SIGNATURE_DIGEST_BYTES]) {
-    if (digest == NULL) {
-        return;
-    }
-    DSD_MEMSET(digest, 0, M17_SIGNATURE_DIGEST_BYTES);
 }
 
 void
@@ -87,14 +74,6 @@ m17_signature_digest_update(uint8_t digest[M17_SIGNATURE_DIGEST_BYTES],
     const uint8_t first = digest[0];
     DSD_MEMMOVE(digest, digest + 1, M17_SIGNATURE_DIGEST_BYTES - 1U);
     digest[M17_SIGNATURE_DIGEST_BYTES - 1U] = first;
-}
-
-void
-m17_signature_collector_reset(struct m17_signature_collector* collector) {
-    if (collector == NULL) {
-        return;
-    }
-    DSD_MEMSET(collector, 0, sizeof(*collector));
 }
 
 int
@@ -230,14 +209,6 @@ m17_meta_text_parse_block(const uint8_t meta[M17_META_BYTES], struct m17_meta_te
     return 0;
 }
 
-void
-m17_meta_text_assembler_reset(struct m17_meta_text_assembler* assembler) {
-    if (assembler == NULL) {
-        return;
-    }
-    DSD_MEMSET(assembler, 0, sizeof(*assembler));
-}
-
 static int
 m17_meta_text_block_is_usable(const struct m17_meta_text_block* block) {
     return block->total_blocks != 0U && block->total_blocks <= M17_TEXT_MAX_BLOCKS
@@ -280,7 +251,7 @@ m17_meta_text_assembler_push(struct m17_meta_text_assembler* assembler, const st
     out_text[0] = '\0';
 
     if (block->has_text == 0U) {
-        m17_meta_text_assembler_reset(assembler);
+        DSD_MEMSET(assembler, 0, sizeof(*assembler));
         return 0;
     }
 
@@ -289,7 +260,7 @@ m17_meta_text_assembler_push(struct m17_meta_text_assembler* assembler, const st
     }
 
     if (assembler->expected_bitmap != 0U && assembler->expected_bitmap != block->length_bitmap) {
-        m17_meta_text_assembler_reset(assembler);
+        DSD_MEMSET(assembler, 0, sizeof(*assembler));
     }
 
     assembler->expected_bitmap = block->length_bitmap;
@@ -319,17 +290,6 @@ m17_address_classify(unsigned long long address) {
         return M17_ADDRESS_EXTENDED;
     }
     return M17_ADDRESS_BROADCAST_KIND;
-}
-
-int
-m17_address_is_valid_destination(unsigned long long address) {
-    const uint8_t kind = m17_address_classify(address);
-    return kind == M17_ADDRESS_STANDARD || kind == M17_ADDRESS_EXTENDED || kind == M17_ADDRESS_BROADCAST_KIND;
-}
-
-int
-m17_address_is_valid_source(unsigned long long address) {
-    return m17_address_classify(address) == M17_ADDRESS_STANDARD;
 }
 
 int
@@ -435,8 +395,8 @@ m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* ou
     out->meta_is_iv = (out->et == 2U) ? 1U : 0U;
     out->dst_address_kind = m17_address_classify(lsf_dst);
     out->src_address_kind = m17_address_classify(lsf_src);
-    out->dst_is_valid = (uint8_t)m17_address_is_valid_destination(lsf_dst);
-    out->src_is_valid = (uint8_t)m17_address_is_valid_source(lsf_src);
+    out->dst_is_valid = (uint8_t)(out->dst_address_kind != M17_ADDRESS_RESERVED);
+    out->src_is_valid = (uint8_t)(out->src_address_kind == M17_ADDRESS_STANDARD);
     out->type_reserved_valid = (uint8_t)m17_lsf_type_reserved_bits_valid(out);
 
     /* Decode base-40 CSD strings for destination and source. */

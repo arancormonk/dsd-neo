@@ -24,11 +24,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-static uint8_t
-nxdn_bits_to_u8(const uint8_t* bits, size_t start, uint32_t len) {
-    return (uint8_t)convert_bits_into_output(&bits[start], len);
-}
+#include "nxdn_crc.h"
 
 static void
 nxdn_alias_trim_trailing_spaces(char* s) {
@@ -59,28 +55,6 @@ nxdn_alias_reset_arib(dsd_state* state) {
     state->nxdn_alias_arib_total_segments = 0U;
     state->nxdn_alias_arib_seen_mask = 0U;
     DSD_MEMSET(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
-}
-
-static uint32_t
-nxdn_alias_crc32_msb_first(const uint8_t* data, size_t len) {
-    if (data == NULL || len == 0U) {
-        return 0xFFFFFFFFU;
-    }
-
-    // NXDN message CRC-32: poly 0x04C11DB7, MSB-first, init all ones, no final xor.
-    uint32_t crc = 0xFFFFFFFFU;
-    for (size_t i = 0U; i < len; i++) {
-        uint8_t b = data[i];
-        for (size_t bit = 0U; bit < 8U; bit++) {
-            uint32_t in_bit = (uint32_t)((b >> (7U - bit)) & 1U);
-            uint32_t fb = ((crc >> 31U) & 1U) ^ in_bit;
-            crc <<= 1U;
-            if (fb != 0U) {
-                crc ^= 0x04C11DB7U;
-            }
-        }
-    }
-    return crc;
 }
 
 static uint32_t
@@ -216,7 +190,7 @@ nxdn_alias_log_prop_segment(const dsd_opts* opts, uint8_t block_number, uint8_t 
 static void
 nxdn_alias_store_prop_segment(dsd_state* state, const uint8_t* message_bits, uint8_t block_number) {
     for (size_t i = 0U; i < 4U; i++) {
-        uint8_t b = nxdn_bits_to_u8(message_bits, 40U + (i * 8U), 8U);
+        uint8_t b = (uint8_t)convert_bits_into_output(&message_bits[40U + (i * 8U)], 8U);
         char c = (b >= 0x20U && b <= 0x7EU) ? (char)b : ' ';
         state->nxdn_alias_block_segment[block_number - 1U][i][0] = c;
         state->nxdn_alias_block_segment[block_number - 1U][i][1] = '\0';
@@ -267,8 +241,11 @@ nxdn_alias_arib_pack_and_validate(const dsd_state* state, uint8_t seg_total, uin
     if (*packed_len < 4U) {
         return 0;
     }
-    uint32_t crc32_have = nxdn_alias_read_u32_be(&packed[*packed_len - 4U]);
-    uint32_t crc32_want = nxdn_alias_crc32_msb_first(packed, *packed_len - 4U);
+    const size_t crc_byte_count = *packed_len - 4U;
+    uint8_t crc_bits[20U * 8U];
+    unpack_byte_array_into_bit_array(packed, crc_bits, (int)crc_byte_count);
+    uint32_t crc32_have = nxdn_alias_read_u32_be(&packed[crc_byte_count]);
+    uint32_t crc32_want = nxdn_crc32_bits(crc_bits, crc_byte_count * 8U);
     if (crc32_have != crc32_want) {
         return 0;
     }
@@ -365,8 +342,8 @@ nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* me
         return;
     }
 
-    uint8_t block_number = nxdn_bits_to_u8(message_bits, 32U, 4U);
-    uint8_t total_blocks = nxdn_bits_to_u8(message_bits, 36U, 4U);
+    uint8_t block_number = (uint8_t)convert_bits_into_output(&message_bits[32U], 4U);
+    uint8_t total_blocks = (uint8_t)convert_bits_into_output(&message_bits[36U], 4U);
     nxdn_alias_log_prop_segment(opts, block_number, total_blocks, crc_ok);
 
     if (crc_ok == 0U) {
@@ -397,8 +374,8 @@ nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* me
         return;
     }
 
-    uint8_t seg_num = nxdn_bits_to_u8(message_bits, 16U, 4U);
-    uint8_t seg_total = nxdn_bits_to_u8(message_bits, 20U, 4U);
+    uint8_t seg_num = (uint8_t)convert_bits_into_output(&message_bits[16U], 4U);
+    uint8_t seg_total = (uint8_t)convert_bits_into_output(&message_bits[20U], 4U);
     nxdn_alias_log_arib_segment(opts, seg_num, seg_total, crc_ok);
 
     if (crc_ok == 0U) {
@@ -422,7 +399,8 @@ nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* me
 
     state->nxdn_alias_arib_total_segments = seg_total;
     for (size_t i = 0U; i < 6U; i++) {
-        state->nxdn_alias_arib_segments[seg_num - 1U][i] = nxdn_bits_to_u8(message_bits, 24U + (i * 8U), 8U);
+        state->nxdn_alias_arib_segments[seg_num - 1U][i] =
+            (uint8_t)convert_bits_into_output(&message_bits[24U + (i * 8U)], 8U);
     }
     state->nxdn_alias_arib_seen_mask |= (uint8_t)(1U << (seg_num - 1U));
 

@@ -236,10 +236,6 @@ test_dibit_symbol_mapping(void) {
     err |= expect_int("dibit 01", m17_symbol_from_dibit(1U), +3);
     err |= expect_int("dibit 10", m17_symbol_from_dibit(2U), -1);
     err |= expect_int("dibit 11", m17_symbol_from_dibit(3U), -3);
-    err |= expect_int("dibit 00 deviation", m17_deviation_hz_from_dibit(0U), +800);
-    err |= expect_int("dibit 01 deviation", m17_deviation_hz_from_dibit(1U), +2400);
-    err |= expect_int("dibit 10 deviation", m17_deviation_hz_from_dibit(2U), -800);
-    err |= expect_int("dibit 11 deviation", m17_deviation_hz_from_dibit(3U), -2400);
 
     const uint8_t byte = 0xB4U;
     const int want_symbols[4] = {-1, -3, +3, +1};
@@ -700,12 +696,7 @@ test_packet_and_bert_frame_helpers(void) {
     DSD_MEMSET(bert_type3, 0, sizeof(bert_type3));
     DSD_MEMSET(bert_type2, 0, sizeof(bert_type2));
     DSD_MEMSET(bert_expected_type3, 0, sizeof(bert_expected_type3));
-
-    m17_bert_build_type1_bits(bert_payload, bert_type1);
-    for (int i = 0; i < M17_BERT_PAYLOAD_BITS; i++) {
-        err |= expect_u32("BERT type1 payload", bert_type1[i], bert_payload[i]);
-    }
-    err |= expect_int("BERT flush bits", count_ones(&bert_type1[M17_BERT_PAYLOAD_BITS], M17_BERT_FLUSH_BITS), 0);
+    DSD_MEMCPY(bert_type1, bert_payload, sizeof(bert_payload));
 
     uint16_t consumed = 0U;
     uint16_t out = m17_bert_encode_type1_bits(bert_type1, bert_frame, &consumed);
@@ -834,10 +825,6 @@ static int
 test_scrambler_helpers(void) {
     int err = 0;
 
-    err |= expect_int("scrambler subtype 0 key bits", m17_scrambler_key_bits_for_subtype(0U), 8);
-    err |= expect_int("scrambler subtype 1 key bits", m17_scrambler_key_bits_for_subtype(1U), 16);
-    err |= expect_int("scrambler subtype 2 key bits", m17_scrambler_key_bits_for_subtype(2U), 24);
-    err |= expect_int("scrambler reserved key bits", m17_scrambler_key_bits_for_subtype(3U), 0);
     err |= expect_u32("scrambler subtype 0 mask", m17_scrambler_mask_for_subtype(0U), M17_SCRAMBLER_8BIT_MASK);
     err |= expect_u32("scrambler subtype 1 mask", m17_scrambler_mask_for_subtype(1U), M17_SCRAMBLER_16BIT_MASK);
     err |= expect_u32("scrambler subtype 2 mask", m17_scrambler_mask_for_subtype(2U), M17_SCRAMBLER_24BIT_MASK);

@@ -163,44 +163,6 @@ p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {
     p25_patch_clear_entry_context(state, idx);
 }
 
-int
-p25_patch_compose_summary(const dsd_state* state, char* out, size_t cap) {
-    if (!out || cap == 0) {
-        return 0;
-    }
-    out[0] = '\0';
-    if (!state) {
-        return 0;
-    }
-    // Copy to temp and sweep stale to avoid modifying caller's state
-    dsd_state* mutable_state = (dsd_state*)state;
-    p25_patch_sweep_stale(mutable_state);
-    char buf[128] = {0};
-    int n = 0;
-    for (int i = 0; i < mutable_state->p25_patch_count && i < 8; i++) {
-        if (!mutable_state->p25_patch_active[i]) {
-            continue;
-        }
-        if (!mutable_state->p25_patch_is_patch[i]) {
-            continue; // show patches only (not simulselects)
-        }
-        if (n == 0) {
-            n += DSD_SNPRINTF(buf + n, sizeof(buf) - n, "P: %03u", mutable_state->p25_patch_sgid[i]);
-        } else {
-            n += DSD_SNPRINTF(buf + n, sizeof(buf) - n, ",%03u", mutable_state->p25_patch_sgid[i]);
-        }
-        if (n >= (int)sizeof(buf) - 8) {
-            break;
-        }
-    }
-    if (n <= 0) {
-        return 0;
-    }
-    // Copy to output
-    int w = DSD_SNPRINTF(out, cap, "%s", buf);
-    return (w > 0) ? w : 0;
-}
-
 void
 p25_patch_add_wgid(dsd_state* state, int sgid, int wgid) {
     if (!state || sgid <= 0 || sgid > 0xFFFF || wgid <= 0 || wgid > 0xFFFF) {
@@ -360,30 +322,6 @@ p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid) {
                 state->p25_patch_wgid[idx][i] = state->p25_patch_wgid[idx][cnt - 1];
             }
             state->p25_patch_wgid_count[idx] = cnt - 1;
-            break;
-        }
-    }
-    if (state->p25_patch_wgid_count[idx] == 0 && state->p25_patch_wuid_count[idx] == 0) {
-        state->p25_patch_active[idx] = 0;
-    }
-}
-
-void
-p25_patch_remove_wuid(dsd_state* state, int sgid, uint32_t wuid) {
-    if (!state || sgid <= 0 || wuid == 0) {
-        return;
-    }
-    int idx = find_patch_idx(state, (uint16_t)sgid);
-    if (idx < 0) {
-        return;
-    }
-    uint8_t cnt = state->p25_patch_wuid_count[idx];
-    for (int i = 0; i < cnt && i < 8; i++) {
-        if (state->p25_patch_wuid[idx][i] == wuid) {
-            if (i != cnt - 1) {
-                state->p25_patch_wuid[idx][i] = state->p25_patch_wuid[idx][cnt - 1];
-            }
-            state->p25_patch_wuid_count[idx] = cnt - 1;
             break;
         }
     }

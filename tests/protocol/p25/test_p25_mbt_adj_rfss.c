@@ -10,7 +10,6 @@
  */
 
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -23,51 +22,6 @@
 #endif
 
 #include "p25_test_shim.h"
-
-// Shim: decode an MBT with pre-seeded iden tables
-int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
-                                  int spac, long* out_cc, long* out_wacn, int* out_sysid);
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bw) {
-    (void)sockfd;
-    (void)bw;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -433,8 +387,20 @@ main(void) {
         DSD_MEMSET(mbt, 0, sizeof(mbt));
         long cc = 111, w = 222;
         int sid = 333;
-        int sh = p25_test_decode_mbt_with_iden(mbt, (int)sizeof(mbt), /*iden*/ -1, type, tdma, base5, spac125, &cc, &w,
-                                               &sid);
+        const p25_test_iden_config invalid_cfg = {
+            .iden = -1,
+            .type = type,
+            .tdma = tdma,
+            .base = base5,
+            .spac = spac125,
+        };
+        const p25_test_mbt_outputs outputs = {
+            .cc = &cc,
+            .wacn = &w,
+            .sysid = &sid,
+            .inspect_iden = -1,
+        };
+        int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &invalid_cfg, &outputs);
         rc |= expect_eq_long("invalid iden rejected", sh, -2);
         rc |= expect_eq_long("invalid iden preserves cc", cc, 111);
         rc |= expect_eq_long("invalid iden preserves wacn", w, 222);

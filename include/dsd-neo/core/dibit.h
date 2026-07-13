@@ -42,9 +42,9 @@ extern "C" {
 
 int get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
 int getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft);
-int getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability);
 int getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol);
-void write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol);
+void write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol,
+                                 const dsd_dibit_soft_t* soft);
 uint8_t dmr_compute_reliability(const dsd_state* st, float sym);
 void soft_symbol_frame_begin(dsd_state* state);
 uint16_t soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state, int bit_position);

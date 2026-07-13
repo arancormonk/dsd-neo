@@ -14,7 +14,6 @@
 #include <dsd-neo/protocol/p25/p25_pdu.h>
 #include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,8 +23,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
-struct RtlSdrContext;
-
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
@@ -34,7 +31,7 @@ struct RtlSdrContext;
 #define setenv dsd_test_setenv
 
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
-void dsd_neo_config_init(const dsd_opts* opts);
+void dsd_neo_config_init(void);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
 // Shim to invoke real decoder
@@ -85,18 +82,6 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     (void)input;
 }
 
-// Bit helpers expected by p25p1_pdu_data.c implementation
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    // MSB-first bit unpack
-    for (int i = 0; i < len * 8; i++) {
-        int byte = i / 8;
-        int bit = 7 - (i % 8);
-        output[i] = (input[byte] >> bit) & 1;
-    }
-}
-
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
@@ -115,40 +100,6 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)state;
     (void)len;
     (void)input;
-}
-
-// Additional stubs for rigctl path
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
 }
 
 static int
@@ -472,7 +423,7 @@ main(void) {
 
     // Enable JSON emission
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_p1_pdu_es_ext") != 0) {

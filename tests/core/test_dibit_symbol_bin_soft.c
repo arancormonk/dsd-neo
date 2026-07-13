@@ -7,7 +7,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -66,9 +65,7 @@ dsd_sleep_ns(uint64_t ns) {
 }
 
 void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts;
-}
+dsd_neo_config_init(void) {}
 
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
@@ -76,18 +73,10 @@ dsd_neo_get_config(void) {
     return &cfg;
 }
 
-uint8_t
-dsd_fsk_symbol_reliability(float symbol, int levels) {
-    (void)symbol;
-    (void)levels;
-    return 255;
-}
-
 static void
 free_state_buffers(dsd_state* state) {
     free(state->dibit_buf);
     free(state->dmr_payload_buf);
-    free(state->dmr_reliab_buf);
     free(state->dmr_soft_buf);
 }
 
@@ -95,16 +84,13 @@ static int
 init_state_buffers(dsd_state* state) {
     state->dibit_buf = (int*)calloc(1000001, sizeof(int));
     state->dmr_payload_buf = (int*)calloc(1000001, sizeof(int));
-    state->dmr_reliab_buf = (uint8_t*)calloc(1000001, sizeof(uint8_t));
     state->dmr_soft_buf = (dsd_dibit_soft_t*)calloc(1000001, sizeof(dsd_dibit_soft_t));
-    if (state->dibit_buf == NULL || state->dmr_payload_buf == NULL || state->dmr_reliab_buf == NULL
-        || state->dmr_soft_buf == NULL) {
+    if (state->dibit_buf == NULL || state->dmr_payload_buf == NULL || state->dmr_soft_buf == NULL) {
         free_state_buffers(state);
         return 0;
     }
     state->dibit_buf_p = state->dibit_buf + 200;
     state->dmr_payload_p = state->dmr_payload_buf + 200;
-    state->dmr_reliab_p = state->dmr_reliab_buf + 200;
     state->dmr_soft_p = state->dmr_soft_buf + 200;
     return 1;
 }
@@ -166,11 +152,6 @@ test_symbol_bin_soft_matches_returned_dibit(int dibit) {
         DSD_FPRINTF(stderr, "dibit %d: expected symbol-bin reliability 255, got %u\n", dibit, soft.reliability);
         rc = 1;
     }
-    if (state.dmr_reliab_p[-1] != 255) {
-        DSD_FPRINTF(stderr, "dibit %d: previous reliability buffer was not rebuilt\n", dibit);
-        rc = 1;
-    }
-
     const dsd_dibit_soft_t previous = state.dmr_soft_p[-1];
     if (previous.llr[0] != soft.llr[0] || previous.llr[1] != soft.llr[1] || previous.reliability != soft.reliability) {
         DSD_FPRINTF(stderr, "dibit %d: previous soft buffer does not match returned soft metric\n", dibit);
@@ -347,7 +328,7 @@ test_symbol_bin_replay_throttle_paces_from_timing_rate(void) {
 }
 
 static int
-test_reader_wraps_legacy_ring_buffers_before_store(void) {
+test_reader_wraps_ring_buffers_before_store(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -362,7 +343,6 @@ test_reader_wraps_legacy_ring_buffers_before_store(void) {
     state.lastsynctype = -1;
     state.dibit_buf_p = state.dibit_buf + 900001;
     state.dmr_payload_p = state.dmr_payload_buf + 900001;
-    state.dmr_reliab_p = state.dmr_reliab_buf + 900001;
     state.dmr_soft_p = state.dmr_soft_buf + 900001;
     g_next_dibit = 1;
 
@@ -372,17 +352,15 @@ test_reader_wraps_legacy_ring_buffers_before_store(void) {
 
     int rc = 0;
     if (got != 1 || state.dibit_buf_p != state.dibit_buf + 201 || state.dmr_payload_p != state.dmr_payload_buf + 201
-        || state.dmr_reliab_p != state.dmr_reliab_buf + 201 || state.dmr_soft_p != state.dmr_soft_buf + 201) {
-        DSD_FPRINTF(stderr, "ring wrap pointer mismatch got=%d d=%td p=%td r=%td s=%td\n", got,
+        || state.dmr_soft_p != state.dmr_soft_buf + 201) {
+        DSD_FPRINTF(stderr, "ring wrap pointer mismatch got=%d d=%td p=%td s=%td\n", got,
                     state.dibit_buf_p - state.dibit_buf, state.dmr_payload_p - state.dmr_payload_buf,
-                    state.dmr_reliab_p - state.dmr_reliab_buf, state.dmr_soft_p - state.dmr_soft_buf);
+                    state.dmr_soft_p - state.dmr_soft_buf);
         rc = 1;
     } else if (state.dibit_buf[200] != 1 || state.dmr_payload_buf[200] != 1
-               || state.dmr_reliab_buf[200] != soft.reliability
                || state.dmr_soft_buf[200].reliability != soft.reliability) {
-        DSD_FPRINTF(stderr, "ring wrap stored values mismatch d=%d p=%d r=%u s=%u soft=%u\n", state.dibit_buf[200],
-                    state.dmr_payload_buf[200], state.dmr_reliab_buf[200], state.dmr_soft_buf[200].reliability,
-                    soft.reliability);
+        DSD_FPRINTF(stderr, "ring wrap stored values mismatch d=%d p=%d s=%u soft=%u\n", state.dibit_buf[200],
+                    state.dmr_payload_buf[200], state.dmr_soft_buf[200].reliability, soft.reliability);
         rc = 1;
     }
 
@@ -391,7 +369,7 @@ test_reader_wraps_legacy_ring_buffers_before_store(void) {
 }
 
 static int
-test_get_dibit_soft_falls_back_to_reliability_buffer(void) {
+test_get_dibit_soft_falls_back_to_hard_dibit(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -414,10 +392,9 @@ test_get_dibit_soft_falls_back_to_reliability_buffer(void) {
     int got = getDibitSoft(&opts, &state, &soft);
 
     int rc = 0;
-    if (got != 2 || soft.reliability == 0 || soft.reliability != state.dmr_reliab_p[-1]
-        || !llr_matches_bit(soft.llr[0], 1) || !llr_matches_bit(soft.llr[1], 0)) {
-        DSD_FPRINTF(stderr, "soft fallback mismatch got=%d rel=%u stored=%u llr=(%d,%d)\n", got, soft.reliability,
-                    state.dmr_reliab_p[-1], soft.llr[0], soft.llr[1]);
+    if (got != 2 || soft.reliability != 255 || !llr_matches_bit(soft.llr[0], 1) || !llr_matches_bit(soft.llr[1], 0)) {
+        DSD_FPRINTF(stderr, "soft fallback mismatch got=%d rel=%u llr=(%d,%d)\n", got, soft.reliability, soft.llr[0],
+                    soft.llr[1]);
         rc = 1;
     }
 
@@ -444,10 +421,9 @@ test_direct_symbol_capture_writer_formats(void) {
         return 1;
     }
 
-    state.dmr_soft_p[0].reliability = 7;
-    state.dmr_soft_p++;
+    const dsd_dibit_soft_t soft = {.reliability = 7, .llr = {-7, 7}};
     opts.symbol_out_f = f;
-    write_symbol_capture_record(&opts, &state, 3, -3.0f);
+    write_symbol_capture_record(&opts, &state, 3, -3.0f, &soft);
 
     unsigned char rec[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
     size_t n = 0;
@@ -460,7 +436,7 @@ test_direct_symbol_capture_writer_formats(void) {
     if (n != sizeof(rec)) {
         DSD_FPRINTF(stderr, "direct soft capture record missing bytes=%zu\n", n);
         rc = 1;
-    } else if (rec[0] != 3 || rec[1] != 255) {
+    } else if (rec[0] != 3 || rec[1] != 7) {
         DSD_FPRINTF(stderr, "direct soft capture record mismatch dibit=%u reliability=%u\n", rec[0], rec[1]);
         rc = 1;
     } else if (state.symbol_capture_soft_records != 1) {
@@ -577,11 +553,11 @@ test_reader_apis_and_soft_symbol_ring(void) {
         rc = 1;
     }
 
-    uint8_t reliability = 0;
+    dsd_dibit_soft_t dibit_soft;
     g_next_dibit = 1;
-    got = getDibitWithReliability(&opts, &state, &reliability);
-    if (got != 1 || reliability == 0) {
-        DSD_FPRINTF(stderr, "reliability reader mismatch got=%d rel=%u\n", got, reliability);
+    got = getDibitSoft(&opts, &state, &dibit_soft);
+    if (got != 1 || dibit_soft.reliability == 0) {
+        DSD_FPRINTF(stderr, "soft reader mismatch got=%d rel=%u\n", got, dibit_soft.reliability);
         rc = 1;
     }
 
@@ -695,8 +671,8 @@ main(void) {
     rc |= test_soft_symbol_capture_record();
     rc |= test_symbol_replay_soft_metric_overrides_fallback();
     rc |= test_symbol_bin_replay_throttle_paces_from_timing_rate();
-    rc |= test_reader_wraps_legacy_ring_buffers_before_store();
-    rc |= test_get_dibit_soft_falls_back_to_reliability_buffer();
+    rc |= test_reader_wraps_ring_buffers_before_store();
+    rc |= test_get_dibit_soft_falls_back_to_hard_dibit();
     rc |= test_direct_symbol_capture_writer_formats();
     rc |= test_digitize_public_threshold_paths();
     rc |= test_reader_apis_and_soft_symbol_ring();

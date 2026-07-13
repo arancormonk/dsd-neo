@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -24,10 +25,7 @@ void p25p2_process_isch(dsd_opts* opts, dsd_state* state, int framing_index);
 void p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey);
 void p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status);
 void p25p2_process_duid(dsd_opts* opts, dsd_state* state);
-
-#if defined(DSD_NEO_P25P2_TEST_STUB)
-void p25p2_decode_voice_frame_for_lockout(dsd_opts* opts, dsd_state* state);
-#endif
+void p25p2_generate_scramble_bits(uint64_t wacn, uint64_t sysid, uint64_t nac, uint8_t* out_bits, size_t bit_count);
 
 #ifdef __cplusplus
 }

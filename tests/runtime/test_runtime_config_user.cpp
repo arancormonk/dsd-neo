@@ -97,7 +97,6 @@ expect_contains(const char* label, const char* haystack, const char* needle) {
 static int
 test_apply_file_input_rescales_symbol_timing(void) {
     dsdneoUserConfig cfg = {};
-    cfg.version = 1;
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_FILE;
     cfg.file_sample_rate = 44100;
@@ -144,9 +143,7 @@ test_apply_file_input_rescales_symbol_timing(void) {
 
 static int
 test_decode_mode_and_load_guards(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[mode]\n"
+    static const char* ini = "[mode]\n"
                              "decode = \"edacs_pv\"\n";
 
     char path[DSD_TEST_PATH_MAX];
@@ -168,9 +165,8 @@ test_decode_mode_and_load_guards(void) {
     }
 
     dsdneoUserConfig bad_cfg;
-    bad_cfg.version = 99;
-    if (dsd_user_config_load(NULL, &bad_cfg) == 0 || bad_cfg.version != 1) {
-        DSD_FPRINTF(stderr, "load NULL path should fail and reset config version=%d\n", bad_cfg.version);
+    if (dsd_user_config_load(NULL, &bad_cfg) == 0) {
+        DSD_FPRINTF(stderr, "load NULL path should fail\n");
         rc |= 1;
     }
     if (dsd_user_config_load(path, NULL) == 0) {
@@ -183,10 +179,74 @@ test_decode_mode_and_load_guards(void) {
 }
 
 static int
+test_persisted_v1_load_boundary(void) {
+    struct persisted_config_case {
+        const char* label;
+        const char* contents;
+        int should_load;
+    } cases[] = {
+        {"persisted version 1", "version = 1\n\n[mode]\ndecode = \"dmr\"\n", 1},
+        {"unsupported version", "version = 2\n\n[mode]\ndecode = \"dmr\"\n", 0},
+        {"non-integer version", "version = old\n\n[mode]\ndecode = \"dmr\"\n", 0},
+    };
+
+    int result = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(cases[i].contents, path, sizeof path) != 0) {
+            return 1;
+        }
+
+        dsdneoUserConfig cfg;
+        int load_rc = dsd_user_config_load(path, &cfg);
+        if (cases[i].should_load) {
+            if (load_rc != 0 || !cfg.has_mode || cfg.decode_mode != DSDCFG_MODE_DMR) {
+                DSD_FPRINTF(stderr, "%s should load through the persisted-config boundary (rc=%d)\n", cases[i].label,
+                            load_rc);
+                result = 1;
+            }
+        } else if (load_rc == 0) {
+            DSD_FPRINTF(stderr, "%s should be rejected\n", cases[i].label);
+            result = 1;
+        }
+        (void)remove(path);
+    }
+    return result;
+}
+
+static int
+test_integer_overflow_is_rejected_consistently(void) {
+    static const char* ini = "[input]\n"
+                             "source = \"rtl\"\n"
+                             "rtl_device = 999999999999999999999999\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof diags);
+    int rc = 0;
+    if (dsd_user_config_validate(path, &diags) == 0 || diags.error_count == 0) {
+        DSD_FPRINTF(stderr, "out-of-range integer should fail validation\n");
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0 || cfg.rtl_device != 0) {
+        DSD_FPRINTF(stderr, "out-of-range integer should leave the base default, got %d\n", cfg.rtl_device);
+        rc = 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
 test_unknown_section_warnings_do_not_mutate_loaded_config(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[input]\n"
+    static const char* ini = "[input]\n"
                              "source = \"pulse\"\n"
                              "\n"
                              "[unexpected]\n"
@@ -265,7 +325,6 @@ static int
 test_render_input_variants_and_save_atomic(void) {
     dsdneoUserConfig cfg;
     DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.version = 1;
     cfg.has_input = 1;
     cfg.has_output = 1;
     cfg.output_backend = DSDCFG_OUTPUT_PULSE;
@@ -311,6 +370,10 @@ test_render_input_variants_and_save_atomic(void) {
     cfg.rtl_auto_ppm = 1;
     if (render_config_to_buffer(&cfg, rendered, sizeof rendered) != 0) {
         return 1;
+    }
+    if (strstr(rendered, "version =") != NULL) {
+        DSD_FPRINTF(stderr, "rendered config must not emit the persisted version marker:\n%s\n", rendered);
+        rc |= 1;
     }
     rc |= expect_contains("render rtl source", rendered, "source = \"rtl\"\n");
     rc |= expect_contains("render rtl device", rendered, "rtl_device = 3\n");
@@ -410,9 +473,7 @@ test_load_and_apply_basic(void) {
      * The first half verifies parsed config fields; the second half applies the
      * snapshot to opts/state and checks the runtime-facing values.
      */
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[input]\n"
+    static const char* ini = "[input]\n"
                              "source = \"rtl\"\n"
                              "rtl_device = 1\n"
                              "rtl_freq = \"851.375M\"\n"
@@ -528,7 +589,7 @@ test_load_and_apply_basic(void) {
         DSD_FPRINTF(stderr, "DMR mode flags not applied as expected\n");
         rc |= 1;
     }
-    if (!(opts.p25_trunk == 1 && opts.trunk_enable == 1)) {
+    if (opts.trunk_enable != 1) {
         DSD_FPRINTF(stderr, "trunking not enabled in opts\n");
         rc |= 1;
     }
@@ -586,57 +647,8 @@ test_load_and_apply_basic(void) {
 }
 
 static int
-test_load_apply_and_snapshot_native_frontend(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[output]\n"
-                             "frontend = \"native\"\n";
-
-    char path[DSD_TEST_PATH_MAX];
-    if (write_temp_config(ini, path, sizeof path) != 0) {
-        return 1;
-    }
-
-    dsdneoUserConfig cfg;
-    if (dsd_user_config_load(path, &cfg) != 0) {
-        DSD_FPRINTF(stderr, "dsd_user_config_load failed for native frontend config %s\n", path);
-        (void)remove(path);
-        return 1;
-    }
-
-    int rc = 0;
-    if (!cfg.has_output || !cfg.frontend_kind_is_set || cfg.frontend_kind != DSD_FRONTEND_NATIVE) {
-        DSD_FPRINTF(stderr, "native frontend config not parsed, has=%d set=%d kind=%d\n", cfg.has_output,
-                    cfg.frontend_kind_is_set, (int)cfg.frontend_kind);
-        rc |= 1;
-    }
-
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_opts_and_state(opts, state);
-    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
-    if (opts.frontend_kind != DSD_FRONTEND_NATIVE) {
-        DSD_FPRINTF(stderr, "native frontend config not applied, kind=%d\n", (int)opts.frontend_kind);
-        rc |= 1;
-    }
-
-    dsdneoUserConfig snap;
-    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
-    if (!snap.frontend_kind_is_set || snap.frontend_kind != DSD_FRONTEND_NATIVE) {
-        DSD_FPRINTF(stderr, "native frontend snapshot mismatch, set=%d kind=%d\n", snap.frontend_kind_is_set,
-                    (int)snap.frontend_kind);
-        rc |= 1;
-    }
-
-    (void)remove(path);
-    return rc;
-}
-
-static int
 test_load_and_apply_alerts_empty_event_mask(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[alerts]\n"
+    static const char* ini = "[alerts]\n"
                              "enabled = true\n"
                              "voice_start = false\n"
                              "voice_end = false\n"
@@ -694,9 +706,7 @@ test_load_and_apply_alerts_empty_event_mask(void) {
 
 static int
 test_load_and_apply_soapy_input_no_args(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[input]\n"
+    static const char* ini = "[input]\n"
                              "source = \"soapy\"\n"
                              "rtl_freq = \"155.340M\"\n";
 
@@ -751,9 +761,7 @@ test_load_and_apply_soapy_input_no_args(void) {
 
 static int
 test_load_and_apply_soapy_input_with_args(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[input]\n"
+    static const char* ini = "[input]\n"
                              "source = \"soapy\"\n"
                              "soapy_args = \"driver=airspy,serial=ABC123\"\n"
                              "soapy_profile = \"airspy\"\n"
@@ -1093,9 +1101,7 @@ test_snapshot_rtl_and_rtltcp_device_specs(void) {
 
 static int
 test_load_and_apply_rtltcp_regression(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[input]\n"
+    static const char* ini = "[input]\n"
                              "source = \"rtltcp\"\n"
                              "rtltcp_host = \"127.0.0.1\"\n"
                              "rtltcp_port = 1234\n"
@@ -1141,9 +1147,7 @@ test_load_and_apply_rtltcp_regression(void) {
 
 static int
 test_snapshot_roundtrip(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[input]\n"
+    static const char* ini = "[input]\n"
                              "source = \"udp\"\n"
                              "udp_addr = \"127.0.0.1\"\n"
                              "udp_port = 9000\n"
@@ -1228,9 +1232,7 @@ test_snapshot_roundtrip(void) {
 
 static int
 test_apply_demod_lock(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[mode]\n"
+    static const char* ini = "[mode]\n"
                              "decode = \"auto\"\n"
                              "demod = \"qpsk\"\n";
 
@@ -1348,7 +1350,6 @@ test_apply_logging_retargets_frame_log_file(void) {
     opts.p25_sm_log_file[sizeof opts.p25_sm_log_file - 1] = '\0';
 
     dsdneoUserConfig cfg = {};
-    cfg.version = 1;
     cfg.has_logging = 1;
     DSD_SNPRINTF(cfg.frame_log, sizeof cfg.frame_log, "%s", "/tmp/frames-new.log");
     cfg.frame_log[sizeof cfg.frame_log - 1] = '\0';
@@ -1459,7 +1460,6 @@ test_apply_logging_retargets_frame_log_file(void) {
 static int
 test_apply_mode_ysf_uses_config_profile_behavior(void) {
     dsdneoUserConfig cfg = {};
-    cfg.version = 1;
     cfg.has_mode = 1;
     cfg.decode_mode = DSDCFG_MODE_YSF;
 
@@ -1474,9 +1474,9 @@ test_apply_mode_ysf_uses_config_profile_behavior(void) {
         DSD_FPRINTF(stderr, "YSF config mode flags not applied as expected\n");
         rc |= 1;
     }
-    if (opts.pulse_digi_out_channels != 2 || opts.dmr_stereo != 1 || opts.dmr_mono != 0) {
-        DSD_FPRINTF(stderr, "YSF config profile audio mismatch channels=%d stereo=%d mono=%d\n",
-                    opts.pulse_digi_out_channels, opts.dmr_stereo, opts.dmr_mono);
+    if (opts.pulse_digi_out_channels != 2 || opts.dmr_stereo != 1) {
+        DSD_FPRINTF(stderr, "YSF config profile audio mismatch channels=%d stereo=%d\n", opts.pulse_digi_out_channels,
+                    opts.dmr_stereo);
         rc |= 1;
     }
     if (strcmp(opts.output_name, "YSF") != 0) {
@@ -1552,10 +1552,11 @@ main(void) {
     int rc = 0;
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_decode_mode_and_load_guards();
+    rc |= test_persisted_v1_load_boundary();
+    rc |= test_integer_overflow_is_rejected_consistently();
     rc |= test_unknown_section_warnings_do_not_mutate_loaded_config();
     rc |= test_render_input_variants_and_save_atomic();
     rc |= test_load_and_apply_basic();
-    rc |= test_load_apply_and_snapshot_native_frontend();
     rc |= test_load_and_apply_alerts_empty_event_mask();
     rc |= test_load_and_apply_soapy_input_no_args();
     rc |= test_load_and_apply_soapy_input_with_args();

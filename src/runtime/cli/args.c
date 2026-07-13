@@ -7,6 +7,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -84,61 +85,6 @@ cli_collect_hex_digits(const char* in, char* out, size_t out_cap, size_t* out_le
     if (out_len) {
         *out_len = w;
     }
-    return 1;
-}
-
-static int
-cli_hex_digit_value(char c) {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-        return c - 'A' + 10;
-    }
-    return -1;
-}
-
-static int
-cli_parse_hex_bytes_exact(const char* in, uint8_t* out, size_t out_len) {
-    if (in == NULL || out == NULL || out_len == 0U) {
-        return 0;
-    }
-
-    char hex[(DSD_ECDSA_P256_PUBLIC_KEY_BYTES * 2U) + 1U];
-    size_t nhex = 0U;
-    if (out_len > DSD_ECDSA_P256_PUBLIC_KEY_BYTES || !cli_collect_hex_digits(in, hex, sizeof(hex), &nhex)
-        || nhex != out_len * 2U) {
-        return 0;
-    }
-
-    for (size_t i = 0U; i < out_len; i++) {
-        const int hi = cli_hex_digit_value(hex[i * 2U]);
-        const int lo = cli_hex_digit_value(hex[(i * 2U) + 1U]);
-        if (hi < 0 || lo < 0) {
-            return 0;
-        }
-        out[i] = (uint8_t)(((uint8_t)hi << 4U) | (uint8_t)lo);
-    }
-    return 1;
-}
-
-static int
-cli_parse_hex_u64_n(const char* hex, size_t n, unsigned long long* out) {
-    if (!hex || !out || n == 0 || n > 16) {
-        return 0;
-    }
-    char buf[17];
-    DSD_MEMCPY(buf, hex, n);
-    buf[n] = '\0';
-    char* end = NULL;
-    unsigned long long v = strtoull(buf, &end, 16);
-    if (!end || *end != '\0') {
-        return 0;
-    }
-    *out = v;
     return 1;
 }
 
@@ -352,10 +298,6 @@ cli_parse_frontend_kind(const char* in, dsd_frontend_kind* out) {
         *out = DSD_FRONTEND_TERMINAL;
         return 1;
     }
-    if (dsd_strcasecmp(in, "native") == 0) {
-        *out = DSD_FRONTEND_NATIVE;
-        return 1;
-    }
     return 0;
 }
 
@@ -363,7 +305,6 @@ static const char*
 cli_frontend_kind_name(dsd_frontend_kind frontend) {
     switch (frontend) {
         case DSD_FRONTEND_TERMINAL: return "terminal";
-        case DSD_FRONTEND_NATIVE: return "native";
         case DSD_FRONTEND_NONE:
         default: return "none";
     }
@@ -618,19 +559,6 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             iq_capture_max_mb_cli = argv[i] + 20;                                                                      \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--symbol-capture-format") == 0) {                                                         \
-            if (i + 1 >= argc) {                                                                                       \
-                LOG_ERROR("--symbol-capture-format requires a value (soft|legacy)\n");                                 \
-                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
-                return DSD_PARSE_ERROR;                                                                                \
-            }                                                                                                          \
-            symbol_capture_format_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                     \
-            continue;                                                                                                  \
-        }                                                                                                              \
-        if (strncmp(argv[i], "--symbol-capture-format=", 24) == 0) {                                                   \
-            symbol_capture_format_cli = argv[i] + 24;                                                                  \
-            continue;                                                                                                  \
-        }                                                                                                              \
         if (strcmp(argv[i], "--iq-replay") == 0) {                                                                     \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--iq-replay requires a path value\n");                                                      \
@@ -865,7 +793,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         }                                                                                                              \
         if (strcmp(argv[i], "--frontend") == 0) {                                                                      \
             if (i + 1 >= argc) {                                                                                       \
-                LOG_ERROR("--frontend requires a value (none|terminal|native)\n");                                     \
+                LOG_ERROR("--frontend requires a value (none|terminal)\n");                                            \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
@@ -1058,15 +986,6 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         opts->iq_capture_max_bytes = mb * 1024ULL * 1024ULL;                                                           \
     }                                                                                                                  \
                                                                                                                        \
-    if (symbol_capture_format_cli) {                                                                                   \
-        if (strcmp(symbol_capture_format_cli, "soft") != 0 && strcmp(symbol_capture_format_cli, "legacy") != 0) {      \
-            LOG_ERROR("Invalid --symbol-capture-format value \"%s\" (expected soft or legacy)\n",                      \
-                      symbol_capture_format_cli);                                                                      \
-            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
-            return DSD_PARSE_ERROR;                                                                                    \
-        }                                                                                                              \
-    }                                                                                                                  \
-                                                                                                                       \
     if (iq_replay_cli) {                                                                                               \
         opts->iq_replay_requested = 1;                                                                                 \
         DSD_SNPRINTF(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", iq_replay_cli);                         \
@@ -1182,8 +1101,8 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
     /* If CLI present, set env vars and maybe run calculator */                                                        \
     if (calc_csv_cli) {                                                                                                \
         char calc_csv_path[DSD_CLI_LOCAL_PATH_MAX];                                                                    \
-        if (!cli_resolve_existing_local_file_option("--dmr-t3-calc-csv", calc_csv_cli, calc_csv_path,                  \
-                                                    sizeof calc_csv_path, out_exit_rc)) {                              \
+        if (!cli_resolve_existing_local_file_option("--calc-lcn", calc_csv_cli, calc_csv_path, sizeof calc_csv_path,   \
+                                                    out_exit_rc)) {                                                    \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
         long calc_long_check = 0;                                                                                      \
@@ -1218,7 +1137,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             dsd_setenv("DSD_NEO_DMR_T3_START_LCN", calc_start_cli, 1);                                                 \
         }                                                                                                              \
         /* Refresh typed env config after CLI writes. */                                                               \
-        dsd_neo_config_init(opts);                                                                                     \
+        dsd_neo_config_init();                                                                                         \
         int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(calc_csv_path);                                                      \
         cli_set_exit_rc(out_exit_rc, rc);                                                                              \
         return DSD_PARSE_ONE_SHOT;                                                                                     \
@@ -1256,7 +1175,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
     if (frontend_cli) {                                                                                                \
         dsd_frontend_kind frontend = DSD_FRONTEND_NONE;                                                                \
         if (!cli_parse_frontend_kind(frontend_cli, &frontend)) {                                                       \
-            LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal|native)\n", frontend_cli);              \
+            LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal)\n", frontend_cli);                     \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
@@ -1424,9 +1343,9 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
     if (dmr_force_algid_cli) {                                                                                         \
         char hex[3];                                                                                                   \
         size_t nhex = 0;                                                                                               \
-        unsigned long long alg = 0ULL;                                                                                 \
+        uint64_t alg = 0U;                                                                                             \
         if (!cli_collect_hex_digits(dmr_force_algid_cli, hex, sizeof hex, &nhex) || nhex == 0 || nhex > 2              \
-            || !cli_parse_hex_u64_n(hex, nhex, &alg)) {                                                                \
+            || dsd_parse_hex_u64_n(hex, nhex, &alg) != 0) {                                                            \
             LOG_ERROR("Invalid --dmr-force-algid value\n");                                                            \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
@@ -1436,8 +1355,12 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
                  state->M);                                                                                            \
     }                                                                                                                  \
     if (m17_signature_public_key_cli) {                                                                                \
-        if (!cli_parse_hex_bytes_exact(m17_signature_public_key_cli, state->m17_signature_public_key,                  \
-                                       sizeof(state->m17_signature_public_key))) {                                     \
+        char hex[(DSD_ECDSA_P256_PUBLIC_KEY_BYTES * 2U) + 1U];                                                         \
+        size_t nhex = 0U;                                                                                              \
+        if (!cli_collect_hex_digits(m17_signature_public_key_cli, hex, sizeof hex, &nhex)                              \
+            || dsd_parse_hex_bytes_exact(hex, nhex, state->m17_signature_public_key,                                   \
+                                         sizeof(state->m17_signature_public_key))                                      \
+                   != 0) {                                                                                             \
             LOG_ERROR("Invalid --m17-signature-public-key value\n");                                                   \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
@@ -1450,7 +1373,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
 
-    dsd_neo_config_init(opts);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
 
     // CLI long options (pre-scan) ------------------------------------------------
@@ -1479,7 +1402,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* iq_capture_cli = NULL;
     const char* iq_capture_format_cli = NULL;
     const char* iq_capture_max_mb_cli = NULL;
-    const char* symbol_capture_format_cli = NULL;
     const char* iq_replay_cli = NULL;
     const char* iq_replay_rate_cli = NULL;
     const char* iq_info_cli = NULL;
@@ -1570,10 +1492,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->monitor_input_audio = 1;                                                                             \
             LOG_INFO("NOTICE: Experimental Raw Analog Source Monitoring Enabled (Pulse Audio Only!)\n");               \
             break;                                                                                                     \
-        case 'j':                                                                                                      \
-            opts->p25_lcw_retune = 1;                                                                                  \
-            LOG_INFO("NOTICE: P25: LCW explicit retune (0x44) forced ON.\n");                                          \
-            break;                                                                                                     \
         case '^':                                                                                                      \
             opts->p25_prefer_candidates = 1;                                                                           \
             LOG_INFO("NOTICE: P25: Prefer CC candidates during hunt: On.\n");                                          \
@@ -1596,8 +1514,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     cli_set_exit_rc(out_exit_rc, 1);                                                                   \
                     return DSD_PARSE_ERROR;                                                                            \
                 }                                                                                                      \
-                unsigned long long key = 0ULL;                                                                         \
-                if (!cli_parse_hex_u64_n(hex, nhex, &key)) {                                                           \
+                uint64_t key = 0U;                                                                                     \
+                if (dsd_parse_hex_u64_n(hex, nhex, &key) != 0) {                                                       \
                     LOG_ERROR("-1 failed to parse key\n");                                                             \
                     cli_set_exit_rc(out_exit_rc, 1);                                                                   \
                     return DSD_PARSE_ERROR;                                                                            \
@@ -1654,7 +1572,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             opts->scanner_mode = 1;                                                                                    \
-            opts->p25_trunk = 0;                                                                                       \
             opts->trunk_enable = 0;                                                                                    \
             opts->trunk_cli_seen = 1;                                                                                  \
             break;                                                                                                     \
@@ -1718,9 +1635,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     return DSD_PARSE_ERROR;                                                                            \
                 }                                                                                                      \
                                                                                                                        \
-                unsigned long long k1 = 0ULL, k2 = 0ULL, k3 = 0ULL, k4 = 0ULL;                                         \
+                uint64_t k1 = 0U, k2 = 0U, k3 = 0U, k4 = 0U;                                                           \
                 if (nhex == 10) {                                                                                      \
-                    if (!cli_parse_hex_u64_n(hex, 10, &k1)) {                                                          \
+                    if (dsd_parse_hex_u64_n(hex, 10, &k1) != 0) {                                                      \
                         LOG_ERROR("-H failed to parse 10-hex Hytera BP key\n");                                        \
                         cli_set_exit_rc(out_exit_rc, 1);                                                               \
                         return DSD_PARSE_ERROR;                                                                        \
@@ -1734,7 +1651,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     LOG_INFO("NOTICE: Hytera BP key loaded (40-bit): %s\n",                                            \
                              dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->K1, 10U, 0));    \
                 } else if (nhex == 32) {                                                                               \
-                    if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)) {           \
+                    if (dsd_parse_hex_u64_n(hex + 0, 16, &k1) != 0 || dsd_parse_hex_u64_n(hex + 16, 16, &k2) != 0) {   \
                         LOG_ERROR("-H failed to parse 32-hex key (2x16)\n");                                           \
                         cli_set_exit_rc(out_exit_rc, 1);                                                               \
                         return DSD_PARSE_ERROR;                                                                        \
@@ -1763,8 +1680,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                         "NOTICE: AES-128 / Hytera 128-bit key loaded (2x64): %s\n",                                    \
                         dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments, 2U));     \
                 } else if (nhex == 64) {                                                                               \
-                    if (!cli_parse_hex_u64_n(hex + 0, 16, &k1) || !cli_parse_hex_u64_n(hex + 16, 16, &k2)              \
-                        || !cli_parse_hex_u64_n(hex + 32, 16, &k3) || !cli_parse_hex_u64_n(hex + 48, 16, &k4)) {       \
+                    if (dsd_parse_hex_u64_n(hex + 0, 16, &k1) != 0 || dsd_parse_hex_u64_n(hex + 16, 16, &k2) != 0      \
+                        || dsd_parse_hex_u64_n(hex + 32, 16, &k3) != 0                                                 \
+                        || dsd_parse_hex_u64_n(hex + 48, 16, &k4) != 0) {                                              \
                         LOG_ERROR("-H failed to parse 64-hex key (4x16)\n");                                           \
                         cli_set_exit_rc(out_exit_rc, 1);                                                               \
                         return DSD_PARSE_ERROR;                                                                        \
@@ -1861,11 +1779,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->payload = 1;                                                                                         \
             LOG_INFO("NOTICE: Logging MBE/PDU payloads to console.\n");                                                \
             break;                                                                                                     \
-        case 'N':                                                                                                      \
-            /* Short alias for --frontend terminal. */                                                                 \
-            opts->frontend_kind = DSD_FRONTEND_TERMINAL;                                                               \
-            LOG_INFO("NOTICE: Frontend: terminal\n");                                                                  \
-            break;                                                                                                     \
         case 'P':                                                                                                      \
             if (opts->static_wav_file == 1) {                                                                          \
                 /* Allow CLI to override config-derived static WAV settings (file not opened yet). */                  \
@@ -1915,8 +1828,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->audio_in_dev[2047] = '\0';                                                                           \
             break;                                                                                                     \
         case 'T':                                                                                                      \
-            /* Enable trunking features; protocol-agnostic alias kept in sync */                                       \
-            opts->p25_trunk = 1;                                                                                       \
+            /* Enable trunking features. */                                                                            \
             opts->trunk_enable = 1;                                                                                    \
             opts->trunk_cli_seen = 1;                                                                                  \
             break;                                                                                                     \
@@ -1972,10 +1884,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             }                                                                                                          \
             float g = (float)parsed_g;                                                                                 \
             if (g < 0.0f) {                                                                                            \
-                /* Historical behavior: negative disables manual gain without changing autogain. */                    \
-                LOG_INFO("NOTICE: Disabling audio out gain setting\n");                                                \
-                opts->audio_gain = g;                                                                                  \
-                opts->audio_gainR = g;                                                                                 \
+                LOG_ERROR("-g must be between 0 and 50\n");                                                            \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
             } else if (g == 0.0f) {                                                                                    \
                 opts->audio_gain = 0.0f;                                                                               \
                 opts->audio_gainR = 0.0f;                                                                              \
@@ -1993,25 +1904,19 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         }                                                                                                              \
         case 'n': {                                                                                                    \
-            /* Dual-purpose: -nm enables DMR mono; otherwise treat as analog gain 0..100. */                           \
-            if (optarg[0] == 'm' && optarg[1] == '\0') {                                                               \
-                opts->dmr_mono = 1;                                                                                    \
-                LOG_INFO("NOTICE: DMR Mono (1997 method) enabled\n");                                                  \
-            } else {                                                                                                   \
-                double parsed_ga = 0.0;                                                                                \
-                if (!cli_parse_double_option("-n", optarg, &parsed_ga, out_exit_rc)) {                                 \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
-                float ga = (float)parsed_ga;                                                                           \
-                if (ga < 0.0f) {                                                                                       \
-                    ga = 0.0f;                                                                                         \
-                } else if (ga > 100.0f) {                                                                              \
-                    ga = 100.0f;                                                                                       \
-                }                                                                                                      \
-                opts->audio_gainA = ga;                                                                                \
-                LOG_INFO("NOTICE: Analog Audio Out Gain set to %.1f;\n", ga);                                          \
-                /* 0.0 means auto; analog_gain/agsm will derive the effective coefficient. */                          \
+            double parsed_ga = 0.0;                                                                                    \
+            if (!cli_parse_double_option("-n", optarg, &parsed_ga, out_exit_rc)) {                                     \
+                return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            float ga = (float)parsed_ga;                                                                               \
+            if (ga < 0.0f) {                                                                                           \
+                ga = 0.0f;                                                                                             \
+            } else if (ga > 100.0f) {                                                                                  \
+                ga = 100.0f;                                                                                           \
+            }                                                                                                          \
+            opts->audio_gainA = ga;                                                                                    \
+            LOG_INFO("NOTICE: Analog Audio Out Gain set to %.1f;\n", ga);                                              \
+            /* 0.0 means auto; analog_gain/agsm will derive the effective coefficient. */                              \
             break;                                                                                                     \
         }                                                                                                              \
         case 'w':                                                                                                      \
@@ -2118,7 +2023,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     case 'i': LOG_INFO("NOTICE: Decoding only NXDN48 frames.\n"); break;                               \
                     case 'n': LOG_INFO("NOTICE: Decoding only NXDN96 frames.\n"); break;                               \
                     case 'y': LOG_INFO("NOTICE: Decoding only YSF frames.\n"); break;                                  \
-                    case 'm':                                                                                          \
+                    case 'm': LOG_INFO("NOTICE: Decoding only dPMR frames.\n"); break;                                 \
+                    case 'z':                                                                                          \
                         LOG_INFO("NOTICE: Decoding only M17 frames (polarity auto-detected from preamble).\n");        \
                         break;                                                                                         \
                     default: break;                                                                                    \
@@ -2144,7 +2050,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
-                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2185,7 +2090,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
-                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2236,7 +2140,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
-                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2279,7 +2182,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
-                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2312,7 +2214,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
-                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2320,41 +2221,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 LOG_INFO("NOTICE: EDACS Analog Voice Channels are Experimental.\n");                                   \
                 opts->rtl_dsp_bw_khz = 24;                                                                             \
                 cli_decode_timing_mode = DSDCFG_MODE_EDACS_PV;                                                         \
-                cli_decode_timing_seen = 1;                                                                            \
-                cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
-            } else if (optarg[0] == 'r') {                                                                             \
-                /* -fr alias: DMR BS/MS simplex with mono audio. \
-                       Mirrors -fs but prefers mono content while keeping a \
-                       2-channel output interface for audio consumers. */                                                     \
-                opts->frame_dstar = 0;                                                                                 \
-                opts->frame_x2tdma = 0;                                                                                \
-                opts->frame_p25p1 = 0;                                                                                 \
-                opts->frame_p25p2 = 0;                                                                                 \
-                opts->inverted_p2 = 0;                                                                                 \
-                opts->frame_nxdn48 = 0;                                                                                \
-                opts->frame_nxdn96 = 0;                                                                                \
-                opts->frame_dmr = 1;                                                                                   \
-                opts->frame_dpmr = 0;                                                                                  \
-                opts->frame_provoice = 0;                                                                              \
-                opts->frame_ysf = 0;                                                                                   \
-                opts->frame_m17 = 0;                                                                                   \
-                if (!opts->mod_cli_lock) {                                                                             \
-                    opts->mod_c4fm = 0;                                                                                \
-                    opts->mod_qpsk = 0;                                                                                \
-                    opts->mod_gfsk = 1;                                                                                \
-                    state->rf_mod = 2;                                                                                 \
-                }                                                                                                      \
-                opts->dmr_stereo = 0;                                                                                  \
-                state->dmr_stereo = 0;                                                                                 \
-                opts->dmr_mono = 1;                                                                                    \
-                opts->pulse_digi_rate_out = 8000;                                                                      \
-                /* Use 2-channel digital output (like -fs) so audio \
-                       routing stays consistent across sinks; mono behavior \
-                       is provided by dmr_mono in the vocoder/mixers. */                                                  \
-                opts->pulse_digi_out_channels = 2;                                                                     \
-                DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "DMR-Mono");                           \
-                LOG_INFO("NOTICE: Decoding DMR (-fr mono mode).\n");                                                   \
-                cli_decode_timing_mode = DSDCFG_MODE_DMR;                                                              \
                 cli_decode_timing_seen = 1;                                                                            \
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'Z') {                                                                             \
@@ -2646,7 +2512,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_center = 0;
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
-                       "89:Ek:I:J:Oj^N"))
+                       "89:Ek:I:J:O^"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
     }

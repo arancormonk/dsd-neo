@@ -61,7 +61,7 @@ dmr_close_mbe_out_if_open(dsd_opts* opts, dsd_state* state) {
 static void
 dmr_bootstrap_ms_if_enabled(dsd_opts* opts, dsd_state* state) {
     dmr_open_mbe_out_if_needed(opts, state);
-    if (opts->p25_trunk == 0) {
+    if (opts->trunk_enable == 0) {
         dmrMSBootstrap(opts, state);
     }
 }
@@ -71,9 +71,6 @@ dmr_handle_voice(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
     if (opts->dmr_stereo == 0 && state->synctype < DSD_SYNC_DMR_MS_VOICE) {
         dmr_set_slot_lights(state);
-        dmr_bootstrap_ms_if_enabled(opts, state);
-    }
-    if (opts->dmr_mono == 1 && state->synctype == DSD_SYNC_DMR_MS_VOICE) {
         dmr_bootstrap_ms_if_enabled(opts, state);
     }
     if (opts->dmr_stereo == 1) {
@@ -89,7 +86,7 @@ dmr_handle_voice(dsd_opts* opts, dsd_state* state) {
 static void
 dmr_handle_ms_or_rc_data(dsd_opts* opts, dsd_state* state) {
     dmr_close_mbe_out_if_open(opts, state);
-    if (opts->p25_trunk == 0) {
+    if (opts->trunk_enable == 0) {
         dmrMSData(opts, state);
     }
 }

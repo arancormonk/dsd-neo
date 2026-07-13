@@ -27,20 +27,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
 
-#ifndef MAXIMUM_OVERSAMPLE
-#define MAXIMUM_OVERSAMPLE 16
-#endif
-#ifndef DEFAULT_BUF_LENGTH
-#define DEFAULT_BUF_LENGTH 16384
-#endif
-#ifndef MAXIMUM_BUF_LENGTH
-#define MAXIMUM_BUF_LENGTH (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
-#endif
-
-#ifndef DSD_NEO_ALIGN
-#define DSD_NEO_ALIGN 64
-#endif
-
 #ifndef DSD_NEO_RESTRICT
 #if defined(_MSC_VER)
 #define DSD_NEO_RESTRICT __restrict
@@ -51,15 +37,11 @@
 #endif
 #endif
 
-#ifndef DSD_NEO_IVDEP
-#define DSD_NEO_IVDEP
-#endif
-
 static inline int
 debug_cqpsk_enabled(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     return (cfg && cfg->debug_cqpsk_enable) ? 1 : 0;
@@ -553,28 +535,6 @@ channel_lpf_apply(struct demod_state* d) {
 }
 
 /**
- * @brief Half-band decimator for complex interleaved I/Q data.
- *
- * Decimates by 2:1 using symmetric FIR filter. Uses SIMD-dispatched implementation.
- *
- * @param in      Input complex samples (interleaved I/Q).
- * @param in_len  Number of complex samples (total elements = 2 * in_len).
- * @param out     Output buffer for decimated complex samples.
- * @param hist_i  Persistent I-channel history of length HB_TAPS-1.
- * @param hist_q  Persistent Q-channel history of length HB_TAPS-1.
- * @param taps_q15 Half-band filter taps (odd count, odd indices zero except center).
- * @param taps_len Number of taps.
- * @return Number of output floats (decimated complex samples * 2).
- */
-static int
-hb_decim2_complex_interleaved_ex(const float* DSD_NEO_RESTRICT in, int in_len, float* DSD_NEO_RESTRICT out,
-                                 float* DSD_NEO_RESTRICT hist_i, float* DSD_NEO_RESTRICT hist_q,
-                                 const float* DSD_NEO_RESTRICT taps_q15, int taps_len) {
-    /* Use SIMD-dispatched complex half-band decimator */
-    return simd_hb_decim2_complex(in, in_len, out, hist_i, hist_q, taps_q15, taps_len);
-}
-
-/**
  * @brief Boxcar low-pass and decimate by step (no wraparound).
  *
  * Length must be a multiple of step.
@@ -625,7 +585,6 @@ low_pass_real(struct demod_state* s) {
         decim = 1;
     }
     float recip = 1.0f / (float)decim;
-    DSD_NEO_IVDEP
     while (i < s->result_len) {
         s->now_lpr += r[i];
         i++;
@@ -879,7 +838,6 @@ deemph_filter(struct demod_state* fm) {
         alpha = 1.0f;
     }
     /* Single-pole IIR: avg += (x - avg) * alpha */
-    DSD_NEO_IVDEP
     for (int i = 0; i < fm->result_len; i++) {
         float d = res[i] - avg;
         avg += d * alpha;
@@ -900,7 +858,6 @@ dc_block_filter(struct demod_state* fm) {
     const int k = 11; /* cutoff ~ Fs / (2π * 2^k) for small alpha=2^-k (k in 10..12) */
     float k_scale = 1.0f / (float)(1 << k);
     float* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
-    DSD_NEO_IVDEP
     for (int i = 0; i < fm->result_len; i++) {
         float x = res[i];
         dc += (x - dc) * k_scale;
@@ -929,7 +886,6 @@ audio_lpf_filter(struct demod_state* fm) {
     if (alpha > 1.0f) {
         alpha = 1.0f;
     }
-    DSD_NEO_IVDEP
     for (int i = 0; i < fm->result_len; i++) {
         float x = res[i];
         float d = x - y;
@@ -1015,8 +971,7 @@ full_demod_apply_halfband_decimation(struct demod_state* d) {
     for (int i = 0; i < d->downsample_passes; i++) {
         const float* taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
         int taps_len = (i == 0) ? 31 : HB_TAPS;
-        int out_len =
-            hb_decim2_complex_interleaved_ex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], taps, taps_len);
+        int out_len = simd_hb_decim2_complex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], taps, taps_len);
         src = dst;
         in_len = out_len;
         dst = (src == d->hb_workbuf) ? d->lowpassed : d->hb_workbuf;

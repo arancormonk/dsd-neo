@@ -8,7 +8,7 @@ target_sources(
 target_include_directories(
     dsd-neo_proto_m17
     PUBLIC ${PROJECT_SOURCE_DIR}/include
-    PRIVATE ${_PUBLIC_INCLUDES}
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp ${_PUBLIC_INCLUDES}
 )
 
 target_link_libraries(
@@ -23,7 +23,7 @@ target_link_libraries(
         dsd-neo_feature_codec2
 )
 
-target_link_libraries(dsd-neo_proto_m17 PRIVATE dsd-neo_warnings)
+target_link_libraries(dsd-neo_proto_m17 PRIVATE dsd-neo_dsp dsd-neo_warnings)
 
 install(
     TARGETS dsd-neo_proto_m17

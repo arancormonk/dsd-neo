@@ -8,8 +8,8 @@
  * @brief Runtime hook table for optional rigctl queries.
  *
  * Protocol code should not depend on IO headers directly. The engine installs
- * real hook functions at startup; the runtime provides safe wrappers and
- * fallback behavior when hooks are not installed.
+ * real hook functions at startup; without an installed query hook, the
+ * current frequency is reported as unknown (zero).
  */
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RIGCTL_QUERY_HOOKS_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RIGCTL_QUERY_HOOKS_H_

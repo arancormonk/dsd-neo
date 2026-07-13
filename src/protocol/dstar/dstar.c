@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -40,7 +41,8 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
             x++;
         }
 
-        soft_mbe(opts, state, NULL, ambe_fr, NULL);
+        processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+        dsd_play_synthesized_voice(opts, state);
 
         if (j != 20) {
             for (i = 0; i < 24; i++) {

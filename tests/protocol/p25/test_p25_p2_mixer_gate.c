@@ -886,36 +886,6 @@ main(void) {
     static dsd_state st;
     DSD_MEMSET(&st, 0, sizeof(st));
 
-    int encL = -1, encR = -1;
-
-    // Case A: slot1 muted (enc), slot2 clear → encL=1, encR=0
-    st.p25_p2_audio_allowed[0] = 0;
-    st.p25_p2_audio_allowed[1] = 1;
-    rc |= expect_eq("gate ret A", dsd_p25p2_mixer_gate(&st, &encL, &encR), 0);
-    rc |= expect_eq("A encL", encL, 1);
-    rc |= expect_eq("A encR", encR, 0);
-
-    // Case B: slot1 clear, slot2 muted → encL=0, encR=1
-    st.p25_p2_audio_allowed[0] = 1;
-    st.p25_p2_audio_allowed[1] = 0;
-    rc |= expect_eq("gate ret B", dsd_p25p2_mixer_gate(&st, &encL, &encR), 0);
-    rc |= expect_eq("B encL", encL, 0);
-    rc |= expect_eq("B encR", encR, 1);
-
-    // Case C: both clear → encL=0, encR=0
-    st.p25_p2_audio_allowed[0] = 1;
-    st.p25_p2_audio_allowed[1] = 1;
-    rc |= expect_eq("gate ret C", dsd_p25p2_mixer_gate(&st, &encL, &encR), 0);
-    rc |= expect_eq("C encL", encL, 0);
-    rc |= expect_eq("C encR", encR, 0);
-
-    // Case D: both muted → encL=1, encR=1
-    st.p25_p2_audio_allowed[0] = 0;
-    st.p25_p2_audio_allowed[1] = 0;
-    rc |= expect_eq("gate ret D", dsd_p25p2_mixer_gate(&st, &encL, &encR), 0);
-    rc |= expect_eq("D encL", encL, 1);
-    rc |= expect_eq("D encR", encR, 1);
-
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_blast});
     rc |= run_fs4_left_active_case(/*enc_lockout_enabled*/ 1, /*expect_right_silent*/ 1, /*muted_slot_algid*/ 0,
                                    /*muted_slot_aes_loaded*/ 0, /*muted_slot_key*/ 0ULL);

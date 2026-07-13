@@ -30,7 +30,6 @@
 
 void dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
 void apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
-void harris_gps(dsd_opts* opts, dsd_state* state, int slot, uint8_t* input);
 void lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input);
 void nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int type);
 void nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot);
@@ -291,30 +290,6 @@ test_lip_and_vendor_gps(dsd_opts* opts, dsd_state* st) {
         rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "Last Fix", "apx-event");
     }
 
-    {
-        uint8_t bits[160];
-        DSD_MEMSET(bits, 0, sizeof bits);
-        st->currentslot = 0;
-        st->lastsrc = 0x445566;
-        DSD_MEMSET(st->dmr_embedded_gps[0], 0, sizeof st->dmr_embedded_gps[0]);
-        set_bits_msb(bits, (int)sizeof bits, 40, 1234U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 58, 30U, 6);
-        set_bits_msb(bits, (int)sizeof bits, 65, 41U, 7);
-        bits[72] = 1U;
-        set_bits_msb(bits, (int)sizeof bits, 72, 5678U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 90, 15U, 6);
-        set_bits_msb(bits, (int)sizeof bits, 96, 87U, 8);
-        set_bits_msb(bits, (int)sizeof bits, 104, 3723U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 120, 90U, 8);
-        set_bits_msb(bits, (int)sizeof bits, 128, 0x8000U, 16);
-
-        harris_gps(opts, st, 0, bits);
-
-        rc |= expect_has_substr(st->dmr_embedded_gps[0], "GPS:", "legacy-harris-gps");
-        rc |= expect_has_substr(st->dmr_embedded_gps[0], "41.", "legacy-harris-lat");
-        rc |= expect_has_substr(st->dmr_embedded_gps[0], "87.", "legacy-harris-lon");
-    }
-
     return rc;
 }
 
@@ -384,6 +359,7 @@ main(void) {
 
     uint8_t lc_bits[80];
     DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
+    st.currentslot = 0;
 
     // pos_err == 5: less than 200km (200000m)
     {

@@ -237,6 +237,7 @@ test_vhf_uhf_base_classifier(void) {
 static int
 test_channel_type_matches_op25(void) {
     int rc = 0;
+    /* OP25/TIA channel-type reference values, independent of the implementation table. */
     const int slots[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
     const int tdma[16] = {0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 

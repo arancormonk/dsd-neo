@@ -81,7 +81,7 @@ struct dsd_opts {
     double rtl_squelch_level;
     double input_warn_db;
     time_t last_input_warn_time;
-    // P25 SM unified follower configuration (CLI-mirrored; env fallback retained)
+    // P25 SM unified follower configuration (CLI values override environment defaults)
     // Values <= 0 mean "unset" and will defer to environment or defaults.
     double p25_vc_grace_s;             // seconds after tune before eligible for VC->CC return
     double p25_min_follow_dwell_s;     // minimum seconds to dwell after first voice
@@ -244,10 +244,8 @@ struct dsd_opts {
     int input_upsample_pos;
     int input_upsample_tail_blocks;
     int input_upsample_prev_valid;
-    int p25_trunk;        // P25-family trunk decoder is active for the current target
-    int trunk_enable;     // generic trunking owner is enabled
-    int p25_is_tuned;     // P25-family decoder is currently on a voice channel
-    int trunk_is_tuned;   // generic trunking owner is currently on a voice channel
+    int trunk_enable;     // trunking owner is enabled
+    int trunk_is_tuned;   // tuner is currently on a trunked voice channel
     float trunk_hangtime; //hangtime in seconds before tuning back to CC
     int scanner_mode;     //experimental -- use the channel map as a conventional scanner, quicker tuning, but no CC
     int trunk_scan_enabled;
@@ -267,7 +265,6 @@ struct dsd_opts {
     dsd_frontend_terminal_display_opts frontend_terminal_display;
     short int mbe_out;  //flag for mbe out, don't attempt fclose more than once
     short int mbe_outR; //flag for mbe out, don't attempt fclose more than once
-    short int dmr_mono;
     short int dmr_stereo;
     short int lrrp_file_output;
     short int dmr_mute_encL;
@@ -331,7 +328,6 @@ struct dsd_opts {
     char tcp_hostname[1024];
     char rtltcp_hostname[1024];
     char group_in_file[1024];
-    char lcn_in_file[1024];
     char chan_in_file[1024];
     char trunk_scan_targets_csv[1024];
     char key_in_file[1024];
@@ -357,6 +353,26 @@ enum DSD_ATTR_PACKED {
     DSD_OPTS_INPUT_UPSAMPLE_STAGING_CAP =
         (int)(sizeof(((dsd_opts*)0)->input_upsample_buf) / sizeof(((dsd_opts*)0)->input_upsample_buf[0])),
 };
+
+/** @brief Return 1 when any digital frame decoder is enabled. */
+static inline int
+dsd_opts_has_digital_decode_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
+           || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
+           || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1;
+}
+
+/** @brief Return 1 when an enabled 4800-symbol four-level mode uses the 12.5 kHz channel profile. */
+static inline int
+dsd_opts_uses_wide_4800_profile(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1;
+}
 
 /**
  * @brief Clear staged low-rate PCM input bookkeeping.
@@ -663,22 +679,6 @@ dsd_opts_current_input_timing_rate(const dsd_opts* opts) {
         return dsd_opts_effective_input_rate(opts);
     }
     return 0;
-}
-
-/**
- * @brief Compute samples-per-symbol for a given symbol rate and DSP bandwidth.
- *
- * Convenience wrapper that uses rtl_dsp_bw_khz from opts. For cases where the
- * actual demodulator output rate may differ (e.g., resampler active), prefer
- * dsd_opts_compute_sps_rate() with the actual rate.
- *
- * @param opts Decoder options containing rtl_dsp_bw_khz (may be NULL).
- * @param sym_rate_hz Symbol rate in Hz (e.g., 4800 for P25P1, 6000 for P25P2).
- * @return Computed samples per symbol, clamped to [2, 64].
- */
-static inline int
-dsd_opts_compute_sps(const dsd_opts* opts, int sym_rate_hz) {
-    return dsd_opts_compute_sps_rate(opts, sym_rate_hz, 0);
 }
 
 /**

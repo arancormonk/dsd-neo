@@ -6,8 +6,7 @@
  * @file ncurses_snr.h
  * @brief SNR display API for ncurses UI.
  *
- * Provides SNR history tracking, sparkline visualization, and compact meter
- * rendering for different modulation types.
+ * Provides compact SNR meter rendering for different modulation types.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_SNR_H_
@@ -29,12 +28,6 @@ typedef int (*dsd_ncurses_snr_emit_attr_set_fn)(unsigned long attrs, short pair)
 extern "C" {
 #endif
 
-/** Push a new SNR sample to the history ring for the given modulation (0=C4FM, 1=QPSK, 2=GFSK). */
-void snr_hist_push(int mod, double snr);
-
-/** Render a sparkline showing recent SNR history. */
-void print_snr_sparkline(const dsd_opts* opts, int mod);
-
 /** Render a compact SNR meter. */
 void print_snr_meter(const dsd_opts* opts, double snr_db, int mod);
 
@@ -42,13 +35,6 @@ void print_snr_meter(const dsd_opts* opts, double snr_db, int mod);
 int dsd_ncurses_snr_meter_bar_count_for_test(double snr_db);
 void dsd_ncurses_snr_meter_ascii_for_test(double snr_db, char* out, size_t out_size);
 int dsd_ncurses_snr_use_unicode_for_test(int option_enabled, int block_glyphs_supported);
-void dsd_ncurses_snr_hist_reset_for_test(void);
-int dsd_ncurses_snr_hist_len_for_test(int mod);
-int dsd_ncurses_snr_hist_head_for_test(int mod);
-double dsd_ncurses_snr_hist_value_for_test(int mod, int index);
-int dsd_ncurses_snr_hist_render_count_for_test(int len, int width);
-int dsd_ncurses_snr_hist_render_start_for_test(int head, int len, int count);
-int dsd_ncurses_snr_level_index_for_test(double value, double clip_lo, double span, int levels);
 void dsd_ncurses_snr_set_emit_hooks_for_test(dsd_ncurses_snr_emit_ch_fn emit_ch, dsd_ncurses_snr_emit_str_fn emit_str,
                                              dsd_ncurses_snr_emit_attr_fn emit_attron,
                                              dsd_ncurses_snr_emit_attr_fn emit_attroff,

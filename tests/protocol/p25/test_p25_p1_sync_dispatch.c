@@ -3,9 +3,9 @@
  * Focused checks for P25 Phase 1 sync constants and dispatch routing.
  */
 
+#include <mbelib-neo/mbelib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "mbelib.h"
 
 #include <assert.h>
 #include <dsd-neo/core/dibit.h>
@@ -60,16 +60,6 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
         out_soft->reliability = 255;
         out_soft->llr[0] = -255;
         out_soft->llr[1] = -255;
-    }
-    return 0;
-}
-
-int
-getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
-    (void)opts;
-    (void)state;
-    if (out_reliability != NULL) {
-        *out_reliability = 255;
     }
     return 0;
 }
@@ -139,9 +129,8 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 }
 
 void
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     (void)state;
-    (void)opts;
     ++g_status_classify_calls;
 }
 
@@ -340,6 +329,58 @@ test_p25p1_nid_correction_and_failure_state(void) {
 }
 
 static void
+test_p25p1_nac_update_guards(void) {
+    static const int invalid_nacs[] = {0, 0xFFF};
+
+    for (size_t i = 0; i < sizeof(invalid_nacs) / sizeof(invalid_nacs[0]); i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_stub_state();
+
+        state.synctype = DSD_SYNC_P25P1_POS;
+        state.nac = 0x2AA;
+        state.p2_cc = 0x2AAULL;
+        g_new_nac = invalid_nacs[i];
+        g_error_count = 2;
+        g_test_duid = 0x0U;
+
+        dsd_dispatch_handle_p25p1(&opts, &state);
+
+        assert(g_last_observed_nac == 0x2AA);
+        assert(state.nac == 0x2AA);
+        assert(state.p2_cc == 0x2AAULL);
+        assert(state.nid_corrections_total == 2U);
+        assert(state.debug_header_errors == 1U);
+        assert(state.nid_failures_total == 0U);
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.nac = 0x234;
+    state.p2_cc = 0x123ULL;
+    state.p2_hardset = 1;
+    g_new_nac = 0x321;
+    g_error_count = 1;
+    g_test_duid = 0x0U;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_last_observed_nac == 0x123);
+    assert(state.nac == 0x321);
+    assert(state.p2_cc == 0x123ULL);
+    assert(state.nid_corrections_total == 1U);
+    assert(state.debug_header_errors == 1U);
+    assert(state.nid_failures_total == 0U);
+}
+
+static void
 test_p25p1_mbe_output_and_resume_side_effects(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -398,6 +439,7 @@ main(void) {
     test_p25p1_dispatch_clears_stale_data_call_display();
     test_p25p1_observed_nac_priority();
     test_p25p1_nid_correction_and_failure_state();
+    test_p25p1_nac_update_guards();
     test_p25p1_mbe_output_and_resume_side_effects();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;

@@ -468,7 +468,7 @@ dmr_confidence_any_voice_open(const dsd_state* state) {
 }
 
 static void
-test_bs_voice_sync_refreshes_when_trunk_alias_tuned(void) {
+test_bs_voice_sync_refreshes_when_trunk_tuned(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -663,7 +663,7 @@ test_bs_bootstrap_prefetched_voice_runs_first_frame_path(void) {
 
 int
 main(void) {
-    test_bs_voice_sync_refreshes_when_trunk_alias_tuned();
+    test_bs_voice_sync_refreshes_when_trunk_tuned();
     test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks();
     test_bs_slot2_voice_integer_output_uses_ss3_playback();
     test_bs_data_sync_closes_slot_file_and_resets_error_state();

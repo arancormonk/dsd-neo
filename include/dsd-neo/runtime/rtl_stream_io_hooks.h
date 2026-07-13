@@ -9,8 +9,8 @@
  *
  * Some protocol code wants to read RTL stream samples and query soft squelch
  * power without directly depending on IO backends. The engine installs real
- * hook functions at startup; the runtime provides safe wrappers and fallback
- * behavior when hooks are not installed.
+ * hook functions at startup. Reads fail when no backend is installed; power
+ * queries return a neutral value.
  */
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_IO_HOOKS_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_IO_HOOKS_H_

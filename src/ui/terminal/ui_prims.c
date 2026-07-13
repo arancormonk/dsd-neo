@@ -29,14 +29,6 @@ ui_make_window(int h, int w, int y, int x) {
 }
 
 void
-ui_destroy_window(WINDOW** win) {
-    if (win && *win) {
-        delwin(*win);
-        *win = NULL;
-    }
-}
-
-void
 ui_commit_frame(void) {
     doupdate();
 }

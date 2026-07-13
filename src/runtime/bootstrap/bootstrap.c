@@ -14,7 +14,7 @@
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -572,8 +572,8 @@ bootstrap_handle_list_profiles(const bootstrap_cli_args* args, const char* confi
 }
 
 static const char*
-bootstrap_get_config_env_path(const dsd_opts* opts) {
-    dsd_neo_config_init(opts);
+bootstrap_get_config_env_path(void) {
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* rcfg = dsd_neo_get_config();
     if (rcfg && rcfg->config_path_is_set) {
         return rcfg->config_path;
@@ -621,7 +621,7 @@ bootstrap_record_effective_cli_args(dsd_state* state, char** argv, int argc_effe
 static void
 bootstrap_apply_runtime_config_after_cli(dsd_opts* opts, dsd_state* state) {
     /* Re-parse env-derived config after CLI mapping (CLI sets DSD_NEO_* env overrides). */
-    dsd_neo_config_init(opts);
+    dsd_neo_config_init();
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, state);
 }
 
@@ -664,7 +664,6 @@ bootstrap_apply_trunk_cli_gating(dsd_opts* opts, int argc_effective, char** argv
                                  int explicit_profile_selected) {
     if (bootstrap_effective_cli_has_trunking_override(argc_effective, argv) && user_cfg_loaded && !opts->trunk_cli_seen
         && !explicit_profile_selected) {
-        opts->p25_trunk = 0;
         opts->trunk_enable = 0;
     }
 }
@@ -707,7 +706,7 @@ bootstrap_maybe_run_interactive(const bootstrap_cli_args* args, int argc, int us
     if (args->force_bootstrap_cli || (argc <= 1 && !user_cfg_loaded)) {
         if (args->force_bootstrap_cli) {
             dsd_unsetenv("DSD_NEO_NO_BOOTSTRAP");
-            dsd_neo_config_init(opts);
+            dsd_neo_config_init();
         }
         dsd_bootstrap_interactive(opts, state);
     }
@@ -726,7 +725,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     bootstrap_parse_cli_args(argc, argv, &args);
     bootstrap_apply_positional_ini_shortcut(argc, argv, &args);
 
-    const char* config_env = bootstrap_get_config_env_path(opts);
+    const char* config_env = bootstrap_get_config_env_path();
 
     const int explicit_profile_selected = (args.profile_cli && *args.profile_cli) ? 1 : 0;
     int user_cfg_loaded = 0;

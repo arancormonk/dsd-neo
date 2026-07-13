@@ -9,8 +9,6 @@
  * timestamp should not be printed to stderr.
  */
 
-#include <dsd-neo/core/bit_packing.h>
-
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -62,25 +60,6 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 int
 dsd_unicode_supported(void) {
     return 0;
-}
-
-void
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (!input || !output || len <= 0) {
-        return;
-    }
-
-    int k = 0;
-    for (int i = 0; i < len; i++) {
-        output[k++] = (input[i] >> 7) & 1;
-        output[k++] = (input[i] >> 6) & 1;
-        output[k++] = (input[i] >> 5) & 1;
-        output[k++] = (input[i] >> 4) & 1;
-        output[k++] = (input[i] >> 3) & 1;
-        output[k++] = (input[i] >> 2) & 1;
-        output[k++] = (input[i] >> 1) & 1;
-        output[k++] = (input[i] >> 0) & 1;
-    }
 }
 
 void

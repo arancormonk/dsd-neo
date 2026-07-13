@@ -157,11 +157,6 @@ void dmr_sm_emit_data_sync(dsd_opts* opts, dsd_state* state, int slot);
 void dmr_sm_emit_release(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
- * @brief Emit CC sync event.
- */
-void dmr_sm_emit_cc_sync(dsd_opts* opts, dsd_state* state);
-
-/**
  * @brief Emit a group voice grant event.
  */
 void dmr_sm_emit_group_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int tg, int src);
@@ -184,11 +179,6 @@ void dmr_sm_init(const dsd_opts* opts, const dsd_state* state);
  * @brief Update neighbor/alternate control channel list.
  */
 void dmr_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count);
-
-/**
- * @brief Fetch the next candidate CC frequency.
- */
-int dmr_sm_next_cc_candidate(dsd_state* state, long* out_freq);
 
 /* ============================================================================
  * Helper: Create events

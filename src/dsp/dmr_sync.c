@@ -118,7 +118,7 @@ dmr_resample_on_sync(dsd_opts* opts, dsd_state* state) {
     /* 1. Initialize thresholds from the most recent DMR sync symbols. */
     (void)dsd_sync_warm_start_thresholds_outer_only(opts, state, DMR_SYNC_SYMBOLS);
 
-    /* 2. Re-digitize CACH even if warm-start is disabled or rejects a degenerate sync. */
+    /* 2. Re-digitize CACH even if warm-start rejects a degenerate sync. */
     dmr_resample_cach(opts, state, 0);
 
     return 0;

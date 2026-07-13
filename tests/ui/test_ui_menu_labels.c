@@ -117,7 +117,7 @@ test_visibility_and_state_labels(void) {
     rc |= expect_str("invert all active", lbl_invert_all(&ctx, b, sizeof(b)), "Toggle Signal Inversion [Active]");
     opts.payload = 0;
     rc |= expect_str("payload inactive", lbl_toggle_payload(&ctx, b, sizeof(b)), "Toggle Payload Logging [Inactive]");
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     rc |= expect_str("trunk active", lbl_trunk(&ctx, b, sizeof(b)), "Toggle Trunking [Active]");
     opts.scanner_mode = 0;
     rc |= expect_str("scanner inactive", lbl_scan(&ctx, b, sizeof(b)), "Toggle Scanning Mode [Inactive]");

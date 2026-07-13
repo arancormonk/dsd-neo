@@ -7,12 +7,10 @@
  */
 
 #include <cmath>
-#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/io/rtl_device.h"
 #include "soapy_profile.h"
 
 using dsdneo::SoapyProfileId;
@@ -21,19 +19,6 @@ using dsdneo::SoapyRange;
 using dsdneo::SoapySettingScope;
 using dsdneo::SoapySettingValueType;
 using dsdneo::SoapyStreamFormat;
-
-static_assert(offsetof(struct rtl_soapy_config, profile) < offsetof(struct rtl_soapy_config, antenna),
-              "rtl_soapy_config legacy field order changed");
-static_assert(offsetof(struct rtl_soapy_config, antenna) < offsetof(struct rtl_soapy_config, clock_source),
-              "rtl_soapy_config legacy field order changed");
-static_assert(offsetof(struct rtl_soapy_config, clock_source) < offsetof(struct rtl_soapy_config, gains),
-              "rtl_soapy_config legacy field order changed");
-static_assert(offsetof(struct rtl_soapy_config, gains) < offsetof(struct rtl_soapy_config, stream_format),
-              "rtl_soapy_config legacy field order changed");
-static_assert(offsetof(struct rtl_soapy_config, stream_format) < offsetof(struct rtl_soapy_config, bandwidth_hz),
-              "rtl_soapy_config legacy field order changed");
-static_assert(offsetof(struct rtl_soapy_config, bandwidth_hz) < offsetof(struct rtl_soapy_config, settings),
-              "rtl_soapy_config settings must remain appended");
 
 static int
 expect_true(const char* label, bool value) {
@@ -114,9 +99,6 @@ test_profile_selection(void) {
     rc |= expect_profile("rtlsdr args", {"", "", "", "driver=rtl_sdr"}, SoapyProfileId::Rtlsdr);
     rc |= expect_profile("uhd hardware", {"", "", "USRP B200", ""}, SoapyProfileId::Uhd);
     rc |= expect_profile("requested overrides auto", {"generic", "airspy", "", ""}, SoapyProfileId::Generic);
-    rc |= expect_profile("requested alias rtl", {"rtl", "", "", ""}, SoapyProfileId::Rtlsdr);
-    rc |= expect_profile("requested alias usrp", {"usrp", "", "", ""}, SoapyProfileId::Uhd);
-    rc |= expect_profile("requested alias sdr-play", {"sdr-play", "", "", ""}, SoapyProfileId::Sdrplay);
     rc |= expect_profile("unknown falls back generic", {"", "custom", "unknown", ""}, SoapyProfileId::Generic);
 
     SoapyProfileId parsed = SoapyProfileId::Generic;

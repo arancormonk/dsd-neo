@@ -23,7 +23,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -36,8 +35,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-struct RtlSdrContext;
 
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
 
@@ -55,39 +52,11 @@ static uint16_t g_last_alias_prefix;
 
 /* ── Strong stubs (same set used by test_p25_lcw_call_term) ────────────── */
 
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return true;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return true;
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
 dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)request_id;
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
@@ -774,7 +743,6 @@ main(void) {
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&st, 0, sizeof st);
-        opts.p25_is_tuned = 1;
         opts.trunk_is_tuned = 1;
         st.p25_vc_freq[0] = 851000000;
         st.p25_vc_freq[1] = 851000000;
@@ -794,9 +762,8 @@ main(void) {
         rc |= expect_contains("MFIDA4_0x0A_neutral_label", out, "Data/Return-to-Control Indication");
         rc |= expect_contains("MFIDA4_0x0A_source", out, "SRC: 1193046");
         rc |= expect_contains("MFIDA4_0x0A_target", out, "TGT: 11259375");
-        rc |= expect_true("MFIDA4_0x0A_no_release", opts.p25_is_tuned == 1 && opts.trunk_is_tuned == 1
-                                                        && st.p25_vc_freq[0] == 851000000
-                                                        && st.p25_vc_freq[1] == 851000000);
+        rc |= expect_true("MFIDA4_0x0A_no_release",
+                          opts.trunk_is_tuned == 1 && st.p25_vc_freq[0] == 851000000 && st.p25_vc_freq[1] == 851000000);
     }
 
     /*

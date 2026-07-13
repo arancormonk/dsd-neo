@@ -11,6 +11,7 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -24,7 +25,6 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
@@ -71,8 +71,9 @@ dmr_ms_read_dibit(dsd_opts* opts, dsd_state* state, int mask_after_xor) {
 
 static void
 dmr_ms_store_ambe_dibit(char ambe_fr[4][24], int index, int dibit) {
-    ambe_fr[dmr_ambe_interleave_w[index]][dmr_ambe_interleave_x[index]] = (1 & (dibit >> 1)); // bit 1
-    ambe_fr[dmr_ambe_interleave_y[index]][dmr_ambe_interleave_z[index]] = (1 & dibit);        // bit 0
+    const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[index];
+    ambe_fr[map->high_row][map->high_col] = (1 & (dibit >> 1)); // bit 1
+    ambe_fr[map->low_row][map->low_col] = (1 & dibit);          // bit 0
 }
 
 static void
@@ -191,18 +192,6 @@ dmr_ms_apply_keystream(dsd_state* state, dmr_ms_voice_frames* frames) {
         csi72_ambe2_codeword_keystream(state, frames->ambe_fr2);
         csi72_ambe2_codeword_keystream(state, frames->ambe_fr3);
     }
-}
-
-static void
-dmr_ms_print_ambe72(dsd_opts* opts, dmr_ms_voice_frames* frames) {
-#ifdef PRINT_AMBE72
-    ambe2_codeword_print_i(opts, frames->ambe_fr);
-    ambe2_codeword_print_i(opts, frames->ambe_fr2);
-    ambe2_codeword_print_i(opts, frames->ambe_fr3);
-#else
-    UNUSED(opts);
-    UNUSED(frames);
-#endif
 }
 
 static void
@@ -371,7 +360,6 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         state->dmr_ms_mode = 1;
         dmr_ms_copy_frames_for_late_entry(&frames);
         dmr_ms_apply_keystream(state, &frames);
-        dmr_ms_print_ambe72(opts, &frames);
         dmr_ms_process_audio_frames(opts, state, &frames);
         dmr_ms_play_voice(opts, state);
 
@@ -416,7 +404,6 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     dmr_ms_copy_frames_for_late_entry(&frames);
     dmr_ms_apply_keystream(state, &frames);
-    dmr_ms_print_ambe72(opts, &frames);
     dmr_ms_process_audio_frames(opts, state, &frames);
     dmr_ms_play_voice(opts, state);
 

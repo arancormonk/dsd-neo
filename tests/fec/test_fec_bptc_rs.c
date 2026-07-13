@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
-// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// or invalid-value negative vectors to exercise guarded behavior.
 // NOLINTBEGIN(bugprone-implicit-widening-of-multiplication-result)
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
@@ -14,94 +14,30 @@
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
-static void
-set_bits_from_u32_u8(uint8_t* dst_bits, int nbits, unsigned int v) {
-    for (int i = 0; i < nbits; i++) {
-        dst_bits[i] = (uint8_t)((v >> i) & 1U);
-    }
-}
-
-static void
-compute_even_parity_row(uint8_t mat[8][16]) {
-    for (int col = 0; col < 16; col++) {
-        int sum = 0;
-        for (int row = 0; row < 7; row++) {
-            sum += mat[row][col] & 1U;
-        }
-        mat[7][col] = (uint8_t)(sum & 1U);
-    }
-}
-
-static void
-fill_bptc_196x96_matrix(const uint8_t payload[96], const uint8_t r_bits[3], uint8_t matrix[13][15]) {
-    uint8_t row_data[11];
-    uint8_t row_encoded[15];
-    DSD_MEMSET(matrix, 0, 13U * 15U);
-
-    matrix[0][2] = r_bits[0] & 1U;
-    matrix[0][1] = r_bits[1] & 1U;
-    matrix[0][0] = r_bits[2] & 1U;
-    int k = 0;
-    for (int col = 3; col < 11; col++, k++) {
-        matrix[0][col] = payload[k] & 1U;
-    }
-    for (int row = 1; row < 9; row++) {
-        for (int col = 0; col < 11; col++, k++) {
-            matrix[row][col] = payload[k] & 1U;
-        }
-    }
-    assert(k == 96);
-
-    for (int row = 0; row < 9; row++) {
-        for (int col = 0; col < 11; col++) {
-            row_data[col] = matrix[row][col] & 1U;
-        }
-        Hamming_15_11_encode(row_data, row_encoded);
-        for (int col = 0; col < 15; col++) {
-            matrix[row][col] = row_encoded[col] & 1U;
-        }
-    }
-
-    for (int col = 0; col < 15; col++) {
-        uint8_t col_data[9];
-        uint8_t col_encoded[13];
-        for (int row = 0; row < 9; row++) {
-            col_data[row] = matrix[row][col] & 1U;
-        }
-        Hamming_13_9_encode(col_data, col_encoded);
-        for (int row = 0; row < 13; row++) {
-            matrix[row][col] = col_encoded[row] & 1U;
-        }
-    }
-}
-
-static void
-matrix_to_bptc_196_input(uint8_t matrix[13][15], uint8_t input[196]) {
-    DSD_MEMSET(input, 0, 196U);
-    int k = 1;
-    for (int row = 0; row < 13; row++) {
-        for (int col = 0; col < 15; col++, k++) {
-            input[k] = matrix[row][col] & 1U;
-        }
-    }
-    assert(k == 196);
-}
+/* Fixed DMR BPTC(196,96) reference codeword. Bit 0 is the reserved bit; the
+ * remaining bits are the row-major 13x15 product code consumed by the decoder. */
+static const uint8_t k_bptc_196_codeword[196] = {
+    0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0,
+    1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0,
+    1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0,
+    1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0,
+    1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1,
+    0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0,
+};
 
 static int
 test_bptc_196x96_extract(void) {
     InitAllFecFunction();
     uint8_t payload[96];
-    uint8_t r_bits[3] = {1, 0, 1};
+    static const uint8_t r_bits[3] = {1, 0, 1};
     for (int i = 0; i < 96; i++) {
         payload[i] = (uint8_t)(((i * 17) + (i / 5)) & 1U);
     }
 
-    uint8_t matrix[13][15];
     uint8_t input[196];
     uint8_t extracted[96];
     uint8_t got_r[3];
-    fill_bptc_196x96_matrix(payload, r_bits, matrix);
-    matrix_to_bptc_196_input(matrix, input);
+    DSD_MEMCPY(input, k_bptc_196_codeword, sizeof(input));
 
     uint32_t irr = BPTC_196x96_Extract_Data(input, extracted, got_r);
     assert(irr == 0);
@@ -113,7 +49,7 @@ test_bptc_196x96_extract(void) {
     }
 
     uint8_t correctable[196];
-    DSD_MEMCPY(correctable, input, sizeof(correctable));
+    DSD_MEMCPY(correctable, k_bptc_196_codeword, sizeof(correctable));
     correctable[1 + (4 * 15) + 5] ^= 1U;
     irr = BPTC_196x96_Extract_Data(correctable, extracted, got_r);
     assert(irr == 0);
@@ -122,7 +58,7 @@ test_bptc_196x96_extract(void) {
     }
 
     uint8_t uncorrectable[196];
-    DSD_MEMCPY(uncorrectable, input, sizeof(uncorrectable));
+    DSD_MEMCPY(uncorrectable, k_bptc_196_codeword, sizeof(uncorrectable));
     for (int row = 0; row < 5; row++) {
         for (int col = 0; col < 5; col++) {
             uncorrectable[1 + (row * 15) + col] ^= 1U;
@@ -137,9 +73,14 @@ test_bptc_196x96_extract(void) {
 static int
 test_bptc_128x77(void) {
     InitAllFecFunction();
-    // Build a valid 8x16 matrix (7 data rows with Hamming(16,11,4), last row parity of columns)
-    uint8_t mat[8][16] = {0};
-    uint8_t enc[16];
+    static const uint8_t reference[8][16] = {
+        {1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1}, {0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1},
+        {0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0}, {1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0},
+        {1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0}, {0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0},
+        {0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0}, {1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0},
+    };
+    uint8_t mat[8][16];
+    DSD_MEMCPY(mat, reference, sizeof(mat));
 
     // Message layout per extractor:
     // rows 0..1: 11 bits each; rows 2..6: 10 bits each; CRC bits at mat[i][10] for i=2..6
@@ -148,30 +89,6 @@ test_bptc_128x77(void) {
     for (int i = 0; i < 72; i++) {
         data_bits72[i] = (uint8_t)((0xA5 >> (i % 8)) & 1U);
     }
-
-    int k = 0;
-    for (int row = 0; row < 7; row++) {
-        uint8_t orig[11];
-        DSD_MEMSET(orig, 0, sizeof(orig));
-        if (row < 2) {
-            for (int j = 0; j < 11; j++, k++) {
-                orig[j] = data_bits72[k];
-            }
-        } else {
-            // 10 data + 1 CRC placeholder (use 0 for CRC bit in orig[10])
-            for (int j = 0; j < 10; j++, k++) {
-                orig[j] = data_bits72[k];
-            }
-            // Place chosen CRC bit in orig[10] so encoding carries it
-            orig[10] = crc_bits5[row - 2];
-        }
-        Hamming_16_11_4_encode(orig, enc);
-        for (int col = 0; col < 16; col++) {
-            mat[row][col] = enc[col] & 1U;
-        }
-    }
-
-    compute_even_parity_row(mat);
 
     // Call extractor
     uint8_t extracted[77] = {0};
@@ -214,16 +131,13 @@ static int
 test_bptc_16x2(void) {
     InitAllFecFunction();
 
-    // Build a 32-bit vector with first 16 = valid Hamming(16,11,4) codeword
-    uint8_t info[11];
-    set_bits_from_u32_u8(info, 11, 0x3AB);
-    uint8_t enc16[16];
-    Hamming_16_11_4_encode(info, enc16);
+    static const uint8_t info[11] = {1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0};
+    static const uint8_t codeword[16] = {1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0};
 
     // Build DataMatrix (deinterleaved logical order)
     uint8_t dmat[32] = {0};
     for (int i = 0; i < 16; i++) {
-        dmat[i] = enc16[i] & 1U;
+        dmat[i] = codeword[i];
     }
 
     // Case 1: odd parity (second half is complement)
@@ -277,15 +191,7 @@ test_bptc_196x96_deinterleave(void) {
 
 static int
 test_rs_12_9(void) {
-    // Build a codeword = 9 data + 3 checksum
-    rs_12_9_codeword_t cw = {0};
-    for (int i = 0; i < RS_12_9_DATASIZE; i++) {
-        cw.data[i] = (uint8_t)(i * 17 + 3);
-    }
-    rs_12_9_checksum_t* cks = rs_12_9_calc_checksum(&cw);
-    cw.data[9] = cks->bytes[0];
-    cw.data[10] = cks->bytes[1];
-    cw.data[11] = cks->bytes[2];
+    rs_12_9_codeword_t cw = {{3, 20, 37, 54, 71, 88, 105, 122, 139, 208, 63, 250}};
 
     rs_12_9_poly_t syn = {0};
     rs_12_9_calc_syndrome(&cw, &syn);

@@ -20,7 +20,6 @@ bool io_always_on(const void* ctx);
 bool io_rtl_active(const void* ctx);
 
 #ifdef USE_RADIO
-bool dsp_cq_on(const void* v);
 bool is_mod_qpsk(const void* v);
 bool is_not_qpsk(const void* v);
 bool is_ted_allowed(const void* v);

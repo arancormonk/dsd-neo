@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
-// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// or invalid-value negative vectors to exercise guarded behavior.
 // NOLINTBEGIN(bugprone-implicit-widening-of-multiplication-result,bugprone-unsafe-functions,cert-msc24-c,cert-msc33-c,clang-analyzer-core.CallAndMessage,clang-analyzer-core.uninitialized.Assign)
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
@@ -8,19 +8,20 @@
 
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
-#include <dsd-neo/core/mbe_api.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <errno.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -29,22 +30,10 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "mbe_result_context.h"
 
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-void dsd_mbe_init_nxdn_cipher23_keystream(dsd_state* state);
-
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
-        return 1;
-    }
-    return 0;
-}
-
-static int
-expect_eq_size(const char* tag, size_t got, size_t want) {
-    if (got != want) {
-        DSD_FPRINTF(stderr, "%s: got %zu want %zu\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -67,6 +56,34 @@ expect_any_nonzero_u8(const char* tag, const uint8_t* got, size_t size) {
         }
     }
     DSD_FPRINTF(stderr, "%s: buffer is all zero\n", tag);
+    return 1;
+}
+
+static uint8_t
+bit_from_byte_array(const uint8_t* bytes, size_t bit) {
+    return (uint8_t)((bytes[bit / 8U] >> (7U - (bit % 8U))) & 1U);
+}
+
+static int
+expect_bits_match(const char* tag, const uint8_t* got, const uint8_t* bytes, size_t bits) {
+    for (size_t i = 0U; i < bits; i++) {
+        uint8_t want = bit_from_byte_array(bytes, i);
+        if (got[i] != want) {
+            DSD_FPRINTF(stderr, "%s: bit %zu got %u want %u\n", tag, i, (unsigned)got[i], (unsigned)want);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+expect_bits_differ(const char* tag, const uint8_t* got, const uint8_t* bytes, size_t bits) {
+    for (size_t i = 0U; i < bits; i++) {
+        if (got[i] != bit_from_byte_array(bytes, i)) {
+            return 0;
+        }
+    }
+    DSD_FPRINTF(stderr, "%s: bits unexpectedly matched\n", tag);
     return 1;
 }
 
@@ -166,7 +183,7 @@ apply_expected_p25p1_aes128(dsd_state* state, char imbe_d[88]) {
     if (state->p25vc == 0) {
         state->octet_counter = 11 + 16;
         DSD_MEMSET(state->ks_octetL, 0, sizeof(state->ks_octetL));
-        aes_ofb_keystream_output(state->aes_iv, aes_key, state->ks_octetL, 0, 14);
+        aes_ofb_keystream_output(state->aes_iv, aes_key, state->ks_octetL, DSD_AES_KEY_128, 14);
     }
 
     pack_imbe88_to_bytes(imbe_d, cipher);
@@ -189,17 +206,6 @@ apply_expected_nxdn_cipher1(dsd_state* state, char ambe_d[49]) {
 }
 
 static void
-apply_expected_nxdn_cipher23(dsd_state* state, char ambe_d[49]) {
-    dsd_mbe_init_nxdn_cipher23_keystream(state);
-    if (state->bit_counterL > (1568 - 49)) {
-        state->bit_counterL = (1568 - 49);
-    }
-    for (int i = 0; i < 49; i++) {
-        ambe_d[i] ^= state->ks_bitstreamL[state->bit_counterL++];
-    }
-}
-
-static void
 set_ambe2450_b0(char ambe_d[49], int b0) {
     ambe_d[0] = (char)((b0 >> 6) & 1);
     ambe_d[1] = (char)((b0 >> 5) & 1);
@@ -209,6 +215,8 @@ set_ambe2450_b0(char ambe_d[49], int b0) {
     ambe_d[38] = (char)((b0 >> 1) & 1);
     ambe_d[39] = (char)((b0 >> 0) & 1);
 }
+
+static void store_expected_decode_status(int ret, int* errs, int* errs2, const mbe_process_result* result);
 
 static int
 prepare_active_ambe2450_fixture(char ambe_fr[4][24], char ambe_d[49], int* errs, int* errs2,
@@ -223,8 +231,9 @@ prepare_active_ambe2450_fixture(char ambe_fr[4][24], char ambe_d[49], int* errs,
 
         *errs = -1;
         *errs2 = -1;
-        int ret = dsd_mbe_decode_ambe2450_frame(errs, errs2, (const char (*)[24])ambe_fr, ambe_d, result);
-        if (ret >= 0 && dmr_ambe49_should_skip_voice_stream(ambe_d) == 0) {
+        int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, result);
+        store_expected_decode_status(ret, errs, errs2, result);
+        if (ret >= 0 && dmr_ambe49_should_skip_crypto(ambe_d) == 0) {
             return 0;
         }
     }
@@ -255,23 +264,29 @@ stored_errs_from_result(const mbe_process_result* result) {
     return ((result->flags & MBE_PROCESS_FLAG_C0_VALID) != 0u) ? result->c0_errors : result->total_errors;
 }
 
-static int
-expect_result_fields(const char* tag, const mbe_process_result* got, const mbe_process_result* want) {
-    int rc = 0;
-    char subtag[96];
+static void
+store_expected_decode_status(int ret, int* errs, int* errs2, const mbe_process_result* result) {
+    if (ret < 0) {
+        *errs = 0;
+        *errs2 = 0;
+        return;
+    }
+    *errs = stored_errs_from_result(result);
+    *errs2 = result->total_errors;
+}
 
-    DSD_SNPRINTF(subtag, sizeof(subtag), "%s-total", tag);
-    rc |= expect_eq_int(subtag, got->total_errors, want->total_errors);
-    DSD_SNPRINTF(subtag, sizeof(subtag), "%s-c0", tag);
-    rc |= expect_eq_int(subtag, got->c0_errors, want->c0_errors);
-    DSD_SNPRINTF(subtag, sizeof(subtag), "%s-c4", tag);
-    rc |= expect_eq_int(subtag, got->c4_errors, want->c4_errors);
-    DSD_SNPRINTF(subtag, sizeof(subtag), "%s-protected", tag);
-    rc |= expect_eq_int(subtag, got->protected_errors, want->protected_errors);
-    DSD_SNPRINTF(subtag, sizeof(subtag), "%s-flags", tag);
-    rc |= expect_eq_int(subtag, (int)got->flags, (int)want->flags);
-
-    return rc;
+static void
+store_expected_process_status(int ret, float audio[160], int* errs, int* errs2, char* err_str, size_t err_str_size,
+                              const mbe_process_result* result) {
+    if (ret < 0) {
+        mbe_synthesizeSilencef(audio);
+        *errs = 0;
+        *errs2 = 0;
+        err_str[0] = '\0';
+        return;
+    }
+    store_expected_decode_status(ret, errs, errs2, result);
+    mbe_formatProcessResult(err_str, err_str_size, result);
 }
 
 static int
@@ -279,180 +294,6 @@ result_has_marker(const mbe_process_result* result, char marker) {
     char status[96];
     mbe_formatProcessResult(status, sizeof(status), result);
     return strchr(status, marker) != NULL;
-}
-
-static int
-test_decode_wrappers_store_status_like_mbelib(void) {
-    int rc = 0;
-    int errs;
-    int errs2;
-    char imbe7200_fr[8][23] = {{0}};
-    char imbe7100_fr[7][24] = {{0}};
-    char ambe2450_fr[4][24] = {{0}};
-    char direct_imbe_d[88] = {0};
-    char wrapper_imbe_d[88] = {0};
-    char direct_ambe_d[49] = {0};
-    char wrapper_ambe_d[49] = {0};
-    mbe_process_result direct_result;
-    mbe_process_result wrapper_result;
-    int direct_ret;
-    int wrapper_ret;
-
-    direct_ret = mbe_decodeImbe7200x4400Frame((const char (*)[23])imbe7200_fr, direct_imbe_d, &direct_result);
-    errs = -1;
-    errs2 = -1;
-    DSD_MEMSET(&wrapper_result, 0xA5, sizeof(wrapper_result));
-    wrapper_ret =
-        dsd_mbe_decode_imbe7200_frame(&errs, &errs2, (const char (*)[23])imbe7200_fr, wrapper_imbe_d, &wrapper_result);
-    rc |= expect_eq_int("imbe7200-ret", wrapper_ret, direct_ret);
-    rc |= expect_eq_int("imbe7200-errs", errs, stored_errs_from_result(&direct_result));
-    rc |= expect_eq_int("imbe7200-errs2", errs2, direct_result.total_errors);
-    rc |= expect_result_fields("imbe7200-result", &wrapper_result, &direct_result);
-    rc |= expect_eq_mem("imbe7200-payload", wrapper_imbe_d, direct_imbe_d, sizeof(wrapper_imbe_d));
-
-    direct_ret = mbe_decodeImbe7100x4400Frame((const char (*)[24])imbe7100_fr, direct_imbe_d, &direct_result);
-    errs = -1;
-    errs2 = -1;
-    DSD_MEMSET(wrapper_imbe_d, 0, sizeof(wrapper_imbe_d));
-    DSD_MEMSET(&wrapper_result, 0xA5, sizeof(wrapper_result));
-    wrapper_ret =
-        dsd_mbe_decode_imbe7100_frame(&errs, &errs2, (const char (*)[24])imbe7100_fr, wrapper_imbe_d, &wrapper_result);
-    rc |= expect_eq_int("imbe7100-ret", wrapper_ret, direct_ret);
-    rc |= expect_eq_int("imbe7100-errs", errs, stored_errs_from_result(&direct_result));
-    rc |= expect_eq_int("imbe7100-errs2", errs2, direct_result.total_errors);
-    rc |= expect_result_fields("imbe7100-result", &wrapper_result, &direct_result);
-    rc |= expect_eq_mem("imbe7100-payload", wrapper_imbe_d, direct_imbe_d, sizeof(wrapper_imbe_d));
-
-    direct_ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe2450_fr, direct_ambe_d, &direct_result);
-    errs = -1;
-    errs2 = -1;
-    DSD_MEMSET(&wrapper_result, 0xA5, sizeof(wrapper_result));
-    wrapper_ret =
-        dsd_mbe_decode_ambe2450_frame(&errs, &errs2, (const char (*)[24])ambe2450_fr, wrapper_ambe_d, &wrapper_result);
-    rc |= expect_eq_int("ambe2450-ret", wrapper_ret, direct_ret);
-    rc |= expect_eq_int("ambe2450-errs", errs, stored_errs_from_result(&direct_result));
-    rc |= expect_eq_int("ambe2450-errs2", errs2, direct_result.total_errors);
-    rc |= expect_result_fields("ambe2450-result", &wrapper_result, &direct_result);
-    rc |= expect_eq_mem("ambe2450-payload", wrapper_ambe_d, direct_ambe_d, sizeof(wrapper_ambe_d));
-
-    return rc;
-}
-
-static int
-test_process_wrappers_match_direct_mbelib_status(void) {
-    int rc = 0;
-    int direct_errs = 5;
-    int direct_errs2 = 9;
-    int wrapper_errs = 5;
-    int wrapper_errs2 = 9;
-    char ambe_d[49] = {0};
-    char direct_err_str[96] = {0};
-    char wrapper_err_str[96] = {0};
-    float direct_audio[160] = {0};
-    float wrapper_audio[160] = {0};
-    mbe_parms direct_cur = {0};
-    mbe_parms direct_prev = {0};
-    mbe_parms direct_prev_enhanced = {0};
-    mbe_parms wrapper_cur = {0};
-    mbe_parms wrapper_prev = {0};
-    mbe_parms wrapper_prev_enhanced = {0};
-    mbe_process_result direct_result;
-    int direct_ret;
-    int wrapper_ret;
-
-    set_ambe2450_b0(ambe_d, 42);
-    mbe_initMbeParms(&direct_cur, &direct_prev, &direct_prev_enhanced);
-    mbe_initMbeParms(&wrapper_cur, &wrapper_prev, &wrapper_prev_enhanced);
-    dsd_mbe_init_result_from_errors(&direct_result, direct_errs, direct_errs2, 0u);
-
-    direct_ret = mbe_processAmbe2450Dataf(direct_audio, &direct_result, ambe_d, &direct_cur, &direct_prev,
-                                          &direct_prev_enhanced);
-    mbe_formatProcessResult(direct_err_str, sizeof(direct_err_str), &direct_result);
-    wrapper_ret = dsd_mbe_process_ambe2450_dataf(wrapper_audio, &wrapper_errs, &wrapper_errs2, wrapper_err_str,
-                                                 sizeof(wrapper_err_str), ambe_d, &wrapper_cur, &wrapper_prev,
-                                                 &wrapper_prev_enhanced, NULL);
-
-    rc |= expect_eq_int("ambe2450-process-ret", wrapper_ret, direct_ret);
-    rc |= expect_eq_int("ambe2450-process-errs", wrapper_errs, stored_errs_from_result(&direct_result));
-    rc |= expect_eq_int("ambe2450-process-errs2", wrapper_errs2, direct_result.total_errors);
-    rc |= expect_eq_size("ambe2450-process-status-len", strlen(wrapper_err_str), strlen(direct_err_str));
-    rc |= expect_eq_int("ambe2450-process-status-text", strcmp(wrapper_err_str, direct_err_str), 0);
-    rc |= expect_eq_mem("ambe2450-process-audio", wrapper_audio, direct_audio, sizeof(wrapper_audio));
-
-    DSD_MEMSET(direct_audio, 0, sizeof(direct_audio));
-    DSD_MEMSET(wrapper_audio, 0, sizeof(wrapper_audio));
-    DSD_MEMSET(direct_err_str, 0, sizeof(direct_err_str));
-    DSD_MEMSET(wrapper_err_str, 0, sizeof(wrapper_err_str));
-    mbe_initMbeParms(&direct_cur, &direct_prev, &direct_prev_enhanced);
-    mbe_initMbeParms(&wrapper_cur, &wrapper_prev, &wrapper_prev_enhanced);
-    dsd_mbe_init_result_from_errors(&direct_result, direct_errs, direct_errs2, MBE_PROCESS_FLAG_SOFT_INPUT);
-    wrapper_errs = direct_errs;
-    wrapper_errs2 = direct_errs2;
-
-    direct_ret = mbe_processAmbe2400Dataf(direct_audio, &direct_result, ambe_d, &direct_cur, &direct_prev,
-                                          &direct_prev_enhanced);
-    mbe_formatProcessResult(direct_err_str, sizeof(direct_err_str), &direct_result);
-    wrapper_ret = dsd_mbe_process_ambe2400_dataf(wrapper_audio, &wrapper_errs, &wrapper_errs2, wrapper_err_str,
-                                                 sizeof(wrapper_err_str), ambe_d, &wrapper_cur, &wrapper_prev,
-                                                 &wrapper_prev_enhanced, NULL);
-
-    rc |= expect_eq_int("ambe2400-process-ret", wrapper_ret, direct_ret);
-    rc |= expect_eq_int("ambe2400-process-errs", wrapper_errs, stored_errs_from_result(&direct_result));
-    rc |= expect_eq_int("ambe2400-process-errs2", wrapper_errs2, direct_result.total_errors);
-    rc |= expect_eq_size("ambe2400-process-status-len", strlen(wrapper_err_str), strlen(direct_err_str));
-    rc |= expect_eq_int("ambe2400-process-status-text", strcmp(wrapper_err_str, direct_err_str), 0);
-    rc |= expect_eq_mem("ambe2400-process-audio", wrapper_audio, direct_audio, sizeof(wrapper_audio));
-
-    return rc;
-}
-
-static int
-test_process_frame_wrapper_stores_status_and_audio(void) {
-    int rc = 0;
-    int direct_errs;
-    int direct_errs2;
-    int wrapper_errs = -1;
-    int wrapper_errs2 = -1;
-    char ambe_fr[4][24] = {{0}};
-    char direct_ambe_d[49] = {0};
-    char wrapper_ambe_d[49] = {0};
-    char direct_err_str[96] = {0};
-    char wrapper_err_str[96] = {0};
-    float direct_audio[160] = {0};
-    float wrapper_audio[160] = {0};
-    mbe_parms direct_cur = {0};
-    mbe_parms direct_prev = {0};
-    mbe_parms direct_prev_enhanced = {0};
-    mbe_parms wrapper_cur = {0};
-    mbe_parms wrapper_prev = {0};
-    mbe_parms wrapper_prev_enhanced = {0};
-    mbe_process_result direct_result;
-    int direct_ret;
-    int wrapper_ret;
-
-    ambe_fr[0][0] = 1;
-    ambe_fr[1][5] = 1;
-    mbe_initMbeParms(&direct_cur, &direct_prev, &direct_prev_enhanced);
-    mbe_initMbeParms(&wrapper_cur, &wrapper_prev, &wrapper_prev_enhanced);
-
-    direct_ret = mbe_processAmbe3600x2400Framef(direct_audio, &direct_result, (const char (*)[24])ambe_fr,
-                                                direct_ambe_d, &direct_cur, &direct_prev, &direct_prev_enhanced);
-    direct_errs = stored_errs_from_result(&direct_result);
-    direct_errs2 = direct_result.total_errors;
-    mbe_formatProcessResult(direct_err_str, sizeof(direct_err_str), &direct_result);
-
-    wrapper_ret = dsd_mbe_process_ambe3600x2400_framef(wrapper_audio, &wrapper_errs, &wrapper_errs2, wrapper_err_str,
-                                                       sizeof(wrapper_err_str), ambe_fr, wrapper_ambe_d, &wrapper_cur,
-                                                       &wrapper_prev, &wrapper_prev_enhanced);
-
-    rc |= expect_eq_int("ambe3600x2400-ret", wrapper_ret, direct_ret);
-    rc |= expect_eq_int("ambe3600x2400-errs", wrapper_errs, direct_errs);
-    rc |= expect_eq_int("ambe3600x2400-errs2", wrapper_errs2, direct_errs2);
-    rc |= expect_eq_int("ambe3600x2400-status-text", strcmp(wrapper_err_str, direct_err_str), 0);
-    rc |= expect_eq_mem("ambe3600x2400-payload", wrapper_ambe_d, direct_ambe_d, sizeof(wrapper_ambe_d));
-    rc |= expect_eq_mem("ambe3600x2400-audio", wrapper_audio, direct_audio, sizeof(wrapper_audio));
-
-    return rc;
 }
 
 static int
@@ -521,61 +362,6 @@ test_keyring_tracks_aes_segment_metadata(void) {
 }
 
 static int
-test_public_result_helpers_normalize_error_counts(void) {
-    int rc = 0;
-    mbe_process_result result;
-
-    dsd_mbe_init_result_from_errors(NULL, 1, 2, MBE_PROCESS_FLAG_C0_VALID);
-
-    dsd_mbe_init_result_from_errors(&result, 6, 2, MBE_PROCESS_FLAG_C0_VALID | MBE_PROCESS_FLAG_SOFT_INPUT);
-    rc |= expect_eq_int("result-c0-errors", result.c0_errors, 6);
-    rc |= expect_eq_int("result-total-clamped", result.total_errors, 6);
-    rc |= expect_eq_int("result-protected-clamped", result.protected_errors, 0);
-    rc |= expect_flag("result-c0-valid", result.flags, MBE_PROCESS_FLAG_C0_VALID, 1);
-    rc |= expect_flag("result-soft-input", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
-
-    dsd_mbe_init_result_from_errors(&result, -4, -1, 0u);
-    rc |= expect_eq_int("result-negative-total", result.total_errors, 0);
-    rc |= expect_eq_int("result-negative-c0", result.c0_errors, 0);
-    rc |= expect_eq_int("result-negative-protected", result.protected_errors, 0);
-    rc |= expect_flag("result-negative-c0-valid", result.flags, MBE_PROCESS_FLAG_C0_VALID, 0);
-
-    return rc;
-}
-
-static int
-test_public_store_result_uses_c0_when_valid(void) {
-    int rc = 0;
-    int errs = -1;
-    int errs2 = -1;
-    char err_str[96] = {0};
-    mbe_process_result result;
-
-    init_result(&result, 9, 3, MBE_PROCESS_FLAG_C0_VALID | MBE_PROCESS_FLAG_REPEAT);
-    dsd_mbe_store_result(&errs, &errs2, err_str, sizeof err_str, &result);
-    rc |= expect_eq_int("store-c0-errs", errs, 3);
-    rc |= expect_eq_int("store-c0-total", errs2, 9);
-    rc |= expect_eq_int("store-c0-repeat-marker", strchr(err_str, 'R') != NULL, 1);
-
-    errs = -1;
-    errs2 = -1;
-    err_str[0] = 'x';
-    init_result(&result, 7, 2, MBE_PROCESS_FLAG_TONE);
-    dsd_mbe_store_result(&errs, &errs2, err_str, 1, &result);
-    rc |= expect_eq_int("store-total-errs", errs, 7);
-    rc |= expect_eq_int("store-total-errs2", errs2, 7);
-    rc |= expect_eq_int("store-size-one-nul", err_str[0], '\0');
-
-    dsd_mbe_store_result(&errs, &errs2, err_str, sizeof err_str, NULL);
-    rc |= expect_eq_int("store-null-errs-unchanged", errs, 7);
-    rc |= expect_eq_int("store-null-errs2-unchanged", errs2, 7);
-
-    dsd_mbe_store_result(NULL, NULL, NULL, 0, &result);
-
-    return rc;
-}
-
-static int
 test_unchanged_preserves_c0_context(void) {
     int rc = 0;
     char before[49] = {0};
@@ -621,7 +407,7 @@ test_changed_strips_only_c0_context(void) {
 }
 
 static int
-test_changed_without_c0_context_keeps_legacy_shape(void) {
+test_changed_without_c0_context_keeps_current_shape(void) {
     int rc = 0;
     char before[49] = {0};
     char after[49] = {0};
@@ -631,12 +417,12 @@ test_changed_without_c0_context_keeps_legacy_shape(void) {
     after[0] = 1;
     init_result(&result, 7, 3, MBE_PROCESS_FLAG_SOFT_INPUT);
 
-    rc |= expect_eq_int("legacy-return", dsd_mbe_strip_ambe_context_if_changed(before, after, &result), 1);
-    rc |= expect_flag("legacy-c0", result.flags, MBE_PROCESS_FLAG_C0_VALID, 0);
-    rc |= expect_flag("legacy-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
-    rc |= expect_eq_int("legacy-c0-errors", result.c0_errors, 0);
-    rc |= expect_eq_int("legacy-protected", result.protected_errors, 7);
-    rc |= expect_eq_int("legacy-total", result.total_errors, 7);
+    rc |= expect_eq_int("no-c0-return", dsd_mbe_strip_ambe_context_if_changed(before, after, &result), 1);
+    rc |= expect_flag("no-c0-flag", result.flags, MBE_PROCESS_FLAG_C0_VALID, 0);
+    rc |= expect_flag("no-c0-soft", result.flags, MBE_PROCESS_FLAG_SOFT_INPUT, 1);
+    rc |= expect_eq_int("no-c0-errors", result.c0_errors, 0);
+    rc |= expect_eq_int("no-c0-protected", result.protected_errors, 7);
+    rc |= expect_eq_int("no-c0-total", result.total_errors, 7);
 
     return rc;
 }
@@ -744,8 +530,8 @@ test_changed_frame_restores_total_error_repeat_fallback(void) {
 }
 
 static void
-init_soft_mbe_state(dsd_state* state, mbe_parms* cur, mbe_parms* prev, mbe_parms* prev_enhanced, mbe_parms* cur2,
-                    mbe_parms* prev2, mbe_parms* prev_enhanced2) {
+init_mbe_state(dsd_state* state, mbe_parms* cur, mbe_parms* prev, mbe_parms* prev_enhanced, mbe_parms* cur2,
+               mbe_parms* prev2, mbe_parms* prev_enhanced2) {
     DSD_MEMSET(state, 0, sizeof(*state));
     mbe_initMbeParms(cur, prev, prev_enhanced);
     mbe_initMbeParms(cur2, prev2, prev_enhanced2);
@@ -764,6 +550,26 @@ create_playback_temp(char* path, size_t path_size, const char* prefix) {
         return -1;
     }
     return dsd_mkstemp(path);
+}
+
+static SNDFILE*
+create_wav_temp(char* path, size_t path_size, const char* prefix) {
+    int fd = create_playback_temp(path, path_size, prefix);
+    if (fd < 0) {
+        return NULL;
+    }
+    dsd_close(fd);
+
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = 8000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* wav = sf_open(path, SFM_WRITE, &info);
+    if (wav == NULL) {
+        (void)remove(path);
+    }
+    return wav;
 }
 
 static int
@@ -842,7 +648,7 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     static mbe_parms prev2;
     static mbe_parms prev_enhanced2;
     DSD_MEMSET(&opts, 0, sizeof(opts));
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.optind = 1;
     state.synctype = DSD_SYNC_P25P1_POS;
 
@@ -854,7 +660,7 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     rc |= expect_eq_int("play-imbe-path", strcmp(opts.mbe_in_file, imbe_path), 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.optind = 1;
 
     char* amb_argv[] = {"dsd-neo", amb_path};
@@ -865,7 +671,7 @@ test_play_mbe_files_processes_imbe_ambe_and_dstar_records(void) {
     rc |= expect_eq_int("play-amb-path", strcmp(opts.mbe_in_file, amb_path), 0);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.optind = 1;
 
     char* dmb_argv[] = {"dsd-neo", dmb_path};
@@ -922,7 +728,7 @@ copy_ambe2450_soft_to_mbelib(const dsd_vocoder_soft_bit src[4][24], mbe_soft_bit
 }
 
 static int
-test_soft_mbe_p25p1_updates_error_history(void) {
+test_process_mbe_frame_p25p1_updates_error_history(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -942,28 +748,30 @@ test_soft_mbe_p25p1_updates_error_history(void) {
     mbe_process_result result;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
-    int ret =
-        dsd_mbe_decode_imbe7200_frame(&expected_errs, &expected_errs2, (const char (*)[23])imbe_fr, imbe_d, &result);
-    rc |= expect_eq_int("soft-p25 fixture decodes", ret >= 0, 1);
+    int ret = mbe_decodeImbe7200x4400Frame((const char (*)[23])imbe_fr, imbe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
+    rc |= expect_eq_int("hard-p25 fixture decodes", ret >= 0, 1);
     decoded_errs2 = expected_errs2;
     if (ret >= 0) {
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_imbe4400_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), imbe_d, &cur, &prev, &prev_enhanced, &result);
-        rc |= expect_eq_int("soft-p25 fixture processes", ret >= 0, 1);
+        ret = mbe_processImbe4400Dataf(expected_audio, &result, imbe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
+        rc |= expect_eq_int("hard-p25 fixture processes", ret >= 0, 1);
     }
 
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_P25P1_POS;
-    soft_mbe(&opts, &state, imbe_fr, NULL, NULL);
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    processMbeFrame(&opts, &state, imbe_fr, NULL, NULL);
 
-    rc |= expect_eq_int("soft-p25 errs", state.errs, expected_errs);
-    rc |= expect_eq_int("soft-p25 errs2", state.errs2, expected_errs2);
-    rc |= expect_eq_int("soft-p25 debug errors", state.debug_audio_errors, decoded_errs2);
-    rc |= expect_eq_int("soft-p25 history length", state.p25_p1_voice_err_hist_len, 50);
-    rc |= expect_eq_int("soft-p25 history position", state.p25_p1_voice_err_hist_pos, 1);
-    rc |= expect_eq_int("soft-p25 history value", state.p25_p1_voice_err_hist[0], state.errs2 & 0xFF);
-    rc |= expect_eq_int("soft-p25 history sum", (int)state.p25_p1_voice_err_hist_sum, state.errs2 & 0xFF);
+    rc |= expect_eq_int("hard-p25 errs", state.errs, expected_errs);
+    rc |= expect_eq_int("hard-p25 errs2", state.errs2, expected_errs2);
+    rc |= expect_eq_int("hard-p25 debug errors", state.debug_audio_errors, decoded_errs2);
+    rc |= expect_eq_int("hard-p25 history length", state.p25_p1_voice_err_hist_len, 50);
+    rc |= expect_eq_int("hard-p25 history position", state.p25_p1_voice_err_hist_pos, 1);
+    rc |= expect_eq_int("hard-p25 history value", state.p25_p1_voice_err_hist[0], state.errs2 & 0xFF);
+    rc |= expect_eq_int("hard-p25 history sum", (int)state.p25_p1_voice_err_hist_sum, state.errs2 & 0xFF);
 
     return rc;
 }
@@ -997,14 +805,15 @@ test_process_mbe_frame_soft_p25p1_copies_soft_imbe_audio(void) {
         expected_errs = stored_errs_from_result(&result);
         expected_errs2 = result.total_errors;
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_imbe4400_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), imbe_d, &cur, &prev, &prev_enhanced, &result);
+        ret = mbe_processImbe4400Dataf(expected_audio, &result, imbe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("frame-soft-p25 process", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_P25P1_POS;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
 
@@ -1053,14 +862,15 @@ test_process_mbe_frame_soft_nxdn_copies_soft_ambe_audio(void) {
         expected_errs = stored_errs_from_result(&result);
         expected_errs2 = result.total_errors;
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_ambe2450_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), ambe_d, &cur, &prev, &prev_enhanced, &result);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, ambe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("frame-soft-nxdn process", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_NXDN_POS;
 
     processMbeFrameSoft(&opts, &state, NULL, ambe_soft, NULL);
@@ -1103,8 +913,8 @@ test_process_mbe_frame_p25p1_rc4_transforms_imbe_payload(void) {
     imbe_fr[2][7] = 1;
     imbe_fr[5][13] = 1;
 
-    int ret = dsd_mbe_decode_imbe7200_frame(&expected_errs, &expected_errs2, (const char (*)[23])imbe_fr,
-                                            decoded_imbe_d, &result);
+    int ret = mbe_decodeImbe7200x4400Frame((const char (*)[23])imbe_fr, decoded_imbe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("p25p1-rc4 fixture decodes", ret >= 0, 1);
     if (ret >= 0) {
         copy_imbe88(expected_imbe_d, k_p25p1_rc4_expected_imbe);
@@ -1116,15 +926,15 @@ test_process_mbe_frame_p25p1_rc4_transforms_imbe_payload(void) {
 
         (void)dsd_mbe_strip_imbe_context_if_changed(decoded_imbe_d, expected_imbe_d, &result);
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_imbe4400_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), expected_imbe_d, &cur, &prev, &prev_enhanced,
-                                             &result);
+        ret = mbe_processImbe4400Dataf(expected_audio, &result, expected_imbe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("p25p1-rc4 fixture processes", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_P25P1_POS;
     state.payload_algid = 0xAA;
     state.R = 0x0102030405ULL;
@@ -1175,8 +985,8 @@ test_process_mbe_frame_p25p1_multicrypt_transforms_imbe_payload(void) {
 
     // First build an independent AES128 oracle from the decoded IMBE bits so
     // the processMbeFrame assertions do not mirror production side effects.
-    int ret = dsd_mbe_decode_imbe7200_frame(&expected_errs, &expected_errs2, (const char (*)[23])imbe_fr,
-                                            decoded_imbe_d, &result);
+    int ret = mbe_decodeImbe7200x4400Frame((const char (*)[23])imbe_fr, decoded_imbe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("p25p1-multicrypt fixture decodes", ret >= 0, 1);
     if (ret >= 0) {
         copy_imbe88(expected_imbe_d, decoded_imbe_d);
@@ -1200,9 +1010,9 @@ test_process_mbe_frame_p25p1_multicrypt_transforms_imbe_payload(void) {
 
         (void)dsd_mbe_strip_imbe_context_if_changed(decoded_imbe_d, expected_imbe_d, &result);
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_imbe4400_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), expected_imbe_d, &cur, &prev, &prev_enhanced,
-                                             &result);
+        ret = mbe_processImbe4400Dataf(expected_audio, &result, expected_imbe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("p25p1-multicrypt aes128 fixture processes", ret >= 0, 1);
     }
 
@@ -1210,7 +1020,7 @@ test_process_mbe_frame_p25p1_multicrypt_transforms_imbe_payload(void) {
     // vocoder status, and staged float audio against the oracle above.
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_P25P1_POS;
     state.payload_algid = 0x89;
     state.aes_key_loaded[0] = 1;
@@ -1239,7 +1049,7 @@ test_process_mbe_frame_p25p1_multicrypt_transforms_imbe_payload(void) {
     // MI/key schedule and octet counter progression, so keep it in this fixture.
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_P25P1_POS;
     state.payload_algid = 0x9F;
     state.R = 0x0102030405ULL;
@@ -1283,8 +1093,8 @@ test_process_mbe_frame_nxdn_cipher1_transforms_ambe_payload(void) {
     ambe_fr[1][11] = 1;
     ambe_fr[3][19] = 1;
 
-    int ret = dsd_mbe_decode_ambe2450_frame(&expected_errs, &expected_errs2, (const char (*)[24])ambe_fr,
-                                            decoded_ambe_d, &result);
+    int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, decoded_ambe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("nxdn-cipher1 fixture decodes", ret >= 0, 1);
     if (ret >= 0) {
         copy_ambe49(expected_ambe_d, decoded_ambe_d);
@@ -1297,15 +1107,15 @@ test_process_mbe_frame_nxdn_cipher1_transforms_ambe_payload(void) {
 
         (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_ambe2450_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), expected_ambe_d, &cur, &prev, &prev_enhanced,
-                                             &result);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("nxdn-cipher1 fixture processes", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_NXDN_POS;
     state.nxdn_cipher_type = 0x01;
     state.R = 0x12345ULL;
@@ -1328,7 +1138,6 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
-    static dsd_state expected_state;
     static mbe_parms cur;
     static mbe_parms prev;
     static mbe_parms prev_enhanced;
@@ -1340,6 +1149,7 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
     char imbe7100_fr[7][24] = {{0}};
     char decoded_ambe_d[49] = {0};
     char expected_ambe_d[49] = {0};
+    uint8_t expected_keystream[26U * 8U] = {0};
     float expected_audio[160] = {0};
     char expected_err_str[96] = {0};
     int expected_errs = -1;
@@ -1350,35 +1160,30 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
     ambe_fr[2][13] = 1;
     ambe_fr[3][20] = 1;
 
-    int ret = dsd_mbe_decode_ambe2450_frame(&expected_errs, &expected_errs2, (const char (*)[24])ambe_fr,
-                                            decoded_ambe_d, &result);
+    des_ofb_keystream_output(0x1122334455667788ULL, 0x0102030405ULL, expected_keystream, 26);
+
+    int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, decoded_ambe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("nxdn-cipher2 fixture decodes", ret >= 0, 1);
     if (ret >= 0) {
         copy_ambe49(expected_ambe_d, decoded_ambe_d);
-        DSD_MEMSET(&expected_state, 0, sizeof(expected_state));
-        expected_state.nxdn_cipher_type = 0x02;
-        expected_state.nxdn_new_iv = 1;
-        expected_state.R = 0x0102030405ULL;
-        expected_state.payload_miN = 0x1122334455667788ULL;
-        apply_expected_nxdn_cipher23(&expected_state, expected_ambe_d);
-        rc |= expect_eq_int("nxdn-cipher2 clears new-iv", expected_state.nxdn_new_iv, 0);
-        rc |= expect_eq_int("nxdn-cipher2 advances bits", expected_state.bit_counterL, 49);
-        rc |= expect_any_nonzero_u8("nxdn-cipher2 keystream", expected_state.ks_bitstreamL,
-                                    sizeof(expected_state.ks_bitstreamL));
+        for (size_t i = 0U; i < 49U; i++) {
+            expected_ambe_d[i] ^= (char)bit_from_byte_array(expected_keystream + 8U, i);
+        }
         rc |= expect_eq_int("nxdn-cipher2 transformed",
                             memcmp(expected_ambe_d, decoded_ambe_d, sizeof(expected_ambe_d)) != 0, 1);
 
         (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_ambe2450_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), expected_ambe_d, &cur, &prev, &prev_enhanced,
-                                             &result);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("nxdn-cipher2 fixture processes", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_NXDN_POS;
     state.nxdn_cipher_type = 0x02;
     state.nxdn_new_iv = 1;
@@ -1388,7 +1193,9 @@ test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream(void) {
     processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
 
     rc |= expect_eq_int("nxdn-cipher2 state new-iv", state.nxdn_new_iv, 0);
-    rc |= expect_eq_int("nxdn-cipher2 state bit-counter", state.bit_counterL, expected_state.bit_counterL);
+    rc |= expect_eq_int("nxdn-cipher2 state bit-counter", state.bit_counterL, 49);
+    rc |= expect_eq_mem("nxdn-cipher2 state octets", state.ks_octetL, expected_keystream, sizeof(expected_keystream));
+    rc |= expect_bits_match("nxdn-cipher2 state offset", state.ks_bitstreamL, expected_keystream + 8U, 49U);
     rc |= expect_any_nonzero_u8("nxdn-cipher2 state keystream", state.ks_bitstreamL, sizeof(state.ks_bitstreamL));
     rc |= expect_eq_int("nxdn-cipher2 errs", state.errs, expected_errs);
     rc |= expect_eq_int("nxdn-cipher2 errs2", state.errs2, expected_errs2);
@@ -1404,7 +1211,6 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
-    static dsd_state expected_state;
     static mbe_parms cur;
     static mbe_parms prev;
     static mbe_parms prev_enhanced;
@@ -1415,7 +1221,6 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
     char ambe_fr[4][24] = {{0}};
     char imbe7100_fr[7][24] = {{0}};
     char decoded_ambe_d[49] = {0};
-    char expected_ambe_d[49] = {0};
     int expected_errs = -1;
     int expected_errs2 = -1;
     mbe_process_result result;
@@ -1424,25 +1229,13 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
     ambe_fr[1][18] = 1;
     ambe_fr[3][5] = 1;
 
-    int ret = dsd_mbe_decode_ambe2450_frame(&expected_errs, &expected_errs2, (const char (*)[24])ambe_fr,
-                                            decoded_ambe_d, &result);
+    int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, decoded_ambe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("nxdn-cipher2-clamp fixture decodes", ret >= 0, 1);
-    if (ret >= 0) {
-        copy_ambe49(expected_ambe_d, decoded_ambe_d);
-        DSD_MEMSET(&expected_state, 0, sizeof(expected_state));
-        expected_state.nxdn_cipher_type = 0x02;
-        expected_state.R = 1U;
-        expected_state.bit_counterL = 2000;
-        DSD_MEMSET(expected_state.ks_bitstreamL, 1, sizeof(expected_state.ks_bitstreamL));
-        apply_expected_nxdn_cipher23(&expected_state, expected_ambe_d);
-        rc |= expect_eq_int("nxdn-cipher2-clamp counter", expected_state.bit_counterL, 1568);
-        rc |= expect_eq_int("nxdn-cipher2-clamp transformed",
-                            memcmp(expected_ambe_d, decoded_ambe_d, sizeof(expected_ambe_d)) != 0, 1);
-    }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_NXDN_POS;
     state.nxdn_cipher_type = 0x02;
     state.R = 1U;
@@ -1451,12 +1244,61 @@ test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter(void) {
 
     processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
 
-    rc |= expect_eq_int("nxdn-cipher2-clamp state bit-counter", state.bit_counterL, expected_state.bit_counterL);
+    rc |= expect_eq_int("nxdn-cipher2-clamp state bit-counter", state.bit_counterL, 1568);
     rc |= expect_eq_int("nxdn-cipher2-clamp status populated", state.err_str[0] != '\0', 1);
     rc |= expect_eq_int("nxdn-cipher2-clamp errs updated", state.errs2 >= expected_errs2, 1);
     rc |= expect_any_nonzero_u8("nxdn-cipher2-clamp temp audio", (const uint8_t*)state.audio_out_temp_buf,
                                 sizeof(state.audio_out_temp_buf));
     rc |= expect_eq_mem("nxdn-cipher2-clamp staged left", state.f_l, state.audio_out_temp_buf, sizeof(state.f_l));
+
+    return rc;
+}
+
+static int
+test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+    char ambe_fr[4][24] = {{0}};
+    char imbe7100_fr[7][24] = {{0}};
+    uint8_t expected_keystream[15U * 16U] = {0};
+
+    ambe_fr[0][4] = 1;
+    ambe_fr[2][13] = 1;
+    ambe_fr[3][20] = 1;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.nxdn_cipher_type = 0x03U;
+    state.nxdn_new_iv = 1U;
+    state.nxdn_part_of_frame = 0U;
+    state.aes_key_loaded[0] = 1U;
+    for (size_t i = 0U; i < sizeof(state.aes_iv); i++) {
+        state.aes_iv[i] = (uint8_t)(0x10U + i);
+    }
+    for (size_t i = 0U; i < sizeof(state.aes_key); i++) {
+        state.aes_key[i] = (uint8_t)(0xA0U + (i * 3U));
+    }
+    aes_ofb_keystream_output(state.aes_iv, state.aes_key, expected_keystream, DSD_AES_KEY_256, 15);
+
+    processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
+
+    rc |= expect_eq_int("nxdn-cipher3 state new-iv", state.nxdn_new_iv, 0);
+    rc |= expect_eq_int("nxdn-cipher3 state bit-counter", state.bit_counterL, 49);
+    rc |= expect_eq_mem("nxdn-cipher3 state octets", state.ks_octetL, expected_keystream, sizeof(expected_keystream));
+    rc |= expect_bits_match("nxdn-cipher3 state voice offset", state.ks_bitstreamL, expected_keystream + 16U,
+                            14U * 16U * 8U);
+    rc |= expect_bits_differ("nxdn-cipher3 rejects old offset", state.ks_bitstreamL, expected_keystream + 8U, 64U);
+    rc |= expect_eq_mem("nxdn-cipher3 staged left", state.f_l, state.audio_out_temp_buf, sizeof(state.f_l));
 
     return rc;
 }
@@ -1480,19 +1322,21 @@ test_process_mbe_frame_hard_dstar_stages_audio(void) {
     char expected_err_str[96] = {0};
     int expected_errs = -1;
     int expected_errs2 = -1;
+    mbe_process_result result;
 
     ambe_fr[0][0] = 1;
     ambe_fr[2][9] = 1;
 
     mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-    int ret =
-        dsd_mbe_process_ambe3600x2400_framef(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), ambe_fr, ambe_d, &cur, &prev, &prev_enhanced);
+    int ret = mbe_processAmbe3600x2400Framef(expected_audio, &result, (const char (*)[24])ambe_fr, ambe_d, &cur, &prev,
+                                             &prev_enhanced);
+    store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                  sizeof(expected_err_str), &result);
     rc |= expect_eq_int("frame-hard-dstar process", ret >= 0, 1);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
 
     processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
@@ -1532,20 +1376,21 @@ test_process_mbe_frame_hard_dmr_left_stages_audio(void) {
     ambe_fr[1][4] = 1;
     ambe_fr[3][19] = 1;
 
-    int ret =
-        dsd_mbe_decode_ambe2450_frame(&expected_errs, &expected_errs2, (const char (*)[24])ambe_fr, ambe_d, &result);
+    int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("frame-hard-dmr decode", ret >= 0, 1);
     if (ret >= 0) {
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_ambe2450_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), ambe_d, &cur, &prev, &prev_enhanced, &result);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, ambe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("frame-hard-dmr process", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    opts.dmr_mono = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    opts.dmr_stereo = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 0;
 
@@ -1599,16 +1444,16 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
 
         (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_ambe2450_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), expected_ambe_d, &cur, &prev, &prev_enhanced,
-                                             &result);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("dmr-rc4-left fixture processes", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    opts.dmr_mono = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    opts.dmr_stereo = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 0;
     state.payload_algid = 0x21;
@@ -1633,10 +1478,10 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
     DSD_MEMSET(expected_ambe_d, 0, sizeof(expected_ambe_d));
     DSD_MEMSET(expected_audio, 0, sizeof(expected_audio));
     DSD_MEMSET(expected_err_str, 0, sizeof(expected_err_str));
-    ret = dsd_mbe_decode_ambe2450_frame(&expected_errs, &expected_errs2, (const char (*)[24])ambe_fr, decoded_ambe_d,
-                                        &result);
+    ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, decoded_ambe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("dmr-rc4-right fixture decodes", ret >= 0, 1);
-    rc |= expect_eq_int("dmr-rc4-right fixture active voice", dmr_ambe49_should_skip_voice_stream(decoded_ambe_d), 0);
+    rc |= expect_eq_int("dmr-rc4-right fixture active voice", dmr_ambe49_should_skip_crypto(decoded_ambe_d), 0);
     if (ret >= 0) {
         // The right-slot vector uses an independent key/MI/drop tuple from the left slot.
         copy_ambe49(expected_ambe_d, k_dmr_rc4_right_expected_ambe);
@@ -1648,16 +1493,16 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
 
         (void)dsd_mbe_strip_ambe_context_if_changed(decoded_ambe_d, expected_ambe_d, &result);
         mbe_initMbeParms(&cur2, &prev2, &prev_enhanced2);
-        ret = dsd_mbe_process_ambe2450_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), expected_ambe_d, &cur2, &prev2, &prev_enhanced2,
-                                             &result);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected_ambe_d, &cur2, &prev2, &prev_enhanced2);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("dmr-rc4-right fixture processes", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
     opts.dmr_stereo = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 1;
     state.payload_algidR = 0x21;
@@ -1699,10 +1544,10 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    opts.dmr_mono = 1;
+    opts.dmr_stereo = 1;
     opts.reverse_mute = 1;
     opts.unmute_encrypted_p25 = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 0;
 
@@ -1717,7 +1562,7 @@ test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
     opts.floating_point = 1;
     opts.dmr_stereo = 1;
     opts.reverse_mute = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 1;
     state.dmr_soR = 0x40;
@@ -1752,8 +1597,8 @@ test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    opts.dmr_mono = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    opts.dmr_stereo = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 0;
     state.dmr_so = 0x40;
@@ -1769,7 +1614,7 @@ test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
     opts.dmr_stereo = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 1;
     state.dmr_soR = 0x40;
@@ -1805,8 +1650,8 @@ test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    opts.dmr_mono = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    opts.dmr_stereo = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 0;
     state.payload_algid = 0x7E;
@@ -1820,7 +1665,7 @@ test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
     opts.dmr_stereo = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_P25P2_POS;
     state.currentslot = 1;
     state.payload_algidR = 0x80;
@@ -1857,9 +1702,9 @@ test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    opts.dmr_mono = 1;
+    opts.dmr_stereo = 1;
     opts.dmr_mute_encL = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 0;
     state.payload_algid = 0x24;
@@ -1884,7 +1729,7 @@ test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
     opts.floating_point = 1;
     opts.dmr_stereo = 1;
     opts.dmr_mute_encR = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 1;
     state.payload_algidR = 0x25;
@@ -1932,20 +1777,21 @@ test_process_mbe_frame_hard_p25p2_right_stages_audio(void) {
     ambe_fr[0][11] = 1;
     ambe_fr[2][20] = 1;
 
-    int ret =
-        dsd_mbe_decode_ambe2450_frame(&expected_errs, &expected_errs2, (const char (*)[24])ambe_fr, ambe_d, &result);
+    int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("frame-hard-p25p2-r decode", ret >= 0, 1);
     if (ret >= 0) {
         mbe_initMbeParms(&cur2, &prev2, &prev_enhanced2);
-        ret = dsd_mbe_process_ambe2450_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), ambe_d, &cur2, &prev2, &prev_enhanced2, &result);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, ambe_d, &cur2, &prev2, &prev_enhanced2);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("frame-hard-p25p2-r process", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
     opts.dmr_stereo = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_P25P2_POS;
     state.currentslot = 1;
     state.p2_wacn = 1;
@@ -1972,7 +1818,7 @@ test_process_mbe_frame_hard_p25p2_right_stages_audio(void) {
 }
 
 static int
-test_soft_mbe_provoice_updates_debug_errors_without_p25_history(void) {
+test_process_mbe_frame_provoice_updates_debug_errors_without_p25_history(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -1992,26 +1838,27 @@ test_soft_mbe_provoice_updates_debug_errors_without_p25_history(void) {
     mbe_process_result result;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
-    int ret = dsd_mbe_decode_imbe7100_frame(&expected_errs, &expected_errs2, (const char (*)[24])imbe7100_fr, imbe_d,
-                                            &result);
-    rc |= expect_eq_int("soft-provoice fixture decodes", ret >= 0, 1);
+    int ret = mbe_decodeImbe7100x4400Frame((const char (*)[24])imbe7100_fr, imbe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
+    rc |= expect_eq_int("provoice-baseline fixture decodes", ret >= 0, 1);
     decoded_errs2 = expected_errs2;
     if (ret >= 0) {
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_imbe4400_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), imbe_d, &cur, &prev, &prev_enhanced, &result);
-        rc |= expect_eq_int("soft-provoice fixture processes", ret >= 0, 1);
+        ret = mbe_processImbe4400Dataf(expected_audio, &result, imbe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
+        rc |= expect_eq_int("provoice-baseline fixture processes", ret >= 0, 1);
     }
 
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_PROVOICE_POS;
-    soft_mbe(&opts, &state, NULL, NULL, imbe7100_fr);
+    processMbeFrame(&opts, &state, NULL, NULL, imbe7100_fr);
 
-    rc |= expect_eq_int("soft-provoice errs", state.errs, expected_errs);
-    rc |= expect_eq_int("soft-provoice errs2", state.errs2, expected_errs2);
-    rc |= expect_eq_int("soft-provoice debug errors", state.debug_audio_errors, decoded_errs2);
-    rc |= expect_eq_int("soft-provoice keeps p25 history length", state.p25_p1_voice_err_hist_len, 0);
-    rc |= expect_eq_int("soft-provoice keeps p25 history sum", (int)state.p25_p1_voice_err_hist_sum, 0);
+    rc |= expect_eq_int("provoice-baseline errs", state.errs, expected_errs);
+    rc |= expect_eq_int("provoice-baseline errs2", state.errs2, expected_errs2);
+    rc |= expect_eq_int("provoice-baseline debug errors", state.debug_audio_errors, decoded_errs2);
+    rc |= expect_eq_int("provoice-baseline keeps p25 history length", state.p25_p1_voice_err_hist_len, 0);
+    rc |= expect_eq_int("provoice-baseline keeps p25 history sum", (int)state.p25_p1_voice_err_hist_sum, 0);
 
     return rc;
 }
@@ -2041,19 +1888,20 @@ test_process_mbe_frame_hard_provoice_stages_audio(void) {
     imbe7100_fr[2][11] = 1;
     imbe7100_fr[6][19] = 1;
 
-    int ret = dsd_mbe_decode_imbe7100_frame(&expected_errs, &expected_errs2, (const char (*)[24])imbe7100_fr, imbe_d,
-                                            &result);
+    int ret = mbe_decodeImbe7100x4400Frame((const char (*)[24])imbe7100_fr, imbe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
     rc |= expect_eq_int("hard-provoice fixture decodes", ret >= 0, 1);
     if (ret >= 0) {
         mbe_initMbeParms(&cur, &prev, &prev_enhanced);
-        ret = dsd_mbe_process_imbe4400_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), imbe_d, &cur, &prev, &prev_enhanced, &result);
+        ret = mbe_processImbe4400Dataf(expected_audio, &result, imbe_d, &cur, &prev, &prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
         rc |= expect_eq_int("hard-provoice fixture processes", ret >= 0, 1);
     }
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_PROVOICE_POS;
 
     processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
@@ -2070,7 +1918,7 @@ test_process_mbe_frame_hard_provoice_stages_audio(void) {
 }
 
 static int
-test_soft_mbe_ambe2_ehr_routes_slot2_error_state(void) {
+test_process_mbe_frame_ambe2_routes_slot2_error_state(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -2090,17 +1938,18 @@ test_soft_mbe_ambe2_ehr_routes_slot2_error_state(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
-    int ret =
-        dsd_mbe_decode_ambe2450_frame(&expected_errs, &expected_errs2, (const char (*)[24])ambe_fr, ambe_d, &result);
-    rc |= expect_eq_int("soft-ehr fixture decodes", ret >= 0, 1);
+    int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
+    rc |= expect_eq_int("ambe2-slot2 fixture decodes", ret >= 0, 1);
     if (ret >= 0) {
         mbe_initMbeParms(&cur2, &prev2, &prev_enhanced2);
-        ret = dsd_mbe_process_ambe2450_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), ambe_d, &cur2, &prev2, &prev_enhanced2, &result);
-        rc |= expect_eq_int("soft-ehr fixture processes", ret >= 0, 1);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, ambe_d, &cur2, &prev2, &prev_enhanced2);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
+        rc |= expect_eq_int("ambe2-slot2 fixture processes", ret >= 0, 1);
     }
 
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 1;
     state.errs = 101;
@@ -2108,18 +1957,18 @@ test_soft_mbe_ambe2_ehr_routes_slot2_error_state(void) {
     state.errsR = 201;
     state.errs2R = 202;
 
-    soft_mbe(&opts, &state, NULL, ambe_fr, NULL);
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
 
-    rc |= expect_eq_int("soft-ehr keeps slot1 errs", state.errs, 101);
-    rc |= expect_eq_int("soft-ehr keeps slot1 errs2", state.errs2, 102);
-    rc |= expect_eq_int("soft-ehr slot2 errs", state.errsR, expected_errs);
-    rc |= expect_eq_int("soft-ehr slot2 errs2", state.errs2R, expected_errs2);
+    rc |= expect_eq_int("ambe2-slot2 keeps slot1 errs", state.errs, 101);
+    rc |= expect_eq_int("ambe2-slot2 keeps slot1 errs2", state.errs2, 102);
+    rc |= expect_eq_int("ambe2-slot2 errs", state.errsR, expected_errs);
+    rc |= expect_eq_int("ambe2-slot2 errs2", state.errs2R, expected_errs2);
 
     return rc;
 }
 
 static int
-test_soft_mbe_dstar_stages_float_audio(void) {
+test_process_mbe_frame_dstar_stages_second_float_fixture(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -2138,35 +1987,49 @@ test_soft_mbe_dstar_stages_float_audio(void) {
     char expected_err_str[96] = {0};
     int expected_errs = -1;
     int expected_errs2 = -1;
+    mbe_process_result result;
+    char wav_path[1024];
+    SNDFILE* wav_out = create_wav_temp(wav_path, sizeof(wav_path), "dstar_frame_wav");
 
     ambe_fr[0][0] = 1;
     ambe_fr[3][12] = 1;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
+    opts.wav_out_f = wav_out;
+    opts.dmr_stereo_wav = 1;
     mbe_initMbeParms(&expected_cur, &expected_prev, &expected_prev_enhanced);
-    int ret = dsd_mbe_process_ambe3600x2400_framef(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                                   sizeof(expected_err_str), ambe_fr, expected_ambe_d, &expected_cur,
-                                                   &expected_prev, &expected_prev_enhanced);
-    rc |= expect_eq_int("soft-dstar fixture processes", ret >= 0, 1);
+    int ret = mbe_processAmbe3600x2400Framef(expected_audio, &result, (const char (*)[24])ambe_fr, expected_ambe_d,
+                                             &expected_cur, &expected_prev, &expected_prev_enhanced);
+    store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                  sizeof(expected_err_str), &result);
+    rc |= expect_eq_int("dstar-second fixture processes", ret >= 0, 1);
 
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
 
-    soft_mbe(&opts, &state, NULL, ambe_fr, NULL);
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
 
-    rc |= expect_eq_int("soft-dstar errs", state.errs, expected_errs);
-    rc |= expect_eq_int("soft-dstar errs2", state.errs2, expected_errs2);
-    rc |= expect_eq_int("soft-dstar status", strcmp(state.err_str, expected_err_str), 0);
-    rc |= expect_eq_mem("soft-dstar temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
-    rc |= expect_eq_mem("soft-dstar staged left", state.f_l, expected_audio, sizeof(expected_audio));
-    rc |= expect_eq_int("soft-dstar keeps right errs", state.errsR, 0);
+    rc |= expect_eq_int("dstar-second errs", state.errs, expected_errs);
+    rc |= expect_eq_int("dstar-second errs2", state.errs2, expected_errs2);
+    rc |= expect_eq_int("dstar-second status", strcmp(state.err_str, expected_err_str), 0);
+    rc |= expect_eq_mem("dstar-second temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
+    rc |= expect_eq_mem("dstar-second staged left", state.f_l, expected_audio, sizeof(expected_audio));
+    rc |= expect_eq_int("dstar-second keeps right errs", state.errsR, 0);
+    rc |= expect_eq_int("dstar-second wav output opened", wav_out != NULL, 1);
+    if (wav_out) {
+        sf_write_sync(wav_out);
+        rc |= expect_eq_int("dstar-second wav frames", (int)sf_seek(wav_out, 0, SEEK_END), 160);
+        rc |= expect_eq_int("dstar-second wav close", sf_close(wav_out), 0);
+        (void)remove(wav_path);
+        opts.wav_out_f = NULL;
+    }
 
     return rc;
 }
 
 static int
-test_soft_mbe_x2_slot2_uses_right_error_state_and_stages_audio(void) {
+test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -2187,6 +2050,8 @@ test_soft_mbe_x2_slot2_uses_right_error_state_and_stages_audio(void) {
     int expected_errs2 = -1;
     mbe_process_result result;
     FILE* mbe_out = tmpfile();
+    char wav_path[1024];
+    SNDFILE* wav_out = create_wav_temp(wav_path, sizeof(wav_path), "x2_frame_wav");
 
     ambe_fr[1][3] = 1;
     ambe_fr[2][17] = 1;
@@ -2194,37 +2059,44 @@ test_soft_mbe_x2_slot2_uses_right_error_state_and_stages_audio(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
     opts.mbe_out_f = mbe_out;
-    int ret =
-        dsd_mbe_decode_ambe2450_frame(&expected_errs, &expected_errs2, (const char (*)[24])ambe_fr, ambe_d, &result);
-    rc |= expect_eq_int("soft-x2 fixture decodes", ret >= 0, 1);
+    opts.wav_out_f = wav_out;
+    opts.static_wav_file = 1;
+    int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
+    rc |= expect_eq_int("x2-slot2 fixture decodes", ret >= 0, 1);
     if (ret >= 0) {
         mbe_initMbeParms(&expected_cur, &expected_prev, &expected_prev_enhanced);
-        ret = dsd_mbe_process_ambe2450_dataf(expected_audio, &expected_errs, &expected_errs2, expected_err_str,
-                                             sizeof(expected_err_str), ambe_d, &expected_cur, &expected_prev,
-                                             &expected_prev_enhanced, &result);
-        rc |= expect_eq_int("soft-x2 fixture processes", ret >= 0, 1);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, ambe_d, &expected_cur, &expected_prev,
+                                       &expected_prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
+        rc |= expect_eq_int("x2-slot2 fixture processes", ret >= 0, 1);
     }
 
-    init_soft_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_X2TDMA_VOICE_POS;
     state.currentslot = 1;
     state.errs = 101;
     state.errs2 = 102;
     state.errsR = 201;
     state.errs2R = 202;
+    state.payload_algidR = 0x21;
+    state.RR = 0x0102030405ULL;
+    state.dropR = 5;
 
-    soft_mbe(&opts, &state, NULL, ambe_fr, NULL);
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
 
-    rc |= expect_eq_int("soft-x2 keeps slot1 errs", state.errs, 101);
-    rc |= expect_eq_int("soft-x2 keeps slot1 errs2", state.errs2, 102);
-    rc |= expect_eq_int("soft-x2 slot2 errs", state.errsR, expected_errs);
-    rc |= expect_eq_int("soft-x2 slot2 errs2", state.errs2R, expected_errs2);
-    rc |= expect_eq_int("soft-x2 status", strcmp(state.err_strR, expected_err_str), 0);
-    rc |= expect_eq_mem("soft-x2 temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
-    rc |= expect_eq_mem("soft-x2 staged left", state.f_l, expected_audio, sizeof(expected_audio));
-    rc |= expect_eq_int("soft-x2 mbe output opened", mbe_out != NULL, 1);
+    rc |= expect_eq_int("x2-slot2 keeps slot1 errs", state.errs, 101);
+    rc |= expect_eq_int("x2-slot2 keeps slot1 errs2", state.errs2, 102);
+    rc |= expect_eq_int("x2-slot2 errs", state.errsR, expected_errs);
+    rc |= expect_eq_int("x2-slot2 errs2", state.errs2R, expected_errs2);
+    rc |= expect_eq_int("x2-slot2 ignores dmr crypto state", state.dropR, 5);
+    rc |= expect_eq_int("x2-slot2 status", strcmp(state.err_strR, expected_err_str), 0);
+    rc |= expect_eq_mem("x2-slot2 temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
+    rc |= expect_eq_mem("x2-slot2 staged left", state.f_l, expected_audio, sizeof(expected_audio));
+    rc |= expect_eq_int("x2-slot2 mbe output opened", mbe_out != NULL, 1);
     if (mbe_out) {
-        rc |= expect_eq_int("soft-x2 mbe flush", fflush(mbe_out), 0);
+        rc |= expect_eq_int("x2-slot2 mbe flush", fflush(mbe_out), 0);
         if (fseek(mbe_out, 0, SEEK_SET) != 0) {
             rc = 1;
         }
@@ -2233,7 +2105,7 @@ test_soft_mbe_x2_slot2_uses_right_error_state_and_stages_audio(void) {
         if (first == EOF && ferror(mbe_out)) {
             rc = 1;
         }
-        rc |= expect_eq_int("soft-x2 saved slot2 err byte", first, expected_errs2 & 0xFF);
+        rc |= expect_eq_int("x2-slot2 saved err byte", first, expected_errs2 & 0xFF);
         int bytes = 0;
         while (fgetc(mbe_out) != EOF) {
             bytes++;
@@ -2241,9 +2113,17 @@ test_soft_mbe_x2_slot2_uses_right_error_state_and_stages_audio(void) {
         if (ferror(mbe_out)) {
             rc = 1;
         }
-        rc |= expect_eq_int("soft-x2 saved ambe payload bytes", bytes, 7);
+        rc |= expect_eq_int("x2-slot2 saved ambe payload bytes", bytes, 7);
         fclose(mbe_out);
         opts.mbe_out_f = NULL;
+    }
+    rc |= expect_eq_int("x2-slot2 wav output opened", wav_out != NULL, 1);
+    if (wav_out) {
+        sf_write_sync(wav_out);
+        rc |= expect_eq_int("x2-slot2 wav frames", (int)sf_seek(wav_out, 0, SEEK_END), 160);
+        rc |= expect_eq_int("x2-slot2 wav close", sf_close(wav_out), 0);
+        (void)remove(wav_path);
+        opts.wav_out_f = NULL;
     }
 
     return rc;
@@ -2253,18 +2133,13 @@ int
 main(void) {
     int rc = 0;
 
-    rc |= test_public_result_helpers_normalize_error_counts();
-    rc |= test_public_store_result_uses_c0_when_valid();
     rc |= test_unchanged_preserves_c0_context();
     rc |= test_changed_strips_only_c0_context();
-    rc |= test_changed_without_c0_context_keeps_legacy_shape();
+    rc |= test_changed_without_c0_context_keeps_current_shape();
     rc |= test_null_result_is_safe();
     rc |= test_imbe_unchanged_preserves_c0_c4_context();
     rc |= test_imbe_changed_strips_c0_c4_context();
     rc |= test_changed_frame_restores_total_error_repeat_fallback();
-    rc |= test_decode_wrappers_store_status_like_mbelib();
-    rc |= test_process_wrappers_match_direct_mbelib_status();
-    rc |= test_process_frame_wrapper_stores_status_and_audio();
     rc |= test_keyring_tracks_aes_segment_metadata();
     rc |= test_process_mbe_frame_soft_p25p1_copies_soft_imbe_audio();
     rc |= test_process_mbe_frame_soft_nxdn_copies_soft_ambe_audio();
@@ -2273,6 +2148,7 @@ main(void) {
     rc |= test_process_mbe_frame_nxdn_cipher1_transforms_ambe_payload();
     rc |= test_process_mbe_frame_nxdn_cipher2_initializes_and_advances_keystream();
     rc |= test_process_mbe_frame_nxdn_cipher2_clamps_stale_bit_counter();
+    rc |= test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset();
     rc |= test_process_mbe_frame_hard_dstar_stages_audio();
     rc |= test_process_mbe_frame_hard_dmr_left_stages_audio();
     rc |= test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots();
@@ -2282,12 +2158,12 @@ main(void) {
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();
     rc |= test_play_mbe_files_processes_imbe_ambe_and_dstar_records();
-    rc |= test_soft_mbe_p25p1_updates_error_history();
-    rc |= test_soft_mbe_provoice_updates_debug_errors_without_p25_history();
+    rc |= test_process_mbe_frame_p25p1_updates_error_history();
+    rc |= test_process_mbe_frame_provoice_updates_debug_errors_without_p25_history();
     rc |= test_process_mbe_frame_hard_provoice_stages_audio();
-    rc |= test_soft_mbe_ambe2_ehr_routes_slot2_error_state();
-    rc |= test_soft_mbe_dstar_stages_float_audio();
-    rc |= test_soft_mbe_x2_slot2_uses_right_error_state_and_stages_audio();
+    rc |= test_process_mbe_frame_ambe2_routes_slot2_error_state();
+    rc |= test_process_mbe_frame_dstar_stages_second_float_fixture();
+    rc |= test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio();
 
     if (rc == 0) {
         printf("CORE_MBE_TRANSFORM_CONTEXT: OK\n");

@@ -114,8 +114,8 @@ test_process_voice_integer_playback(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.payload = 1;
     opts.floating_point = 0;
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     state.ea_mode = 1;
     state.lasttg = 100344;
     state.lastsrc = 321;
@@ -139,8 +139,8 @@ test_process_voice_float_playback(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 1;
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     state.ea_mode = 0;
     state.lastsrc = 0x123;
     state.edacs_site_id = 9;

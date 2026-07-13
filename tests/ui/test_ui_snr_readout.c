@@ -137,14 +137,14 @@ test_qpsk_uses_constellation_fallback(void) {
 }
 
 static void
-test_qpsk_uses_best_legacy_snr_when_constellation_invalid(void) {
+test_qpsk_uses_best_cross_modulation_snr_when_constellation_invalid(void) {
     reset_fakes();
     g_snr_cqpsk = -100.0;
     g_snr_qpsk_const = -100.0;
     g_snr_c4fm = 4.25;
     g_snr_gfsk = 6.75;
 
-    expect_readout("qpsk-legacy-best-fallback", 1, 6.75, "QPSK");
+    expect_readout("qpsk-cross-modulation-fallback", 1, 6.75, "QPSK");
 }
 
 static void
@@ -167,7 +167,7 @@ main(void) {
     test_c4fm_snr_at_invalid_threshold_falls_back();
     test_qpsk_uses_cqpsk_snr();
     test_qpsk_uses_constellation_fallback();
-    test_qpsk_uses_best_legacy_snr_when_constellation_invalid();
+    test_qpsk_uses_best_cross_modulation_snr_when_constellation_invalid();
     test_qpsk_reports_invalid_when_all_estimates_stale();
     printf("UI_SNR_READOUT: OK\n");
     return 0;

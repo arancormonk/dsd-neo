@@ -11,6 +11,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -53,30 +55,10 @@ free_test_state(dsd_state* st) {
  */
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (input == NULL || output == NULL || len <= 0) {
-        return;
-    }
-    DSD_MEMSET(output, 0, (size_t)len * sizeof(uint8_t));
-    for (int i = 0; i < len; i++) {
-        output[i] = (uint8_t)((input[i / 8] >> (7 - (i % 8))) & 1U);
-    }
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     (void)opts;
     (void)state;
     (void)MessageType;
-}
-
-uint32_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_message_crc32(const uint8_t* input, int len) {
-    (void)input;
-    (void)len;
-    return 0U;
 }
 
 void
@@ -179,22 +161,21 @@ LFSR128n(dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
-                           int len) {
+des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int nblocks) {
     (void)mi;
     (void)key_ulli;
     (void)output;
-    (void)type;
-    (void)len;
+    (void)nblocks;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, dsd_aes_key_size key_size,
+                         int nblocks) {
     (void)iv;
     (void)key;
     (void)output;
-    (void)type;
+    (void)key_size;
     (void)nblocks;
 }
 
@@ -218,7 +199,6 @@ hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, 
     g_tune_count++;
     g_last_tune_freq = freq;
     if (opts) {
-        opts->p25_is_tuned = 1;
         opts->trunk_is_tuned = 1;
     }
     if (state) {
@@ -241,7 +221,6 @@ static dsd_trunk_tune_result
 hook_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)request_id;
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
@@ -292,7 +271,6 @@ static void
 reset_tune_state(dsd_opts* opts, dsd_state* st) {
     g_tune_count = 0;
     g_last_tune_freq = 0;
-    opts->p25_is_tuned = 0;
     opts->trunk_is_tuned = 0;
     st->trunk_vc_freq[0] = st->trunk_vc_freq[1] = 0;
 }
@@ -313,7 +291,6 @@ main(void) {
         return 1;
     }
 
-    opts->p25_trunk = 1;
     opts->trunk_enable = 1;
     opts->trunk_use_allow_list = 1;
     opts->trunk_tune_group_calls = 1;

@@ -54,31 +54,12 @@ build_arib_msg(uint8_t* bits, uint8_t seg_num, uint8_t seg_total, const uint8_t 
     }
 }
 
-static uint32_t
-arib_crc32_msb_first(const uint8_t* data, size_t len) {
-    // Keep test-vector CRC generation aligned with decoder CRC validation.
-    uint32_t crc = 0xFFFFFFFFU;
-    for (size_t i = 0U; i < len; i++) {
-        uint8_t b = data[i];
-        for (size_t bit = 0U; bit < 8U; bit++) {
-            uint32_t in_bit = (uint32_t)((b >> (7U - bit)) & 1U);
-            uint32_t fb = ((crc >> 31U) & 1U) ^ in_bit;
-            crc <<= 1U;
-            if (fb != 0U) {
-                crc ^= 0x04C11DB7U;
-            }
-        }
-    }
-    return crc;
-}
-
 static void
-build_arib_packed_alias8(uint8_t packed12[12], const char alias8[9]) {
+build_arib_packed_alias8(uint8_t packed12[12], const char alias8[9], uint32_t crc) {
     DSD_MEMSET(packed12, 0, 12U);
     for (size_t i = 0U; i < 8U; i++) {
         packed12[i] = (uint8_t)alias8[i];
     }
-    uint32_t crc = arib_crc32_msb_first(packed12, 8U);
     packed12[8] = (uint8_t)((crc >> 24U) & 0xFFU);
     packed12[9] = (uint8_t)((crc >> 16U) & 0xFFU);
     packed12[10] = (uint8_t)((crc >> 8U) & 0xFFU);
@@ -143,7 +124,7 @@ main(void) {
 
     {
         uint8_t packed[12];
-        build_arib_packed_alias8(packed, "ARIBTEST");
+        build_arib_packed_alias8(packed, "ARIBTEST", 0x84201F67U);
         build_arib_msg(bits, 1U, 2U, &packed[0]);
         nxdn_alias_decode_arib(&opts, &state, bits, 1U);
         rc |= expect_str("arib-partial", state.generic_talker_alias[0], "KEEP");
@@ -159,7 +140,7 @@ main(void) {
     {
         static const uint8_t stale_seg2[6] = {'Z', 'Z', 0x11, 0x22, 0x33, 0x44};
         uint8_t fresh_packed[12];
-        build_arib_packed_alias8(fresh_packed, "GOOD1234");
+        build_arib_packed_alias8(fresh_packed, "GOOD1234", 0x51265003U);
 
         build_arib_msg(bits, 2U, 2U, stale_seg2);
         nxdn_alias_decode_arib(&opts, &state, bits, 1U);
@@ -199,8 +180,8 @@ main(void) {
     {
         uint8_t stale_packed[12];
         uint8_t fresh_packed[12];
-        build_arib_packed_alias8(stale_packed, "STALE111");
-        build_arib_packed_alias8(fresh_packed, "FRESH222");
+        build_arib_packed_alias8(stale_packed, "STALE111", 0x15165977U);
+        build_arib_packed_alias8(fresh_packed, "FRESH222", 0x5FD0F4FDU);
 
         build_arib_msg(bits, 1U, 2U, &stale_packed[0]);
         nxdn_alias_decode_arib(&opts, &state, bits, 1U);

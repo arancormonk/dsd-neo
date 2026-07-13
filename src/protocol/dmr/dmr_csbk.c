@@ -46,8 +46,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#define PCLEAR_TUNE_AWAY //disable if slower return is preferred
-
 static void
 dmr_csbk_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
@@ -91,52 +89,14 @@ dmr_policy_tune_allowed(const dsd_opts* opts, const dsd_state* state, uint32_t t
     DSD_MEMSET(&decision, 0, sizeof(decision));
 
     if (is_group_call) {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, data_call,
-                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, data_call, &decision);
     } else {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call,
-                                                 DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                 DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call, &decision);
     }
     if (out_decision) {
         *out_decision = decision;
     }
     return rc == 0 && decision.tune_allowed;
-}
-
-static const char*
-dmr_policy_block_reason_label(uint32_t block_reasons) {
-    if (block_reasons & DSD_TG_POLICY_BLOCK_HOLD) {
-        return "hold";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED) {
-        return "private-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_GROUP_DISABLED) {
-        return "group-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_DATA_DISABLED) {
-        return "data-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
-        return "enc-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) {
-        return "allowlist";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_MODE) {
-        return "mode";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_AUDIO) {
-        return "audio";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_RECORD) {
-        return "record";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_STREAM) {
-        return "stream";
-    }
-    return "policy";
 }
 
 static void
@@ -149,7 +109,7 @@ dmr_policy_log_block(const dsd_opts* opts, int is_group_call, uint32_t target, u
         return;
     }
     DSD_FPRINTF(stderr, "\n DMR %s grant blocked (%s): target=%u source=%u;", is_group_call ? "group" : "private",
-                dmr_policy_block_reason_label(decision->block_reasons), target, source);
+                dsd_tg_policy_block_reason_label(decision->block_reasons), target, source);
 }
 
 static void dmr_gateway_identifier(uint32_t source, uint32_t target);
@@ -1203,18 +1163,12 @@ dmr_cspdu_pf0_handle_p_clear(dsd_opts* opts, dsd_state* state, int csbk_o, int c
     clear = dmr_cspdu_pf0_p_clear_compute(opts, state);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Clear (P_CLEAR) ");
-#ifdef PCLEAR_TUNE_AWAY
     if (opts->trunk_enable != 1) {
         return;
     }
     dmr_cspdu_pf0_p_clear_mark_slots_idle(state);
     clear = dmr_cspdu_pf0_p_clear_log_status(state, clear, csbk_fid, pslot, oslot);
     dmr_cspdu_pf0_p_clear_emit_release(opts, state, clear);
-#else
-    UNUSED(clear);
-    UNUSED(pslot);
-    UNUSED(oslot);
-#endif
 }
 
 typedef struct {
@@ -2723,7 +2677,6 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     // This does not process the PDU further — it only keeps the CC timer warm.
     else if (opts->dmr_crc_relaxed_default) {
         state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
         state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
     }
 

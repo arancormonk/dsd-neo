@@ -13,7 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -26,53 +26,35 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
 void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
 
-// Stubs for external hooks
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
 
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
 }
 
 // Alias decode helpers referenced by MAC VPDU handler
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -147,6 +129,7 @@ mark_cc_reacquired(dsd_state* st) {
 int
 main(void) {
     int rc = 0;
+    install_trunk_tuning_hooks();
 
     // Build a TSBK-mapped vPDU Group Voice grant frame (DUID=0x07, op=0x40)
     unsigned long long MAC[24] = {0};
@@ -166,7 +149,7 @@ main(void) {
     static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     st.p25_cc_freq = 851000000;
     int iden = 1;
     st.p25_chan_iden = iden;
@@ -193,7 +176,7 @@ main(void) {
     rc |= expect_true("group allowed tunes", st.p25_sm_tune_count == before + 1);
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
 
     // Case C: private grant gating — reuse MAC with private opcode mapping
     // Use MFID std (0) and UU opcode 0x44 in UU map (P2 handler honors private gate)
@@ -211,14 +194,14 @@ main(void) {
     MAC3[3] = 0x0B; // use a different channel so grant de-dup doesn't mask this case
 
     // Reset tuned flag before private tests to allow tuning path
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     opts.trunk_tune_private_calls = 0;
     opts.trunk_tune_enc_calls = 1; // ensure ENC gating does not suppress UU grant
     before = st.p25_sm_tune_count;
     process_MAC_VPDU(&opts, &st, 0, MAC2);
     rc |= expect_true("private gating honored", st.p25_sm_tune_count == before);
 
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_enc_calls = 1; // ensure ENC gating does not suppress UU grant
     before = st.p25_sm_tune_count;
@@ -228,7 +211,7 @@ main(void) {
     // Case D: helper-path private allow-list behavior: unknown private IDs block.
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     opts.trunk_use_allow_list = 1;
     opts.trunk_tune_private_calls = 1;
     before = st.p25_sm_tune_count;
@@ -237,11 +220,12 @@ main(void) {
 
     // Case E: helper-path private allow-list known target tunes.
     rc |= expect_true("seed private allow-list target", seed_exact(&st, 256, "A", "UU-ALLOW") == 0);
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     before = st.p25_sm_tune_count;
     process_MAC_VPDU(&opts, &st, 0, MAC3);
     rc |= expect_true("private allow-list known target tunes", st.p25_sm_tune_count == before + 1);
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

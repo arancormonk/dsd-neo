@@ -13,16 +13,13 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -62,61 +59,28 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-// Rig/RTL helpers
-bool
-SetFreq(dsd_socket_t sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(dsd_socket_t sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-long int
-GetCurrentFreq(dsd_socket_t sockfd) {
-    (void)sockfd;
-    return 0;
-}
-struct RtlSdrContext;
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-// SM tuner/reset stubs
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+static dsd_trunk_tune_result
+test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     if (!opts || !state || freq <= 0) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     opts->trunk_is_tuned = 1;
-    state->last_vc_sync_time = time(NULL);
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+static dsd_trunk_tune_result
+test_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     if (opts) {
         opts->trunk_is_tuned = 0;
     }
     if (state) {
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 void
@@ -132,13 +96,6 @@ crc8(uint8_t bits[], unsigned int len) {
     (void)bits;
     (void)len;
     return 0xFF;
-}
-
-// Audio drain helper referenced by tuner paths
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_drain_audio_output(dsd_opts* opts) {
-    (void)opts;
 }
 
 // --- Helpers ---
@@ -189,6 +146,10 @@ main(int argc, char** argv) {
     static dsd_opts opts;
     static dsd_state state;
     init_env(&opts, &state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_to_freq,
+        .return_to_cc_request = test_return_to_cc,
+    });
 
     // Step 1: tune to initial VC via SM grant
     long f1 = 852000000;
@@ -209,7 +170,7 @@ main(int argc, char** argv) {
     assert(state.trunk_vc_freq[0] == f2);
 
     // Step 3: while on CC (not on VC), a C_MOVE should NOT cause a retune
-    return_to_cc(&opts, &state); // sets trunk_is_tuned = 0 and clears vc freqs
+    assert(dsd_trunk_tuning_hook_return_to_cc(&opts, &state, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(opts.trunk_is_tuned == 0);
     // Build another move to 854.000000 MHz
     rx_int = 854;
@@ -220,6 +181,7 @@ main(int argc, char** argv) {
     assert(opts.trunk_is_tuned == 0);
     assert(state.trunk_vc_freq[0] == 0);
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     printf("DMR_T3_CMOVE: OK\n");
     return 0;
 }

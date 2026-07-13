@@ -18,10 +18,10 @@ int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symb
 int rtl_stream_test_tune_result_output_drain(int tune_result, size_t queued_samples, int cached_symbols,
                                              size_t* out_used_after, int* out_cache_pending_after,
                                              uint32_t* out_generation_before, uint32_t* out_generation_after);
-int rtl_stream_test_untagged_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
-                                               size_t* out_used_while_pending, int* out_read_after_failed_completion,
-                                               int* out_read_after_recovery, uint32_t* out_generation_before,
-                                               uint32_t* out_generation_after_gate);
+int rtl_stream_test_tune_timeout_read_gate(size_t queued_samples, int* out_read_while_pending,
+                                           size_t* out_used_while_pending, int* out_read_after_failed_completion,
+                                           int* out_read_after_recovery, uint32_t* out_generation_before,
+                                           uint32_t* out_generation_after_gate);
 int dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_result);
 int dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
                                                         uint32_t applied_freq_hz);
@@ -72,13 +72,6 @@ int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* 
 int rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
                                                         uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
                                                         uint32_t* out_coalesced_request_id);
-int rtl_stream_test_tagged_completion_boundary(uint64_t first_token, uint64_t second_token, size_t queued_samples,
-                                               uint64_t* out_coalesced_token, uint32_t* out_generation_before,
-                                               uint32_t* out_generation_after);
-int dsd_rtl_stream_test_cancel_queued_tagged_retune(uint64_t token, int* out_pending_after, int* out_completion_result);
-int dsd_rtl_stream_test_cancel_queued_tagged_retune_order(uint64_t active_token, uint64_t queued_token,
-                                                          int* out_active_result, int* out_cancelled_result);
-int dsd_rtl_stream_test_tune_completion_callback_registered(void);
 int dsd_rtl_stream_test_retune_without_controller_rejected(void);
 int rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_gain_tenth_db, int* out_gain_is_auto,
                                                 int* out_autogain_is_set, int* out_autogain_on);

@@ -9,8 +9,8 @@
  *
  * Some DSP/protocol code wants to query RTL stream metrics without directly
  * depending on IO backends. The engine installs real hook functions at
- * startup; the runtime provides safe wrappers and fallback behavior when
- * hooks are not installed.
+ * startup. Missing query hooks return empty metrics; missing mutating hooks
+ * report that the operation is unavailable.
  */
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_METRICS_HOOKS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_RTL_STREAM_METRICS_HOOKS_H_H
@@ -30,7 +30,6 @@ typedef struct {
     int (*output_kind)(void);
     int (*symbol_profile)(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
     uint32_t (*stream_generation)(void);
-    int (*set_symbol_profile)(int symbol_rate_hz, int levels, int channel_profile);
     int (*cqpsk_status)(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
     int (*cqpsk_timing_bias)(void);
     double (*snr_bias_evm)(void);
@@ -64,13 +63,11 @@ int dsd_rtl_stream_metrics_hook_symbol_profile(int* out_symbol_rate_hz, int* out
 uint32_t dsd_rtl_stream_metrics_hook_stream_generation(void);
 int dsd_rtl_stream_metrics_hook_stream_active(void);
 int dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out);
-int dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
 /**
  * @brief Synchronize the RTL demodulator family, symbol profile, and timing recovery rate.
  *
  * The engine implementation applies the family transition before updating TED timing and the
- * symbol/channel profile. When the complete transition hook is unavailable, the wrapper falls
- * back to the symbol-profile hook so non-RTL test and embedding configurations remain usable.
+ * symbol/channel profile.
  */
 int dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
                                                     int channel_profile, int ted_sps);

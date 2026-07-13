@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -23,12 +24,37 @@
 static dsd_opts g_opts;
 static dsd_state g_state;
 
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+}
+
 static void
 reset_test_state(void) {
     dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
-    g_opts.p25_trunk = 1;
     g_opts.trunk_enable = 1;
     g_opts.trunk_hangtime = 2.0f; // op25 TGID_HOLD_TIME
     g_opts.trunk_tune_group_calls = 1;
@@ -572,6 +598,7 @@ test_tdma_enc_respects_media_policy(void) {
 int
 main(void) {
     int fail = 0;
+    install_trunk_tuning_hooks();
 
     printf("Testing P25 SM (4-state model)...\n");
 
@@ -592,8 +619,9 @@ main(void) {
 
     if (fail) {
         printf("FAILED: %d test(s)\n", fail);
-        return 1;
+    } else {
+        printf("PASSED: All P25 SM tests\n");
     }
-    printf("PASSED: All P25 SM tests\n");
-    return 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    return fail ? 1 : 0;
 }

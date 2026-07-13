@@ -51,7 +51,7 @@ p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (p25_sm_tick_guard_try_enter()) {
-        if (opts->p25_trunk == 1) {
+        if (opts->trunk_enable == 1) {
             /* Only one tick runs at a time across all callers. */
             atomic_store(&g_p25_sm_in_tick, 1);
             // Drive the high-level trunk SM tick
@@ -97,7 +97,7 @@ p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
     g_opts = opts;
     g_state = state;
     // One-time env override for watchdog cadence (milliseconds)
-    // DSD_NEO_P25_WD_MS=100 .. 2000
+    // DSD_NEO_P25_WD_MS=20 .. 2000
     if (g_p25_sm_wd_ms == 0) {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (cfg && cfg->p25_wd_ms_is_set) {

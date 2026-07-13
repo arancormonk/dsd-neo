@@ -14,28 +14,25 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "ysf_frame.h"
 #include "ysf_internal.h"
 
-typedef struct mbe_parms mbe_parms;
-typedef struct mbe_process_result mbe_process_result;
-
 void LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state); // NOLINT(misc-use-internal-linkage)
-uint16_t ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len);         // NOLINT(misc-use-internal-linkage)
 int Connect(char* hostname, int portno);                               // NOLINT(misc-use-internal-linkage)
 int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state,
                                        int* out_analog_signal); // NOLINT(misc-use-internal-linkage)
 void __wrap_processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
                             char imbe7100_fr[7][24]); // NOLINT(misc-use-internal-linkage)
-int __wrap_dsd_mbe_process_ambe2450_dataf(float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
-                                          const char ambe_d[49], mbe_parms* cur_mp, mbe_parms* prev_mp,
-                                          mbe_parms* prev_mp_enhanced,
-                                          mbe_process_result* result); // NOLINT(misc-use-internal-linkage)
+int __wrap_mbe_processAmbe2450Dataf(float* aout_buf, mbe_process_result* result, const char ambe_d[49],
+                                    mbe_parms* cur_mp, mbe_parms* prev_mp,
+                                    mbe_parms* prev_mp_enhanced); // NOLINT(misc-use-internal-linkage)
 
 static uint8_t g_dibit_stream[512];
 static size_t g_dibit_stream_len;
@@ -100,13 +97,6 @@ LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) {
     (void)state;
 }
 
-uint16_t
-ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
-    (void)buf;
-    (void)len;
-    return 0;
-}
-
 int
 Connect(char* hostname, int portno) {
     (void)hostname;
@@ -116,28 +106,22 @@ Connect(char* hostname, int portno) {
 
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-__wrap_dsd_mbe_process_ambe2450_dataf(float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
-                                      const char ambe_d[49], mbe_parms* cur_mp, mbe_parms* prev_mp,
-                                      mbe_parms* prev_mp_enhanced, mbe_process_result* result) {
+__wrap_mbe_processAmbe2450Dataf(float* aout_buf, mbe_process_result* result, const char ambe_d[49], mbe_parms* cur_mp,
+                                mbe_parms* prev_mp, mbe_parms* prev_mp_enhanced) {
     (void)ambe_d;
     (void)cur_mp;
     (void)prev_mp;
     (void)prev_mp_enhanced;
-    (void)result;
 
     assert(g_mbe_call_count < 5);
-    g_mbe_inbound_errs2[g_mbe_call_count] = *errs2;
-    if (errs != NULL) {
-        *errs = 4 + g_mbe_call_count;
-    }
-    if (err_str != NULL && err_str_size > 0U) {
-        DSD_SNPRINTF(err_str, err_str_size, "stub-%d", g_mbe_call_count);
-    }
+    g_mbe_inbound_errs2[g_mbe_call_count] = result->total_errors;
+    result->total_errors = 4 + g_mbe_call_count;
+    result->protected_errors = result->total_errors;
     for (size_t i = 0; i < 160U; i++) {
         aout_buf[i] = (float)(g_mbe_call_count + 1);
     }
     g_mbe_call_count++;
-    return 0;
+    return result->total_errors;
 }
 
 static void
@@ -375,15 +359,9 @@ append_vd_type1_blocks(const uint8_t dch[180], uint8_t voice_seed) {
 
 static void
 append_type2_vech_dibits(uint8_t error_bit) {
-    static const uint8_t vd2_interleave[104] = {
-        0,  26, 52, 78, 1,  27, 53, 79, 2,  28, 54, 80, 3,  29,  55, 81, 4,  30,  56, 82, 5,  31,  57, 83, 6,  32,
-        58, 84, 7,  33, 59, 85, 8,  34, 60, 86, 9,  35, 61, 87,  10, 36, 62, 88,  11, 37, 63, 89,  12, 38, 64, 90,
-        13, 39, 65, 91, 14, 40, 66, 92, 15, 41, 67, 93, 16, 42,  68, 94, 17, 43,  69, 95, 18, 44,  70, 96, 19, 45,
-        71, 97, 20, 46, 72, 98, 21, 47, 73, 99, 22, 48, 74, 100, 23, 49, 75, 101, 24, 50, 76, 102, 25, 51, 77, 103};
-
     for (size_t i = 0; i < 52U; i++) {
-        uint8_t msb_index = vd2_interleave[i * 2U];
-        uint8_t lsb_index = vd2_interleave[(i * 2U) + 1U];
+        uint8_t msb_index = dsd_ysf_vd2_interleave_index(i * 2U);
+        uint8_t lsb_index = dsd_ysf_vd2_interleave_index((i * 2U) + 1U);
         uint8_t desired_msb = 0U;
         uint8_t desired_lsb = (lsb_index == 103U) ? error_bit : 0U;
         uint8_t source_msb = desired_msb ^ test_ysf_pn95_bit(msb_index);
@@ -747,7 +725,7 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     assert(state.ysf_fi == 1U);
     assert(state.ysf_dt == 2U);
     assert(strcmp(state.ysf_src, "VD2SRC4444") == 0);
-    assert(strcmp(state.err_str, "stub-4") == 0);
+    assert(strcmp(state.err_str, "========") == 0);
     assert(state.f_l[0] == 5.0F);
     assert(state.f_l[159] == 5.0F);
 }

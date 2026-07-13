@@ -527,15 +527,6 @@ test_costas_smooths_error_step(void) {
         return 1;
     }
 
-    dsd_costas_loop_state_t c = s->costas_state;
-    c.error_smooth = 0.5f;
-    dsd_costas_reset(&c);
-    if (c.error_smooth != 0.0f) {
-        DSD_FPRINTF(stderr, "COSTAS SMOOTH: reset did not clear smoothed error\n");
-        free(s);
-        return 1;
-    }
-
     free(s);
     return 0;
 }
@@ -716,7 +707,7 @@ test_gardner_omega_absolute_clamp_p25p2(void) {
 static int
 expect_p25p2_tracking_gain_after_lock(const char* label, float ted_gain, int ted_gain_is_set, float expected_gain) {
     dsd_unsetenv("DSD_NEO_TED_GAIN");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const int sps = 8;
     const int pairs = 64 * sps;
@@ -776,54 +767,6 @@ test_p25p2_tracking_gain_reduces_after_lock(void) {
 static int
 test_p25p2_tracking_gain_honors_runtime_override_after_lock(void) {
     return expect_p25p2_tracking_gain_after_lock("P25P2 runtime TED gain", 0.031f, 1, 0.031f);
-}
-
-/*
- * Test: public reset helpers tolerate null pointers and clear documented state.
- */
-static int
-test_reset_helpers_clear_tracking_state(void) {
-    dsd_costas_reset(NULL);
-    dsd_fll_band_edge_reset(NULL);
-
-    dsd_costas_loop_state_t c;
-    DSD_MEMSET(&c, 0, sizeof(c));
-    c.phase = 0.9f;
-    c.freq = -0.3f;
-    c.error = 0.2f;
-    c.error_smooth = -0.1f;
-    c.alpha = 0.04f;
-    c.initialized = 1;
-
-    dsd_costas_reset(&c);
-    if (c.phase != 0.0f || c.freq != 0.0f || c.error != 0.0f || c.error_smooth != 0.0f || c.initialized != 0
-        || c.alpha != 0.04f) {
-        DSD_FPRINTF(stderr, "RESET: Costas reset left phase=%f freq=%f err=%f smooth=%f init=%d alpha=%f\n", c.phase,
-                    c.freq, c.error, c.error_smooth, c.initialized, c.alpha);
-        return 1;
-    }
-
-    dsd_fll_band_edge_state_t f;
-    DSD_MEMSET(&f, 0, sizeof(f));
-    dsd_fll_band_edge_init(&f, 5);
-    f.phase = 0.7f;
-    f.freq = -0.2f;
-    f.delay_idx = 3;
-    f.delay_r[0] = 1.0f;
-    f.delay_i[0] = -1.0f;
-    const float tap0 = f.taps_upper_r[0];
-    const int n_taps = f.n_taps;
-
-    dsd_fll_band_edge_reset(&f);
-    if (std::fabs(f.phase) > 1e-7f || std::fabs(f.freq) > 1e-7f || f.delay_idx != 0 || std::fabs(f.delay_r[0]) > 1e-7f
-        || std::fabs(f.delay_i[0]) > 1e-7f || std::fabs(f.taps_upper_r[0] - tap0) > 1e-7f || f.n_taps != n_taps
-        || !f.initialized) {
-        DSD_FPRINTF(stderr, "RESET: FLL reset phase=%f freq=%f delay=%d tap0=%f/%f n_taps=%d/%d initialized=%d\n",
-                    f.phase, f.freq, f.delay_idx, f.taps_upper_r[0], tap0, f.n_taps, n_taps, f.initialized);
-        return 1;
-    }
-
-    return 0;
 }
 
 /*
@@ -1066,9 +1009,6 @@ main(void) {
         return 1;
     }
     if (test_p25p2_tracking_gain_honors_runtime_override_after_lock() != 0) {
-        return 1;
-    }
-    if (test_reset_helpers_clear_tracking_state() != 0) {
         return 1;
     }
     if (test_diff_phasor_short_block_preserves_state() != 0) {

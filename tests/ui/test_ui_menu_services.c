@@ -24,7 +24,6 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
-#include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <math.h>
@@ -230,12 +229,13 @@ static int g_p25_tick_guard_enter_calls = 0;
 static int g_p25_tick_guard_leave_calls = 0;
 static int g_p25_tick_guard_errors = 0;
 static int g_rtl_lifecycle_outside_guard = 0;
-static int g_rtl_soft_stop_calls = 0;
+static int g_rtl_stop_calls = 0;
 static int g_rtl_destroy_calls = 0;
 static int g_rtl_create_calls = 0;
 static int g_rtl_start_calls = 0;
 static int g_rtl_create_result = -1;
 static int g_rtl_start_result = -1;
+static int g_rtltcp_autotune_result = 0;
 
 void
 p25_sm_tick_guard_enter(void) {
@@ -263,10 +263,10 @@ note_rtl_lifecycle_call(void) {
 }
 
 int
-rtl_stream_soft_stop(RtlSdrContext* ctx) {
+rtl_stream_stop(RtlSdrContext* ctx) {
     (void)ctx;
     note_rtl_lifecycle_call();
-    g_rtl_soft_stop_calls++;
+    g_rtl_stop_calls++;
     return 0;
 }
 
@@ -279,7 +279,7 @@ rtl_stream_destroy(RtlSdrContext* ctx) {
 }
 
 int
-rtl_stream_create_mirrored(dsd_opts* opts, RtlSdrContext** out_ctx) {
+rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     (void)opts;
     note_rtl_lifecycle_call();
     g_rtl_create_calls++;
@@ -323,9 +323,10 @@ rtl_stream_set_bias_tee(int on) {
     return 0;
 }
 
-void
+int
 rtl_stream_set_rtltcp_autotune(int onoff) {
     (void)onoff;
+    return g_rtltcp_autotune_result;
 }
 
 void
@@ -379,7 +380,7 @@ expect_str(const char* tag, const char* got, const char* want) {
 }
 
 static int
-test_mute_alert_and_inversion_toggles(void) {
+test_mute_and_protocol_inversion_toggles(void) {
     int rc = 0;
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -393,41 +394,20 @@ test_mute_alert_and_inversion_toggles(void) {
     rc |= expect_int("dmr left mute toggled", opts.dmr_mute_encL, 0);
     rc |= expect_int("dmr right mute toggled", opts.dmr_mute_encR, 1);
 
-    rc |= expect_int("call alert null guard", svc_toggle_call_alert(NULL), -1);
-    opts.call_alert = 0;
-    opts.call_alert_events = (uint8_t)(0x80u | DSD_CALL_ALERT_EVENT_DATA);
-    rc |= expect_int("call alert valid event toggle", svc_toggle_call_alert(&opts), 0);
-    rc |= expect_int("call alert masks invalid event bits", opts.call_alert_events, DSD_CALL_ALERT_EVENT_DATA);
-    rc |= expect_int("call alert enables when masked events remain", opts.call_alert, 1);
-    rc |= expect_int("call alert disables on second toggle", svc_toggle_call_alert(&opts), 0);
-    rc |= expect_int("call alert disabled", opts.call_alert, 0);
-
-    opts.call_alert = 0;
-    opts.call_alert_events = 0x80u;
-    rc |= expect_int("call alert invalid-only success", svc_toggle_call_alert(&opts), 0);
-    rc |= expect_int("call alert invalid-only masks to zero", opts.call_alert_events, 0);
-    rc |= expect_int("call alert stays disabled without valid events", opts.call_alert, 0);
-
     opts.inverted_dmr = 0;
     opts.inverted_dpmr = 1;
     opts.inverted_x2tdma = 1;
     opts.inverted_ysf = 0;
     opts.inverted_m17 = 1;
-    svc_toggle_inversion(&opts);
-    rc |= expect_int("global inversion dmr drives group", opts.inverted_dmr, 1);
-    rc |= expect_int("global inversion dpmr follows group", opts.inverted_dpmr, 1);
-    rc |= expect_int("global inversion x2 follows group", opts.inverted_x2tdma, 1);
-    rc |= expect_int("global inversion ysf follows group", opts.inverted_ysf, 1);
-    rc |= expect_int("global inversion m17 follows group", opts.inverted_m17, 1);
     svc_toggle_inv_dmr(&opts);
     svc_toggle_inv_dpmr(&opts);
     svc_toggle_inv_x2(&opts);
     svc_toggle_inv_m17(&opts);
-    rc |= expect_int("dmr protocol inversion toggled independently", opts.inverted_dmr, 0);
+    rc |= expect_int("dmr protocol inversion toggled independently", opts.inverted_dmr, 1);
     rc |= expect_int("dpmr protocol inversion toggled independently", opts.inverted_dpmr, 0);
     rc |= expect_int("x2 protocol inversion toggled independently", opts.inverted_x2tdma, 0);
     rc |= expect_int("m17 protocol inversion toggled independently", opts.inverted_m17, 0);
-    rc |= expect_int("ysf inversion unchanged by specific toggles", opts.inverted_ysf, 1);
+    rc |= expect_int("ysf inversion unchanged by specific toggles", opts.inverted_ysf, 0);
 
     return rc;
 }
@@ -496,25 +476,6 @@ test_p2_trunking_and_slot_controls(void) {
     svc_set_p2_params(&state, 0, 1, 1);
     rc |= expect_int("p2 hardset disabled when any field zero", state.p2_hardset, 0);
 
-    opts.p25_trunk = 0;
-    opts.trunk_enable = 0;
-    opts.scanner_mode = 1;
-    svc_toggle_trunking(&opts);
-    rc |= expect_int("trunk toggle enables p25 trunk", opts.p25_trunk, 1);
-    rc |= expect_int("trunk toggle mirrors trunk_enable", opts.trunk_enable, 1);
-    rc |= expect_int("trunk toggle disables scanner", opts.scanner_mode, 0);
-    svc_toggle_scanner(&opts);
-    rc |= expect_int("scanner toggle enables scanner", opts.scanner_mode, 1);
-    rc |= expect_int("scanner toggle disables p25 trunk", opts.p25_trunk, 0);
-    rc |= expect_int("scanner toggle disables trunk enable", opts.trunk_enable, 0);
-
-    svc_toggle_tune_group(&opts);
-    svc_toggle_tune_private(&opts);
-    svc_toggle_tune_data(&opts);
-    rc |= expect_int("group-call tune toggled", opts.trunk_tune_group_calls, 1);
-    rc |= expect_int("private-call tune toggled", opts.trunk_tune_private_calls, 1);
-    rc |= expect_int("data-call tune toggled", opts.trunk_tune_data_calls, 1);
-
     svc_set_tg_hold(&state, 65535U);
     rc |= expect_uint("tg hold stored", state.tg_hold, 65535U);
     svc_set_hangtime(&opts, -2.5);
@@ -530,11 +491,9 @@ test_p2_trunking_and_slot_controls(void) {
     rc |= expect_int("setmod bandwidth stores in range", opts.setmod_bw, 12500);
 
     svc_toggle_reverse_mute(&opts);
-    svc_toggle_crc_relax(&opts);
     svc_toggle_lcw_retune(&opts);
     svc_toggle_dmr_le(&opts);
     rc |= expect_int("reverse mute toggled", opts.reverse_mute, 1);
-    rc |= expect_int("crc relax toggled", opts.aggressive_framesync, 1);
     rc |= expect_int("lcw retune toggled", opts.p25_lcw_retune, 1);
     rc |= expect_int("dmr little-endian toggled", opts.dmr_le, 1);
 
@@ -563,28 +522,6 @@ test_payload_symbol_and_pulse_state(void) {
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
 
-    opts.payload = 0;
-    svc_toggle_payload(&opts);
-    rc |= expect_int("payload toggle enables", opts.payload, 1);
-    svc_toggle_payload(&opts);
-    rc |= expect_int("payload toggle disables", opts.payload, 0);
-
-    opts.audio_out_type = 0;
-    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
-    svc_stop_symbol_playback(&opts);
-    rc |= expect_int("stop symbol playback restores pulse when output is pulse", opts.audio_in_type, AUDIO_IN_PULSE);
-    opts.audio_out_type = 1;
-    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
-    svc_stop_symbol_playback(&opts);
-    rc |= expect_int("stop symbol playback restores stdin for non-pulse output", opts.audio_in_type, AUDIO_IN_STDIN);
-
-    DSD_SNPRINTF(opts.symbol_out_file, sizeof opts.symbol_out_file, "%s", "last-symbol.bin");
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "old-input");
-    opts.symbol_out_f = (FILE*)&opts;
-    svc_stop_symbol_saving(&opts, NULL);
-    rc |= expect_int("stop symbol saving closes output handle", opts.symbol_out_f == NULL, 1);
-    rc |= expect_str("stop symbol saving stores replay path", opts.audio_in_dev, "last-symbol.bin");
-
     rc |= expect_int("pulse output null opts", svc_set_pulse_output(NULL, "1"), -1);
     rc |= expect_int("pulse input null opts", svc_set_pulse_input(NULL, "1"), -1);
     rc |= expect_int("pulse output valid index", svc_set_pulse_output(&opts, "2"), 0);
@@ -605,7 +542,7 @@ reset_rtl_restart_stubs(void) {
     g_p25_tick_guard_leave_calls = 0;
     g_p25_tick_guard_errors = 0;
     g_rtl_lifecycle_outside_guard = 0;
-    g_rtl_soft_stop_calls = 0;
+    g_rtl_stop_calls = 0;
     g_rtl_destroy_calls = 0;
     g_rtl_create_calls = 0;
     g_rtl_start_calls = 0;
@@ -633,7 +570,7 @@ test_rtl_restart_quiesces_p25_retunes(void) {
     rc |= expect_int("rtl restart balances P25 tune guard", g_p25_tick_guard_depth, 0);
     rc |= expect_int("rtl restart uses P25 tune guard correctly", g_p25_tick_guard_errors, 0);
     rc |= expect_int("rtl lifecycle stays inside P25 tune guard", g_rtl_lifecycle_outside_guard, 0);
-    rc |= expect_int("guarded rtl restart soft stops old stream", g_rtl_soft_stop_calls, 1);
+    rc |= expect_int("guarded rtl restart stops old stream", g_rtl_stop_calls, 1);
     rc |= expect_int("guarded rtl restart destroys old stream", g_rtl_destroy_calls, 1);
     rc |= expect_int("guarded rtl restart attempts replacement", g_rtl_create_calls, 1);
     rc |= expect_int("guarded rtl restart does not start failed replacement", g_rtl_start_calls, 0);
@@ -693,8 +630,6 @@ test_rtl_service_option_contracts(void) {
     rc |= expect_int("rtl bandwidth valid stored", svc_rtl_set_bandwidth(&opts, &state, 12), 0);
     rc |= expect_int("rtl bandwidth exact stored", opts.rtl_dsp_bw_khz, 12);
 
-    rc |= expect_int("rtl ppm clamps high", svc_rtl_set_ppm(&opts, 300), 0);
-    rc |= expect_int("rtl ppm stored", opts.rtlsdr_ppm_error, 200);
     rc |= expect_int("rtl squelch stores converted threshold", svc_rtl_set_sql_db(&opts, -12.5), 0);
     rc |= expect_double("rtl squelch level stored", opts.rtl_squelch_level, -12.5);
     rc |= expect_int("rtl volume invalid defaults", svc_rtl_set_volume_mult(&opts, -1), 0);
@@ -705,6 +640,10 @@ test_rtl_service_option_contracts(void) {
     state.rtl_ctx = (RtlSdrContext*)&state;
     rc |= expect_int("rtl bias tee live apply", svc_rtl_set_bias_tee(&opts, &state, 7), 0);
     rc |= expect_int("rtl bias tee boolean stored", opts.rtl_bias_tee, 1);
+    g_rtltcp_autotune_result = -1;
+    rc |= expect_int("rtltcp autotune live failure", svc_rtltcp_set_autotune(&opts, &state, 1), -1);
+    rc |= expect_int("rtltcp autotune failure preserves state", opts.rtltcp_autotune, 0);
+    g_rtltcp_autotune_result = 0;
     rc |= expect_int("rtltcp autotune live apply", svc_rtltcp_set_autotune(&opts, &state, 1), 0);
     rc |= expect_int("rtltcp autotune stored", opts.rtltcp_autotune, 1);
     rc |= expect_int("rtl auto ppm live apply", svc_rtl_set_auto_ppm(&opts, &state, 0), 0);
@@ -728,9 +667,6 @@ test_file_network_and_import_failure_contracts(void) {
 
     rc |= expect_int("symbol in missing file", svc_open_symbol_in(&opts, &state, "missing.sym"), -1);
     rc |= expect_int("symbol in missing leaves type unchanged", opts.audio_in_type, 0);
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "last.sym");
-    rc |= expect_int("symbol replay missing file", svc_replay_last_symbol(&opts, &state), -1);
-
     rc |= expect_int("static wav invalid path", svc_open_static_wav(&opts, &state, ""), -1);
     rc |= expect_int("static wav failed open", svc_open_static_wav(&opts, &state, "static.wav"), -1);
     rc |= expect_str("static wav path stored before open", opts.wav_out_file, "static.wav");
@@ -771,7 +707,7 @@ test_file_network_and_import_failure_contracts(void) {
 int
 main(void) {
     int rc = 0;
-    rc |= test_mute_alert_and_inversion_toggles();
+    rc |= test_mute_and_protocol_inversion_toggles();
     rc |= test_lrrp_event_log_and_history_state();
     rc |= test_p2_trunking_and_slot_controls();
     rc |= test_payload_symbol_and_pulse_state();

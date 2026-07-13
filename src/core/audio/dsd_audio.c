@@ -945,18 +945,13 @@ dsd_audio_open_tcp_input(dsd_opts* opts) {
 }
 
 static int
-dsd_audio_select_radio_or_pulse_input(dsd_opts* opts) {
+dsd_audio_select_radio_input(dsd_opts* opts) {
 #ifdef USE_RADIO
     opts->audio_in_type = AUDIO_IN_RTL;
-    return 0;
+    return 1;
 #else
-    if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
-        LOG_ERROR("IQ replay requires a build with radio pipeline support.\n");
-        return -1;
-    }
-    opts->audio_in_type = AUDIO_IN_PULSE;
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "pulse");
-    return 0;
+    LOG_ERROR("Radio input '%s' requires a build with radio pipeline support.\n", opts->audio_in_dev);
+    return -1;
 #endif
 }
 
@@ -979,12 +974,7 @@ dsd_audio_try_open_named_input(dsd_opts* opts) {
         || dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
         || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
         || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
-#ifdef USE_RADIO
-        (void)dsd_audio_select_radio_or_pulse_input(opts);
-        return 1;
-#else
-        return (dsd_audio_select_radio_or_pulse_input(opts) == 0) ? 1 : -1;
-#endif
+        return dsd_audio_select_radio_input(opts);
     }
     if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_PULSE;
@@ -1037,8 +1027,8 @@ dsd_audio_open_symbol_input(dsd_opts* opts, dsd_state* state, int symbol_type, c
         return -1;
     }
     if (!dsd_stat_is_regular(&stat_buf)) {
-        opts->audio_in_type = AUDIO_IN_PULSE;
-        return 0;
+        LOG_ERROR("Error, %s input path is not a regular file: %s\n", label, opts->audio_in_dev);
+        return -1;
     }
 
     opts->symbolfile = dsd_fopen_existing_regular_file(opts->audio_in_dev, "rb");

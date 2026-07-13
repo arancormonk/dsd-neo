@@ -27,3 +27,20 @@ convert_bits_into_output(const uint8_t* input, uint32_t len) {
     }
     return output;
 }
+
+uint16_t
+dsd_crc_ccitt16_bits(const uint8_t* input, size_t bit_count) {
+    if (input == NULL) {
+        return 0U;
+    }
+
+    uint16_t crc = 0U;
+    for (size_t i = 0U; i < bit_count; i++) {
+        const uint16_t feedback = (uint16_t)(((crc >> 15U) & 1U) ^ (input[i] & 1U));
+        crc = (uint16_t)(crc << 1U);
+        if (feedback != 0U) {
+            crc ^= 0x1021U;
+        }
+    }
+    return (uint16_t)(crc ^ 0xFFFFU);
+}

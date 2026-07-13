@@ -7,9 +7,8 @@
  * @file
  * @brief Demodulator state shared across DSP modules and RTL-SDR front-end.
  *
- * Centralized definition of `struct demod_state`. Mirrors the demodulator layout in
- * `src/rtl_sdr_fm.cpp` and is intended to remain ABI-stable during ongoing
- * refactoring.
+ * This is the canonical `struct demod_state` definition consumed by the DSP
+ * pipeline and radio front-end.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_DEMOD_STATE_H_
@@ -25,27 +24,13 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
 
-/* Buffer sizing constants used throughout the demodulator. Keep consistent
-   with rtl_sdr_fm.cpp; guard to avoid redefinition across TUs. */
-#ifndef DEFAULT_BUF_LENGTH
-#define DEFAULT_BUF_LENGTH (1 * 16384)
-#endif
-#ifndef MAXIMUM_OVERSAMPLE
+/* Buffer sizing constants shared by the demodulator and radio front-end. */
+#define DEFAULT_BUF_LENGTH 16384
 #define MAXIMUM_OVERSAMPLE 16
-#endif
-#ifndef MAXIMUM_BUF_LENGTH
 #define MAXIMUM_BUF_LENGTH (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
-#endif
 
-/* Half-band decimator taps (HB_TAPS) are defined where needed in DSP modules.
-   Here we dimension histories against the maximum half-band used by the
-   complex decimator cascade. */
-#ifndef HB_TAPS
-#define HB_TAPS 15
-#endif
-#ifndef HB_TAPS_MAX
-#define HB_TAPS_MAX 31
-#endif
+/* Maximum half-band tap count used to dimension complex-decimator histories. */
+#define HB_TAPS_MAX        31
 
 /* Channel LPF profile ids */
 enum DSD_ATTR_PACKED {
@@ -70,10 +55,7 @@ enum DSD_ATTR_PACKED dsd_demod_output_kind {
  * pipeline (filters, resamplers, CQPSK recovery, etc.) and by the RTL-SDR front-end
  * thread.
  *
- * @note Keep this definition synchronized with usages in:
- *  - src/rtl_sdr_fm.cpp
- *  - src/dsp/demod_pipeline.cpp
- *  - src/dsp/resampler.cpp
+ * Radio and DSP implementation units include this definition directly.
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 struct demod_state {
@@ -130,8 +112,7 @@ struct demod_state {
     int rate_out2;
     float pre_r, pre_j;
     /* 1 once pre_r/pre_j hold a valid sample from a prior block; 0 before the
-       first sample has been observed. Replaces an older (prev==0) heuristic
-       that false-seeded on a genuinely-zero first sample. */
+       first sample has been observed, including when that sample is exactly zero. */
     int fm_demod_history_valid;
     int post_downsample;
     float output_scale;

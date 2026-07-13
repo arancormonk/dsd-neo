@@ -15,15 +15,13 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
-
-struct RtlSdrContext;
 
 #define setenv dsd_test_setenv
 
@@ -32,38 +30,30 @@ struct RtlSdrContext;
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Stubs for rigctl/rtl to avoid external I/O
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
 
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
 }
 
 static int
@@ -80,6 +70,7 @@ main(int argc, char** argv) {
     (void)argc;
     (void)argv;
     int rc = 0;
+    install_trunk_tuning_hooks();
 
     // Use a temp cache dir to avoid touching HOME
     char dir[DSD_TEST_PATH_MAX];
@@ -88,7 +79,7 @@ main(int argc, char** argv) {
         return 100;
     }
     setenv("DSD_NEO_CACHE_DIR", dir, 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     static dsd_opts opts;
     static dsd_state state;
@@ -123,7 +114,7 @@ main(int argc, char** argv) {
     rc |= expect_eq("cand3", cand, cc_candidates[0]);
 
     // Simulate a group grant: enable trunking and a non-zero CC freq
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_group_calls = 1;
     state.p25_cc_freq = 851012500;
 
@@ -162,6 +153,7 @@ main(int argc, char** argv) {
     p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
     rc |= expect_eq("release_count", state.p25_sm_release_count, 1);
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

@@ -7,6 +7,7 @@
 #include <math.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
+#include "m17_rrc_taps.h"
 
 #define FIR_MAX_TAPS          1024
 #define SPS_FIR_DESIGN_INTERP 0
@@ -200,7 +201,7 @@ apply_sps_fir(sps_fir* f, float sample, int sps) {
 }
 
 // M17 Filter -- RRC Alpha = 0.5 at 48 kHz (sps=10)
-static const float m17coeffs[81] = {
+const float dsd_m17_rrc_48khz_taps[DSD_M17_RRC_48KHZ_TAP_COUNT] = {
     -0.003195702904062073f, -0.002930279157647190f, -0.001940667871554463f, -0.000356087678023658f,
     0.001547011339077758f,  0.003389554791179751f,  0.004761898604225673f,  0.005310860846138910f,
     0.004824746306020221f,  0.003297923526848786f,  0.000958710871218619f,  -0.001749908029791816f,
@@ -223,7 +224,7 @@ static const float m17coeffs[81] = {
     0.001547011339077758f,  -0.000356087678023658f, -0.001940667871554463f, -0.002930279157647190f,
     -0.003195702904062073f};
 #define M17_BASE_SPS     10
-#define M17_BASE_TAP_LEN (int)(sizeof(m17coeffs) / sizeof(m17coeffs[0]))
+#define M17_BASE_TAP_LEN (int)(sizeof(dsd_m17_rrc_48khz_taps) / sizeof(dsd_m17_rrc_48khz_taps[0]))
 
 // DMR filter F4EXB - root raised cosine alpha=0.7 at 48 kHz (sps=10)
 static const float dmrcoeffs[61] = {
@@ -337,7 +338,7 @@ static sps_fir g_fir_dpmr = {.base = dpmrcoeffs,
                              .base_sps = DPMR_BASE_SPS,
                              .design_kind = SPS_FIR_DESIGN_RRC,
                              .rrc_alpha = 0.2f};
-static sps_fir g_fir_m17 = {.base = m17coeffs,
+static sps_fir g_fir_m17 = {.base = dsd_m17_rrc_48khz_taps,
                             .base_len = M17_BASE_TAP_LEN,
                             .base_sps = M17_BASE_SPS,
                             .design_kind = SPS_FIR_DESIGN_RRC,

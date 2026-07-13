@@ -51,7 +51,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     /* [output] section */
     {"output", "backend", "Audio output backend", "pulse", "pulse|null", DSDCFG_TYPE_ENUM, 0, 0},
     {"output", "pulse_sink", "PulseAudio sink device name", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
-    {"output", "frontend", "Frontend implementation", "none", "none|terminal|native", DSDCFG_TYPE_ENUM, 0, 0},
+    {"output", "frontend", "Frontend implementation", "none", "none|terminal", DSDCFG_TYPE_ENUM, 0, 0},
 
     /* [mode] section */
     {"mode", "decode", "Decode mode preset", "auto",
@@ -135,25 +135,6 @@ dsdcfg_schema_find(const char* section, const char* key) {
     return NULL;
 }
 
-const char*
-dsd_config_key_description(const char* section, const char* key) {
-    const dsdcfg_schema_entry_t* e = dsdcfg_schema_find(section, key);
-    return e ? e->description : NULL;
-}
-
-const char*
-dsdcfg_type_name(dsdcfg_type_t type) {
-    switch (type) {
-        case DSDCFG_TYPE_STRING: return "string";
-        case DSDCFG_TYPE_INT: return "int";
-        case DSDCFG_TYPE_BOOL: return "bool";
-        case DSDCFG_TYPE_ENUM: return "enum";
-        case DSDCFG_TYPE_PATH: return "path";
-        case DSDCFG_TYPE_FREQ: return "freq";
-        default: return "unknown";
-    }
-}
-
 void
 dsdcfg_diags_init(dsdcfg_diagnostics_t* diags) {
     if (!diags) {
@@ -188,6 +169,7 @@ dsdcfg_diags_add(dsdcfg_diagnostics_t* diags, dsdcfg_diag_level_t level, int lin
     dsdcfg_diagnostic_t* d = &diags->items[diags->count++];
     d->level = level;
     d->line_number = line;
+    d->source_path[0] = '\0';
 
     d->section[0] = '\0';
     if (section) {
@@ -235,6 +217,7 @@ dsdcfg_diags_print(const dsdcfg_diagnostics_t* diags, FILE* stream, const char* 
 
     for (int i = 0; i < diags->count; i++) {
         const dsdcfg_diagnostic_t* d = &diags->items[i];
+        const char* diagnostic_path = d->source_path[0] ? d->source_path : path;
         const char* level_str = "info";
         if (d->level == DSDCFG_DIAG_WARNING) {
             level_str = "warning";
@@ -242,8 +225,8 @@ dsdcfg_diags_print(const dsdcfg_diagnostics_t* diags, FILE* stream, const char* 
             level_str = "error";
         }
 
-        if (path && d->line_number > 0) {
-            DSD_FPRINTF(stream, "%s:%d: %s", path, d->line_number, level_str);
+        if (diagnostic_path && d->line_number > 0) {
+            DSD_FPRINTF(stream, "%s:%d: %s", diagnostic_path, d->line_number, level_str);
         } else if (d->line_number > 0) {
             DSD_FPRINTF(stream, "line %d: %s", d->line_number, level_str);
         } else {

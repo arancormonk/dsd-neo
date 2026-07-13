@@ -16,6 +16,8 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/ambe_interleave.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
@@ -23,7 +25,6 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
-#include <dsd-neo/protocol/x2tdma/x2tdma_const.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -48,6 +49,12 @@ typedef struct {
     int aiei;
     int msMode;
 } x2tdma_voice_ctx;
+
+static void
+x2tdma_process_voice_frame(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24]) {
+    processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+    dsd_play_synthesized_voice(opts, state);
+}
 
 static int
 x2tdma_read_slot_dibit(dsd_opts* opts, dsd_state* state, int j, int** dibit_p) {
@@ -122,19 +129,12 @@ x2tdma_fill_ambe_from_slot(dsd_opts* opts, dsd_state* state, int j, int** dibit_
                            int count) {
     int i;
     int dibit;
-    const int* w = x2tdma_ambe_interleave_w + start;
-    const int* x = x2tdma_ambe_interleave_x + start;
-    const int* y = x2tdma_ambe_interleave_y + start;
-    const int* z = x2tdma_ambe_interleave_z + start;
 
     for (i = 0; i < count; i++) {
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[start + i];
         dibit = x2tdma_read_slot_dibit(opts, state, j, dibit_p);
-        frame[*w][*x] = (1 & (dibit >> 1)); // bit 1
-        frame[*y][*z] = (1 & dibit);        // bit 0
-        w++;
-        x++;
-        y++;
-        z++;
+        frame[map->high_row][map->high_col] = (1 & (dibit >> 1)); // bit 1
+        frame[map->low_row][map->low_col] = (1 & dibit);          // bit 0
     }
 }
 
@@ -142,19 +142,12 @@ static void
 x2tdma_fill_ambe_from_stream(dsd_opts* opts, dsd_state* state, char frame[4][24], int start, int count) {
     int i;
     int dibit;
-    const int* w = x2tdma_ambe_interleave_w + start;
-    const int* x = x2tdma_ambe_interleave_x + start;
-    const int* y = x2tdma_ambe_interleave_y + start;
-    const int* z = x2tdma_ambe_interleave_z + start;
 
     for (i = 0; i < count; i++) {
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[start + i];
         dibit = get_dibit_and_analog_signal(opts, state, NULL);
-        frame[*w][*x] = (1 & (dibit >> 1)); // bit 1
-        frame[*y][*z] = (1 & dibit);        // bit 0
-        w++;
-        x++;
-        y++;
-        z++;
+        frame[map->high_row][map->high_col] = (1 & (dibit >> 1)); // bit 1
+        frame[map->low_row][map->low_col] = (1 & dibit);          // bit 0
     }
 }
 
@@ -179,27 +172,6 @@ x2tdma_read_sync_from_stream(dsd_opts* opts, dsd_state* state, char sync[25], ch
     sync[24] = 0;
     syncdata[24] = 0;
 }
-
-#ifdef X2TDMA_DUMP
-static void
-x2tdma_dump_dibits(const char dibits[], int count) {
-    int i;
-    int k = 0;
-    int dibit;
-    char bits[49];
-
-    for (i = 0; i < count; i++) {
-        dibit = dibits[i];
-        bits[k] = (1 & (dibit >> 1)) + 48; // bit 1
-        k++;
-        bits[k] = (1 & dibit) + 48; // bit 0
-        k++;
-    }
-
-    bits[k] = 0;
-    DSD_FPRINTF(stderr, "%s ", bits);
-}
-#endif
 
 static void
 x2tdma_update_mute_and_lights(x2tdma_voice_ctx* ctx, dsd_state* state) {
@@ -451,14 +423,17 @@ x2tdma_process_voice_frames(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx* 
             // We don't know if anything before first sync after no carrier is valid.
             state->firstframe = 0;
         } else {
-            soft_mbe(opts, state, NULL, ctx->ambe_fr, NULL);
-            soft_mbe(opts, state, NULL, ctx->ambe_fr2, NULL);
+            x2tdma_process_voice_frame(opts, state, ctx->ambe_fr);
+            x2tdma_process_voice_frame(opts, state, ctx->ambe_fr2);
         }
     }
 
     x2tdma_fill_ambe_from_stream(opts, state, ctx->ambe_fr3, 0, 36);
     if (ctx->mutecurrentslot == 0) {
-        soft_mbe(opts, state, NULL, ctx->ambe_fr3, NULL);
+        x2tdma_process_voice_frame(opts, state, ctx->ambe_fr3);
+    } else {
+        /* Drain audio already decoded for the other timeslot. */
+        dsd_play_synthesized_voice(opts, state);
     }
 }
 
@@ -484,10 +459,6 @@ x2tdma_process_slot_iteration(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx
     x2tdma_skip_prev_half(opts, state, j, dibit_p);
     x2tdma_read_cach_from_slot(opts, state, j, dibit_p, ctx->cachdata);
 
-#ifdef X2TDMA_DUMP
-    x2tdma_dump_dibits(ctx->cachdata, 12);
-#endif
-
     x2tdma_fill_ambe_from_slot(opts, state, j, dibit_p, ctx->ambe_fr, 0, 36);
     x2tdma_fill_ambe_from_slot(opts, state, j, dibit_p, ctx->ambe_fr2, 0, 18);
 
@@ -499,25 +470,13 @@ x2tdma_process_slot_iteration(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx
         DSD_FPRINTF(stderr, "%s %s  VOICE e:", state->slot0light, state->slot1light);
     }
 
-#ifdef X2TDMA_DUMP
-    x2tdma_dump_dibits(ctx->syncdata, 24);
-#endif
-
     x2tdma_decode_signaling(j, ctx, state);
     x2tdma_process_voice_frames(opts, state, ctx);
 
     x2tdma_read_cach_from_stream(opts, state, ctx->cachdata);
-#ifdef X2TDMA_DUMP
-    x2tdma_dump_dibits(ctx->cachdata, 12);
-#endif
-
     skipDibit(opts, state, 54);
     x2tdma_read_sync_from_stream(opts, state, ctx->sync, ctx->syncdata);
     x2tdma_update_next_slot_lights(ctx, state);
-
-#ifdef X2TDMA_DUMP
-    x2tdma_dump_dibits(ctx->syncdata, 24);
-#endif
 
     if (j == 5) {
         skipDibit(opts, state, 54);

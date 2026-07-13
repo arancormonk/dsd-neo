@@ -15,11 +15,9 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +27,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -87,57 +84,13 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     g_rotate_symbol_out_file_calls++;
 }
 
-bool
-SetFreq(dsd_socket_t sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(dsd_socket_t sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-long int
-GetCurrentFreq(dsd_socket_t sockfd) {
-    (void)sockfd;
-    return 0;
-}
-
-struct RtlSdrContext;
-
-struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
 static int g_dmr_reset_blocks_calls = 0;
 static int g_result_tune_to_freq_calls = 0;
 static int g_fail_tune_to_freq_calls = 0;
 static int g_return_to_cc_result_calls = 0;
 
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    (void)ted_sps;
-    if (!opts || !state || freq <= 0) {
-        return;
-    }
-    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-    opts->trunk_is_tuned = 1;
-    state->last_vc_sync_time = time(NULL);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+static void
+reset_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts) {
         opts->trunk_is_tuned = 0;
     }
@@ -253,6 +206,41 @@ build_cap_plus_3e_single_idle(uint8_t* bits, uint8_t* bytes, uint8_t rest_lsn) {
     write_bits_u32(bits, 16U, 3U, 2U); // single-block Cap+ channel status
     bits[18] = 0U;                     // TS1 status bank
     write_bits_u32(bits, 20U, rest_lsn & 0x0FU, 4U);
+}
+
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)ted_sps;
+    (void)request_id;
+    if (!opts || !state || freq <= 0) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    opts->rtlsdr_center_freq = freq;
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    state->last_vc_sync_time = time(NULL);
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    if (opts) {
+        opts->trunk_is_tuned = 0;
+    }
+    if (state) {
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    }
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
 }
 
 static dsd_trunk_tune_result
@@ -480,6 +468,7 @@ main(void) {
         return 1;
     }
 
+    install_trunk_tuning_hooks();
     init_env(opts, st);
     st->trunk_chan_map[lpcn] = freq;
     opts->trunk_use_allow_list = 1;
@@ -492,13 +481,13 @@ main(void) {
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("group known allowed", opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq);
 
-    return_to_cc(opts, st);
+    reset_to_cc(opts, st);
     rc |= expect_true("seed group block", seed_exact(st, 1100U, "B", "BLOCK-GRP") == 0);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("group explicit block mode", opts->trunk_is_tuned == 0);
 
     build_grant(bits, bytes, 48U, lpcn, 9001U, 9002U, 0U);
-    return_to_cc(opts, st);
+    reset_to_cc(opts, st);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("private unknown blocked in allow-list", opts->trunk_is_tuned == 0);
 
@@ -507,17 +496,17 @@ main(void) {
     rc |= expect_true("private known source allowed", opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq);
 
     opts->trunk_use_allow_list = 0;
-    return_to_cc(opts, st);
+    reset_to_cc(opts, st);
     build_grant(bits, bytes, 50U, lpcn, 1200U, 2200U, 0U);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("broadcast voice grant is normalized to group", dmr_sm_get_ctx()->vc_tg == 1200);
 
-    return_to_cc(opts, st);
+    reset_to_cc(opts, st);
     build_grant(bits, bytes, 52U, lpcn, 1300U, 2300U, 1U);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("data grant enabled for tuning is normalized to group", dmr_sm_get_ctx()->vc_tg == 1300);
 
-    return_to_cc(opts, st);
+    reset_to_cc(opts, st);
     build_absolute_grant(bits, bytes, 49U, 3300U, 4400U, 0U, 88U, 452U, 100U);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("absolute grant learns mbc lpcn", st->trunk_chan_map[88] == 452012500L);
@@ -527,7 +516,7 @@ main(void) {
     rc |= expect_true("absolute grant dispatches learned frequency",
                       opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == 452012500L);
 
-    return_to_cc(opts, st);
+    reset_to_cc(opts, st);
     build_absolute_grant(bits, bytes, 49U, 3310U, 4410U, 0U, 89U, 453U, 200U);
     write_bits_u32(bits, 112U, 3U, 4U);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
@@ -538,7 +527,7 @@ main(void) {
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("invalid zero grant channel does not tune", opts->trunk_is_tuned == 0);
 
-    return_to_cc(opts, st);
+    reset_to_cc(opts, st);
     const uint16_t unmapped_lpcn = 0x0123;
     DSD_MEMSET(st->active_channel[0], 0, sizeof(st->active_channel[0]));
     build_grant(bits, bytes, 49U, unmapped_lpcn, 3325U, 4425U, 0U);
@@ -571,6 +560,8 @@ main(void) {
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
         .tune_to_freq_request = cap_plus_result_tune_to_freq,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
     });
     static dsd_opts cap_opts;
     static dsd_state cap_st;
@@ -624,7 +615,7 @@ main(void) {
     rc |= expect_true("cap+ 3e idle rest channel becomes CC", cap_st.trunk_cc_freq == 852000000L);
     rc |= expect_true("cap+ 3e idle rest channel does not tune VC", g_result_tune_to_freq_calls == 0);
     rc |= expect_true("cap+ 3e idle rest channel still brands", strcmp(cap_st.dmr_branding_sub, "Cap+ ") == 0);
-    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    install_trunk_tuning_hooks();
 
     static dsd_opts con_opts;
     static dsd_state con_st;
@@ -675,6 +666,8 @@ main(void) {
     g_result_tune_to_freq_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
         .tune_to_freq_request = cap_plus_result_tune_to_freq,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
     });
     build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
@@ -715,13 +708,15 @@ main(void) {
     g_fail_tune_to_freq_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
         .tune_to_freq_request = fail_result_tune_to_freq,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
     });
     build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
     rc |= expect_true("con+ data failed tune hook called", g_fail_tune_to_freq_calls == 1);
     rc |= expect_true("con+ data rollback active", strcmp(con_st.active_channel[0], "previous active") == 0);
     rc |= expect_true("con+ data failed tune does not mark flavor", con_st.is_con_plus == 0);
-    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    install_trunk_tuning_hooks();
 
     init_env(&con_opts, &con_st);
     con_st.trunk_chan_map[5] = 855125000L;
@@ -886,11 +881,13 @@ main(void) {
     DSD_SNPRINTF(pf0_st.active_channel[1], sizeof(pf0_st.active_channel[1]), "slot two voice channel");
     g_return_to_cc_result_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
         .return_to_cc_request = result_return_to_cc,
     });
     build_p_clear(bits, bytes, 0U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    install_trunk_tuning_hooks();
     rc |= expect_true("p_clear hold forced return hook called", g_return_to_cc_result_calls == 1);
     rc |= expect_true("p_clear hold clears force latch", pf0_st.trunk_sm_force_release == 0);
     rc |= expect_true("p_clear hold returns to cc", pf0_opts.trunk_is_tuned == 0 && pf0_st.p25_sm_release_count == 1);
@@ -924,11 +921,13 @@ main(void) {
     pf0_st.trunk_chan_map[22] = 852250000L;
     g_return_to_cc_result_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
         .return_to_cc_request = result_return_to_cc,
     });
     build_c_bcast_ann_wd_tscc(bits, bytes, 11U, 22U, 1U, 0U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    install_trunk_tuning_hooks();
     rc |= expect_true("c_bcast tscc switch hook called", g_return_to_cc_result_calls == 1);
     rc |= expect_true("c_bcast tscc switch commits new cc", pf0_st.trunk_cc_freq == 852250000L);
     dsd_state_ext_free_all(&pf0_st);
@@ -1018,6 +1017,7 @@ main(void) {
     }
     free_test_state(st);
     free(opts);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

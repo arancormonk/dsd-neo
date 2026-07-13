@@ -20,8 +20,9 @@ loading is opt-in, CLI arguments override loaded values, and documented
   - Existing `DSD_NEO_*` environment variables remain separate runtime knobs;
     only documented keys are persisted in user config files.
 - **Simple INI-style format** that's easy to read and edit.
-- **Future-proof**: Config files are versioned; unknown keys/sections are
-  ignored on load (use `--validate-config` to report warnings).
+- **Rollback-tolerant**: Unknown keys/sections are ignored on load so a config
+  used during a staged deployment remains readable after rollback (use
+  `--validate-config` to report warnings).
 - **Validation** with helpful diagnostics including line numbers.
 - **User experience enhancements**:
   - Template generation (`--dump-config-template`).
@@ -37,7 +38,8 @@ We use a minimal INI-style format:
 
 - Sections: `[section-name]`
 - Key-value pairs: `key = value`
-- Comments: lines starting with `#` or `;`
+- Comments: lines starting with `#` or `;`, plus quote-aware inline comments
+  introduced by either character.
 - Values:
   - Strings (unquoted or double-quoted).
   - Integers (parsed with `strtol`).
@@ -51,13 +53,10 @@ Design principles:
 - **Case-insensitive booleans** (e.g., `True`, `YES`, `0`).
 - **Unknown sections/keys are ignored** during normal startup; `--validate-config`
   reports them as warnings.
-- A top-level `version` key defines the config schema version.
 
 Example:
 
 ```ini
-version = 1
-
 [input]
 source = "rtl"              # pulse / rtl / rtltcp / soapy / file / tcp / udp
 rtl_device = 0
@@ -65,7 +64,7 @@ rtl_freq = "851.375M"       # supports K/M/G suffix or raw Hz
 
 [output]
 backend = "pulse"           # pulse / null
-frontend = "terminal"       # none / terminal / native
+frontend = "terminal"       # none / terminal
 
 [alerts]
 enabled = false             # map to -a / call alert toggle
@@ -122,8 +121,6 @@ Use `--profile NAME` to activate a specific profile.
 Profiles are defined using `[profile.NAME]` sections with dotted key syntax:
 
 ```ini
-version = 1
-
 [input]
 source = "pulse"
 
@@ -188,8 +185,6 @@ include = "/etc/dsd-neo/system.ini"
 include = "~/.config/dsd-neo/local.ini"
 include = "site-overrides.ini"  # relative to this config file's directory
 
-version = 1
-
 [input]
 source = "rtl"  # overrides anything from includes
 ```
@@ -198,7 +193,9 @@ source = "rtl"  # overrides anything from includes
 
 - Include directives must appear **before** any section headers.
 - Paths support expansion (`~`, `$VAR`, `${VAR}`).
-- Maximum include depth: 3 (to prevent infinite recursion).
+- Three include hops are accepted (root → level 1 → level 2 → level 3, four
+  files total); an include from level 3 that would create level 4 is an error.
+- Missing, unreadable, empty, or unresolvable include paths are errors.
 - Circular includes are detected and silently skipped.
 - Included files are processed first; main file values override includes.
 - Profile sections in included files are ignored (profiles are only read
@@ -305,7 +302,7 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `backend` | ENUM | Audio output backend (`pulse|null`) | `pulse` |
 | `pulse_sink` | STRING | PulseAudio sink device | (empty) |
-| `frontend` | ENUM | Frontend implementation (`none|terminal|native`) | `none` |
+| `frontend` | ENUM | Frontend implementation (`none|terminal`) | `none` |
 
 **[mode] section:**
 | Key | Type | Description | Default |
@@ -427,8 +424,6 @@ Output format:
 # User-config precedence: defaults < config file < CLI arguments
 # Selected DSD_NEO_* environment variables are separate runtime overrides.
 
-version = 1
-
 [input]
 # Input source type
 # Allowed: pulse|rtl|rtltcp|soapy|file|tcp|udp
@@ -489,7 +484,10 @@ version = 1
 
 - **File (`source = "file"`)**: Set `file_path` to switch the input to a file
   input (WAV/BIN/RAW/SYM). Use `file_sample_rate` for PCM16 WAV/RAW inputs that
-  are not 48 kHz (symbol capture formats ignore it).
+  are not 48 kHz (symbol capture formats ignore it). Persisted discriminator
+  captures that use a `.wav` suffix without a WAV header are opened as raw
+  PCM16LE; remove this mislabeled-file fallback after those captures are
+  migrated or their support window ends.
 
 ### Decode Modes
 
@@ -708,12 +706,26 @@ through selecting input, mode, trunking, and UI options.
 
 ---
 
-## Versioning and Compatibility
+## Persisted Config Compatibility
 
-- Config files use `version = 1` at the top.
-- If `version` is missing, defaults to 1.
-- Unknown keys are ignored on load; `--validate-config` reports them as warnings.
-- This allows newer binaries to add options without breaking older configs.
+Newly rendered and generated config files do not contain a schema-version key.
+Older DSD-neo releases generated a top-level `version = 1` line, so the loader
+retains a narrow read-only exception for those user-owned files: integer value
+`1` is accepted but is neither stored nor emitted again. Non-integer values and
+every other version are rejected. Remove this exception after the support window
+for configs generated by those releases ends, or after a migration tool that
+strips the line is provided and required.
+
+Older releases also wrote per-system P25 control-channel candidate files under
+`DSD_NEO_CACHE_DIR`. The current decoder can read those files, controlled by
+`DSD_NEO_CC_CACHE`, but does not write or update them. Remove this read-only
+loader and both environment variables after the cache support window ends or a
+migration imports the saved frequencies into current channel-map inputs.
+
+Separately, normal loading ignores unknown keys and sections so configuration
+introduced during a staged deployment can survive rollback to an older binary;
+`--validate-config` recursively checks included files and reports each unknown
+entry as a warning.
 
 ---
 

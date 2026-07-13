@@ -233,6 +233,7 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->snr_bias_c4fm = rtl_stream_get_snr_bias_c4fm();
     out->snr_c4fm_db = rtl_stream_get_snr_c4fm();
+    out->spectrum_size = rtl_stream_spectrum_get_size();
     return 0;
 }
 
@@ -249,11 +250,6 @@ dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps) {
 int
 dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     return rtl_stream_spectrum_get(out_db, max_bins, out_rate);
-}
-
-int
-dsd_app_frontend_spectrum_get_size(void) {
-    return rtl_stream_spectrum_get_size();
 }
 
 static int

@@ -99,11 +99,12 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) { /
 }
 
 void
-write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol) {
+write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol, const dsd_dibit_soft_t* soft) {
     (void)opts;
     (void)state;
     (void)dibit;
     (void)symbol;
+    (void)soft;
 }
 
 uint8_t
@@ -111,14 +112,6 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
     (void)st;
     (void)sym;
     return 255;
-}
-
-double
-raw_pwr_f(const float* samples, int len, int step) { // NOLINT(misc-use-internal-linkage)
-    (void)samples;
-    (void)len;
-    (void)step;
-    return 1.0;
 }
 
 double
@@ -238,7 +231,6 @@ static void
 free_state_buffers(dsd_state* state) {
     free(state->dibit_buf);
     free(state->dmr_payload_buf);
-    free(state->dmr_reliab_buf);
     free(state->dmr_soft_buf);
 }
 
@@ -246,15 +238,13 @@ static int
 init_state_buffers(dsd_state* state) {
     state->dibit_buf = (int*)calloc(1000000U, sizeof(int));
     state->dmr_payload_buf = (int*)calloc(1000000U, sizeof(int));
-    state->dmr_reliab_buf = (uint8_t*)calloc(1000000U, sizeof(uint8_t));
     state->dmr_soft_buf = (dsd_dibit_soft_t*)calloc(1000000U, sizeof(dsd_dibit_soft_t));
-    if (!state->dibit_buf || !state->dmr_payload_buf || !state->dmr_reliab_buf || !state->dmr_soft_buf) {
+    if (!state->dibit_buf || !state->dmr_payload_buf || !state->dmr_soft_buf) {
         free_state_buffers(state);
         return 0;
     }
     state->dibit_buf_p = state->dibit_buf + 200;
     state->dmr_payload_p = state->dmr_payload_buf + 200;
-    state->dmr_reliab_p = state->dmr_reliab_buf + 200;
     state->dmr_soft_p = state->dmr_soft_buf + 200;
     return 1;
 }

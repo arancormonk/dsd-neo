@@ -29,8 +29,7 @@ gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state) {
 }
 
 static void pack_slow_data_bytes(const uint8_t bytes[60], uint8_t bits[480]);
-static void build_encoded_header_fixture(int hard_rx[DSD_DSTAR_HEADER_CODED_BITS],
-                                         float soft_rx[DSD_DSTAR_HEADER_CODED_BITS]);
+static void build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS]);
 static void set_compacted_slow_data_bytes(uint8_t bytes[60], const uint8_t compact[51]);
 
 static void
@@ -46,7 +45,7 @@ convolution_encode(const int* bits, size_t bit_count, int* symbols) {
     }
 }
 
-// Inverse of dstar_deinterleave_header_bits: map payload order -> on-air order.
+// Map payload order to the on-air interleave order defined by the D-STAR specification.
 static void
 dstar_interleave_header_bits(const int* in, int* out, size_t bit_count) {
     size_t k = 0;
@@ -62,84 +61,11 @@ dstar_interleave_header_bits(const int* in, int* out, size_t bit_count) {
 }
 
 static void
-test_scrambler_roundtrip(void) {
-    int original[DSD_DSTAR_HEADER_CODED_BITS];
-    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
-    int recovered[DSD_DSTAR_HEADER_CODED_BITS];
-
-    for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
-        original[i] = (int)((i * 3 + 1) & 0x1);
-    }
-
-    dstar_scramble_header_bits(original, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_scramble_header_bits(scrambled, recovered, DSD_DSTAR_HEADER_CODED_BITS);
-
-    assert(memcmp(original, recovered, sizeof(original)) == 0);
-}
-
-static void
-test_scrambler_reference_prefix(void) {
-    static const int expected[32] = {
-        0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0,
-    };
-    int zeroes[DSD_DSTAR_HEADER_CODED_BITS];
-    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
-
-    DSD_MEMSET(zeroes, 0, sizeof(zeroes));
-    dstar_scramble_header_bits(zeroes, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
-
-    assert(memcmp(expected, scrambled, sizeof(expected)) == 0);
-}
-
-static void
-test_interleave_roundtrip(void) {
-    int coded[DSD_DSTAR_HEADER_CODED_BITS];
-    int on_air[DSD_DSTAR_HEADER_CODED_BITS];
-    int recovered[DSD_DSTAR_HEADER_CODED_BITS];
-
-    for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
-        coded[i] = (int)((i + 5) & 0x1);
-    }
-
-    dstar_interleave_header_bits(coded, on_air, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_deinterleave_header_bits(on_air, recovered, DSD_DSTAR_HEADER_CODED_BITS);
-
-    assert(memcmp(coded, recovered, sizeof(coded)) == 0);
-}
-
-static void
-test_decode_pipeline(void) {
-    int info_bits[DSD_DSTAR_HEADER_INFO_BITS];
-    int coded[DSD_DSTAR_HEADER_CODED_BITS];
-    int interleaved[DSD_DSTAR_HEADER_CODED_BITS];
-    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
-    int rx_buf[DSD_DSTAR_HEADER_CODED_BITS];
-    int decoded[DSD_DSTAR_HEADER_INFO_BITS];
-
-    for (size_t i = 0; i < DSD_DSTAR_HEADER_INFO_BITS; i++) {
-        info_bits[i] = (int)((i * 7 + 3) & 0x1);
-    }
-
-    convolution_encode(info_bits, DSD_DSTAR_HEADER_INFO_BITS, coded);
-    dstar_interleave_header_bits(coded, interleaved, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_scramble_header_bits(interleaved, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
-
-    // Receiver path
-    dstar_scramble_header_bits(scrambled, rx_buf, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_deinterleave_header_bits(rx_buf, interleaved, DSD_DSTAR_HEADER_CODED_BITS);
-    size_t out_len =
-        dstar_header_viterbi_decode(interleaved, DSD_DSTAR_HEADER_CODED_BITS, decoded, DSD_DSTAR_HEADER_INFO_BITS);
-
-    assert(out_len == DSD_DSTAR_HEADER_INFO_BITS);
-    assert(memcmp(info_bits, decoded, sizeof(info_bits)) == 0);
-}
-
-static void
 test_soft_decode_pipeline(void) {
     int info_bits[DSD_DSTAR_HEADER_INFO_BITS];
     int coded[DSD_DSTAR_HEADER_CODED_BITS];
     int interleaved[DSD_DSTAR_HEADER_CODED_BITS];
-    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
+    uint16_t soft_interleaved[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_descrambled[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_deinterleaved[DSD_DSTAR_HEADER_CODED_BITS];
@@ -151,11 +77,10 @@ test_soft_decode_pipeline(void) {
 
     convolution_encode(info_bits, DSD_DSTAR_HEADER_INFO_BITS, coded);
     dstar_interleave_header_bits(coded, interleaved, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_scramble_header_bits(interleaved, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
-
     for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
-        soft_rx[i] = scrambled[i] ? 0xF000U : 0x1000U;
+        soft_interleaved[i] = interleaved[i] ? 0xF000U : 0x1000U;
     }
+    dstar_scramble_soft_costs(soft_interleaved, soft_rx, DSD_DSTAR_HEADER_CODED_BITS);
 
     dstar_scramble_soft_costs(soft_rx, soft_descrambled, DSD_DSTAR_HEADER_CODED_BITS);
     dstar_deinterleave_soft_costs(soft_descrambled, soft_deinterleaved, DSD_DSTAR_HEADER_CODED_BITS);
@@ -167,11 +92,13 @@ test_soft_decode_pipeline(void) {
 }
 
 static void
-build_encoded_header_fixture(int hard_rx[DSD_DSTAR_HEADER_CODED_BITS], float soft_rx[DSD_DSTAR_HEADER_CODED_BITS]) {
+build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS]) {
     uint8_t header[41];
     int info_bits[DSD_DSTAR_HEADER_INFO_BITS];
     int coded[DSD_DSTAR_HEADER_CODED_BITS];
     int interleaved[DSD_DSTAR_HEADER_CODED_BITS];
+    uint16_t soft_interleaved[DSD_DSTAR_HEADER_CODED_BITS];
+    uint16_t soft_scrambled[DSD_DSTAR_HEADER_CODED_BITS];
 
     DSD_MEMSET(header, 0, sizeof header);
     header[0] = 0xF8U;
@@ -189,41 +116,26 @@ build_encoded_header_fixture(int hard_rx[DSD_DSTAR_HEADER_CODED_BITS], float sof
 
     convolution_encode(info_bits, DSD_DSTAR_HEADER_INFO_BITS, coded);
     dstar_interleave_header_bits(coded, interleaved, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_scramble_header_bits(interleaved, hard_rx, DSD_DSTAR_HEADER_CODED_BITS);
 
     for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
-        soft_rx[i] = hard_rx[i] ? 1.0F : -1.0F;
+        soft_interleaved[i] = interleaved[i] ? 0xF000U : 0x1000U;
     }
-}
-
-static void
-test_hard_header_decode_extracts_callsigns(void) {
-    static dsd_state state;
-    int hard_rx[DSD_DSTAR_HEADER_CODED_BITS];
-    float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
-
-    DSD_MEMSET(&state, 0, sizeof state);
-    build_encoded_header_fixture(hard_rx, soft_rx);
-
-    dstar_header_decode(&state, hard_rx);
-
-    assert(strcmp(state.dstar_rpt2, "RPT2TST ") == 0);
-    assert(strcmp(state.dstar_rpt1, "RPT1TST ") == 0);
-    assert(strcmp(state.dstar_dst, "CQCQCQ  ") == 0);
-    assert(strcmp(state.dstar_src, "N0CALL  /TST") == 0);
+    dstar_scramble_soft_costs(soft_interleaved, soft_scrambled, DSD_DSTAR_HEADER_CODED_BITS);
+    for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
+        soft_rx[i] = soft_scrambled[i] > 0x7FFFU ? 1.0F : -1.0F;
+    }
 }
 
 static void
 test_soft_header_decode_extracts_callsigns(void) {
     static dsd_state state;
-    int hard_rx[DSD_DSTAR_HEADER_CODED_BITS];
     float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
 
     DSD_MEMSET(&state, 0, sizeof state);
     state.min = -1.0F;
     state.center = 0.0F;
     state.max = 1.0F;
-    build_encoded_header_fixture(hard_rx, soft_rx);
+    build_encoded_header_fixture(soft_rx);
 
     dstar_header_decode_soft(&state, soft_rx);
 
@@ -388,12 +300,7 @@ test_slow_data_aprs_latitude_uses_compacted_direction(void) {
 
 int
 main(void) {
-    test_scrambler_roundtrip();
-    test_scrambler_reference_prefix();
-    test_interleave_roundtrip();
-    test_decode_pipeline();
     test_soft_decode_pipeline();
-    test_hard_header_decode_extracts_callsigns();
     test_soft_header_decode_extracts_callsigns();
     test_crc16();
     test_slow_data_header_accepts_wire_crc_order();

@@ -13,8 +13,8 @@
  */
 
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,15 +28,33 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Alias decode helper stubs referenced by VPDU handler
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+}
+
+// Alias decode helper stubs referenced by VPDU handler
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -75,40 +93,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)slot;
 }
 
-// Rigctl/rtl stubs referenced by linked objects
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
 static int
 expect_eq(const char* tag, long got, long want) {
     if (got != want) {
@@ -128,9 +112,9 @@ expect_str_has(const char* tag, const char* haystack, const char* needle) {
 }
 
 // Test shim entry (implemented in tests/test_support/p25_test_shim.c)
-void p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len, int p25_trunk, long p25_cc_freq,
-                                         int iden, int type, int tdma, long base, int spac);
-void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len);
+void p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len, int trunk_enable,
+                                         long p25_cc_freq, int iden, int type, int tdma, long base, int spac);
+void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
 const char* p25_extended_function_class0_operand_label(uint8_t operand);
 int p25_extended_function_operand_is_ack(uint8_t operand);
 
@@ -164,7 +148,7 @@ test_extended_function_command_abbreviated(void) {
         DSD_FPRINTF(stderr, "capture stderr begin failed: %s\n", strerror(errno));
         return rc | 100;
     }
-    p25_test_process_mac_vpdu(0, mac, 10);
+    p25_test_process_mac_vpdu_ex(0, mac, 10, 0, 0);
     dsd_test_capture_stderr_end(&cap);
 
     FILE* f = fopen(cap.path, "r");
@@ -189,6 +173,7 @@ test_extended_function_command_abbreviated(void) {
 int
 main(void) {
     int rc = 0;
+    install_trunk_tuning_hooks();
 
     // Build TSBK-mapped vPDU: DUID=0x07, opcode=0x40 (Group Voice)
     // svc=0x00 (clear), channel=0x100A (iden=1, ch=10), group=0x4567, source=0x00ABCDEF
@@ -237,6 +222,7 @@ main(void) {
 
     rc |= test_extended_function_command_abbreviated();
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

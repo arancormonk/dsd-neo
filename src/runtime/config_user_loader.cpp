@@ -7,50 +7,23 @@
  * INI loading and profile overlay support for user configuration.
  */
 
+#if defined(_WIN32)
+#include <algorithm>
+#endif
 #include <ctype.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
-#include <errno.h>
-#include <limits.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include <string>
+#include <vector>
 #include "config_user_internal.h"
 #include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/runtime/call_alert.h"
-
-static void
-trim_whitespace(char* s) {
-    const char* p = s;
-    while (*p && isspace((unsigned char)*p)) {
-        p++;
-    }
-    if (p != s) {
-        DSD_MEMMOVE(s, p, strlen(p) + 1);
-    }
-    size_t n = strlen(s);
-    while (n > 0 && isspace((unsigned char)s[n - 1])) {
-        s[--n] = '\0';
-    }
-}
-
-static void
-strip_inline_comment(char* s) {
-    int in_quote = 0;
-    for (char* p = s; *p; ++p) {
-        if (*p == '"') {
-            in_quote = !in_quote;
-            continue;
-        }
-        if (!in_quote && (*p == '#' || *p == ';')) {
-            *p = '\0';
-            break;
-        }
-    }
-}
 
 static int
 seek_config_stream_to_start(FILE* stream) {
@@ -58,48 +31,6 @@ seek_config_stream_to_start(FILE* stream) {
         return -1;
     }
     return fseek(stream, 0L, SEEK_SET);
-}
-
-static void
-unquote(char* s) {
-    size_t n = strlen(s);
-    if (n >= 2 && s[0] == '"' && s[n - 1] == '"') {
-        DSD_MEMMOVE(s, s + 1, n - 2);
-        s[n - 2] = '\0';
-    }
-}
-
-static int
-parse_bool(const char* v, int* out) {
-    if (!v || !*v || !out) {
-        return -1;
-    }
-    if (dsd_strcasecmp(v, "1") == 0 || dsd_strcasecmp(v, "true") == 0 || dsd_strcasecmp(v, "yes") == 0
-        || dsd_strcasecmp(v, "on") == 0) {
-        *out = 1;
-        return 0;
-    }
-    if (dsd_strcasecmp(v, "0") == 0 || dsd_strcasecmp(v, "false") == 0 || dsd_strcasecmp(v, "no") == 0
-        || dsd_strcasecmp(v, "off") == 0) {
-        *out = 0;
-        return 0;
-    }
-    return -1;
-}
-
-static int
-parse_int_value(const char* v, long* out) {
-    if (!v || !*v || !out) {
-        return -1;
-    }
-    errno = 0;
-    char* end = NULL;
-    long x = strtol(v, &end, 10);
-    if (end == v || (end && *end != '\0') || errno == ERANGE) {
-        return -1;
-    }
-    *out = x;
-    return 0;
 }
 
 /**
@@ -132,6 +63,8 @@ namespace {
 
 enum user_cfg_parse_mode_t : unsigned char { USER_CFG_PARSE_MODE_BASE = 0, USER_CFG_PARSE_MODE_PROFILE = 1 };
 
+constexpr int USER_CFG_INVALID_PERSISTED_VERSION = -2;
+
 } // namespace
 
 static void
@@ -145,9 +78,9 @@ copy_text_value(char* dst, size_t dst_size, const char* src) {
 
 static int
 apply_integer_setting(const char* value, int base_default, user_cfg_parse_mode_t mode, int* setting) {
-    long parsed = 0;
-    if (parse_int_value(value, &parsed) == 0) {
-        *setting = (int)parsed;
+    int parsed = 0;
+    if (user_config_parse_int_value(value, &parsed) == 0) {
+        *setting = parsed;
         return 1;
     }
     if (mode == USER_CFG_PARSE_MODE_BASE) {
@@ -155,16 +88,6 @@ apply_integer_setting(const char* value, int base_default, user_cfg_parse_mode_t
         return 1;
     }
     return 0;
-}
-
-static void
-lowercase_ascii(char* s) {
-    if (!s) {
-        return;
-    }
-    for (char* p = s; *p; ++p) {
-        *p = (char)tolower((unsigned char)*p);
-    }
 }
 
 static int
@@ -183,8 +106,8 @@ parse_section_header_line(char* line, char* out_section, size_t out_section_size
     size_t section_len = strnlen(line + 1, out_section_size - 1U);
     DSD_MEMCPY(out_section, line + 1, section_len);
     out_section[section_len] = '\0';
-    trim_whitespace(out_section);
-    lowercase_ascii(out_section);
+    user_config_trim_ascii_whitespace(out_section);
+    user_config_lowercase_ascii(out_section);
     return 1;
 }
 
@@ -200,9 +123,9 @@ parse_key_value_fields(char* line, char** out_key, char** out_val) {
     *eq = '\0';
     char* key = line;
     char* val = eq + 1;
-    trim_whitespace(key);
-    trim_whitespace(val);
-    unquote(val);
+    user_config_trim_ascii_whitespace(key);
+    user_config_trim_ascii_whitespace(val);
+    user_config_strip_wrapping_quotes(val);
     *out_key = key;
     *out_val = val;
     return 1;
@@ -215,7 +138,7 @@ normalize_key_to_lower(const char* key, char* key_lc, size_t key_lc_size) {
     }
     DSD_SNPRINTF(key_lc, key_lc_size, "%.*s", (int)(key_lc_size - 1), key ? key : "");
     key_lc[key_lc_size - 1] = '\0';
-    lowercase_ascii(key_lc);
+    user_config_lowercase_ascii(key_lc);
 }
 
 static int
@@ -283,10 +206,6 @@ parse_frontend_kind_value(const char* val, dsd_frontend_kind* out_frontend) {
         *out_frontend = DSD_FRONTEND_TERMINAL;
         return 0;
     }
-    if (dsd_strcasecmp(val, "native") == 0) {
-        *out_frontend = DSD_FRONTEND_NATIVE;
-        return 0;
-    }
     return -1;
 }
 
@@ -352,7 +271,7 @@ apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val,
         (void)apply_integer_setting(val, 1, mode, &cfg->rtl_volume);
     } else if (strcmp(key_lc, "auto_ppm") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->rtl_auto_ppm = b;
         }
     } else {
@@ -460,7 +379,7 @@ static void
 apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "enabled") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->trunk_enabled = b;
         }
     } else if (strcmp(key_lc, "chan_csv") == 0) {
@@ -469,64 +388,49 @@ apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char
         copy_path_expanded(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, val);
     } else if (strcmp(key_lc, "allow_list") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->trunk_use_allow_list = b;
         }
     } else if (strcmp(key_lc, "tune_group_calls") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->trunk_tune_group_calls = b;
         }
     } else if (strcmp(key_lc, "tune_private_calls") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->trunk_tune_private_calls = b;
         }
     } else if (strcmp(key_lc, "tune_data_calls") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->trunk_tune_data_calls = b;
         }
     } else if (strcmp(key_lc, "tune_enc_calls") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->trunk_tune_enc_calls = b;
         }
     }
-}
-
-static int
-parse_int_value(const char* val, int* out) {
-    if (!val || !out || val[0] == '\0') {
-        return -1;
-    }
-    errno = 0;
-    char* end = NULL;
-    long parsed = strtol(val, &end, 10);
-    if (errno != 0 || end == val || (end && *end != '\0') || parsed < INT_MIN || parsed > INT_MAX) {
-        return -1;
-    }
-    *out = (int)parsed;
-    return 0;
 }
 
 static void
 apply_trunk_scan_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "enabled") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->trunk_scan_enabled = b;
         }
     } else if (strcmp(key_lc, "targets_csv") == 0) {
         copy_path_expanded(cfg->trunk_scan_targets_csv, sizeof cfg->trunk_scan_targets_csv, val);
     } else if (strcmp(key_lc, "idle_dwell_ms") == 0) {
         int parsed = 0;
-        if (parse_int_value(val, &parsed) == 0) {
+        if (user_config_parse_int_value(val, &parsed) == 0) {
             cfg->trunk_scan_idle_dwell_ms = parsed;
         }
     } else if (strcmp(key_lc, "activity_hold_ms") == 0) {
         int parsed = 0;
-        if (parse_int_value(val, &parsed) == 0) {
+        if (user_config_parse_int_value(val, &parsed) == 0) {
             cfg->trunk_scan_activity_hold_ms = parsed;
         }
     }
@@ -534,7 +438,7 @@ apply_trunk_scan_section_key(dsdneoUserConfig* cfg, const char* key_lc, const ch
 
 static void
 apply_logging_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (strcmp(key_lc, "event_log") == 0 || strcmp(key_lc, "event_log_file") == 0) {
+    if (strcmp(key_lc, "event_log") == 0) {
         copy_path_expanded(cfg->event_log, sizeof cfg->event_log, val);
     } else if (strcmp(key_lc, "frame_log") == 0) {
         copy_path_expanded(cfg->frame_log, sizeof cfg->frame_log, val);
@@ -556,22 +460,22 @@ static void
 apply_alerts_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "enabled") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->call_alert_enabled = b;
         }
     } else if (strcmp(key_lc, "voice_start") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             set_alert_event(cfg, DSD_CALL_ALERT_EVENT_VOICE_START, b);
         }
     } else if (strcmp(key_lc, "voice_end") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             set_alert_event(cfg, DSD_CALL_ALERT_EVENT_VOICE_END, b);
         }
     } else if (strcmp(key_lc, "data") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             set_alert_event(cfg, DSD_CALL_ALERT_EVENT_DATA, b);
         }
     }
@@ -582,8 +486,8 @@ apply_recording_rdio_range_value(const char* val, int default_value, int min_val
     if (!out_value) {
         return;
     }
-    long v = 0;
-    if (parse_int_value(val, &v) != 0) {
+    int v = 0;
+    if (user_config_parse_int_value(val, &v) != 0) {
         v = default_value;
     }
     if (v < min_value) {
@@ -592,14 +496,14 @@ apply_recording_rdio_range_value(const char* val, int default_value, int min_val
     if (v > max_value) {
         v = max_value;
     }
-    *out_value = (int)v;
+    *out_value = v;
 }
 
 static int
 apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "per_call_wav") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->per_call_wav = b;
         }
     } else if (strcmp(key_lc, "per_call_wav_dir") == 0) {
@@ -633,7 +537,7 @@ apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char*
         apply_recording_rdio_range_value(val, cfg->rdio_upload_retries, 0, 10, &cfg->rdio_upload_retries);
     } else if (strcmp(key_lc, "rdio_api_delete_after_upload") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->rdio_api_delete_after_upload = b;
         }
     } else {
@@ -654,12 +558,12 @@ static void
 apply_dsp_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "iq_balance") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->iq_balance = b;
         }
     } else if (strcmp(key_lc, "iq_dc_block") == 0) {
         int b = 0;
-        if (parse_bool(val, &b) == 0) {
+        if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->iq_dc_block = b;
         }
     }
@@ -719,7 +623,7 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
     current_section[0] = '\0';
 
     while (fgets(line, sizeof line, fp)) {
-        trim_whitespace(line);
+        user_config_trim_ascii_whitespace(line);
         if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
             continue;
         }
@@ -729,8 +633,8 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
             continue;
         }
 
-        strip_inline_comment(line);
-        trim_whitespace(line);
+        user_config_strip_inline_comment(line);
+        user_config_trim_ascii_whitespace(line);
         if (line[0] == '\0') {
             continue;
         }
@@ -747,8 +651,10 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
         if (current_section[0] == '\0') {
             // Top-level keys
             if (strcmp(key_lc, "version") == 0) {
-                long version = 0;
-                cfg->version = parse_int_value(val, &version) == 0 ? (int)version : 1;
+                int version = 0;
+                if (user_config_parse_int_value(val, &version) != 0 || version != 1) {
+                    return USER_CFG_INVALID_PERSISTED_VERSION;
+                }
             }
             continue;
         }
@@ -790,7 +696,10 @@ dsd_user_config_load(const char* path, dsdneoUserConfig* cfg) {
 
     /* Process includes first (they provide base values that can be overridden) */
     const char* stack[1] = {root_path};
-    process_includes(root_path, cfg, 0, stack, 1);
+    int include_rc = process_includes(root_path, cfg, 0, stack, 1);
+    if (include_rc != 0) {
+        return include_rc;
+    }
 
     /* Now load the main config (which overrides included values) */
     return user_config_load_no_reset(root_path, cfg);
@@ -863,17 +772,22 @@ copy_include_path_value(char* p, char* out_inc_path, size_t out_inc_path_size) {
     return 0;
 }
 
-static int
-parse_include_directive_line(char* line, char* out_inc_path, size_t out_inc_path_size) {
-    if (!line || !out_inc_path || out_inc_path_size == 0) {
+int
+user_config_parse_include_directive_line(char* line, char* out_include_path, size_t out_include_path_size) {
+    if (!line || !out_include_path || out_include_path_size == 0) {
         return 0;
     }
-    out_inc_path[0] = '\0';
-    trim_whitespace(line);
+    out_include_path[0] = '\0';
+    user_config_trim_ascii_whitespace(line);
     if (line[0] == '[') {
         return -1;
     }
     if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
+        return 0;
+    }
+    user_config_strip_inline_comment(line);
+    user_config_trim_ascii_whitespace(line);
+    if (line[0] == '\0') {
         return 0;
     }
     if (dsd_strncasecmp(line, "include", 7) != 0) {
@@ -885,26 +799,130 @@ parse_include_directive_line(char* line, char* out_inc_path, size_t out_inc_path
         return 0;
     }
     (void)skip_ascii_spaces(p + 1, &p);
-    if (copy_include_path_value(p, out_inc_path, out_inc_path_size) != 0) {
+    if (copy_include_path_value(p, out_include_path, out_include_path_size) != 0) {
         return 0;
     }
     return 1;
 }
 
-static int
-include_stack_contains_path(const char** include_stack, int include_stack_size, const char* path) {
+static bool
+is_include_path_separator(char c) {
+    return c == '/' || c == '\\';
+}
+
+static size_t
+normalize_include_path_prefix(const std::string& input, std::string& prefix) {
+    size_t pos = 0;
+#if DSD_PLATFORM_WIN_NATIVE
+    if (input.size() >= 2 && isalpha((unsigned char)input[0]) && input[1] == ':') {
+        prefix.push_back((char)tolower((unsigned char)input[0]));
+        prefix.push_back(':');
+        pos = 2;
+    }
+#else
+    (void)input;
+    (void)prefix;
+#endif
+    return pos;
+}
+
+static size_t
+skip_include_path_separators(const std::string& input, size_t pos) {
+    while (pos < input.size() && is_include_path_separator(input[pos])) {
+        pos++;
+    }
+    return pos;
+}
+
+static void
+append_normalized_include_path_component(const std::string& component, bool absolute,
+                                         std::vector<std::string>& components) {
+#if DSD_PLATFORM_WIN_NATIVE
+    std::string folded_component = component;
+    std::transform(folded_component.begin(), folded_component.end(), folded_component.begin(),
+                   [](char c) { return (char)tolower((unsigned char)c); });
+    const std::string& normalized_component = folded_component;
+#else
+    const std::string& normalized_component = component;
+#endif
+    if (normalized_component.empty() || normalized_component == ".") {
+        return;
+    }
+    if (normalized_component != "..") {
+        components.push_back(normalized_component);
+        return;
+    }
+    if (!components.empty() && components.back() != "..") {
+        components.pop_back();
+    } else if (!absolute) {
+        components.push_back(normalized_component);
+    }
+}
+
+static std::vector<std::string>
+normalize_include_path_components(const std::string& input, size_t pos, bool absolute) {
+    std::vector<std::string> components;
+    while (pos < input.size()) {
+        size_t end = pos;
+        while (end < input.size() && !is_include_path_separator(input[end])) {
+            end++;
+        }
+        append_normalized_include_path_component(input.substr(pos, end - pos), absolute, components);
+        pos = skip_include_path_separators(input, end);
+    }
+    return components;
+}
+
+static std::string
+join_normalized_include_path(const std::string& prefix, bool absolute, const std::vector<std::string>& components) {
+    std::string normalized = prefix;
+    if (absolute) {
+        normalized.push_back('/');
+    }
+    for (const std::string& component : components) {
+        bool append_separator = !normalized.empty() && normalized.back() != '/';
+#if DSD_PLATFORM_WIN_NATIVE
+        if (!absolute && !prefix.empty() && normalized == prefix) {
+            append_separator = false;
+        }
+#endif
+        if (append_separator) {
+            normalized.push_back('/');
+        }
+        normalized += component;
+    }
+    if (normalized.empty()) {
+        return absolute ? "/" : ".";
+    }
+    return normalized;
+}
+
+static std::string
+normalize_include_path_identity(const char* path) {
+    const std::string input = path ? path : "";
+    std::string prefix;
+    size_t pos = normalize_include_path_prefix(input, prefix);
+    bool absolute = pos < input.size() && is_include_path_separator(input[pos]);
+    pos = skip_include_path_separators(input, pos);
+    const std::vector<std::string> components = normalize_include_path_components(input, pos, absolute);
+    return join_normalized_include_path(prefix, absolute, components);
+}
+
+int
+user_config_include_stack_contains_path(const char** include_stack, int include_stack_size, const char* path) {
     if (!include_stack || !path || path[0] == '\0') {
         return 0;
     }
+    std::string normalized_path = normalize_include_path_identity(path);
     for (int i = 0; i < include_stack_size; i++) {
-        if (include_stack[i] && strcmp(include_stack[i], path) == 0) {
+        if (include_stack[i] && normalize_include_path_identity(include_stack[i]) == normalized_path) {
             return 1;
         }
     }
     return 0;
 }
 
-static void
+static int
 process_nested_includes(const char* inc_path, dsdneoUserConfig* cfg, int depth, const char** include_stack,
                         int include_stack_size) {
     const char* nested_stack[8];
@@ -913,14 +931,14 @@ process_nested_includes(const char* inc_path, dsdneoUserConfig* cfg, int depth, 
         nested_stack[nested_stack_size++] = include_stack[i];
     }
     nested_stack[nested_stack_size++] = inc_path;
-    process_includes(inc_path, cfg, depth + 1, nested_stack, nested_stack_size);
+    return process_includes(inc_path, cfg, depth + 1, nested_stack, nested_stack_size);
 }
 
 static int
 process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char** include_stack,
                         int include_stack_size) {
-    if (depth >= 3) {
-        return 0; /* max depth reached */
+    if (depth > DSD_USER_CONFIG_MAX_INCLUDE_DEPTH) {
+        return -1;
     }
     if (!fp) {
         return -1;
@@ -929,7 +947,7 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
     char line[1024];
     while (fgets(line, sizeof line, fp)) {
         char inc_path[1024];
-        int parse_rc = parse_include_directive_line(line, inc_path, sizeof inc_path);
+        int parse_rc = user_config_parse_include_directive_line(line, inc_path, sizeof inc_path);
         if (parse_rc < 0) {
             break;
         }
@@ -940,18 +958,27 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
         const char* including_path = include_stack_size > 0 ? include_stack[include_stack_size - 1] : NULL;
         if (dsd_path_resolve_relative_to_file(including_path, inc_path, resolved_inc_path, sizeof resolved_inc_path)
             != 0) {
-            continue;
+            return -1;
         }
         DSD_SNPRINTF(inc_path, sizeof inc_path, "%s", resolved_inc_path);
         inc_path[sizeof inc_path - 1] = '\0';
-        if (include_stack_contains_path(include_stack, include_stack_size, inc_path)) {
+        if (user_config_include_stack_contains_path(include_stack, include_stack_size, inc_path)) {
             continue; /* skip circular include */
+        }
+        if (depth >= DSD_USER_CONFIG_MAX_INCLUDE_DEPTH) {
+            return -1;
         }
 
         /* First process any nested includes in the included file */
-        process_nested_includes(inc_path, cfg, depth, include_stack, include_stack_size);
+        int include_rc = process_nested_includes(inc_path, cfg, depth, include_stack, include_stack_size);
+        if (include_rc != 0) {
+            return include_rc;
+        }
         /* Then load the included file's config values */
-        user_config_load_no_reset(inc_path, cfg);
+        int load_rc = user_config_load_no_reset(inc_path, cfg);
+        if (load_rc != 0) {
+            return load_rc;
+        }
     }
 
     return 0;
@@ -982,7 +1009,7 @@ build_target_profile_name(const char* profile_name, char* target_profile, size_t
     }
     DSD_SNPRINTF(target_profile, target_profile_size, "profile.%s", profile_name);
     target_profile[target_profile_size - 1] = '\0';
-    lowercase_ascii(target_profile);
+    user_config_lowercase_ascii(target_profile);
     return 1;
 }
 
@@ -1041,7 +1068,7 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
     int profile_found = 0;
 
     while (fgets(line, sizeof line, fp)) {
-        trim_whitespace(line);
+        user_config_trim_ascii_whitespace(line);
         if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
             continue;
         }
@@ -1052,6 +1079,12 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
         }
         if (section_result > 0) {
             update_profile_section_state(current_section, target_profile, &in_target_profile, &profile_found);
+            continue;
+        }
+
+        user_config_strip_inline_comment(line);
+        user_config_trim_ascii_whitespace(line);
+        if (line[0] == '\0') {
             continue;
         }
 
@@ -1110,7 +1143,10 @@ dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoU
 
     /* Process includes first (they provide base values that can be overridden) */
     const char* stack[1] = {root_path};
-    process_includes(root_path, cfg, 0, stack, 1);
+    int include_rc = process_includes(root_path, cfg, 0, stack, 1);
+    if (include_rc != 0) {
+        return include_rc;
+    }
 
     /* Now load the main config (which overrides included values) */
     int rc = user_config_load_no_reset(root_path, cfg);
@@ -1127,51 +1163,12 @@ dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoU
     return load_config_internal(root_path, profile_name, cfg, 0, stack, 1);
 }
 
-int
-dsd_user_config_load_profile_stream(FILE* stream, const char* source_name, const char* profile_name,
-                                    dsdneoUserConfig* cfg) {
-    if (!cfg || !stream) {
-        return -1;
-    }
-
-    user_cfg_reset(cfg);
-    char source_buf[2048];
-    const char* stack_name = (source_name && *source_name) ? source_name : "<stream>";
-    if (source_name && *source_name && source_name[0] != '<'
-        && dsd_path_expand_user(source_name, source_buf, sizeof source_buf) == 0) {
-        stack_name = source_buf;
-    }
-
-    const char* stack[1] = {stack_name};
-    if (seek_config_stream_to_start(stream) != 0) {
-        return -1;
-    }
-    process_includes_stream(stream, cfg, 0, stack, 1);
-
-    if (seek_config_stream_to_start(stream) != 0) {
-        return -1;
-    }
-    int rc = user_config_load_no_reset_stream(stream, cfg);
-    if (rc != 0) {
-        return rc;
-    }
-
-    if (!profile_name || !*profile_name) {
-        return 0;
-    }
-
-    if (seek_config_stream_to_start(stream) != 0) {
-        return -1;
-    }
-    return load_config_internal_stream(stream, profile_name, cfg);
-}
-
 static int
 extract_profile_section_name(char* line, const char** out_profile_name) {
     if (!line || !out_profile_name) {
         return 0;
     }
-    trim_whitespace(line);
+    user_config_trim_ascii_whitespace(line);
     if (line[0] != '[') {
         return 0;
     }

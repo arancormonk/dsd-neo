@@ -37,10 +37,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#ifdef TRACE_DSD
-#include <dsd-neo/platform/file_compat.h>
-#endif
-
 #ifdef USE_RADIO
 #endif
 
@@ -360,7 +356,7 @@ static inline int DSD_ATTR_USED
 cqpsk_slice_aligned(float symbol) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     int inv = (cfg && cfg->cqpsk_sync_inv) ? 1 : 0;
@@ -660,7 +656,7 @@ static void DSD_ATTR_USED
 build_cqpsk_dibit_ideals(const dsd_state* state, int inverted, float ideal[4]) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
 
@@ -763,13 +759,6 @@ replace_previous_dibit_soft(dsd_state* state, const dsd_dibit_soft_t* soft) {
             *(sp - 1) = *soft;
         }
     }
-
-    if (state->dmr_reliab_buf != NULL && state->dmr_reliab_p != NULL) {
-        uint8_t* rp = state->dmr_reliab_p;
-        if (rp > state->dmr_reliab_buf + 200 && rp <= state->dmr_reliab_buf + 1000000) {
-            *(rp - 1) = soft->reliability;
-        }
-    }
 }
 
 static void DSD_ATTR_USED
@@ -799,25 +788,24 @@ write_le_u32(unsigned char* out, uint32_t value) {
     out[3] = (unsigned char)((value >> 24) & 0xFFU);
 }
 
-static void DSD_ATTR_USED
-write_symbol_capture_record_with_soft(dsd_opts* opts, dsd_state* state, int dibit, float symbol,
-                                      const dsd_dibit_soft_t* soft_in) {
+void
+write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol, const dsd_dibit_soft_t* soft) {
     if (opts == NULL || state == NULL || opts->symbol_out_f == NULL) {
         return;
     }
 
-    dsd_dibit_soft_t soft;
-    if (soft_in != NULL) {
-        soft = *soft_in;
+    dsd_dibit_soft_t capture_soft;
+    if (soft != NULL) {
+        capture_soft = *soft;
     } else {
-        fallback_soft_from_dibit(dibit, 255, &soft);
+        fallback_soft_from_dibit(dibit, 255, &capture_soft);
     }
 
     unsigned char record[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
     record[0] = (unsigned char)(dibit & 3);
-    record[1] = soft.reliability;
-    write_le_i16(record + 2, soft.llr[0]);
-    write_le_i16(record + 4, soft.llr[1]);
+    record[1] = capture_soft.reliability;
+    write_le_i16(record + 2, capture_soft.llr[0]);
+    write_le_i16(record + 4, capture_soft.llr[1]);
     uint32_t raw_symbol = 0;
     DSD_MEMCPY(&raw_symbol, &symbol, sizeof(raw_symbol));
     write_le_u32(record + 6, raw_symbol);
@@ -825,26 +813,6 @@ write_symbol_capture_record_with_soft(dsd_opts* opts, dsd_state* state, int dibi
         state->symbol_capture_soft_records++;
     }
 }
-
-void
-write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol) {
-    write_symbol_capture_record_with_soft(opts, state, dibit, symbol, NULL);
-}
-
-#ifdef DSD_NEO_TEST_HOOKS
-uint8_t
-dsd_test_compute_cqpsk_reliability(float sym) {
-    // Use static to avoid stack overflow - dsd_state is ~1.5MB
-    static dsd_state dummy;
-    static int initialized = 0;
-    if (!initialized) {
-        DSD_MEMSET(&dummy, 0, sizeof(dummy));
-        initialized = 1;
-    }
-    dummy.rf_mod = 1;
-    return dmr_compute_reliability(&dummy, sym);
-}
-#endif
 
 /**
  * @brief Check if CQPSK demodulation path is active.
@@ -883,7 +851,7 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     if (!cfg || !cfg->debug_cqpsk_enable) {
@@ -914,11 +882,6 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
         sym_min = 1e9f;
         sym_max = -1e9f;
     }
-}
-#else
-static inline void DSD_ATTR_USED
-debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
-    UNUSED3(dibit, symbol, state);
 }
 #endif
 
@@ -1045,13 +1008,6 @@ store_dibit_with_soft(dsd_state* state, int stored_dibit, const dsd_dibit_soft_t
     state->dibit_buf_p++;
 
     *state->dmr_payload_p = stored_dibit;
-    if (state->dmr_reliab_p) {
-        if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
-            state->dmr_reliab_p = state->dmr_reliab_buf + 200;
-        }
-        *state->dmr_reliab_p = soft->reliability;
-        state->dmr_reliab_p++;
-    }
     write_dibit_soft_metric(state, soft);
     state->dmr_payload_p++;
 }
@@ -1090,19 +1046,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     float symbol;
     int dibit;
 
-#ifdef TRACE_DSD
-    unsigned int l, r;
-#endif
-
-#ifdef TRACE_DSD
-    l = state->debug_sample_index;
-#endif
-
     symbol = getSymbol(opts, state, 1);
-
-#ifdef TRACE_DSD
-    r = state->debug_sample_index;
-#endif
 
     state->sbuf[state->sidx] = symbol;
 
@@ -1123,20 +1067,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 
     dsd_dibit_soft_t capture_soft;
     const dsd_dibit_soft_t* capture_soft_p = read_previous_dibit_soft(state, &capture_soft) ? &capture_soft : NULL;
-    write_symbol_capture_record_with_soft(opts, state, dibit, symbol, capture_soft_p);
-
-#ifdef TRACE_DSD
-    {
-        if (state->debug_label_dibit_file == NULL) {
-            state->debug_label_dibit_file = dsd_fopen_private("pp_label_dibit.txt", "w");
-        }
-        if (state->debug_label_dibit_file != NULL) {
-            float left = l / 48000.0f;
-            float right = r / 48000.0f;
-            DSD_FPRINTF(state->debug_label_dibit_file, "%f\t%f\t%i\n", left, right, dibit);
-        }
-    }
-#endif
+    write_symbol_capture_record(opts, state, dibit, symbol, capture_soft_p);
 
     return dibit;
 }
@@ -1147,36 +1078,8 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
 
     if (out_soft != NULL) {
         if (!read_previous_dibit_soft(state, out_soft)) {
-            uint8_t rel = 255;
-            if (state && state->dmr_reliab_p != NULL && state->dmr_reliab_buf != NULL) {
-                rel = *(state->dmr_reliab_p - 1);
-            }
-            fallback_soft_from_dibit(dibit, rel, out_soft);
+            fallback_soft_from_dibit(dibit, 255, out_soft);
         }
-    }
-
-    return dibit;
-}
-
-/**
- * \brief Get the next dibit along with its reliability value.
- *
- * This function reads the next dibit and returns the associated reliability
- * (0=uncertain, 255=confident) via out_reliability. The reliability is computed
- * based on the symbol's position relative to decision thresholds.
- *
- * @param opts Decoder options.
- * @param state Decoder state containing symbol buffers and thresholds.
- * @param out_reliability [out] Reliability value when non-NULL.
- * @return Dibit value [0,3]; negative on shutdown/EOF.
- */
-int
-getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
-    dsd_dibit_soft_t soft;
-    int dibit = getDibitSoft(opts, state, &soft);
-
-    if (out_reliability != NULL) {
-        *out_reliability = soft.reliability;
     }
 
     return dibit;
@@ -1215,7 +1118,7 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
 
     dsd_dibit_soft_t capture_soft;
     const dsd_dibit_soft_t* capture_soft_p = read_previous_dibit_soft(state, &capture_soft) ? &capture_soft : NULL;
-    write_symbol_capture_record_with_soft(opts, state, dibit, symbol, capture_soft_p);
+    write_symbol_capture_record(opts, state, dibit, symbol, capture_soft_p);
 
     if (out_soft_symbol != NULL) {
         *out_soft_symbol = symbol;

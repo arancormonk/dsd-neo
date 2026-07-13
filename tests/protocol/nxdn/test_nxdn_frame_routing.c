@@ -19,8 +19,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "nxdn_internal.h"
-
 static dsd_opts g_opts;
 static dsd_state g_state;
 static int g_lfsr_calls;
@@ -107,14 +105,6 @@ reset_state(void) {
     g_last_frame_type[0] = '\0';
 }
 
-static void
-fill_soft_bits(uint8_t bits[364], uint8_t reliab[364]) {
-    for (size_t i = 0U; i < 364U; i++) {
-        bits[i] = (uint8_t)(((i * 5U) + 1U) & 1U);
-        reliab[i] = (uint8_t)(250U - (i % 200U));
-    }
-}
-
 void
 LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) {
     (void)buffer_in;
@@ -131,7 +121,7 @@ nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed) {
 }
 
 int
-getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
+getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
     (void)state;
     uint8_t dibit = 0U;
@@ -141,8 +131,9 @@ getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliabili
         reliab = g_dibit_reliab_stream[g_dibit_stream_pos];
         g_dibit_stream_pos++;
     }
-    if (out_reliability != NULL) {
-        *out_reliability = reliab;
+    if (out_soft != NULL) {
+        DSD_MEMSET(out_soft, 0, sizeof(*out_soft));
+        out_soft->reliability = reliab;
     }
     return dibit;
 }
@@ -277,11 +268,6 @@ nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const
     g_last_voice = voice;
 }
 
-static int
-route(uint8_t lich, const uint8_t bits[364], const uint8_t reliab[364]) {
-    return nxdn_route_decoded_lich(&g_opts, &g_state, lich, bits, reliab);
-}
-
 static uint8_t
 encoded_lich_full(uint8_t lich) {
     uint8_t full = (uint8_t)(lich << 1U);
@@ -309,57 +295,61 @@ prepare_frame_stream(uint8_t lich, int force_bad_parity) {
 }
 
 static int
+route_frame(uint8_t lich) {
+    prepare_frame_stream(lich, 0);
+    nxdn_frame(&g_opts, &g_state);
+    return g_state.carrier != 0 ? 1 : 0;
+}
+
+static int
 test_control_channel_routes_and_reliability(void) {
     int rc = 0;
-    uint8_t bits[364];
-    uint8_t reliab[364];
-    fill_soft_bits(bits, reliab);
 
     reset_state();
-    rc |= expect_int("cac accepted", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("cac accepted", route_frame(0x01U), 1);
     rc |= expect_int("cac route", g_cac_calls, 1);
-    rc |= expect_int("cac first bit", g_last_cac_bit, bits[16]);
-    rc |= expect_int("cac first reliability", g_last_cac_reliab, reliab[16]);
+    rc |= expect_int("cac first bit", g_last_cac_bit, (g_dibit_stream[8] >> 1U) & 1U);
+    rc |= expect_int("cac first reliability", g_last_cac_reliab, g_dibit_reliab_stream[8]);
 
     reset_state();
-    rc |= expect_int("sacch/facch accepted", route(0x32U, bits, reliab), 1);
+    rc |= expect_int("sacch/facch accepted", route_frame(0x32U), 1);
     rc |= expect_int("sacch route", g_sacch_calls, 1);
     rc |= expect_int("facch route", g_facch_calls, 1);
     rc |= expect_int("voice route", g_voice_calls, 1);
     rc |= expect_int("voice mode", g_last_voice, 2);
-    rc |= expect_int("sacch first bit", g_last_sacch_bit, bits[16]);
-    rc |= expect_int("sacch first reliability", g_last_sacch_reliab, reliab[16]);
-    rc |= expect_int("facch first bit", g_last_facch_bit, bits[76]);
-    rc |= expect_int("facch first reliability", g_last_facch_reliab, reliab[76]);
+    rc |= expect_int("sacch first bit", g_last_sacch_bit, (g_dibit_stream[8] >> 1U) & 1U);
+    rc |= expect_int("sacch first reliability", g_last_sacch_reliab, g_dibit_reliab_stream[8]);
+    rc |= expect_int("facch first bit", g_last_facch_bit, (g_dibit_stream[38] >> 1U) & 1U);
+    rc |= expect_int("facch first reliability", g_last_facch_reliab, g_dibit_reliab_stream[38]);
 
     reset_state();
-    rc |= expect_int("facch-both accepted", route(0x20U, bits, reliab), 1);
+    rc |= expect_int("facch-both accepted", route_frame(0x20U), 1);
     rc |= expect_int("facch both routes", g_facch_calls, 2);
     rc |= expect_int("non-superframe sacch mode", g_state.nxdn_sacch_non_superframe, 1);
 
     reset_state();
-    rc |= expect_int("scch accepted", route(0x76U, bits, reliab), 1);
+    rc |= expect_int("scch accepted", route_frame(0x76U), 1);
     rc |= expect_int("scch route", g_scch_calls, 1);
 
     reset_state();
-    rc |= expect_int("facch2 accepted", route(0x28U, bits, reliab), 1);
+    rc |= expect_int("facch2 accepted", route_frame(0x28U), 1);
     rc |= expect_int("facch2 route", g_facch2_calls, 1);
-    rc |= expect_int("udch accepted", route(0x2EU, bits, reliab), 1);
+    rc |= expect_int("udch accepted", route_frame(0x2EU), 1);
     rc |= expect_int("udch route", g_udch_calls, 1);
 
     reset_state();
-    rc |= expect_int("facch3 accepted", route(0x68U, bits, reliab), 1);
+    rc |= expect_int("facch3 accepted", route_frame(0x68U), 1);
     rc |= expect_int("facch3 route", g_facch3_calls, 1);
     reset_state();
-    rc |= expect_int("udch2 accepted", route(0x6EU, bits, reliab), 1);
+    rc |= expect_int("udch2 accepted", route_frame(0x6EU), 1);
     rc |= expect_int("udch2 route", g_udch2_calls, 1);
 
     reset_state();
-    rc |= expect_int("sacch2-pich accepted", route(0x08U, bits, reliab), 1);
+    rc |= expect_int("sacch2-pich accepted", route_frame(0x08U), 1);
     rc |= expect_int("sacch2 route", g_sacch2_calls, 1);
     rc |= expect_int("pich single route", g_pich_tch_calls, 1);
     reset_state();
-    rc |= expect_int("sacch2-pich both accepted", route(0x48U, bits, reliab), 1);
+    rc |= expect_int("sacch2-pich both accepted", route_frame(0x48U), 1);
     rc |= expect_int("pich both routes", g_pich_tch_calls, 2);
 
     return rc;
@@ -368,29 +358,20 @@ test_control_channel_routes_and_reliability(void) {
 static int
 test_bad_frame_and_filter_gates(void) {
     int rc = 0;
-    uint8_t bits[364];
-    uint8_t reliab[364];
-    fill_soft_bits(bits, reliab);
-
-    reset_state();
-    rc |= expect_int("route null opts", nxdn_route_decoded_lich(NULL, &g_state, 0x01U, bits, reliab), -1);
-    rc |= expect_int("route null state", nxdn_route_decoded_lich(&g_opts, NULL, 0x01U, bits, reliab), -1);
-    rc |= expect_int("route null bits", nxdn_route_decoded_lich(&g_opts, &g_state, 0x01U, NULL, reliab), -1);
-    rc |= expect_int("route null reliab", nxdn_route_decoded_lich(&g_opts, &g_state, 0x01U, bits, NULL), -1);
 
     reset_state();
     g_state.carrier = 1;
     g_state.synctype = 99;
     g_state.lastsynctype = 99;
-    rc |= expect_int("unsupported lich rejected", route(0x7FU, bits, reliab), 0);
+    rc |= expect_int("unsupported lich rejected", route_frame(0x7FU), 0);
     rc |= expect_int("unsupported lich marks sync none", g_state.lastsynctype, DSD_SYNC_NONE);
     rc |= expect_int("unsupported lich clears carrier after sync reject", g_state.carrier, 0);
     rc |= expect_int("unsupported lich sacch reset", g_state.nxdn_sacch_frame_segment[0][0], 1);
     rc |= expect_int("unsupported lich sacch crc reset", g_state.nxdn_sacch_frame_segcrc[0], 1);
 
     reset_state();
-    g_opts.p25_trunk = 1;
-    rc |= expect_int("inbound trunk lich rejected", route(0x38U, bits, reliab), 0);
+    g_opts.trunk_enable = 1;
+    rc |= expect_int("inbound trunk lich rejected", route_frame(0x38U), 0);
     rc |= expect_int("inbound trunk marks sync none", g_state.lastsynctype, DSD_SYNC_NONE);
 
     return rc;
@@ -452,42 +433,39 @@ test_public_frame_entry_lich_collection(void) {
 static int
 test_lfsr_and_scanner_state(void) {
     int rc = 0;
-    uint8_t bits[364];
-    uint8_t reliab[364];
-    fill_soft_bits(bits, reliab);
 
     reset_state();
     g_state.nxdn_cipher_type = 0x1;
     g_state.R = 0x1234U;
-    rc |= expect_int("data frame accepted", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("data frame accepted", route_frame(0x01U), 1);
     rc |= expect_u64("data frame seeds mi", g_state.payload_miN, 0x1238ULL);
     rc |= expect_int("data frame lfsr calls", g_lfsr_calls, 4);
 
     reset_state();
     g_state.nxdn_cipher_type = 0x2;
-    rc |= expect_int("data aes accepted", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("data aes accepted", route_frame(0x01U), 1);
     rc |= expect_u64("data aes bit counter", (unsigned long long)g_state.bit_counterL, 196ULL);
 
     reset_state();
     g_state.M = 1;
     g_state.R = 0x2000U;
-    rc |= expect_int("voice facch accepted", route(0x32U, bits, reliab), 1);
+    rc |= expect_int("voice facch accepted", route_frame(0x32U), 1);
     rc |= expect_int("voice sets cipher type", g_state.nxdn_cipher_type, 1);
     rc |= expect_int("pre voice lfsr calls", g_lfsr_calls, 2);
     rc |= expect_u64("pre voice seeds mi", g_state.payload_miN, 0x2002ULL);
 
     reset_state();
     g_state.nxdn_cipher_type = 0x2;
-    rc |= expect_int("post voice facch2 accepted", route(0x34U, bits, reliab), 1);
+    rc |= expect_int("post voice facch2 accepted", route_frame(0x34U), 1);
     rc |= expect_u64("post voice facch2 bit counter", (unsigned long long)g_state.bit_counterL, 98ULL);
 
     reset_state();
     DSD_SNPRINTF(g_opts.mbe_out_dir, sizeof(g_opts.mbe_out_dir), "%s", "mbe");
-    rc |= expect_int("voice opens mbe file route", route(0x32U, bits, reliab), 1);
+    rc |= expect_int("voice opens mbe file route", route_frame(0x32U), 1);
     rc |= expect_int("voice opened mbe file", g_opts.mbe_out_f == stdout, 1);
     g_opts.frame_nxdn48 = 1;
     g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
-    rc |= expect_int("nxdn48 data closes mbe file route", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("nxdn48 data closes mbe file route", route_frame(0x01U), 1);
     rc |= expect_int("nxdn48 data closed mbe file", g_opts.mbe_out_f == NULL, 1);
 
     reset_state();
@@ -496,15 +474,15 @@ test_lfsr_and_scanner_state(void) {
     g_opts.frame_nxdn96 = 1;
     g_active_nxdn_variant = DSD_NXDN_VARIANT_96;
     g_state.last_vc_sync_time = time(NULL);
-    rc |= expect_int("full-auto NXDN96 recent data keeps mbe file route", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("full-auto NXDN96 recent data keeps mbe file route", route_frame(0x01U), 1);
     rc |= expect_int("full-auto NXDN96 recent data keeps mbe file", g_opts.mbe_out_f == stdout, 1);
     g_state.last_vc_sync_time = 0;
-    rc |= expect_int("nxdn96 stale data closes mbe file route", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("nxdn96 stale data closes mbe file route", route_frame(0x01U), 1);
     rc |= expect_int("nxdn96 stale data closed mbe file", g_opts.mbe_out_f == NULL, 1);
 
     reset_state();
     g_opts.scanner_mode = 1;
-    rc |= expect_int("scanner accepted", route(0x01U, bits, reliab), 1);
+    rc |= expect_int("scanner accepted", route_frame(0x01U), 1);
     rc |= expect_int("scanner extends cc sync", g_state.last_cc_sync_time > 0, 1);
     rc |= expect_int("carrier active", g_state.carrier, 1);
 

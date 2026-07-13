@@ -319,8 +319,9 @@ ui_print_rtl_gain_field(dsd_opts* opts) {
 static void
 ui_print_rtl_ppm_field(const dsd_opts* opts) {
     (void)opts;
-    int requested_ppm = dsd_app_frontend_requested_ppm();
-    printw(" PPM: %i;", requested_ppm); //Adjust manually now with { and }
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    printw(" PPM: %i;", metrics.requested_ppm); //Adjust manually now with { and }
 }
 
 static void
@@ -658,7 +659,7 @@ ui_render_trunking_call_filters_plain(const dsd_opts* opts) {
 
 static void
 ui_render_trunking_call_filters(const dsd_opts* opts) {
-    if (!(opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL))) {
+    if (!(opts->trunk_enable == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL))) {
         return;
     }
 #ifdef PRETTY_COLORS
@@ -745,7 +746,7 @@ ui_render_edacs_mode_toggles_plain(dsd_state* state) {
 static void
 ui_render_edacs_mode_toggles(const dsd_opts* opts, dsd_state* state) {
     //print additional information for EDACS modes and toggles
-    if (!(opts->p25_trunk == 1 && opts->frame_provoice == 1)) {
+    if (!(opts->trunk_enable == 1 && opts->frame_provoice == 1)) {
         return;
     }
 #ifdef PRETTY_COLORS
@@ -927,8 +928,9 @@ ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
     /* Only show RTL-SDR section and render visualizers when RTL input is active */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         ui_print_header(ui_audio_in_is_soapy(opts) ? "SoapySDR Visual Aids" : "RTL-SDR Visual Aids");
-        int nfft = dsd_app_frontend_spectrum_get_size();
-        ui_print_rtl_visual_aids_controls(opts, nfft);
+        dsd_frontend_metrics metrics;
+        (void)dsd_app_frontend_get_metrics(&metrics);
+        ui_print_rtl_visual_aids_controls(opts, metrics.spectrum_size);
         ui_render_rtl_visual_aid_panels(opts, state);
     }
 #else
@@ -984,10 +986,10 @@ ui_render_audio_decode_header_fields(dsd_opts* opts, const dsd_state* state) {
     }
 
     ui_print_header("Audio Decode");
-    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+    if (opts->trunk_enable == 1 && (opts->trunk_is_tuned == 1)) {
         ui_print_kv_line("Tuner state", "Busy");
     }
-    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0)) {
+    if (opts->trunk_enable == 1 && (opts->trunk_is_tuned == 0)) {
         ui_print_kv_line("Tuner state", "Free");
     }
     ui_print_label_pad("Demod/Rate");
@@ -1204,7 +1206,7 @@ ui_render_p25_metric_toggles(const dsd_opts* opts, const dsd_state* state) {
         (void)ui_print_p25_metrics(opts, state);
         ui_print_hr();
     }
-    if (opts->frontend_display.show_p25_cc_candidates == 1 && opts->p25_trunk == 1) {
+    if (opts->frontend_display.show_p25_cc_candidates == 1 && opts->trunk_enable == 1) {
         ui_print_header("P25 CC Candidates");
         ui_print_p25_cc_candidates(opts, state);
         ui_print_hr();
@@ -1932,11 +1934,11 @@ ui_nxdn_is_idas(const dsd_state* state) {
 
 static void
 ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int idas) {
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
     printw("| ");
-    if (opts->p25_is_tuned == 0) {
+    if (opts->trunk_is_tuned == 0) {
         printw(idas ? "Monitoring RTCH2 Channel" : "Monitoring RCCH Channel");
         if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
             long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
@@ -2121,7 +2123,7 @@ ui_render_edacs_site_header(const dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    if (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0) {
+    if (opts->trunk_is_tuned == 0) {
         printw("| Monitoring CC - LCN [%02d]\n", state->edacs_cc_lcn);
     } else {
         printw("| Monitoring VC - LCN [%02d]\n", state->edacs_tuned_lcn);
@@ -2296,7 +2298,7 @@ ui_render_edacs_lcn_row(const dsd_opts* opts, const dsd_state* state, int lcn) {
         }
     }
 
-    if (lcn == state->edacs_tuned_lcn && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+    if (lcn == state->edacs_tuned_lcn && (opts->trunk_is_tuned == 1)) {
         printw(" **T**");
     }
     printw("\n");
@@ -2844,12 +2846,12 @@ ui_render_p25_dmr_active_channels_line(const dsd_opts* opts, const dsd_state* st
 
 static void
 ui_render_p25_dmr_tuned_freq_line(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
 
     printw("|        | ");
-    if (opts->p25_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1) {
         long int vc = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
         if (vc == 0) {
             vc = ui_guess_active_vc_freq(state);
@@ -2919,8 +2921,8 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_render_event_history_section(state);
 }
 
-static void
-ui_ncurses_printer_impl(dsd_opts* opts, dsd_state* state) {
+void
+dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
     /* Guard against null opts. Without opts we cannot render safely. */
     if (!opts) {
         return;
@@ -2958,9 +2960,4 @@ ui_ncurses_printer_impl(dsd_opts* opts, dsd_state* state) {
     if (ui_menu_is_open()) {
         ui_menu_tick(opts, state);
     }
-}
-
-void
-dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
-    ui_ncurses_printer_impl(opts, state);
 }

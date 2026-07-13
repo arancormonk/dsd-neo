@@ -209,7 +209,7 @@ main(void) {
     for (int i = 0; i < 8; i++) {
         dst[i] = 0;
     }
-    widen_rotate90_u8_to_f32_bias127(src, dst, 8);
+    (void)widen_rotate90_u8_to_f32_bias127_phase(src, dst, 8, 0U);
     float i0 = ((float)src[0] - 127.5f) * inv, q0 = ((float)src[1] - 127.5f) * inv;
     float i1 = ((float)src[2] - 127.5f) * inv, q1 = ((float)src[3] - 127.5f) * inv;
     float i2 = ((float)src[4] - 127.5f) * inv, q2 = ((float)src[5] - 127.5f) * inv;

@@ -143,63 +143,6 @@ test_channel_import_missing_file(void) {
 }
 
 static int
-test_lcn_import_caps_frequency_count(void) {
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    if (!opts || !state) {
-        free(opts);
-        free_test_state(state);
-        return 1;
-    }
-
-    char tmpl[] = "dsd-neo-test-lcn-overflow-XXXXXX";
-    int fd = dsd_mkstemp(tmpl);
-    if (fd < 0) {
-        free(opts);
-        free_test_state(state);
-        return 1;
-    }
-    (void)dsd_close(fd);
-
-    FILE* fp = dsd_fopen_private(tmpl, "w");
-    if (!fp) {
-        (void)remove(tmpl);
-        free(opts);
-        free_test_state(state);
-        return 1;
-    }
-
-    DSD_FPRINTF(fp, "lcn\n");
-    for (int i = 0; i < 30; ++i) {
-        DSD_FPRINTF(fp, "%s%d", i == 0 ? "" : ",", 851000000 + i);
-    }
-    DSD_FPRINTF(fp, "\n");
-    fclose(fp);
-
-    DSD_SNPRINTF(opts->lcn_in_file, sizeof opts->lcn_in_file, "%s", tmpl);
-    int rc = csvLCNImport(opts, state);
-
-    int failed = 0;
-    if (rc != 0) {
-        failed = 1;
-    }
-    if (state->lcn_freq_count != 26) {
-        failed = 1;
-    }
-    for (int i = 0; i < 26; ++i) {
-        if (state->trunk_lcn_freq[i] != 851000000 + i) {
-            failed = 1;
-            break;
-        }
-    }
-
-    (void)remove(tmpl);
-    free(opts);
-    free_test_state(state);
-    return failed;
-}
-
-static int
 test_channel_import_rejects_directory(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -512,12 +455,12 @@ test_group_import_large_file_policy(void) {
         || strcmp(lookup.entry.name, "Late Allow") != 0) {
         failed = 1;
     }
-    if (dsd_tg_policy_evaluate_group_call(opts, state, 6500U, 1U, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) != 0
+    if (dsd_tg_policy_evaluate_group_call(opts, state, 6500U, 1U, 0, 0, &decision) != 0
         || decision.match != DSD_TG_POLICY_MATCH_EXACT || decision.tune_allowed != 1) {
         failed = 1;
     }
-    if (dsd_tg_policy_evaluate_group_call(opts, state, 7000U, 1U, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) != 0
-        || decision.tune_allowed != 0 || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0) {
+    if (dsd_tg_policy_evaluate_group_call(opts, state, 7000U, 1U, 0, 0, &decision) != 0 || decision.tune_allowed != 0
+        || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0) {
         failed = 1;
     }
     if (dsd_tg_policy_lookup_id(state, (uint32_t)rows, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
@@ -525,9 +468,7 @@ test_group_import_large_file_policy(void) {
         || strlen(lookup.entry.name) != sizeof(lookup.entry.name) - 1) {
         failed = 1;
     }
-    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)rows, 1U, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT,
-                                          &decision)
-            != 0
+    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)rows, 1U, 0, 0, &decision) != 0
         || decision.tune_allowed != 0 || (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) == 0) {
         failed = 1;
     }
@@ -1004,9 +945,6 @@ main(void) {
         return 1;
     }
     if (test_channel_import_missing_file() != 0) {
-        return 1;
-    }
-    if (test_lcn_import_caps_frequency_count() != 0) {
         return 1;
     }
     if (test_channel_import_rejects_directory() != 0) {

@@ -14,8 +14,6 @@
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
 
-#include "dsd-neo/core/opts_fwd.h"
-
 const char* dsd_neo_rt_sched_test_role_or_default(const char* role);
 int dsd_neo_rt_sched_test_resolve_role_rt_priority(const dsdneoRuntimeConfig* cfg, const char* role);
 int dsd_neo_rt_sched_test_resolve_role_cpu_affinity(const dsdneoRuntimeConfig* cfg, const char* role);
@@ -39,8 +37,7 @@ dsd_neo_get_config(void) {
 }
 
 extern "C" void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts;
+dsd_neo_config_init(void) {
     ++g_config_init_calls;
 }
 

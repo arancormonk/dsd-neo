@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_hytera.h"
 #include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -154,10 +155,6 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->IrrecoverableErrors = IrrecoverableErrors;
     ctx->type = type;
     ctx->restchannel = -1;
-
-    if (opts->dmr_mono == 1) {
-        state->currentslot = 0;
-    }
 
     ctx->slot = state->currentslot;
     ctx->slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
@@ -427,7 +424,7 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
         return 0;
     }
 
-    uint8_t checksum = 0;
+    uint8_t checksum_bytes[8];
     uint8_t alg = (uint8_t)convert_bits_into_output(&ctx->lc_bits[0], 8);
     uint8_t key = (uint8_t)convert_bits_into_output(&ctx->lc_bits[16], 8);
     unsigned long long int mi = (unsigned long long int)convert_bits_into_output(&ctx->lc_bits[24], 40);
@@ -450,14 +447,12 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
                     dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->RR, 10U, 0));
     }
 
-    for (int i = 0; i < 8; i++) {
-        checksum += (uint8_t)convert_bits_into_output(&ctx->lc_bits[((size_t)i * 8)], 8);
-        checksum &= 0xFF;
+    for (size_t i = 0; i < sizeof checksum_bytes; i++) {
+        checksum_bytes[i] = (uint8_t)convert_bits_into_output(&ctx->lc_bits[i * 8U], 8);
     }
-    checksum = ~checksum & 0xFF;
-    checksum++;
 
-    if (checksum == (uint8_t)convert_bits_into_output(&ctx->lc_bits[64], 8)) {
+    if (dmr_hytera_checksum(checksum_bytes, sizeof checksum_bytes)
+        == (uint8_t)convert_bits_into_output(&ctx->lc_bits[64], 8)) {
         if (ctx->slot == 0) {
             ctx->state->dmr_so |= 0x40;
             ctx->state->payload_algid = alg;
@@ -556,7 +551,7 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
         ctx->state->lasttgR = ctx->target;
         ctx->state->lastsrcR = ctx->source;
     }
-    if (ctx->opts->trunk_is_tuned == 1 || ctx->opts->p25_is_tuned == 1) {
+    if (ctx->opts->trunk_is_tuned == 1) {
         dsd_mark_vc_sync(ctx->state);
         dsd_mark_cc_sync(ctx->state);
     }
@@ -1233,7 +1228,6 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
-    opts->p25_is_tuned = 0;
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
@@ -1281,15 +1275,9 @@ dmr_slco_fill_activity_strings(uint8_t slco_bits[], dmr_slco_data* data) {
     const char* ts1 = dmr_activity_type_label(ts1_act, ts1_fb, sizeof(ts1_fb));
     DSD_SNPRINTF(data->ts1_str, sizeof(data->ts1_str), "%s", ts1);
 
-    if (ts2_act == 0x0 || ts2_act == 0x2 || ts2_act == 0x3 || ts2_act == 0x8 || ts2_act == 0x9 || ts2_act == 0xA
-        || ts2_act == 0xB || ts2_act == 0xC || ts2_act == 0xD) {
-        char ts2_fb[16];
-        const char* ts2 = dmr_activity_type_label(ts2_act, ts2_fb, sizeof(ts2_fb));
-        DSD_SNPRINTF(data->ts2_str, sizeof(data->ts2_str), "%s", ts2);
-    } else {
-        // Preserve existing behavior: TS2 unknown fallback prints TS1 activity value.
-        DSD_SNPRINTF(data->ts2_str, sizeof(data->ts2_str), "Res %X", ts1_act);
-    }
+    char ts2_fb[16];
+    const char* ts2 = dmr_activity_type_label(ts2_act, ts2_fb, sizeof(ts2_fb));
+    DSD_SNPRINTF(data->ts2_str, sizeof(data->ts2_str), "%s", ts2);
 
     data->ts1_hash = (uint8_t)convert_bits_into_output(&slco_bits[12], 8);
     data->ts2_hash = (uint8_t)convert_bits_into_output(&slco_bits[20], 8);

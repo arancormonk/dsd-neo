@@ -40,16 +40,6 @@ ncurses_drain_escape_sequence(void) {
     }
 }
 
-static void
-ncurses_post_delta_i32(int cmd, int32_t value) {
-    (void)dsd_app_command_set_i32_tracked(cmd, value, NULL);
-}
-
-static void
-ncurses_post_delta_f32(int cmd, float value) {
-    (void)dsd_app_command_set_float_tracked(cmd, value, NULL);
-}
-
 static uint32_t DSD_ATTR_USED
 ncurses_resolve_tg_hold_target(const dsd_opts* opts, const dsd_state* state, int right_slot) {
     uint32_t tg = 0;
@@ -128,7 +118,7 @@ ncurses_try_post_simple_cmd(int c) {
         if (map[i].key != c) {
             continue;
         }
-        (void)dsd_app_command_action_tracked(map[i].cmd, NULL);
+        (void)dsd_app_command_action(map[i].cmd);
         return 1;
     }
     return 0;
@@ -153,21 +143,27 @@ ncurses_handle_escape_or_history(dsd_opts* opts, dsd_state* state, int c) {
 static int DSD_ATTR_USED
 ncurses_handle_delta_keys(int c) {
     switch (c) {
-        case DSD_KEY_GAIN_PLUS: ncurses_post_delta_i32(DSD_APP_CMD_GAIN_DELTA, +1); return 1;
-        case DSD_KEY_GAIN_MINUS: ncurses_post_delta_i32(DSD_APP_CMD_GAIN_DELTA, -1); return 1;
-        case DSD_KEY_AGAIN_PLUS: ncurses_post_delta_i32(DSD_APP_CMD_AGAIN_DELTA, +1); return 1;
-        case DSD_KEY_AGAIN_MINUS: ncurses_post_delta_i32(DSD_APP_CMD_AGAIN_DELTA, -1); return 1;
-        case DSD_KEY_CONST_GATE_DEC: ncurses_post_delta_f32(DSD_APP_CMD_CONST_GATE_DELTA, -0.02f); return 1;
-        case DSD_KEY_CONST_GATE_INC: ncurses_post_delta_f32(DSD_APP_CMD_CONST_GATE_DELTA, +0.02f); return 1;
-        case DSD_KEY_PPM_UP: ncurses_post_delta_i32(DSD_APP_CMD_PPM_DELTA, +1); return 1;
-        case DSD_KEY_PPM_DOWN: ncurses_post_delta_i32(DSD_APP_CMD_PPM_DELTA, -1); return 1;
+        case DSD_KEY_GAIN_PLUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, +1); return 1;
+        case DSD_KEY_GAIN_MINUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, -1); return 1;
+        case DSD_KEY_AGAIN_PLUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_AGAIN_DELTA, +1); return 1;
+        case DSD_KEY_AGAIN_MINUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_AGAIN_DELTA, -1); return 1;
+        case DSD_KEY_CONST_GATE_DEC: (void)dsd_app_command_set_float(DSD_APP_CMD_CONST_GATE_DELTA, -0.02f); return 1;
+        case DSD_KEY_CONST_GATE_INC: (void)dsd_app_command_set_float(DSD_APP_CMD_CONST_GATE_DELTA, +0.02f); return 1;
+        case DSD_KEY_PPM_UP: (void)dsd_app_command_set_i32(DSD_APP_CMD_PPM_DELTA, +1); return 1;
+        case DSD_KEY_PPM_DOWN: (void)dsd_app_command_set_i32(DSD_APP_CMD_PPM_DELTA, -1); return 1;
 #ifdef USE_RTLSDR
-        case DSD_KEY_SPEC_DEC:
-            ncurses_post_delta_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, -(dsd_app_frontend_spectrum_get_size() / 2));
+        case DSD_KEY_SPEC_DEC: {
+            dsd_frontend_metrics metrics;
+            (void)dsd_app_frontend_get_metrics(&metrics);
+            (void)dsd_app_command_set_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, -(metrics.spectrum_size / 2));
             return 1;
-        case DSD_KEY_SPEC_INC:
-            ncurses_post_delta_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, +(dsd_app_frontend_spectrum_get_size()));
+        }
+        case DSD_KEY_SPEC_INC: {
+            dsd_frontend_metrics metrics;
+            (void)dsd_app_frontend_get_metrics(&metrics);
+            (void)dsd_app_command_set_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, +metrics.spectrum_size);
             return 1;
+        }
 #endif
         default: return 0;
     }
@@ -179,20 +175,19 @@ ncurses_handle_tg_hold_keys(const dsd_opts* opts, const dsd_state* state, int c)
         return 0;
     }
     uint32_t tg = ncurses_resolve_tg_hold_target(opts, state, c == DSD_KEY_TG_HOLD2);
-    (void)dsd_app_command_set_u32_tracked(DSD_APP_CMD_TG_HOLD_SET, tg, NULL);
+    (void)dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, tg);
     return 1;
 }
 
 static int DSD_ATTR_USED
 ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c) {
     if (c == DSD_KEY_EH_TOGGLE) {
-        (void)dsd_app_command_action_tracked(
-            opts->m17encoder == 1 ? DSD_APP_CMD_M17_TX_TOGGLE : DSD_APP_CMD_EH_TOGGLE_SLOT, NULL);
+        (void)dsd_app_command_action(opts->m17encoder == 1 ? DSD_APP_CMD_M17_TX_TOGGLE : DSD_APP_CMD_EH_TOGGLE_SLOT);
         return 1;
     }
     if (c == '!' || c == '@') {
         uint8_t slot = (uint8_t)((c == '@') ? 1 : 0);
-        (void)dsd_app_command_set_u8_tracked(DSD_APP_CMD_LOCKOUT_SLOT, slot, NULL);
+        (void)dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, slot);
         return 1;
     }
     if (c == DSD_KEY_ENTER || c == '\r' || c == KEY_ENTER) {

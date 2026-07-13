@@ -9,8 +9,8 @@
  *
  * Protocol state machines may need to request retunes without depending on
  * IO/control headers or linking IO backends. The engine (or tests) installs
- * real hook functions at startup; the runtime provides safe wrappers and
- * fallback behavior when hooks are not installed.
+ * real hook functions at startup. Tune requests fail when no backend is
+ * installed.
  */
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_TUNING_HOOKS_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_TUNING_HOOKS_H_

@@ -102,7 +102,7 @@ Required columns:
 Notes:
 
 - The first line is treated as header text and is required.
-- Legacy/default behavior uses only the first 3 columns; extra columns are ignored.
+- Basic/default behavior uses only the first 3 columns; extra columns are ignored.
 - `mode` is matched literally by features that consult it:
   - `A` usually means allow/normal.
   - `B` and `DE` are treated as locked out.

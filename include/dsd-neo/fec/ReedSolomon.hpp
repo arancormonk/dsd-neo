@@ -35,10 +35,9 @@
  addresses) to the functions  may be a sensible move to reduce the number
  of global variables and thus decrease the chance of a bug being introduced.
 
- This program does not handle erasures at present, but should not be hard
- to adapt to do this, as it is just an adjustment to the Berlekamp-Massey
- algorithm. It also does not attempt to decode past the BCH bound -- see
- Blahut "Theory and practice of error control codes" for how to do this.
+ The original program did not handle erasures; this dsd-neo adaptation adds
+ bounded erasure decoding. It does not attempt to decode past the BCH bound --
+ see Blahut "Theory and practice of error control codes" for how to do this.
 
  Simon Rockliff, University of Adelaide   21/9/89
 
@@ -71,7 +70,6 @@ class ReedSolomon_63 {
 
     int* alpha_to;
     int* index_of;
-    int* gg;
 
     int
     gf_mul(int a, int b) const {
@@ -717,45 +715,15 @@ class ReedSolomon_63 {
         index_of[0] = -1;
     }
 
-    void
-    gen_poly()
-    /* Obtain the generator polynomial of the tt-error correcting, length
-     nn=(2**mm -1) Reed Solomon code  from the product of (X+alpha**i), i=1..2*tt
-     */
-    {
-        int i, j;
-
-        gg[0] = 2; /* primitive element alpha = 2  for GF(2**mm)  */
-        gg[1] = 1; /* g(x) = (X+alpha) initially */
-        for (i = 2; i <= NN - KK; i++) {
-            gg[i] = 1;
-            for (j = i - 1; j > 0; j--) {
-                if (gg[j] != 0) {
-                    gg[j] = gg[j - 1] ^ alpha_to[(index_of[gg[j]] + i) % NN];
-                } else {
-                    gg[j] = gg[j - 1];
-                }
-            }
-            gg[0] = alpha_to[(index_of[gg[0]] + i) % NN]; /* gg[0] can never be zero */
-        }
-        /* convert gg[] to index form for quicker encoding */
-        for (i = 0; i <= NN - KK; i++) {
-            gg[i] = index_of[gg[i]];
-        }
-    }
-
   public:
     ReedSolomon_63() {
         alpha_to = new int[NN + 1];
         index_of = new int[NN + 1];
-        gg = new int[NN - KK + 1];
 
         // Polynom used in P25 is alpha**6+alpha+1
         const int generator_polinomial[] = {1, 1, 0, 0, 0, 0, 1}; /* specify irreducible polynomial coeffts */
 
         generate_gf(generator_polinomial);
-
-        gen_poly();
     }
 
     // Non-copyable to prevent double-delete of dynamic arrays
@@ -763,43 +731,8 @@ class ReedSolomon_63 {
     ReedSolomon_63& operator=(const ReedSolomon_63&) = delete;
 
     virtual ~ReedSolomon_63() {
-        delete[] gg;
         delete[] index_of;
         delete[] alpha_to;
-    }
-
-    void
-    encode(const int* data, int* bb) const
-    /* take the string of symbols in data[i], i=0..(k-1) and encode systematically
-     to produce 2*tt parity symbols in bb[0]..bb[2*tt-1]
-     data[] is input and bb[] is output in polynomial form.
-     Encoding is done by using a feedback shift register with appropriate
-     connections specified by the elements of gg[], which was generated above.
-     Codeword is   c(X) = data(X)*X**(nn-kk)+ b(X)          */
-    {
-        int i, j;
-
-        for (i = 0; i < NN - KK; i++) {
-            bb[i] = 0;
-        }
-        for (i = KK - 1; i >= 0; i--) {
-            int feedback = index_of[data[i] ^ bb[NN - KK - 1]];
-            if (feedback != -1) {
-                for (j = NN - KK - 1; j > 0; j--) {
-                    if (gg[j] != -1) {
-                        bb[j] = bb[j - 1] ^ alpha_to[(gg[j] + feedback) % NN];
-                    } else {
-                        bb[j] = bb[j - 1];
-                    }
-                }
-                bb[0] = alpha_to[(gg[0] + feedback) % NN];
-            } else {
-                for (j = NN - KK - 1; j > 0; j--) {
-                    bb[j] = bb[j - 1];
-                }
-                bb[0] = 0;
-            }
-        }
     }
 
     int
@@ -976,30 +909,6 @@ class DSDReedSolomon_36_20_17 : public ReedSolomon_63<8> {
         }
         return result;
     }
-
-    void
-    encode(const char* hex_data, char* out_hex_parity) const {
-        int input[47];
-        int output[63];
-
-        // Put the 20 hex words of data
-        for (size_t i = 0; i < 20; i++) {
-            input[i] = bin_to_hex(hex_data + i * 6);
-        }
-
-        // Fill up with zeros to complete the 47 expected hex words of data
-        for (size_t i = 20; i < 47; i++) {
-            input[i] = 0;
-        }
-
-        // Now we can call encode on the base class
-        ReedSolomon_63<8>::encode(input, output);
-
-        // Convert it back to binary form and put it into the parity
-        for (size_t i = 0; i < 16; i++) {
-            hex_to_bin(output[i], out_hex_parity + i * 6);
-        }
-    }
 };
 
 /**
@@ -1095,30 +1004,6 @@ class DSDReedSolomon_24_12_13 : public ReedSolomon_63<6> {
         }
         return result;
     }
-
-    void
-    encode(const char* hex_data, char* out_hex_parity) const {
-        int input[51];
-        int output[63];
-
-        // Put the 12 hex words of data
-        for (size_t i = 0; i < 12; i++) {
-            input[i] = bin_to_hex(hex_data + i * 6);
-        }
-
-        // Fill up with zeros to complete the 51 expected hex words of data
-        for (size_t i = 12; i < 51; i++) {
-            input[i] = 0;
-        }
-
-        // Now we can call encode on the base class
-        ReedSolomon_63<6>::encode(input, output);
-
-        // Convert it back to binary form and put it into the parity
-        for (size_t i = 0; i < 12; i++) {
-            hex_to_bin(output[i], out_hex_parity + i * 6);
-        }
-    }
 };
 
 /**
@@ -1213,30 +1098,6 @@ class DSDReedSolomon_24_16_9 : public ReedSolomon_63<4> {
             }
         }
         return result;
-    }
-
-    void
-    encode(const char* hex_data, char* out_hex_parity) const {
-        int input[55];
-        int output[63];
-
-        // Put the 16 hex words of data
-        for (size_t i = 0; i < 16; i++) {
-            input[i] = bin_to_hex(hex_data + i * 6);
-        }
-
-        // Fill up with zeros to complete the 55 expected hex words of data
-        for (size_t i = 16; i < 55; i++) {
-            input[i] = 0;
-        }
-
-        // Now we can call encode on the base class
-        ReedSolomon_63<4>::encode(input, output);
-
-        // Convert it back to binary form and put it into the parity
-        for (size_t i = 0; i < 8; i++) {
-            hex_to_bin(output[i], out_hex_parity + i * 6);
-        }
     }
 };
 

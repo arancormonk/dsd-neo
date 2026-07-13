@@ -7,51 +7,14 @@
  * @file
  * @brief Runtime logging implementation for environment-independent logging.
  *
- * Implements the low-level write routine used by logging macros to emit
- * messages. Currently forwards to `stderr`. Future enhancements may include
- * runtime level control, timestamps, and file sinks.
+ * Implements the low-level write routine used by logging macros.
  */
 
 #include <cstdarg>
 #include <cstdio>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/unicode.h>
-#include <mutex>
 #include "dsd-neo/core/safe_api.h"
-
-namespace {
-
-std::mutex g_log_sink_mutex;
-dsd_neo_log_sink g_log_sink = {};
-bool g_log_sink_active = false;
-
-dsd_neo_log_sink
-log_sink_snapshot(bool* active) {
-    std::lock_guard<std::mutex> lock(g_log_sink_mutex);
-    if (active != nullptr) {
-        *active = g_log_sink_active;
-    }
-    return g_log_sink;
-}
-
-} // namespace
-
-extern "C" void
-dsd_neo_log_sink_set(const dsd_neo_log_sink* sink) {
-    std::lock_guard<std::mutex> lock(g_log_sink_mutex);
-    if (sink == nullptr || sink->write == nullptr) {
-        g_log_sink = {};
-        g_log_sink_active = false;
-        return;
-    }
-    g_log_sink = *sink;
-    g_log_sink_active = true;
-}
-
-extern "C" void
-dsd_neo_log_sink_reset(void) {
-    dsd_neo_log_sink_set(nullptr);
-}
 
 extern "C" void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
@@ -73,12 +36,6 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
         out = safe;
     }
 
-    bool sink_active = false;
-    dsd_neo_log_sink sink = log_sink_snapshot(&sink_active);
-    if (sink_active && sink.write != nullptr) {
-        sink.write(level, out, sink.context);
-    }
-    if (!sink_active || sink.mirror_stderr) {
-        fputs(out, stderr);
-    }
+    (void)level;
+    fputs(out, stderr);
 }

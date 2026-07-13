@@ -113,22 +113,6 @@ dmr_dburst_ctx_init(dmr_data_burst_ctx* ctx, dsd_opts* opts, dsd_state* state, u
 }
 
 static void
-dmr_dburst_bits_from_bytes(uint8_t* out_bits, const uint8_t* bytes, uint32_t count_bytes) {
-    uint32_t i;
-    uint32_t j;
-    for (i = 0, j = 0; i < count_bytes; i++, j += 8) {
-        out_bits[j + 0] = (bytes[i] >> 7) & 0x01;
-        out_bits[j + 1] = (bytes[i] >> 6) & 0x01;
-        out_bits[j + 2] = (bytes[i] >> 5) & 0x01;
-        out_bits[j + 3] = (bytes[i] >> 4) & 0x01;
-        out_bits[j + 4] = (bytes[i] >> 3) & 0x01;
-        out_bits[j + 5] = (bytes[i] >> 2) & 0x01;
-        out_bits[j + 6] = (bytes[i] >> 1) & 0x01;
-        out_bits[j + 7] = (bytes[i] >> 0) & 0x01;
-    }
-}
-
-static void
 dmr_dburst_apply_base_profile(dmr_data_burst_ctx* ctx) {
     static const dmr_dburst_profile profiles[12] = {
         [0x00] = {.subtype = " PI  ", .crcmask = 0x6969, .flags = DMR_DBURST_F_BPTC, .crclen = 16, .pdu_len = 12},
@@ -326,7 +310,7 @@ dmr_dburst_copy_bptc_outputs(dmr_data_burst_ctx* ctx) {
         max_bytes = avail;
     }
 
-    dmr_dburst_bits_from_bytes(ctx->bptc_data_bits, ctx->bptc_data_bytes + ctx->pdu_start, max_bytes);
+    unpack_byte_array_into_bit_array(ctx->bptc_data_bytes + ctx->pdu_start, ctx->bptc_data_bits, max_bytes);
 
     for (i = 0; i < max_bytes; i++) {
         ctx->dmr_pdu[i] = ctx->bptc_data_bytes[i + ctx->pdu_start];
@@ -418,7 +402,7 @@ dmr_dburst_trellis_candidate_metrics(dmr_data_burst_ctx* ctx, const uint8_t byte
     uint32_t cand_comp;
 
     DSD_MEMSET(ctx->dmr_pdu_bits, 0, sizeof(ctx->dmr_pdu_bits));
-    dmr_dburst_bits_from_bytes(ctx->dmr_pdu_bits, bytes18, 18);
+    unpack_byte_array_into_bit_array(bytes18, ctx->dmr_pdu_bits, 18);
 
     *cand_dbsn = (uint8_t)convert_bits_into_output(&ctx->dmr_pdu_bits[0], 7);
     cand_ext = (uint32_t)convert_bits_into_output(&ctx->dmr_pdu_bits[7], 9) ^ ctx->crcmask;
@@ -475,29 +459,15 @@ dmr_dburst_trellis_choose_candidate_index(dmr_data_burst_ctx* ctx, const dmr_r34
     return 0;
 }
 
-static const uint8_t*
-dmr_dburst_trellis_fallback(int have_soft, int have_hard, const uint8_t soft[18], const uint8_t hard[18],
-                            const uint8_t symbol_fallback[18]) {
-    if (have_soft) {
-        return soft;
-    }
-    if (have_hard) {
-        return hard;
-    }
-    return symbol_fallback;
-}
-
 static void
 dmr_dburst_pick_trellis_payload(dmr_data_burst_ctx* ctx, uint8_t tdibits[98], uint8_t trellis_return[18]) {
     uint8_t trellis_soft[18];
     uint8_t trellis_hard[18];
-    uint8_t trellis_symbol_fallback[18];
     int have_soft = 0;
     int have_hard = 0;
 
     DSD_MEMSET(trellis_soft, 0, sizeof(trellis_soft));
     DSD_MEMSET(trellis_hard, 0, sizeof(trellis_hard));
-    DSD_MEMSET(trellis_symbol_fallback, 0, sizeof(trellis_symbol_fallback));
 
     if (ctx->reliab98 != NULL && dmr_r34_viterbi_decode_soft(tdibits, ctx->reliab98, trellis_soft) == 0) {
         have_soft = 1;
@@ -505,10 +475,8 @@ dmr_dburst_pick_trellis_payload(dmr_data_burst_ctx* ctx, uint8_t tdibits[98], ui
     if (dmr_r34_viterbi_decode(tdibits, trellis_hard) == 0) {
         have_hard = 1;
     }
-    (void)dmr_34(tdibits, trellis_symbol_fallback);
-
-    if (ctx->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
-        DSD_MEMCPY(trellis_return, trellis_symbol_fallback, 18);
+    if (ctx->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN && have_hard) {
+        DSD_MEMCPY(trellis_return, trellis_hard, 18);
         return;
     }
 
@@ -522,9 +490,7 @@ dmr_dburst_pick_trellis_payload(dmr_data_burst_ctx* ctx, uint8_t tdibits[98], ui
         }
     }
 
-    DSD_MEMCPY(trellis_return,
-               dmr_dburst_trellis_fallback(have_soft, have_hard, trellis_soft, trellis_hard, trellis_symbol_fallback),
-               18);
+    DSD_MEMCPY(trellis_return, have_soft ? trellis_soft : trellis_hard, 18);
 }
 
 static void
@@ -580,7 +546,7 @@ dmr_dburst_handle_trellis(dmr_data_burst_ctx* ctx) {
         ctx->dmr_pdu[i] = trellis_return[i + ctx->pdu_start];
     }
 
-    dmr_dburst_bits_from_bytes(ctx->dmr_pdu_bits, trellis_return, 18);
+    unpack_byte_array_into_bit_array(trellis_return, ctx->dmr_pdu_bits, 18);
     if (ctx->state->data_conf_data[ctx->slot] == 1) {
         ctx->dbsn_for_seq = (uint8_t)convert_bits_into_output(&ctx->dmr_pdu_bits[0], 7);
         ctx->dbsn_valid = 1;
@@ -589,7 +555,7 @@ dmr_dburst_handle_trellis(dmr_data_burst_ctx* ctx) {
     dmr_dburst_trellis_update_confirmed_crc(ctx);
 
     DSD_MEMSET(ctx->dmr_pdu_bits, 0, sizeof(ctx->dmr_pdu_bits));
-    dmr_dburst_bits_from_bytes(ctx->dmr_pdu_bits, trellis_return + ctx->pdu_start, ctx->pdu_len);
+    unpack_byte_array_into_bit_array(trellis_return + ctx->pdu_start, ctx->dmr_pdu_bits, ctx->pdu_len);
 }
 
 static void

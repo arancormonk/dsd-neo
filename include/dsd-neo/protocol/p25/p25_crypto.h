@@ -27,6 +27,9 @@ typedef enum {
     DSD_P25_CRYPTO_PHASE2 = 2,
 } dsd_p25_crypto_phase;
 
+/** Return the standard display name for a known P25 algorithm ID, or NULL. */
+const char* p25_algid_name(uint8_t algid);
+
 /** Return non-zero only for clear or supported decryptable voice. */
 static inline int
 p25_crypto_audio_ready(const dsd_state* state, int slot) {

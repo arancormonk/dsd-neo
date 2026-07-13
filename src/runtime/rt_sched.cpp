@@ -17,7 +17,6 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rt_sched.h>
 #include <errno.h>
-#include <stdio.h>
 #include <string.h>
 
 static const char*
@@ -29,7 +28,7 @@ static const dsdneoRuntimeConfig*
 runtime_config_ready(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     return cfg;

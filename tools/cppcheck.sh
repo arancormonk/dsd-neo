@@ -88,6 +88,7 @@ CPPCHECK_ARGS=(
   --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
   --inline-suppr
   -I include
+  -I src/dsp
   -I src/ui/terminal
   -I src/ui/terminal/menus
   -I src/third_party
@@ -112,6 +113,7 @@ if [[ $STRICT -eq 1 ]]; then
     --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
     --inline-suppr
     -I include
+    -I src/dsp
     -I src/ui/terminal
     -I src/ui/terminal/menus
     -I src/third_party

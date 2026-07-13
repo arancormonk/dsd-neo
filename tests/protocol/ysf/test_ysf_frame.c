@@ -69,6 +69,18 @@ expected_ysf_pn95_bit(size_t bit_index) {
 }
 
 static void
+test_ysf_vd2_interleave_matrix(void) {
+    assert(dsd_ysf_vd2_interleave_index(0U) == 0U);
+    assert(dsd_ysf_vd2_interleave_index(1U) == 26U);
+    assert(dsd_ysf_vd2_interleave_index(2U) == 52U);
+    assert(dsd_ysf_vd2_interleave_index(3U) == 78U);
+    assert(dsd_ysf_vd2_interleave_index(4U) == 1U);
+    assert(dsd_ysf_vd2_interleave_index(99U) == 102U);
+    assert(dsd_ysf_vd2_interleave_index(100U) == 25U);
+    assert(dsd_ysf_vd2_interleave_index(103U) == 103U);
+}
+
+static void
 test_ysf_pn95_seed_bit_order_and_reset(void) {
     static const uint8_t expected_prefix[16] = {1U, 0U, 0U, 1U, 0U, 0U, 1U, 1U, 1U, 1U, 0U, 1U, 0U, 1U, 1U, 1U};
     uint8_t dch2_bits[80];
@@ -232,10 +244,6 @@ test_ysf_event_text_print_guard(void) {
     DSD_SNPRINTF(history[0].Event_History_Items[0].text_message, sizeof(history[0].Event_History_Items[0].text_message),
                  "%s", "hello ysf");
     DSD_SNPRINTF(history[0].Event_History_Items[0].event_string, sizeof(history[0].Event_History_Items[0].event_string),
-                 "%s", "BUMBLEBEETUNA");
-    assert(!dsd_ysf_event_text_should_print(&state));
-
-    DSD_SNPRINTF(history[0].Event_History_Items[0].event_string, sizeof(history[0].Event_History_Items[0].event_string),
                  "%s", "YSF data event");
     assert(dsd_ysf_event_text_should_print(&state));
 }
@@ -297,6 +305,7 @@ test_ysf_full_rate_imbe_unpack_consumes_144_bits(void) {
 
 int
 main(void) {
+    test_ysf_vd2_interleave_matrix();
     test_ysf_pn95_seed_bit_order_and_reset();
     test_ysf_soft_viterbi_matches_reference_offset();
     test_ysf_soft_viterbi_full_rate_reference_offset();

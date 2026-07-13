@@ -16,8 +16,8 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,14 +34,30 @@
 
 #include "p25_test_shim.h"
 
-struct RtlSdrContext;
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
 }
 
 void
@@ -80,39 +96,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)input;
     (void)src;
     (void)slot;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
 }
 
 static int
@@ -241,8 +224,8 @@ run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     opts.trunk_tune_enc_calls = 0;
     state.currentslot = slot;
     state.gi[slot] = 1;
@@ -276,7 +259,7 @@ run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
     DSD_SNPRINTF(label, sizeof label, "%s no grant dispatch", tag);
     rc |= expect_eq_long(label, p25_sm_get_ctx()->grant_count, 0);
     DSD_SNPRINTF(label, sizeof label, "%s no retune", tag);
-    rc |= expect_eq_long(label, opts.p25_is_tuned, 1);
+    rc |= expect_eq_long(label, opts.trunk_is_tuned, 1);
     DSD_SNPRINTF(label, sizeof label, "%s group call", tag);
     rc |= expect_eq_long(label, state.gi[slot], 0);
     DSD_SNPRINTF(label, sizeof label, "%s mac wall timestamp", tag);
@@ -545,8 +528,7 @@ test_inband_encrypted_voice_starts_classification_deadline(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
     opts.trunk_tune_enc_calls = 0;
     state.currentslot = 0;
@@ -599,8 +581,7 @@ test_private_voice_ignores_regroup_clear_key_collision(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
     opts.trunk_tune_enc_calls = 0;
     state.currentslot = 0;
@@ -644,6 +625,7 @@ test_private_voice_ignores_regroup_clear_key_collision(void) {
 int
 main(void) {
     int rc = 0;
+    install_trunk_tuning_hooks();
 
     // Common IDEN: iden=1, type=1 (FDMA), spac=12.5k, base=851.000 MHz
     // Note: base/spacing units match process_channel_to_freq expectations:
@@ -723,7 +705,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_private_calls = 1;
         opts.trunk_tune_enc_calls = 0;
         state.p25_cc_freq = cc;
@@ -741,7 +723,7 @@ main(void) {
         MAC[9] = 0x02;
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("UU unknown-service probe tunes", opts.p25_is_tuned == 1);
+        rc |= expect_true("UU unknown-service probe tunes", opts.trunk_is_tuned == 1);
         rc |= expect_eq_long("UU unknown-service probe vc", state.p25_vc_freq[0], 851125000);
         rc |= expect_eq_long("UU unknown-service probe pending", state.p25_crypto_state[0],
                              DSD_P25_CRYPTO_ENCRYPTED_PENDING);
@@ -837,7 +819,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
         opts.trunk_tune_data_calls = 1;
@@ -903,7 +885,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
         state.p25_cc_freq = cc;
@@ -942,7 +924,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
         state.p25_cc_freq = cc;
@@ -978,7 +960,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
         opts.trunk_tune_data_calls = 1;
@@ -1016,7 +998,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
         state.p25_cc_freq = cc;
@@ -1055,7 +1037,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
         state.p25_cc_freq = cc;
@@ -1184,7 +1166,7 @@ main(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 0;
         state.p25_cc_freq = cc;
@@ -1203,7 +1185,7 @@ main(void) {
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
 
-        rc |= expect_true("0xA3 encrypted probe tunes", opts.p25_is_tuned == 1);
+        rc |= expect_true("0xA3 encrypted probe tunes", opts.trunk_is_tuned == 1);
         rc |= expect_eq_long("0xA3 encrypted probe gate closed", state.p25_p2_audio_allowed[0], 0);
         rc |=
             expect_eq_long("0xA3 encrypted probe pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
@@ -1421,7 +1403,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         state.p25_cc_freq = cc;
         state.p25_iden_fdma[iden].base_freq = base;
@@ -1445,7 +1427,7 @@ main(void) {
         MAC[9] = 0x02; // source
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x40 blocked by backoff", opts.p25_is_tuned == 0);
+        rc |= expect_true("0x40 blocked by backoff", opts.trunk_is_tuned == 0);
         rc |= expect_eq_long("0x40 blocked vc", state.p25_vc_freq[0], 0);
     }
 
@@ -1460,10 +1442,9 @@ main(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
-        opts.p25_is_tuned = 1;
         opts.trunk_is_tuned = 1;
         state.p25_cc_freq = cc;
         state.p25_vc_freq[0] = vc_freq;
@@ -1490,7 +1471,7 @@ main(void) {
         rc |= expect_eq_long("0x40 tuned same-carrier channel", ctx->vc_channel, ch_slot1);
         rc |= expect_eq_long("0x40 tuned same-carrier tg", ctx->slots[1].ota_tg, 0x2345);
         rc |= expect_eq_long("0x40 tuned same-carrier src", ctx->vc_src, 7);
-        rc |= expect_true("0x40 tuned same-carrier remains tuned", opts.p25_is_tuned == 1 && opts.trunk_is_tuned == 1);
+        rc |= expect_true("0x40 tuned same-carrier remains tuned", opts.trunk_is_tuned == 1);
     }
 
     // Case F: an LCCH VPDU grant seeds the current tuner as a recoverable CC before retuning.
@@ -1501,7 +1482,7 @@ main(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.audio_in_type = AUDIO_IN_RTL;
         opts.rtlsdr_center_freq = (uint32_t)cc;
@@ -1527,7 +1508,7 @@ main(void) {
 
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x40 LCCH grant tuned", opts.p25_is_tuned == 1);
+        rc |= expect_true("0x40 LCCH grant tuned", opts.trunk_is_tuned == 1);
         rc |= expect_eq_long("0x40 LCCH grant seeded CC", state.p25_cc_freq, cc);
         rc |= expect_eq_long("0x40 LCCH grant seeded trunk CC", state.trunk_cc_freq, cc);
         rc |= expect_eq_long("0x40 LCCH grant seeded LCN0", state.trunk_lcn_freq[0], cc);
@@ -1543,7 +1524,7 @@ main(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         state.synctype = DSD_SYNC_P25P2_POS;
         state.p2_is_lcch = 1;
@@ -1568,7 +1549,7 @@ main(void) {
         process_MAC_VPDU(&opts, &state, 0, MAC);
 
         rc |= expect_eq_long("0x40 unseeded LCCH grant not dispatched", p25_sm_get_ctx()->grant_count, 0);
-        rc |= expect_true("0x40 unseeded LCCH grant not tuned", opts.p25_is_tuned == 0 && opts.trunk_is_tuned == 0);
+        rc |= expect_true("0x40 unseeded LCCH grant not tuned", opts.trunk_is_tuned == 0);
         rc |= expect_eq_long("0x40 unseeded LCCH no p25 CC", state.p25_cc_freq, 0);
         rc |= expect_eq_long("0x40 unseeded LCCH no trunk CC", state.trunk_cc_freq, 0);
         rc |= expect_eq_long("0x40 unseeded LCCH no vc", state.p25_vc_freq[0], 0);
@@ -1582,7 +1563,7 @@ main(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.audio_in_type = AUDIO_IN_RTL;
         opts.rtlsdr_center_freq = 852000000U;
@@ -1606,7 +1587,7 @@ main(void) {
         MAC[9] = 0x02; // source
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x40 traffic MAC not tuned", opts.p25_is_tuned == 0);
+        rc |= expect_true("0x40 traffic MAC not tuned", opts.trunk_is_tuned == 0);
         rc |= expect_eq_long("0x40 traffic MAC no p25 CC seed", state.p25_cc_freq, 0);
         rc |= expect_eq_long("0x40 traffic MAC no trunk CC seed", state.trunk_cc_freq, 0);
         rc |= expect_eq_long("0x40 traffic MAC no vc", state.p25_vc_freq[0], 0);
@@ -1621,7 +1602,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         state.trunk_cc_freq = cc;
         state.p25_iden_fdma[iden].base_freq = base;
@@ -1642,7 +1623,7 @@ main(void) {
         MAC[9] = 0x02; // source
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x40 trunk alias CC tuned", opts.p25_is_tuned == 1);
+        rc |= expect_true("0x40 trunk alias CC tuned", opts.trunk_is_tuned == 1);
         rc |= expect_eq_long("0x40 trunk alias p25 CC", state.p25_cc_freq, cc);
         rc |= expect_eq_long("0x40 trunk alias trunk CC", state.trunk_cc_freq, cc);
         rc |= expect_eq_long("0x40 trunk alias vc", state.p25_vc_freq[0], 851125000);
@@ -1657,7 +1638,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         state.p25_cc_freq = cc;
         state.p25_iden_fdma[iden].base_freq = base;
@@ -1681,7 +1662,7 @@ main(void) {
         MAC[9] = 0x35; // group2
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x42 blocked by backoff", opts.p25_is_tuned == 0);
+        rc |= expect_true("0x42 blocked by backoff", opts.trunk_is_tuned == 0);
         rc |= expect_eq_long("0x42 blocked vc", state.p25_vc_freq[0], 0);
     }
 
@@ -1693,7 +1674,7 @@ main(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 0;
         state.p25_cc_freq = cc;
@@ -1704,7 +1685,7 @@ main(void) {
         state.p25_iden_fdma[iden].populated = 1;
         state.p25_chan_tdma_explicit[iden] = 1;
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_emit_enc_lockout_once(&opts, &state, 0, 0x1234, /*svc_bits*/ 0);
+        p25_emit_enc_lockout_once_typed(&opts, &state, 0, 0x1234, /*svc_bits*/ 0, 1);
 
         MAC[1] = 0x42; // Group Voice Channel Grant Update - Implicit
         MAC[2] = 0x10;
@@ -1717,7 +1698,7 @@ main(void) {
         MAC[9] = 0x35; // group2
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x42 suppressed by transient enc cache", opts.p25_is_tuned == 0);
+        rc |= expect_true("0x42 suppressed by transient enc cache", opts.trunk_is_tuned == 0);
         rc |= expect_eq_long("0x42 transient enc cache no vc", state.p25_vc_freq[0], 0);
     }
 
@@ -1730,7 +1711,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_is_tuned = 1;
+        opts.trunk_is_tuned = 1;
         state.p25_cc_freq = cc;
         state.trunk_cc_freq = cc;
         state.p25_cc_is_tdma = 0;
@@ -1910,7 +1891,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_is_tuned = 1;
+        opts.trunk_is_tuned = 1;
         state.p25_cc_freq = 851000000;
         state.trunk_cc_freq = 851000000;
         state.p25_site_lra = 0x44;
@@ -1987,7 +1968,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_is_tuned = 1;
+        opts.trunk_is_tuned = 1;
         state.p25_cc_freq = 851000000;
         state.trunk_cc_freq = 851000000;
         state.p25_site_lra = 0x45;
@@ -2026,7 +2007,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 0;
         state.p25_cc_freq = cc;
@@ -2054,7 +2035,7 @@ main(void) {
         MAC[15] = 0x78;
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x25 encrypted multi probe tunes", opts.p25_is_tuned == 1);
+        rc |= expect_true("0x25 encrypted multi probe tunes", opts.trunk_is_tuned == 1);
         rc |= expect_eq_long("0x25 encrypted multi probe vc", state.p25_vc_freq[0], 851125000);
         rc |= expect_eq_long("0x25 encrypted multi probe pending", state.p25_crypto_state[0],
                              DSD_P25_CRYPTO_ENCRYPTED_PENDING);
@@ -2074,7 +2055,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
         state.p25_cc_freq = cc;
@@ -2118,7 +2099,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 0;
         state.p25_cc_freq = cc;
@@ -2142,7 +2123,7 @@ main(void) {
         MAC[15] = 0x78;
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x25 mixed update tunes", opts.p25_is_tuned == 1);
+        rc |= expect_true("0x25 mixed update tunes", opts.trunk_is_tuned == 1);
         rc |= expect_eq_long("0x25 mixed update prefers clear vc", state.p25_vc_freq[0], 851137500);
         rc |= expect_eq_long("0x25 mixed update clear classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     }
@@ -2157,7 +2138,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 0;
         state.p25_cc_freq = cc;
@@ -2168,7 +2149,7 @@ main(void) {
         state.p25_iden_fdma[iden].populated = 1;
         state.p25_chan_tdma_explicit[iden] = 1;
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_emit_enc_lockout_once(&opts, &state, 0, 0x1234, /*svc_bits*/ 0x40);
+        p25_emit_enc_lockout_once_typed(&opts, &state, 0, 0x1234, /*svc_bits*/ 0x40, 1);
 
         MAC[1] = 0x25;
         MAC[2] = 0x40; // cached encrypted group
@@ -2183,7 +2164,7 @@ main(void) {
         MAC[15] = 0x78;
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x25 cached first candidate falls through", opts.p25_is_tuned == 1);
+        rc |= expect_true("0x25 cached first candidate falls through", opts.trunk_is_tuned == 1);
         rc |= expect_eq_long("0x25 later uncached probe selected", state.p25_vc_freq[0], 851137500);
         rc |= expect_eq_long("0x25 later uncached probe pending", state.p25_crypto_state[0],
                              DSD_P25_CRYPTO_ENCRYPTED_PENDING);
@@ -2199,7 +2180,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 0;
         state.p25_cc_freq = cc;
@@ -2228,7 +2209,7 @@ main(void) {
         MAC[16] = 0xBC;
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x05 encrypted triple probe tunes", opts.p25_is_tuned == 1);
+        rc |= expect_true("0x05 encrypted triple probe tunes", opts.trunk_is_tuned == 1);
         rc |= expect_eq_long("0x05 encrypted triple probe vc", state.p25_vc_freq[0], 851125000);
         rc |= expect_eq_long("0x05 encrypted triple probe pending", state.p25_crypto_state[0],
                              DSD_P25_CRYPTO_ENCRYPTED_PENDING);
@@ -2246,7 +2227,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         state.p25_cc_freq = cc;
         state.p25_iden_fdma[iden].base_freq = base;
@@ -2304,7 +2285,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 0;
         state.p25_cc_freq = cc;
@@ -2333,7 +2314,7 @@ main(void) {
         MAC[16] = 0xBC;
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x05 mixed update tunes", opts.p25_is_tuned == 1);
+        rc |= expect_true("0x05 mixed update tunes", opts.trunk_is_tuned == 1);
         rc |= expect_eq_long("0x05 mixed update prefers clear vc", state.p25_vc_freq[0], 851137500);
         rc |= expect_eq_long("0x05 mixed update clear classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     }
@@ -2348,7 +2329,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_private_calls = 1;
         state.p25_cc_freq = cc;
         state.p25_iden_fdma[iden].base_freq = base;
@@ -2370,7 +2351,7 @@ main(void) {
         MAC[9] = 0x05; // target
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x48 telephone no unsupported tune", opts.p25_is_tuned == 0);
+        rc |= expect_true("0x48 telephone no unsupported tune", opts.trunk_is_tuned == 0);
         rc |= expect_eq_long("0x48 telephone no vc", state.p25_vc_freq[0], 0);
         rc |= expect_contains("0x48 telephone active", state.active_channel[0], "Active Tele Ch: 100A");
         rc |= expect_contains("0x48 telephone target", state.active_channel[0], "TGT: 197637");
@@ -2388,7 +2369,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_private_calls = 1;
         opts.trunk_tune_enc_calls = 1;
@@ -2434,7 +2415,7 @@ main(void) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
 
-        opts.p25_trunk = 1;
+        opts.trunk_enable = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_private_calls = 1;
         opts.trunk_tune_enc_calls = 1;
@@ -2498,7 +2479,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 0;
+        opts.trunk_enable = 0;
         state.lasttg = 0x030405;
         state.synctype = DSD_SYNC_P25P2_POS;
         state.p25_iden_fdma[iden].base_freq = base;
@@ -2534,7 +2515,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 0;
+        opts.trunk_enable = 0;
         state.lasttg = 0x030405;
         state.synctype = DSD_SYNC_P25P2_POS;
         state.p25_iden_fdma[iden].base_freq = base;
@@ -2570,7 +2551,7 @@ main(void) {
         DSD_MEMSET(&state, 0, sizeof state);
         p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
-        opts.p25_trunk = 0;
+        opts.trunk_enable = 0;
         state.lasttg = 0x030405;
         state.synctype = DSD_SYNC_P25P2_POS;
         state.p25_iden_fdma[iden].base_freq = base;
@@ -2601,6 +2582,7 @@ main(void) {
         rc |= expect_eq_long("Harris AC vc1", state.p25_vc_freq[1], 851125000);
     }
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

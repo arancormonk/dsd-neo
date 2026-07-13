@@ -138,7 +138,7 @@ static void
 ui_draw_if_needed(const dsd_opts* osnap, uint64_t* last_draw_ns, uint64_t frame_ns) {
     uint64_t now_ns = dsd_time_monotonic_ns();
     uint64_t dt_ns = now_ns - *last_draw_ns;
-    if (!(dsd_app_consume_redraw_requested() || dt_ns >= frame_ns)) {
+    if (!(dsd_app_frontend_redraw_consume() || dt_ns >= frame_ns)) {
         return;
     }
     atomic_store(&g_ui_in_context, 1);
@@ -154,7 +154,7 @@ dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state) {
     g_ui_opts = opts;
     g_ui_state = state;
     g_ui_curses_cfg_done = 0;
-    (void)dsd_app_consume_redraw_requested();
+    (void)dsd_app_frontend_redraw_consume();
     atomic_store(&g_ui_in_context, 0);
 }
 

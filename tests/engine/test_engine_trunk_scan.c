@@ -35,6 +35,7 @@
 #include "dsd-neo/platform/sockets.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
+#include "trunk_scan_test_support.h"
 
 static const char k_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n";
 static int g_dmr_tick_calls = 0;
@@ -78,7 +79,7 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     }
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->initialized = 1;
-    ctx->state = (opts && state && opts->p25_trunk == 1 && state->trunk_cc_freq != 0) ? P25_SM_ON_CC : P25_SM_IDLE;
+    ctx->state = (opts && state && opts->trunk_enable == 1 && state->trunk_cc_freq != 0) ? P25_SM_ON_CC : P25_SM_IDLE;
 }
 
 int
@@ -150,7 +151,7 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state)
     }
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->initialized = 1;
-    ctx->state = (opts && state && opts->trunk_enable == 1 && opts->p25_trunk == 0 && state->trunk_cc_freq != 0)
+    ctx->state = (opts && state && opts->trunk_enable == 1 && state->p25_cc_freq == 0 && state->trunk_cc_freq != 0)
                      ? DMR_SM_ON_CC
                      : DMR_SM_IDLE;
 }
@@ -163,7 +164,6 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     }
     ctx->state = DMR_SM_ON_CC;
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
@@ -181,7 +181,6 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-    opts->p25_is_tuned = 0;
     opts->trunk_is_tuned = 0;
     state->last_cc_sync_time_m = dsd_engine_trunk_scan_active_index(state) == (size_t)-1 ? 0.0 : 1.0;
     return DSD_TRUNK_TUNE_RESULT_OK;
@@ -225,10 +224,8 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
 
 int
 dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, uint32_t tg, uint32_t src,
-                                  int encrypted, int data_call, dsd_tg_policy_hold_behavior hold_behavior,
-                                  dsd_tg_policy_decision* out) {
+                                  int encrypted, int data_call, dsd_tg_policy_decision* out) {
     (void)state;
-    (void)hold_behavior;
     if (!out) {
         return -1;
     }
@@ -247,11 +244,8 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
 
 int
 dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
-                                    int encrypted, int data_call, dsd_tg_policy_private_allowlist_mode allowlist_mode,
-                                    dsd_tg_policy_hold_behavior hold_behavior, dsd_tg_policy_decision* out) {
+                                    int encrypted, int data_call, dsd_tg_policy_decision* out) {
     (void)state;
-    (void)allowlist_mode;
-    (void)hold_behavior;
     if (!out) {
         return -1;
     }
@@ -438,7 +432,7 @@ test_parser_accepts_optional_modulation_and_gain_columns(void) {
     if (write_targets_file_with_header(dir, header,
                                        "p25,p25-trunk,851000000,,250,,primary,27,cqpsk\n"
                                        "dmr,dmr-trunk,452000000,,250,,tier iii,auto,gfsk\n"
-                                       "plain,dmr-conventional,461000000,,250,,legacy row\n",
+                                       "plain,dmr-conventional,461000000,,250,,basic row\n",
                                        target_path, sizeof target_path)
         != 0) {
         cleanup_paths(dir, NULL, NULL);
@@ -1779,7 +1773,6 @@ test_dmr_trunk_sm_timeout_releases_scan_hold(void) {
     } else {
         active_dmr->state = DMR_SM_TUNED;
     }
-    opts.p25_is_tuned = 0;
     opts.trunk_is_tuned = 1;
     g_dmr_tick_calls = 0;
 
@@ -3006,8 +2999,10 @@ test_retune_failure_cooldown(void) {
         test_rc = 1;
     }
 
-    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
     trunk_scan_test_set_now(2.40);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
@@ -3157,10 +3152,8 @@ test_init_failure_restores_saved_trunk_opts(void) {
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
-    opts.p25_trunk = 1;
-    opts.trunk_enable = 0;
-    opts.p25_is_tuned = 1;
-    opts.trunk_is_tuned = 0;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     g_csv_import_result = -1;
@@ -3173,10 +3166,9 @@ test_init_failure_restores_saved_trunk_opts(void) {
         DSD_FPRINTF(stderr, "scan init should have failed on chan_csv import\n");
         test_rc = 1;
     }
-    if (opts.p25_trunk != 1 || opts.trunk_enable != 0 || opts.p25_is_tuned != 1 || opts.trunk_is_tuned != 0) {
-        DSD_FPRINTF(stderr,
-                    "scan init failure did not restore trunk opts p25=%d trunk=%d p25_tuned=%d trunk_tuned=%d\n",
-                    opts.p25_trunk, opts.trunk_enable, opts.p25_is_tuned, opts.trunk_is_tuned);
+    if (opts.trunk_enable != 1 || opts.trunk_is_tuned != 1) {
+        DSD_FPRINTF(stderr, "scan init failure did not restore trunk opts enabled=%d tuned=%d\n", opts.trunk_enable,
+                    opts.trunk_is_tuned);
         test_rc = 1;
     }
     if (dsd_engine_trunk_scan_active_index(&state) != (size_t)-1) {
@@ -3309,51 +3301,67 @@ test_trunk_scan_rejects_iq_replay_input(void) {
     return test_rc;
 }
 
+static int
+run_with_default_tune_hook(int (*test_fn)(void)) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_trunk_tuning_requests_reset();
+    g_counting_tune_to_cc_failures_remaining = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    int rc = test_fn();
+
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
-    rc |= test_parser_valid_mixed_targets_and_relative_chan_csv();
-    rc |= test_parser_accepts_quoted_chan_csv_with_comma();
-    rc |= test_parser_accepts_optional_modulation_and_gain_columns();
-    rc |= test_parser_rejects_invalid_inputs();
-    rc |= test_parser_rejects_too_many_targets();
-    rc |= test_coordinator_idle_rotation_and_state_restore();
-    rc |= test_call_identity_state_isolated_per_target();
-    rc |= test_dmr_branding_state_isolated_per_target();
-    rc |= test_dmr_confidence_state_isolated_per_target();
-    rc |= test_dmr_service_options_state_isolated_per_target();
-    rc |= test_p25_targets_seed_valid_control_channel_timing();
-    rc |= test_p25_nac_state_isolated_per_target();
-    rc |= test_p25_target_switch_resyncs_sm_mode();
-    rc |= test_p25_scan_retune_restarts_pending_cc_acquisition();
-    rc |= test_mixed_target_switch_resets_dmr_demod_profile();
-    rc |= test_conventional_activity_hold_and_allowlist_block();
-    rc |= test_conventional_activity_encrypted_lockout_does_not_hold();
-    rc |= test_state_ext_cleanup_clears_scan_hooks();
-    rc |= test_protocol_hooks_only_expose_matching_target_contexts();
-    rc |= test_dmr_trunk_sm_timeout_releases_scan_hold();
-    rc |= test_p25_pending_retune_holds_scan_dwell();
-    rc |= test_p25_pending_retune_adopts_sm_retry();
-    rc |= test_p25_pending_retune_preserves_completed_sm_recovery();
-    rc |= test_generic_pending_retune_holds_and_recovers();
-    rc |= test_p25_targets_pass_cc_sps_to_retune_paths();
-    rc |= test_p25_targets_use_rtl_output_rate_for_retune_sps();
-    rc |= test_channel_map_sequence_advances_on_equal_count_target_switches();
-    rc |= test_p25_retune_backoff_state_isolated_per_target();
-    rc |= test_trunk_targets_reuse_restored_control_channel();
-    rc |= test_locked_demod_mode_preserved_when_seeding_targets();
-    rc |= test_target_retunes_select_four_level_sps_profile();
-    rc |= test_per_target_modulation_overrides_global_lock();
-    rc |= test_active_p25_cqpsk_request_tracks_target_modulation();
-    rc |= test_per_target_rtl_gain_overrides_and_restores_global_default();
-    rc |= test_scan_tick_skips_rotation_when_p25_guard_busy();
-    rc |= test_single_target_retune_failure_retries_after_cooldown();
-    rc |= test_retune_failure_cooldown();
-    rc |= test_scan_does_not_retune_active_target_while_alternates_cool_down();
-    rc |= test_dmr_targets_pass_sps_to_retune_paths();
-    rc |= test_init_failure_restores_saved_trunk_opts();
-    rc |= test_trunk_scan_rejects_fixed_input_without_tuner();
-    rc |= test_trunk_scan_rejects_unopened_rtl_without_rigctl();
-    rc |= test_trunk_scan_rejects_iq_replay_input();
+    rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
+    rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
+    rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
+    rc |= run_with_default_tune_hook(test_parser_rejects_invalid_inputs);
+    rc |= run_with_default_tune_hook(test_parser_rejects_too_many_targets);
+    rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_call_identity_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_branding_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_confidence_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_service_options_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_p25_targets_seed_valid_control_channel_timing);
+    rc |= run_with_default_tune_hook(test_p25_nac_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_p25_target_switch_resyncs_sm_mode);
+    rc |= run_with_default_tune_hook(test_p25_scan_retune_restarts_pending_cc_acquisition);
+    rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_dmr_demod_profile);
+    rc |= run_with_default_tune_hook(test_conventional_activity_hold_and_allowlist_block);
+    rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);
+    rc |= run_with_default_tune_hook(test_state_ext_cleanup_clears_scan_hooks);
+    rc |= run_with_default_tune_hook(test_protocol_hooks_only_expose_matching_target_contexts);
+    rc |= run_with_default_tune_hook(test_dmr_trunk_sm_timeout_releases_scan_hold);
+    rc |= run_with_default_tune_hook(test_p25_pending_retune_holds_scan_dwell);
+    rc |= run_with_default_tune_hook(test_p25_pending_retune_adopts_sm_retry);
+    rc |= run_with_default_tune_hook(test_p25_pending_retune_preserves_completed_sm_recovery);
+    rc |= run_with_default_tune_hook(test_generic_pending_retune_holds_and_recovers);
+    rc |= run_with_default_tune_hook(test_p25_targets_pass_cc_sps_to_retune_paths);
+    rc |= run_with_default_tune_hook(test_p25_targets_use_rtl_output_rate_for_retune_sps);
+    rc |= run_with_default_tune_hook(test_channel_map_sequence_advances_on_equal_count_target_switches);
+    rc |= run_with_default_tune_hook(test_p25_retune_backoff_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_trunk_targets_reuse_restored_control_channel);
+    rc |= run_with_default_tune_hook(test_locked_demod_mode_preserved_when_seeding_targets);
+    rc |= run_with_default_tune_hook(test_target_retunes_select_four_level_sps_profile);
+    rc |= run_with_default_tune_hook(test_per_target_modulation_overrides_global_lock);
+    rc |= run_with_default_tune_hook(test_active_p25_cqpsk_request_tracks_target_modulation);
+    rc |= run_with_default_tune_hook(test_per_target_rtl_gain_overrides_and_restores_global_default);
+    rc |= run_with_default_tune_hook(test_scan_tick_skips_rotation_when_p25_guard_busy);
+    rc |= run_with_default_tune_hook(test_single_target_retune_failure_retries_after_cooldown);
+    rc |= run_with_default_tune_hook(test_retune_failure_cooldown);
+    rc |= run_with_default_tune_hook(test_scan_does_not_retune_active_target_while_alternates_cool_down);
+    rc |= run_with_default_tune_hook(test_dmr_targets_pass_sps_to_retune_paths);
+    rc |= run_with_default_tune_hook(test_init_failure_restores_saved_trunk_opts);
+    rc |= run_with_default_tune_hook(test_trunk_scan_rejects_fixed_input_without_tuner);
+    rc |= run_with_default_tune_hook(test_trunk_scan_rejects_unopened_rtl_without_rigctl);
+    rc |= run_with_default_tune_hook(test_trunk_scan_rejects_iq_replay_input);
     return rc;
 }

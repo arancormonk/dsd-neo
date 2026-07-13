@@ -3,6 +3,7 @@
 #define DSD_NEO_CRYPTO_VENDOR_AP_KEY_PARSE_H
 
 #include <ctype.h>
+#include <dsd-neo/core/parse.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -17,20 +18,6 @@ enum {
     DSD_VENDOR_AP_KEY_INVALID = -1,
     DSD_VENDOR_AP_KEY_BAD_LENGTH = -2,
 };
-
-static inline int
-dsd_vendor_ap_key_nibble(int c) {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return 10 + (c - 'a');
-    }
-    if (c >= 'A' && c <= 'F') {
-        return 10 + (c - 'A');
-    }
-    return -1;
-}
 
 static inline unsigned char
 dsd_vendor_ap_key_hex_char(int nibble) {
@@ -64,7 +51,7 @@ dsd_vendor_ap_key_parse_hex_run(const unsigned char** cursor, dsd_vendor_ap_key*
     }
 
     while (*p != '\0' && !isspace(*p)) {
-        const int nibble = dsd_vendor_ap_key_nibble((int)*p);
+        const int nibble = dsd_hex_nibble_value((int)*p);
         if (nibble < 0) {
             return DSD_VENDOR_AP_KEY_INVALID;
         }
@@ -84,12 +71,8 @@ dsd_vendor_ap_key_parse_words(dsd_vendor_ap_key* out) {
     const size_t word_count = out->nhex / 16U;
     for (size_t word = 0; word < word_count; word++) {
         uint64_t value = 0ULL;
-        for (size_t i = 0; i < 16U; i++) {
-            const int nibble = dsd_vendor_ap_key_nibble((int)out->hex[(word * 16U) + i]);
-            if (nibble < 0) {
-                return DSD_VENDOR_AP_KEY_INVALID;
-            }
-            value = (value << 4U) | (uint64_t)nibble;
+        if (dsd_parse_hex_u64_n((const char*)out->hex + (word * 16U), 16U, &value) != 0) {
+            return DSD_VENDOR_AP_KEY_INVALID;
         }
         out->words[word] = value;
     }
@@ -122,23 +105,6 @@ dsd_vendor_ap_key_parse(const char* input, dsd_vendor_ap_key* out) {
     }
 
     return dsd_vendor_ap_key_parse_words(out);
-}
-
-static inline int
-dsd_vendor_ap_key_hex_to_bytes(const unsigned char* hex, size_t nhex, unsigned char* out, size_t out_len) {
-    if (hex == NULL || out == NULL || nhex != (out_len * 2U)) {
-        return -1;
-    }
-
-    for (size_t i = 0; i < out_len; i++) {
-        const int hi = dsd_vendor_ap_key_nibble((int)hex[i * 2U]);
-        const int lo = dsd_vendor_ap_key_nibble((int)hex[(i * 2U) + 1U]);
-        if (hi < 0 || lo < 0) {
-            return -1;
-        }
-        out[i] = (unsigned char)((hi << 4) | lo);
-    }
-    return 0;
 }
 
 #endif

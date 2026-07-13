@@ -61,25 +61,6 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 }
 
 /**
- * @brief Compute the expected attenuated sample for repeat k.
- */
-static int16_t
-expected_sample(int16_t original, int k) {
-    float gain = 1.0f;
-    for (int i = 0; i < k; i++) {
-        gain *= AUDIO_CONCEAL_ATTEN_PER_REPEAT;
-    }
-    float sample = (float)original * gain;
-    if (sample > 32767.0f) {
-        sample = 32767.0f;
-    }
-    if (sample < -32768.0f) {
-        sample = -32768.0f;
-    }
-    return (int16_t)sample;
-}
-
-/**
  * @brief Verify that every sample in a buffer matches an expected value.
  */
 static int
@@ -204,11 +185,12 @@ main(void) {
     }
 
     /* --- Step 3: Trigger 4 underruns → progressive attenuation --- */
+    static const int16_t expected_repeats[4] = {5000, 2500, 1250, 625};
     for (int k = 1; k <= 4; k++) {
         DSD_MEMSET(out, 0xAA, sizeof(out));
         audio_conceal_on_underrun(&cs, out, FRAMES);
 
-        int16_t want = expected_sample(GOOD_VAL, k);
+        int16_t want = expected_repeats[k - 1];
         char label[64];
         DSD_SNPRINTF(label, sizeof(label), "step3: underrun k=%d sample[0]", k);
         rc |= expect_i16(label, out[0], want);
@@ -240,9 +222,8 @@ main(void) {
     DSD_MEMSET(out, 0xAA, sizeof(out));
     audio_conceal_on_underrun(&cs, out, FRAMES);
 
-    int16_t want_fresh = expected_sample(GOOD_VAL2, 1);
-    rc |= expect_i16("step6: fresh k=1 sample[0]", out[0], want_fresh);
-    rc |= expect_i16("step6: fresh k=1 sample[255]", out[255], want_fresh);
+    rc |= expect_i16("step6: fresh k=1 sample[0]", out[0], 10000);
+    rc |= expect_i16("step6: fresh k=1 sample[255]", out[255], 10000);
 
     /* --- Step 7: Verify underrun_total == 6 (4 + 1 + 1) --- */
     rc |= expect_u64("step7: underrun_total", cs.underrun_total, 6U);

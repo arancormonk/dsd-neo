@@ -6,7 +6,7 @@
 #ifndef DSD_NEO_SRC_CORE_MBE_RESULT_CONTEXT_H_
 #define DSD_NEO_SRC_CORE_MBE_RESULT_CONTEXT_H_
 
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 #include <stddef.h>
 
 static inline int
@@ -23,18 +23,8 @@ dsd_mbe_bits_changed(const char* before, const char* after, size_t len) {
 }
 
 static inline int
-dsd_mbe_ambe49_changed(const char before[49], const char after[49]) {
-    return dsd_mbe_bits_changed(before, after, 49);
-}
-
-static inline int
-dsd_mbe_imbe88_changed(const char before[88], const char after[88]) {
-    return dsd_mbe_bits_changed(before, after, 88);
-}
-
-static inline int
 dsd_mbe_strip_ambe_context_if_changed(const char before[49], const char after[49], mbe_process_result* result) {
-    if (!result || !dsd_mbe_ambe49_changed(before, after)) {
+    if (!result || !dsd_mbe_bits_changed(before, after, 49U)) {
         return 0;
     }
 
@@ -46,7 +36,7 @@ dsd_mbe_strip_ambe_context_if_changed(const char before[49], const char after[49
 
 static inline int
 dsd_mbe_strip_imbe_context_if_changed(const char before[88], const char after[88], mbe_process_result* result) {
-    if (!result || !dsd_mbe_imbe88_changed(before, after)) {
+    if (!result || !dsd_mbe_bits_changed(before, after, 88U)) {
         return 0;
     }
 

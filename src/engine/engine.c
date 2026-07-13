@@ -53,7 +53,7 @@
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <errno.h>
 #include <limits.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -301,7 +301,7 @@ autosave_user_config(const dsd_opts* opts, const dsd_state* state) {
 
 static int
 import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
-    const int trunk_or_scan = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->scanner_mode == 1);
+    const int trunk_or_scan = (opts->trunk_enable == 1) || (opts->scanner_mode == 1);
     if (opts->trunk_scan_enabled == 1 && opts->chan_in_file[0] != '\0') {
         LOG_ERROR("Trunk scan does not allow global channel maps; use per-target chan_csv values.\n");
         return -1;
@@ -318,7 +318,7 @@ import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
 
 static int
 import_group_csv_if_needed(dsd_opts* opts, dsd_state* state) {
-    const int trunk_enabled = (opts->trunk_enable == 1) || (opts->p25_trunk == 1) || (opts->trunk_scan_enabled == 1);
+    const int trunk_enabled = (opts->trunk_enable == 1) || (opts->trunk_scan_enabled == 1);
     if (trunk_enabled && opts->group_in_file[0] != '\0' && !dsd_tg_policy_has_entries(state)) {
         if (csvGroupImport(opts, state) != 0) {
             return -1;
@@ -654,10 +654,8 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
             dsd_sleep_ms(1000);
             continue;
         }
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "pulse");
-        LOG_ERROR("TCP Connection Failure - Using %s Audio Input.\n", opts->audio_in_dev);
-        opts->audio_in_type = AUDIO_IN_PULSE;
-        return 0;
+        LOG_ERROR("TCP Connection Failure.\n");
+        return -1;
     }
 }
 
@@ -964,10 +962,10 @@ dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* ven
 #endif
 }
 
-static void
+static int
 dsd_engine_setup_parse_rtl_input(dsd_opts* opts, dsd_state* state) {
     if (!dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) {
-        return;
+        return 0;
     }
 
     char vendor[256];
@@ -976,19 +974,15 @@ dsd_engine_setup_parse_rtl_input(dsd_opts* opts, dsd_state* state) {
     int rtl_ok = dsd_engine_setup_configure_local_rtl(opts, state, vendor, product, serial);
 #ifdef USE_RTLSDR
     if (rtl_ok != 1) {
-        LOG_ERROR("RTL Support not enabled/compiled, falling back to Pulse Audio Input.\n");
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "pulse");
-        opts->audio_in_type = AUDIO_IN_PULSE;
+        LOG_ERROR("RTL-SDR input is unavailable.\n");
+        return -1;
     }
+    return 0;
 #else
     UNUSED(rtl_ok);
-    LOG_ERROR("RTL Support not enabled/compiled, falling back to Pulse Audio Input.\n");
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "%s", "pulse");
-    opts->audio_in_type = AUDIO_IN_PULSE;
+    LOG_ERROR("RTL-SDR input requires a build with RTL-SDR support.\n");
+    return -1;
 #endif
-    UNUSED(vendor);
-    UNUSED(product);
-    UNUSED(serial);
 }
 
 static void
@@ -1000,10 +994,10 @@ dsd_engine_setup_parse_pulse_input(dsd_opts* opts) {
     parse_audio_input_string(opts, opts->audio_in_dev + 5);
 }
 
-static void
+static int
 dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
     if (strncmp(opts->audio_out_dev, "udp", 3) != 0) {
-        return;
+        return 0;
     }
     LOG_INFO("NOTICE: UDP Blaster Output: ");
     char* saveptr = NULL;
@@ -1028,13 +1022,12 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
     int err = udp_socket_connect(opts, state);
     if (err < 0) {
         LOG_ERROR("Error Configuring UDP Socket for UDP Blaster Audio :( \n");
-        DSD_SNPRINTF(opts->audio_out_dev, sizeof(opts->audio_out_dev), "%s", "pulse");
-        opts->audio_out_type = 0;
+        return -1;
     }
 
     opts->audio_out_type = 8;
     if (opts->monitor_input_audio != 1 && opts->frame_provoice != 1) {
-        return;
+        return 0;
     }
 
     err = udp_socket_connectA(opts, state);
@@ -1047,9 +1040,10 @@ dsd_engine_setup_parse_udp_output(dsd_opts* opts, dsd_state* state) {
         LOG_INFO("NOTICE: %s:", opts->udp_hostname);
         LOG_INFO("NOTICE: %d \n", opts->udp_portno + 2);
     }
-    if (opts->frame_provoice == 1 && opts->p25_trunk == 1) {
+    if (opts->frame_provoice == 1 && opts->trunk_enable == 1) {
         opts->monitor_input_audio = 0;
     }
+    return 0;
 }
 
 static void
@@ -1106,16 +1100,24 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     (void)dsd_engine_setup_parse_m17_udp_input(opts);
     (void)dsd_engine_setup_parse_udp_input(opts);
     (void)dsd_engine_setup_parse_m17_udp_output(opts);
-    if (dsd_engine_setup_parse_tcp_input(opts, state) != 0) {
+    const int tcp_setup_result = dsd_engine_setup_parse_tcp_input(opts, state);
+    if (tcp_setup_result < 0) {
+        return -1;
+    }
+    if (tcp_setup_result > 0) {
         return 0;
     }
     dsd_engine_setup_connect_rigctl_if_enabled(opts);
     dsd_engine_setup_enable_iq_replay_if_selected(opts);
     dsd_engine_setup_parse_rtltcp_input(opts);
     dsd_engine_setup_parse_soapy_input(opts);
-    dsd_engine_setup_parse_rtl_input(opts, state);
+    if (dsd_engine_setup_parse_rtl_input(opts, state) != 0) {
+        return -1;
+    }
     dsd_engine_setup_parse_pulse_input(opts);
-    dsd_engine_setup_parse_udp_output(opts, state);
+    if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
+        return -1;
+    }
     dsd_engine_setup_parse_simple_outputs(opts);
     return dsd_engine_setup_open_audio_paths(opts, state);
 }
@@ -1228,35 +1230,46 @@ no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
     state->nxdn_last_tg = 0;
 }
 
-static void
+static dsd_trunk_tune_result
 no_carrier_tune_rigctl_if_needed(const dsd_opts* opts, long int freq) {
     if (opts->use_rigctl != 1) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     if (opts->setmod_bw != 0 && opts->setmod_bw != s_last_rigctl_bw) {
-        SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
+        if (!SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
+        }
         s_last_rigctl_bw = opts->setmod_bw;
     }
     if (freq != s_last_rigctl_freq) {
-        SetFreq(opts->rigctl_sockfd, freq);
+        if (!SetFreq(opts->rigctl_sockfd, freq)) {
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
+        }
         s_last_rigctl_freq = freq;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 #ifdef USE_RADIO
-static int
+static dsd_trunk_tune_result
 no_carrier_tune_rtl_if_needed(const dsd_opts* opts, dsd_state* state, uint32_t rf) {
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
-        return 1;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     if (rf != s_last_rtl_freq) {
         int tune_result = rtl_stream_tune(state->rtl_ctx, rf);
         if (tune_result == RTL_STREAM_TUNE_DEFERRED) {
-            return 0;
+            return DSD_TRUNK_TUNE_RESULT_DEFERRED;
+        }
+        if (tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+            return DSD_TRUNK_TUNE_RESULT_TIMEOUT;
+        }
+        if (tune_result != RTL_STREAM_TUNE_OK) {
+            return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
         s_last_rtl_freq = rf;
     }
-    return 1;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 #endif
 
@@ -1273,12 +1286,19 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
 
     long int freq = state->trunk_lcn_freq[state->lcn_freq_roll];
     if (freq != 0) {
-        no_carrier_tune_rigctl_if_needed(opts, freq);
+        if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
+            return;
+        }
+        if (opts->use_rigctl == 1 && no_carrier_tune_rigctl_if_needed(opts, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
+            return;
+        }
         if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
-            if (!no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq)) {
+            if (no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq) != DSD_TRUNK_TUNE_RESULT_OK) {
                 return;
             }
+#else
+            return;
 #endif
         }
     }
@@ -1289,7 +1309,7 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
 
 static int
 no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t now) {
-    if ((opts->trunk_enable != 1 && opts->p25_trunk != 1) || (opts->trunk_is_tuned != 1 && opts->p25_is_tuned != 1)) {
+    if ((opts->trunk_enable != 1) || (opts->trunk_is_tuned != 1)) {
         return 0;
     }
 
@@ -1334,14 +1354,13 @@ no_carrier_generic_trunk_synctype(int synctype) {
 
 static int
 no_carrier_has_active_p25_voice_state(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->p25_is_tuned != 1) {
+    if (opts->trunk_is_tuned != 1) {
         return 0;
     }
-    /*
-     * Configured P25 follows can tune a voice channel before CC identity hints
-     * are decoded; p25_is_tuned plus a tracked P25 VC is still a P25 return hint.
-     */
-    return (state->p25_vc_freq[0] != 0 || state->p25_vc_freq[1] != 0) ? 1 : 0;
+    /* A configured P25 follow can tune before CC identity is decoded, but it
+     * still has a P25 control-channel frequency and a tracked P25 voice channel.
+     * Requiring both avoids treating generic tune bookkeeping as P25 state. */
+    return (state->p25_cc_freq != 0 && (state->p25_vc_freq[0] != 0 || state->p25_vc_freq[1] != 0)) ? 1 : 0;
 }
 
 static int
@@ -1350,11 +1369,11 @@ no_carrier_has_selectable_control_channel(const dsd_state* state) {
 }
 
 static void
-no_carrier_clear_stale_p25_return_hints_after_generic_activity(dsd_opts* opts, dsd_state* state) {
+no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    if (opts->p25_trunk != 1 && opts->trunk_enable != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
     if (!no_carrier_generic_trunk_synctype(state->lastsynctype)
@@ -1378,12 +1397,11 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(dsd_opts* opts, d
     DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));
     state->p25_call_is_packet[0] = 0;
     state->p25_call_is_packet[1] = 0;
-    opts->p25_is_tuned = 0;
 }
 
 static int
 no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state || opts->p25_trunk != 1 || !no_carrier_p25_frames_enabled(opts)) {
+    if (!opts || !state || opts->trunk_enable != 1 || !no_carrier_p25_frames_enabled(opts)) {
         return 0;
     }
     if (no_carrier_has_mapped_dmr_rest_channel(state)) {
@@ -1449,7 +1467,6 @@ no_carrier_sync_helper_tune_cache(const dsd_opts* opts, const dsd_state* state, 
 
 static void
 no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
-    opts->p25_is_tuned = 0;
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
@@ -1503,8 +1520,8 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
         }
         return 0;
     }
-    /* The watchdog owns this same context. Keep the selected CC, tagged retune,
-     * and request handoff atomic even when the tuner wait blocks. */
+    /* The watchdog owns this same context. Keep the selected CC, retune, and
+     * request handoff atomic even when the tuner wait blocks. */
     const long old_p25_cc_freq = state->p25_cc_freq;
     const long old_trunk_cc_freq = state->trunk_cc_freq;
     no_carrier_sync_selected_control_channel(state, cc, p25_return, clear_generic_p25_alias);
@@ -1589,15 +1606,14 @@ no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, 
         }
         *helper_attempted = 1;
         if (dsd_trunk_tuning_request_status(unresolved_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING) {
-            /* Do not replace correlated work with an untagged direct return.
-             * Its completion will either open the gate or make this path retry
-             * with a newer correlated request. */
+            /* Do not replace correlated work with a second direct return. Its
+             * completion will either open the gate or make this path retry
+             * with a newer request. */
             return 0;
         }
     }
 
     *helper_attempted = 1;
-    const int old_p25_is_tuned = opts->p25_is_tuned;
     const int old_trunk_is_tuned = opts->trunk_is_tuned;
     const long old_p25_cc_freq = state->p25_cc_freq;
     const long old_trunk_cc_freq = state->trunk_cc_freq;
@@ -1611,7 +1627,6 @@ no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, 
     s_no_carrier_generic_recovery_state = state;
     s_no_carrier_generic_recovery_cc = cc;
     if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        opts->p25_is_tuned = old_p25_is_tuned;
         opts->trunk_is_tuned = old_trunk_is_tuned;
         no_carrier_sync_helper_tune_cache(opts, state, cc);
         return 0;
@@ -1635,24 +1650,25 @@ no_carrier_helper_result_is_deferred(int helper_attempted, dsd_trunk_tune_result
 static int
 no_carrier_apply_direct_cc_return(const dsd_opts* opts, dsd_state* state, long cc, int helper_attempted) {
     if (opts->use_rigctl == 1) {
-        no_carrier_tune_rigctl_if_needed(opts, cc);
+        if (no_carrier_tune_rigctl_if_needed(opts, cc) != DSD_TRUNK_TUNE_RESULT_OK) {
+            return 0;
+        }
         state->dmr_rest_channel = -1;
         return 1;
     }
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        if (!helper_attempted) {
-#ifdef USE_RADIO
-            if (!no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)cc)) {
-                return 0;
-            }
-            state->dmr_rest_channel = -1;
-#endif
-            return 1;
+        if (helper_attempted) {
+            return 0;
         }
 #ifdef USE_RADIO
+        if (no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)cc) != DSD_TRUNK_TUNE_RESULT_OK) {
+            return 0;
+        }
         state->dmr_rest_channel = -1;
+        return 1;
+#else
+        return 0;
 #endif
-        return state->rtl_ctx ? 0 : 1;
     }
     state->dmr_rest_channel = -1;
     return 1;
@@ -1762,10 +1778,6 @@ no_carrier_reset_dibit_and_dmr_buffers(dsd_state* state) {
     state->dmr_payload_p = state->dmr_payload_buf + 200;
     DSD_MEMSET(state->dmr_payload_buf, 0, sizeof(int) * 200);
     DSD_MEMSET(state->dmr_stereo_payload, 1, sizeof(int) * 144);
-    if (state->dmr_reliab_buf) {
-        state->dmr_reliab_p = state->dmr_reliab_buf + 200;
-        DSD_MEMSET(state->dmr_reliab_buf, 0, 200 * sizeof(uint8_t));
-    }
     if (state->dmr_soft_buf) {
         state->dmr_soft_p = state->dmr_soft_buf + 200;
         DSD_MEMSET(state->dmr_soft_buf, 0, 200 * sizeof(dsd_dibit_soft_t));
@@ -1807,7 +1819,7 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
 
 static void
 no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* state) {
-    if (opts->p25_trunk != 0 || opts->trunk_enable != 0) {
+    if (opts->trunk_enable != 0) {
         return;
     }
     state->lasttg = 0;
@@ -2038,7 +2050,7 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
 
 static int
 engine_trunk_tuning_owner_active(const dsd_opts* opts) {
-    return opts && (opts->p25_trunk == 1 || opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1);
+    return opts && (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1);
 }
 
 static void
@@ -2050,8 +2062,8 @@ no_carrier_retire_inactive_tune_failures(const dsd_opts* opts) {
 
 static void
 no_carrier_clear_stale_follow_state_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
-    const int trunking_enabled = (opts->p25_trunk == 1 || opts->trunk_enable == 1) ? 1 : 0;
-    const int voice_tuned = (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) ? 1 : 0;
+    const int trunking_enabled = (opts->trunk_enable == 1) ? 1 : 0;
+    const int voice_tuned = (opts->trunk_is_tuned == 1) ? 1 : 0;
     const int vc_recent = (state->last_vc_sync_time != 0 && (now - state->last_vc_sync_time) <= 10) ? 1 : 0;
     const int retryable_cc_return = no_carrier_has_selectable_control_channel(state);
     const int preserve_voice_state = (trunking_enabled && voice_tuned && (vc_recent || retryable_cc_return)) ? 1 : 0;
@@ -2066,7 +2078,6 @@ no_carrier_clear_stale_follow_state_if_needed(dsd_opts* opts, dsd_state* state, 
         state->dmr_branding_sub[0] = '\0';
         state->dmr_branding[0] = '\0';
         state->dmr_site_parms[0] = '\0';
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
         DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
     }
@@ -2224,7 +2235,7 @@ static int
 live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         if (state->rtl_ctx == NULL) {
-            if (rtl_stream_create_mirrored(opts, &state->rtl_ctx) < 0) {
+            if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create radio stream.\n");
                 opts->rtl_started = 0;
                 opts->rtl_needs_restart = 0;
@@ -2337,10 +2348,6 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
         }
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
-
-#ifdef TRACE_DSD
-        state->debug_prefix = '\0';
-#endif
 
         dsd_runtime_pump_controls(opts, state);
         if (frame_tune_generation) {
@@ -2633,24 +2640,6 @@ dsd_engine_run_open_audio_output_if_needed(dsd_opts* opts) {
     return 0;
 }
 
-static void
-dsd_engine_run_start_rtl_encoder_input_if_needed(dsd_opts* opts, dsd_state* state) {
-#ifdef USE_RADIO
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        if (state->rtl_ctx == NULL && rtl_stream_create_mirrored(opts, &state->rtl_ctx) < 0) {
-            LOG_ERROR("Failed to create radio stream.\n");
-        }
-        if (state->rtl_ctx && rtl_stream_start(state->rtl_ctx) < 0) {
-            LOG_ERROR("Failed to open radio stream.\n");
-        }
-        opts->rtl_started = 1;
-    }
-#else
-    UNUSED(opts);
-    UNUSED(state);
-#endif
-}
-
 static int
 dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
                             int* lifecycle_started) {
@@ -2660,15 +2649,22 @@ dsd_engine_run_mode_m17_str(dsd_opts* opts, dsd_state* state, const dsd_engine_l
     if (opts->audio_in_type == AUDIO_IN_PULSE && openAudioInput(opts) != 0) {
         return -1;
     }
-    dsd_engine_run_start_rtl_encoder_input_if_needed(opts, state);
+#ifdef USE_RADIO
+    if (live_scanner_start_rtl_if_needed(opts, state) != 0) {
+        return -1;
+    }
+#else
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return -1;
+    }
+#endif
     if (dsd_engine_run_open_audio_output_if_needed(opts) != 0) {
         return -1;
     }
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
         return -1;
     }
-    encodeM17STR(opts, state);
-    return 0;
+    return encodeM17STR(opts, state);
 }
 
 static int
@@ -2697,8 +2693,7 @@ dsd_engine_run_mode_m17_pkt(dsd_opts* opts, dsd_state* state, const dsd_engine_l
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
         return -1;
     }
-    encodeM17PKT(opts, state);
-    return 0;
+    return encodeM17PKT(opts, state);
 }
 
 static int
@@ -2711,8 +2706,7 @@ dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_e
     if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
         return -1;
     }
-    processM17IPF(opts, state);
-    return 0;
+    return processM17IPF(opts, state);
 }
 
 static int

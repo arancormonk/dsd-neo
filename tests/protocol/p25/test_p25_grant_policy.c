@@ -14,7 +14,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -28,32 +28,30 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
 
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
 }
 
 static int
@@ -156,10 +154,11 @@ main(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
+    install_trunk_tuning_hooks();
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
 
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
@@ -176,7 +175,7 @@ main(void) {
 
     // Unknown group is blocked in allow-list mode.
     unsigned before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -190,7 +189,7 @@ main(void) {
     // Known allowed group tunes.
     rc |= expect_true("seed group A", seed_exact(&st, 1101, "A", "ALLOW", 0, 0) == 0);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -208,7 +207,7 @@ main(void) {
     st.tg_hold = 1401;
     p25_patch_add_wgid(&st, 1400, 1401);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -233,7 +232,7 @@ main(void) {
     rc |= expect_true("seed patch member allow", seed_exact(&st, 1403, "A", "PATCH-MEMBER", 0, 0) == 0);
     p25_patch_add_wgid(&st, 1402, 1403);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -254,7 +253,7 @@ main(void) {
     mark_cc_reacquired(&st);
     p25_patch_add_wgid(&st, 1404, 1405);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -268,7 +267,7 @@ main(void) {
     // Explicit mode blocks remain enforced.
     rc |= expect_true("seed group B", seed_exact(&st, 1102, "B", "BLOCK", 0, 0) == 0);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -281,7 +280,7 @@ main(void) {
 
     rc |= expect_true("seed group DE", seed_exact(&st, 1103, "DE", "ENC", 0, 0) == 0);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -298,7 +297,7 @@ main(void) {
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
     opts.trunk_tune_enc_calls = 0;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     before = st.p25_sm_tune_count;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
@@ -315,7 +314,7 @@ main(void) {
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -334,7 +333,7 @@ main(void) {
         static dsd_state cache_st;
         DSD_MEMSET(&cache_opts, 0, sizeof cache_opts);
         DSD_MEMSET(&cache_st, 0, sizeof cache_st);
-        cache_opts.p25_trunk = 1;
+        cache_opts.trunk_enable = 1;
         cache_opts.trunk_tune_group_calls = 1;
         cache_opts.trunk_tune_private_calls = 1;
         cache_opts.trunk_tune_data_calls = 1;
@@ -368,7 +367,7 @@ main(void) {
         }
         time_t short_until = (cache_idx >= 0) ? cache_st.p25_enc_tg_cache_until[cache_idx] : 0;
         before = cache_st.p25_sm_tune_count;
-        cache_opts.p25_is_tuned = 0;
+        cache_opts.trunk_is_tuned = 0;
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                        .slot = -1,
@@ -392,7 +391,7 @@ main(void) {
                           cache_st.p25_sm_tune_count == before);
         rc |= expect_true("transient enc cache does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
 
-        cache_opts.p25_is_tuned = 0;
+        cache_opts.trunk_is_tuned = 0;
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                        .slot = -1,
@@ -534,7 +533,7 @@ main(void) {
     // Matching hold does not override explicit B/DE blocks in grant-compatible hold mode.
     st.tg_hold = 1102;
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -549,7 +548,7 @@ main(void) {
     // TG 0 is evaluated like any other exact ID.
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     rc |= expect_true("seed tg0 A", seed_exact(&st, 0, "A", "ZERO-ALLOW", 0, 0) == 0);
     before = st.p25_sm_tune_count;
     p25_sm_event(
@@ -560,18 +559,18 @@ main(void) {
 
     rc |= expect_true("upsert tg0 B", seed_exact(&st, 0, "B", "ZERO-BLOCK", 0, 0) == 0);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(
         p25_sm_get_ctx(), &opts, &st,
         &(p25_sm_event_t){
             .type = P25_SM_EV_GRANT, .slot = -1, .channel = ch, .tg = 0, .src = 2301, .svc_bits = 0x00, .is_group = 1});
     rc |= expect_true("tg0 blocked row blocks", st.p25_sm_tune_count == before);
 
-    // SM private-grant path keeps unknown private IDs allowed under allow-list mode.
+    // The SM is the canonical private-grant policy gate.
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -580,7 +579,7 @@ main(void) {
                                    .src = 9002,
                                    .svc_bits = 0x00,
                                    .is_group = 0});
-    rc |= expect_true("private unknown allowed in allow-list", st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("private unknown blocked in allow-list", st.p25_sm_tune_count == before);
 
     // Explicit data grant wrappers force data-call policy without rewriting service bits.
     {
@@ -588,7 +587,7 @@ main(void) {
         static dsd_state data_st;
         DSD_MEMSET(&data_opts, 0, sizeof data_opts);
         DSD_MEMSET(&data_st, 0, sizeof data_st);
-        data_opts.p25_trunk = 1;
+        data_opts.trunk_enable = 1;
         data_opts.trunk_tune_group_calls = 1;
         data_opts.trunk_tune_private_calls = 1;
         data_opts.trunk_tune_data_calls = 0;
@@ -620,7 +619,7 @@ main(void) {
         rc |= expect_true("indiv data unknown svc blocked when data disabled", data_st.p25_sm_tune_count == before);
 
         data_opts.trunk_tune_data_calls = 1;
-        data_opts.p25_is_tuned = 0;
+        data_opts.trunk_is_tuned = 0;
         p25_sm_event(p25_sm_get_ctx(), &data_opts, &data_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                        .slot = -1,
@@ -633,7 +632,7 @@ main(void) {
         rc |= expect_true("group data clear svc tunes when data enabled", data_st.p25_sm_tune_count == before + 1);
         p25_sm_release(p25_sm_get_ctx(), &data_opts, &data_st, "explicit-release");
         mark_cc_reacquired(&data_st);
-        data_opts.p25_is_tuned = 0;
+        data_opts.trunk_is_tuned = 0;
         before = data_st.p25_sm_tune_count;
         p25_sm_event(p25_sm_get_ctx(), &data_opts, &data_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
@@ -649,7 +648,7 @@ main(void) {
         p25_sm_release(p25_sm_get_ctx(), &data_opts, &data_st, "explicit-release");
         mark_cc_reacquired(&data_st);
         data_opts.trunk_tune_enc_calls = 0;
-        data_opts.p25_is_tuned = 0;
+        data_opts.trunk_is_tuned = 0;
         before = data_st.p25_sm_tune_count;
         p25_sm_event(p25_sm_get_ctx(), &data_opts, &data_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
@@ -676,10 +675,10 @@ main(void) {
         p25_sm_release(p25_sm_get_ctx(), &data_opts, &data_st, "explicit-release");
         mark_cc_reacquired(&data_st);
 
-        p25_emit_enc_lockout_once(&data_opts, &data_st, 0, 3105, /*svc*/ 0x40);
+        p25_emit_enc_lockout_once_typed(&data_opts, &data_st, 0, 3105, /*svc*/ 0x40, 1);
         rc |= expect_true("seed transient voice enc cache", !enc_tg_cache_is_absent(&data_st, 3105U));
         before = data_st.p25_sm_tune_count;
-        data_opts.p25_is_tuned = 0;
+        data_opts.trunk_is_tuned = 0;
         p25_sm_event(p25_sm_get_ctx(), &data_opts, &data_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                        .slot = -1,
@@ -696,7 +695,7 @@ main(void) {
         mark_cc_reacquired(&data_st);
 
         data_opts.trunk_tune_data_calls = 0;
-        data_opts.p25_is_tuned = 0;
+        data_opts.trunk_is_tuned = 0;
         before = data_st.p25_sm_tune_count;
         p25_sm_event(p25_sm_get_ctx(), &data_opts, &data_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
@@ -728,7 +727,7 @@ main(void) {
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -782,7 +781,7 @@ main(void) {
     rc |= expect_true("seed patch member preempt", seed_exact(&st, 1502, "A", "PATCH-PREEMPT", 95, 1) == 0);
     p25_patch_add_wgid(&st, 1501, 1502);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     p25_sm_event(p25_sm_get_ctx(), &opts, &st,
                  &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                    .slot = -1,
@@ -810,7 +809,7 @@ main(void) {
         static dsd_state dual_st;
         DSD_MEMSET(&dual_opts, 0, sizeof dual_opts);
         DSD_MEMSET(&dual_st, 0, sizeof dual_st);
-        dual_opts.p25_trunk = 1;
+        dual_opts.trunk_enable = 1;
         dual_opts.trunk_tune_group_calls = 1;
         dual_opts.trunk_tune_private_calls = 1;
         dual_opts.trunk_tune_data_calls = 1;
@@ -898,7 +897,7 @@ main(void) {
         static dsd_state namespace_st;
         DSD_MEMSET(&namespace_opts, 0, sizeof namespace_opts);
         DSD_MEMSET(&namespace_st, 0, sizeof namespace_st);
-        namespace_opts.p25_trunk = 1;
+        namespace_opts.trunk_enable = 1;
         namespace_opts.trunk_tune_group_calls = 1;
         namespace_opts.trunk_tune_private_calls = 1;
         namespace_opts.trunk_tune_data_calls = 1;
@@ -948,6 +947,7 @@ main(void) {
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

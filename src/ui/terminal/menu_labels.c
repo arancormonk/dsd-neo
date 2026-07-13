@@ -68,12 +68,6 @@ rtl_fsk_symbol_output_active_for_ui(const void* v) {
     return metrics.output_kind == DSD_FRONTEND_RTL_OUTPUT_FSK_DISCRIMINATOR;
 }
 
-bool
-dsp_cq_on(const void* v) {
-    dsd_frontend_metrics metrics = menu_frontend_metrics(v);
-    return metrics.cqpsk_enable != 0;
-}
-
 int
 ui_current_mod(const void* v) {
     UiCtx* c = (UiCtx*)v;
@@ -153,7 +147,7 @@ lbl_toggle_payload(const void* v, char* b, size_t n) {
 const char*
 lbl_trunk(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Toggle Trunking [%s]", c->opts->p25_trunk ? "Active" : "Inactive");
+    DSD_SNPRINTF(b, n, "Toggle Trunking [%s]", c->opts->trunk_enable ? "Active" : "Inactive");
     return b;
 }
 
@@ -963,16 +957,24 @@ lbl_rtl_rtltcp_autotune(const void* v, char* b, size_t n) {
 const char*
 lbl_rtl_auto_ppm(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    int on = dsd_app_frontend_auto_ppm_enabled((c && c->opts) ? c->opts->rtl_auto_ppm : 0);
+    int on = (c && c->opts && c->opts->rtl_auto_ppm) ? 1 : 0;
+    if (c && c->state && c->state->rtl_ctx) {
+        dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+        on = metrics.auto_ppm_enabled;
+    }
     DSD_SNPRINTF(b, n, "Auto-PPM (Spectrum): %s", on ? "On" : "Off");
     return b;
 }
 
 const char*
 lbl_rtl_tuner_autogain(const void* v, char* b, size_t n) {
-    (void)v;
+    const UiCtx* c = (const UiCtx*)v;
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    int on = dsd_app_frontend_tuner_autogain_enabled((cfg && cfg->tuner_autogain_enable) ? 1 : 0);
+    int on = (cfg && cfg->tuner_autogain_enable) ? 1 : 0;
+    if (c && c->state && c->state->rtl_ctx) {
+        dsd_frontend_metrics metrics = menu_frontend_metrics(v);
+        on = metrics.tuner_autogain;
+    }
     DSD_SNPRINTF(b, n, "Tuner Autogain: %s", on ? "On" : "Off");
     return b;
 }

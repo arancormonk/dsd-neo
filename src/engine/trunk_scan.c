@@ -40,6 +40,7 @@
 #include "dsd-neo/protocol/p25/p25_cc_candidates.h"
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 #include "trunk_scan_internal.h"
+#include "trunk_scan_test_support.h"
 #endif
 
 #if LONG_MAX < 4294967295LL
@@ -199,9 +200,7 @@ typedef struct {
     dsd_trunk_scan_snapshot scratch_snapshot;
     size_t count;
     size_t active;
-    int saved_p25_trunk;
     int saved_trunk_enable;
-    int saved_p25_is_tuned;
     int saved_trunk_is_tuned;
     int saved_mod_c4fm;
     int saved_mod_qpsk;
@@ -1417,21 +1416,11 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, 
     trunk_scan_restore_saved_mod_gain_opts(opts, coord);
     trunk_scan_apply_target_mod_opts(opts, target);
     trunk_scan_apply_target_gain_opts(opts, target);
-    opts->p25_is_tuned = 0;
     opts->trunk_is_tuned = 0;
     switch (target->type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-            opts->p25_trunk = 1;
-            opts->trunk_enable = 1;
-            break;
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-            opts->p25_trunk = 0;
-            opts->trunk_enable = 1;
-            break;
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
-            opts->p25_trunk = 0;
-            opts->trunk_enable = 0;
-            break;
+        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK: opts->trunk_enable = 1; break;
+        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: opts->trunk_enable = 0; break;
     }
 }
 
@@ -1692,11 +1681,11 @@ trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coor
         return 1;
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-        return (rt->p25_ctx.cc_tune_pending || opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1
+        return (rt->p25_ctx.cc_tune_pending || opts->trunk_is_tuned == 1
                 || p25_sm_get_state(&rt->p25_ctx) == P25_SM_TUNED);
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
-        return (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
+        return (opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
     }
     double now_m = trunk_scan_now_m();
     double hold_s = (double)rt->target.activity_hold_ms / 1000.0;
@@ -1709,9 +1698,7 @@ trunk_scan_restore_saved_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord)
         return;
     }
     trunk_scan_restore_saved_mod_gain_opts(opts, coord);
-    opts->p25_trunk = coord->saved_p25_trunk;
     opts->trunk_enable = coord->saved_trunk_enable;
-    opts->p25_is_tuned = coord->saved_p25_is_tuned;
     opts->trunk_is_tuned = coord->saved_trunk_is_tuned;
 }
 
@@ -1720,9 +1707,7 @@ trunk_scan_capture_saved_opts(dsd_trunk_scan_coord* coord, const dsd_opts* opts)
     if (!coord || !opts) {
         return;
     }
-    coord->saved_p25_trunk = opts->p25_trunk;
     coord->saved_trunk_enable = opts->trunk_enable;
-    coord->saved_p25_is_tuned = opts->p25_is_tuned;
     coord->saved_trunk_is_tuned = opts->trunk_is_tuned;
     coord->saved_mod_c4fm = opts->mod_c4fm;
     coord->saved_mod_qpsk = opts->mod_qpsk;
@@ -1908,12 +1893,9 @@ dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_
     dsd_tg_policy_decision decision;
     int rc = 0;
     if (is_private) {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call,
-                                                 DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                 DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision);
     } else {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call,
-                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
     }
     if (rc == 0 && decision.tune_allowed) {
         rt->last_allowed_activity_m = trunk_scan_now_m();
@@ -2020,11 +2002,13 @@ dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, NULL, NULL);
 }
 
+#ifdef DSD_TRUNK_SCAN_TEST_CLOCK
 size_t
 dsd_engine_trunk_scan_active_index(const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
     return coord ? coord->active : (size_t)-1;
 }
+#endif
 
 size_t
 dsd_engine_trunk_scan_target_count(const dsd_state* state) {

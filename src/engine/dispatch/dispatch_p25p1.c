@@ -15,7 +15,7 @@
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/runtime/colors.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -124,14 +124,13 @@ p25p1_read_nid_fields(dsd_opts* opts, dsd_state* state, uint8_t* duid, char bch_
                       unsigned char* parity, uint8_t* parity_reliab) {
     int index_bch_code = 0;
     int dibit;
-    uint8_t rel;
     dsd_dibit_soft_t soft;
 
     p25p1_read_nac_bits(opts, state, bch_code, bch_reliab, &index_bch_code);
     *duid = p25p1_read_duid_bits(opts, state, bch_code, bch_reliab, &index_bch_code);
     p25p1_read_bch_soft_dibits(opts, state, bch_code, bch_reliab, &index_bch_code, 3);
 
-    dibit = getDibitWithReliability(opts, state, &rel);
+    dibit = getDibitSoft(opts, state, NULL);
     p25_status_accum_add(state, dibit);
 
     p25p1_read_bch_soft_dibits(opts, state, bch_code, bch_reliab, &index_bch_code, 20);
@@ -399,7 +398,7 @@ p25p1_handle_unknown_duid(dsd_opts* opts, dsd_state* state, uint8_t duid) {
     }
 
     p25_status_accum_reset(state);
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 }
 
 static void DSD_ATTR_USED

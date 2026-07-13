@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: ISC
 #include <stddef.h>
 #include <stdint.h>
+#include "md2ii.h"
 #include "pc4_internal.h"
 
 #define nbround 254
@@ -30,9 +31,6 @@ typedef struct {
     uint8_t xyz, count;
     unsigned char array_arc4[256];
     int i_arc4, j_arc4;
-    int x1, x2, i;
-    unsigned char h2[n1];
-    unsigned char h1[n1 * 3];
 } PC4Context;
 
 static PC4Context g_tyt_pc4_context;
@@ -117,73 +115,6 @@ arc4_output(PC4Context* pc4_ctx) {
     return rndbyte;
 }
 
-/* Initialize MD2-II state */
-static void
-md2_init(PC4Context* pc4_ctx) {
-    pc4_ctx->x1 = 0;
-    pc4_ctx->x2 = 0;
-    for (pc4_ctx->i = 0; pc4_ctx->i < n1; pc4_ctx->i++) {
-        pc4_ctx->h2[pc4_ctx->i] = 0;
-    }
-    for (pc4_ctx->i = 0; pc4_ctx->i < n1; pc4_ctx->i++) {
-        pc4_ctx->h1[pc4_ctx->i] = 0;
-    }
-}
-
-/* MD2-II hashing */
-static void
-md2_hashing(PC4Context* pc4_ctx, const unsigned char t1[], size_t b6) {
-    static const unsigned char s4[256] = {
-        13,  199, 11,  67,  237, 193, 164, 77,  115, 184, 141, 222, 73,  38,  147, 36,  150, 87,  21,  104, 12,  61,
-        156, 101, 111, 145, 119, 22,  207, 35,  198, 37,  171, 167, 80,  30,  219, 28,  213, 121, 86,  29,  214, 242,
-        6,   4,   89,  162, 110, 175, 19,  157, 3,   88,  234, 94,  144, 118, 159, 239, 100, 17,  182, 173, 238, 68,
-        16,  79,  132, 54,  163, 52,  9,   58,  57,  55,  229, 192, 170, 226, 56,  231, 187, 158, 70,  224, 233, 245,
-        26,  47,  32,  44,  247, 8,   251, 20,  197, 185, 109, 153, 204, 218, 93,  178, 212, 137, 84,  174, 24,  120,
-        130, 149, 72,  180, 181, 208, 255, 189, 152, 18,  143, 176, 60,  249, 27,  227, 128, 139, 243, 253, 59,  123,
-        172, 108, 211, 96,  138, 10,  215, 42,  225, 40,  81,  65,  90,  25,  98,  126, 154, 64,  124, 116, 122, 5,
-        1,   168, 83,  190, 131, 191, 244, 240, 235, 177, 155, 228, 125, 66,  43,  201, 248, 220, 129, 188, 230, 62,
-        75,  71,  78,  34,  31,  216, 254, 136, 91,  114, 106, 46,  217, 196, 92,  151, 209, 133, 51,  236, 33,  252,
-        127, 179, 69,  7,   183, 105, 146, 97,  39,  15,  205, 112, 200, 166, 223, 45,  48,  246, 186, 41,  148, 140,
-        107, 76,  85,  95,  194, 142, 50,  49,  134, 23,  135, 169, 221, 210, 203, 63,  165, 82,  161, 202, 53,  14,
-        206, 232, 103, 102, 195, 117, 250, 99,  0,   74,  160, 241, 2,   113};
-
-    size_t t1_len = b6;
-    size_t idx = 0;
-    while (idx < t1_len) {
-        for (; idx < t1_len && pc4_ctx->x2 < n1; pc4_ctx->x2++) {
-            int b5 = t1[idx++];
-            pc4_ctx->h1[pc4_ctx->x2 + n1] = (unsigned char)b5;
-            pc4_ctx->h1[pc4_ctx->x2 + (n1 * 2)] = (unsigned char)(b5 ^ pc4_ctx->h1[pc4_ctx->x2]);
-            pc4_ctx->x1 = pc4_ctx->h2[pc4_ctx->x2] ^= s4[b5 ^ pc4_ctx->x1];
-        }
-        if (pc4_ctx->x2 == n1) {
-            int b2 = 0;
-            pc4_ctx->x2 = 0;
-            for (int b3 = 0; b3 < (n1 + 2); b3++) {
-                for (int b1 = 0; b1 < (n1 * 3); b1++) {
-                    b2 = pc4_ctx->h1[b1] ^= s4[b2];
-                }
-                b2 = (b2 + b3) % 256;
-            }
-        }
-    }
-}
-
-/* Finalize MD2-II */
-static void
-md2_end(PC4Context* pc4_ctx, unsigned char h4[n1]) {
-    unsigned char h3[n1];
-    int i, n4 = n1 - pc4_ctx->x2;
-    for (i = 0; i < n4; i++) {
-        h3[i] = (unsigned char)n4;
-    }
-    md2_hashing(pc4_ctx, h3, (size_t)n4);
-    md2_hashing(pc4_ctx, pc4_ctx->h2, sizeof(pc4_ctx->h2));
-    for (i = 0; i < n1; i++) {
-        h4[i] = pc4_ctx->h1[i];
-    }
-}
-
 /* Generate a random index */
 static int
 mixy(PC4Context* pc4_ctx, int nn2) {
@@ -228,9 +159,7 @@ pc4_shuffle_into(PC4Context* pc4_ctx, uint8_t* numbers, uint8_t* dst, int count)
 
 static void
 pc4_init_hash_state(PC4Context* pc4_ctx, const unsigned char key1[], size_t size1, unsigned char h4[n1]) {
-    md2_init(pc4_ctx);
-    md2_hashing(pc4_ctx, key1, size1);
-    md2_end(pc4_ctx, h4);
+    (void)dsd_md2ii_hash(key1, size1, n1, h4, n1);
 
     arc4_init(pc4_ctx, h4);
 

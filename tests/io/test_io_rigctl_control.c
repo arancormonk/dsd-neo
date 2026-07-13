@@ -41,6 +41,7 @@ static const char* g_responses[MAX_RESPONSES];
 static size_t g_response_count;
 static size_t g_response_index;
 static dsd_socket_t g_create_result;
+static int g_send_result;
 static int g_resolve_result;
 static int g_connect_result;
 static int g_close_count;
@@ -64,6 +65,7 @@ reset_stubs(void) {
     g_response_count = 0;
     g_response_index = 0;
     g_create_result = 41;
+    g_send_result = -2;
     g_resolve_result = 0;
     g_connect_result = 0;
     g_close_count = 0;
@@ -116,9 +118,7 @@ dsd_neo_get_config(void) {
 }
 
 void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts;
-}
+dsd_neo_config_init(void) {}
 
 dsd_socket_t
 dsd_socket_create(int domain, int type, int protocol) {
@@ -185,6 +185,9 @@ dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     DSD_MEMCPY(g_commands[g_command_count], buf, copy_len);
     g_commands[g_command_count][copy_len] = '\0';
     g_command_count++;
+    if (g_send_result != -2) {
+        return g_send_result;
+    }
     return (int)len;
 }
 
@@ -260,6 +263,18 @@ test_setfreq_success_failure_and_cache(void) {
     assert(!SetFreq(100, 851025000L));
     assert(g_command_count == 2);
     assert(strcmp(g_commands[1], "F 851025000\n") == 0);
+
+    reset_stubs();
+    assert(!SetFreq(110, 851037500L));
+    assert(g_command_count == 1);
+
+    reset_stubs();
+    g_send_result = -1;
+    assert(!SetFreq(111, 851050000L));
+
+    reset_stubs();
+    g_send_result = 2;
+    assert(!SetFreq(112, 851062500L));
     return 0;
 }
 
@@ -282,6 +297,14 @@ test_setmodulation_fallback_and_cache(void) {
     assert(g_command_count == 4);
     assert(strcmp(g_commands[2], "M NFM 25000\n") == 0);
     assert(strcmp(g_commands[3], "M FM 25000\n") == 0);
+
+    reset_stubs();
+    assert(!SetModulation(113, 6250));
+    assert(g_command_count == 1);
+
+    reset_stubs();
+    g_send_result = 1;
+    assert(!SetModulation(114, 7500));
     return 0;
 }
 
@@ -309,6 +332,7 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
 
     assert(io_control_set_freq(NULL, &state, 851000000L) == -1);
     assert(io_control_set_freq(&opts, &state, 0L) == -1);
+    assert(io_control_set_freq(&opts, &state, 851000000L) == -1);
     assert(g_command_count == 0);
 
     opts.use_rigctl = 1;
@@ -322,6 +346,33 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     assert(g_command_count == 2);
     assert(strcmp(g_commands[0], "M NFM 12500\n") == 0);
     assert(strcmp(g_commands[1], "F 851050000\n") == 0);
+
+    reset_stubs();
+    opts.rtlsdr_center_freq = 851050000U;
+    push_response("RPRT 1\n");
+    assert(io_control_set_freq(&opts, &state, 851062500L) == -1);
+    assert(opts.rtlsdr_center_freq == 851050000U);
+
+    reset_stubs();
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    assert(io_control_set_freq(&opts, &state, 851075000L) == -1);
+    assert(g_command_count == 0);
+    return 0;
+}
+
+static int
+test_io_control_set_freq_rejects_missing_rtl_context(void) {
+    reset_stubs();
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851000000U;
+
+    assert(io_control_set_freq(&opts, &state, 851075000L) == -1);
+    assert(g_rtl_tune_calls == 0);
+    assert(opts.rtlsdr_center_freq == 851000000U);
     return 0;
 }
 
@@ -398,6 +449,7 @@ main(void) {
     rc |= test_setmodulation_fallback_and_cache();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
+    rc |= test_io_control_set_freq_rejects_missing_rtl_context();
     rc |= test_io_control_set_freq_propagates_rtl_deferred();
     rc |= test_io_control_set_freq_caches_applied_rtl_frequency();
     rc |= test_io_control_set_freq_retains_accepted_rtl_timeout_target();

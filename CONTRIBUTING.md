@@ -135,7 +135,7 @@ Every pull request is reviewed for:
 
 - correctness and compatibility with surrounding module design
 - security impact, including untrusted input handling and dependency changes
-- API and CLI compatibility
+- API and CLI change impact
 - licensing and attribution
 - test coverage and documentation coverage
 - packaging and release impact

@@ -536,18 +536,6 @@ p25_sm_ev_crypto_pending(int slot) {
 void p25_patch_update(dsd_state* state, int sgid, int is_patch, int active);
 
 /**
- * @brief Compose a compact summary string for active patch SGIDs.
- *
- * Example output: "P: 069,142".
- *
- * @param state Decoder state (read-only).
- * @param out Destination buffer for summary string.
- * @param cap Capacity of destination buffer.
- * @return Length written (0 when none active).
- */
-int p25_patch_compose_summary(const dsd_state* state, char* out, size_t cap);
-
-/**
  * @brief Add a Working Group ID to an SGID entry (creates/activates if needed).
  *
  * @param state Decoder state holding patch context.
@@ -585,14 +573,6 @@ int p25_patch_compose_details(const dsd_state* state, char* out, size_t cap);
  * @param wgid Working Group ID to remove.
  */
 void p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid);
-/**
- * @brief Remove a WUID membership from an SG record.
- *
- * @param state Decoder state holding patch context.
- * @param sgid Super Group ID.
- * @param wuid Working Unit ID to remove.
- */
-void p25_patch_remove_wuid(dsd_state* state, int sgid, uint32_t wuid);
 /**
  * @brief Clear all membership and status for an SG record.
  *
@@ -709,7 +689,7 @@ void p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg);
 void p25_ga_tick(dsd_state* state);
 
 /**
- * @brief Emit a single encryption lockout event for a talkgroup.
+ * @brief Emit a single encryption lockout event for a group or private target.
  *
  * Records transient encrypted-call state and pushes the corresponding event to history/log exactly once per TG until
  * scrubbed.
@@ -717,10 +697,12 @@ void p25_ga_tick(dsd_state* state);
  * @param opts Decoder options.
  * @param state Decoder state.
  * @param slot 0 for FDMA/left, 1 for TDMA/right.
- * @param tg Talkgroup.
+ * @param target Group or private target.
  * @param svc_bits Optional service bits (pass 0 if unknown).
+ * @param is_group Nonzero for a group target, zero for a private target.
  */
-void p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits);
+void p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int target, int svc_bits,
+                                     int is_group);
 
 /**
  * @brief Clear all transient blocked-call classifications.

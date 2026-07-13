@@ -28,10 +28,7 @@ typedef struct demod_mt_task {
     void* arg;
 } demod_mt_task;
 
-/*
- * Minimal 2-thread worker pool API (env-gated by DSD_NEO_MT)
- * These calls mirror the inlined versions that previously lived in rtl_sdr_fm.cpp
- */
+/* Minimal 2-thread worker pool API, enabled by DSD_NEO_MT. */
 
 /**
  * @brief Initialize the minimal worker pool when `DSD_NEO_MT=1`.

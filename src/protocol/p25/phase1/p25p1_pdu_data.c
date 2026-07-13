@@ -495,7 +495,8 @@ p25_build_aes_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint8_
     lfsr_64_to_128(aes_iv);
 
     int nblocks = (len / 16) + 1;
-    aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, (alg_id == 0x84) ? 2 : 0, nblocks);
+    const dsd_aes_key_size key_size = (alg_id == 0x84) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+    aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, key_size, nblocks);
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n AES-%s keystream ready", (alg_id == 0x84) ? "256" : "128");
@@ -517,8 +518,8 @@ p25_build_des_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
     }
 
     int nblocks = (len / 8) + 1;
-    // codeql[cpp/weak-cryptographic-algorithm] DES is required for legacy P25 interoperability.
-    des_multi_keystream_output(mi, des_key, ks_bytes, 1, nblocks);
+    // codeql[cpp/weak-cryptographic-algorithm] DES is required for active P25 interoperability.
+    des_ofb_keystream_output(mi, des_key, ks_bytes, nblocks);
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n DES56 keystream ready");
@@ -548,7 +549,7 @@ p25_build_rc4_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
         return 1;
     }
 
-    // codeql[cpp/weak-cryptographic-algorithm] RC4/ADP is required for legacy P25 interoperability.
+    // codeql[cpp/weak-cryptographic-algorithm] RC4/ADP is required for active P25 interoperability.
     rc4_block_output(256, 13, len, rc4_kiv, ks_bytes);
 
     if (opts->payload == 1) {

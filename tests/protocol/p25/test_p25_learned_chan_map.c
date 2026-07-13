@@ -12,8 +12,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
-#include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -24,36 +22,7 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
 // Stubs
-bool
-SetFreq(int sockfd, long int freq) { // NOLINT(misc-use-internal-linkage)
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(int sockfd, int bandwidth) { // NOLINT(misc-use-internal-linkage)
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-return_to_cc(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-}
-struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
-
-int
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) { // NOLINT(misc-use-internal-linkage)
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
 
 static int
 expect_eq_long(const char* tag, long got, long want) {

@@ -553,41 +553,6 @@ rtl_stream_get_fll_band_edge_freq_hz(void) {
     return freq_rad * static_cast<double>(Fs) / (2.0 * M_PI);
 }
 
-/**
- * @brief Reset Costas loop state for fresh carrier acquisition on retune.
- *
- * Clears the Costas phase and error estimates, but PRESERVES the frequency
- * estimate. The carrier frequency offset is primarily a property of the RTL-SDR
- * local oscillator, not the channel. Preserving freq allows immediate tracking
- * on channel changes rather than slewing from 0 Hz.
- *
- * Also resets the differential phasor history to (1,0) so the first sample's
- * diff output equals raw input.
- */
-extern "C" void
-rtl_stream_reset_costas(void) {
-    /* Reset phase and error, but preserve frequency estimate */
-    demod.costas_state.phase = 0.0f;
-    demod.costas_state.error = 0.0f;
-    demod.costas_state.error_smooth = 0.0f;
-    demod.costas_err_avg_q14 = 0;
-    demod.costas_err_raw_avg_q14 = 0;
-    demod.costas_conf_avg_q14 = 0;
-    demod.costas_zero_conf_pct = 0;
-    g_costas_err_avg_q14.store(0, std::memory_order_relaxed);
-    g_costas_err_raw_avg_q14.store(0, std::memory_order_relaxed);
-    g_costas_conf_avg_q14.store(0, std::memory_order_relaxed);
-    g_costas_zero_conf_pct.store(0, std::memory_order_relaxed);
-    /* Note: deliberately NOT zeroing costas_state.freq - preserve it! */
-
-    /* Reset differential decode history to (1,0) not (0,0).
-     * When prev is (0,0), the first diff decode produces zero output,
-     * which corrupts the Costas phase error and causes the loop to hunt.
-     * Using (1,0) means the first sample's diff output equals raw input. */
-    demod.cqpsk_diff_prev_r = 1.0f;
-    demod.cqpsk_diff_prev_j = 0.0f;
-}
-
 /* Smoothed SNR exports (for UI and protocol code). */
 /** @brief Get the smoothed C4FM SNR estimate in dB (negative when unavailable). */
 extern "C" double

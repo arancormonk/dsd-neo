@@ -81,15 +81,6 @@ dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
 
 double
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-raw_pwr_f(const float* samples, int len, int step) {
-    (void)samples;
-    (void)len;
-    (void)step;
-    return 0.0;
-}
-
-double
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 pwr_to_dB(double mean_power) {
     (void)mean_power;
     return 0.0;
@@ -302,7 +293,7 @@ test_missing_symbol_file_returns_error_symbol(void) {
 }
 
 static void
-test_invalid_soft_header_replays_as_legacy_bytes(void) {
+assert_unsupported_soft_header_is_rejected(uint8_t version, uint8_t record_size) {
     static dsd_opts opts;
     static dsd_state state;
     init_symbol_replay_fixture(&opts, &state);
@@ -310,7 +301,7 @@ test_invalid_soft_header_replays_as_legacy_bytes(void) {
     assert(opts.symbolfile != NULL);
 
     unsigned char header[DSD_SYMBOL_CAPTURE_SOFT_HEADER_SIZE] = {
-        'D', 'S', 'D', 'N', 'S', 'Y', 'M', '2', 3, DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE, 0, 0, 0, 0, 0, 0,
+        'D', 'S', 'D', 'N', 'S', 'Y', 'M', '2', version, record_size, 0, 0, 0, 0, 0, 0,
     };
     assert(fwrite(header, 1, sizeof(header), opts.symbolfile) == sizeof(header));
     rewind(opts.symbolfile);
@@ -318,15 +309,19 @@ test_invalid_soft_header_replays_as_legacy_bytes(void) {
     exitflag = 0;
 
     float symbol = getSymbol(&opts, &state, 0);
-    assert(symbol_level_matches(symbol, (uint8_t)('D' & 3)));
-    assert(state.symbol_replay_format == DSD_SYMBOL_REPLAY_FORMAT_LEGACY);
+    assert(symbol == 0.0f);
+    assert(opts.symbolfile == NULL);
+    assert(state.symbol_replay_format == DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN);
     assert(state.symbol_replay_header_checked == 1);
     assert(state.symbol_replay_has_soft == 0);
-    assert(state.symbolc == ('D' & 3));
-    assert(g_cleanup_calls == 0);
+    assert(g_cleanup_calls == 1);
+    assert(exitflag == 1);
+}
 
-    fclose(opts.symbolfile);
-    opts.symbolfile = NULL;
+static void
+test_unsupported_soft_headers_are_rejected(void) {
+    assert_unsupported_soft_header_is_rejected(3U, DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE);
+    assert_unsupported_soft_header_is_rejected(2U, DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE + 1U);
 }
 
 static void
@@ -558,7 +553,7 @@ main(void) {
     test_short_file_falls_back_to_legacy_replay();
     test_debug_replay_reopens_and_reprobes();
     test_missing_symbol_file_returns_error_symbol();
-    test_invalid_soft_header_replays_as_legacy_bytes();
+    test_unsupported_soft_headers_are_rejected();
     test_soft_header_without_record_cleans_up_at_eof();
     test_float_symbol_replay_scales_values();
     test_float_symbol_replay_eof_sets_exitflag();

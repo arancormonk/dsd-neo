@@ -37,7 +37,7 @@ set_p25p2_threshold(int threshold) {
     char value[16];
     DSD_SNPRINTF(value, sizeof(value), "%d", threshold);
     dsd_setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 }
 
 int

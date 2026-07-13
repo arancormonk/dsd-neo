@@ -23,15 +23,6 @@
 
 static int g_unicode_supported;
 
-// Minimal stubs needed to link `src/core/util/dsd_alias.c` in isolation.
-uint16_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
-    (void)buf;
-    (void)len;
-    return 0;
-}
-
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_unicode_supported(void) {

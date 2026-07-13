@@ -212,7 +212,8 @@ dmr_block_crypto_apply_aes_ofb(dsd_state* state, uint8_t slot, const dmr_block_c
     DSD_MEMSET(maes, 0, sizeof(maes));
     DSD_FPRINTF(stderr, "\n");
     dmr_block_crypto_prepare_aes_iv(state, maes);
-    aes_ofb_keystream_output(maes, ctx->aes_key, stream, (ctx->alg == 5) ? 2 : 0, nblocks);
+    const dsd_aes_key_size key_size = (ctx->alg == 5) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+    aes_ofb_keystream_output(maes, ctx->aes_key, stream, key_size, nblocks);
     dmr_block_crypto_apply_stream(state, slot, ctx, stream, DMR_AES_OFB_DISCARD_BYTES);
     return 1;
 }
@@ -230,7 +231,8 @@ dmr_block_crypto_apply_aes_ecb(const dsd_state* state, uint8_t* slot_payload, ui
     }
 
     uint8_t* payload = slot_payload + ctx->start;
-    aes_ecb_decrypt_blocks(payload, ctx->aes_key, payload, (ctx->alg == 5) ? 2 : 0, nblocks);
+    const dsd_aes_key_size key_size = (ctx->alg == 5) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+    aes_ecb_decrypt_blocks(payload, ctx->aes_key, payload, key_size, nblocks);
     return 1;
 }
 
@@ -278,7 +280,7 @@ dmr_block_crypto_decrypt_payload(dsd_state* state, uint8_t slot, const dmr_block
         uint8_t stream[DMR_BLOCK_CRYPTO_STREAM_BYTES];
         const int nblocks = (ctx->end / 8) + 1;
         DSD_MEMSET(stream, 0, sizeof(stream));
-        des_multi_keystream_output(ctx->mi, ctx->rkey, stream, 1, nblocks);
+        des_ofb_keystream_output(ctx->mi, ctx->rkey, stream, nblocks);
         dmr_block_crypto_apply_stream(state, slot, ctx, stream, 0);
         return 1;
     }

@@ -9,32 +9,8 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "md2ii.h"
 #include "pc4_internal.h"
-
-#define KIR_MD2_MAX_BLOCK 264U
-
-typedef struct {
-    size_t block_len;
-    uint8_t x1;
-    size_t x2;
-    uint8_t h2[KIR_MD2_MAX_BLOCK];
-    uint8_t h1[KIR_MD2_MAX_BLOCK * 3U];
-} kir_md2ii_ctx;
-
-static const uint8_t KIR_MD2_SBOX[256] = {
-    13,  199, 11,  67,  237, 193, 164, 77,  115, 184, 141, 222, 73,  38,  147, 36,  150, 87,  21,  104, 12,  61,
-    156, 101, 111, 145, 119, 22,  207, 35,  198, 37,  171, 167, 80,  30,  219, 28,  213, 121, 86,  29,  214, 242,
-    6,   4,   89,  162, 110, 175, 19,  157, 3,   88,  234, 94,  144, 118, 159, 239, 100, 17,  182, 173, 238, 68,
-    16,  79,  132, 54,  163, 52,  9,   58,  57,  55,  229, 192, 170, 226, 56,  231, 187, 158, 70,  224, 233, 245,
-    26,  47,  32,  44,  247, 8,   251, 20,  197, 185, 109, 153, 204, 218, 93,  178, 212, 137, 84,  174, 24,  120,
-    130, 149, 72,  180, 181, 208, 255, 189, 152, 18,  143, 176, 60,  249, 27,  227, 128, 139, 243, 253, 59,  123,
-    172, 108, 211, 96,  138, 10,  215, 42,  225, 40,  81,  65,  90,  25,  98,  126, 154, 64,  124, 116, 122, 5,
-    1,   168, 83,  190, 131, 191, 244, 240, 235, 177, 155, 228, 125, 66,  43,  201, 248, 220, 129, 188, 230, 62,
-    75,  71,  78,  34,  31,  216, 254, 136, 91,  114, 106, 46,  217, 196, 92,  151, 209, 133, 51,  236, 33,  252,
-    127, 179, 69,  7,   183, 105, 146, 97,  39,  15,  205, 112, 200, 166, 223, 45,  48,  246, 186, 41,  148, 140,
-    107, 76,  85,  95,  194, 142, 50,  49,  134, 23,  135, 169, 221, 210, 203, 63,  165, 82,  161, 202, 53,  14,
-    206, 232, 103, 102, 195, 117, 250, 99,  0,   74,  160, 241, 2,   113,
-};
 
 static const uint8_t KIR_TAPS_R1[] = {0,  3,  5,  9,  10, 11, 12, 17, 18, 28, 33, 34, 35, 36,
                                       37, 39, 42, 43, 44, 46, 47, 49, 50, 57, 60, 61, 62, 63};
@@ -49,56 +25,6 @@ store_u64_be(uint64_t value, uint8_t out[8]) {
     for (int i = 0; i < 8; i++) {
         out[i] = (uint8_t)((value >> (56 - (i * 8))) & 0xFFU);
     }
-}
-
-static void
-kir_md2ii_init(kir_md2ii_ctx* ctx, size_t block_len) {
-    DSD_MEMSET(ctx, 0, sizeof(*ctx));
-    ctx->block_len = block_len;
-}
-
-static void
-kir_md2ii_update(kir_md2ii_ctx* ctx, const uint8_t* input, size_t len) {
-    size_t in_pos = 0;
-    while (len > 0U) {
-        while (len > 0U && ctx->x2 < ctx->block_len) {
-            const uint8_t b = input[in_pos++];
-            ctx->h1[ctx->x2 + ctx->block_len] = b;
-            ctx->h1[ctx->x2 + (ctx->block_len * 2U)] = (uint8_t)(b ^ ctx->h1[ctx->x2]);
-            ctx->x1 = ctx->h2[ctx->x2] ^= KIR_MD2_SBOX[b ^ ctx->x1];
-            ctx->x2++;
-            len--;
-        }
-
-        if (ctx->x2 == ctx->block_len) {
-            uint8_t t = 0;
-            ctx->x2 = 0;
-            for (size_t round = 0; round < (ctx->block_len + 2U); round++) {
-                for (size_t i = 0; i < (ctx->block_len * 3U); i++) {
-                    t = ctx->h1[i] ^= KIR_MD2_SBOX[t];
-                }
-                t = (uint8_t)((t + round) & 0xFFU);
-            }
-        }
-    }
-}
-
-static void
-kir_md2ii_final(kir_md2ii_ctx* ctx, uint8_t* out, size_t out_len) {
-    uint8_t pad[KIR_MD2_MAX_BLOCK];
-    DSD_MEMSET(pad, 0, sizeof(pad));
-    const size_t pad_len = ctx->block_len - ctx->x2;
-    for (size_t i = 0; i < pad_len; i++) {
-        pad[i] = (uint8_t)pad_len;
-    }
-
-    kir_md2ii_update(ctx, pad, pad_len);
-    kir_md2ii_update(ctx, ctx->h2, ctx->block_len);
-
-    if (out_len > ctx->block_len) {
-        out_len = ctx->block_len;
-    }
-    DSD_MEMCPY(out, ctx->h1, out_len);
 }
 
 static int
@@ -230,20 +156,20 @@ kirisun_uni_keystream_creation(dsd_state* state) {
     uint8_t real_key[32];
     DSD_MEMSET(real_key, 0, sizeof(real_key));
     {
-        kir_md2ii_ctx md2;
-        kir_md2ii_init(&md2, 32U);
-        kir_md2ii_update(&md2, user_key, sizeof(user_key));
-        kir_md2ii_final(&md2, real_key, sizeof(real_key));
+        dsd_md2ii_ctx md2;
+        (void)dsd_md2ii_init(&md2, 32U);
+        dsd_md2ii_update(&md2, user_key, sizeof(user_key));
+        dsd_md2ii_final(&md2, real_key, sizeof(real_key));
     }
 
     uint8_t hash8[8];
     DSD_MEMSET(hash8, 0, sizeof(hash8));
     {
-        kir_md2ii_ctx md2;
-        kir_md2ii_init(&md2, 8U);
-        kir_md2ii_update(&md2, mi_bytes, sizeof(mi_bytes));
-        kir_md2ii_update(&md2, real_key, sizeof(real_key));
-        kir_md2ii_final(&md2, hash8, sizeof(hash8));
+        dsd_md2ii_ctx md2;
+        (void)dsd_md2ii_init(&md2, 8U);
+        dsd_md2ii_update(&md2, mi_bytes, sizeof(mi_bytes));
+        dsd_md2ii_update(&md2, real_key, sizeof(real_key));
+        dsd_md2ii_final(&md2, hash8, sizeof(hash8));
     }
 
     uint64_t internal_state = 0;
@@ -254,11 +180,11 @@ kirisun_uni_keystream_creation(dsd_state* state) {
     uint8_t key24[24];
     DSD_MEMSET(key24, 0, sizeof(key24));
     {
-        kir_md2ii_ctx md2;
-        kir_md2ii_init(&md2, 24U);
-        kir_md2ii_update(&md2, mi_bytes, sizeof(mi_bytes));
-        kir_md2ii_update(&md2, real_key, sizeof(real_key));
-        kir_md2ii_final(&md2, key24, sizeof(key24));
+        dsd_md2ii_ctx md2;
+        (void)dsd_md2ii_init(&md2, 24U);
+        dsd_md2ii_update(&md2, mi_bytes, sizeof(mi_bytes));
+        dsd_md2ii_update(&md2, real_key, sizeof(real_key));
+        dsd_md2ii_final(&md2, key24, sizeof(key24));
     }
 
     uint8_t ks_bytes[126];
@@ -285,10 +211,10 @@ kirisun_adv_keystream_creation(dsd_state* state) {
     uint8_t real_key[32];
     DSD_MEMSET(real_key, 0, sizeof(real_key));
     {
-        kir_md2ii_ctx md2;
-        kir_md2ii_init(&md2, 32U);
-        kir_md2ii_update(&md2, user_key, sizeof(user_key));
-        kir_md2ii_final(&md2, real_key, sizeof(real_key));
+        dsd_md2ii_ctx md2;
+        (void)dsd_md2ii_init(&md2, 32U);
+        dsd_md2ii_update(&md2, user_key, sizeof(user_key));
+        dsd_md2ii_final(&md2, real_key, sizeof(real_key));
     }
 
     uint8_t hash32[32];
@@ -300,11 +226,11 @@ kirisun_adv_keystream_creation(dsd_state* state) {
             (uint8_t)((mi >> 8) & 0xFFU),
             (uint8_t)(mi & 0xFFU),
         };
-        kir_md2ii_ctx md2;
-        kir_md2ii_init(&md2, 32U);
-        kir_md2ii_update(&md2, mi_bytes, sizeof(mi_bytes));
-        kir_md2ii_update(&md2, real_key, sizeof(real_key));
-        kir_md2ii_final(&md2, hash32, sizeof(hash32));
+        dsd_md2ii_ctx md2;
+        (void)dsd_md2ii_init(&md2, 32U);
+        dsd_md2ii_update(&md2, mi_bytes, sizeof(mi_bytes));
+        dsd_md2ii_update(&md2, real_key, sizeof(real_key));
+        dsd_md2ii_final(&md2, hash32, sizeof(hash32));
     }
 
     uint64_t internal_state = 0;

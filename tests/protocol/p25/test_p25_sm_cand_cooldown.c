@@ -50,7 +50,7 @@ static void
 init_basic(dsd_opts* o, dsd_state* s) {
     DSD_MEMSET(o, 0, sizeof(*o));
     DSD_MEMSET(s, 0, sizeof(*s));
-    o->p25_trunk = 1;
+    o->trunk_enable = 1;
     o->trunk_hangtime = 0.2f; // short for test
     o->p25_prefer_candidates = 1;
     s->p25_cc_freq = 851000000;
@@ -67,8 +67,8 @@ main(void) {
     // Two candidates A, B
     long A = 852000000;
     long B = 853000000;
-    (void)dsd_trunk_cc_candidates_add_with_flags(&st, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
-    (void)dsd_trunk_cc_candidates_add_with_flags(&st, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     // Force CC hunt
     st.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
 
@@ -90,8 +90,8 @@ main(void) {
     static dsd_opts o2;
     static dsd_state st2;
     init_basic(&o2, &st2);
-    (void)dsd_trunk_cc_candidates_add_with_flags(&st2, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
-    (void)dsd_trunk_cc_candidates_add_with_flags(&st2, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st2, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st2, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     double pending_m = dsd_time_now_monotonic_s() - 2.5;
@@ -112,8 +112,8 @@ main(void) {
     static dsd_opts o3;
     static dsd_state st3;
     init_basic(&o3, &st3);
-    (void)dsd_trunk_cc_candidates_add_with_flags(&st3, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
-    (void)dsd_trunk_cc_candidates_add_with_flags(&st3, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st3, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st3, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     st3.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
     dsd_trunk_tuning_hooks pending_hooks = {0};
     pending_hooks.tune_to_cc_request = trunk_tune_to_cc;

@@ -6,7 +6,7 @@
 /*
  * P25 Phase 1 TDULC parser test → LCW retune (format 0x44).
  *
- * Feeds deterministic 6×12-bit data words via read_word() stub to form an LCW
+ * Feeds deterministic 6×12-bit data words through the canonical dibit reader to form an LCW
  * with format 0x44, service=0x00, TG=0x4567, CHAN-T=0x100A. Stubs FEC and
  * analog readers to bypass error correction. Asserts the canonical trunk SM
  * accepts a group grant when LCW retune is enabled and CC is known.
@@ -19,6 +19,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -29,6 +30,32 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
+
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+}
 
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
@@ -105,13 +132,6 @@ check_and_fix_golay_24_12(char* dodeca, char* parity, int* fixed_errors) {
     return 0; // no irrecoverable errors
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-encode_golay_24_12(char* data, char* parity) {
-    (void)data;
-    (void)parity;
-}
-
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 check_and_fix_reedsolomon_24_12_13(char* data, char* parity) {
@@ -128,13 +148,6 @@ check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* era
     (void)erasures;
     (void)n_erasures;
     return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-encode_reedsolomon_24_12_13(char* data, char* parity) {
-    (void)data;
-    (void)parity;
 }
 
 int
@@ -161,10 +174,10 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     return 0;
 }
 
-// Scripted 12-bit words fed into read_word() in the order TDULC expects:
-// dodeca_data[5]..[0], then dodeca_parity[5]..[0]
-static char g_words[12][12];
+// Scripted 12-bit words fed into the canonical reader in TDULC data-word order.
+static char g_words[6][12];
 static int g_word_index = 0;
+static int g_read_parity_next = 0;
 
 // Helper: write MSB-first bits of an 8- or 16-bit value into an array
 static void
@@ -237,42 +250,36 @@ build_lcw_words(uint8_t lc_format, uint8_t mfid, uint8_t svc, uint16_t group1, u
     DSD_MEMCPY(ordered[5], g_words[5], 12); // data[0]
     DSD_MEMCPY(g_words, ordered, sizeof(ordered));
 
-    // Parity words (not used by stubs): fill with zeros for indices 6..11 in read order parity[5]..[0]
-    for (int w = 6; w < 12; w++) {
-        DSD_MEMSET(g_words[w], 0, 12);
-    }
-
     g_word_index = 0;
+    g_read_parity_next = 0;
 }
 
-// Reader stubs used by TDULC
+// Canonical reader fixture used by TDULC.
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int* status_count,
-          P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
+read_dibit_update_soft_data(dsd_opts* opts, dsd_state* state, char* buffer, unsigned int count, int* status_count,
+                            P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
     (void)opts;
     (void)state;
     (void)status_count;
     (void)soft_dibits;
     (void)soft_dibit_index;
-    if (length != 12 || g_word_index >= 12) {
-        DSD_MEMSET(word, 0, length);
+    if (count != 12) {
+        DSD_MEMSET(buffer, 0, count);
         return;
     }
-    DSD_MEMCPY(word, g_words[g_word_index], 12);
-    g_word_index++;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count, P25P1SoftDibit* soft_dibits,
-                    int* soft_dibit_index) {
-    (void)opts;
-    (void)state;
-    (void)status_count;
-    (void)soft_dibits;
-    (void)soft_dibit_index;
-    DSD_MEMSET(parity, 0, 12);
+    if (g_read_parity_next) {
+        DSD_MEMSET(buffer, 0, 12);
+        g_read_parity_next = 0;
+        return;
+    }
+    if (g_word_index < 6) {
+        DSD_MEMCPY(buffer, g_words[g_word_index], 12);
+        g_word_index++;
+    } else {
+        DSD_MEMSET(buffer, 0, 12);
+    }
+    g_read_parity_next = 1;
 }
 
 static int
@@ -322,6 +329,7 @@ expect_blank_call_string(const char* tag, const char* value) {
 int
 main(void) {
     int rc = 0;
+    install_trunk_tuning_hooks();
 
     // Case 1: Retune enabled (baseline)
     build_lcw_words(0x44, 0x00, 0x00, 0x4567, 0x100A, 0x0000);
@@ -329,11 +337,11 @@ main(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.p25_lcw_retune = 1;
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_enc_calls = 1;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     opts.floating_point = 1;
     opts.audio_gain = 3.5F;
     opts.payload = 0;
@@ -430,6 +438,7 @@ main(void) {
     rc |= expect_eq_int("soft rs grant tg", ctx->vc_tg, 0x3456);
 
     dsd_state_ext_free_all(&state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

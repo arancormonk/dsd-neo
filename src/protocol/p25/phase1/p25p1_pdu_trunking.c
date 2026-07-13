@@ -57,11 +57,7 @@ typedef struct {
 enum {
     P25_MBT_AMBTC_OPCODE_INDEX = 7,
     P25_MBT_UMBTC_OPCODE_INDEX = 12,
-    P25_MBT_LEGACY_MAX_LEN = 48,
 };
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len);
 
 static int
 p25_mbt_opcode_index(uint8_t fmt) {
@@ -71,16 +67,6 @@ p25_mbt_opcode_index(uint8_t fmt) {
      * contiguous MPDU buffer that opcode is byte 12 and payload starts at 13.
      */
     return (fmt == 0x17) ? P25_MBT_AMBTC_OPCODE_INDEX : P25_MBT_UMBTC_OPCODE_INDEX;
-}
-
-static size_t
-p25_mbt_declared_len(const uint8_t* mpdu_byte) {
-    if (!mpdu_byte) {
-        return 0U;
-    }
-
-    size_t declared = ((size_t)(mpdu_byte[6] & 0x7FU) + 1U) * 12U;
-    return declared <= P25_MBT_LEGACY_MAX_LEN ? declared : P25_MBT_LEGACY_MAX_LEN;
 }
 
 static int
@@ -219,7 +205,7 @@ p25_mbt_is_ambtc(const p25p1_mbt_fields* fields) {
 
 static int
 p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
-    if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
+    if (!opts || !state || opts->trunk_enable != 1 || opts->trunk_is_tuned != 0 || freq == 0) {
         return 0;
     }
     p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
@@ -561,8 +547,7 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     dsd_tg_policy_decision decision;
     if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target,
                                             p25p1_pdu_private_prefilter_encrypted(opts, svc), (svc & 0x10) ? 1 : 0,
-                                            DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                            DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                            &decision)
             != 0
         || !decision.tune_allowed) {
         return;
@@ -684,10 +669,7 @@ p25_handle_mbt_individual_data_channel_grant(dsd_opts* opts, dsd_state* state, c
     }
 
     dsd_tg_policy_decision decision;
-    if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, (svc & 0x40) ? 1 : 0, 1,
-                                            DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                            DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-            != 0
+    if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, (svc & 0x40) ? 1 : 0, 1, &decision) != 0
         || !decision.tune_allowed) {
         return;
     }
@@ -725,15 +707,14 @@ static int DSD_ATTR_USED
 p25_telephone_call_policy_allows(const dsd_opts* opts, const dsd_state* state, uint32_t target, int svc) {
     dsd_tg_policy_decision decision;
     return dsd_tg_policy_evaluate_private_call(opts, state, 0, target, p25p1_pdu_private_prefilter_encrypted(opts, svc),
-                                               (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                               (svc & 0x10) ? 1 : 0, &decision)
                == 0
            && decision.tune_allowed;
 }
 
 static void DSD_ATTR_USED
 p25_telephone_update_nontrunk_vc_freq(const dsd_opts* opts, dsd_state* state, uint32_t target, long int freq) {
-    if (opts->p25_trunk != 0) {
+    if (opts->trunk_enable != 0) {
         return;
     }
 
@@ -1244,15 +1225,8 @@ p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* 
     return p25_handle_mbt_affiliation_roaming_opcode(state, mpdu_byte, mpdu_len, fields);
 }
 
-//trunking data delivered via PDU format
-void
-p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
-    (void)p25_decode_pdu_trunking_bounded(opts, state, mpdu_byte, p25_mbt_declared_len(mpdu_byte));
-}
-
 int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len) {
+p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len) {
     p25p1_mbt_fields fields;
     if (!p25_parse_mbt_fields_checked(mpdu_byte, mpdu_len, &fields)) {
         DSD_FPRINTF(stderr, " ALT MBT - short payload (got %zu)", mpdu_len);
@@ -1267,7 +1241,7 @@ p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t*
         return 0;
     }
 
-    p25_sm_note_cc_activity(opts, state, "p25p1-mbt");
+    p25_sm_note_cc_activity(state);
 
     if (p25_mbt_has_unsupported_survey_format(&fields)) {
         DSD_FPRINTF(stderr, " - broadcast format %02X not handled", fields.fmt);

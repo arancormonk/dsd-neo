@@ -49,7 +49,7 @@ provoice_read_raw_bits(provoice_reader* reader, int count) {
 
 static void
 provoice_print_call_info(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->ea_mode == 1) {
+    if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->ea_mode == 1) {
         DSD_FPRINTF(stderr, "%s", KGRN);
         if (state->lasttg > 100000) {
             DSD_FPRINTF(stderr, " Site: %lld Target: %d Source: %d LCN: %d ", state->edacs_site_id,
@@ -59,7 +59,7 @@ provoice_print_call_info(const dsd_opts* opts, const dsd_state* state) {
                         state->lastsrc, state->edacs_tuned_lcn);
         }
         DSD_FPRINTF(stderr, "%s", KNRM);
-    } else if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && state->ea_mode == 0) {
+    } else if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->ea_mode == 0) {
         DSD_FPRINTF(stderr, "%s", KGRN);
         DSD_FPRINTF(stderr, " Site: %lld AFS: %d-%d LCN: %d ", state->edacs_site_id, (state->lastsrc >> 7) & 0xF,
                     state->lastsrc & 0x7F, state->edacs_tuned_lcn);
@@ -84,32 +84,9 @@ provoice_decode_imbe_pair(dsd_opts* opts, dsd_state* state, char frame1[7][24], 
     provoice_play_voice(opts, state);
 }
 
-static void
-provoice_dump_payload_debug(const dsd_opts* opts, const uint8_t* raw_bits, uint8_t* raw_bytes, uint16_t bit_count) {
-#ifdef PVDEBUG
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "\n pV Payload Dump: \n  ");
-        for (int i = 0; i < bit_count / 8; i++) {
-            uint16_t top = (uint16_t)convert_bits_into_output(raw_bits + (i * 8), 16);
-            if (top == 0x0EBF && i != 0) {
-                DSD_FPRINTF(stderr, "\n  ");
-            }
-            raw_bytes[i] = (uint8_t)convert_bits_into_output(raw_bits + (i * 8), 8);
-            DSD_FPRINTF(stderr, "%02X", raw_bytes[i]);
-        }
-    }
-#else
-    (void)opts;
-    (void)raw_bits;
-    (void)raw_bytes;
-    (void)bit_count;
-#endif
-}
-
 void
 processProVoice(dsd_opts* opts, dsd_state* state) {
     uint8_t raw_bits[800];
-    uint8_t raw_bytes[100];
     char imbe7100_fr1[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
     char imbe7100_fr2[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
     unsigned long long int initial;
@@ -119,7 +96,6 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
     provoice_reader reader;
 
     DSD_MEMSET(raw_bits, 0, sizeof(raw_bits));
-    DSD_MEMSET(raw_bytes, 0, sizeof(raw_bytes));
 
     reader.opts = opts;
     reader.state = state;
@@ -159,6 +135,5 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
     provoice_decode_imbe_pair(opts, state, imbe7100_fr1, imbe7100_fr2);
 
     provoice_read_raw_bits(&reader, 2);
-    provoice_dump_payload_debug(opts, raw_bits, raw_bytes, reader.bit_count);
     DSD_FPRINTF(stderr, "\n");
 }

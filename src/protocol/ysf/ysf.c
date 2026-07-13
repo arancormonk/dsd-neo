@@ -10,11 +10,11 @@
  *-----------------------------------------------------------------------------*/
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
-#include <dsd-neo/core/mbe_api.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -22,6 +22,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/colors.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,26 +31,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "ysf_frame.h"
 #include "ysf_internal.h"
-
-//half-rate (from NXDN)
-static const int YnW[36] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-                            0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2};
-
-static const int YnX[36] = {23, 10, 22, 9, 21, 8,  20, 7, 19, 6, 18, 5, 17, 4, 16, 3, 15, 2,
-                            14, 1,  13, 0, 12, 10, 11, 9, 10, 8, 9,  7, 8,  6, 7,  5, 6,  4};
-
-static const int YnY[36] = {0, 2, 0, 2, 0, 2, 0, 2, 0, 3, 0, 3, 1, 3, 1, 3, 1, 3,
-                            1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3};
-
-static const int YnZ[36] = {5,  3, 4,  2, 3,  1, 2,  0, 1,  13, 0,  12, 22, 11, 21, 10, 20, 9,
-                            19, 8, 18, 7, 17, 6, 16, 5, 15, 4,  14, 3,  13, 2,  12, 1,  11, 0};
-
-//M = 26, depth of 4; -- from DSDcc
-static const int vd2Interleave[104] = {
-    0,  26, 52, 78, 1,  27, 53, 79, 2,  28, 54, 80, 3,  29,  55, 81, 4,  30,  56, 82, 5,  31,  57, 83, 6,  32,
-    58, 84, 7,  33, 59, 85, 8,  34, 60, 86, 9,  35, 61, 87,  10, 36, 62, 88,  11, 37, 63, 89,  12, 38, 64, 90,
-    13, 39, 65, 91, 14, 40, 66, 92, 15, 41, 67, 93, 16, 42,  68, 94, 17, 43,  69, 95, 18, 44,  70, 96, 19, 45,
-    71, 97, 20, 46, 72, 98, 21, 47, 73, 99, 22, 48, 74, 100, 23, 49, 75, 101, 24, 50, 76, 102, 25, 51, 77, 103};
 
 static void
 ysf_dch_decode_csd1(dsd_state* state, const char dch_bytes[20], uint8_t cm) {
@@ -415,12 +396,11 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
     state->synctype = DSD_SYNC_NXDN_POS;
 
     for (; start < stop; start++) {
-        const int *w = YnW, *x = YnX, *y = YnY, *z = YnZ;
-
         //debug
         // DSD_FPRINTF(stderr, " DBUF = ");
 
-        for (i = 0; i < 36; i++) {
+        for (i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+            const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
 
             //debug
             // DSD_FPRINTF(stderr, "%d", dbuf[(start*36)+i]);
@@ -429,13 +409,8 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
             uint8_t b2 = dbuf[(start * 36) + i] & 1;
 
             //should all be loaded back to back
-            ambe_fr[*w][*x] = (char)b1;
-            ambe_fr[*y][*z] = (char)b2;
-
-            w++;
-            x++;
-            y++;
-            z++;
+            ambe_fr[map->high_row][map->high_col] = (char)b1;
+            ambe_fr[map->low_row][map->low_col] = (char)b2;
         }
 
         processMbeFrame(opts, state, NULL, ambe_fr, NULL);
@@ -446,29 +421,14 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
             if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
                 writeSynthesizedVoice(opts, state);
             }
-
-            if (opts->pulse_digi_out_channels == 1) {
-                playSynthesizedVoiceMS(opts, state);
-            }
-
-            if (opts->pulse_digi_out_channels == 2) {
-                playSynthesizedVoiceSS(opts, state);
-            }
         }
 
         if (opts->floating_point == 1) //float audio is really quiet now (look into it)
         {
 
             DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-
-            if (opts->pulse_digi_out_channels == 1) {
-                playSynthesizedVoiceFM(opts, state);
-            }
-
-            if (opts->pulse_digi_out_channels == 2) {
-                playSynthesizedVoiceFS(opts, state);
-            }
         }
+        dsd_play_synthesized_voice(opts, state);
     }
 
     if (opts->payload == 1) {
@@ -506,25 +466,10 @@ ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool run_process_audi
             writeSynthesizedVoice(opts, state);
         }
 
-        if (opts->pulse_digi_out_channels == 1) {
-            playSynthesizedVoiceMS(opts, state);
-        }
-
-        if (opts->pulse_digi_out_channels == 2) {
-            playSynthesizedVoiceSS(opts, state);
-        }
-        return;
+    } else {
+        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
     }
-
-    DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-
-    if (opts->pulse_digi_out_channels == 1) {
-        playSynthesizedVoiceFM(opts, state);
-    }
-
-    if (opts->pulse_digi_out_channels == 2) {
-        playSynthesizedVoiceFS(opts, state);
-    }
+    dsd_play_synthesized_voice(opts, state);
 }
 
 static void
@@ -710,8 +655,8 @@ ysf_read_type2_vech_bits(dsd_opts* opts, dsd_state* state, uint8_t vech_bits[104
         int dibit = get_dibit_and_analog_signal(opts, state, NULL);
         uint8_t b1 = (uint8_t)((dibit >> 1) & 1);
         uint8_t b2 = (uint8_t)(dibit & 1);
-        uint8_t msb = (uint8_t)vd2Interleave[k++];
-        uint8_t lsb = (uint8_t)vd2Interleave[k++];
+        uint8_t msb = dsd_ysf_vd2_interleave_index((size_t)k++);
+        uint8_t lsb = dsd_ysf_vd2_interleave_index((size_t)k++);
 
         vech_bits[msb] = b1 ^ dsd_ysf_pn95_bit(msb);
         vech_bits[lsb] = b2 ^ dsd_ysf_pn95_bit(lsb);
@@ -764,9 +709,22 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
         state->errs2 = vech_bits[103];
         state->debug_audio_errors += state->errs2;
 
-        (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
-                                             sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
-                                             state->prev_mp_enhanced, NULL);
+        mbe_process_result result;
+        mbe_initProcessResult(&result);
+        result.total_errors = state->errs2;
+        result.protected_errors = result.total_errors;
+        int ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp, state->prev_mp,
+                                           state->prev_mp_enhanced);
+        if (ret < 0) {
+            mbe_synthesizeSilencef(state->audio_out_temp_buf);
+            state->errs = 0;
+            state->errs2 = 0;
+            state->err_str[0] = '\0';
+        } else {
+            state->errs = ((result.flags & MBE_PROCESS_FLAG_C0_VALID) != 0u) ? result.c0_errors : result.total_errors;
+            state->errs2 = result.total_errors;
+            mbe_formatProcessResult(state->err_str, sizeof(state->err_str), &result);
+        }
 
         if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);

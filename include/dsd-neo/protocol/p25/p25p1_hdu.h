@@ -29,24 +29,6 @@ void read_dibit_update_soft_data(dsd_opts* opts, dsd_state* state, char* buffer,
                                  P25P1SoftDibit* soft_dibits, int* soft_dibit_index);
 
 /**
- * Reads a word, made up of length bits or length/2 dibits. Also keeps track of the status dibits.
- */
-void read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int* status_count,
-               P25P1SoftDibit* soft_dibits, int* soft_dibit_index);
-
-/**
- * Reads 4 bits from the stream of data. Those are the parity bits that follow each hex word.
- */
-void read_hamm_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count, P25P1SoftDibit* soft_dibits,
-                      int* soft_dibit_index);
-
-/**
- * Reads 12 bits from the stream of data. Those are the extended Golay parity bits that follow a word of data.
- */
-void read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count, P25P1SoftDibit* soft_dibits,
-                         int* soft_dibit_index);
-
-/**
  * Reads bits from the data stream that should all be zeros.
  * \param opts A pointer the the DSD options.
  * \param state A pointer the the DSD state structure.

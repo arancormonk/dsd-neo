@@ -12,8 +12,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "dsd-neo/core/opts_fwd.h"
-
 #if defined(__SSE__) || defined(__SSE2__)
 #include <xmmintrin.h>
 #endif
@@ -37,8 +35,7 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
 }
 
 void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts;
+dsd_neo_config_init(void) {
     ++g_config_init_calls;
     g_config_available = 1;
     DSD_MEMSET(&g_config, 0, sizeof g_config);

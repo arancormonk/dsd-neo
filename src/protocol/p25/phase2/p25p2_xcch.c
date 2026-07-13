@@ -529,7 +529,7 @@ p25p2_xcch_validate_sacch_crc(const dsd_opts* opts, dsd_state* state, const int 
         }
 
         if (err == 0) {
-            p25_sm_note_cc_activity(opts, state, "p25p2-lcch");
+            p25_sm_note_cc_activity(state);
         }
     }
 
@@ -748,7 +748,7 @@ p25p2_xcch_handle_facch_mac_hangtime(dsd_opts* opts, dsd_state* state, unsigned 
 
 void
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
-    uint8_t slot = (uint8_t)((state->currentslot ^ 1) & 1);
+    uint8_t slot = (uint8_t)p25_sacch_to_voice_slot(state->currentslot);
     unsigned long long int smac[24] = {0};
     int opcode = 0;
     int mac_offset = 0;

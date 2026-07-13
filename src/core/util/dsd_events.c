@@ -287,7 +287,7 @@ watchdog_event_source_id(const dsd_opts* opts, const dsd_state* state, uint8_t s
     }
 
     if (DSD_SYNC_IS_EDACS(state->lastsynctype)) {
-        return (opts->p25_is_tuned == 1) ? state->lastsrc : 0;
+        return (opts->trunk_is_tuned == 1) ? state->lastsrc : 0;
     }
 
     return source_id;
@@ -682,7 +682,7 @@ watchdog_event_current_apply_dpmr(const dsd_state* state, watchdog_event_current
 static void
 watchdog_event_current_apply_edacs(const dsd_opts* opts, dsd_state* state, watchdog_event_current_ctx* ctx) {
     ctx->source_id = 0;
-    if (opts->p25_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1) {
         ctx->source_id = state->lastsrc;
         ctx->channel = state->edacs_tuned_lcn;
     }

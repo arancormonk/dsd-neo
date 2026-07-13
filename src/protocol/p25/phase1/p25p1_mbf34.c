@@ -18,23 +18,11 @@
  * CRC-guided list interface for MDPDU callers.
  */
 
+#include <dsd-neo/fec/trellis34.h>
 #include <dsd-neo/protocol/p25/p25p1_mbf34.h>
+#include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
-
-static const uint8_t p25_mbf34_interleave[98] = {
-    0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73, 80, 81, 88, 89, 96,
-    97, 2,  3,  10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 50, 51, 58, 59, 66, 67, 74, 75, 82, 83, 90, 91,
-    4,  5,  12, 13, 20, 21, 28, 29, 36, 37, 44, 45, 52, 53, 60, 61, 68, 69, 76, 77, 84, 85, 92, 93, 6,
-    7,  14, 15, 22, 23, 30, 31, 38, 39, 46, 47, 54, 55, 62, 63, 70, 71, 78, 79, 86, 87, 94, 95};
-
-// Dibit-pair nibble to constellation point permutation (bijective)
-static const uint8_t p25_constellation_map[16] = {11, 12, 0, 7, 14, 9, 5, 2, 10, 13, 1, 6, 15, 8, 4, 3};
-
-// Finite-state machine mapping: (state*8 + tribit) -> constellation point
-static const uint8_t p25_fsm[64] = {0, 8,  4, 12, 2, 10, 6, 14, 4, 12, 2, 10, 6, 14, 0, 8, 1, 9,  5, 13, 3, 11,
-                                    7, 15, 5, 13, 3, 11, 7, 15, 1, 9,  3, 11, 7, 15, 1, 9, 5, 13, 7, 15, 1, 9,
-                                    5, 13, 3, 11, 2, 10, 6, 14, 0, 8,  4, 12, 6, 14, 0, 8, 4, 12, 2, 10};
 
 enum {
     P25_MBF34_N_SYMS = 49,
@@ -121,18 +109,10 @@ p25_mbf34_insert_candidate(p25_mbf34_candidate_t* candidates, int* count, int ma
 }
 
 static void
-build_inverse_constellation(uint8_t inverse_map[16]) {
-    DSD_MEMSET(inverse_map, 0, 16);
-    for (int i = 0; i < 16; i++) {
-        inverse_map[p25_constellation_map[i] & 0xF] = (uint8_t)i;
-    }
-}
-
-static void
 p25_mbf34_deinterleave_llr(const int16_t bit_llr[196], int16_t llr_deint[196]) {
     DSD_MEMSET(llr_deint, 0, sizeof(int16_t) * 196U);
     for (int i = 0; i < 98; i++) {
-        int p = p25_mbf34_interleave[i];
+        int p = dsd_trellis_interleave_98[i];
         llr_deint[(p * 2) + 0] = bit_llr[(i * 2) + 0];
         llr_deint[(p * 2) + 1] = bit_llr[(i * 2) + 1];
     }
@@ -145,8 +125,7 @@ p25_mbf34_branch_cost(const int16_t llr_deint[196], int base, uint8_t expect) {
 }
 
 static void
-p25_mbf34_expand_paths(const int16_t llr_deint[196], const uint8_t inverse_map[16],
-                       p25_mbf34_path_t prev[P25_MBF34_N_ST][P25_MBF34_MAX_CANDIDATES]) {
+p25_mbf34_expand_paths(const int16_t llr_deint[196], p25_mbf34_path_t prev[P25_MBF34_N_ST][P25_MBF34_MAX_CANDIDATES]) {
     p25_mbf34_path_t curr[P25_MBF34_N_ST][P25_MBF34_MAX_CANDIDATES];
     for (int i = 0; i < P25_MBF34_N_SYMS; i++) {
         DSD_MEMSET(curr, 0, sizeof(curr));
@@ -157,8 +136,8 @@ p25_mbf34_expand_paths(const int16_t llr_deint[196], const uint8_t inverse_map[1
                     continue;
                 }
                 for (int next = 0; next < P25_MBF34_N_ST; next++) {
-                    uint8_t point = p25_fsm[(prev_st * 8) + next] & 0xF;
-                    uint8_t expect = inverse_map[point] & 0xF;
+                    uint8_t point = dsd_trellis34_fsm[(prev_st * 8) + next] & 0xF;
+                    uint8_t expect = dsd_trellis34_inverse_constellation[point] & 0xF;
                     p25_mbf34_path_t candidate = prev[prev_st][rank];
                     candidate.metric += p25_mbf34_branch_cost(llr_deint, base, expect);
                     candidate.states[i] = (uint8_t)next;
@@ -188,7 +167,7 @@ p25_mbf34_collect_candidates(p25_mbf34_path_t prev[P25_MBF34_N_ST][P25_MBF34_MAX
 }
 
 static void
-p25_mbf34_run_viterbi(const int16_t llr_deint[196], const uint8_t inverse_map[16], uint32_t curr_metric[P25_MBF34_N_ST],
+p25_mbf34_run_viterbi(const int16_t llr_deint[196], uint32_t curr_metric[P25_MBF34_N_ST],
                       uint8_t backptr[P25_MBF34_N_SYMS][P25_MBF34_N_ST]) {
     uint32_t prev_metric[P25_MBF34_N_ST];
     for (int st = 0; st < P25_MBF34_N_ST; st++) {
@@ -201,8 +180,8 @@ p25_mbf34_run_viterbi(const int16_t llr_deint[196], const uint8_t inverse_map[16
             uint32_t best = 0xFFFFFFFFU;
             uint8_t best_prev = 0;
             for (int prev = 0; prev < P25_MBF34_N_ST; prev++) {
-                uint8_t point = p25_fsm[(prev * 8) + next] & 0xF;
-                uint8_t expect = inverse_map[point] & 0xF;
+                uint8_t point = dsd_trellis34_fsm[(prev * 8) + next] & 0xF;
+                uint8_t expect = dsd_trellis34_inverse_constellation[point] & 0xF;
                 uint32_t metric = prev_metric[prev] + p25_mbf34_branch_cost(llr_deint, base, expect);
                 if (metric < best) {
                     best = metric;
@@ -229,9 +208,6 @@ p25_mbf34_decode_soft_list(const uint8_t dibits[98], const int16_t bit_llr[196],
         max_candidates = P25_MBF34_MAX_CANDIDATES;
     }
 
-    uint8_t inverse_map[16];
-    build_inverse_constellation(inverse_map);
-
     int16_t llr_deint[196];
     p25_mbf34_deinterleave_llr(bit_llr, llr_deint);
 
@@ -242,7 +218,7 @@ p25_mbf34_decode_soft_list(const uint8_t dibits[98], const int16_t bit_llr[196],
         prev[st][0].metric = (st == 0) ? 0U : 1024U;
     }
 
-    p25_mbf34_expand_paths(llr_deint, inverse_map, prev);
+    p25_mbf34_expand_paths(llr_deint, prev);
     return p25_mbf34_collect_candidates(prev, candidates, max_candidates);
 }
 
@@ -253,15 +229,12 @@ p25_mbf34_decode_soft(const uint8_t dibits[98], const int16_t bit_llr[196], uint
     }
     (void)dibits;
 
-    uint8_t inverse_map[16];
-    build_inverse_constellation(inverse_map);
-
     int16_t llr_deint[196];
     p25_mbf34_deinterleave_llr(bit_llr, llr_deint);
 
     uint32_t curr_metric[P25_MBF34_N_ST];
     uint8_t backptr[P25_MBF34_N_SYMS][P25_MBF34_N_ST];
-    p25_mbf34_run_viterbi(llr_deint, inverse_map, curr_metric, backptr);
+    p25_mbf34_run_viterbi(llr_deint, curr_metric, backptr);
 
     uint32_t best_final = curr_metric[0];
     int st = 0;

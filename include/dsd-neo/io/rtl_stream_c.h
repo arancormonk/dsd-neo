@@ -49,67 +49,32 @@ typedef enum DSD_ATTR_PACKED rtl_stream_tune_result {
     RTL_STREAM_TUNE_TIMEOUT = -2,
 } rtl_stream_tune_result;
 
-/**
- * @brief Completion notification for a tagged RTL tune request.
- *
- * The callback runs on the RTL controller thread after the hardware/DSP
- * reconfigure and configured output drain have completed. Implementations
- * must not block or call back into the RTL tuning API.
- *
- * @param token Caller-provided token from rtl_stream_tune_tagged().
- * @param result Final result of the coalesced controller request.
- * @param user_data Opaque pointer supplied at registration time.
- */
-typedef void (*rtl_stream_tune_completion_callback)(uint64_t token, rtl_stream_tune_result result, void* user_data);
-
 /* Lifecycle */
-/**
- * @brief Create a new RTL-SDR stream context from an immutable options snapshot.
- *
- * The supplied options are copied internally and never mutated. Use
- * rtl_stream_create_mirrored() when the caller needs live RTL PPM updates to
- * propagate back into its owning @ref dsd_opts.
- *
- * @param opts Decoder options snapshot used to configure the stream. Must not be NULL.
- * @param out_ctx [out] On success, receives an opaque context pointer.
- * @return 0 on success; otherwise <0 on error.
- */
-int rtl_stream_create(const dsd_opts* opts, RtlSdrContext** out_ctx);
 /**
  * @brief Create a new RTL-SDR stream context mirrored to caller-owned options.
  *
- * The stream still owns an internal copy of @p opts, but live requested PPM
+ * The stream owns an internal copy of @p opts, while live requested PPM
  * updates also write back into the caller-owned structure so restarts and
  * config snapshots retain the current correction.
  *
- * @param opts Mutable caller-owned decoder options to mirror. Must not be NULL.
+ * @param opts Mutable caller-owned decoder options. Must not be NULL.
  * @param out_ctx [out] On success, receives an opaque context pointer.
  * @return 0 on success; otherwise <0 on error.
  */
-int rtl_stream_create_mirrored(dsd_opts* opts, RtlSdrContext** out_ctx);
+int rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx);
 /**
  * @brief Start the stream threads and device I/O.
- * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
+ * @param ctx Stream context created by rtl_stream_create().
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_start(RtlSdrContext* ctx);
 /**
  * @brief Stop the stream and cleanup resources associated with the run.
  * Safe to call multiple times; subsequent calls are no-ops.
- * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
+ * @param ctx Stream context created by rtl_stream_create().
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_stop(RtlSdrContext* ctx);
-/**
- * @brief Gracefully stop the stream without asserting global exit flags.
- *
- * Mirrors rtl_stream_stop() but avoids toggling global shutdown state so the
- * UI can reconfigure and restart streaming without terminating the process.
- *
- * @param ctx Stream context created by rtl_stream_create() or rtl_stream_create_mirrored().
- * @return 0 on success; otherwise <0 on error.
- */
-int rtl_stream_soft_stop(RtlSdrContext* ctx);
 /**
  * @brief Destroy the stream context and free all associated resources.
  * If the stream is running, it is stopped before destruction.
@@ -126,35 +91,6 @@ int rtl_stream_destroy(RtlSdrContext* ctx);
  * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
  */
 int rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz);
-
-/**
- * @brief Tune to a new center frequency and tag its asynchronous completion.
- *
- * A queued tagged tune owns its controller request until completion. Another
- * tune with a different token, including an untagged tune, is deferred instead
- * of replacing that request. Untagged queued work may still be upgraded to a
- * tagged request. A token of zero is reserved for untagged requests and is
- * rejected by this entry point.
- *
- * @param ctx Stream context.
- * @param center_freq_hz New center frequency in Hz.
- * @param token Non-zero caller token returned unchanged to the completion callback.
- * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
- */
-int rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t token);
-
-/**
- * @brief Register the process-wide tagged tune completion callback.
- *
- * Replaces any prior registration. Pass NULL to clear the callback. Replacement
- * and unregistration wait for invocations of the previous callback to finish,
- * so its user_data may be released after this function returns. A completion
- * callback must not call this function or another RTL tuning entry point.
- *
- * @param callback Completion callback, or NULL to unregister.
- * @param user_data Opaque callback context.
- */
-void rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data);
 
 /**
  * @brief Publish a live RTL PPM request and assign it a fresh request generation.
@@ -240,26 +176,6 @@ int rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels,
  * @return 0 on success, negative on invalid input.
  */
 int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
-
-/**
- * @brief Queue a symbol/CQPSK timing profile for a specific RTL retune target.
- *
- * This is the preferred trunking helper when the destination frequency is
- * already known. The native RTL controller consumes the profile only for a
- * matching target frequency, so unrelated retunes cannot steal the queued
- * demodulator settings before the intended tune request is scheduled.
- *
- * @param target_freq_hz Intended center frequency in Hz; zero leaves the profile unbound.
- * @param cqpsk_enable 0/1 to force CQPSK off/on, negative to leave unchanged.
- * @param symbol_rate_hz Symbol rate in Hz, e.g. 4800 or 6000.
- * @param levels Number of symbol levels, 2 or 4.
- * @param channel_profile rtl_stream_channel_profile profile id.
- * @param ted_sps CQPSK timing samples-per-symbol to apply; <=0 leaves the SPS unchanged.
- * @param persist_ted_override Non-zero keeps ted_sps as an override after retune.
- */
-void rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_enable, int symbol_rate_hz,
-                                                  int levels, int channel_profile, int ted_sps,
-                                                  int persist_ted_override);
 
 typedef struct rtl_stream_retune_gain_profile {
     int tuner_gain_is_set;
@@ -356,7 +272,7 @@ int rtl_stream_get_gain(int* out_tenth_db, int* out_is_auto);
  * @brief Enable or disable rtl_tcp adaptive buffering/autotune logic.
  * @param onoff Non-zero to enable; zero to disable.
  */
-void rtl_stream_set_rtltcp_autotune(int onoff);
+int rtl_stream_set_rtltcp_autotune(int onoff);
 
 /**
  * @brief Return the last RF center frequency applied by the controller thread.
@@ -700,15 +616,6 @@ int rtl_stream_spectrum_set_size(int n);
 int rtl_stream_spectrum_get_size(void);
 
 /* Carrier/Costas diagnostics and control */
-/**
- * @brief Reset Costas loop state for fresh carrier acquisition.
- *
- * Call on channel retunes to clear stale phase/frequency estimates from the
- * previous channel. Without reset, the loop starts with the old frequency
- * offset and must slew to the new carrier, delaying sync acquisition.
- */
-void rtl_stream_reset_costas(void);
-
 /** Return current NCO frequency used for carrier rotation (Costas/FLL), in Hz. */
 double rtl_stream_get_cfo_hz(void);
 /** Return 1 when carrier loop appears locked (CQPSK active, CFO/residual small, SNR ok), else 0. */

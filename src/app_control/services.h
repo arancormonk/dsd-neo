@@ -31,11 +31,6 @@ extern "C" {
  */
 int svc_toggle_all_mutes(dsd_opts* opts);
 /**
- * @brief Toggle call alert beeps.
- */
-int svc_toggle_call_alert(dsd_opts* opts);
-
-/**
  * @brief Enable per-call WAV capture, creating the output directory if needed.
  */
 int svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state);
@@ -48,19 +43,6 @@ int svc_open_symbol_out(dsd_opts* opts, dsd_state* state, const char* filename);
  * @brief Open a captured symbol file for playback and switch input type.
  */
 int svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename);
-/**
- * @brief Re-open the last symbol capture used as input (opts->audio_in_dev).
- */
-int svc_replay_last_symbol(dsd_opts* opts, dsd_state* state);
-/**
- * @brief Stop symbol playback and restore the prior input type.
- */
-void svc_stop_symbol_playback(dsd_opts* opts);
-/**
- * @brief Close symbol output capture and point input at the saved file path.
- */
-void svc_stop_symbol_saving(dsd_opts* opts, dsd_state* state);
-
 /**
  * @brief Connect to a PCM16LE audio stream over TCP and configure libsndfile.
  */
@@ -90,17 +72,9 @@ void svc_lrrp_disable(dsd_opts* opts);
 
 // Misc toggles/actions
 /**
- * @brief Toggle inversion flags for DMR/dPMR/X2/YSF/M17 simultaneously.
- */
-void svc_toggle_inversion(dsd_opts* opts);
-/**
  * @brief Reset both event-history rings to their initial empty state.
  */
 void svc_reset_event_history(dsd_state* state);
-/**
- * @brief Toggle raw payload logging/display.
- */
-void svc_toggle_payload(dsd_opts* opts);
 /**
  * @brief Override Phase 2 system identifiers (WACN, SYSID, CC), clamped to valid ranges.
  */
@@ -127,10 +101,6 @@ int svc_set_pulse_input(dsd_opts* opts, const char* index);
 int svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int port);
 
 // Trunking & control helpers
-/** @brief Toggle P25 trunk-tracking mode (disables scanner when enabled). */
-void svc_toggle_trunking(dsd_opts* opts);
-/** @brief Toggle scanner mode (disables trunking when enabled). */
-void svc_toggle_scanner(dsd_opts* opts);
 /** @brief Import a channel map CSV into runtime state. */
 int svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path);
 /** @brief Import a group list CSV into runtime state. */
@@ -139,12 +109,6 @@ int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path);
 int svc_import_keys_dec(dsd_opts* opts, dsd_state* state, const char* path);
 /** @brief Import keys from a hexadecimal CSV. */
 int svc_import_keys_hex(dsd_opts* opts, dsd_state* state, const char* path);
-/** @brief Toggle tuning to group calls in trunking mode. */
-void svc_toggle_tune_group(dsd_opts* opts);
-/** @brief Toggle tuning to private calls in trunking mode. */
-void svc_toggle_tune_private(dsd_opts* opts);
-/** @brief Toggle tuning to data calls in trunking mode. */
-void svc_toggle_tune_data(dsd_opts* opts);
 /** @brief Set the current talkgroup hold value. */
 void svc_set_tg_hold(dsd_state* state, unsigned tg);
 /** @brief Set trunking hang time (seconds, clamped to >=0). */
@@ -153,8 +117,6 @@ void svc_set_hangtime(dsd_opts* opts, double seconds);
 void svc_set_rigctl_setmod_bw(dsd_opts* opts, int hz);
 /** @brief Toggle reverse mute (mute when unmuted, unmute when muted). */
 void svc_toggle_reverse_mute(dsd_opts* opts);
-/** @brief Toggle relaxed CRC handling/aggressive frame sync. */
-void svc_toggle_crc_relax(dsd_opts* opts);
 /** @brief Toggle P25 LCW retune helper. */
 void svc_toggle_lcw_retune(dsd_opts* opts);
 /** @brief Toggle little-endian DMR symbol ordering. */
@@ -186,8 +148,6 @@ int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
 int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
-/** @brief Set RTL PPM correction (clamped to ±200). */
-int svc_rtl_set_ppm(dsd_opts* opts, int ppm);
 /** @brief Set RTL DSP baseband bandwidth (kHz: 4,6,8,12,16,24,48), clamping and restarting if needed. */
 int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz);
 /** @brief Set RTL squelch threshold in dB, converting to power units. */

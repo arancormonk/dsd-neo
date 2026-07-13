@@ -18,7 +18,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -48,8 +47,8 @@ static int g_menu_handle_key_calls = 0;
 static int g_menu_last_key = ERR;
 static int g_menu_open_async_calls = 0;
 
-int
-dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT(misc-use-internal-linkage)
+static int
+capture_command(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT(misc-use-internal-linkage)
     g_cap.id = cmd_id;
     g_cap.n = payload_sz;
     if (payload_sz > sizeof(g_cap.data)) {
@@ -65,37 +64,28 @@ dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) { // NOLINT
 }
 
 int
-dsd_app_command_action_tracked(int cmd_id, dsd_app_command_token* out_token) { // NOLINT(misc-use-internal-linkage)
-    (void)out_token;
-    return dsd_app_post_cmd(cmd_id, NULL, 0U);
+dsd_app_command_action(int cmd_id) { // NOLINT(misc-use-internal-linkage)
+    return capture_command(cmd_id, NULL, 0U);
 }
 
 int
-dsd_app_command_set_i32_tracked(int cmd_id, int32_t value,
-                                dsd_app_command_token* out_token) { // NOLINT(misc-use-internal-linkage)
-    (void)out_token;
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+dsd_app_command_set_i32(int cmd_id, int32_t value) { // NOLINT(misc-use-internal-linkage)
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 int
-dsd_app_command_set_u8_tracked(int cmd_id, uint8_t value,
-                               dsd_app_command_token* out_token) { // NOLINT(misc-use-internal-linkage)
-    (void)out_token;
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+dsd_app_command_set_u8(int cmd_id, uint8_t value) { // NOLINT(misc-use-internal-linkage)
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 int
-dsd_app_command_set_u32_tracked(int cmd_id, uint32_t value,
-                                dsd_app_command_token* out_token) { // NOLINT(misc-use-internal-linkage)
-    (void)out_token;
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+dsd_app_command_set_u32(int cmd_id, uint32_t value) { // NOLINT(misc-use-internal-linkage)
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 int
-dsd_app_command_set_float_tracked(int cmd_id, float value,
-                                  dsd_app_command_token* out_token) { // NOLINT(misc-use-internal-linkage)
-    (void)out_token;
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+dsd_app_command_set_float(int cmd_id, float value) { // NOLINT(misc-use-internal-linkage)
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 void
@@ -150,11 +140,6 @@ int
 wgetch(WINDOW* win) {
     (void)win;
     return ERR;
-}
-
-int
-rtl_stream_spectrum_get_size(void) { // NOLINT(misc-use-internal-linkage)
-    return 512;
 }
 
 static void

@@ -75,7 +75,7 @@ Connect(char* hostname, int portno) {
     if (dsd_socket_resolve(hostname, portno, &serveraddr) != 0) {
         LOG_ERROR("ERROR, no such host as %s\n", hostname);
         dsd_socket_close(sockfd);
-        return DSD_INVALID_SOCKET; //check on other end and configure pulse input
+        return DSD_INVALID_SOCKET;
     }
 
     /* connect: create a connection with the server */
@@ -90,7 +90,7 @@ Connect(char* hostname, int portno) {
         int to_ms = 1500;
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (!cfg) {
-            dsd_neo_config_init(NULL);
+            dsd_neo_config_init();
             cfg = dsd_neo_get_config();
         }
         if (cfg) {
@@ -118,14 +118,12 @@ Connect(char* hostname, int portno) {
  */
 static bool
 Send(dsd_socket_t sockfd, const char* buf) {
-    int n;
-
-    n = dsd_socket_send(sockfd, buf, strlen(buf), 0);
-    if (n < 0) {
-        // Non-fatal: allow control plane hiccups without exiting
+    if (buf == NULL) {
         return false;
     }
-    return true;
+    const size_t len = strlen(buf);
+    const int n = dsd_socket_send(sockfd, buf, len, 0);
+    return n >= 0 && (size_t)n == len;
 }
 
 /**
@@ -170,16 +168,33 @@ GetCurrentFreq(dsd_socket_t sockfd) {
     const char* token;
     char* saveptr = NULL;
 
-    Send(sockfd, "f\n");
-    Recv(sockfd, buf);
+    if (!Send(sockfd, "f\n") || !Recv(sockfd, buf)) {
+        return 0;
+    }
 
-    if (strcmp(buf, "RPRT 1") == 0) {
+    if (strncmp(buf, "RPRT ", 5) == 0) {
         return freq;
     }
 
     token = dsd_strtok_r(buf, "\n", &saveptr);
+    if (token == NULL) {
+        return 0;
+    }
     freq = strtol(token, &ptr, 10);
+    if (ptr == token) {
+        return 0;
+    }
     return freq;
+}
+
+static bool
+rigctl_response_ok(const char* response) {
+    if (response == NULL || strncmp(response, "RPRT ", 5) != 0) {
+        return false;
+    }
+    char* end = NULL;
+    const long code = strtol(response + 5, &end, 10);
+    return end != response + 5 && code == 0;
 }
 
 /**
@@ -201,10 +216,7 @@ SetFreq(dsd_socket_t sockfd, long int freq) {
     char buf[BUFSIZE];
 
     DSD_SNPRINTF(buf, sizeof buf, "F %ld\n", freq);
-    Send(sockfd, buf);
-    Recv(sockfd, buf);
-
-    if (strcmp(buf, "RPRT 1\n") == 0) { //sdr++ has a linebreak here, is that in all versions of the protocol?
+    if (!Send(sockfd, buf) || !Recv(sockfd, buf) || !rigctl_response_ok(buf)) {
         return false;
     }
 
@@ -231,22 +243,22 @@ SetModulation(dsd_socket_t sockfd, int bandwidth) {
         return true; // unchanged
     }
     char buf[BUFSIZE];
-    //the bandwidth is now a user/system based configurable variable
-    DSD_SNPRINTF(
-        buf, sizeof buf, "M NFM %d\n",
-        bandwidth); //SDR++ has changed the token from FM to NFM, even if Ryzerth fixes it later, users may still have an older version
-    Send(sockfd, buf);
-    Recv(sockfd, buf);
-
-    // If it fails the first time, send the other token instead
-    if (strcmp(buf, "RPRT 1\n") == 0) //sdr++ has a linebreak here, is that in all versions of the protocol?
-    {
-        DSD_SNPRINTF(buf, sizeof buf, "M FM %d\n", bandwidth); //anything not SDR++
-        Send(sockfd, buf);
-        Recv(sockfd, buf);
+    /* Active rigctl peers disagree on the narrow-FM token: SDR++ expects NFM,
+     * while GQRX and other Hamlib-compatible peers commonly expect FM. */
+    DSD_SNPRINTF(buf, sizeof buf, "M NFM %d\n", bandwidth);
+    if (!Send(sockfd, buf) || !Recv(sockfd, buf)) {
+        return false;
     }
 
-    if (strcmp(buf, "RPRT 1\n") == 0) {
+    /* Retry with the token used by the other active peer family. */
+    if (!rigctl_response_ok(buf)) {
+        DSD_SNPRINTF(buf, sizeof buf, "M FM %d\n", bandwidth);
+        if (!Send(sockfd, buf) || !Recv(sockfd, buf)) {
+            return false;
+        }
+    }
+
+    if (!rigctl_response_ok(buf)) {
         return false;
     }
 
@@ -254,6 +266,44 @@ SetModulation(dsd_socket_t sockfd, int bandwidth) {
     s_last_bw = bandwidth;
     return true;
 }
+
+static int
+set_rigctl_frequency(const dsd_opts* opts, long int freq) {
+    if (opts->rigctl_sockfd == DSD_INVALID_SOCKET) {
+        return -1;
+    }
+    if (opts->setmod_bw != 0 && !SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
+        return -1;
+    }
+    return SetFreq(opts->rigctl_sockfd, freq) ? 0 : -1;
+}
+
+#ifdef USE_RADIO
+static int
+set_rtl_frequency(dsd_opts* opts, dsd_state* state, uint32_t requested_freq, uint32_t* applied_freq) {
+    if (!state || !state->rtl_ctx) {
+        return -1;
+    }
+
+    int tune_result = rtl_stream_tune(state->rtl_ctx, requested_freq);
+    if (tune_result != RTL_STREAM_TUNE_OK) {
+        if (tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+            /* The controller accepted the request and may complete after the
+             * synchronous wait expires. */
+            opts->rtlsdr_center_freq = requested_freq;
+        }
+        return tune_result;
+    }
+
+    /* Controller requests can coalesce, so cache the target that actually
+     * completed rather than this caller's requested one. */
+    uint32_t controller_freq = 0U;
+    if (rtl_stream_get_last_applied_freq(&controller_freq) == 0 && controller_freq != 0U) {
+        *applied_freq = controller_freq;
+    }
+    return 0;
+}
+#endif
 
 /**
  * @brief Set tuner frequency via io/control API (simple tune without trunking bookkeeping).
@@ -281,31 +331,16 @@ io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
 
     LOG_INFO("io_control: tune to %ld Hz\n", freq);
 
+    int rc = -1;
     if (opts->use_rigctl == 1) {
-        if (opts->setmod_bw != 0) {
-            SetModulation(opts->rigctl_sockfd, opts->setmod_bw);
-        }
-        SetFreq(opts->rigctl_sockfd, freq);
-    } else if (opts->audio_in_type == AUDIO_IN_RTL) {
+        rc = set_rigctl_frequency(opts, freq);
 #ifdef USE_RADIO
-        if (state && state->rtl_ctx) {
-            int tune_result = rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
-            if (tune_result != RTL_STREAM_TUNE_OK) {
-                if (tune_result == RTL_STREAM_TUNE_TIMEOUT) {
-                    // The untagged controller request remains accepted and may
-                    // complete after the synchronous wait expires.
-                    opts->rtlsdr_center_freq = applied_freq;
-                }
-                return tune_result;
-            }
-            // Untagged controller requests can coalesce, so cache the target
-            // that actually completed rather than this caller's requested one.
-            uint32_t controller_freq = 0U;
-            if (rtl_stream_get_last_applied_freq(&controller_freq) == 0 && controller_freq != 0U) {
-                applied_freq = controller_freq;
-            }
-        }
+    } else if (opts->audio_in_type == AUDIO_IN_RTL) {
+        rc = set_rtl_frequency(opts, state, applied_freq, &applied_freq);
 #endif
+    }
+    if (rc != 0) {
+        return rc;
     }
     // Update cached frequency only after the selected backend accepts the request.
     opts->rtlsdr_center_freq = applied_freq;

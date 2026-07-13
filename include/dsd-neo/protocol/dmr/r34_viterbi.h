@@ -17,8 +17,8 @@
 extern "C" {
 #endif
 
-// Normative DMR Rate 3/4 decoder (hard-decision Viterbi), compatible with
-// existing dmr_34() packing (18-byte payload from the first 48 tribits).
+// Normative DMR Rate 3/4 decoder (hard-decision Viterbi), producing an
+// 18-byte payload from the first 48 tribits.
 //
 // Input: 98 dibits (values 0..3).
 // Output: 18 payload bytes.
@@ -68,20 +68,6 @@ typedef struct {
  */
 int dmr_r34_viterbi_decode_list(const uint8_t* dibits98, const uint8_t* reliab98, dmr_r34_candidate* out_candidates,
                                 int max_candidates, int* out_count);
-
-// Simple R3/4 encoder helper for tests:
-// Input: 18 payload bytes (packed as in dmr_34())
-// Output: 98 dibits (0..3), interleaved per the standard.
-/**
- * @brief Encode payload bytes using the DMR rate 3/4 convolutional code.
- *
- * Primarily used in tests to generate expected dibit sequences.
- *
- * @param out_bytes18 Input payload bytes (18 bytes).
- * @param dibits98 [out] Encoded dibits (98 entries, values 0..3).
- * @return 0 on success; non-zero on error.
- */
-int dmr_r34_encode(const uint8_t out_bytes18[18], uint8_t dibits98[98]);
 
 #ifdef __cplusplus
 }

@@ -50,17 +50,6 @@ typedef void (*dsd_neo_widen_rot_fn)(const unsigned char*, float*, uint32_t);
 void widen_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len);
 
 /**
- * @brief Rotate 90° (IQ) and widen u8→float centered at 127.5.
- *
- * Performs 90° IQ rotation combined with widen u8→float centered at 127.5.
- *
- * @param src Source buffer of unsigned bytes (I/Q interleaved).
- * @param dst Destination float buffer.
- * @param len Number of bytes in src to process.
- */
-void widen_rotate90_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len);
-
-/**
  * @brief Rotate 90° (IQ) and widen u8→float centered at 127.5 with explicit phase.
  *
  * Applies the `j^n` sequence starting at `phase & 3`, where phase 0 leaves the

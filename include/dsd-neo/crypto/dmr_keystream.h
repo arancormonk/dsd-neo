@@ -39,8 +39,10 @@ void straight_mod_xor_keystream_creation(dsd_state* state, const char* input, in
 void straight_mod_xor_apply_frame49(dsd_state* state, int slot, char ambe_d[49]);
 int dmr_ambe49_is_default_silence(const char ambe_d[49]);
 int dmr_ambe49_has_zero_tail(const char ambe_d[49]);
-int dmr_ambe49_should_skip_voice_stream(const char ambe_d[49]);
+int dmr_ambe49_should_skip_crypto(const char ambe_d[49]);
 int dmr_voice_stream_apply_frame49(const uint8_t* ks_bits, long int* bit_counter, int algid, char ambe_d[49]);
+/** Advance the DMR RC4 message indicator by one 32-bit LFSR cycle. */
+uint32_t dmr_mi_advance32(uint32_t mi);
 int dmr_basic_privacy_apply_frame49(unsigned long long key_id, char ambe_d[49]);
 int tyt_ap_pc4_apply_frame49(const dsd_state* state, char ambe_d[49]);
 int tyt_ep_aes_apply_frame49(const dsd_state* state, char ambe_d[49]);

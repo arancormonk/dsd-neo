@@ -40,12 +40,9 @@ int m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const ui
                                 uint8_t* processed_payload);
 
 void m17_process_bert_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* bert_bits);
-void m17_unpack_bytes_to_bits(const uint8_t* bytes, int byte_count, uint8_t* out_bits);
 void m17_depuncture_p2_hard(const uint8_t* punctured, uint8_t* depunc, int depunc_bits);
 void m17_decode_bert_payload_bits(const uint8_t* m17_bits, uint8_t* bert_bits);
 
-void m17_apply_frame_prefix_dibits(int type, uint8_t* output_dibits);
-void m17_load_payload_dibits(const uint8_t* input, uint8_t* output_dibits);
 void m17_dibits_to_symbols(const uint8_t* output_dibits, int* output_symbols);
 void m17_upsample_symbols_10x(const int* output_symbols, int* output_up);
 void m17_baseband_no_filter(const int* output_up, short* baseband);
@@ -57,11 +54,6 @@ void m17_setup_conn_disc_eotx(unsigned long long src, uint8_t reflector_module, 
 void m17_load_lsf_callsigns(uint8_t* m17_lsf, unsigned long long dst, unsigned long long src);
 uint16_t m17_attach_lsf_crc(uint8_t* m17_lsf, uint8_t* lsf_packed);
 
-size_t m17_strlen_limit(const char* text, size_t limit);
-int m17_prepare_packet_payload(const char* text, uint8_t* packed, uint8_t* full_bits, uint16_t* app_len, int* block,
-                               uint8_t* lst, uint16_t* crc);
-int m17_prepare_packet_from_state(const dsd_state* input_state, uint8_t* lsf_bits, uint8_t* packed, uint16_t* app_len,
-                                  uint16_t* lsf_crc, uint8_t* can, unsigned long long* dst, unsigned long long* src);
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);
 int m17_pkt_ptr_clamped(int pbc_count);
 void m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end);

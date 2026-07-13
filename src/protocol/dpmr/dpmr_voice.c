@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -28,7 +29,6 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/protocol/dpmr/dpmr_const.h>
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdbool.h>
@@ -86,22 +86,15 @@ dpmr_read_first_cch(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx) {
 static void DSD_ATTR_USED
 dpmr_read_tch_group(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx, uint32_t frame_base) {
     for (uint32_t j = 0; j < 4; j++) {
-        const int* w = dpmr_ambe_interleave_w;
-        const int* x = dpmr_ambe_interleave_x;
-        const int* y = dpmr_ambe_interleave_y;
-        const int* z = dpmr_ambe_interleave_z;
         uint32_t k = 0;
-        for (uint32_t i = 0; i < 36; i++) {
+        for (uint32_t i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+            const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
             uint32_t dibit = dpmr_read_dibit(opts, state);
-            ctx->ambe_fr[frame_base + j][*w][*x] = (char)(1U & (dibit >> 1)); // bit 1
-            ctx->ambe_fr[frame_base + j][*y][*z] = (char)(1U & dibit);        // bit 0
+            ctx->ambe_fr[frame_base + j][map->high_row][map->high_col] = (char)(1U & (dibit >> 1)); // bit 1
+            ctx->ambe_fr[frame_base + j][map->low_row][map->low_col] = (char)(1U & dibit);          // bit 0
             state->dPMRVoiceFS2Frame.RawVoiceBit[frame_base + j][k] = (uint8_t)(1U & (dibit >> 1));
             state->dPMRVoiceFS2Frame.RawVoiceBit[frame_base + j][k + 1] = (uint8_t)(1U & dibit);
             k += 2;
-            w++;
-            x++;
-            y++;
-            z++;
         }
     }
 }
@@ -360,27 +353,6 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
     }
 }
 
-#ifdef dPMR_PRINT_DEBUG_INFO
-static void
-dpmr_print_debug_cch(const dpmr_voice_ctx_t* ctx, const dsd_state* state) {
-    for (uint32_t i = 0; i < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; i++) {
-        DSD_FPRINTF(stderr, "i = %u - ", i);
-        DSD_FPRINTF(stderr, "Comm Mode = %01u - ", state->dPMRVoiceFS2Frame.CommunicationMode[i]);
-        DSD_FPRINTF(stderr, "Version = %01u - ", state->dPMRVoiceFS2Frame.Version[i]);
-        DSD_FPRINTF(stderr, "Comms Format = %01u - ", state->dPMRVoiceFS2Frame.CommsFormat[i]);
-        DSD_FPRINTF(stderr, "Emergency = %01u - ", state->dPMRVoiceFS2Frame.EmergencyPriority[i]);
-        DSD_FPRINTF(stderr, "Reserved = %01u - ", state->dPMRVoiceFS2Frame.Reserved[i]);
-        DSD_FPRINTF(stderr, "Slow Data = 0x%05X - ", state->dPMRVoiceFS2Frame.SlowData[i]);
-        if (ctx->HammingOk[i] && ctx->CrcOk[i]) {
-            DSD_FPRINTF(stderr, "Valid");
-        } else {
-            DSD_FPRINTF(stderr, "CRC ERROR");
-        }
-        DSD_FPRINTF(stderr, "\n");
-    }
-}
-#endif
-
 void
 processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_voice_ctx_t ctx;
@@ -411,9 +383,6 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
     DSD_FPRINTF(stderr, "\n");
 
-#ifdef dPMR_PRINT_DEBUG_INFO
-    dpmr_print_debug_cch(&ctx, state);
-#endif
 } //End processdPMRvoice()
 
 /* Scrambler used for dPMR scrambling / descrambling,

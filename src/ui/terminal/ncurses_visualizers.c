@@ -1024,9 +1024,7 @@ print_constellation_view(dsd_opts* opts, dsd_state* state) {
     constellation_print_legend(opts, &style);
 
     attron(COLOR_PAIR(4));
-    attron(COLOR_PAIR(4));
     ui_print_hr();
-    attroff(COLOR_PAIR(4));
     attroff(COLOR_PAIR(4));
 #else
     ui_print_header("Constellation");
@@ -1329,7 +1327,9 @@ print_fsk_hist_view(void) {
 #ifdef USE_RTLSDR
 static int
 spectrum_nfft_clamped(void) {
-    int nfft = dsd_app_frontend_spectrum_get_size();
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    int nfft = metrics.spectrum_size;
     if (nfft < 64) {
         nfft = 64;
     }
@@ -1431,6 +1431,7 @@ spectrum_color_pair_for_level(float t) {
 
 static void
 spectrum_draw_cell(const dsd_opts* opts, int use_unicode, float v, float vmin, float vmax, float span, int y, int h) {
+    (void)opts;
     float vc = clamp_float_local(v, vmin, vmax);
     float t = (vc - vmin) / span;
     int col_h = (int)lrintf(t * (float)(h - 1));
@@ -1490,7 +1491,9 @@ spectrum_print_color_legend(int use_unicode) {
 static void
 spectrum_print_legend(const dsd_opts* opts, int rate, int w, int use_unicode, float vmax, float vmin) {
     float span_hz = (float)rate;
-    int nfft2 = dsd_app_frontend_spectrum_get_size();
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    int nfft2 = metrics.spectrum_size;
     const char* df = use_unicode ? "\xCE\x94"
                                    "f"
                                  : "df";

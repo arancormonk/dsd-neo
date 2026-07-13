@@ -109,8 +109,6 @@ used when every target is the same protocol.
 `[trunk_scan]` can enable the same feature from a config file:
 
 ```ini
-version = 1
-
 [input]
 source = "rtl"
 rtl_device = 0

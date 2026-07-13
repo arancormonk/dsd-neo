@@ -271,9 +271,6 @@ struct dsd_state {
     int* dibit_buf_p;
     int* dmr_payload_buf;
     int* dmr_payload_p;
-    // Per-dibit reliability buffer (0..255). Aligned with dmr_payload_buf.
-    uint8_t* dmr_reliab_buf;
-    uint8_t* dmr_reliab_p;
     // Per-dibit signed soft metrics. Aligned with dmr_payload_buf.
     dsd_dibit_soft_t* dmr_soft_buf;
     dsd_dibit_soft_t* dmr_soft_p;
@@ -730,12 +727,6 @@ struct dsd_state {
     unsigned int p25_p2_soft_ess_ok;     // soft ESS corrections
     unsigned int p25_p2_soft_ess_max_depth;
     unsigned int p25_p1_soft_combined_ok;
-    // P25p2 early ENC lockout counter (MAC_PTT-driven)
-    unsigned int p25_p2_enc_lo_early;
-    // P25p2 early ENC lockout hardening: require confirmation across two indications
-    uint8_t p25_p2_enc_pending[2];
-    uint32_t p25_p2_enc_pending_ttg[2];
-
     //iden freq storage for frequency calculations
     // Bitmask per IDEN slot indicating which modulation classes have been seen:
     //   bit 0x01 marks an FDMA/non-TDMA entry
@@ -784,7 +775,7 @@ struct dsd_state {
     // One-shot flag to force immediate return-to-CC on explicit MAC_END/IDLE
     // or policy events; cleared by the SM after handling
     int p25_sm_force_release;
-    int trunk_sm_force_release; // protocol-agnostic alias (kept in sync with p25_sm_force_release)
+    int trunk_sm_force_release; // protocol-agnostic force-release latch
     // Timestamp of last p25_sm_release() (0 when none yet)
     time_t p25_sm_last_release_time;
     // Last SM status/reason tag (e.g., "after-tune", "release-deferred-gated") and timestamp

@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include <mbelib-neo/mbelib.h>
 #include "core/audio/dsd_audio2_internal.h"
 #include "core/audio/dsd_audio_internal.h"
 #include "dsd-neo/core/audio.h"
@@ -32,7 +33,6 @@
 #include "dsd-neo/runtime/log.h"
 #include "dsd-neo/runtime/p25_p2_audio_ring.h"
 #include "dsd-neo/runtime/udp_audio_hooks.h"
-#include "mbelib.h"
 
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {

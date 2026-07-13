@@ -5,7 +5,6 @@ target_sources(
     PRIVATE
         dsd_ncurses_handler.c
         dsd_ncurses_printer.c
-        frontend_provider.c
         ncurses_utils.c
         ncurses_snr.c
         ui_snr_readout.c

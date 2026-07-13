@@ -331,7 +331,6 @@ interactive_maybe_configure_trunking(int mode, int src, dsd_opts* opts, dsd_stat
     if (!prompt_yes_no("Is this a trunked system?", 0)) {
         return;
     }
-    opts->p25_trunk = 1;
     opts->trunk_enable = 1;
     if (src == 5) {
         if (opts->rigctlportno == 0) {
@@ -381,7 +380,7 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(opts);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     if (cfg && cfg->no_bootstrap_enable) {

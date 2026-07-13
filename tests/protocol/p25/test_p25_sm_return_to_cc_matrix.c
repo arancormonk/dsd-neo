@@ -167,7 +167,6 @@ matrix_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
     if (dsd_trunk_tune_result_is_ok(result)) {
         double now_m = dsd_time_now_monotonic_s();
         if (opts) {
-            opts->p25_is_tuned = 1;
             opts->trunk_is_tuned = 1;
         }
         if (state) {
@@ -274,7 +273,6 @@ matrix_setup_fixture(matrix_fixture* fixture, const matrix_mode_case* mode) {
     DSD_MEMSET(fixture->state, 0, sizeof(*fixture->state));
     DSD_MEMSET(&fixture->ctx, 0, sizeof(fixture->ctx));
 
-    fixture->opts->p25_trunk = 1;
     fixture->opts->trunk_enable = 1;
     fixture->opts->trunk_tune_group_calls = 1;
     fixture->opts->trunk_tune_private_calls = 1;
@@ -343,8 +341,7 @@ matrix_send_initial_grant(matrix_fixture* fixture, const matrix_mode_case* mode,
     int rc = 0;
     rc |= matrix_expect(g_hooks.vc_calls == 1, mode->name, flow, script, "initial grant called tune once");
     rc |= matrix_expect(fixture->ctx.state == P25_SM_TUNED, mode->name, flow, script, "grant reached TUNED");
-    rc |= matrix_expect(fixture->opts->p25_is_tuned == 1 && fixture->opts->trunk_is_tuned == 1, mode->name, flow,
-                        script, "grant set tuned flags");
+    rc |= matrix_expect(fixture->opts->trunk_is_tuned == 1, mode->name, flow, script, "grant set tuned flags");
     rc |= matrix_expect(g_hooks.last_vc_sps == matrix_expected_sps(fixture, mode), mode->name, flow, script,
                         "grant sps matches mode");
     rc |= matrix_expect(fixture->state->samplesPerSymbol == matrix_expected_sps(fixture, mode), mode->name, flow,
@@ -421,8 +418,8 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
                             script->name, "completed return starts acquisition timer");
     }
     rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, flow->name, script->name, "returned to ON_CC");
-    rc |= matrix_expect(fixture->opts->p25_is_tuned == 0 && fixture->opts->trunk_is_tuned == 0, mode->name, flow->name,
-                        script->name, "tuned flags cleared");
+    rc |=
+        matrix_expect(fixture->opts->trunk_is_tuned == 0, mode->name, flow->name, script->name, "tuned flags cleared");
     rc |= matrix_expect(fixture->state->p25_vc_freq[0] == 0 && fixture->state->p25_vc_freq[1] == 0, mode->name,
                         flow->name, script->name, "p25 vc frequencies cleared");
     rc |= matrix_expect(fixture->state->trunk_vc_freq[0] == 0 && fixture->state->trunk_vc_freq[1] == 0, mode->name,
@@ -613,8 +610,8 @@ matrix_run_initial_tune_reject_case(const matrix_mode_case* mode, dsd_trunk_tune
     rc |= matrix_expect(g_hooks.vc_calls == 1, mode->name, "initial-tune", name, "vc tune attempted");
     rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, "initial-tune", name,
                         "failed/deferred vc tune stays ON_CC");
-    rc |= matrix_expect(fixture->opts->p25_is_tuned == 0 && fixture->opts->trunk_is_tuned == 0, mode->name,
-                        "initial-tune", name, "failed/deferred vc tune leaves tuned flags clear");
+    rc |= matrix_expect(fixture->opts->trunk_is_tuned == 0, mode->name, "initial-tune", name,
+                        "failed/deferred vc tune leaves tuned flags clear");
     rc |= matrix_expect(fixture->state->p25_vc_freq[0] == 0 && fixture->state->trunk_vc_freq[0] == 0, mode->name,
                         "initial-tune", name, "failed/deferred vc tune leaves vc frequencies clear");
     rc |= matrix_expect(fixture->state->p25_sm_tune_count == 0, mode->name, "initial-tune", name,
@@ -651,7 +648,7 @@ matrix_run_active_no_terminal_case(const matrix_mode_case* mode) {
 
     rc |= matrix_expect(fixture->ctx.state == P25_SM_TUNED, mode->name, flow, "no-return",
                         "active call remains tuned without terminal signal");
-    rc |= matrix_expect(fixture->opts->p25_is_tuned == 1 && g_hooks.return_calls == 0, mode->name, flow, "no-return",
+    rc |= matrix_expect(fixture->opts->trunk_is_tuned == 1 && g_hooks.return_calls == 0, mode->name, flow, "no-return",
                         "active call did not spuriously return");
     return rc;
 }
@@ -728,7 +725,7 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
 
     long candidate = MATRIX_BASE_CC_HZ + 1000000;
     double now_m = dsd_time_now_monotonic_s();
-    (void)dsd_trunk_cc_candidates_add_with_flags(fixture->state, candidate, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(fixture->state, candidate, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     fixture->state->last_cc_sync_time = time(NULL) - 10;
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
     fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;

@@ -48,6 +48,15 @@ check_float(const char* name, float expected, float actual, float tol) {
     }
 }
 
+static void
+attach_history_fixture(struct dsd_state* state, float* history, int symbols) {
+    DSD_MEMSET(history, 0, sizeof(*history) * (size_t)symbols);
+    state->symbol_history = history;
+    state->symbol_history_size = symbols;
+    state->symbol_history_head = 0;
+    state->symbol_history_count = 0;
+}
+
 static float
 sync_ascii_to_symbol(char dibit_char) {
     switch (dibit_char) {
@@ -75,11 +84,9 @@ test_history_buffer_ops(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[DSD_SYMBOL_HISTORY_SIZE];
 
-    /* Initialize history buffer */
-    int ret = dsd_symbol_history_init(&state, DSD_SYMBOL_HISTORY_SIZE);
-    check_int("init return", 0, ret);
-    check_int("buffer allocated", 1, state.symbol_history != NULL);
+    attach_history_fixture(&state, history, DSD_SYMBOL_HISTORY_SIZE);
     check_int("size", DSD_SYMBOL_HISTORY_SIZE, state.symbol_history_size);
     check_int("head", 0, state.symbol_history_head);
     check_int("count", 0, state.symbol_history_count);
@@ -97,14 +104,9 @@ test_history_buffer_ops(void) {
     check_float("get 1", 2.0f, dsd_symbol_history_get_back(&state, 1), FLOAT_TOL);
     check_float("get 2", 1.0f, dsd_symbol_history_get_back(&state, 2), FLOAT_TOL);
 
-    /* Reset */
-    dsd_symbol_history_reset(&state);
+    attach_history_fixture(&state, history, DSD_SYMBOL_HISTORY_SIZE);
     check_int("count after reset", 0, state.symbol_history_count);
     check_int("head after reset", 0, state.symbol_history_head);
-
-    /* Cleanup */
-    dsd_symbol_history_free(&state);
-    check_int("buffer freed", 1, state.symbol_history == NULL);
 
     printf("test_history_buffer_ops: passed\n\n");
 }
@@ -118,9 +120,9 @@ test_history_buffer_wrap(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[4];
 
-    /* Use small buffer for wrap test */
-    check_int("small init", 0, dsd_symbol_history_init(&state, 4));
+    attach_history_fixture(&state, history, 4);
 
     /* Push 6 values into size-4 buffer */
     for (int i = 1; i <= 6; i++) {
@@ -140,7 +142,6 @@ test_history_buffer_wrap(void) {
     check_float("get 2", 4.0f, dsd_symbol_history_get_back(&state, 2), FLOAT_TOL);
     check_float("get 3", 3.0f, dsd_symbol_history_get_back(&state, 3), FLOAT_TOL);
 
-    dsd_symbol_history_free(&state);
     printf("test_history_buffer_wrap: passed\n\n");
 }
 
@@ -159,9 +160,9 @@ test_cach_redigitize(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[DSD_SYMBOL_HISTORY_SIZE];
 
-    /* Initialize history buffer */
-    dsd_symbol_history_init(&state, DSD_SYMBOL_HISTORY_SIZE);
+    attach_history_fixture(&state, history, DSD_SYMBOL_HISTORY_SIZE);
 
     /* Set up ideal thresholds for ±3/±1 symbol levels */
     state.max = 3.0f;
@@ -238,7 +239,6 @@ test_cach_redigitize(void) {
     }
 
     free(state.dmr_payload_buf);
-    dsd_symbol_history_free(&state);
     printf("test_cach_redigitize: passed\n\n");
 }
 
@@ -255,9 +255,9 @@ test_full_resample_on_sync(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[DSD_SYMBOL_HISTORY_SIZE];
 
-    /* Initialize history buffer */
-    dsd_symbol_history_init(&state, DSD_SYMBOL_HISTORY_SIZE);
+    attach_history_fixture(&state, history, DSD_SYMBOL_HISTORY_SIZE);
 
     /* Allocate the CACH/prefix and sync-sized rolling payload window. */
     const int payload_len = DMR_RESAMPLE_SYMBOLS + DMR_SYNC_SYMBOLS;
@@ -307,7 +307,7 @@ test_full_resample_on_sync(void) {
 
     check_int("resample_on_sync return", 0, ret);
 
-    /* The generic warm-start must reproduce the former DMR noisy-sync means exactly. */
+    /* Warm-start level estimates must match the observed positive and negative symbol means. */
     float expected_max = sum_pos / (float)count_pos;
     float expected_min = sum_neg / (float)count_neg;
     float expected_center = (expected_max + expected_min) / 2.0f;
@@ -333,7 +333,6 @@ test_full_resample_on_sync(void) {
     }
 
     free(state.dmr_payload_buf);
-    dsd_symbol_history_free(&state);
     printf("test_full_resample_on_sync: passed\n\n");
 }
 

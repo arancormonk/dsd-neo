@@ -106,8 +106,7 @@ static const char* const k_skip_exact_next_any[] = {
 };
 
 static const char* const k_skip_exact_next_nonnull[] = {
-    "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format",
-    "--iq-replay",  "--iq-replay-rate",    "--iq-info",
+    "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--iq-replay", "--iq-replay-rate", "--iq-info",
 };
 
 static const char* const k_skip_exact_next_nonopt[] = {
@@ -123,7 +122,6 @@ static const char* const k_skip_prefix[] = {
     "--iq-capture=",
     "--iq-capture-format=",
     "--iq-capture-max-mb=",
-    "--symbol-capture-format=",
     "--iq-replay=",
     "--iq-replay-rate=",
     "--iq-info=",

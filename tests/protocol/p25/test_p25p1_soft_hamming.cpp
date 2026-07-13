@@ -9,7 +9,6 @@
  */
 
 #include <cstdio>
-#include <dsd-neo/fec/Hamming.hpp>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/config.h>
@@ -28,7 +27,7 @@ static int g_fail_count = 0;
 static void
 set_soft_hard_override(int enabled) {
     dsd_setenv("DSD_NEO_P25_SOFT_HARD_OVERRIDE", enabled ? "1" : "0", 1);
-    dsd_neo_config_init(nullptr);
+    dsd_neo_config_init();
 }
 
 static int
@@ -43,30 +42,33 @@ codeword_distance(const char* a, const char* b) {
 }
 
 static void
-build_codeword(Hamming_10_6_3_TableImpl& hamming, int value, char out[10]) {
-    char data[6];
+build_parity(const char data[6], char parity[4]) {
+    parity[0] = data[0] ^ data[1] ^ data[2] ^ data[5];
+    parity[1] = data[0] ^ data[1] ^ data[3] ^ data[5];
+    parity[2] = data[0] ^ data[2] ^ data[3] ^ data[4];
+    parity[3] = data[1] ^ data[2] ^ data[3] ^ data[4];
+}
+
+static void
+build_codeword(int value, char out[10]) {
     for (int i = 0; i < 6; i++) {
-        data[i] = (value >> (5 - i)) & 1;
+        out[i] = (value >> (5 - i)) & 1;
     }
-    char parity[4];
-    hamming.encode(data, parity);
-    DSD_MEMCPY(out, data, 6);
-    DSD_MEMCPY(out + 6, parity, 4);
+    build_parity(out, out + 6);
 }
 
 static void
 test_no_error() {
-    /* Valid Hamming(10,6,3) codeword: data=0b101010 (42), parity=0b1001 */
-    Hamming_10_6_3_TableImpl hamming;
+    /* Valid Hamming(10,6,3) codeword: data=0b101010 (42), parity=0b0110. */
     char hex[6] = {1, 0, 1, 0, 1, 0};
     char parity[4];
-    hamming.encode(hex, parity);
+    build_parity(hex, parity);
 
     char bits[10];
     DSD_MEMCPY(bits, hex, 6);
     DSD_MEMCPY(bits + 6, parity, 4);
 
-    int reliab[10] = {200, 200, 200, 200, 200, 200, 200, 200, 200, 200};
+    const int reliab[10] = {200, 200, 200, 200, 200, 200, 200, 200, 200, 200};
     char out[10];
 
     int result = hamming_10_6_3_soft(bits, reliab, out);
@@ -80,10 +82,9 @@ test_no_error() {
 static void
 test_single_error() {
     /* Valid codeword, then flip one bit */
-    Hamming_10_6_3_TableImpl hamming;
     char hex[6] = {0, 1, 1, 0, 0, 1};
     char parity[4];
-    hamming.encode(hex, parity);
+    build_parity(hex, parity);
 
     char bits[10];
     DSD_MEMCPY(bits, hex, 6);
@@ -92,7 +93,7 @@ test_single_error() {
     /* Flip bit 2 (in data portion) */
     bits[2] ^= 1;
 
-    int reliab[10] = {200, 200, 200, 200, 200, 200, 200, 200, 200, 200};
+    const int reliab[10] = {200, 200, 200, 200, 200, 200, 200, 200, 200, 200};
     char out[10];
 
     int result = hamming_10_6_3_soft(bits, reliab, out);
@@ -107,10 +108,9 @@ test_single_error() {
 static void
 test_two_errors_with_soft_info() {
     /* Valid codeword, then flip two bits */
-    Hamming_10_6_3_TableImpl hamming;
     char hex[6] = {1, 1, 0, 0, 1, 1};
     char parity[4];
-    hamming.encode(hex, parity);
+    build_parity(hex, parity);
 
     char bits[10];
     DSD_MEMCPY(bits, hex, 6);
@@ -121,7 +121,7 @@ test_two_errors_with_soft_info() {
     bits[3] ^= 1;
 
     /* Mark positions 1 and 3 as low reliability */
-    int reliab[10] = {200, 10, 200, 10, 200, 200, 200, 200, 200, 200};
+    const int reliab[10] = {200, 10, 200, 10, 200, 200, 200, 200, 200, 200};
     char out[10];
 
     int result = hamming_10_6_3_soft(bits, reliab, out);
@@ -138,16 +138,15 @@ test_two_errors_with_soft_info() {
 
 static void
 test_soft_hard_override_toggle() {
-    Hamming_10_6_3_TableImpl hamming;
     char hard_word[10];
     char soft_word[10];
     int diff_idx[3] = {-1, -1, -1};
     int found = 0;
 
     for (int a = 0; a < 64 && !found; a++) {
-        build_codeword(hamming, a, hard_word);
+        build_codeword(a, hard_word);
         for (int b = a + 1; b < 64 && !found; b++) {
-            build_codeword(hamming, b, soft_word);
+            build_codeword(b, soft_word);
             if (codeword_distance(hard_word, soft_word) == 3) {
                 int k = 0;
                 for (int i = 0; i < 10; i++) {
@@ -192,16 +191,15 @@ test_soft_hard_override_toggle() {
 static void
 test_high_reliability_no_change() {
     /* When all bits are high reliability, soft decoder should trust hard decode */
-    Hamming_10_6_3_TableImpl hamming;
     char hex[6] = {0, 0, 0, 1, 1, 1};
     char parity[4];
-    hamming.encode(hex, parity);
+    build_parity(hex, parity);
 
     char bits[10];
     DSD_MEMCPY(bits, hex, 6);
     DSD_MEMCPY(bits + 6, parity, 4);
 
-    int reliab[10] = {255, 255, 255, 255, 255, 255, 255, 255, 255, 255};
+    const int reliab[10] = {255, 255, 255, 255, 255, 255, 255, 255, 255, 255};
     char out[10];
 
     int result = hamming_10_6_3_soft(bits, reliab, out);
@@ -212,24 +210,6 @@ test_high_reliability_no_change() {
     }
 }
 
-static void
-test_table_impl_public_guards() {
-    Hamming_10_6_3_TableImpl hamming;
-    int decoded = 123;
-
-    ASSERT_EQ(hamming.decode(-1, &decoded), 2, "Negative table decode input should fail");
-    ASSERT_EQ(decoded, 0, "Negative table decode input should clear output");
-
-    decoded = 123;
-    ASSERT_EQ(hamming.decode(1024, &decoded), 2, "Out-of-range table decode input should fail");
-    ASSERT_EQ(decoded, 0, "Out-of-range table decode input should clear output");
-
-    ASSERT_EQ(hamming.decode(0, nullptr), 2, "Null table decode output should fail");
-
-    ASSERT_EQ(hamming.encode(-1), 0, "Negative table encode input should clamp to zero");
-    ASSERT_EQ(hamming.encode(64), 0, "Out-of-range table encode input should clamp to zero");
-}
-
 int
 main(void) {
     test_no_error();
@@ -237,8 +217,6 @@ main(void) {
     test_two_errors_with_soft_info();
     test_soft_hard_override_toggle();
     test_high_reliability_no_change();
-    test_table_impl_public_guards();
-
     if (g_fail_count > 0) {
         DSD_FPRINTF(stderr, "FAILED: %d test(s) failed\n", g_fail_count);
         return 1;

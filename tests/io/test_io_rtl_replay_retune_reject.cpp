@@ -133,7 +133,7 @@ test_replay_retune_rejected_quickly(void) {
     prepare_replay_opts(opts.get(), metadata_path);
 
     RtlSdrContext* ctx = NULL;
-    rc |= expect_int_eq("rtl_stream_create_mirrored", rtl_stream_create_mirrored(opts.get(), &ctx), 0);
+    rc |= expect_int_eq("rtl_stream_create", rtl_stream_create(opts.get(), &ctx), 0);
     if (rc != 0 || !ctx) {
         if (ctx) {
             rtl_stream_destroy(ctx);

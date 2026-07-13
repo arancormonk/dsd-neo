@@ -14,67 +14,19 @@
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-// Rigctl/RTL and CC-return stubs to avoid external I/O and core linkage
-bool
-SetFreq(dsd_socket_t sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(dsd_socket_t sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-long int
-GetCurrentFreq(dsd_socket_t sockfd) {
-    (void)sockfd;
-    return 0;
-}
-struct RtlSdrContext;
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    if (opts) {
-        opts->trunk_is_tuned = 0;
-    }
-    if (state) {
-        state->trunk_vc_freq[0] = 0;
-        state->trunk_vc_freq[1] = 0;
-    }
-}
 
 // Provide local stubs to satisfy DMR SM linker deps
 void
@@ -84,16 +36,28 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+static dsd_trunk_tune_result
+test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     if (!opts || !state || freq <= 0) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     opts->trunk_is_tuned = 1;
-    state->last_vc_sync_time = time(NULL);
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static dsd_trunk_tune_result
+test_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    if (opts) {
+        opts->trunk_is_tuned = 0;
+    }
+    if (state) {
+        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
@@ -117,11 +81,6 @@ test_neighbor_candidates(void) {
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&state);
     assert(cc != NULL);
     assert(cc->count >= 2);
-
-    long next = 0;
-    int ok = dmr_sm_next_cc_candidate(&state, &next);
-    assert(ok == 1);
-    assert(next == cand[0] || next == cand[1]);
 }
 
 static void
@@ -204,9 +163,14 @@ int
 main(int argc, char** argv) {
     (void)argc;
     (void)argv;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_to_freq,
+        .return_to_cc_request = test_return_to_cc,
+    });
     test_neighbor_candidates();
     test_explicit_grant_and_release();
     test_lpcn_trust_gating();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     printf("DMR_T3_SHIM: OK\n");
     return 0;
 }

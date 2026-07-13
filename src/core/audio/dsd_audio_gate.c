@@ -256,16 +256,6 @@ dsd_dmr_apply_forced_algid(dsd_state* state) {
     return 0;
 }
 
-int
-dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR) {
-    if (!state || !encL || !encR) {
-        return -1;
-    }
-    *encL = state->p25_p2_audio_allowed[0] ? 0 : 1;
-    *encR = state->p25_p2_audio_allowed[1] ? 0 : 1;
-    return 0;
-}
-
 static int
 dsd_p25p2_slot_crypto_permits_audio(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
     (void)alg;
@@ -309,17 +299,12 @@ dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int
     target = (raw_target > 0) ? (uint32_t)raw_target : 0u;
     source = (raw_source > 0) ? (uint32_t)raw_source : 0u;
     if (state->gi[slot] == 1) {
-        if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, 0,
-                                                DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY, &decision)
-            == 0) {
+        if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, 0, &decision) == 0) {
             return dsd_p25p2_media_decision_allows_audio(&decision);
         }
     } else {
         uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(state, slot, target);
-        if (dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source, 0, 0,
-                                              DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY, &decision)
-            == 0) {
+        if (dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source, 0, 0, &decision) == 0) {
             return dsd_p25p2_media_decision_allows_audio(&decision);
         }
     }
@@ -348,9 +333,7 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
         source_id = dsd_audio_group_source_id(state, policy_tg);
     }
 
-    if (dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY,
-                                          &decision)
-        == 0) {
+    if (dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, &decision) == 0) {
         if (decision.tg_hold_active && decision.tg_hold_match) {
             enc = 0;
         } else if (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
@@ -413,9 +396,7 @@ dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int
     tg = (slot == 1) ? (unsigned long)state->lasttgR : (unsigned long)state->lasttg;
     tg = (unsigned long)dsd_audio_p25_policy_target_for_slot(state, slot, (uint32_t)tg);
     source_id = (slot == 1) ? state->lastsrcR : state->lastsrc;
-    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)tg, source_id, 0, 0,
-                                          DSD_TG_POLICY_HOLD_FORCE_MEDIA_ONLY, &decision)
-        != 0) {
+    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)tg, source_id, 0, 0, &decision) != 0) {
         return 0;
     }
 

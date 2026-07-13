@@ -16,6 +16,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -31,6 +32,10 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static const uint32_t POSITION_ERROR_POW10[8] = {
+    1U, 10U, 100U, 1000U, 10000U, 100000U, 1000000U, 10000000U,
+};
 
 static void
 gps_write_lrrp_compact(const dsd_opts* opts, uint32_t src, double latitude, double longitude, int speed_kph,
@@ -164,8 +169,6 @@ lip_store_state_strings(dsd_state* state, int slot, const lip_state_strings* gps
                  sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_embedded_gps[slot]);
 }
 
-static int nmea_hex_nibble(uint8_t c);
-
 static void DSD_ATTR_USED
 lip_emit_position_metadata(const dsd_opts* opts, dsd_state* state, int slot, const lip_state_strings* gps,
                            double lat_sf, double lon_sf, uint8_t reason, uint8_t time_elapsed) {
@@ -220,8 +223,8 @@ nmea_validate_checksum(const uint8_t* input, int len_bytes, uint8_t* end_value, 
 
     uint8_t h0 = (uint8_t)convert_bits_into_output(input + ((size_t)(star_pos + 1) * 8U), 8);
     uint8_t h1 = (uint8_t)convert_bits_into_output(input + ((size_t)(star_pos + 2) * 8U), 8);
-    int n0 = nmea_hex_nibble(h0);
-    int n1 = nmea_hex_nibble(h1);
+    int n0 = dsd_hex_nibble_value(h0);
+    int n1 = dsd_hex_nibble_value(h1);
     if (n0 < 0 || n1 < 0) {
         return 0U;
     }
@@ -339,8 +342,7 @@ lip_protocol_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* inpu
                     lon_sf * longitude, vt, dt, deg_glyph);
 
         //6.3.63 Position Error (2 * 10^pos_err) via tiny LUT
-        static const uint32_t pow10_lut[8] = {1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u};
-        unsigned int position_error = (unsigned int)(2u * pow10_lut[pos_err & 7U]);
+        unsigned int position_error = (unsigned int)(2U * POSITION_ERROR_POW10[pos_err & 7U]);
         lip_state_strings gps = {add_hash, latitude, longitude, position_error, pos_err,
                                  vt,       dt,       deg_glyph, latstr,         lonstr};
         lip_emit_position_metadata(opts, state, slot, &gps, lat_sf, lon_sf, reason, time_elapsed);
@@ -547,114 +549,6 @@ nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32
     gps_write_lrrp_compact(opts, src, latitude, longitude, 0, (int)heading);
 }
 
-//fallback version (if desired/required)
-static void DSD_ATTR_USED
-harris_gps_store_and_report(const dsd_opts* opts, dsd_state* state, int slot, uint32_t src, float lat_dec,
-                            float lon_dec, int speed_kph, int azimuth, const char* deg_glyph) {
-    uint8_t slot_idx = (slot >= 2) ? 1 : (uint8_t)slot;
-    DSD_SNPRINTF(state->dmr_embedded_gps[slot_idx], sizeof state->dmr_embedded_gps[slot_idx], "GPS: (%f%s, %f%s)",
-                 lat_dec, deg_glyph, lon_dec, deg_glyph);
-    gps_write_lrrp_compact(opts, src, lat_dec, lon_dec, speed_kph, azimuth);
-}
-
-void
-harris_gps(const dsd_opts* opts, dsd_state* state, int slot, const uint8_t* input) {
-
-    uint8_t lat_sign, lat_deg, lat_min = 0;
-    uint8_t lon_sign, lon_deg, lon_min = 0;
-    uint16_t lat_mmin = 0;
-    uint16_t lon_mmin = 0;
-
-    //potentially in this PDU, but unverifiable without documentation or reasonable
-    //mathematical proof vs map points and direction of travel / distance over time (assuming the radio is facing that direction)
-    uint16_t rspeed = (uint16_t)convert_bits_into_output(&input[136], 8);        //MSB //136
-    rspeed = (rspeed << 8) + (uint16_t)convert_bits_into_output(&input[128], 8); //LSB //128
-
-    //this works okay for example of driver driving due west at the speed limit of the road (fluke?)
-    uint16_t rangle = (uint16_t)convert_bits_into_output(&input[120], 8); //120,8
-    float fspeed = (float)rspeed;
-    float fangle = (float)rangle;
-
-    fspeed /= 255.0f; //unit value of 1 bit
-    fspeed *=
-        1.56f; //this is based on an observation of a driver moving approx 210 meters in about 8 seconds and this makes it just under the speed limit on the road there
-    // fangle *= 360.0f/255.0f; //unit value of 1 bit
-    fangle *= 2.0f; //may exceed 360 degrees as is (use %)
-
-    int s, a = 0;
-    s = (int)fspeed * 3.6;
-    a = (int)fangle % 360;
-
-    //fix and quality indicators?
-    uint8_t fix = input[147];
-    UNUSED(fix);
-    uint8_t quality = (uint16_t)convert_bits_into_output(&input[148], 3);
-    UNUSED(quality);
-
-    // Timestamp has a 16-bit value with an appended 17th MSB.
-    uint32_t rtime = (uint32_t)convert_bits_into_output(
-        &input[104], 16); //seconds since midnight since last GPS fix (whatever the radio has as internal time)
-    rtime |=
-        input[144] << 16; //test appending this as bit 17 (observed this bit set after the afternoon 0xFFFF rollover)
-    uint32_t thour = rtime / 3600;
-    uint32_t tmin = (rtime % 3600) / 60;
-    uint32_t tsec = (rtime % 3600) % 60;
-
-    float lat_dec = 0.0f;
-    float lon_dec = 0.0f;
-
-    const char* deg_glyph = dsd_degrees_glyph();
-
-    //This appears to be similar to the NMEA GPGGA format (DDmm.mm) but
-    //octets are ordered in least significant to most significant value
-    lat_mmin = (uint16_t)convert_bits_into_output(&input[40], 16); //? bits required, but grabbing two octets
-    lat_min = (uint8_t)convert_bits_into_output(&input[58], 6);    //6 bits required to get 60
-    lat_deg = (uint8_t)convert_bits_into_output(&input[65], 7);    //7 bits required to get 90
-    lat_sign = input[72];                                          //64
-
-    lon_mmin = (uint16_t)convert_bits_into_output(&input[72], 16); //? bits required, but grabbing two octets
-    lon_min = (uint8_t)convert_bits_into_output(&input[90], 6);    //6 bits required to get 60
-    lon_deg = (uint8_t)convert_bits_into_output(&input[96], 8);    //8 bits required to get 180
-    lon_sign =
-        input[88]; //88, unsure of a correct location, but on the sample with 0 minutes, this lonely bit was flagged on
-
-    int src = 0;
-    if (slot == 0) {
-        src = state->lastsrc;
-    }
-    if (slot == 1) {
-        src = state->lastsrcR;
-    }
-
-    //calculate decimal representation (was a pain to figure out the sub minute values)
-    lat_dec = ((float)lat_deg + ((float)lat_min / 60.0f) + ((float)lat_mmin / 600000.0f));
-    lon_dec = ((float)lon_deg + ((float)lon_min / 60.0f) + ((float)lon_mmin / 600000.0f));
-
-    if (lat_sign) {
-        lat_dec *= -1.0f;
-    }
-
-    if (lon_sign) {
-        lon_dec *= -1.0f;
-    }
-
-    //line break
-    DSD_FPRINTF(stderr, "\n");
-    DSD_FPRINTF(stderr, " GPS: %f%s, %f%s;", lat_dec, deg_glyph, lon_dec, deg_glyph);
-
-    //gps fix time
-    DSD_FPRINTF(stderr, " LTS: %02d:%02d:%02d UTC;", thour, tmin, tsec); //last time synced to GPS
-
-    //speed and direction
-    DSD_FPRINTF(stderr, " DIR: %03d%s;", a, deg_glyph);
-
-    harris_gps_store_and_report(opts, state, slot, (uint32_t)src, lat_dec, lon_dec, s, a, deg_glyph);
-
-    //NOTE: Thanks to DSheirer (SDRTrunk) for helping me work out a few of the things in here
-    //not entirely convinced on some of these calcs (speed, angle, and TS) but sure these bits
-    //are actual speed/direction/timestamps judging from what the coordinates show on a map
-}
-
 //externalize embedded GPS - Confirmed working now on NE, NW, SE, and SW coordinates
 typedef struct {
     double latitude;
@@ -752,10 +646,9 @@ dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
                         deg_glyph, lonstr, lat_sf * latitude, lon_sf * longitude);
 
             //7.2.15 Position Error: 2 * 10^pos_err via LUT
-            static const uint32_t pow10_lut[8] = {1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u};
             unsigned int position_error = 0;
             if (pos_err <= 0x5) {
-                position_error = (unsigned int)(2u * pow10_lut[pos_err]);
+                position_error = (unsigned int)(2U * POSITION_ERROR_POW10[pos_err]);
             }
             if (pos_err == 0x7) {
                 DSD_FPRINTF(stderr, "\n  Position Error: Unknown or Invalid");
@@ -912,20 +805,6 @@ decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
 
     //Data afterwards appears to be an arbitrary len so has variable reporting data
     //will need to establish a len value for data and contents
-}
-
-static int
-nmea_hex_nibble(uint8_t c) {
-    if (c >= (uint8_t)'0' && c <= (uint8_t)'9') {
-        return (int)(c - (uint8_t)'0');
-    }
-    if (c >= (uint8_t)'A' && c <= (uint8_t)'F') {
-        return 10 + (int)(c - (uint8_t)'A');
-    }
-    if (c >= (uint8_t)'a' && c <= (uint8_t)'f') {
-        return 10 + (int)(c - (uint8_t)'a');
-    }
-    return -1;
 }
 
 uint8_t

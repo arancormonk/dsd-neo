@@ -92,28 +92,25 @@ main(void) {
     assert(dsd_trunk_tuning_generation() == tune_generation + 1U);
     assert(g_return_to_cc_calls == 1);
 
-    // Verify fallback behavior when hooks are not installed
+    // Missing tune backends must fail without fabricating decoder-state changes.
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
-    assert(dsd_trunk_tuning_hook_tune_to_freq(&opts, &state, 853000000, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(opts.p25_is_tuned == 1);
-    assert(opts.trunk_is_tuned == 1);
-    assert(state.p25_vc_freq[0] == 853000000);
-    assert(state.trunk_vc_freq[0] == 853000000);
+    assert(dsd_trunk_tuning_hook_tune_to_freq(&opts, &state, 853000000, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.p25_vc_freq[0] == 0);
+    assert(state.trunk_vc_freq[0] == 0);
 
-    assert(dsd_trunk_tuning_hook_return_to_cc(&opts, &state, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(opts.p25_is_tuned == 0);
+    assert(dsd_trunk_tuning_hook_return_to_cc(&opts, &state, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(opts.trunk_is_tuned == 0);
     assert(state.p25_vc_freq[0] == 0);
     assert(state.trunk_vc_freq[0] == 0);
 
     tune_generation = dsd_trunk_tuning_generation();
-    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851500000, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(dsd_trunk_tuning_generation() == tune_generation + 1U);
-    assert(state.trunk_cc_freq == 851500000);
-    tune_generation = dsd_trunk_tuning_generation();
+    assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 851500000, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_trunk_tuning_generation() == tune_generation);
+    assert(state.trunk_cc_freq == 0);
     assert(dsd_trunk_tuning_hook_tune_to_cc(&opts, &state, 0, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_trunk_tuning_generation() == tune_generation);
 

@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
@@ -60,11 +61,11 @@ main(void) {
 
     assert(g_snapshot_calls == 1);
     assert(g_opts_snapshot_calls == 1);
-    assert(dsd_app_consume_redraw_requested() == 1);
-    assert(dsd_app_consume_redraw_requested() == 0);
+    assert(dsd_app_frontend_redraw_consume() == 1);
+    assert(dsd_app_frontend_redraw_consume() == 0);
 
     dsd_app_request_redraw();
-    assert(dsd_app_consume_redraw_requested() == 1);
+    assert(dsd_app_frontend_redraw_consume() == 1);
 
     dsd_app_install_telemetry_hooks();
     assert(g_hooks.request_redraw == dsd_app_request_redraw);

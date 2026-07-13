@@ -274,9 +274,6 @@ test_crc_helpers(void) {
         pattern171[i] = (uint8_t)((i * 7U + 3U) & 1U);
     }
 
-    rc |= expect_int("load empty", load_i(empty, 0), 0);
-    rc |= expect_int("load pattern8", load_i(pattern8, (int)sizeof(pattern8)), 0xB2);
-
     rc |= expect_u8_at("crc6 empty", 0U, crc6(empty, 0), 63U);
     rc |= expect_u8_at("crc6 zeros6", 0U, crc6(zeros6, (int)sizeof(zeros6)), 24U);
     rc |= expect_u8_at("crc6 ones6", 0U, crc6(ones6, (int)sizeof(ones6)), 0U);
@@ -293,25 +290,10 @@ test_crc_helpers(void) {
 
 static int
 test_bit_window_and_state_helpers(void) {
-    static const uint8_t bytes[3] = {0xA5U, 0x3CU, 0x01U};
-    static const uint8_t expected_bits[24] = {1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    uint8_t bits[24];
-    uint8_t roundtrip[3];
     uint8_t trellis[8];
     static dsd_state state;
     int rc = 0;
 
-    DSD_MEMSET(bits, 0xA5, sizeof(bits));
-    DSD_MEMSET(roundtrip, 0, sizeof(roundtrip));
-    nxdn_unpack_bytes_msb(bytes, sizeof(bytes), bits);
-    for (size_t i = 0U; i < sizeof(bits); i++) {
-        rc |= expect_u8_at("unpack-msb", i, bits[i], expected_bits[i]);
-    }
-    nxdn_pack_bits_msb(bits, sizeof(roundtrip), roundtrip);
-    for (size_t i = 0U; i < sizeof(roundtrip); i++) {
-        rc |= expect_u8_at("pack-msb", i, roundtrip[i], bytes[i]);
-    }
-    rc |= expect_u8_at("bits-to-u16", 0U, (uint8_t)nxdn_bits_to_u16(bits, 8), bytes[0]);
     rc |= expect_u8_at("dcr-sb0-call", 0U, (uint8_t)nxdn_dcr_is_sb0_message_type(0x01U), 1U);
     rc |= expect_u8_at("dcr-sb0-idle", 0U, (uint8_t)nxdn_dcr_is_sb0_message_type(0x02U), 0U);
     rc |= expect_u8_at("sacch-sf2-part", 0U, (uint8_t)nxdn_sacch_part_of_frame(2U), 1U);

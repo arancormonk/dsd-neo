@@ -191,12 +191,6 @@ main(void) {
         }
     }
 
-    dsd_clear_cc_sync(state);
-    if (!expect_cc_zero(state)) {
-        free(state);
-        return 4;
-    }
-
     dsd_mark_vc_sync(state);
     if (state->last_vc_sync_time == 0) {
         free(state);
@@ -211,16 +205,8 @@ main(void) {
         }
     }
 
-    dsd_clear_vc_sync(state);
-    if (!expect_vc_zero(state)) {
-        free(state);
-        return 7;
-    }
-
     dsd_mark_cc_sync(NULL);
     dsd_mark_vc_sync(NULL);
-    dsd_clear_cc_sync(NULL);
-    dsd_clear_vc_sync(NULL);
 
     free(state);
     return 0;

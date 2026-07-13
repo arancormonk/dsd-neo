@@ -12,7 +12,7 @@
  */
 
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -24,13 +24,36 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-void p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq);
-void p25_test_invoke_lcw_with_lastsrc(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq,
-                                      long lastsrc);
-void p25_test_invoke_lcw_with_tuner(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq,
-                                    long tuner_freq);
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
 
-// Stubs referenced by LCW path (alias helpers and streaming/rigctl)
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+}
+
+void p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, long cc_freq, long lastsrc,
+                         long tuner_freq);
+
+// Alias helpers referenced by the LCW path.
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -86,39 +109,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)slot;
 }
 
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
 static void
 set_bits_msb(uint8_t* bits, int start, int width, unsigned value) {
     for (int i = 0; i < width; i++) {
@@ -139,6 +129,7 @@ expect_eq_int(const char* tag, int got, int want) {
 int
 main(void) {
     int rc = 0;
+    install_trunk_tuning_hooks();
 
     // Build LCW bits for format 0x44 (Group Voice Channel Update – Explicit)
     // Layout (bit indices):
@@ -161,12 +152,12 @@ main(void) {
     // CHAN-R left zero
 
     // Subcase A: retune disabled → no SM dispatch
-    p25_test_invoke_lcw(lcw, 72, /*enable_retune*/ 0, /*cc*/ 851000000);
+    p25_test_invoke_lcw(lcw, 72, /*enable_retune*/ 0, /*cc*/ 851000000, /*lastsrc*/ 0, /*tuner_freq*/ 0);
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     rc |= expect_eq_int("no-dispatch when disabled", (int)ctx->grant_count, 0);
 
     // Subcase B: retune enabled and CC set → expect dispatch with exact fields
-    p25_test_invoke_lcw(lcw, 72, /*enable_retune*/ 1, /*cc*/ 851000000);
+    p25_test_invoke_lcw(lcw, 72, /*enable_retune*/ 1, /*cc*/ 851000000, /*lastsrc*/ 0, /*tuner_freq*/ 0);
     ctx = p25_sm_get_ctx();
     rc |= expect_eq_int("dispatch called", (int)ctx->grant_count, 1);
     rc |= expect_eq_int("channel", ctx->vc_channel, ch);
@@ -176,7 +167,7 @@ main(void) {
     rc |= expect_eq_int("src default", ctx->vc_src, 0);
 
     // Subcase C: LCW traffic frames must not infer a CC from live tuner metadata.
-    p25_test_invoke_lcw_with_tuner(lcw, 72, /*enable_retune*/ 1, /*cc*/ 0, /*tuner_freq*/ 851012500);
+    p25_test_invoke_lcw(lcw, 72, /*enable_retune*/ 1, /*cc*/ 0, /*lastsrc*/ 0, /*tuner_freq*/ 851012500);
     ctx = p25_sm_get_ctx();
     rc |= expect_eq_int("no dispatch from tuner-only lcw", (int)ctx->grant_count, 0);
 
@@ -192,11 +183,13 @@ main(void) {
         set_bits_msb(lcw42, 8, 16, (unsigned)ch);
         set_bits_msb(lcw42, 24, 16, (unsigned)tg);
 
-        p25_test_invoke_lcw_with_lastsrc(lcw42, 72, /*enable_retune*/ 0, /*cc*/ 851000000, /*lastsrc*/ 777777);
+        p25_test_invoke_lcw(lcw42, 72, /*enable_retune*/ 0, /*cc*/ 851000000, /*lastsrc*/ 777777,
+                            /*tuner_freq*/ 0);
         ctx = p25_sm_get_ctx();
         rc |= expect_eq_int("0x42 no dispatch", (int)ctx->grant_count, 0);
     }
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

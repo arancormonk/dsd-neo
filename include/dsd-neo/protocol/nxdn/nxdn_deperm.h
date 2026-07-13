@@ -55,13 +55,11 @@ void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcC
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
 void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 
-int load_i(const uint8_t val[], int len);
 uint8_t crc6(const uint8_t buf[], int len);
 uint16_t crc12f(const uint8_t buf[], int len);
 uint16_t crc15(const uint8_t buf[], int len);
 uint16_t crc16cac(const uint8_t buf[], int len);
 uint8_t crc7_scch(const uint8_t bits[], int len);
-uint32_t nxdn_message_crc32(const uint8_t* input, int len);
 
 /**
  * Read the 7-bit SCCH CRC check field from decoded trellis bits.

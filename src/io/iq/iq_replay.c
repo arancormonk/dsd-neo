@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <errno.h>
@@ -265,20 +266,6 @@ tokenizer_set_error(json_tokenizer* tk, const char* msg, size_t pos) {
     }
 }
 
-static int
-hex_value(char c) {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return 10 + (c - 'a');
-    }
-    if (c >= 'A' && c <= 'F') {
-        return 10 + (c - 'A');
-    }
-    return -1;
-}
-
 static json_token
 make_simple_token(json_token_type type, size_t offset) {
     json_token tok;
@@ -316,21 +303,18 @@ tokenizer_parse_unicode_escape(json_tokenizer* tk, unsigned char* out_ch) {
         tokenizer_set_error(tk, "truncated unicode escape", tk->pos);
         return 0;
     }
-    int h0 = hex_value(tk->src[tk->pos + 0]);
-    int h1 = hex_value(tk->src[tk->pos + 1]);
-    int h2 = hex_value(tk->src[tk->pos + 2]);
-    int h3 = hex_value(tk->src[tk->pos + 3]);
-    if (h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0) {
+    uint64_t parsed = 0U;
+    if (dsd_parse_hex_u64_n(tk->src + tk->pos, 4U, &parsed) != 0) {
         tokenizer_set_error(tk, "invalid unicode escape", tk->pos);
         return 0;
     }
-    unsigned int codepoint = (unsigned int)((h0 << 12) | (h1 << 8) | (h2 << 4) | h3);
+    const unsigned int codepoint = (unsigned int)parsed;
     if (codepoint == 0U) {
         tokenizer_set_error(tk, "embedded NUL is not allowed", tk->pos);
         return 0;
     }
     if (codepoint > 0x7FU) {
-        tokenizer_set_error(tk, "unicode codepoint > 0x7f is unsupported in metadata v1", tk->pos);
+        tokenizer_set_error(tk, "unicode codepoint > 0x7f is unsupported in IQ metadata", tk->pos);
         return 0;
     }
     *out_ch = (unsigned char)codepoint;

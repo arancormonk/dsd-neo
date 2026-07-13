@@ -23,7 +23,7 @@
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/types.h>
@@ -851,8 +851,7 @@ FS3_END:
 //NOTE: Disabling voice synthesis clears up the delay issue (obviosly since we aren't having to wait on it to play)
 //disabling voice in only one slot will also fix most random stutter from the 4v in one slot, and 2v in the other slot
 
-//NOTE: The same skip may be occurring on the main and v2.1b branches of DSD-neo as well, so that may be due to the 4v/2v and
-//playing back immediately instead of buffering x number of samples or 4v/2v to get a smoother playback
+//NOTE: The skip is consistent with immediate mixed 4v/2v playback instead of buffering enough samples to smooth output.
 
 //NOTE: When using capture bins for playback, this issue is not as observable compared to real time reception due to how fast
 //we can blow through pure data on bin files compared to waiting for the real time reception

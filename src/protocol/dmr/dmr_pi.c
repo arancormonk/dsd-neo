@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include "dmr_hytera.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
@@ -24,7 +25,7 @@
 
 static void
 dmr_pi_update_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state) {
-    if (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1) {
         state->last_vc_sync_time = time(NULL);
         state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         state->last_cc_sync_time = time(NULL);
@@ -82,19 +83,6 @@ dmr_pi_handle_kirisun(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[])
     opts->dmr_le = 3;
 }
 
-static uint8_t
-dmr_pi_hytera_checksum(const uint8_t pi_byte[]) {
-    uint8_t checksum = 0;
-
-    for (int i = 0; i < 9; i++) {
-        checksum = (uint8_t)((checksum + pi_byte[i]) & 0xFFU);
-    }
-
-    checksum = (uint8_t)(~checksum & 0xFFU);
-    checksum++;
-    return checksum;
-}
-
 static void
 dmr_pi_hytera_print_key(const dsd_state* state, int show_keys) {
     if (state->currentslot == 0 && state->R != 0) {
@@ -128,7 +116,7 @@ dmr_pi_handle_hytera(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[]) 
     DSD_FPRINTF(stderr, " DMR PI H- ALG ID: %02X; KEY ID: %02X; MI(40): %02X%02X%02X%02X%02X;", pi_byte[0], pi_byte[2],
                 pi_byte[3], pi_byte[4], pi_byte[5], pi_byte[6], pi_byte[7]);
 
-    if (dmr_pi_hytera_checksum(pi_byte) == pi_byte[9]) {
+    if (dmr_hytera_checksum(pi_byte, 9U) == pi_byte[9]) {
         DSD_FPRINTF(stderr, " Hytera Enhanced; ");
         dmr_pi_hytera_print_key(state, opts->show_keys);
 
@@ -245,47 +233,6 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
 
     if (MFID == 0x10) { //DMRA
         dmr_pi_handle_dmra(state, PI_BYTE);
-    }
-}
-
-void
-LFSR(dsd_state* state) {
-    unsigned long long int lfsr = 0;
-    if (state->currentslot == 0) {
-        lfsr = state->payload_mi;
-    } else {
-        lfsr = state->payload_miR;
-    }
-
-    uint8_t cnt = 0;
-
-    for (cnt = 0; cnt < 32; cnt++) {
-        // Polynomial is C(x) = x^32 + x^4 + x^2 + 1
-        unsigned long long int bit = ((lfsr >> 31) ^ (lfsr >> 3) ^ (lfsr >> 1)) & 0x1;
-        lfsr = (lfsr << 1) | bit;
-    }
-
-    lfsr &= 0xFFFFFFFF;
-
-    if (state->currentslot == 0) {
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, " Slot 1");
-        DSD_FPRINTF(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", state->payload_algid, state->payload_keyid);
-        DSD_FPRINTF(stderr, " MI(32): %08llX;", lfsr);
-        DSD_FPRINTF(stderr, " RC4;");
-        DSD_FPRINTF(stderr, "%s", KNRM);
-        state->payload_mi = lfsr;
-    }
-
-    if (state->currentslot == 1) {
-
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, " Slot 2");
-        DSD_FPRINTF(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", state->payload_algidR, state->payload_keyidR);
-        DSD_FPRINTF(stderr, " MI(32): %08llX;", lfsr);
-        DSD_FPRINTF(stderr, " RC4;");
-        DSD_FPRINTF(stderr, "%s", KNRM);
-        state->payload_miR = lfsr;
     }
 }
 

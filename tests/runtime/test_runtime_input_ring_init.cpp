@@ -54,7 +54,6 @@ expect_float(const char* label, float got, float want) {
 static int
 test_guard_and_wrap_contracts(void) {
     int rc = 0;
-    float sample = 1.0f;
     float out[8] = {0.0f};
     float* p1 = reinterpret_cast<float*>(static_cast<uintptr_t>(1U));
     float* p2 = reinterpret_cast<float*>(static_cast<uintptr_t>(2U));
@@ -63,7 +62,6 @@ test_guard_and_wrap_contracts(void) {
 
     input_ring_destroy(NULL);
     input_ring_enable_space_notify(NULL, 1);
-    input_ring_write(NULL, &sample, 1U);
 
     struct input_ring_state ring;
     DSD_MEMSET(&ring, 0, sizeof(ring));
@@ -78,10 +76,6 @@ test_guard_and_wrap_contracts(void) {
 
     input_ring_commit(&ring, 0U);
     rc |= expect_size("commit zero keeps empty", input_ring_used(&ring), 0U);
-    input_ring_write(&ring, NULL, 1U);
-    input_ring_write(&ring, &sample, 0U);
-    rc |= expect_size("write guards keep empty", input_ring_used(&ring), 0U);
-
     ring.head.store(6U);
     ring.tail.store(4U);
     rc |= expect_int("reserve wrap", input_ring_reserve(&ring, 4U, &p1, &n1, &p2, &n2), 4);
@@ -90,14 +84,24 @@ test_guard_and_wrap_contracts(void) {
     rc |= expect_int("reserve wrap p2", p2 == ring.buffer, 1);
     rc |= expect_size("reserve wrap n2", n2, 2U);
 
-    input_ring_clear(&ring);
+    ring.tail.store(0U);
+    ring.head.store(0U);
     ring.head.store(6U);
     ring.tail.store(5U);
-    float end_write[2] = {30.0f, 31.0f};
-    input_ring_write(&ring, end_write, 2U);
-    rc |= expect_size("write exact end wraps head", ring.head.load(), 0U);
+    p1 = NULL;
+    p2 = NULL;
+    n1 = 0U;
+    n2 = 0U;
+    rc |= expect_int("reserve exact end", input_ring_reserve(&ring, 2U, &p1, &n1, &p2, &n2), 2);
+    if (p1 && n1 == 2U) {
+        p1[0] = 30.0f;
+        p1[1] = 31.0f;
+    }
+    input_ring_commit(&ring, 2U);
+    rc |= expect_size("commit exact end wraps head", ring.head.load(), 0U);
 
-    input_ring_clear(&ring);
+    ring.tail.store(0U);
+    ring.head.store(0U);
     ring.buffer[6] = 40.0f;
     ring.buffer[7] = 41.0f;
     ring.head.store(0U);
@@ -107,7 +111,8 @@ test_guard_and_wrap_contracts(void) {
     rc |= expect_float("read block exact end out[1]", out[1], 41.0f);
     rc |= expect_size("read block exact end wraps tail", ring.tail.load(), 0U);
 
-    input_ring_clear(&ring);
+    ring.tail.store(0U);
+    ring.head.store(0U);
     rc |= expect_int("read block zero", input_ring_read_block(&ring, out, 0U), 0);
     exitflag = 1U;
     rc |= expect_int("read block exit", input_ring_read_block(&ring, out, 1U), -1);
@@ -127,18 +132,31 @@ test_guard_and_wrap_contracts(void) {
     rc |= expect_int("read reserve zero p2", p2 == NULL, 1);
     rc |= expect_size("read reserve zero n2", n2, 0U);
 
-    float write_full[9] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
-    input_ring_write(&ring, write_full, 7U);
+    float write_full[7] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+    p1 = NULL;
+    p2 = NULL;
+    n1 = 0U;
+    n2 = 0U;
+    rc |= expect_int("reserve full ring", input_ring_reserve(&ring, 7U, &p1, &n1, &p2, &n2), 7);
+    if (p1 && n1 == 7U) {
+        DSD_MEMCPY(p1, write_full, sizeof write_full);
+    }
+    input_ring_commit(&ring, 7U);
     rc |= expect_size("full ring used", input_ring_used(&ring), 7U);
-    input_ring_write(&ring, write_full + 7U, 2U);
-    rc |= expect_size("full ring drops keep used", input_ring_used(&ring), 7U);
-    rc |= expect_int("full ring drops counted", ring.producer_drops.load() == 2U, 1);
+    rc |= expect_int("full ring grants no write span", input_ring_reserve(&ring, 1U, &p1, &n1, &p2, &n2), 0);
 
     input_ring_read_commit(&ring, 99U);
     rc |= expect_size("overconsume clamps to available", input_ring_used(&ring), 0U);
 
     input_ring_enable_space_notify(&ring, 1);
-    input_ring_write(&ring, write_full, 2U);
+    rc |= expect_int("reserve two", input_ring_reserve(&ring, 2U, &p1, &n1, &p2, &n2), 2);
+    if (p1 && n1 > 0U) {
+        DSD_MEMCPY(p1, write_full, n1 * sizeof(float));
+    }
+    if (p2 && n2 > 0U) {
+        DSD_MEMCPY(p2, write_full + n1, n2 * sizeof(float));
+    }
+    input_ring_commit(&ring, 2U);
     rc |= expect_int("read block two", input_ring_read_block(&ring, out, 2U), 2);
     rc |= expect_float("read block out[0]", out[0], 0.0f);
     rc |= expect_float("read block out[1]", out[1], 1.0f);
@@ -195,7 +213,11 @@ main(void) {
     rc |= expect_size("stale reservation not committed", input_ring_used(&ring), 0U);
 
     float write_a[6] = {10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f};
-    input_ring_write(&ring, write_a, 6U);
+    rc |= expect_int("reserve initial six", input_ring_reserve(&ring, 6U, &p1, &n1, &p2, &n2), 6);
+    if (p1 && n1 == 6U) {
+        DSD_MEMCPY(p1, write_a, sizeof write_a);
+    }
+    input_ring_commit(&ring, 6U);
     float* rp1 = NULL;
     float* rp2 = NULL;
     size_t rn1 = 0;
@@ -212,7 +234,18 @@ main(void) {
     rc |= expect_size("used after read commit", input_ring_used(&ring), 2U);
 
     float write_b[5] = {20.0f, 21.0f, 22.0f, 23.0f, 24.0f};
-    input_ring_write(&ring, write_b, 5U);
+    p1 = NULL;
+    p2 = NULL;
+    n1 = 0U;
+    n2 = 0U;
+    rc |= expect_int("reserve wrapped five", input_ring_reserve(&ring, 5U, &p1, &n1, &p2, &n2), 5);
+    if (p1 && n1 > 0U) {
+        DSD_MEMCPY(p1, write_b, n1 * sizeof(float));
+    }
+    if (p2 && n2 > 0U) {
+        DSD_MEMCPY(p2, write_b + n1, n2 * sizeof(float));
+    }
+    input_ring_commit(&ring, 5U);
     rp1 = NULL;
     rp2 = NULL;
     rn1 = 0;
