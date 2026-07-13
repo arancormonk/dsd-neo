@@ -218,6 +218,12 @@ __wrap_rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
 }
 
 int
+__wrap_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {
+    (void)request_id;
+    return __wrap_rtl_stream_tune(ctx, center_freq_hz);
+}
+
+int
 __wrap_rtl_stream_request_fsk_reacquire(void) {
     g_rtl_fsk_reacquire_requests++;
     return 1;
@@ -656,8 +662,8 @@ main(void) {
     rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->trunk_is_tuned == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
 
-    // A controller wait timeout is accepted because stream reads remain gated
-    // until the controller crosses the physical retune boundary.
+    // A controller wait timeout remains correlated until the controller
+    // publishes the physical retune result.
     reset_rtl_profile_fakes();
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     opts->trunk_is_tuned = 1;
@@ -674,15 +680,24 @@ main(void) {
     g_check_p25_tick_guard = 0;
 
     rc |= expect_true("p25-rtl-nocarrier-timeout-accepted", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769868750U);
-    rc |= expect_true("p25-rtl-nocarrier-timeout-starts-acquisition",
-                      pending_ctx->cc_tune_pending == 0 && pending_ctx->t_cc_tune_m > 0.0);
+    const uint64_t pending_cc_request_id = pending_ctx->cc_tune_request_id;
+    rc |= expect_true(
+        "p25-rtl-nocarrier-timeout-waits-for-completion",
+        pending_ctx->cc_tune_pending == 1 && pending_ctx->t_cc_tune_m == 0.0 && pending_cc_request_id != 0U
+            && dsd_trunk_tuning_request_status(pending_cc_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING);
     rc |= expect_true("p25-rtl-nocarrier-timeout-serializes-tune", g_p25_tick_guard_held_during_tune == 1);
     int guard_released = p25_sm_tick_guard_try_enter();
     rc |= expect_true("p25-rtl-nocarrier-timeout-releases-guard", guard_released == 1);
     if (guard_released) {
         p25_sm_tick_guard_leave();
     }
-    rc |= expect_true("p25-rtl-nocarrier-timeout-keeps-frame-gate-current",
+    rc |= expect_true("p25-rtl-nocarrier-timeout-keeps-frame-gate-closed",
+                      !dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
+    dsd_trunk_tuning_request_publish(pending_cc_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    p25_sm_tick_ctx(pending_ctx, opts, state);
+    rc |= expect_true("p25-rtl-nocarrier-completion-starts-acquisition",
+                      pending_ctx->cc_tune_pending == 0 && pending_ctx->t_cc_tune_m > 0.0);
+    rc |= expect_true("p25-rtl-nocarrier-completion-opens-frame-gate",
                       dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 
@@ -1096,8 +1111,8 @@ main(void) {
         return 1;
     }
 
-    // An unresolved generic tune keeps dispatch gated. Once it fails, an
-    // accepted controller timeout establishes the next coherent boundary.
+    // An unresolved generic tune keeps dispatch gated. Once it fails, a
+    // controller timeout remains pending until its exact completion arrives.
     reset_rtl_profile_fakes();
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
@@ -1131,16 +1146,30 @@ main(void) {
     noCarrier(opts, state);
 
     const uint64_t recovery_generation = dsd_trunk_tuning_generation();
-    rc |= expect_true("generic-rtl-recovery-timeout-is-accepted", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 936000000U
-                                                                      && recovery_generation == failed_generation + 1U);
-    rc |= expect_true("generic-rtl-recovery-timeout-commits-state",
+    const uint64_t recovery_request_id = dsd_trunk_tuning_pending_request();
+    rc |=
+        expect_true("generic-rtl-recovery-timeout-remains-pending",
+                    g_rtl_tune_calls == 1 && g_rtl_tune_freq == 936000000U && recovery_generation == failed_generation
+                        && recovery_request_id > failed_request_id
+                        && dsd_trunk_tuning_request_status(recovery_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    rc |= expect_true("generic-rtl-recovery-timeout-stages-state",
+                      opts->trunk_is_tuned == 1 && state->trunk_vc_freq[0] == 0 && state->trunk_cc_freq == 936000000
+                          && state->p25_cc_freq == 0);
+    rc |= expect_true("generic-rtl-recovery-timeout-keeps-gate-closed",
+                      !dsd_trunk_tuning_frame_is_current(recovery_generation));
+    rc |=
+        expect_true("generic-rtl-recovery-preserves-profile", g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_WIDE);
+
+    dsd_trunk_tuning_request_publish(recovery_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    noCarrier(opts, state);
+    const uint64_t completed_recovery_generation = dsd_trunk_tuning_generation();
+    rc |= expect_true("generic-rtl-recovery-completion-commits-state",
                       opts->trunk_is_tuned == 0 && state->trunk_vc_freq[0] == 0 && state->trunk_cc_freq == 936000000
                           && state->p25_cc_freq == 0);
     rc |=
-        expect_true("generic-rtl-recovery-timeout-opens-gate",
-                    dsd_trunk_tuning_pending_request() == 0U && dsd_trunk_tuning_frame_is_current(recovery_generation));
-    rc |=
-        expect_true("generic-rtl-recovery-preserves-profile", g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_WIDE);
+        expect_true("generic-rtl-recovery-completion-opens-gate",
+                    completed_recovery_generation == failed_generation + 1U && dsd_trunk_tuning_pending_request() == 0U
+                        && dsd_trunk_tuning_frame_is_current(completed_recovery_generation));
 
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

@@ -72,6 +72,9 @@ int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* 
 int rtl_stream_test_retune_profile_coalesced_no_profile(int* out_profile, uint32_t* out_profile_freq_hz,
                                                         uint32_t* out_manual_freq_hz, uint32_t* out_request_id,
                                                         uint32_t* out_coalesced_request_id);
+int rtl_stream_test_tagged_retune_ownership(uint64_t owner_token, uint64_t contender_token, int terminal_result,
+                                            uint32_t* out_owner_freq_hz, uint32_t* out_profile_freq_hz,
+                                            uint64_t* out_owner_token, int* out_completion_result);
 int dsd_rtl_stream_test_retune_without_controller_rejected(void);
 int rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_gain_tenth_db, int* out_gain_is_auto,
                                                 int* out_autogain_is_set, int* out_autogain_on);

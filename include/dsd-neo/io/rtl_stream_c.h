@@ -49,6 +49,20 @@ typedef enum DSD_ATTR_PACKED rtl_stream_tune_result {
     RTL_STREAM_TUNE_TIMEOUT = -2,
 } rtl_stream_tune_result;
 
+/**
+ * @brief Completion notification for a request-tagged RTL tune.
+ *
+ * The callback runs on the RTL controller thread after the hardware/DSP
+ * reconfigure and output boundary have completed. Implementations must not
+ * block or call back into the RTL tuning API.
+ *
+ * @param request_id Caller-provided request ID from rtl_stream_tune_tagged().
+ * @param result Terminal result for the controller request.
+ * @param user_data Opaque pointer supplied at registration time.
+ */
+typedef void (*rtl_stream_tune_completion_callback)(uint64_t request_id, rtl_stream_tune_result result,
+                                                    void* user_data);
+
 /* Lifecycle */
 /**
  * @brief Create a new RTL-SDR stream context mirrored to caller-owned options.
@@ -91,6 +105,33 @@ int rtl_stream_destroy(RtlSdrContext* ctx);
  * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
  */
 int rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz);
+
+/**
+ * @brief Tune to a new center frequency with correlated completion.
+ *
+ * A queued tagged tune owns its controller request until completion. A tune
+ * from a different owner, including an untagged tune, is deferred instead of
+ * replacing the queued target and profile. A zero request ID is invalid.
+ *
+ * @param ctx Stream context.
+ * @param center_freq_hz New center frequency in Hz.
+ * @param request_id Non-zero request ID forwarded to the completion callback.
+ * @return rtl_stream_tune_result: 0 on success, 1 when deferred, negative on error/timeout.
+ */
+int rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
+
+/**
+ * @brief Register the process-wide tagged tune completion callback.
+ *
+ * Replaces any prior registration. Pass NULL to clear the callback. Replacement
+ * and unregistration wait for invocations of the previous callback to finish,
+ * so its user data may be released after this function returns. A completion
+ * callback must not call this function or another RTL tuning entry point.
+ *
+ * @param callback Completion callback, or NULL to unregister.
+ * @param user_data Opaque callback context.
+ */
+void rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data);
 
 /**
  * @brief Publish a live RTL PPM request and assign it a fresh request generation.

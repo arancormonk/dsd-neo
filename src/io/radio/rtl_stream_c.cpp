@@ -26,6 +26,7 @@ extern "C" {
 double dsd_rtl_stream_return_pwr(void);
 int dsd_rtl_stream_cqpsk_timing_bias(void);
 unsigned int dsd_rtl_stream_output_rate(void);
+void dsd_rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data);
 }
 
 #include <dsd-neo/io/rtl_stream.h>
@@ -124,6 +125,19 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
         return -1;
     }
     return ctx->stream->tune(center_freq_hz);
+}
+
+extern "C" int
+rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {
+    if (!ctx || !ctx->stream || request_id == 0U) {
+        return RTL_STREAM_TUNE_FAILED;
+    }
+    return ctx->stream->tune_tagged(center_freq_hz, request_id);
+}
+
+extern "C" void
+rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data) {
+    dsd_rtl_stream_register_tune_completion_callback(callback, user_data);
 }
 
 /**

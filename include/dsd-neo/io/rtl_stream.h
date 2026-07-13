@@ -57,6 +57,14 @@ class RtlSdrOrchestrator {
     int tune(uint32_t center_freq_hz);
 
     /**
+     * @brief Tune with a caller-owned request ID for asynchronous completion.
+     * @param center_freq_hz Frequency in Hz.
+     * @param request_id Non-zero ID forwarded to the registered completion callback.
+     * @return 0 when completed, 1 when deferred, or a negative error/timeout code.
+     */
+    int tune_tagged(uint32_t center_freq_hz, uint64_t request_id);
+
+    /**
      * @brief Read up to count audio samples.
      * @param out Destination buffer.
      * @param count Max samples to read.

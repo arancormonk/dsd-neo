@@ -23,6 +23,7 @@ struct StubState {
     int open_calls;
     int soft_stop_calls;
     int tune_calls;
+    int tagged_tune_calls;
     int read_calls;
     int register_calls;
     int unregister_calls;
@@ -32,6 +33,7 @@ struct StubState {
     dsd_opts* last_unregistered_active;
     dsd_opts* last_unregistered_caller;
     long int last_tune_hz;
+    uint64_t last_tune_request_id;
     size_t last_read_count;
 };
 
@@ -110,6 +112,15 @@ dsd_rtl_stream_tune(dsd_opts* opts, long int frequency) {
     g_stub.tune_calls++;
     g_stub.last_open_opts = opts;
     g_stub.last_tune_hz = frequency;
+    return g_stub.tune_rc;
+}
+
+extern "C" int
+dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t request_id) {
+    g_stub.tagged_tune_calls++;
+    g_stub.last_open_opts = opts;
+    g_stub.last_tune_hz = frequency;
+    g_stub.last_tune_request_id = request_id;
     return g_stub.tune_rc;
 }
 
@@ -195,7 +206,9 @@ test_start_failure_and_prestart_errors(void) {
     rc |= expect_int_eq("start propagates open failure", stream.start(), -7);
     rc |= expect_int_eq("failed start does not soft stop", g_stub.soft_stop_calls, 0);
     rc |= expect_int_eq("prestart tune rejected", stream.tune(851000000U), -1);
+    rc |= expect_int_eq("prestart tagged tune rejected", stream.tune_tagged(851000000U, 7U), -1);
     rc |= expect_int_eq("prestart tune does not call backend tune", g_stub.tune_calls, 0);
+    rc |= expect_int_eq("prestart tagged tune does not call backend tune", g_stub.tagged_tune_calls, 0);
 
     float sample = 0.0f;
     int got = 123;
@@ -218,6 +231,11 @@ test_tune_and_read_error_propagation(void) {
     rc |= expect_int_eq("tune records frequency", (int)g_stub.last_tune_hz, 851012500);
     g_stub.tune_rc = 0;
     rc |= expect_int_eq("tune succeeds", stream.tune(851025000U), 0);
+    rc |=
+        expect_int_eq("zero tagged tune request rejected", stream.tune_tagged(851037500U, 0U), RTL_STREAM_TUNE_FAILED);
+    rc |= expect_int_eq("tagged tune succeeds", stream.tune_tagged(851050000U, UINT64_C(0x12345678)), 0);
+    rc |= expect_int_eq("tagged tune calls backend once", g_stub.tagged_tune_calls, 1);
+    rc |= expect_int_eq("tagged tune records request id", (int)g_stub.last_tune_request_id, 0x12345678);
     float samples[4] = {};
     int got = 0;
     g_stub.read_rc = 3;

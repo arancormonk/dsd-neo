@@ -99,6 +99,22 @@ expect_u64_eq(const char* label, uint64_t got, uint64_t want) {
     return 0;
 }
 
+namespace {
+struct TaggedTuneCompletionState {
+    int calls;
+    uint64_t request_id;
+    rtl_stream_tune_result result;
+};
+
+void
+tagged_tune_completion(uint64_t request_id, rtl_stream_tune_result result, void* user_data) {
+    auto* state = static_cast<TaggedTuneCompletionState*>(user_data);
+    state->calls++;
+    state->request_id = request_id;
+    state->result = result;
+}
+} // namespace
+
 static int
 call_replay_convert_block(int format, const char* capture_stage, int fs4_shift_enabled, int historical_cu8_two_pass,
                           const uint8_t* raw_block, size_t raw_bytes, size_t out_cap_f32, int start_phase,
@@ -247,6 +263,27 @@ main(void) {
     failed |= expect_int_eq("retune completion result binding helper rc", rc, 0);
     failed |= expect_int_eq("first completion keeps failed result", first_completion_result, RTL_STREAM_TUNE_FAILED);
     failed |= expect_int_eq("second completion keeps ok result", second_completion_result, RTL_STREAM_TUNE_OK);
+
+    TaggedTuneCompletionState tagged_completion = {};
+    uint32_t owner_freq_hz = 0U;
+    uint32_t owner_profile_freq_hz = 0U;
+    uint64_t owner_token = 0U;
+    int owner_completion_result = RTL_STREAM_TUNE_OK;
+    const uint64_t expected_owner_token = UINT64_C(0x1111222233334444);
+    rtl_stream_register_tune_completion_callback(tagged_tune_completion, &tagged_completion);
+    rc = rtl_stream_test_tagged_retune_ownership(expected_owner_token, 0U, RTL_STREAM_TUNE_FAILED, &owner_freq_hz,
+                                                 &owner_profile_freq_hz, &owner_token, &owner_completion_result);
+    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
+    failed |= expect_int_eq("tagged retune ownership helper rc", rc, 0);
+    failed |= expect_int_eq("untagged contender preserves owner frequency", (int)owner_freq_hz, 855000000);
+    failed |= expect_int_eq("untagged contender preserves owner profile", (int)owner_profile_freq_hz, 855000000);
+    failed |= expect_u64_eq("untagged contender preserves owner token", owner_token, expected_owner_token);
+    failed |= expect_int_eq("failed owner completion is retained", owner_completion_result, RTL_STREAM_TUNE_FAILED);
+    failed |= expect_int_eq("failed owner completion is published once", tagged_completion.calls, 1);
+    failed |= expect_u64_eq("failed owner completion keeps request token", tagged_completion.request_id,
+                            expected_owner_token);
+    failed |=
+        expect_int_eq("failed owner callback keeps terminal result", tagged_completion.result, RTL_STREAM_TUNE_FAILED);
 
     failed |= expect_int_eq("retune without controller is rejected",
                             dsd_rtl_stream_test_retune_without_controller_rejected(), 1);

@@ -56,6 +56,8 @@ static int g_rtl_ted_sps = 5;
 static int g_rtl_ted_sps_override = 0;
 static int g_drain_audio_calls = 0;
 static int g_rtl_tune_calls = 0;
+static int g_rtl_tagged_tune_calls = 0;
+static uint64_t g_rtl_last_request_id = 0U;
 static int g_rtl_pending_active = 0;
 static int g_rtl_pending_cqpsk = -1;
 static int g_rtl_pending_symbol_rate_hz = 0;
@@ -250,6 +252,13 @@ rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz) {
         apply_pending_retune_profile(center_freq_hz);
     }
     return g_rtl_tune_result;
+}
+
+int
+rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {
+    g_rtl_tagged_tune_calls++;
+    g_rtl_last_request_id = request_id;
+    return rtl_stream_tune(ctx, center_freq_hz);
 }
 
 void
@@ -573,9 +582,17 @@ main(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     state->rtl_ctx = (RtlSdrContext*)state;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 853900000, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(g_tune_generation_advance_calls == 2);
+    g_rtl_tagged_tune_calls = 0;
+    g_rtl_last_request_id = 0U;
+    uint64_t scan_request_id = 0U;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853900000, 0, &scan_request_id) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(g_tune_generation_advance_calls == 1);
+    assert(scan_request_id != 0U && g_tune_request_pending == scan_request_id);
+    assert(g_rtl_tagged_tune_calls == 1);
+    assert(g_rtl_last_request_id == scan_request_id);
+    dsd_trunk_tuning_request_complete(scan_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(g_tune_request_pending == 0U);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 
     /* RTL audio retuned by rigctl has no native RTL controller boundary, so the
      * queued P25 VC demod profile must be applied after SetFreq succeeds. */
@@ -631,7 +648,7 @@ main(void) {
     assert(g_frame_sync_reset_calls == 0);
 
 #ifdef USE_RADIO
-    /* Native RTL stream retunes keep relying on rtl_stream_tune() for
+    /* Native RTL stream retunes keep relying on the RTL tune API for
      * hardware-side drain/clear behavior instead of also draining here. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
@@ -685,7 +702,8 @@ main(void) {
     g_trunk_scan_saved_autogain_on = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     rtl_stream_clear_pending_retune_profile();
-    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453000000, 10, UINT64_C(0x10))
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(g_rtl_pending_active == 1);
     assert(g_rtl_pending_tuner_gain_is_set == 1);
     assert(g_rtl_pending_tuner_gain_tenth_db == 270);
@@ -706,7 +724,8 @@ main(void) {
     g_trunk_scan_saved_autogain_on = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     rtl_stream_clear_pending_retune_profile();
-    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453500000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453500000, 10, UINT64_C(0x11))
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(g_rtl_pending_active == 1);
     assert(g_rtl_pending_tuner_gain_is_set == 1);
     assert(g_rtl_pending_tuner_gain_is_auto == 1);
@@ -773,7 +792,13 @@ main(void) {
     g_rtl_pending_active = 0;
     g_frame_sync_reset_calls = 0;
     g_p25p2_frame_reset_calls = 0;
-    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 855000000, 8, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    const uint64_t voice_request_id = UINT64_C(0x1122334455667788);
+    g_rtl_tagged_tune_calls = 0;
+    g_rtl_last_request_id = 0U;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 855000000, 8, voice_request_id)
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(g_rtl_tagged_tune_calls == 1);
+    assert(g_rtl_last_request_id == voice_request_id);
     assert(opts->trunk_is_tuned == 1);
     assert(state->trunk_vc_freq[0] == 855000000);
     assert(state->p25_vc_cqpsk_override == -1);
@@ -814,7 +839,13 @@ main(void) {
     g_rtl_ted_sps_override = 0;
     g_rtl_pending_active = 0;
     g_frame_sync_reset_calls = 0;
-    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 4, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    const uint64_t cc_request_id = UINT64_C(0x8877665544332211);
+    g_rtl_tagged_tune_calls = 0;
+    g_rtl_last_request_id = 0U;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 4, cc_request_id)
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(g_rtl_tagged_tune_calls == 1);
+    assert(g_rtl_last_request_id == cc_request_id);
     assert(state->rf_mod == 1);
     assert(state->trunk_cc_freq == 852000000);
     assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
