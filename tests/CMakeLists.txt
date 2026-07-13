@@ -2578,6 +2578,11 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src
 )
+target_include_directories(
+    dsd-neo_test_core_audio2_helpers
+    SYSTEM
+    PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
+)
 target_compile_definitions(
     dsd-neo_test_core_audio2_helpers
     PRIVATE DSD_AUDIO2_INTERNAL=
@@ -3832,6 +3837,11 @@ target_include_directories(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
         ${PROJECT_SOURCE_DIR}/include
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_sync_dispatch
+    SYSTEM
+    PRIVATE ${_MBE_TARGET_INCLUDE_DIRS}
 )
 add_test(NAME P25_P1_SYNC_DISPATCH COMMAND dsd-neo_test_p25_p1_sync_dispatch)
 
