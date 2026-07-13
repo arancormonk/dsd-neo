@@ -517,6 +517,19 @@ else()
         "mbe-neo package found but exported targets are missing"
     )
 endif()
+# Test and analyzer targets compile some mbe-consuming sources directly, so
+# retain the package include root independently of link propagation.
+get_target_property(
+    _MBE_TARGET_INCLUDE_DIRS
+    ${MBE_LINK_TARGET}
+    INTERFACE_INCLUDE_DIRECTORIES
+)
+if(NOT _MBE_TARGET_INCLUDE_DIRS)
+    message(
+        FATAL_ERROR
+        "mbe-neo package found but its exported target has no include directories"
+    )
+endif()
 
 include(CheckCSourceCompiles)
 set(_DSD_SAVED_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
@@ -761,7 +774,7 @@ else()
     message(STATUS "Audio backend: PulseAudio")
 endif()
 
-set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR})
+set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${_MBE_TARGET_INCLUDE_DIRS})
 
 # Audio backend includes and libraries
 set(AUDIO_SYSTEM_LIBS "")
