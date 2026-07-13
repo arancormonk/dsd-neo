@@ -11,7 +11,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -58,8 +58,8 @@ init_opts_display_and_audio_defaults(dsd_opts* opts) {
     opts->frontend_display.const_norm_mode = 0; // default: radial percentile normalization
     opts->frontend_display.eye_view = 0;
     opts->frontend_display.fsk_hist_view = 0;
-    opts->frontend_display.eye_unicode = 1;              //default On for clearer rendering
-    opts->frontend_display.eye_color = 1;                //default On when terminal supports color
+    opts->frontend_terminal_display.eye_unicode = 1;     //default On for clearer rendering
+    opts->frontend_terminal_display.eye_color = 1;       //default On when terminal supports color
     opts->frontend_display.show_dsp_panel = 0;           // hide compact DSP panel by default
     opts->frontend_display.show_p25_metrics = 0;         // hide P25 metrics by default
     opts->frontend_display.show_p25_neighbors = 0;       // hide P25 Neighbors by default
@@ -122,7 +122,6 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->p25_sm_log_write_error_reported = 0;
     opts->symbol_out_file_creation_time = time(NULL);
     opts->symbol_out_file_is_auto = 0;
-    opts->symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
     opts->mbe_out = 0;
     opts->mbe_outR = 0; //second slot on a TDMA system
     opts->wav_out_f = NULL;
@@ -183,8 +182,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
         2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
     // Generic input volume for non-RTL inputs (Pulse/WAV/TCP/UDP)
     opts->input_volume_multiplier = 1;
-    opts->rtl_udp_port =
-        0; //set UDP port for RTL remote -- 0 by default, will be making this optional for some external/legacy use cases (edacs-fm, etc)
+    opts->rtl_udp_port = 0; // external RTL retune control is disabled by default
     DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", "127.0.0.1");
     opts->rtl_dsp_bw_khz = 48;  // DSP baseband kHz (4,6,8,12,16,24,48). Not tuner IF BW.
     opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
@@ -233,10 +231,10 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
     opts->pulse_flush = 1; //set 0 to flush, 1 for flushed
     opts->frontend_kind = DSD_FRONTEND_NONE;
-    opts->frontend_display.terminal_compact = 0;
-    opts->frontend_display.terminal_history = 1;
+    opts->frontend_terminal_display.terminal_compact = 0;
+    opts->frontend_terminal_display.terminal_history = 1;
 #ifdef LIMAZULUTWEAKS
-    opts->frontend_display.terminal_compact = 1;
+    opts->frontend_terminal_display.terminal_compact = 1;
 #endif
     opts->payload = 0;
     opts->inverted_dpmr = 0;
@@ -441,13 +439,13 @@ init_state_core_buffers(dsd_state* state) {
 
     // Symbol history buffer for resample-on-sync (SDRTrunk-style)
     // Note: Buffer stores symbols (one per dibit decision), not raw audio samples
-    state->dmr_sample_history_size = DMR_SAMPLE_HISTORY_SIZE; // ~427ms at 4800 sym/s
-    state->dmr_sample_history = aligned_alloc_64(sizeof(float) * state->dmr_sample_history_size);
-    if (state->dmr_sample_history) {
-        DSD_MEMSET(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);
+    state->symbol_history_size = DSD_SYMBOL_HISTORY_SIZE; // ~427ms at 4800 sym/s
+    state->symbol_history = aligned_alloc_64(sizeof(float) * state->symbol_history_size);
+    if (state->symbol_history) {
+        DSD_MEMSET(state->symbol_history, 0, sizeof(float) * state->symbol_history_size);
     }
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
+    state->symbol_history_head = 0;
+    state->symbol_history_count = 0;
 
     state->repeat = 0;
 
@@ -743,9 +741,6 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
     DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));
-    state->p25_p2_enc_lockout_muted[0] = 0;
-    state->p25_p2_enc_lockout_muted[1] = 0;
-
     state->K = 0;
     state->R = 0;
     state->RR = 0;
@@ -910,9 +905,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_vc_cqpsk_pref = -1;
     state->p25_vc_cqpsk_override = -1;
 
-    //experimental symbol file capture read throttle
-    state->symbol_throttle = 0; //0 = auto pace from symbol timing
-    state->use_throttle = 0;    //only use throttle if set to 1
+    state->use_throttle = 0;
     state->symbol_replay_next_deadline_ns = 0;
 
     state->p2_scramble_offset = 0;
@@ -1254,11 +1247,11 @@ freeState(dsd_state* state) {
     state->audio_out_float_bufR = NULL;
     state->audio_out_float_buf_pR = NULL;
 
-    dsd_aligned_free(state->dmr_sample_history);
-    state->dmr_sample_history = NULL;
-    state->dmr_sample_history_size = 0;
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
+    dsd_aligned_free(state->symbol_history);
+    state->symbol_history = NULL;
+    state->symbol_history_size = 0;
+    state->symbol_history_head = 0;
+    state->symbol_history_count = 0;
 
     dsd_aligned_free(state->dibit_buf);
     state->dibit_buf = NULL;

@@ -32,7 +32,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -274,7 +273,6 @@ static void
 tdulc_finalize_tail_symbols(dsd_opts* opts, dsd_state* state, int* status_count) {
     read_zeros(opts, state, 20, status_count);
 
-    state->p25_p1_last_tdu = time(NULL);
     state->p25_p1_last_tdu_m = dsd_time_now_monotonic_s();
     state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
     if (*status_count != 35) {

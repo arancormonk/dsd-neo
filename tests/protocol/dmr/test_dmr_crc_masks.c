@@ -9,6 +9,8 @@
  * PI/CSBK/MBC Header/Data Header/USBD via ComputeCrcCCITT.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <assert.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
@@ -132,7 +134,7 @@ test_ccitt16_mask(uint16_t mask16) {
     append_bits(bits, 80, masked, 16);
 
     // Emulate extraction
-    uint16_t ext = (uint16_t)ConvertBitIntoBytes(&bits[80], 16);
+    uint16_t ext = (uint16_t)convert_bits_into_output(&bits[80], 16);
     ext ^= mask16;
     uint16_t cmp = ComputeCrcCCITT(bits);
     assert(ext == cmp);

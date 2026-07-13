@@ -227,8 +227,8 @@ dsd_frame_logf(dsd_opts* opts, const char* format, ...) {
     time_t now = time(NULL);
     char timestr[9];
     char datestr[11];
-    getTimeN_buf(now, timestr);
-    getDateN_buf(now, datestr);
+    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
     if (DSD_FPRINTF(opts->frame_log_f, "%s %s %s\n", datestr, timestr, line) < 0) {
         if (!opts->frame_log_write_error_reported) {
@@ -389,7 +389,7 @@ readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d) {
     }
 
     x = 0;
-    for (i = 0; i < 6; i++) //breaks backwards compatablilty with 6 files
+    for (i = 0; i < 6; i++) // AMBE payload occupies six bytes
     {
         c = fgetc(opts->mbe_in_f);
         if (c == EOF) {
@@ -512,7 +512,7 @@ closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
             fclose(opts->mbe_out_f);
             opts->mbe_out_f = NULL;
             opts->mbe_out = 0;
-            LOG_NOTICE("\nClosing MBE out file 1.\n");
+            LOG_INFO("NOTICE: \nClosing MBE out file 1.\n");
         }
     }
 }
@@ -528,7 +528,7 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
             fclose(opts->mbe_out_fR);
             opts->mbe_out_fR = NULL;
             opts->mbe_outR = 0;
-            LOG_NOTICE("\nClosing MBE out file 2.\n");
+            LOG_INFO("NOTICE: \nClosing MBE out file 2.\n");
         }
     }
 }
@@ -544,8 +544,8 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     //random element of filename, so two files won't overwrite one another
     uint16_t random_number = dsd_nonce_u16();
 
-    getTime_buf(timestr);
-    getDate_buf(datestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
     //phase 1 and provoice
     if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
@@ -599,8 +599,8 @@ openMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     //random element of filename, so two files won't overwrite one another
     uint16_t random_number = dsd_nonce_u16();
 
-    getTime_buf(timestr);
-    getDate_buf(datestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
     //phase 1 and provoice
     if (DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)) {
@@ -653,8 +653,8 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
     uint16_t random_number = dsd_nonce_u16();
     char datestr[9];
     char timestr[7];
-    getDate_buf(datestr);
-    getTime_buf(timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
 
     int written = 0;
     if (ext == 0) {
@@ -724,8 +724,10 @@ wav_rename_build_metadata(const Event_History* event_item, wav_rename_metadata* 
     if (event_item && event_item->event_time > 0) {
         event_time = event_item->event_time;
     }
-    getDateF_buf(event_time, metadata->datestr);
-    getTimeF_buf(event_time, metadata->timestr);
+    (void)dsd_format_local_datetime(event_time, DSD_LOCAL_DATETIME_DATE_COMPACT, metadata->datestr,
+                                    sizeof metadata->datestr);
+    (void)dsd_format_local_datetime(event_time, DSD_LOCAL_DATETIME_TIME_COMPACT, metadata->timestr,
+                                    sizeof metadata->timestr);
     metadata->random_number = dsd_nonce_u16();
     metadata->source_id = event_item ? event_item->source_id : 0U;
     metadata->target_id = event_item ? event_item->target_id : 0U;
@@ -867,7 +869,7 @@ void
 openSymbolOutFile(dsd_opts* opts, dsd_state* state) {
     closeSymbolOutFile(opts, state);
     opts->symbol_out_f = dsd_fopen_private(opts->symbol_out_file, "wb");
-    if (opts->symbol_out_f != NULL && opts->symbol_capture_format == DSD_SYMBOL_CAPTURE_FORMAT_SOFT) {
+    if (opts->symbol_out_f != NULL) {
         const unsigned char header[DSD_SYMBOL_CAPTURE_SOFT_HEADER_SIZE] = {
             'D', 'S', 'D', 'N', 'S', 'Y', 'M', '2', 2, DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE, 0, 0, 0, 0, 0, 0,
         };
@@ -896,8 +898,8 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             //basically just lift the close and open from ncurses handler for 'r' and then 'R'
             char timestr[7];
             char datestr[9];
-            getTime_buf(timestr);
-            getDate_buf(datestr);
+            (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+            (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
             DSD_SNPRINTF(opts->symbol_out_file, sizeof(opts->symbol_out_file), "%s_%s_dibit_capture.bin", datestr,
                          timestr);
             openSymbolOutFile(opts, state);
@@ -919,21 +921,6 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
         }
     }
 }
-
-//input bit array, return output as up to a 64-bit value
-uint64_t
-convert_bits_into_output(const uint8_t* input, int len) {
-    int i;
-    uint64_t output = 0;
-    for (i = 0; i < len; i++) {
-        output <<= 1;
-        output |= (uint64_t)(input[i] & 1);
-    }
-    return output;
-}
-
-/* Note: ConvertBitIntoBytes() is provided in DMR utils (dmr_utils.c).
- * Do not duplicate here to avoid multiple definition at link time. */
 
 void
 pack_bit_array_into_byte_array(const uint8_t* input, uint8_t* output, int len) {
@@ -1991,7 +1978,7 @@ sdrtrunk_json_handle_mi(dsd_opts* opts, dsd_state* state, const char* token, cha
     state->payload_mi = iv_hex;
     state->payload_keyid = ctx->key_id;
     if (state->keyloader == 1) {
-        keyring(opts, state);
+        keyring_activate_slot(opts, state, state->currentslot);
     }
 
     ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, iv_str);
@@ -2074,8 +2061,8 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
 
     char timestr[9];
     char datestr[11];
-    getTimeN_buf(event_time, timestr);
-    getDateN_buf(event_time, datestr);
+    (void)dsd_format_local_datetime(event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
     if (ctx->show_time == 1) {
         DSD_FPRINTF(stderr, " Date: %s Time: %s", datestr, timestr);
     }

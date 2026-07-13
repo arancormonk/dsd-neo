@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: ISC
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
@@ -23,7 +24,7 @@ typedef struct {
 
 static int
 provoice_next_dibit(provoice_reader* reader) {
-    int dibit = getDibit(reader->opts, reader->state);
+    int dibit = get_dibit_and_analog_signal(reader->opts, reader->state, NULL);
     reader->raw_bits[reader->bit_count++] = (uint8_t)dibit;
     return dibit;
 }
@@ -89,11 +90,11 @@ provoice_dump_payload_debug(const dsd_opts* opts, const uint8_t* raw_bits, uint8
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n pV Payload Dump: \n  ");
         for (int i = 0; i < bit_count / 8; i++) {
-            uint16_t top = (uint16_t)ConvertBitIntoBytes(raw_bits + (i * 8), 16);
+            uint16_t top = (uint16_t)convert_bits_into_output(raw_bits + (i * 8), 16);
             if (top == 0x0EBF && i != 0) {
                 DSD_FPRINTF(stderr, "\n  ");
             }
-            raw_bytes[i] = (uint8_t)ConvertBitIntoBytes(raw_bits + (i * 8), 8);
+            raw_bytes[i] = (uint8_t)convert_bits_into_output(raw_bits + (i * 8), 8);
             DSD_FPRINTF(stderr, "%02X", raw_bytes[i]);
         }
     }
@@ -129,9 +130,9 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
     provoice_print_call_info(opts, state);
 
     provoice_read_raw_bits(&reader, 64 + 16 + 64);
-    initial = (unsigned long long int)ConvertBitIntoBytes(&raw_bits[0], 64);
-    lid = (uint16_t)ConvertBitIntoBytes(&raw_bits[64], 16);
-    secondary = (unsigned long long int)ConvertBitIntoBytes(&raw_bits[80], 64);
+    initial = (unsigned long long int)convert_bits_into_output(&raw_bits[0], 64);
+    lid = (uint16_t)convert_bits_into_output(&raw_bits[64], 16);
+    secondary = (unsigned long long int)convert_bits_into_output(&raw_bits[80], 64);
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n N64: %016llX", initial);
         DSD_FPRINTF(stderr, "\n LID: %04X", lid);
@@ -146,7 +147,7 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
 
     provoice_read_raw_bits(&reader, 2);
     provoice_read_raw_bits(&reader, 16);
-    bf = (uint16_t)ConvertBitIntoBytes(&raw_bits[(size_t)54u * 8u], 16);
+    bf = (uint16_t)convert_bits_into_output(&raw_bits[(size_t)54u * 8u], 16);
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n BF: %04X ", bf);
     }

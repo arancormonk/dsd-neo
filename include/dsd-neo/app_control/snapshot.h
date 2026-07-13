@@ -317,7 +317,6 @@ int dsd_app_frontend_event_history_page_get(const dsd_frontend_event_history_que
                                             dsd_frontend_event_history_page_info* out_info);
 int dsd_app_frontend_event_history_item_get(uint8_t slot, size_t index, dsd_frontend_event_history_item* out,
                                             uint64_t* out_sequence);
-void dsd_app_frontend_redraw_request(void);
 int dsd_app_frontend_redraw_consume(void);
 
 #ifdef __cplusplus

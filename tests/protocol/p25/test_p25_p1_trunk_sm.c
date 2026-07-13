@@ -101,7 +101,7 @@ main(int argc, char** argv) {
     opts.verbose = 0;
 
     // Initialize SM and verify counters
-    p25_sm_init(&opts, &state);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
     rc |= expect_eq("init tune_count", state.p25_sm_tune_count, 0);
     rc |= expect_eq("init release_count", state.p25_sm_release_count, 0);
 
@@ -112,13 +112,13 @@ main(int argc, char** argv) {
 
     // Iterate candidates (order preserved)
     long cand = 0;
-    int ok1 = p25_sm_next_cc_candidate(&state, &cand);
+    int ok1 = p25_cc_next_candidate(&state, &cand);
     rc |= expect_eq("cand ok1", ok1, 1);
     rc |= expect_eq("cand1", cand, cc_candidates[0]);
-    ok1 = p25_sm_next_cc_candidate(&state, &cand);
+    ok1 = p25_cc_next_candidate(&state, &cand);
     rc |= expect_eq("cand ok2", ok1, 1);
     rc |= expect_eq("cand2", cand, cc_candidates[1]);
-    ok1 = p25_sm_next_cc_candidate(&state, &cand);
+    ok1 = p25_cc_next_candidate(&state, &cand);
     rc |= expect_eq("cand cycle ok3", ok1, 1);
     rc |= expect_eq("cand3", cand, cc_candidates[0]);
 
@@ -140,7 +140,14 @@ main(int argc, char** argv) {
     int svc = 0;                            // service bits not used here
     int tg = 1234;
     int src = 5678;
-    p25_sm_on_group_grant(&opts, &state, channel, svc, tg, src);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &state,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = channel,
+                                   .tg = tg,
+                                   .src = src,
+                                   .svc_bits = svc,
+                                   .is_group = 1});
 
     // Expect one tune and active slot set to 1 for TDMA
     rc |= expect_eq("tune_count after grant", state.p25_sm_tune_count, 1);
@@ -152,7 +159,7 @@ main(int argc, char** argv) {
     state.p25_p2_audio_allowed[1] = 0;
     state.dmrburstL = 24;
     state.dmrburstR = 24;
-    p25_sm_on_release(&opts, &state);
+    p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
     rc |= expect_eq("release_count", state.p25_sm_release_count, 1);
 
     return rc;

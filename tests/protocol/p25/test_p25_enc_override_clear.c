@@ -87,7 +87,14 @@ main(void) {
 
     unsigned before = st.p25_sm_tune_count;
     // svc has ENC bit set (0x40); override should allow tune
-    p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x40, /*tg*/ 0x2345, /*src*/ 1001);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = ch,
+                                   .tg = 0x2345,
+                                   .src = 1001,
+                                   .svc_bits = 0x40,
+                                   .is_group = 1});
     rc |= expect_true("enc override clear", st.p25_sm_tune_count == before + 1);
 
     return rc;

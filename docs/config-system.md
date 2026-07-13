@@ -3,9 +3,9 @@
 This document describes the configuration file system in `dsd-neo`, covering
 file format, options, profiles, validation, and CLI integration.
 
-The goal is to let users avoid re-entering common options on every run while
-preserving strict backward compatibility with existing CLI / environment
-workflows.
+The goal is to let users avoid re-entering common options on every run. Config
+loading is opt-in, CLI arguments override loaded values, and documented
+`DSD_NEO_*` environment variables remain runtime-only controls.
 
 ---
 
@@ -13,7 +13,7 @@ workflows.
 
 - **Persist user preferences** such as input source, output backend, decode
   mode, trunking basics, and UI behavior.
-- **Non-breaking behavior** for existing users:
+- **Stable precedence** for existing command-line workflows:
   - If no config file exists, behavior is identical to current releases.
   - For keys covered by the config file, CLI arguments override config file
     values.
@@ -275,7 +275,6 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `source` | ENUM | Input source type (`pulse|rtl|rtltcp|soapy|file|tcp|udp`) | `pulse` |
 | `pulse_source` | STRING | PulseAudio source device | (empty) |
-| `pulse_input` | STRING | Deprecated alias for `pulse_source` | (empty) |
 | `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
 | `rtl_freq` | FREQ | RTL-SDR frequency | `851.375M` |
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
@@ -284,7 +283,6 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_sql` | INT (-100-0) | Squelch level | `0` |
 | `rtl_volume` | INT (1-3) | RTL monitor/non-symbol gain multiplier | `2` |
 | `auto_ppm` | BOOL | Enable carrier/error-based RTL auto-PPM correction | `false` |
-| `rtl_auto_ppm` | BOOL | Deprecated alias for `auto_ppm` | `false` |
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
 | `soapy_args` | STRING | SoapySDR device selection args (from SoapySDRUtil `--find`/`--probe`) | (empty) |
@@ -307,9 +305,7 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `backend` | ENUM | Audio output backend (`pulse|null`) | `pulse` |
 | `pulse_sink` | STRING | PulseAudio sink device | (empty) |
-| `pulse_output` | STRING | Deprecated alias for `pulse_sink` | (empty) |
 | `frontend` | ENUM | Frontend implementation (`none|terminal|native`) | `none` |
-| `ncurses_ui` | BOOL | Deprecated alias for `frontend`; `true` maps to `terminal`, `false` maps to `none` | `false` |
 
 **[mode] section:**
 | Key | Type | Description | Default |
@@ -348,11 +344,8 @@ small subset is exposed as config keys for convenience (for example
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `enabled` | BOOL | Enable audible call-alert beeps | `false` |
-| `call_alert` | BOOL | Deprecated alias for `enabled` | `false` |
 | `voice_start` | BOOL | Beep when a voice call starts | `true` |
-| `start` | BOOL | Deprecated alias for `voice_start` | `true` |
 | `voice_end` | BOOL | Beep when a voice call ends | `true` |
-| `end` | BOOL | Deprecated alias for `voice_end` | `true` |
 | `data` | BOOL | Beep when a data call is logged | `true` |
 
 **[recording] section:**
@@ -394,7 +387,6 @@ The config system validates files and reports issues with line numbers:
 
 - **Error**: Invalid enum value, type mismatch, parse failure
 - **Warning**: Unknown key or section, integer out of range
-- **Info**: Deprecated key usage (key still works)
 
 ```bash
 # Validate a config file
@@ -485,8 +477,7 @@ version = 1
   - Use `SoapySDRUtil --find` / `SoapySDRUtil --probe="<args>"` to discover valid `soapy_args`.
 
 - **PulseAudio (`source = "pulse"`)**: Use `pulse_source` to specify
-  a particular input device. The older `pulse_input` key is accepted
-  as an alias.
+  a particular input device.
 
 - **TCP (`source = "tcp"`)**: Set `tcp_host` (port optional) to switch
   the input to TCP PCM audio (raw PCM16LE mono). Sample rate uses the
@@ -505,8 +496,6 @@ version = 1
 The `decode` key in `[mode]` configures the frame types and modulation.
 Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `nxdn48`, `nxdn96`,
 `x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`, `analog`.
-Compatibility aliases are also accepted: `p25p1_only`, `p25p2_only`,
-`edacs`, `provoice`, and `analog_monitor`.
 
 `decode = "auto"` preserves the protocol candidates already established by
 initialization and any active configuration/profile overlay; it does not replace
@@ -629,7 +618,8 @@ Config/CLI interaction:
 - `--validate-config` reports an error when `trunk_scan.enabled = true` lacks `targets_csv`.
 - `--validate-config` reports an error when trunk scan and `[trunking] chan_csv` are both enabled.
 - If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
-  file/replay input, trunking mode, or legacy scan mode disable the inherited scan for that run. UI-only flags such as
+  file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run. UI-only
+  flags such as
   `--frontend terminal` and trunk-scan timing overrides keep the inherited scan enabled.
 - Explicit profile runs preserve the profile's trunk scan settings and disable autosave for that process, like other
   profile-based runs.

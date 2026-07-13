@@ -39,10 +39,6 @@ struct p25p2_mac_result {
     /* MFID and opcode from the MAC header. */
     uint8_t mfid;
     uint8_t opcode;
-    /* Compatibility fields: first offset and first two segment lengths. */
-    int len_a;
-    int len_b;
-    int len_c;
     int segment_count;
     struct p25p2_mac_segment segments[P25P2_MAC_MAX_SEGMENTS];
 };

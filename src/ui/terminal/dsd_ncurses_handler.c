@@ -4,7 +4,7 @@
  */
 /*-------------------------------------------------------------------------------
 * dsd_ncurses_handler.c
-* DSD-FME ncurses terminal user input handler
+* Terminal user input handler
 *
 * LWVMOBILE
 * 2025-05 DSD-FME Florida Man Edition
@@ -42,12 +42,12 @@ ncurses_drain_escape_sequence(void) {
 
 static void
 ncurses_post_delta_i32(int cmd, int32_t value) {
-    (void)dsd_app_command_set_i32(cmd, value);
+    (void)dsd_app_command_set_i32_tracked(cmd, value, NULL);
 }
 
 static void
 ncurses_post_delta_f32(int cmd, float value) {
-    (void)dsd_app_command_set_float(cmd, value);
+    (void)dsd_app_command_set_float_tracked(cmd, value, NULL);
 }
 
 static uint32_t DSD_ATTR_USED
@@ -128,7 +128,7 @@ ncurses_try_post_simple_cmd(int c) {
         if (map[i].key != c) {
             continue;
         }
-        (void)dsd_app_command_action(map[i].cmd);
+        (void)dsd_app_command_action_tracked(map[i].cmd, NULL);
         return 1;
     }
     return 0;
@@ -179,19 +179,20 @@ ncurses_handle_tg_hold_keys(const dsd_opts* opts, const dsd_state* state, int c)
         return 0;
     }
     uint32_t tg = ncurses_resolve_tg_hold_target(opts, state, c == DSD_KEY_TG_HOLD2);
-    (void)dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, tg);
+    (void)dsd_app_command_set_u32_tracked(DSD_APP_CMD_TG_HOLD_SET, tg, NULL);
     return 1;
 }
 
 static int DSD_ATTR_USED
 ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c) {
     if (c == DSD_KEY_EH_TOGGLE) {
-        (void)dsd_app_command_action(opts->m17encoder == 1 ? DSD_APP_CMD_M17_TX_TOGGLE : DSD_APP_CMD_EH_TOGGLE_SLOT);
+        (void)dsd_app_command_action_tracked(
+            opts->m17encoder == 1 ? DSD_APP_CMD_M17_TX_TOGGLE : DSD_APP_CMD_EH_TOGGLE_SLOT, NULL);
         return 1;
     }
     if (c == '!' || c == '@') {
         uint8_t slot = (uint8_t)((c == '@') ? 1 : 0);
-        (void)dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, slot);
+        (void)dsd_app_command_set_u8_tracked(DSD_APP_CMD_LOCKOUT_SLOT, slot, NULL);
         return 1;
     }
     if (c == DSD_KEY_ENTER || c == '\r' || c == KEY_ENTER) {
@@ -204,7 +205,7 @@ ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c)
 }
 
 uint8_t
-ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
+dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
 
     if (!opts || !state) {
         return 1;

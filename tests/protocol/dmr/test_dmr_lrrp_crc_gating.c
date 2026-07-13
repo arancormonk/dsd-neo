@@ -16,6 +16,7 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -73,15 +74,13 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     (void)slot;
 }
 
-// Provide deterministic system time stubs for LRRP output (when enabled).
-void
-getTimeC_buf(char out[9]) {
-    DSD_SNPRINTF(out, 9, "%s", "11:22:33");
-}
-
-void
-getDateS_buf(char out[11]) {
-    DSD_SNPRINTF(out, 11, "%s", "1999/01/02");
+// Provide deterministic system time for LRRP output (when enabled).
+int
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
+    (void)timestamp;
+    const char* value = (format == DSD_LOCAL_DATETIME_DATE_SLASH) ? "1999/01/02" : "11:22:33";
+    DSD_SNPRINTF(out, out_size, "%s", value);
+    return 1;
 }
 
 // Under test

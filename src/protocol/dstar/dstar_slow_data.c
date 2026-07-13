@@ -3,9 +3,10 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <stdint.h>
@@ -75,7 +76,7 @@ static void
 dstar_sd_pack_bytes(const uint8_t* sd, uint8_t* sd_bytes) {
     int i;
     for (i = 0; i < 60; i++) {
-        sd_bytes[59 - i] = (uint8_t)ConvertBitIntoBytes(&sd[i * 8 + 0], 8);
+        sd_bytes[59 - i] = (uint8_t)convert_bits_into_output(&sd[i * 8 + 0], 8);
     }
 }
 

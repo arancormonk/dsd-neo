@@ -46,25 +46,6 @@ static long int g_mapped_channel_freq;
  * code paths, so we link against dsd-neo_proto_nxdn and provide focused stubs
  * for external entrypoints that are irrelevant to these bounds checks.
  */
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0U; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-convert_bits_into_output(const uint8_t* input, int len) {
-    if (input == NULL || len <= 0) {
-        return 0ULL;
-    }
-    return ConvertBitIntoBytes(input, (uint32_t)len);
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
@@ -327,9 +308,13 @@ dsd_time_monotonic_ns(void) {
 
 dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                 uint64_t* out_request_id) {
     (void)opts;
     (void)state;
+    if (out_request_id != NULL) {
+        *out_request_id = 0U;
+    }
     g_tune_cc_calls++;
     g_tune_cc_freq = freq;
     g_tune_cc_ted_sps = ted_sps;
@@ -338,8 +323,12 @@ dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq
 
 dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                   uint64_t* out_request_id) {
     (void)state;
+    if (out_request_id != NULL) {
+        *out_request_id = 0U;
+    }
     g_tune_freq_calls++;
     g_tune_freq_freq = freq;
     g_tune_freq_ted_sps = ted_sps;

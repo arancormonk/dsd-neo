@@ -58,9 +58,10 @@ reset_counters(void) {
 }
 
 int
-getDibit(dsd_opts* opts, dsd_state* state) {
+get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)state;
+    (void)out_analog_signal;
     int value = dibit_calls & 3;
     dibit_calls++;
     return value;

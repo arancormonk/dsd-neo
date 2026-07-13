@@ -30,19 +30,6 @@ struct udp_control;
 typedef void (*udp_control_retune_cb)(uint32_t new_frequency_hz);
 
 /**
- * @brief Start UDP control thread.
- *
- * Starts a background UDP listener on 127.0.0.1 and the specified port. On
- * valid messages, invokes the provided retune callback with the parsed
- * frequency.
- *
- * @param udp_port UDP port to bind and listen on (0 disables/start no-op).
- * @param cb Callback invoked upon receiving a valid retune command.
- * @return Opaque handle on success; NULL on failure.
- */
-struct udp_control* udp_control_start(int udp_port, udp_control_retune_cb cb);
-
-/**
  * @brief Start UDP control thread bound to a specific IPv4 address.
  *
  * Starts a background UDP listener on the specified numeric IPv4 address and
@@ -60,7 +47,7 @@ struct udp_control* udp_control_start_bound(const char* bindaddr, int udp_port, 
  *
  * Closes the socket, joins the worker thread, and releases the handle.
  *
- * @param ctrl Opaque handle returned by `udp_control_start` (safe to pass NULL).
+ * @param ctrl Opaque handle returned by `udp_control_start_bound` (safe to pass NULL).
  */
 void udp_control_stop(struct udp_control* ctrl);
 

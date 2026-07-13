@@ -6,21 +6,10 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
-#include <dsd-neo/crypto/pc4.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-uint64_t
-convert_bits_into_output(const uint8_t* input, int len) {
-    uint64_t value = 0;
-    for (int i = 0; i < len; i++) {
-        value = (value << 1) | (uint64_t)(input[i] & 1U);
-    }
-    return value;
-}
 
 void
 pack_bit_array_into_byte_array(const uint8_t* input, uint8_t* output, int len) {
@@ -43,19 +32,6 @@ expect_int(const char* label, int got, int want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: expected %d, got %d\n", label, want, got);
         return 1;
-    }
-    return 0;
-}
-
-static int
-expect_bits_string(const char* label, const short* bits, const char* want) {
-    for (size_t i = 0; want[i] != '\0'; i++) {
-        int got = bits[i] & 1;
-        int expected = want[i] - '0';
-        if (got != expected) {
-            DSD_FPRINTF(stderr, "%s: bit %zu expected %d, got %d\n", label, i, expected, got);
-            return 1;
-        }
     }
     return 0;
 }
@@ -89,32 +65,14 @@ expect_char_frame(const char* label, const char got[49], const char want[49]) {
 }
 
 static int
-expect_char_short_bits(const char* label, const char got[49], const short want[49]) {
+expect_frame_string(const char* label, const char got[49], const char* want) {
     for (int i = 0; i < 49; i++) {
         int actual = ((unsigned char)got[i]) & 1U;
-        int expected = want[i] & 1;
+        int expected = want[i] - '0';
         if (actual != expected) {
             DSD_FPRINTF(stderr, "%s: bit %d expected %d, got %d\n", label, i, expected, actual);
             return 1;
         }
-    }
-    return 0;
-}
-
-static int
-expect_pc4_schedule(const char* label, const PC4Context* got, const PC4Context* want) {
-    if (got->rounds != want->rounds || memcmp(got->keys, want->keys, sizeof(want->keys)) != 0
-        || memcmp(got->perm, want->perm, sizeof(want->perm)) != 0
-        || memcmp(got->new1, want->new1, sizeof(want->new1)) != 0
-        || memcmp(got->array, want->array, sizeof(want->array)) != 0
-        || memcmp(got->array2, want->array2, sizeof(want->array2)) != 0
-        || memcmp(got->decal, want->decal, sizeof(want->decal)) != 0
-        || memcmp(got->rngxor, want->rngxor, sizeof(want->rngxor)) != 0
-        || memcmp(got->rngxor2, want->rngxor2, sizeof(want->rngxor2)) != 0
-        || memcmp(got->tab, want->tab, sizeof(want->tab)) != 0 || memcmp(got->inv, want->inv, sizeof(want->inv)) != 0
-        || memcmp(got->permut, want->permut, sizeof(want->permut)) != 0) {
-        DSD_FPRINTF(stderr, "%s: schedule mismatch\n", label);
-        return 1;
     }
     return 0;
 }
@@ -141,22 +99,9 @@ fill_zero_tail(char frame[49]) {
 }
 
 static void
-build_pc4_128_key(uint64_t k1, uint64_t k2, unsigned char key2[16]) {
-    unsigned char key1[16];
-    DSD_MEMSET(key1, 0, sizeof(key1));
-    u64_to_bytes_be(k1, &key1[0]);
-    u64_to_bytes_be(k2, &key1[8]);
-
-    for (int i = 0; i < 16; i++) {
-        key2[i] = key1[15 - i];
-    }
-}
-
-static void
-append_ascii_hex_chunk(uint64_t value, unsigned char* out) {
-    for (int i = 0; i < 16; i++) {
-        uint8_t nibble = (uint8_t)((value >> (60 - (i * 4))) & 0xFU);
-        out[i] = (unsigned char)(nibble <= 9 ? (nibble + 0x30U) : (nibble + 0x37U));
+load_voice_frame(char frame[49]) {
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((i * 7 + 1) & 1);
     }
 }
 
@@ -194,96 +139,53 @@ test_tyt16_codeword_keystream_vectors(void) {
 }
 
 static int
-test_pc4_decrypt_frame_vector(void) {
+test_tyt_ap_128_apply_vector(void) {
     static const char expect[] = "1001100011110001111101001011001100111110001000101";
-    unsigned char key[16];
-    DSD_MEMSET(key, 0, sizeof(key));
-    build_pc4_128_key(0x736B9A9C5645288BULL, 0x243AD5CB8701EF8AULL, key);
-
-    DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
-    create_keys(&g_pc4_context, key, sizeof(key));
-    g_pc4_context.rounds = nbround;
-
-    short frame[49];
-    for (int i = 0; i < 49; i++) {
-        frame[i] = (short)((i * 3 + 1) & 1);
-    }
-    decrypt_frame_49(frame);
-
-    return expect_bits_string("pc4 decrypt vector", g_pc4_context.bits, expect);
-}
-
-static int
-test_tyt_ap_128_key_schedule(void) {
-    PC4Context expected;
-    DSD_MEMSET(&expected, 0, sizeof(expected));
-    unsigned char key[16];
-    DSD_MEMSET(key, 0, sizeof(key));
-    build_pc4_128_key(0x736B9A9C5645288BULL, 0x243AD5CB8701EF8AULL, key);
-    create_keys(&expected, key, sizeof(key));
-    expected.rounds = nbround;
-
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
-    char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
-    tyt_ap_pc4_keystream_creation(&state, input, 0);
+    tyt_ap_pc4_keystream_creation(&state, "736B9A9C5645288B 243AD5CB8701EF8A", 0);
+
+    char frame[49];
+    load_voice_frame(frame);
 
     int rc = 0;
     rc |= expect_int("tyt ap 128 flag", state.tyt_ap, 1);
-    rc |= expect_pc4_schedule("tyt ap 128", &g_pc4_context, &expected);
+    rc |= expect_int("tyt ap 128 apply", tyt_ap_pc4_apply_frame49(&state, frame), 1);
+    rc |= expect_frame_string("tyt ap 128 vector", frame, expect);
     return rc;
 }
 
 static int
-test_tyt_ap_256_key_schedule(void) {
-    static const uint64_t chunks[4] = {0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL, 0x1111222233334444ULL,
-                                       0x5555666677778888ULL};
-    PC4Context expected;
-    DSD_MEMSET(&expected, 0, sizeof(expected));
-    unsigned char key[64];
-    DSD_MEMSET(key, 0, sizeof(key));
-    for (size_t i = 0; i < 4U; i++) {
-        append_ascii_hex_chunk(chunks[i], key + (i * 16U));
-    }
-    create_keys(&expected, key, sizeof(key));
-    expected.rounds = nbround;
-
+test_tyt_ap_256_apply_vector(void) {
+    static const char expect[] = "1011101011000001010000101111011100101110010000001";
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
-    char input[] = "0123456789ABCDEF FEDCBA9876543210 1111222233334444 5555666677778888";
-    tyt_ap_pc4_keystream_creation(&state, input, 0);
+    tyt_ap_pc4_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210 1111222233334444 5555666677778888", 0);
+
+    char frame[49];
+    load_voice_frame(frame);
 
     int rc = 0;
     rc |= expect_int("tyt ap 256 flag", state.tyt_ap, 1);
-    rc |= expect_pc4_schedule("tyt ap 256", &g_pc4_context, &expected);
+    rc |= expect_int("tyt ap 256 apply", tyt_ap_pc4_apply_frame49(&state, frame), 1);
+    rc |= expect_frame_string("tyt ap 256 vector", frame, expect);
     return rc;
 }
 
 static int
-test_tyt_ap_256_trailing_zero_chunks_key_schedule(void) {
-    static const uint64_t chunks[4] = {0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL, 0x0000000000000000ULL,
-                                       0x0000000000000000ULL};
-    PC4Context expected;
-    DSD_MEMSET(&expected, 0, sizeof(expected));
-    unsigned char key[64];
-    DSD_MEMSET(key, 0, sizeof(key));
-    for (size_t i = 0; i < 4U; i++) {
-        append_ascii_hex_chunk(chunks[i], key + (i * 16U));
-    }
-    create_keys(&expected, key, sizeof(key));
-    expected.rounds = nbround;
-
+test_tyt_ap_256_trailing_zero_chunks_apply_vector(void) {
+    static const char expect[] = "1011101110001000011000010101111001110001111001101";
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
-    char input[] = "0123456789ABCDEF FEDCBA9876543210 0000000000000000 0000000000000000";
-    tyt_ap_pc4_keystream_creation(&state, input, 0);
+    tyt_ap_pc4_keystream_creation(&state, "0123456789ABCDEF FEDCBA9876543210 0000000000000000 0000000000000000", 0);
+
+    char frame[49];
+    load_voice_frame(frame);
 
     int rc = 0;
     rc |= expect_int("tyt ap 256 zero chunks flag", state.tyt_ap, 1);
-    rc |= expect_pc4_schedule("tyt ap 256 zero chunks", &g_pc4_context, &expected);
+    rc |= expect_int("tyt ap 256 zero chunks apply", tyt_ap_pc4_apply_frame49(&state, frame), 1);
+    rc |= expect_frame_string("tyt ap 256 zero chunks vector", frame, expect);
     return rc;
 }
 
@@ -310,17 +212,18 @@ test_tyt_ap_rejects_malformed_keys(void) {
 
 static int
 test_tyt_ep_aes_vector(void) {
-    static const char expect[] = "0001100011000000101000001110110101000101101011001";
+    static const char expect[] = "1011001001101010000010100100011111101111000001100";
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
-    char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
+    tyt_ep_aes_keystream_creation(&state, "736B9A9C5645288B 243AD5CB8701EF8A", 0);
 
-    tyt_ep_aes_keystream_creation(&state, input, 0);
+    char frame[49];
+    load_voice_frame(frame);
 
     int rc = 0;
     rc |= expect_int("tyt ep flag", state.tyt_ep, 1);
-    rc |= expect_bits_string("tyt ep aes", g_pc4_context.bits, expect);
+    rc |= expect_int("tyt ep apply", tyt_ep_aes_apply_frame49(&state, frame), 1);
+    rc |= expect_frame_string("tyt ep aes vector", frame, expect);
     return rc;
 }
 
@@ -361,43 +264,11 @@ test_tyt_ap_apply_skips_silence_and_zero_tail(void) {
 }
 
 static int
-test_tyt_ap_apply_decrypts_voice_frame(void) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
-    char input[] = "736B9A9C5645288B 243AD5CB8701EF8A";
-    tyt_ap_pc4_keystream_creation(&state, input, 0);
-
-    char frame[49];
-    short expected_input[49];
-    for (int i = 0; i < 49; i++) {
-        frame[i] = (char)((i * 7 + 1) & 1);
-        expected_input[i] = (short)(frame[i] & 1);
-    }
-    decrypt_frame_49(expected_input);
-
-    short expected[49];
-    for (int i = 0; i < 49; i++) {
-        expected[i] = (short)(g_pc4_context.bits[i] & 1);
-    }
-
-    DSD_MEMSET(&g_pc4_context, 0, sizeof(g_pc4_context));
-    tyt_ap_pc4_keystream_creation(&state, input, 0);
-
-    int rc = 0;
-    rc |= expect_int("tyt ap apply voice frame", tyt_ap_pc4_apply_frame49(&state, frame), 1);
-    rc |= expect_char_short_bits("tyt ap apply voice bits", frame, expected);
-    return rc;
-}
-
-static int
 test_tyt_ep_apply_skips_silence_and_zero_tail(void) {
+    static const char active_expect[] = "1011001001101010000010100100011111101111000001100";
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
-    state.tyt_ep = 1;
-    for (int i = 0; i < 49; i++) {
-        g_pc4_context.bits[i] = (short)((i + 1) & 1U);
-    }
+    tyt_ep_aes_keystream_creation(&state, "736B9A9C5645288B 243AD5CB8701EF8A", 0);
 
     int rc = 0;
     char inactive[49];
@@ -428,17 +299,9 @@ test_tyt_ep_apply_skips_silence_and_zero_tail(void) {
     rc |= expect_char_frame("tyt ep skip zero-tail frame", zero_tail, original_zero_tail);
 
     char active[49];
-    for (int i = 0; i < 49; i++) {
-        active[i] = (char)(i & 1U);
-    }
-    active[24] = 1;
-    char expected[49];
-    DSD_MEMCPY(expected, active, sizeof(expected));
-    for (int i = 0; i < 49; i++) {
-        expected[i] ^= (char)(g_pc4_context.bits[i] & 1);
-    }
+    load_voice_frame(active);
     rc |= expect_int("tyt ep active applied", tyt_ep_aes_apply_frame49(&state, active), 1);
-    rc |= expect_char_frame("tyt ep active frame", active, expected);
+    rc |= expect_frame_string("tyt ep active frame", active, active_expect);
     return rc;
 }
 
@@ -446,14 +309,12 @@ int
 main(void) {
     int rc = 0;
     rc |= test_tyt16_codeword_keystream_vectors();
-    rc |= test_pc4_decrypt_frame_vector();
-    rc |= test_tyt_ap_128_key_schedule();
-    rc |= test_tyt_ap_256_key_schedule();
-    rc |= test_tyt_ap_256_trailing_zero_chunks_key_schedule();
+    rc |= test_tyt_ap_128_apply_vector();
+    rc |= test_tyt_ap_256_apply_vector();
+    rc |= test_tyt_ap_256_trailing_zero_chunks_apply_vector();
     rc |= test_tyt_ap_rejects_malformed_keys();
     rc |= test_tyt_ep_aes_vector();
     rc |= test_tyt_ap_apply_skips_silence_and_zero_tail();
-    rc |= test_tyt_ap_apply_decrypts_voice_frame();
     rc |= test_tyt_ep_apply_skips_silence_and_zero_tail();
     return rc;
 }

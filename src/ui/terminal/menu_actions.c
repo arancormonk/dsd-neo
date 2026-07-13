@@ -44,25 +44,25 @@
 void
 act_toggle_invert(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_INVERT_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_INVERT_TOGGLE, NULL);
 }
 
 void
 act_toggle_payload(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_PAYLOAD_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_PAYLOAD_TOGGLE, NULL);
 }
 
 void
 act_reset_eh(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_EH_RESET);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_EH_RESET, NULL);
 }
 
 void
 act_exit(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_QUIT);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_QUIT, NULL);
 }
 
 // ---- Event/WAV/DSP actions ----
@@ -76,7 +76,7 @@ act_event_log_set(void* v) {
 void
 act_event_log_disable(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_EVENT_LOG_DISABLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_EVENT_LOG_DISABLE, NULL);
 }
 
 void
@@ -106,7 +106,7 @@ ui_submit_config_metadata(int autosave_enabled, const char* path) {
     payload.autosave_enabled = autosave_enabled ? 1 : 0;
     DSD_SNPRINTF(payload.path, sizeof payload.path, "%s", path ? path : "");
     payload.path[sizeof payload.path - 1] = '\0';
-    (void)dsd_app_command_set_config_metadata(&payload);
+    (void)dsd_app_command_set_config_metadata_tracked(&payload, NULL);
 }
 
 void
@@ -297,33 +297,33 @@ act_config_save_as(void* v) {
 void
 act_crc_relax(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_CRC_RELAX_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_CRC_RELAX_TOGGLE, NULL);
 }
 
 void
 act_trunk_toggle(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_TRUNK_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_TRUNK_TOGGLE, NULL);
     ui_statusf("Trunking toggle requested...");
 }
 
 void
 act_scan_toggle(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_SCANNER_TOGGLE, NULL);
     ui_statusf("Scanner toggle requested...");
 }
 
 void
 act_lcw_toggle(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_LCW_RETUNE_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_LCW_RETUNE_TOGGLE, NULL);
 }
 
 void
 act_p25_enc_lockout(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_TRUNK_ENC_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_TRUNK_ENC_TOGGLE, NULL);
 }
 
 void
@@ -347,25 +347,25 @@ act_import_group(void* v) {
 void
 act_allow_toggle(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_TRUNK_WLIST_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_TRUNK_WLIST_TOGGLE, NULL);
 }
 
 void
 act_tune_group(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_TRUNK_GROUP_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_TRUNK_GROUP_TOGGLE, NULL);
 }
 
 void
 act_tune_priv(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_TRUNK_PRIV_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_TRUNK_PRIV_TOGGLE, NULL);
 }
 
 void
 act_tune_data(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_TRUNK_DATA_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_TRUNK_DATA_TOGGLE, NULL);
 }
 
 void
@@ -385,13 +385,13 @@ act_hangtime(void* v) {
 void
 act_rev_mute(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_REVERSE_MUTE_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_REVERSE_MUTE_TOGGLE, NULL);
 }
 
 void
 act_dmr_le(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_DMR_LE_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_DMR_LE_TOGGLE, NULL);
 }
 
 void
@@ -554,7 +554,7 @@ act_tcp_waitall(void* v) {
     dsd_setenv("DSD_NEO_TCP_WAITALL", on ? "0" : "1", 1);
     env_reparse_runtime_cfg(c ? c->opts : NULL);
     if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
-        (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
+        (void)dsd_app_command_action_tracked(DSD_APP_CMD_RTL_RESTART, NULL);
     }
 }
 
@@ -701,13 +701,13 @@ act_set_p25_p1_err_sec(void* v) {
 void
 io_toggle_mute_enc(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_ALL_MUTES_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_ALL_MUTES_TOGGLE, NULL);
 }
 
 void
 io_toggle_call_alert(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_CALL_ALERT_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_CALL_ALERT_TOGGLE, NULL);
 }
 
 typedef struct {
@@ -737,7 +737,7 @@ chooser_done_call_alert_events(void* u, int sel) {
     }
 
     uint8_t events = k_call_alert_choices[sel].events;
-    (void)dsd_app_command_set_u8(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, events);
+    (void)dsd_app_command_set_u8_tracked(DSD_APP_CMD_CALL_ALERT_EVENTS_SET, events, NULL);
     ui_statusf("Call alert events: %s", k_call_alert_choices[sel].label);
 }
 
@@ -752,14 +752,14 @@ io_select_call_alert_events(void* vctx) {
 void
 io_toggle_cc_candidates(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_P25_CC_CAND_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_P25_CC_CAND_TOGGLE, NULL);
 }
 
 // cppcheck-suppress-begin constParameterPointer
 void
 io_enable_per_call_wav(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_WAV_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_WAV_TOGGLE, NULL);
     ui_statusf("Per-call WAV toggle requested");
 }
 
@@ -780,21 +780,21 @@ io_read_symbol_bin(void* vctx) {
 void
 io_replay_last_symbol_bin(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_REPLAY_LAST);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_REPLAY_LAST, NULL);
     ui_statusf("Replay last requested");
 }
 
 void
 io_stop_symbol_playback(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_STOP_PLAYBACK);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_STOP_PLAYBACK, NULL);
     ui_statusf("Stop playback requested");
 }
 
 void
 io_stop_symbol_saving(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_SYMCAP_STOP);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_SYMCAP_STOP, NULL);
     ui_statusf("Stop symbol capture requested");
 }
 
@@ -924,13 +924,13 @@ io_set_gain_ana(void* vctx) {
 void
 io_toggle_monitor(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_INPUT_MONITOR_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_INPUT_MONITOR_TOGGLE, NULL);
 }
 
 void
 io_toggle_cosine(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_COSINE_FILTER_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_COSINE_FILTER_TOGGLE, NULL);
 }
 
 void
@@ -954,7 +954,7 @@ io_input_vol_up(void* vctx) {
         m++;
     }
     int32_t v = m;
-    (void)dsd_app_command_set_i32(DSD_APP_CMD_INPUT_VOL_SET, v);
+    (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_INPUT_VOL_SET, v, NULL);
     ui_statusf("Input Volume requested: %dX", m);
 }
 
@@ -966,7 +966,7 @@ io_input_vol_dn(void* vctx) {
         m--;
     }
     int32_t v = m;
-    (void)dsd_app_command_set_i32(DSD_APP_CMD_INPUT_VOL_SET, v);
+    (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_INPUT_VOL_SET, v, NULL);
     ui_statusf("Input Volume requested: %dX", m);
 }
 
@@ -988,25 +988,25 @@ io_rigctl_config(void* vctx) {
 void
 inv_x2(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_INV_X2_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_INV_X2_TOGGLE, NULL);
 }
 
 void
 inv_dmr(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_INV_DMR_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_INV_DMR_TOGGLE, NULL);
 }
 
 void
 inv_dpmr(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_INV_DPMR_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_INV_DPMR_TOGGLE, NULL);
 }
 
 void
 inv_m17(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_INV_M17_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_INV_M17_TOGGLE, NULL);
 }
 
 // ---- Switch input/output actions ----
@@ -1014,7 +1014,7 @@ inv_m17(void* v) {
 void
 switch_to_pulse(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_INPUT_SET_PULSE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_INPUT_SET_PULSE, NULL);
     ui_statusf("Pulse input requested");
 }
 
@@ -1052,7 +1052,7 @@ void
 switch_out_pulse(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     const char* idx = c->opts->pa_output_idx[0] ? c->opts->pa_output_idx : "";
-    (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_OUT_SET, idx);
+    (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_PULSE_OUT_SET, idx, NULL);
 }
 
 void
@@ -1063,7 +1063,7 @@ switch_out_udp(void* vctx) {
 void
 switch_out_toggle_mute(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_TOGGLE_MUTE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_TOGGLE_MUTE, NULL);
     ui_statusf("Output mute toggle requested");
 }
 
@@ -1096,7 +1096,7 @@ key_scrambler(void* v) {
 void
 key_force_bp(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_FORCE_PRIV_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_FORCE_PRIV_TOGGLE, NULL);
 }
 
 void
@@ -1122,14 +1122,14 @@ key_aes(void* v) {
 void
 lr_home(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_LRRP_SET_HOME);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_LRRP_SET_HOME, NULL);
     ui_statusf("LRRP set home requested");
 }
 
 void
 lr_dsdp(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_LRRP_SET_DSDP);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_LRRP_SET_DSDP, NULL);
     ui_statusf("LRRP set DSDPlus requested");
 }
 
@@ -1142,7 +1142,7 @@ lr_custom(void* v) {
 void
 lr_off(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_LRRP_DISABLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_LRRP_DISABLE, NULL);
     ui_statusf("LRRP disable requested");
 }
 
@@ -1165,49 +1165,49 @@ act_m17_user_data(void* v) {
 void
 act_toggle_ui_p25_metrics(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE, NULL);
 }
 
 void
 act_toggle_ui_p25_affil(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_AFFIL_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_UI_SHOW_P25_AFFIL_TOGGLE, NULL);
 }
 
 void
 act_toggle_ui_p25_ga(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_P25_GA_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_P25_GA_TOGGLE, NULL);
 }
 
 void
 act_toggle_ui_p25_neighbors(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_UI_SHOW_P25_NEIGHBORS_TOGGLE, NULL);
 }
 
 void
 act_toggle_ui_p25_iden(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_IDEN_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_UI_SHOW_P25_IDEN_TOGGLE, NULL);
 }
 
 void
 act_toggle_ui_p25_ccc(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_UI_SHOW_P25_CCC_TOGGLE, NULL);
 }
 
 void
 act_toggle_ui_channels(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE, NULL);
 }
 
 void
 act_toggle_ui_p25_callsign(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE, NULL);
 }
 
 // ---- RTL-SDR actions ----
@@ -1217,13 +1217,13 @@ act_toggle_ui_p25_callsign(void* v) {
 void
 rtl_enable(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL);
 }
 
 void
 rtl_restart(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_RTL_RESTART, NULL);
 }
 
 void
@@ -1272,21 +1272,21 @@ void
 rtl_toggle_bias(void* v) {
     UiCtx* c = (UiCtx*)v;
     int32_t on = c->opts->rtl_bias_tee ? 0 : 1;
-    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BIAS_TEE, on);
+    (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_RTL_SET_BIAS_TEE, on, NULL);
 }
 
 void
 rtl_toggle_rtltcp_autotune(void* v) {
     UiCtx* c = (UiCtx*)v;
     int32_t on = c->opts->rtltcp_autotune ? 0 : 1;
-    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, on);
+    (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, on, NULL);
 }
 
 void
 rtl_toggle_auto_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
     int32_t on = c->opts->rtl_auto_ppm ? 0 : 1;
-    (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_AUTO_PPM, on);
+    (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_RTL_SET_AUTO_PPM, on, NULL);
 }
 
 void
@@ -1294,7 +1294,7 @@ rtl_toggle_tuner_autogain(void* v) {
     UiCtx* c = (UiCtx*)v;
     if (c && c->state && c->state->rtl_ctx) {
         dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE};
-        (void)dsd_app_command_dsp_op(&p);
+        (void)dsd_app_command_dsp_op_tracked(&p, NULL);
     } else {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         int on = (cfg && cfg->tuner_autogain_enable) ? 1 : 0;
@@ -1306,7 +1306,7 @@ rtl_toggle_tuner_autogain(void* v) {
 void
 switch_to_rtl(void* vctx) {
     UNUSED(vctx);
-    (void)dsd_app_command_action(DSD_APP_CMD_RTL_ENABLE_INPUT);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL);
 }
 
 // ---- DSP actions ----
@@ -1315,35 +1315,35 @@ void
 act_toggle_cq(void* v) {
     UNUSED(v);
     dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_TOGGLE_CQ};
-    (void)dsd_app_command_dsp_op(&p);
+    (void)dsd_app_command_dsp_op_tracked(&p, NULL);
 }
 
 void
 act_toggle_iqbal(void* v) {
     UNUSED(v);
     dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_TOGGLE_IQBAL};
-    (void)dsd_app_command_dsp_op(&p);
+    (void)dsd_app_command_dsp_op_tracked(&p, NULL);
 }
 
 void
 act_toggle_iq_dc(void* v) {
     UNUSED(v);
     dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_IQ_DC_TOGGLE};
-    (void)dsd_app_command_dsp_op(&p);
+    (void)dsd_app_command_dsp_op_tracked(&p, NULL);
 }
 
 void
 act_iq_dc_k_up(void* v) {
     UNUSED(v);
     dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_IQ_DC_K_DELTA, .a = +1};
-    (void)dsd_app_command_dsp_op(&p);
+    (void)dsd_app_command_dsp_op_tracked(&p, NULL);
 }
 
 void
 act_iq_dc_k_dn(void* v) {
     UNUSED(v);
     dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_IQ_DC_K_DELTA, .a = -1};
-    (void)dsd_app_command_dsp_op(&p);
+    (void)dsd_app_command_dsp_op_tracked(&p, NULL);
 }
 
 void
@@ -1355,7 +1355,7 @@ act_ted_gain_up(void* v) {
         g_milli += 5;
     }
     dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_TED_GAIN_SET, .a = g_milli};
-    (void)dsd_app_command_dsp_op(&p);
+    (void)dsd_app_command_dsp_op_tracked(&p, NULL);
 }
 
 void
@@ -1367,13 +1367,13 @@ act_ted_gain_dn(void* v) {
         g_milli -= 5;
     }
     dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_TED_GAIN_SET, .a = g_milli};
-    (void)dsd_app_command_dsp_op(&p);
+    (void)dsd_app_command_dsp_op_tracked(&p, NULL);
 }
 
 void
 act_toggle_dsp_panel(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
+    (void)dsd_app_command_action_tracked(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE, NULL);
 }
 
 #endif /* USE_RADIO */

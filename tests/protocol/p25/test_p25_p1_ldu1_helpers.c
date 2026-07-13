@@ -15,7 +15,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/timing.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
@@ -59,16 +58,6 @@ static uint8_t g_last_policy_source;
 static dsd_tg_policy_upsert_mode g_last_policy_upsert_mode;
 static char g_last_policy_mode[8];
 static char g_last_policy_name[32];
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1) | (uint64_t)(BufferIn[i] & 1U);
-    }
-    return out;
-}
 
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)

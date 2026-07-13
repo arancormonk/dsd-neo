@@ -7,6 +7,8 @@
  * Verify P25 Phase 1 PDU JSON emission for data SAPs.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -92,17 +94,6 @@ unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len)
     }
 }
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    // Simple MSB-first packer
-    uint64_t v = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (BufferIn[i] & 1);
-    }
-    return v;
-}
-
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
@@ -115,7 +106,7 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
 
     char prefix[7];
     for (int i = 0; i < 6; i++) {
-        prefix[i] = (char)ConvertBitIntoBytes(input + ((size_t)i * 8U), 8);
+        prefix[i] = (char)convert_bits_into_output(input + ((size_t)i * 8U), 8);
     }
     prefix[6] = '\0';
     if (strcmp(prefix, "$GPRMC") != 0) {

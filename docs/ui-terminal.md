@@ -7,7 +7,7 @@ For CLI flags and inputs/outputs, see `docs/cli.md`.
 
 ## Start the UI
 
-- Enable UI: `dsd-neo --frontend terminal ...` (`-N` is the legacy alias)
+- Enable UI: `dsd-neo --frontend terminal ...` (`-N` is the short CLI alias)
 - Quit: `q`
 - Open the menu overlay: `Enter`
 
@@ -62,7 +62,7 @@ need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are 
 expected to match exactly.
 
 The low-level threshold is controlled by `--input-level-warn-db` or `DSD_NEO_INPUT_WARN_DB` and defaults to `-40 dBFS`.
-Hot/clipping advisories use fixed v1 thresholds: peak at or above `-1.0 dBFS` is `HOT`, and at least `0.1%` clipped or
+Hot/clipping advisories use fixed thresholds: peak at or above `-1.0 dBFS` is `HOT`, and at least `0.1%` clipped or
 near-rail samples is `CLIP`. Footer messages are rate-limited. RF low-level status remains persistent but does not
 produce repeated low-level footer messages because a quiet channel and too little RF gain are not reliably
 distinguishable from raw receiver samples alone. TCP PCM input suppresses repeated LOW/HOT/CLIP footer messages while

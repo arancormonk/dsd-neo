@@ -64,16 +64,6 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     return 0;
 }
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* buffer_in, uint32_t bit_length) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < bit_length; i++) {
-        out = (out << 1) | (uint64_t)(buffer_in[i] & 1U);
-    }
-    return out;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {

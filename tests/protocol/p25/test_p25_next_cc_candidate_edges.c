@@ -11,7 +11,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -74,18 +74,18 @@ main(void) {
 
     long out = -1;
     // Empty list
-    rc |= expect_eq_int("empty", p25_sm_next_cc_candidate(&st, &out), 0);
+    rc |= expect_eq_int("empty", p25_cc_next_candidate(&st, &out), 0);
 
     // Only current CC and zeros
     st.p25_cc_freq = 851000000;
     long neigh[4] = {st.p25_cc_freq, 0, 0, 0};
-    p25_sm_on_neighbor_update(&opts, &st, neigh, 4);
-    rc |= expect_eq_int("cc-only", p25_sm_next_cc_candidate(&st, &out), 0);
+    p25_cc_record_neighbor_frequencies(&opts, &st, neigh, 4);
+    rc |= expect_eq_int("cc-only", p25_cc_next_candidate(&st, &out), 0);
     rc |= expect_eq_int("cc-only-lcn-count", st.lcn_freq_count, 1);
 
     long neighbor_only[1] = {852000000};
-    p25_sm_on_neighbor_update(&opts, &st, neighbor_only, 1);
-    rc |= expect_eq_int("neighbor-only", p25_sm_next_cc_candidate(&st, &out), 0);
+    p25_cc_record_neighbor_frequencies(&opts, &st, neighbor_only, 1);
+    rc |= expect_eq_int("neighbor-only", p25_cc_next_candidate(&st, &out), 0);
     return rc;
 }
 

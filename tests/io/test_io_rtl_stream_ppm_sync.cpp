@@ -155,9 +155,7 @@ test_c_api_lifecycle_rejects_invalid_inputs(void) {
     rc |= expect_int_eq("soft stop rejects null ctx", rtl_stream_soft_stop(nullptr), -1);
     rc |= expect_int_eq("tune rejects null ctx", rtl_stream_tune(nullptr, 851000000U), -1);
     rc |= expect_int_eq("read rejects null ctx", rtl_stream_read(nullptr, &sample, 1U, &got), -1);
-    rc |= expect_int_eq("monitor read rejects null ctx", rtl_stream_read_monitor(nullptr, &sample, 1U, &got), -1);
     rc |= expect_int_eq("output rate rejects null ctx", (int)rtl_stream_output_rate(nullptr), 0);
-    rc |= expect_int_eq("monitor rate rejects null ctx", (int)rtl_stream_monitor_rate(nullptr), 0);
     return rc;
 }
 
@@ -181,10 +179,6 @@ test_c_api_stopped_context_contracts(void) {
     rc |= expect_int_eq("stopped context read rejected", rtl_stream_read(ctx, &sample, 1U, &got), -1);
     rc |= expect_int_eq("stopped context read rejects null output", rtl_stream_read(ctx, nullptr, 1U, &got), -1);
     rc |= expect_int_eq("stopped context read rejects null got", rtl_stream_read(ctx, &sample, 1U, nullptr), -1);
-    rc |= expect_int_eq("stopped context monitor read rejects null output",
-                        rtl_stream_read_monitor(ctx, nullptr, 1U, &got), -1);
-    rc |= expect_int_eq("stopped context monitor read rejects null got",
-                        rtl_stream_read_monitor(ctx, &sample, 1U, nullptr), -1);
     rc |= expect_int_eq("stopped context destroy rc", rtl_stream_destroy(ctx), 0);
     return rc;
 }

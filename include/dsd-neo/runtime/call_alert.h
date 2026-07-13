@@ -29,17 +29,11 @@ dsd_call_alert_mask_events(uint8_t events) {
 }
 
 static inline uint8_t
-dsd_call_alert_normalize_events(uint8_t events) {
-    uint8_t normalized = dsd_call_alert_mask_events(events);
-    return normalized ? normalized : (uint8_t)DSD_CALL_ALERT_EVENT_ALL;
-}
-
-static inline uint8_t
 dsd_call_alert_effective_events(int enabled, uint8_t events) {
     if (!enabled) {
         return 0;
     }
-    return dsd_call_alert_normalize_events(events);
+    return dsd_call_alert_mask_events(events);
 }
 
 static inline int

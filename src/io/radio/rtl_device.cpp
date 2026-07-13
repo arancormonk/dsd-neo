@@ -400,13 +400,12 @@ struct rtl_device {
     int direct_sampling = 0;
     std::atomic<int> mute{0};
     int thread_started = 0;
-    int combine_rotate_enabled = 0;
     std::atomic<uint32_t> capture_retune_count{0U};
     std::atomic<int> capture_reconfigure_hold{0};
     /* Backend selector: 0 = USB (librtlsdr), 1 = rtl_tcp, 2 = SoapySDR */
     int backend = 0;
     int replay_fs4_shift_enabled = 0;
-    int replay_combine_rotate_enabled = 0;
+    int replay_historical_cu8_two_pass = 0;
     uint32_t replay_initial_sample_rate_hz = 0U;
     uint32_t replay_initial_freq = 0U;
     uint32_t replay_initial_rate = 0U;
@@ -533,10 +532,10 @@ rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int
     int combine_active = 0;
     if (s && s->backend == RTL_BACKEND_IQ_REPLAY) {
         fs4_active = s->replay_fs4_shift_enabled ? 1 : 0;
-        combine_active = s->replay_combine_rotate_enabled ? 1 : 0;
+        combine_active = s->replay_historical_cu8_two_pass ? 0 : 1;
     } else {
         fs4_active = fs4_shift_capture_active(s);
-        combine_active = (s && s->combine_rotate_enabled) ? 1 : 0;
+        combine_active = 1;
     }
     if (out_fs4_active) {
         *out_fs4_active = fs4_active;
@@ -546,6 +545,51 @@ rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int
     }
     if (out_use_two_pass) {
         *out_use_two_pass = (fs4_active && !combine_active) ? 1 : 0;
+    }
+}
+
+/* Persisted IQ metadata may select the historical CU8 transform. Keep that
+ * decoder private to replay; live input and new captures always use the
+ * combined bias-127.5 transform. */
+static uint32_t
+rtl_replay_apply_historical_cu8_rotation(unsigned char* buf, uint32_t len, uint32_t phase) {
+    uint32_t cur_phase = phase & 3U;
+    if (!buf || len < 2U) {
+        return cur_phase;
+    }
+    uint32_t pairs = len >> 1;
+    for (uint32_t n = 0; n < pairs; n++) {
+        uint32_t idx = n << 1;
+        unsigned char in_i = buf[idx];
+        unsigned char in_q = buf[idx + 1U];
+        switch (cur_phase) {
+            case 0: break;
+            case 1:
+                buf[idx] = (unsigned char)(255U - (uint32_t)in_q);
+                buf[idx + 1U] = in_i;
+                break;
+            case 2:
+                buf[idx] = (unsigned char)(255U - (uint32_t)in_i);
+                buf[idx + 1U] = (unsigned char)(255U - (uint32_t)in_q);
+                break;
+            default:
+                buf[idx] = in_q;
+                buf[idx + 1U] = (unsigned char)(255U - (uint32_t)in_i);
+                break;
+        }
+        cur_phase = (cur_phase + 1U) & 3U;
+    }
+    return cur_phase;
+}
+
+static void
+rtl_replay_widen_historical_cu8(const unsigned char* src, float* dst, uint32_t len) {
+    if (!src || !dst || len == 0U) {
+        return;
+    }
+    const float inv = 1.0f / 127.5f;
+    for (uint32_t i = 0; i < len; i++) {
+        dst[i] = ((float)src[i] - 128.0f) * inv;
     }
 }
 
@@ -559,8 +603,8 @@ rtl_process_u8_chunk(const struct rtl_device* s, unsigned char* src, float* dst,
     if (fs4_shift_active && combine_rotate_active) {
         cur_phase = (int)widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, (uint32_t)cur_phase);
     } else if (use_two_pass) {
-        cur_phase = (int)rotate90_u8_inplace_phase(src, (uint32_t)len, (uint32_t)cur_phase);
-        widen_u8_to_f32_bias128_scalar(src, dst, (uint32_t)len);
+        cur_phase = (int)rtl_replay_apply_historical_cu8_rotation(src, (uint32_t)len, (uint32_t)cur_phase);
+        rtl_replay_widen_historical_cu8(src, dst, (uint32_t)len);
     } else {
         widen_u8_to_f32_bias127(src, dst, (uint32_t)len);
     }
@@ -2112,7 +2156,7 @@ struct rtl_device_test_replay_convert_block_request {
     int format;
     const char* capture_stage;
     int fs4_shift_enabled;
-    int combine_rotate_enabled;
+    int historical_cu8_two_pass;
     const uint8_t* raw_block;
     size_t raw_bytes;
     size_t out_cap_f32;
@@ -2149,7 +2193,7 @@ rtl_device_test_replay_convert_block(const rtl_device_test_replay_convert_block_
     dev.replay_cfg.format = (dsd_iq_sample_format)request->format;
     dev.replay_cfg.fs4_shift_enabled = request->fs4_shift_enabled ? 1 : 0;
     dev.replay_fs4_shift_enabled = request->fs4_shift_enabled ? 1 : 0;
-    dev.replay_combine_rotate_enabled = request->combine_rotate_enabled ? 1 : 0;
+    dev.replay_historical_cu8_two_pass = request->historical_cu8_two_pass ? 1 : 0;
     DSD_SNPRINTF(dev.replay_cfg.capture_stage, sizeof(dev.replay_cfg.capture_stage), "%s",
                  request->capture_stage ? request->capture_stage : "");
 
@@ -2223,11 +2267,9 @@ static DSD_THREAD_RETURN_TYPE
 
 /**
  * @brief RTL-SDR asynchronous USB callback.
- * Converts incoming u8 I/Q to normalized float and enqueues into the input ring. If
- * `offset_tuning` is off and `DSD_NEO_COMBINE_ROT` is enabled (default), a
- * combined rotate+widen implementation is used. Otherwise it falls back to
- * a legacy two-pass byte-rotation + bias128 widen path or a simple widen
- * subtracting 127. On overflow, drops oldest ring data to avoid stalls.
+ * Converts incoming u8 I/Q to normalized float and enqueues into the input ring.
+ * When offset tuning is off, rotation and widening use the combined bias-127.5
+ * transform. On overflow, drops oldest ring data to avoid stalls.
  *
  * @param buf USB I/Q byte buffer.
  * @param len Buffer length in bytes (I/Q interleaved).
@@ -2346,21 +2388,6 @@ rtl_device_copy_cstr(char* dst, size_t dst_size, const char* src) {
     DSD_SNPRINTF(dst, dst_size, "%s", src ? src : "");
     dst[dst_size - 1] = '\0';
 }
-
-static bool
-rtl_soapy_config_has_field(size_t config_size, size_t field_offset, size_t field_size) {
-    return field_offset <= config_size && field_size <= config_size - field_offset;
-}
-
-static bool
-rtl_soapy_config_field_available(const struct rtl_soapy_config* cfg, size_t config_size, size_t field_offset,
-                                 size_t field_size) {
-    return cfg && rtl_soapy_config_has_field(config_size, field_offset, field_size);
-}
-
-#define RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, field)                                                      \
-    rtl_soapy_config_field_available((cfg), (config_size), offsetof(struct rtl_soapy_config, field),                   \
-                                     sizeof(((struct rtl_soapy_config*)0)->field))
 
 static std::string
 soapy_trim_copy(const std::string& value) {
@@ -4710,7 +4737,7 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->capture_mute_pending_bytes.store(0U, std::memory_order_relaxed);
     dev->capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_INACTIVE, std::memory_order_relaxed);
     dev->replay_fs4_shift_enabled = 0;
-    dev->replay_combine_rotate_enabled = 0;
+    dev->replay_historical_cu8_two_pass = 0;
     DSD_MEMSET(&dev->replay_cfg, 0, sizeof(dev->replay_cfg));
     dev->replay_initial_center_frequency_hz = 0;
     dev->replay_initial_capture_center_frequency_hz = 0;
@@ -4756,11 +4783,10 @@ rtl_device_cleanup_common_state(struct rtl_device* dev) {
  *
  * @param dev_index Device index to open.
  * @param input_ring Pointer to input ring for USB data.
- * @param use_combine_rotate Whether to use combined rotate+widen when offset tuning is disabled.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device*
-rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_combine_rotate) {
+rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     if (!input_ring) {
         return NULL;
     }
@@ -4776,7 +4802,6 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_co
     dev->thread_started = 0;
     dev->mute = 0;
     dev->mute_byte_phase = 0;
-    dev->combine_rotate_enabled = use_combine_rotate;
     dev->backend = RTL_BACKEND_USB;
     dev->soapy_dev = NULL;
     dev->soapy_stream = NULL;
@@ -4820,8 +4845,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_co
 }
 
 struct rtl_device*
-rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring, int use_combine_rotate,
-                      int autotune_enabled) {
+rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring, int autotune_enabled) {
     if (!input_ring || !host || port <= 0) {
         return NULL;
     }
@@ -4841,7 +4865,6 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->thread_started = 0;
     dev->mute = 0;
     dev->mute_byte_phase = 0;
-    dev->combine_rotate_enabled = use_combine_rotate;
     dev->backend = RTL_BACKEND_TCP;
     dev->soapy_dev = NULL;
     dev->soapy_stream = NULL;
@@ -4907,7 +4930,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
 }
 
 static struct rtl_device*
-rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int use_combine_rotate) {
+rtl_device_alloc_soapy_base(struct input_ring_state* input_ring) {
     struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
     if (!dev) {
         return NULL;
@@ -4916,7 +4939,6 @@ rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int use_combine
     dev->dev = NULL;
     dev->dev_index = -1;
     dev->input_ring = input_ring;
-    dev->combine_rotate_enabled = use_combine_rotate;
     dev->backend = RTL_BACKEND_SOAPY;
     dev->soapy_format = SOAPY_FMT_NONE;
     rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
@@ -4928,11 +4950,11 @@ rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int use_combine
 }
 
 struct rtl_device*
-rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring, int use_combine_rotate) {
+rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring) {
     if (!input_ring) {
         return NULL;
     }
-    struct rtl_device* dev = rtl_device_alloc_soapy_base(input_ring, use_combine_rotate);
+    struct rtl_device* dev = rtl_device_alloc_soapy_base(input_ring);
     if (!dev) {
         return NULL;
     }
@@ -5029,18 +5051,16 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
 }
 
 static void
-rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_soapy_config* cfg, size_t config_size) {
+rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_soapy_config* cfg) {
     if (!dev) {
         return;
     }
-    const char* profile = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, profile) ? cfg->profile : NULL;
-    const char* antenna = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, antenna) ? cfg->antenna : NULL;
-    const char* clock_source =
-        RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, clock_source) ? cfg->clock_source : NULL;
-    const char* settings = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, settings) ? cfg->settings : NULL;
-    const char* gains = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, gains) ? cfg->gains : NULL;
-    const char* stream_format =
-        RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, stream_format) ? cfg->stream_format : NULL;
+    const char* profile = cfg ? cfg->profile : NULL;
+    const char* antenna = cfg ? cfg->antenna : NULL;
+    const char* clock_source = cfg ? cfg->clock_source : NULL;
+    const char* settings = cfg ? cfg->settings : NULL;
+    const char* gains = cfg ? cfg->gains : NULL;
+    const char* stream_format = cfg ? cfg->stream_format : NULL;
 
     rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile), profile);
     rtl_device_copy_cstr(dev->soapy_requested_antenna, sizeof(dev->soapy_requested_antenna), antenna);
@@ -5048,8 +5068,7 @@ rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_s
     rtl_device_copy_cstr(dev->soapy_requested_settings, sizeof(dev->soapy_requested_settings), settings);
     rtl_device_copy_cstr(dev->soapy_requested_gains, sizeof(dev->soapy_requested_gains), gains);
     rtl_device_copy_cstr(dev->soapy_requested_stream_format, sizeof(dev->soapy_requested_stream_format), stream_format);
-    dev->soapy_requested_bandwidth_hz =
-        RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, bandwidth_hz) ? cfg->bandwidth_hz : -1;
+    dev->soapy_requested_bandwidth_hz = cfg ? cfg->bandwidth_hz : -1;
 }
 
 #ifdef USE_SOAPYSDR
@@ -5087,15 +5106,10 @@ rtl_device_apply_soapy_configuration_locked(struct rtl_device* dev) {
 
 int
 rtl_device_configure_soapy(struct rtl_device* dev, const struct rtl_soapy_config* config) {
-    return rtl_device_configure_soapy_sized(dev, config, RTL_SOAPY_CONFIG_LEGACY_SIZE);
-}
-
-int
-rtl_device_configure_soapy_sized(struct rtl_device* dev, const struct rtl_soapy_config* config, size_t config_size) {
     if (!dev || dev->backend != RTL_BACKEND_SOAPY) {
         return DSD_ERR_NOT_SUPPORTED;
     }
-    rtl_device_store_soapy_config_request(dev, config, config ? config_size : 0U);
+    rtl_device_store_soapy_config_request(dev, config);
 #ifndef USE_SOAPYSDR
     return DSD_ERR_NOT_SUPPORTED;
 #else
@@ -5117,7 +5131,6 @@ rtl_device_init_iq_replay_backend_state(struct rtl_device* dev, const dsd_iq_rep
     dev->thread_started = 0;
     dev->mute.store(0, std::memory_order_relaxed);
     dev->mute_byte_phase.store(0, std::memory_order_relaxed);
-    dev->combine_rotate_enabled = cfg->combine_rotate_enabled ? 1 : 0;
     dev->backend = RTL_BACKEND_IQ_REPLAY;
     dev->soapy_dev = NULL;
     dev->soapy_stream = NULL;
@@ -5137,7 +5150,7 @@ rtl_device_init_iq_replay_backend_state(struct rtl_device* dev, const dsd_iq_rep
     dev->tuner_xtal_hz = 0;
     dev->if_gain_count = 0;
     dev->replay_fs4_shift_enabled = cfg->fs4_shift_enabled ? 1 : 0;
-    dev->replay_combine_rotate_enabled = cfg->combine_rotate_enabled ? 1 : 0;
+    dev->replay_historical_cu8_two_pass = cfg->historical_cu8_two_pass ? 1 : 0;
     if (eof_state) {
         dev->replay_eof = *eof_state;
         dev->replay_has_eof_state = 1;
@@ -6134,20 +6147,6 @@ rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff) {
 }
 
 int
-rtl_device_get_tcp_autotune(const struct rtl_device* dev) {
-    if (!dev) {
-        return 0;
-    }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return 0;
-    }
-    if (dev->backend != RTL_BACKEND_TCP) {
-        return 0;
-    }
-    return dev->tcp_autotune ? 1 : 0;
-}
-
-int
 rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t tuner_xtal_hz) {
     if (!dev) {
         return -1;
@@ -6383,7 +6382,7 @@ rtl_device_test_u8_odd_carry_bridge(size_t* out_used, int* out_phase, int* out_c
     dev.input_ring = &ring;
     dev.backend = RTL_BACKEND_IQ_REPLAY;
     dev.replay_fs4_shift_enabled = 1;
-    dev.replay_combine_rotate_enabled = 1;
+    dev.replay_historical_cu8_two_pass = 0;
     dev.rot_phase = 0;
 
     unsigned char first[] = {129U};
@@ -6414,11 +6413,10 @@ rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out_drops, uint64_
     dev.input_ring = &ring;
     dev.backend = RTL_BACKEND_USB;
     dev.offset_tuning = 0;
-    dev.combine_rotate_enabled = 0;
     dev.rot_phase = 0;
 
     unsigned char input[] = {130U, 127U, 129U, 126U, 128U, 125U};
-    *out_status = rtl_write_u8_to_ring(&dev, input, sizeof(input), 1, 1, 0, 1);
+    *out_status = rtl_write_u8_to_ring(&dev, input, sizeof(input), 1, 0, 1, 1);
     *out_used = input_ring_used(&ring);
     *out_drops = ring.producer_drops.load(std::memory_order_acquire);
     *out_full_events = dev.reserve_full_events;
@@ -6465,23 +6463,6 @@ rtl_device_test_u8_generation_stale_drop(uint64_t* out_drops, int* out_phase, in
     return 0;
 }
 
-extern "C" int
-rtl_device_test_soapy_config_settings_visibility(size_t config_size, const char* settings, int* out_seen) {
-    if (!out_seen) {
-        return -1;
-    }
-
-    rtl_device dev{};
-    rtl_device_init_common_state(&dev);
-    rtl_soapy_config cfg{};
-    cfg.settings = settings;
-
-    rtl_device_store_soapy_config_request(&dev, &cfg, config_size);
-    *out_seen = dev.soapy_requested_settings[0] != '\0' ? 1 : 0;
-
-    rtl_device_cleanup_common_state(&dev);
-    return 0;
-}
 #endif
 
 void
@@ -6553,20 +6534,6 @@ rtl_device_get_native_sample_format(const struct rtl_device* dev) {
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         return (int)dev->replay_cfg.format;
     }
-    return 0;
-}
-
-int
-rtl_device_get_tcp_quality_snapshot(struct rtl_device* dev, struct tcp_quality_snapshot* out) {
-    if (!dev || !out || dev->backend != RTL_BACKEND_TCP) {
-        if (out) {
-            *out = tcp_quality_snapshot{};
-        }
-        return -1;
-    }
-    rtl_tcp_metrics_lock(dev);
-    *out = tcp_metrics_get_snapshot(&dev->tcp_metrics);
-    rtl_tcp_metrics_unlock(dev);
     return 0;
 }
 

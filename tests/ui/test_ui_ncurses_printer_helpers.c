@@ -8,6 +8,7 @@
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
@@ -27,7 +28,6 @@
 #include <dsd-neo/ui/ncurses_trunk_display.h>
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_history.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdarg.h>
 #include <stdint.h>

@@ -10,7 +10,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -90,7 +90,7 @@ main(void) {
     st.p2_sysid = sysid;
 
     long f[3] = {851000000, 851012500, 851025000};
-    p25_sm_on_neighbor_update(&opts, &st, f, 3);
+    p25_cc_record_neighbor_frequencies(&opts, &st, f, 3);
 
     // No file should be created
     char path[DSD_TEST_PATH_MAX];

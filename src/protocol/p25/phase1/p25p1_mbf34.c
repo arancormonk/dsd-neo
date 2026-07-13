@@ -14,9 +14,8 @@
  *  byte[1]: [CRC9 low 8 bits]
  *  byte[2..17]: 16 bytes (128 bits) of payload
  *
- * The hard-decision path keeps the legacy repair walk; the soft-decision
- * path uses a full 8-state Viterbi search and a CRC-guided list interface for
- * MDPDU callers.
+ * The decoder uses a full 8-state soft-decision Viterbi search and a
+ * CRC-guided list interface for MDPDU callers.
  */
 
 #include <dsd-neo/protocol/p25/p25p1_mbf34.h>
@@ -217,124 +216,6 @@ p25_mbf34_run_viterbi(const int16_t llr_deint[196], const uint8_t inverse_map[16
             prev_metric[st] = curr_metric[st];
         }
     }
-}
-
-// Attempt to find a surviving/best path given a local error at position
-static uint8_t
-p25_fix34(uint8_t* p, uint8_t state, int position) {
-    int i, j, k, best_p, best_v, survivors;
-
-    int s[8];
-    DSD_MEMSET(s, 0, sizeof(s));
-
-    uint8_t temp_p[8];
-    temp_p[0] = (p[position] ^ 1) & 0xF;
-    temp_p[1] = (p[position] ^ 3) & 0xF;
-    temp_p[2] = (p[position] ^ 5) & 0xF;
-    temp_p[3] = (p[position] ^ 7) & 0xF;
-    temp_p[4] = (p[position] ^ 9) & 0xF;
-    temp_p[5] = (p[position] ^ 11) & 0xF;
-    temp_p[6] = (p[position] ^ 13) & 0xF;
-    temp_p[7] = (p[position] ^ 15) & 0xF;
-
-    best_p = 0;
-    best_v = 0;
-
-    for (k = 0; k < 8; k++) {
-        uint8_t temp_s = state;
-        int counter = 0;
-        uint8_t tri = 0;
-        for (i = position; i < 49; i++) {
-            const uint8_t t = (i == position) ? temp_p[k] : p[i];
-            if (tri != 0xFF) {
-                tri = 0xFF;
-                for (j = 0; j < 8; j++) {
-                    if (p25_fsm[(temp_s * 8) + j] == t) {
-                        tri = temp_s = (uint8_t)j;
-                        counter++;
-                        break;
-                    }
-                }
-                if (counter > best_p) {
-                    best_p = counter;
-                    best_v = k;
-                }
-                if (i == 48) {
-                    s[k] = 1;
-                }
-            }
-        }
-    }
-
-    survivors = 0;
-    for (k = 0; k < 8; k++) {
-        if (s[k] == 1) {
-            survivors++;
-        }
-    }
-    (void)survivors; // debug aid if needed
-    return temp_p[best_v];
-}
-
-int
-p25_mbf34_decode(const uint8_t dibits[98], uint8_t out[18]) {
-    if (!dibits || !out) {
-        return -1;
-    }
-
-    uint32_t irr_err = 0;
-
-    uint8_t deint[98];
-    DSD_MEMSET(deint, 0, sizeof(deint));
-    for (int i = 0; i < 98; i++) {
-        deint[p25_mbf34_interleave[i]] = dibits[i];
-    }
-
-    uint8_t nibs[49];
-    DSD_MEMSET(nibs, 0, sizeof(nibs));
-    for (int i = 0; i < 49; i++) {
-        nibs[i] = (uint8_t)((deint[i * 2 + 0] << 2) | (deint[i * 2 + 1]));
-    }
-
-    uint8_t point[49];
-    DSD_MEMSET(point, 0xFF, sizeof(point));
-    for (int i = 0; i < 49; i++) {
-        point[i] = p25_constellation_map[nibs[i] & 0xF];
-    }
-
-    uint8_t state = 0;
-    uint32_t tribits[49];
-    DSD_MEMSET(tribits, 0xF, sizeof(tribits));
-
-    int i = 0;
-    while (i < 49) {
-        for (int j = 0; j < 8; j++) {
-            if (p25_fsm[(state * 8) + j] == point[i]) {
-                tribits[i] = state = (uint8_t)j;
-                break;
-            }
-        }
-        if (tribits[i] > 7) {
-            irr_err++;
-            point[i] = p25_fix34(point, state, i);
-            continue;
-        }
-        i++;
-    }
-
-    // Pack first 48 tribits into 18 bytes (24 bits per 8-tribit group)
-    for (int group = 0; group < 6; group++) {
-        uint32_t tmp = (tribits[(group * 8) + 0] << 21) | (tribits[(group * 8) + 1] << 18)
-                       | (tribits[(group * 8) + 2] << 15) | (tribits[(group * 8) + 3] << 12)
-                       | (tribits[(group * 8) + 4] << 9) | (tribits[(group * 8) + 5] << 6)
-                       | (tribits[(group * 8) + 6] << 3) | (tribits[(group * 8) + 7] << 0);
-        out[(group * 3) + 0] = (uint8_t)((tmp >> 16) & 0xFF);
-        out[(group * 3) + 1] = (uint8_t)((tmp >> 8) & 0xFF);
-        out[(group * 3) + 2] = (uint8_t)((tmp >> 0) & 0xFF);
-    }
-
-    (void)irr_err; // could be used for telemetry
-    return 0;
 }
 
 int

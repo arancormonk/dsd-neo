@@ -40,7 +40,6 @@ dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsig
 
 static void
 reset_fakes(void) {
-    ui_snr_readout_reset_for_test();
     g_snr_c4fm = -100.0;
     g_snr_c4fm_eye = -100.0;
     g_snr_cqpsk = -100.0;

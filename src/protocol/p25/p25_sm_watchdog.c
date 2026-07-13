@@ -55,7 +55,7 @@ p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
             /* Only one tick runs at a time across all callers. */
             atomic_store(&g_p25_sm_in_tick, 1);
             // Drive the high-level trunk SM tick
-            p25_sm_tick(opts, state);
+            p25_sm_tick_ctx(p25_sm_get_ctx(), opts, state);
             atomic_store(&g_p25_sm_in_tick, 0);
         }
         p25_sm_tick_guard_leave();

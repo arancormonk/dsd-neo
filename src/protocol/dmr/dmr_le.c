@@ -7,6 +7,8 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
@@ -252,9 +254,9 @@ dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t
 
     //collect our fragments and place them into storage
     if (vc < 8) {
-        state->late_entry_mi_fragment[slot_idx][vc][0] = (uint64_t)ConvertBitIntoBytes(&ambe_fr[3][0], 4);
-        state->late_entry_mi_fragment[slot_idx][vc][1] = (uint64_t)ConvertBitIntoBytes(&ambe_fr2[3][0], 4);
-        state->late_entry_mi_fragment[slot_idx][vc][2] = (uint64_t)ConvertBitIntoBytes(&ambe_fr3[3][0], 4);
+        state->late_entry_mi_fragment[slot_idx][vc][0] = (uint64_t)convert_bits_into_output(&ambe_fr[3][0], 4);
+        state->late_entry_mi_fragment[slot_idx][vc][1] = (uint64_t)convert_bits_into_output(&ambe_fr2[3][0], 4);
+        state->late_entry_mi_fragment[slot_idx][vc][2] = (uint64_t)convert_bits_into_output(&ambe_fr3[3][0], 4);
     }
 
     if (vc == 6) {
@@ -286,7 +288,7 @@ dmr_late_entry_mi(dsd_opts* opts, dsd_state* state) {
     unsigned long long int mi_final = 0;
     mi_final = (mi_corrected >> 4) & 0xFFFFFFFF;
 
-    mi_crc_ext = (uint8_t)ConvertBitIntoBytes(&mi_bits[32], 4);
+    mi_crc_ext = (uint8_t)convert_bits_into_output(&mi_bits[32], 4);
     mi_crc_cmp = crc4(mi_bits, 32);
     if (mi_crc_ext == mi_crc_cmp) {
         mi_crc_ok = 1;

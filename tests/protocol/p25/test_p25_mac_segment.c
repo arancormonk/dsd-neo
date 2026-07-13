@@ -320,8 +320,6 @@ run_direct_segment_parse_cases(void) {
     rc |= expect_int("three segment len 1", res.segments[1].length, 5);
     rc |= expect_int("three segment offset 2", res.segments[2].offset, 10);
     rc |= expect_int("three segment len 2", res.segments[2].length, 5);
-    rc |= expect_int("compat lenB", res.len_b, 5);
-    rc |= expect_int("compat lenC", res.len_c, 5);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x82;
@@ -339,8 +337,6 @@ run_direct_segment_parse_cases(void) {
     rc |= expect_int("generic harris len 1", res.segments[1].length, 5);
     rc |= expect_int("generic harris offset 2", res.segments[2].offset, 10);
     rc |= expect_int("generic harris len 2", res.segments[2].length, 5);
-    rc |= expect_int("generic harris compat lenB", res.len_b, 5);
-    rc |= expect_int("generic harris compat lenC", res.len_c, 5);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x88;
@@ -365,8 +361,6 @@ run_direct_segment_parse_cases(void) {
     }
     rc |= expect_int("null fills remaining count", res.segment_count, 1);
     rc |= expect_int("null fills remaining len", res.segments[0].length, 19);
-    rc |= expect_int("null fills remaining compat lenB", res.len_b, 19);
-    rc |= expect_int("null fills remaining compat lenC", res.len_c, 0);
 
     const uint8_t bridged_ops[] = {0x69U, 0x7FU, 0xEFU};
     for (size_t i = 0; i < sizeof(bridged_ops) / sizeof(bridged_ops[0]); i++) {
@@ -379,7 +373,6 @@ run_direct_segment_parse_cases(void) {
         rc |= expect_int("bridged later segment count", res.segment_count, 2);
         rc |= expect_int("bridged later segment offset", res.segments[1].offset, 5);
         rc |= expect_int("bridged later segment len", res.segments[1].length, 14);
-        rc |= expect_int("bridged later segment compat lenC", res.len_c, 14);
     }
 
     DSD_MEMSET(mac, 0, sizeof(mac));
@@ -388,8 +381,6 @@ run_direct_segment_parse_cases(void) {
         return 407;
     }
     rc |= expect_int("unsupported first count", res.segment_count, 0);
-    rc |= expect_int("unsupported first compat lenB", res.len_b, 0);
-    rc |= expect_int("unsupported first compat lenC", res.len_c, 16);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0xA0;
@@ -439,7 +430,6 @@ run_direct_segment_parse_cases(void) {
         return 405;
     }
     rc |= expect_int("truncated third segment count", res.segment_count, 2);
-    rc |= expect_int("truncated third compat lenC", res.len_c, 5);
 
     return rc;
 }

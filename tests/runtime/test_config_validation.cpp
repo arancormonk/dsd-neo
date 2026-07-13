@@ -94,7 +94,7 @@ test_valid_config(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -154,7 +154,7 @@ test_trunk_scan_enabled_requires_targets_csv(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -190,7 +190,7 @@ test_trunk_scan_rejects_global_channel_map(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -228,7 +228,7 @@ test_trunk_scan_include_composed_targets_csv_is_valid(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     (void)remove(inc_path);
     return result;
@@ -265,7 +265,7 @@ test_profile_trunk_scan_rejects_inherited_channel_map(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -297,7 +297,7 @@ test_profile_trunk_scan_enabled_requires_targets_csv(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -330,7 +330,7 @@ test_profile_trunk_scan_inherits_base_targets_csv(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -391,7 +391,7 @@ test_validate_stream_rejects_null_stream(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     return result;
 }
 
@@ -417,7 +417,7 @@ test_validate_stream_runs_composed_trunk_scan_checks(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     return result;
 }
 
@@ -443,7 +443,7 @@ test_validate_stream_runs_profile_composed_checks(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     return result;
 }
 
@@ -470,7 +470,7 @@ test_validate_stream_accepts_profile_inherited_targets_csv(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     return result;
 }
 
@@ -517,7 +517,7 @@ test_unknown_key_warning(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -551,7 +551,7 @@ test_unknown_section_warning(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -584,51 +584,7 @@ test_invalid_enum_error(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
-    (void)remove(path);
-    return result;
-}
-
-static int
-test_decode_mode_aliases_valid(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[mode]\n"
-                             "decode = \"p25p1_only\"\n"
-                             "\n"
-                             "[profile.alias_p25p2]\n"
-                             "mode.decode = \"p25p2_only\"\n"
-                             "\n"
-                             "[profile.alias_analog]\n"
-                             "mode.decode = \"analog_monitor\"\n"
-                             "\n"
-                             "[profile.alias_edacs]\n"
-                             "mode.decode = \"edacs\"\n"
-                             "\n"
-                             "[profile.alias_provoice]\n"
-                             "mode.decode = \"provoice\"\n";
-
-    char path[DSD_TEST_PATH_MAX];
-    if (write_temp_config(ini, path, sizeof path) != 0) {
-        return 1;
-    }
-
-    dsdcfg_diagnostics_t diags;
-    DSD_MEMSET(&diags, 0, sizeof(diags));
-
-    int rc = dsd_user_config_validate(path, &diags);
-
-    int result = 0;
-    if (rc != 0) {
-        DSD_FPRINTF(stderr, "FAIL: decode alias config returned error %d\n", rc);
-        result = 1;
-    }
-    if (diags.error_count > 0) {
-        DSD_FPRINTF(stderr, "FAIL: decode alias config has %d errors\n", diags.error_count);
-        result = 1;
-    }
-
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -663,7 +619,7 @@ test_soapy_source_valid(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -695,7 +651,7 @@ test_invalid_source_rejected_after_soapy_added(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -726,7 +682,7 @@ test_int_out_of_range(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -772,7 +728,7 @@ test_int_out_of_range_negative_max(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -812,7 +768,7 @@ test_diags_have_line_numbers(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -838,7 +794,7 @@ test_empty_config(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -853,11 +809,11 @@ test_nonexistent_file(void) {
     // Should return error for nonexistent file
     if (rc == 0) {
         DSD_FPRINTF(stderr, "FAIL: nonexistent file should return error\n");
-        dsd_user_config_diags_free(&diags);
+        dsdcfg_diags_free(&diags);
         return 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     return 0;
 }
 
@@ -906,7 +862,7 @@ test_profile_invalid_enum(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -952,7 +908,7 @@ test_profile_int_out_of_range(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -989,7 +945,7 @@ test_profile_invalid_bool(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -1027,7 +983,7 @@ test_profile_valid_values(void) {
         result = 1;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     (void)remove(path);
     return result;
 }
@@ -1067,12 +1023,6 @@ test_schema_accessors_and_type_names(void) {
         DSD_FPRINTF(stderr, "FAIL: description lookup accepted unknown key\n");
         result = 1;
     }
-    if (!dsd_config_key_is_deprecated("input", "pulse_input") || dsd_config_key_is_deprecated("input", "source")
-        || dsd_config_key_is_deprecated("input", "missing")) {
-        DSD_FPRINTF(stderr, "FAIL: deprecated-key lookup mismatch\n");
-        result = 1;
-    }
-
     if (strcmp(dsdcfg_type_name(DSDCFG_TYPE_STRING), "string") != 0
         || strcmp(dsdcfg_type_name(DSDCFG_TYPE_INT), "int") != 0
         || strcmp(dsdcfg_type_name(DSDCFG_TYPE_BOOL), "bool") != 0
@@ -1120,7 +1070,7 @@ test_diagnostics_direct_api_and_print_formats(void) {
         return 1;
     }
 
-    dsdcfg_diags_add(&diags, DSDCFG_DIAG_WARNING, 7, "input", "pulse_input", "deprecated alias");
+    dsdcfg_diags_add(&diags, DSDCFG_DIAG_WARNING, 7, "input", "source", "source warning");
     dsdcfg_diags_add(&diags, DSDCFG_DIAG_ERROR, 9, "mode", "decode", "invalid mode");
     dsdcfg_diags_add(&diags, DSDCFG_DIAG_INFO, 3, "trunking", NULL, "section info");
     dsdcfg_diags_add(&diags, DSDCFG_DIAG_INFO, 0, NULL, NULL, "global info");
@@ -1131,8 +1081,8 @@ test_diagnostics_direct_api_and_print_formats(void) {
     }
 
     int result = 0;
-    if (strcmp(diags.items[0].section, "input") != 0 || strcmp(diags.items[0].key, "pulse_input") != 0
-        || strcmp(diags.items[0].message, "deprecated alias") != 0) {
+    if (strcmp(diags.items[0].section, "input") != 0 || strcmp(diags.items[0].key, "source") != 0
+        || strcmp(diags.items[0].message, "source warning") != 0) {
         DSD_FPRINTF(stderr, "FAIL: diagnostic field storage mismatch\n");
         result = 1;
     }
@@ -1156,7 +1106,7 @@ test_diagnostics_direct_api_and_print_formats(void) {
     output[n] = '\0';
     fclose(tmp);
 
-    if (!strstr(output, "config.ini:7: warning [input] pulse_input: deprecated alias")
+    if (!strstr(output, "config.ini:7: warning [input] source: source warning")
         || !strstr(output, "config.ini:9: error [mode] decode: invalid mode")
         || !strstr(output, "config.ini:3: info [trunking]: section info") || !strstr(output, "info: global info")
         || !strstr(output, "Summary: 1 error(s), 1 warning(s)")) {
@@ -1180,7 +1130,7 @@ test_diagnostics_direct_api_and_print_formats(void) {
     n = fread(output, 1, sizeof(output) - 1U, tmp);
     output[n] = '\0';
     fclose(tmp);
-    if (!strstr(output, "line 7: warning [input] pulse_input: deprecated alias")) {
+    if (!strstr(output, "line 7: warning [input] source: source warning")) {
         DSD_FPRINTF(stderr, "FAIL: diagnostics no-path line format mismatch\n%s\n", output);
         result = 1;
     }
@@ -1216,7 +1166,6 @@ main(void) {
     rc |= test_unknown_key_warning();
     rc |= test_unknown_section_warning();
     rc |= test_invalid_enum_error();
-    rc |= test_decode_mode_aliases_valid();
     rc |= test_soapy_source_valid();
     rc |= test_invalid_source_rejected_after_soapy_added();
     rc |= test_int_out_of_range();

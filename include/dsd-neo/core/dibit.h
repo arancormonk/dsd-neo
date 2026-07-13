@@ -27,11 +27,6 @@ typedef struct {
 } dsd_dibit_soft_t;
 
 enum DSD_ATTR_PACKED {
-    DSD_SYMBOL_CAPTURE_FORMAT_LEGACY = 0,
-    DSD_SYMBOL_CAPTURE_FORMAT_SOFT = 1,
-};
-
-enum DSD_ATTR_PACKED {
     DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN = 0,
     DSD_SYMBOL_REPLAY_FORMAT_LEGACY = 1,
     DSD_SYMBOL_REPLAY_FORMAT_SOFT = 2,
@@ -45,7 +40,6 @@ enum DSD_ATTR_PACKED {
 extern "C" {
 #endif
 
-int getDibit(dsd_opts* opts, dsd_state* state);
 int get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
 int getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft);
 int getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability);

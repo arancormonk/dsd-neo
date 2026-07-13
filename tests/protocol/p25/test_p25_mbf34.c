@@ -150,22 +150,20 @@ main(void) {
     uint8_t block[18];
     build_block(dbsn, payload, block);
 
-    // 2) Encode to dibits and decode back
+    // 2) Encode to dibits and decode through the production soft path
     uint8_t tribits[49];
     block_to_tribits(block, tribits);
     uint8_t in_dibits[98];
     DSD_MEMSET(in_dibits, 0, sizeof(in_dibits));
     encode_tribits_to_dibits(tribits, in_dibits);
 
+    int16_t bit_llr[196];
+    dibits_to_llr(in_dibits, bit_llr, 200);
     uint8_t out_block[18];
     DSD_MEMSET(out_block, 0, sizeof(out_block));
-    int rc = p25_mbf34_decode(in_dibits, out_block);
-    if (rc != 0) {
-        DSD_FPRINTF(stderr, "decoder rc=%d\n", rc);
-        return 10;
-    }
-    if (memcmp(block, out_block, 18) != 0) {
-        DSD_FPRINTF(stderr, "decoded block mismatch\n");
+    int rc = p25_mbf34_decode_soft(in_dibits, bit_llr, out_block);
+    if (rc != 0 || memcmp(block, out_block, 18) != 0) {
+        DSD_FPRINTF(stderr, "soft decoder clean block mismatch rc=%d\n", rc);
         return 11;
     }
 
@@ -194,16 +192,7 @@ main(void) {
         return 13;
     }
 
-    // 5) Soft decoder preserves clean blocks and can use low-confidence LLRs
-    int16_t bit_llr[196];
-    dibits_to_llr(in_dibits, bit_llr, 200);
-    uint8_t out_soft[18];
-    DSD_MEMSET(out_soft, 0, sizeof(out_soft));
-    rc = p25_mbf34_decode_soft(in_dibits, bit_llr, out_soft);
-    if (rc != 0 || memcmp(block, out_soft, 18) != 0) {
-        DSD_FPRINTF(stderr, "soft decoder clean block mismatch rc=%d\n", rc);
-        return 14;
-    }
+    // 5) List decoding preserves clean blocks and low-confidence candidates
     p25_mbf34_candidate_t list[P25_MBF34_MAX_CANDIDATES];
     int list_count = p25_mbf34_decode_soft_list(in_dibits, bit_llr, list, P25_MBF34_MAX_CANDIDATES);
     if (list_count <= 0 || memcmp(block, list[0].bytes, 18) != 0) {
@@ -216,6 +205,7 @@ main(void) {
     noisy_dibits[7] ^= 1U;
     dibits_to_llr(noisy_dibits, bit_llr, 200);
     set_dibit_llr_magnitude(noisy_dibits, bit_llr, 7, 10);
+    uint8_t out_soft[18];
     DSD_MEMSET(out_soft, 0, sizeof(out_soft));
     rc = p25_mbf34_decode_soft(noisy_dibits, bit_llr, out_soft);
     if (rc != 0 || memcmp(block, out_soft, 18) != 0) {
@@ -235,30 +225,6 @@ main(void) {
         return 19;
     }
 
-    // 6) Error injection: flip one dibit, ensure CRC9 no longer matches
-    // flip a bunch of dibits to induce CRC9 failure
-    for (int i = 0; i < 20; i += 2) {
-        in_dibits[i] ^= 3;
-    }
-    uint8_t out_err[18];
-    DSD_MEMSET(out_err, 0, sizeof(out_err));
-    rc = p25_mbf34_decode(in_dibits, out_err);
-    if (rc != 0) {
-        DSD_FPRINTF(stderr, "decoder(rc=%d) after error inj\n", rc);
-        return 16;
-    }
-    for (int i = 0; i < 7; i++) {
-        bits[i] = (uint8_t)((out_err[0] >> (7 - i)) & 1);
-    }
-    bytes_to_bits_msbf(out_err + 2, 16, payload_bits);
-    DSD_MEMCPY(bits + 7, payload_bits, 128);
-    crc9_cmp = test_crc9(bits, 135);
-    crc9_ext = (uint16_t)(((out_err[0] & 1) << 8) | out_err[1]);
-    if (crc9_cmp == crc9_ext) {
-        DSD_FPRINTF(stderr, "CRC9 unexpectedly matched after error injection\n");
-        return 17;
-    }
-
-    DSD_FPRINTF(stderr, "p25_mbf34 decode+CRC tests OK\n");
+    DSD_FPRINTF(stderr, "p25_mbf34 soft decode+CRC tests OK\n");
     return 0;
 }

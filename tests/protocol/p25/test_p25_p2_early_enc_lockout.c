@@ -103,22 +103,24 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)slot;
 }
 
-// Capture return_to_cc calls invoked by p25_sm_on_release path
+// Capture return_to_cc calls invoked by p25_sm_release path
 static int g_return_to_cc_called = 0;
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-void return_to_cc(dsd_opts* opts, dsd_state* state);
+dsd_trunk_tune_result return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id);
 
-void
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+dsd_trunk_tune_result
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_return_to_cc_called++;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc = return_to_cc;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 

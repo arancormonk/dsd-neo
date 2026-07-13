@@ -23,6 +23,8 @@
  * Boston, MA 02110-1301, USA.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -31,7 +33,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -43,6 +44,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_internal.h"
 
 #ifdef LIMAZULUTWEAKS
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -202,7 +204,7 @@ nxdn_collect_lich(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
         ctx->lich_bits[(i * 2) + 0] = (ctx->lich_dibits[i] >> 1) & 1;
         ctx->lich_bits[(i * 2) + 1] = (ctx->lich_dibits[i] >> 0) & 1;
     }
-    ctx->lich_bits_hex = (uint16_t)ConvertBitIntoBytes(ctx->lich_bits, 16);
+    ctx->lich_bits_hex = (uint16_t)convert_bits_into_output(ctx->lich_bits, 16);
 }
 
 #ifdef NXDN_LICH_OFFBITS_CHECK
@@ -711,10 +713,9 @@ END:
     nxdn_finalize_sync_reject(state);
 }
 
-#ifdef DSD_NEO_TEST_HOOKS
 int
-dsd_neo_nxdn_test_route_decoded_lich(dsd_opts* opts, dsd_state* state, uint8_t lich, const uint8_t bits[364],
-                                     const uint8_t reliab[364]) {
+nxdn_route_decoded_lich(dsd_opts* opts, dsd_state* state, uint8_t lich, const uint8_t bits[364],
+                        const uint8_t reliab[364]) {
     if (opts == NULL || state == NULL || bits == NULL || reliab == NULL) {
         return -1;
     }
@@ -758,4 +759,3 @@ END:
     nxdn_finalize_sync_reject(state);
     return 0;
 }
-#endif

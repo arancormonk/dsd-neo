@@ -15,8 +15,7 @@
 
 #include "dsd-neo/core/state_fwd.h"
 
-// Legacy 6x simplified version for the float_buf_p (sample repetition)
-// Maintained for backward compatibility where interpolation isn't desired.
+// Six-fold sample repetition for the analog-monitor float buffer.
 void
 upsample(dsd_state* state, float invalue) {
 

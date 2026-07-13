@@ -48,7 +48,7 @@ int dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode)
  * @brief Apply a decode preset to opts/state.
  *
  * @param mode Decode mode preset.
- * @param profile Caller profile controlling legacy behavior differences.
+ * @param profile Caller profile controlling preset semantics.
  * @param opts Decoder options.
  * @param state Decoder state.
  * @return 0 on success, -1 for invalid args or unsupported mode.

@@ -83,13 +83,19 @@ main(void) {
     // Grant non-held TG -> should be blocked
     unsigned before = st.p25_sm_tune_count;
     opts.p25_is_tuned = 0;
-    p25_sm_on_group_grant(&opts, &st, ch, 0 /*svc*/, /*tg*/ 4321, /*src*/ 999);
+    p25_sm_event(
+        p25_sm_get_ctx(), &opts, &st,
+        &(p25_sm_event_t){
+            .type = P25_SM_EV_GRANT, .slot = -1, .channel = ch, .tg = 4321, .src = 999, .svc_bits = 0, .is_group = 1});
     rc |= expect_true("non-held blocked", st.p25_sm_tune_count == before && opts.p25_is_tuned == 0);
 
     // Grant held TG -> should tune
     before = st.p25_sm_tune_count;
     opts.p25_is_tuned = 0;
-    p25_sm_on_group_grant(&opts, &st, ch, 0 /*svc*/, /*tg*/ 1234, /*src*/ 888);
+    p25_sm_event(
+        p25_sm_get_ctx(), &opts, &st,
+        &(p25_sm_event_t){
+            .type = P25_SM_EV_GRANT, .slot = -1, .channel = ch, .tg = 1234, .src = 888, .svc_bits = 0, .is_group = 1});
     rc |= expect_true("held allowed", st.p25_sm_tune_count == before + 1);
 
     return rc;

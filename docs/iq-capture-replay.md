@@ -40,7 +40,8 @@ Metadata is JSON with `format: "dsd-neo-iq"`.
 The writer records:
 
 - sample format (`cu8` or `cf32`), sample rate, and tuned centers.
-- capture-time transform policy (`fs4_shift_enabled`, `combine_rotate_enabled`, `offset_tuning_enabled`).
+- capture-time transform policy (`fs4_shift_enabled`, `offset_tuning_enabled`). New captures always record the combined
+  CU8 rotate-and-widen transform.
 - replay rate-chain fields (`base_decimation`, `post_downsample`, `demod_rate_hz`).
 - source identity (`source_backend`, `source_args`).
 - finalized byte/counter fields (`data_bytes`, `capture_drops`, `capture_drop_blocks`, `input_ring_drops`).
@@ -79,6 +80,9 @@ rounds down to sample alignment. Zero effective bytes are rejected for `--iq-rep
 
 - `--iq-capture` and `--iq-replay` are mutually exclusive in one invocation.
 - Single-segment v1 captures continue to replay unchanged.
+- Historical CU8 metadata with `combine_rotate_enabled: false` still selects the former two-pass byte rotation and
+  bias-128 widening so those captures replay identically. This private compatibility decoder can be removed when support
+  for pre-unconditional-transform v1/v2 CU8 captures is retired.
 - Retuned captures are replayable only when they include a v2 event timeline. Older retuned v1 captures with
   `contains_retunes: true` and no `events` array are rejected because they do not preserve enough ordering data to replay
   safely.

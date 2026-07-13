@@ -100,8 +100,3 @@ ui_snr_readout_for_mod(int rf_mod) {
 
     return out;
 }
-
-#ifdef DSD_NEO_TEST_HOOKS
-void
-ui_snr_readout_reset_for_test(void) {}
-#endif

@@ -3,10 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#ifndef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-#error "DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS must be enabled for this test."
-#endif
-
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -16,11 +12,11 @@
 #include <cstring>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/io/iq_types.h>
-#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <mutex>
 #include <thread>
 #include "dsd-neo/core/safe_api.h"
+#include "rtl_stream_test_support.h"
 
 extern "C" uint64_t rtl_device_test_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes,
                                                                    size_t alignment);
@@ -29,8 +25,6 @@ extern "C" void rtl_device_test_end_capture_reconfigure_with_odd_carry(int* out_
                                                                        int* out_mute_byte_phase);
 extern "C" int rtl_device_test_begin_capture_reconfigure_without_writer(int* out_hold);
 extern "C" int rtl_device_test_usb_reconfigure_discards_samples(size_t input_bytes, size_t* out_ring_used);
-extern "C" int rtl_device_test_soapy_config_settings_visibility(size_t config_size, const char* settings,
-                                                                int* out_seen);
 extern "C" void rtl_device_test_replay_dispatch_reset_event_state(int* phase, int* have_carry, uint8_t* carry_byte);
 extern "C" int rtl_device_test_replay_event_boundary_drained(size_t ring_used, uint64_t submitted_gen,
                                                              uint64_t consumed_gen);
@@ -61,7 +55,7 @@ struct rtl_device_test_replay_convert_block_request {
     int format;
     const char* capture_stage;
     int fs4_shift_enabled;
-    int combine_rotate_enabled;
+    int historical_cu8_two_pass;
     const uint8_t* raw_block;
     size_t raw_bytes;
     size_t out_cap_f32;
@@ -82,24 +76,6 @@ extern "C" int rtl_device_test_misc_string_helpers(char* tuner_labels, size_t tu
 extern "C" int rtl_device_test_tcp_policy_helpers(size_t* bufsz_out, size_t bufsz_count, int* waitall_out,
                                                   size_t waitall_count, uint64_t* delta_out, size_t delta_count,
                                                   int* agc_out);
-extern "C" int dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_result);
-extern "C" int dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
-                                                                   uint32_t applied_freq_hz);
-extern "C" int dsd_rtl_stream_test_tune_failure_reconciles_applied(uint32_t requested_freq_hz, uint32_t applied_freq_hz,
-                                                                   long int* out_opts_freq,
-                                                                   uint32_t* out_capture_freq_hz);
-extern "C" int
-dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz, uint32_t* out_full_rate_hz,
-                                                     int* out_full_rate_out_hz, uint32_t* out_partial_freq_hz,
-                                                     uint32_t* out_partial_rate_hz, int* out_partial_rate_out_hz);
-extern "C" int dsd_rtl_stream_test_ppm_store_if_applied(int ppm_rc, int requested_ppm, int* out_ppm_error);
-extern "C" int dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, int* out_second_result);
-extern "C" int dsd_rtl_stream_test_cancel_queued_tagged_retune(uint64_t token, int* out_pending_after,
-                                                               int* out_completion_result);
-extern "C" int dsd_rtl_stream_test_cancel_queued_tagged_retune_order(uint64_t active_token, uint64_t queued_token,
-                                                                     int* out_active_result, int* out_cancelled_result);
-extern "C" int dsd_rtl_stream_test_tune_completion_callback_registered(void);
-extern "C" int dsd_rtl_stream_test_retune_without_controller_rejected(void);
 
 namespace {
 struct TaggedTuneCompletionState {
@@ -186,13 +162,13 @@ expect_u64_eq(const char* label, uint64_t got, uint64_t want) {
 }
 
 static int
-call_replay_convert_block(int format, const char* capture_stage, int fs4_shift_enabled, int combine_rotate_enabled,
+call_replay_convert_block(int format, const char* capture_stage, int fs4_shift_enabled, int historical_cu8_two_pass,
                           const uint8_t* raw_block, size_t raw_bytes, size_t out_cap_f32, int start_phase,
                           int start_have_carry, uint8_t start_carry_byte, float* out_f32, size_t out_f32_count,
                           int* out_phase, int* out_have_carry, uint8_t* out_carry_byte) {
     rtl_device_test_replay_convert_block_request request{
-        format,    capture_stage, fs4_shift_enabled, combine_rotate_enabled, raw_block,
-        raw_bytes, out_cap_f32,   start_phase,       start_have_carry,       start_carry_byte};
+        format,    capture_stage, fs4_shift_enabled, historical_cu8_two_pass, raw_block,
+        raw_bytes, out_cap_f32,   start_phase,       start_have_carry,        start_carry_byte};
     return rtl_device_test_replay_convert_block(&request, out_f32, out_f32_count, out_phase, out_have_carry,
                                                 out_carry_byte);
 }
@@ -610,17 +586,6 @@ main(void) {
     failed |= expect_int_eq("retune gain profile keeps autogain-is-set", autogain_is_set, 1);
     failed |= expect_int_eq("retune gain profile keeps autogain off", autogain_on, 0);
 
-    int settings_seen = -1;
-    failed |= expect_int_eq("legacy Soapy config settings visibility helper",
-                            rtl_device_test_soapy_config_settings_visibility(RTL_SOAPY_CONFIG_LEGACY_SIZE,
-                                                                             "biasT_ctrl=false", &settings_seen),
-                            0);
-    failed |= expect_int_eq("legacy Soapy config ignores appended settings", settings_seen, 0);
-    failed |= expect_int_eq(
-        "sized Soapy config settings visibility helper",
-        rtl_device_test_soapy_config_settings_visibility(RTL_SOAPY_CONFIG_SIZE, "biasT_ctrl=false", &settings_seen), 0);
-    failed |= expect_int_eq("sized Soapy config observes appended settings", settings_seen, 1);
-
     /*
      * USB apply/readback checks keep retry behavior explicit: apply failures are
      * retried, readback failures are retried only when verification is enabled,
@@ -885,6 +850,17 @@ main(void) {
     failed |= expect_int_eq("replay CU8 odd tail conversion count", rc, 2);
     failed |= expect_int_eq("replay CU8 odd tail retained", convert_have_carry, 1);
     failed |= expect_int_eq("replay CU8 odd tail byte", (int)convert_carry_byte, 129);
+
+    const uint8_t historical_cu8[] = {10U, 11U, 20U, 21U};
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CU8, "", 1, 1, historical_cu8, sizeof(historical_cu8), 8U, 0, 0, 0U,
+                                   converted, sizeof(converted) / sizeof(converted[0]), &convert_phase,
+                                   &convert_have_carry, &convert_carry_byte);
+    failed |= expect_int_eq("historical CU8 conversion count", rc, 4);
+    failed |= expect_double_near("historical CU8 phase0 I", converted[0], (10.0 - 128.0) / 127.5, 1e-6);
+    failed |= expect_double_near("historical CU8 phase0 Q", converted[1], (11.0 - 128.0) / 127.5, 1e-6);
+    failed |= expect_double_near("historical CU8 phase1 I", converted[2], (234.0 - 128.0) / 127.5, 1e-6);
+    failed |= expect_double_near("historical CU8 phase1 Q", converted[3], (20.0 - 128.0) / 127.5, 1e-6);
+    failed |= expect_int_eq("historical CU8 phase advance", convert_phase, 2);
 
     float cf32_samples[] = {1.0f, 2.0f, 3.0f, 4.0f};
     uint8_t cf32_raw[sizeof(cf32_samples)] = {};

@@ -9,7 +9,6 @@
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -23,6 +22,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,6 +30,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "symbol_test_support.h"
 #include "test_support.h"
 
 static int g_cleanup_calls = 0;
@@ -38,19 +39,6 @@ static int
 symbol_level_matches(float got, uint8_t dibit) {
     return fabsf(got - dsd_symbol_level_from_dibit(dibit)) <= 1e-6f;
 }
-
-void dsd_symbol_test_select_window(int rf_mod, int synctype, int lastsynctype, int freeze_window, int* l_edge,
-                                   int* r_edge);
-int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, int rf_mod, int jitter,
-                                        int have_sync, int symbol_span, int start_i, int* jitter_after);
-int dsd_symbol_test_is_m17_sync(int lastsynctype);
-float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
-                                           int rtl_symbol_rate_output, int cqpsk_symbol_rate);
-unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);
-#ifdef USE_RADIO
-int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
-int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);
-#endif
 
 dsd_socket_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -76,7 +64,7 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-cleanupAndExit(dsd_opts* opts, dsd_state* state) {
+dsd_request_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_cleanup_calls++;

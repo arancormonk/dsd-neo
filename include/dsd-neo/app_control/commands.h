@@ -90,7 +90,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TRUNK_ENC_TOGGLE = 213,
     DSD_APP_CMD_WAV_TOGGLE = 214,
 
-    // Additional commands to preserve legacy hotkeys in async mode
+    // Additional commands used by terminal hotkeys in async mode
     DSD_APP_CMD_QUIT = 300,
     DSD_APP_CMD_FORCE_PRIV_TOGGLE = 301,
     DSD_APP_CMD_FORCE_RC4_TOGGLE = 302,
@@ -210,7 +210,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_M17_USER_DATA_SET = 651, // payload: char s[] (<=49 chars)
 
     // DSP runtime (rtl_stream_*)
-    DSD_APP_CMD_DSP_OP = 700,             // payload: dsd_app_dsp_payload (see ui_dsp_cmd.h)
+    DSD_APP_CMD_DSP_OP = 700,             // payload: dsd_app_dsp_payload
     DSD_APP_CMD_CONFIG_APPLY = 710,       // payload: dsdneoUserConfig (see runtime/config.h)
     DSD_APP_CMD_CONFIG_METADATA_SET = 711 // payload: dsd_app_config_metadata_payload
 };
@@ -302,19 +302,6 @@ typedef struct {
     char message[128];
 } dsd_app_command_result;
 
-enum {
-    DSD_APP_COMMAND_CAP_ACTION = 1u << 0,
-    DSD_APP_COMMAND_CAP_I32 = 1u << 1,
-    DSD_APP_COMMAND_CAP_U8 = 1u << 2,
-    DSD_APP_COMMAND_CAP_U32 = 1u << 3,
-    DSD_APP_COMMAND_CAP_U64 = 1u << 4,
-    DSD_APP_COMMAND_CAP_DOUBLE = 1u << 5,
-    DSD_APP_COMMAND_CAP_FLOAT = 1u << 6,
-    DSD_APP_COMMAND_CAP_STRING = 1u << 7,
-    DSD_APP_COMMAND_CAP_ENDPOINT = 1u << 8,
-    DSD_APP_COMMAND_CAP_STRUCT = 1u << 9,
-};
-
 typedef enum {
     DSD_APP_COMMAND_PAYLOAD_NONE = 0,
     DSD_APP_COMMAND_PAYLOAD_I32 = 1,
@@ -340,12 +327,9 @@ typedef struct {
 } dsd_app_command_enum_option;
 
 typedef struct {
-    int command_id;
     const char* name;
     const char* label;
     const char* description;
-    dsd_app_command_payload_kind payload_kind;
-    unsigned int capability_flags;
     size_t payload_size;
     double min_value;
     double max_value;
@@ -353,16 +337,12 @@ typedef struct {
     const char* units;
     const dsd_app_command_enum_option* enum_options;
     size_t enum_option_count;
+    const char* validation_hint;
+    int command_id;
+    dsd_app_command_payload_kind payload_kind;
     unsigned int availability_flags;
     int may_require_restart;
-    const char* validation_hint;
 } dsd_app_command_descriptor;
-
-typedef struct {
-    int command_id;
-    unsigned int flags;
-    size_t payload_size;
-} dsd_app_command_capability;
 
 #ifdef __cplusplus
 extern "C" {
@@ -390,24 +370,6 @@ int dsd_app_command_set_config_metadata_tracked(const dsd_app_config_metadata_pa
                                                 dsd_app_command_token* out_token);
 int dsd_app_command_result_get(dsd_app_command_token token, dsd_app_command_result* out);
 int dsd_app_command_descriptors_get(dsd_app_command_descriptor* out, size_t max, size_t* out_count);
-int dsd_app_command_capabilities_get(dsd_app_command_capability* out, size_t max, size_t* out_count);
-
-int dsd_app_command_action(int cmd_id);
-int dsd_app_command_set_i32(int cmd_id, int32_t value);
-int dsd_app_command_set_u8(int cmd_id, uint8_t value);
-int dsd_app_command_set_u32(int cmd_id, uint32_t value);
-int dsd_app_command_set_u64(int cmd_id, uint64_t value);
-int dsd_app_command_set_double(int cmd_id, double value);
-int dsd_app_command_set_float(int cmd_id, float value);
-int dsd_app_command_set_string(int cmd_id, const char* value);
-int dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port);
-int dsd_app_command_set_udp_input(const char* bind, int32_t port);
-int dsd_app_command_set_p25_p2_params(const dsd_app_p25_p2_params_payload* payload);
-int dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload);
-int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
-int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);
-int dsd_app_command_apply_config(const dsdneoUserConfig* config);
-int dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload);
 
 #ifdef __cplusplus
 }

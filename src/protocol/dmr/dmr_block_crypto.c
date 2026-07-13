@@ -79,7 +79,7 @@ dmr_block_crypto_clamp_window(const dsd_state* state, uint8_t slot, dmr_block_cr
     }
     const int max_end = cap - ctx->start;
     if (ctx->end < 0 || ctx->end > max_end) {
-        /* Preserve legacy malformed-length fallback semantics, bounded to the actual buffer. */
+        /* Malformed lengths consume the remaining bounded buffer window. */
         ctx->end = max_end;
     }
 }

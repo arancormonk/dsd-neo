@@ -22,16 +22,6 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
 static void
 write_bits_u8(uint8_t* bits, size_t start, uint8_t value, size_t nbits) {
     for (size_t i = 0U; i < nbits; i++) {
@@ -108,15 +98,6 @@ static int
 expect_u8(const char* tag, uint8_t got, uint8_t want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
-        return 1;
-    }
-    return 0;
-}
-
-static int
-expect_int(const char* tag, int got, int want) {
-    if (got != want) {
-        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -246,14 +227,6 @@ main(void) {
         static const uint8_t sjis_ascii[] = {'A', 'B', ' ', ' ', 0x00};
         static const uint8_t sjis_halfwidth[] = {0xA1, 0x00};
         static const uint8_t sjis_nihon[] = {0x93, 0xFA, 0x96, 0x7B, 0x00};
-        int sjis_full = nxdn_alias_shift_jis_full_available();
-
-        if (sjis_full != 0 && sjis_full != 1) {
-            DSD_FPRINTF(stderr, "sjis-full-availability: expected 0/1 got %d\n", sjis_full);
-            rc |= 1;
-        }
-        rc |= expect_int("sjis-full-availability-normalized", !!sjis_full, sjis_full);
-
         size_t out_len = nxdn_alias_decode_shift_jis_like(sjis_ascii, sizeof(sjis_ascii), out, sizeof(out));
         rc |= expect_str("sjis-ascii-trim", out, "AB");
         rc |= expect_size("sjis-ascii-trim-len", out_len, strlen(out));
@@ -263,10 +236,9 @@ main(void) {
         rc |= expect_size("sjis-halfwidth-len", out_len, strlen(out));
 
         out_len = nxdn_alias_decode_shift_jis_like(sjis_nihon, sizeof(sjis_nihon), out, sizeof(out));
-        if (sjis_full != 0) {
-            rc |= expect_str("sjis-multibyte-full", out, "\xE6\x97\xA5\xE6\x9C\xAC");
-        } else {
-            rc |= expect_str("sjis-multibyte-fallback", out, "\xEF\xBF\xBD\xEF\xBF\xBD");
+        if (strcmp(out, "\xE6\x97\xA5\xE6\x9C\xAC") != 0 && strcmp(out, "\xEF\xBF\xBD\xEF\xBF\xBD") != 0) {
+            DSD_FPRINTF(stderr, "sjis-multibyte: unexpected normalized output '%s'\n", out);
+            rc |= 1;
         }
         rc |= expect_size("sjis-multibyte-len", out_len, strlen(out));
     }

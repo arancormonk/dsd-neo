@@ -59,9 +59,10 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     return 0;
 }
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)freq;
     (void)ted_sps;
     g_vc_tunes++;
@@ -72,11 +73,13 @@ trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps)
     if (state) {
         state->last_vc_sync_time = time(NULL);
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_cc_returns++;
     if (opts) {
         opts->p25_is_tuned = 0;
@@ -86,13 +89,14 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq = trunk_tune_to_freq;
-    hooks.return_to_cc = return_to_cc;
+    hooks.tune_to_freq_request = trunk_tune_to_freq;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -149,7 +153,14 @@ main(void) {
         // Ensure untuned; request a grant
         opts.p25_is_tuned = 0;
         int before = g_vc_tunes;
-        p25_sm_on_group_grant(&opts, &st, ch, /*svc*/ 0x00, /*tg*/ 40000 + (t & 0xFF), /*src*/ 1000 + (t & 0xFF));
+        p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                     &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                       .slot = -1,
+                                       .channel = ch,
+                                       .tg = 40000 + (t & 0xFF),
+                                       .src = 1000 + (t & 0xFF),
+                                       .svc_bits = 0x00,
+                                       .is_group = 1});
         int tuned = (g_vc_tunes > before) && (opts.p25_is_tuned == 1);
 
         if (!tuned) {
@@ -180,7 +191,7 @@ main(void) {
         const int max_steps = 5;
         int before_rtc = g_cc_returns;
         while (opts.p25_is_tuned == 1 && steps++ < max_steps) {
-            p25_sm_tick(&opts, &st);
+            p25_sm_tick_ctx(p25_sm_get_ctx(), &opts, &st);
         }
         rc |= expect_true("p2-release", g_cc_returns > before_rtc && opts.p25_is_tuned == 0);
 
@@ -189,7 +200,7 @@ main(void) {
         st.p25_p2_audio_allowed[0] = st.p25_p2_audio_allowed[1] = 0;
         st.p25_sm_force_release = 1;
         before_rtc = g_cc_returns;
-        p25_sm_on_release(&opts, &st);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
         rc |= expect_true("p2-forced-release", g_cc_returns > before_rtc && opts.p25_is_tuned == 0);
     }
 

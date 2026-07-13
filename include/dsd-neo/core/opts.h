@@ -141,7 +141,7 @@ struct dsd_opts {
     int mod_c4fm;
     int mod_qpsk;
     int mod_gfsk;
-    /* Legacy/manual -m3 P25p2 C4FM path; keeps its 10-SPS timing eligible for P25p2 sync. */
+    /* Explicit -m3 P25p2 C4FM path; keeps its 10-SPS timing eligible for P25p2 sync. */
     int mod_p25p2_c4fm;
     /* P25p2-specific -m2/M selection; pins the strict matcher to the 6000-symbol profile. */
     int mod_p25p2_profile_lock;
@@ -244,10 +244,10 @@ struct dsd_opts {
     int input_upsample_pos;
     int input_upsample_tail_blocks;
     int input_upsample_prev_valid;
-    int p25_trunk;        // legacy flag name used across protocols
-    int trunk_enable;     // protocol-agnostic alias for trunking enable (kept in sync with p25_trunk)
-    int p25_is_tuned;     //set to 1 if currently on VC, set back to 0 if on CC
-    int trunk_is_tuned;   //protocol-agnostic alias (kept in sync with p25_is_tuned)
+    int p25_trunk;        // P25-family trunk decoder is active for the current target
+    int trunk_enable;     // generic trunking owner is enabled
+    int p25_is_tuned;     // P25-family decoder is currently on a voice channel
+    int trunk_is_tuned;   // generic trunking owner is currently on a voice channel
     float trunk_hangtime; //hangtime in seconds before tuning back to CC
     int scanner_mode;     //experimental -- use the channel map as a conventional scanner, quicker tuning, but no CC
     int trunk_scan_enabled;
@@ -263,7 +263,8 @@ struct dsd_opts {
     int use_hpf_d;
     int floating_point;
     float input_upsample_buf[6];
-    dsd_frontend_display_opts frontend_display;
+    dsd_frontend_common_display_opts frontend_display;
+    dsd_frontend_terminal_display_opts frontend_terminal_display;
     short int mbe_out;  //flag for mbe out, don't attempt fclose more than once
     short int mbe_outR; //flag for mbe out, don't attempt fclose more than once
     short int dmr_mono;
@@ -277,7 +278,6 @@ struct dsd_opts {
     dsd_frontend_kind frontend_kind;
     uint8_t show_keys;               //show radio key/keystream material in CLI/status output (0=redacted)
     uint8_t symbol_out_file_is_auto; //if the user hit the R key
-    uint8_t symbol_capture_format;   //DSD_SYMBOL_CAPTURE_FORMAT_* for new symbol captures
     uint8_t reverse_mute;
     uint8_t dmr_dmrla_is_set; //flag to tell us dmrla is set by the user
     uint8_t dmr_dmrla_n;      //n value for dmrla
@@ -361,10 +361,8 @@ enum DSD_ATTR_PACKED {
 /**
  * @brief Clear staged low-rate PCM input bookkeeping.
  *
- * Zeros the staged output buffer and clears the legacy bookkeeping fields
- * retained for compatibility. The reusable FIR state is intentionally not
- * touched here so runtime-only targets can use this inline helper without
- * taking a link-time dependency on `dsd-neo_dsp`.
+ * Zeros the staged output buffer and clears its bookkeeping fields. The reusable FIR state is intentionally not touched
+ * here so runtime-only targets can use this inline helper without taking a link-time dependency on `dsd-neo_dsp`.
  *
  * @param opts Decoder options containing the staged input bookkeeping.
  */
@@ -386,9 +384,8 @@ dsd_opts_reset_input_upsample_state(dsd_opts* opts) {
 /**
  * @brief Reset low-rate PCM input processing state at a stream boundary.
  *
- * Clears both the legacy staged upsample bookkeeping and the reusable FIR
- * state so the next socket/file block cannot blend samples from a previous
- * stream. Callers that use this helper must link against `dsd-neo_dsp`.
+ * Clears both the staged upsample bookkeeping and the reusable FIR state so the next socket/file block cannot blend
+ * samples from a previous stream. Callers that use this helper must link against `dsd-neo_dsp`.
  *
  * @param opts Decoder options containing the staged/FIR input state.
  */
@@ -404,10 +401,9 @@ dsd_opts_reset_pcm_input_state(dsd_opts* opts) {
 /**
  * @brief Apply a new raw PCM input sample rate to decoder options.
  *
- * Updates the stored raw rate, preserves the legacy integer interpolator
- * semantics for integer >=48 kHz ratios, and clears staged bookkeeping so the
- * next sample block starts on the new rate. Callers that own a live
- * FIR/polyphase state must reset `input_resampler` from compiled code.
+ * Updates the stored raw rate, preserves integer staged-resampling semantics for integer >=48 kHz ratios, and clears
+ * staged bookkeeping so the next sample block starts on the new rate. Callers that own a live FIR/polyphase state must
+ * reset `input_resampler` from compiled code.
  *
  * @param opts Decoder options to update.
  * @param sample_rate_hz New raw PCM sample rate in Hz.
@@ -550,7 +546,7 @@ dsd_opts_compute_sps_rate(const dsd_opts* opts, int sym_rate_hz, int demod_rate_
 /**
  * @brief Return the integer upsample factor used for common sub-48 kHz PCM inputs.
  *
- * Legacy file/socket decode paths expect approximately 48 kHz discriminator
+ * PCM file/socket decode paths expect approximately 48 kHz discriminator
  * audio. When a non-RTL PCM source is an integer divisor of 48 kHz, the sample
  * reader stages FIR/polyphase-resampled output up to 48 kHz before symbol
  * timing consumes it. The factor must fit within the fixed staging buffer used
@@ -576,7 +572,7 @@ dsd_opts_input_upsample_factor(const dsd_opts* opts) {
 }
 
 /**
- * @brief Return the effective PCM rate seen by non-RTL legacy decode paths.
+ * @brief Return the effective PCM rate seen by non-RTL PCM decode paths.
  *
  * @param opts Decoder options containing the configured PCM input sample rate.
  * @return Effective sample rate in Hz after any staged PCM input resampling.

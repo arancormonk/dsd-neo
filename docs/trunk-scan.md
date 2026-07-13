@@ -15,7 +15,7 @@ state from one system is not reused on another.
     input path.
   - Or an external tuner controlled by rigctl, usually with TCP PCM input: `-i tcp -U 4532`.
 - IQ replay cannot be used with trunk scan because replay timelines cannot retune to unrelated live frequencies.
-- Legacy conventional scanner mode (`-Y`) cannot be combined with trunk scan.
+- Conventional scanner mode (`-Y`) cannot be combined with trunk scan.
 - Global channel maps (`-C` or `[trunking] chan_csv`) cannot be used while trunk scan is active. Put each trunk target's
   optional channel map in the target CSV `chan_csv` column instead.
 - A group list (`-G` or `[trunking] group_csv`) is still global and applies to every target.
@@ -155,8 +155,8 @@ Config notes:
 - `[trunking] chan_csv` is rejected when trunk scan is enabled.
 - Profiles can enable trunk scan. A profile may inherit `trunk_scan.targets_csv` from the base config.
 - If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
-  file/replay input, trunking mode, or legacy scan mode disable the inherited scan for that run. UI-only flags and
-  trunk-scan timing overrides keep it enabled.
+  file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run. UI-only
+  flags and trunk-scan timing overrides keep it enabled.
 
 ## Runtime Behavior
 
@@ -249,5 +249,5 @@ To scan multiple systems with one receiver:
 3. Put each trunk system's channel map in the target CSV `chan_csv` column.
 4. Replace `-T` with `--trunk-scan targets.csv`.
 
-Legacy `-Y` conventional scanning remains a separate mode for fast conventional sync scanning and is mutually exclusive
+`-Y` conventional scanning remains a separate mode for fast conventional sync scanning and is mutually exclusive
 with trunk scan.

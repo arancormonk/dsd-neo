@@ -20,12 +20,10 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
-#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <mbelib.h>
-#include <sndfile.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/types.h>
@@ -33,22 +31,12 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd_audio2_internal.h"
+#include "dsd_audio_internal.h"
 
 static void
 write_s16_audio(dsd_opts* opts, const int16_t* buf, size_t frames) {
     if (opts->audio_out_stream) {
         dsd_audio_write(opts->audio_out_stream, buf, frames);
-    }
-}
-
-static void
-dsd_audio2_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
-    if (file == NULL || samples == NULL || sample_count <= 0) {
-        return;
-    }
-    sf_count_t written = sf_write_short(file, samples, sample_count);
-    if (written != sample_count) {
-        LOG_WARN("%s: wrote %lld/%lld samples to WAV output\n", context, (long long)written, (long long)sample_count);
     }
 }
 
@@ -258,7 +246,7 @@ dsd_write_static_wav_from_mono(dsd_opts* opts, const short* mono_samp, size_t le
             ss[(i * 2) + 1] = mono_samp[(size_t)i * 6];
         }
     }
-    dsd_audio2_write_wav_short_block(opts->wav_out_f, ss, 320, "dsd_write_static_wav_from_mono");
+    dsd_audio_write_wav_short_block(opts->wav_out_f, ss, 320, "dsd_write_static_wav_from_mono");
 }
 
 DSD_AUDIO2_INTERNAL int
@@ -525,7 +513,7 @@ dsd_write_s16_wav_18_blocks(dsd_opts* opts, short stereo_sf[18][320]) {
         return;
     }
     for (int j = 0; j < 18; j++) {
-        dsd_audio2_write_wav_short_block(opts->wav_out_f, stereo_sf[j], 320, "dsd_write_s16_wav_18_blocks");
+        dsd_audio_write_wav_short_block(opts->wav_out_f, stereo_sf[j], 320, "dsd_write_s16_wav_18_blocks");
     }
 }
 
@@ -1013,7 +1001,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
     if (!encL) {
         dsd_output_s16_block(opts, state, stereo_samp1, 160, 2);
         if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
-            dsd_audio2_write_wav_short_block(opts->wav_out_f, stereo_samp1, 320, "processAudioDMRslot");
+            dsd_audio_write_wav_short_block(opts->wav_out_f, stereo_samp1, 320, "processAudioDMRslot");
         }
     }
     dsd_audio_reset_short_lr_working_state(state);
@@ -1067,9 +1055,9 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     dsd_output_s16_blocks(opts, state, stereo_blocks, 3, 160, 2, 0);
 
     if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
-        dsd_audio2_write_wav_short_block(opts->wav_out_f, stereo_samp1, 320, "processAudioDMRstereo3v2 block1");
-        dsd_audio2_write_wav_short_block(opts->wav_out_f, stereo_samp2, 320, "processAudioDMRstereo3v2 block2");
-        dsd_audio2_write_wav_short_block(opts->wav_out_f, stereo_samp3, 320, "processAudioDMRstereo3v2 block3");
+        dsd_audio_write_wav_short_block(opts->wav_out_f, stereo_samp1, 320, "processAudioDMRstereo3v2 block1");
+        dsd_audio_write_wav_short_block(opts->wav_out_f, stereo_samp2, 320, "processAudioDMRstereo3v2 block2");
+        dsd_audio_write_wav_short_block(opts->wav_out_f, stereo_samp3, 320, "processAudioDMRstereo3v2 block3");
     }
 
 SS3_END:

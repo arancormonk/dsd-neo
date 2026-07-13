@@ -253,34 +253,19 @@ p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* st
     (void)state;
 }
 
-void
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
+static p25_sm_ctx_t g_sm_ctx;
+
+p25_sm_ctx_t*
+p25_sm_get_ctx(void) {
+    return &g_sm_ctx;
 }
 
 void
-p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    (void)ctx;
     (void)opts;
     (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
-}
-
-void
-p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)dst;
-    (void)src;
+    (void)ev;
 }
 
 int
@@ -322,25 +307,15 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
 }
 
 void
-p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
+p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    (void)ctx;
     (void)opts;
     (void)state;
-    (void)svc_type;
-    (void)reason_code;
-    (void)target;
+    (void)reason;
 }
 
 void
-p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
-    (void)opts;
-    (void)state;
-    (void)svc_type;
-    (void)reason_code;
-    (void)target;
-}
-
-void
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     (void)freqs;

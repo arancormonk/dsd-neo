@@ -317,8 +317,8 @@ struct dsd_state {
     unsigned long long int p2_cc; //p1 NAC
     unsigned long long int p2_siteid;
     unsigned long long int p2_rfssid;
-    long int p25_cc_freq;   //cc freq from net_stat
-    long int trunk_cc_freq; //protocol-agnostic alias (kept in sync with p25_cc_freq)
+    long int p25_cc_freq;   // P25 control-channel frequency from network status
+    long int trunk_cc_freq; // generic trunk-owner control-channel frequency
     unsigned long long int edacs_site_id;
     time_t last_cc_sync_time;    //use this to start hunting for CC after signal lost
     time_t p25_last_cc_msg_time; //last decoded P25 control-channel message
@@ -361,7 +361,7 @@ struct dsd_state {
     unsigned long long int dmr_lrrp_target[2];
     // P25 trunking freq storage
     long int p25_vc_freq[2];
-    long int trunk_vc_freq[2]; //protocol-agnostic alias (kept in sync with p25_vc_freq)
+    long int trunk_vc_freq[2]; // generic trunk-owner voice-channel frequencies
     // Trunking LCNs and maps
     long int trunk_lcn_freq[26];
     long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
@@ -383,7 +383,7 @@ struct dsd_state {
     float* audio_out_temp_buf_pR;
     //analog/raw signal audio buffers (float path for better SNR, convert to int16 at output)
     float analog_out_f[960]; // float buffer for analog monitor path
-    short analog_out[960];   // int16 buffer for output and legacy paths
+    short analog_out[960];   // int16 buffer for analog monitor output
     int analog_sample_counter;
     //new stereo float sample storage
     float f_l[160];     //single sample left
@@ -694,8 +694,6 @@ struct dsd_state {
     dsd_p25_p2_rekey_state p25_p2_rekey[2];
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
-    // Compatibility marker derived from p25_crypto_state (pending/blocked => muted).
-    uint8_t p25_p2_enc_lockout_muted[2];
     // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
     // Depth DSD_P25_P2_AUDIO_RING_DEPTH to match drain behavior (~80 ms max at depth=4)
     float p25_p2_audio_ring[2][DSD_P25_P2_AUDIO_RING_DEPTH][160];
@@ -711,9 +709,8 @@ struct dsd_state {
     // P25p2 recent MAC_END_PTT timestamps per slot (enables early teardown
     // once per-slot jitter/audio has drained)
     time_t p25_p2_last_end_ptt[2];
-    // P25p1 recent TDU/TDULC timestamps (enables early teardown on Phase 1)
-    time_t p25_p1_last_tdu;   // wall clock (legacy)
-    double p25_p1_last_tdu_m; // monotonic seconds (preferred)
+    // P25p1 recent TDU/TDULC timestamp (enables early teardown on Phase 1)
+    double p25_p1_last_tdu_m;
 
     // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
     unsigned int p25_p2_rs_facch_ok;
@@ -764,7 +761,7 @@ struct dsd_state {
      * - p25_vc_cqpsk_pref: learned preference (-1=unknown/auto,
      *   1=prefer OP25-style CQPSK+TED chain). Value 0 is treated as no learned
      *   TDMA preference so automatic retry logic does not force P25p2 through
-     *   the legacy FM/QPSK slicer.
+     *   the FM/QPSK slicer.
      * - p25_vc_cqpsk_override: one-shot retry override applied on next VC tune (-1=none).
      *
      * These are ignored when the user explicitly forces CQPSK via env/config (DSD_NEO_CQPSK).
@@ -788,7 +785,7 @@ struct dsd_state {
     // or policy events; cleared by the SM after handling
     int p25_sm_force_release;
     int trunk_sm_force_release; // protocol-agnostic alias (kept in sync with p25_sm_force_release)
-    // Timestamp of last p25_sm_on_release() (0 when none yet)
+    // Timestamp of last p25_sm_release() (0 when none yet)
     time_t p25_sm_last_release_time;
     // Last SM status/reason tag (e.g., "after-tune", "release-deferred-gated") and timestamp
     char p25_sm_last_reason[32];
@@ -821,7 +818,7 @@ struct dsd_state {
     uint32_t p25_enc_tg_cache_tg[DSD_P25_ENC_TG_CACHE_DEPTH];
     uint8_t p25_enc_tg_cache_is_group[DSD_P25_ENC_TG_CACHE_DEPTH]; // 1=group/SG, 0=private destination
     unsigned int p25_enc_tg_cache_next;
-    // Cached P25 SM tunables (seconds), resolved once at p25_sm_init()
+    // Cached P25 SM tunables (seconds), resolved once at p25_sm_init_ctx()
     double p25_cfg_vc_grace_s;
     double p25_cfg_grant_voice_to_s;
     double p25_cfg_min_follow_dwell_s;
@@ -998,7 +995,6 @@ struct dsd_state {
     uint32_t p25_policy_tg[2];            // matched policy TG for patched SG calls; 0 means use OTA TG
 
     //experimental symbol file capture read throttle
-    int symbol_throttle;                     //throttle speed
     int use_throttle;                        //only use throttle if set to 1
     uint64_t symbol_replay_next_deadline_ns; //0 when uninitialized
 
@@ -1181,7 +1177,7 @@ struct dsd_state {
     //generic ks
     int straight_ks;
     int straight_mod;
-    int straight_frame_mode; //0=legacy continuous bitstream, 1=frame-aligned (offset/step)
+    int straight_frame_mode; // 0=continuous bitstream, 1=frame-aligned (offset/step)
     int straight_frame_off;  //frame-aligned start offset (bits)
     int straight_frame_step; //frame-aligned per-frame step (bits)
 
@@ -1204,7 +1200,7 @@ struct dsd_state {
     uint8_t dmr_emb_err[2];
 
     /* ─────────────────────────────────────────────────────────────────────────
-     * DMR Resample-on-Sync Support
+     * Symbol History and DMR Resample-on-Sync Support
      *
      * Implements SDRTrunk-style threshold calibration and CACH resampling to
      * improve first-frame decode accuracy. See dmr_sync.h for details.
@@ -1212,10 +1208,10 @@ struct dsd_state {
 
     /** Symbol history circular buffer for retrospective resampling.
      *  Stores symbol-rate floats (one per dibit decision), not raw audio samples. */
-    float* dmr_sample_history;
-    int dmr_sample_history_size;  /**< Buffer size (DMR_SAMPLE_HISTORY_SIZE) */
-    int dmr_sample_history_head;  /**< Write index into circular buffer */
-    int dmr_sample_history_count; /**< Symbols written (for underflow check) */
+    float* symbol_history;
+    int symbol_history_size;  /**< Circular-buffer size in symbols */
+    int symbol_history_head;  /**< Write index into circular buffer */
+    int symbol_history_count; /**< Symbols written (for underflow check) */
 
     // Advisory-only input level health for ncurses/status snapshots.
     dsd_input_level_snapshot input_level;

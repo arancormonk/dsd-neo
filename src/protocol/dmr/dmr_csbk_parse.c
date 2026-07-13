@@ -7,9 +7,10 @@
  * DMR CSBK parsing and dispatch helpers.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -33,15 +34,15 @@ dmr_csbk_parse(const uint8_t* cs_pdu_bits, const uint8_t* cs_pdu, struct dmr_csb
 
     /* For channel grant CSBK/MBC PDUs (ETSI 7.1.1.1.1), decode common fields. */
     if (out->opcode >= 48 && out->opcode <= 56) {
-        out->lpcn = (uint16_t)ConvertBitIntoBytes((uint8_t*)&cs_pdu_bits[16], 12U);
-        out->pluschannum = (uint16_t)ConvertBitIntoBytes((uint8_t*)&cs_pdu_bits[16], 13U);
+        out->lpcn = (uint16_t)convert_bits_into_output((uint8_t*)&cs_pdu_bits[16], 12U);
+        out->pluschannum = (uint16_t)convert_bits_into_output((uint8_t*)&cs_pdu_bits[16], 13U);
         out->pluschannum = (uint16_t)(out->pluschannum + 1U);
         out->lcn = cs_pdu_bits[28];
         out->st1 = cs_pdu_bits[29];
         out->st2 = cs_pdu_bits[30];
         out->st3 = cs_pdu_bits[31];
-        out->target = (uint32_t)ConvertBitIntoBytes((uint8_t*)&cs_pdu_bits[32], 24U);
-        out->source = (uint32_t)ConvertBitIntoBytes((uint8_t*)&cs_pdu_bits[56], 24U);
+        out->target = (uint32_t)convert_bits_into_output((uint8_t*)&cs_pdu_bits[32], 24U);
+        out->source = (uint32_t)convert_bits_into_output((uint8_t*)&cs_pdu_bits[56], 24U);
     }
 
     return 0;

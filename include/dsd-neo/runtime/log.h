@@ -92,15 +92,4 @@ void dsd_neo_log_sink_reset(void);
     } while (0)
 #endif
 
-/* Convenience macros for specific message types */
-
-/* For warnings with WARNING: prefix */
-#define LOG_WARNING(...)  LOG_WARN("WARNING: " __VA_ARGS__)
-
-/* For notices with NOTICE: prefix */
-#define LOG_NOTICE(...)   LOG_INFO("NOTICE: " __VA_ARGS__)
-
-/* For critical errors that may exit */
-#define LOG_CRITICAL(...) LOG_ERROR(__VA_ARGS__)
-
 #endif /* DSD_NEO_LOG_H */

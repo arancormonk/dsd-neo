@@ -225,18 +225,12 @@ reset_ring_at(input_ring_state* ring, size_t index) {
 }
 
 static uint32_t
-process_u8_chunk(unsigned char* src, float* dst, size_t len, int combined, uint32_t phase) {
-    if (combined) {
-        return widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, phase);
-    }
-    phase = rotate90_u8_inplace_phase(src, (uint32_t)len, phase);
-    widen_u8_to_f32_bias128_scalar(src, dst, (uint32_t)len);
-    return phase;
+process_u8_chunk(const unsigned char* src, float* dst, size_t len, uint32_t phase) {
+    return widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, phase);
 }
 
 static float
-ingest_u8_block(input_ring_state* ring, unsigned char* src, size_t len, size_t start_index, int combined,
-                uint32_t* phase) {
+ingest_u8_block(input_ring_state* ring, const unsigned char* src, size_t len, size_t start_index, uint32_t* phase) {
     reset_ring_at(ring, start_index);
     float *p1 = NULL, *p2 = NULL;
     size_t n1 = 0, n2 = 0;
@@ -252,10 +246,10 @@ ingest_u8_block(input_ring_state* ring, unsigned char* src, size_t len, size_t s
     size_t w2 = (n2 < rem) ? n2 : rem;
 
     if (w1 > 0U) {
-        *phase = process_u8_chunk(src, p1, w1, combined, *phase);
+        *phase = process_u8_chunk(src, p1, w1, *phase);
     }
     if (w2 > 0U) {
-        *phase = process_u8_chunk(src + w1, p2, w2, combined, *phase);
+        *phase = process_u8_chunk(src + w1, p2, w2, *phase);
     }
     input_ring_commit(ring, w1 + w2);
     return (p1 ? p1[0] : 0.0f)
@@ -317,15 +311,11 @@ bench_rtl_ingest(const BenchOptions& opts) {
 
     uint32_t combined_phase = 0;
     ran += run_case(opts, "rtl_ingest_u8_combined_contig", "byte", (double)kBytes,
-                    [&]() -> float { return ingest_u8_block(&ring, u8.data(), kBytes, 0U, 1, &combined_phase); });
+                    [&]() -> float { return ingest_u8_block(&ring, u8.data(), kBytes, 0U, &combined_phase); });
 
     uint32_t wrap_phase = 0;
     ran += run_case(opts, "rtl_ingest_u8_combined_wrap", "byte", (double)kBytes,
-                    [&]() -> float { return ingest_u8_block(&ring, u8.data(), kBytes, kWrapStart, 1, &wrap_phase); });
-
-    uint32_t two_pass_phase = 0;
-    ran += run_case(opts, "rtl_ingest_u8_two_pass_contig", "byte", (double)kBytes,
-                    [&]() -> float { return ingest_u8_block(&ring, u8.data(), kBytes, 0U, 0, &two_pass_phase); });
+                    [&]() -> float { return ingest_u8_block(&ring, u8.data(), kBytes, kWrapStart, &wrap_phase); });
 
     ran += run_case(opts, "rtl_ingest_cs16_contig", "sample", (double)kBytes,
                     [&]() -> float { return ingest_cs16_block(&ring, cs16.data(), kBytes / 2U, 0U); });

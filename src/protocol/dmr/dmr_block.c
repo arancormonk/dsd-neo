@@ -11,6 +11,8 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
@@ -157,19 +159,19 @@ dmr_dd_format_string(uint8_t dd_format) {
 static void
 dmr_dheader_parse_fields(const dsd_state* state, const uint8_t dheader_bits[], dmr_dheader_fields* f) {
     uint8_t mpoc = dheader_bits[3];
-    uint8_t s_ab_msb = (uint8_t)ConvertBitIntoBytes(&dheader_bits[2], 2);
-    uint8_t s_ab_lsb = (uint8_t)ConvertBitIntoBytes(&dheader_bits[12], 4);
+    uint8_t s_ab_msb = (uint8_t)convert_bits_into_output(&dheader_bits[2], 2);
+    uint8_t s_ab_lsb = (uint8_t)convert_bits_into_output(&dheader_bits[12], 4);
     f->gi = dheader_bits[0];
     f->a = dheader_bits[1];
-    f->dpf = (uint8_t)ConvertBitIntoBytes(&dheader_bits[4], 4);
-    f->sap = (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 4);
-    f->poc = (uint8_t)ConvertBitIntoBytes(&dheader_bits[12], 4) + (mpoc << 4);
-    f->target = (uint32_t)ConvertBitIntoBytes(&dheader_bits[16], 24);
-    f->source = (uint32_t)ConvertBitIntoBytes(&dheader_bits[40], 24);
+    f->dpf = (uint8_t)convert_bits_into_output(&dheader_bits[4], 4);
+    f->sap = (uint8_t)convert_bits_into_output(&dheader_bits[8], 4);
+    f->poc = (uint8_t)convert_bits_into_output(&dheader_bits[12], 4) + (mpoc << 4);
+    f->target = (uint32_t)convert_bits_into_output(&dheader_bits[16], 24);
+    f->source = (uint32_t)convert_bits_into_output(&dheader_bits[40], 24);
     f->is_xpt = dmr_branding_is(state, "XPT ");
     if (f->is_xpt == 1) {
-        f->target = (uint32_t)ConvertBitIntoBytes(&dheader_bits[24], 16);
-        f->source = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 16);
+        f->target = (uint32_t)convert_bits_into_output(&dheader_bits[24], 16);
+        f->source = (uint32_t)convert_bits_into_output(&dheader_bits[48], 16);
         if (f->gi == 0) {
             uint8_t target_hash[16];
             for (int i = 0; i < 16; i++) {
@@ -180,35 +182,35 @@ dmr_dheader_parse_fields(const dsd_state* state, const uint8_t dheader_bits[], d
     }
     if (dmr_branding_is(state, "Cap+ ")) {
         if (f->gi == 0) {
-            f->target = (uint32_t)ConvertBitIntoBytes(&dheader_bits[24], 16);
+            f->target = (uint32_t)convert_bits_into_output(&dheader_bits[24], 16);
         }
-        f->source = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 16);
+        f->source = (uint32_t)convert_bits_into_output(&dheader_bits[48], 16);
     }
     f->f = dheader_bits[64];
-    f->bf = (uint8_t)ConvertBitIntoBytes(&dheader_bits[65], 7);
+    f->bf = (uint8_t)convert_bits_into_output(&dheader_bits[65], 7);
     f->s = dheader_bits[72];
-    f->ns = (uint8_t)ConvertBitIntoBytes(&dheader_bits[73], 3);
-    f->fsn = (uint8_t)ConvertBitIntoBytes(&dheader_bits[76], 4);
-    f->r_class = (uint8_t)ConvertBitIntoBytes(&dheader_bits[72], 2);
-    f->r_type = (uint8_t)ConvertBitIntoBytes(&dheader_bits[74], 3);
-    f->r_status = (uint8_t)ConvertBitIntoBytes(&dheader_bits[77], 3);
+    f->ns = (uint8_t)convert_bits_into_output(&dheader_bits[73], 3);
+    f->fsn = (uint8_t)convert_bits_into_output(&dheader_bits[76], 4);
+    f->r_class = (uint8_t)convert_bits_into_output(&dheader_bits[72], 2);
+    f->r_type = (uint8_t)convert_bits_into_output(&dheader_bits[74], 3);
+    f->r_status = (uint8_t)convert_bits_into_output(&dheader_bits[77], 3);
     f->s_ab_fin = (uint8_t)((s_ab_msb << 2) | s_ab_lsb);
-    f->s_source_port = (uint8_t)ConvertBitIntoBytes(&dheader_bits[64], 3);
-    f->s_dest_port = (uint8_t)ConvertBitIntoBytes(&dheader_bits[67], 3);
-    f->s_status_precoded = (uint8_t)ConvertBitIntoBytes(&dheader_bits[70], 10);
+    f->s_source_port = (uint8_t)convert_bits_into_output(&dheader_bits[64], 3);
+    f->s_dest_port = (uint8_t)convert_bits_into_output(&dheader_bits[67], 3);
+    f->s_status_precoded = (uint8_t)convert_bits_into_output(&dheader_bits[70], 10);
     f->sd_sarq = dheader_bits[70];
     f->sd_f = dheader_bits[71];
-    f->sd_bp = (uint8_t)ConvertBitIntoBytes(&dheader_bits[72], 8);
-    f->dd_format = (uint8_t)ConvertBitIntoBytes(&dheader_bits[64], 6);
-    f->udt_format = (uint8_t)ConvertBitIntoBytes(&dheader_bits[12], 4);
-    f->udt_padnib = (uint8_t)ConvertBitIntoBytes(&dheader_bits[64], 5);
-    f->udt_uab = (uint8_t)ConvertBitIntoBytes(&dheader_bits[70], 2);
+    f->sd_bp = (uint8_t)convert_bits_into_output(&dheader_bits[72], 8);
+    f->dd_format = (uint8_t)convert_bits_into_output(&dheader_bits[64], 6);
+    f->udt_format = (uint8_t)convert_bits_into_output(&dheader_bits[12], 4);
+    f->udt_padnib = (uint8_t)convert_bits_into_output(&dheader_bits[64], 5);
+    f->udt_uab = (uint8_t)convert_bits_into_output(&dheader_bits[70], 2);
     f->udt_sf = dheader_bits[72];
     f->udt_pf = dheader_bits[73];
-    f->udt_op = (uint8_t)ConvertBitIntoBytes(&dheader_bits[74], 6);
+    f->udt_op = (uint8_t)convert_bits_into_output(&dheader_bits[74], 6);
     f->udt_uab += 1;
-    f->p_sap = (uint8_t)ConvertBitIntoBytes(&dheader_bits[0], 4);
-    f->p_mfid = (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8);
+    f->p_sap = (uint8_t)convert_bits_into_output(&dheader_bits[0], 4);
+    f->p_mfid = (uint8_t)convert_bits_into_output(&dheader_bits[8], 8);
 }
 
 static void
@@ -383,14 +385,14 @@ dmr_dheader_handle_moto_p_head(dsd_state* state, uint8_t slot, uint8_t dheader[]
     state->data_block_counter[slot]++;
     state->data_byte_ctr[slot] = (uint16_t)len;
     state->data_p_head[slot] = 1;
-    uint8_t p_opcode = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
+    uint8_t p_opcode = (uint8_t)convert_bits_into_output(&dheader_bits[16], 8);
     state->data_ks_start[slot] = (p_opcode == 0x02) ? 3 : 0;
 }
 
 static void
 dmr_dheader_handle_vertex_enc(dsd_state* state, uint8_t slot, uint8_t p_mfid, const uint8_t dheader_bits[]) {
-    uint8_t key_id = (uint8_t)ConvertBitIntoBytes(&dheader_bits[16], 8);
-    uint32_t mi32 = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 32);
+    uint8_t key_id = (uint8_t)convert_bits_into_output(&dheader_bits[16], 8);
+    uint32_t mi32 = (uint32_t)convert_bits_into_output(&dheader_bits[48], 32);
     if (state->currentslot == 0) {
         state->dmr_so = 0x100;
         state->payload_keyid = key_id;
@@ -433,10 +435,10 @@ dmr_dheader_print_alg_label(uint8_t alg) {
 
 static void
 dmr_dheader_handle_moto_enc(dsd_state* state, uint8_t slot, const uint8_t dheader_bits[]) {
-    uint8_t enc = (uint8_t)ConvertBitIntoBytes(&dheader_bits[20], 4);
-    uint8_t key_id = (uint8_t)ConvertBitIntoBytes(&dheader_bits[24], 8);
-    uint8_t alg = (uint8_t)ConvertBitIntoBytes(&dheader_bits[17], 3);
-    uint32_t mi32 = (uint32_t)ConvertBitIntoBytes(&dheader_bits[48], 32);
+    uint8_t enc = (uint8_t)convert_bits_into_output(&dheader_bits[20], 4);
+    uint8_t key_id = (uint8_t)convert_bits_into_output(&dheader_bits[24], 8);
+    uint8_t alg = (uint8_t)convert_bits_into_output(&dheader_bits[17], 3);
+    uint32_t mi32 = (uint32_t)convert_bits_into_output(&dheader_bits[48], 32);
     if (enc == 1) {
         if (state->currentslot == 0) {
             state->dmr_so = 0x100;
@@ -445,7 +447,7 @@ dmr_dheader_handle_moto_enc(dsd_state* state, uint8_t slot, const uint8_t dheade
         }
     }
     DSD_FPRINTF(stderr, "\n PDU ENC Header:");
-    DSD_FPRINTF(stderr, " MFID: %02X;", (uint8_t)ConvertBitIntoBytes(&dheader_bits[8], 8));
+    DSD_FPRINTF(stderr, " MFID: %02X;", (uint8_t)convert_bits_into_output(&dheader_bits[8], 8));
     DSD_FPRINTF(stderr, " ENC: %X;", enc);
     if (state->currentslot == 0) {
         state->payload_keyid = key_id;
@@ -469,7 +471,7 @@ static void
 dmr_dheader_print_unknown_ext(const uint8_t dheader_bits[]) {
     DSD_FPRINTF(stderr, "\n Unknown Extended Header: ");
     for (uint8_t i = 2; i < 10; i++) {
-        DSD_FPRINTF(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&dheader_bits[((size_t)i) * 8u], 8));
+        DSD_FPRINTF(stderr, "%02X", (uint8_t)convert_bits_into_output(&dheader_bits[((size_t)i) * 8u], 8));
     }
 }
 
@@ -678,23 +680,23 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     dmr_unpack_bytes_to_bits(block_bytes, 60, ctx->cs_bits);
     udt_ig = ctx->cs_bits[0];
     udt_a = ctx->cs_bits[1];
-    udt_res = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[2], 2);
-    udt_format1 = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[4], 4);
-    udt_sap = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[8], 4);
-    ctx->udt_format2 = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[12], 4);
-    ctx->udt_target = (uint32_t)ConvertBitIntoBytes(&ctx->cs_bits[16], 24);
-    ctx->udt_source = (uint32_t)ConvertBitIntoBytes(&ctx->cs_bits[40], 24);
-    udt_padnib = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[64], 5);
+    udt_res = (uint8_t)convert_bits_into_output(&ctx->cs_bits[2], 2);
+    udt_format1 = (uint8_t)convert_bits_into_output(&ctx->cs_bits[4], 4);
+    udt_sap = (uint8_t)convert_bits_into_output(&ctx->cs_bits[8], 4);
+    ctx->udt_format2 = (uint8_t)convert_bits_into_output(&ctx->cs_bits[12], 4);
+    ctx->udt_target = (uint32_t)convert_bits_into_output(&ctx->cs_bits[16], 24);
+    ctx->udt_source = (uint32_t)convert_bits_into_output(&ctx->cs_bits[40], 24);
+    udt_padnib = (uint8_t)convert_bits_into_output(&ctx->cs_bits[64], 5);
     udt_zero = ctx->cs_bits[69];
-    ctx->udt_uab = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[70], 2) + 1;
+    ctx->udt_uab = (uint8_t)convert_bits_into_output(&ctx->cs_bits[70], 2) + 1;
     udt_sf = ctx->cs_bits[72];
     udt_pf = ctx->cs_bits[73];
-    udt_op = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[74], 6);
+    udt_op = (uint8_t)convert_bits_into_output(&ctx->cs_bits[74], 6);
     UNUSED4(udt_ig, udt_a, udt_res, udt_format1);
     UNUSED4(udt_sap, udt_zero, udt_sf, udt_pf);
     UNUSED(udt_op);
     ctx->payload_bits = dmr_udt_payload_bits(state, ctx->slot, udt_padnib);
-    ctx->add_res = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96], 7);
+    ctx->add_res = (uint8_t)convert_bits_into_output(&ctx->cs_bits[96], 7);
     ctx->add_ok = ctx->cs_bits[103];
     DSD_MEMSET(ctx->udt_string, 0, sizeof(ctx->udt_string));
     DSD_SNPRINTF(ctx->udt_string, sizeof(ctx->udt_string), "UDT SRC: %d; TGT: %d; ", ctx->udt_source, ctx->udt_target);
@@ -729,7 +731,7 @@ dmr_udt_print_utf16_char(uint16_t utf16c) {
 static void
 dmr_udt_emit_utf16_text(dmr_udt_ctx* ctx, int bit_offset, int char_count) {
     for (int i = 0; i < char_count; i++) {
-        uint16_t utf16c = (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 16) + bit_offset], 16);
+        uint16_t utf16c = (uint16_t)convert_bits_into_output(&ctx->cs_bits[(i * 16) + bit_offset], 16);
         if (utf16c >= 0x20 && utf16c != 0x7F) {
             dmr_udt_print_utf16_char(utf16c);
             if (utf16c < 0x7F) {
@@ -771,7 +773,7 @@ dmr_udt_handle_appended_addressing(dmr_udt_ctx* ctx) {
     DSD_FPRINTF(stderr, "OK: %d; ", ctx->add_ok);
     DSD_FPRINTF(stderr, "ADDR:");
     for (int i = 0; i < end; i++) {
-        DSD_FPRINTF(stderr, " %d;", (uint32_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 24) + 104], 24));
+        DSD_FPRINTF(stderr, " %d;", (uint32_t)convert_bits_into_output(&ctx->cs_bits[(i * 24) + 104], 24));
     }
 }
 
@@ -813,7 +815,7 @@ dmr_udt_handle_bcd(dmr_udt_ctx* ctx) {
     DSD_FPRINTF(stderr, "Dialer BCD: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Dialer Digits: ");
     for (int i = 0; i < end; i++) {
-        int digit = (int)ConvertBitIntoBytes(&ctx->cs_bits[(i * 4) + 96], 4);
+        int digit = (int)convert_bits_into_output(&ctx->cs_bits[(i * 4) + 96], 4);
         dmr_udt_print_bcd_digit(digit);
         dmr_udt_append_text_event(ctx->state, ctx->slot, dmr_udt_bcd_char(digit));
     }
@@ -827,7 +829,7 @@ dmr_udt_handle_iso7(dmr_udt_ctx* ctx) {
     DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
                  sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "%s", " ");
     for (int i = 0; i < end; i++) {
-        uint8_t iso7c = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 7) + 96], 7);
+        uint8_t iso7c = (uint8_t)convert_bits_into_output(&ctx->cs_bits[(i * 7) + 96], 7);
         if (iso7c >= 0x20 && iso7c <= 0x7E) {
             DSD_FPRINTF(stderr, "%c", iso7c);
             dmr_udt_append_text_event(ctx->state, ctx->slot, (char)iso7c);
@@ -845,7 +847,7 @@ dmr_udt_handle_iso8(dmr_udt_ctx* ctx) {
     DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
                  sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "%s", " ");
     for (int i = 0; i < end; i++) {
-        uint8_t iso8c = (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[(i * 8) + 96], 8);
+        uint8_t iso8c = (uint8_t)convert_bits_into_output(&ctx->cs_bits[(i * 8) + 96], 8);
         if (iso8c >= 0x20 && iso8c <= 0x7E) {
             DSD_FPRINTF(stderr, "%c", iso8c);
             dmr_udt_append_text_event(ctx->state, ctx->slot, (char)iso8c);
@@ -869,21 +871,21 @@ static void
 dmr_udt_handle_ip(dmr_udt_ctx* ctx) {
     if (ctx->udt_uab == 1) {
         DSD_FPRINTF(stderr, "IP4: ");
-        DSD_FPRINTF(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 0], 8));
-        DSD_FPRINTF(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 8], 8));
-        DSD_FPRINTF(stderr, "%d.", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 16], 8));
-        DSD_FPRINTF(stderr, "%d", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 24], 8));
+        DSD_FPRINTF(stderr, "%d.", (uint8_t)convert_bits_into_output(&ctx->cs_bits[96 + 0], 8));
+        DSD_FPRINTF(stderr, "%d.", (uint8_t)convert_bits_into_output(&ctx->cs_bits[96 + 8], 8));
+        DSD_FPRINTF(stderr, "%d.", (uint8_t)convert_bits_into_output(&ctx->cs_bits[96 + 16], 8));
+        DSD_FPRINTF(stderr, "%d", (uint8_t)convert_bits_into_output(&ctx->cs_bits[96 + 24], 8));
         dsd_append(ctx->udt_string, sizeof ctx->udt_string, "IP4; ");
     } else {
         DSD_FPRINTF(stderr, "IP6: ");
-        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 0], 16));
-        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 16], 16));
-        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 32], 16));
-        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 48], 16));
-        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 64], 16));
-        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 80], 16));
-        DSD_FPRINTF(stderr, "%04X:", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 96], 16));
-        DSD_FPRINTF(stderr, "%04X", (uint16_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 112], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)convert_bits_into_output(&ctx->cs_bits[96 + 0], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)convert_bits_into_output(&ctx->cs_bits[96 + 16], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)convert_bits_into_output(&ctx->cs_bits[96 + 32], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)convert_bits_into_output(&ctx->cs_bits[96 + 48], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)convert_bits_into_output(&ctx->cs_bits[96 + 64], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)convert_bits_into_output(&ctx->cs_bits[96 + 80], 16));
+        DSD_FPRINTF(stderr, "%04X:", (uint16_t)convert_bits_into_output(&ctx->cs_bits[96 + 96], 16));
+        DSD_FPRINTF(stderr, "%04X", (uint16_t)convert_bits_into_output(&ctx->cs_bits[96 + 112], 16));
         dsd_append(ctx->udt_string, sizeof ctx->udt_string, "IP6; ");
     }
 }
@@ -895,7 +897,7 @@ dmr_udt_handle_mixed_utf16(dmr_udt_ctx* ctx) {
         text_bits = 0;
     }
     int end = text_bits / 16;
-    uint32_t address = (uint32_t)ConvertBitIntoBytes(&ctx->cs_bits[96 + 8], 24);
+    uint32_t address = (uint32_t)convert_bits_into_output(&ctx->cs_bits[96 + 8], 24);
     DSD_FPRINTF(stderr, "Address: %d; ", address);
     DSD_FPRINTF(stderr, "UTF16 Text: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Mixed Add/Text; ");
@@ -916,7 +918,8 @@ dmr_udt_handle_nmea(dmr_udt_ctx* ctx) {
     } else if (ctx->udt_uab == 2) {
         nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, ctx->udt_source, 2);
     } else if (ctx->udt_uab == 3) {
-        DSD_FPRINTF(stderr, " Unspecified MFID Format: %02X;", (uint8_t)ConvertBitIntoBytes(&ctx->cs_bits[184], 8));
+        DSD_FPRINTF(stderr, " Unspecified MFID Format: %02X;",
+                    (uint8_t)convert_bits_into_output(&ctx->cs_bits[184], 8));
     } else {
         DSD_FPRINTF(stderr, " Reserved Format; ");
     }
@@ -1571,9 +1574,9 @@ dmr_block_assembler_finalize(dmr_block_assembler_ctx* ctx) {
     }
 }
 
-static void DSD_ATTR_USED
-dmr_block_assembler_body(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uint8_t block_len, uint8_t databurst,
-                         uint8_t type) {
+void
+dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uint8_t block_len, uint8_t databurst,
+                    uint8_t type) {
     dmr_block_assembler_ctx ctx;
 
     UNUSED(databurst);
@@ -1586,12 +1589,6 @@ dmr_block_assembler_body(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[]
         }
     }
     dmr_block_assembler_finalize(&ctx);
-}
-
-void
-dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uint8_t block_len, uint8_t databurst,
-                    uint8_t type) {
-    dmr_block_assembler_body(opts, state, block_bytes, block_len, databurst, type);
 }
 
 //failsafe to clear old data header, block info, cach, in case of tact/emb/slottype failures

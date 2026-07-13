@@ -43,11 +43,7 @@ dsd_trunk_cc_candidates* dsd_trunk_cc_candidates_get(dsd_state* state);
 
 const dsd_trunk_cc_candidates* dsd_trunk_cc_candidates_peek(const dsd_state* state);
 
-int dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added);
-
 int dsd_trunk_cc_candidates_add_with_flags(dsd_state* state, long freq_hz, int bump_added, uint8_t flags);
-
-int dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, long* out_freq_hz);
 
 int dsd_trunk_cc_candidates_next_with_flags(dsd_state* state, double now_monotonic_s, uint8_t required_flags,
                                             long* out_freq_hz);

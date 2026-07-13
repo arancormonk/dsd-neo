@@ -277,14 +277,6 @@ m17_aes_build_counter(const uint8_t nonce[M17_AES_NONCE_BYTES], uint16_t frame_n
     counter[15] = (uint8_t)(fn & 0xFFU);
 }
 
-uint32_t
-m17_aes_nonce_timestamp(const uint8_t nonce[M17_AES_NONCE_BYTES]) {
-    if (nonce == NULL) {
-        return 0U;
-    }
-    return ((uint32_t)nonce[0] << 24U) | ((uint32_t)nonce[1] << 16U) | ((uint32_t)nonce[2] << 8U) | (uint32_t)nonce[3];
-}
-
 int
 m17_packet_frame_count_for_app_bytes(uint16_t app_bytes, uint8_t* last_frame_bytes) {
     if (app_bytes > M17_PACKET_MAX_APPLICATION_BYTES) {
@@ -664,20 +656,6 @@ m17_stream_parse_type1_bits(const uint8_t* type1_bits, uint16_t* frame_number, u
 uint16_t
 m17_stream_next_frame_counter(uint16_t frame_counter) {
     return (uint16_t)((frame_counter + 1U) & 0x7FFFU);
-}
-
-void
-m17_stream_copy_payload_chunk(const uint8_t* input_bits, uint16_t valid_bits, uint8_t* payload_bits) {
-    if (payload_bits == NULL) {
-        return;
-    }
-
-    if (valid_bits > M17_STREAM_PAYLOAD_BITS) {
-        valid_bits = M17_STREAM_PAYLOAD_BITS;
-    }
-    for (uint16_t i = 0U; i < M17_STREAM_PAYLOAD_BITS; i++) {
-        payload_bits[i] = (input_bits != NULL && i < valid_bits) ? (uint8_t)(input_bits[i] & 1U) : 0U;
-    }
 }
 
 void

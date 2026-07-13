@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_snr.h>
 #include <math.h>
 #include <stdio.h>
@@ -13,9 +14,6 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
-
-int ui_unicode_supported(void);      // NOLINT(misc-use-internal-linkage)
-int ui_block_glyphs_supported(void); // NOLINT(misc-use-internal-linkage)
 
 #if defined(DSD_NEO_FAST_MATH) || defined(__FAST_MATH__) || defined(_M_FP_FAST)
 #define DSD_NEO_TEST_FAST_MATH 1
@@ -43,12 +41,7 @@ struct render_capture {
 static struct render_capture g_capture;
 
 int
-ui_unicode_supported(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
-}
-
-int
-ui_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
+dsd_unicode_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 

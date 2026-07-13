@@ -23,16 +23,15 @@ main(void) {
 
     rc |= expect_int("disabled suppresses default mask",
                      dsd_call_alert_event_enabled(0, 0, DSD_CALL_ALERT_EVENT_VOICE_START), 0);
-    rc |= expect_int("enabled zero mask means legacy all",
-                     dsd_call_alert_event_enabled(1, 0, DSD_CALL_ALERT_EVENT_DATA), 1);
+    rc |= expect_int("enabled zero mask allows no events",
+                     dsd_call_alert_event_enabled(1, 0, DSD_CALL_ALERT_EVENT_DATA), 0);
     rc |= expect_int(
         "start-only allows start",
         dsd_call_alert_event_enabled(1, DSD_CALL_ALERT_EVENT_VOICE_START, DSD_CALL_ALERT_EVENT_VOICE_START), 1);
     rc |= expect_int("start-only suppresses end",
                      dsd_call_alert_event_enabled(1, DSD_CALL_ALERT_EVENT_VOICE_START, DSD_CALL_ALERT_EVENT_VOICE_END),
                      0);
-    rc |= expect_int("unknown bits are masked",
-                     dsd_call_alert_normalize_events((uint8_t)(0x80 | DSD_CALL_ALERT_EVENT_DATA)),
+    rc |= expect_int("unknown bits are masked", dsd_call_alert_mask_events((uint8_t)(0x80 | DSD_CALL_ALERT_EVENT_DATA)),
                      DSD_CALL_ALERT_EVENT_DATA);
 
     if (rc == 0) {

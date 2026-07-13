@@ -42,16 +42,6 @@ expect_true(const char* tag, int cond) {
     return 0;
 }
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (uint64_t)(BufferIn[i] & 1U);
-    }
-    return v;
-}
-
 void
 watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
@@ -139,7 +129,8 @@ dsd_drain_audio_output(dsd_opts* opts) {
 }
 
 static dsd_trunk_tune_result
-test_return_to_cc(dsd_opts* opts, dsd_state* state) {
+test_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_return_to_cc_calls++;
     if (g_return_to_cc_result != DSD_TRUNK_TUNE_RESULT_OK) {
         return g_return_to_cc_result;
@@ -240,7 +231,7 @@ main(void) {
     const long next_cc = 852000000L;
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .return_to_cc_result = test_return_to_cc,
+        .return_to_cc_request = test_return_to_cc,
     });
 
     init_env(&opts, &state);

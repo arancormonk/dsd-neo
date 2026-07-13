@@ -34,7 +34,7 @@ extern "C" {
 uint16_t parse_raw_user_string(const char* input, uint8_t* output, size_t out_cap);
 
 /** @brief Convert a packed bit array into an integer output value (MSB-first). */
-uint64_t convert_bits_into_output(const uint8_t* input, int len);
+uint64_t convert_bits_into_output(const uint8_t* input, uint32_t len);
 /** @brief Pack an array of bits into bytes (length multiple of 8). */
 void pack_bit_array_into_byte_array(const uint8_t* input, uint8_t* output, int len);
 /** @brief Pack bits into bytes when length is not a multiple of 8. */

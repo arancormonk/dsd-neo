@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -103,7 +104,7 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     (void)freqs;
@@ -122,16 +123,6 @@ p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
     (void)freq_hz;
     (void)bump_added;
     return 0;
-}
-
-void
-p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
-    (void)state;
-    (void)freq;
-    (void)sysid;
-    (void)rfss;
-    (void)site;
-    (void)cfva;
 }
 
 void
@@ -162,29 +153,12 @@ p25_format_adjacent_cfva(uint8_t cfva, char* out, size_t out_len) {
 }
 
 int
-p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state, uint16_t channel, uint32_t wacn, int wacn_valid,
-                              uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
+p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state,
+                              const p25_neighbor_channel_announcement_t* announcement) {
     (void)opts;
     (void)state;
-    (void)channel;
-    (void)wacn;
-    (void)wacn_valid;
-    (void)sysid;
-    (void)rfss;
-    (void)site;
-    (void)cfva;
+    (void)announcement;
     return 0;
-}
-
-int
-p25_announce_neighbor_channel_ex(const dsd_opts* opts, dsd_state* state,
-                                 const p25_neighbor_channel_announcement_t* announcement) {
-    if (!announcement) {
-        return 0;
-    }
-    return p25_announce_neighbor_channel(opts, state, announcement->channel, announcement->wacn,
-                                         announcement->wacn_valid, announcement->sysid, announcement->rfss,
-                                         announcement->site, announcement->cfva);
 }
 
 void
@@ -251,16 +225,33 @@ p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* st
     g_seed_count++;
 }
 
+static p25_sm_ctx_t g_sm_ctx;
+
+p25_sm_ctx_t*
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_get_ctx(void) {
+    return &g_sm_ctx;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
+p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    (void)ctx;
+    if (!ev || ev->type != P25_SM_EV_GRANT) {
+        return;
+    }
+    if (!ev->is_group) {
+        if (opts && state) {
+            state->p25_sm_tune_count++;
+            opts->p25_is_tuned = 1;
+        }
+        return;
+    }
     g_group_grant_count++;
-    g_last_group_channel = channel;
-    g_last_group_svc = svc_bits;
-    g_last_group_tg = tg;
-    g_last_group_src = src;
+    g_last_group_channel = ev->channel;
+    g_last_group_svc = ev->svc_bits;
+    g_last_group_tg = ev->tg;
+    g_last_group_src = ev->src;
 }
 
 void
@@ -271,32 +262,6 @@ p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, i
     if (opts && state && opts->p25_trunk == 1 && opts->trunk_tune_enc_calls == 0 && (svc_bits & 0x40) && tg > 0) {
         p25_emit_enc_lockout_once(opts, state, 0, tg, svc_bits);
     }
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    p25_sm_on_group_grant(opts, state, channel, svc_bits, tg, src);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)channel;
-    (void)svc_bits;
-    (void)dst;
-    (void)src;
-    if (!opts || !state) {
-        return;
-    }
-    state->p25_sm_tune_count++;
-    opts->p25_is_tuned = 1;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    p25_sm_on_indiv_grant(opts, state, channel, svc_bits, dst, src);
 }
 
 void

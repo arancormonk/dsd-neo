@@ -6,7 +6,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_mode.h>
-#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -446,60 +445,17 @@ decode_mode_apply_analog(dsd_opts* o, dsd_state* s) {
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "Analog Monitor");
 }
 
-typedef void (*decode_mode_apply_fn)(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state);
-
-static void
-decode_mode_apply_p25p1_profile(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    (void)profile;
-    decode_mode_apply_p25p1(opts, state);
-}
-
-static void
-decode_mode_apply_p25p2_profile(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    (void)profile;
-    decode_mode_apply_p25p2(opts, state);
-}
-
-static void
-decode_mode_apply_dmr_profile(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    (void)profile;
-    decode_mode_apply_dmr(opts, state);
-}
-
-static void
-decode_mode_apply_dstar_profile(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    (void)profile;
-    decode_mode_apply_dstar(opts, state);
-}
-
-static void
-decode_mode_apply_edacs_pv_profile(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    (void)profile;
-    decode_mode_apply_edacs_pv(opts, state);
-}
-
-static void
-decode_mode_apply_dpmr_profile(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    (void)profile;
-    decode_mode_apply_dpmr(opts, state);
-}
-
-static void
-decode_mode_apply_m17_profile(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    (void)profile;
-    decode_mode_apply_m17(opts, state);
-}
-
-static void
-decode_mode_apply_tdma_profile(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    (void)profile;
-    decode_mode_apply_tdma(opts, state);
-}
-
-static void
-decode_mode_apply_analog_profile(dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
-    (void)profile;
-    decode_mode_apply_analog(opts, state);
+static int
+decode_mode_apply_profiled(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
+                           dsd_state* state) {
+    switch (mode) {
+        case DSDCFG_MODE_AUTO: decode_mode_apply_auto(profile, opts, state); return 0;
+        case DSDCFG_MODE_NXDN48: decode_mode_apply_nxdn48(profile, opts, state); return 0;
+        case DSDCFG_MODE_NXDN96: decode_mode_apply_nxdn96(profile, opts, state); return 0;
+        case DSDCFG_MODE_X2TDMA: decode_mode_apply_x2tdma(profile, opts, state); return 0;
+        case DSDCFG_MODE_YSF: decode_mode_apply_ysf(profile, opts, state); return 0;
+        default: return -1;
+    }
 }
 
 int
@@ -509,34 +465,22 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         return -1;
     }
 
-    static const struct {
-        dsdneoUserDecodeMode mode;
-        decode_mode_apply_fn apply;
-    } mode_map[] = {
-        {DSDCFG_MODE_AUTO, decode_mode_apply_auto},
-        {DSDCFG_MODE_P25P1, decode_mode_apply_p25p1_profile},
-        {DSDCFG_MODE_P25P2, decode_mode_apply_p25p2_profile},
-        {DSDCFG_MODE_DMR, decode_mode_apply_dmr_profile},
-        {DSDCFG_MODE_NXDN48, decode_mode_apply_nxdn48},
-        {DSDCFG_MODE_NXDN96, decode_mode_apply_nxdn96},
-        {DSDCFG_MODE_X2TDMA, decode_mode_apply_x2tdma},
-        {DSDCFG_MODE_YSF, decode_mode_apply_ysf},
-        {DSDCFG_MODE_DSTAR, decode_mode_apply_dstar_profile},
-        {DSDCFG_MODE_EDACS_PV, decode_mode_apply_edacs_pv_profile},
-        {DSDCFG_MODE_DPMR, decode_mode_apply_dpmr_profile},
-        {DSDCFG_MODE_M17, decode_mode_apply_m17_profile},
-        {DSDCFG_MODE_TDMA, decode_mode_apply_tdma_profile},
-        {DSDCFG_MODE_ANALOG, decode_mode_apply_analog_profile},
-    };
-
-    for (size_t i = 0; i < sizeof(mode_map) / sizeof(mode_map[0]); i++) {
-        if (mode == mode_map[i].mode) {
-            mode_map[i].apply(profile, opts, state);
-            return 0;
-        }
+    if (decode_mode_apply_profiled(mode, profile, opts, state) == 0) {
+        return 0;
     }
 
-    return -1;
+    switch (mode) {
+        case DSDCFG_MODE_P25P1: decode_mode_apply_p25p1(opts, state); return 0;
+        case DSDCFG_MODE_P25P2: decode_mode_apply_p25p2(opts, state); return 0;
+        case DSDCFG_MODE_DMR: decode_mode_apply_dmr(opts, state); return 0;
+        case DSDCFG_MODE_DSTAR: decode_mode_apply_dstar(opts, state); return 0;
+        case DSDCFG_MODE_EDACS_PV: decode_mode_apply_edacs_pv(opts, state); return 0;
+        case DSDCFG_MODE_DPMR: decode_mode_apply_dpmr(opts, state); return 0;
+        case DSDCFG_MODE_M17: decode_mode_apply_m17(opts, state); return 0;
+        case DSDCFG_MODE_TDMA: decode_mode_apply_tdma(opts, state); return 0;
+        case DSDCFG_MODE_ANALOG: decode_mode_apply_analog(opts, state); return 0;
+        default: return -1;
+    }
 }
 
 dsdneoUserDecodeMode

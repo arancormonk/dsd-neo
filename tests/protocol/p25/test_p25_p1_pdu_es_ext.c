@@ -97,16 +97,6 @@ unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len)
     }
 }
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (BufferIn[i] & 1);
-    }
-    return v;
-}
-
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
@@ -443,16 +433,14 @@ test_p25_pdu_header_state_updates(void) {
 }
 
 static int
-test_p25_pdu_es_headers_decrypt_and_advance(void) {
+test_p25_pdu_es_header_decrypt_and_advance(void) {
     static const uint8_t des_expect[] = {0x67, 0xAE, 0x7A, 0x29, 0x61, 0xDF, 0xA3, 0x45};
     static dsd_opts opts;
     static dsd_state st;
     uint8_t es[13 + sizeof(des_expect)];
-    uint8_t es2[12 + 4];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&st, 0, sizeof(st));
     DSD_MEMSET(es, 0, sizeof(es));
-    DSD_MEMSET(es2, 0, sizeof(es2));
     st.R = 0x133457799BBCDFF1ULL;
 
     es[0] = 0x01;
@@ -475,25 +463,6 @@ test_p25_pdu_es_headers_decrypt_and_advance(void) {
     rc |= expect_u32("ES header ptr", (uint32_t)ptr, 13);
     rc |= expect_bytes("ES header DES payload", es + 13, des_expect, sizeof(des_expect));
 
-    es2[0] = 0x80; // clear
-    es2[1] = 0x12;
-    es2[2] = 0x34;
-    es2[3] = 0x01;
-    es2[4] = 0x23;
-    es2[5] = 0x45;
-    es2[6] = 0x67;
-    es2[7] = 0x89;
-    es2[8] = 0xAB;
-    es2[9] = 0xCD;
-    es2[10] = 0xEF;
-    es2[12] = 0xCA;
-    es2[13] = 0xFE;
-    ptr = 5;
-    encrypted = p25_decode_es_header_2(&opts, &st, es2, &ptr, (int)sizeof(es2));
-    rc |= expect_u8("ES header 2 clear flag", encrypted, 0);
-    rc |= expect_u32("ES header 2 ptr", (uint32_t)ptr, 17);
-    rc |= expect_u8("ES header 2 payload unchanged 0", es2[12], 0xCA);
-    rc |= expect_u8("ES header 2 payload unchanged 1", es2[13], 0xFE);
     return rc;
 }
 
@@ -602,7 +571,7 @@ main(void) {
     rc |= test_p25_pdu_missing_keys_stay_encrypted();
     rc |= test_p25_pdu_label_helpers();
     rc |= test_p25_pdu_header_state_updates();
-    rc |= test_p25_pdu_es_headers_decrypt_and_advance();
+    rc |= test_p25_pdu_es_header_decrypt_and_advance();
     return rc;
 }
 

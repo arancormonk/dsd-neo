@@ -37,7 +37,7 @@ dsd_cli_usage_section_intro(void) {
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("      --frame-log <file>    Append one-line timestamped frame trace output\n");
     printf("      --p25-sm-log <file>   Append P25 state-machine decision diagnostics\n");
-    printf("      --symbol-capture-format <fmt>  Symbol capture format (soft|legacy; default soft)\n");
+    printf("      --symbol-capture-format <fmt>  Symbol capture format (soft; legacy aliases soft)\n");
     printf("  -j            Force-enable P25 LCW explicit retune (format 0x44; default is enabled)\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
     printf("      --p25-vc-grace <s>     P25: Seconds after VC tune before eligible to return to CC\n");
@@ -101,7 +101,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -g <float>    Audio Digital Output Gain  (Default: 0 = Auto;        )\n");
     printf("                                           (Manual:  1 = 2%%; 50 = 100%%)\n");
     printf("  -n <float>    Audio Analog  Output Gain  (Default: 0 = Auto; 0-100%%  )\n");
-    printf("  -nm           Enable legacy DMR mono audio path (same as -n m)\n");
+    printf("  -nm           Enable the DMR mono audio path (same as -n m)\n");
     printf("  -6 <file>     Output raw audio .wav file (48K/1). (WARNING! Large File Sizes 1 Hour ~= 360 MB)\n");
     printf("  -7 <dir>      Create/Use Custom directory for Per Call decoded .wav file saving.\n");
     printf("                 (Use ./folder for Nested Directory!)\n");
@@ -222,7 +222,7 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fA           Passive Analog Audio Monitor\n");
     printf("  -ft           TDMA Trunking P25p1 Control and Voice, P25p2 Trunked Channels, and DMR\n");
     printf("  -fs           DMR TDMA BS and MS Simplex\n");
-    printf("  -fr           DMR TDMA BS/MS Simplex (legacy mono alias; same as -fs -nm)\n");
+    printf("  -fr           DMR TDMA BS/MS Simplex (mono alias; same as -fs -nm)\n");
     printf("  -f1           Decode only P25 Phase 1\n");
     printf("  -f2           Decode only P25 Phase 2 (6000 sps) **\n");
     printf("  -fd           Decode only DSTAR\n");

@@ -92,7 +92,7 @@ ui_handle_normal_input(int ch) {
         return;
     }
     if (ch != ERR) {
-        (void)ncurses_input_handler(g_ui_opts, g_ui_state, ch);
+        (void)dsd_terminal_handle_input(g_ui_opts, g_ui_state, ch);
     }
 }
 
@@ -112,14 +112,14 @@ ui_open_curses_if_needed(void) {
     if (!dsd_opts_frontend_is_terminal(g_ui_opts)) {
         return 0;
     }
-    ncursesOpen(g_ui_opts, g_ui_state);
+    dsd_terminal_open(g_ui_opts, g_ui_state);
     return 1;
 }
 
 static void
 ui_close_curses_if_opened(int curses_opened) {
     if (curses_opened) {
-        ncursesClose();
+        dsd_terminal_close();
     }
 }
 
@@ -128,9 +128,9 @@ ui_draw_frame(const dsd_opts* osnap) {
     /* Draw using a state snapshot when available */
     const dsd_state* snap = dsd_app_get_latest_snapshot();
     if (snap) {
-        ncursesPrinter((dsd_opts*)osnap, (dsd_state*)snap);
+        dsd_terminal_render((dsd_opts*)osnap, (dsd_state*)snap);
     } else {
-        ncursesPrinter((dsd_opts*)osnap, g_ui_state);
+        dsd_terminal_render((dsd_opts*)osnap, g_ui_state);
     }
 }
 
@@ -237,7 +237,7 @@ ui_start(dsd_opts* opts, dsd_state* state) {
     dsd_app_frontend_runtime_start(opts, state);
     g_ui_opts = opts;
     g_ui_state = state;
-    dsd_app_frontend_history_set_mode(opts ? opts->frontend_display.terminal_history : 1);
+    dsd_app_frontend_history_set_mode(opts ? opts->frontend_terminal_display.terminal_history : 1);
     atomic_store(&g_ui_stop, 0);
 
     if (dsd_thread_create(&g_ui_thread, ui_thread_main, NULL) != 0) {

@@ -8,7 +8,7 @@
  *
  * Short P25p2 calls can end before a full 18-frame superframe is available for
  * playSynthesizedVoiceSS18(), causing the buffered audio to be dropped when
- * returning to the control channel. Verify that p25_sm_on_release() triggers a
+ * returning to the control channel. Verify that p25_sm_release() triggers a
  * best-effort flush that clears the buffered short frames so short calls are
  * still audible.
  */
@@ -51,18 +51,20 @@ SetModulation(int sockfd, int bandwidth) {
 
 static int g_return_to_cc_called = 0;
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_return_to_cc_called++;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc = return_to_cc;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -138,9 +140,16 @@ main(void) {
     st.p25_iden_tdma[id].populated = 1;
     st.p25_chan_tdma_explicit[id] = 2; // TDMA known
 
-    p25_sm_init(&opts, &st);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &st);
     int ch_tdma = (id << 12) | 0x0001;
-    p25_sm_on_group_grant(&opts, &st, ch_tdma, 0, 1234, 5678);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = ch_tdma,
+                                   .tg = 1234,
+                                   .src = 5678,
+                                   .svc_bits = 0,
+                                   .is_group = 1});
 
     // Simulate a short call that buffered some audio but ended before the
     // normal SS18 playback cadence. Also simulate gates already cleared.
@@ -153,7 +162,7 @@ main(void) {
 
     g_return_to_cc_called = 0;
     g_p25p2_flush_called = 0;
-    p25_sm_on_release(&opts, &st);
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     rc |= expect_eq_int("return_to_cc called", g_return_to_cc_called, 1);
     rc |= expect_eq_int("flush called", g_p25p2_flush_called, 1);
 

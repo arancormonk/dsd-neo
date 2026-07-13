@@ -59,7 +59,6 @@ static int g_hard_rs_result;
 static int g_soft_rs_result;
 static int g_lsd_soft_result;
 static int g_lfsr128_calls;
-static int g_release_calls;
 static int g_watchdog_calls;
 static int g_write_event_calls;
 static int g_push_event_calls;
@@ -112,15 +111,6 @@ p25_lsd_fec_16x8_soft(uint8_t* bits16, const int16_t llr16[16]) {
 uint64_t
 dsd_time_monotonic_ns(void) {
     return 42000000000ULL;
-}
-
-uint64_t
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t value = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        value = (value << 1U) | (uint64_t)(BufferIn[i] & 1U);
-    }
-    return value;
 }
 
 void
@@ -221,20 +211,6 @@ read_and_correct_hex_word(dsd_opts* opts, dsd_state* state, char* hex, int* stat
     (void)status_count;
     (void)soft_dibits;
     (void)soft_dibit_index;
-}
-
-void
-p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    g_release_calls++;
-}
-
-void
-p25_sm_note_encrypted_call(dsd_opts* opts, dsd_state* state, int tg) {
-    (void)opts;
-    (void)state;
-    (void)tg;
 }
 
 int
@@ -345,7 +321,6 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
         resolved = (scalar_key || aes_key) ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_BLOCKED;
     }
     state->p25_crypto_state[0] = resolved;
-    state->p25_p2_enc_lockout_muted[0] = (resolved == DSD_P25_CRYPTO_BLOCKED) ? 1U : 0U;
     state->p25_p2_audio_allowed[0] = 0;
     return resolved;
 }
@@ -369,7 +344,6 @@ reset_hook_counters(void) {
     g_soft_rs_result = 0;
     g_lsd_soft_result = 1;
     g_lfsr128_calls = 0;
-    g_release_calls = 0;
     g_watchdog_calls = 0;
     g_write_event_calls = 0;
     g_push_event_calls = 0;
@@ -581,12 +555,11 @@ test_ldu2_fec_outcomes(void) {
     state.payload_keyid = 0x2468;
     state.payload_miP = 0x1122334455667788ULL;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
-    state.p25_p2_enc_lockout_muted[0] = 1U;
     rc |= expect_int("RS failure result", ldu2_run_fec(&state, hex_data, hex_parity, soft_dibits), 1);
     rc |= expect_int("RS failure err count", state.p25_p1_voice_fec_err, 1);
     rc |= expect_int("RS failure critical count", state.debug_header_critical_errors, 1);
     rc |= expect_int("RS failure preserves blocked state", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
-    rc |= expect_int("RS failure preserves lockout marker", state.p25_p2_enc_lockout_muted[0], 1);
+    rc |= expect_int("RS failure preserves closed gate", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("RS failure preserves ALGID", state.payload_algid, 0x81);
     rc |= expect_int("RS failure preserves KID", state.payload_keyid, 0x2468);
     rc |= expect_u64("RS failure preserves MI", state.payload_miP, 0x1122334455667788ULL);
@@ -923,9 +896,8 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
 
     ldu2_maybe_enc_lockout(&opts, &state, &frame);
 
-    rc |= expect_int("lockout direct helper does not release", g_release_calls, 0);
     rc |= expect_int("lockout state", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
-    rc |= expect_int("lockout marker", state.p25_p2_enc_lockout_muted[0], 1);
+    rc |= expect_int("lockout gate", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("lockout preserves algid", state.payload_algid, 0xAA);
     rc |= expect_int("lockout preserves kid", state.payload_keyid, 0x2A2A);
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
@@ -936,7 +908,6 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     state.p25_sm_force_release = 0;
     state.R = 0x1234U;
     ldu2_maybe_enc_lockout(&opts, &state, &frame);
-    rc |= expect_int("lockout skipped with key", g_release_calls, 0);
     rc |= expect_int("lockout skipped force release", state.p25_sm_force_release, 0);
     rc |= expect_int("lockout skipped policy", g_policy_make_calls, 0);
     rc |= expect_int("matching key decryptable", state.p25_crypto_state[0], DSD_P25_CRYPTO_DECRYPTABLE);

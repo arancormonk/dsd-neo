@@ -3,13 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"

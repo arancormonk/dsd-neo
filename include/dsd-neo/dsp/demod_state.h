@@ -7,7 +7,7 @@
  * @file
  * @brief Demodulator state shared across DSP modules and RTL-SDR front-end.
  *
- * Centralized definition of `struct demod_state`. Mirrors the legacy layout in
+ * Centralized definition of `struct demod_state`. Mirrors the demodulator layout in
  * `src/rtl_sdr_fm.cpp` and is intended to remain ABI-stable during ongoing
  * refactoring.
  */
@@ -100,7 +100,6 @@ struct demod_state {
     double squelch_running_power;
     float* resamp_taps; /* normalized taps as L contiguous phase blocks, length = K*L */
     float* resamp_hist; /* mirrored history window, length = 2*K */
-    int (*discriminator)(int, int, int, int);
     void (*mode_demod)(struct demod_state*);
     float* post_polydecim_taps; /* normalized taps length K */
     float* post_polydecim_hist; /* circular history length K */

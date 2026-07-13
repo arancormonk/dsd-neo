@@ -15,7 +15,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <math.h>
 #include <stdbool.h>
@@ -212,53 +211,6 @@ read_capture_file(const char* path, char* out, size_t out_sz) {
     return 0;
 }
 
-static int g_group_grant_called = 0;
-static int g_group_grant_channel = -1;
-static int g_group_grant_svc = -1;
-static int g_group_grant_tg = -1;
-static int g_group_grant_src = -1;
-static int g_indiv_data_grant_called = 0;
-static int g_indiv_data_grant_channel = -1;
-static int g_indiv_data_grant_svc = -1;
-static int g_indiv_data_grant_dst = -1;
-static int g_indiv_data_grant_src = -1;
-
-static void
-sm_on_group_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    g_group_grant_called++;
-    g_group_grant_channel = channel;
-    g_group_grant_svc = svc_bits;
-    g_group_grant_tg = tg;
-    g_group_grant_src = src;
-}
-
-static void
-sm_on_indiv_data_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    g_indiv_data_grant_called++;
-    g_indiv_data_grant_channel = channel;
-    g_indiv_data_grant_svc = svc_bits;
-    g_indiv_data_grant_dst = dst;
-    g_indiv_data_grant_src = src;
-}
-
-static void
-reset_group_grant_capture(void) {
-    g_group_grant_called = 0;
-    g_group_grant_channel = -1;
-    g_group_grant_svc = -1;
-    g_group_grant_tg = -1;
-    g_group_grant_src = -1;
-    g_indiv_data_grant_called = 0;
-    g_indiv_data_grant_channel = -1;
-    g_indiv_data_grant_svc = -1;
-    g_indiv_data_grant_dst = -1;
-    g_indiv_data_grant_src = -1;
-}
-
 static void
 seed_fdma_iden(dsd_state* state, int iden, int type, long base, int spac) {
     state->p25_iden_fdma[iden].base_freq = base;
@@ -318,15 +270,11 @@ run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
     MAC[6] = 0x02;
     MAC[7] = 0x03;
 
-    reset_group_grant_capture();
-    p25_sm_api api = {0};
-    api.on_group_grant = sm_on_group_grant_capture;
-    p25_sm_set_api(&api);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
     process_MAC_VPDU(&opts, &state, 0, MAC);
-    p25_sm_reset_api();
 
     DSD_SNPRINTF(label, sizeof label, "%s no grant dispatch", tag);
-    rc |= expect_eq_long(label, g_group_grant_called, 0);
+    rc |= expect_eq_long(label, p25_sm_get_ctx()->grant_count, 0);
     DSD_SNPRINTF(label, sizeof label, "%s no retune", tag);
     rc |= expect_eq_long(label, opts.p25_is_tuned, 1);
     DSD_SNPRINTF(label, sizeof label, "%s group call", tag);
@@ -357,8 +305,8 @@ run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
     rc |= expect_eq_long(label, state.p25_call_is_packet[slot], 1);
     DSD_SNPRINTF(label, sizeof label, "%s priority unchanged", tag);
     rc |= expect_eq_long(label, state.p25_call_priority[slot], 7);
-    DSD_SNPRINTF(label, sizeof label, "%s enc lockout unchanged", tag);
-    rc |= expect_eq_long(label, state.p25_p2_enc_lockout_muted[slot], 0);
+    DSD_SNPRINTF(label, sizeof label, "%s crypto state unchanged", tag);
+    rc |= expect_eq_long(label, state.p25_crypto_state[slot], DSD_P25_CRYPTO_UNKNOWN);
 
     if (slot == 0) {
         DSD_SNPRINTF(label, sizeof label, "%s last tg", tag);
@@ -408,14 +356,10 @@ run_standard_regroup_voice_user_nonstandard_guard_case(void) {
     MAC[6] = 0x02;
     MAC[7] = 0x03;
 
-    reset_group_grant_capture();
-    p25_sm_api api = {0};
-    api.on_group_grant = sm_on_group_grant_capture;
-    p25_sm_set_api(&api);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
     process_MAC_VPDU(&opts, &state, 0, MAC);
-    p25_sm_reset_api();
 
-    rc |= expect_eq_long("0x90/mfid90 guard no grant dispatch", g_group_grant_called, 0);
+    rc |= expect_eq_long("0x90/mfid90 guard no grant dispatch", p25_sm_get_ctx()->grant_count, 0);
     rc |= expect_eq_long("0x90/mfid90 guard last tg", state.lasttg, 0x1111);
     rc |= expect_eq_long("0x90/mfid90 guard last src", state.lastsrc, 0x010101);
     rc |= expect_eq_long("0x90/mfid90 guard group flag", state.gi[0], 1);
@@ -609,7 +553,7 @@ test_inband_encrypted_voice_starts_classification_deadline(void) {
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     state.p25_p2_audio_allowed[0] = 1;
 
-    p25_sm_init(&opts, &state);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     ctx->state = P25_SM_TUNED;
     ctx->vc_is_tdma = 1;
@@ -642,7 +586,7 @@ test_inband_encrypted_voice_starts_classification_deadline(void) {
     rc |= expect_eq_long("repeated in-band encrypted voice activity cleared", ctx->slots[0].voice_active, 0);
     rc |= expect_true("repeated in-band encrypted voice keeps deadline",
                       fabs(ctx->slots[0].crypto_attempt_m - started_m) <= 1.0e-9);
-    p25_sm_init(&opts, &state);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
     return rc;
 }
 
@@ -663,7 +607,7 @@ test_private_voice_ignores_regroup_clear_key_collision(void) {
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     state.p25_p2_audio_allowed[0] = 1;
 
-    p25_sm_init(&opts, &state);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     ctx->state = P25_SM_TUNED;
     ctx->vc_is_tdma = 1;
@@ -693,7 +637,7 @@ test_private_voice_ignores_regroup_clear_key_collision(void) {
     rc |= expect_eq_long("private patch collision activity cleared", ctx->slots[0].voice_active, 0);
     rc |= expect_true("private patch collision deadline started", ctx->slots[0].crypto_attempt_m > 0.0);
 
-    p25_sm_init(&opts, &state);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
     return rc;
 }
 
@@ -777,7 +721,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_private_calls = 1;
@@ -896,6 +840,7 @@ main(void) {
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
+        opts.trunk_tune_data_calls = 1;
         state.p25_cc_freq = cc;
         seed_fdma_iden(&state, iden, type, base, spac);
 
@@ -909,18 +854,15 @@ main(void) {
         MAC[8] = 0x34;
         MAC[9] = 0x56;
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0x43 capture called", g_group_grant_called, 1);
-        rc |= expect_eq_long("0x43 capture channel", g_group_grant_channel, 0x100A);
-        rc |= expect_eq_long("0x43 capture svc", g_group_grant_svc, 0x85);
-        rc |= expect_eq_long("0x43 capture tg", g_group_grant_tg, 0x3456);
-        rc |= expect_eq_long("0x43 capture src", g_group_grant_src, 0);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("0x43 capture called", ctx->grant_count, 1);
+        rc |= expect_eq_long("0x43 capture channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_long("0x43 capture svc", ctx->slots[0].svc_bits, 0x85);
+        rc |= expect_eq_long("0x43 capture tg", ctx->slots[0].ota_tg, 0x3456);
+        rc |= expect_eq_long("0x43 capture src", ctx->vc_src, 0);
         rc |= expect_eq_long("0x43 CHAN-R cache", state.trunk_chan_map[0x100B], 851137500);
         rc |= expect_contains("0x43 active channel", state.active_channel[0], "TG: 13398");
     }
@@ -979,18 +921,15 @@ main(void) {
         MAC[10] = 0x02;
         MAC[11] = 0x03;
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0xC0 capture called", g_group_grant_called, 1);
-        rc |= expect_eq_long("0xC0 capture channel", g_group_grant_channel, 0x100C);
-        rc |= expect_eq_long("0xC0 capture svc", g_group_grant_svc, 0x23);
-        rc |= expect_eq_long("0xC0 capture tg", g_group_grant_tg, 0x2222);
-        rc |= expect_eq_long("0xC0 capture src", g_group_grant_src, 0x010203);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("0xC0 capture called", ctx->grant_count, 1);
+        rc |= expect_eq_long("0xC0 capture channel", ctx->vc_channel, 0x100C);
+        rc |= expect_eq_long("0xC0 capture svc", ctx->slots[0].svc_bits, 0x23);
+        rc |= expect_eq_long("0xC0 capture tg", ctx->slots[0].ota_tg, 0x2222);
+        rc |= expect_eq_long("0xC0 capture src", ctx->vc_src, 0x010203);
         rc |= expect_eq_long("0xC0 CHAN-R cache", state.trunk_chan_map[0x100D], 851162500);
         rc |= expect_eq_long("0xC0 stored service options", state.dmr_so, 0x23);
         rc |= expect_eq_long("0xC0 service options valid", state.p25_service_options_valid[0], 1);
@@ -1023,16 +962,13 @@ main(void) {
         MAC[10] = 0x02;
         MAC[11] = 0x03;
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0xC0 patch member hold dispatch", g_group_grant_called, 1);
-        rc |= expect_eq_long("0xC0 patch member hold tg", g_group_grant_tg, 0x2222);
-        rc |= expect_eq_long("0xC0 patch member hold src", g_group_grant_src, 0x010203);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("0xC0 patch member hold dispatch", ctx->grant_count, 1);
+        rc |= expect_eq_long("0xC0 patch member hold tg", ctx->slots[0].ota_tg, 0x2222);
+        rc |= expect_eq_long("0xC0 patch member hold src", ctx->vc_src, 0x010203);
     }
 
     // Case D5b: MFID90 0xA3 propagates service options and source.
@@ -1045,6 +981,7 @@ main(void) {
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 1;
+        opts.trunk_tune_data_calls = 1;
         state.p25_cc_freq = cc;
         seed_fdma_iden(&state, iden, type, base, spac);
 
@@ -1059,18 +996,15 @@ main(void) {
         MAC[10] = 0x02;
         MAC[11] = 0x03;
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0xA3 capture called", g_group_grant_called, 1);
-        rc |= expect_eq_long("0xA3 capture channel", g_group_grant_channel, 0x100A);
-        rc |= expect_eq_long("0xA3 capture svc", g_group_grant_svc, 0xA5);
-        rc |= expect_eq_long("0xA3 capture tg", g_group_grant_tg, 0x3456);
-        rc |= expect_eq_long("0xA3 capture src", g_group_grant_src, 0x010203);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("0xA3 capture called", ctx->grant_count, 1);
+        rc |= expect_eq_long("0xA3 capture channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_long("0xA3 capture svc", ctx->slots[0].svc_bits, 0xA5);
+        rc |= expect_eq_long("0xA3 capture tg", ctx->slots[0].ota_tg, 0x3456);
+        rc |= expect_eq_long("0xA3 capture src", ctx->vc_src, 0x010203);
         rc |= expect_eq_long("0xA3 stored service options", state.dmr_so, 0xA5);
         rc |= expect_eq_long("0xA3 emergency state", state.p25_call_emergency[0], 1);
     }
@@ -1101,18 +1035,15 @@ main(void) {
         MAC[12] = 0x0B;
         MAC[13] = 0x0C;
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0xA4 capture called", g_group_grant_called, 1);
-        rc |= expect_eq_long("0xA4 capture channel", g_group_grant_channel, 0x100A);
-        rc |= expect_eq_long("0xA4 capture svc", g_group_grant_svc, 0x23);
-        rc |= expect_eq_long("0xA4 capture tg", g_group_grant_tg, 0x4567);
-        rc |= expect_eq_long("0xA4 capture src", g_group_grant_src, 0x0A0B0C);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("0xA4 capture called", ctx->grant_count, 1);
+        rc |= expect_eq_long("0xA4 capture channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_long("0xA4 capture svc", ctx->slots[0].svc_bits, 0x23);
+        rc |= expect_eq_long("0xA4 capture tg", ctx->slots[0].ota_tg, 0x4567);
+        rc |= expect_eq_long("0xA4 capture src", ctx->vc_src, 0x0A0B0C);
         rc |= expect_eq_long("0xA4 CHAN-R cache", state.trunk_chan_map[0x100B], 851137500);
         rc |= expect_eq_long("0xA4 stored service options", state.dmr_so, 0x23);
     }
@@ -1138,18 +1069,15 @@ main(void) {
         MAC[6] = 0x10;
         MAC[7] = 0x0A;
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0x83 capture called", g_group_grant_called, 1);
-        rc |= expect_eq_long("0x83 capture channel", g_group_grant_channel, 0x100A);
-        rc |= expect_eq_long("0x83 capture svc", g_group_grant_svc, 0x81);
-        rc |= expect_eq_long("0x83 capture tg", g_group_grant_tg, 0x5566);
-        rc |= expect_eq_long("0x83 capture src", g_group_grant_src, 0);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("0x83 capture called", ctx->grant_count, 1);
+        rc |= expect_eq_long("0x83 capture channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_long("0x83 capture svc", ctx->slots[0].svc_bits, 0x81);
+        rc |= expect_eq_long("0x83 capture tg", ctx->slots[0].ota_tg, 0x5566);
+        rc |= expect_eq_long("0x83 capture src", ctx->vc_src, 0);
         rc |= expect_eq_long("0x83 stored service options", state.dmr_so, 0x81);
     }
 
@@ -1255,7 +1183,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
         opts.trunk_tune_enc_calls = 0;
@@ -1491,7 +1419,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -1531,7 +1459,6 @@ main(void) {
         const long vc_freq = 851012500;
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -1555,17 +1482,14 @@ main(void) {
         MAC[8] = 0x00;
         MAC[9] = 0x07; // source
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0x40 tuned same-carrier dispatch", g_group_grant_called, 1);
-        rc |= expect_eq_long("0x40 tuned same-carrier channel", g_group_grant_channel, ch_slot1);
-        rc |= expect_eq_long("0x40 tuned same-carrier tg", g_group_grant_tg, 0x2345);
-        rc |= expect_eq_long("0x40 tuned same-carrier src", g_group_grant_src, 7);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("0x40 tuned same-carrier dispatch", ctx->grant_count, 1);
+        rc |= expect_eq_long("0x40 tuned same-carrier channel", ctx->vc_channel, ch_slot1);
+        rc |= expect_eq_long("0x40 tuned same-carrier tg", ctx->slots[1].ota_tg, 0x2345);
+        rc |= expect_eq_long("0x40 tuned same-carrier src", ctx->vc_src, 7);
         rc |= expect_true("0x40 tuned same-carrier remains tuned", opts.p25_is_tuned == 1 && opts.trunk_is_tuned == 1);
     }
 
@@ -1576,7 +1500,6 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -1602,6 +1525,7 @@ main(void) {
         MAC[8] = 0x00;
         MAC[9] = 0x02; // source
 
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
         rc |= expect_true("0x40 LCCH grant tuned", opts.p25_is_tuned == 1);
         rc |= expect_eq_long("0x40 LCCH grant seeded CC", state.p25_cc_freq, cc);
@@ -1618,7 +1542,6 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -1641,14 +1564,10 @@ main(void) {
         MAC[8] = 0x00;
         MAC[9] = 0x02; // source
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_group_grant = sm_on_group_grant_capture;
-        p25_sm_set_api(&api);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
 
-        rc |= expect_eq_long("0x40 unseeded LCCH grant not dispatched", g_group_grant_called, 0);
+        rc |= expect_eq_long("0x40 unseeded LCCH grant not dispatched", p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_true("0x40 unseeded LCCH grant not tuned", opts.p25_is_tuned == 0 && opts.trunk_is_tuned == 0);
         rc |= expect_eq_long("0x40 unseeded LCCH no p25 CC", state.p25_cc_freq, 0);
         rc |= expect_eq_long("0x40 unseeded LCCH no trunk CC", state.trunk_cc_freq, 0);
@@ -1662,7 +1581,6 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -1701,7 +1619,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -1737,7 +1655,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -1785,7 +1703,7 @@ main(void) {
         state.p25_iden_fdma[iden].trust = 2;
         state.p25_iden_fdma[iden].populated = 1;
         state.p25_chan_tdma_explicit[iden] = 1;
-        p25_sm_init(&opts, &state);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_emit_enc_lockout_once(&opts, &state, 0, 0x1234, /*svc_bits*/ 0);
 
         MAC[1] = 0x42; // Group Voice Channel Grant Update - Implicit
@@ -1810,7 +1728,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_is_tuned = 1;
         state.p25_cc_freq = cc;
@@ -1855,7 +1773,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         state.p2_wacn = 0x11111;
         state.p2_sysid = 0x222;
@@ -1901,7 +1819,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         state.p2_wacn = 0x11111;
         state.p2_sysid = 0x222;
@@ -1948,7 +1866,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         state.p25_iden_fdma[iden].base_freq = base;
         state.p25_iden_fdma[iden].chan_type = type;
@@ -1990,7 +1908,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_is_tuned = 1;
         state.p25_cc_freq = 851000000;
@@ -2027,7 +1945,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         state.p25_iden_fdma[iden].base_freq = base;
         state.p25_iden_fdma[iden].chan_type = type;
@@ -2067,7 +1985,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_is_tuned = 1;
         state.p25_cc_freq = 851000000;
@@ -2106,7 +2024,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -2154,7 +2072,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -2198,7 +2116,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -2237,7 +2155,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -2249,7 +2167,7 @@ main(void) {
         state.p25_iden_fdma[iden].trust = 2;
         state.p25_iden_fdma[iden].populated = 1;
         state.p25_chan_tdma_explicit[iden] = 1;
-        p25_sm_init(&opts, &state);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_emit_enc_lockout_once(&opts, &state, 0, 0x1234, /*svc_bits*/ 0x40);
 
         MAC[1] = 0x25;
@@ -2279,7 +2197,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -2326,7 +2244,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -2384,7 +2302,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -2428,7 +2346,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_private_calls = 1;
@@ -2468,7 +2386,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -2493,22 +2411,19 @@ main(void) {
         MAC[8] = 0x04;
         MAC[9] = 0x05;
 
-        reset_group_grant_capture();
-        p25_sm_api api = {0};
-        api.on_indiv_data_grant = sm_on_indiv_data_grant_capture;
-        p25_sm_set_api(&api);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_eq_long("0x54 data disabled no callback", g_indiv_data_grant_called, 0);
+        rc |= expect_eq_long("0x54 data disabled no callback", p25_sm_get_ctx()->grant_count, 0);
 
         opts.trunk_tune_data_calls = 1;
-        reset_group_grant_capture();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
-        rc |= expect_eq_long("0x54 data callback", g_indiv_data_grant_called, 1);
-        rc |= expect_eq_long("0x54 data callback channel", g_indiv_data_grant_channel, 0x100A);
-        rc |= expect_eq_long("0x54 data callback svc", g_indiv_data_grant_svc, P25_SM_SVC_UNKNOWN);
-        rc |= expect_eq_long("0x54 data callback dst", g_indiv_data_grant_dst, 0x030405);
-        rc |= expect_eq_long("0x54 data callback src", g_indiv_data_grant_src, 0);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("0x54 data callback", ctx->grant_count, 1);
+        rc |= expect_eq_long("0x54 data callback channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_long("0x54 data callback svc", ctx->slots[0].svc_bits, P25_SM_SVC_UNKNOWN);
+        rc |= expect_eq_long("0x54 data callback dst", ctx->slots[0].dst, 0x030405);
+        rc |= expect_eq_long("0x54 data callback src", ctx->vc_src, 0);
     }
 
     // Case S1: L3Harris data grants also use the data-grant SM surface.
@@ -2518,7 +2433,6 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
 
         opts.p25_trunk = 1;
         opts.trunk_tune_group_calls = 1;
@@ -2533,10 +2447,6 @@ main(void) {
         state.p25_iden_fdma[iden].populated = 1;
         state.p25_chan_tdma_explicit[iden] = 1;
 
-        p25_sm_api api = {0};
-        api.on_indiv_data_grant = sm_on_indiv_data_grant_capture;
-        p25_sm_set_api(&api);
-
         MAC[1] = 0xA0;
         MAC[2] = 0xA4;
         MAC[3] = 0x09;
@@ -2547,12 +2457,13 @@ main(void) {
         MAC[8] = 0x04;
         MAC[9] = 0x05;
 
-        reset_group_grant_capture();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_eq_long("Harris A0 data callback", g_indiv_data_grant_called, 1);
-        rc |= expect_eq_long("Harris A0 data channel", g_indiv_data_grant_channel, 0x100A);
-        rc |= expect_eq_long("Harris A0 data dst", g_indiv_data_grant_dst, 0x030405);
-        rc |= expect_eq_long("Harris A0 data src", g_indiv_data_grant_src, 0);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("Harris A0 data callback", ctx->grant_count, 1);
+        rc |= expect_eq_long("Harris A0 data channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_long("Harris A0 data dst", ctx->slots[0].dst, 0x030405);
+        rc |= expect_eq_long("Harris A0 data src", ctx->vc_src, 0);
 
         DSD_MEMSET(MAC, 0, sizeof MAC);
         MAC[1] = 0xAC;
@@ -2568,13 +2479,13 @@ main(void) {
         MAC[11] = 0x04;
         MAC[12] = 0x18;
 
-        reset_group_grant_capture();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        p25_sm_reset_api();
-        rc |= expect_eq_long("Harris AC data callback", g_indiv_data_grant_called, 1);
-        rc |= expect_eq_long("Harris AC data channel", g_indiv_data_grant_channel, 0x100A);
-        rc |= expect_eq_long("Harris AC data dst", g_indiv_data_grant_dst, 0x030405);
-        rc |= expect_eq_long("Harris AC data src", g_indiv_data_grant_src, 0x980418);
+        ctx = p25_sm_get_ctx();
+        rc |= expect_eq_long("Harris AC data callback", ctx->grant_count, 1);
+        rc |= expect_eq_long("Harris AC data channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_long("Harris AC data dst", ctx->slots[0].dst, 0x030405);
+        rc |= expect_eq_long("Harris AC data src", ctx->vc_src, 0x980418);
     }
 
     // Case S: explicit SNDCP data grants update data-channel state in playback
@@ -2585,7 +2496,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 0;
         state.lasttg = 0x030405;
@@ -2621,7 +2532,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 0;
         state.lasttg = 0x030405;
@@ -2657,7 +2568,7 @@ main(void) {
         unsigned long long int MAC[24] = {0};
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&state, 0, sizeof state);
-        p25_sm_on_release(&opts, &state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
 
         opts.p25_trunk = 0;
         state.lasttg = 0x030405;

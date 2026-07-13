@@ -22,16 +22,7 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Minimal MSB-first bit-to-integer helper matching the DMR utils API.
-uint64_t
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) { // NOLINT(misc-use-internal-linkage)
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < n; i++) {
-        v = (v << 1) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
+// MSB-first test-vector writer.
 static void
 write_bits_from_u64(uint8_t* dst, uint64_t value, uint32_t nbits) {
     for (uint32_t i = 0; i < nbits; i++) {
@@ -132,10 +123,7 @@ test_parse_lsf_v2(void) {
     err |= expect_eq_u8("es", res.es, es);
     err |= expect_eq_u8("cn", res.cn, cn);
     err |= expect_eq_u8("rs", res.rs, 0U);
-    err |= expect_eq_u8("payload_contents", res.payload_contents, dt);
-    err |= expect_eq_u8("encryption_type", res.encryption_type, et);
     err |= expect_eq_u8("signature", res.signature, 1U);
-    err |= expect_eq_u8("meta_contents", res.meta_contents, es);
     err |= expect_eq_u8("meta_is_iv", res.meta_is_iv, 0U);
     err |= expect_eq_u8("dst kind", res.dst_address_kind, M17_ADDRESS_STANDARD);
     err |= expect_eq_u8("src kind", res.src_address_kind, M17_ADDRESS_STANDARD);
@@ -214,9 +202,6 @@ test_parse_lsf_spec_reserved_bits(void) {
     err |= expect_eq_u8("spec reserved cn", res.cn, 7U);
     err |= expect_eq_u8("spec reserved signature", res.signature, 1U);
     err |= expect_eq_u8("spec reserved rs", res.rs, 0xBU);
-    err |= expect_eq_u8("spec reserved payload_contents", res.payload_contents, res.dt);
-    err |= expect_eq_u8("spec reserved encryption_type", res.encryption_type, res.et);
-    err |= expect_eq_u8("spec reserved meta_contents", res.meta_contents, res.es);
     err |= expect_eq_u8("spec reserved meta_is_iv", res.meta_is_iv, 0U);
     err |= expect_eq_u8("spec reserved has_meta", res.has_meta, 1U);
     err |= expect_eq_u8("spec reserved type invalid", res.type_reserved_valid, 0U);

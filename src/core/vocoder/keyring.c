@@ -67,10 +67,3 @@ keyring_activate_slot(dsd_opts* opts, dsd_state* state, int slot) {
         (state->A1[slot] != 0ULL || state->A2[slot] != 0ULL || state->A3[slot] != 0ULL || state->A4[slot] != 0ULL) ? 1
                                                                                                                    : 0;
 }
-
-void
-keyring(dsd_opts* opts, dsd_state* state) {
-    if (state) {
-        keyring_activate_slot(opts, state, state->currentslot);
-    }
-}

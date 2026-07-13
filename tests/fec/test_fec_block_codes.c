@@ -270,27 +270,29 @@ test_rs28_zero_codewords(void) {
     int facch_parity[114] = {0};
     int sacch_payload[180] = {0};
     int sacch_parity[132] = {0};
+    const int facch_fixed_erasures[18] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62};
+    const int sacch_fixed_erasures[11] = {0, 1, 2, 3, 4, 57, 58, 59, 60, 61, 62};
     int many_erasures[32];
     for (int i = 0; i < 32; i++) {
         many_erasures[i] = i;
     }
 
-    assert(ez_rs28_ess(ess_payload, ess_parity) == 0);
+    assert(ez_rs28_ess(ess_payload, ess_parity, NULL, 0) == 0);
     assert_all_zero_ints(ess_payload, sizeof(ess_payload) / sizeof(ess_payload[0]));
 
-    assert(ez_rs28_facch(facch_payload, facch_parity) == 0);
+    assert(ez_rs28_facch(facch_payload, facch_parity, facch_fixed_erasures, 18) == 0);
     assert_all_zero_ints(facch_payload, sizeof(facch_payload) / sizeof(facch_payload[0]));
 
-    assert(ez_rs28_sacch(sacch_payload, sacch_parity) == 0);
+    assert(ez_rs28_sacch(sacch_payload, sacch_parity, sacch_fixed_erasures, 11) == 0);
     assert_all_zero_ints(sacch_payload, sizeof(sacch_payload) / sizeof(sacch_payload[0]));
 
-    assert(ez_rs28_ess_soft(ess_payload, ess_parity, many_erasures, 32) == 0);
+    assert(ez_rs28_ess(ess_payload, ess_parity, many_erasures, 32) == 0);
     assert_all_zero_ints(ess_payload, sizeof(ess_payload) / sizeof(ess_payload[0]));
 
-    assert(ez_rs28_facch_soft(facch_payload, facch_parity, many_erasures, 32) == 0);
+    assert(ez_rs28_facch(facch_payload, facch_parity, many_erasures, 32) == 0);
     assert_all_zero_ints(facch_payload, sizeof(facch_payload) / sizeof(facch_payload[0]));
 
-    assert(ez_rs28_sacch_soft(sacch_payload, sacch_parity, many_erasures, 32) == 0);
+    assert(ez_rs28_sacch(sacch_payload, sacch_parity, many_erasures, 32) == 0);
     assert_all_zero_ints(sacch_payload, sizeof(sacch_payload) / sizeof(sacch_payload[0]));
 
     return 0;

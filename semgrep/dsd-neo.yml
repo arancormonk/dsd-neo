@@ -197,21 +197,6 @@ rules:
       - pattern: mkstemp(...)
       - pattern: mkstemps(...)
 
-  - id: dsd-neo.no-deprecated-dsd-sprintf
-    languages: [c, cpp]
-    severity: ERROR
-    message: Use DSD_SNPRINTF with an explicit destination size instead of deprecated DSD_SPRINTF.
-    paths:
-      include:
-        - /apps/**
-        - /include/**
-        - /src/**
-        - /tests/**
-      exclude:
-        - /include/dsd-neo/core/safe_api.h
-        - /src/third_party/**
-    pattern: DSD_SPRINTF(...)
-
   - id: dsd-neo.no-sizeof-function-parameter-in-dsd-snprintf
     languages: [c, cpp]
     severity: ERROR
@@ -254,7 +239,6 @@ rules:
         - /src/fec/ez.cpp
         - /src/io/radio/rtl_metrics.cpp
         - /tests/protocol/p25/test_p25_p2_rs28_limits.cpp
-        - /tests/protocol/p25/test_p25_p2_rs28_wrappers.cpp
     pattern-either:
       - pattern: '#include "src/third_party/..."'
       - pattern: '#include <src/third_party/...>'

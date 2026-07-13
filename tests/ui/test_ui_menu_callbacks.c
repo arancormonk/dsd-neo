@@ -11,13 +11,13 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/ui/ui_cmd.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -92,47 +92,56 @@ dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
 }
 
 int
-dsd_app_command_action(int cmd_id) {
+dsd_app_command_action_tracked(int cmd_id, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(cmd_id, NULL, 0U);
 }
 
 int
-dsd_app_command_set_i32(int cmd_id, int32_t value) {
+dsd_app_command_set_i32_tracked(int cmd_id, int32_t value, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(cmd_id, &value, sizeof value);
 }
 
 int
-dsd_app_command_set_u8(int cmd_id, uint8_t value) {
+dsd_app_command_set_u8_tracked(int cmd_id, uint8_t value, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(cmd_id, &value, sizeof value);
 }
 
 int
-dsd_app_command_set_u32(int cmd_id, uint32_t value) {
+dsd_app_command_set_u32_tracked(int cmd_id, uint32_t value, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(cmd_id, &value, sizeof value);
 }
 
 int
-dsd_app_command_set_u64(int cmd_id, uint64_t value) {
+dsd_app_command_set_u64_tracked(int cmd_id, uint64_t value, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(cmd_id, &value, sizeof value);
 }
 
 int
-dsd_app_command_set_double(int cmd_id, double value) {
+dsd_app_command_set_double_tracked(int cmd_id, double value, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(cmd_id, &value, sizeof value);
 }
 
 int
-dsd_app_command_set_float(int cmd_id, float value) {
+dsd_app_command_set_float_tracked(int cmd_id, float value, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(cmd_id, &value, sizeof value);
 }
 
 int
-dsd_app_command_set_string(int cmd_id, const char* value) {
+dsd_app_command_set_string_tracked(int cmd_id, const char* value, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(cmd_id, value, value ? strlen(value) + 1U : 0U);
 }
 
 int
-dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port) {
+dsd_app_command_set_endpoint_tracked(int cmd_id, const char* host, int32_t port, dsd_app_command_token* out_token) {
+    (void)out_token;
     dsd_app_endpoint_payload payload = {0};
     DSD_SNPRINTF(payload.host, sizeof payload.host, "%s", host ? host : "");
     payload.port = port;
@@ -140,7 +149,8 @@ dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port) {
 }
 
 int
-dsd_app_command_set_udp_input(const char* bind, int32_t port) {
+dsd_app_command_set_udp_input_tracked(const char* bind, int32_t port, dsd_app_command_token* out_token) {
+    (void)out_token;
     dsd_app_udp_input_payload payload = {0};
     DSD_SNPRINTF(payload.bind, sizeof payload.bind, "%s", bind ? bind : "");
     payload.port = port;
@@ -148,32 +158,40 @@ dsd_app_command_set_udp_input(const char* bind, int32_t port) {
 }
 
 int
-dsd_app_command_set_p25_p2_params(const dsd_app_p25_p2_params_payload* payload) {
+dsd_app_command_set_p25_p2_params_tracked(const dsd_app_p25_p2_params_payload* payload,
+                                          dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(DSD_APP_CMD_P25_P2_PARAMS_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 int
-dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload) {
+dsd_app_command_set_hytera_key_tracked(const dsd_app_hytera_key_payload* payload, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(DSD_APP_CMD_KEY_HYTERA_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 int
-dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload) {
+dsd_app_command_set_aes_key_tracked(const dsd_app_aes_key_payload* payload, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(DSD_APP_CMD_KEY_AES_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 int
-dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload) {
+dsd_app_command_dsp_op_tracked(const dsd_app_dsp_payload* payload, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, payload, payload ? sizeof *payload : 0U);
 }
 
 int
-dsd_app_command_apply_config(const dsdneoUserConfig* config) {
+dsd_app_command_apply_config_tracked(const dsdneoUserConfig* config, dsd_app_command_token* out_token) {
+    (void)out_token;
     return dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, config, config ? sizeof *config : 0U);
 }
 
 int
-dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload) {
+dsd_app_command_set_config_metadata_tracked(const dsd_app_config_metadata_payload* payload,
+                                            dsd_app_command_token* out_token) {
+    (void)out_token;
     DSD_MEMSET(&g_config_metadata, 0, sizeof g_config_metadata);
     if (payload) {
         g_config_metadata = *payload;

@@ -8,6 +8,8 @@
  * and explicit block-mode behavior.
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -15,7 +17,6 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
@@ -52,15 +53,6 @@ free_test_state(dsd_state* st) {
         dsd_state_ext_free_all(st);
     }
     free(st);
-}
-
-uint64_t
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (uint64_t)(BufferIn[i] & 1U);
-    }
-    return v;
 }
 
 void
@@ -264,7 +256,8 @@ build_cap_plus_3e_single_idle(uint8_t* bits, uint8_t* bytes, uint8_t rest_lsn) {
 }
 
 static dsd_trunk_tune_result
-cap_plus_result_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+cap_plus_result_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     g_result_tune_to_freq_calls++;
     opts->rtlsdr_center_freq = freq;
@@ -275,7 +268,8 @@ cap_plus_result_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
 }
 
 static dsd_trunk_tune_result
-fail_result_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+fail_result_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)freq;
@@ -285,7 +279,8 @@ fail_result_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int te
 }
 
 static dsd_trunk_tune_result
-result_return_to_cc(dsd_opts* opts, dsd_state* state) {
+result_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_return_to_cc_result_calls++;
     if (opts) {
         opts->trunk_is_tuned = 0;
@@ -575,7 +570,7 @@ main(void) {
     opts->trunk_enable = 1;
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .tune_to_freq_result = cap_plus_result_tune_to_freq,
+        .tune_to_freq_request = cap_plus_result_tune_to_freq,
     });
     static dsd_opts cap_opts;
     static dsd_state cap_st;
@@ -679,7 +674,7 @@ main(void) {
     g_dmr_reset_blocks_calls = 0;
     g_result_tune_to_freq_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .tune_to_freq_result = cap_plus_result_tune_to_freq,
+        .tune_to_freq_request = cap_plus_result_tune_to_freq,
     });
     build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
@@ -719,7 +714,7 @@ main(void) {
     DSD_SNPRINTF(con_st.active_channel[0], sizeof(con_st.active_channel[0]), "previous active");
     g_fail_tune_to_freq_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .tune_to_freq_result = fail_result_tune_to_freq,
+        .tune_to_freq_request = fail_result_tune_to_freq,
     });
     build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
@@ -891,7 +886,7 @@ main(void) {
     DSD_SNPRINTF(pf0_st.active_channel[1], sizeof(pf0_st.active_channel[1]), "slot two voice channel");
     g_return_to_cc_result_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .return_to_cc_result = result_return_to_cc,
+        .return_to_cc_request = result_return_to_cc,
     });
     build_p_clear(bits, bytes, 0U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
@@ -929,7 +924,7 @@ main(void) {
     pf0_st.trunk_chan_map[22] = 852250000L;
     g_return_to_cc_result_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .return_to_cc_result = result_return_to_cc,
+        .return_to_cc_request = result_return_to_cc,
     });
     build_c_bcast_ann_wd_tscc(bits, bytes, 11U, 22U, 1U, 0U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);

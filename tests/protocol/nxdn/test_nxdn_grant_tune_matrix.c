@@ -74,25 +74,6 @@ static long g_last_tune_freq = 0;
  * Pulling focused grant handlers from nxdn_element.c requires auxiliary
  * symbols that are irrelevant to this matrix.
  */
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0U; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-convert_bits_into_output(const uint8_t* input, int len) {
-    if (!input || len <= 0) {
-        return 0ULL;
-    }
-    return ConvertBitIntoBytes(input, (uint32_t)len);
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
@@ -254,7 +235,8 @@ dsd_time_monotonic_ns(void) {
 }
 
 static dsd_trunk_tune_result
-nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     g_tune_count++;
     g_last_tune_freq = freq;
@@ -276,7 +258,7 @@ nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_
 static void
 nxdn_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = nxdn_hook_tune_to_freq;
+    hooks.tune_to_freq_request = nxdn_hook_tune_to_freq;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 

@@ -336,7 +336,7 @@ test_hex_key_import_preserves_zero_segments_for_keyring(void) {
 
     state->currentslot = 0;
     state->payload_keyid = key_id;
-    keyring(opts, state);
+    keyring_activate_slot(opts, state, state->currentslot);
     if (state->R != 0xA753BC945DE5E0F1ULL || state->A1[0] != 0xA753BC945DE5E0F1ULL || state->A2[0] != 0ULL
         || state->A3[0] != 0xD9DF2FAC6278FA93ULL || state->A4[0] != 0ULL || state->aes_key_segments[0] != 4U
         || state->aes_key_loaded[0] != 1) {

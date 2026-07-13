@@ -12,21 +12,20 @@ int
 main(void) {
     dsd_app_frontend_history_set_mode(1);
     assert(dsd_app_frontend_history_get_mode() == 1);
-    assert(ui_history_get_mode() == 1);
 
     assert(dsd_app_frontend_history_cycle_mode() == 2);
     assert(dsd_app_frontend_history_get_mode() == 2);
 
-    assert(ui_history_cycle_mode() == 0);
+    assert(dsd_app_frontend_history_cycle_mode() == 0);
     assert(dsd_app_frontend_history_get_mode() == 0);
 
     assert(dsd_app_frontend_history_cycle_mode() == 1);
-    assert(ui_history_get_mode() == 1);
+    assert(dsd_app_frontend_history_get_mode() == 1);
 
     dsd_app_frontend_history_set_mode(-1);
     assert(dsd_app_frontend_history_get_mode() == 2);
 
-    ui_history_set_mode(8);
+    dsd_app_frontend_history_set_mode(8);
     assert(dsd_app_frontend_history_get_mode() == 2);
 
     printf("UI_HISTORY_STATE: OK\n");

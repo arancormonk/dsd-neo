@@ -11,7 +11,6 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -30,6 +29,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -125,7 +125,7 @@ read_dmr_bs_ambe_segment_stream(dsd_opts* opts, dsd_state* state, char frame[4][
     const int *w = dmr_ambe_interleave_w + interleave_offset, *x = dmr_ambe_interleave_x + interleave_offset,
               *y = dmr_ambe_interleave_y + interleave_offset, *z = dmr_ambe_interleave_z + interleave_offset;
     for (int i = 0; i < dibit_count; i++) {
-        int dibit = getDibit(opts, state);
+        int dibit = get_dibit_and_analog_signal(opts, state, NULL);
         state->dmr_stereo_payload[payload_offset + i] = dibit;
         if (redundancy_out != NULL) {
             redundancy_out[i] = (char)dibit;
@@ -158,7 +158,7 @@ unpack_dmr_bs_ambe_segment_from_payload(const dsd_state* state, char frame[4][24
 static void
 read_dmr_bs_sync_segment(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     for (int i = 0; i < 24; i++) {
-        int dibit = getDibit(opts, state);
+        int dibit = get_dibit_and_analog_signal(opts, state, NULL);
         state->dmr_stereo_payload[i + 66] = dibit;
         ctx->sync[i] = (dibit | 1) + 48;
         ctx->syncdata[((size_t)2 * i)] = (1 & (dibit >> 1));
@@ -189,7 +189,7 @@ extract_dmr_bs_sync_from_payload(const dsd_state* state, int payload_offset, cha
 static int
 collect_dmr_bs_cach_and_tact(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     for (int i = 0; i < 12; i++) {
-        int dibit = getDibit(opts, state);
+        int dibit = get_dibit_and_analog_signal(opts, state, NULL);
         state->dmr_stereo_payload[i] = dibit;
         ctx->cachdata[dmr_bs_cach_interleave[((size_t)i * 2)]] = (1 & (dibit >> 1));
         ctx->cachdata[dmr_bs_cach_interleave[((size_t)i * 2) + 1]] = (1 & dibit);
@@ -431,7 +431,7 @@ handle_dmr_bs_slot_vc6_pre_link(dsd_opts* opts, dsd_state* state, const dmr_bs_c
             hytera_enhanced_alg_refresh(state);
         }
         DSD_FPRINTF(stderr, "\n");
-        dmr_data_burst_handler(opts, state, (uint8_t*)ctx->dummy_bits, 0xEB);
+        dmr_data_burst_handler(opts, state, (uint8_t*)ctx->dummy_bits, 0xEB, NULL);
     }
 
     if (ctx->internalslot == 1 && ctx->vc2 == 6) {
@@ -439,7 +439,7 @@ handle_dmr_bs_slot_vc6_pre_link(dsd_opts* opts, dsd_state* state, const dmr_bs_c
             hytera_enhanced_alg_refresh(state);
         }
         DSD_FPRINTF(stderr, "\n");
-        dmr_data_burst_handler(opts, state, (uint8_t*)ctx->dummy_bits, 0xEB);
+        dmr_data_burst_handler(opts, state, (uint8_t*)ctx->dummy_bits, 0xEB, NULL);
     }
 }
 
@@ -709,7 +709,7 @@ run_dmr_bs_post_skip(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     watchdog_event_current(opts, state, 0);
     watchdog_event_history(opts, state, 1);
     watchdog_event_current(opts, state, 1);
-    dmr_sm_tick(opts, state);
+    dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
 
     return DMR_BS_ACTION_CONTINUE;
 }
@@ -762,7 +762,7 @@ static void
 init_dmr_bs_bootstrap_ctx(dmr_bs_bootstrap_ctx* ctx) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->sync_okay = 1;
-    getTimeC_buf(ctx->timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, ctx->timestr, sizeof ctx->timestr);
 }
 
 static void
@@ -900,7 +900,7 @@ process_dmr_bs_bootstrap_voice_if_open(dsd_opts* opts, dsd_state* state, dmr_bs_
 
 static dmr_bs_action DSD_ATTR_USED
 process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
-    getTimeC_buf(ctx->timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, ctx->timestr, sizeof ctx->timestr);
     reset_dmr_bs_loop_buffers(ctx);
 
     if (!collect_dmr_bs_cach_and_tact(opts, state, ctx)) {
@@ -972,7 +972,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
 
     while (1) {
         if (exitflag == 1) {
-            cleanupAndExit(opts, state);
+            dsd_request_shutdown(opts, state);
             break;
         }
         if (process_dmr_bs_iteration(opts, state, &ctx) == DMR_BS_ACTION_END) {

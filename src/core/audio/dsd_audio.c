@@ -93,7 +93,7 @@ dsd_audio_default_sample_rate_hz(int configured_sample_rate_hz) {
     return (configured_sample_rate_hz > 0) ? configured_sample_rate_hz : 48000;
 }
 
-static void
+void
 dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
     if (file == NULL || samples == NULL || sample_count <= 0) {
         return;
@@ -183,19 +183,6 @@ dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, 
         *out_opened_as_container = opened_as_container;
     }
     return 0;
-}
-
-size_t
-dsd_audio_linear_upsample_block_f32(float previous, float current, size_t factor, float* out, size_t out_cap) {
-    if (!out || factor == 0 || out_cap < factor) {
-        return 0;
-    }
-
-    float diff = current - previous;
-    for (size_t n = 0; n < factor; n++) {
-        out[n] = previous + (diff * ((float)(n + 1) / (float)factor));
-    }
-    return factor;
 }
 
 void
@@ -1093,8 +1080,8 @@ dsd_audio_open_fallback_file_input(dsd_opts* opts, dsd_state* state, int old_eff
 
     if (active_sample_rate != opts->wav_sample_rate) {
         if (opened_as_container) {
-            LOG_NOTICE("WAV header sample rate %d Hz overrides configured %d Hz for %s\n", active_sample_rate,
-                       configured_file_sample_rate, opts->audio_in_dev);
+            LOG_INFO("NOTICE: WAV header sample rate %d Hz overrides configured %d Hz for %s\n", active_sample_rate,
+                     configured_file_sample_rate, opts->audio_in_dev);
         }
         dsd_audio_apply_input_sample_rate(opts, state, old_effective_input_rate, active_sample_rate);
     }

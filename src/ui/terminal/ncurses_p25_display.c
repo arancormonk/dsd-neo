@@ -33,9 +33,6 @@
 #ifdef USE_RTLSDR
 #endif
 
-/* Alias for shared last synctype tracking (defined in ncurses_utils.c) */
-#define lls ncurses_last_synctype
-
 static int
 ui_is_p25_synctype(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype) || DSD_SYNC_IS_P25P2(synctype);
@@ -434,7 +431,7 @@ compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
 
 static int
 ui_print_p25_sync_metric(const dsd_state* state) {
-    int cur = lls;
+    int cur = ncurses_last_synctype;
     int prev = state->lastsynctype;
     const char* cur_s = dsd_synctype_to_string(cur);
     const char* prev_s = dsd_synctype_to_string(prev);
@@ -1023,7 +1020,7 @@ ui_print_p25p1_sm_timers_metric(const dsd_state* state) {
     double dt_vc = ui_time_diff_maybe_monotonic(now, state->last_vc_sync_time, nowm, state->last_vc_sync_time_m);
     double dt_tune =
         ui_time_diff_maybe_monotonic(now, state->p25_last_vc_tune_time, nowm, state->p25_last_vc_tune_time_m);
-    double tdu_age = ui_time_diff_maybe_monotonic(now, state->p25_p1_last_tdu, nowm, state->p25_p1_last_tdu_m);
+    double tdu_age = (state->p25_p1_last_tdu_m > 0.0) ? nowm - state->p25_p1_last_tdu_m : -1.0;
     printw("| SM Timers: dCC=%4.1fs dVC=%4.1fs dTune=%4.1fs TDU_age=%4.1fs\n", dt_cc, dt_vc, dt_tune, tdu_age);
     return 1;
 }
@@ -1079,8 +1076,8 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     int lines = 0;
-    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
-    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
+    int is_p25p1 = DSD_SYNC_IS_P25P1(ncurses_last_synctype);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     lines += ui_print_p25_core_metrics(state, is_p25p1, is_p25p2);
     lines += ui_print_p25p2_metrics(opts, state, is_p25p1, is_p25p2);
     lines += ui_print_p25_rtl_metrics(is_p25p1, is_p25p2);

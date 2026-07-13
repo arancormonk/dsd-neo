@@ -36,9 +36,9 @@ Remaining risks to keep visible during native UI work:
 - The public snapshot APIs are intended for a normal single UI event thread. If a selected toolkit polls frontend state
   from multiple UI/render threads, add caller-owned copy APIs or locking around the consume buffers before relying on
   concurrent polling.
-- Terminal UI remains a legacy compatibility frontend and still reads some backend/protocol details directly. It is not
-  the native UI implementation template. New native views should copy missing state into app-control instead of porting
-  terminal helper logic.
+- The established terminal frontend still reads some backend/protocol details directly. It is not the native UI
+  implementation template. New native views should copy missing state into app-control instead of porting terminal
+  helper logic.
 - Backend diagnostics may still write through runtime logging. A native frontend should install a log sink if it needs
   in-app logs; it should not scrape `stderr` or depend on terminal output.
 
@@ -46,7 +46,7 @@ Remaining risks to keep visible during native UI work:
 
 - `status.frontend_kind`: copied from the active `dsd_opts.frontend_kind`.
 - `status.display`: common frontend display preferences copied from `dsd_opts.frontend_display`.
-- `status.terminal_display`: terminal-only render preferences copied from `dsd_opts.frontend_display`.
+- `status.terminal_display`: terminal-only render preferences copied from `dsd_opts.frontend_terminal_display`.
 - Decoder/input status fields: copied from stable option and runtime fields needed by existing frontend status views.
 - Native-visible controls and labels can read promoted recording, logging, trunk policy, connection, call-alert, and
   capture/playback state from `dsd_frontend_status` instead of raw `dsd_opts` or terminal menu helpers.
@@ -102,19 +102,18 @@ Remaining risks to keep visible during native UI work:
 - Frontends should call `dsd_app_frontend_event_history_item_get()` only for selected rows that need full detail.
   The full detail item includes source/target IDs, labels, modes, system IDs, channel, timestamp, service options,
   encryption metadata, PDU bytes, summary text, detail text, GPS text, text message, and alias.
-- Terminal color pairs are not part of the public snapshot. Terminal UI keeps using the internally copied compatibility
-  `dsd_state` and maps neutral metadata to curses attributes inside `src/ui/terminal/`.
+- Terminal color pairs are not part of the public snapshot. Terminal UI passes live decoder state to curses and maps
+  neutral metadata to curses attributes inside `src/ui/terminal/`.
 
 ## Commands
 
 - `dsd_app_command_descriptors_get()` is the native-control metadata source. It exposes command labels, payload kind,
   payload size, value ranges, enum options, units, radio/runtime availability flags, restart hints, and validation
   hints.
-- `dsd_app_command_capabilities_get()` remains as the compatibility view and is derived from the descriptor table.
 
 ## Native Host Model
 
-- Native UI v1 is currently hosted through the CLI `--frontend native` provider path.
+- The current native UI is hosted through the CLI `--frontend native` provider path.
 - Providers may set `DSD_FRONTEND_PROVIDER_MAIN_THREAD_UI` when a frontend needs main-thread UI ownership.
 - No separate native app host library or executable is part of this boundary cleanup; that should be revisited only
   when a selected native UI toolkit requires a separate executable or app bundle.

@@ -34,6 +34,7 @@
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/platform/sockets.h"
 #include "test_support.h"
+#include "trunk_scan_internal.h"
 
 static const char k_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n";
 static int g_dmr_tick_calls = 0;
@@ -172,7 +173,10 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 }
 
 dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t* out_request_id) {
+    if (out_request_id) {
+        *out_request_id = 0U;
+    }
     g_scan_tune_to_freq_ted_sps = ted_sps;
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -181,15 +185,6 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     opts->trunk_is_tuned = 0;
     state->last_cc_sync_time_m = dsd_engine_trunk_scan_active_index(state) == (size_t)-1 ? 0.0 : 1.0;
     return DSD_TRUNK_TUNE_RESULT_OK;
-}
-
-dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                                     uint64_t* out_request_id) {
-    if (out_request_id) {
-        *out_request_id = 0U;
-    }
-    return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps);
 }
 
 int
@@ -874,7 +869,7 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -888,13 +883,13 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     state.dmr_lcn_trust[4] = 2;
     seed_target0_p25_state(&state);
 
-    dsd_engine_trunk_scan_test_set_now(0.24);
+    trunk_scan_test_set_now(0.24);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "scan rotated before dwell\n");
         test_rc = 1;
     }
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "scan did not rotate after dwell\n");
@@ -909,7 +904,7 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     state.dmr_lcn_trust[8] = 2;
     seed_target1_p25_state(&state);
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "scan did not rotate back to target 0\n");
@@ -923,7 +918,7 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     test_rc |= expect_target0_p25_state(&state);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -967,7 +962,7 @@ test_call_identity_state_isolated_per_target(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -976,7 +971,7 @@ test_call_identity_state_isolated_per_target(void) {
     }
 
     seed_call_identity(&state, 101, 201, 102, 202, 0, 1);
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "call identity scan did not rotate to second target\n");
@@ -985,7 +980,7 @@ test_call_identity_state_isolated_per_target(void) {
     test_rc |= expect_call_identity("fresh target", &state, 0, 0, 0, 0, -1, -1);
 
     seed_call_identity(&state, 301, 401, 302, 402, 1, 0);
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "call identity scan did not rotate back to first target\n");
@@ -994,7 +989,7 @@ test_call_identity_state_isolated_per_target(void) {
     test_rc |= expect_call_identity("restored target", &state, 101, 201, 102, 202, 0, 1);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1039,7 +1034,7 @@ test_dmr_branding_state_isolated_per_target(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -1049,7 +1044,7 @@ test_dmr_branding_state_isolated_per_target(void) {
     }
 
     seed_dmr_identity(&state, 0x10, 0x123U, "Motorola", "Cap+ ", "cap-site ");
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "dmr identity scan did not rotate to second target\n");
@@ -1058,7 +1053,7 @@ test_dmr_branding_state_isolated_per_target(void) {
     test_rc |= expect_dmr_identity("fresh target", &state, -1, "", "", "", 0U);
 
     seed_dmr_identity(&state, 0x68, 0x456U, "  Hytera", "XPT ", "xpt-site ");
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "dmr identity scan did not rotate back to first target\n");
@@ -1067,7 +1062,7 @@ test_dmr_branding_state_isolated_per_target(void) {
     test_rc |= expect_dmr_identity("restored target", &state, 0x10, "Motorola", "Cap+ ", "cap-site ", 0x123U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1126,7 +1121,7 @@ test_dmr_confidence_state_isolated_per_target(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -1136,7 +1131,7 @@ test_dmr_confidence_state_isolated_per_target(void) {
     }
 
     seed_dmr_confidence(&state, 3);
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "dmr confidence scan did not rotate to second target\n");
@@ -1145,7 +1140,7 @@ test_dmr_confidence_state_isolated_per_target(void) {
     test_rc |= expect_dmr_confidence("fresh target", &state, 16, 0);
 
     seed_dmr_confidence(&state, 7);
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "dmr confidence scan did not rotate back to first target\n");
@@ -1154,7 +1149,7 @@ test_dmr_confidence_state_isolated_per_target(void) {
     test_rc |= expect_dmr_confidence("restored target", &state, 3, 1);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1195,7 +1190,7 @@ test_dmr_service_options_state_isolated_per_target(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -1205,7 +1200,7 @@ test_dmr_service_options_state_isolated_per_target(void) {
     }
 
     seed_dmr_service_options(&state, 0x10U, 0x40U, 0x68U, 0x41U);
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "dmr service option scan did not rotate to second target\n");
@@ -1214,7 +1209,7 @@ test_dmr_service_options_state_isolated_per_target(void) {
     test_rc |= expect_dmr_service_options("fresh target", &state, 0U, 0U, 0U, 0U);
 
     seed_dmr_service_options(&state, 0x22U, 0x02U, 0x33U, 0x03U);
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "dmr service option scan did not rotate back to first target\n");
@@ -1223,7 +1218,7 @@ test_dmr_service_options_state_isolated_per_target(void) {
     test_rc |= expect_dmr_service_options("restored target", &state, 0x10U, 0x40U, 0x68U, 0x41U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1245,7 +1240,7 @@ test_p25_targets_seed_valid_control_channel_timing(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -1262,7 +1257,7 @@ test_p25_targets_seed_valid_control_channel_timing(void) {
     state.symbolCenter = 3;
     state.rf_mod = 1;
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.samplesPerSymbol != 10 || state.symbolCenter != 4
         || state.rf_mod != 0) {
@@ -1272,7 +1267,7 @@ test_p25_targets_seed_valid_control_channel_timing(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.samplesPerSymbol != 8 || state.symbolCenter != 3
         || state.rf_mod != 1) {
@@ -1283,7 +1278,7 @@ test_p25_targets_seed_valid_control_channel_timing(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1305,7 +1300,7 @@ test_p25_nac_state_isolated_per_target(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -1314,7 +1309,7 @@ test_p25_nac_state_isolated_per_target(void) {
     }
 
     state.nac = 0x2A1;
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.nac != 0) {
         DSD_FPRINTF(stderr, "fresh P25 scan target inherited stale NAC active=%zu nac=0x%03X\n",
@@ -1323,7 +1318,7 @@ test_p25_nac_state_isolated_per_target(void) {
     }
 
     state.nac = 0x345;
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.nac != 0x2A1) {
         DSD_FPRINTF(stderr, "P25 scan target did not restore its own NAC active=%zu nac=0x%03X\n",
@@ -1332,7 +1327,7 @@ test_p25_nac_state_isolated_per_target(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1354,7 +1349,7 @@ test_p25_target_switch_resyncs_sm_mode(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -1371,7 +1366,7 @@ test_p25_target_switch_resyncs_sm_mode(void) {
         state.p25_sm_mode = DSD_P25_SM_MODE_UNKNOWN;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_sm_mode != DSD_P25_SM_MODE_ON_CC) {
         DSD_FPRINTF(stderr, "second P25 scan target SM mode invalid active=%zu mode=%d\n",
@@ -1379,7 +1374,7 @@ test_p25_target_switch_resyncs_sm_mode(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_sm_mode != DSD_P25_SM_MODE_ON_CC) {
         DSD_FPRINTF(stderr, "retuned P25 scan target SM mode invalid active=%zu mode=%d\n",
@@ -1388,7 +1383,7 @@ test_p25_target_switch_resyncs_sm_mode(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1410,7 +1405,7 @@ test_p25_scan_retune_restarts_pending_cc_acquisition(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(1.0);
+    trunk_scan_test_set_now(1.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     p25_sm_ctx_t* first_ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
@@ -1432,14 +1427,14 @@ test_p25_scan_retune_restarts_pending_cc_acquisition(void) {
         state.p25_last_cc_msg_time_m = 0.75;
     }
 
-    dsd_engine_trunk_scan_test_set_now(1.26);
+    trunk_scan_test_set_now(1.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "pending CC timer scan did not rotate away from first target\n");
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(4.0);
+    trunk_scan_test_set_now(4.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
     p25_sm_ctx_t* restored_ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
     const double timestamp_epsilon_s = 1.0e-9;
@@ -1463,7 +1458,7 @@ test_p25_scan_retune_restarts_pending_cc_acquisition(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1486,7 +1481,7 @@ test_mixed_target_switch_resets_dmr_demod_profile(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -1497,7 +1492,7 @@ test_mixed_target_switch_resets_dmr_demod_profile(void) {
     state.rf_mod = 1;
     state.samplesPerSymbol = 8;
     state.symbolCenter = 3;
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rf_mod != 2 || state.samplesPerSymbol != 10
         || state.symbolCenter != 4) {
@@ -1510,7 +1505,7 @@ test_mixed_target_switch_resets_dmr_demod_profile(void) {
     state.rf_mod = 1;
     state.samplesPerSymbol = 8;
     state.symbolCenter = 3;
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 2 || state.rf_mod != 2 || state.samplesPerSymbol != 10
         || state.symbolCenter != 4) {
@@ -1523,7 +1518,7 @@ test_mixed_target_switch_resets_dmr_demod_profile(void) {
     state.rf_mod = 2;
     state.samplesPerSymbol = 10;
     state.symbolCenter = 4;
-    dsd_engine_trunk_scan_test_set_now(0.78);
+    trunk_scan_test_set_now(0.78);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.rf_mod != 0 || state.samplesPerSymbol != 10
         || state.symbolCenter != 4) {
@@ -1534,7 +1529,7 @@ test_mixed_target_switch_resets_dmr_demod_profile(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1556,7 +1551,7 @@ test_conventional_activity_hold_and_allowlist_block(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0) {
@@ -1564,17 +1559,17 @@ test_conventional_activity_hold_and_allowlist_block(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.10);
+    trunk_scan_test_set_now(0.10);
     dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
-    dsd_engine_trunk_scan_test_set_now(0.30);
+    trunk_scan_test_set_now(0.30);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "allowed conventional activity did not hold target\n");
         test_rc = 1;
     }
-    dsd_engine_trunk_scan_test_set_now(0.61);
+    trunk_scan_test_set_now(0.61);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    dsd_engine_trunk_scan_test_set_now(0.87);
+    trunk_scan_test_set_now(0.87);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "target did not rotate after conventional hold and dwell\n");
@@ -1586,15 +1581,15 @@ test_conventional_activity_hold_and_allowlist_block(void) {
     reset_scan_opts_state(&opts, &state);
     opts.trunk_use_allow_list = 1;
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc != 0) {
         DSD_FPRINTF(stderr, "allowlist scan init failed: %s\n", err);
         test_rc = 1;
     }
-    dsd_engine_trunk_scan_test_set_now(0.10);
+    trunk_scan_test_set_now(0.10);
     dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "blocked allow-list traffic held conventional target\n");
@@ -1602,7 +1597,7 @@ test_conventional_activity_hold_and_allowlist_block(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1625,7 +1620,7 @@ test_conventional_activity_encrypted_lockout_does_not_hold(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0) {
@@ -1633,9 +1628,9 @@ test_conventional_activity_encrypted_lockout_does_not_hold(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.10);
+    trunk_scan_test_set_now(0.10);
     dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 1, 0);
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "encrypted conventional traffic held target despite lockout\n");
@@ -1643,7 +1638,7 @@ test_conventional_activity_encrypted_lockout_does_not_hold(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1663,7 +1658,7 @@ test_state_ext_cleanup_clears_scan_hooks(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0) {
@@ -1681,7 +1676,7 @@ test_state_ext_cleanup_clears_scan_hooks(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1701,7 +1696,7 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0) {
@@ -1717,7 +1712,7 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
         test_rc = 1;
     }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     if (test_rc != 0) {
         return test_rc;
@@ -1731,7 +1726,7 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
     reset_scan_opts_state(&opts, &state);
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
     DSD_MEMSET(err, 0, sizeof err);
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc != 0) {
         DSD_FPRINTF(stderr, "p25 hook gating scan init failed: %s\n", err);
@@ -1747,7 +1742,7 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1769,7 +1764,7 @@ test_dmr_trunk_sm_timeout_releases_scan_hold(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -1788,7 +1783,7 @@ test_dmr_trunk_sm_timeout_releases_scan_hold(void) {
     opts.trunk_is_tuned = 1;
     g_dmr_tick_calls = 0;
 
-    dsd_engine_trunk_scan_test_set_now(0.10);
+    trunk_scan_test_set_now(0.10);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "dmr active call did not hold scan target\n");
@@ -1799,7 +1794,7 @@ test_dmr_trunk_sm_timeout_releases_scan_hold(void) {
     g_dmr_tick_calls = 0;
     g_dmr_tick_release_tuned = 1;
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (g_dmr_tick_calls == 0) {
         DSD_FPRINTF(stderr, "dmr target SM was not ticked before scan hold check\n");
@@ -1810,7 +1805,7 @@ test_dmr_trunk_sm_timeout_releases_scan_hold(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "dmr scan did not rotate after SM timeout released hold\n");
@@ -1819,13 +1814,14 @@ test_dmr_trunk_sm_timeout_releases_scan_hold(void) {
 
     g_dmr_tick_release_tuned = 0;
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
 
 static dsd_trunk_tune_result
-failing_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+failing_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)freq;
@@ -1840,7 +1836,8 @@ static long int g_counting_tune_to_cc_freq = 0;
 static dsd_trunk_tune_result g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
 static dsd_trunk_tune_result
-counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     g_counting_tune_to_cc_calls++;
     g_counting_tune_to_cc_ted_sps = ted_sps;
@@ -1853,12 +1850,6 @@ counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
         state->trunk_cc_freq = freq;
     }
     return g_counting_tune_to_cc_result;
-}
-
-static dsd_trunk_tune_result
-counting_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
-    (void)request_id;
-    return counting_tune_to_cc(opts, state, freq, ted_sps);
 }
 
 static int
@@ -1878,13 +1869,13 @@ test_p25_pending_retune_holds_scan_dwell(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_request = counting_tune_to_cc_request;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(1.0);
+    trunk_scan_test_set_now(1.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
@@ -1895,7 +1886,7 @@ test_p25_pending_retune_holds_scan_dwell(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(2.0);
+    trunk_scan_test_set_now(2.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1) {
         DSD_FPRINTF(stderr, "pending P25 retune did not hold scan dwell active=%zu calls=%d\n",
@@ -1914,7 +1905,7 @@ test_p25_pending_retune_holds_scan_dwell(void) {
         test_rc = 1;
     }
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
-    dsd_engine_trunk_scan_test_set_now(10.0);
+    trunk_scan_test_set_now(10.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1) {
         DSD_FPRINTF(stderr, "P25 pending completion consumed scan dwell active=%zu calls=%d\n",
@@ -1922,9 +1913,9 @@ test_p25_pending_retune_holds_scan_dwell(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(10.20);
+    trunk_scan_test_set_now(10.20);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    dsd_engine_trunk_scan_test_set_now(10.26);
+    trunk_scan_test_set_now(10.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_calls != 2) {
         DSD_FPRINTF(stderr, "scan dwell did not restart after pending completion active=%zu calls=%d\n",
@@ -1935,7 +1926,7 @@ test_p25_pending_retune_holds_scan_dwell(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -1958,13 +1949,13 @@ test_p25_pending_retune_adopts_sm_retry(void) {
     dsd_trunk_tuning_requests_reset();
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_request = counting_tune_to_cc_request;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(1.0);
+    trunk_scan_test_set_now(1.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
@@ -1978,7 +1969,7 @@ test_p25_pending_retune_adopts_sm_retry(void) {
         DSD_MEMSET(&hooks, 0, sizeof hooks);
         dsd_trunk_tuning_hooks_set(hooks);
         dsd_engine_trunk_scan_shutdown(&opts, &state);
-        dsd_engine_trunk_scan_test_clear_now();
+        trunk_scan_test_clear_now();
         dsd_trunk_tuning_requests_reset();
         cleanup_paths(dir, target_path, NULL);
         return 1;
@@ -1997,7 +1988,7 @@ test_p25_pending_retune_adopts_sm_retry(void) {
         ctx->state = P25_SM_ON_CC;
     }
 
-    dsd_engine_trunk_scan_test_set_now(2.0);
+    trunk_scan_test_set_now(2.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1 || !ctx->cc_tune_pending
         || ctx->cc_tune_request_id != retry_request_id) {
@@ -2009,7 +2000,7 @@ test_p25_pending_retune_adopts_sm_retry(void) {
 
     dsd_trunk_tuning_request_publish(retry_request_id, DSD_TRUNK_TUNE_RESULT_OK);
     (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 2.1, "test-sm-recovery");
-    dsd_engine_trunk_scan_test_set_now(2.1);
+    trunk_scan_test_set_now(2.1);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1 || ctx->cc_tune_pending) {
         DSD_FPRINTF(stderr, "adopted P25 retry completion advanced scan active=%zu calls=%d pending=%d\n",
@@ -2020,7 +2011,7 @@ test_p25_pending_retune_adopts_sm_retry(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     dsd_trunk_tuning_requests_reset();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -2044,13 +2035,13 @@ test_p25_pending_retune_preserves_completed_sm_recovery(void) {
     dsd_trunk_tuning_requests_reset();
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_request = counting_tune_to_cc_request;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(1.0);
+    trunk_scan_test_set_now(1.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
@@ -2064,7 +2055,7 @@ test_p25_pending_retune_preserves_completed_sm_recovery(void) {
         DSD_MEMSET(&hooks, 0, sizeof hooks);
         dsd_trunk_tuning_hooks_set(hooks);
         dsd_engine_trunk_scan_shutdown(&opts, &state);
-        dsd_engine_trunk_scan_test_clear_now();
+        trunk_scan_test_clear_now();
         dsd_trunk_tuning_requests_reset();
         cleanup_paths(dir, target_path, NULL);
         return 1;
@@ -2083,7 +2074,7 @@ test_p25_pending_retune_preserves_completed_sm_recovery(void) {
         (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, retry_completed_m, "test-sm-recovery");
     }
 
-    dsd_engine_trunk_scan_test_set_now(2.0);
+    trunk_scan_test_set_now(2.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1
         || ctx->state != P25_SM_ON_CC || ctx->cc_tune_pending) {
@@ -2096,7 +2087,7 @@ test_p25_pending_retune_preserves_completed_sm_recovery(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     dsd_trunk_tuning_requests_reset();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -2119,13 +2110,13 @@ test_generic_pending_retune_holds_and_recovers(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_request = counting_tune_to_cc_request;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(1.0);
+    trunk_scan_test_set_now(1.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     uint64_t request_id = dsd_trunk_tuning_pending_request();
@@ -2135,7 +2126,7 @@ test_generic_pending_retune_holds_and_recovers(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(2.0);
+    trunk_scan_test_set_now(2.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1) {
         DSD_FPRINTF(stderr, "generic pending retune did not hold scan active=%zu calls=%d\n",
@@ -2145,7 +2136,7 @@ test_generic_pending_retune_holds_and_recovers(void) {
 
     dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
-    dsd_engine_trunk_scan_test_set_now(2.10);
+    trunk_scan_test_set_now(2.10);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_calls != 2
         || dsd_trunk_tuning_pending_request() != 0U
@@ -2159,55 +2150,7 @@ test_generic_pending_retune_holds_and_recovers(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
-    cleanup_paths(dir, target_path, NULL);
-    return test_rc;
-}
-
-static int
-test_legacy_pending_retune_does_not_hold_scan(void) {
-    char dir[DSD_TEST_PATH_MAX];
-    char target_path[DSD_TEST_PATH_MAX];
-    if (make_runtime_targets("a,dmr-trunk,451000000,,250,,\n"
-                             "b,dmr-trunk,452000000,,250,,\n",
-                             target_path, sizeof target_path, dir, sizeof dir)
-        != 0) {
-        return 1;
-    }
-
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
-
-    dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
-    dsd_trunk_tuning_hooks_set(hooks);
-    g_counting_tune_to_cc_calls = 0;
-    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
-
-    char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(1.0);
-    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
-    int test_rc = 0;
-    if (rc != 0 || dsd_trunk_tuning_pending_request() != 0U || g_counting_tune_to_cc_calls != 1) {
-        DSD_FPRINTF(stderr, "legacy pending scan init failed rc=%d pending=%llu calls=%d err=%s\n", rc,
-                    (unsigned long long)dsd_trunk_tuning_pending_request(), g_counting_tune_to_cc_calls, err);
-        test_rc = 1;
-    }
-
-    dsd_engine_trunk_scan_test_set_now(2.0);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_calls != 2) {
-        DSD_FPRINTF(stderr, "legacy pending retune held scan active=%zu calls=%d\n",
-                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls);
-        test_rc = 1;
-    }
-
-    DSD_MEMSET(&hooks, 0, sizeof hooks);
-    dsd_trunk_tuning_hooks_set(hooks);
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2229,14 +2172,14 @@ test_p25_targets_pass_cc_sps_to_retune_paths(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_failures_remaining = 0;
     g_counting_tune_to_cc_ted_sps = 0;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || g_counting_tune_to_cc_calls != 1 || g_counting_tune_to_cc_ted_sps != 10) {
@@ -2248,7 +2191,7 @@ test_p25_targets_pass_cc_sps_to_retune_paths(void) {
     state.p25_cc_is_tdma = 1;
     state.samplesPerSymbol = 8;
     state.symbolCenter = 3;
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_ted_sps != 10) {
         DSD_FPRINTF(stderr, "p25 fdma target retune did not receive FDMA CC sps active=%zu sps=%d\n",
@@ -2256,7 +2199,7 @@ test_p25_targets_pass_cc_sps_to_retune_paths(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_ted_sps != 8) {
         DSD_FPRINTF(stderr, "p25 tdma target retune did not receive TDMA CC sps active=%zu sps=%d\n",
@@ -2267,7 +2210,7 @@ test_p25_targets_pass_cc_sps_to_retune_paths(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2295,7 +2238,7 @@ test_p25_targets_use_rtl_output_rate_for_retune_sps(void) {
     dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_failures_remaining = 0;
@@ -2303,7 +2246,7 @@ test_p25_targets_use_rtl_output_rate_for_retune_sps(void) {
     g_counting_tune_to_cc_freq = 0;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || g_counting_tune_to_cc_calls != 1 || g_counting_tune_to_cc_ted_sps != 5) {
@@ -2313,9 +2256,9 @@ test_p25_targets_use_rtl_output_rate_for_retune_sps(void) {
     }
 
     state.p25_cc_is_tdma = 1;
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_ted_sps != 4) {
         DSD_FPRINTF(stderr, "p25 TDMA retune did not use RTL output rate active=%zu sps=%d\n",
@@ -2327,7 +2270,7 @@ test_p25_targets_use_rtl_output_rate_for_retune_sps(void) {
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2361,7 +2304,7 @@ test_channel_map_sequence_advances_on_equal_count_target_switches(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     const uint64_t seq0 = state.trunk_chan_map_seq;
@@ -2373,7 +2316,7 @@ test_channel_map_sequence_advances_on_equal_count_target_switches(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     const uint64_t seq1 = state.trunk_chan_map_seq;
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map_used_count != 1U
@@ -2385,7 +2328,7 @@ test_channel_map_sequence_advances_on_equal_count_target_switches(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     const uint64_t seq2 = state.trunk_chan_map_seq;
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.trunk_chan_map_used_count != 1U
@@ -2398,7 +2341,7 @@ test_channel_map_sequence_advances_on_equal_count_target_switches(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     (void)remove(chan_b_path);
     cleanup_paths(dir, target_path, chan_a_path);
     return test_rc;
@@ -2421,7 +2364,7 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -2443,7 +2386,7 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
     state.p25_enc_tg_cache_is_group[0] = 1U;
     state.p25_enc_tg_cache_next = 5U;
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_retune_block_until != 0
         || state.p25_retune_block_freq != 0 || state.p25_retune_block_history_until[0] != 0
@@ -2469,7 +2412,7 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
     state.p25_enc_tg_cache_is_group[0] = 0U;
     state.p25_enc_tg_cache_next = 7U;
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_retune_block_until != until0
         || state.p25_retune_block_freq != 851125000L || state.p25_retune_block_slot != 1
@@ -2486,7 +2429,7 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.78);
+    trunk_scan_test_set_now(0.78);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_retune_block_until != until1
         || state.p25_retune_block_freq != 852125000L || state.p25_retune_block_slot != 0
@@ -2510,7 +2453,7 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(1.04);
+    trunk_scan_test_set_now(1.04);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_enc_tg_cache_until[0] != 0
         || state.p25_enc_tg_cache_tg[0] != 0U || state.p25_enc_tg_cache_is_group[0] != 0U
@@ -2519,7 +2462,7 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(1.30);
+    trunk_scan_test_set_now(1.30);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_enc_tg_cache_until[0] != 0
         || state.p25_enc_tg_cache_tg[0] != 0U || state.p25_enc_tg_cache_is_group[0] != 0U
@@ -2529,7 +2472,7 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2551,7 +2494,7 @@ test_trunk_targets_reuse_restored_control_channel(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_failures_remaining = 0;
@@ -2559,7 +2502,7 @@ test_trunk_targets_reuse_restored_control_channel(void) {
     g_counting_tune_to_cc_freq = 0;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -2569,11 +2512,11 @@ test_trunk_targets_reuse_restored_control_channel(void) {
 
     state.p25_cc_freq = 851500000L;
     state.trunk_cc_freq = 851500000L;
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     state.p25_cc_freq = 852500000L;
     state.trunk_cc_freq = 852500000L;
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_freq != 851500000L
         || state.p25_cc_freq != 851500000L || state.trunk_cc_freq != 851500000L) {
@@ -2584,7 +2527,7 @@ test_trunk_targets_reuse_restored_control_channel(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
 
     if (make_runtime_targets("dmra,dmr-trunk,451000000,,250,,\n"
@@ -2600,7 +2543,7 @@ test_trunk_targets_reuse_restored_control_channel(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_freq = 0;
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "dmr learned CC scan init failed rc=%d err=%s\n", rc, err);
@@ -2608,10 +2551,10 @@ test_trunk_targets_reuse_restored_control_channel(void) {
     }
 
     state.trunk_cc_freq = 451500000L;
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     state.trunk_cc_freq = 452500000L;
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_freq != 451500000L
         || state.p25_cc_freq != 0 || state.trunk_cc_freq != 451500000L) {
@@ -2624,7 +2567,7 @@ test_trunk_targets_reuse_restored_control_channel(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2649,7 +2592,7 @@ test_locked_demod_mode_preserved_when_seeding_targets(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || state.rf_mod != 1) {
@@ -2658,7 +2601,7 @@ test_locked_demod_mode_preserved_when_seeding_targets(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rf_mod != 1) {
         DSD_FPRINTF(stderr, "locked demod overwritten on DMR target active=%zu rf_mod=%d\n",
@@ -2667,7 +2610,7 @@ test_locked_demod_mode_preserved_when_seeding_targets(void) {
     }
 
     state.rf_mod = 1;
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.rf_mod != 1) {
         DSD_FPRINTF(stderr, "locked demod overwritten on P25 return active=%zu rf_mod=%d\n",
@@ -2676,7 +2619,7 @@ test_locked_demod_mode_preserved_when_seeding_targets(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2704,7 +2647,7 @@ test_target_retunes_select_four_level_sps_profile(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0
@@ -2716,7 +2659,7 @@ test_target_retunes_select_four_level_sps_profile(void) {
 
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
     state.sps_hunt_counter = 23;
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4
         || state.sps_hunt_counter != 0) {
@@ -2726,7 +2669,7 @@ test_target_retunes_select_four_level_sps_profile(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2757,7 +2700,7 @@ test_per_target_modulation_overrides_global_lock(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || state.rf_mod != 0 || opts.mod_cli_lock != 0) {
@@ -2766,7 +2709,7 @@ test_per_target_modulation_overrides_global_lock(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rf_mod != 2 || opts.mod_gfsk != 1
         || opts.mod_cli_lock != 1) {
@@ -2781,7 +2724,7 @@ test_per_target_modulation_overrides_global_lock(void) {
                     opts.mod_cli_lock, opts.mod_qpsk, opts.mod_gfsk);
         test_rc = 1;
     }
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2809,13 +2752,13 @@ test_active_p25_cqpsk_request_tracks_target_modulation(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_failures_remaining = 0;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     int cqpsk_enable = -1;
@@ -2825,7 +2768,7 @@ test_active_p25_cqpsk_request_tracks_target_modulation(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     cqpsk_enable = -1;
     if (dsd_engine_trunk_scan_active_index(&state) != 1
@@ -2835,7 +2778,7 @@ test_active_p25_cqpsk_request_tracks_target_modulation(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     state.p25_cc_is_tdma = 0;
     cqpsk_enable = -1;
@@ -2852,7 +2795,7 @@ test_active_p25_cqpsk_request_tracks_target_modulation(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.78);
+    trunk_scan_test_set_now(0.78);
     dsd_engine_trunk_scan_tick(&opts, &state);
     cqpsk_enable = -1;
     if (dsd_engine_trunk_scan_active_index(&state) != 3
@@ -2865,7 +2808,7 @@ test_active_p25_cqpsk_request_tracks_target_modulation(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2893,7 +2836,7 @@ test_per_target_rtl_gain_overrides_and_restores_global_default(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || opts.rtl_gain_value != 10) {
@@ -2902,7 +2845,7 @@ test_per_target_rtl_gain_overrides_and_restores_global_default(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || opts.rtl_gain_value != 22) {
         DSD_FPRINTF(stderr, "empty target did not restore global gain active=%zu gain=%d\n",
@@ -2910,7 +2853,7 @@ test_per_target_rtl_gain_overrides_and_restores_global_default(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 2 || opts.rtl_gain_value != 0) {
         DSD_FPRINTF(stderr, "auto target did not request autogain active=%zu gain=%d\n",
@@ -2923,7 +2866,7 @@ test_per_target_rtl_gain_overrides_and_restores_global_default(void) {
         DSD_FPRINTF(stderr, "shutdown did not restore global gain=%d\n", opts.rtl_gain_value);
         test_rc = 1;
     }
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2945,7 +2888,7 @@ test_scan_tick_skips_rotation_when_p25_guard_busy(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -2955,7 +2898,7 @@ test_scan_tick_skips_rotation_when_p25_guard_busy(void) {
     }
 
     g_p25_tick_guard_available = 0;
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_p25_tick_guard_leave_calls != 0) {
         DSD_FPRINTF(stderr, "scan rotated or left guard while P25 guard busy active=%zu leaves=%d\n",
@@ -2973,7 +2916,7 @@ test_scan_tick_skips_rotation_when_p25_guard_busy(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -2992,14 +2935,14 @@ test_single_target_retune_failure_retries_after_cooldown(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_failures_remaining = 1;
     g_counting_tune_to_cc_ted_sps = 0;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || g_counting_tune_to_cc_calls != 1) {
@@ -3007,14 +2950,14 @@ test_single_target_retune_failure_retries_after_cooldown(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(1.99);
+    trunk_scan_test_set_now(1.99);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (g_counting_tune_to_cc_calls != 1) {
         DSD_FPRINTF(stderr, "single target retried before cooldown expired\n");
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(2.01);
+    trunk_scan_test_set_now(2.01);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (g_counting_tune_to_cc_calls != 2) {
         DSD_FPRINTF(stderr, "single target did not retry after cooldown; calls=%d\n", g_counting_tune_to_cc_calls);
@@ -3024,7 +2967,7 @@ test_single_target_retune_failure_retries_after_cooldown(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -3045,7 +2988,7 @@ test_retune_failure_cooldown(void) {
     reset_scan_opts_state(&opts, &state);
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0) {
@@ -3054,9 +2997,9 @@ test_retune_failure_cooldown(void) {
     }
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = failing_tune_to_cc;
+    hooks.tune_to_cc_request = failing_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
         DSD_FPRINTF(stderr, "failed retune should not leave scanner on failed target\n");
@@ -3065,7 +3008,7 @@ test_retune_failure_cooldown(void) {
 
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
-    dsd_engine_trunk_scan_test_set_now(2.40);
+    trunk_scan_test_set_now(2.40);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
         DSD_FPRINTF(stderr, "target did not rotate after retry cooldown expired\n");
@@ -3073,7 +3016,7 @@ test_retune_failure_cooldown(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -3095,13 +3038,13 @@ test_scan_does_not_retune_active_target_while_alternates_cool_down(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_failures_remaining = 0;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1) {
@@ -3111,7 +3054,7 @@ test_scan_does_not_retune_active_target_while_alternates_cool_down(void) {
     }
 
     g_counting_tune_to_cc_failures_remaining = 1;
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     int calls_after_failed_alternate = g_counting_tune_to_cc_calls;
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || calls_after_failed_alternate < 2) {
@@ -3120,7 +3063,7 @@ test_scan_does_not_retune_active_target_while_alternates_cool_down(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0
         || g_counting_tune_to_cc_calls != calls_after_failed_alternate) {
@@ -3133,7 +3076,7 @@ test_scan_does_not_retune_active_target_while_alternates_cool_down(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -3156,7 +3099,7 @@ test_dmr_targets_pass_sps_to_retune_paths(void) {
     DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
 
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc_result = counting_tune_to_cc;
+    hooks.tune_to_cc_request = counting_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
     g_counting_tune_to_cc_calls = 0;
     g_counting_tune_to_cc_failures_remaining = 0;
@@ -3164,7 +3107,7 @@ test_dmr_targets_pass_sps_to_retune_paths(void) {
     g_scan_tune_to_freq_ted_sps = 0;
 
     char err[256] = {0};
-    dsd_engine_trunk_scan_test_set_now(0.0);
+    trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -3172,7 +3115,7 @@ test_dmr_targets_pass_sps_to_retune_paths(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.26);
+    trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_ted_sps != 10) {
         DSD_FPRINTF(stderr, "dmr trunk retune did not receive DMR sps active=%zu sps=%d\n",
@@ -3180,7 +3123,7 @@ test_dmr_targets_pass_sps_to_retune_paths(void) {
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_test_set_now(0.52);
+    trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 2 || g_scan_tune_to_freq_ted_sps != 10) {
         DSD_FPRINTF(stderr, "dmr conventional retune did not receive DMR sps active=%zu sps=%d\n",
@@ -3191,7 +3134,7 @@ test_dmr_targets_pass_sps_to_retune_paths(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    dsd_engine_trunk_scan_test_clear_now();
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -3393,7 +3336,6 @@ main(void) {
     rc |= test_p25_pending_retune_adopts_sm_retry();
     rc |= test_p25_pending_retune_preserves_completed_sm_recovery();
     rc |= test_generic_pending_retune_holds_and_recovers();
-    rc |= test_legacy_pending_retune_does_not_hold_scan();
     rc |= test_p25_targets_pass_cc_sps_to_retune_paths();
     rc |= test_p25_targets_use_rtl_output_rate_for_retune_sps();
     rc |= test_channel_map_sequence_advances_on_equal_count_target_switches();

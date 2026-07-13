@@ -157,7 +157,8 @@ matrix_pop_result(dsd_trunk_tune_result* results, int count, int* pos) {
 }
 
 static dsd_trunk_tune_result
-matrix_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+matrix_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     dsd_trunk_tune_result result = matrix_pop_result(g_hooks.vc_results, g_hooks.vc_count, &g_hooks.vc_pos);
     g_hooks.vc_calls++;
     g_hooks.last_vc_freq = freq;
@@ -184,7 +185,8 @@ matrix_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
 }
 
 static dsd_trunk_tune_result
-matrix_return_to_cc(dsd_opts* opts, dsd_state* state) {
+matrix_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_hooks.return_calls++;
@@ -192,7 +194,8 @@ matrix_return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 static dsd_trunk_tune_result
-matrix_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+matrix_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     dsd_trunk_tune_result result = matrix_pop_result(g_hooks.cc_results, g_hooks.cc_count, &g_hooks.cc_pos);
     g_hooks.cc_calls++;
@@ -207,30 +210,12 @@ matrix_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) 
     return result;
 }
 
-static dsd_trunk_tune_result
-matrix_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
-    (void)request_id;
-    return matrix_tune_to_freq(opts, state, freq, ted_sps);
-}
-
-static dsd_trunk_tune_result
-matrix_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
-    (void)request_id;
-    return matrix_return_to_cc(opts, state);
-}
-
-static dsd_trunk_tune_result
-matrix_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
-    (void)request_id;
-    return matrix_tune_to_cc(opts, state, freq, ted_sps);
-}
-
 static void
 matrix_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_request = matrix_tune_to_freq_request;
-    hooks.return_to_cc_request = matrix_return_to_cc_request;
-    hooks.tune_to_cc_request = matrix_tune_to_cc_request;
+    hooks.tune_to_freq_request = matrix_tune_to_freq;
+    hooks.return_to_cc_request = matrix_return_to_cc;
+    hooks.tune_to_cc_request = matrix_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -559,7 +544,6 @@ matrix_flow_enc_lockout(matrix_fixture* fixture, int event_slot) {
     matrix_send_event(fixture, &ev);
     fixture->state->p25_p2_audio_allowed[event_slot] = 1;
     fixture->state->p25_crypto_state[event_slot] = DSD_P25_CRYPTO_BLOCKED;
-    fixture->state->p25_p2_enc_lockout_muted[event_slot] = 1U;
     ev = p25_sm_ev_enc(event_slot, 0x84, 0x1234, 2000);
     matrix_send_event(fixture, &ev);
 }
@@ -744,7 +728,7 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
 
     long candidate = MATRIX_BASE_CC_HZ + 1000000;
     double now_m = dsd_time_now_monotonic_s();
-    (void)dsd_trunk_cc_candidates_add(fixture->state, candidate, 0);
+    (void)dsd_trunk_cc_candidates_add_with_flags(fixture->state, candidate, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     fixture->state->last_cc_sync_time = time(NULL) - 10;
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
     fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;

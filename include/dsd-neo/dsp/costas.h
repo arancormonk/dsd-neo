@@ -127,7 +127,7 @@ dsd_neo_costas_default_max_freq(void) {
     return 1.0f;
 }
 
-/** @brief Default Costas loop bandwidth (legacy, for non-CQPSK modes). */
+/** @brief Default Costas loop bandwidth for non-CQPSK modes. */
 static inline float
 dsd_neo_costas_default_loop_bw(void) {
     return 6.28318530717958647692f / 100.0f;

@@ -25,8 +25,6 @@ struct demod_state;
 struct output_state;
 
 /* Runtime-config toggles shared with RTL stream/device modules. */
-extern int combine_rotate_enabled;
-extern int upsample_fixedpoint_enabled;
 extern int disable_fs4_shift;
 
 /**

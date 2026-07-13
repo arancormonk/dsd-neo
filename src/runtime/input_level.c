@@ -489,7 +489,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
     if (dsd_input_level_format_advisory(&next, msg, sizeof(msg)) != 0) {
         return;
     }
-    LOG_WARNING("%s\n", msg);
+    LOG_WARN("WARNING: %s\n", msg);
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", msg);
     state->ui_msg_expire = now + DSD_INPUT_LEVEL_TOAST_TTL_SEC;
     state->input_level_last_toast_time = now;

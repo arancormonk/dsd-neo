@@ -35,7 +35,6 @@ typedef struct {
     uint32_t demod_rate_hz;
     int offset_tuning_enabled;
     int fs4_shift_enabled;
-    int combine_rotate_enabled;
     int muted_bytes_excluded;
     char source_backend[32];
     char source_args[256];

@@ -15,7 +15,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 
-#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -32,9 +31,7 @@ struct dsd_iq_capture_writer;
  *
  * String pointers may be NULL or empty. bandwidth_hz uses -1 for profile/default
  * behavior, 0 for driver automatic/no explicit bandwidth request, and positive
- * values for a requested hardware bandwidth in Hz. Fields appended after
- * bandwidth_hz are read only by rtl_device_configure_soapy_sized() when the
- * supplied config_size includes them.
+ * values for a requested hardware bandwidth in Hz.
  */
 struct rtl_soapy_config {
     const char* profile;
@@ -46,18 +43,14 @@ struct rtl_soapy_config {
     const char* settings;
 };
 
-#define RTL_SOAPY_CONFIG_LEGACY_SIZE offsetof(struct rtl_soapy_config, settings)
-#define RTL_SOAPY_CONFIG_SIZE        sizeof(struct rtl_soapy_config)
-
 /**
  * @brief Create and initialize a local RTL-SDR device over USB (librtlsdr).
  *
  * @param dev_index Device index to open.
  * @param input_ring Pointer to input ring for incoming I/Q data.
- * @param use_combine_rotate Whether to use combined rotate+widen when offset tuning is disabled.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
-struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_combine_rotate);
+struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring);
 
 /**
  * @brief Create and initialize a remote RTL-SDR stream via rtl_tcp.
@@ -69,42 +62,28 @@ struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* inp
  * @param host Remote hostname or IP (e.g., "127.0.0.1").
  * @param port Remote TCP port (e.g., 1234).
  * @param input_ring Pointer to input ring for incoming I/Q data.
- * @param use_combine_rotate Whether to use combined rotate+widen when offset tuning is disabled.
  * @param autotune_enabled Enable rtl_tcp adaptive buffering/autotune at startup (1=on, 0=off).
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device* rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring,
-                                         int use_combine_rotate, int autotune_enabled);
+                                         int autotune_enabled);
 
 /**
  * @brief Create and initialize an RX source through SoapySDR.
  *
  * @param soapy_args Opaque Soapy device arguments string (may be empty).
  * @param input_ring Pointer to input ring for incoming I/Q data.
- * @param use_combine_rotate Whether to use combined rotate+widen where applicable.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
-struct rtl_device* rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring,
-                                           int use_combine_rotate);
+struct rtl_device* rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring);
 
 /**
  * @brief Apply SoapySDR-specific profile and capability-aware startup options.
  *
  * Must be called after rtl_device_create_soapy() and before rtl_device_start_async().
- * Preserves compatibility with callers built against the legacy six-field
- * rtl_soapy_config layout and ignores fields appended after bandwidth_hz.
  * Returns 0 for success, negative for failure/unsupported backend.
  */
 int rtl_device_configure_soapy(struct rtl_device* dev, const struct rtl_soapy_config* config);
-
-/**
- * @brief Apply SoapySDR-specific startup options with an explicit config size.
- *
- * Pass sizeof(struct rtl_soapy_config), or RTL_SOAPY_CONFIG_SIZE, to opt in to
- * appended fields such as settings. Smaller sizes are accepted and only fields
- * fully contained by config_size are read.
- */
-int rtl_device_configure_soapy_sized(struct rtl_device* dev, const struct rtl_soapy_config* config, size_t config_size);
 
 /**
  * @brief Destroy an RTL-SDR device and free resources.
@@ -292,16 +271,6 @@ void rtl_device_print_offset_capability(struct rtl_device* dev);
  */
 int rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff);
 /**
- * @brief Query the rtl_tcp adaptive buffering enable flag.
- *
- * Returns 0 when not applicable (USB backend or null handle).
- *
- * @param dev RTL-SDR device handle.
- * @return 1 if autotune is enabled; 0 otherwise.
- */
-int rtl_device_get_tcp_autotune(const struct rtl_device* dev);
-
-/**
  * @brief Attach or detach an optional IQ capture writer.
  *
  * The stream/orchestrator owns the writer lifetime. The device stores only a
@@ -395,20 +364,6 @@ int rtl_device_set_testmode(struct rtl_device* dev, int on);
  * @return 0 on success; negative on failure.
  */
 int rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db);
-
-/**
- * @brief Get a snapshot of TCP connection quality metrics.
- *
- * Returns a copy of the latest metrics collected by the TCP reader thread.
- * Safe to call from a different thread (e.g., UI poll thread).
- * Returns a zeroed snapshot if the device is NULL or not a TCP backend.
- *
- * @param dev RTL-SDR device handle.
- * @param out Pointer to snapshot struct to fill.
- * @return 0 on success; -1 if dev is NULL or metrics unavailable.
- */
-struct tcp_quality_snapshot;
-int rtl_device_get_tcp_quality_snapshot(struct rtl_device* dev, struct tcp_quality_snapshot* out);
 
 #ifdef __cplusplus
 }

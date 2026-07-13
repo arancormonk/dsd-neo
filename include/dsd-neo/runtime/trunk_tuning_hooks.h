@@ -34,15 +34,7 @@ typedef enum {
 } dsd_trunk_tune_result;
 
 typedef struct {
-    void (*tune_to_freq)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-    void (*tune_to_cc)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-    void (*return_to_cc)(dsd_opts* opts, dsd_state* state);
-    /* Legacy result hooks cannot receive a request ID. A PENDING result remains
-     * accepted but uncorrelated: it advances the generation without gating. */
-    dsd_trunk_tune_result (*tune_to_freq_result)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-    dsd_trunk_tune_result (*tune_to_cc_result)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-    dsd_trunk_tune_result (*return_to_cc_result)(dsd_opts* opts, dsd_state* state);
-    /* Request-aware hooks must use request_id when publishing asynchronous completion. */
+    /* Hooks must use request_id when publishing asynchronous completion. */
     dsd_trunk_tune_result (*tune_to_freq_request)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                                   uint64_t request_id);
     dsd_trunk_tune_result (*tune_to_cc_request)(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
@@ -57,10 +49,8 @@ void dsd_trunk_tuning_hooks_set(dsd_trunk_tuning_hooks hooks);
  *
  * Frame decoders can snapshot this value before collecting a frame and verify
  * it again before dispatch, preventing work from an earlier trunk target from
- * mutating state restored for a newer target. Correlated hook wrappers and
- * direct trunk-scan retunes publish this generation only after completion.
- * Legacy result hooks also publish on an accepted PENDING result because they
- * have no completion channel; those hooks remain deliberately ungated.
+ * mutating state restored for a newer target. Hook wrappers and direct
+ * trunk-scan retunes publish this generation only after completion.
  */
 uint64_t dsd_trunk_tuning_generation(void);
 
@@ -173,17 +163,11 @@ int dsd_trunk_tuning_frame_is_current(uint64_t frame_generation);
  */
 int dsd_trunk_tuning_frame_is_dispatchable(uint64_t frame_generation, int tune_owner_active);
 
-dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps);
-dsd_trunk_tune_result dsd_trunk_tuning_hook_return_to_cc(dsd_opts* opts, dsd_state* state);
-/* When both hook variants are installed, the _with_id wrappers use the request-aware hook when an output pointer is
- * supplied. They return zero when dispatching through a legacy result hook. */
-dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, long int freq,
-                                                                 int ted_sps, uint64_t* out_request_id);
-dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc_with_id(dsd_opts* opts, dsd_state* state, long int freq,
-                                                               int ted_sps, uint64_t* out_request_id);
-dsd_trunk_tune_result dsd_trunk_tuning_hook_return_to_cc_with_id(dsd_opts* opts, dsd_state* state,
-                                                                 uint64_t* out_request_id);
+dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                                         uint64_t* out_request_id);
+dsd_trunk_tune_result dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                                       uint64_t* out_request_id);
+dsd_trunk_tune_result dsd_trunk_tuning_hook_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t* out_request_id);
 
 static inline int
 dsd_trunk_tune_result_is_ok(dsd_trunk_tune_result result) {

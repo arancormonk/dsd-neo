@@ -8,7 +8,6 @@
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -24,10 +23,12 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include "dmr_confidence.h"
 #include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -176,9 +177,10 @@ load_bootstrap_voice_stream(uint8_t slot) {
 }
 
 int
-getDibit(dsd_opts* opts, dsd_state* state) {
+get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)state;
+    (void)out_analog_signal;
     if (g_dibit_index >= sizeof(g_dibits)) {
         return 0;
     }
@@ -203,15 +205,18 @@ dsd_time_monotonic_ns(void) {
 }
 
 void
-cleanupAndExit(dsd_opts* opts, dsd_state* state) {
+dsd_request_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     exitflag = 1;
 }
 
-void
-getTimeC_buf(char out[9]) {
-    DSD_SNPRINTF(out, 9, "%s", "00:00:00");
+int
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
+    (void)timestamp;
+    (void)format;
+    DSD_SNPRINTF(out, out_size, "%s", "00:00:00");
+    return 1;
 }
 
 FILE*
@@ -315,10 +320,12 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst) {
+dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                       const uint8_t* reliab98) {
     (void)opts;
     (void)state;
     (void)info;
+    (void)reliab98;
     g_data_burst_calls++;
     g_data_burst_last = databurst;
 }
@@ -404,8 +411,15 @@ dmr_sm_emit_voice_sync(dsd_opts* opts, dsd_state* state, int slot) {
     g_sm_voice_sync_last_slot = slot;
 }
 
+dmr_sm_ctx_t*
+dmr_sm_get_ctx(void) {
+    static dmr_sm_ctx_t ctx;
+    return &ctx;
+}
+
 void
-dmr_sm_tick(dsd_opts* opts, dsd_state* state) {
+dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    (void)ctx;
     (void)opts;
     (void)state;
     g_sm_tick_calls++;

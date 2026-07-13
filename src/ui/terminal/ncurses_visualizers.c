@@ -10,6 +10,7 @@
 #include <curses.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_visualizers.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -158,9 +159,9 @@ constellation_grid_size(int* W, int* H) {
 static constellation_style
 constellation_make_style(const dsd_opts* opts) {
     constellation_style style;
-    style.use_unicode = (opts && opts->frontend_display.eye_unicode && ui_block_glyphs_supported());
+    style.use_unicode = (opts && opts->frontend_terminal_display.eye_unicode && dsd_unicode_block_glyphs_supported());
     style.use_dots = 1;
-    style.color_enabled = (opts && opts->frontend_display.eye_color && has_colors());
+    style.color_enabled = (opts && opts->frontend_terminal_display.eye_color && has_colors());
     style.ascii_len = (int)(sizeof(k_density_ascii_palette) - 1);
     style.block_len = (int)(sizeof(k_density_block_palette) / sizeof(k_density_block_palette[0]));
     style.dot_len = (int)(sizeof(k_constellation_dot_palette) / sizeof(k_constellation_dot_palette[0]));
@@ -543,10 +544,10 @@ eye_effective_unicode_ui(const dsd_opts* opts) {
     static int s_unicode_ready = -1;
     static int s_unicode_warned = 0;
     if (s_unicode_ready < 0) {
-        s_unicode_ready = ui_block_glyphs_supported() ? 1 : 0;
+        s_unicode_ready = dsd_unicode_block_glyphs_supported() ? 1 : 0;
     }
-    int use_unicode_ui = (opts && opts->frontend_display.eye_unicode && s_unicode_ready);
-    if (opts && opts->frontend_display.eye_unicode && !s_unicode_ready && !s_unicode_warned) {
+    int use_unicode_ui = (opts && opts->frontend_terminal_display.eye_unicode && s_unicode_ready);
+    if (opts && opts->frontend_terminal_display.eye_unicode && !s_unicode_ready && !s_unicode_warned) {
         printw("| (Unicode block glyphs unsupported; falling back to ASCII)\n");
         s_unicode_warned = 1;
     }
@@ -689,8 +690,8 @@ static eye_style
 eye_make_style(const dsd_opts* opts, int use_unicode_ui) {
     eye_style style;
     style.use_unicode_ui = use_unicode_ui;
-    style.unicode_requested = opts->frontend_display.eye_unicode;
-    style.color_enabled = opts->frontend_display.eye_color && has_colors();
+    style.unicode_requested = opts->frontend_terminal_display.eye_unicode;
+    style.color_enabled = opts->frontend_terminal_display.eye_color && has_colors();
     style.color_len = (int)(sizeof(k_density_color_seq) / sizeof(k_density_color_seq[0]));
     style.color_base = 21;
     style.guide_h_pair = (short)(style.color_base + 8);
@@ -1436,7 +1437,7 @@ spectrum_draw_cell(const dsd_opts* opts, int use_unicode, float v, float vmin, f
     int filled = (h - 1 - y) <= col_h;
 #ifdef PRETTY_COLORS
     short cp = spectrum_color_pair_for_level(t);
-    if (opts && opts->frontend_display.eye_color && has_colors()) {
+    if (opts && opts->frontend_terminal_display.eye_color && has_colors()) {
         attron(COLOR_PAIR(cp));
     }
 #endif
@@ -1450,7 +1451,7 @@ spectrum_draw_cell(const dsd_opts* opts, int use_unicode, float v, float vmin, f
         addch(' ');
     }
 #ifdef PRETTY_COLORS
-    if (opts && opts->frontend_display.eye_color && has_colors()) {
+    if (opts && opts->frontend_terminal_display.eye_color && has_colors()) {
         attroff(COLOR_PAIR(cp));
     }
 #endif
@@ -1497,13 +1498,13 @@ spectrum_print_legend(const dsd_opts* opts, int rate, int w, int use_unicode, fl
     printw(" Span: %.1f kHz  %s(FFT): %.1f Hz  %s(col): %.1f Hz  FFT: %d  Glyphs: %s%s\n", span_hz / 1000.0f, df,
            (rate > 0 && nfft2 > 0) ? (span_hz / (float)nfft2) : 0.0f, df,
            (rate > 0 && w > 0) ? (span_hz / (float)w) : 0.0f, nfft2, use_unicode ? "Unicode" : "ASCII",
-           (opts && opts->frontend_display.eye_color && has_colors()) ? "; colored" : "");
+           (opts && opts->frontend_terminal_display.eye_color && has_colors()) ? "; colored" : "");
     ui_print_lborder();
     printw(" Freq: -%.1fk   0   +%.1fk\n", (span_hz * 0.5f) / 1000.0f, (span_hz * 0.5f) / 1000.0f);
     ui_print_lborder();
     printw(" Scale: top=%.1f dB  floor=%.1f dB (relative)\n", vmax, vmin);
 #ifdef PRETTY_COLORS
-    if (opts && opts->frontend_display.eye_color && has_colors()) {
+    if (opts && opts->frontend_terminal_display.eye_color && has_colors()) {
         spectrum_print_color_legend(use_unicode);
     }
 #endif
@@ -1534,7 +1535,7 @@ print_spectrum_view_rtlsdr(const dsd_opts* opts) {
     float span = 1.0f;
     spectrum_range(col, w, &vmin, &vmax, &span);
 
-    int use_unicode = (opts && opts->frontend_display.eye_unicode && ui_block_glyphs_supported());
+    int use_unicode = (opts && opts->frontend_terminal_display.eye_unicode && dsd_unicode_block_glyphs_supported());
     spectrum_draw_plot(opts, col, w, h, vmin, vmax, span, use_unicode);
     spectrum_print_legend(opts, rate, w, use_unicode, vmax, vmin);
 }

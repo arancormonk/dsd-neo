@@ -37,7 +37,8 @@ typedef struct {
     uint32_t demod_rate_hz;
     int offset_tuning_enabled;
     int fs4_shift_enabled;
-    int combine_rotate_enabled;
+    /* Derived from persisted combine_rotate_enabled=false metadata. */
+    int historical_cu8_two_pass;
     int muted_bytes_excluded;
     int contains_retunes;
     uint32_t capture_retune_count;

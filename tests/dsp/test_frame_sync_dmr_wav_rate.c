@@ -7,13 +7,15 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/sockets.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -47,7 +49,7 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) { // NOLINT(misc-u
 }
 
 void
-cleanupAndExit(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+dsd_request_shutdown(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }
@@ -60,11 +62,12 @@ dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
     (void)new_rate_hz;
 }
 
-void
-getTimeC_buf(char out[9]) { // NOLINT(misc-use-internal-linkage)
-    if (out) {
-        DSD_SNPRINTF(out, 9, "%s", "00:00:00");
-    }
+int
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out,
+                          size_t out_size) { // NOLINT(misc-use-internal-linkage)
+    (void)timestamp;
+    (void)format;
+    return out ? DSD_SNPRINTF(out, out_size, "%s", "00:00:00") >= 0 : 0;
 }
 
 void
@@ -173,7 +176,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     g_symbol_index++;
 
     float symbol = symbol_level_for_dibit(dibit);
-    dmr_sample_history_push(state, symbol);
+    dsd_symbol_history_push(state, symbol);
     return symbol;
 }
 
@@ -183,7 +186,7 @@ free_state_buffers(dsd_state* state) {
     free(state->dmr_payload_buf);
     free(state->dmr_reliab_buf);
     free(state->dmr_soft_buf);
-    dmr_sample_history_free(state);
+    dsd_symbol_history_free(state);
 }
 
 static int
@@ -192,8 +195,8 @@ init_state_buffers(dsd_state* state) {
     state->dmr_payload_buf = (int*)calloc(1000000U, sizeof(int));
     state->dmr_reliab_buf = (uint8_t*)calloc(1000000U, sizeof(uint8_t));
     state->dmr_soft_buf = (dsd_dibit_soft_t*)calloc(1000000U, sizeof(dsd_dibit_soft_t));
-    if (dmr_sample_history_init(state) != 0 || !state->dibit_buf || !state->dmr_payload_buf || !state->dmr_reliab_buf
-        || !state->dmr_soft_buf) {
+    if (dsd_symbol_history_init(state, DSD_SYMBOL_HISTORY_SIZE) != 0 || !state->dibit_buf || !state->dmr_payload_buf
+        || !state->dmr_reliab_buf || !state->dmr_soft_buf) {
         free_state_buffers(state);
         return 0;
     }

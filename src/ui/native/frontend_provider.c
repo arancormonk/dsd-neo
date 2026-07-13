@@ -49,7 +49,7 @@ dsd_native_frontend_run_main_loop(const dsd_frontend_host_callbacks* host, void*
         return -1;
     }
 
-    LOG_NOTICE("Native frontend scaffold only; no native GUI is rendered yet.\n");
+    LOG_INFO("NOTICE: Native frontend scaffold only; no native GUI is rendered yet.\n");
 
     uint64_t last_event_history_sequence = 0;
     while (!host->engine_finished(host->context)) {

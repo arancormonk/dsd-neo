@@ -458,14 +458,12 @@ bench_u8_widen(const BenchOptions& opts) {
     int ran = 0;
     constexpr uint32_t kBytes = 16384;
     std::vector<unsigned char> in(kBytes);
-    std::vector<unsigned char> legacy(kBytes);
     std::vector<float> out(kBytes);
     uint32_t seed = 0x9e3779b9u;
     for (uint32_t i = 0; i < kBytes; i++) {
         seed = seed * 1664525u + 1013904223u;
         in[i] = (unsigned char)((seed >> 24) & 0xffu);
     }
-    legacy = in;
 
     ran += run_case(opts, "widen_u8_to_f32_bias127", "byte", (double)kBytes, [&]() -> float {
         widen_u8_to_f32_bias127(in.data(), out.data(), kBytes);
@@ -476,13 +474,6 @@ bench_u8_widen(const BenchOptions& opts) {
     ran += run_case(opts, "widen_rotate90_u8_to_f32_bias127", "byte", (double)kBytes, [&]() -> float {
         combined_phase = widen_rotate90_u8_to_f32_bias127_phase(in.data(), out.data(), kBytes, combined_phase);
         return out[0] + out[kBytes - 1] + (float)combined_phase;
-    });
-
-    uint32_t legacy_phase = 0;
-    ran += run_case(opts, "rotate90_u8_then_widen_bias128", "byte", (double)kBytes, [&]() -> float {
-        legacy_phase = rotate90_u8_inplace_phase(legacy.data(), kBytes, legacy_phase);
-        widen_u8_to_f32_bias128_scalar(legacy.data(), out.data(), kBytes);
-        return out[0] + out[kBytes - 1] + (float)legacy_phase;
     });
 
     return ran;

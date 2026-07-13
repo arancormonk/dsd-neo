@@ -7,13 +7,14 @@
  * Verify C_MOVE handling: retunes only while on VC and updates to new VC.
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <assert.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,16 +30,6 @@
 #endif
 
 // --- Stubs for external symbols referenced by dmr_csbk.c ---
-
-// Minimal bit converter: MSB-first across the provided bit array
-uint64_t
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return v;
-}
 
 void
 watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {

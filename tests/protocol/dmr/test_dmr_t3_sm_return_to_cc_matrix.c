@@ -125,7 +125,8 @@ dmr_pop_result(const dsd_trunk_tune_result* results, int count, int* pos) {
 }
 
 static dsd_trunk_tune_result
-dmr_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+dmr_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     dsd_trunk_tune_result result = dmr_pop_result(g_hooks.tune_results, g_hooks.tune_count, &g_hooks.tune_pos);
     g_hooks.tune_calls++;
@@ -146,7 +147,8 @@ dmr_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_s
 }
 
 static dsd_trunk_tune_result
-dmr_hook_return_to_cc(dsd_opts* opts, dsd_state* state) {
+dmr_hook_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_hooks.return_calls++;
@@ -161,8 +163,8 @@ dmr_hook_scan_ctx(void) {
 static void
 dmr_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = dmr_hook_tune_to_freq;
-    hooks.return_to_cc_result = dmr_hook_return_to_cc;
+    hooks.tune_to_freq_request = dmr_hook_tune_to_freq;
+    hooks.return_to_cc_request = dmr_hook_return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -763,7 +765,7 @@ dmr_run_global_emit_and_scan_hook_case(void) {
     rc |= dmr_expect(dmr_sm_get_ctx() == &g_ctx, grant, flow, script, "scan hook supplies DMR context");
 
     dmr_sm_event_t ev = dmr_sm_ev_cc_sync();
-    dmr_sm_emit(&g_opts, &g_state, &ev);
+    dmr_sm_event(dmr_sm_get_ctx(), &g_opts, &g_state, &ev);
     rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC && g_ctx.t_cc_sync_m > 0.0, grant, flow, script,
                      "generic emit delivered cc sync");
 

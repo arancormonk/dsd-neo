@@ -27,7 +27,7 @@
  *
  * Returned by BCH_63_16_11::decode_with_result() to provide both the success/failure
  * indication and the number of bit errors that were corrected. This enables
- * callers (e.g., check_NID) to make confidence-based decisions using the
+ * callers (for example, the P25 NID decoder) to make confidence-based decisions using the
  * error count as a quality metric.
  */
 struct BCH_63_16_Result {
@@ -402,21 +402,6 @@ class BCH_63_16_11 {
         correct_error_locations(recd, loc, count);
         extract_data_bits(recd, output);
         return BCH_63_16_Result{true, count};
-    }
-
-    /**
-     * @brief Decode a BCH(63,16,11) codeword.
-     *
-     * Thin wrapper around decode_with_result() that discards the error count
-     * and preserves the original public bool-returning API.
-     *
-     * @param input  Array of 63 chars, each containing a bit (0 or 1).
-     * @param output Array of 16 chars to receive corrected data bits.
-     * @return true if decoding succeeded, false otherwise.
-     */
-    bool
-    decode(const char* input, char* output) const {
-        return decode_with_result(input, output).success;
     }
 };
 

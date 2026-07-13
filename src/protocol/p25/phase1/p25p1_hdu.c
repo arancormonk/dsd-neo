@@ -19,12 +19,13 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
@@ -430,9 +431,9 @@ processHDU(dsd_opts* opts, dsd_state* state) {
     uint32_t algid_parsed = 0;
     algidhex = (dsd_parse_binary_u32_n(algid, 8, &algid_parsed) == 0) ? (int)algid_parsed : 0;
     kidhex = (dsd_parse_binary_u32_n(kid, 16, &kid_parsed) == 0) ? (int)kid_parsed : 0;
-    mihex1 = (unsigned long long int)ConvertBitIntoBytes(&mi[0], 32);
-    mihex2 = (unsigned long long int)ConvertBitIntoBytes(&mi[32], 32);
-    mihex3 = (unsigned long long int)ConvertBitIntoBytes(&mi[64], 8);
+    mihex1 = (unsigned long long int)convert_bits_into_output(&mi[0], 32);
+    mihex2 = (unsigned long long int)convert_bits_into_output(&mi[32], 32);
+    mihex3 = (unsigned long long int)convert_bits_into_output(&mi[64], 8);
 
     //reset dropbytes - skip first 11 for LCW
     state->dropL = 267;

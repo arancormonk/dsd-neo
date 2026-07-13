@@ -7,8 +7,8 @@
  * @file
  * @brief RAII orchestrator for RTL-SDR stream lifecycle and control.
  *
- * Wraps legacy C streaming control with a C++ class managing start/stop,
- * tuning, and reads with error propagation. Intended as a safer API surface.
+ * Manages the global radio backend's start/stop, tuning, reads, and error
+ * propagation behind the public context API.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -21,11 +21,11 @@
 #include "dsd-neo/core/safe_api.h"
 
 extern "C" {
-// Local forward declarations for legacy functions now hidden from public headers
+// Backend operations hidden from the installed context API.
 int dsd_rtl_stream_open(dsd_opts* opts);
 void dsd_rtl_stream_close(void);
 int dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state);
-uint32_t dsd_rtl_stream_output_generation(void);
+uint32_t rtl_stream_output_generation(void);
 int dsd_rtl_stream_tune(dsd_opts* opts, long int frequency);
 int dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t token);
 unsigned int dsd_rtl_stream_output_rate(void);
@@ -220,7 +220,7 @@ RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
     }
     const bool replay_active = opts_->iq_replay_active != 0;
     for (;;) {
-        const uint32_t generation_before = dsd_rtl_stream_output_generation();
+        const uint32_t generation_before = rtl_stream_output_generation();
         int got = dsd_rtl_stream_read(out, count, opts_, nullptr);
         if (got < 0) {
             last_error_code_ = got;
@@ -233,7 +233,7 @@ RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
          * batch can starve forever on a short looping capture. Live retunes do
          * not have this ordering guarantee and must still reject a stale
          * handoff. */
-        if (!replay_active && dsd_rtl_stream_output_generation() != generation_before) {
+        if (!replay_active && rtl_stream_output_generation() != generation_before) {
             continue;
         }
         out_got = got;

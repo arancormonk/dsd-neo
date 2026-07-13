@@ -6,6 +6,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <assert.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -13,7 +15,6 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -210,7 +211,8 @@ clear_scan_hooks(void) {
 }
 
 static dsd_trunk_tune_result
-capture_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+capture_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)ted_sps;
@@ -940,7 +942,7 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     s_tune_to_cc_calls = 0;
     s_tune_to_cc_freq = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .tune_to_cc_result = capture_tune_to_cc,
+        .tune_to_cc_request = capture_tune_to_cc,
     });
 
     write_bits_u64(slco, 0U, 0xFU, 4U);

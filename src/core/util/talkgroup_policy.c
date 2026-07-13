@@ -57,6 +57,8 @@ typedef struct {
 #ifdef DSD_NEO_TEST_HOOKS
 static long s_alloc_fail_after = -1;
 static long s_alloc_calls = 0;
+void dsd_tg_policy_test_alloc_reset(void);
+void dsd_tg_policy_test_alloc_fail_after(long fail_after);
 #endif
 static dsd_atomic_u64 s_next_context_id = {1u};
 

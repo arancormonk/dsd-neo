@@ -9,8 +9,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
-#include <dsd-neo/crypto/pc5.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -1453,7 +1453,7 @@ test_bootstrap_accepts_explicit_config_path_outside_cwd(void) {
 }
 
 static int
-test_bootstrap_config_trunking_preserves_legacy_terminal_alias(void) {
+test_bootstrap_config_trunking_preserves_terminal_alias(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -1501,7 +1501,7 @@ test_bootstrap_config_trunking_preserves_legacy_terminal_alias(void) {
 
     int test_rc = 0;
     if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) {
-        DSD_FPRINTF(stderr, "expected legacy terminal alias bootstrap continue, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        DSD_FPRINTF(stderr, "expected terminal alias bootstrap continue, got rc=%d exit_rc=%d\n", rc, exit_rc);
         test_rc = 1;
     }
     if (argc_effective != 2 || !state->cli_argv || !state->cli_argv[1] || strcmp(state->cli_argv[1], "-N") != 0) {
@@ -3453,6 +3453,48 @@ test_iq_capture_long_options_parse(void) {
 }
 
 static int
+test_symbol_capture_format_values_parse(void) {
+    const char* values[] = {"soft", "legacy"};
+
+    for (size_t i = 0; i < sizeof values / sizeof values[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[64];
+        DSD_SNPRINTF(arg1, sizeof arg1, "--symbol-capture-format=%s", values[i]);
+        char* argv[] = {arg0, arg1, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE) {
+            DSD_FPRINTF(stderr, "expected symbol capture format %s to parse, got rc=%d exit_rc=%d\n", values[i], rc,
+                        exit_rc);
+            freeState(state);
+            free(opts);
+            free(state);
+            return 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    return 0;
+}
+
+static int
 test_iq_replay_long_options_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -4108,7 +4150,6 @@ test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key(void) {
 
     initOpts(opts);
     initState(state);
-    DSD_MEMSET(&ctxpc5, 0, sizeof(ctxpc5));
 
     char arg0[] = "dsd-neo";
     char arg1[] = "--dmr-baofeng-pc5";
@@ -4133,23 +4174,26 @@ test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key(void) {
         return 1;
     }
 
-    PC5Context expected;
-    DSD_MEMSET(&expected, 0, sizeof(expected));
-    const unsigned char key_ascii[] = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F";
-    create_keys_pc5(&expected, key_ascii, strlen((const char*)key_ascii));
-    expected.rounds = PC5_NBROUND;
-
-    if (ctxpc5.rounds != expected.rounds || memcmp(ctxpc5.perm, expected.perm, sizeof(expected.perm)) != 0
-        || memcmp(ctxpc5.new1, expected.new1, sizeof(expected.new1)) != 0
-        || memcmp(ctxpc5.decal, expected.decal, sizeof(expected.decal)) != 0
-        || memcmp(ctxpc5.rngxor, expected.rngxor, sizeof(expected.rngxor)) != 0
-        || memcmp(ctxpc5.tab, expected.tab, sizeof(expected.tab)) != 0
-        || memcmp(ctxpc5.inv, expected.inv, sizeof(expected.inv)) != 0) {
-        DSD_FPRINTF(stderr, "expected 64-hex PC5 input to use legacy ASCII hex key schedule\n");
+    static const char expected[] = "1011101110110010100111001011000101011000011001111";
+    char frame[49];
+    for (int i = 0; i < 49; i++) {
+        frame[i] = (char)((i * 7 + 1) & 1);
+    }
+    if (baofeng_pc5_apply_frame49(state, frame) != 1) {
+        DSD_FPRINTF(stderr, "expected 64-hex PC5 input to enable voice-frame application\n");
         freeState(state);
         free(opts);
         free(state);
         return 1;
+    }
+    for (int i = 0; i < 49; i++) {
+        if ((frame[i] & 1) != (expected[i] - '0')) {
+            DSD_FPRINTF(stderr, "expected 64-hex PC5 input to use ASCII hex OTA schedule (bit %d)\n", i);
+            freeState(state);
+            free(opts);
+            free(state);
+            return 1;
+        }
     }
 
     freeState(state);
@@ -4758,7 +4802,7 @@ test_f_edacs_presets_match_reference_modes(void) {
 }
 
 static int
-test_f_legacy_fr_mono_still_supported(void) {
+test_f_fr_mono_alias_still_supported(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -4945,7 +4989,7 @@ test_mc_before_f_dmr_preserves_c4fm_lock(void) {
 }
 
 static int
-test_mc_before_legacy_fr_preserves_c4fm_lock(void) {
+test_mc_before_fr_alias_preserves_c4fm_lock(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -5427,7 +5471,7 @@ test_trunk_scan_long_options_parse(void) {
 }
 
 static int
-test_trunk_scan_conflicts_with_legacy_scanner(void) {
+test_trunk_scan_conflicts_with_scanner_mode(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -6120,7 +6164,7 @@ main(void) {
     rc |= test_nxdn_pn95_seed_option_matches_reference_bounds();
     rc |= test_bootstrap_treats_lone_ini_as_config();
     rc |= test_bootstrap_accepts_explicit_config_path_outside_cwd();
-    rc |= test_bootstrap_config_trunking_preserves_legacy_terminal_alias();
+    rc |= test_bootstrap_config_trunking_preserves_terminal_alias();
     rc |= test_bootstrap_missing_explicit_config_keeps_autosave_path();
     rc |= test_bootstrap_rejects_too_long_explicit_config_path();
     rc |= test_bootstrap_guard_rejects_invalid_arguments();
@@ -6155,12 +6199,13 @@ main(void) {
     rc |= test_input_source_rtltcp_roundtrip();
     rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();
-    rc |= test_trunk_scan_conflicts_with_legacy_scanner();
+    rc |= test_trunk_scan_conflicts_with_scanner_mode();
     rc |= test_trunk_scan_rejects_global_channel_map();
     rc |= test_trunk_scan_cli_clears_inherited_channel_map();
     rc |= test_trunk_scan_inherited_state_rejects_invalid_runtime_combinations();
     rc |= test_trunk_scan_rejects_ms_values_outside_range();
     rc |= test_iq_capture_long_options_parse();
+    rc |= test_symbol_capture_format_values_parse();
     rc |= test_iq_capture_missing_value_returns_error();
     rc |= test_iq_capture_format_missing_value_returns_error();
     rc |= test_iq_capture_max_mb_missing_value_returns_error();
@@ -6194,11 +6239,11 @@ main(void) {
     rc |= test_f_auto_preset_applies_cli_profile();
     rc |= test_f_ysf_preset_applies_cli_profile();
     rc |= test_f_edacs_presets_match_reference_modes();
-    rc |= test_f_legacy_fr_mono_still_supported();
+    rc |= test_f_fr_mono_alias_still_supported();
     rc |= test_f_dmr_preset_selects_gfsk();
     rc |= test_mg_before_f_dmr_keeps_gfsk_lock();
     rc |= test_mc_before_f_dmr_preserves_c4fm_lock();
-    rc |= test_mc_before_legacy_fr_preserves_c4fm_lock();
+    rc |= test_mc_before_fr_alias_preserves_c4fm_lock();
     rc |= test_f_nxdn48_clears_dmr_mono_after_fr();
     rc |= test_bootstrap_config_file_rate_survives_cli_provoice_preset();
     rc |= test_bootstrap_compact_s_rate_override_clears_config_file_rate();

@@ -26,10 +26,7 @@ static int g_get_symbol_calls;
 static uint64_t g_now_ns;
 static int g_sleep_ms_calls;
 static int g_sleep_ns_calls;
-static int g_sleep_us_calls;
-static unsigned int g_last_sleep_ms;
 static uint64_t g_last_sleep_ns;
-static uint64_t g_last_sleep_us;
 
 float
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -57,8 +54,8 @@ dsd_time_monotonic_ns(void) {
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_sleep_ms(unsigned int ms) {
+    (void)ms;
     g_sleep_ms_calls++;
-    g_last_sleep_ms = ms;
 }
 
 void
@@ -66,13 +63,6 @@ void
 dsd_sleep_ns(uint64_t ns) {
     g_sleep_ns_calls++;
     g_last_sleep_ns = ns;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_sleep_us(uint64_t us) {
-    g_sleep_us_calls++;
-    g_last_sleep_us = us;
 }
 
 void
@@ -124,10 +114,7 @@ reset_timing_stubs(uint64_t now_ns) {
     g_now_ns = now_ns;
     g_sleep_ms_calls = 0;
     g_sleep_ns_calls = 0;
-    g_sleep_us_calls = 0;
-    g_last_sleep_ms = 0;
     g_last_sleep_ns = 0;
-    g_last_sleep_us = 0;
 }
 
 static int
@@ -223,7 +210,6 @@ test_soft_symbol_capture_record(void) {
     }
 
     opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
-    opts.symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
     opts.symbol_out_f = f;
     state.synctype = DSD_SYNC_P25P1_NEG;
     state.rf_mod = 0;
@@ -326,22 +312,9 @@ test_symbol_bin_replay_throttle_paces_from_timing_rate(void) {
     set_standard_thresholds(&state);
 
     int rc = 0;
-    state.symbol_throttle = 77;
-    reset_timing_stubs(1000000ULL);
-    g_next_dibit = 0;
-    int got = getDibit(&opts, &state);
-    if (got != 0 || g_sleep_us_calls != 1 || g_last_sleep_us != 77 || g_sleep_ns_calls != 0
-        || state.symbol_replay_next_deadline_ns != 0ULL) {
-        DSD_FPRINTF(stderr, "legacy symbol throttle mismatch got=%d us_calls=%d us=%llu ns_calls=%d deadline=%llu\n",
-                    got, g_sleep_us_calls, (unsigned long long)g_last_sleep_us, g_sleep_ns_calls,
-                    (unsigned long long)state.symbol_replay_next_deadline_ns);
-        rc = 1;
-    }
-
-    state.symbol_throttle = 0;
     reset_timing_stubs(2000000ULL);
     g_next_dibit = 1;
-    got = getDibit(&opts, &state);
+    int got = get_dibit_and_analog_signal(&opts, &state, NULL);
     if (got != 1 || state.symbol_replay_next_deadline_ns != 2250000ULL || g_sleep_ns_calls != 0
         || g_sleep_ms_calls != 0) {
         DSD_FPRINTF(stderr, "initial auto throttle mismatch got=%d deadline=%llu ns_calls=%d ms_calls=%d\n", got,
@@ -351,7 +324,7 @@ test_symbol_bin_replay_throttle_paces_from_timing_rate(void) {
 
     reset_timing_stubs(2100000ULL);
     g_next_dibit = 2;
-    got = getDibit(&opts, &state);
+    got = get_dibit_and_analog_signal(&opts, &state, NULL);
     if (got != 2 || g_sleep_ns_calls != 1 || g_last_sleep_ns != 150000ULL
         || state.symbol_replay_next_deadline_ns != 2500000ULL) {
         DSD_FPRINTF(stderr, "paced auto throttle mismatch got=%d ns_calls=%d ns=%llu deadline=%llu\n", got,
@@ -362,7 +335,7 @@ test_symbol_bin_replay_throttle_paces_from_timing_rate(void) {
 
     reset_timing_stubs(253000001ULL);
     g_next_dibit = 3;
-    got = getDibit(&opts, &state);
+    got = get_dibit_and_analog_signal(&opts, &state, NULL);
     if (got != 3 || g_sleep_ns_calls != 0 || state.symbol_replay_next_deadline_ns != 253250001ULL) {
         DSD_FPRINTF(stderr, "stalled auto throttle rebase mismatch got=%d ns_calls=%d deadline=%llu\n", got,
                     g_sleep_ns_calls, (unsigned long long)state.symbol_replay_next_deadline_ns);
@@ -473,7 +446,6 @@ test_direct_symbol_capture_writer_formats(void) {
 
     state.dmr_soft_p[0].reliability = 7;
     state.dmr_soft_p++;
-    opts.symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
     opts.symbol_out_f = f;
     write_symbol_capture_record(&opts, &state, 3, -3.0f);
 
@@ -493,28 +465,6 @@ test_direct_symbol_capture_writer_formats(void) {
         rc = 1;
     } else if (state.symbol_capture_soft_records != 1) {
         DSD_FPRINTF(stderr, "direct soft capture counter mismatch %u\n", state.symbol_capture_soft_records);
-        rc = 1;
-    }
-
-    f = tmpfile();
-    if (f == NULL) {
-        DSD_FPRINTF(stderr, "tmpfile failed\n");
-        free_state_buffers(&state);
-        return 1;
-    }
-    opts.symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_LEGACY;
-    opts.symbol_out_f = f;
-    write_symbol_capture_record(&opts, &state, 0xFF, 0.0f);
-    int c = EOF;
-    if (seek_start(f, "legacy capture record") == 0) {
-        c = fgetc(f);
-    }
-    fclose(f);
-    if (c != 0xFF) {
-        DSD_FPRINTF(stderr, "legacy capture byte mismatch %d\n", c);
-        rc = 1;
-    } else if (state.symbol_capture_soft_records != 1) {
-        DSD_FPRINTF(stderr, "legacy capture changed soft counter %u\n", state.symbol_capture_soft_records);
         rc = 1;
     }
 
@@ -597,7 +547,7 @@ test_digitize_public_threshold_paths(void) {
 }
 
 static int
-test_reader_wrappers_and_soft_symbol_ring(void) {
+test_reader_apis_and_soft_symbol_ring(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -621,9 +571,9 @@ test_reader_wrappers_and_soft_symbol_ring(void) {
     }
 
     g_next_dibit = 3;
-    got = getDibit(&opts, &state);
+    got = get_dibit_and_analog_signal(&opts, &state, NULL);
     if (got != 3) {
-        DSD_FPRINTF(stderr, "public getDibit wrapper mismatch got=%d\n", got);
+        DSD_FPRINTF(stderr, "dibit reader mismatch got=%d\n", got);
         rc = 1;
     }
 
@@ -749,7 +699,7 @@ main(void) {
     rc |= test_get_dibit_soft_falls_back_to_reliability_buffer();
     rc |= test_direct_symbol_capture_writer_formats();
     rc |= test_digitize_public_threshold_paths();
-    rc |= test_reader_wrappers_and_soft_symbol_ring();
+    rc |= test_reader_apis_and_soft_symbol_ring();
     rc |= test_viterbi_metric_public_edges();
     rc |= test_skip_dibit_consumes_requested_symbols();
     return rc;

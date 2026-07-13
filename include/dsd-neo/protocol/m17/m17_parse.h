@@ -73,15 +73,7 @@ struct m17_lsf_result {
     uint8_t cn;
     uint8_t rs;
 
-    /*
-     * Compatibility aliases for callers that consume named TYPE semantics.
-     * payload_contents mirrors dt, encryption_type mirrors et, and
-     * meta_contents mirrors es in the v2.0.4 layout.
-     */
-    uint8_t payload_contents;
-    uint8_t encryption_type;
     uint8_t signature;
-    uint8_t meta_contents;
     uint8_t meta_is_iv;
     uint8_t dst_address_kind;
     uint8_t src_address_kind;
@@ -189,11 +181,10 @@ int m17_meta_text_assembler_push(struct m17_meta_text_assembler* assembler, cons
 /**
  * Return a human-readable name for an M17 packet protocol identifier.
  *
- * @param protocol 8-bit protocol code from packet payload octet 0.
+ * @param protocol Protocol identifier from the decoded packet header.
  *
  * @return Constant string for known protocol IDs, or NULL if unknown/reserved.
  */
-const char* m17_packet_protocol_name(uint8_t protocol);
 const char* m17_packet_protocol_name_u32(uint32_t protocol);
 int m17_packet_protocol_decode(const uint8_t* input, size_t len, struct m17_packet_protocol_result* out);
 

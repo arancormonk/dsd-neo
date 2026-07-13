@@ -29,25 +29,6 @@ static int g_alias_reset_calls;
  * nxdn_message_crc32 currently lives in nxdn_deperm.c, so this test only
  * provides minimal symbols required to link that object safely.
  */
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-convert_bits_into_output(const uint8_t* input, int len) {
-    if (len <= 0) {
-        return 0ULL;
-    }
-    return ConvertBitIntoBytes(input, (uint32_t)len);
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 CNXDNConvolution_start(void) {}

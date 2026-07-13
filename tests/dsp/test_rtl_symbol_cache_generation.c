@@ -67,7 +67,7 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-cleanupAndExit(dsd_opts* opts, dsd_state* state) {
+dsd_request_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_cleanup_calls++;

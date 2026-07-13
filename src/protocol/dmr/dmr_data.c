@@ -365,7 +365,7 @@ dmr_data_dispatch_burst(dmr_data_sync_ctx* ctx) {
     if (ctx->burst == 6 || ctx->burst == 7 || ctx->burst == 8 || ctx->burst == 10) {
         dmr_sm_emit_data_sync(ctx->opts, ctx->state, ctx->state->currentslot);
     }
-    dmr_data_burst_handler_ex(ctx->opts, ctx->state, ctx->info, ctx->burst, ctx->rel98);
+    dmr_data_burst_handler(ctx->opts, ctx->state, ctx->info, ctx->burst, ctx->rel98);
     if (ctx->state->dmr_ms_mode == 0 && ctx->opts->dmr_mono == 0) {
         (void)dmr_cach(ctx->opts, ctx->state, ctx->cachdata);
     }

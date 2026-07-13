@@ -72,16 +72,6 @@ crc16_lb_bridge(const int* payload, int len) {
     return (test_crc16_bits(payload, len) == extracted) ? 0 : 1;
 }
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* buffer_in, uint32_t bit_length) {
-    uint64_t value = 0;
-    for (uint32_t bit = 0; bit < bit_length; bit++) {
-        value = (value << 1) | (uint64_t)(buffer_in[bit] & 1);
-    }
-    return value;
-}
-
 uint16_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 ComputeCrc9Bit(const uint8_t* data, uint32_t bit_count) {

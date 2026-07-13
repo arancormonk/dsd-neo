@@ -4,7 +4,7 @@
  */
 
 /*
- * P25 neighbor update spam test: stress p25_sm_on_neighbor_update with
+ * P25 neighbor update spam test: stress p25_cc_record_neighbor_frequencies with
  * many updates and assert neighbors do not become tuneable CC candidates.
  */
 
@@ -12,7 +12,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdbool.h>
@@ -107,7 +106,7 @@ main(void) {
                 st.p25_cc_freq = f[k]; // sometimes match current CC to test dedup
             }
         }
-        p25_sm_on_neighbor_update(&opts, &st, f, n);
+        p25_cc_record_neighbor_frequencies(&opts, &st, f, n);
         rc |= expect_true("neighbor<=max", st.p25_nb_count >= 0 && st.p25_nb_count <= P25_NB_MAX);
     }
 
@@ -122,17 +121,17 @@ main(void) {
 #endif
 
     // Generic neighbor updates must not seed the CC hunt list. Only validated
-    // current-site candidates should be tuneable by p25_sm_next_cc_candidate().
+    // Current-site candidates should be tuneable by p25_cc_next_candidate().
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&st);
     const int count = cc ? cc->count : 0;
     rc |= expect_true("neighbor-not-candidates", count == 0);
 
     long out = 0;
-    rc |= expect_true("neighbor-next-empty", p25_sm_next_cc_candidate(&st, &out) == 0);
+    rc |= expect_true("neighbor-next-empty", p25_cc_next_candidate(&st, &out) == 0);
 
     (void)p25_cc_add_candidate(&st, 852500000L, 1);
     out = 0;
-    rc |= expect_true("validated-next-ok", p25_sm_next_cc_candidate(&st, &out) == 1);
+    rc |= expect_true("validated-next-ok", p25_cc_next_candidate(&st, &out) == 1);
     rc |= expect_true("validated-next-freq", out == 852500000L);
 
     return rc;

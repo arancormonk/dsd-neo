@@ -80,8 +80,8 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
     dsd_stat_t st;
     if (dsd_stat_path(wav_file_directory, &st) == -1) {
-        LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
-        LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
+        LOG_INFO("NOTICE: %s wav file directory does not exist\n", wav_file_directory);
+        LOG_INFO("NOTICE: Creating directory %s to save decoded wav files\n", wav_file_directory);
         dsd_mkdir(wav_file_directory, 0700);
     }
     DSD_FPRINTF(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);

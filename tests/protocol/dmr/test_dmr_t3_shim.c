@@ -147,7 +147,7 @@ test_explicit_grant_and_release(void) {
     assert(ctx->slots[0].voice_active == 1);
 
     // Tick while voice active - should stay tuned
-    dmr_sm_tick(&opts, &state);
+    dmr_sm_tick_ctx(ctx, &opts, &state);
     assert(opts.trunk_is_tuned == 1);
 
     // Mark voice inactive (but hangtime not expired yet)
@@ -155,7 +155,7 @@ test_explicit_grant_and_release(void) {
     // t_voice_m was just set, so within hangtime
 
     // Tick - should stay tuned (hangtime)
-    dmr_sm_tick(&opts, &state);
+    dmr_sm_tick_ctx(ctx, &opts, &state);
     assert(opts.trunk_is_tuned == 1);
 
     // Set voice timestamp far in past to exceed hangtime
@@ -163,7 +163,7 @@ test_explicit_grant_and_release(void) {
     ctx->t_voice_m = now_m - 10.0; // 10 seconds ago, well past hangtime
 
     // Tick - should release
-    dmr_sm_tick(&opts, &state);
+    dmr_sm_tick_ctx(ctx, &opts, &state);
     assert(opts.trunk_is_tuned == 0);
     assert(ctx->state == DMR_SM_ON_CC);
 }

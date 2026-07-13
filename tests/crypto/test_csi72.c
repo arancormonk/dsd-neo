@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <stdint.h>

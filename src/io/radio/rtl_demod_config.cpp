@@ -13,6 +13,7 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/math_utils.h>
@@ -24,7 +25,6 @@
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/worker_pool.h>
-#include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -33,9 +33,6 @@
 #include "dsd-neo/dsp/costas.h"
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/platform/threading.h"
-
-int combine_rotate_enabled = 1;      /* DSD_NEO_COMBINE_ROT (1 default) */
-int upsample_fixedpoint_enabled = 1; /* DSD_NEO_UPSAMPLE_FP (1 default) */
 
 /* Allow disabling the fs/4 capture frequency shift via env for trunking/exact-center use cases. */
 int disable_fs4_shift = 0; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */
@@ -87,20 +84,6 @@ opts_digital_mode_count(const dsd_opts* opts) {
            + opts_flag_is_set(opts->frame_x2tdma) + opts_flag_is_set(opts->frame_ysf)
            + opts_flag_is_set(opts->frame_dstar) + opts_flag_is_set(opts->frame_dpmr)
            + opts_flag_is_set(opts->frame_m17);
-}
-
-static int
-parse_int_atoi_compat(const char* text) {
-    if (!text || *text == '\0') {
-        return 0;
-    }
-    errno = 0;
-    char* end = NULL;
-    long v = strtol(text, &end, 10);
-    if (end == text || (end && *end != '\0') || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
-        return 0;
-    }
-    return (int)v;
 }
 
 static int
@@ -423,8 +406,6 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     demod_init_cqpsk_defaults(s);
     demod_apply_mode_defaults(s, mode, p, rtl_dsp_bw_hz);
 
-    /* Legacy discriminator path removed; keep placeholders NULL. */
-    s->discriminator = NULL;
     /* Initialize minimal worker pool (env-gated via DSD_NEO_MT). */
     demod_mt_init(s);
 
@@ -439,12 +420,6 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
 
 static void
 demod_apply_runtime_global_flags(const dsd_opts* opts, const dsdneoRuntimeConfig* cfg) {
-    if (cfg->combine_rot_is_set) {
-        combine_rotate_enabled = (cfg->combine_rot != 0);
-    }
-    if (cfg->upsample_fp_is_set) {
-        upsample_fixedpoint_enabled = (cfg->upsample_fp != 0);
-    }
     if (cfg->fs4_shift_disable_is_set) {
         disable_fs4_shift = (cfg->fs4_shift_disable != 0);
     }
@@ -521,7 +496,8 @@ demod_apply_iq_defaults(struct demod_state* demod, const dsdneoRuntimeConfig* cf
     demod->iq_dc_avg_r = demod->iq_dc_avg_i = 0;
     const char* iqb = getenv("DSD_NEO_IQ_BALANCE");
     if (iqb && *iqb) {
-        demod->iqbal_enable = (parse_int_atoi_compat(iqb) != 0) ? 1 : 0;
+        int parsed = 0;
+        demod->iqbal_enable = (dsd_parse_int_strict(iqb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
     }
 }
 
@@ -640,16 +616,16 @@ rtl_demod_clamp_sps(int sps) {
 static void
 rtl_demod_log_non_integer_defaults(const struct demod_state* demod, int fs_cx, int sym_rate, int sps) {
     if (demod->cqpsk_enable) {
-        LOG_WARNING("Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
-                    "CQPSK timing will continue at the rounded SPS. Use a DSP bandwidth that results in "
-                    "integer SPS for optimal performance.\n",
-                    fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
+        LOG_WARN("WARNING: Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
+                 "CQPSK timing will continue at the rounded SPS. Use a DSP bandwidth that results in "
+                 "integer SPS for optimal performance.\n",
+                 fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
         return;
     }
-    LOG_WARNING("Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
-                "Symbol timing will use the rounded SPS. "
-                "Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
-                fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
+    LOG_WARN("WARNING: Non-integer SPS detected: %d Hz / %d sym/s = %.3f (rounded to %d). "
+             "Symbol timing will use the rounded SPS. "
+             "Use a DSP bandwidth that results in integer SPS for optimal performance.\n",
+             fs_cx, sym_rate, (float)fs_cx / (float)sym_rate, sps);
 }
 
 static void
@@ -658,8 +634,8 @@ rtl_demod_apply_digital_default_tracking(struct demod_state* demod, const dsd_op
     int fs_cx = rtl_demod_resolve_complex_rate(demod, output);
     int sym_rate = opts_symbol_rate_hz(opts);
     if (fs_cx < (sym_rate * 2)) {
-        LOG_WARNING("CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", fs_cx,
-                    sym_rate);
+        LOG_WARN("WARNING: CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", fs_cx,
+                 sym_rate);
     }
     int sps = rtl_demod_clamp_sps((fs_cx + (sym_rate / 2)) / sym_rate);
     demod->ted_sps = sps;
@@ -729,14 +705,14 @@ rtl_demod_resampler_needs_reconfigure(const struct demod_state* demod, int L, in
 static void
 rtl_demod_log_non_integer_after_rate_change(const struct demod_state* demod, int fs_cx, int sym_rate) {
     if (demod->cqpsk_enable) {
-        LOG_WARNING("Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
-                    "CQPSK timing continues at the rounded SPS.\n",
-                    fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
+        LOG_WARN("WARNING: Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
+                 "CQPSK timing continues at the rounded SPS.\n",
+                 fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
         return;
     }
-    LOG_WARNING("Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
-                "Symbol timing will use the rounded SPS.\n",
-                fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
+    LOG_WARN("WARNING: Non-integer SPS after rate change: %d Hz / %d sym/s = %.3f. "
+             "Symbol timing will use the rounded SPS.\n",
+             fs_cx, sym_rate, (float)fs_cx / (float)sym_rate);
 }
 
 /**
@@ -809,7 +785,7 @@ rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demod, st
     if (scale > 12) {
         rtl_demod_disable_resampler(demod, 0);
         output->rate = inRate;
-        LOG_WARNING("Resampler ratio too large on retune (L=%d,M=%d). Disabled.\n", L, M);
+        LOG_WARN("WARNING: Resampler ratio too large on retune (L=%d,M=%d). Disabled.\n", L, M);
         return;
     }
 
@@ -855,8 +831,8 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
             sym_rate = 4800;
         }
         if (Fs_cx < (sym_rate * 2)) {
-            LOG_WARNING("CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n", Fs_cx,
-                        sym_rate);
+            LOG_WARN("WARNING: CQPSK timing SPS: demod rate %d Hz is low for ~%d sym/s; clamping to minimum SPS.\n",
+                     Fs_cx, sym_rate);
         }
         sps = (Fs_cx + (sym_rate / 2)) / sym_rate;
         if ((Fs_cx % sym_rate) == 0) {

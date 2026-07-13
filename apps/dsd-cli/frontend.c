@@ -61,10 +61,10 @@ dsd_cli_find_frontend_provider(dsd_frontend_kind kind, const dsd_frontend_provid
 }
 
 static int
-dsd_cli_frontend_select_from_registry_ex(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_hooks* hooks_storage,
-                                         const dsd_engine_lifecycle_hooks** out_hooks,
-                                         const dsd_frontend_provider** out_provider,
-                                         const dsd_frontend_provider* const* providers, size_t provider_count) {
+dsd_cli_prepare_frontend_from_registry(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_hooks* hooks_storage,
+                                       const dsd_engine_lifecycle_hooks** out_hooks,
+                                       const dsd_frontend_provider** out_provider,
+                                       const dsd_frontend_provider* const* providers, size_t provider_count) {
     if (!opts || !hooks_storage || !out_hooks) {
         return -1;
     }
@@ -95,14 +95,6 @@ dsd_cli_frontend_select_from_registry_ex(dsd_opts* opts, dsd_state* state, dsd_e
     return 0;
 }
 
-int
-dsd_cli_frontend_select_from_registry(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_hooks* hooks_storage,
-                                      const dsd_engine_lifecycle_hooks** out_hooks,
-                                      const dsd_frontend_provider* const* providers, size_t provider_count) {
-    return dsd_cli_frontend_select_from_registry_ex(opts, state, hooks_storage, out_hooks, NULL, providers,
-                                                    provider_count);
-}
-
 static size_t
 dsd_cli_collect_frontend_providers(const dsd_frontend_provider** providers, size_t max_providers) {
     size_t provider_count = 0;
@@ -119,14 +111,6 @@ dsd_cli_collect_frontend_providers(const dsd_frontend_provider** providers, size
     }
 #endif
     return provider_count;
-}
-
-int
-dsd_cli_frontend_select(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_hooks* hooks_storage,
-                        const dsd_engine_lifecycle_hooks** out_hooks) {
-    const dsd_frontend_provider* providers[2] = {NULL, NULL};
-    size_t provider_count = dsd_cli_collect_frontend_providers(providers, sizeof providers / sizeof providers[0]);
-    return dsd_cli_frontend_select_from_registry(opts, state, hooks_storage, out_hooks, providers, provider_count);
 }
 
 static int
@@ -272,8 +256,8 @@ dsd_cli_frontend_run_from_registry(dsd_opts* opts, dsd_state* state, const dsd_f
     dsd_engine_lifecycle_hooks lifecycle_hooks = {0};
     const dsd_engine_lifecycle_hooks* run_hooks = NULL;
     const dsd_frontend_provider* provider = NULL;
-    if (dsd_cli_frontend_select_from_registry_ex(opts, state, &lifecycle_hooks, &run_hooks, &provider, providers,
-                                                 provider_count)
+    if (dsd_cli_prepare_frontend_from_registry(opts, state, &lifecycle_hooks, &run_hooks, &provider, providers,
+                                               provider_count)
         != 0) {
         return 1;
     }

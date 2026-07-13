@@ -12,7 +12,6 @@
  * 2022-10 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/control.h>
@@ -21,12 +20,9 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
-#include <errno.h>
 #include <limits.h>
-#include <math.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -48,48 +44,9 @@
 #define SAVED_FREQ_MAX 1000
 #define TAG_MAX        100
 
-#if defined(__GNUC__) || defined(__clang__)
-#define DSD_ATTR_UNUSED_FN __attribute__((unused))
-#else
-#define DSD_ATTR_UNUSED_FN
-#endif
-
 /* Forward declarations for non-static rigctl helpers exported by this TU. */
 static bool Send(dsd_socket_t sockfd, const char* buf);
 static bool Recv(dsd_socket_t sockfd, char* buf);
-static bool GetSignalLevel(dsd_socket_t sockfd, double* dB);
-static bool DSD_ATTR_UNUSED_FN GetSquelchLevel(dsd_socket_t sockfd, double* dB);
-static bool DSD_ATTR_UNUSED_FN SetSquelchLevel(dsd_socket_t sockfd, double dB);
-static bool DSD_ATTR_UNUSED_FN GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp);
-static void DSD_ATTR_UNUSED_FN rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency);
-#if defined(DSD_NEO_TEST_HOOKS)
-bool dsd_rigctl_test_get_signal_level(dsd_socket_t sockfd, double* dB);
-bool dsd_rigctl_test_get_squelch_level(dsd_socket_t sockfd, double* dB);
-bool dsd_rigctl_test_set_squelch_level(dsd_socket_t sockfd, double dB);
-bool dsd_rigctl_test_get_signal_level_ex(dsd_socket_t sockfd, double* dB, int n_samp);
-void dsd_rigctl_test_rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency);
-#endif
-
-static bool
-parse_double_strict(const char* input, double* out) {
-    if (!input || !out) {
-        return false;
-    }
-    errno = 0;
-    char* end = NULL;
-    double value = strtod(input, &end);
-    if (end == input || errno == ERANGE) {
-        return false;
-    }
-    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') {
-        end++;
-    }
-    if (*end != '\0') {
-        return false;
-    }
-    *out = value;
-    return true;
-}
 
 /**
  * @brief Establish a TCP RIGCTL connection to the given host/port.
@@ -297,191 +254,6 @@ SetModulation(dsd_socket_t sockfd, int bandwidth) {
     s_last_bw = bandwidth;
     return true;
 }
-
-/**
- * @brief Read current signal level from the peer.
- *
- * Issues the "l" command and parses the reported dB level with one decimal
- * place of precision.
- *
- * @param sockfd Connected RIGCTL socket.
- * @param dB [out] Parsed signal level.
- * @return true on success; false on error or zero reading.
- */
-static bool
-GetSignalLevel(dsd_socket_t sockfd, double* dB) {
-    char buf[BUFSIZE];
-
-    Send(sockfd, "l\n");
-    Recv(sockfd, buf);
-
-    if (strcmp(buf, "RPRT 1") == 0) {
-        return false;
-    }
-
-    if (!parse_double_strict(buf, dB)) {
-        return false;
-    }
-    *dB = round((*dB) * 10) / 10;
-
-    if (*dB == 0.0) {
-        return false;
-    }
-    return true;
-}
-
-/**
- * @brief Query squelch level in dB from the peer.
- * @param sockfd Connected RIGCTL socket.
- * @param dB [out] Parsed squelch level.
- * @return true on success; false on error.
- */
-static bool DSD_ATTR_UNUSED_FN
-GetSquelchLevel(dsd_socket_t sockfd, double* dB) {
-    char buf[BUFSIZE];
-
-    Send(sockfd, "l SQL\n");
-    Recv(sockfd, buf);
-
-    if (strcmp(buf, "RPRT 1") == 0) {
-        return false;
-    }
-
-    if (!parse_double_strict(buf, dB)) {
-        return false;
-    }
-    *dB = round((*dB) * 10) / 10;
-
-    return true;
-}
-
-/**
- * @brief Set squelch level on the peer in dB.
- * @param sockfd Connected RIGCTL socket.
- * @param dB Desired squelch level.
- * @return true on success; false on failure.
- */
-static bool DSD_ATTR_UNUSED_FN
-SetSquelchLevel(dsd_socket_t sockfd, double dB) {
-    char buf[BUFSIZE];
-
-    DSD_SNPRINTF(buf, sizeof buf, "L SQL %f\n", dB);
-    Send(sockfd, buf);
-    Recv(sockfd, buf);
-
-    if (strcmp(buf, "RPRT 1") == 0) {
-        return false;
-    }
-
-    return true;
-}
-
-//
-// GetSignalLevelEx
-// Get a bunch of sample with some delay and calculate the mean value
-//
-/**
- * @brief Average multiple signal level samples with a short delay between reads.
- *
- * Intended to smooth noisy signal reports when deciding on squelch or tuning
- * actions.
- *
- * @param sockfd Connected RIGCTL socket.
- * @param dB [out] Averaged signal level.
- * @param n_samp Number of samples to average.
- * @return true when sampling completed (errors are tolerated in the average).
- */
-static bool DSD_ATTR_UNUSED_FN
-GetSignalLevelEx(dsd_socket_t sockfd, double* dB, int n_samp) {
-    double temp_level;
-    *dB = 0;
-    int errors = 0;
-    for (int i = 0; i < n_samp; i++) {
-        if (GetSignalLevel(sockfd, &temp_level)) {
-            *dB = *dB + temp_level;
-        } else {
-            errors++;
-        }
-        dsd_sleep_ms(1);
-    }
-    *dB = *dB / (n_samp - errors);
-    return true;
-}
-
-#if defined(DSD_NEO_TEST_HOOKS)
-bool
-dsd_rigctl_test_get_signal_level(dsd_socket_t sockfd, double* dB) {
-    return GetSignalLevel(sockfd, dB);
-}
-
-bool
-dsd_rigctl_test_get_squelch_level(dsd_socket_t sockfd, double* dB) {
-    return GetSquelchLevel(sockfd, dB);
-}
-
-bool
-dsd_rigctl_test_set_squelch_level(dsd_socket_t sockfd, double dB) {
-    return SetSquelchLevel(sockfd, dB);
-}
-
-bool
-dsd_rigctl_test_get_signal_level_ex(dsd_socket_t sockfd, double* dB, int n_samp) {
-    return GetSignalLevelEx(sockfd, dB, n_samp);
-}
-#endif
-
-//going to leave this function available, even if completely switched over to rtl_dev_tune now, may be useful in the future
-/**
- * @brief Tune RTL devices via legacy UDP command flow.
- *
- * Writes a 5-byte tuning command to the configured RTL UDP port on localhost.
- * Caches the last frequency to avoid redundant transmissions.
- *
- * @param opts Decoder options (supplies UDP port and caches freq).
- * @param state Decoder state (unused).
- * @param frequency Desired center frequency in Hz.
- */
-static void DSD_ATTR_UNUSED_FN
-rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
-    UNUSED(state);
-    static long int s_last_udp_freq = LONG_MIN;
-    if (frequency == s_last_udp_freq) {
-        return; // unchanged
-    }
-    dsd_socket_t handle;
-    unsigned short udp_port = opts->rtl_udp_port;
-    char data[5] = {0}; //data buffer size is 5 for UDP frequency tuning
-    struct sockaddr_in tune_addr;
-
-    uint32_t new_freq = (uint32_t)frequency;
-    opts->rtlsdr_center_freq = new_freq; // For ncurses terminal display after rtl is started up
-
-    handle = dsd_socket_create(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (handle == DSD_INVALID_SOCKET) {
-        return; // failed to create socket
-    }
-
-    data[0] = 0;
-    data[1] = (char)(new_freq & 0xFF);
-    data[2] = (char)((new_freq >> 8) & 0xFF);
-    data[3] = (char)((new_freq >> 16) & 0xFF);
-    data[4] = (char)((new_freq >> 24) & 0xFF);
-
-    DSD_MEMSET((char*)&tune_addr, 0, sizeof(tune_addr));
-    tune_addr.sin_family = AF_INET;
-    dsd_socket_resolve("127.0.0.1", udp_port, &tune_addr); //make user configurable later
-    (void)dsd_socket_sendto(handle, data, 5, 0, (const struct sockaddr*)&tune_addr, sizeof(struct sockaddr_in));
-
-    dsd_socket_close(handle); //close socket after sending.
-    s_last_udp_freq = frequency;
-}
-
-#if defined(DSD_NEO_TEST_HOOKS)
-void
-dsd_rigctl_test_rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency) {
-    rtl_udp_tune(opts, state, frequency);
-}
-#endif
 
 /**
  * @brief Set tuner frequency via io/control API (simple tune without trunking bookkeeping).

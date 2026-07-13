@@ -16,6 +16,10 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 
+const char* dsd_neo_rt_sched_test_role_or_default(const char* role);
+int dsd_neo_rt_sched_test_resolve_role_rt_priority(const dsdneoRuntimeConfig* cfg, const char* role);
+int dsd_neo_rt_sched_test_resolve_role_cpu_affinity(const dsdneoRuntimeConfig* cfg, const char* role);
+
 static dsdneoRuntimeConfig g_config;
 static const dsdneoRuntimeConfig* g_config_ptr = &g_config;
 static int g_config_init_calls = 0;

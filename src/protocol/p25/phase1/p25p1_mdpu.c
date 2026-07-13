@@ -10,6 +10,8 @@
  * 2025-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -506,11 +508,11 @@ p25_mpdu_compute_rate34_crc(P25MpduContext* ctx, uint32_t* crc_extracted, uint32
     uint8_t crc_bytes[P25_MPDU_MAX_DATA_BLOCKS * P25_MPDU_R34_BYTES];
     DSD_MEMSET(crc_bytes, 0, sizeof(crc_bytes));
     for (int byte_idx = 0; byte_idx < 16 * (ctx->blks + 1); byte_idx++) {
-        crc_bytes[byte_idx] = (uint8_t)ConvertBitIntoBytes(&ctx->mpdu_crc_bits[(size_t)byte_idx * 8], 8);
+        crc_bytes[byte_idx] = (uint8_t)convert_bits_into_output(&ctx->mpdu_crc_bits[(size_t)byte_idx * 8], 8);
     }
 
     if (ctx->blks > 0) {
-        *crc_extracted = (uint32_t)ConvertBitIntoBytes(&ctx->mpdu_crc_bits[(((size_t)128) * ctx->blks) - 32], 32);
+        *crc_extracted = (uint32_t)convert_bits_into_output(&ctx->mpdu_crc_bits[(((size_t)128) * ctx->blks) - 32], 32);
         *crc_computed = crc32mbf(crc_bytes, (((size_t)128) * ctx->blks) - 32);
     } else {
         *crc_extracted = 0;

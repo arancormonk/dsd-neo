@@ -21,7 +21,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/mbe_api.h>
@@ -39,6 +38,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -427,12 +427,12 @@ mbe_prepare_frame_state(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame
 
     //these conditions should ensure no clashing with the BP/HBP/Scrambler key loading machanisms already coded in
     if (state->currentslot == 0 && state->payload_algid != 0 && state->payload_algid != 0x80 && state->keyloader == 1) {
-        keyring(opts, state);
+        keyring_activate_slot(opts, state, state->currentslot);
     }
 
     if (state->currentslot == 1 && state->payload_algidR != 0 && state->payload_algidR != 0x80
         && state->keyloader == 1) {
-        keyring(opts, state);
+        keyring_activate_slot(opts, state, state->currentslot);
     }
 
     DSD_MEMSET(frame_ctx->imbe_d, 0, sizeof(frame_ctx->imbe_d));
@@ -1205,7 +1205,7 @@ mbeslot_left_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_c
 
     mbeslot_left_apply_keystream_bits(state, frame_ctx->ambe_d);
     state->DMRvcL++;
-    opts->dmr_mute_encL = 0; //shim to unmute
+    opts->dmr_mute_encL = 0; //clear left-slot mute state
 }
 
 static void
@@ -1226,7 +1226,7 @@ mbeslot_right_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_
 
     mbeslot_right_apply_keystream_bits(state, frame_ctx->ambe_d);
     state->DMRvcR++;
-    opts->dmr_mute_encR = 0; //shim to unmute
+    opts->dmr_mute_encR = 0; //clear right-slot mute state
 }
 
 static void
@@ -1665,7 +1665,7 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
                 }
             }
             if (exitflag == 1) {
-                cleanupAndExit(opts, state);
+                dsd_request_shutdown(opts, state);
                 break;
             }
         }

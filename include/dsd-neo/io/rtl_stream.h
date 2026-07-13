@@ -8,7 +8,7 @@
  * @brief RAII orchestrator for RTL-SDR stream lifecycle and control.
  *
  * Declares the C++ wrapper class that manages start/stop lifecycle, tuning,
- * and buffered reads over the legacy C RTL-SDR streaming control.
+ * and buffered reads over the RTL stream C API.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_H_

@@ -30,23 +30,8 @@ void dmrMSBootstrap(dsd_opts* opts, dsd_state* state);
 void dmrMSData(dsd_opts* opts, dsd_state* state);
 
 void dmr_data_sync(dsd_opts* opts, dsd_state* state);
-void dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst);
-void dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
-                               const uint8_t* reliab98);
-#ifdef DSD_NEO_TEST_HOOKS
-typedef struct {
-    uint8_t pdu_len;
-    uint8_t pdu_start;
-    uint8_t crclen;
-    uint32_t crcmask;
-    uint8_t flags;
-    char subtype[8];
-    uint8_t data_p_head;
-} dsd_neo_dmr_test_dburst_profile_result;
-
-int dsd_neo_dmr_test_dburst_profile(dsd_opts* opts, dsd_state* state, uint8_t databurst, uint8_t slot,
-                                    dsd_neo_dmr_test_dburst_profile_result* result);
-#endif
+void dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                            const uint8_t* reliab98);
 
 void dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,

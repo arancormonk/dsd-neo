@@ -7,7 +7,7 @@ endif(NOT EXISTS "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
 
 file(READ "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt" files)
 string(REGEX REPLACE "\n" ";" files "${files}")
-cmake_policy(SET CMP0007 OLD)
+list(FILTER files EXCLUDE REGEX "^$")
 list(REVERSE files)
 foreach(file ${files})
     message(STATUS "Uninstalling \"$ENV{DESTDIR}${file}\"")

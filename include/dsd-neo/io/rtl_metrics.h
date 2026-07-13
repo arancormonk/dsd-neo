@@ -18,21 +18,8 @@
 extern "C" {
 #endif
 
-/** @brief Get auto-PPM status snapshot; returns 0 on success. */
-int dsd_rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm, int* last_dir,
-                                       int* cooldown, int* locked);
-
 /** @brief Return 1 if auto-PPM training window is active. */
 int dsd_rtl_stream_auto_ppm_training_active(void);
-
-/** @brief Get locked auto-PPM value and lock-time snapshot; returns 0 on success. */
-int dsd_rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz);
-
-/** @brief Enable/disable auto-PPM runtime helper. */
-void dsd_rtl_stream_set_auto_ppm(int onoff);
-
-/** @brief Return current auto-PPM enable flag. */
-int dsd_rtl_stream_get_auto_ppm(void);
 
 /**
  * @brief Update spectrum/SNR metrics from a block of interleaved I/Q.

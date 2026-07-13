@@ -48,13 +48,6 @@ extern "C" {
  *     Optional CPU core pinning for each thread. Integer CPU id (>=0). Example: export DSD_NEO_CPU_DEMOD=2
  *
  * Frontend/decimation/upsampling
- * - DSD_NEO_COMBINE_ROT
- *     Combine 90° IQ rotation with USB byte→float widening in one pass when offset tuning is off.
- *     Values: 1 enable, 0 disable. Default: 1 (enabled).
- * - DSD_NEO_UPSAMPLE_FP
- *     Use fixed-point arithmetic in legacy linear upsampler for lower CPU/divisions.
- *     Values: 1 enable, 0 disable. Default: 1 (enabled).
- *
  * Rational resampler (polyphase upfirdn L/M)
  * - DSD_NEO_RESAMP
  *     Target output sample rate in Hz (RTL/RTL-TCP). The RTL demod pipeline
@@ -364,14 +357,6 @@ typedef struct dsdneoRuntimeConfig {
     int auto_ppm_freeze_is_set;
     int auto_ppm_freeze_enable;
 
-    /* Combine rotate + widen */
-    int combine_rot_is_set;
-    int combine_rot;
-
-    /* Legacy upsampler fixed-point toggle */
-    int upsample_fp_is_set;
-    int upsample_fp;
-
     /* Rational resampler target */
     int resamp_is_set;    /* env seen */
     int resamp_disable;   /* env explicitly disables */
@@ -662,18 +647,6 @@ const char* dsd_user_config_default_path(void);
 int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
 
 /**
- * @brief Load a user config from an already-open stream.
- *
- * The stream must be readable and seekable. The parser rewinds it as needed.
- *
- * @param stream Open INI stream.
- * @param source_name Display name used for include-cycle tracking.
- * @param cfg [out] Destination user config.
- * @return 0 on success; non-zero on error.
- */
-int dsd_user_config_load_stream(FILE* stream, const char* source_name, dsdneoUserConfig* cfg);
-
-/**
  * @brief Atomically write cfg to the given path (for interactive save).
  *
  * @param path Destination path for the INI file.
@@ -826,10 +799,9 @@ int dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char*
  *   - Unknown keys (warning)
  *   - Type mismatches (error)
  *   - Value range violations (warning)
- *   - Deprecated key usage (info)
  *
  * @param path Path to INI file.
- * @param diags [out] Diagnostic results (caller frees via dsd_user_config_diags_free).
+ * @param diags [out] Diagnostic results (caller frees via dsdcfg_diags_free).
  * @return 0 if no errors; non-zero if errors present.
  */
 int dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags);
@@ -840,17 +812,10 @@ int dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags);
  * The stream must be readable and seekable. The parser rewinds it before use.
  *
  * @param stream Open INI stream.
- * @param diags [out] Diagnostic results (caller frees via dsd_user_config_diags_free).
+ * @param diags [out] Diagnostic results (caller frees via dsdcfg_diags_free).
  * @return 0 if no errors; non-zero if errors present.
  */
 int dsd_user_config_validate_stream(FILE* stream, dsdcfg_diagnostics_t* diags);
-
-/**
- * @brief Free diagnostic results from validation.
- *
- * @param diags Diagnostics structure to free.
- */
-void dsd_user_config_diags_free(dsdcfg_diagnostics_t* diags);
 
 #ifdef __cplusplus
 }

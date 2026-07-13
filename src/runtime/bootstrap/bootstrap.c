@@ -240,11 +240,11 @@ bootstrap_handle_loaded_user_config(dsd_opts* opts, dsd_state* state, const boot
     *user_cfg_loaded = 1;
     if (explicit_profile_selected) {
         state->config_autosave_enabled = 0;
-        LOG_NOTICE("Autosave disabled for profiled config %s to avoid overwriting profile sections.\n", cfg_path);
-        LOG_NOTICE("Loaded user config from %s (profile: %s)\n", cfg_path, args->profile_cli);
+        LOG_INFO("NOTICE: Autosave disabled for profiled config %s to avoid overwriting profile sections.\n", cfg_path);
+        LOG_INFO("NOTICE: Loaded user config from %s (profile: %s)\n", cfg_path, args->profile_cli);
         return;
     }
-    LOG_NOTICE("Loaded user config from %s\n", cfg_path);
+    LOG_INFO("NOTICE: Loaded user config from %s\n", cfg_path);
 }
 
 static int
@@ -256,7 +256,7 @@ bootstrap_handle_failed_user_config_load(const bootstrap_cli_args* args, int exp
         return DSD_BOOTSTRAP_ERROR;
     }
     if (args->config_path_cli || config_env || args->enable_config_cli) {
-        LOG_WARNING("Failed to load config file from %s; proceeding without config.\n", cfg_path);
+        LOG_WARN("WARNING: Failed to load config file from %s; proceeding without config.\n", cfg_path);
     }
     return DSD_BOOTSTRAP_CONTINUE;
 }
@@ -517,7 +517,7 @@ bootstrap_handle_validate_config(const bootstrap_cli_args* args, const char* con
         exit_code = 2;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     bootstrap_set_exit_rc(out_exit_rc, exit_code);
     return DSD_BOOTSTRAP_EXIT;
 }
@@ -689,15 +689,15 @@ bootstrap_handle_post_parse_actions(const bootstrap_cli_args* args, dsd_opts* op
 
 static void
 bootstrap_log_startup_banner(void) {
-    LOG_NOTICE("------------------------------------------------------------------------------\n");
-    LOG_NOTICE("| Digital Speech Decoder: DSD-neo %s (%s) \n", GIT_TAG, GIT_HASH);
-    LOG_NOTICE("------------------------------------------------------------------------------\n");
+    LOG_INFO("NOTICE: ------------------------------------------------------------------------------\n");
+    LOG_INFO("NOTICE: | Digital Speech Decoder: DSD-neo %s (%s) \n", GIT_TAG, GIT_HASH);
+    LOG_INFO("NOTICE: ------------------------------------------------------------------------------\n");
 
     const char* versionstr = mbe_versionString();
-    LOG_NOTICE("MBElib-neo Version: %s\n", versionstr);
+    LOG_INFO("NOTICE: MBElib-neo Version: %s\n", versionstr);
 
 #ifdef USE_CODEC2
-    LOG_NOTICE("CODEC2 Support Enabled\n");
+    LOG_INFO("NOTICE: CODEC2 Support Enabled\n");
 #endif
 }
 

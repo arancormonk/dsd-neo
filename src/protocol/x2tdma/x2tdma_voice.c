@@ -54,7 +54,7 @@ x2tdma_read_slot_dibit(dsd_opts* opts, dsd_state* state, int j, int** dibit_p) {
     int dibit;
 
     if (j > 0) {
-        return getDibit(opts, state);
+        return get_dibit_and_analog_signal(opts, state, NULL);
     }
 
     dibit = **dibit_p;
@@ -71,7 +71,7 @@ x2tdma_skip_prev_half(dsd_opts* opts, dsd_state* state, int j, int** dibit_p) {
 
     for (i = 0; i < 54; i++) {
         if (j > 0) {
-            (void)getDibit(opts, state);
+            (void)get_dibit_and_analog_signal(opts, state, NULL);
         } else {
             (*dibit_p)++;
         }
@@ -112,7 +112,7 @@ x2tdma_read_cach_from_stream(dsd_opts* opts, dsd_state* state, char cachdata[13]
     int i;
 
     for (i = 0; i < 12; i++) {
-        cachdata[i] = getDibit(opts, state);
+        cachdata[i] = get_dibit_and_analog_signal(opts, state, NULL);
     }
     cachdata[12] = 0;
 }
@@ -148,7 +148,7 @@ x2tdma_fill_ambe_from_stream(dsd_opts* opts, dsd_state* state, char frame[4][24]
     const int* z = x2tdma_ambe_interleave_z + start;
 
     for (i = 0; i < count; i++) {
-        dibit = getDibit(opts, state);
+        dibit = get_dibit_and_analog_signal(opts, state, NULL);
         frame[*w][*x] = (1 & (dibit >> 1)); // bit 1
         frame[*y][*z] = (1 & dibit);        // bit 0
         w++;
@@ -172,7 +172,7 @@ x2tdma_read_sync_from_slot(dsd_opts* opts, dsd_state* state, int j, int** dibit_
 static void
 x2tdma_read_sync_from_stream(dsd_opts* opts, dsd_state* state, char sync[25], char syncdata[25]) {
     for (int i = 0; i < 24; i++) {
-        int dibit = getDibit(opts, state);
+        int dibit = get_dibit_and_analog_signal(opts, state, NULL);
         syncdata[i] = dibit;
         sync[i] = (dibit | 1) + 48;
     }

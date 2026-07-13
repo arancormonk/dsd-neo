@@ -137,7 +137,7 @@ main(void) {
     hooks.tick = fake_trunk_scan_tick;
     dsd_trunk_scan_hooks_set(hooks);
 
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
 
     int test_rc = 0;

@@ -87,18 +87,19 @@ parse_bool(const char* v, int* out) {
     return -1;
 }
 
-static long
-parse_int(const char* v, long defv) {
-    if (!v || !*v) {
-        return defv;
+static int
+parse_int_value(const char* v, long* out) {
+    if (!v || !*v || !out) {
+        return -1;
     }
     errno = 0;
     char* end = NULL;
     long x = strtol(v, &end, 10);
     if (end == v || (end && *end != '\0') || errno == ERANGE) {
-        return defv;
+        return -1;
     }
-    return x;
+    *out = x;
+    return 0;
 }
 
 /**
@@ -142,9 +143,18 @@ copy_text_value(char* dst, size_t dst_size, const char* src) {
     dst[dst_size - 1] = '\0';
 }
 
-static long
-parse_int_for_mode(const char* v, long base_default, user_cfg_parse_mode_t mode) {
-    return parse_int(v, mode == USER_CFG_PARSE_MODE_PROFILE ? 0 : base_default);
+static int
+apply_integer_setting(const char* value, int base_default, user_cfg_parse_mode_t mode, int* setting) {
+    long parsed = 0;
+    if (parse_int_value(value, &parsed) == 0) {
+        *setting = (int)parsed;
+        return 1;
+    }
+    if (mode == USER_CFG_PARSE_MODE_BASE) {
+        *setting = base_default;
+        return 1;
+    }
+    return 0;
 }
 
 static void
@@ -317,7 +327,7 @@ apply_input_source_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* v
         if (parse_input_source_value(val, &source) == 0) {
             cfg->input_source = source;
         }
-    } else if (strcmp(key_lc, "pulse_source") == 0 || strcmp(key_lc, "pulse_input") == 0) {
+    } else if (strcmp(key_lc, "pulse_source") == 0) {
         copy_text_value(cfg->pulse_input, sizeof cfg->pulse_input, val);
     }
 }
@@ -325,21 +335,22 @@ apply_input_source_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* v
 static int
 apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val, user_cfg_parse_mode_t mode) {
     if (strcmp(key_lc, "rtl_device") == 0) {
-        cfg->rtl_device = (int)parse_int_for_mode(val, 0, mode);
+        (void)apply_integer_setting(val, 0, mode, &cfg->rtl_device);
     } else if (strcmp(key_lc, "rtl_freq") == 0) {
         copy_text_value(cfg->rtl_freq, sizeof cfg->rtl_freq, val);
     } else if (strcmp(key_lc, "rtl_gain") == 0) {
-        cfg->rtl_gain = (int)parse_int_for_mode(val, 22, mode);
+        (void)apply_integer_setting(val, 22, mode, &cfg->rtl_gain);
     } else if (strcmp(key_lc, "rtl_ppm") == 0) {
-        cfg->rtl_ppm = (int)parse_int_for_mode(val, 0, mode);
-        cfg->rtl_ppm_is_set = 1;
+        if (apply_integer_setting(val, 0, mode, &cfg->rtl_ppm)) {
+            cfg->rtl_ppm_is_set = 1;
+        }
     } else if (strcmp(key_lc, "rtl_bw_khz") == 0) {
-        cfg->rtl_bw_khz = (int)parse_int_for_mode(val, 12, mode);
+        (void)apply_integer_setting(val, 12, mode, &cfg->rtl_bw_khz);
     } else if (strcmp(key_lc, "rtl_sql") == 0) {
-        cfg->rtl_sql = (int)parse_int_for_mode(val, 0, mode);
+        (void)apply_integer_setting(val, 0, mode, &cfg->rtl_sql);
     } else if (strcmp(key_lc, "rtl_volume") == 0) {
-        cfg->rtl_volume = (int)parse_int_for_mode(val, 1, mode);
-    } else if (strcmp(key_lc, "auto_ppm") == 0 || strcmp(key_lc, "rtl_auto_ppm") == 0) {
+        (void)apply_integer_setting(val, 1, mode, &cfg->rtl_volume);
+    } else if (strcmp(key_lc, "auto_ppm") == 0) {
         int b = 0;
         if (parse_bool(val, &b) == 0) {
             cfg->rtl_auto_ppm = b;
@@ -355,7 +366,7 @@ apply_input_rtltcp_soapy_keys(dsdneoUserConfig* cfg, const char* key_lc, const c
     if (strcmp(key_lc, "rtltcp_host") == 0) {
         copy_text_value(cfg->rtltcp_host, sizeof cfg->rtltcp_host, val);
     } else if (strcmp(key_lc, "rtltcp_port") == 0) {
-        cfg->rtltcp_port = (int)parse_int_for_mode(val, 1234, mode);
+        (void)apply_integer_setting(val, 1234, mode, &cfg->rtltcp_port);
     } else if (strcmp(key_lc, "soapy_args") == 0) {
         copy_text_value(cfg->soapy_args, sizeof cfg->soapy_args, val);
     } else if (strcmp(key_lc, "soapy_profile") == 0) {
@@ -371,8 +382,9 @@ apply_input_rtltcp_soapy_keys(dsdneoUserConfig* cfg, const char* key_lc, const c
     } else if (strcmp(key_lc, "soapy_gains") == 0) {
         copy_text_value(cfg->soapy_gains, sizeof cfg->soapy_gains, val);
     } else if (strcmp(key_lc, "soapy_bandwidth_hz") == 0) {
-        cfg->soapy_bandwidth_hz = (int)parse_int_for_mode(val, -1, mode);
-        cfg->soapy_bandwidth_hz_is_set = 1;
+        if (apply_integer_setting(val, -1, mode, &cfg->soapy_bandwidth_hz)) {
+            cfg->soapy_bandwidth_hz_is_set = 1;
+        }
     } else {
         return 0;
     }
@@ -384,15 +396,15 @@ apply_input_file_network_keys(dsdneoUserConfig* cfg, const char* key_lc, const c
     if (strcmp(key_lc, "file_path") == 0) {
         copy_path_expanded(cfg->file_path, sizeof cfg->file_path, val);
     } else if (strcmp(key_lc, "file_sample_rate") == 0) {
-        cfg->file_sample_rate = (int)parse_int_for_mode(val, 48000, mode);
+        (void)apply_integer_setting(val, 48000, mode, &cfg->file_sample_rate);
     } else if (strcmp(key_lc, "tcp_host") == 0) {
         copy_text_value(cfg->tcp_host, sizeof cfg->tcp_host, val);
     } else if (strcmp(key_lc, "tcp_port") == 0) {
-        cfg->tcp_port = (int)parse_int_for_mode(val, 7355, mode);
+        (void)apply_integer_setting(val, 7355, mode, &cfg->tcp_port);
     } else if (strcmp(key_lc, "udp_addr") == 0) {
         copy_text_value(cfg->udp_addr, sizeof cfg->udp_addr, val);
     } else if (strcmp(key_lc, "udp_port") == 0) {
-        cfg->udp_port = (int)parse_int_for_mode(val, 7355, mode);
+        (void)apply_integer_setting(val, 7355, mode, &cfg->udp_port);
     } else {
         return 0;
     }
@@ -418,17 +430,12 @@ apply_output_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* 
         if (parse_output_backend_value(val, &backend) == 0) {
             cfg->output_backend = backend;
         }
-    } else if (strcmp(key_lc, "pulse_sink") == 0 || strcmp(key_lc, "pulse_output") == 0) {
+    } else if (strcmp(key_lc, "pulse_sink") == 0) {
         copy_text_value(cfg->pulse_output, sizeof cfg->pulse_output, val);
     } else if (strcmp(key_lc, "frontend") == 0) {
         dsd_frontend_kind frontend = DSD_FRONTEND_NONE;
         if (parse_frontend_kind_value(val, &frontend) == 0) {
             set_config_frontend_kind(cfg, frontend);
-        }
-    } else if (strcmp(key_lc, "ncurses_ui") == 0) {
-        int enabled = 0;
-        if (parse_bool(val, &enabled) == 0) {
-            set_config_frontend_kind(cfg, enabled ? DSD_FRONTEND_TERMINAL : DSD_FRONTEND_NONE);
         }
     }
 }
@@ -437,7 +444,7 @@ static void
 apply_mode_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "decode") == 0) {
         dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
-        if (user_config_parse_decode_mode_value(val, &mode, NULL) == 0) {
+        if (user_config_parse_decode_mode_value(val, &mode) == 0) {
             cfg->decode_mode = mode;
         }
     } else if (strcmp(key_lc, "demod") == 0) {
@@ -547,17 +554,17 @@ set_alert_event(dsdneoUserConfig* cfg, int event, int enabled) {
 
 static void
 apply_alerts_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (strcmp(key_lc, "enabled") == 0 || strcmp(key_lc, "call_alert") == 0) {
+    if (strcmp(key_lc, "enabled") == 0) {
         int b = 0;
         if (parse_bool(val, &b) == 0) {
             cfg->call_alert_enabled = b;
         }
-    } else if (strcmp(key_lc, "voice_start") == 0 || strcmp(key_lc, "start") == 0) {
+    } else if (strcmp(key_lc, "voice_start") == 0) {
         int b = 0;
         if (parse_bool(val, &b) == 0) {
             set_alert_event(cfg, DSD_CALL_ALERT_EVENT_VOICE_START, b);
         }
-    } else if (strcmp(key_lc, "voice_end") == 0 || strcmp(key_lc, "end") == 0) {
+    } else if (strcmp(key_lc, "voice_end") == 0) {
         int b = 0;
         if (parse_bool(val, &b) == 0) {
             set_alert_event(cfg, DSD_CALL_ALERT_EVENT_VOICE_END, b);
@@ -575,7 +582,10 @@ apply_recording_rdio_range_value(const char* val, int default_value, int min_val
     if (!out_value) {
         return;
     }
-    long v = parse_int(val, default_value);
+    long v = 0;
+    if (parse_int_value(val, &v) != 0) {
+        v = default_value;
+    }
     if (v < min_value) {
         v = min_value;
     }
@@ -737,7 +747,8 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
         if (current_section[0] == '\0') {
             // Top-level keys
             if (strcmp(key_lc, "version") == 0) {
-                cfg->version = (int)parse_int(val, 1);
+                long version = 0;
+                cfg->version = parse_int_value(val, &version) == 0 ? (int)version : 1;
             }
             continue;
         }
@@ -763,34 +774,6 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
     int rc = user_config_load_no_reset_stream(fp, cfg);
     fclose(fp);
     return rc;
-}
-
-int
-dsd_user_config_load_stream(FILE* stream, const char* source_name, dsdneoUserConfig* cfg) {
-    if (!cfg || !stream) {
-        return -1;
-    }
-
-    user_cfg_reset(cfg);
-    char source_buf[2048];
-    const char* stack_name = (source_name && *source_name) ? source_name : "<stream>";
-    if (source_name && *source_name && source_name[0] != '<'
-        && dsd_path_expand_user(source_name, source_buf, sizeof source_buf) == 0) {
-        stack_name = source_buf;
-    }
-
-    /* Process includes first (they provide base values that can be overridden) */
-    const char* stack[1] = {stack_name};
-    if (seek_config_stream_to_start(stream) != 0) {
-        return -1;
-    }
-    process_includes_stream(stream, cfg, 0, stack, 1);
-
-    /* Now load the main config (which overrides included values) */
-    if (seek_config_stream_to_start(stream) != 0) {
-        return -1;
-    }
-    return user_config_load_no_reset_stream(stream, cfg);
 }
 
 int

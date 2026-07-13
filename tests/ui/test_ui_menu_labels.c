@@ -187,8 +187,8 @@ test_call_alert_slot_and_muting_labels(void) {
                      "Call Alert Events [Off]");
     opts.call_alert = 1;
     opts.call_alert_events = 0;
-    rc |= expect_str("call alert all when enabled with default", lbl_call_alert_events(&ctx, b, sizeof(b)),
-                     "Call Alert Events [All]");
+    rc |= expect_str("call alert zero mask remains off", lbl_call_alert_events(&ctx, b, sizeof(b)),
+                     "Call Alert Events [Off]");
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_DATA;
     rc |= expect_str("call alert start data", lbl_call_alert_events(&ctx, b, sizeof(b)),
                      "Call Alert Events [Start+Data]");

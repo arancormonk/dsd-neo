@@ -10,6 +10,8 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
@@ -161,11 +163,11 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
     ctx->pf = lc_bits[0];
     ctx->reserved = lc_bits[1];
-    ctx->flco = (uint8_t)ConvertBitIntoBytes(&lc_bits[2], 6);
-    ctx->fid = (uint8_t)ConvertBitIntoBytes(&lc_bits[8], 8);
-    ctx->so = (uint8_t)ConvertBitIntoBytes(&lc_bits[16], 8);
-    ctx->target = (uint32_t)ConvertBitIntoBytes(&lc_bits[24], 24);
-    ctx->source = (uint32_t)ConvertBitIntoBytes(&lc_bits[48], 24);
+    ctx->flco = (uint8_t)convert_bits_into_output(&lc_bits[2], 6);
+    ctx->fid = (uint8_t)convert_bits_into_output(&lc_bits[8], 8);
+    ctx->so = (uint8_t)convert_bits_into_output(&lc_bits[16], 8);
+    ctx->target = (uint32_t)convert_bits_into_output(&lc_bits[24], 24);
+    ctx->source = (uint32_t)convert_bits_into_output(&lc_bits[48], 24);
 }
 
 static void
@@ -274,9 +276,9 @@ static void
 dmr_flco_handle_cap_plus(dmr_flco_ctx* ctx) {
     if (ctx->type == 1 && ctx->fid == 0x10 && (ctx->flco == 0x04 || ctx->flco == 0x07)) {
         ctx->is_cap_plus = 1;
-        (void)ConvertBitIntoBytes(&ctx->lc_bits[48], 4);
-        ctx->restchannel = (int)ConvertBitIntoBytes(&ctx->lc_bits[52], 4);
-        ctx->source = (uint32_t)ConvertBitIntoBytes(&ctx->lc_bits[56], 16);
+        (void)convert_bits_into_output(&ctx->lc_bits[48], 4);
+        ctx->restchannel = (int)convert_bits_into_output(&ctx->lc_bits[52], 4);
+        ctx->source = (uint32_t)convert_bits_into_output(&ctx->lc_bits[56], 16);
         ctx->state->gi[ctx->slot] = (ctx->flco == 0x07) ? 1 : 0;
     }
 }
@@ -328,8 +330,8 @@ dmr_flco_handle_motorola_or_tait(dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_set_xpt_targets(dmr_flco_ctx* ctx) {
-    ctx->target = (uint32_t)ConvertBitIntoBytes(&ctx->lc_bits[32], 16);
-    ctx->source = (uint32_t)ConvertBitIntoBytes(&ctx->lc_bits[56], 16);
+    ctx->target = (uint32_t)convert_bits_into_output(&ctx->lc_bits[32], 16);
+    ctx->source = (uint32_t)convert_bits_into_output(&ctx->lc_bits[56], 16);
     for (int i = 0; i < 16; i++) {
         ctx->target_hash[i] = ctx->lc_bits[32 + i];
     }
@@ -342,12 +344,12 @@ dmr_flco_handle_hytera_xpt_alert(dmr_flco_ctx* ctx) {
         return 0;
     }
 
-    ctx->xpt_int = (uint8_t)ConvertBitIntoBytes(&ctx->lc_bits[16], 4);
-    ctx->xpt_free = (uint8_t)ConvertBitIntoBytes(&ctx->lc_bits[24], 4);
-    ctx->xpt_hand = (uint8_t)ConvertBitIntoBytes(&ctx->lc_bits[28], 4);
+    ctx->xpt_int = (uint8_t)convert_bits_into_output(&ctx->lc_bits[16], 4);
+    ctx->xpt_free = (uint8_t)convert_bits_into_output(&ctx->lc_bits[24], 4);
+    ctx->xpt_hand = (uint8_t)convert_bits_into_output(&ctx->lc_bits[28], 4);
     dmr_flco_set_xpt_targets(ctx);
-    (void)ConvertBitIntoBytes(&ctx->lc_bits[20], 4);
-    (void)ConvertBitIntoBytes(&ctx->lc_bits[48], 8);
+    (void)convert_bits_into_output(&ctx->lc_bits[20], 4);
+    (void)convert_bits_into_output(&ctx->lc_bits[48], 8);
 
     DSD_FPRINTF(stderr, "%s \n", KGRN);
     dmr_print_slot_tag(ctx->state);
@@ -426,9 +428,9 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
     }
 
     uint8_t checksum = 0;
-    uint8_t alg = (uint8_t)ConvertBitIntoBytes(&ctx->lc_bits[0], 8);
-    uint8_t key = (uint8_t)ConvertBitIntoBytes(&ctx->lc_bits[16], 8);
-    unsigned long long int mi = (unsigned long long int)ConvertBitIntoBytes(&ctx->lc_bits[24], 40);
+    uint8_t alg = (uint8_t)convert_bits_into_output(&ctx->lc_bits[0], 8);
+    uint8_t key = (uint8_t)convert_bits_into_output(&ctx->lc_bits[16], 8);
+    unsigned long long int mi = (unsigned long long int)convert_bits_into_output(&ctx->lc_bits[24], 40);
     DSD_FPRINTF(stderr, "%s", KYEL);
     if (dmr_slot_is_known(ctx->state)) {
         DSD_FPRINTF(stderr, " Slot %d Alg: %02X; KEY ID: %02X; MI(40): %010llX;", ctx->slot + 1, alg, key, mi);
@@ -449,13 +451,13 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
     }
 
     for (int i = 0; i < 8; i++) {
-        checksum += (uint8_t)ConvertBitIntoBytes(&ctx->lc_bits[((size_t)i * 8)], 8);
+        checksum += (uint8_t)convert_bits_into_output(&ctx->lc_bits[((size_t)i * 8)], 8);
         checksum &= 0xFF;
     }
     checksum = ~checksum & 0xFF;
     checksum++;
 
-    if (checksum == (uint8_t)ConvertBitIntoBytes(&ctx->lc_bits[64], 8)) {
+    if (checksum == (uint8_t)convert_bits_into_output(&ctx->lc_bits[64], 8)) {
         if (ctx->slot == 0) {
             ctx->state->dmr_so |= 0x40;
             ctx->state->payload_algid = alg;
@@ -961,9 +963,9 @@ dmr_flco_finalize(dmr_flco_ctx* ctx) {
 }
 
 //combined flco handler (vlc, tlc, emb), minus the superfluous structs and strings
-static void
-dmr_flco_body(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
-              uint8_t type) {
+void
+dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
+         uint8_t type) {
     dmr_flco_ctx ctx;
     dmr_flco_ctx_init(&ctx, opts, state, lc_bits, CRCCorrect, IrrecoverableErrors, type);
     dmr_flco_detect_special_modes(&ctx);
@@ -996,12 +998,6 @@ dmr_flco_body(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCC
     }
 
     dmr_flco_finalize(&ctx);
-}
-
-void
-dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
-         uint8_t type) {
-    dmr_flco_body(opts, state, lc_bits, CRCCorrect, IrrecoverableErrors, type);
 }
 
 static const char*
@@ -1046,22 +1042,22 @@ dmr_cach_reset_fragments(dsd_state* state) {
 
 static void
 dmr_cach_print_single_fragment(const dsd_state* state, uint8_t slco_bits[68]) {
-    uint8_t slco = (uint8_t)ConvertBitIntoBytes(&slco_bits[0], 4);
+    uint8_t slco = (uint8_t)convert_bits_into_output(&slco_bits[0], 4);
 
     DSD_FPRINTF(stderr, "\n%s", KYEL);
     dmr_print_slot_tag(state);
     if (slco == 0x0) {
         DSD_FPRINTF(stderr, " SLCO NULL (single) ");
     } else if (slco == 0x1) {
-        uint8_t ts1_act = (uint8_t)ConvertBitIntoBytes(&slco_bits[4], 4);
-        uint8_t ts2_act = (uint8_t)ConvertBitIntoBytes(&slco_bits[8], 4);
+        uint8_t ts1_act = (uint8_t)convert_bits_into_output(&slco_bits[4], 4);
+        uint8_t ts2_act = (uint8_t)convert_bits_into_output(&slco_bits[8], 4);
         char ts1_buf[16];
         char ts2_buf[16];
         const char* ts1_str = dmr_activity_type_label(ts1_act, ts1_buf, sizeof(ts1_buf));
         const char* ts2_str = dmr_activity_type_label(ts2_act, ts2_buf, sizeof(ts2_buf));
         DSD_FPRINTF(stderr, " SLC Activity (single) TS1: %s; TS2: %s;", ts1_str, ts2_str);
     } else if (slco == 0x2 || slco == 0x3) {
-        uint8_t model = (uint8_t)ConvertBitIntoBytes(&slco_bits[4], 2);
+        uint8_t model = (uint8_t)convert_bits_into_output(&slco_bits[4], 2);
         if (slco == 0x2) {
             DSD_FPRINTF(stderr, " SLC C_SYS_PARMS (single) Model=%s", dmr_model_label(model));
         } else {
@@ -1233,7 +1229,7 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
     if (state->trunk_cc_freq == 0) {
         return;
     }
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
@@ -1246,29 +1242,29 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
 
 static void
 dmr_slco_fill_sys_fields(const dsd_opts* opts, uint8_t slco_bits[], dmr_slco_data* data) {
-    uint8_t model = (uint8_t)ConvertBitIntoBytes(&slco_bits[4], 2);
+    uint8_t model = (uint8_t)convert_bits_into_output(&slco_bits[4], 2);
     uint16_t site_bits = 0;
     uint16_t default_n = dmr_tiii_model_default_split_n(model);
     DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "");
 
     if (model == 0) {
-        data->net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 9);
-        data->site = (uint16_t)ConvertBitIntoBytes(&slco_bits[15], 3);
+        data->net = (uint16_t)convert_bits_into_output(&slco_bits[6], 9);
+        data->site = (uint16_t)convert_bits_into_output(&slco_bits[15], 3);
         DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Tiny");
         site_bits = 3;
     } else if (model == 1) {
-        data->net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 7);
-        data->site = (uint16_t)ConvertBitIntoBytes(&slco_bits[13], 5);
+        data->net = (uint16_t)convert_bits_into_output(&slco_bits[6], 7);
+        data->site = (uint16_t)convert_bits_into_output(&slco_bits[13], 5);
         DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Small");
         site_bits = 5;
     } else if (model == 2) {
-        data->net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 4);
-        data->site = (uint16_t)ConvertBitIntoBytes(&slco_bits[10], 8);
+        data->net = (uint16_t)convert_bits_into_output(&slco_bits[6], 4);
+        data->site = (uint16_t)convert_bits_into_output(&slco_bits[10], 8);
         DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Large");
         site_bits = 8;
     } else if (model == 3) {
-        data->net = (uint16_t)ConvertBitIntoBytes(&slco_bits[6], 2);
-        data->site = (uint16_t)ConvertBitIntoBytes(&slco_bits[8], 10);
+        data->net = (uint16_t)convert_bits_into_output(&slco_bits[6], 2);
+        data->site = (uint16_t)convert_bits_into_output(&slco_bits[8], 10);
         DSD_SNPRINTF(data->model_str, sizeof(data->model_str), "%s", "Huge");
         site_bits = 10;
     }
@@ -1279,8 +1275,8 @@ dmr_slco_fill_sys_fields(const dsd_opts* opts, uint8_t slco_bits[], dmr_slco_dat
 
 static void
 dmr_slco_fill_activity_strings(uint8_t slco_bits[], dmr_slco_data* data) {
-    uint8_t ts1_act = (uint8_t)ConvertBitIntoBytes(&slco_bits[4], 4);
-    uint8_t ts2_act = (uint8_t)ConvertBitIntoBytes(&slco_bits[8], 4);
+    uint8_t ts1_act = (uint8_t)convert_bits_into_output(&slco_bits[4], 4);
+    uint8_t ts2_act = (uint8_t)convert_bits_into_output(&slco_bits[8], 4);
     char ts1_fb[16];
     const char* ts1 = dmr_activity_type_label(ts1_act, ts1_fb, sizeof(ts1_fb));
     DSD_SNPRINTF(data->ts1_str, sizeof(data->ts1_str), "%s", ts1);
@@ -1295,24 +1291,24 @@ dmr_slco_fill_activity_strings(uint8_t slco_bits[], dmr_slco_data* data) {
         DSD_SNPRINTF(data->ts2_str, sizeof(data->ts2_str), "Res %X", ts1_act);
     }
 
-    data->ts1_hash = (uint8_t)ConvertBitIntoBytes(&slco_bits[12], 8);
-    data->ts2_hash = (uint8_t)ConvertBitIntoBytes(&slco_bits[20], 8);
+    data->ts1_hash = (uint8_t)convert_bits_into_output(&slco_bits[12], 8);
+    data->ts2_hash = (uint8_t)convert_bits_into_output(&slco_bits[20], 8);
 }
 
 static void
 dmr_slco_decode(uint8_t slco_bits[], const dsd_opts* opts, dmr_slco_data* data) {
     DSD_MEMSET(data, 0, sizeof(*data));
-    data->slco = (uint8_t)ConvertBitIntoBytes(&slco_bits[0], 4);
+    data->slco = (uint8_t)convert_bits_into_output(&slco_bits[0], 4);
     data->reg = slco_bits[18];
-    data->csc = (uint16_t)ConvertBitIntoBytes(&slco_bits[19], 9);
-    data->con_netid = (uint8_t)ConvertBitIntoBytes(&slco_bits[8], 8);
-    data->con_siteid = (uint8_t)ConvertBitIntoBytes(&slco_bits[16], 8);
-    data->capsite = (uint8_t)ConvertBitIntoBytes(&slco_bits[22], 3);
-    data->restchannel = (uint8_t)ConvertBitIntoBytes(&slco_bits[16], 4);
-    data->cap_reserved = (uint8_t)ConvertBitIntoBytes(&slco_bits[20], 2);
-    data->xpt_free = (uint8_t)ConvertBitIntoBytes(&slco_bits[12], 4);
-    data->xpt_pri = (uint8_t)ConvertBitIntoBytes(&slco_bits[16], 4);
-    data->xpt_hash = (uint8_t)ConvertBitIntoBytes(&slco_bits[20], 8);
+    data->csc = (uint16_t)convert_bits_into_output(&slco_bits[19], 9);
+    data->con_netid = (uint8_t)convert_bits_into_output(&slco_bits[8], 8);
+    data->con_siteid = (uint8_t)convert_bits_into_output(&slco_bits[16], 8);
+    data->capsite = (uint8_t)convert_bits_into_output(&slco_bits[22], 3);
+    data->restchannel = (uint8_t)convert_bits_into_output(&slco_bits[16], 4);
+    data->cap_reserved = (uint8_t)convert_bits_into_output(&slco_bits[20], 2);
+    data->xpt_free = (uint8_t)convert_bits_into_output(&slco_bits[12], 4);
+    data->xpt_pri = (uint8_t)convert_bits_into_output(&slco_bits[16], 4);
+    data->xpt_hash = (uint8_t)convert_bits_into_output(&slco_bits[20], 8);
     dmr_slco_fill_activity_strings(slco_bits, data);
     if (data->slco == 0x2 || data->slco == 0x3) {
         dmr_slco_fill_sys_fields(opts, slco_bits, data);
@@ -1335,7 +1331,7 @@ dmr_slco_print_tiii_site_parms(dsd_state* state, const dmr_slco_data* data, uint
 
 static void
 dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco_bits[], const dmr_slco_data* data) {
-    uint16_t syscode = (uint16_t)ConvertBitIntoBytes(&slco_bits[4], 14);
+    uint16_t syscode = (uint16_t)convert_bits_into_output(&slco_bits[4], 14);
     if (data->n != 0) {
         uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
         uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
@@ -1359,7 +1355,7 @@ dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco
 
 static void
 dmr_slco_handle_p_sys_parms(dsd_state* state, uint8_t slco_bits[], const dmr_slco_data* data) {
-    uint16_t syscode = (uint16_t)ConvertBitIntoBytes(&slco_bits[4], 14);
+    uint16_t syscode = (uint16_t)convert_bits_into_output(&slco_bits[4], 14);
     if (data->n != 0) {
         uint16_t display_net = dmr_tiii_display_net(data->net, data->n);
         uint16_t display_site = dmr_tiii_display_site(data->site, data->n);
@@ -1469,9 +1465,9 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
     dmr_slco_data data;
 
     for (int i = 0; i < 5; i++) {
-        slco_bytes[i] = (uint8_t)ConvertBitIntoBytes(&slco_bits[((size_t)i * 8)], 8);
+        slco_bytes[i] = (uint8_t)convert_bits_into_output(&slco_bits[((size_t)i * 8)], 8);
     }
-    slco_bytes[5] = (uint8_t)ConvertBitIntoBytes(&slco_bits[32], 4);
+    slco_bytes[5] = (uint8_t)convert_bits_into_output(&slco_bits[32], 4);
 
     dmr_slco_decode(slco_bits, opts, &data);
 

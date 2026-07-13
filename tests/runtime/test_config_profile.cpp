@@ -294,64 +294,6 @@ test_profile_bool_aliases(void) {
 }
 
 static int
-test_profile_decode_mode_aliases(void) {
-    static const char* ini = "version = 1\n"
-                             "\n"
-                             "[mode]\n"
-                             "decode = \"auto\"\n"
-                             "\n"
-                             "[profile.alias_p25p1]\n"
-                             "mode.decode = \"p25p1_only\"\n"
-                             "\n"
-                             "[profile.alias_p25p2]\n"
-                             "mode.decode = \"p25p2_only\"\n"
-                             "\n"
-                             "[profile.alias_analog]\n"
-                             "mode.decode = \"analog_monitor\"\n"
-                             "\n"
-                             "[profile.alias_edacs]\n"
-                             "mode.decode = \"edacs\"\n"
-                             "\n"
-                             "[profile.alias_provoice]\n"
-                             "mode.decode = \"provoice\"\n";
-
-    char path[DSD_TEST_PATH_MAX];
-    if (write_temp_config(ini, path, sizeof path) != 0) {
-        return 1;
-    }
-
-    struct {
-        const char* profile_name;
-        dsdneoUserDecodeMode expected_mode;
-    } cases[] = {
-        {"alias_p25p1", DSDCFG_MODE_P25P1},       {"alias_p25p2", DSDCFG_MODE_P25P2},
-        {"alias_analog", DSDCFG_MODE_ANALOG},     {"alias_edacs", DSDCFG_MODE_EDACS_PV},
-        {"alias_provoice", DSDCFG_MODE_EDACS_PV},
-    };
-
-    int result = 0;
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        dsdneoUserConfig cfg;
-        DSD_MEMSET(&cfg, 0, sizeof(cfg));
-
-        int rc = dsd_user_config_load_profile(path, cases[i].profile_name, &cfg);
-        if (rc != 0) {
-            DSD_FPRINTF(stderr, "FAIL: load with profile %s failed (rc=%d)\n", cases[i].profile_name, rc);
-            result = 1;
-            continue;
-        }
-        if (cfg.decode_mode != cases[i].expected_mode) {
-            DSD_FPRINTF(stderr, "FAIL: profile %s expected decode_mode %d, got %d\n", cases[i].profile_name,
-                        (int)cases[i].expected_mode, (int)cfg.decode_mode);
-            result = 1;
-        }
-    }
-
-    (void)remove(path);
-    return result;
-}
-
-static int
 test_unknown_profile(void) {
     static const char* ini = "version = 1\n"
                              "\n"
@@ -514,7 +456,7 @@ test_profile_rtl_settings(void) {
 }
 
 static int
-test_profile_invalid_int_uses_legacy_zero_fallback(void) {
+test_profile_invalid_int_preserves_inherited_value(void) {
     static const char* ini = "version = 1\n"
                              "\n"
                              "[input]\n"
@@ -522,7 +464,9 @@ test_profile_invalid_int_uses_legacy_zero_fallback(void) {
                              "rtl_gain = 30\n"
                              "\n"
                              "[profile.invalid_gain]\n"
-                             "input.rtl_gain = \"invalid\"\n";
+                             "input.rtl_gain = \"invalid\"\n"
+                             "input.rtl_ppm = \"invalid\"\n"
+                             "input.soapy_bandwidth_hz = \"invalid\"\n";
 
     char path[DSD_TEST_PATH_MAX];
     if (write_temp_config(ini, path, sizeof path) != 0) {
@@ -543,8 +487,19 @@ test_profile_invalid_int_uses_legacy_zero_fallback(void) {
         DSD_FPRINTF(stderr, "FAIL: expected rtl source, got %d\n", cfg.input_source);
         result = 1;
     }
-    if (cfg.rtl_gain != 0) {
-        DSD_FPRINTF(stderr, "FAIL: expected invalid profile rtl_gain to fall back to 0, got %d\n", cfg.rtl_gain);
+    if (cfg.rtl_gain != 30) {
+        DSD_FPRINTF(stderr, "FAIL: expected invalid profile rtl_gain to preserve inherited value 30, got %d\n",
+                    cfg.rtl_gain);
+        result = 1;
+    }
+    if (cfg.rtl_ppm != 0 || cfg.rtl_ppm_is_set != 0) {
+        DSD_FPRINTF(stderr, "FAIL: invalid profile rtl_ppm should remain unset (value=%d set=%d)\n", cfg.rtl_ppm,
+                    cfg.rtl_ppm_is_set);
+        result = 1;
+    }
+    if (cfg.soapy_bandwidth_hz != -1 || cfg.soapy_bandwidth_hz_is_set != 0) {
+        DSD_FPRINTF(stderr, "FAIL: invalid profile soapy bandwidth should remain unset (value=%d set=%d)\n",
+                    cfg.soapy_bandwidth_hz, cfg.soapy_bandwidth_hz_is_set);
         result = 1;
     }
 
@@ -815,12 +770,11 @@ main(void) {
     rc |= test_load_with_profile_override();
     rc |= test_profile_multiple_overrides();
     rc |= test_profile_bool_aliases();
-    rc |= test_profile_decode_mode_aliases();
     rc |= test_unknown_profile();
     rc |= test_list_profiles();
     rc |= test_list_profiles_empty();
     rc |= test_profile_rtl_settings();
-    rc |= test_profile_invalid_int_uses_legacy_zero_fallback();
+    rc |= test_profile_invalid_int_preserves_inherited_value();
     rc |= test_profile_soapy_settings();
     rc |= test_include_directive();
     rc |= test_include_override();

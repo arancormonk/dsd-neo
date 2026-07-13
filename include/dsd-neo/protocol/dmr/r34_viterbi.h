@@ -32,19 +32,6 @@ extern "C" {
  */
 int dmr_r34_viterbi_decode(const uint8_t* dibits98, uint8_t out_bytes18[18]);
 
-/**
- * @brief Decode DMR rate 3/4 codewords using hard-decision Viterbi with a forced end state.
- *
- * This is useful for CRC-aided selection on marginal signals where the globally best
- * end state may not yield a payload that satisfies higher-layer CRC checks.
- *
- * @param dibits98 Input dibits (98 entries, values 0..3).
- * @param end_state Forced end state [0..7] for traceback.
- * @param out_bytes18 [out] Decoded 18-byte payload.
- * @return 0 on success; non-zero on error.
- */
-int dmr_r34_viterbi_decode_endstate(const uint8_t* dibits98, int end_state, uint8_t out_bytes18[18]);
-
 // Soft-decision variant using per-dibit reliability weights.
 // reliab98: 98 entries, 0..255 (higher means more confident) for each dibit.
 // Branch metric penalizes mismatches proportionally to reliability.
@@ -57,18 +44,6 @@ int dmr_r34_viterbi_decode_endstate(const uint8_t* dibits98, int end_state, uint
  * @return 0 on success; non-zero on error.
  */
 int dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, uint8_t out_bytes18[18]);
-
-/**
- * @brief Soft-decision DMR rate 3/4 decoder with a forced end state.
- *
- * @param dibits98 Input dibits (98 entries, values 0..3).
- * @param reliab98 Reliability weights per dibit (0..255; higher is more confident).
- * @param end_state Forced end state [0..7] for traceback.
- * @param out_bytes18 [out] Decoded 18-byte payload.
- * @return 0 on success; non-zero on error.
- */
-int dmr_r34_viterbi_decode_soft_endstate(const uint8_t* dibits98, const uint8_t* reliab98, int end_state,
-                                         uint8_t out_bytes18[18]);
 
 /**
  * @brief Candidate decode result for list Viterbi.

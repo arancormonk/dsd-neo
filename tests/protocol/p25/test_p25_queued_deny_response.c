@@ -5,14 +5,13 @@
 
 /*
  * Unit tests for P25 Queued Response (0x61) and Deny Response (0x67) handling.
- * Tests field extraction, reason code lookup, SM notification, and active
+ * Tests response classification, reason code lookup, SM notification, and active
  * channel display via the process_MAC_VPDU() entry point.
  */
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,10 +29,6 @@ struct RtlSdrContext;
 
 /* External entry point under test */
 void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
-
-/* SM wrapper functions under test */
-void p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
-void p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
 
 /* Stubs for external hooks referenced by linked modules */
 bool
@@ -118,54 +113,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
 }
 
 /* ============================================================================
- * SM API override tracking for tests
- * ============================================================================ */
-
-static int g_queued_calls;
-static int g_deny_calls;
-static int g_last_svc_type;
-static int g_last_reason_code;
-static int g_last_target;
-
-static void
-fake_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
-    (void)opts;
-    (void)state;
-    g_queued_calls++;
-    g_last_svc_type = svc_type;
-    g_last_reason_code = reason_code;
-    g_last_target = target;
-}
-
-static void
-fake_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
-    (void)opts;
-    (void)state;
-    g_deny_calls++;
-    g_last_svc_type = svc_type;
-    g_last_reason_code = reason_code;
-    g_last_target = target;
-}
-
-static p25_sm_api
-sm_test_api(void) {
-    p25_sm_api api;
-    DSD_MEMSET(&api, 0, sizeof(api));
-    api.on_queued_response = fake_on_queued_response;
-    api.on_deny_response = fake_on_deny_response;
-    return api;
-}
-
-static void
-reset_tracking(void) {
-    g_queued_calls = 0;
-    g_deny_calls = 0;
-    g_last_svc_type = -1;
-    g_last_reason_code = -1;
-    g_last_target = -1;
-}
-
-/* ============================================================================
  * Helper: build a QUE/DENY MAC PDU
  * ============================================================================ */
 
@@ -219,12 +166,6 @@ test_que_rsp_field_extraction_known_payload(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
 
-    reset_tracking();
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
-
     unsigned long long MAC[24];
     // SVC=0x15, Reason=0x20, Addl=0x123456, Target=0xABCDEF (11259375)
     build_que_deny_mac(MAC, 0, 0x15, 0x20, 0x123456, 0xABCDEF);
@@ -232,27 +173,19 @@ test_que_rsp_field_extraction_known_payload(void) {
     process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
 
     int rc = 0;
-    if (g_queued_calls != 1) {
-        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: expected 1 queued call, got %d\n", g_queued_calls);
+    if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: queued=%u deny=%u\n", st.p25_sm_queued_count,
+                    st.p25_sm_deny_count);
         rc = 1;
     }
-    if (g_last_svc_type != 0x15) {
-        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: svc_type expected 0x15, got 0x%02X\n",
-                    g_last_svc_type);
+    if (strstr(st.active_channel[0], "Target Unit Busy Other Service") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: reason missing from '%s'\n", st.active_channel[0]);
         rc = 1;
     }
-    if (g_last_reason_code != 0x20) {
-        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: reason_code expected 0x20, got 0x%02X\n",
-                    g_last_reason_code);
+    if (strstr(st.active_channel[0], "11259375") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: target missing from '%s'\n", st.active_channel[0]);
         rc = 1;
     }
-    if (g_last_target != 0xABCDEF) {
-        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: target expected 0xABCDEF, got 0x%06X\n",
-                    g_last_target);
-        rc = 1;
-    }
-
-    p25_sm_reset_api();
     return rc;
 }
 
@@ -267,12 +200,6 @@ test_deny_rsp_field_extraction_known_payload(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
 
-    reset_tracking();
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
-
     unsigned long long MAC[24];
     // SVC=0x3F, Reason=0xFF, Addl=0xFEDCBA, Target=0x000001
     build_que_deny_mac(MAC, 1, 0x3F, 0xFF, 0xFEDCBA, 0x000001);
@@ -280,27 +207,19 @@ test_deny_rsp_field_extraction_known_payload(void) {
     process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
 
     int rc = 0;
-    if (g_deny_calls != 1) {
-        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: expected 1 deny call, got %d\n", g_deny_calls);
+    if (st.p25_sm_deny_count != 1 || st.p25_sm_queued_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: queued=%u deny=%u\n", st.p25_sm_queued_count,
+                    st.p25_sm_deny_count);
         rc = 1;
     }
-    if (g_last_svc_type != 0x3F) {
-        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: svc_type expected 0x3F, got 0x%02X\n",
-                    g_last_svc_type);
+    if (strstr(st.active_channel[0], "System Does Not Support Service") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: reason missing from '%s'\n", st.active_channel[0]);
         rc = 1;
     }
-    if (g_last_reason_code != 0xFF) {
-        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: reason_code expected 0xFF, got 0x%02X\n",
-                    g_last_reason_code);
+    if (strstr(st.active_channel[0], "Target: 1") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: target missing from '%s'\n", st.active_channel[0]);
         rc = 1;
     }
-    if (g_last_target != 0x000001) {
-        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: target expected 0x000001, got 0x%06X\n",
-                    g_last_target);
-        rc = 1;
-    }
-
-    p25_sm_reset_api();
     return rc;
 }
 
@@ -335,19 +254,14 @@ test_que_reason_code_lookup_all_known(void) {
     for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&st, 0, sizeof st);
-        reset_tracking();
-        {
-            p25_sm_api api = sm_test_api();
-            p25_sm_set_api(&api);
-        }
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 0, 0x01, cases[i].code, 0, 12345);
         process_MAC_VPDU(&opts, &st, 0, MAC);
 
-        if (g_last_reason_code != cases[i].code) {
-            DSD_FPRINTF(stderr, "FAIL: test_que_reason_code[0x%02X]: reason_code mismatch got 0x%02X\n", cases[i].code,
-                        g_last_reason_code);
+        if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
+            DSD_FPRINTF(stderr, "FAIL: test_que_reason_code[0x%02X]: queued=%u deny=%u\n", cases[i].code,
+                        st.p25_sm_queued_count, st.p25_sm_deny_count);
             rc = 1;
         }
         if (strstr(st.active_channel[0], "QUE") == NULL) {
@@ -360,7 +274,6 @@ test_que_reason_code_lookup_all_known(void) {
                         cases[i].code, cases[i].expected_substr, st.active_channel[0]);
             rc = 1;
         }
-        p25_sm_reset_api();
     }
 
     return rc;
@@ -412,19 +325,14 @@ test_deny_reason_code_lookup_all_known(void) {
     for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&st, 0, sizeof st);
-        reset_tracking();
-        {
-            p25_sm_api api = sm_test_api();
-            p25_sm_set_api(&api);
-        }
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 1, 0x02, cases[i].code, 0, 54321);
         process_MAC_VPDU(&opts, &st, 0, MAC);
 
-        if (g_last_reason_code != cases[i].code) {
-            DSD_FPRINTF(stderr, "FAIL: test_deny_reason_code[0x%02X]: reason_code mismatch got 0x%02X\n", cases[i].code,
-                        g_last_reason_code);
+        if (st.p25_sm_deny_count != 1 || st.p25_sm_queued_count != 0) {
+            DSD_FPRINTF(stderr, "FAIL: test_deny_reason_code[0x%02X]: queued=%u deny=%u\n", cases[i].code,
+                        st.p25_sm_queued_count, st.p25_sm_deny_count);
             rc = 1;
         }
         if (strstr(st.active_channel[0], "DENY") == NULL) {
@@ -437,7 +345,6 @@ test_deny_reason_code_lookup_all_known(void) {
                         cases[i].code, cases[i].expected_substr, st.active_channel[0]);
             rc = 1;
         }
-        p25_sm_reset_api();
     }
 
     return rc;
@@ -453,19 +360,14 @@ test_que_rsp_user_reason_range(void) {
     static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    reset_tracking();
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
-
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0xAB, 0, 999);
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     int rc = 0;
-    if (g_last_reason_code != 0xAB) {
-        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_user_reason_range: expected 0xAB, got 0x%02X\n", g_last_reason_code);
+    if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_user_reason_range: queued=%u deny=%u\n", st.p25_sm_queued_count,
+                    st.p25_sm_deny_count);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "QUE") == NULL) {
@@ -478,8 +380,6 @@ test_que_rsp_user_reason_range(void) {
                     st.active_channel[0]);
         rc = 1;
     }
-
-    p25_sm_reset_api();
     return rc;
 }
 
@@ -493,19 +393,14 @@ test_deny_rsp_user_reason_range(void) {
     static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    reset_tracking();
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
-
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x99, 0, 888);
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     int rc = 0;
-    if (g_last_reason_code != 0x99) {
-        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_user_reason_range: expected 0x99, got 0x%02X\n", g_last_reason_code);
+    if (st.p25_sm_deny_count != 1 || st.p25_sm_queued_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_user_reason_range: queued=%u deny=%u\n", st.p25_sm_queued_count,
+                    st.p25_sm_deny_count);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "DENY") == NULL) {
@@ -518,8 +413,6 @@ test_deny_rsp_user_reason_range(void) {
                     st.active_channel[0]);
         rc = 1;
     }
-
-    p25_sm_reset_api();
     return rc;
 }
 
@@ -540,10 +433,8 @@ test_sm_queued_releases_when_tuned(void) {
     ctx->state = P25_SM_TUNED;
     ctx->initialized = 1;
 
-    /* Reset API to default (no override) so real SM logic runs */
-    p25_sm_reset_api();
-
-    p25_sm_on_queued_response(&opts, &st, 0x01, 0x20, 12345);
+    st.p25_sm_queued_count++;
+    p25_sm_release(ctx, &opts, &st, "queued-rsp");
 
     int rc = 0;
     if (st.p25_sm_queued_count != 1) {
@@ -576,9 +467,8 @@ test_sm_deny_releases_when_tuned(void) {
     ctx->state = P25_SM_TUNED;
     ctx->initialized = 1;
 
-    p25_sm_reset_api();
-
-    p25_sm_on_deny_response(&opts, &st, 0x02, 0xFF, 54321);
+    st.p25_sm_deny_count++;
+    p25_sm_release(ctx, &opts, &st, "deny-rsp");
 
     int rc = 0;
     if (st.p25_sm_deny_count != 1) {
@@ -610,9 +500,8 @@ test_sm_queued_noop_when_on_cc(void) {
     ctx->state = P25_SM_ON_CC;
     ctx->initialized = 1;
 
-    p25_sm_reset_api();
-
-    p25_sm_on_queued_response(&opts, &st, 0x01, 0x10, 100);
+    st.p25_sm_queued_count++;
+    p25_sm_release(ctx, &opts, &st, "queued-rsp");
 
     int rc = 0;
     if (st.p25_sm_queued_count != 1) {
@@ -644,9 +533,8 @@ test_sm_deny_noop_when_on_cc(void) {
     ctx->state = P25_SM_ON_CC;
     ctx->initialized = 1;
 
-    p25_sm_reset_api();
-
-    p25_sm_on_deny_response(&opts, &st, 0x02, 0x60, 200);
+    st.p25_sm_deny_count++;
+    p25_sm_release(ctx, &opts, &st, "deny-rsp");
 
     int rc = 0;
     if (st.p25_sm_deny_count != 1) {
@@ -677,11 +565,10 @@ test_sm_queued_counter_increments(void) {
     ctx->state = P25_SM_IDLE;
     ctx->initialized = 1;
 
-    p25_sm_reset_api();
-
-    p25_sm_on_queued_response(&opts, &st, 0x01, 0x10, 100);
-    p25_sm_on_queued_response(&opts, &st, 0x01, 0x20, 200);
-    p25_sm_on_queued_response(&opts, &st, 0x01, 0x30, 300);
+    for (int i = 0; i < 3; i++) {
+        st.p25_sm_queued_count++;
+        p25_sm_release(ctx, &opts, &st, "queued-rsp");
+    }
 
     int rc = 0;
     if (st.p25_sm_queued_count != 3) {
@@ -708,10 +595,10 @@ test_sm_deny_counter_increments(void) {
     ctx->state = P25_SM_HUNTING;
     ctx->initialized = 1;
 
-    p25_sm_reset_api();
-
-    p25_sm_on_deny_response(&opts, &st, 0x02, 0x20, 100);
-    p25_sm_on_deny_response(&opts, &st, 0x02, 0x60, 200);
+    for (int i = 0; i < 2; i++) {
+        st.p25_sm_deny_count++;
+        p25_sm_release(ctx, &opts, &st, "deny-rsp");
+    }
 
     int rc = 0;
     if (st.p25_sm_deny_count != 2) {
@@ -732,11 +619,6 @@ test_active_channel_que_format(void) {
     static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    reset_tracking();
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0x40, 0, 67890);
@@ -751,8 +633,6 @@ test_active_channel_que_format(void) {
         DSD_FPRINTF(stderr, "FAIL: test_active_channel_que_format: missing '67890' in '%s'\n", st.active_channel[0]);
         rc = 1;
     }
-
-    p25_sm_reset_api();
     return rc;
 }
 
@@ -766,11 +646,6 @@ test_active_channel_deny_format(void) {
     static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    reset_tracking();
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 12345);
@@ -785,8 +660,6 @@ test_active_channel_deny_format(void) {
         DSD_FPRINTF(stderr, "FAIL: test_active_channel_deny_format: missing '12345' in '%s'\n", st.active_channel[0]);
         rc = 1;
     }
-
-    p25_sm_reset_api();
     return rc;
 }
 
@@ -799,12 +672,6 @@ test_additional_info_indicator_controls_display(void) {
     static dsd_opts opts;
     static dsd_state st;
     int rc = 0;
-
-    reset_tracking();
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
 
     unsigned long long MAC[24];
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -825,8 +692,6 @@ test_additional_info_indicator_controls_display(void) {
         DSD_FPRINTF(stderr, "FAIL: test_additional_info_indicator: missing AII info: '%s'\n", st.active_channel[0]);
         rc = 1;
     }
-
-    p25_sm_reset_api();
     return rc;
 }
 
@@ -840,32 +705,21 @@ test_motorola_queued_response_field_extraction(void) {
     static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    reset_tracking();
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
 
     unsigned long long MAC[24];
     build_moto_que_deny_mac(MAC, 0, 0x15, 0x42, 0x123456, 0xABCDEF, 1);
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     int rc = 0;
-    if (g_queued_calls != 1 || g_deny_calls != 0) {
-        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_response: queued=%d deny=%d\n", g_queued_calls, g_deny_calls);
-        rc = 1;
-    }
-    if (g_last_svc_type != 0x15 || g_last_reason_code != 0x42 || g_last_target != 0xABCDEF) {
-        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_response: svc=0x%02X reason=0x%02X target=0x%06X\n",
-                    g_last_svc_type, g_last_reason_code, g_last_target);
+    if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_response: queued=%u deny=%u\n", st.p25_sm_queued_count,
+                    st.p25_sm_deny_count);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "MOT QUEUED") == NULL || strstr(st.active_channel[0], "Info: 123456") == NULL) {
         DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_response: active_channel '%s'\n", st.active_channel[0]);
         rc = 1;
     }
-
-    p25_sm_reset_api();
     return rc;
 }
 
@@ -875,24 +729,15 @@ test_motorola_deny_response_field_extraction(void) {
     static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    reset_tracking();
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
 
     unsigned long long MAC[24];
     build_moto_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 0x000123, 0);
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     int rc = 0;
-    if (g_deny_calls != 1 || g_queued_calls != 0) {
-        DSD_FPRINTF(stderr, "FAIL: test_motorola_deny_response: queued=%d deny=%d\n", g_queued_calls, g_deny_calls);
-        rc = 1;
-    }
-    if (g_last_svc_type != 0x02 || g_last_reason_code != 0x60 || g_last_target != 0x000123) {
-        DSD_FPRINTF(stderr, "FAIL: test_motorola_deny_response: svc=0x%02X reason=0x%02X target=0x%06X\n",
-                    g_last_svc_type, g_last_reason_code, g_last_target);
+    if (st.p25_sm_deny_count != 1 || st.p25_sm_queued_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_deny_response: queued=%u deny=%u\n", st.p25_sm_queued_count,
+                    st.p25_sm_deny_count);
         rc = 1;
     }
     if (strstr(st.active_channel[0], "MOT DENY") == NULL
@@ -900,8 +745,6 @@ test_motorola_deny_response_field_extraction(void) {
         DSD_FPRINTF(stderr, "FAIL: test_motorola_deny_response: active_channel '%s'\n", st.active_channel[0]);
         rc = 1;
     }
-
-    p25_sm_reset_api();
     return rc;
 }
 

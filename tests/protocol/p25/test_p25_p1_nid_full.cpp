@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Unit tests for check_NID_with_error_count() with full BCH correction,
+ * @brief Unit tests for p25p1_nid_decode() with full BCH correction,
  *        DUID validation, and parity override logic.
  *
  * This file is C++ because it uses the BCH encoder (BCH_63_16.hpp) to generate
@@ -17,7 +17,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <dsd-neo/fec/BCH_63_16.hpp>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include "dsd-neo/core/safe_api.h"
@@ -51,9 +50,9 @@ expected_parity(int duid) {
  * -------------------------------------------------------------------------- */
 
 /**
- * @brief Verify that check_NID accepts all 7 valid DUID values.
+ * @brief Verify that p25p1_nid_decode accepts all 7 valid DUID values.
  *
- * For each valid DUID, encode a codeword with NAC=0x123, call check_NID_with_error_count
+ * For each valid DUID, encode a codeword with NAC=0x123, call p25p1_nid_decode
  * with the correct parity, and verify NID_OK is returned.
  *
  * Validates: Requirements 4.1, 4.2
@@ -72,32 +71,33 @@ test_duid_validation_all_valid(void) {
         make_info_word(nac, duid, info);
         bch.encode(info, codeword);
 
-        int decoded_nac = -1;
-        char decoded_duid[3] = {0};
-        int error_count = -1;
         unsigned char parity = expected_parity(duid);
 
-        int result = check_NID_with_error_count(codeword, &decoded_nac, decoded_duid, parity, &error_count);
+        struct p25p1_nid_result result = p25p1_nid_decode(codeword, nullptr, 0, parity, 0);
 
-        if (result != NID_OK) {
+        if (result.status != NID_OK) {
             DSD_FPRINTF(stderr,
                         "test_duid_validation_all_valid: DUID=0x%X expected NID_OK (1), "
                         "got %d\n",
-                        duid, result);
+                        duid, result.status);
             return 1;
         }
-        if (decoded_nac != nac) {
+        if (result.nac != nac) {
             DSD_FPRINTF(stderr,
                         "test_duid_validation_all_valid: DUID=0x%X expected NAC=0x%X, "
                         "got 0x%X\n",
-                        duid, nac, decoded_nac);
+                        duid, nac, result.nac);
             return 1;
         }
-        if (error_count != 0) {
+        if (result.duid != duid) {
+            DSD_FPRINTF(stderr, "test_duid_validation_all_valid: expected DUID=0x%X, got 0x%X\n", duid, result.duid);
+            return 1;
+        }
+        if (result.error_count != 0) {
             DSD_FPRINTF(stderr,
                         "test_duid_validation_all_valid: DUID=0x%X expected error_count=0, "
                         "got %d\n",
-                        duid, error_count);
+                        duid, result.error_count);
             return 1;
         }
     }
@@ -109,9 +109,9 @@ test_duid_validation_all_valid(void) {
  * -------------------------------------------------------------------------- */
 
 /**
- * @brief Verify that check_NID rejects all 9 invalid DUID values.
+ * @brief Verify that p25p1_nid_decode rejects all 9 invalid DUID values.
  *
- * For each invalid DUID, encode a codeword with NAC=0x456, call check_NID_with_error_count
+ * For each invalid DUID, encode a codeword with NAC=0x456, call p25p1_nid_decode
  * with parity=0, and verify NID_DECODE_FAIL is returned.
  *
  * Validates: Requirements 4.3
@@ -130,25 +130,21 @@ test_duid_validation_all_invalid(void) {
         make_info_word(nac, duid, info);
         bch.encode(info, codeword);
 
-        int decoded_nac = -1;
-        char decoded_duid[3] = {0};
-        int error_count = -1;
-
         // Use parity=0 (doesn't matter since DUID validation happens first)
-        int result = check_NID_with_error_count(codeword, &decoded_nac, decoded_duid, 0, &error_count);
+        struct p25p1_nid_result result = p25p1_nid_decode(codeword, nullptr, 0, 0, 0);
 
-        if (result != NID_DECODE_FAIL) {
+        if (result.status != NID_DECODE_FAIL) {
             DSD_FPRINTF(stderr,
                         "test_duid_validation_all_invalid: DUID=0x%X expected "
                         "NID_DECODE_FAIL (0), got %d\n",
-                        duid, result);
+                        duid, result.status);
             return 1;
         }
-        if (error_count != 0) {
+        if (result.error_count != 0) {
             DSD_FPRINTF(stderr,
                         "test_duid_validation_all_invalid: DUID=0x%X expected "
                         "error_count=0, got %d\n",
-                        duid, error_count);
+                        duid, result.error_count);
             return 1;
         }
     }
@@ -162,7 +158,7 @@ test_duid_validation_all_invalid(void) {
 /**
  * @brief Verify that P=1 for LDU1 and LDU2, P=0 for all other valid DUIDs.
  *
- * Encodes each valid DUID with NAC=0x789, then calls check_NID with
+ * Encodes each valid DUID with NAC=0x789, then calls p25p1_nid_decode with
  * parity=1. For LDU1/LDU2 this should return NID_OK (parity matches).
  * For all others, parity=1 is wrong so it should return NID_PARITY_OVERRIDE
  * after successful BCH decode.
@@ -183,30 +179,26 @@ test_parity_table_values(void) {
         make_info_word(nac, duid, info);
         bch.encode(info, codeword);
 
-        int decoded_nac = -1;
-        char decoded_duid[3] = {0};
-        int error_count = -1;
-
         // Call with parity=1 for all DUIDs
-        int result = check_NID_with_error_count(codeword, &decoded_nac, decoded_duid, 1, &error_count);
+        struct p25p1_nid_result result = p25p1_nid_decode(codeword, nullptr, 0, 1, 0);
 
         if (duid == 0x5 || duid == 0xA) {
             // LDU1 and LDU2 have expected parity=1, so parity=1 matches
-            if (result != NID_OK) {
+            if (result.status != NID_OK) {
                 DSD_FPRINTF(stderr,
                             "test_parity_table_values: DUID=0x%X (P=1) expected "
                             "NID_OK (1), got %d\n",
-                            duid, result);
+                            duid, result.status);
                 return 1;
             }
         } else {
             // All others have expected parity=0, so parity=1 is a mismatch.
             // Successful BCH decode should still report NID_PARITY_OVERRIDE.
-            if (result != NID_PARITY_OVERRIDE) {
+            if (result.status != NID_PARITY_OVERRIDE) {
                 DSD_FPRINTF(stderr,
                             "test_parity_table_values: DUID=0x%X (P=0) with parity=1 "
                             "expected NID_PARITY_OVERRIDE (2), got %d\n",
-                            duid, result);
+                            duid, result.status);
                 return 1;
             }
         }
@@ -223,7 +215,7 @@ test_parity_table_values(void) {
  *        for BCH-correctable NIDs across the correction range.
  *
  * Uses NAC=0x293, DUID=0x5 (LDU1, expected parity=1). Introduces errors
- * and calls check_NID_with_error_count with wrong parity (0 instead of 1).
+ * and calls p25p1_nid_decode with wrong parity (0 instead of 1).
  *
  * Validates: Requirements 7.1, 7.2
  */
@@ -254,32 +246,28 @@ test_parity_override_correctable_range(void) {
             corrupted[flip_positions[i]] ^= 1;
         }
 
-        int decoded_nac = -1;
-        char decoded_duid[3] = {0};
-        int error_count = -1;
-
         // Wrong parity: expected is 1 for LDU1, pass 0
-        int result = check_NID_with_error_count(corrupted, &decoded_nac, decoded_duid, 0, &error_count);
+        struct p25p1_nid_result result = p25p1_nid_decode(corrupted, nullptr, 0, 0, 0);
 
-        if (result != NID_PARITY_OVERRIDE) {
+        if (result.status != NID_PARITY_OVERRIDE) {
             DSD_FPRINTF(stderr,
                         "test_parity_override_correctable_range: %d errors + wrong parity "
                         "expected NID_PARITY_OVERRIDE (2), got %d\n",
-                        corrections, result);
+                        corrections, result.status);
             return 1;
         }
-        if (error_count != corrections) {
+        if (result.error_count != corrections) {
             DSD_FPRINTF(stderr,
                         "test_parity_override_correctable_range: %d errors expected "
                         "error_count=%d, got %d\n",
-                        corrections, corrections, error_count);
+                        corrections, corrections, result.error_count);
             return 1;
         }
-        if (decoded_nac != nac) {
+        if (result.nac != nac) {
             DSD_FPRINTF(stderr,
                         "test_parity_override_correctable_range: %d errors expected "
                         "NAC=0x%X, got 0x%X\n",
-                        corrections, nac, decoded_nac);
+                        corrections, nac, result.nac);
             return 1;
         }
     }
@@ -319,24 +307,20 @@ test_decode_failure_no_error_count(void) {
         corrupted[flip_12[i]] ^= 1;
     }
 
-    int decoded_nac = -1;
-    char decoded_duid[3] = {0};
-    int error_count = -1;
+    struct p25p1_nid_result result = p25p1_nid_decode(corrupted, nullptr, 0, 0, 0);
 
-    int result = check_NID_with_error_count(corrupted, &decoded_nac, decoded_duid, 0, &error_count);
-
-    if (result != NID_DECODE_FAIL) {
+    if (result.status != NID_DECODE_FAIL) {
         DSD_FPRINTF(stderr,
                     "test_decode_failure_no_error_count: expected NID_DECODE_FAIL (0), "
                     "got %d\n",
-                    result);
+                    result.status);
         return 1;
     }
-    if (error_count != 0) {
+    if (result.error_count != 0) {
         DSD_FPRINTF(stderr,
                     "test_decode_failure_no_error_count: expected error_count=0, "
                     "got %d\n",
-                    error_count);
+                    result.error_count);
         return 1;
     }
 
@@ -368,38 +352,32 @@ test_observed_nac_retry_after_bch_failure(void) {
         corrupted[i] ^= 1;
     }
 
-    int decoded_nac = -1;
-    char decoded_duid[3] = {0};
-    int error_count = -1;
-    int result = check_NID_with_error_count(corrupted, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
-    if (result != NID_DECODE_FAIL) {
+    struct p25p1_nid_result result = p25p1_nid_decode(corrupted, nullptr, 0, expected_parity(duid), 0);
+    if (result.status != NID_DECODE_FAIL) {
         DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected initial decode failure, got %d\n",
-                    result);
+                    result.status);
         return 1;
     }
 
-    decoded_nac = -1;
-    decoded_duid[0] = decoded_duid[1] = decoded_duid[2] = 0;
-    error_count = -1;
-    result =
-        check_NID_with_observed_nac(corrupted, nac, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
-    if (result != NID_OK) {
+    result = p25p1_nid_decode(corrupted, nullptr, nac, expected_parity(duid), 0);
+    if (result.status != NID_OK) {
         DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected observed NAC retry success, got %d\n",
-                    result);
+                    result.status);
         return 1;
     }
-    if (decoded_nac != nac) {
+    if (result.nac != nac) {
         DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected NAC=0x%X, got 0x%X\n", nac,
-                    decoded_nac);
+                    result.nac);
         return 1;
     }
-    if (std::strcmp(decoded_duid, "11") != 0) {
-        DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected DUID=11, got %s\n", decoded_duid);
+    if (result.duid != (uint8_t)duid) {
+        DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected DUID=0x%X, got 0x%X\n", duid,
+                    result.duid);
         return 1;
     }
-    if (error_count != 0) {
+    if (result.error_count != 0) {
         DSD_FPRINTF(stderr, "test_observed_nac_retry_after_bch_failure: expected retry error_count=0, got %d\n",
-                    error_count);
+                    result.error_count);
         return 1;
     }
 
@@ -429,14 +407,10 @@ test_soft_nid_low_reliability_recovery(void) {
         corrupted[flip_12[i]] ^= 1;
     }
 
-    int decoded_nac = -1;
-    char decoded_duid[3] = {0};
-    int error_count = -1;
-    int hard_result =
-        check_NID_with_observed_nac(corrupted, 0, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
-    if (hard_result != NID_DECODE_FAIL) {
+    struct p25p1_nid_result hard_result = p25p1_nid_decode(corrupted, nullptr, 0, expected_parity(duid), 0);
+    if (hard_result.status != NID_DECODE_FAIL) {
         DSD_FPRINTF(stderr, "test_soft_nid_low_reliability_recovery: expected hard decode failure, got %d\n",
-                    hard_result);
+                    hard_result.status);
         return 1;
     }
 
@@ -446,21 +420,17 @@ test_soft_nid_low_reliability_recovery(void) {
     }
     reliab[flip_12[0]] = 10;
 
-    decoded_nac = -1;
-    decoded_duid[0] = decoded_duid[1] = decoded_duid[2] = 0;
-    error_count = -1;
-    int soft_result = check_NID_with_observed_nac_soft(corrupted, reliab, 0, &decoded_nac, decoded_duid,
-                                                       expected_parity(duid), 220, &error_count);
-    if (soft_result != NID_OK) {
+    struct p25p1_nid_result soft_result = p25p1_nid_decode(corrupted, reliab, 0, expected_parity(duid), 220);
+    if (soft_result.status != NID_OK) {
         DSD_FPRINTF(stderr, "test_soft_nid_low_reliability_recovery: expected soft decode success, got %d\n",
-                    soft_result);
+                    soft_result.status);
         return 1;
     }
-    if (decoded_nac != nac || std::strcmp(decoded_duid, "11") != 0 || error_count != 11) {
+    if (soft_result.nac != nac || soft_result.duid != (uint8_t)duid || soft_result.error_count != 11) {
         DSD_FPRINTF(stderr,
-                    "test_soft_nid_low_reliability_recovery: expected NAC=0x%X DUID=11 errors=11, "
-                    "got NAC=0x%X DUID=%s errors=%d\n",
-                    nac, decoded_nac, decoded_duid, error_count);
+                    "test_soft_nid_low_reliability_recovery: expected NAC=0x%X DUID=0x%X errors=11, "
+                    "got NAC=0x%X DUID=0x%X errors=%d\n",
+                    nac, duid, soft_result.nac, soft_result.duid, soft_result.error_count);
         return 1;
     }
 
@@ -495,13 +465,10 @@ test_soft_nid_high_reliability_rejected(void) {
         reliab[i] = 220;
     }
 
-    int decoded_nac = -1;
-    char decoded_duid[3] = {0};
-    int error_count = -1;
-    int result = check_NID_with_observed_nac_soft(corrupted, reliab, 0, &decoded_nac, decoded_duid,
-                                                  expected_parity(duid), 220, &error_count);
-    if (result != NID_DECODE_FAIL) {
-        DSD_FPRINTF(stderr, "test_soft_nid_high_reliability_rejected: expected soft decode failure, got %d\n", result);
+    struct p25p1_nid_result result = p25p1_nid_decode(corrupted, reliab, 0, expected_parity(duid), 220);
+    if (result.status != NID_DECODE_FAIL) {
+        DSD_FPRINTF(stderr, "test_soft_nid_high_reliability_rejected: expected soft decode failure, got %d\n",
+                    result.status);
         return 1;
     }
 
@@ -533,15 +500,11 @@ test_soft_observed_nac_retry_exempts_forced_nac_bits(void) {
         corrupted[parity_errors[i]] ^= 1;
     }
 
-    int decoded_nac = -1;
-    char decoded_duid[3] = {0};
-    int error_count = -1;
-    int hard_result =
-        check_NID_with_observed_nac(corrupted, nac, &decoded_nac, decoded_duid, expected_parity(duid), &error_count);
-    if (hard_result != NID_DECODE_FAIL) {
+    struct p25p1_nid_result hard_result = p25p1_nid_decode(corrupted, nullptr, nac, expected_parity(duid), 0);
+    if (hard_result.status != NID_DECODE_FAIL) {
         DSD_FPRINTF(stderr,
                     "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected hard retry failure, got %d\n",
-                    hard_result);
+                    hard_result.status);
         return 1;
     }
 
@@ -551,22 +514,18 @@ test_soft_observed_nac_retry_exempts_forced_nac_bits(void) {
     }
     reliab[parity_errors[0]] = 10;
 
-    decoded_nac = -1;
-    decoded_duid[0] = decoded_duid[1] = decoded_duid[2] = 0;
-    error_count = -1;
-    int soft_result = check_NID_with_observed_nac_soft(corrupted, reliab, nac, &decoded_nac, decoded_duid,
-                                                       expected_parity(duid), 220, &error_count);
-    if (soft_result != NID_OK) {
+    struct p25p1_nid_result soft_result = p25p1_nid_decode(corrupted, reliab, nac, expected_parity(duid), 220);
+    if (soft_result.status != NID_OK) {
         DSD_FPRINTF(stderr,
                     "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected soft retry success, got %d\n",
-                    soft_result);
+                    soft_result.status);
         return 1;
     }
-    if (decoded_nac != nac || std::strcmp(decoded_duid, "11") != 0 || error_count != 11) {
+    if (soft_result.nac != nac || soft_result.duid != (uint8_t)duid || soft_result.error_count != 11) {
         DSD_FPRINTF(stderr,
-                    "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected NAC=0x%X DUID=11 errors=11, "
-                    "got NAC=0x%X DUID=%s errors=%d\n",
-                    nac, decoded_nac, decoded_duid, error_count);
+                    "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected NAC=0x%X DUID=0x%X errors=11, "
+                    "got NAC=0x%X DUID=0x%X errors=%d\n",
+                    nac, duid, soft_result.nac, soft_result.duid, soft_result.error_count);
         return 1;
     }
 

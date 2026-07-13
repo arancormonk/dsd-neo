@@ -16,6 +16,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -44,7 +45,8 @@ enum {
 static int g_return_to_cc_calls = 0;
 
 static dsd_trunk_tune_result
-generic_return_to_cc_guard(dsd_opts* opts, dsd_state* state) {
+generic_return_to_cc_guard(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_return_to_cc_calls++;
@@ -55,7 +57,7 @@ static void
 install_return_to_cc_guard(void) {
     g_return_to_cc_calls = 0;
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc_result = generic_return_to_cc_guard;
+    hooks.return_to_cc_request = generic_return_to_cc_guard;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -138,8 +140,8 @@ setup_generic_fixture(dsd_opts** opts_out, dsd_state** state_out, const generic_
     state->p25_p2_active_slot = 1;
     state->p25_p2_audio_allowed[0] = 1;
     state->p25_p2_audio_allowed[1] = 1;
-    state->p25_p2_enc_lockout_muted[0] = 1;
-    state->p25_p2_enc_lockout_muted[1] = 1;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     state->p25_call_is_packet[0] = 1;
     state->p25_call_is_packet[1] = 1;
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "%s", scenario);
@@ -149,8 +151,9 @@ setup_generic_fixture(dsd_opts** opts_out, dsd_state** state_out, const generic_
 static int
 p25_p2_voice_aliases_cleared(const dsd_state* state) {
     return state->p25_p2_active_slot == -1 && state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0
-           && state->p25_p2_enc_lockout_muted[0] == 0 && state->p25_p2_enc_lockout_muted[1] == 0
-           && state->p25_call_is_packet[0] == 0 && state->p25_call_is_packet[1] == 0;
+           && state->p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN
+           && state->p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN && state->p25_call_is_packet[0] == 0
+           && state->p25_call_is_packet[1] == 0;
 }
 
 static int

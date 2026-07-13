@@ -59,45 +59,52 @@ typedef struct {
     dsd_state* state;
 } release_thread_args;
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)ted_sps;
     g_last_tuned_vc = freq;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_return_to_cc_called++;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)ted_sps;
     g_last_tuned_cc = freq;
     if (g_mark_cc_sync_on_cc_tune) {
         dsd_mark_cc_sync(state);
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq = trunk_tune_to_freq;
-    hooks.tune_to_cc = trunk_tune_to_cc;
-    hooks.return_to_cc = return_to_cc;
+    hooks.tune_to_freq_request = trunk_tune_to_freq;
+    hooks.tune_to_cc_request = trunk_tune_to_cc;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
 static dsd_trunk_tune_result
-trunk_tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     g_result_tune_to_freq_calls++;
     g_last_tuned_vc = freq;
@@ -115,7 +122,8 @@ trunk_tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int t
 }
 
 static dsd_trunk_tune_result
-trunk_tune_to_cc_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_cc_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)ted_sps;
     g_result_tune_to_cc_calls++;
@@ -128,7 +136,8 @@ trunk_tune_to_cc_result(dsd_opts* opts, dsd_state* state, long int freq, int ted
 }
 
 static dsd_trunk_tune_result
-return_to_cc_result(dsd_opts* opts, dsd_state* state) {
+return_to_cc_result(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_result_return_to_cc_calls++;
     if (atomic_load(&g_release_hook_block)) {
         int sync_rc = 0;
@@ -164,16 +173,16 @@ static DSD_THREAD_RETURN_TYPE
 #endif
     release_wrapper_thread(void* arg) {
     release_thread_args* args = (release_thread_args*)arg;
-    p25_sm_on_release(args ? args->opts : NULL, args ? args->state : NULL);
+    p25_sm_release(p25_sm_get_ctx(), args ? args->opts : NULL, args ? args->state : NULL, "explicit-release");
     DSD_THREAD_RETURN;
 }
 
 static void
 install_result_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = trunk_tune_to_freq_result;
-    hooks.tune_to_cc_result = trunk_tune_to_cc_result;
-    hooks.return_to_cc_result = return_to_cc_result;
+    hooks.tune_to_freq_request = trunk_tune_to_freq_result;
+    hooks.tune_to_cc_request = trunk_tune_to_cc_result;
+    hooks.return_to_cc_request = return_to_cc_result;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -192,7 +201,7 @@ init_basic(dsd_opts* o, dsd_state* s) {
     o->p25_prefer_candidates = 1;
     s->p25_cc_freq = 851000000;
     // Cache tunables at init
-    p25_sm_init(o, s);
+    p25_sm_init_ctx(p25_sm_get_ctx(), o, s);
 }
 
 static void
@@ -236,7 +245,7 @@ main(void) {
     st.p25_last_vc_tune_time_m = nowm - 1.0;
     st.last_vc_sync_time_m = nowm - 1.0; // stale
     st.p25_p2_active_slot = -1;          // P1 behavior path allowed
-    p25_sm_tick(&opts, &st);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &opts, &st);
     // Expect SM to force a release back to CC after hangtime
     assert(st.p25_vc_freq[0] == 0 || g_return_to_cc_called >= 0);
 
@@ -245,9 +254,9 @@ main(void) {
     static dsd_state s3;
     init_basic(&o3, &s3);
     s3.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0; // stale CC
-    (void)dsd_trunk_cc_candidates_add(&s3, 852000000, 0);
+    (void)dsd_trunk_cc_candidates_add_with_flags(&s3, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     g_last_tuned_cc = 0;
-    p25_sm_tick(&o3, &s3);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o3, &s3);
     assert(g_last_tuned_cc == 852000000);
 
     // 3) ENC lockout once (SM helper)
@@ -287,7 +296,7 @@ main(void) {
     p25_sm_init_ctx(&ctx5, &o5, &s5);
     assert(ctx5.expected_cc_nac == 0x293);
 
-    (void)dsd_trunk_cc_candidates_add(&s5, 852000000, 0);
+    (void)dsd_trunk_cc_candidates_add_with_flags(&s5, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     g_last_tuned_cc = 0;
     s5.p2_cc = 0x123; // Simulate P1 NID refresh on the wrong channel.
     s5.nac = 0x123;
@@ -338,7 +347,7 @@ main(void) {
     p25_sm_init_ctx(&ctx7, &o7, &s7);
     assert(ctx7.expected_cc_nac == 0x293);
 
-    (void)dsd_trunk_cc_candidates_add(&s7, 852000000, 0);
+    (void)dsd_trunk_cc_candidates_add_with_flags(&s7, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     g_last_tuned_cc = 0;
     g_mark_cc_sync_on_cc_tune = 1;
     s7.p2_cc = 0x123;
@@ -449,7 +458,7 @@ main(void) {
     s8c.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
     dsd_state_set_trunk_chan_freq(&s8c, 101U, 889000000L);
     assert(s8c.trunk_chan_map_used_count == 1U);
-    (void)dsd_trunk_cc_candidates_add(&s8c, 852000000, 0);
+    (void)dsd_trunk_cc_candidates_add_with_flags(&s8c, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
 
     p25_sm_ctx_t ctx8c;
     p25_sm_init_ctx(&ctx8c, &o8c, &s8c);
@@ -506,7 +515,7 @@ main(void) {
     s10.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
     const double old_cc_sync_m = s10.last_cc_sync_time_m;
     const double cc_sync_epsilon_s = 1.0e-9;
-    (void)dsd_trunk_cc_candidates_add(&s10, 852000000, 0);
+    (void)dsd_trunk_cc_candidates_add_with_flags(&s10, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     p25_sm_ctx_t ctx10;
     p25_sm_init_ctx(&ctx10, &o10, &s10);
     g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_TIMEOUT;
@@ -797,7 +806,7 @@ main(void) {
     s18.p25_iden_fdma[id9].trust = 2;
     s18.p25_iden_fdma[id9].populated = 1;
     s18.p25_chan_tdma_explicit[id9] = 1;
-    (void)dsd_trunk_cc_candidates_add(&s18, 853000000, 0);
+    (void)dsd_trunk_cc_candidates_add_with_flags(&s18, 853000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     p25_sm_ctx_t ctx18;
     p25_sm_init_ctx(&ctx18, &o18, &s18);
     assert(ctx18.state == P25_SM_IDLE);
@@ -888,7 +897,7 @@ main(void) {
     o18b.p25_prefer_candidates = 1;
     s18b.p25_cc_freq = 851000000;
     s18b.trunk_cc_freq = 851000000;
-    (void)dsd_trunk_cc_candidates_add(&s18b, 852000000, 0);
+    (void)dsd_trunk_cc_candidates_add_with_flags(&s18b, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     p25_sm_ctx_t ctx18b;
     p25_sm_init_ctx(&ctx18b, &o18b, &s18b);
     ctx18b.config.cc_grace_s = 5.0;
@@ -1159,7 +1168,6 @@ main(void) {
     ctx19b.slots[1].last_grant_m = dsd_time_now_monotonic_s();
     s19b.p25_p2_audio_allowed[0] = 1;
     s19b.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
-    s19b.p25_p2_enc_lockout_muted[0] = 1U;
 
     p25_sm_event_t enc_slot0 = p25_sm_ev_enc(0, 0x84, 0x1234, 5101);
     g_result_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -1170,7 +1178,7 @@ main(void) {
     assert(ctx19b.state == P25_SM_TUNED);
     assert(ctx19b.slots[1].grant_active == 1);
     assert(s19b.p25_p2_audio_allowed[0] == 0);
-    assert(s19b.p25_p2_enc_lockout_muted[0] == 1);
+    assert(s19b.p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
 
     // A retained sticky block suppresses only encrypted/unknown re-probes;
     // an explicit-clear grant on the same slot starts a new clear call.
@@ -1274,7 +1282,6 @@ main(void) {
     assert(ctx19g.slots[0].svc_bits == 0x00);
     assert(ctx19g.slots[0].crypto_attempt_m == 0.0);
     assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
-    assert(s19g.p25_p2_enc_lockout_muted[0] == 0U);
 
     s19g.p25_p2_audio_allowed[0] = 1;
     s19g.p25_p2_audio_ring_count[0] = 1;
@@ -1445,7 +1452,6 @@ main(void) {
     p25_sm_event(&ctx19j, &o19j, &s19j, &inband_encrypted);
     assert(s19j.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     assert(s19j.p25_p2_audio_allowed[0] == 0);
-    assert(s19j.p25_p2_enc_lockout_muted[0] == 1U);
     assert(ctx19j.slots[0].voice_active == 0);
     assert(ctx19j.slots[0].last_active_m == 0.0);
     assert(ctx19j.t_voice_m == 0.0);
@@ -1553,7 +1559,6 @@ main(void) {
     s19c.trunk_vc_freq[0] = s19c.trunk_vc_freq[1] = 851000000;
     s19c.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
     s19c.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
-    s19c.p25_p2_enc_lockout_muted[0] = 1U;
     s19c.p25_p2_audio_allowed[1] = 1;
     s19c.p25_p2_audio_ring_count[0] = 2;
     s19c.p25_p2_audio_ring_count[1] = 3;
@@ -1582,7 +1587,6 @@ main(void) {
     assert(ctx19c.slots[0].grant_active == 0);
     assert(ctx19c.slots[1].voice_active == 1);
     assert(s19c.p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
-    assert(s19c.p25_p2_enc_lockout_muted[0] == 1U);
     assert(s19c.p25_p2_audio_ring_count[0] == 0);
     assert(s19c.p25_p2_audio_ring_count[1] == 3);
     assert(s19c.s_l4[0][0] == 0);
@@ -1602,7 +1606,6 @@ main(void) {
     s19i.p25_vc_freq[0] = s19i.p25_vc_freq[1] = 851000000;
     s19i.trunk_vc_freq[0] = s19i.trunk_vc_freq[1] = 851000000;
     s19i.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-    s19i.p25_p2_enc_lockout_muted[0] = 1U;
     s19i.p25_p2_audio_ring_count[0] = 2;
     s19i.s_l4[0][0] = 333;
 
@@ -1647,7 +1650,6 @@ main(void) {
     s19d.p25_vc_freq[0] = s19d.p25_vc_freq[1] = 851125000;
     s19d.trunk_vc_freq[0] = s19d.trunk_vc_freq[1] = 851125000;
     s19d.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-    s19d.p25_p2_enc_lockout_muted[0] = 1U;
     s19d.p25_p2_audio_ring_count[0] = 2;
     s19d.s_l4[0][0] = 111;
 
@@ -1669,7 +1671,6 @@ main(void) {
     assert(ctx19d.state == P25_SM_ON_CC);
     assert(o19d.p25_is_tuned == 0 && o19d.trunk_is_tuned == 0);
     assert(s19d.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
-    assert(s19d.p25_p2_enc_lockout_muted[0] == 0U);
     assert(s19d.p25_p2_audio_ring_count[0] == 0);
     assert(s19d.s_l4[0][0] == 0);
 
@@ -1861,7 +1862,7 @@ main(void) {
         return 1;
     }
 
-    p25_sm_on_release(&o21, &s21);
+    p25_sm_release(p25_sm_get_ctx(), &o21, &s21, "explicit-release");
     assert(g_result_return_to_cc_calls == 1);
     assert(release_ctx->state == P25_SM_TUNED);
     assert(release_ctx->tune_count == 41);
@@ -1988,8 +1989,8 @@ main(void) {
     s24.dmr_soR = 0x41;
     s24.p25_service_options_valid[0] = 1;
     s24.p25_service_options_valid[1] = 1;
-    s24.p25_p2_enc_lockout_muted[0] = 1;
-    s24.p25_p2_enc_lockout_muted[1] = 1;
+    s24.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    s24.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     s24.p25_policy_tg[0] = 6201;
     s24.p25_policy_tg[1] = 6202;
 
@@ -2022,7 +2023,7 @@ main(void) {
     assert(s24.payload_keyid == 0 && s24.payload_keyidR == 0);
     assert(s24.dmr_so == 0 && s24.dmr_soR == 0);
     assert(s24.p25_service_options_valid[0] == 0 && s24.p25_service_options_valid[1] == 0);
-    assert(s24.p25_p2_enc_lockout_muted[0] == 0 && s24.p25_p2_enc_lockout_muted[1] == 0);
+    assert(s24.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN && s24.p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN);
     assert(s24.p25_policy_tg[0] == 0 && s24.p25_policy_tg[1] == 0);
     assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 0);
 

@@ -1137,19 +1137,19 @@ main(void) {
                       recovery_generation == failed_generation + 3U && dsd_trunk_tuning_pending_request() == 0U
                           && dsd_trunk_tuning_frame_is_current(recovery_generation));
 
-    // A legacy VC tune after recovery completion supersedes the saved request.
+    // A VC tune after recovery completion supersedes the saved request.
     // The next no-carrier pass must issue a new correlated CC return instead
     // of clearing VC state while the hardware remains on the newer target.
-    dsd_trunk_tuning_hooks legacy_vc_hooks = {0};
-    legacy_vc_hooks.tune_to_freq_result = dsd_engine_trunk_tune_to_freq;
-    dsd_trunk_tuning_hooks_set(legacy_vc_hooks);
+    dsd_trunk_tuning_hooks vc_hooks = {0};
+    vc_hooks.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request;
+    dsd_trunk_tuning_hooks_set(vc_hooks);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     const long superseding_vc_freq = 937500000;
-    rc |= expect_true("generic-rtl-recovery-newer-legacy-vc-tune",
-                      dsd_trunk_tuning_hook_tune_to_freq(opts, state, superseding_vc_freq, 0)
+    rc |= expect_true("generic-rtl-recovery-newer-vc-tune",
+                      dsd_trunk_tuning_hook_tune_to_freq(opts, state, superseding_vc_freq, 0, NULL)
                           == DSD_TRUNK_TUNE_RESULT_OK);
     const uint64_t superseding_vc_generation = dsd_trunk_tuning_generation();
-    rc |= expect_true("generic-rtl-recovery-newer-legacy-vc-owns-generation",
+    rc |= expect_true("generic-rtl-recovery-newer-vc-owns-generation",
                       g_rtl_tune_calls == 4 && g_rtl_tune_freq == (uint32_t)superseding_vc_freq
                           && superseding_vc_generation == recovery_generation + 1U && opts->trunk_is_tuned == 1);
 

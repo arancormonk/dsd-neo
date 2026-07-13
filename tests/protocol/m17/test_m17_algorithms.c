@@ -657,16 +657,6 @@ test_stream_content_helpers(void) {
     err |= expect_u32("stream next max wraps", m17_stream_next_frame_counter(M17_STREAM_FRAME_COUNTER_MAX), 0U);
     err |= expect_u32("stream next masks EoT", m17_stream_next_frame_counter(M17_STREAM_FRAME_END_MASK), 1U);
 
-    uint8_t short_chunk[M17_STREAM_PAYLOAD_BITS];
-    for (int i = 0; i < M17_STREAM_PAYLOAD_BITS; i++) {
-        short_chunk[i] = (uint8_t)((i + 1) & 1U);
-    }
-    m17_stream_copy_payload_chunk(short_chunk, 97U, payload);
-    for (int i = 0; i < M17_STREAM_PAYLOAD_BITS; i++) {
-        const uint8_t want = (i < 97) ? short_chunk[i] : 0U;
-        err |= expect_u32("stream short chunk padding", payload[i], want);
-    }
-
     uint8_t lich[M17_LICH_CONTENT_BITS];
     uint8_t lich_encoded[M17_LICH_BITS];
     uint8_t stream_punctured[M17_STREAM_PUNCTURED_BITS];
@@ -947,8 +937,6 @@ test_aes_helpers(void) {
     m17_aes_build_counter(nonce, 0xFFFFU, counter);
     err |= expect_u32("AES final FN counter high masks EoT", counter[14], 0x7FU);
     err |= expect_u32("AES final FN counter low", counter[15], 0xFFU);
-    err |= expect_u32("AES nonce timestamp", m17_aes_nonce_timestamp(nonce), 0x00010203U);
-
     return err;
 }
 

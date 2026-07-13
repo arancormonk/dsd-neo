@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
@@ -28,6 +29,8 @@
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frame_sync_internal.h"
+#include "frame_sync_test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -54,7 +57,7 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) { // NOLINT(misc-u
 }
 
 void
-cleanupAndExit(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+dsd_request_shutdown(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
 }
@@ -66,11 +69,12 @@ dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
     (void)new_rate_hz;
 }
 
-void
-getTimeC_buf(char out[9]) { // NOLINT(misc-use-internal-linkage)
-    if (out) {
-        DSD_SNPRINTF(out, 9, "%s", "00:00:00");
-    }
+int
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out,
+                          size_t out_size) { // NOLINT(misc-use-internal-linkage)
+    (void)timestamp;
+    (void)format;
+    return out ? DSD_SNPRINTF(out, out_size, "%s", "00:00:00") >= 0 : 0;
 }
 
 void
@@ -178,31 +182,31 @@ test_sps_hunt_skips_disabled_protocol_rates(void) {
     reset(&opts, &state);
     opts.frame_dstar = 1;
     state.sps_hunt_idx = 3;
-    assert(dsd_frame_sync_test_sps_hunt_next_index(&opts, &state) == 4);
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == 4);
 
     reset(&opts, &state);
     opts.frame_dmr = 1;
     state.sps_hunt_idx = 4;
-    assert(dsd_frame_sync_test_sps_hunt_next_index(&opts, &state) == 0);
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == 0);
 
     reset(&opts, &state);
     opts.frame_nxdn48 = 1;
     state.sps_hunt_idx = 0;
-    assert(dsd_frame_sync_test_sps_hunt_next_index(&opts, &state) == 1);
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == 1);
 
     reset(&opts, &state);
     opts.frame_provoice = 1;
     state.sps_hunt_idx = 1;
-    assert(dsd_frame_sync_test_sps_hunt_next_index(&opts, &state) == 2);
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == 2);
 
     reset(&opts, &state);
     opts.frame_p25p2 = 1;
     state.sps_hunt_idx = 2;
-    assert(dsd_frame_sync_test_sps_hunt_next_index(&opts, &state) == 3);
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == 3);
 
     reset(&opts, &state);
     state.sps_hunt_idx = 2;
-    assert(dsd_frame_sync_test_sps_hunt_next_index(&opts, &state) == 2);
+    assert(frame_sync_sps_hunt_next_index(&opts, &state) == 2);
 }
 
 static void
@@ -218,14 +222,14 @@ test_sps_hunt_profile_updates_timing(void) {
         state.sps_hunt_idx = (profile_index + 1) % dsd_frame_sync_test_sps_hunt_profile_count();
         state.samplesPerSymbol = -1;
         state.symbolCenter = -1;
-        dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, profile_index);
+        frame_sync_apply_sps_hunt_profile(&opts, &state, profile_index, 0);
         int symbol_rate = dsd_frame_sync_test_sps_hunt_profile_rate(profile_index);
         int expected_sps = dsd_opts_compute_sps_rate(&opts, symbol_rate, dsd_opts_current_input_timing_rate(&opts));
         assert(state.sps_hunt_idx == profile_index);
         assert(state.samplesPerSymbol == expected_sps);
         assert(state.symbolCenter == dsd_opts_symbol_center(expected_sps));
 
-        dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, profile_index);
+        frame_sync_apply_sps_hunt_profile(&opts, &state, profile_index, 0);
         assert(state.samplesPerSymbol == expected_sps);
         assert(state.symbolCenter == dsd_opts_symbol_center(expected_sps));
     }
@@ -237,7 +241,7 @@ test_sps_hunt_profile_updates_timing(void) {
     state.sps_hunt_counter = 100;
     state.samplesPerSymbol = 10;
     state.symbolCenter = 4;
-    dsd_frame_sync_test_no_sync_sps_hunt(&opts, &state);
+    frame_sync_no_sync_sps_hunt(&opts, &state);
     assert(state.sps_hunt_idx == 4);
     assert(state.samplesPerSymbol == 10);
     assert(state.symbolCenter == 4);
@@ -260,7 +264,7 @@ test_sps_hunt_profile_updates_timing(void) {
     state.symbolCenter = 4;
     state.min = -3.0f;
     state.max = 3.0f;
-    dsd_frame_sync_test_no_sync_sps_hunt(&opts, &state);
+    frame_sync_no_sync_sps_hunt(&opts, &state);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
     assert(state.sps_hunt_counter == 0);
     assert(state.samplesPerSymbol == 10);
@@ -286,7 +290,7 @@ test_sps_hunt_profile_updates_timing(void) {
     state.symbolCenter = 4;
     state.min = -3.0f;
     state.max = 3.0f;
-    dsd_frame_sync_test_no_sync_sps_hunt(&opts, &state);
+    frame_sync_no_sync_sps_hunt(&opts, &state);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
     assert(state.sps_hunt_counter == 0);
     assert(state.samplesPerSymbol == 10);
@@ -315,7 +319,7 @@ test_sps_hunt_profile_updates_timing(void) {
     state.p2_cc = 1;
     state.p2_sysid = 1;
     assert(dsd_opts_compute_sps_rate(&opts, 4800, 0) == state.samplesPerSymbol);
-    dsd_frame_sync_test_no_sync_sps_hunt(&opts, &state);
+    frame_sync_no_sync_sps_hunt(&opts, &state);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     assert(state.sps_hunt_counter == 0);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
@@ -337,7 +341,7 @@ test_sps_hunt_profile_updates_timing(void) {
     state.min = -3.0f;
     state.max = 3.0f;
     assert(dsd_opts_compute_sps_rate(&opts, 6000, 0) == state.samplesPerSymbol);
-    dsd_frame_sync_test_no_sync_sps_hunt(&opts, &state);
+    frame_sync_no_sync_sps_hunt(&opts, &state);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
     assert(state.sps_hunt_counter == 0);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
@@ -354,7 +358,7 @@ test_sps_hunt_profile_updates_timing(void) {
     state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) - 1;
     state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 0);
     state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
-    dsd_frame_sync_test_no_sync_sps_hunt(&opts, &state);
+    frame_sync_no_sync_sps_hunt(&opts, &state);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
     assert(state.sps_hunt_counter == 0);
 
@@ -367,7 +371,7 @@ test_sps_hunt_profile_updates_timing(void) {
     state.sps_hunt_idx = 0;
     state.samplesPerSymbol = 20;
     state.symbolCenter = 8;
-    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
     assert(state.sps_hunt_idx == 3);
     assert(state.samplesPerSymbol == 20);
     assert(state.symbolCenter == 8);
@@ -391,7 +395,7 @@ test_sps_hunt_reconciles_external_timing(void) {
     state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 48000);
     state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
 
-    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
     assert(state.sps_hunt_idx == 3);
     assert(state.samplesPerSymbol == 8);
     assert(state.symbolCenter == 3);
@@ -412,10 +416,10 @@ test_sps_hunt_reconciles_external_timing(void) {
     state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 48000);
     state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
 
-    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     assert(state.rf_mod == 1);
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 1);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 1);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
 
     /* Manual -m2 carries profile 3 explicitly because low input rates can round
@@ -435,7 +439,7 @@ test_sps_hunt_reconciles_external_timing(void) {
     state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
 
     assert(dsd_opts_compute_sps_rate(&opts, 4800, 11025) == state.samplesPerSymbol);
-    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
 
@@ -447,7 +451,7 @@ test_sps_hunt_reconciles_external_timing(void) {
     state.sps_hunt_idx = 0;
     state.samplesPerSymbol = 7;
     state.symbolCenter = 3;
-    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
     assert(state.sps_hunt_idx == 0);
     assert(state.samplesPerSymbol == 7);
     assert(state.symbolCenter == 3);
@@ -465,7 +469,7 @@ test_sps_hunt_reconciles_external_timing(void) {
     state.sps_hunt_idx = 3;
     state.samplesPerSymbol = 10;
     state.symbolCenter = 4;
-    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
     assert(state.sps_hunt_idx == 0);
     assert(state.samplesPerSymbol == 10);
     assert(state.symbolCenter == 4);
@@ -481,10 +485,10 @@ test_binary_profiles_override_unlocked_qpsk(void) {
     opts.frame_provoice = 1;
     state.sps_hunt_idx = 0;
     state.rf_mod = 1;
-    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, 2);
+    frame_sync_apply_sps_hunt_profile(&opts, &state, 2, 0);
     assert(state.sps_hunt_idx == 2);
     assert(state.rf_mod == 2);
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 2);
 
     reset(&opts, &state);
     opts.frame_dstar = 1;
@@ -492,10 +496,10 @@ test_binary_profiles_override_unlocked_qpsk(void) {
     state.samplesPerSymbol = 10;
     state.symbolCenter = 4;
     state.rf_mod = 1;
-    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
     assert(state.sps_hunt_idx == 4);
     assert(state.rf_mod == 2);
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 2);
 
     reset(&opts, &state);
     opts.frame_dstar = 1;
@@ -503,10 +507,10 @@ test_binary_profiles_override_unlocked_qpsk(void) {
     opts.mod_qpsk = 1;
     state.sps_hunt_idx = 0;
     state.rf_mod = 1;
-    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, 4);
+    frame_sync_apply_sps_hunt_profile(&opts, &state, 4, 0);
     assert(state.sps_hunt_idx == 4);
     assert(state.rf_mod == 1);
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 1);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 1);
 }
 
 static void
@@ -519,7 +523,7 @@ test_four_level_profiles_reset_inherited_modulation(void) {
     opts.frame_dstar = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
     state.rf_mod = 2;
-    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    frame_sync_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
     assert(state.rf_mod == 0);
 
@@ -528,7 +532,7 @@ test_four_level_profiles_reset_inherited_modulation(void) {
     opts.frame_provoice = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
     state.rf_mod = 2;
-    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    frame_sync_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 0);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     assert(state.rf_mod == 0);
 
@@ -536,7 +540,7 @@ test_four_level_profiles_reset_inherited_modulation(void) {
     opts.frame_p25p1 = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state.rf_mod = 2;
-    dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    frame_sync_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
     assert(state.rf_mod == 2);
 }
 
@@ -691,7 +695,7 @@ test_manual_p25p2_c4fm_bypasses_profile_gating(void) {
     state.min = -3.0f;
     state.max = 3.0f;
 
-    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
     assert(state.sps_hunt_idx == 0);
     assert(state.samplesPerSymbol == 20);
     assert(state.symbolCenter == 8);
@@ -759,7 +763,7 @@ test_short_m17_window_estimates_levels_without_warm_start_history(void) {
         levels[i] = M17_PRE[i] == '3' ? -3.0f : 3.0f;
     }
 
-    assert(state.dmr_sample_history == NULL);
+    assert(state.symbol_history == NULL);
     assert(dsd_frame_sync_test_eval_window(&opts, &state, M17_PRE, levels, 8) == DSD_SYNC_M17_PRE_POS);
     assert(fabsf(state.min - (-1.5f)) < 0.0001f);
     assert(fabsf(state.max - 1.5f) < 0.0001f);
@@ -800,9 +804,9 @@ test_m17_preamble_requires_context_when_dstar_is_enabled(void) {
 
 static void
 test_elapsed_seconds_prefers_monotonic_then_wall_time(void) {
-    assert(fabs(dsd_frame_sync_test_elapsed_seconds(12.5, (time_t)20, 10.0, (time_t)3) - 2.5) < 0.000001);
-    assert(fabs(dsd_frame_sync_test_elapsed_seconds(12.5, (time_t)20, 0.0, (time_t)3) - 17.0) < 0.000001);
-    assert(dsd_frame_sync_test_elapsed_seconds(12.5, (time_t)20, 0.0, (time_t)0) > 1.0e8);
+    assert(fabs(frame_sync_elapsed_seconds(12.5, (time_t)20, 10.0, (time_t)3) - 2.5) < 0.000001);
+    assert(fabs(frame_sync_elapsed_seconds(12.5, (time_t)20, 0.0, (time_t)3) - 17.0) < 0.000001);
+    assert(frame_sync_elapsed_seconds(12.5, (time_t)20, 0.0, (time_t)0) > 1.0e8);
 }
 
 static void
@@ -818,15 +822,13 @@ test_p25_slot_activity_honors_ring_and_hangtime(void) {
     state.p25_p2_last_mac_active_m[1] = 95.0;
     state.p25_p2_audio_ring_count[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
-    dsd_frame_sync_test_p25_slot_activity(&opts, &state, (time_t)100, 100.0, 0.75, 0.75, 1.0, &left_active,
-                                          &right_active);
+    frame_sync_p25_slot_activity(&opts, &state, (time_t)100, 100.0, 0.75, 0.75, 1.0, &left_active, &right_active);
     assert(left_active == 1);
     assert(right_active == 1);
 
     left_active = 0;
     right_active = 0;
-    dsd_frame_sync_test_p25_slot_activity(&opts, &state, (time_t)100, 100.0, 0.75, 0.75, 2.0, &left_active,
-                                          &right_active);
+    frame_sync_p25_slot_activity(&opts, &state, (time_t)100, 100.0, 0.75, 0.75, 2.0, &left_active, &right_active);
     assert(left_active == 1);
     assert(right_active == 0);
 }
@@ -835,12 +837,12 @@ static void
 test_hamming_helpers_find_best_patterns(void) {
     const char* patterns[] = {"012301", "333333", "111111"};
 
-    assert(dsd_frame_sync_test_hamming_distance_pattern("012301", "012301", 6) == 0);
-    assert(dsd_frame_sync_test_hamming_distance_pattern("012301", "012300", 6) == 1);
-    assert(dsd_frame_sync_test_best_ham_for_patterns("111101", patterns, 3, 6, 6) == 1);
-    assert(dsd_frame_sync_test_best_ham_for_patterns("222222", patterns, 3, 6, 3) == 3);
-    assert(dsd_frame_sync_test_best_nxdn_scaled_ham("3131331131", 24) == 0);
-    assert(dsd_frame_sync_test_best_nxdn_scaled_ham("1313113300", 24) == 5);
+    assert(frame_sync_hamming_distance_pattern("012301", "012301", 6) == 0);
+    assert(frame_sync_hamming_distance_pattern("012301", "012300", 6) == 1);
+    assert(frame_sync_best_ham_for_patterns("111101", patterns, 3, 6, 6) == 1);
+    assert(frame_sync_best_ham_for_patterns("222222", patterns, 3, 6, 3) == 3);
+    assert(frame_sync_best_nxdn_scaled_ham("3131331131", 24) == 0);
+    assert(frame_sync_best_nxdn_scaled_ham("1313113300", 24) == 5);
 }
 
 #ifdef USE_RADIO
@@ -1003,7 +1005,7 @@ test_rtl_p25p2_timing_reconciliation_preserves_cqpsk(void) {
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     reset_fake_profile_capture();
 
-    dsd_frame_sync_test_ensure_enabled_sps_profile(&opts, &state);
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     assert(state.rf_mod == 1);
     assert(g_profile_set_calls == 1);
@@ -1093,7 +1095,7 @@ test_rtl_sps_profiles_apply_and_lock_on_sync(void) {
 
     for (int profile_index = 0; profile_index < 5; profile_index++) {
         state.sps_hunt_idx = (profile_index + 1) % 5;
-        dsd_frame_sync_test_apply_sps_hunt_profile(&opts, &state, profile_index);
+        frame_sync_apply_sps_hunt_profile(&opts, &state, profile_index, 0);
         assert(state.sps_hunt_idx == profile_index);
         assert(g_profile_rate == expected_rates[profile_index]);
         assert(g_profile_levels == expected_levels[profile_index]);
@@ -1178,32 +1180,32 @@ test_active_profile_metrics_power_gate_and_votes(void) {
 
     state.sps_hunt_idx = 0;
     state.rf_mod = 0;
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 0);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 101.0);
-    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 0);
+    assert(frame_sync_active_profile_snr_db(&opts, &state) == 101.0);
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
 
     state.rf_mod = 1;
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 1);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 102.0);
-    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 1);
+    assert(frame_sync_active_profile_snr_db(&opts, &state) == 102.0);
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
 
     state.sps_hunt_idx = 4;
     state.rf_mod = 1;
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 103.0);
-    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 1);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 2);
+    assert(frame_sync_active_profile_snr_db(&opts, &state) == 103.0);
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 1);
 
     opts.mod_cli_lock = 1;
     opts.mod_qpsk = 1;
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 1);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 102.0);
-    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 1);
+    assert(frame_sync_active_profile_snr_db(&opts, &state) == 102.0);
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
     opts.mod_cli_lock = 0;
     opts.mod_qpsk = 0;
 
     opts.audio_in_type = AUDIO_IN_WAV;
     dsd_frame_sync_reset_mod_state();
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     dsd_frame_sync_test_get_mod_votes(&c4fm_votes, &qpsk_votes, &gfsk_votes);
     assert(state.rf_mod == 2);
     assert(c4fm_votes == 0);
@@ -1235,7 +1237,7 @@ test_mixed_profile_snr_recovers_from_gfsk(void) {
     dsd_frame_sync_reset_mod_state();
     reset_fake_profile_capture();
 
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     dsd_frame_sync_test_get_mod_votes(&c4fm_votes, &qpsk_votes, &gfsk_votes);
     assert(state.rf_mod == 2);
     assert(c4fm_votes == 0);
@@ -1244,7 +1246,7 @@ test_mixed_profile_snr_recovers_from_gfsk(void) {
     assert(g_profile_set_calls == 0);
 
     lastt = 24;
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     assert(state.rf_mod == 1);
     assert(g_profile_set_calls == 1);
     assert(g_profile_cqpsk == 1);
@@ -1260,7 +1262,7 @@ test_mixed_profile_snr_recovers_from_gfsk(void) {
     state.rf_mod = 2;
     lastt = 24;
     dsd_frame_sync_reset_mod_state();
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     dsd_frame_sync_test_get_mod_votes(&c4fm_votes, &qpsk_votes, &gfsk_votes);
     assert(state.rf_mod == 2);
     assert(c4fm_votes == 0);
@@ -1274,7 +1276,7 @@ test_mixed_profile_snr_recovers_from_gfsk(void) {
     state.rf_mod = 2;
     lastt = 24;
     dsd_frame_sync_reset_mod_state();
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     dsd_frame_sync_test_get_mod_votes(&c4fm_votes, &qpsk_votes, &gfsk_votes);
     assert(state.rf_mod == 2);
     assert(c4fm_votes == 0);
@@ -1305,7 +1307,7 @@ test_snr_squelch_only_applies_to_rtl_input(void) {
         opts.mod_gfsk = 1;
         state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
         state.rf_mod = 2;
-        assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+        assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
     }
 
     reset(&opts, &state);
@@ -1315,7 +1317,7 @@ test_snr_squelch_only_applies_to_rtl_input(void) {
     opts.mod_gfsk = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state.rf_mod = 2;
-    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 1);
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 1);
 
     (void)dsd_unsetenv("DSD_NEO_SNR_SQL_DB");
     dsd_neo_config_init(NULL);
@@ -1338,22 +1340,22 @@ test_nxdn_only_profiles_use_gfsk_snr_gate(void) {
     state.rf_mod = 0;
     g_snr_c4fm = 0.0;
     g_snr_gfsk = 20.0;
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 20.0);
-    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 2);
+    assert(frame_sync_active_profile_snr_db(&opts, &state) == 20.0);
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
 
     reset(&opts, &state);
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.frame_nxdn48 = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
     state.rf_mod = 0;
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 2);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 20.0);
-    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 2);
+    assert(frame_sync_active_profile_snr_db(&opts, &state) == 20.0);
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
 
     g_snr_c4fm = 20.0;
     g_snr_gfsk = 0.0;
-    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 1);
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 1);
 
     reset(&opts, &state);
     opts.audio_in_type = AUDIO_IN_RTL;
@@ -1361,9 +1363,9 @@ test_nxdn_only_profiles_use_gfsk_snr_gate(void) {
     opts.frame_nxdn96 = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state.rf_mod = 0;
-    assert(dsd_frame_sync_test_active_profile_modulation(&opts, &state) == 0);
-    assert(dsd_frame_sync_test_active_profile_snr_db(&opts, &state) == 20.0);
-    assert(dsd_frame_sync_test_should_skip_snr_or_power_gate(&opts, &state) == 0);
+    assert(frame_sync_active_profile_modulation(&opts, &state) == 0);
+    assert(frame_sync_active_profile_snr_db(&opts, &state) == 20.0);
+    assert(frame_sync_should_skip_snr_or_power_gate(&opts, &state) == 0);
 
     (void)dsd_unsetenv("DSD_NEO_SNR_SQL_DB");
     dsd_neo_config_init(NULL);
@@ -1387,7 +1389,7 @@ test_modulation_snr_fallback_votes_and_dwell(void) {
     set_fake_snr(-100.0, 4.0, -100.0, 12.0);
     install_fake_snr_hooks();
 
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     dsd_frame_sync_test_get_mod_votes(&c4fm_votes, &qpsk_votes, &gfsk_votes);
     assert(state.rf_mod == 0);
     assert(c4fm_votes == 0);
@@ -1395,12 +1397,12 @@ test_modulation_snr_fallback_votes_and_dwell(void) {
     assert(gfsk_votes == 0);
 
     lastt = 24;
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     assert(state.rf_mod == 1);
 
     lastt = 24;
     set_fake_snr(25.0, -100.0, 5.0, -100.0);
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     assert(state.rf_mod == 1);
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -1424,7 +1426,7 @@ test_modulation_cli_lock_prevents_votes(void) {
     set_fake_snr(-100.0, -100.0, 20.0, -100.0);
     install_fake_snr_hooks();
 
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     dsd_frame_sync_test_get_mod_votes(&c4fm_votes, &qpsk_votes, &gfsk_votes);
     assert(state.rf_mod == 0);
     assert(c4fm_votes == 0);
@@ -1447,10 +1449,10 @@ test_hamming_override_can_select_qpsk(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_frame_sync_test_set_recent_hamming(10, 1, 24);
 
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     assert(state.rf_mod == 0);
     lastt = 24;
-    dsd_frame_sync_test_auto_switch_modulation(&opts, &state, 24, &lastt);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
     assert(state.rf_mod == 1);
 }
 
@@ -1469,19 +1471,19 @@ test_p25_trunk_tick_recency(void) {
         .p25_sm_try_tick = fake_p25_sm_try_tick,
     });
 
-    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)100);
+    frame_sync_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)100);
     assert(g_frame_sync_tick_calls == 1);
-    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)100);
+    frame_sync_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)100);
     assert(g_frame_sync_tick_calls == 1);
 
     state.lastsynctype = DSD_SYNC_NONE;
-    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)101);
+    frame_sync_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)101);
     assert(g_frame_sync_tick_calls == 2);
-    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)105);
+    frame_sync_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)105);
     assert(g_frame_sync_tick_calls == 2);
 
     state.p25_p2_active_slot = 0;
-    dsd_frame_sync_test_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)106);
+    frame_sync_maybe_tick_p25_trunk_sm(&opts, &state, (time_t)106);
     assert(g_frame_sync_tick_calls == 3);
 
     dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});

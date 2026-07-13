@@ -3,11 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,7 +85,7 @@ expect_date_shape(const char* label, const char* value, char separator) {
 }
 
 static int
-test_time_format_wrappers(void) {
+test_local_datetime_formats(void) {
     int rc = 0;
     const time_t fixed = (time_t)1700000000;
     struct tm local_tm;
@@ -110,49 +110,44 @@ test_time_format_wrappers(void) {
     char time_compact[7];
     char date_hyphen[11];
     char date_compact[9];
-    getTimeN_buf(fixed, time_colon);
-    getTimeF_buf(fixed, time_compact);
-    getDateN_buf(fixed, date_hyphen);
-    getDateF_buf(fixed, date_compact);
+    (void)dsd_format_local_datetime(fixed, DSD_LOCAL_DATETIME_TIME_COLON, time_colon, sizeof time_colon);
+    (void)dsd_format_local_datetime(fixed, DSD_LOCAL_DATETIME_TIME_COMPACT, time_compact, sizeof time_compact);
+    (void)dsd_format_local_datetime(fixed, DSD_LOCAL_DATETIME_DATE_HYPHEN, date_hyphen, sizeof date_hyphen);
+    (void)dsd_format_local_datetime(fixed, DSD_LOCAL_DATETIME_DATE_COMPACT, date_compact, sizeof date_compact);
 
-    if (!expect_str("fixed getTimeN_buf", time_colon, expected_time)) {
+    if (!expect_str("fixed colon time", time_colon, expected_time)) {
         rc = 11;
     }
-    if (!expect_str("fixed getTimeF_buf", time_compact, expected_time_compact)) {
+    if (!expect_str("fixed compact time", time_compact, expected_time_compact)) {
         rc = 12;
     }
-    if (!expect_str("fixed getDateN_buf", date_hyphen, expected_date_hyphen)) {
+    if (!expect_str("fixed hyphen date", date_hyphen, expected_date_hyphen)) {
         rc = 13;
     }
-    if (!expect_str("fixed getDateF_buf", date_compact, expected_date_compact)) {
+    if (!expect_str("fixed compact date", date_compact, expected_date_compact)) {
         rc = 14;
     }
 
     char now_time[7];
     char now_time_colon[9];
     char now_date[9];
-    char now_date_hyphen[11];
     char now_date_slash[11];
-    getTime_buf(now_time);
-    getTimeC_buf(now_time_colon);
-    getDate_buf(now_date);
-    getDateH_buf(now_date_hyphen);
-    getDateS_buf(now_date_slash);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, now_time, sizeof now_time);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, now_time_colon, sizeof now_time_colon);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, now_date, sizeof now_date);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_SLASH, now_date_slash, sizeof now_date_slash);
 
-    if (!expect_time_shape("current getTime_buf", now_time, 0)) {
+    if (!expect_time_shape("current compact time", now_time, 0)) {
         rc = 15;
     }
-    if (!expect_time_shape("current getTimeC_buf", now_time_colon, 1)) {
+    if (!expect_time_shape("current colon time", now_time_colon, 1)) {
         rc = 16;
     }
-    if (!expect_date_shape("current getDate_buf", now_date, '\0')) {
+    if (!expect_date_shape("current compact date", now_date, '\0')) {
         rc = 17;
     }
-    if (!expect_date_shape("current getDateH_buf", now_date_hyphen, '-')) {
+    if (!expect_date_shape("current slash date", now_date_slash, '/')) {
         rc = 18;
-    }
-    if (!expect_date_shape("current getDateS_buf", now_date_slash, '/')) {
-        rc = 19;
     }
 
     return rc;
@@ -160,13 +155,13 @@ test_time_format_wrappers(void) {
 
 int
 main(void) {
-    int rc = test_time_format_wrappers();
+    int rc = test_local_datetime_formats();
     if (rc != 0) {
         return rc;
     }
 
     exitflag = 0;
-    cleanupAndExit(NULL, NULL);
+    dsd_request_shutdown(NULL, NULL);
     if (exitflag != 1) {
         return 20;
     }

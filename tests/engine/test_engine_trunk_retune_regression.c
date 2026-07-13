@@ -318,18 +318,6 @@ rtl_stream_prepare_retune_profile_for_target(uint32_t target_freq_hz, int cqpsk_
 }
 
 void
-rtl_stream_prepare_retune_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
-                                  int persist_ted_override) {
-    rtl_stream_prepare_retune_profile_for_target(0, cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
-                                                 persist_ted_override);
-}
-
-void
-rtl_stream_apply_pending_retune_profile(void) {
-    apply_pending_retune_profile(0);
-}
-
-void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     apply_pending_retune_profile(target_freq_hz);
 }
@@ -412,8 +400,8 @@ main(void) {
     state->trunk_vc_freq[1] = 852000000;
     state->p25_p2_audio_allowed[0] = 1;
     state->p25_p2_audio_allowed[1] = 1;
-    state->p25_p2_enc_lockout_muted[0] = 1;
-    state->p25_p2_enc_lockout_muted[1] = 1;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     state->last_cc_sync_time = 0;
     state->last_cc_sync_time_m = 0.0;
     DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "left active");
@@ -429,7 +417,7 @@ main(void) {
     g_setfreq_calls = 0;
     g_last_setfreq_hz = 0;
 
-    dsd_engine_return_to_cc(opts, state);
+    dsd_engine_return_to_cc_request(opts, state, 0U);
 
     /* Core return semantics. */
     assert(opts->trunk_is_tuned == 0);
@@ -438,8 +426,8 @@ main(void) {
     assert(state->trunk_vc_freq[1] == 0);
     assert(state->p25_p2_audio_allowed[0] == 0);
     assert(state->p25_p2_audio_allowed[1] == 0);
-    assert(state->p25_p2_enc_lockout_muted[0] == 0);
-    assert(state->p25_p2_enc_lockout_muted[1] == 0);
+    assert(state->p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
+    assert(state->p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN);
     assert(strcmp(state->call_string[0], "                     ") == 0);
     assert(strcmp(state->call_string[1], "                     ") == 0);
     assert(state->active_channel[0][0] == '\0');
@@ -470,7 +458,7 @@ main(void) {
     g_setmod_result = false;
     g_setfreq_result = true;
     g_frame_sync_reset_calls = 0;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 853000000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_setfreq_calls == 1);
     assert(g_last_setfreq_hz == 853000000);
     assert(opts->trunk_is_tuned == 1);
@@ -488,7 +476,7 @@ main(void) {
     g_setfreq_result = true;
     g_drain_audio_calls = 0;
     g_rtl_tune_calls = 0;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 853500000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853500000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_drain_audio_calls == 1);
     assert(g_setfreq_calls == 1);
     assert(g_last_setfreq_hz == 853500000);
@@ -514,7 +502,7 @@ main(void) {
     g_setfreq_calls = 0;
     g_last_setfreq_hz = 0;
     g_setfreq_result = true;
-    assert(dsd_engine_return_to_cc(opts, state) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_setfreq_calls == 1);
     assert(g_last_setfreq_hz == 851000000);
     assert(state->samplesPerSymbol == 16);
@@ -533,7 +521,7 @@ main(void) {
     g_frame_sync_reset_calls = 0;
     g_p25p2_frame_reset_calls = 0;
     g_setfreq_result = true;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 853600000, 16) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853600000, 16, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_frame_sync_reset_calls == 1);
     assert(g_p25p2_frame_reset_calls == 1);
 
@@ -550,12 +538,12 @@ main(void) {
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
     state->sps_hunt_counter = 17;
     g_setfreq_result = true;
-    assert(dsd_engine_trunk_tune_to_cc(opts, state, 451000000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
     assert(state->sps_hunt_counter == 17);
 
     state->sps_hunt_counter = 23;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 451500000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 451500000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
     assert(state->sps_hunt_counter == 23);
 
@@ -567,10 +555,10 @@ main(void) {
     opts->use_rigctl = 1;
     g_tune_generation_advance_calls = 0;
     g_setfreq_result = true;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 853700000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853700000, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_tune_generation_advance_calls == 1);
     g_setfreq_result = false;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 853800000, 0) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853800000, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(g_tune_generation_advance_calls == 1);
 
 #ifdef USE_RADIO
@@ -579,7 +567,7 @@ main(void) {
     opts->audio_in_type = AUDIO_IN_RTL;
     state->rtl_ctx = (RtlSdrContext*)state;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 853900000, 0) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853900000, 0, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(g_tune_generation_advance_calls == 1);
     assert(g_tune_request_pending != 0U);
     dsd_trunk_tuning_request_complete(g_tune_request_pending, DSD_TRUNK_TUNE_RESULT_OK);
@@ -609,7 +597,7 @@ main(void) {
     g_rtl_ted_sps = 5;
     g_rtl_ted_sps_override = 0;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 853750000, 8) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853750000, 8, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_setfreq_calls == 1);
     assert(g_last_setfreq_hz == 853750000);
     assert(g_rtl_tune_calls == 0);
@@ -633,7 +621,7 @@ main(void) {
     g_setmod_result = false;
     g_setfreq_result = false;
     g_frame_sync_reset_calls = 0;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 854000000, 0) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 854000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(opts->trunk_is_tuned == 0);
     assert(state->trunk_vc_freq[0] == 0);
     assert(g_frame_sync_reset_calls == 0);
@@ -648,7 +636,7 @@ main(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_drain_audio_calls = 0;
     g_rtl_tune_calls = 0;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 854500000, 0) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 854500000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_drain_audio_calls == 0);
     assert(g_rtl_tune_calls == 1);
 
@@ -668,7 +656,7 @@ main(void) {
     g_rtl_ted_sps = 8;
     g_rtl_ted_sps_override = 8;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_trunk_tune_to_cc(opts, state, 452000000, 10) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 452000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->trunk_cc_freq == 452000000);
     assert(g_rtl_pending_active == 0);
     assert(g_rtl_cqpsk_enable == 0);
@@ -693,7 +681,7 @@ main(void) {
     g_trunk_scan_saved_autogain_on = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     rtl_stream_clear_pending_retune_profile();
-    assert(dsd_engine_trunk_tune_to_cc(opts, state, 453000000, 10) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(g_rtl_pending_active == 1);
     assert(g_rtl_pending_tuner_gain_is_set == 1);
     assert(g_rtl_pending_tuner_gain_tenth_db == 270);
@@ -714,7 +702,7 @@ main(void) {
     g_trunk_scan_saved_autogain_on = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     rtl_stream_clear_pending_retune_profile();
-    assert(dsd_engine_trunk_tune_to_cc(opts, state, 453500000, 10) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 453500000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(g_rtl_pending_active == 1);
     assert(g_rtl_pending_tuner_gain_is_set == 1);
     assert(g_rtl_pending_tuner_gain_is_auto == 1);
@@ -745,7 +733,7 @@ main(void) {
     g_rtl_pending_active = 0;
     g_frame_sync_reset_calls = 0;
     g_p25p2_frame_reset_calls = 0;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 855000000, 4) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 855000000, 4, 0U) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
     assert(opts->trunk_is_tuned == 0);
     assert(state->trunk_vc_freq[0] == 0);
     assert(state->p25_vc_cqpsk_override == 1);
@@ -781,7 +769,7 @@ main(void) {
     g_rtl_pending_active = 0;
     g_frame_sync_reset_calls = 0;
     g_p25p2_frame_reset_calls = 0;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 855000000, 8) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 855000000, 8, 0U) == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(opts->trunk_is_tuned == 1);
     assert(state->trunk_vc_freq[0] == 855000000);
     assert(state->p25_vc_cqpsk_override == -1);
@@ -822,7 +810,7 @@ main(void) {
     g_rtl_ted_sps_override = 0;
     g_rtl_pending_active = 0;
     g_frame_sync_reset_calls = 0;
-    assert(dsd_engine_trunk_tune_to_cc(opts, state, 852000000, 4) == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 4, 0U) == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(state->rf_mod == 1);
     assert(state->trunk_cc_freq == 852000000);
     assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
@@ -860,7 +848,7 @@ main(void) {
     g_rtl_symbol_levels = 4;
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_trunk_tune_to_cc(opts, state, 852250000, 5) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852250000, 5, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_cqpsk_enable == 1);
 
     /* Explicit target C4FM overrides a globally forced CQPSK runtime mode. */
@@ -883,7 +871,7 @@ main(void) {
     g_rtl_symbol_levels = 4;
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_trunk_tune_to_cc(opts, state, 852500000, 5) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852500000, 5, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->rf_mod == 0);
     assert(g_rtl_cqpsk_enable == 0);
     assert(g_rtl_symbol_rate_hz == 4800);
@@ -914,7 +902,7 @@ main(void) {
     g_rtl_symbol_levels = 4;
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_trunk_tune_to_freq(opts, state, 853000000, 8) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 8, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_pending_active == 0);
     assert(g_rtl_cqpsk_enable == 1);
     assert(g_rtl_symbol_rate_hz == 6000);
@@ -941,7 +929,7 @@ main(void) {
     g_rtl_symbol_levels = 4;
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_trunk_tune_to_cc(opts, state, 852750000, 5) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852750000, 5, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->rf_mod == 1);
     assert(g_rtl_cqpsk_enable == 1);
     assert(g_rtl_symbol_rate_hz == 4800);
@@ -976,7 +964,7 @@ main(void) {
     g_rtl_ted_sps_override = 8;
     g_rtl_pending_active = 0;
     g_frame_sync_reset_calls = 0;
-    assert(dsd_engine_return_to_cc(opts, state) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(opts->trunk_is_tuned == 0);
     assert(opts->p25_is_tuned == 0);
     assert(state->rf_mod == 1);

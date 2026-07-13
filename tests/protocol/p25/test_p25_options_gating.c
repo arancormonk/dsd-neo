@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,7 +29,6 @@
 struct RtlSdrContext;
 
 void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
-void p25_sm_on_release(dsd_opts* opts, dsd_state* state);
 
 // Stubs for external hooks
 bool
@@ -191,7 +191,7 @@ main(void) {
     before = st.p25_sm_tune_count;
     process_MAC_VPDU(&opts, &st, 0, MAC);
     rc |= expect_true("group allowed tunes", st.p25_sm_tune_count == before + 1);
-    p25_sm_on_release(&opts, &st);
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
     opts.p25_is_tuned = 0;
 
@@ -226,7 +226,7 @@ main(void) {
     rc |= expect_true("private allowed tunes", st.p25_sm_tune_count == before + 1);
 
     // Case D: helper-path private allow-list behavior: unknown private IDs block.
-    p25_sm_on_release(&opts, &st);
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
     opts.p25_is_tuned = 0;
     opts.trunk_use_allow_list = 1;

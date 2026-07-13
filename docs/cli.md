@@ -101,7 +101,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 ## Display & UI
 
-- `--frontend terminal` Use the terminal UI (`-N` is the legacy alias)
+- `--frontend terminal` Use the terminal UI (`-N` is the short CLI alias)
 - `-Z` Log MBE/PDU payloads to the console (verbose)
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
@@ -182,8 +182,9 @@ Windows console runs:
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload
 - `-r <files>` Play saved MBE files
 - `-c <file>` Save symbol captures to a .bin file
-- `--symbol-capture-format <soft|legacy>` Select symbol capture format. `soft` is the default and preserves dibit
-  reliability, bit LLRs, and raw symbol values for replay; `legacy` writes the historical one-byte hard dibit stream.
+- `--symbol-capture-format <soft|legacy>` Select symbol capture format. New captures use the soft format, which
+  preserves dibit reliability, bit LLRs, and raw symbol values for replay. The `legacy` value remains accepted as an
+  alias for `soft`, so existing command lines continue to work without creating new headerless captures.
   Neither format stores the NXDN symbol rate, so NXDN capture replay requires `-fi` or `-fn` instead of `-fa`.
 - `-d <dir>` Save raw MBE vocoder frames in this folder
 - `-J <file>` Append event log output
@@ -221,7 +222,7 @@ Notes
 
 - `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
 - `-n <num>` Analog output gain (0–100%)
-- `-nm` Enable legacy DMR mono audio path (does not change which frames are decoded)
+- `-nm` Enable the DMR mono audio path (does not change which frames are decoded)
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
 - `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3)
@@ -233,7 +234,7 @@ Notes
 - Auto: `-fa`
 - Passive analog monitor: `-fA`
 - Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
-- DMR simplex (BS/MS): `-fs` (stereo output), `-fr` (legacy mono alias)
+- DMR simplex (BS/MS): `-fs` (stereo output), `-fr` (mono alias)
 - P25 Phase 1 only: `-f1`
 - P25 Phase 2 only (6000 sps): `-f2`
 - D‑STAR: `-fd`
@@ -298,7 +299,7 @@ Notes
   - Use per-target `chan_csv` entries in the target CSV; global `-C` is rejected in this mode.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
     active target.
-  - Cannot be combined with legacy `-Y` or IQ replay.
+  - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
   - Conventional DMR activity hold: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`).
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
@@ -544,8 +545,6 @@ paths; they are not part of RTL-family digital FSK symbol decode.
 - `DSD_NEO_COSTAS_BW=<float>`, `DSD_NEO_COSTAS_DAMPING=<float>` — Costas loop tuning
 - `DSD_NEO_CHANNEL_LPF=0|1` — channel LPF enable/disable (auto-enabled at RTL DSP rates >=20 kHz; mode passbands protect nominal channel edges)
 - `DSD_NEO_WINDOW_FREEZE=1` — freeze symbol‑center window timing for debugging
-- `DSD_NEO_COMBINE_ROT=0|1` — enable combined rotation (default 1)
-- `DSD_NEO_UPSAMPLE_FP=0|1` — enable upsampler fixed‑point path (default 1)
 - `DSD_NEO_CQPSK=1` — enable CQPSK demodulation
 - `DSD_NEO_CQPSK_SYNC_INV=1`, `DSD_NEO_CQPSK_SYNC_NEG=1` — CQPSK sync polarity tweaks
 

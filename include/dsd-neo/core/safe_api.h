@@ -227,33 +227,6 @@ dsd_safe_snprintf(char* dst, size_t dst_size, const char* fmt, ...) {
     return rc;
 }
 
-static inline int dsd_safe_vsprintf_impl(char* dst, size_t dst_size, const char* fmt, va_list ap)
-    DSD_NEO_PRINTF_FORMAT(3, 0);
-
-static inline int
-dsd_safe_vsprintf_impl(char* dst, size_t dst_size, const char* fmt, va_list ap) {
-    if (dst == NULL || fmt == NULL) {
-        return -1;
-    }
-    if (dst_size != (size_t)-1) {
-        return dsd_safe_vsnprintf(dst, dst_size, fmt, ap);
-    }
-    (void)fmt;
-    (void)ap;
-    return -1;
-}
-
-static inline int dsd_safe_sprintf_impl(char* dst, size_t dst_size, const char* fmt, ...) DSD_NEO_PRINTF_FORMAT(3, 4);
-
-static inline int
-dsd_safe_sprintf_impl(char* dst, size_t dst_size, const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int rc = dsd_safe_vsprintf_impl(dst, dst_size, fmt, ap);
-    va_end(ap);
-    return rc;
-}
-
 static inline int dsd_safe_vsscanf(const char* src, const char* fmt, va_list ap) DSD_NEO_SCANF_FORMAT(2, 0);
 
 static inline int
@@ -287,8 +260,6 @@ dsd_safe_sscanf(const char* src, const char* fmt, ...) {
 #define DSD_MEMSET(dst, value, count)         dsd_safe_memset_impl((dst), DSD_NEO_OBJECT_SIZE(dst), (value), (count))
 #define DSD_FPRINTF(stream, ...)              dsd_safe_fprintf((stream), __VA_ARGS__)
 #define DSD_SNPRINTF(dst, dst_size, ...)      dsd_safe_snprintf((dst), (dst_size), __VA_ARGS__)
-/* Deprecated: use DSD_SNPRINTF(dst, sizeof dst, ...) or another explicit destination size. */
-#define DSD_SPRINTF(dst, ...)                 dsd_safe_sprintf_impl((dst), DSD_NEO_OBJECT_SIZE(dst), __VA_ARGS__)
 #define DSD_SSCANF(src, ...)                  dsd_safe_sscanf((src), __VA_ARGS__)
 #define DSD_VSNPRINTF(dst, dst_size, fmt, ap) dsd_safe_vsnprintf((dst), (dst_size), (fmt), (ap))
 

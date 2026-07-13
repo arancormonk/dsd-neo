@@ -6,7 +6,7 @@
 /*
  * P25 LCW 0x4F (Call Termination) unit test.
  * Feeds a minimal LCW bit array to p25_lcw() and verifies that
- * p25_sm_on_release -> return_to_cc is invoked when tuned.
+ * p25_sm_release -> return_to_cc is invoked when tuned.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -57,9 +57,10 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     return 0;
 }
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_return_to_cc_called++;
     if (opts) {
         opts->p25_is_tuned = 0;
@@ -68,12 +69,13 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (state) {
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc = return_to_cc;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -133,17 +135,7 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)slot;
 }
 
-// Minimal ConvertBitIntoBytes (MSB-first) used by LCW
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return out;
-}
-
+// Minimal convert_bits_into_output (MSB-first) used by LCW
 static void
 set_bits_msb(uint8_t* b, int off, int n, uint32_t v) {
     for (int i = 0; i < n; i++) {

@@ -9,8 +9,7 @@
  *
  * Tests the complete resample-on-sync flow:
  * 1. Symbol history buffer push/get operations
- * 2. Sync pattern correlation scoring
- * 3. CACH re-digitization with corrected thresholds
+ * 2. CACH re-digitization with corrected thresholds
  *
  * Verifies that re-digitization produces expected dibits in the correct
  * ring-buffer-relative positions.
@@ -20,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/sync_calibration.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,34 +77,34 @@ test_history_buffer_ops(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     /* Initialize history buffer */
-    int ret = dmr_sample_history_init(&state);
+    int ret = dsd_symbol_history_init(&state, DSD_SYMBOL_HISTORY_SIZE);
     check_int("init return", 0, ret);
-    check_int("buffer allocated", 1, state.dmr_sample_history != NULL);
-    check_int("size", DMR_SAMPLE_HISTORY_SIZE, state.dmr_sample_history_size);
-    check_int("head", 0, state.dmr_sample_history_head);
-    check_int("count", 0, state.dmr_sample_history_count);
+    check_int("buffer allocated", 1, state.symbol_history != NULL);
+    check_int("size", DSD_SYMBOL_HISTORY_SIZE, state.symbol_history_size);
+    check_int("head", 0, state.symbol_history_head);
+    check_int("count", 0, state.symbol_history_count);
 
     /* Push some values */
-    dmr_sample_history_push(&state, 1.0f);
-    dmr_sample_history_push(&state, 2.0f);
-    dmr_sample_history_push(&state, 3.0f);
+    dsd_symbol_history_push(&state, 1.0f);
+    dsd_symbol_history_push(&state, 2.0f);
+    dsd_symbol_history_push(&state, 3.0f);
 
-    check_int("count after push", 3, state.dmr_sample_history_count);
-    check_int("head after push", 3, state.dmr_sample_history_head);
+    check_int("count after push", 3, state.symbol_history_count);
+    check_int("head after push", 3, state.symbol_history_head);
 
-    /* Get values: offset 0 is most recent, -1 is one before, etc. */
-    check_float("get 0", 3.0f, dmr_sample_history_get(&state, 0), FLOAT_TOL);
-    check_float("get -1", 2.0f, dmr_sample_history_get(&state, -1), FLOAT_TOL);
-    check_float("get -2", 1.0f, dmr_sample_history_get(&state, -2), FLOAT_TOL);
+    /* Generic back offsets are non-negative: 0 is newest. */
+    check_float("get 0", 3.0f, dsd_symbol_history_get_back(&state, 0), FLOAT_TOL);
+    check_float("get 1", 2.0f, dsd_symbol_history_get_back(&state, 1), FLOAT_TOL);
+    check_float("get 2", 1.0f, dsd_symbol_history_get_back(&state, 2), FLOAT_TOL);
 
     /* Reset */
-    dmr_sample_history_reset(&state);
-    check_int("count after reset", 0, state.dmr_sample_history_count);
-    check_int("head after reset", 0, state.dmr_sample_history_head);
+    dsd_symbol_history_reset(&state);
+    check_int("count after reset", 0, state.symbol_history_count);
+    check_int("head after reset", 0, state.symbol_history_head);
 
     /* Cleanup */
-    dmr_sample_history_free(&state);
-    check_int("buffer freed", 1, state.dmr_sample_history == NULL);
+    dsd_symbol_history_free(&state);
+    check_int("buffer freed", 1, state.symbol_history == NULL);
 
     printf("test_history_buffer_ops: passed\n\n");
 }
@@ -120,116 +120,28 @@ test_history_buffer_wrap(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     /* Use small buffer for wrap test */
-    state.dmr_sample_history_size = 4;
-    state.dmr_sample_history = (float*)malloc(sizeof(float) * 4);
-    DSD_MEMSET(state.dmr_sample_history, 0, sizeof(float) * 4);
-    state.dmr_sample_history_head = 0;
-    state.dmr_sample_history_count = 0;
+    check_int("small init", 0, dsd_symbol_history_init(&state, 4));
 
     /* Push 6 values into size-4 buffer */
     for (int i = 1; i <= 6; i++) {
-        dmr_sample_history_push(&state, (float)i);
+        dsd_symbol_history_push(&state, (float)i);
     }
 
     /* Count should be clamped at buffer size */
-    check_int("count clamped", 4, state.dmr_sample_history_count);
+    check_int("count clamped", 4, state.symbol_history_count);
 
     /* Head should have wrapped */
-    check_int("head wrapped", 2, state.dmr_sample_history_head);
+    check_int("head wrapped", 2, state.symbol_history_head);
 
     /* Buffer should contain [5, 6, 3, 4] with head at 2 */
     /* Most recent is 6, then 5, then 4, then 3 */
-    check_float("get 0 (most recent)", 6.0f, dmr_sample_history_get(&state, 0), FLOAT_TOL);
-    check_float("get -1", 5.0f, dmr_sample_history_get(&state, -1), FLOAT_TOL);
-    check_float("get -2", 4.0f, dmr_sample_history_get(&state, -2), FLOAT_TOL);
-    check_float("get -3", 3.0f, dmr_sample_history_get(&state, -3), FLOAT_TOL);
+    check_float("get 0 (most recent)", 6.0f, dsd_symbol_history_get_back(&state, 0), FLOAT_TOL);
+    check_float("get 1", 5.0f, dsd_symbol_history_get_back(&state, 1), FLOAT_TOL);
+    check_float("get 2", 4.0f, dsd_symbol_history_get_back(&state, 2), FLOAT_TOL);
+    check_float("get 3", 3.0f, dsd_symbol_history_get_back(&state, 3), FLOAT_TOL);
 
-    free(state.dmr_sample_history);
+    dsd_symbol_history_free(&state);
     printf("test_history_buffer_wrap: passed\n\n");
-}
-
-/**
- * @brief Test sync correlation scoring.
- */
-static void
-test_sync_correlation(void) {
-    printf("=== test_sync_correlation ===\n");
-
-    static struct dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
-
-    /* Initialize history */
-    dmr_sample_history_init(&state);
-
-    /* Push canonical BS_VOICE sync pattern from sync_patterns.h. */
-    float bs_voice[DMR_SYNC_SYMBOLS];
-    fill_symbols_from_sync_ascii(DMR_BS_VOICE_SYNC, bs_voice);
-
-    for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
-        dmr_sample_history_push(&state, bs_voice[i]);
-    }
-
-    /* Score should be high for matching pattern */
-    float score_match = dmr_sync_score(&state, 0, 1.0f, DMR_SYNC_BS_VOICE);
-    /* Perfect match: sum of (±3)^2 for 24 symbols = 24 * 9 = 216 */
-    check_float("score match", 216.0f, score_match, 1.0f);
-
-    /* Score for wrong pattern should be lower or negative */
-    float score_wrong = dmr_sync_score(&state, 0, 1.0f, DMR_SYNC_BS_DATA);
-    g_test_count++;
-    if (score_wrong >= score_match) {
-        printf("FAIL: wrong pattern score (%.1f) should be less than match (%.1f)\n", (double)score_wrong,
-               (double)score_match);
-        g_fail_count++;
-    }
-
-    dmr_sample_history_free(&state);
-    printf("test_sync_correlation: passed\n\n");
-}
-
-/**
- * @brief Test symbol extraction from history.
- */
-static void
-test_symbol_extraction(void) {
-    printf("=== test_symbol_extraction ===\n");
-
-    static struct dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
-
-    dmr_sample_history_init(&state);
-
-    /* Push known pattern */
-    float pattern[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
-    for (int i = 0; i < 6; i++) {
-        dmr_sample_history_push(&state, pattern[i]);
-    }
-
-    /* Push padding to simulate sync at end of buffer */
-    for (int i = 0; i < DMR_SYNC_SYMBOLS - 6; i++) {
-        dmr_sample_history_push(&state, 0.0f);
-    }
-
-    /* Push sync pattern (BS_VOICE) */
-    float bs_voice[DMR_SYNC_SYMBOLS];
-    fill_symbols_from_sync_ascii(DMR_BS_VOICE_SYNC, bs_voice);
-    for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
-        dmr_sample_history_push(&state, bs_voice[i]);
-    }
-
-    /* Extract sync symbols */
-    float extracted[DMR_SYNC_SYMBOLS];
-    dmr_extract_sync_symbols(&state, 0, 1.0f, extracted);
-
-    /* Verify extracted symbols match what we pushed */
-    for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
-        char name[32];
-        DSD_SNPRINTF(name, sizeof(name), "extracted[%d]", i);
-        check_float(name, bs_voice[i], extracted[i], FLOAT_TOL);
-    }
-
-    dmr_sample_history_free(&state);
-    printf("test_symbol_extraction: passed\n\n");
 }
 
 /**
@@ -249,7 +161,7 @@ test_cach_redigitize(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     /* Initialize history buffer */
-    dmr_sample_history_init(&state);
+    dsd_symbol_history_init(&state, DSD_SYMBOL_HISTORY_SIZE);
 
     /* Set up ideal thresholds for ±3/±1 symbol levels */
     state.max = 3.0f;
@@ -286,7 +198,7 @@ test_cach_redigitize(void) {
 
     /* Push all symbols into history */
     for (int i = 0; i < DMR_RESAMPLE_SYMBOLS + DMR_SYNC_SYMBOLS; i++) {
-        dmr_sample_history_push(&state, test_symbols[i]);
+        dsd_symbol_history_push(&state, test_symbols[i]);
     }
 
     /* Allocate payload buffer */
@@ -326,7 +238,7 @@ test_cach_redigitize(void) {
     }
 
     free(state.dmr_payload_buf);
-    dmr_sample_history_free(&state);
+    dsd_symbol_history_free(&state);
     printf("test_cach_redigitize: passed\n\n");
 }
 
@@ -345,11 +257,13 @@ test_full_resample_on_sync(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     /* Initialize history buffer */
-    dmr_sample_history_init(&state);
+    dsd_symbol_history_init(&state, DSD_SYMBOL_HISTORY_SIZE);
 
-    /* Allocate payload buffer */
-    state.dmr_payload_buf = (int*)malloc(sizeof(int) * DMR_RESAMPLE_SYMBOLS);
-    DSD_MEMSET(state.dmr_payload_buf, 0xFF, sizeof(int) * DMR_RESAMPLE_SYMBOLS);
+    /* Allocate the CACH/prefix and sync-sized rolling payload window. */
+    const int payload_len = DMR_RESAMPLE_SYMBOLS + DMR_SYNC_SYMBOLS;
+    state.dmr_payload_buf = (int*)malloc(sizeof(int) * (size_t)payload_len);
+    DSD_MEMSET(state.dmr_payload_buf, 0xFF, sizeof(int) * (size_t)payload_len);
+    state.dmr_payload_p = state.dmr_payload_buf + payload_len;
 
     /* Push CACH + sync worth of symbols */
     /* CACH with mild DC offset */
@@ -363,14 +277,29 @@ test_full_resample_on_sync(void) {
             case 3: sym = -3.0f + dc_offset; break;
             default: sym = 0.0f; break;
         }
-        dmr_sample_history_push(&state, sym);
+        dsd_symbol_history_push(&state, sym);
     }
 
-    /* Sync pattern with same DC offset */
+    /* Sync pattern with the same DC offset and deterministic first-frame noise. */
     float bs_voice[DMR_SYNC_SYMBOLS];
+    const float noise[DMR_SYNC_SYMBOLS] = {0.1f,  -0.2f,  0.15f, -0.05f, 0.2f, -0.1f, 0.05f, -0.15f,
+                                           0.3f,  -0.25f, 0.1f,  -0.3f,  0.2f, -0.2f, 0.15f, -0.1f,
+                                           0.05f, -0.05f, 0.1f,  -0.1f,  0.2f, -0.2f, 0.25f, -0.25f};
     fill_symbols_from_sync_ascii(DMR_BS_VOICE_SYNC, bs_voice);
+    float sum_pos = 0.0f;
+    float sum_neg = 0.0f;
+    int count_pos = 0;
+    int count_neg = 0;
     for (int i = 0; i < DMR_SYNC_SYMBOLS; i++) {
-        dmr_sample_history_push(&state, bs_voice[i] + dc_offset);
+        float observed = bs_voice[i] + dc_offset + noise[i];
+        dsd_symbol_history_push(&state, observed);
+        if (observed > 0.0f) {
+            sum_pos += observed;
+            count_pos++;
+        } else {
+            sum_neg += observed;
+            count_neg++;
+        }
     }
 
     /* Call full resample_on_sync */
@@ -378,15 +307,33 @@ test_full_resample_on_sync(void) {
 
     check_int("resample_on_sync return", 0, ret);
 
-    /* Thresholds should be initialized */
+    /* The generic warm-start must reproduce the former DMR noisy-sync means exactly. */
+    float expected_max = sum_pos / (float)count_pos;
+    float expected_min = sum_neg / (float)count_neg;
+    float expected_center = (expected_max + expected_min) / 2.0f;
+    check_float("noisy max", expected_max, state.max, FLOAT_TOL);
+    check_float("noisy min", expected_min, state.min, FLOAT_TOL);
+    check_float("noisy center", expected_center, state.center, FLOAT_TOL);
+
+    /* CACH/prefix re-digitization remains part of the full warm-start path. */
+    int all_correct = 1;
+    for (int i = 0; i < DMR_RESAMPLE_SYMBOLS; i++) {
+        const int expected_dibit[4] = {1, 0, 2, 3};
+        if (state.dmr_payload_buf[i] != expected_dibit[i % 4]) {
+            if (all_correct) {
+                printf("FAIL: noisy full-path dibit mismatch at index %d: expected %d, got %d\n", i,
+                       expected_dibit[i % 4], state.dmr_payload_buf[i]);
+            }
+            all_correct = 0;
+        }
+    }
     g_test_count++;
-    if (state.max < 2.5f || state.max > 3.5f) {
-        printf("FAIL: max threshold (%.3f) out of range\n", (double)state.max);
+    if (!all_correct) {
         g_fail_count++;
     }
 
     free(state.dmr_payload_buf);
-    dmr_sample_history_free(&state);
+    dsd_symbol_history_free(&state);
     printf("test_full_resample_on_sync: passed\n\n");
 }
 
@@ -397,8 +344,6 @@ main(void) {
 
     test_history_buffer_ops();
     test_history_buffer_wrap();
-    test_sync_correlation();
-    test_symbol_extraction();
     test_cach_redigitize();
     test_full_resample_on_sync();
 

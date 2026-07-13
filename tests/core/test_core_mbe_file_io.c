@@ -6,6 +6,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
@@ -15,7 +17,6 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <sndfile.h>
@@ -248,8 +249,8 @@ find_wav_rename_output_for_string_event(char* out, size_t out_size, const char* 
 
     char datestr[9];
     char timestr[7];
-    getDateF_buf(item->event_time, datestr);
-    getTimeF_buf(item->event_time, timestr);
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
 
     for (unsigned int n = 0; n <= UINT16_MAX; n++) {
         DSD_SNPRINTF(out, out_size, "%s/%s_%s_%05u_%s_%s_TGT_%s_SRC_%s.wav", dir, datestr, timestr, n,
@@ -272,8 +273,8 @@ find_wav_rename_output_for_numeric_event(char* out, size_t out_size, const char*
 
     char datestr[9];
     char timestr[7];
-    getDateF_buf(item->event_time, datestr);
-    getTimeF_buf(item->event_time, timestr);
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
 
     for (unsigned int n = 0; n <= UINT16_MAX; n++) {
         DSD_SNPRINTF(out, out_size, "%s/%s_%s_%05u_%s_%s_TGT_%u_SRC_%u.wav", dir, datestr, timestr, n,
@@ -1324,50 +1325,35 @@ test_symbol_capture_open_writes_expected_headers(void) {
     };
     int rc = 0;
 
-    struct {
-        const char* prefix;
-        uint8_t capture_format;
-        const unsigned char* want;
-        size_t want_len;
-    } cases[] = {
-        {"symbol_soft", DSD_SYMBOL_CAPTURE_FORMAT_SOFT, soft_header, sizeof soft_header},
-        {"symbol_legacy", DSD_SYMBOL_CAPTURE_FORMAT_LEGACY, NULL, 0},
-    };
-
-    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        char path[DSD_TEST_PATH_MAX];
-        int fd = dsd_test_mkstemp(path, sizeof path, cases[i].prefix);
-        if (fd < 0) {
-            DSD_FPRINTF(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
-            return 1;
-        }
-        (void)dsd_close(fd);
-        (void)remove(path);
-
-        static dsd_opts opts;
-        static dsd_state state;
-        DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&state, 0, sizeof state);
-        DSD_SNPRINTF(opts.symbol_out_file, sizeof opts.symbol_out_file, "%s", path);
-        opts.symbol_capture_format = cases[i].capture_format;
-
-        openSymbolOutFile(&opts, &state);
-        rc |= expect_true("symbol file handle opened", opts.symbol_out_f != NULL);
-        closeSymbolOutFile(&opts, &state);
-        rc |= expect_true("symbol close clears handle", opts.symbol_out_f == NULL);
-
-        unsigned char bytes[DSD_SYMBOL_CAPTURE_SOFT_HEADER_SIZE];
-        size_t got = 0;
-        if (read_file_exact(path, bytes, sizeof bytes, &got) != 0) {
-            rc = 1;
-        } else {
-            rc |= expect_int("symbol file size", (int)got, (int)cases[i].want_len);
-            if (cases[i].want_len > 0) {
-                rc |= expect_true("symbol soft header bytes", memcmp(bytes, cases[i].want, cases[i].want_len) == 0);
-            }
-        }
-        (void)remove(path);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "symbol_soft");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
+        return 1;
     }
+    (void)dsd_close(fd);
+    (void)remove(path);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_SNPRINTF(opts.symbol_out_file, sizeof opts.symbol_out_file, "%s", path);
+
+    openSymbolOutFile(&opts, &state);
+    rc |= expect_true("symbol file handle opened", opts.symbol_out_f != NULL);
+    closeSymbolOutFile(&opts, &state);
+    rc |= expect_true("symbol close clears handle", opts.symbol_out_f == NULL);
+
+    unsigned char bytes[DSD_SYMBOL_CAPTURE_SOFT_HEADER_SIZE];
+    size_t got = 0;
+    if (read_file_exact(path, bytes, sizeof bytes, &got) != 0) {
+        rc = 1;
+    } else {
+        rc |= expect_int("symbol file size", (int)got, (int)sizeof soft_header);
+        rc |= expect_true("symbol soft header bytes", memcmp(bytes, soft_header, sizeof soft_header) == 0);
+    }
+    (void)remove(path);
 
     return rc;
 }
@@ -1405,7 +1391,6 @@ test_symbol_capture_auto_rotation_reopens_and_logs_event(void) {
     DSD_MEMSET(history, 0, sizeof history);
     state.event_history_s = history;
     DSD_SNPRINTF(opts.symbol_out_file, sizeof opts.symbol_out_file, "%s", old_path);
-    opts.symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
     opts.symbol_out_file_is_auto = 1;
     opts.symbol_out_file_creation_time = time(NULL) - 4000;
     state.lastsrc = 1234;

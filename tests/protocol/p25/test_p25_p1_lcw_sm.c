@@ -6,12 +6,12 @@
 /*
  * P25 Phase 1 LCW → Trunk SM dispatch tests.
  *
- * Verifies that an explicit Group Voice Channel Update (format 0x44) invokes
- * p25_sm_on_group_grant with correct channel/service/TG parameters under
- * retune-allowed policy, and does not dispatch when retune is disabled.
+ * Verifies that an explicit Group Voice Channel Update (format 0x44) reaches
+ * the canonical state machine with the expected grant fields under
+ * retune-allowed policy, and is ignored when retune is disabled.
  */
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -119,91 +119,6 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     return 0;
 }
 
-// Minimal replacement for ConvertBitIntoBytes (MSB-first packing)
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return out;
-}
-
-// Capture trunk SM group grant invocations
-static int g_called = 0;
-static int g_last_channel = -1;
-static int g_last_svc = -1;
-static int g_last_tg = -1;
-static int g_last_src = -1;
-
-static void
-sm_noop_init(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_on_group_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    g_called++;
-    g_last_channel = channel;
-    g_last_svc = svc_bits;
-    g_last_tg = tg;
-    g_last_src = src;
-}
-
-static void
-sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)dst;
-    (void)src;
-}
-
-static void
-sm_noop_on_release(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
-    (void)opts;
-    (void)state;
-    (void)freqs;
-    (void)count;
-}
-
-static void
-sm_noop_tick(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static int
-sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
-    (void)state;
-    (void)out_freq;
-    return 0;
-}
-
-static p25_sm_api
-sm_test_api(void) {
-    p25_sm_api api = {0};
-    api.init = sm_noop_init;
-    api.on_group_grant = sm_on_group_grant_capture;
-    api.on_indiv_grant = sm_noop_on_indiv_grant;
-    api.on_release = sm_noop_on_release;
-    api.on_neighbor_update = sm_noop_on_neighbor_update;
-    api.next_cc_candidate = sm_noop_next_cc_candidate;
-    api.tick = sm_noop_tick;
-    return api;
-}
-
 static void
 set_bits_msb(uint8_t* bits, int start, int width, unsigned value) {
     for (int i = 0; i < width; i++) {
@@ -224,11 +139,6 @@ expect_eq_int(const char* tag, int got, int want) {
 int
 main(void) {
     int rc = 0;
-
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
 
     // Build LCW bits for format 0x44 (Group Voice Channel Update – Explicit)
     // Layout (bit indices):
@@ -251,44 +161,27 @@ main(void) {
     // CHAN-R left zero
 
     // Subcase A: retune disabled → no SM dispatch
-    g_called = 0;
-    g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
     p25_test_invoke_lcw(lcw, 72, /*enable_retune*/ 0, /*cc*/ 851000000);
-    rc |= expect_eq_int("no-dispatch when disabled", g_called, 0);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    rc |= expect_eq_int("no-dispatch when disabled", (int)ctx->grant_count, 0);
 
     // Subcase B: retune enabled and CC set → expect dispatch with exact fields
-    g_called = 0;
-    g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
     p25_test_invoke_lcw(lcw, 72, /*enable_retune*/ 1, /*cc*/ 851000000);
-    rc |= expect_eq_int("dispatch called", g_called, 1);
-    rc |= expect_eq_int("channel", g_last_channel, ch);
-    rc |= expect_eq_int("svc", g_last_svc, svc);
-    rc |= expect_eq_int("tg", g_last_tg, tg);
+    ctx = p25_sm_get_ctx();
+    rc |= expect_eq_int("dispatch called", (int)ctx->grant_count, 1);
+    rc |= expect_eq_int("channel", ctx->vc_channel, ch);
+    rc |= expect_eq_int("svc", ctx->slots[0].svc_bits, svc);
+    rc |= expect_eq_int("tg", ctx->vc_tg, tg);
     // source may be 0 unless prior LCW set it
-    rc |= expect_eq_int("src default", g_last_src, 0);
+    rc |= expect_eq_int("src default", ctx->vc_src, 0);
 
-    // Subcase C: encrypted grants must reach the trunk SM under lockout so its
-    // key-aware policy can classify and follow calls with usable keys.
-    const int encrypted_svc = 0x40;
-    set_bits_msb(lcw, 16, 8, (unsigned)encrypted_svc);
-    g_called = 0;
-    g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
-    p25_test_invoke_lcw(lcw, 72, /*enable_retune*/ 1, /*cc*/ 851000000);
-    rc |= expect_eq_int("encrypted lockout dispatch called", g_called, 1);
-    rc |= expect_eq_int("encrypted lockout channel", g_last_channel, ch);
-    rc |= expect_eq_int("encrypted lockout svc", g_last_svc, encrypted_svc);
-    rc |= expect_eq_int("encrypted lockout tg", g_last_tg, tg);
-
-    set_bits_msb(lcw, 16, 8, (unsigned)svc);
-
-    // Subcase D: LCW traffic frames must not infer a CC from live tuner metadata.
-    g_called = 0;
-    g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
+    // Subcase C: LCW traffic frames must not infer a CC from live tuner metadata.
     p25_test_invoke_lcw_with_tuner(lcw, 72, /*enable_retune*/ 1, /*cc*/ 0, /*tuner_freq*/ 851012500);
-    rc |= expect_eq_int("no dispatch from tuner-only lcw", g_called, 0);
+    ctx = p25_sm_get_ctx();
+    rc |= expect_eq_int("no dispatch from tuner-only lcw", (int)ctx->grant_count, 0);
 
     // Gating cases are covered in a separate test without overriding
-    // p25_sm_on_group_grant so the implementation’s gating logic runs.
+    // the canonical grant handler so the implementation's gating logic runs.
 
     // Format 0x42 reports calls in progress on other channels. It is display-only
     // in the LCW path and must not dispatch a traffic-channel grant.
@@ -299,10 +192,9 @@ main(void) {
         set_bits_msb(lcw42, 8, 16, (unsigned)ch);
         set_bits_msb(lcw42, 24, 16, (unsigned)tg);
 
-        g_called = 0;
-        g_last_channel = g_last_svc = g_last_tg = g_last_src = -1;
         p25_test_invoke_lcw_with_lastsrc(lcw42, 72, /*enable_retune*/ 0, /*cc*/ 851000000, /*lastsrc*/ 777777);
-        rc |= expect_eq_int("0x42 no dispatch", g_called, 0);
+        ctx = p25_sm_get_ctx();
+        rc |= expect_eq_int("0x42 no dispatch", (int)ctx->grant_count, 0);
     }
 
     return rc;

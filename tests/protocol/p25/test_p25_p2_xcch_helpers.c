@@ -97,7 +97,6 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
     if (state && g_vpdu_enc_pending_slot >= 0 && g_vpdu_enc_pending_slot <= 1) {
         const int slot = g_vpdu_enc_pending_slot;
         state->p25_crypto_state[slot] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-        state->p25_p2_enc_lockout_muted[slot] = 1U;
         state->p25_p2_audio_allowed[slot] = 0;
         p25_p2_audio_ring_reset(state, slot);
     }
@@ -227,7 +226,6 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
         (algid == 0x80) ? DSD_P25_CRYPTO_CLEAR
                         : ((scalar_ready || aes_ready) ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_BLOCKED);
     state->p25_crypto_state[slot] = resolved;
-    state->p25_p2_enc_lockout_muted[slot] = (resolved == DSD_P25_CRYPTO_BLOCKED) ? 1U : 0U;
     if (!p25_crypto_audio_ready(state, slot)) {
         state->p25_p2_audio_allowed[slot] = 0;
     }
@@ -253,7 +251,6 @@ p25_crypto_reset_slot(dsd_state* state, int slot) {
     }
     state->p25_crypto_state[slot] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_p2_audio_allowed[slot] = 0;
-    state->p25_p2_enc_lockout_muted[slot] = 0U;
     if (state->keyloader == 1) {
         if (slot == 0) {
             state->R = 0ULL;
@@ -456,7 +453,7 @@ test_slot_ptt_and_end_helpers(void) {
     opts.audio_gain = 3;
     state.aout_gain = 0.5F;
     state.aout_gainR = 0.25F;
-    state.p25_p2_enc_lockout_muted[0] = 1;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state.fourv_counter[0] = 9;
     state.voice_counter[0] = 7;
     state.p25_policy_tg[0] = 0x5678;
@@ -478,7 +475,7 @@ test_slot_ptt_and_end_helpers(void) {
     rc |= expect_int("slot0 drop", state.dropL, 256);
     rc |= expect_int("slot0 burst", (int)state.dmrburstL, 20);
     rc |= expect_int("slot0 audio gate", state.p25_p2_audio_allowed[0], 1);
-    rc |= expect_int("slot0 mute marker", state.p25_p2_enc_lockout_muted[0], 0);
+    rc |= expect_int("slot0 crypto state", state.p25_crypto_state[0], DSD_P25_CRYPTO_DECRYPTABLE);
     rc |= expect_int("slot0 fourv reset", state.fourv_counter[0], 0);
     rc |= expect_int("slot0 voice reset", state.voice_counter[0], 0);
     rc |= expect_int("slot0 gain reset", (int)state.aout_gain, 3);
@@ -490,7 +487,6 @@ test_slot_ptt_and_end_helpers(void) {
     g_audio_allow = 0;
     DSD_MEMSET(&state, 0, sizeof(state));
     state.lastsrcR = 0xAAAAAA;
-    state.p25_p2_enc_lockout_muted[1] = 1;
     fill_mac(mac, 0x80, 0x1111, 0, 0x4567);
 
     p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 1, 1);
@@ -523,7 +519,6 @@ test_slot_ptt_and_end_helpers(void) {
     state.aes_key_loaded[0] = 1;
     state.aes_key_segments[0] = 4;
     state.p25_p2_audio_allowed[0] = 1;
-    state.p25_p2_enc_lockout_muted[0] = 1;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
     state.fourv_counter[0] = 8;
     state.voice_counter[0] = 6;
@@ -621,7 +616,7 @@ test_facch_public_dispatch_and_crc_gates(void) {
     state.p25_policy_tg[1] = 0x6789;
     state.p25_service_options_valid[1] = 1;
     state.dmr_soR = 0x93;
-    state.p25_p2_enc_lockout_muted[1] = 1;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     g_vpdu_grant_newer_slot = 1;
     DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "grant");
     pack_payload_from_mac(payload, 156, mac, 0x3, 0, 0);
@@ -638,7 +633,7 @@ test_facch_public_dispatch_and_crc_gates(void) {
     rc |= expect_int("facch idle grant policy preserved", (int)state.p25_policy_tg[1], 0x6789);
     rc |= expect_int("facch idle grant service valid preserved", state.p25_service_options_valid[1], 1);
     rc |= expect_int("facch idle grant service preserved", state.dmr_soR, 0x93);
-    rc |= expect_int("facch idle grant mute clear", state.p25_p2_enc_lockout_muted[1], 0);
+    rc |= expect_int("facch idle grant crypto clear", state.p25_crypto_state[1], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_int("facch idle grant call preserved", strncmp(state.call_string[1], "grant", 5), 0);
 
     reset_stubs();
@@ -769,7 +764,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch idle policy clear", (int)state.p25_policy_tg[1], 0);
     rc |= expect_int("sacch idle service valid clear", state.p25_service_options_valid[1], 0);
     rc |= expect_int("sacch idle service clear", state.dmr_soR, 0);
-    rc |= expect_int("sacch idle mute clear", state.p25_p2_enc_lockout_muted[1], 0);
+    rc |= expect_int("sacch idle crypto clear", state.p25_crypto_state[1], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_int("sacch idle call blank", strncmp(state.call_string[1], P25P2_EMPTY_CALL_STRING, 21), 0);
     rc |= expect_int("sacch idle tail flush", g_flush_count, 1);
     rc |= expect_int("sacch idle tail flush slot", g_flush_slot, 1);
@@ -782,7 +777,6 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     state.p25_p2_audio_allowed[1] = 1;
-    state.p25_p2_enc_lockout_muted[1] = 1;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
     state.p25_call_is_packet[1] = 1;
     state.p25_policy_tg[1] = 0x6789;
@@ -799,7 +793,6 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch idle grant policy preserved", (int)state.p25_policy_tg[1], 0x6789);
     rc |= expect_int("sacch idle grant service valid preserved", state.p25_service_options_valid[1], 1);
     rc |= expect_int("sacch idle grant service preserved", state.dmr_soR, 0x93);
-    rc |= expect_int("sacch idle grant mute preserved", state.p25_p2_enc_lockout_muted[1], 1);
     rc |= expect_int("sacch idle grant crypto preserved", state.p25_crypto_state[1], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     rc |= expect_int("sacch idle grant call preserved", strncmp(state.call_string[1], "grant", 5), 0);
 
@@ -1024,7 +1017,6 @@ test_encrypted_voice_user_stays_locked_through_mac_active(void) {
         rc |= expect_int("facch encrypted user state pending", state.p25_crypto_state[slot],
                          DSD_P25_CRYPTO_ENCRYPTED_PENDING);
         rc |= expect_int("facch encrypted user gate stays closed", state.p25_p2_audio_allowed[slot], 0);
-        rc |= expect_int("facch encrypted user marker stays set", state.p25_p2_enc_lockout_muted[slot], 1);
         rc |= expect_int("facch encrypted user ring purged", state.p25_p2_audio_ring_count[slot], 0);
         rc |= expect_int("facch encrypted user still emits activity", g_active_count[slot], 1);
         rc |= expect_int("facch companion gate preserved", state.p25_p2_audio_allowed[slot ^ 1], 1);
@@ -1057,7 +1049,6 @@ test_encrypted_voice_user_stays_locked_through_mac_active(void) {
         rc |= expect_int("sacch encrypted user state pending", state.p25_crypto_state[slot],
                          DSD_P25_CRYPTO_ENCRYPTED_PENDING);
         rc |= expect_int("sacch encrypted user gate stays closed", state.p25_p2_audio_allowed[slot], 0);
-        rc |= expect_int("sacch encrypted user marker stays set", state.p25_p2_enc_lockout_muted[slot], 1);
         rc |= expect_int("sacch encrypted user ring purged", state.p25_p2_audio_ring_count[slot], 0);
         rc |= expect_int("sacch companion gate preserved", state.p25_p2_audio_allowed[slot ^ 1], 1);
         rc |= expect_int("sacch companion ring preserved", state.p25_p2_audio_ring_count[slot ^ 1], 3);

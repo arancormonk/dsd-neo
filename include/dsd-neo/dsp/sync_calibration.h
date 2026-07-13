@@ -67,8 +67,6 @@ struct dsd_state;
  * Symbol History Management
  *
  * Generic APIs for managing a circular buffer of recent symbol values.
- * These wrap the existing state->dmr_sample_history infrastructure but
- * provide a cleaner, protocol-agnostic interface.
  * ───────────────────────────────────────────────────────────────────────────── */
 
 /**

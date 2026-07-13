@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
-// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// or invalid-value negative vectors to exercise guarded behavior.
 // NOLINTBEGIN(bugprone-implicit-widening-of-multiplication-result)
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
@@ -13,7 +13,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -23,6 +22,7 @@
 #include "dsd-neo/protocol/m17/m17_parse.h"
 #include "dsd-neo/protocol/m17/m17_tables.h"
 #include "m17_algorithms.h"
+#include "m17_internal.h"
 
 struct CODEC2;
 
@@ -44,8 +44,6 @@ static uint8_t g_conv_first_symbols[8];
 enum { TEST_M17_LSF_BITS = M17_LSF_BYTES * 8U };
 
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-uint64_t ConvertBitIntoBytes(const uint8_t* bits, uint32_t n);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 void CNXDNConvolution_start(void);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void CNXDNConvolution_decode(uint8_t s0, uint8_t s1);
@@ -63,15 +61,6 @@ void LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state);
 uint16_t ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 int Connect(char* hostname, int portno);
-
-uint64_t
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t value = 0ULL;
-    for (uint32_t i = 0U; i < n; i++) {
-        value = (value << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return value;
-}
 
 void
 CNXDNConvolution_start(void) {
@@ -267,7 +256,7 @@ static void
 build_lsf_bits(uint8_t lsf_bits[TEST_M17_LSF_BITS], unsigned long long dst, unsigned long long src, uint16_t type_word,
                const uint8_t meta[M17_AES_NONCE_BYTES]) {
     DSD_MEMSET(lsf_bits, 0, TEST_M17_LSF_BITS);
-    dsd_neo_m17_test_load_lsf_callsigns(lsf_bits, dst, src);
+    m17_load_lsf_callsigns(lsf_bits, dst, src);
     write_bits_from_u64(lsf_bits + 96, type_word, 16U);
     if (meta != NULL) {
         for (size_t i = 0U; i < M17_AES_NONCE_BYTES; i++) {
@@ -373,14 +362,14 @@ test_embedded_lich_chunks_store_and_finalize_lsf_state(void) {
 
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
-    const uint16_t type_word = dsd_neo_m17_test_compose_frame_info(1U, 2U, 0U, 0U, 6U, 1U, 0U);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 6U, 1U, 0U);
     build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
-    (void)dsd_neo_m17_test_attach_lsf_crc(lsf_bits, lsf_packed);
+    (void)m17_attach_lsf_crc(lsf_bits, lsf_packed);
 
     int err = 0;
     for (uint8_t chunk = 0U; chunk < (M17_LICH_CHUNKS - 1U); chunk++) {
         build_encoded_lich_chunk(lsf_bits, chunk, encoded);
-        err |= expect_int("LICH chunk accepted", dsd_neo_m17_test_process_lich(state, opts, encoded), 0);
+        err |= expect_int("LICH chunk accepted", m17_process_lich(state, opts, encoded), 0);
         for (size_t bit = 0U; bit < M17_LICH_CHUNK_BITS; bit++) {
             err |= expect_u8("LICH chunk stored", state->m17_lsf[((size_t)chunk * M17_LICH_CHUNK_BITS) + bit],
                              lsf_bits[((size_t)chunk * M17_LICH_CHUNK_BITS) + bit]);
@@ -389,7 +378,7 @@ test_embedded_lich_chunks_store_and_finalize_lsf_state(void) {
     }
 
     build_encoded_lich_chunk(lsf_bits, (uint8_t)(M17_LICH_CHUNKS - 1U), encoded);
-    err |= expect_int("final LICH chunk accepted", dsd_neo_m17_test_process_lich(state, opts, encoded), 0);
+    err |= expect_int("final LICH chunk accepted", m17_process_lich(state, opts, encoded), 0);
     err |= expect_u64("final LICH decodes dst", state->m17_dst, dst);
     err |= expect_u64("final LICH decodes src", state->m17_src, src);
     err |= expect_u8("final LICH decodes data type", state->m17_str_dt, 2U);
@@ -420,9 +409,9 @@ test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc(void) {
 
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
-    const uint16_t type_word = dsd_neo_m17_test_compose_frame_info(1U, 1U, 0U, 0U, 7U, 0U, 0U);
+    const uint16_t type_word = m17_compose_frame_info(1U, 1U, 0U, 0U, 7U, 0U, 0U);
     build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
-    (void)dsd_neo_m17_test_attach_lsf_crc(lsf_bits, lsf_packed);
+    (void)m17_attach_lsf_crc(lsf_bits, lsf_packed);
 
     uint8_t invalid_content[M17_LICH_CONTENT_BITS];
     DSD_MEMSET(invalid_content, 0, sizeof(invalid_content));
@@ -433,7 +422,7 @@ test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc(void) {
     DSD_MEMSET(state->m17_lsf, 0x5AU, sizeof(state->m17_lsf));
 
     int err = 0;
-    err |= expect_int("invalid-counter LICH chunk rejected", dsd_neo_m17_test_process_lich(state, opts, encoded), -1);
+    err |= expect_int("invalid-counter LICH chunk rejected", m17_process_lich(state, opts, encoded), -1);
     for (size_t bit = 0U; bit < TEST_M17_LSF_BITS; bit++) {
         err |= expect_u8("invalid-counter LICH preserves staged LSF", state->m17_lsf[bit], 0x5AU);
     }
@@ -445,7 +434,7 @@ test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc(void) {
     lsf_bits[M17_LSF_LSD_BITS + 3U] ^= 1U;
     for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
         build_encoded_lich_chunk(lsf_bits, chunk, encoded);
-        err |= expect_int("bad CRC LICH chunk accepted", dsd_neo_m17_test_process_lich(state, opts, encoded), 0);
+        err |= expect_int("bad CRC LICH chunk accepted", m17_process_lich(state, opts, encoded), 0);
     }
     err |= expect_u64("bad LSF CRC preserves dst under aggressive sync", state->m17_dst, 0x111122223333ULL);
     err |= expect_u64("bad LSF CRC preserves src under aggressive sync", state->m17_src, 0x444455556666ULL);
@@ -473,7 +462,7 @@ test_lsf_application_resets_and_stores_state(void) {
 
     struct m17_lsf_result res = valid_lsf_result();
     int err = 0;
-    err |= expect_int("valid LSF applied", dsd_neo_m17_test_apply_lsf_result(state, &res), 1);
+    err |= expect_int("valid LSF applied", m17_apply_lsf_result(state, &res), 1);
     err |= expect_u64("LSF dst", state->m17_dst, res.dst);
     err |= expect_u64("LSF src", state->m17_src, res.src);
     err |= expect_u8("LSF CAN", state->m17_can, res.cn);
@@ -513,7 +502,7 @@ test_lsf_rejects_reserved_type_without_replacing_state(void) {
     res.rs = 1U;
 
     int err = 0;
-    err |= expect_int("reserved LSF rejected", dsd_neo_m17_test_apply_lsf_result(state, &res), 0);
+    err |= expect_int("reserved LSF rejected", m17_apply_lsf_result(state, &res), 0);
     err |= expect_u64("reserved LSF dst preserved", state->m17_dst, 0x1111ULL);
     err |= expect_u64("reserved LSF src preserved", state->m17_src, 0x2222ULL);
     err |= expect_u8("reserved LSF CAN preserved", state->m17_can, 4U);
@@ -534,7 +523,7 @@ test_lsf_rejects_invalid_addresses_without_replacing_state(void) {
     res.dst_is_valid = 0U;
 
     int err = 0;
-    err |= expect_int("invalid destination rejected", dsd_neo_m17_test_apply_lsf_result(state, &res), 0);
+    err |= expect_int("invalid destination rejected", m17_apply_lsf_result(state, &res), 0);
     err |= expect_u64("invalid destination preserves dst", state->m17_dst, 0x1234ULL);
     err |= expect_u64("invalid destination preserves src", state->m17_src, 0x5678ULL);
     err |= expect_u8("invalid destination preserves CAN", state->m17_can, 6U);
@@ -542,7 +531,7 @@ test_lsf_rejects_invalid_addresses_without_replacing_state(void) {
 
     res = valid_lsf_result();
     res.src_is_valid = 0U;
-    err |= expect_int("invalid source rejected", dsd_neo_m17_test_apply_lsf_result(state, &res), 0);
+    err |= expect_int("invalid source rejected", m17_apply_lsf_result(state, &res), 0);
     err |= expect_u64("invalid source preserves dst", state->m17_dst, 0x1234ULL);
     err |= expect_u64("invalid source preserves src", state->m17_src, 0x5678ULL);
     err |= expect_u8("invalid source preserves CAN", state->m17_can, 6U);
@@ -571,7 +560,7 @@ test_lsf_null_meta_decodes_text_and_honors_can_filter(void) {
     state->m17_can_en = -1;
 
     int err = 0;
-    err |= expect_int("null META LSF accepted", dsd_neo_m17_test_apply_lsf_result(state, &res), 1);
+    err |= expect_int("null META LSF accepted", m17_apply_lsf_result(state, &res), 1);
     err |= expect_u8("null META text expected bitmap", state->m17_text_meta_expected_bitmap, 0x01U);
     err |= expect_u8("null META text received bitmap", state->m17_text_meta_received_bitmap, 0x01U);
     err |= expect_u8("null META text control", state->m17_text_meta_control_or, 0x11U);
@@ -585,7 +574,7 @@ test_lsf_null_meta_decodes_text_and_honors_can_filter(void) {
     state->m17_text_meta_control_or = 0xF2U;
     DSD_MEMSET(state->m17_text_meta, 0x5AU, sizeof(state->m17_text_meta));
 
-    err |= expect_int("CAN-filtered null META LSF accepted", dsd_neo_m17_test_apply_lsf_result(state, &res), 1);
+    err |= expect_int("CAN-filtered null META LSF accepted", m17_apply_lsf_result(state, &res), 1);
     err |= expect_u8("CAN-filtered null META preserves expected", state->m17_text_meta_expected_bitmap, 0x0FU);
     err |= expect_u8("CAN-filtered null META preserves received", state->m17_text_meta_received_bitmap, 0x02U);
     err |= expect_u8("CAN-filtered null META preserves control", state->m17_text_meta_control_or, 0xF2U);
@@ -601,7 +590,7 @@ test_lsf_null_meta_decodes_text_and_honors_can_filter(void) {
     DSD_MEMSET(state->m17_text_meta, 0x5AU, sizeof(state->m17_text_meta));
     res.es = 3U;
 
-    err |= expect_int("reserved null META LSF accepted", dsd_neo_m17_test_apply_lsf_result(state, &res), 1);
+    err |= expect_int("reserved null META LSF accepted", m17_apply_lsf_result(state, &res), 1);
     err |= expect_u8("reserved null META preserves expected", state->m17_text_meta_expected_bitmap, 0x0FU);
     err |= expect_u8("reserved null META preserves received", state->m17_text_meta_received_bitmap, 0x02U);
     err |= expect_u8("reserved null META preserves control", state->m17_text_meta_control_or, 0xF2U);
@@ -631,10 +620,10 @@ test_stream_dispatch_can_filter_and_aes_gates(void) {
     DSD_MEMSET(processed_bits, 0xA5U, sizeof(processed_bits));
 
     int err = 0;
-    err |= expect_int(
-        "CAN filter blocks stream",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_CAN_FILTERED);
+    err |=
+        expect_int("CAN filter blocks stream",
+                   m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
+                   M17_STREAM_CAN_FILTERED);
     for (size_t i = 0U; i < sizeof(processed_bits); i++) {
         err |= expect_u8("CAN-filtered stream clears output", processed_bits[i], 0U);
     }
@@ -644,19 +633,19 @@ test_stream_dispatch_can_filter_and_aes_gates(void) {
     state->m17_enc = 2U;
     state->m17_enc_st = 0U;
     DSD_MEMCPY(state->m17_meta, M17_REF_AES_NONCE, sizeof(M17_REF_AES_NONCE));
-    err |= expect_int(
-        "AES missing key locks stream",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_ENCRYPTED_LOCKED);
+    err |=
+        expect_int("AES missing key locks stream",
+                   m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
+                   M17_STREAM_ENCRYPTED_LOCKED);
 
     DSD_MEMCPY(state->aes_key, M17_REF_AES128_KEY, sizeof(M17_REF_AES128_KEY));
     state->aes_key_loaded[0] = 1;
     state->aes_key_segments[0] = 2U;
     state->m17_payload_decrypted = 7U;
-    err |= expect_int(
-        "AES stream dispatches",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_ENCRYPTED_DISPATCHED);
+    err |=
+        expect_int("AES stream dispatches",
+                   m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
+                   M17_STREAM_ENCRYPTED_DISPATCHED);
     err |= expect_bytes("AES stream plaintext bits", processed_bits, plaintext_bits, sizeof(plaintext_bits));
     err |= expect_u8("AES transient decrypt flag restored", state->m17_payload_decrypted, 7U);
     return err;
@@ -683,10 +672,10 @@ test_stream_dispatch_legacy_aes_key_segments(void) {
     state->K2 = 0x08090A0B0C0D0E0FULL;
 
     int err = 0;
-    err |= expect_int(
-        "legacy AES key dispatches",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_ENCRYPTED_DISPATCHED);
+    err |=
+        expect_int("legacy AES key dispatches",
+                   m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
+                   M17_STREAM_ENCRYPTED_DISPATCHED);
     err |= expect_bytes("legacy AES key plaintext bits", processed_bits, plaintext_bits, sizeof(plaintext_bits));
     return err;
 }
@@ -703,10 +692,9 @@ test_stream_dispatch_rejects_invalid_arguments_and_unknown_encryption(void) {
     DSD_MEMSET(processed_bits, 0xA5, sizeof(processed_bits));
 
     int err = 0;
-    err |= expect_int(
-        "stream null opts rejected",
-        dsd_neo_m17_test_dispatch_stream_payload(NULL, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_INVALID);
+    err |= expect_int("stream null opts rejected",
+                      m17_dispatch_stream_payload(NULL, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_INVALID);
     for (size_t i = 0U; i < sizeof(processed_bits); i++) {
         err |= expect_u8("stream null opts preserves output", processed_bits[i], 0xA5U);
     }
@@ -714,10 +702,9 @@ test_stream_dispatch_rejects_invalid_arguments_and_unknown_encryption(void) {
     state->m17_can_en = -1;
     state->m17_enc = 3U;
     state->m17_str_dt = 1U;
-    err |= expect_int(
-        "unknown encryption locks stream",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_ENCRYPTED_LOCKED);
+    err |= expect_int("unknown encryption locks stream",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_ENCRYPTED_LOCKED);
     for (size_t i = 0U; i < sizeof(processed_bits); i++) {
         err |= expect_u8("unknown encryption clears output", processed_bits[i], 0U);
     }
@@ -755,8 +742,8 @@ test_stream_dispatch_scrambler_decrypts_with_seed_and_subtype(void) {
 
     int err = 0;
     err |= expect_int("scrambler stream dispatches",
-                      dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, frame_number, processed_bits),
-                      DSD_NEO_M17_TEST_STREAM_ENCRYPTED_DISPATCHED);
+                      m17_dispatch_stream_payload(opts, state, payload_bits, frame_number, processed_bits),
+                      M17_STREAM_ENCRYPTED_DISPATCHED);
     err |= expect_bytes("scrambler stream output", processed_bits, expected_bits, sizeof(expected_bits));
     err |= expect_u8("scrambler transient decrypt flag restored", state->m17_payload_decrypted, 9U);
     return err;
@@ -783,10 +770,10 @@ test_stream_dispatch_legacy_aes_array_key_segments(void) {
     state->A2[0] = 0x08090A0B0C0D0E0FULL;
 
     int err = 0;
-    err |= expect_int(
-        "legacy AES array key dispatches",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_ENCRYPTED_DISPATCHED);
+    err |=
+        expect_int("legacy AES array key dispatches",
+                   m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_AES_TRANSMITTED_FN, processed_bits),
+                   M17_STREAM_ENCRYPTED_DISPATCHED);
     err |= expect_bytes("legacy AES array key plaintext bits", processed_bits, plaintext_bits, sizeof(plaintext_bits));
     return err;
 }
@@ -807,10 +794,9 @@ test_stream_signature_frames_are_consumed_and_verify_without_key(void) {
     int err = 0;
     for (size_t i = 0U; i < 4U; i++) {
         expect_signature_slice(payload_bits, i * 16U);
-        err |= expect_int(
-            "signature payload consumed",
-            dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, signature_fns[i], processed_bits),
-            DSD_NEO_M17_TEST_STREAM_SIGNATURE_CONSUMED);
+        err |= expect_int("signature payload consumed",
+                          m17_dispatch_stream_payload(opts, state, payload_bits, signature_fns[i], processed_bits),
+                          M17_STREAM_SIGNATURE_CONSUMED);
         err |=
             expect_u8("signature received mask", state->m17_signature_received_mask, (uint8_t)((1U << (i + 1U)) - 1U));
         err |= expect_bytes("signature bytes stored", state->m17_signature + (i * 16U),
@@ -836,10 +822,9 @@ test_stream_signature_out_of_order_marks_sequence_error(void) {
     expect_signature_slice(payload_bits, 16U);
 
     int err = 0;
-    err |= expect_int(
-        "out-of-order signature consumed",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_STREAM_SIGNATURE_FN1, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_SIGNATURE_CONSUMED);
+    err |= expect_int("out-of-order signature consumed",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_STREAM_SIGNATURE_FN1, processed_bits),
+                      M17_STREAM_SIGNATURE_CONSUMED);
     err |= expect_u8("out-of-order signature mask", state->m17_signature_received_mask, 0x02U);
     err |= expect_u8("out-of-order signature sequence", state->m17_signature_bad_sequence, 1U);
     err |= expect_u8("out-of-order signature incomplete", state->m17_signature_complete, 0U);
@@ -866,10 +851,9 @@ test_clear_signed_payload_updates_digest_and_dispatches(void) {
     expected_digest[sizeof(expected_digest) - 1U] = first;
 
     int err = 0;
-    err |= expect_int(
-        "clear signed payload dispatches",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_CLEAR_DISPATCHED);
+    err |= expect_int("clear signed payload dispatches",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
     err |= expect_bytes("clear signed payload preserved", processed_bits, payload_bits, sizeof(payload_bits));
     err |= expect_bytes("clear signed payload digest", state->m17_signature_digest, expected_digest,
                         sizeof(expected_digest));
@@ -898,10 +882,9 @@ test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
-    err |= expect_int(
-        "3200 voice stream dispatches",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_CLEAR_DISPATCHED);
+    err |= expect_int("3200 voice stream dispatches",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
     err |= expect_bytes("3200 voice processed bits", processed_bits, payload_bits, sizeof(payload_bits));
     err |= expect_int("3200 voice Codec2 decodes", g_codec2_decode_calls, 2);
     err |= expect_bytes("3200 voice second codec frame", g_codec2_last_bits, payload_bytes + 8U, 8U);
@@ -934,10 +917,9 @@ test_stream_voice_1600_dispatch_routes_single_audio_to_udp(void) {
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
-    err |= expect_int(
-        "1600 voice stream dispatches",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_CLEAR_DISPATCHED);
+    err |= expect_int("1600 voice stream dispatches",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
     err |= expect_bytes("1600 voice processed bits", processed_bits, payload_bits, sizeof(payload_bits));
     err |= expect_int("1600 voice Codec2 decodes", g_codec2_decode_calls, 1);
     err |= expect_bytes("1600 voice codec frame", g_codec2_last_bits, payload_bytes, 8U);
@@ -968,10 +950,9 @@ test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled(void) {
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
-    err |= expect_int(
-        "slot-disabled voice stream dispatches",
-        dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
-        DSD_NEO_M17_TEST_STREAM_CLEAR_DISPATCHED);
+    err |= expect_int("slot-disabled voice stream dispatches",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
     err |= expect_int("slot-disabled voice still decodes", g_codec2_decode_calls, 2);
     err |= expect_int("slot-disabled voice suppresses UDP", g_udp_audio_calls, 0);
     err |= expect_int("slot-disabled voice leaves UDP byte count clear", (int)g_udp_audio_last_nsam, 0);
@@ -990,7 +971,7 @@ test_bert_payload_locks_from_default_state_and_continues(void) {
     DSD_MEMSET(state, 0, sizeof(*state));
 
     m17_prbs9_fill_bits(&tx_lfsr, bert_bits, M17_BERT_PAYLOAD_BITS);
-    dsd_neo_m17_test_process_bert_payload(opts, state, bert_bits);
+    m17_process_bert_payload(opts, state, bert_bits);
 
     int err = 0;
     err |= expect_u8("BERT locks from default LFSR", state->m17_bert_locked, 1U);
@@ -1000,7 +981,7 @@ test_bert_payload_locks_from_default_state_and_continues(void) {
     err |= expect_int("BERT first payload resyncs", (int)state->m17_bert_resyncs, 0);
 
     m17_prbs9_fill_bits(&tx_lfsr, bert_bits, M17_BERT_PAYLOAD_BITS);
-    dsd_neo_m17_test_process_bert_payload(opts, state, bert_bits);
+    m17_process_bert_payload(opts, state, bert_bits);
 
     err |= expect_u8("BERT stays locked", state->m17_bert_locked, 1U);
     err |= expect_int("BERT second payload counted bits", (int)state->m17_bert_bits,
@@ -1026,7 +1007,7 @@ test_bert_payload_resyncs_after_error_threshold(void) {
         bert_bits[i] ^= 1U;
     }
 
-    dsd_neo_m17_test_process_bert_payload(opts, state, bert_bits);
+    m17_process_bert_payload(opts, state, bert_bits);
 
     int err = 0;
     err |= expect_u8("BERT relocks after threshold", state->m17_bert_locked, 1U);
@@ -1058,7 +1039,7 @@ test_bert_hard_payload_decode_primitives(void) {
     DSD_MEMSET(depunc, 0xA5, sizeof(depunc));
     DSD_MEMSET(expected_depunc, 0, sizeof(expected_depunc));
 
-    dsd_neo_m17_test_depuncture_p2_hard(input_bits, depunc, M17_BERT_TYPE2_BITS);
+    m17_depuncture_p2_hard(input_bits, depunc, M17_BERT_TYPE2_BITS);
     for (int i = 0; i < M17_BERT_TYPE2_BITS; i++) {
         if (m17_puncture_pattern_2[i % M17_PUNCTURE_P2_LEN] == 1U && bit_in < M17_PAYLOAD_BITS) {
             expected_depunc[i] = input_bits[bit_in++];
@@ -1070,22 +1051,22 @@ test_bert_hard_payload_decode_primitives(void) {
     err |= expect_bytes("BERT depunctured P2 bits", depunc, expected_depunc, sizeof(depunc));
 
     DSD_MEMSET(depunc, 0x5A, sizeof(depunc));
-    dsd_neo_m17_test_depuncture_p2_hard(input_bits, depunc, -1);
+    m17_depuncture_p2_hard(input_bits, depunc, -1);
     err |= expect_u8("BERT depuncture negative guard preserves output", depunc[0], 0x5AU);
 
     static const uint8_t packed[2] = {0xA5U, 0x3CU};
     static const uint8_t unpacked_expected[16] = {1U, 0U, 1U, 0U, 0U, 1U, 0U, 1U, 0U, 0U, 1U, 1U, 1U, 1U, 0U, 0U};
     DSD_MEMSET(unpacked, 0xCC, sizeof(unpacked));
     DSD_MEMCPY(expected_unpacked, unpacked_expected, sizeof(expected_unpacked));
-    dsd_neo_m17_test_unpack_bytes_to_bits(packed, 2, unpacked);
+    m17_unpack_bytes_to_bits(packed, 2, unpacked);
     err |= expect_bytes("BERT byte unpack MSB first", unpacked, expected_unpacked, sizeof(expected_unpacked));
     err |= expect_u8("BERT byte unpack does not overrun", unpacked[16], 0xCCU);
-    dsd_neo_m17_test_unpack_bytes_to_bits(NULL, 2, unpacked);
+    m17_unpack_bytes_to_bits(NULL, 2, unpacked);
     err |= expect_u8("BERT byte unpack null guard preserves output", unpacked[0], 1U);
 
     reset_convolution_fake();
     DSD_MEMSET(bert_bits, 0x5A, sizeof(bert_bits));
-    dsd_neo_m17_test_decode_bert_payload_bits(input_bits, bert_bits);
+    m17_decode_bert_payload_bits(input_bits, bert_bits);
     err |= expect_int("BERT hard decode starts convolution", g_conv_start_calls, 1);
     err |= expect_int("BERT hard decode symbol pairs", g_conv_decode_calls, M17_BERT_TYPE1_FLUSH_BITS);
     err |= expect_int("BERT hard decode chainback calls", g_conv_chainback_calls, 1);
@@ -1112,10 +1093,8 @@ test_frame_info_packet_and_ip_helpers(void) {
     DSD_MEMSET(state, 0, sizeof(*state));
 
     int err = 0;
-    err |= expect_int("frame info masks fields", dsd_neo_m17_test_compose_frame_info(3U, 7U, 6U, 5U, 0x1FU, 3U, 0x1FU),
-                      0xFFB7);
-    err |= expect_int("frame info selected fields", dsd_neo_m17_test_compose_frame_info(1U, 2U, 1U, 3U, 9U, 1U, 0xAU),
-                      0xACED);
+    err |= expect_int("frame info masks fields", m17_compose_frame_info(3U, 7U, 6U, 5U, 0x1FU, 3U, 0x1FU), 0xFFB7);
+    err |= expect_int("frame info selected fields", m17_compose_frame_info(1U, 2U, 1U, 3U, 9U, 1U, 0xAU), 0xACED);
 
     uint8_t ip_frame[12];
     DSD_MEMSET(ip_frame, 0, sizeof(ip_frame));
@@ -1125,66 +1104,63 @@ test_frame_info_packet_and_ip_helpers(void) {
     ip_frame[7] = 0x67U;
     ip_frame[8] = 0x89U;
     ip_frame[9] = 0xABU;
-    err |= expect_u64("IP source", dsd_neo_m17_test_read_ip_source(ip_frame), 0x0123456789ABULL);
-    err |= expect_u64("IP null source", dsd_neo_m17_test_read_ip_source(NULL), 0ULL);
+    err |= expect_u64("IP source", m17_read_ip_source(ip_frame), 0x0123456789ABULL);
+    err |= expect_u64("IP null source", m17_read_ip_source(NULL), 0ULL);
 
-    err |= expect_int("pkt negative clamp", dsd_neo_m17_test_pkt_ptr_clamped(-4), 0);
-    err |= expect_int("pkt second frame ptr", dsd_neo_m17_test_pkt_ptr_clamped(2), 50);
-    err |= expect_int("pkt high clamp", dsd_neo_m17_test_pkt_ptr_clamped(99), 825);
+    err |= expect_int("pkt negative clamp", m17_pkt_ptr_clamped(-4), 0);
+    err |= expect_int("pkt second frame ptr", m17_pkt_ptr_clamped(2), 50);
+    err |= expect_int("pkt high clamp", m17_pkt_ptr_clamped(99), 825);
 
-    err |=
-        expect_int("clear packet not encrypted", dsd_neo_m17_test_decode_pkt_should_report_encrypted(state, 0x05U), 0);
+    err |= expect_int("clear packet not encrypted", m17_decode_pkt_should_report_encrypted(state, 0x05U), 0);
     state->m17_enc = 2U;
-    err |= expect_int("GNSS meta allowed while encrypted",
-                      dsd_neo_m17_test_decode_pkt_should_report_encrypted(state, 0x81U), 0);
-    err |=
-        expect_int("SMS blocked while encrypted", dsd_neo_m17_test_decode_pkt_should_report_encrypted(state, 0x05U), 1);
+    err |= expect_int("GNSS meta allowed while encrypted", m17_decode_pkt_should_report_encrypted(state, 0x81U), 0);
+    err |= expect_int("SMS blocked while encrypted", m17_decode_pkt_should_report_encrypted(state, 0x05U), 1);
     state->m17_payload_decrypted = 1U;
-    err |= expect_int("decrypted packet allowed", dsd_neo_m17_test_decode_pkt_should_report_encrypted(state, 0x05U), 0);
+    err |= expect_int("decrypted packet allowed", m17_decode_pkt_should_report_encrypted(state, 0x05U), 0);
 
     DSD_MEMSET(state, 0, sizeof(*state));
     state->carrier = 1;
     state->synctype = DSD_SYNC_M17_STR_POS;
     uint8_t disc[10] = {'D', 'I', 'S', 'C', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, disc, sizeof(disc));
+    m17_ip_dispatch_frame(opts, state, disc, sizeof(disc));
     err |= expect_int("DISC drops carrier", state->carrier, 0);
     err |= expect_int("DISC clears synctype", state->synctype, DSD_SYNC_NONE);
 
     state->carrier = 1;
     state->synctype = DSD_SYNC_M17_STR_POS;
     uint8_t eotx[10] = {'E', 'O', 'T', 'X', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, eotx, sizeof(eotx));
+    m17_ip_dispatch_frame(opts, state, eotx, sizeof(eotx));
     err |= expect_int("EOTX drops carrier", state->carrier, 0);
     err |= expect_int("EOTX clears synctype", state->synctype, DSD_SYNC_NONE);
 
     state->carrier = 1;
     state->synctype = DSD_SYNC_M17_STR_POS;
     uint8_t conn[11] = {'C', 'O', 'N', 'N', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 'A'};
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, conn, sizeof(conn));
+    m17_ip_dispatch_frame(opts, state, conn, sizeof(conn));
     err |= expect_int("CONN keeps carrier", state->carrier, 1);
     err |= expect_int("CONN keeps synctype", state->synctype, DSD_SYNC_M17_STR_POS);
 
     uint8_t ping[10] = {'P', 'I', 'N', 'G', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, ping, sizeof(ping));
+    m17_ip_dispatch_frame(opts, state, ping, sizeof(ping));
     err |= expect_int("PING keeps carrier", state->carrier, 1);
     err |= expect_int("PING keeps synctype", state->synctype, DSD_SYNC_M17_STR_POS);
 
     uint8_t pong[10] = {'P', 'O', 'N', 'G', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, pong, sizeof(pong));
+    m17_ip_dispatch_frame(opts, state, pong, sizeof(pong));
     err |= expect_int("PONG keeps carrier", state->carrier, 1);
     err |= expect_int("PONG keeps synctype", state->synctype, DSD_SYNC_M17_STR_POS);
 
     uint8_t short_mpkt[12] = {'M', 'P', 'K', 'T', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0x55, 0xAA};
     state->m17_dst = 0x111122223333ULL;
     state->m17_src = 0x444455556666ULL;
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, short_mpkt, sizeof(short_mpkt));
+    m17_ip_dispatch_frame(opts, state, short_mpkt, sizeof(short_mpkt));
     err |= expect_u64("short MPKT preserves dst", state->m17_dst, 0x111122223333ULL);
     err |= expect_u64("short MPKT preserves src", state->m17_src, 0x444455556666ULL);
 
     uint8_t unknown[10] = {'N', 'O', 'P', 'E', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
     state->carrier = 1;
     state->synctype = DSD_SYNC_M17_STR_POS;
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, unknown, sizeof(unknown));
+    m17_ip_dispatch_frame(opts, state, unknown, sizeof(unknown));
     err |= expect_int("unknown IP magic preserves carrier", state->carrier, 1);
     err |= expect_int("unknown IP magic preserves synctype", state->synctype, DSD_SYNC_M17_STR_POS);
     return err;
@@ -1205,13 +1181,13 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
 
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
-    const uint16_t type_word = dsd_neo_m17_test_compose_frame_info(1U, 1U, 2U, 0U, 5U, 0U, 0U);
+    const uint16_t type_word = m17_compose_frame_info(1U, 1U, 2U, 0U, 5U, 0U, 0U);
     build_lsf_bits(lsf_bits, dst, src, type_word, M17_REF_AES_NONCE);
     bytes_to_bits(M17_REF_STREAM_PAYLOAD_BYTES, payload_bits, sizeof(M17_REF_STREAM_PAYLOAD_BYTES));
     build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEF, M17_REF_STREAM_FN, 0U, payload_bits);
 
     state->m17_can_en = -1;
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, ip_frame, sizeof(ip_frame));
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
 
     int err = 0;
     err |= expect_int("valid IP stream sets carrier", state->carrier, 1);
@@ -1239,7 +1215,7 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
     build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEF, M17_REF_STREAM_FN, 1U, payload_bits);
     ip_frame[52] ^= 0x01U;
 
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, ip_frame, sizeof(ip_frame));
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
     err |= expect_int("bad IP stream CRC sets carrier", state->carrier, 1);
     err |= expect_int("bad IP stream CRC sets synctype", state->synctype, DSD_SYNC_M17_STR_POS);
     err |= expect_u64("bad IP stream CRC preserves dst", state->m17_dst, 0x111122223333ULL);
@@ -1265,7 +1241,7 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
 
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
-    const uint16_t packet_type_word = dsd_neo_m17_test_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U);
+    const uint16_t packet_type_word = m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U);
     build_lsf_bits(lsf_bits, dst, src, packet_type_word, NULL);
 
     app[0] = 0xC2U;
@@ -1276,7 +1252,7 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     const size_t mpkt_len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), lsf_bits, 0xCAFEU, app, sizeof(app));
 
     state->m17_can_en = -1;
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, mpkt_frame, (int)mpkt_len);
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
 
     int err = 0;
     err |= expect_u64("valid MPKT dst", state->m17_dst, dst);
@@ -1300,7 +1276,7 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), lsf_bits, 0xCAFEU, app, sizeof(app));
     mpkt_frame[mpkt_len - 1U] ^= 0x01U;
 
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, mpkt_frame, (int)mpkt_len);
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
     err |= expect_u64("bad MPKT CRC preserves dst", state->m17_dst, 0xAAAABBBBCCCCULL);
     err |= expect_u64("bad MPKT CRC preserves src", state->m17_src, 0x111122223333ULL);
     err |= expect_u8("bad MPKT CRC preserves text expected", state->m17_text_meta_expected_bitmap, 0x0FU);
@@ -1349,7 +1325,7 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     state->m17_pbc_ct = 4;
     stage_packet_with_crc(state, app, app_len, crc);
 
-    dsd_neo_m17_test_finalize_packet_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
 
     int err = 0;
     err |= expect_u8("valid packet EOT text expected bitmap", state->m17_text_meta_expected_bitmap, 0x01U);
@@ -1371,7 +1347,7 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     opts->aggressive_framesync = 1;
     stage_packet_with_crc(state, app, app_len, (uint16_t)(crc ^ 0x0001U));
 
-    dsd_neo_m17_test_finalize_packet_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
 
     err |= expect_u8("bad packet CRC preserves text expected", state->m17_text_meta_expected_bitmap, 0x0FU);
     err |= expect_u8("bad packet CRC preserves text received", state->m17_text_meta_received_bitmap, 0x02U);
@@ -1389,7 +1365,7 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     state->m17_can_en = -1;
     stage_packet_with_crc(state, app, app_len, (uint16_t)(crc ^ 0x0001U));
 
-    dsd_neo_m17_test_finalize_packet_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
 
     err |=
         expect_u8("non-aggressive bad CRC still decodes expected bitmap", state->m17_text_meta_expected_bitmap, 0x01U);
@@ -1418,7 +1394,7 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
     DSD_MEMSET(dibits, 0, sizeof(dibits));
     DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
 
-    dsd_neo_m17_test_setup_conn_disc_eotx(0x0123456789ABULL, 'Z', conn, disc, eotx);
+    m17_setup_conn_disc_eotx(0x0123456789ABULL, 'Z', conn, disc, eotx);
 
     int err = 0;
     static const uint8_t want_conn[11] = {'C', 'O', 'N', 'N', 0x01U, 0x23U, 0x45U, 0x67U, 0x89U, 0xABU, 'Z'};
@@ -1430,19 +1406,19 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
 
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
-    dsd_neo_m17_test_load_lsf_callsigns(lsf_bits, dst, src);
-    const uint16_t type_word = dsd_neo_m17_test_compose_frame_info(1U, 2U, 0U, 0U, 9U, 1U, 0U);
+    m17_load_lsf_callsigns(lsf_bits, dst, src);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 9U, 1U, 0U);
     for (int i = 0; i < 16; i++) {
         lsf_bits[96 + i] = (uint8_t)((type_word >> (15 - i)) & 1U);
     }
-    const uint16_t crc = dsd_neo_m17_test_attach_lsf_crc(lsf_bits, lsf_packed);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
     err |= expect_u64("LSF dst bits", bits_to_u64(lsf_bits, 48U), dst);
     err |= expect_u64("LSF src bits", bits_to_u64(lsf_bits + 48, 48U), src);
     err |= expect_int("LSF type word", (int)bits_to_u64(lsf_bits + 96, 16U), type_word);
     err |= expect_int("LSF packed CRC", crc, m17_crc16(lsf_packed, M17_LSF_LSD_BYTES));
     err |= expect_int("LSF CRC bits", (int)bits_to_u64(lsf_bits + M17_LSF_LSD_BITS, M17_LSF_CRC_BITS), crc);
 
-    dsd_neo_m17_test_apply_frame_prefix_dibits(2, dibits);
+    m17_apply_frame_prefix_dibits(2, dibits);
     uint8_t want_sync[M17_SYNC_SYMBOLS];
     DSD_MEMSET(want_sync, 0, sizeof(want_sync));
     m17_fill_sync_dibits_from_word(M17_SYNC_STREAM_WORD, want_sync);
@@ -1452,7 +1428,7 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
     }
 
     DSD_MEMSET(dibits, 0, sizeof(dibits));
-    dsd_neo_m17_test_apply_frame_prefix_dibits(55, dibits);
+    m17_apply_frame_prefix_dibits(55, dibits);
     uint8_t want_eot_dibits[M17_FRAME_SYMBOLS];
     DSD_MEMSET(want_eot_dibits, 0, sizeof(want_eot_dibits));
     m17_fill_repeating_16bit_dibits(M17_EOT_MARKER_WORD, want_eot_dibits);
@@ -1462,16 +1438,16 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
         payload_bits[i] = (uint8_t)(i & 1);
     }
     DSD_MEMSET(dibits, 0xEE, sizeof(dibits));
-    dsd_neo_m17_test_load_payload_dibits(payload_bits, dibits);
+    m17_load_payload_dibits(payload_bits, dibits);
     err |= expect_u8("payload helper preserves prefix byte", dibits[0], 0xEEU);
     for (int i = 0; i < M17_PAYLOAD_SYMBOLS; i++) {
         err |= expect_u8("payload dibit mapping", dibits[i + M17_SYNC_SYMBOLS], 1U);
     }
 
-    err |= expect_int("clip high", dsd_neo_m17_test_clip_float_to_short(40000.0f), 32767);
-    err |= expect_int("clip low", dsd_neo_m17_test_clip_float_to_short(-40000.0f), -32768);
-    err |= expect_int("clip rounded positive", dsd_neo_m17_test_clip_float_to_short(123.6f), 124);
-    err |= expect_int("clip rounded negative", dsd_neo_m17_test_clip_float_to_short(-123.4f), -123);
+    err |= expect_int("clip high", m17_clip_float_to_short(40000.0f), 32767);
+    err |= expect_int("clip low", m17_clip_float_to_short(-40000.0f), -32768);
+    err |= expect_int("clip rounded positive", m17_clip_float_to_short(123.6f), 124);
+    err |= expect_int("clip rounded negative", m17_clip_float_to_short(-123.4f), -123);
 
     uint8_t symbol_dibits[M17_FRAME_SYMBOLS];
     int symbols[M17_FRAME_SYMBOLS];
@@ -1486,28 +1462,28 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
     symbol_dibits[2] = 2U;
     symbol_dibits[3] = 3U;
     symbol_dibits[4] = 7U;
-    dsd_neo_m17_test_dibits_to_symbols(symbol_dibits, symbols);
+    m17_dibits_to_symbols(symbol_dibits, symbols);
     err |= expect_int("dibit 0 symbol", symbols[0], 1);
     err |= expect_int("dibit 1 symbol", symbols[1], 3);
     err |= expect_int("dibit 2 symbol", symbols[2], -1);
     err |= expect_int("dibit 3 symbol", symbols[3], -3);
     err |= expect_int("dibit masked symbol", symbols[4], -3);
 
-    dsd_neo_m17_test_upsample_symbols_10x(symbols, upsampled);
+    m17_upsample_symbols_10x(symbols, upsampled);
     for (int i = 0; i < M17_RECOMMENDED_UPSAMPLE_FACTOR; i++) {
         err |= expect_int("first symbol upsampled", upsampled[i], 1);
         err |= expect_int("second symbol upsampled", upsampled[M17_RECOMMENDED_UPSAMPLE_FACTOR + i], 3);
     }
 
-    dsd_neo_m17_test_baseband_no_filter(upsampled, baseband);
+    m17_baseband_no_filter(upsampled, baseband);
     err |= expect_int("baseband symbol +1", baseband[0], 7168);
     err |= expect_int("baseband symbol +3", baseband[M17_RECOMMENDED_UPSAMPLE_FACTOR], 21504);
     symbols[0] = -1;
     symbols[1] = -3;
     DSD_MEMSET(upsampled, 0, sizeof(upsampled));
     DSD_MEMSET(baseband, 0, sizeof(baseband));
-    dsd_neo_m17_test_upsample_symbols_10x(symbols, upsampled);
-    dsd_neo_m17_test_baseband_no_filter(upsampled, baseband);
+    m17_upsample_symbols_10x(symbols, upsampled);
+    m17_baseband_no_filter(upsampled, baseband);
     err |= expect_int("baseband symbol -1", baseband[0], -7168);
     err |= expect_int("baseband symbol -3", baseband[M17_RECOMMENDED_UPSAMPLE_FACTOR], -21504);
 
@@ -1515,10 +1491,10 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
     for (size_t i = 0U; i < (M17_FRAME_SYMBOLS * M17_RECOMMENDED_UPSAMPLE_FACTOR); i++) {
         baseband[i] = 55;
     }
-    dsd_neo_m17_test_maybe_apply_dead_air(1, symbol_dibits, baseband);
+    m17_maybe_apply_dead_air(1, symbol_dibits, baseband);
     err |= expect_u8("non-dead-air preserves dibit", symbol_dibits[0], 0x22U);
     err |= expect_int("non-dead-air preserves baseband", baseband[0], 55);
-    dsd_neo_m17_test_maybe_apply_dead_air(99, symbol_dibits, baseband);
+    m17_maybe_apply_dead_air(99, symbol_dibits, baseband);
     for (int i = 0; i < M17_FRAME_SYMBOLS; i++) {
         err |= expect_u8("dead-air dibit marker", symbol_dibits[i], 0xFFU);
     }
@@ -1532,7 +1508,7 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
         bert_bits[i] = (uint8_t)((i % 3) == 0);
     }
     DSD_MEMSET(reversed, 0xA5, sizeof(reversed));
-    dsd_neo_m17_test_reverse_brt_bits(bert_bits, reversed);
+    m17_reverse_brt_bits(bert_bits, reversed);
     err |= expect_u8("BERT reverse leading zero 0", reversed[0], 0U);
     err |= expect_u8("BERT reverse leading zero 1", reversed[1], 0U);
     err |= expect_u8("BERT reverse leading zero 2", reversed[2], 0U);
@@ -1541,10 +1517,10 @@ test_encoder_control_lsf_and_dibit_helpers(void) {
     }
     err |= expect_u8("BERT reverse trailing zero", reversed[200], 0U);
 
-    err |= expect_int("strlen null", (int)dsd_neo_m17_test_strlen_limit(NULL, 9U), 0);
-    err |= expect_int("strlen full", (int)dsd_neo_m17_test_strlen_limit("abc", 9U), 3);
-    err |= expect_int("strlen capped", (int)dsd_neo_m17_test_strlen_limit("abcdef", 3U), 3);
-    err |= expect_int("strlen zero cap", (int)dsd_neo_m17_test_strlen_limit("abcdef", 0U), 0);
+    err |= expect_int("strlen null", (int)m17_strlen_limit(NULL, 9U), 0);
+    err |= expect_int("strlen full", (int)m17_strlen_limit("abc", 9U), 3);
+    err |= expect_int("strlen capped", (int)m17_strlen_limit("abcdef", 3U), 3);
+    err |= expect_int("strlen zero cap", (int)m17_strlen_limit("abcdef", 0U), 0);
 
     return err;
 }
@@ -1562,20 +1538,20 @@ test_encoder_packet_payload_layout(void) {
     DSD_MEMSET(packed, 0xA5, sizeof(packed));
     DSD_MEMSET(full_bits, 0xA5, sizeof(full_bits));
     err |= expect_int("packet layout null guard",
-                      dsd_neo_m17_test_prepare_pkt_payload("x", NULL, full_bits, &app_len, &block, &lst, &crc), -1);
+                      m17_prepare_packet_payload("x", NULL, full_bits, &app_len, &block, &lst, &crc), -1);
     err |= expect_int("packet layout null bits guard",
-                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, NULL, &app_len, &block, &lst, &crc), -1);
+                      m17_prepare_packet_payload("x", packed, NULL, &app_len, &block, &lst, &crc), -1);
     err |= expect_int("packet layout null app-len guard",
-                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, full_bits, NULL, &block, &lst, &crc), -1);
+                      m17_prepare_packet_payload("x", packed, full_bits, NULL, &block, &lst, &crc), -1);
     err |= expect_int("packet layout null block guard",
-                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, full_bits, &app_len, NULL, &lst, &crc), -1);
+                      m17_prepare_packet_payload("x", packed, full_bits, &app_len, NULL, &lst, &crc), -1);
     err |= expect_int("packet layout null last-count guard",
-                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, full_bits, &app_len, &block, NULL, &crc), -1);
+                      m17_prepare_packet_payload("x", packed, full_bits, &app_len, &block, NULL, &crc), -1);
     err |= expect_int("packet layout null crc guard",
-                      dsd_neo_m17_test_prepare_pkt_payload("x", packed, full_bits, &app_len, &block, &lst, NULL), -1);
+                      m17_prepare_packet_payload("x", packed, full_bits, &app_len, &block, &lst, NULL), -1);
 
     err |= expect_int("packet layout short text",
-                      dsd_neo_m17_test_prepare_pkt_payload("hi", packed, full_bits, &app_len, &block, &lst, &crc), 0);
+                      m17_prepare_packet_payload("hi", packed, full_bits, &app_len, &block, &lst, &crc), 0);
     err |= expect_int("packet short app len", app_len, 4);
     err |= expect_int("packet short block count", block, 1);
     err |= expect_u8("packet short last frame bytes", lst, 6U);
@@ -1598,9 +1574,8 @@ test_encoder_packet_payload_layout(void) {
     long_text[sizeof(long_text) - 1U] = '\0';
     DSD_MEMSET(packed, 0, sizeof(packed));
     DSD_MEMSET(full_bits, 0, sizeof(full_bits));
-    err |=
-        expect_int("packet layout max text",
-                   dsd_neo_m17_test_prepare_pkt_payload(long_text, packed, full_bits, &app_len, &block, &lst, &crc), 0);
+    err |= expect_int("packet layout max text",
+                      m17_prepare_packet_payload(long_text, packed, full_bits, &app_len, &block, &lst, &crc), 0);
     err |= expect_int("packet max app len", app_len, M17_PACKET_MAX_APPLICATION_BYTES);
     err |= expect_int("packet max block count", block, M17_PACKET_MAX_FRAMES);
     err |= expect_u8("packet max last frame bytes", lst, M17_PACKET_CHUNK_BYTES);
@@ -1619,31 +1594,31 @@ test_packet_protocol_identifier_utf8_boundaries(void) {
     int err = 0;
 
     DSD_MEMSET(out, 0xA5, sizeof(out));
-    err |= expect_int("packet protocol null guard", (int)dsd_neo_m17_test_encode_packet_protocol_id(0x05U, NULL), 0);
+    err |= expect_int("packet protocol null guard", (int)m17_encode_packet_protocol_id(0x05U, NULL), 0);
     err |= expect_int("packet protocol high guard",
-                      (int)dsd_neo_m17_test_encode_packet_protocol_id(M17_PACKET_PROTOCOL_MAX + 1U, out), 0);
+                      (int)m17_encode_packet_protocol_id(M17_PACKET_PROTOCOL_MAX + 1U, out), 0);
     for (size_t i = 0U; i < sizeof(out); i++) {
         err |= expect_u8("packet protocol invalid preserves output", out[i], 0xA5U);
     }
 
     static const uint8_t want_sms[4] = {0x05U, 0xA5U, 0xA5U, 0xA5U};
-    err |= expect_int("packet protocol one byte", (int)dsd_neo_m17_test_encode_packet_protocol_id(0x05U, out), 1);
+    err |= expect_int("packet protocol one byte", (int)m17_encode_packet_protocol_id(0x05U, out), 1);
     err |= expect_bytes("packet protocol one-byte layout", out, want_sms, sizeof(want_sms));
 
     DSD_MEMSET(out, 0xA5, sizeof(out));
     static const uint8_t want_text_meta[4] = {0xC2U, 0x80U, 0xA5U, 0xA5U};
-    err |= expect_int("packet protocol two bytes", (int)dsd_neo_m17_test_encode_packet_protocol_id(0x80U, out), 2);
+    err |= expect_int("packet protocol two bytes", (int)m17_encode_packet_protocol_id(0x80U, out), 2);
     err |= expect_bytes("packet protocol two-byte layout", out, want_text_meta, sizeof(want_text_meta));
 
     DSD_MEMSET(out, 0xA5, sizeof(out));
     static const uint8_t want_three[4] = {0xE0U, 0xA0U, 0x80U, 0xA5U};
-    err |= expect_int("packet protocol three bytes", (int)dsd_neo_m17_test_encode_packet_protocol_id(0x0800U, out), 3);
+    err |= expect_int("packet protocol three bytes", (int)m17_encode_packet_protocol_id(0x0800U, out), 3);
     err |= expect_bytes("packet protocol three-byte layout", out, want_three, sizeof(want_three));
 
     DSD_MEMSET(out, 0xA5, sizeof(out));
     static const uint8_t want_max[4] = {0xF7U, 0xBFU, 0xBFU, 0xBFU};
-    err |= expect_int("packet protocol four bytes",
-                      (int)dsd_neo_m17_test_encode_packet_protocol_id(M17_PACKET_PROTOCOL_MAX, out), 4);
+    err |=
+        expect_int("packet protocol four bytes", (int)m17_encode_packet_protocol_id(M17_PACKET_PROTOCOL_MAX, out), 4);
     err |= expect_bytes("packet protocol four-byte layout", out, want_max, sizeof(want_max));
 
     return err;
@@ -1665,38 +1640,32 @@ test_encoder_packet_state_overrides_prepare_lsf_and_payload(void) {
     state.m17_can_en = -1;
     DSD_MEMSET(lsf_bits, 0xA5, sizeof(lsf_bits));
     DSD_MEMSET(packed, 0xA5, sizeof(packed));
-    err |= expect_int(
-        "packet state helper null guard",
-        dsd_neo_m17_test_prepare_pkt_from_state(NULL, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), -1);
-    err |= expect_int(
-        "packet state helper null LSF guard",
-        dsd_neo_m17_test_prepare_pkt_from_state(&state, NULL, packed, &app_len, &lsf_crc, &can, &dst, &src), -1);
-    err |= expect_int(
-        "packet state helper null packet guard",
-        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, NULL, &app_len, &lsf_crc, &can, &dst, &src), -1);
-    err |= expect_int(
-        "packet state helper null app-len guard",
-        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, NULL, &lsf_crc, &can, &dst, &src), -1);
-    err |= expect_int(
-        "packet state helper null LSF CRC guard",
-        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, NULL, &can, &dst, &src), -1);
-    err |= expect_int(
-        "packet state helper null CAN guard",
-        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, NULL, &dst, &src), -1);
-    err |= expect_int(
-        "packet state helper null dst guard",
-        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, NULL, &src), -1);
-    err |= expect_int(
-        "packet state helper null src guard",
-        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, NULL), -1);
-    err |= expect_int(
-        "packet default state helper",
-        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), 0);
+    err |= expect_int("packet state helper null guard",
+                      m17_prepare_packet_from_state(NULL, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), -1);
+    err |= expect_int("packet state helper null LSF guard",
+                      m17_prepare_packet_from_state(&state, NULL, packed, &app_len, &lsf_crc, &can, &dst, &src), -1);
+    err |= expect_int("packet state helper null packet guard",
+                      m17_prepare_packet_from_state(&state, lsf_bits, NULL, &app_len, &lsf_crc, &can, &dst, &src), -1);
+    err |= expect_int("packet state helper null app-len guard",
+                      m17_prepare_packet_from_state(&state, lsf_bits, packed, NULL, &lsf_crc, &can, &dst, &src), -1);
+    err |= expect_int("packet state helper null LSF CRC guard",
+                      m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, NULL, &can, &dst, &src), -1);
+    err |=
+        expect_int("packet state helper null CAN guard",
+                   m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, NULL, &dst, &src), -1);
+    err |=
+        expect_int("packet state helper null dst guard",
+                   m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, NULL, &src), -1);
+    err |=
+        expect_int("packet state helper null src guard",
+                   m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, NULL), -1);
+    err |= expect_int("packet default state helper",
+                      m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), 0);
     err |= expect_u8("packet default CAN", can, 7U);
     err |= expect_u64("packet default dst broadcast", dst, 0xFFFFFFFFFFFFULL);
     err |= expect_u64("packet default src", src, m17_encode_b40_callsign(0ULL, "DSD-neo  "));
     err |= expect_int("packet default LSF type", (int)bits_to_u64(lsf_bits + 96, 16U),
-                      dsd_neo_m17_test_compose_frame_info(0U, 0U, 0U, 0U, 7U, 0U, 0U));
+                      m17_compose_frame_info(0U, 0U, 0U, 0U, 7U, 0U, 0U));
     err |= expect_int("packet default LSF CRC bits", (int)bits_to_u64(lsf_bits + M17_LSF_LSD_BITS, M17_LSF_CRC_BITS),
                       lsf_crc);
     err |= expect_int("packet default app length", app_len, 447);
@@ -1710,14 +1679,13 @@ test_encoder_packet_state_overrides_prepare_lsf_and_payload(void) {
     DSD_MEMSET(lsf_bits, 0, sizeof(lsf_bits));
     DSD_MEMSET(packed, 0, sizeof(packed));
 
-    err |= expect_int(
-        "packet override state helper",
-        dsd_neo_m17_test_prepare_pkt_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), 0);
+    err |= expect_int("packet override state helper",
+                      m17_prepare_packet_from_state(&state, lsf_bits, packed, &app_len, &lsf_crc, &can, &dst, &src), 0);
     err |= expect_u8("packet override CAN", can, 3U);
     err |= expect_u64("packet ALL dst broadcast", dst, 0xFFFFFFFFFFFFULL);
     err |= expect_u64("packet override src", src, m17_encode_b40_callsign(0ULL, "N0CALL"));
     err |= expect_int("packet override LSF type", (int)bits_to_u64(lsf_bits + 96, 16U),
-                      dsd_neo_m17_test_compose_frame_info(0U, 0U, 0U, 0U, 3U, 0U, 0U));
+                      m17_compose_frame_info(0U, 0U, 0U, 0U, 3U, 0U, 0U));
     err |= expect_int("packet override LSF CRC bits", (int)bits_to_u64(lsf_bits + M17_LSF_LSD_BITS, M17_LSF_CRC_BITS),
                       lsf_crc);
     err |= expect_int("packet override app len", app_len, 10);
@@ -1761,49 +1729,46 @@ test_m17_hook_argument_guards(void) {
     DSD_MEMSET(reversed, 0x66, sizeof(reversed));
     DSD_MEMSET(bert_bits, 0, sizeof(bert_bits));
 
-    err |= expect_int("process LICH rejects null state", dsd_neo_m17_test_process_lich(NULL, opts, bits), -1);
-    err |= expect_int("process LICH rejects null opts", dsd_neo_m17_test_process_lich(state, NULL, bits), -1);
-    err |= expect_int("process LICH rejects null bits", dsd_neo_m17_test_process_lich(state, opts, NULL), -1);
+    err |= expect_int("process LICH rejects null state", m17_process_lich(NULL, opts, bits), -1);
+    err |= expect_int("process LICH rejects null opts", m17_process_lich(state, NULL, bits), -1);
+    err |= expect_int("process LICH rejects null bits", m17_process_lich(state, opts, NULL), -1);
 
     err |= expect_int("stream dispatch rejects null state",
-                      dsd_neo_m17_test_dispatch_stream_payload(opts, NULL, payload_bits, 0U, processed_bits),
-                      DSD_NEO_M17_TEST_STREAM_INVALID);
+                      m17_dispatch_stream_payload(opts, NULL, payload_bits, 0U, processed_bits), M17_STREAM_INVALID);
     err |= expect_int("stream dispatch rejects null payload",
-                      dsd_neo_m17_test_dispatch_stream_payload(opts, state, NULL, 0U, processed_bits),
-                      DSD_NEO_M17_TEST_STREAM_INVALID);
+                      m17_dispatch_stream_payload(opts, state, NULL, 0U, processed_bits), M17_STREAM_INVALID);
     err |= expect_int("stream dispatch rejects null output",
-                      dsd_neo_m17_test_dispatch_stream_payload(opts, state, payload_bits, 0U, NULL),
-                      DSD_NEO_M17_TEST_STREAM_INVALID);
+                      m17_dispatch_stream_payload(opts, state, payload_bits, 0U, NULL), M17_STREAM_INVALID);
 
     state->m17_bert_bits = 1234U;
-    dsd_neo_m17_test_process_bert_payload(NULL, state, bert_bits);
+    m17_process_bert_payload(NULL, state, bert_bits);
     err |= expect_int("BERT null opts preserves state", (int)state->m17_bert_bits, 1234);
-    dsd_neo_m17_test_process_bert_payload(opts, state, NULL);
+    m17_process_bert_payload(opts, state, NULL);
     err |= expect_int("BERT null bits preserves state", (int)state->m17_bert_bits, 1234);
 
     state->carrier = 1;
     state->synctype = DSD_SYNC_M17_STR_POS;
-    dsd_neo_m17_test_dispatch_ip_frame(NULL, state, bits, sizeof(bits));
+    m17_ip_dispatch_frame(NULL, state, bits, sizeof(bits));
     err |= expect_int("IP dispatch null opts preserves carrier", state->carrier, 1);
-    dsd_neo_m17_test_dispatch_ip_frame(opts, NULL, bits, sizeof(bits));
-    dsd_neo_m17_test_dispatch_ip_frame(opts, state, NULL, sizeof(bits));
+    m17_ip_dispatch_frame(opts, NULL, bits, sizeof(bits));
+    m17_ip_dispatch_frame(opts, state, NULL, sizeof(bits));
     err |= expect_int("IP dispatch null frame preserves synctype", state->synctype, DSD_SYNC_M17_STR_POS);
 
-    dsd_neo_m17_test_setup_conn_disc_eotx(0x0123456789ABULL, 'A', NULL, disc, eotx);
+    m17_setup_conn_disc_eotx(0x0123456789ABULL, 'A', NULL, disc, eotx);
     err |= expect_u8("setup CONN null guard preserves DISC", disc[0], 0x22U);
-    dsd_neo_m17_test_setup_conn_disc_eotx(0x0123456789ABULL, 'A', conn, NULL, eotx);
+    m17_setup_conn_disc_eotx(0x0123456789ABULL, 'A', conn, NULL, eotx);
     err |= expect_u8("setup DISC null guard preserves CONN", conn[0], 0x11U);
-    dsd_neo_m17_test_setup_conn_disc_eotx(0x0123456789ABULL, 'A', conn, disc, NULL);
+    m17_setup_conn_disc_eotx(0x0123456789ABULL, 'A', conn, disc, NULL);
     err |= expect_u8("setup EOTX null guard preserves EOTX", eotx[0], 0x33U);
 
-    err |= expect_int("attach LSF CRC rejects null LSF", dsd_neo_m17_test_attach_lsf_crc(NULL, lsf_packed), 0);
-    err |= expect_int("attach LSF CRC rejects null packed", dsd_neo_m17_test_attach_lsf_crc(lsf_bits, NULL), 0);
-    dsd_neo_m17_test_load_lsf_callsigns(NULL, 1ULL, 2ULL);
-    dsd_neo_m17_test_apply_frame_prefix_dibits(2, NULL);
-    dsd_neo_m17_test_load_payload_dibits(NULL, dibits);
+    err |= expect_int("attach LSF CRC rejects null LSF", m17_attach_lsf_crc(NULL, lsf_packed), 0);
+    err |= expect_int("attach LSF CRC rejects null packed", m17_attach_lsf_crc(lsf_bits, NULL), 0);
+    m17_load_lsf_callsigns(NULL, 1ULL, 2ULL);
+    m17_apply_frame_prefix_dibits(2, NULL);
+    m17_load_payload_dibits(NULL, dibits);
     err |= expect_u8("payload dibits null input preserves output", dibits[M17_SYNC_SYMBOLS], 0x44U);
-    dsd_neo_m17_test_load_payload_dibits(full_payload_bits, NULL);
-    dsd_neo_m17_test_reverse_brt_bits(NULL, reversed);
+    m17_load_payload_dibits(full_payload_bits, NULL);
+    m17_reverse_brt_bits(NULL, reversed);
     err |= expect_u8("reverse BRT null input preserves output", reversed[0], 0x66U);
 
     return err;

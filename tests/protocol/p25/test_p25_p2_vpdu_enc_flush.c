@@ -106,18 +106,20 @@ static int g_return_to_cc_called = 0;
 static int g_audio_capture_calls = 0;
 static short g_first_audio_block[320];
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_return_to_cc_called++;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc = return_to_cc;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -212,7 +214,6 @@ main(void) {
     rc |= expect_eq("slot0 ring remains empty", st.p25_p2_audio_ring_count[0], 0);
     rc |= expect_eq("classification does not release early", g_return_to_cc_called, 0);
     rc |= expect_eq("slot0 remains pending", st.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
-    rc |= expect_eq("slot0 pending marker remains set", st.p25_p2_enc_lockout_muted[0], 1);
 
     // Scenario 3: unit-to-unit encrypted fallback should honor recent opposite-slot MAC activity,
     // matching the group-call fallback and avoiding a premature CC return while the other slot is active.
@@ -228,7 +229,6 @@ main(void) {
     opts.p25_is_tuned = 1;
     st.currentslot = 0;
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
-    st.p25_p2_enc_lockout_muted[0] = 0;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_allowed[1] = 0;
     st.p25_p2_audio_ring_count[0] = 1;
@@ -257,14 +257,12 @@ main(void) {
     opts.p25_is_tuned = 1;
     st.currentslot = 0;
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
-    st.p25_p2_enc_lockout_muted[0] = 0;
     st.p25_p2_audio_allowed[0] = 0;
     st.p25_p2_audio_ring_count[0] = 0;
 
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     rc |= expect_eq("late clear regroup member classified", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
-    rc |= expect_eq("late clear regroup member marker clear", st.p25_p2_enc_lockout_muted[0], 0);
 
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_ring_count[0] = 2;
@@ -273,7 +271,6 @@ main(void) {
     rc |= expect_eq("clear regroup member remains clear", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     rc |= expect_eq("clear regroup member gate remains open", st.p25_p2_audio_allowed[0], 1);
     rc |= expect_eq("clear regroup member ring preserved", st.p25_p2_audio_ring_count[0], 2);
-    rc |= expect_eq("clear regroup member marker remains clear", st.p25_p2_enc_lockout_muted[0], 0);
 
     // Scenario 5: MAC Release drains a short int16 tail while crypto readiness
     // is still authoritative, before the slot is gated and reset.

@@ -259,7 +259,6 @@ test_metadata_round_trip_capture_open_close(void) {
     cfg.demod_rate_hz = 48000;
     cfg.offset_tuning_enabled = 0;
     cfg.fs4_shift_enabled = 1;
-    cfg.combine_rotate_enabled = 1;
     cfg.muted_bytes_excluded = 1;
     DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl");
     DSD_SNPRINTF(cfg.source_args, sizeof(cfg.source_args), "%s", "dev=\\\"0\\\"\\\\tcp");
@@ -337,7 +336,6 @@ test_metadata_v2_events_round_trip(void) {
     cfg.post_downsample = 1;
     cfg.demod_rate_hz = 48000;
     cfg.fs4_shift_enabled = 1;
-    cfg.combine_rotate_enabled = 1;
     cfg.muted_bytes_excluded = 1;
     DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl");
     DSD_SNPRINTF(cfg.source_args, sizeof(cfg.source_args), "%s", "dev=0");

@@ -1416,7 +1416,11 @@ metadata_parse_field_group_b2(metadata_parse_state* st, const char* key, const j
         st->seen.fs4_shift_enabled = 1;
         *handled = 1;
     } else if (strcmp(key, "combine_rotate_enabled") == 0) {
-        rc = token_to_bool(val_tok, &st->cfg.combine_rotate_enabled, err_buf, err_buf_size, "combine_rotate_enabled");
+        int combine_rotate = 0;
+        rc = token_to_bool(val_tok, &combine_rotate, err_buf, err_buf_size, "combine_rotate_enabled");
+        if (rc == DSD_IQ_OK) {
+            st->cfg.historical_cu8_two_pass = combine_rotate ? 0 : 1;
+        }
         st->seen.combine_rotate_enabled = 1;
         *handled = 1;
     } else if (strcmp(key, "muted_bytes_excluded") == 0) {
@@ -2088,7 +2092,7 @@ dsd_iq_info_print_summary(const dsd_iq_replay_config* cfg, const char* display_p
                 cfg->source_args[0] ? cfg->source_args : "none");
     DSD_FPRINTF(out, "  Capture stage:       %s\n", cfg->capture_stage);
     DSD_FPRINTF(out, "  FS/4 shift:          %s\n", cfg->fs4_shift_enabled ? "enabled" : "disabled");
-    DSD_FPRINTF(out, "  Combine-rotate:      %s\n", cfg->combine_rotate_enabled ? "enabled" : "disabled");
+    DSD_FPRINTF(out, "  CU8 transform:       %s\n", cfg->historical_cu8_two_pass ? "historical two-pass" : "combined");
     DSD_FPRINTF(out, "  Offset tuning:       %s\n", cfg->offset_tuning_enabled ? "enabled" : "disabled");
     DSD_FPRINTF(out, "  Tuner gain:          %.1f dB\n", (double)cfg->tuner_gain_tenth_db / 10.0);
     DSD_FPRINTF(out, "  PPM correction:      %d\n", cfg->ppm);

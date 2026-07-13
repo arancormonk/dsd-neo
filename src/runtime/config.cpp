@@ -251,10 +251,6 @@ config_snapshot_equals_block_c(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(auto_ppm_zerolock_hz);
     CONFIG_EQ_FIELD(auto_ppm_freeze_is_set);
     CONFIG_EQ_FIELD(auto_ppm_freeze_enable);
-    CONFIG_EQ_FIELD(combine_rot_is_set);
-    CONFIG_EQ_FIELD(combine_rot);
-    CONFIG_EQ_FIELD(upsample_fp_is_set);
-    CONFIG_EQ_FIELD(upsample_fp);
     return true;
 }
 
@@ -1007,27 +1003,7 @@ config_init_auto_ppm(dsdneoRuntimeConfig& c) {
 }
 
 static void
-config_init_rotation_and_resamp(dsdneoRuntimeConfig& c) {
-    /* COMBINE_ROT */
-    const char* cr = getenv("DSD_NEO_COMBINE_ROT");
-    c.combine_rot_is_set = env_is_set(cr);
-    if (c.combine_rot_is_set) {
-        int v = 0;
-        c.combine_rot = env_parse_int_strict(cr, &v) ? (v != 0) : 0;
-    } else {
-        c.combine_rot = 1;
-    }
-
-    /* UPSAMPLE_FP */
-    const char* ufp = getenv("DSD_NEO_UPSAMPLE_FP");
-    c.upsample_fp_is_set = env_is_set(ufp);
-    if (c.upsample_fp_is_set) {
-        int v = 0;
-        c.upsample_fp = env_parse_int_strict(ufp, &v) ? (v != 0) : 0;
-    } else {
-        c.upsample_fp = 1;
-    }
-
+config_init_resamp(dsdneoRuntimeConfig& c) {
     /* RESAMP */
     const char* rs = getenv("DSD_NEO_RESAMP");
     c.resamp_is_set = env_is_set(rs);
@@ -1272,7 +1248,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
     config_init_rtl_and_tuner(c);
     config_init_tuner_autogain(c);
     config_init_auto_ppm(c);
-    config_init_rotation_and_resamp(c);
+    config_init_resamp(c);
     config_init_costas_ted(c);
     config_init_deemph_audio(c);
     config_init_mt_and_retune(c);

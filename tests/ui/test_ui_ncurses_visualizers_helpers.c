@@ -13,6 +13,7 @@
 #include <curses.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -157,7 +158,7 @@ select_k_int_local(int* a, int n, int k) { // NOLINT(misc-use-internal-linkage)
 }
 
 int
-ui_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
+dsd_unicode_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
@@ -660,7 +661,7 @@ test_histogram_and_spectrum_helpers(void) {
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof opts);
     g_has_colors = 1;
-    opts.frontend_display.eye_color = 1;
+    opts.frontend_terminal_display.eye_color = 1;
     render_reset();
     spectrum_draw_cell(&opts, 0, vmax, vmin, vmax, span, 0, 4);
     assert(strcmp(g_render_out, "#") == 0);

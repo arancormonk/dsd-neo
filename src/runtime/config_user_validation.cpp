@@ -18,7 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
-#include "config_user_internal.h"
 #include "dsd-neo/core/safe_api.h"
 
 static int
@@ -87,36 +86,12 @@ validate_enum_value(const char* val, const char* allowed) {
     return -1;
 }
 
-static void
-add_decode_mode_validation_error(dsdcfg_diagnostics_t* diags, int line_num, const char* section, const char* key,
-                                 const char* val, const char* allowed) {
-    if (!diags || !val) {
-        return;
-    }
-    char msg[256];
-    DSD_SNPRINTF(msg, sizeof msg,
-                 "Invalid value '%s' (allowed: %s, aliases: p25p1_only|p25p2_only|edacs|provoice|analog_monitor)", val,
-                 allowed ? allowed
-                         : "auto|p25p1|p25p2|dmr|nxdn48|nxdn96|x2tdma|ysf|dstar|edacs_pv|dpmr|m17|tdma|analog");
-    dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, section ? section : "", key ? key : "", msg);
-}
-
 static int
-validate_enum_with_compat_aliases(const char* section, const char* key, const char* val, const char* allowed,
-                                  dsdcfg_diagnostics_t* diags, int line_num, const char* diag_section,
-                                  const char* diag_key) {
+validate_enum_value_with_diagnostic(const char* val, const char* allowed, dsdcfg_diagnostics_t* diags, int line_num,
+                                    const char* diag_section, const char* diag_key) {
     if (!val) {
         return -1;
     }
-    if (user_config_is_mode_decode_key(section, key)) {
-        dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
-        if (user_config_parse_decode_mode_value(val, &mode, NULL) == 0) {
-            return 0;
-        }
-        add_decode_mode_validation_error(diags, line_num, diag_section, diag_key, val, allowed);
-        return -1;
-    }
-
     if (allowed && validate_enum_value(val, allowed) != 0) {
         char msg[256];
         DSD_SNPRINTF(msg, sizeof msg, "Invalid value '%s' (allowed: %s)", val, allowed);
@@ -129,9 +104,8 @@ validate_enum_with_compat_aliases(const char* section, const char* key, const ch
 }
 
 static void
-validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* schema_section, const char* schema_key,
-                     const char* val, dsdcfg_diagnostics_t* diags, int line_num, const char* diag_section,
-                     const char* diag_key) {
+validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
+                     const char* diag_section, const char* diag_key) {
     if (!entry || !val || !diags) {
         return;
     }
@@ -162,8 +136,7 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* schema_sect
         }
 
         case DSDCFG_TYPE_ENUM:
-            (void)validate_enum_with_compat_aliases(schema_section, schema_key, val, entry->allowed, diags, line_num,
-                                                    diag_section, diag_key);
+            (void)validate_enum_value_with_diagnostic(val, entry->allowed, diags, line_num, diag_section, diag_key);
             break;
 
         default: break;
@@ -287,7 +260,7 @@ validate_profile_key_value(char* key, const char* val, dsdcfg_diagnostics_t* dia
         std::string msg = std::string("Unknown key '") + target_sec + "." + target_key + "' in profile";
         dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, line_num, current_section, key, msg.c_str());
     } else {
-        validate_entry_value(entry, target_sec, target_key, val, diags, line_num, current_section, key);
+        validate_entry_value(entry, val, diags, line_num, current_section, key);
     }
     *dot = '.';
 }
@@ -310,12 +283,7 @@ validate_section_key_value(char* key, const char* val, dsdcfg_diagnostics_t* dia
         return;
     }
 
-    if (entry->deprecated) {
-        std::string msg = std::string("Key '") + key + "' is deprecated";
-        dsdcfg_diags_add(diags, DSDCFG_DIAG_INFO, line_num, current_section, key, msg.c_str());
-    }
-
-    validate_entry_value(entry, current_section, key, val, diags, line_num, current_section, key);
+    validate_entry_value(entry, val, diags, line_num, current_section, key);
 }
 
 static void
@@ -528,9 +496,4 @@ dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags) {
         validate_composed_config_path(path, diags);
     }
     return diags->error_count > 0 ? -1 : rc;
-}
-
-void
-dsd_user_config_diags_free(dsdcfg_diagnostics_t* diags) {
-    dsdcfg_diags_free(diags);
 }

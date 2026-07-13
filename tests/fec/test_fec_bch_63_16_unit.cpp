@@ -7,8 +7,8 @@
  * @file
  * @brief Unit tests for BCH(63,16,11) encoder/decoder.
  *
- * Validates encode/decode correctness, GF(2^6) field properties, error
- * detection limits, and backward-compatible legacy interface.
+ * Validates encode/decode correctness, GF(2^6) field properties, and error
+ * detection limits.
  */
 
 #include <cstdio>
@@ -348,67 +348,6 @@ test_gf_field_properties(void) {
     return 0;
 }
 
-/**
- * @brief Verify that the legacy bool decode interface still works.
- *
- * The decode() wrapper should return true on success and false
- * on failure, discarding the error count.
- *
- * Validates: Requirements 5.2, 5.3
- */
-static int
-test_backward_compat_legacy_decode(void) {
-    BCH_63_16_11 bch;
-
-    // Test success case
-    {
-        char info[16] = {1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0};
-        char codeword[63];
-        char decoded[16];
-
-        bch.encode(info, codeword);
-
-        // Introduce 3 errors
-        codeword[2] ^= 1;
-        codeword[20] ^= 1;
-        codeword[40] ^= 1;
-
-        bool ok = bch.decode(codeword, decoded);
-        if (!ok) {
-            DSD_FPRINTF(stderr, "test_backward_compat_legacy_decode: expected true, got false\n");
-            return 1;
-        }
-        if (std::memcmp(decoded, info, 16) != 0) {
-            DSD_FPRINTF(stderr, "test_backward_compat_legacy_decode: decoded bits mismatch\n");
-            return 1;
-        }
-    }
-
-    // Test failure case (12 errors)
-    {
-        char info[16];
-        char codeword[63];
-        char decoded[16];
-
-        DSD_MEMSET(info, 0, sizeof(info));
-        bch.encode(info, codeword);
-
-        // Flip 12 bits
-        for (std::size_t i = 0; i < 12; i++) {
-            codeword[i * 5U] ^= 1;
-        }
-
-        bool ok = bch.decode(codeword, decoded);
-        if (ok) {
-            DSD_FPRINTF(stderr, "test_backward_compat_legacy_decode: expected false on 12 errors, "
-                                "got true\n");
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
 int
 main(void) {
     int rc = 0;
@@ -419,8 +358,6 @@ main(void) {
     rc |= test_decode_no_errors();
     rc |= test_decode_failure_12_errors();
     rc |= test_gf_field_properties();
-    rc |= test_backward_compat_legacy_decode();
-
     if (rc == 0) {
         std::printf("BCH(63,16,11) unit tests passed.\n");
     }

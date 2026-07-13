@@ -55,7 +55,8 @@ ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
 }
 
 static dsd_trunk_tune_result
-diag_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+diag_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     if (opts) {
         opts->p25_is_tuned = 1;
@@ -71,7 +72,8 @@ diag_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) 
 }
 
 static dsd_trunk_tune_result
-diag_return_to_cc(dsd_opts* opts, dsd_state* state) {
+diag_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     if (opts) {
         opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
@@ -84,7 +86,8 @@ diag_return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 static dsd_trunk_tune_result
-diag_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+diag_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)ted_sps;
     if (state) {
@@ -98,9 +101,9 @@ diag_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
 static void
 install_diag_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = diag_tune_to_freq;
-    hooks.return_to_cc_result = diag_return_to_cc;
-    hooks.tune_to_cc_result = diag_tune_to_cc;
+    hooks.tune_to_freq_request = diag_tune_to_freq;
+    hooks.return_to_cc_request = diag_return_to_cc;
+    hooks.tune_to_cc_request = diag_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -187,7 +190,7 @@ main(void) {
     hunt_state.p25_cc_freq = 851000000;
     hunt_state.trunk_cc_freq = 851000000;
     hunt_state.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
-    (void)dsd_trunk_cc_candidates_add(&hunt_state, 852000000, 0);
+    (void)dsd_trunk_cc_candidates_add_with_flags(&hunt_state, 852000000, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     p25_sm_ctx_t hunt_ctx;
     p25_sm_init_ctx(&hunt_ctx, &hunt_opts, &hunt_state);
     p25_sm_tick_ctx(&hunt_ctx, &hunt_opts, &hunt_state);

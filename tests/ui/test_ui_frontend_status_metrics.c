@@ -44,8 +44,10 @@ fill_frontend_inputs(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->frontend_kind = DSD_FRONTEND_TERMINAL;
-    opts->frontend_display.terminal_compact = 1;
-    opts->frontend_display.terminal_history = 0;
+    opts->frontend_display.constellation = 1;
+    opts->frontend_display.show_dsp_panel = 1;
+    opts->frontend_terminal_display.terminal_compact = 1;
+    opts->frontend_terminal_display.terminal_history = 0;
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->audio_out_type = 0;
     opts->audio_out = 1;
@@ -103,6 +105,8 @@ test_status_copies_opts_and_state(void) {
     state.config_autosave_path[0] = '\0';
 
     assert(status.frontend_kind == DSD_FRONTEND_TERMINAL);
+    assert(status.display.constellation == 1);
+    assert(status.display.show_dsp_panel == 1);
     assert(status.terminal_display.terminal_compact == 1);
     assert(status.terminal_display.terminal_history == 0);
     assert(status.audio_in_type == AUDIO_IN_RTL);

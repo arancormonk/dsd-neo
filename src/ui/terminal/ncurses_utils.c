@@ -10,7 +10,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <math.h>
 #include <stdint.h>
@@ -20,18 +19,8 @@
 
 #include "dsd-neo/core/state_fwd.h"
 
-/* Shared state: last sync type seen by the UI (updated by ncursesPrinter) */
+/* Shared state: last sync type seen by the terminal renderer. */
 int ncurses_last_synctype = DSD_SYNC_NONE;
-
-int
-ui_unicode_supported(void) {
-    return dsd_unicode_supported();
-}
-
-int
-ui_block_glyphs_supported(void) {
-    return dsd_unicode_block_glyphs_supported();
-}
 
 /* Quickselect helpers for int arrays (k-th smallest in O(n)) */
 

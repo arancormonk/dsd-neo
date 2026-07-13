@@ -33,7 +33,6 @@ std::atomic<double> g_spec_peak_db{-100.0};
 std::atomic<double> g_spec_snr_db{-100.0};
 /* Carrier diagnostics (updated alongside spectrum) */
 static std::atomic<double> g_cfo_nco_hz{0.0};
-static std::atomic<double> g_resid_cfo_spec_hz{0.0};
 std::atomic<double> g_resid_cfo_phase_hz{0.0};
 static std::atomic<int> g_carrier_lock{0};
 static std::atomic<int> g_nco_q15{0};
@@ -157,7 +156,6 @@ struct rtl_metrics_peak_metrics {
     int i_max = 0;
     float p_max = -100.0f;
     float spec_snr_db = -100.0f;
-    double df_spec_hz = 0.0;
 };
 
 struct rtl_metrics_nco_metrics {
@@ -321,30 +319,8 @@ rtl_metrics_peak_center_tone_filter(int N, int k_center_i, int i_max, float p_ma
     return spec_snr_db;
 }
 
-static double
-rtl_metrics_peak_df_spec_hz(int N, int i_max, int out_rate_hz) {
-    if (!(N >= 3 && i_max > 0 && i_max + 1 < N && out_rate_hz > 0)) {
-        return 0.0;
-    }
-
-    double p1 = g_spec_db[i_max - 1];
-    double p2 = g_spec_db[i_max];
-    double p3 = g_spec_db[i_max + 1];
-    double denom = (p1 - 2.0 * p2 + p3);
-    double delta = (fabs(denom) > 1e-9) ? (0.5 * (p1 - p3) / denom) : 0.0;
-    if (delta < -0.5) {
-        delta = -0.5;
-    } else if (delta > 0.5) {
-        delta = 0.5;
-    }
-
-    double center = static_cast<double>(N) / 2.0;
-    double k_off = (static_cast<double>(i_max) + delta) - center;
-    return k_off * static_cast<double>(out_rate_hz) / static_cast<double>(N);
-}
-
 static rtl_metrics_peak_metrics
-rtl_metrics_compute_peak_metrics(int N, int out_rate_hz) {
+rtl_metrics_compute_peak_metrics(int N) {
     rtl_metrics_peak_metrics peak = {};
     int k_center_i = 0;
     int i_lo = 0;
@@ -353,7 +329,6 @@ rtl_metrics_compute_peak_metrics(int N, int out_rate_hz) {
     rtl_metrics_peak_find_bin(i_lo, i_hi, &peak.i_max, &peak.p_max);
     peak.spec_snr_db = rtl_metrics_peak_noise_snr(i_lo, i_hi, peak.i_max, peak.p_max);
     peak.spec_snr_db = rtl_metrics_peak_center_tone_filter(N, k_center_i, peak.i_max, peak.p_max, peak.spec_snr_db);
-    peak.df_spec_hz = rtl_metrics_peak_df_spec_hz(N, peak.i_max, out_rate_hz);
     return peak;
 }
 
@@ -415,10 +390,9 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
         pffft_transform_ordered(setup, z, z, nullptr, PFFFT_FORWARD);
         rtl_metrics_smooth_spectrum_bins(N, out_rate_hz, z);
     }
-    rtl_metrics_peak_metrics peak = rtl_metrics_compute_peak_metrics(N, out_rate_hz);
+    rtl_metrics_peak_metrics peak = rtl_metrics_compute_peak_metrics(N);
     g_spec_peak_db.store(peak.p_max, std::memory_order_relaxed);
     g_spec_snr_db.store(peak.spec_snr_db, std::memory_order_relaxed);
-    g_resid_cfo_spec_hz.store(peak.df_spec_hz, std::memory_order_relaxed);
 
     /* NCO CFO from CQPSK band-edge/Costas recovery (native float freq in rad/sample, scaled by Fs/(2π))
      *
@@ -455,7 +429,7 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
  * @return Number of bins copied (0 if not ready or on invalid input).
  */
 extern "C" int
-dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
+rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     if (!out_db || max_bins <= 0) {
         return 0;
     }
@@ -489,7 +463,7 @@ dsd_rtl_stream_spectrum_get(float* out_db, int max_bins, int* out_rate) {
  * @return Actual FFT length selected.
  */
 extern "C" int
-dsd_rtl_stream_spectrum_set_size(int n) {
+rtl_stream_spectrum_set_size(int n) {
     if (n < 64) {
         n = 64;
     }
@@ -512,7 +486,7 @@ dsd_rtl_stream_spectrum_set_size(int n) {
  * @return FFT length in bins.
  */
 extern "C" int
-dsd_rtl_stream_spectrum_get_size(void) {
+rtl_stream_spectrum_get_size(void) {
     int N = g_spec_N.load(std::memory_order_relaxed);
     if (N < 64) {
         N = 64;
@@ -525,43 +499,37 @@ dsd_rtl_stream_spectrum_get_size(void) {
 
 /** @brief Return the current NCO CFO estimate in Hz derived from Costas/FLL. */
 extern "C" double
-dsd_rtl_stream_get_cfo_hz(void) {
+rtl_stream_get_cfo_hz(void) {
     return g_cfo_nco_hz.load(std::memory_order_relaxed);
-}
-
-/** @brief Return the residual CFO estimate in Hz derived from the spectrum peak. */
-extern "C" double
-dsd_rtl_stream_get_residual_cfo_hz(void) {
-    return g_resid_cfo_spec_hz.load(std::memory_order_relaxed);
 }
 
 /** @brief Return 1 when the CQPSK carrier lock heuristic is satisfied. */
 extern "C" int
-dsd_rtl_stream_get_carrier_lock(void) {
+rtl_stream_get_carrier_lock(void) {
     return g_carrier_lock.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
 /** @brief Get the current FLL/Costas NCO frequency in Q15 cycles/sample. */
 extern "C" int
-dsd_rtl_stream_get_nco_q15(void) {
+rtl_stream_get_nco_q15(void) {
     return g_nco_q15.load(std::memory_order_relaxed);
 }
 
 /** @brief Get the demodulator sample rate (Hz) used for CFO scaling. */
 extern "C" int
-dsd_rtl_stream_get_demod_rate_hz(void) {
+rtl_stream_get_demod_rate_hz(void) {
     return g_demod_rate_hz.load(std::memory_order_relaxed);
 }
 
 /** @brief Get the smoothed Costas error term (Q14). */
 extern "C" int
-dsd_rtl_stream_get_costas_err_q14(void) {
+rtl_stream_get_costas_err_q14(void) {
     return g_costas_err_avg_q14.load(std::memory_order_relaxed);
 }
 
 /** @brief Get Costas discriminator health metrics for the latest DSP block. */
 extern "C" int
-dsd_rtl_stream_get_costas_metrics(rtl_stream_costas_metrics* out) {
+rtl_stream_get_costas_metrics(rtl_stream_costas_metrics* out) {
     if (!out) {
         return -1;
     }
@@ -574,7 +542,7 @@ dsd_rtl_stream_get_costas_metrics(rtl_stream_costas_metrics* out) {
 
 /** @brief Return the FLL band-edge frequency estimate in Hz. */
 extern "C" double
-dsd_rtl_stream_get_fll_band_edge_freq_hz(void) {
+rtl_stream_get_fll_band_edge_freq_hz(void) {
     int Fs = g_demod_rate_hz.load(std::memory_order_relaxed);
     if (Fs <= 0) {
         return 0.0;
@@ -597,7 +565,7 @@ dsd_rtl_stream_get_fll_band_edge_freq_hz(void) {
  * diff output equals raw input.
  */
 extern "C" void
-dsd_rtl_stream_reset_costas(void) {
+rtl_stream_reset_costas(void) {
     /* Reset phase and error, but preserve frequency estimate */
     demod.costas_state.phase = 0.0f;
     demod.costas_state.error = 0.0f;
@@ -642,13 +610,13 @@ rtl_stream_get_snr_gfsk(void) {
 /* Supervisory tuner autogain runtime control */
 /** @brief Return the supervisory tuner auto-gain flag (1=enabled). */
 extern "C" int
-dsd_rtl_stream_get_tuner_autogain(void) {
+rtl_stream_get_tuner_autogain(void) {
     return g_tuner_autogain_on.load(std::memory_order_relaxed) ? 1 : 0;
 }
 
 /** @brief Enable or disable supervisory tuner auto-gain (atomic flag). */
 extern "C" void
-dsd_rtl_stream_set_tuner_autogain(int onoff) {
+rtl_stream_set_tuner_autogain(int onoff) {
     g_tuner_autogain_on.store(onoff ? 1 : 0, std::memory_order_relaxed);
 }
 
@@ -668,8 +636,8 @@ dsd_rtl_stream_set_tuner_autogain(int onoff) {
  * @return 0 always (snapshot only).
  */
 int
-dsd_rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm, int* last_dir,
-                                   int* cooldown, int* locked) {
+rtl_stream_auto_ppm_get_status(int* enabled, double* snr_db, double* df_hz, double* est_ppm, int* last_dir,
+                               int* cooldown, int* locked) {
     if (enabled) {
         *enabled = g_auto_ppm_enabled.load(std::memory_order_relaxed);
     }
@@ -709,7 +677,7 @@ dsd_rtl_stream_auto_ppm_training_active(void) {
  * @return 0 always (snapshot only).
  */
 int
-dsd_rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz) {
+rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz) {
     if (ppm) {
         *ppm = g_auto_ppm_lock_ppm.load(std::memory_order_relaxed);
     }
@@ -727,7 +695,7 @@ dsd_rtl_stream_auto_ppm_get_lock(int* ppm, double* snr_db, double* df_hz) {
  * @param onoff Non-zero to enable; zero to disable.
  */
 void
-dsd_rtl_stream_set_auto_ppm(int onoff) {
+rtl_stream_set_auto_ppm(int onoff) {
     g_auto_ppm_user_en.store(onoff ? 1 : 0, std::memory_order_relaxed);
 }
 
@@ -736,7 +704,7 @@ dsd_rtl_stream_set_auto_ppm(int onoff) {
  * @return 1 when enabled, 0 when disabled.
  */
 int
-dsd_rtl_stream_get_auto_ppm(void) {
+rtl_stream_get_auto_ppm(void) {
     int u = g_auto_ppm_user_en.load(std::memory_order_relaxed);
     if (u == 0) {
         return 0;

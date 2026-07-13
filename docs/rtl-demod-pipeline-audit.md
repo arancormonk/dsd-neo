@@ -22,8 +22,8 @@ SoapySDR, and IQ replay; all four sources feed the same direct-output contracts.
      AGC -> band-edge FLL -> Gardner -> differential phasor -> Costas ->
      phase symbol scaling.
 4. Direct outputs are written to the RTL output ring without monitor volume,
-   audio resampling, deemphasis, audio LPF, DC-block audio filtering, or legacy
-   scalar matched filters.
+   audio resampling, deemphasis, audio LPF, DC-block audio filtering, or
+   sample-domain matched filters.
 5. `getSymbol()` detects CQPSK symbol output and uses the symbol-rate fast path.
    FSK discriminator output stays on the sample-domain timing/filter path.
 6. `digitize()` maps floats to dibits.

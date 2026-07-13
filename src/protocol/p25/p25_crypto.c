@@ -54,9 +54,6 @@ p25_crypto_set_state(dsd_state* state, int slot, dsd_p25_crypto_state crypto_sta
         return;
     }
     state->p25_crypto_state[slot] = crypto_state;
-    state->p25_p2_enc_lockout_muted[slot] =
-        (uint8_t)((crypto_state == DSD_P25_CRYPTO_ENCRYPTED_PENDING || crypto_state == DSD_P25_CRYPTO_BLOCKED) ? 1U
-                                                                                                               : 0U);
     if (!p25_crypto_audio_ready(state, slot)) {
         state->p25_p2_audio_allowed[slot] = 0;
     }

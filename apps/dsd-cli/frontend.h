@@ -19,11 +19,6 @@ extern "C" {
 typedef int (*dsd_cli_engine_runner)(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
                                      void* context);
 
-int dsd_cli_frontend_select(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_hooks* hooks_storage,
-                            const dsd_engine_lifecycle_hooks** out_hooks);
-int dsd_cli_frontend_select_from_registry(dsd_opts* opts, dsd_state* state, dsd_engine_lifecycle_hooks* hooks_storage,
-                                          const dsd_engine_lifecycle_hooks** out_hooks,
-                                          const dsd_frontend_provider* const* providers, size_t provider_count);
 int dsd_cli_frontend_run(dsd_opts* opts, dsd_state* state);
 int dsd_cli_frontend_run_from_registry(dsd_opts* opts, dsd_state* state, const dsd_frontend_provider* const* providers,
                                        size_t provider_count, dsd_cli_engine_runner runner, void* runner_context);

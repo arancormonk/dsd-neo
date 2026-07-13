@@ -106,6 +106,12 @@ typedef struct {
     uint8_t cfva_valid; /**< 1 when @ref cfva was decoded with this announcement. */
 } p25_neighbor_channel_announcement_t;
 
+/** A resolved neighbor frequency plus any validity-bearing announcement metadata. */
+typedef struct {
+    long freq;
+    p25_neighbor_channel_announcement_t announcement;
+} p25_neighbor_record_update_t;
+
 /**
  * @brief Build a per-system cache path for CC candidates.
  *
@@ -126,6 +132,12 @@ int p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len);
  */
 int p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added);
 
+/** Record resolved neighbor frequencies without promoting them as current-site candidates. */
+void p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count);
+
+/** Return the next eligible current-site control-channel candidate. */
+int p25_cc_next_candidate(dsd_state* state, long* out_freq);
+
 /**
  * @brief Attempt to load a persisted candidate CC list (best-effort).
  *
@@ -142,37 +154,10 @@ void p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state);
 void p25_cc_persist_cache(const dsd_opts* opts, const dsd_state* state);
 
 /**
- * @brief Add a neighbor with full site metadata to the in-memory table.
- *
- * If an entry with the same frequency already exists, its metadata fields are
- * updated and the last-seen timestamp is refreshed. When the table is full
- * (P25_NB_MAX entries), the oldest entry by last_seen is evicted (LRU).
- *
- * @param state   Decoder state containing neighbor table.
- * @param freq    Neighbor frequency in Hz.
- * @param sysid   System ID (12-bit, stored in 16).
- * @param rfss    RFSS ID (8-bit).
- * @param site    Site ID (8-bit).
- * @param cfva    CFVA status nibble (4-bit).
+ * Apply a resolved neighbor update. An update with only @ref p25_neighbor_record_update_t.freq set refreshes the
+ * matching record without clobbering learned metadata.
  */
-void p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva);
-
-/**
- * @brief Add a neighbor with optional WACN and full site metadata.
- */
-void p25_nb_add_ex_wacn(dsd_state* state, long freq, uint32_t wacn, int wacn_valid, uint16_t sysid, uint8_t rfss,
-                        uint8_t site, uint8_t cfva);
-
-/**
- * @brief Add a neighbor control channel candidate (Hz) to the in-memory list.
- *
- * Backward-compatible frequency-only wrapper that refreshes last-seen without
- * marking site-status metadata valid.
- *
- * @param state Decoder state containing neighbor list.
- * @param freq_hz Candidate control channel frequency in Hz.
- */
-void p25_nb_add(dsd_state* state, long freq_hz);
+void p25_nb_record_update(dsd_state* state, const p25_neighbor_record_update_t* update);
 /**
  * @brief Age/expire neighbor control channel candidates (call periodically).
  *
@@ -203,19 +188,10 @@ const char* p25_adjacent_cfva_flag_name(uint8_t flag_mask);
 size_t p25_format_adjacent_cfva(uint8_t cfva, char* out, size_t out_len);
 
 /**
- * @brief Resolve or defer a P25 adjacent-site channel announcement.
- *
- * Returns 1 when the channel resolved and was stored as a neighbor, 0 when it
- * was ignored or retained pending a later IDEN update.
- */
-int p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state, uint16_t channel, uint32_t wacn,
-                                  int wacn_valid, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva);
-
-/**
  * @brief Resolve or defer a P25 adjacent-site channel announcement with explicit metadata validity.
  */
-int p25_announce_neighbor_channel_ex(const dsd_opts* opts, dsd_state* state,
-                                     const p25_neighbor_channel_announcement_t* announcement);
+int p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state,
+                                  const p25_neighbor_channel_announcement_t* announcement);
 
 /**
  * @brief Resolve or defer a P25 secondary control-channel announcement.
@@ -223,11 +199,11 @@ int p25_announce_neighbor_channel_ex(const dsd_opts* opts, dsd_state* state,
  * Returns 1 when the channel resolved and was promoted as a current-site CC
  * candidate, 0 when it was ignored or retained pending a later IDEN update.
  */
-int p25_announce_secondary_cc_channel(dsd_opts* opts, dsd_state* state, uint16_t channel, uint8_t rfss, uint8_t site,
-                                      uint8_t ssc);
+int p25_announce_secondary_cc_channel(const dsd_opts* opts, dsd_state* state, uint16_t channel, uint8_t rfss,
+                                      uint8_t site, uint8_t ssc);
 
 /** Retry pending neighbor and secondary CC announcements after IDEN updates. */
-void p25_resolve_pending_announcements(dsd_opts* opts, dsd_state* state);
+void p25_resolve_pending_announcements(const dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

@@ -94,21 +94,6 @@ static DSD_THREAD_RETURN_TYPE
     DSD_THREAD_RETURN;
 }
 
-/**
- * @brief Start UDP control thread.
- *
- * Starts a background UDP listener on the specified port. On valid messages,
- * invokes the provided retune callback with the parsed frequency.
- *
- * @param udp_port UDP port to bind and listen on (0 disables/start no-op).
- * @param cb Callback invoked upon receiving a valid retune command.
- * @return Opaque handle on success; NULL on failure.
- */
-extern "C" udp_control*
-udp_control_start(int udp_port, udp_control_retune_cb cb) {
-    return udp_control_start_bound("127.0.0.1", udp_port, cb);
-}
-
 extern "C" udp_control*
 udp_control_start_bound(const char* bindaddr, int udp_port, udp_control_retune_cb cb) {
     if (udp_port <= 0 || udp_port > 65535) {
@@ -168,7 +153,7 @@ udp_control_start_bound(const char* bindaddr, int udp_port, udp_control_retune_c
  *
  * Closes the socket, joins the worker thread, and releases the handle.
  *
- * @param ctrl Opaque handle returned by `udp_control_start` (safe to pass NULL).
+ * @param ctrl Opaque handle returned by `udp_control_start_bound` (safe to pass NULL).
  */
 extern "C" void
 udp_control_stop(udp_control* ctrl) {

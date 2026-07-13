@@ -232,7 +232,8 @@ p25p1_pdu_dispatch_group_grant(dsd_opts* opts, dsd_state* state, int channel, in
     // The trunk state machine owns group-grant policy so patched supergroup
     // grants can be evaluated against their member talkgroups.
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_on_group_grant(opts, state, channel, svc_bits, group, src);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, group, src, svc_bits);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     } else {
         p25_sm_apply_group_grant_policy(opts, state, channel, svc_bits, group, src);
     }
@@ -325,7 +326,7 @@ p25_print_voice_svc_common(const dsd_opts* opts, dsd_state* state, int svc) {
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
+p25_handle_mbt_net_sts_broadcast(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int lra = mpdu_byte[3];
     int sysid = ((mpdu_byte[4] & 0xF) << 8) | mpdu_byte[5];
     int res_a = mpdu_byte[8];
@@ -362,7 +363,7 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
         }
 
         const long neigh[1] = {ct_freq};
-        p25_sm_on_neighbor_update(opts, state, neigh, 1);
+        p25_cc_record_neighbor_frequencies(opts, state, neigh, 1);
         p25_confirm_idens_for_current_site(state);
     } else if (ct_freq > 0) {
         DSD_FPRINTF(stderr, "\n  P25 MBT NET_STS: ignoring CC update while voice-tuned (freq=%ld)", ct_freq);
@@ -372,7 +373,7 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_rfss_status_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
+p25_handle_mbt_rfss_status_broadcast(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int lra = mpdu_byte[3];
     int lsysid = ((mpdu_byte[4] & 0xF) << 8) | mpdu_byte[5];
     int rfssid = mpdu_byte[12];
@@ -391,7 +392,7 @@ p25_handle_mbt_rfss_status_broadcast(dsd_opts* opts, dsd_state* state, const uin
     (void)process_channel_to_freq(opts, state, channelr);
 
     const long neigh2[1] = {f1};
-    p25_sm_on_neighbor_update(opts, state, neigh2, 1);
+    p25_cc_record_neighbor_frequencies(opts, state, neigh2, 1);
 
     if (state->p2_sysid != 0 && (uint16_t)lsysid != state->p2_sysid) {
         return;
@@ -430,7 +431,7 @@ p25_handle_mbt_adjacent_status_broadcast(const dsd_opts* opts, dsd_state* state,
         .lra_valid = 1U,
         .cfva_valid = 1U,
     };
-    (void)p25_announce_neighbor_channel_ex(opts, state, &announcement);
+    (void)p25_announce_neighbor_channel(opts, state, &announcement);
 }
 
 static void DSD_ATTR_USED
@@ -568,7 +569,8 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     }
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
-        p25_sm_on_indiv_grant(opts, state, channelt, svc, (int)target, (int)source);
+        p25_sm_event_t ev = p25_sm_ev_indiv_grant(channelt, 0, (int)target, (int)source, svc);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
 
@@ -691,7 +693,8 @@ p25_handle_mbt_individual_data_channel_grant(dsd_opts* opts, dsd_state* state, c
     }
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_on_indiv_data_grant(opts, state, channelt, svc, (int)target, (int)source);
+        p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channelt, 0, (int)target, (int)source, svc);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
 
@@ -713,7 +716,8 @@ p25_handle_mbt_group_data_channel_grant(dsd_opts* opts, dsd_state* state, const 
     (void)process_channel_to_freq(opts, state, channelr);
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_on_group_data_grant(opts, state, channelt, svc, (int)group, (int)source);
+        p25_sm_event_t ev = p25_sm_ev_group_data_grant(channelt, 0, (int)group, (int)source, svc);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
 
@@ -778,7 +782,8 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
     }
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_on_indiv_grant(opts, state, channel, svc, (int)target, 0);
+        p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, 0, (int)target, 0, svc);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 
     p25_telephone_update_nontrunk_vc_freq(opts, state, target, freq);
@@ -1060,7 +1065,7 @@ p25_handle_mbt_inbound_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p
 }
 
 static int
-p25_handle_mbt_site_status_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
+p25_handle_mbt_site_status_opcode(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                   const p25p1_mbt_fields* fields) {
     switch (fields->opcode) {
         case 0x3B:

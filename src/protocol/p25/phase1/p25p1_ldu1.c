@@ -19,12 +19,13 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
@@ -293,11 +294,11 @@ p25p1_ldu1_build_lcw_buffers(const uint8_t lcformat[9], const uint8_t mfid[9], c
     DSD_MEMSET(LCW_bytes, 0, 9);
     DSD_MEMSET(LCW_bits, 0, 72);
 
-    LCW_bytes[0] = (uint8_t)ConvertBitIntoBytes(&lcformat[0], 8);
-    LCW_bytes[1] = (uint8_t)ConvertBitIntoBytes(&mfid[0], 8);
+    LCW_bytes[0] = (uint8_t)convert_bits_into_output(&lcformat[0], 8);
+    LCW_bytes[1] = (uint8_t)convert_bits_into_output(&mfid[0], 8);
     for (int i = 0; i < 7; i++) {
         ptrdiff_t o = (ptrdiff_t)i * 8;
-        LCW_bytes[i + 2] = (uint8_t)ConvertBitIntoBytes(&lcinfo[o], 8);
+        LCW_bytes[i + 2] = (uint8_t)convert_bits_into_output(&lcinfo[o], 8);
     }
 
     for (int i = 0, j = 0; i < 9; i++, j += 8) {

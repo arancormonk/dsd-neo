@@ -14,7 +14,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
 #include <dsd-neo/protocol/provoice/provoice_const.h>
 #include <stdint.h>
@@ -32,10 +31,7 @@ static int dibit_calls;
 static int mbe_calls;
 static int play_ms_calls;
 static int play_fm_calls;
-static int convert_calls;
 static uint8_t expected_bits[PROVOICE_EXPECTED_TOTAL_DIBITS];
-static uint32_t convert_lengths[8];
-static size_t convert_offsets[8];
 static char captured_first_frame[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
 
 static void
@@ -57,54 +53,18 @@ reset_counters(void) {
     mbe_calls = 0;
     play_ms_calls = 0;
     play_fm_calls = 0;
-    convert_calls = 0;
     fill_expected_bits();
-    DSD_MEMSET(convert_lengths, 0, sizeof(convert_lengths));
-    DSD_MEMSET(convert_offsets, 0, sizeof(convert_offsets));
     DSD_MEMSET(captured_first_frame, 0, sizeof(captured_first_frame));
 }
 
 int
-getDibit(dsd_opts* opts, dsd_state* state) {
+get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)state;
+    (void)out_analog_signal;
     assert(dibit_calls < PROVOICE_EXPECTED_TOTAL_DIBITS);
     int value = expected_bits[dibit_calls];
     dibit_calls++;
-    return value;
-}
-
-static size_t
-find_convert_offset(const uint8_t* buffer, uint32_t bit_length) {
-    assert(bit_length <= sizeof(expected_bits));
-    for (size_t offset = 0; offset <= sizeof(expected_bits) - bit_length; offset++) {
-        int match = 1;
-        for (uint32_t i = 0; i < bit_length; i++) {
-            if (buffer[i] != expected_bits[offset + i]) {
-                match = 0;
-                break;
-            }
-        }
-        if (match != 0) {
-            return offset;
-        }
-    }
-    assert(!"ConvertBitIntoBytes input did not match the expected ProVoice bit stream");
-    return 0U;
-}
-
-uint64_t
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    assert(BufferIn != NULL);
-    assert(convert_calls < (int)(sizeof(convert_lengths) / sizeof(convert_lengths[0])));
-    convert_offsets[convert_calls] = find_convert_offset(BufferIn, BitLength);
-    convert_lengths[convert_calls] = BitLength;
-    convert_calls++;
-
-    uint64_t value = 0;
-    for (uint32_t i = 0; i < BitLength && i < 64; i++) {
-        value = (value << 1) | (uint64_t)(BufferIn[i] & 1U);
-    }
     return value;
 }
 
@@ -133,19 +93,6 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     play_fm_calls++;
-}
-
-static void
-assert_convert_offsets_and_lengths(void) {
-    assert(convert_calls == 4);
-    assert(convert_offsets[0] == 0U);
-    assert(convert_lengths[0] == 64U);
-    assert(convert_offsets[1] == 64U);
-    assert(convert_lengths[1] == 16U);
-    assert(convert_offsets[2] == 80U);
-    assert(convert_lengths[2] == 64U);
-    assert(convert_offsets[3] == (size_t)54U * 8U);
-    assert(convert_lengths[3] == 16U);
 }
 
 static void
@@ -182,7 +129,6 @@ test_process_voice_integer_playback(void) {
     assert(mbe_calls == 4);
     assert(play_ms_calls == 4);
     assert(play_fm_calls == 0);
-    assert_convert_offsets_and_lengths();
     assert_first_imbe_frame_uses_interleave_schedule();
 }
 
@@ -207,7 +153,6 @@ test_process_voice_float_playback(void) {
     assert(mbe_calls == 4);
     assert(play_ms_calls == 0);
     assert(play_fm_calls == 4);
-    assert_convert_offsets_and_lengths();
 }
 
 int

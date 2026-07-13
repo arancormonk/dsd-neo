@@ -54,12 +54,18 @@ test_same_thread(test_thread_id a, test_thread_id b) {
 #endif
 
 static int g_prepare_calls;
+static int g_default_engine_calls;
+static int g_default_engine_hooks_present;
+static int g_selection_runner_calls;
+static int g_selection_runner_hooks_null;
+static void* g_selection_runner_hook_context;
 
 int
 dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
     (void)opts;
     (void)state;
-    (void)hooks;
+    g_default_engine_calls++;
+    g_default_engine_hooks_present = hooks ? 1 : 0;
     return -99;
 }
 
@@ -77,6 +83,18 @@ compiled_native_stop(dsd_opts* opts, dsd_state* state, void* context) {
     (void)opts;
     (void)state;
     (void)context;
+}
+
+static int
+compiled_native_run_main_loop(const dsd_frontend_host_callbacks* host, void* context) {
+    (void)context;
+    for (int i = 0; i < 1000; i++) {
+        if (host && host->engine_finished && host->engine_finished(host->context)) {
+            return 0;
+        }
+        dsd_sleep_ms(1);
+    }
+    return -1;
 }
 
 static int
@@ -100,6 +118,7 @@ dsd_native_frontend_provider(void) {
         .name = "compiled-native-stub",
         .prepare = compiled_native_prepare,
         .flags = DSD_FRONTEND_PROVIDER_MAIN_THREAD_UI,
+        .run_main_loop = compiled_native_run_main_loop,
     };
     return &provider;
 }
@@ -122,6 +141,24 @@ fake_prepare(const dsd_opts* opts, const dsd_state* state, dsd_engine_lifecycle_
 }
 
 static int
+fake_selection_engine_runner(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks, void* context) {
+    (void)opts;
+    (void)state;
+    (void)context;
+    g_selection_runner_calls++;
+    g_selection_runner_hooks_null = hooks ? 0 : 1;
+    g_selection_runner_hook_context = hooks ? hooks->context : NULL;
+    return 23;
+}
+
+static void
+reset_selection_runner(void) {
+    g_selection_runner_calls = 0;
+    g_selection_runner_hooks_null = 0;
+    g_selection_runner_hook_context = NULL;
+}
+
+static int
 expect_int(const char* label, int got, int want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %d want %d\n", label, got, want);
@@ -134,22 +171,19 @@ static int
 test_none_selects_no_provider(void) {
     static dsd_opts opts;
     static dsd_state state;
-    dsd_engine_lifecycle_hooks hooks = {0};
-    const dsd_engine_lifecycle_hooks* out = (const dsd_engine_lifecycle_hooks*)0x1;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.frontend_kind = DSD_FRONTEND_NONE;
     g_prepare_calls = 0;
+    reset_selection_runner();
 
-    int rc = dsd_cli_frontend_select_from_registry(&opts, &state, &hooks, &out, NULL, 0);
+    int rc = dsd_cli_frontend_run_from_registry(&opts, &state, NULL, 0, fake_selection_engine_runner, NULL);
 
     int failures = 0;
-    failures |= expect_int("none rc", rc, 0);
+    failures |= expect_int("none rc", rc, 23);
     failures |= expect_int("none prepare calls", g_prepare_calls, 0);
-    if (out != NULL) {
-        DSD_FPRINTF(stderr, "none out_hooks should be NULL\n");
-        failures |= 1;
-    }
+    failures |= expect_int("none runner calls", g_selection_runner_calls, 1);
+    failures |= expect_int("none runner hooks null", g_selection_runner_hooks_null, 1);
     return failures;
 }
 
@@ -157,22 +191,18 @@ static int
 test_unavailable_native_fails_cleanly(void) {
     static dsd_opts opts;
     static dsd_state state;
-    dsd_engine_lifecycle_hooks hooks = {0};
-    const dsd_engine_lifecycle_hooks* out = NULL;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.frontend_kind = DSD_FRONTEND_NATIVE;
     g_prepare_calls = 0;
+    reset_selection_runner();
 
-    int rc = dsd_cli_frontend_select_from_registry(&opts, &state, &hooks, &out, NULL, 0);
+    int rc = dsd_cli_frontend_run_from_registry(&opts, &state, NULL, 0, fake_selection_engine_runner, NULL);
 
     int failures = 0;
-    failures |= expect_int("native unavailable rc", rc, -1);
+    failures |= expect_int("native unavailable rc", rc, 1);
     failures |= expect_int("native unavailable prepare calls", g_prepare_calls, 0);
-    if (out != NULL) {
-        DSD_FPRINTF(stderr, "native unavailable out_hooks should be NULL\n");
-        failures |= 1;
-    }
+    failures |= expect_int("native unavailable runner calls", g_selection_runner_calls, 0);
     return failures;
 }
 
@@ -180,18 +210,18 @@ static int
 test_unavailable_terminal_matches_disabled_build_registry(void) {
     static dsd_opts opts;
     static dsd_state state;
-    dsd_engine_lifecycle_hooks hooks = {0};
-    const dsd_engine_lifecycle_hooks* out = NULL;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     g_prepare_calls = 0;
+    reset_selection_runner();
 
-    int rc = dsd_cli_frontend_select_from_registry(&opts, &state, &hooks, &out, NULL, 0);
+    int rc = dsd_cli_frontend_run_from_registry(&opts, &state, NULL, 0, fake_selection_engine_runner, NULL);
 
     int failures = 0;
-    failures |= expect_int("terminal unavailable rc", rc, -1);
+    failures |= expect_int("terminal unavailable rc", rc, 1);
     failures |= expect_int("terminal unavailable prepare calls", g_prepare_calls, 0);
+    failures |= expect_int("terminal unavailable runner calls", g_selection_runner_calls, 0);
     return failures;
 }
 
@@ -205,20 +235,21 @@ test_fake_provider_is_selected(void) {
     const dsd_frontend_provider* providers[] = {&fake_native};
     static dsd_opts opts;
     static dsd_state state;
-    dsd_engine_lifecycle_hooks hooks = {0};
-    const dsd_engine_lifecycle_hooks* out = NULL;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.frontend_kind = DSD_FRONTEND_NATIVE;
     g_prepare_calls = 0;
+    reset_selection_runner();
 
-    int rc = dsd_cli_frontend_select_from_registry(&opts, &state, &hooks, &out, providers, 1);
+    int rc = dsd_cli_frontend_run_from_registry(&opts, &state, providers, 1, fake_selection_engine_runner, NULL);
 
     int failures = 0;
-    failures |= expect_int("fake provider rc", rc, 0);
+    failures |= expect_int("fake provider rc", rc, 23);
     failures |= expect_int("fake provider prepare calls", g_prepare_calls, 1);
-    if (out != &hooks || hooks.context != (void*)0x1234) {
-        DSD_FPRINTF(stderr, "fake provider hooks not returned as expected\n");
+    failures |= expect_int("fake provider runner calls", g_selection_runner_calls, 1);
+    failures |= expect_int("fake provider runner hooks null", g_selection_runner_hooks_null, 0);
+    if (g_selection_runner_hook_context != (void*)0x1234) {
+        DSD_FPRINTF(stderr, "fake provider hook context not returned as expected\n");
         failures |= 1;
     }
     return failures;
@@ -228,28 +259,23 @@ static int
 test_compiled_native_provider_availability(void) {
     static dsd_opts opts;
     static dsd_state state;
-    dsd_engine_lifecycle_hooks hooks = {0};
-    const dsd_engine_lifecycle_hooks* out = NULL;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.frontend_kind = DSD_FRONTEND_NATIVE;
     g_prepare_calls = 0;
+    g_default_engine_calls = 0;
+    g_default_engine_hooks_present = 0;
 
-    int rc = dsd_cli_frontend_select(&opts, &state, &hooks, &out);
+    int rc = dsd_cli_frontend_run(&opts, &state);
 
 #if DSD_CLI_HAS_NATIVE_UI
-    int failures = expect_int("compiled native available rc", rc, 0);
-    if (out != &hooks || hooks.start == NULL || hooks.stop == NULL) {
-        DSD_FPRINTF(stderr, "compiled native hooks not returned as expected\n");
-        failures |= 1;
-    }
+    int failures = expect_int("compiled native available rc", rc, -99);
+    failures |= expect_int("compiled native engine calls", g_default_engine_calls, 1);
+    failures |= expect_int("compiled native hooks present", g_default_engine_hooks_present, 1);
     return failures;
 #else
-    int failures = expect_int("compiled native unavailable rc", rc, -1);
-    if (out != NULL) {
-        DSD_FPRINTF(stderr, "compiled native unavailable out_hooks should be NULL\n");
-        failures |= 1;
-    }
+    int failures = expect_int("compiled native unavailable rc", rc, 1);
+    failures |= expect_int("compiled native engine calls", g_default_engine_calls, 0);
     return failures;
 #endif
 }

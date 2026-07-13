@@ -69,7 +69,7 @@ dsd_engine_select_p25_sps_profile(dsd_state* state, int is_tdma) {
 
 static int
 dsd_engine_is_p25_profile_retune(const dsd_opts* opts, int ted_sps) {
-    /* Legacy -T also sets p25_trunk for non-P25 protocols, whose generic retunes do not carry P25 timing. */
+    /* -T also sets p25_trunk for non-P25 protocols, whose generic retunes do not carry P25 timing. */
     return opts && opts->p25_trunk == 1 && ted_sps > 0;
 }
 
@@ -118,8 +118,6 @@ dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
     DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));
-    state->p25_p2_enc_lockout_muted[0] = 0;
-    state->p25_p2_enc_lockout_muted[1] = 0;
     state->p25_call_is_packet[0] = 0;
     state->p25_call_is_packet[1] = 0;
     state->p25_p2_active_slot = -1;
@@ -456,7 +454,7 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
     if (!opts || !state) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-    // Audio drain is handled by dsd_engine_trunk_tune_to_cc() before the hardware retune.
+    // Audio drain is handled by dsd_engine_trunk_tune_to_cc_request() before the hardware retune.
 
     // Tune back to the control channel when known (best-effort). Prefer the
     // explicit CC when available; otherwise fall back to any tracked CC.
@@ -477,11 +475,6 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
     /* Keep symbol timing aligned with the current control-channel mode. */
     dsd_engine_apply_cc_symbol_timing(opts, state);
     return tune_result;
-}
-
-dsd_trunk_tune_result
-dsd_engine_return_to_cc(dsd_opts* opts, dsd_state* state) {
-    return dsd_engine_return_to_cc_request(opts, state, 0U);
 }
 
 /**
@@ -572,11 +565,6 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
     return result;
 }
 
-dsd_trunk_tune_result
-dsd_engine_trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    return dsd_engine_trunk_tune_to_freq_request(opts, state, freq, ted_sps, 0U);
-}
-
 /**
  * @brief Tune to a P25 control channel candidate without marking as tuned.
  *
@@ -605,7 +593,7 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 #endif
 
     // NOTE: Costas/TED reset is deferred to the controller thread after the hardware
-    // retune completes. See dsd_engine_trunk_tune_to_freq for the full rationale.
+    // retune completes. See dsd_engine_trunk_tune_to_freq_request for the full rationale.
 
     dsd_engine_maybe_drain_audio(opts, state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {
@@ -633,13 +621,7 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 }
 
 dsd_trunk_tune_result
-dsd_engine_trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    return dsd_engine_trunk_tune_to_cc_request(opts, state, freq, ted_sps, 0U);
-}
-
-dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                                     uint64_t* out_request_id) {
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t* out_request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
     uint64_t tune_request_id = 0U;
 #ifdef USE_RADIO
@@ -694,9 +676,4 @@ dsd_engine_scan_tune_to_freq_with_id(dsd_opts* opts, dsd_state* state, long int 
         dsd_trunk_tuning_request_complete(tune_request_id, result);
     }
     return result;
-}
-
-dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    return dsd_engine_scan_tune_to_freq_with_id(opts, state, freq, ted_sps, NULL);
 }

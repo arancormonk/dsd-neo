@@ -66,9 +66,10 @@ append_sync(const char sync[25], int inverted) {
 }
 
 int
-getDibit(dsd_opts* opts, dsd_state* state) {
+get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)state;
+    (void)out_analog_signal;
     assert(g_get_pos < g_get_len);
     return g_get_queue[g_get_pos++];
 }

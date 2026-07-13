@@ -9,13 +9,13 @@
  * reused by tests and UI code without pulling in tuning policy.
  */
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <errno.h>
@@ -36,6 +36,37 @@ p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
         return 0;
     }
     return dsd_trunk_cc_candidates_add_with_flags(state, freq_hz, bump_added, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+}
+
+void
+p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+    if (count <= 0 || !state || !freqs) {
+        return;
+    }
+
+    p25_cc_try_load_cache(opts, state);
+    for (int i = 0; i < count; i++) {
+        const long freq = freqs[i];
+        if (freq == 0) {
+            continue;
+        }
+        if (state->p25_cc_freq != 0 && freq == state->p25_cc_freq) {
+            state->trunk_lcn_freq[0] = freq;
+            if (state->lcn_freq_count < 1) {
+                state->lcn_freq_count = 1;
+            }
+        }
+        p25_nb_record_update(state, &(p25_neighbor_record_update_t){.freq = freq});
+    }
+}
+
+int
+p25_cc_next_candidate(dsd_state* state, long* out_freq) {
+    if (!state || !out_freq) {
+        return 0;
+    }
+    return dsd_trunk_cc_candidates_next_with_flags(state, dsd_time_now_monotonic_s(),
+                                                   DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE, out_freq);
 }
 
 int
@@ -194,11 +225,6 @@ p25_cc_persist_cache(const dsd_opts* opts, const dsd_state* state) {
 
 #define P25_NB_TTL_SEC ((time_t)30 * 60)
 
-typedef struct {
-    long freq;
-    p25_neighbor_channel_announcement_t announcement;
-} p25_neighbor_record_update_t;
-
 static uint32_t
 p25_neighbor_wacn20(const p25_neighbor_channel_announcement_t* announcement) {
     return announcement ? (announcement->wacn & 0xFFFFFU) : 0U;
@@ -325,8 +351,8 @@ p25_nb_insert_record(dsd_state* state, const p25_neighbor_record_update_t* updat
     p25_nb_apply_record_update(entry, update, 1, now);
 }
 
-static void
-p25_nb_add_ex_wacn_meta(dsd_state* state, const p25_neighbor_record_update_t* update) {
+void
+p25_nb_record_update(dsd_state* state, const p25_neighbor_record_update_t* update) {
     if (!state || !update || update->freq <= 0) {
         return;
     }
@@ -343,43 +369,13 @@ p25_nb_add_ex_wacn_meta(dsd_state* state, const p25_neighbor_record_update_t* up
         return;
     }
 
-    /* Legacy frequency-only updates refresh by frequency without clobbering
-     * any site metadata learned from structured broadcasts. */
+    /* Frequency-only updates refresh by frequency without clobbering any site
+     * metadata learned from structured broadcasts. */
     if (p25_nb_update_by_freq(state, update, has_site_identity, now)) {
         return;
     }
 
     p25_nb_insert_record(state, update, now);
-}
-
-void
-p25_nb_add_ex_wacn(dsd_state* state, long freq, uint32_t wacn, int wacn_valid, uint16_t sysid, uint8_t rfss,
-                   uint8_t site, uint8_t cfva) {
-    const p25_neighbor_record_update_t update = {
-        .freq = freq,
-        .announcement =
-            {
-                .wacn = wacn,
-                .sysid = sysid,
-                .rfss = rfss,
-                .site = site,
-                .cfva = cfva,
-                .wacn_valid = wacn_valid ? 1U : 0U,
-                .cfva_valid = 1U,
-            },
-    };
-    p25_nb_add_ex_wacn_meta(state, &update);
-}
-
-void
-p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
-    p25_nb_add_ex_wacn(state, freq, 0, 0, sysid, rfss, site, cfva);
-}
-
-void
-p25_nb_add(dsd_state* state, long freq_hz) {
-    const p25_neighbor_record_update_t update = {.freq = freq_hz};
-    p25_nb_add_ex_wacn_meta(state, &update);
 }
 
 void
@@ -769,8 +765,8 @@ p25_pending_store(dsd_state* state, const p25_pending_update_t* update) {
 }
 
 static int
-p25_promote_secondary_cc_freq(dsd_opts* opts, dsd_state* state, long freq, uint16_t channel, uint8_t rfss, uint8_t site,
-                              uint8_t ssc) {
+p25_promote_secondary_cc_freq(const dsd_opts* opts, dsd_state* state, long freq, uint16_t channel, uint8_t rfss,
+                              uint8_t site, uint8_t ssc) {
     if (!state || freq <= 0) {
         return 0;
     }
@@ -783,30 +779,14 @@ p25_promote_secondary_cc_freq(dsd_opts* opts, dsd_state* state, long freq, uint1
     p25_cc_add_candidate(state, freq, 1);
 
     const long notify[1] = {freq};
-    p25_sm_on_neighbor_update(opts, state, notify, 1);
+    p25_cc_record_neighbor_frequencies(opts, state, notify, 1);
     p25_note_sccb_site(state, rfss, site);
     return 1;
 }
 
 int
-p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state, uint16_t channel, uint32_t wacn, int wacn_valid,
-                              uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
-    const p25_neighbor_channel_announcement_t announcement = {
-        .channel = channel,
-        .wacn = wacn,
-        .sysid = sysid,
-        .rfss = rfss,
-        .site = site,
-        .cfva = cfva,
-        .wacn_valid = wacn_valid ? 1U : 0U,
-        .cfva_valid = 1U,
-    };
-    return p25_announce_neighbor_channel_ex(opts, state, &announcement);
-}
-
-int
-p25_announce_neighbor_channel_ex(const dsd_opts* opts, dsd_state* state,
-                                 const p25_neighbor_channel_announcement_t* announcement) {
+p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state,
+                              const p25_neighbor_channel_announcement_t* announcement) {
     if (!state || !announcement || !p25_pending_channel_valid(announcement->channel)) {
         return 0;
     }
@@ -814,7 +794,7 @@ p25_announce_neighbor_channel_ex(const dsd_opts* opts, dsd_state* state,
     long freq = process_channel_to_freq(opts, state, announcement->channel);
     if (freq > 0) {
         const p25_neighbor_record_update_t update = {.freq = freq, .announcement = *announcement};
-        p25_nb_add_ex_wacn_meta(state, &update);
+        p25_nb_record_update(state, &update);
         return 1;
     }
 
@@ -827,7 +807,7 @@ p25_announce_neighbor_channel_ex(const dsd_opts* opts, dsd_state* state,
 }
 
 int
-p25_announce_secondary_cc_channel(dsd_opts* opts, dsd_state* state, uint16_t channel, uint8_t rfss, uint8_t site,
+p25_announce_secondary_cc_channel(const dsd_opts* opts, dsd_state* state, uint16_t channel, uint8_t rfss, uint8_t site,
                                   uint8_t ssc) {
     if (!state || !p25_pending_channel_valid(channel)) {
         return 0;
@@ -874,7 +854,7 @@ p25_pending_to_neighbor_announcement(const p25_pending_announcement_t* pending) 
 }
 
 static int
-p25_pending_try_resolve(dsd_opts* opts, dsd_state* state, const p25_pending_announcement_t* pending) {
+p25_pending_try_resolve(const dsd_opts* opts, dsd_state* state, const p25_pending_announcement_t* pending) {
     if (!state || !pending || !pending->populated || !p25_pending_channel_valid(pending->channel)) {
         return 1;
     }
@@ -894,7 +874,7 @@ p25_pending_try_resolve(dsd_opts* opts, dsd_state* state, const p25_pending_anno
             .freq = freq,
             .announcement = p25_pending_to_neighbor_announcement(pending),
         };
-        p25_nb_add_ex_wacn_meta(state, &update);
+        p25_nb_record_update(state, &update);
         return 1;
     }
     if (pending->kind == P25_PENDING_ANNOUNCEMENT_SECONDARY_CC) {
@@ -906,7 +886,7 @@ p25_pending_try_resolve(dsd_opts* opts, dsd_state* state, const p25_pending_anno
 }
 
 void
-p25_resolve_pending_announcements(dsd_opts* opts, dsd_state* state) {
+p25_resolve_pending_announcements(const dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }

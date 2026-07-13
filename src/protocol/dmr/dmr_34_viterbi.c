@@ -50,14 +50,6 @@ typedef struct {
     uint8_t rank;
 } r34_cand_idx;
 
-static int
-r34_validate_end_state(int force_end_state, int end_state) {
-    if (force_end_state && (end_state < 0 || end_state > 7)) {
-        return -1;
-    }
-    return 0;
-}
-
 static void
 r34_deinterleave_dibits(const uint8_t* dibits98, uint8_t dibits_dei[98]) {
     for (int i = 0; i < 98; i++) {
@@ -166,16 +158,8 @@ r34_metric_init_2d(int metric[R34_S][R34_K]) {
     metric[0][0] = 0;
 }
 
-static int
-r34_select_end_state(const int metric_prev[R34_S], int force_end_state, int end_state, int* best_s) {
-    if (force_end_state) {
-        *best_s = end_state;
-        if (metric_prev[*best_s] >= R34_INF) {
-            return -1;
-        }
-        return 0;
-    }
-
+static void
+r34_select_end_state(const int metric_prev[R34_S], int* best_s) {
     int best_m = metric_prev[0];
     int best = 0;
     for (int s = 1; s < R34_S; s++) {
@@ -185,7 +169,6 @@ r34_select_end_state(const int metric_prev[R34_S], int force_end_state, int end_
         }
     }
     *best_s = best;
-    return 0;
 }
 
 static void
@@ -416,11 +399,8 @@ r34_write_list_candidates(r34_cand_idx idx[R34_S * R34_K], int idx_n, uint8_t ba
 }
 
 static int
-decode_hard_impl(const uint8_t* dibits98, int force_end_state, int end_state, uint8_t out_bytes18[18]) {
+decode_hard_impl(const uint8_t* dibits98, uint8_t out_bytes18[18]) {
     if (!dibits98 || !out_bytes18) {
-        return -1;
-    }
-    if (r34_validate_end_state(force_end_state, end_state) != 0) {
         return -1;
     }
 
@@ -435,9 +415,7 @@ decode_hard_impl(const uint8_t* dibits98, int force_end_state, int end_state, ui
     r34_map_nibbles_to_points(nibs, obs_point);
     r34_run_viterbi_hard(obs_point, metric_prev, backptr);
 
-    if (r34_select_end_state(metric_prev, force_end_state, end_state, &best_s) != 0) {
-        return -1;
-    }
+    r34_select_end_state(metric_prev, &best_s);
 
     r34_traceback_states(backptr, best_s, states);
     r34_pack_states_to_bytes(states, out_bytes18);
@@ -447,21 +425,12 @@ decode_hard_impl(const uint8_t* dibits98, int force_end_state, int end_state, ui
 
 int
 dmr_r34_viterbi_decode(const uint8_t* dibits98, uint8_t out_bytes18[18]) {
-    return decode_hard_impl(dibits98, 0, 0, out_bytes18);
-}
-
-int
-dmr_r34_viterbi_decode_endstate(const uint8_t* dibits98, int end_state, uint8_t out_bytes18[18]) {
-    return decode_hard_impl(dibits98, 1, end_state, out_bytes18);
+    return decode_hard_impl(dibits98, out_bytes18);
 }
 
 static int
-decode_soft_impl(const uint8_t* dibits98, const uint8_t* reliab98, int force_end_state, int end_state,
-                 uint8_t out_bytes18[18]) {
+decode_soft_impl(const uint8_t* dibits98, const uint8_t* reliab98, uint8_t out_bytes18[18]) {
     if (!dibits98 || !reliab98 || !out_bytes18) {
-        return -1;
-    }
-    if (r34_validate_end_state(force_end_state, end_state) != 0) {
         return -1;
     }
 
@@ -477,9 +446,7 @@ decode_soft_impl(const uint8_t* dibits98, const uint8_t* reliab98, int force_end
     r34_prepare_reliability_weights(reliab98, rhi, rlo, 1);
     r34_run_viterbi_soft(nibs, rhi, rlo, metric_prev, backptr);
 
-    if (r34_select_end_state(metric_prev, force_end_state, end_state, &best_s) != 0) {
-        return -1;
-    }
+    r34_select_end_state(metric_prev, &best_s);
 
     r34_traceback_states(backptr, best_s, states);
     r34_pack_states_to_bytes(states, out_bytes18);
@@ -489,13 +456,7 @@ decode_soft_impl(const uint8_t* dibits98, const uint8_t* reliab98, int force_end
 // Soft-decision variant using per-dibit reliability.
 int
 dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, uint8_t out_bytes18[18]) {
-    return decode_soft_impl(dibits98, reliab98, 0, 0, out_bytes18);
-}
-
-int
-dmr_r34_viterbi_decode_soft_endstate(const uint8_t* dibits98, const uint8_t* reliab98, int end_state,
-                                     uint8_t out_bytes18[18]) {
-    return decode_soft_impl(dibits98, reliab98, 1, end_state, out_bytes18);
+    return decode_soft_impl(dibits98, reliab98, out_bytes18);
 }
 
 int

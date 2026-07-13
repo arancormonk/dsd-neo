@@ -368,7 +368,8 @@ p25p2_mac_handle(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* 
 
     // The trunk state machine owns group-grant policy so patched supergroup
     // grants can be evaluated against their member talkgroups.
-    p25_sm_on_group_grant(opts, state, channel, svc_bits, group, source);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, group, source, svc_bits);
+    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
 static void
@@ -400,9 +401,11 @@ p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_s
         return;
     }
     if (policy_data_override > 0) {
-        p25_sm_on_indiv_data_grant(opts, state, channel, svc_bits, target, source);
+        p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channel, 0, target, source, svc_bits);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     } else {
-        p25_sm_on_indiv_grant(opts, state, channel, svc_bits, target, source);
+        p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, 0, target, source, svc_bits);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
 
@@ -896,7 +899,7 @@ p25p2_vpdu_force_release_after_grace(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     state->p25_sm_force_release = 1;
-    p25_sm_on_release(opts, state);
+    p25_sm_release(p25_sm_get_ctx(), opts, state, "explicit-release");
     return 1;
 }
 
@@ -2606,7 +2609,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_29(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -2672,7 +2675,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_30(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -2733,7 +2736,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_31(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -2794,7 +2797,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_32(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -2861,7 +2864,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_33(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -2902,7 +2905,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_34(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -3616,11 +3619,6 @@ p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolo
 }
 
 static void
-p25p2_vpdu_store_nsb_identity_metadata(dsd_state* state, int lwacn, int lsysid, int lcolorcode) {
-    p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
-}
-
-static void
 p25p2_vpdu_note_nsb_system_tdma(dsd_state* state) {
     if (state) {
         state->p25_sys_is_tdma = 1; // system carries Phase 2 voice (TDMA present)
@@ -3628,9 +3626,9 @@ p25p2_vpdu_note_nsb_system_tdma(dsd_state* state) {
 }
 
 static void
-p25p2_vpdu_accept_nsb_cc(dsd_opts* opts, dsd_state* state, int lwacn, int lsysid, int lcolorcode, int seed_lcn0) {
+p25p2_vpdu_accept_nsb_cc(const dsd_opts* opts, dsd_state* state, int lwacn, int lsysid, int lcolorcode, int seed_lcn0) {
     const long neigh[1] = {state->p25_cc_freq};
-    p25_sm_on_neighbor_update(opts, state, neigh, 1);
+    p25_cc_record_neighbor_frequencies(opts, state, neigh, 1);
     p25p2_vpdu_note_nsb_system_tdma(state);
     state->p25_cc_is_tdma = 1; // TDMA control channel (QPSK, 6000 sym/s)
 
@@ -3655,7 +3653,7 @@ p25p2_vpdu_log_rejected_nsb_cc(const char* label, long freq, int channel) {
 
 static void
 p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -3683,7 +3681,7 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
         int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, cc_freq);
         const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
         if (cc_metadata_allowed) {
-            p25p2_vpdu_store_nsb_identity_metadata(state, lwacn, lsysid, lcolorcode);
+            p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
             p25_store_site_lra(state, (uint8_t)lra);
         }
         if (accepted_cc) {
@@ -3705,7 +3703,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -3735,7 +3733,7 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
         int accepted_cc = p25_cc_update_primary_from_network_status(opts, state, nf1);
         const int cc_metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(opts);
         if (cc_metadata_allowed) {
-            p25p2_vpdu_store_nsb_identity_metadata(state, lwacn, lsysid, lcolorcode);
+            p25p2_vpdu_apply_nsb_identity(state, lwacn, lsysid, lcolorcode);
             p25_store_site_lra(state, (uint8_t)lra);
         }
         if (accepted_cc) {
@@ -3815,7 +3813,7 @@ p25p2_vpdu_iter_block_49(p25p2_vpdu_ctx* ctx) {
             .lra_valid = 1U,
             .cfva_valid = 1U,
         };
-        (void)p25_announce_neighbor_channel_ex(opts, state, &announcement);
+        (void)p25_announce_neighbor_channel(opts, state, &announcement);
     }
 
     if (len_b < 0) {
@@ -3880,7 +3878,7 @@ p25p2_vpdu_iter_block_50(p25p2_vpdu_ctx* ctx) {
             .lra_valid = 1U,
             .cfva_valid = 1U,
         };
-        (void)p25_announce_neighbor_channel_ex(opts, state, &announcement);
+        (void)p25_announce_neighbor_channel(opts, state, &announcement);
     }
 
     if (len_b < 0) {
@@ -3949,7 +3947,7 @@ p25p2_vpdu_iter_block_51(p25p2_vpdu_ctx* ctx) {
             .lra_valid = 1U,
             .cfva_valid = 1U,
         };
-        (void)p25_announce_neighbor_channel_ex(opts, state, &announcement);
+        (void)p25_announce_neighbor_channel(opts, state, &announcement);
     }
 
     if (len_b < 0) {
@@ -4007,7 +4005,7 @@ BLOCK_END:
 
 static void
 p25p2_vpdu_iter_block_53(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
+    const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
     dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
@@ -4287,11 +4285,15 @@ p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
         }
         state->last_active_time = time(NULL);
 
-        // Notify the trunking state machine
-        if (is_deny) {
-            p25_sm_on_deny_response(opts, state, svc_type, reason_code, target_addr);
-        } else {
-            p25_sm_on_queued_response(opts, state, svc_type, reason_code, target_addr);
+        // Notify the trunking state machine.
+        if (opts) {
+            if (is_deny) {
+                state->p25_sm_deny_count++;
+                p25_sm_release(p25_sm_get_ctx(), opts, state, "deny-rsp");
+            } else {
+                state->p25_sm_queued_count++;
+                p25_sm_release(p25_sm_get_ctx(), opts, state, "queued-rsp");
+            }
         }
     }
 
@@ -4793,10 +4795,14 @@ p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
     DSD_FPRINTF(stderr, " Target [%d]", target_addr);
     state->last_active_time = time(NULL);
 
-    if (is_deny) {
-        p25_sm_on_deny_response(opts, state, svc_type, reason_code, target_addr);
-    } else {
-        p25_sm_on_queued_response(opts, state, svc_type, reason_code, target_addr);
+    if (opts) {
+        if (is_deny) {
+            state->p25_sm_deny_count++;
+            p25_sm_release(p25_sm_get_ctx(), opts, state, "deny-rsp");
+        } else {
+            state->p25_sm_queued_count++;
+            p25_sm_release(p25_sm_get_ctx(), opts, state, "queued-rsp");
+        }
     }
 }
 
@@ -5634,6 +5640,23 @@ p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index) {
     return ctx->len_b > 0;
 }
 
+static void
+p25p2_vpdu_print_payload(const dsd_opts* opts, const unsigned long long int mac[24]) {
+    if (opts->payload != 1 || mac[1] == 0) {
+        return;
+    }
+
+    DSD_FPRINTF(stderr, "%s", KCYN);
+    DSD_FPRINTF(stderr, "\n P25 PDU Payload\n  ");
+    for (int bi = 0; bi < 24; bi++) {
+        DSD_FPRINTF(stderr, "[%02llX]", mac[bi]);
+        if (bi == 11) {
+            DSD_FPRINTF(stderr, "\n  ");
+        }
+    }
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
 void
 process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int mac[24]) {
     unsigned long long int mac_octets[24] = {0};
@@ -5651,6 +5674,11 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
     if (p25p2_mac_parse(type, MAC, &mac_res) != 0) {
         return;
     }
+    const int initial_len_a = (mac_res.segment_count > 0) ? mac_res.segments[0].offset : 0;
+    const int initial_len_b = (mac_res.segment_count > 0) ? mac_res.segments[0].length : 0;
+    const int initial_len_c = (mac_res.segment_count > 1)
+                                  ? mac_res.segments[1].length
+                                  : ((mac_res.segment_count == 0) ? ((type == 1) ? 19 : 16) : 0);
 
     p25p2_vpdu_ctx ctx = {
         .opts = opts,
@@ -5658,9 +5686,9 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         .type = type,
         .mac = mac_octets,
         .mac_res = &mac_res,
-        .len_a = mac_res.len_a,
-        .len_b = mac_res.len_b,
-        .len_c = mac_res.len_c,
+        .len_a = initial_len_a,
+        .len_b = initial_len_b,
+        .len_c = initial_len_c,
         .slot = (type == 1) ? ((state->currentslot ^ 1) & 1) : state->currentslot,
         .skip_rest = 0,
         .end_pdu = 0,
@@ -5685,19 +5713,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
     }
 
     state->p2_is_lcch = 0;
-    //debug printing
-    if (opts->payload == 1 && MAC[1] != 0) //print only if not a null type //&& MAC[1] != 0 //&& MAC[2] != 0
-    {
-        DSD_FPRINTF(stderr, "%s", KCYN);
-        DSD_FPRINTF(stderr, "\n P25 PDU Payload\n  ");
-        for (int bi = 0; bi < 24; bi++) {
-            DSD_FPRINTF(stderr, "[%02llX]", MAC[bi]);
-            if (bi == 11) {
-                DSD_FPRINTF(stderr, "\n  ");
-            }
-        }
-        DSD_FPRINTF(stderr, "%s", KNRM);
-    }
+    p25p2_vpdu_print_payload(opts, MAC);
 }
 
 // Local bounded append helper (reused pattern across modules)

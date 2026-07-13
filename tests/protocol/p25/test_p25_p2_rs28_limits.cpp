@@ -4,11 +4,11 @@
  */
 
 /*
- * P25 Phase 2 RS(63,35) correction limit tests using FACCH/SACCH wrappers.
+ * P25 Phase 2 RS(63,35) FACCH/SACCH correction limit tests.
  *
  * Valid shortened codewords are constructed via ezpwd::RS<63,35> then symbol
- * errors are injected to test t=14 correction capacity. The wrapper mappers
- * are used to feed payload/parity bit arrays.
+ * errors are injected to test t=14 correction capacity through the canonical
+ * erasure-aware decoders.
  */
 
 #include <exception>
@@ -19,9 +19,12 @@
 #include "ezpwd/rs"
 
 extern "C" {
-int ez_rs28_facch(int payload[156], int parity[114]);
-int ez_rs28_sacch(int payload[180], int parity[132]);
+int ez_rs28_facch(int payload[156], int parity[114], const int* erasures, int n_erasures);
+int ez_rs28_sacch(int payload[180], int parity[132], const int* erasures, int n_erasures);
 }
+
+static const int FACCH_FIXED_ERASURES[18] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62};
+static const int SACCH_FIXED_ERASURES[11] = {0, 1, 2, 3, 4, 57, 58, 59, 60, 61, 62};
 
 static void
 sym_to_bits6(uint8_t s, int* out6) {
@@ -99,7 +102,7 @@ main(void) try {
                 parity_bits[qbits++] = b6[b];
             }
         }
-        int ec = ez_rs28_facch(payload, parity_bits);
+        int ec = ez_rs28_facch(payload, parity_bits, FACCH_FIXED_ERASURES, 18);
         rc |= expect_ge("FACCH t<=14", ec, 0);
     }
 
@@ -122,7 +125,7 @@ main(void) try {
                 parity_bits[qbits++] = b6[b];
             }
         }
-        int ec = ez_rs28_sacch(payload, parity_bits);
+        int ec = ez_rs28_sacch(payload, parity_bits, SACCH_FIXED_ERASURES, 11);
         rc |= expect_lt("SACCH t>=15 fails", ec, 0);
     }
 

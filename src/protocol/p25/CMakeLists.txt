@@ -12,16 +12,12 @@ target_sources(
         p25_lfsr.c
         p25_lcw.c
         p25_trunk_sm.c
-        p25_trunk_sm_api.c
-        p25_trunk_sm_wrappers.c
         p25_cc_candidates.c
         p25_extended_function.c
         p25_mfid90_utils.c
         p25_sm_ui.c
         p25_sm_watchdog.c
         p25_patch.c
-        p25_test_shim.c
-        p25_test_lcw_shim.c
         phase1/p25p1_hdu.c
         phase1/p25p1_audio_dispatch.c
         phase1/p25p1_ldu.c

@@ -127,7 +127,7 @@ if [[ $VERBOSE -eq 1 ]]; then
 fi
 
 # Suppress known false positives or low-value warnings for this codebase
-# Format string mismatches with %d and unsigned are common in legacy code
+# Format string mismatches with %d and unsigned are a recurring C-code issue
 CPPCHECK_ARGS+=(
   --suppress=invalidPrintfArgType_sint
   --suppress=invalidPrintfArgType_uint

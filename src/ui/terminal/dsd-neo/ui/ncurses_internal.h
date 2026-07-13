@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 /* Shared state (accessed by multiple display modules) */
-extern int ncurses_last_synctype; /* renamed from static `lls` */
+extern int ncurses_last_synctype;
 
 /* Utility functions */
 void swap_int_local(int* a, int* b);
@@ -31,8 +31,6 @@ int cmp_int_asc(const void* a, const void* b);
 int compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95);
 int ui_is_locked_from_label(const dsd_state* state, const char* label);
 int ui_is_transient_enc_locked_from_label(const dsd_state* state, const char* label);
-int ui_unicode_supported(void);
-int ui_block_glyphs_supported(void);
 
 static inline int
 ui_burst_is_active_p25_call(int burst) {

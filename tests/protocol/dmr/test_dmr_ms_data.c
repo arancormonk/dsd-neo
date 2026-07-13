@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static int g_stream[4096];
 static size_t g_stream_index;
@@ -91,9 +92,10 @@ reset_fixture(void) {
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-getDibit(dsd_opts* opts, dsd_state* state) {
+get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)state;
+    (void)out_analog_signal;
     assert(g_stream_index < (sizeof(g_stream) / sizeof(g_stream[0])));
     return g_stream[g_stream_index++] & 3;
 }
@@ -108,10 +110,13 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
     g_stream_index += (size_t)count;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-getTimeC_buf(char out[9]) {
-    DSD_SNPRINTF(out, 9, "%s", "00:00:00");
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
+    (void)timestamp;
+    (void)format;
+    DSD_SNPRINTF(out, out_size, "%s", "00:00:00");
+    return 1;
 }
 
 void
@@ -229,11 +234,13 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst) {
+dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                       const uint8_t* reliab98) {
     (void)opts;
     (void)state;
     (void)info;
     (void)databurst;
+    (void)reliab98;
     g_data_burst_calls++;
 }
 
@@ -308,9 +315,17 @@ dmr_sm_emit_voice_sync(dsd_opts* opts, dsd_state* state, int slot) {
     g_voice_sync_calls++;
 }
 
+dmr_sm_ctx_t*
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dmr_sm_get_ctx(void) {
+    static dmr_sm_ctx_t ctx;
+    return &ctx;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_sm_tick(dsd_opts* opts, dsd_state* state) {
+dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    (void)ctx;
     (void)opts;
     (void)state;
     g_sm_tick_calls++;

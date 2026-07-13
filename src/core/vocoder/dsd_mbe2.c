@@ -77,12 +77,6 @@ soft_demod_imbe7100(dsd_state* state, char imbe_fr7100[7][24], char imbe_d[88], 
     return ret;
 }
 
-//AMBE+2 EHR
-static int
-soft_demod_ambe2_ehr(int* errs, int* errs2, char ambe2_ehr[4][24], char ambe_d[49], mbe_process_result* result) {
-    return dsd_mbe_decode_ambe2450_frame(errs, errs2, (const char (*)[24])ambe2_ehr, ambe_d, result);
-}
-
 //AMBE One Shot (DSTAR)
 static void
 soft_demod_ambe_dstar(const dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], char ambe_d[49]) {
@@ -232,7 +226,7 @@ handle_soft_mbe_ambe2_ehr(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24],
     float* audio_buf = state->currentslot == 1 ? state->audio_out_temp_bufR : state->audio_out_temp_buf;
 
     mbe_process_result result;
-    if (soft_demod_ambe2_ehr(errs, errs2, ambe_fr, ambe_d, &result) < 0) {
+    if (dsd_mbe_decode_ambe2450_frame(errs, errs2, (const char (*)[24])ambe_fr, ambe_d, &result) < 0) {
         mbe_synthesizeSilencef(audio_buf);
         return;
     }

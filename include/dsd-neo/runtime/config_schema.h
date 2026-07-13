@@ -46,14 +46,13 @@ typedef struct {
     dsdcfg_type_t type;      /**< Value type */
     int min_val;             /**< Minimum value (for INT type) */
     int max_val;             /**< Maximum value (for INT type, 0 = no max) */
-    int deprecated;          /**< Non-zero if key is deprecated */
 } dsdcfg_schema_entry_t;
 
 /**
  * @brief Diagnostic severity levels.
  */
 typedef enum DSD_ATTR_PACKED {
-    DSDCFG_DIAG_INFO = 0, /**< Informational (e.g., deprecated key usage) */
+    DSDCFG_DIAG_INFO = 0, /**< Informational message */
     DSDCFG_DIAG_WARNING,  /**< Warning (e.g., unknown key, out of range) */
     DSDCFG_DIAG_ERROR     /**< Error (e.g., type mismatch, parse failure) */
 } dsdcfg_diag_level_t;
@@ -108,14 +107,6 @@ const dsdcfg_schema_entry_t* dsdcfg_schema_find(const char* section, const char*
  * @return Description string or NULL if key unknown.
  */
 const char* dsd_config_key_description(const char* section, const char* key);
-
-/**
- * @brief Check if a config key is deprecated.
- * @param section Section name.
- * @param key Key name.
- * @return 1 if deprecated, 0 otherwise (including unknown keys).
- */
-int dsd_config_key_is_deprecated(const char* section, const char* key);
 
 /**
  * @brief Get the type name as a string for display.

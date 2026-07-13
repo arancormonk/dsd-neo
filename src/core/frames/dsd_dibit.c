@@ -54,12 +54,6 @@ throttle_symbol_bin_replay(const dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    /* Keep legacy microsecond override support when explicitly configured. */
-    if (state->symbol_throttle > 0) {
-        dsd_sleep_us((uint64_t)state->symbol_throttle);
-        return;
-    }
-
     int input_rate_hz = dsd_opts_current_input_timing_rate(opts);
     if (input_rate_hz <= 0) {
         input_rate_hz = SAMPLE_RATE_IN;
@@ -812,11 +806,6 @@ write_symbol_capture_record_with_soft(dsd_opts* opts, dsd_state* state, int dibi
         return;
     }
 
-    if (opts->symbol_capture_format != DSD_SYMBOL_CAPTURE_FORMAT_SOFT) {
-        fputc(dibit, opts->symbol_out_f);
-        return;
-    }
-
     dsd_dibit_soft_t soft;
     if (soft_in != NULL) {
         soft = *soft_in;
@@ -1152,15 +1141,6 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     return dibit;
 }
 
-/**
- * \brief This important method reads the last analog signal value (getSymbol call) and digitizes it.
- * Depending of the ongoing transmission it in converted into a bit (0/1) or a di-bit (00/01/10/11).
- */
-int
-getDibit(dsd_opts* opts, dsd_state* state) {
-    return get_dibit_and_analog_signal(opts, state, NULL);
-}
-
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     int dibit = get_dibit_and_analog_signal(opts, state, NULL);
@@ -1399,6 +1379,6 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 
     int i;
     for (i = 0; i < (count); i++) {
-        (void)getDibit(opts, state);
+        (void)get_dibit_and_analog_signal(opts, state, NULL);
     }
 }

@@ -5,7 +5,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
-#include <dsd-neo/crypto/pc4.h>
 #include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -14,6 +13,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "pc4_internal.h"
 #include "vendor_ap_key_parse.h"
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -209,8 +209,7 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, const char* input, int show_keys
     }
 
     if (parsed.nhex == 64U) {
-        create_keys(&g_pc4_context, parsed.hex, parsed.nhex);
-        g_pc4_context.rounds = nbround;
+        pc4_tyt_set_key(parsed.hex, parsed.nhex);
 
         uint8_t key_bytes[32];
         char key_text[65];
@@ -233,8 +232,7 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, const char* input, int show_keys
             key2[i] = key1[15 - i];
         }
 
-        create_keys(&g_pc4_context, key2, 16);
-        g_pc4_context.rounds = nbround;
+        pc4_tyt_set_key(key2, sizeof(key2));
 
         char key_text[33];
         DSD_FPRINTF(stderr, "DMR TYT AP (PC4) 128-bit key loaded with forced application: %s\n",
@@ -301,10 +299,7 @@ tyt_ep_aes_keystream_creation(dsd_state* state, const char* input, int show_keys
     DSD_MEMSET(ks_bits, 0, sizeof(ks_bits));
     unpack_byte_array_into_bit_array(ks_bytes, ks_bits, 16);
 
-    //load static keystream into g_pc4_context.bits since that isn't ever zeroed out
-    for (int i = 0; i < 49; i++) {
-        g_pc4_context.bits[i] = ks_bits[i];
-    }
+    pc4_tyt_set_static_keystream(ks_bits);
 
     const unsigned long long segments[2] = {K1, K2};
     char key_text[34];
@@ -326,11 +321,11 @@ tyt_ap_pc4_apply_frame49(const dsd_state* state, char ambe_d[49]) {
     for (int i = 0; i < 49; i++) {
         frame1_cipher[i] = (short)(unsigned char)ambe_d[i];
     }
-    decrypt_frame_49(frame1_cipher);
+    pc4_tyt_decrypt_frame49(frame1_cipher);
 
     DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
     for (int i = 0; i < 49; i++) {
-        ambe_d[i] = (char)(g_pc4_context.bits[i] & 1);
+        ambe_d[i] = (char)(frame1_cipher[i] & 1);
     }
     return 1;
 }
@@ -344,8 +339,6 @@ tyt_ep_aes_apply_frame49(const dsd_state* state, char ambe_d[49]) {
         return 0;
     }
 
-    for (int i = 0; i < 49; i++) {
-        ambe_d[i] ^= (char)(g_pc4_context.bits[i] & 1);
-    }
+    pc4_tyt_apply_static_keystream(ambe_d);
     return 1;
 }

@@ -141,7 +141,7 @@ clamp_float(float value, float lo, float hi) {
  * below include half of the transition width as guard so nominal channel edges
  * do not sit on the filter skirt.
  *
- * Legacy 63-tap Blackman prototypes are kept as fallback; preferred taps are
+ * Fixed 63-tap Blackman prototypes provide the allocation/design fallback; preferred taps are
  * generated per sample rate to preserve the intended spectral shape at any Fs.
  *
  * At 48 kHz with 1200 Hz transition width:
@@ -157,7 +157,7 @@ static const double kChannelLpf12k5CutoffHz = 6250.0 + kChannelLpfGuardHz;
 static const double kChannelLpfProvoiceCutoffHz = 6250.0 + kChannelLpfGuardHz;
 static const double kChannelLpfP25C4fmCutoffHz = 6250.0 + kChannelLpfGuardHz;
 static const double kChannelLpfP25CqpskCutoffHz = 7250.0;
-/* Legacy fallback filters are 63 taps (designed for 24 kHz). Only used when
+/* Fixed fallback filters are 63 taps (designed for 24 kHz). Only used when
  * dynamic filter generation fails; prefer dynamically generated taps. */
 static const int kChannelLpfFallbackTaps = 63;
 static const float channel_lpf_wide[kChannelLpfFallbackTaps] = {
@@ -226,7 +226,7 @@ static const float channel_lpf_wide[kChannelLpfFallbackTaps] = {
     0.0f,
 };
 
-/* Legacy digital profile taps (fc≈5 kHz @ 24 kHz, 63 taps). Designed as
+/* Fixed digital-profile taps (fc≈5 kHz @ 24 kHz, 63 taps). Designed as
    Blackman-windowed sinc and normalized to unity DC gain. */
 static const float channel_lpf_digital[kChannelLpfFallbackTaps] = {
     0.0f,
@@ -642,9 +642,7 @@ low_pass_real(struct demod_state* s) {
 }
 
 /**
- * @brief Perform FM discriminator on interleaved low-passed I/Q to produce audio PCM.
- *
- * Uses the active discriminator configured in fm->discriminator.
+ * @brief Perform FM discrimination on interleaved low-passed I/Q to produce audio PCM.
  *
  * @param fm Demodulator state (uses lowpassed as input, writes to result).
  */
@@ -745,7 +743,7 @@ cqpsk_diff_phasor(struct demod_state* d) {
  *
  * Assumes fm->lowpassed holds interleaved I/Q samples that have already passed
  * through CQPSK processing (front-end filtering, OP25 Gardner timing, Costas).
- * Produces a single real stream (I only) to feed the legacy symbol sampler path.
+ * Produces a single real stream (I only) for the symbol sampler path.
  */
 /**
  * @brief Phase extractor for CQPSK differential phasors (OP25-compatible).

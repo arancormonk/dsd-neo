@@ -108,8 +108,8 @@ maybe_set_thread_realtime_and_affinity(const char* role) {
 
     if (dsd_thread_set_realtime_priority(priority) != 0) {
         int err = errno;
-        LOG_WARNING("Failed to set %s thread to realtime priority (needs elevated privileges). errno=%d (%s)\n", label,
-                    err, strerror(err));
+        LOG_WARN("WARNING: Failed to set %s thread to realtime priority (needs elevated privileges). errno=%d (%s)\n",
+                 label, err, strerror(err));
     } else {
         LOG_INFO("%s thread realtime priority set to %d.\n", label, priority);
     }
@@ -118,8 +118,8 @@ maybe_set_thread_realtime_and_affinity(const char* role) {
     if (cpu >= 0) {
         if (dsd_thread_set_affinity(cpu) != 0) {
             int err = errno;
-            LOG_WARNING("Failed to set CPU affinity for %s thread to CPU %d. errno=%d (%s)\n", label, cpu, err,
-                        strerror(err));
+            LOG_WARN("WARNING: Failed to set CPU affinity for %s thread to CPU %d. errno=%d (%s)\n", label, cpu, err,
+                     strerror(err));
         } else {
             LOG_INFO("%s thread pinned to CPU %d.\n", label, cpu);
         }

@@ -3,9 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 
 #if !defined(DSD_HAVE_ICONV)
@@ -26,7 +27,7 @@
 
 static uint8_t
 nxdn_bits_to_u8(const uint8_t* bits, size_t start, uint32_t len) {
-    return (uint8_t)ConvertBitIntoBytes(&bits[start], len);
+    return (uint8_t)convert_bits_into_output(&bits[start], len);
 }
 
 static void
@@ -311,29 +312,7 @@ nxdn_alias_try_iconv_decode(const uint8_t* in, size_t in_len, char* out, size_t 
     return 0;
 }
 
-static int
-nxdn_alias_iconv_shift_jis_available(void) {
-    const size_t enc_count = sizeof(nxdn_alias_iconv_enc_candidates) / sizeof(nxdn_alias_iconv_enc_candidates[0]);
-    for (size_t i = 0U; i < enc_count; i++) {
-        errno = 0;
-        iconv_t cd = iconv_open("UTF-8", nxdn_alias_iconv_enc_candidates[i]);
-        if (errno == 0) {
-            (void)iconv_close(cd);
-            return 1;
-        }
-    }
-    return 0;
-}
 #endif
-
-int
-nxdn_alias_shift_jis_full_available(void) {
-#if DSD_HAVE_ICONV
-    return nxdn_alias_iconv_shift_jis_available();
-#else
-    return 0;
-#endif
-}
 
 size_t
 nxdn_alias_decode_shift_jis_like(const uint8_t* in, size_t in_len, char* out, size_t out_sz) {

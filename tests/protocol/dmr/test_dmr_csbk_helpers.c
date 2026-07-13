@@ -13,7 +13,6 @@
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,16 +23,6 @@ static long g_last_freq;
 static int g_last_lpcn;
 static int g_last_target;
 static int g_last_source;
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t value = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        value = (value << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return value;
-}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)

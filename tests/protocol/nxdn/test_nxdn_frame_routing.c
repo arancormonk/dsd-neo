@@ -10,7 +10,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/timing.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -19,6 +18,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include "nxdn_internal.h"
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -127,15 +128,6 @@ nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed) {
     (void)dibits;
     (void)len;
     (void)seed;
-}
-
-uint64_t
-ConvertBitIntoBytes(const uint8_t* buffer_in, uint32_t bit_length) {
-    uint64_t out = 0;
-    for (uint32_t i = 0U; i < bit_length; i++) {
-        out = (out << 1U) | (uint64_t)(buffer_in[i] & 1U);
-    }
-    return out;
 }
 
 int
@@ -287,7 +279,7 @@ nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const
 
 static int
 route(uint8_t lich, const uint8_t bits[364], const uint8_t reliab[364]) {
-    return dsd_neo_nxdn_test_route_decoded_lich(&g_opts, &g_state, lich, bits, reliab);
+    return nxdn_route_decoded_lich(&g_opts, &g_state, lich, bits, reliab);
 }
 
 static uint8_t
@@ -381,12 +373,10 @@ test_bad_frame_and_filter_gates(void) {
     fill_soft_bits(bits, reliab);
 
     reset_state();
-    rc |= expect_int("route null opts", dsd_neo_nxdn_test_route_decoded_lich(NULL, &g_state, 0x01U, bits, reliab), -1);
-    rc |= expect_int("route null state", dsd_neo_nxdn_test_route_decoded_lich(&g_opts, NULL, 0x01U, bits, reliab), -1);
-    rc |=
-        expect_int("route null bits", dsd_neo_nxdn_test_route_decoded_lich(&g_opts, &g_state, 0x01U, NULL, reliab), -1);
-    rc |=
-        expect_int("route null reliab", dsd_neo_nxdn_test_route_decoded_lich(&g_opts, &g_state, 0x01U, bits, NULL), -1);
+    rc |= expect_int("route null opts", nxdn_route_decoded_lich(NULL, &g_state, 0x01U, bits, reliab), -1);
+    rc |= expect_int("route null state", nxdn_route_decoded_lich(&g_opts, NULL, 0x01U, bits, reliab), -1);
+    rc |= expect_int("route null bits", nxdn_route_decoded_lich(&g_opts, &g_state, 0x01U, NULL, reliab), -1);
+    rc |= expect_int("route null reliab", nxdn_route_decoded_lich(&g_opts, &g_state, 0x01U, bits, NULL), -1);
 
     reset_state();
     g_state.carrier = 1;

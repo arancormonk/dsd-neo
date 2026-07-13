@@ -238,48 +238,6 @@ test_singleton(void) {
     return 0;
 }
 
-// Test: Audio allowed query
-static int
-test_audio_allowed(void) {
-    reset_test_state();
-    g_state.trunk_chan_map[0x1234] = 851500000;
-
-    p25_sm_ctx_t ctx;
-    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
-
-    // Before grant, audio not allowed
-    if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 0) {
-        DSD_FPRINTF(stderr, "FAIL: Audio should not be allowed before grant\n");
-        return 1;
-    }
-
-    // Grant + PTT
-    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
-    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-
-    ev = p25_sm_ev_ptt(0);
-    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-
-    // PTT alone doesn't enable audio - that's handled by MAC_PTT in xcch.c
-    // which sets p25_p2_audio_allowed. Simulate what xcch.c does:
-    g_state.p25_p2_audio_allowed[0] = 1;
-
-    // Now audio should be allowed (via legacy state)
-    if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 1) {
-        DSD_FPRINTF(stderr, "FAIL: Audio should be allowed when p25_p2_audio_allowed is set\n");
-        return 1;
-    }
-
-    // Test that disabling it works
-    g_state.p25_p2_audio_allowed[0] = 0;
-    if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 0) {
-        DSD_FPRINTF(stderr, "FAIL: Audio should not be allowed when p25_p2_audio_allowed is cleared\n");
-        return 1;
-    }
-
-    return 0;
-}
-
 // Test: SACCH slot mapping helper
 static int
 test_sacch_slot_mapping(void) {
@@ -425,7 +383,6 @@ test_tdma_enc_lockout_slot_does_not_block_release(void) {
     g_state.p25_p2_audio_allowed[1] = 1;
 
     g_state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    g_state.p25_p2_enc_lockout_muted[1] = 1U;
     ev = p25_sm_ev_enc(1, 0x84, 0x1234, 1001);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
@@ -626,7 +583,6 @@ main(void) {
     fail += test_state_names();
     fail += test_config_defaults();
     fail += test_singleton();
-    fail += test_audio_allowed();
     fail += test_sacch_slot_mapping();
     fail += test_tdma_partial_end_stays_tuned();
     fail += test_tdma_pending_other_slot_blocks_release();

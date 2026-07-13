@@ -20,7 +20,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-void ui_terminal_telemetry_publish_snapshot(const dsd_state* state);
+void dsd_app_telemetry_publish_snapshot(const dsd_state* state);
 
 static void
 assert_slot_tail(const dsd_state* snap, uint32_t slot0_src, uint32_t slot1_src) {
@@ -317,7 +317,7 @@ assert_frontend_snapshot_call_activity_regressions(dsd_state* state) {
     DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
     DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "%s", " \t  ");
 
-    ui_terminal_telemetry_publish_snapshot(state);
+    dsd_app_telemetry_publish_snapshot(state);
 
     dsd_frontend_snapshot* frontend_snap = (dsd_frontend_snapshot*)calloc(1, sizeof(*frontend_snap));
     assert(frontend_snap != NULL);
@@ -448,8 +448,8 @@ main(void) {
     state->input_level_last_toast_status = DSD_INPUT_LEVEL_CLIPPING;
     state->input_level_last_toast_source = DSD_INPUT_LEVEL_SOURCE_RTL_CU8;
     state->rkey_array[7] = 0x12345678ULL;
-    assert(dsd_trunk_cc_candidates_add(state, 851006250L, 1) == 1);
-    assert(dsd_trunk_cc_candidates_add(state, 852006250L, 1) == 1);
+    assert(dsd_trunk_cc_candidates_add_with_flags(state, 851006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
+    assert(dsd_trunk_cc_candidates_add_with_flags(state, 852006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
     dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_get(state);
     assert(cc != NULL);
     cc->idx = 1;
@@ -488,7 +488,7 @@ main(void) {
     DSD_SNPRINTF(hist0_item->text_message, sizeof hist0_item->text_message, "%s", "Text detail");
     DSD_SNPRINTF(hist0_item->alias, sizeof hist0_item->alias, "%s", "Alias detail");
     history[1].Event_History_Items[1].source_id = 456U;
-    ui_terminal_telemetry_publish_snapshot(state);
+    dsd_app_telemetry_publish_snapshot(state);
     history[0].Event_History_Items[1].source_id = 999U;
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
                  "MUTATED");
@@ -511,7 +511,7 @@ main(void) {
     // Update only non-head rows; this must still refresh the snapshot copy.
     history[0].Event_History_Items[1].source_id = 789U;
     history[1].Event_History_Items[1].source_id = 987U;
-    ui_terminal_telemetry_publish_snapshot(state);
+    dsd_app_telemetry_publish_snapshot(state);
     assert_slot_tail(dsd_app_get_latest_snapshot(), 789U, 987U);
     dsd_frontend_event_history_item updated_detail;
     uint64_t updated_sequence = 0;
@@ -521,14 +521,14 @@ main(void) {
 
     // Reset-like clear with unchanged head rows must also be reflected.
     DSD_MEMSET(history, 0, 2u * sizeof(*history));
-    ui_terminal_telemetry_publish_snapshot(state);
+    dsd_app_telemetry_publish_snapshot(state);
     assert_slot_tail(dsd_app_get_latest_snapshot(), 0U, 0U);
     assert(dsd_app_frontend_event_history_item_get(0U, 1U, &updated_detail, NULL) == 0);
     assert(updated_detail.present == 0U);
 
     assert(dsd_tg_policy_make_exact_entry(7777U, "B", "POLICY-ONLY", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     assert(dsd_tg_policy_append_exact(state, &entry) == 0);
-    ui_terminal_telemetry_publish_snapshot(state);
+    dsd_app_telemetry_publish_snapshot(state);
     snap = dsd_app_get_latest_snapshot();
     dsd_tg_policy_lookup lookup;
     assert(dsd_tg_policy_lookup_id(snap, 7777U, &lookup) == 0);

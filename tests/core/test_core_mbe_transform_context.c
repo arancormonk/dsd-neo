@@ -473,7 +473,7 @@ test_keyring_tracks_aes_segment_metadata(void) {
     state.rkey_array_loaded[slot0_zero_key + 0x201] = 1U;
     state.rkey_array_loaded[slot0_zero_key + 0x301] = 1U;
 
-    keyring(&opts, &state);
+    keyring_activate_slot(&opts, &state, state.currentslot);
 
     rc |= expect_eq_int("keyring-slot0-zero-base", (int)state.R, 0);
     rc |= expect_eq_int("keyring-slot0-zero-a1", (int)state.A1[0], 0);
@@ -491,7 +491,7 @@ test_keyring_tracks_aes_segment_metadata(void) {
     state.rkey_array_loaded[slot1_zero_key + 0x201] = 1U;
     state.rkey_array_loaded[slot1_zero_key + 0x301] = 1U;
 
-    keyring(&opts, &state);
+    keyring_activate_slot(&opts, &state, state.currentslot);
 
     rc |= expect_eq_int("keyring-slot1-zero-base", (int)state.RR, 0);
     rc |= expect_eq_int("keyring-slot1-zero-a1", (int)state.A1[1], 0);
@@ -507,7 +507,7 @@ test_keyring_tracks_aes_segment_metadata(void) {
     state.rkey_array[slot1_fallback_key + 0x101] = 0x111ULL;
     state.rkey_array[slot1_fallback_key + 0x301] = 0x222ULL;
 
-    keyring(&opts, &state);
+    keyring_activate_slot(&opts, &state, state.currentslot);
 
     rc |= expect_eq_int("keyring-slot1-fallback-base", (int)state.RR, 0);
     rc |= expect_eq_int("keyring-slot1-fallback-a1", (int)state.A1[1], 0);

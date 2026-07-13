@@ -476,37 +476,8 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
 
     rc |= expect_int_eq("explicit frontend none preserves active frontend", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
 
-    static const char* legacy_ini = "version = 1\n"
-                                    "\n"
-                                    "[output]\n"
-                                    "backend = \"null\"\n"
-                                    "ncurses_ui = false\n";
-
-    char legacy_path[DSD_TEST_PATH_MAX] = {0};
-    if (create_temp_config_file(legacy_ini, legacy_path, sizeof legacy_path) != 0) {
-        free_test_runtime(&runtime);
-        (void)remove(path);
-        return rc | 1;
-    }
-
-    dsdneoUserConfig legacy_cfg = {0};
-    if (dsd_user_config_load(legacy_path, &legacy_cfg) != 0) {
-        DSD_FPRINTF(stderr, "FAIL: could not load legacy ncurses_ui=false config %s\n", legacy_path);
-        free_test_runtime(&runtime);
-        (void)remove(path);
-        (void)remove(legacy_path);
-        return rc | 1;
-    }
-
-    dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, &legacy_cfg, sizeof legacy_cfg);
-    dsd_app_drain_cmds(opts, state);
-
-    rc |=
-        expect_int_eq("legacy ncurses_ui=false preserves active frontend", opts->frontend_kind, DSD_FRONTEND_TERMINAL);
-
     free_test_runtime(&runtime);
     (void)remove(path);
-    (void)remove(legacy_path);
     return rc;
 }
 
@@ -1365,7 +1336,7 @@ test_ui_runtime_toggle_commands_dispatch_through_queue(void) {
 }
 
 static int
-test_ui_legacy_toggle_commands_dispatch_through_queue(void) {
+test_ui_toggle_commands_dispatch_through_queue(void) {
     test_runtime runtime;
     if (alloc_test_runtime(&runtime) != 0) {
         return 1;
@@ -1396,7 +1367,7 @@ test_ui_legacy_toggle_commands_dispatch_through_queue(void) {
     int applied = dsd_app_drain_cmds(opts, state);
 
     int rc = 0;
-    rc |= expect_int_eq("legacy toggle drain count", applied, 10);
+    rc |= expect_int_eq("toggle drain count", applied, 10);
     rc |= expect_int_eq("CRC relax then aggr-sync aliases toggle twice", opts->aggressive_framesync, 0);
     rc |= expect_int_eq("LCW retune toggled through queue", opts->p25_lcw_retune, 0);
     rc |= expect_int_eq("P25 CC candidates toggled through queue", opts->p25_prefer_candidates, 1);
@@ -1491,7 +1462,7 @@ test_ui_dsp_op_commands_dispatch_through_queue(void) {
 #endif
 
 static int
-test_ui_legacy_slot_and_display_commands_update_state(void) {
+test_ui_slot_and_display_commands_update_state(void) {
     test_runtime runtime;
     if (alloc_test_runtime(&runtime) != 0) {
         return 1;
@@ -1549,8 +1520,8 @@ test_ui_legacy_slot_and_display_commands_update_state(void) {
     opts->mod_qpsk = 1;
     opts->frontend_display.const_gate_qpsk = 0.80f;
     opts->frontend_display.eye_view = 0;
-    opts->frontend_display.eye_unicode = 0;
-    opts->frontend_display.eye_color = 0;
+    opts->frontend_terminal_display.eye_unicode = 0;
+    opts->frontend_terminal_display.eye_color = 0;
     opts->frontend_display.fsk_hist_view = 0;
     opts->frontend_display.spectrum_view = 0;
     float delta = 0.25f;
@@ -1588,8 +1559,8 @@ test_ui_legacy_slot_and_display_commands_update_state(void) {
     dsd_app_post_cmd(DSD_APP_CMD_EYE_COLOR_TOGGLE, NULL, 0);
     applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("eye format command drain count", applied, 2);
-    rc |= expect_int_eq("eye unicode toggled on", opts->frontend_display.eye_unicode, 1);
-    rc |= expect_int_eq("eye color toggled on", opts->frontend_display.eye_color, 1);
+    rc |= expect_int_eq("eye unicode toggled on", opts->frontend_terminal_display.eye_unicode, 1);
+    rc |= expect_int_eq("eye color toggled on", opts->frontend_terminal_display.eye_color, 1);
 
 #ifdef USE_RADIO
     (void)rtl_stream_spectrum_set_size(64);
@@ -1599,7 +1570,7 @@ test_ui_legacy_slot_and_display_commands_update_state(void) {
 }
 
 static int
-test_ui_legacy_protocol_reset_and_mode_toggles(void) {
+test_ui_protocol_reset_and_mode_toggles(void) {
     test_runtime runtime;
     if (alloc_test_runtime(&runtime) != 0) {
         return 1;
@@ -1895,7 +1866,7 @@ test_ui_file_open_commands_report_service_results(void) {
 }
 
 static int
-test_ui_legacy_file_capture_commands_manage_handles(void) {
+test_ui_file_capture_commands_manage_handles(void) {
     char wav_dir[DSD_TEST_PATH_MAX] = {0};
     char sym_path[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(wav_dir, sizeof wav_dir, "dsdneo_queue_wav_dir")
@@ -1917,28 +1888,28 @@ test_ui_legacy_file_capture_commands_manage_handles(void) {
     dsd_app_post_cmd(DSD_APP_CMD_WAV_START, NULL, 0);
     dsd_app_post_cmd(DSD_APP_CMD_WAV_START, NULL, 0);
     int applied = dsd_app_drain_cmds(opts, state);
-    rc |= expect_int_eq("duplicate legacy WAV start commands drain", applied, 2);
-    rc |= expect_true("legacy WAV start opens left handle", opts->wav_out_f != NULL);
-    rc |= expect_true("legacy WAV start opens right handle", opts->wav_out_fR != NULL);
-    rc |= expect_int_eq("legacy WAV start enables stereo WAV", opts->dmr_stereo_wav, 1);
-    rc |= expect_true("legacy WAV start stores left temp under dir",
-                      strstr(opts->wav_out_file, wav_dir) == opts->wav_out_file);
-    rc |= expect_true("legacy WAV start stores right temp under dir",
+    rc |= expect_int_eq("duplicate WAV start commands drain", applied, 2);
+    rc |= expect_true("WAV start opens left handle", opts->wav_out_f != NULL);
+    rc |= expect_true("WAV start opens right handle", opts->wav_out_fR != NULL);
+    rc |= expect_int_eq("WAV start enables stereo WAV", opts->dmr_stereo_wav, 1);
+    rc |=
+        expect_true("WAV start stores left temp under dir", strstr(opts->wav_out_file, wav_dir) == opts->wav_out_file);
+    rc |= expect_true("WAV start stores right temp under dir",
                       strstr(opts->wav_out_fileR, wav_dir) == opts->wav_out_fileR);
 #if !DSD_PLATFORM_WIN_NATIVE
-    rc |= expect_int_eq("duplicate legacy WAV start creates one temp pair", count_directory_entries(wav_dir), 2);
+    rc |= expect_int_eq("duplicate WAV start creates one temp pair", count_directory_entries(wav_dir), 2);
 #endif
 
     dsd_app_post_cmd(DSD_APP_CMD_WAV_STOP, NULL, 0);
     applied = dsd_app_drain_cmds(opts, state);
-    rc |= expect_int_eq("legacy WAV stop command drains", applied, 1);
-    rc |= expect_true("legacy WAV stop closes left handle", opts->wav_out_f == NULL);
-    rc |= expect_true("legacy WAV stop closes right handle", opts->wav_out_fR == NULL);
-    rc |= expect_true("legacy WAV stop clears left filename", opts->wav_out_file[0] == '\0');
-    rc |= expect_true("legacy WAV stop clears right filename", opts->wav_out_fileR[0] == '\0');
-    rc |= expect_int_eq("legacy WAV stop disables stereo WAV", opts->dmr_stereo_wav, 0);
+    rc |= expect_int_eq("WAV stop command drains", applied, 1);
+    rc |= expect_true("WAV stop closes left handle", opts->wav_out_f == NULL);
+    rc |= expect_true("WAV stop closes right handle", opts->wav_out_fR == NULL);
+    rc |= expect_true("WAV stop clears left filename", opts->wav_out_file[0] == '\0');
+    rc |= expect_true("WAV stop clears right filename", opts->wav_out_fileR[0] == '\0');
+    rc |= expect_int_eq("WAV stop disables stereo WAV", opts->dmr_stereo_wav, 0);
 #if !DSD_PLATFORM_WIN_NATIVE
-    rc |= expect_int_eq("legacy WAV stop removes duplicate-start temp files", count_directory_entries(wav_dir), 0);
+    rc |= expect_int_eq("WAV stop removes duplicate-start temp files", count_directory_entries(wav_dir), 0);
 #endif
 
     dsd_app_command_token toggle_on = 0;
@@ -2744,16 +2715,16 @@ main(void) {
     rc |= test_ui_basic_key_commands_reset_payload_mute_state();
     rc |= test_ui_m17_user_data_command_truncates_to_state_buffer();
     rc |= test_ui_runtime_toggle_commands_dispatch_through_queue();
-    rc |= test_ui_legacy_toggle_commands_dispatch_through_queue();
+    rc |= test_ui_toggle_commands_dispatch_through_queue();
 #ifdef USE_RADIO
     rc |= test_ui_dsp_op_commands_dispatch_through_queue();
 #endif
-    rc |= test_ui_legacy_slot_and_display_commands_update_state();
-    rc |= test_ui_legacy_protocol_reset_and_mode_toggles();
+    rc |= test_ui_slot_and_display_commands_update_state();
+    rc |= test_ui_protocol_reset_and_mode_toggles();
     rc |= test_ui_replay_and_stop_playback_manage_symbol_state();
     rc |= test_ui_io_command_queue_applies_local_input_and_network_payloads();
     rc |= test_ui_file_open_commands_report_service_results();
-    rc |= test_ui_legacy_file_capture_commands_manage_handles();
+    rc |= test_ui_file_capture_commands_manage_handles();
     rc |= test_ui_import_and_dsp_output_commands_report_service_results();
     rc |= test_ui_malformed_payload_commands_drain_without_mutation();
     rc |= test_ui_runtime_parameter_commands_clamp_and_update_state();

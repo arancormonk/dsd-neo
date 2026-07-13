@@ -41,29 +41,6 @@ apply_j4_rotation_f32(float in_i, float in_q, uint32_t phase, float* out_i, floa
     }
 }
 
-static inline void
-apply_j4_rotation_u8(unsigned char in_i, unsigned char in_q, uint32_t phase, unsigned char* out_i,
-                     unsigned char* out_q) {
-    switch (phase & 3U) {
-        case 0:
-            *out_i = in_i;
-            *out_q = in_q;
-            break;
-        case 1:
-            *out_i = (unsigned char)(255U - (uint32_t)in_q);
-            *out_q = in_i;
-            break;
-        case 2:
-            *out_i = (unsigned char)(255U - (uint32_t)in_i);
-            *out_q = (unsigned char)(255U - (uint32_t)in_q);
-            break;
-        default:
-            *out_i = in_q;
-            *out_q = (unsigned char)(255U - (uint32_t)in_i);
-            break;
-    }
-}
-
 using widen_rot_phase_fn = uint32_t (*)(const unsigned char*, float*, uint32_t, uint32_t);
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -128,18 +105,6 @@ widen_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len) {
     }
 }
 
-void
-widen_u8_to_f32_bias128_scalar(const unsigned char* src, float* dst, uint32_t len) {
-    if (!src || !dst || len == 0) {
-        return;
-    }
-    const float inv = 1.0f / 127.5f;
-    for (uint32_t i = 0; i < len; i++) {
-        float v = ((float)src[i] - 128.0f) * inv;
-        dst[i] = v;
-    }
-}
-
 static uint32_t
 widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* dst, uint32_t len, uint32_t phase) {
     uint32_t cur_phase = phase & 3U;
@@ -179,25 +144,4 @@ widen_rotate90_u8_to_f32_bias127_phase(const unsigned char* src, float* dst, uin
 void
 widen_rotate90_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len) {
     (void)widen_rotate90_u8_to_f32_bias127_phase(src, dst, len, 0U);
-}
-
-uint32_t
-rotate90_u8_inplace_phase(unsigned char* buf, uint32_t len, uint32_t phase) {
-    uint32_t cur_phase = phase & 3U;
-    if (!buf || len < 2) {
-        return cur_phase;
-    }
-
-    uint32_t pairs = len >> 1;
-    for (uint32_t n = 0; n < pairs; n++) {
-        uint32_t idx = n << 1;
-        unsigned char out_i = 0;
-        unsigned char out_q = 0;
-        apply_j4_rotation_u8(buf[idx + 0], buf[idx + 1], cur_phase, &out_i, &out_q);
-        buf[idx + 0] = out_i;
-        buf[idx + 1] = out_q;
-        cur_phase = (cur_phase + 1U) & 3U;
-    }
-
-    return cur_phase;
 }

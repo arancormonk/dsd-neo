@@ -102,7 +102,7 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 
     sm_log(opts, reason);
 
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "release-tune-deferred");
         if (state && had_force_release) {
@@ -180,7 +180,7 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     double now_m = now_monotonic();
 
     dsd_trunk_tune_result tune_result =
-        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0); // DMR: no TED SPS override
+        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL); // DMR: no TED SPS override
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "grant-tune-deferred");
         return;
@@ -484,11 +484,6 @@ dmr_sm_get_ctx(void) {
  * ============================================================================ */
 
 void
-dmr_sm_emit(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
-    dmr_sm_event(dmr_sm_get_ctx(), opts, state, ev);
-}
-
-void
 dmr_sm_emit_voice_sync(dsd_opts* opts, dsd_state* state, int slot) {
     dmr_sm_event_t ev = dmr_sm_ev_voice_sync(slot);
     dmr_sm_event(dmr_sm_get_ctx(), opts, state, &ev);
@@ -533,11 +528,6 @@ dmr_sm_init(const dsd_opts* opts, const dsd_state* state) {
     dmr_sm_init_ctx(dmr_sm_get_ctx(), opts, state);
 }
 
-void
-dmr_sm_tick(dsd_opts* opts, dsd_state* state) {
-    dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
-}
-
 /* ============================================================================
  * Neighbor/CC Candidate Management
  * ============================================================================ */
@@ -554,11 +544,11 @@ dmr_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
         if (f == 0 || f == state->trunk_cc_freq) {
             continue;
         }
-        (void)dsd_trunk_cc_candidates_add(state, f, 1);
+        (void)dsd_trunk_cc_candidates_add_with_flags(state, f, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     }
 }
 
 int
 dmr_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
-    return dsd_trunk_cc_candidates_next(state, now_monotonic(), out_freq);
+    return dsd_trunk_cc_candidates_next_with_flags(state, now_monotonic(), 0, out_freq);
 }

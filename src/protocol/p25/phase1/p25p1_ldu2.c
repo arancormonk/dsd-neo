@@ -19,6 +19,8 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -26,7 +28,6 @@
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
@@ -290,9 +291,9 @@ ldu2_decode_post_fec_fields(const dsd_state* state, Ldu2Frame* frame) {
     uint32_t kidhex = 0;
     frame->algidhex = (dsd_parse_binary_u32_n(frame->algid, 8, &algidhex) == 0) ? (int)algidhex : 0;
     frame->kidhex = (dsd_parse_binary_u32_n(frame->kid, 16, &kidhex) == 0) ? (int)kidhex : 0;
-    frame->mihex1 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[0], 32);
-    frame->mihex2 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[32], 32);
-    frame->mihex3 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[64], 8);
+    frame->mihex1 = (unsigned long long)convert_bits_into_output(&frame->mi[0], 32);
+    frame->mihex2 = (unsigned long long)convert_bits_into_output(&frame->mi[32], 32);
+    frame->mihex3 = (unsigned long long)convert_bits_into_output(&frame->mi[64], 8);
 
     frame->lsd1_okay = p25_lsd_fec_16x8_soft(frame->lowspeeddata + 0, frame->lowspeed_llr + 0);
     frame->lsd2_okay = p25_lsd_fec_16x8_soft(frame->lowspeeddata + 16, frame->lowspeed_llr + 16);

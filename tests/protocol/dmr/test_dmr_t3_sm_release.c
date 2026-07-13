@@ -10,6 +10,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -25,7 +26,8 @@ static dsd_trunk_tune_result g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 static int g_return_to_cc_calls = 0;
 
 static dsd_trunk_tune_result
-test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     if (g_tune_to_freq_result != DSD_TRUNK_TUNE_RESULT_OK) {
         return g_tune_to_freq_result;
@@ -40,7 +42,8 @@ test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) 
 }
 
 static dsd_trunk_tune_result
-test_return_to_cc(dsd_opts* opts, dsd_state* state) {
+test_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_return_to_cc_calls++;
     if (g_return_to_cc_result != DSD_TRUNK_TUNE_RESULT_OK) {
         return g_return_to_cc_result;
@@ -73,8 +76,8 @@ main(int argc, char** argv) {
     opts.trunk_hangtime = 0.5f;
     state.trunk_cc_freq = 851000000;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .tune_to_freq_result = test_tune_to_freq,
-        .return_to_cc_result = test_return_to_cc,
+        .tune_to_freq_request = test_tune_to_freq,
+        .return_to_cc_request = test_return_to_cc,
     });
 
     // Initialize and get context
@@ -102,7 +105,7 @@ main(int argc, char** argv) {
     assert(ctx->slots[0].voice_active == 1);
 
     // Tick while voice active - should NOT release
-    dmr_sm_tick(&opts, &state);
+    dmr_sm_tick_ctx(ctx, &opts, &state);
     assert(opts.trunk_is_tuned == 1);
     assert(ctx->state == DMR_SM_TUNED);
 
@@ -111,7 +114,7 @@ main(int argc, char** argv) {
     // t_voice_m is still recent, so tick should defer
 
     // Tick with recent voice - should stay tuned (hangtime)
-    dmr_sm_tick(&opts, &state);
+    dmr_sm_tick_ctx(ctx, &opts, &state);
     assert(opts.trunk_is_tuned == 1);
 
     // Set voice timestamp far in the past to exceed hangtime
@@ -121,14 +124,14 @@ main(int argc, char** argv) {
 
     // A deferred return-to-CC must leave the VC state untouched for retry.
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
-    dmr_sm_tick(&opts, &state);
+    dmr_sm_tick_ctx(ctx, &opts, &state);
     assert(opts.trunk_is_tuned == 1);
     assert(state.trunk_vc_freq[0] == vc);
     assert(ctx->state == DMR_SM_TUNED);
 
     // Tick should now release once return-to-CC succeeds.
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
-    dmr_sm_tick(&opts, &state);
+    dmr_sm_tick_ctx(ctx, &opts, &state);
     assert(opts.trunk_is_tuned == 0);
     assert(ctx->state == DMR_SM_ON_CC);
 
@@ -149,7 +152,7 @@ main(int argc, char** argv) {
     assert(ctx->state == DMR_SM_TUNED);
 
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
-    dmr_sm_tick(&opts, &state);
+    dmr_sm_tick_ctx(ctx, &opts, &state);
     assert(g_return_to_cc_calls == 2);
     assert(state.trunk_sm_force_release == 0);
     assert(opts.trunk_is_tuned == 0);

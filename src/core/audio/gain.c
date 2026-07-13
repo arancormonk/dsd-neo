@@ -87,7 +87,7 @@ agf_process_20_sample_block(float samp[160], int block_idx, float df, float gain
         samp[idx] = samp[idx] / df;
         samp[idx] = agf_clip_sample(samp[idx], mmin, mmax);
 
-        // Preserve legacy averaging behavior (first 20 entries each block).
+        // Preserve established averaging behavior (first 20 entries each block).
         *aavg += fabsf(samp[i]);
         samp[idx] *= gain * 0.8f;
     }
@@ -155,7 +155,7 @@ agsm(dsd_opts* opts, dsd_state* state, short* input, int len) {
         return;
     }
 
-    /* Legacy target level for analog monitor path (PCM16 scale). */
+    /* Target level for the analog monitor path (PCM16 scale). */
     const float nom = 4800.0f;
     float max_abs = 0.0f;
     for (int i = 0; i < len; i++) {

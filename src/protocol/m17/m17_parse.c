@@ -7,7 +7,8 @@
  * M17 LSF parsing helpers.
  */
 
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
 #include <stddef.h>
@@ -46,11 +47,6 @@ m17_packet_protocol_name_u32(uint32_t protocol) {
         }
     }
     return NULL;
-}
-
-const char*
-m17_packet_protocol_name(uint8_t protocol) {
-    return m17_packet_protocol_name_u32(protocol);
 }
 
 int
@@ -402,7 +398,7 @@ m17_extract_meta_bytes(const uint8_t* lsf_bits, uint8_t meta[M17_META_BYTES]) {
     uint32_t meta_sum = 0U;
 
     for (int i = 0; i < (int)M17_META_BYTES; i++) {
-        meta[i] = (uint8_t)ConvertBitIntoBytes((uint8_t*)&lsf_bits[((size_t)i * 8U) + 112U], 8U);
+        meta[i] = (uint8_t)convert_bits_into_output((uint8_t*)&lsf_bits[((size_t)i * 8U) + 112U], 8U);
         meta_sum += meta[i];
     }
 
@@ -420,9 +416,9 @@ m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* ou
 
     DSD_MEMSET(out, 0, sizeof(*out));
 
-    unsigned long long lsf_dst = ConvertBitIntoBytes(&lsf_bits[0], 48);
-    unsigned long long lsf_src = ConvertBitIntoBytes(&lsf_bits[48], 48);
-    uint16_t lsf_type = (uint16_t)ConvertBitIntoBytes(&lsf_bits[96], 16);
+    unsigned long long lsf_dst = convert_bits_into_output(&lsf_bits[0], 48);
+    unsigned long long lsf_src = convert_bits_into_output(&lsf_bits[48], 48);
+    uint16_t lsf_type = (uint16_t)convert_bits_into_output(&lsf_bits[96], 16);
 
     out->dst = lsf_dst;
     out->src = lsf_src;
@@ -436,9 +432,6 @@ m17_parse_lsf(const uint8_t* lsf_bits, size_t bit_len, struct m17_lsf_result* ou
     out->cn = (uint8_t)((lsf_type >> 7U) & 0xFU);
     out->signature = (uint8_t)((lsf_type >> 11U) & 0x1U);
     out->rs = (uint8_t)((lsf_type >> 12U) & 0xFU);
-    out->payload_contents = out->dt;
-    out->encryption_type = out->et;
-    out->meta_contents = out->es;
     out->meta_is_iv = (out->et == 2U) ? 1U : 0U;
     out->dst_address_kind = m17_address_classify(lsf_dst);
     out->src_address_kind = m17_address_classify(lsf_src);

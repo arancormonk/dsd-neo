@@ -9,6 +9,29 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 
+add_library(
+    dsd-neo_test_bit_packing
+    OBJECT
+    ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
+)
+target_include_directories(
+    dsd-neo_test_bit_packing
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+
+add_library(
+    dsd-neo_test_p25_shims
+    STATIC
+    test_support/p25_test_shim.c
+    test_support/p25_test_lcw_shim.c
+)
+target_include_directories(
+    dsd-neo_test_p25_shims
+    PUBLIC ${PROJECT_SOURCE_DIR}/tests/test_support
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(dsd-neo_test_p25_shims PUBLIC dsd-neo_proto_p25)
+
 if(DSD_ENABLE_FUZZING)
     add_subdirectory(fuzz)
 endif()
@@ -169,12 +192,6 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_colors
   HEADERS_PUBLIC_RUNTIME_COLORS
   dsd-neo/runtime/colors.h
-  C
-)
-dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_runtime_comp
-  HEADERS_PUBLIC_RUNTIME_COMP
-  dsd-neo/runtime/comp.h
   C
 )
 dsd_neo_add_public_header_smoke_test(
@@ -402,12 +419,6 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_app_control_frontend_types
-  HEADERS_PUBLIC_APP_CONTROL_FRONTEND_TYPES
-  dsd-neo/app_control/frontend_types.h
-  C
-)
-dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_history
   HEADERS_PUBLIC_APP_CONTROL_HISTORY
   dsd-neo/app_control/history.h
@@ -426,12 +437,6 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 
-dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_core_cleanup
-  HEADERS_PUBLIC_CORE_CLEANUP
-  dsd-neo/core/cleanup.h
-  C
-)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_frame
   HEADERS_PUBLIC_CORE_FRAME
@@ -480,12 +485,6 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_io_m17_udp
   HEADERS_PUBLIC_IO_M17_UDP
   dsd-neo/io/m17_udp.h
-  C
-)
-dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_io_rigctl
-  HEADERS_PUBLIC_IO_RIGCTL
-  dsd-neo/io/rigctl.h
   C
 )
 dsd_neo_add_public_header_smoke_test(
@@ -556,13 +555,6 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_protocol_p25_crypto
   HEADERS_PUBLIC_PROTOCOL_P25_CRYPTO
   dsd-neo/protocol/p25/p25_crypto.h
-  C
-)
-
-dsd_neo_add_public_header_smoke_test(
-  dsd-neo_test_headers_public_protocol_p25_trunk_sm_api
-  HEADERS_PUBLIC_PROTOCOL_P25_TRUNK_SM_API
-  dsd-neo/protocol/p25/p25_trunk_sm_api.h
   C
 )
 
@@ -805,11 +797,9 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_dpmr_voice_bridge
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_compile_definitions(
-    dsd-neo_test_dpmr_voice_bridge
-    PRIVATE DSD_NEO_TEST_HOOKS
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
 )
 add_test(NAME DPMR_VOICE_BRIDGE COMMAND dsd-neo_test_dpmr_voice_bridge)
 
@@ -826,15 +816,10 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_ysf_frame PRIVATE ${LIBS})
 add_test(NAME YSF_FRAME COMMAND dsd-neo_test_ysf_frame)
 
-target_compile_definitions(dsd-neo_proto_ysf PRIVATE DSD_NEO_TEST_HOOKS)
 add_executable(dsd-neo_test_ysf_dch_decode protocol/ysf/test_ysf_dch_decode.c)
-target_compile_definitions(
-    dsd-neo_test_ysf_dch_decode
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
 target_include_directories(
     dsd-neo_test_ysf_dch_decode
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/ysf
 )
 target_link_libraries(
     dsd-neo_test_ysf_dch_decode
@@ -848,7 +833,7 @@ target_link_libraries(
 target_link_options(
     dsd-neo_test_ysf_dch_decode
     PRIVATE
-        -Wl,--wrap=getDibit
+        -Wl,--wrap=get_dibit_and_analog_signal
         -Wl,--wrap=processMbeFrame
         -Wl,--wrap=dsd_mbe_process_ambe2450_dataf
 )
@@ -980,18 +965,15 @@ target_include_directories(
 )
 add_test(NAME NXDN_DEPERM_WINDOWS COMMAND dsd-neo_test_nxdn_deperm_windows)
 
-target_compile_definitions(dsd-neo_proto_nxdn PRIVATE DSD_NEO_TEST_HOOKS)
 add_executable(
     dsd-neo_test_nxdn_deperm_primitives
     protocol/nxdn/test_nxdn_deperm_primitives.c
 )
-target_compile_definitions(
-    dsd-neo_test_nxdn_deperm_primitives
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
 target_include_directories(
     dsd-neo_test_nxdn_deperm_primitives
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
 target_link_libraries(
     dsd-neo_test_nxdn_deperm_primitives
@@ -1093,13 +1075,11 @@ add_executable(
     protocol/nxdn/test_nxdn_frame_routing.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_frame.c
 )
-target_compile_definitions(
-    dsd-neo_test_nxdn_frame_routing
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
 target_include_directories(
     dsd-neo_test_nxdn_frame_routing
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
 add_test(NAME NXDN_FRAME_ROUTING COMMAND dsd-neo_test_nxdn_frame_routing)
 
@@ -2537,14 +2517,6 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_dsd_time PRIVATE dsd-neo_core)
 add_test(NAME CORE_DSD_TIME COMMAND dsd-neo_test_core_dsd_time)
 
-add_executable(dsd-neo_test_core_safe_api core/test_core_safe_api.c)
-target_include_directories(
-    dsd-neo_test_core_safe_api
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(dsd-neo_test_core_safe_api PRIVATE dsd-neo_safe_api)
-add_test(NAME CORE_SAFE_API COMMAND dsd-neo_test_core_safe_api)
-
 add_executable(
     dsd-neo_test_core_secret_redaction
     core/test_core_secret_redaction.c
@@ -2715,22 +2687,20 @@ dsd_neo_link_dsp_test(
 add_test(NAME DSP_WAV_INPUT_EOF COMMAND dsd-neo_test_dsp_wav_input_eof)
 
 add_executable(dsd-neo_test_dsp_symbol_replay dsp/test_dsp_symbol_replay.c)
-target_compile_definitions(dsd-neo_dsp PRIVATE DSD_NEO_TEST_HOOKS)
-target_compile_definitions(
-    dsd-neo_test_dsp_symbol_replay
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
 target_include_directories(
     dsd-neo_test_dsp_symbol_replay
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
         ${PROJECT_SOURCE_DIR}/tests/test_support
 )
-dsd_neo_link_dsp_test(
+target_link_libraries(
     dsd-neo_test_dsp_symbol_replay
-    dsd-neo_test_support
-    ${DSD_NEO_TEST_MATH_LIB}
-    ${LIBSNDFILE_LIBRARIES}
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
 )
 add_test(NAME DSP_SYMBOL_REPLAY COMMAND dsd-neo_test_dsp_symbol_replay)
 
@@ -3136,7 +3106,11 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+)
+target_compile_definitions(
+    dsd-neo_test_engine_trunk_scan
+    PRIVATE DSD_TRUNK_SCAN_TEST_CLOCK=1
 )
 target_link_libraries(
     dsd-neo_test_engine_trunk_scan
@@ -3783,7 +3757,7 @@ target_include_directories(
     dsd-neo_test_p25_p1_lcw_sm
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-# LCW path depends on ConvertBitIntoBytes (dmr utils) and GPS alias in core
+# LCW path depends on core bit packing and GPS alias support
 target_link_libraries(
     dsd-neo_test_p25_p1_lcw_sm
     PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
@@ -3914,21 +3888,6 @@ target_link_libraries(
 )
 add_test(NAME P25_P2_MAC_JSON COMMAND dsd-neo_test_p25_p2_mac_json)
 
-# P25 P2 RS(63,35) wrappers (FACCH/SACCH)
-add_executable(
-    dsd-neo_test_p25_p2_rs28_wrappers
-    protocol/p25/test_p25_p2_rs28_wrappers.cpp
-)
-target_include_directories(
-    dsd-neo_test_p25_p2_rs28_wrappers
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/third_party
-)
-target_link_libraries(
-    dsd-neo_test_p25_p2_rs28_wrappers
-    PRIVATE dsd-neo_proto_p25
-)
-add_test(NAME P25_P2_RS28_WRAPPERS COMMAND dsd-neo_test_p25_p2_rs28_wrappers)
-
 # P25 P2 RS(63,35) correction limits
 add_executable(
     dsd-neo_test_p25_p2_rs28_limits
@@ -3962,36 +3921,6 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
 )
 add_test(NAME P25_P1_TRUNK_SM COMMAND dsd-neo_test_p25_p1_trunk_sm)
-
-# P25 trunk SM API override (explicit dispatch table)
-add_executable(
-    dsd-neo_test_p25_sm_api_override
-    protocol/p25/test_p25_sm_api_override.c
-)
-target_include_directories(
-    dsd-neo_test_p25_sm_api_override
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_p25_sm_api_override
-    PRIVATE dsd-neo_proto_p25
-)
-add_test(NAME P25_SM_API_OVERRIDE COMMAND dsd-neo_test_p25_sm_api_override)
-
-# P25 P2 audio gating (SIGNAL, explicit Release)
-add_executable(
-    dsd-neo_test_p25_p2_audio_gating
-    protocol/p25/test_p25_p2_audio_gating.c
-)
-target_include_directories(
-    dsd-neo_test_p25_p2_audio_gating
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-target_link_libraries(
-    dsd-neo_test_p25_p2_audio_gating
-    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
-)
-add_test(NAME P25_P2_AUDIO_GATING COMMAND dsd-neo_test_p25_p2_audio_gating)
 
 # Ensure LCCH MAC_SIGNAL never flips P25p2 audio gates
 add_executable(
@@ -4072,20 +4001,6 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
 )
 add_test(NAME P25_P1_SYNC_DISPATCH COMMAND dsd-neo_test_p25_p1_sync_dispatch)
-
-# (Optional) DMR Tier III MBC smoke test is disabled by default.
-# Enable locally if needed.
-# add_executable(dsd-neo_test_dmr_mbc protocol/dmr/test_mbc.c)
-# target_include_directories(dsd-neo_test_dmr_mbc PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/protocol/dmr)
-# target_link_libraries(dsd-neo_test_dmr_mbc PRIVATE dsd-neo_proto_dmr)
-# add_test(NAME DMR_MBC_SMOKE COMMAND dsd-neo_test_dmr_mbc)
-
-# P25 malformed/edge-case frames
-# NOTE: Malformed frame tests are available but disabled by default due to flakiness across platforms.
-# add_executable(dsd-neo_test_p25_malformed_frames protocol/p25/test_p25_malformed_frames.c)
-# target_include_directories(dsd-neo_test_p25_malformed_frames PRIVATE ${PROJECT_SOURCE_DIR}/include)
-# target_link_libraries(dsd-neo_test_p25_malformed_frames PRIVATE dsd-neo_proto_p25)
-# add_test(NAME P25_MALFORMED_FRAMES COMMAND dsd-neo_test_p25_malformed_frames)
 
 # P25 P1 TSBK -> vPDU bridge (Group Voice Channel Grant)
 add_executable(
@@ -4390,7 +4305,10 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_p25_p2_2v_first_frame_gate
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
 )
 target_compile_definitions(
     dsd-neo_test_p25_p2_2v_first_frame_gate
@@ -4440,6 +4358,37 @@ add_test(
     NAME P25_P2_MIDCALL_ENC_FLUSH
     COMMAND dsd-neo_test_p25_p2_midcall_enc_flush
 )
+
+set(_DSD_NEO_P25_SHIM_TEST_TARGETS
+    dsd-neo_test_p25_mac_segment
+    dsd-neo_test_p25_iden_variants
+    dsd-neo_test_p25_iden_bridge
+    dsd-neo_test_p25_mbt_decode
+    dsd-neo_test_p25_p2_mac_vendor_lengths
+    dsd-neo_test_p25_p1_lcw_sm
+    dsd-neo_test_p25_p1_ldu_gating
+    dsd-neo_test_p25_mbt_adj_rfss
+    dsd-neo_test_p25_p1_mbtx_clamp
+    dsd-neo_test_p25_frequency_map
+    dsd-neo_test_p25_p2_mac_json
+    dsd-neo_test_p25_p2_audio_enable
+    dsd-neo_test_p25_p1_tsbk_vpdu
+    dsd-neo_test_p25_p1_tsbk_clamp
+    dsd-neo_test_p25_p2_aach_cach_map
+    dsd-neo_test_p25_p2_vpdu_core
+    dsd-neo_test_p25_p2_vpdu_grants
+    dsd-neo_test_p25_p2_vpdu_sequence
+    dsd-neo_test_p25_p2_early_enc_lockout
+    dsd-neo_test_p25_p2_midcall_enc_flush
+)
+foreach(_DSD_NEO_P25_SHIM_TEST_TARGET IN LISTS _DSD_NEO_P25_SHIM_TEST_TARGETS)
+    target_link_libraries(
+        ${_DSD_NEO_P25_SHIM_TEST_TARGET}
+        PRIVATE dsd-neo_test_p25_shims
+    )
+endforeach()
+unset(_DSD_NEO_P25_SHIM_TEST_TARGET)
+unset(_DSD_NEO_P25_SHIM_TEST_TARGETS)
 
 # P25 IDEN trust promotion for current site
 add_executable(
@@ -4774,14 +4723,9 @@ target_link_libraries(
 )
 add_test(NAME M17_REFERENCE_VECTORS COMMAND dsd-neo_test_m17_reference_vectors)
 
-target_compile_definitions(dsd-neo_proto_m17 PRIVATE DSD_NEO_TEST_HOOKS)
 add_executable(
     dsd-neo_test_m17_state_dispatch
     protocol/m17/test_m17_state_dispatch.c
-)
-target_compile_definitions(
-    dsd-neo_test_m17_state_dispatch
-    PRIVATE DSD_NEO_TEST_HOOKS
 )
 target_include_directories(
     dsd-neo_test_m17_state_dispatch
@@ -5026,15 +4970,14 @@ dsd_neo_link_dsp_test(dsd-neo_test_dsp_ted)
 add_test(NAME DSP_TED COMMAND dsd-neo_test_dsp_ted)
 
 add_executable(dsd-neo_test_dsp_simd_widen dsp/test_dsp_simd_widen.cpp)
-target_compile_definitions(
-    dsd-neo_test_dsp_simd_widen
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
 target_include_directories(
     dsd-neo_test_dsp_simd_widen
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src
 )
-dsd_neo_link_dsp_test(dsd-neo_test_dsp_simd_widen)
+target_link_libraries(
+    dsd-neo_test_dsp_simd_widen
+    PRIVATE dsd-neo_dsp_private_test_support
+)
 add_test(NAME DSP_SIMD_WIDEN COMMAND dsd-neo_test_dsp_simd_widen)
 
 add_executable(dsd-neo_test_dsp_simd_fir dsp/test_dsp_simd_fir.cpp)
@@ -5309,13 +5252,9 @@ add_executable(
     protocol/dmr/test_dmr_dburst_profile.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_dburst.c
 )
-target_compile_definitions(
-    dsd-neo_test_dmr_dburst_profile
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
 target_include_directories(
     dsd-neo_test_dmr_dburst_profile
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 add_test(NAME DMR_DBURST_PROFILE COMMAND dsd-neo_test_dmr_dburst_profile)
 
@@ -6053,7 +5992,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_p25_grant_policy
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
 )
 target_link_libraries(dsd-neo_test_p25_grant_policy PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_GRANT_POLICY COMMAND dsd-neo_test_p25_grant_policy)
@@ -6146,14 +6085,15 @@ add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 
 # This matrix drives eot_cc(); it must not call real skipDibit from the unit-test fixture.
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
-    target_compile_definitions(dsd-neo_proto_edacs PRIVATE DSD_NEO_TEST_HOOKS)
     add_executable(
         dsd-neo_test_edacs_grant_tune_matrix
         protocol/edacs/test_edacs_grant_tune_matrix.c
     )
     target_include_directories(
         dsd-neo_test_edacs_grant_tune_matrix
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/edacs
     )
     target_link_libraries(
         dsd-neo_test_edacs_grant_tune_matrix
@@ -6261,10 +6201,6 @@ add_executable(
     dsd-neo_test_frame_sync_internal_helpers
     dsp/test_frame_sync_internal_helpers.c
 )
-target_compile_definitions(
-    dsd-neo_test_frame_sync_internal_helpers
-    PRIVATE DSD_NEO_TEST_HOOKS
-)
 if(DSD_HAS_RADIO)
     target_compile_definitions(
         dsd-neo_test_frame_sync_internal_helpers
@@ -6273,12 +6209,14 @@ if(DSD_HAS_RADIO)
 endif()
 target_include_directories(
     dsd-neo_test_frame_sync_internal_helpers
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
 )
-dsd_neo_link_dsp_test(
+target_link_libraries(
     dsd-neo_test_frame_sync_internal_helpers
-    ${DSD_NEO_TEST_MATH_LIB}
-    ${LIBSNDFILE_LIBRARIES}
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
 )
 add_test(
     NAME FRAME_SYNC_INTERNAL_HELPERS
@@ -6299,15 +6237,6 @@ add_test(
     NAME FRAME_SYNC_LEVEL_WINDOW
     COMMAND dsd-neo_test_frame_sync_level_window
 )
-
-# DMR sync warm start threshold initialization test
-add_executable(dsd-neo_test_sync_warm_start dsp/test_sync_warm_start.c)
-target_include_directories(
-    dsd-neo_test_sync_warm_start
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
-)
-dsd_neo_link_dsp_test(dsd-neo_test_sync_warm_start ${DSD_NEO_TEST_MATH_LIB})
-add_test(NAME SYNC_WARM_START COMMAND dsd-neo_test_sync_warm_start)
 
 # Generic sync calibration module test
 add_executable(dsd-neo_test_sync_calibration dsp/test_sync_calibration.c)
@@ -6340,7 +6269,10 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_p25_p2_reliability
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${_PUBLIC_INCLUDES}
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
 )
 target_compile_definitions(
     dsd-neo_test_p25_p2_reliability
@@ -6853,11 +6785,6 @@ target_include_directories(
 add_test(NAME IO_RTL_CAPTURE_PHASE COMMAND dsd-neo_test_io_rtl_capture_phase)
 
 if(DSD_HAS_RADIO)
-    target_compile_definitions(
-        dsd-neo_io_radio
-        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-    )
-
     add_executable(dsd-neo_test_io_rtl_auto_ppm io/test_io_rtl_auto_ppm.cpp)
     target_include_directories(
         dsd-neo_test_io_rtl_auto_ppm
@@ -6870,17 +6797,13 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_rtl_demod_config
         io/test_io_rtl_demod_config.cpp
     )
-    target_compile_definitions(
-        dsd-neo_test_io_rtl_demod_config
-        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-    )
     target_include_directories(
         dsd-neo_test_io_rtl_demod_config
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
     )
     target_link_libraries(
         dsd-neo_test_io_rtl_demod_config
-        PRIVATE dsd-neo_io_radio dsd-neo_core
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
     )
     if(DSD_HAS_RTLSDR)
         target_link_libraries(
@@ -6941,17 +6864,13 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_rtl_retune_prepare
         io/test_io_rtl_retune_prepare.cpp
     )
-    target_compile_definitions(
-        dsd-neo_test_io_rtl_retune_prepare
-        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-    )
     target_include_directories(
         dsd-neo_test_io_rtl_retune_prepare
-        PRIVATE ${PROJECT_SOURCE_DIR}/include
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
     )
     target_link_libraries(
         dsd-neo_test_io_rtl_retune_prepare
-        PRIVATE dsd-neo_io_radio dsd-neo_core
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
     )
     if(DSD_HAS_RTLSDR)
         target_link_libraries(
@@ -6968,19 +6887,20 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_rtl_replay_retune_reject
         io/test_io_rtl_replay_retune_reject.cpp
     )
-    target_compile_definitions(
-        dsd-neo_test_io_rtl_replay_retune_reject
-        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-    )
     target_include_directories(
         dsd-neo_test_io_rtl_replay_retune_reject
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
             ${PROJECT_SOURCE_DIR}/tests/test_support
     )
     target_link_libraries(
         dsd-neo_test_io_rtl_replay_retune_reject
-        PRIVATE dsd-neo_io_radio dsd-neo_io_iq dsd-neo_core dsd-neo_test_support
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
     )
     if(DSD_HAS_RTLSDR)
         target_link_libraries(
@@ -6997,19 +6917,20 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_rtl_replay_eof_and_cf32
         io/test_io_rtl_replay_eof_and_cf32.cpp
     )
-    target_compile_definitions(
-        dsd-neo_test_io_rtl_replay_eof_and_cf32
-        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-    )
     target_include_directories(
         dsd-neo_test_io_rtl_replay_eof_and_cf32
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/io/radio
             ${PROJECT_SOURCE_DIR}/tests/test_support
     )
     target_link_libraries(
         dsd-neo_test_io_rtl_replay_eof_and_cf32
-        PRIVATE dsd-neo_io_radio dsd-neo_io_iq dsd-neo_core dsd-neo_test_support
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
     )
     if(DSD_HAS_RTLSDR)
         target_link_libraries(
@@ -7332,3 +7253,49 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_p25_status_symbol PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_STATUS_SYMBOL COMMAND dsd-neo_test_p25_status_symbol)
+
+set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
+    dsd-neo_test_dmr_csbk_helpers
+    dsd-neo_test_dmr_dburst_profile
+    dsd-neo_test_dmr_embedded_gps_position_error
+    dsd-neo_test_dmr_grant_policy
+    dsd-neo_test_dmr_relaxed_header_ip
+    dsd-neo_test_dmr_t3_ann_wd_tscc
+    dsd-neo_test_dmr_t3_cmove
+    dsd-neo_test_dmr_t3_force_release
+    dsd-neo_test_dmr_t3_move_release
+    dsd-neo_test_dmr_talker_alias_header_len
+    dsd-neo_test_dpmr_voice_bridge
+    dsd-neo_test_m17_lsf_parse
+    dsd-neo_test_m17_protocol_names
+    dsd-neo_test_m17_reference_vectors
+    dsd-neo_test_m17_state_dispatch
+    dsd-neo_test_nxdn_alias_decode
+    dsd-neo_test_nxdn_alias_fallback
+    dsd-neo_test_nxdn_element_bounds
+    dsd-neo_test_nxdn_frame_routing
+    dsd-neo_test_nxdn_grant_policy
+    dsd-neo_test_nxdn_grant_tune_matrix
+    dsd-neo_test_nxdn_message_crc32
+    dsd-neo_test_p25_iden_lcw_full
+    dsd-neo_test_p25_lcw_call_term
+    dsd-neo_test_p25_lcw_site_broadcasts
+    dsd-neo_test_p25_lcw_src_zero_guard
+    dsd-neo_test_p25_p1_hdu_helpers
+    dsd-neo_test_p25_p1_lcw_gating
+    dsd-neo_test_p25_p1_lcw_sm
+    dsd-neo_test_p25_p1_ldu1_helpers
+    dsd-neo_test_p25_p1_ldu2_helpers
+    dsd-neo_test_p25_p1_mdpu_helpers
+    dsd-neo_test_p25_p1_pdu_es_ext
+    dsd-neo_test_p25_p1_pdu_json
+    dsd-neo_test_p25_p1_tdulc
+    dsd-neo_test_p25_p1_tdulc_no_cc_bounce
+    dsd-neo_test_pc4_tyt
+    dsd-neo_test_provoice_process
+    dsd-neo_test_ysf_dch_decode
+)
+foreach(_target IN LISTS _DSD_NEO_BIT_PACKING_TEST_TARGETS)
+    target_link_libraries(${_target} PRIVATE dsd-neo_test_bit_packing)
+endforeach()
+unset(_DSD_NEO_BIT_PACKING_TEST_TARGETS)

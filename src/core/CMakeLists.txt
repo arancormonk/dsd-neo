@@ -18,8 +18,8 @@ target_sources(
         frames/dsd_dibit.c
         time/dsd_time.c
         time/dsd_time_state.c
-        util/dsd_cleanup.c
         util/dsd_misc.c
+        util/bit_packing.c
         util/dsd_init.c
         util/dsd_events.c
         util/edacs_afs.c

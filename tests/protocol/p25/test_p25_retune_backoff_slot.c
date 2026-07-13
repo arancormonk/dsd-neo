@@ -86,7 +86,8 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 static dsd_trunk_tune_result
-tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     g_tune_to_freq_calls++;
     g_last_tuned_vc = freq;
@@ -102,7 +103,8 @@ tune_to_freq_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
 }
 
 static dsd_trunk_tune_result
-return_to_cc_result(dsd_opts* opts, dsd_state* state) {
+return_to_cc_result(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_return_to_cc_calls++;
     if (!dsd_trunk_tune_result_is_ok(g_return_to_cc_result)) {
         return g_return_to_cc_result;
@@ -114,8 +116,8 @@ return_to_cc_result(dsd_opts* opts, dsd_state* state) {
 static void
 install_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = tune_to_freq_result;
-    hooks.return_to_cc_result = return_to_cc_result;
+    hooks.tune_to_freq_request = tune_to_freq_result;
+    hooks.return_to_cc_request = return_to_cc_result;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 

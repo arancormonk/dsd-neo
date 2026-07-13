@@ -10,8 +10,8 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -33,143 +33,6 @@ struct RtlSdrContext;
 int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
                                   int spac, long* out_cc, long* out_wacn, int* out_sysid);
 int p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len);
-
-static int g_indiv_grant_count;
-static int g_group_grant_count;
-static int g_indiv_data_grant_count;
-static int g_group_data_grant_count;
-static int g_last_indiv_channel;
-static int g_last_indiv_svc;
-static int g_last_indiv_dst;
-static int g_last_indiv_src;
-static int g_last_group_channel;
-static int g_last_group_svc;
-static int g_last_group_tg;
-static int g_last_group_src;
-static int g_last_indiv_data_channel;
-static int g_last_indiv_data_svc;
-static int g_last_indiv_data_dst;
-static int g_last_indiv_data_src;
-static int g_last_group_data_channel;
-static int g_last_group_data_svc;
-static int g_last_group_data_tg;
-static int g_last_group_data_src;
-
-static void
-sm_noop_init(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    g_group_grant_count++;
-    g_last_group_channel = channel;
-    g_last_group_svc = svc_bits;
-    g_last_group_tg = tg;
-    g_last_group_src = src;
-}
-
-static void
-sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    g_indiv_grant_count++;
-    g_last_indiv_channel = channel;
-    g_last_indiv_svc = svc_bits;
-    g_last_indiv_dst = dst;
-    g_last_indiv_src = src;
-}
-
-static void
-sm_noop_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    g_group_data_grant_count++;
-    g_last_group_data_channel = channel;
-    g_last_group_data_svc = svc_bits;
-    g_last_group_data_tg = tg;
-    g_last_group_data_src = src;
-}
-
-static void
-sm_noop_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    g_indiv_data_grant_count++;
-    g_last_indiv_data_channel = channel;
-    g_last_indiv_data_svc = svc_bits;
-    g_last_indiv_data_dst = dst;
-    g_last_indiv_data_src = src;
-}
-
-static void
-sm_noop_on_release(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
-    (void)opts;
-    (void)state;
-    (void)freqs;
-    (void)count;
-}
-
-static void
-sm_noop_tick(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static int
-sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
-    (void)state;
-    (void)out_freq;
-    return 0;
-}
-
-static p25_sm_api
-sm_noop_api(void) {
-    p25_sm_api api = {0};
-    api.init = sm_noop_init;
-    api.on_group_grant = sm_noop_on_group_grant;
-    api.on_indiv_grant = sm_noop_on_indiv_grant;
-    api.on_group_data_grant = sm_noop_on_group_data_grant;
-    api.on_indiv_data_grant = sm_noop_on_indiv_data_grant;
-    api.on_release = sm_noop_on_release;
-    api.on_neighbor_update = sm_noop_on_neighbor_update;
-    api.next_cc_candidate = sm_noop_next_cc_candidate;
-    api.tick = sm_noop_tick;
-    return api;
-}
-
-static void
-reset_indiv_grants(void) {
-    g_indiv_grant_count = 0;
-    g_group_grant_count = 0;
-    g_indiv_data_grant_count = 0;
-    g_group_data_grant_count = 0;
-    g_last_indiv_channel = 0;
-    g_last_indiv_svc = 0;
-    g_last_indiv_dst = 0;
-    g_last_indiv_src = 0;
-    g_last_group_channel = 0;
-    g_last_group_svc = 0;
-    g_last_group_tg = 0;
-    g_last_group_src = 0;
-    g_last_indiv_data_channel = 0;
-    g_last_indiv_data_svc = 0;
-    g_last_indiv_data_dst = 0;
-    g_last_indiv_data_src = 0;
-    g_last_group_data_channel = 0;
-    g_last_group_data_svc = 0;
-    g_last_group_data_tg = 0;
-    g_last_group_data_src = 0;
-}
 
 // Additional stubs referenced by linked objects (rigctl/rtl streaming)
 bool
@@ -543,7 +406,7 @@ capture_mbt_output(const char* name, const uint8_t* mbt, size_t mbt_len, char* o
     static dsd_state state;
     init_private_trunking(&opts, &state);
     seed_fdma_iden(&state, 1);
-    reset_indiv_grants();
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, name) != 0) {
@@ -552,17 +415,14 @@ capture_mbt_output(const char* name, const uint8_t* mbt, size_t mbt_len, char* o
     (void)p25_decode_pdu_trunking_bounded(&opts, &state, mbt, mbt_len);
     dsd_test_capture_stderr_end(&cap);
 
-    return read_capture_file(cap.path, out, out_sz);
+    int rc = read_capture_file(cap.path, out, out_sz);
+    dsd_state_ext_free_all(&state);
+    return rc;
 }
 
 int
 main(void) {
     int rc = 0;
-
-    {
-        p25_sm_api api = sm_noop_api();
-        p25_sm_set_api(&api);
-    }
 
     // Craft ALT MBT: NET_STS_BCST (0x3B), channelt=0x100A (iden=1, ch=10), WACN=0xABCDE, SYSID=0x123
     uint8_t mbt[48];
@@ -605,12 +465,13 @@ main(void) {
         state.tg_hold = 0x3333;
         p25_patch_add_wgid(&state, 0x2222, 0x3333);
         build_ambtc_group_voice(grant, 0x00, 0x100A, 0x100A, 0x2222, 0x010203);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_decode_pdu_trunking(&opts, &state, grant);
-        rc |= expect_eq_int("mbt group patch member hold count", g_group_grant_count, 1);
-        rc |= expect_eq_int("mbt group patch member hold channel", g_last_group_channel, 0x100A);
-        rc |= expect_eq_int("mbt group patch member hold tg", g_last_group_tg, 0x2222);
-        rc |= expect_eq_int("mbt group patch member hold src", g_last_group_src, 0x010203);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_int("mbt group patch member hold count", (int)ctx->grant_count, 1);
+        rc |= expect_eq_int("mbt group patch member hold channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_int("mbt group patch member hold tg", ctx->slots[0].ota_tg, 0x2222);
+        rc |= expect_eq_int("mbt group patch member hold src", ctx->vc_src, 0x010203);
     }
 
     // MFID90 Group Regroup Grant: patched SG dispatches when TG hold matches only a member WGID.
@@ -623,12 +484,13 @@ main(void) {
         state.tg_hold = 0x4444;
         p25_patch_add_wgid(&state, 0x5555, 0x4444);
         build_ambtc_mfid90_group_regroup(grant, 0x00, 0x100A, 0x100B, 0x5555, 0x010204);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_decode_pdu_trunking(&opts, &state, grant);
-        rc |= expect_eq_int("mbt mfid90 patch member hold count", g_group_grant_count, 1);
-        rc |= expect_eq_int("mbt mfid90 patch member hold channel", g_last_group_channel, 0x100A);
-        rc |= expect_eq_int("mbt mfid90 patch member hold tg", g_last_group_tg, 0x5555);
-        rc |= expect_eq_int("mbt mfid90 patch member hold src", g_last_group_src, 0x010204);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_int("mbt mfid90 patch member hold count", (int)ctx->grant_count, 1);
+        rc |= expect_eq_int("mbt mfid90 patch member hold channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_int("mbt mfid90 patch member hold tg", ctx->slots[0].ota_tg, 0x5555);
+        rc |= expect_eq_int("mbt mfid90 patch member hold src", ctx->vc_src, 0x010204);
     }
 
     // An unresolved encrypted AMBTC channel cannot be classified and must not
@@ -641,9 +503,9 @@ main(void) {
         opts.trunk_tune_enc_calls = 0;
         opts.p25_retune_backoff_s = 5.0;
         build_ambtc_group_voice(grant, 0x40, 0x200A, 0x200A, 0x2345, 0x010205);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_decode_pdu_trunking(&opts, &state, grant);
-        rc |= expect_eq_int("mbt group unresolved enc no grant", g_group_grant_count, 0);
+        rc |= expect_eq_int("mbt group unresolved enc no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_eq_long("mbt group unresolved enc lasttg unchanged", (long)state.lasttg, 0);
         rc |= expect_eq_int("mbt group unresolved enc svc recorded", state.p25_service_options_valid[0], 1);
         rc |= expect_eq_int("mbt group unresolved enc svc stored", state.dmr_so, 0x40);
@@ -661,9 +523,9 @@ main(void) {
         opts.trunk_tune_enc_calls = 0;
         opts.p25_retune_backoff_s = 5.0;
         build_ambtc_mfid90_group_regroup(grant, 0x40, 0x100A, 0x100B, 0x3456, 0x010206);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_decode_pdu_trunking(&opts, &state, grant);
-        rc |= expect_eq_int("mbt mfid90 no cc enc no grant", g_group_grant_count, 0);
+        rc |= expect_eq_int("mbt mfid90 no cc enc no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_eq_long("mbt mfid90 no cc enc lasttg unchanged", (long)state.lasttg, 0);
         rc |= expect_eq_int("mbt mfid90 no cc enc svc remains invalid", state.p25_service_options_valid[0], 0);
         rc |= expect_eq_int("mbt mfid90 no cc enc svc remains empty", state.dmr_so, 0);
@@ -677,7 +539,7 @@ main(void) {
         init_private_trunking(&opts, &state);
         seed_fdma_iden(&state, 1);
         build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x100A, 0x100A);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
 
         dsd_test_capture_stderr cap;
         if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_uu_0x04") != 0) {
@@ -691,11 +553,12 @@ main(void) {
             return 105;
         }
 
-        rc |= expect_eq_int("mbt 0x04 indiv count", g_indiv_grant_count, 1);
-        rc |= expect_eq_int("mbt 0x04 channel", g_last_indiv_channel, 0x100A);
-        rc |= expect_eq_int("mbt 0x04 svc", g_last_indiv_svc, 0x00);
-        rc |= expect_eq_int("mbt 0x04 dst", g_last_indiv_dst, 0x0ABCDE);
-        rc |= expect_eq_int("mbt 0x04 src", g_last_indiv_src, 0x012345);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_int("mbt 0x04 indiv count", (int)ctx->grant_count, 1);
+        rc |= expect_eq_int("mbt 0x04 channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_int("mbt 0x04 svc", ctx->slots[0].svc_bits, 0x00);
+        rc |= expect_eq_int("mbt 0x04 dst", ctx->slots[0].dst, 0x0ABCDE);
+        rc |= expect_eq_int("mbt 0x04 src", ctx->vc_src, 0x012345);
         rc |= expect_contains_text("mbt 0x04 active", state.active_channel[0], "Active UU Ch: 100A");
         rc |= expect_contains_text("mbt 0x04 active src", state.active_channel[0], "SRC: 74565");
         rc |= expect_contains_text("mbt 0x04 active tgt", state.active_channel[0], "TGT: 703710");
@@ -713,7 +576,7 @@ main(void) {
         init_private_trunking(&opts, &state);
         seed_fdma_iden(&state, 1);
         build_ambtc_unit_to_unit(uu, 0x06, 0x02, 0x100A, 0x1010);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
 
         dsd_test_capture_stderr cap;
         if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_uu_0x06") != 0) {
@@ -727,9 +590,10 @@ main(void) {
             return 107;
         }
 
-        rc |= expect_eq_int("mbt 0x06 indiv count", g_indiv_grant_count, 1);
-        rc |= expect_eq_int("mbt 0x06 channel", g_last_indiv_channel, 0x100A);
-        rc |= expect_eq_int("mbt 0x06 svc", g_last_indiv_svc, 0x02);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_int("mbt 0x06 indiv count", (int)ctx->grant_count, 1);
+        rc |= expect_eq_int("mbt 0x06 channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_int("mbt 0x06 svc", ctx->slots[0].svc_bits, 0x02);
         rc |= expect_contains_text("mbt 0x06 update label", out, "Unit to Unit Voice Channel Grant Update - Extended");
         rc |= expect_contains_text("mbt 0x06 explicit uplink", out, "CHAN-R [1010]");
     }
@@ -741,9 +605,9 @@ main(void) {
         uint8_t uu[48];
         init_private_trunking(&opts, &state);
         build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x200A, 0x200A);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_decode_pdu_trunking(&opts, &state, uu);
-        rc |= expect_eq_int("mbt 0x04 unresolved no grant", g_indiv_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x04 unresolved no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_contains_text("mbt 0x04 unresolved active", state.active_channel[0], "Active UU Ch: 200A");
     }
 
@@ -755,9 +619,9 @@ main(void) {
         init_private_trunking(&opts, &state);
         seed_tdma_iden(&state, 1);
         build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x100B, 0x100B);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_decode_pdu_trunking(&opts, &state, uu);
-        rc |= expect_eq_int("mbt 0x04 tdma grant", g_indiv_grant_count, 1);
+        rc |= expect_eq_int("mbt 0x04 tdma grant", (int)p25_sm_get_ctx()->grant_count, 1);
         rc |= expect_contains_text("mbt 0x04 tdma suffix", state.active_channel[0], "(FDMA 0005 S2)");
     }
 
@@ -771,18 +635,18 @@ main(void) {
         seed_fdma_iden(&state, 1);
         opts.trunk_tune_enc_calls = 0;
         build_ambtc_unit_to_unit(uu, 0x04, 0x40, 0x100A, 0x100A);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_decode_pdu_trunking(&opts, &state, uu);
-        rc |= expect_eq_int("mbt 0x04 enc lockout probe grant", g_indiv_grant_count, 1);
+        rc |= expect_eq_int("mbt 0x04 enc lockout probe grant", (int)p25_sm_get_ctx()->grant_count, 1);
         rc |= expect_eq_int("mbt 0x04 encrypted service valid", state.p25_service_options_valid[0], 1);
         rc |= expect_eq_int("mbt 0x04 encrypted svc stored", state.dmr_so, 0x40);
 
         opts.trunk_tune_enc_calls = 1;
         state.tg_hold = 0x222222;
         build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x100A, 0x100A);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         p25_decode_pdu_trunking(&opts, &state, uu);
-        rc |= expect_eq_int("mbt 0x04 hold mismatch no grant", g_indiv_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x04 hold mismatch no grant", (int)p25_sm_get_ctx()->grant_count, 0);
     }
 
     // Bounded MBT decode rejects malformed/short AMBTC 0x04 safely.
@@ -793,7 +657,7 @@ main(void) {
         init_private_trunking(&opts, &state);
         seed_fdma_iden(&state, 1);
         build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x100A, 0x100A);
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
 
         dsd_test_capture_stderr cap;
         if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_uu_short") != 0) {
@@ -806,7 +670,7 @@ main(void) {
         if (read_capture_file(cap.path, out, sizeof out) != 0) {
             return 109;
         }
-        rc |= expect_eq_int("mbt 0x04 short no grant", g_indiv_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x04 short no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_contains_text("mbt 0x04 short log", out, "short payload");
     }
 
@@ -819,7 +683,7 @@ main(void) {
         seed_fdma_iden(&state, 1);
         build_ambtc_unit_to_unit(uu, 0x04, 0x00, 0x100A, 0x100A);
         uu[6] = 0x00;
-        reset_indiv_grants();
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
 
         dsd_test_capture_stderr cap;
         if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_uu_legacy_declared_short") != 0) {
@@ -832,7 +696,7 @@ main(void) {
         if (read_capture_file(cap.path, out, sizeof out) != 0) {
             return 111;
         }
-        rc |= expect_eq_int("mbt 0x04 legacy declared short no grant", g_indiv_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x04 legacy declared short no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_eq_int("mbt 0x04 legacy declared short inactive", state.active_channel[0][0] == '\0', 1);
         rc |= expect_contains_text("mbt 0x04 legacy declared short log", out, "short payload");
     }
@@ -846,8 +710,7 @@ main(void) {
         if (capture_mbt_output("p25_mbt_meta_0x05", meta, sizeof meta, out, sizeof out) != 0) {
             return 112;
         }
-        rc |= expect_eq_int("mbt 0x05 no indiv grant", g_indiv_grant_count, 0);
-        rc |= expect_eq_int("mbt 0x05 no group grant", g_group_grant_count, 0);
+        rc |= expect_eq_int("mbt 0x05 no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_contains_text("mbt 0x05 label", out, "Unit to Unit Answer Request MBT - Extended");
         rc |= expect_contains_text("mbt 0x05 svc", out, "SVC [82]");
         rc |= expect_contains_text("mbt 0x05 target", out, "TO [703710]");
@@ -914,13 +777,13 @@ main(void) {
         if (capture_mbt_output("p25_mbt_data_0x10", meta, sizeof meta, out, sizeof out) != 0) {
             return 118;
         }
-        rc |= expect_eq_int("mbt 0x10 no voice indiv grant", g_indiv_grant_count, 0);
-        rc |= expect_eq_int("mbt 0x10 no group grant", g_group_grant_count, 0);
-        rc |= expect_eq_int("mbt 0x10 data indiv grant", g_indiv_data_grant_count, 1);
-        rc |= expect_eq_int("mbt 0x10 data channel", g_last_indiv_data_channel, 0x100A);
-        rc |= expect_eq_int("mbt 0x10 data svc preserved", g_last_indiv_data_svc, 0x04);
-        rc |= expect_eq_int("mbt 0x10 data dst", g_last_indiv_data_dst, 0x0ABCDE);
-        rc |= expect_eq_int("mbt 0x10 data src", g_last_indiv_data_src, 0x012345);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        rc |= expect_eq_int("mbt 0x10 data indiv grant", (int)ctx->grant_count, 1);
+        rc |= expect_eq_int("mbt 0x10 data call", ctx->vc_data_call, 1);
+        rc |= expect_eq_int("mbt 0x10 data channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_int("mbt 0x10 data svc preserved", ctx->slots[0].svc_bits, 0x04);
+        rc |= expect_eq_int("mbt 0x10 data dst", ctx->slots[0].dst, 0x0ABCDE);
+        rc |= expect_eq_int("mbt 0x10 data src", ctx->vc_src, 0x012345);
         rc |= expect_contains_text("mbt 0x10 label", out, "Individual Data Channel Grant MBT - Obsolete");
         rc |= expect_contains_text("mbt 0x10 channel", out, "CHAN-T [100A] CHAN-R [1010]");
         rc |= expect_contains_text("mbt 0x10 target", out, "TO [703710]");
@@ -929,13 +792,13 @@ main(void) {
         if (capture_mbt_output("p25_mbt_data_0x11", meta, sizeof meta, out, sizeof out) != 0) {
             return 119;
         }
-        rc |= expect_eq_int("mbt 0x11 no indiv grant", g_indiv_grant_count, 0);
-        rc |= expect_eq_int("mbt 0x11 no voice group grant", g_group_grant_count, 0);
-        rc |= expect_eq_int("mbt 0x11 data group grant", g_group_data_grant_count, 1);
-        rc |= expect_eq_int("mbt 0x11 data channel", g_last_group_data_channel, 0x100A);
-        rc |= expect_eq_int("mbt 0x11 data svc preserved", g_last_group_data_svc, 0x04);
-        rc |= expect_eq_int("mbt 0x11 data tg", g_last_group_data_tg, 0x1234);
-        rc |= expect_eq_int("mbt 0x11 data src", g_last_group_data_src, 0x012345);
+        ctx = p25_sm_get_ctx();
+        rc |= expect_eq_int("mbt 0x11 data group grant", (int)ctx->grant_count, 1);
+        rc |= expect_eq_int("mbt 0x11 data call", ctx->vc_data_call, 1);
+        rc |= expect_eq_int("mbt 0x11 data channel", ctx->vc_channel, 0x100A);
+        rc |= expect_eq_int("mbt 0x11 data svc preserved", ctx->slots[0].svc_bits, 0x04);
+        rc |= expect_eq_int("mbt 0x11 data tg", ctx->slots[0].ota_tg, 0x1234);
+        rc |= expect_eq_int("mbt 0x11 data src", ctx->vc_src, 0x012345);
         rc |= expect_contains_text("mbt 0x11 label", out, "Group Data Channel Grant MBT - Obsolete");
         rc |= expect_contains_text("mbt 0x11 channel", out, "CHAN-T [100A] CHAN-R [1010]");
         rc |= expect_contains_text("mbt 0x11 group", out, "Group [4660][1234]");
@@ -974,8 +837,7 @@ main(void) {
         if (capture_mbt_output("p25_mbt_umbtc_standard_no_ambtc", umbtc, sizeof umbtc, out, sizeof out) != 0) {
             return 123;
         }
-        rc |= expect_eq_int("umbtc standard no group grant", g_group_grant_count, 0);
-        rc |= expect_eq_int("umbtc standard no indiv grant", g_indiv_grant_count, 0);
+        rc |= expect_eq_int("umbtc standard no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_contains_text("umbtc standard guard log", out, "UMBTC standard opcode 00 not handled as AMBTC");
         rc |= expect_not_contains_text("umbtc standard no ambtc grant", out,
                                        "Group Voice Channel Grant Update - Extended");
@@ -984,8 +846,7 @@ main(void) {
         if (capture_mbt_output("p25_mbt_umbtc_mfid90_no_ambtc", umbtc, sizeof umbtc, out, sizeof out) != 0) {
             return 124;
         }
-        rc |= expect_eq_int("umbtc mfid90 no group grant", g_group_grant_count, 0);
-        rc |= expect_eq_int("umbtc mfid90 no indiv grant", g_indiv_grant_count, 0);
+        rc |= expect_eq_int("umbtc mfid90 no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_contains_text("umbtc mfid90 raw", out, "MFID 90 (Moto); Opcode: 02");
         rc |= expect_not_contains_text("umbtc mfid90 no ambtc grant", out,
                                        "MFID90 Group Regroup Channel Grant - Explicit");
@@ -1017,8 +878,7 @@ main(void) {
             if (capture_mbt_output("p25_mbt_meta_short", meta, 12U, out, sizeof out) != 0) {
                 return 120;
             }
-            rc |= expect_eq_int("mbt metadata short no indiv grant", g_indiv_grant_count, 0);
-            rc |= expect_eq_int("mbt metadata short no group grant", g_group_grant_count, 0);
+            rc |= expect_eq_int("mbt metadata short no grant", (int)p25_sm_get_ctx()->grant_count, 0);
             rc |= expect_contains_text("mbt metadata short log", out, "short payload");
         }
     }

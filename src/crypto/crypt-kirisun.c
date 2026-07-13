@@ -5,11 +5,11 @@
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
-#include <dsd-neo/crypto/pc4.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "pc4_internal.h"
 
 #define KIR_MD2_MAX_BLOCK 264U
 
@@ -44,9 +44,11 @@ static const uint8_t KIR_TAPS_R3[] = {1,  2,  4,  5,  6,  7,  8,  9,  10, 14, 15
                                       22, 23, 25, 26, 27, 28, 29, 31, 32, 34, 35, 36, 38, 41,
                                       42, 43, 44, 45, 47, 48, 49, 50, 51, 54, 55, 59, 61, 63};
 
-static inline uint64_t
-rol48(uint64_t x, int n) {
-    return ((x << n) | (x >> (48 - n))) & 0xFFFFFFFFFFFFULL;
+static void
+store_u64_be(uint64_t value, uint8_t out[8]) {
+    for (int i = 0; i < 8; i++) {
+        out[i] = (uint8_t)((value >> (56 - (i * 8))) & 0xFFU);
+    }
 }
 
 static void
@@ -113,10 +115,10 @@ kir_load_slot_key(dsd_state* state, uint8_t slot, uint8_t out_key[32]) {
         return -1;
     }
 
-    u64_to_bytes_be((uint64_t)state->A1[slot], &out_key[0]);
-    u64_to_bytes_be((uint64_t)state->A2[slot], &out_key[8]);
-    u64_to_bytes_be((uint64_t)state->A3[slot], &out_key[16]);
-    u64_to_bytes_be((uint64_t)state->A4[slot], &out_key[24]);
+    store_u64_be((uint64_t)state->A1[slot], &out_key[0]);
+    store_u64_be((uint64_t)state->A2[slot], &out_key[8]);
+    store_u64_be((uint64_t)state->A3[slot], &out_key[16]);
+    store_u64_be((uint64_t)state->A4[slot], &out_key[24]);
     return 0;
 }
 
@@ -310,36 +312,8 @@ kirisun_adv_keystream_creation(dsd_state* state) {
         internal_state = (internal_state << 8) | hash32[i];
     }
 
-    PC4Context local_ctx;
-    DSD_MEMSET(&local_ctx, 0, sizeof(local_ctx));
-    create_keys(&local_ctx, user_key, sizeof(user_key));
-    local_ctx.rounds = nbround;
-
     uint8_t ks_bytes[126];
-    DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
-
-    int k = 0;
-    for (int frame = 0; frame < 18; frame++) {
-        local_ctx.convert[0] = (uint8_t)((internal_state >> 40) & 0xFFU);
-        local_ctx.convert[1] = (uint8_t)((internal_state >> 32) & 0xFFU);
-        local_ctx.convert[2] = (uint8_t)((internal_state >> 24) & 0xFFU);
-        local_ctx.convert[3] = (uint8_t)((internal_state >> 16) & 0xFFU);
-        local_ctx.convert[4] = (uint8_t)((internal_state >> 8) & 0xFFU);
-        local_ctx.convert[5] = (uint8_t)(internal_state & 0xFFU);
-
-        pc4encrypt(&local_ctx);
-
-        internal_state = 0;
-        for (int i = 0; i < 6; i++) {
-            internal_state = (internal_state << 8) | local_ctx.convert[i];
-        }
-        internal_state = rol48(internal_state, 1);
-
-        for (int i = 0; i < 6; i++) {
-            ks_bytes[k++] = local_ctx.convert[i];
-        }
-        k++; // Every 7th byte is skipped in the on-air layout.
-    }
+    pc4_kirisun_generate_keystream(user_key, internal_state, ks_bytes);
 
     kir_store_keystream(state, slot, ks_bytes, sizeof(ks_bytes));
 }

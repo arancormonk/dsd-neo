@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Legacy block code (Hamming/Golay/QR) helpers used by DMR/dPMR/NXDN paths.
+ * @brief Block-code (Hamming/Golay/QR) helpers used by DMR/dPMR/NXDN paths.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_FEC_BLOCK_CODES_H_H

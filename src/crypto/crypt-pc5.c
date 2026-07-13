@@ -7,26 +7,53 @@
 #include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
-#include <dsd-neo/crypto/pc5.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-PC5Context ctxpc5;
+#define PC5_NBROUND 254
+#define PC5_MD2_N   264
+
+typedef struct {
+    uint8_t ptconvert;
+    uint8_t convert[7];
+    uint8_t perm[16][256];
+    uint8_t new1[256];
+    uint8_t decal[PC5_NBROUND];
+    uint8_t rngxor[PC5_NBROUND][3];
+    uint8_t rngxor2[PC5_NBROUND][3];
+    uint8_t rounds;
+    uint8_t tab[256];
+    uint8_t inv[256];
+    uint8_t permut[3][3];
+    uint8_t tot[3];
+    uint8_t l[2][3];
+    uint8_t r[2][3];
+    uint8_t y;
+    uint32_t result;
+    uint8_t xyz;
+    uint8_t count;
+    uint64_t bb;
+    uint64_t x;
+    unsigned char array_arc4[256];
+    int i_arc4;
+    int j_arc4;
+    int x1;
+    int x2;
+    int i;
+    unsigned char h2[PC5_MD2_N];
+    unsigned char h1[PC5_MD2_N * 3];
+    uint8_t numbers[25];
+} PC5Context;
+
+static PC5Context g_pc5_context;
 
 static uint32_t
 pc5_ror(uint32_t x, int shift, int bits) {
     uint32_t m0 = (1u << (bits - shift)) - 1u;
     uint32_t m1 = (1u << shift) - 1u;
     return ((x >> shift) & m0) | ((x & m1) << (bits - shift));
-}
-
-static uint32_t
-pc5_rol(uint32_t x, int shift, int bits) {
-    uint32_t m0 = (1u << (bits - shift)) - 1u;
-    uint32_t m1 = (1u << shift) - 1u;
-    return ((x & m0) << shift) | ((x >> (bits - shift)) & m1);
 }
 
 static uint64_t
@@ -262,17 +289,14 @@ pc5_init_permutations(PC5Context* ctx, uint8_t* numbers) {
 
 static void
 pc5_init_tail_numbers(PC5Context* ctx) {
-    /*
-     * Preserve the legacy schedule: compute an unused discard count here with
-     * one ARC4 byte, then immediately emit the 25 tail mask bits.
-     */
+    /* The OTA schedule consumes one ARC4 byte before emitting the 25 tail mask bits. */
     (void)pc5_arc4_output(ctx);
     for (int w = 0; w < 25; w++) {
         ctx->numbers[w] = (uint8_t)(pc5_arc4_output(ctx) % 2);
     }
 }
 
-void
+static void
 create_keys_pc5(PC5Context* ctx, const unsigned char key1[], size_t size1) {
     unsigned char h4[PC5_MD2_N];
     DSD_MEMSET(h4, 0, sizeof(h4));
@@ -318,7 +342,7 @@ pc5_compute(PC5Context* ctx, const uint8_t* tab1, uint8_t round) {
     ctx->tot[2] = (uint8_t)((ctx->tot[2] + ctx->new1[ctx->tot[2]]) % 16);
 }
 
-void
+static void
 binhexpc5(PC5Context* ctx, const short* z, int length) {
     const short* b = z;
     uint8_t i = 0;
@@ -332,7 +356,7 @@ binhexpc5(PC5Context* ctx, const short* z, int length) {
     }
 }
 
-void
+static void
 hexbinpc5(PC5Context* ctx, short* q, uint8_t w, uint8_t hex) {
     (void)ctx;
     short* bits = (short*)q;
@@ -346,54 +370,7 @@ pc5_sub_mod16(uint8_t a, uint8_t b) {
     return (uint8_t)((a + 16U - (b & 0x0FU)) & 0x0FU);
 }
 
-void
-pc5encrypt(PC5Context* ctx) {
-    unsigned int rounds = ctx->rounds;
-    if (rounds == 0 || rounds > PC5_NBROUND) {
-        return;
-    }
-
-    for (int i = 0; i < 3; i++) {
-        ctx->l[0][i] = ctx->convert[i];
-        ctx->r[0][i] = ctx->convert[i + 3];
-    }
-
-    for (unsigned int i = 1; i <= rounds; i++) {
-        ctx->r[(i - 1) % 2][0] = (uint8_t)((ctx->r[(i - 1) % 2][0] + (uint8_t)(~ctx->rngxor2[rounds - i][0])) & 0x0FU);
-        ctx->r[(i - 1) % 2][1] = (uint8_t)((ctx->r[(i - 1) % 2][1] ^ (uint8_t)(~ctx->rngxor2[rounds - i][1])) & 0x0FU);
-        ctx->r[(i - 1) % 2][2] = (uint8_t)((ctx->r[(i - 1) % 2][2] + (uint8_t)(~ctx->rngxor2[rounds - i][2])) & 0x0FU);
-
-        ctx->result =
-            ((uint32_t)ctx->r[(i - 1) % 2][0] << 8) + ((uint32_t)ctx->r[(i - 1) % 2][1] << 4) + ctx->r[(i - 1) % 2][2];
-        ctx->result = pc5_rol(ctx->result, ctx->decal[i - 1], 12);
-
-        ctx->r[(i - 1) % 2][0] = (uint8_t)(ctx->result >> 8);
-        ctx->r[(i - 1) % 2][1] = (uint8_t)((ctx->result >> 4) & 0xFU);
-        ctx->r[(i - 1) % 2][2] = (uint8_t)(ctx->result & 0xFU);
-
-        ctx->r[(i - 1) % 2][0] = (uint8_t)((ctx->tab[ctx->r[(i - 1) % 2][0]] ^ ctx->rngxor[i - 1][0]) & 0x0FU);
-        ctx->r[(i - 1) % 2][1] = pc5_sub_mod16(ctx->inv[ctx->r[(i - 1) % 2][1]], ctx->rngxor[i - 1][1]);
-        ctx->r[(i - 1) % 2][2] = (uint8_t)((ctx->tab[ctx->r[(i - 1) % 2][2]] ^ ctx->rngxor[i - 1][2]) & 0x0FU);
-
-        pc5_compute(ctx, ctx->r[(i - 1) % 2], (uint8_t)((i - 1) % 253));
-
-        ctx->l[i % 2][0] = ctx->r[(i - 1) % 2][0];
-        ctx->r[i % 2][0] = pc5_sub_mod16(ctx->l[(i - 1) % 2][0], ctx->tot[0]);
-
-        ctx->l[i % 2][1] = ctx->r[(i - 1) % 2][1];
-        ctx->r[i % 2][1] = (uint8_t)((ctx->l[(i - 1) % 2][1] ^ ctx->tot[1]) & 0x0FU);
-
-        ctx->l[i % 2][2] = ctx->r[(i - 1) % 2][2];
-        ctx->r[i % 2][2] = pc5_sub_mod16(ctx->l[(i - 1) % 2][2], ctx->tot[2]);
-    }
-
-    for (int i = 0; i < 3; i++) {
-        ctx->convert[i + 3] = ctx->l[(rounds - 1) % 2][i];
-        ctx->convert[i] = ctx->r[(rounds - 1) % 2][i];
-    }
-}
-
-void
+static void
 pc5decrypt(PC5Context* ctx) {
     unsigned int rounds = ctx->rounds;
     if (rounds == 0 || rounds > PC5_NBROUND) {
@@ -451,6 +428,44 @@ pc5decrypt(PC5Context* ctx) {
     for (int i = 0; i < 3; i++) {
         ctx->convert[i + 3] = ctx->l[(rounds - 1) % 2][i];
         ctx->convert[i] = ctx->r[(rounds - 1) % 2][i];
+    }
+}
+
+static void
+pc5_decrypt_frame49(short frame_bits[49]) {
+    PC5Context* ctx = &g_pc5_context;
+    for (int i = 24; i < 49; i++) {
+        frame_bits[i] = (short)(frame_bits[i] ^ ctx->numbers[i - 24]);
+    }
+
+    ctx->ptconvert = 0;
+    binhexpc5(ctx, frame_bits, 24);
+
+    uint8_t convert[6];
+    for (int i = 0; i < 3; i++) {
+        convert[i] = ctx->convert[i];
+    }
+
+    ctx->convert[0] = convert[0] >> 4;
+    ctx->convert[1] = convert[0] & 0xF;
+    ctx->convert[2] = convert[1] >> 4;
+    ctx->convert[3] = convert[1] & 0xF;
+    ctx->convert[4] = convert[2] >> 4;
+    ctx->convert[5] = convert[2] & 0xF;
+
+    pc5decrypt(ctx);
+
+    for (int i = 0; i < 6; i++) {
+        convert[i] = ctx->convert[i];
+    }
+
+    ctx->convert[0] = (uint8_t)((convert[0] << 4) | convert[1]);
+    ctx->convert[1] = (uint8_t)((convert[2] << 4) | convert[3]);
+    ctx->convert[2] = (uint8_t)((convert[4] << 4) | convert[5]);
+
+    for (int q = 0; q < 3; q++) {
+        uint8_t w = (uint8_t)(q * 8);
+        hexbinpc5(ctx, frame_bits, w, ctx->convert[q]);
     }
 }
 
@@ -520,10 +535,10 @@ baofeng_pc5_apply_frame49(const dsd_state* state, char ambe_d[49]) {
     for (int i = 0; i < 49; i++) {
         frame1_cipher[i] = (short)(((unsigned char)ambe_d[i]) & 1U);
     }
-    decrypt_frame_49_pc5(frame1_cipher);
+    pc5_decrypt_frame49(frame1_cipher);
     DSD_MEMSET(ambe_d, 0, 49 * sizeof(char));
     for (int i = 0; i < 49; i++) {
-        ambe_d[i] = (char)(ctxpc5.bits[i] & 1);
+        ambe_d[i] = (char)(frame1_cipher[i] & 1);
     }
     return 1;
 }
@@ -553,8 +568,8 @@ baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input, int show_
         for (int i = 0; i < 16; i++) {
             reversed[i] = raw[15 - i];
         }
-        create_keys_pc5(&ctxpc5, reversed, sizeof(reversed));
-        ctxpc5.rounds = PC5_NBROUND;
+        create_keys_pc5(&g_pc5_context, reversed, sizeof(reversed));
+        g_pc5_context.rounds = PC5_NBROUND;
         char key_text[33];
         DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 128-bit key with forced application: %s\n",
                     dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, raw, sizeof(raw)));
@@ -563,13 +578,10 @@ baofeng_ap_pc5_keystream_creation(dsd_state* state, const char* input, int show_
     }
 
     if (nhex == 64) {
-        /*
-         * PC5-256 uses the 64 ASCII hex characters as key material, unlike
-         * PC5-128 which is decoded to bytes and reversed. Keep that wire
-         * compatibility, while still validating/canonicalizing the input first.
-         */
-        create_keys_pc5(&ctxpc5, (const unsigned char*)hex, nhex);
-        ctxpc5.rounds = PC5_NBROUND;
+        /* PC5-256 uses the 64 ASCII hex characters as OTA key material, unlike
+         * PC5-128 which is decoded to bytes and reversed. */
+        create_keys_pc5(&g_pc5_context, (const unsigned char*)hex, nhex);
+        g_pc5_context.rounds = PC5_NBROUND;
         char key_text[65];
         DSD_FPRINTF(stderr, "DMR Baofeng AP (PC5) 256-bit key with forced application: %s\n",
                     dsd_secret_format_string(key_text, sizeof key_text, show_keys, hex));

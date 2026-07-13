@@ -87,23 +87,8 @@ void analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len
 /** @brief Multiply float buffer by gain factor in-place. */
 void audio_apply_gain_f32(float* buf, size_t n, float gain);
 
-/** @brief Legacy analog monitor 6x upsampler (sample repetition). */
+/** @brief Analog monitor 6x sample-repetition upsampler. */
 void upsample(dsd_state* state, float invalue);
-
-/**
- * @brief Generate one linear interpolation block that ends on the current sample.
- *
- * This legacy helper is retained for compatibility/tests. Low-rate PCM input
- * staging now uses the FIR/polyphase resampler in `dsd-neo/dsp/resampler.h`.
- *
- * @param previous Previous input sample.
- * @param current Current input sample.
- * @param factor Number of output samples to generate.
- * @param out Destination buffer.
- * @param out_cap Destination capacity in samples.
- * @return Number of samples written, or 0 on invalid arguments.
- */
-size_t dsd_audio_linear_upsample_block_f32(float previous, float current, size_t factor, float* out, size_t out_cap);
 
 /**
  * @brief Rescale decoder timing/filter state between two effective PCM rates.
@@ -209,7 +194,7 @@ int dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot);
  */
 int dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key);
 
-/** @brief Legacy UI beeper helper (used by ncurses call-alert and events). */
+/** @brief Terminal call-alert and event beeper. */
 void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 
 /** @brief Open input audio device based on opts. Returns 0 on success. */

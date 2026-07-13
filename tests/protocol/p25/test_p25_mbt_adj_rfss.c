@@ -10,7 +10,6 @@
  */
 
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,81 +27,6 @@
 // Shim: decode an MBT with pre-seeded iden tables
 int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
                                   int spac, long* out_cc, long* out_wacn, int* out_sysid);
-
-static void
-sm_noop_init(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_group_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int tg, int src) {
-    (void)o;
-    (void)s;
-    (void)ch;
-    (void)svc;
-    (void)tg;
-    (void)src;
-}
-
-static void
-sm_noop_on_indiv_grant(dsd_opts* o, dsd_state* s, int ch, int svc, int dst, int src) {
-    (void)o;
-    (void)s;
-    (void)ch;
-    (void)svc;
-    (void)dst;
-    (void)src;
-}
-
-static void
-sm_noop_on_release(dsd_opts* o, dsd_state* s) {
-    (void)o;
-    (void)s;
-}
-
-static void
-sm_noop_tick(dsd_opts* o, dsd_state* s) {
-    (void)o;
-    (void)s;
-}
-
-static int
-sm_noop_next_cc_candidate(dsd_state* s, long* f) {
-    (void)s;
-    (void)f;
-    return 0;
-}
-
-// Capture last neighbor-update frequencies
-static long g_neigh[16];
-static int g_neigh_count = 0;
-
-static void
-sm_on_neighbor_update_capture(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
-    (void)opts;
-    (void)state;
-    if (count > (int)(sizeof g_neigh / sizeof g_neigh[0])) {
-        count = (int)(sizeof g_neigh / sizeof g_neigh[0]);
-    }
-    for (int i = 0; i < count; i++) {
-        g_neigh[i] = freqs[i];
-    }
-    g_neigh_count = count;
-}
-
-static p25_sm_api
-sm_test_api(void) {
-    p25_sm_api api = {0};
-    api.init = sm_noop_init;
-    api.on_group_grant = sm_noop_on_group_grant;
-    api.on_indiv_grant = sm_noop_on_indiv_grant;
-    api.on_release = sm_noop_on_release;
-    api.on_neighbor_update = sm_on_neighbor_update_capture;
-    api.next_cc_candidate = sm_noop_next_cc_candidate;
-    api.tick = sm_noop_tick;
-    return api;
-}
 
 bool
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -196,11 +120,6 @@ int
 main(void) {
     int rc = 0;
 
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
-
     // Common iden config: iden=1 FDMA, base=851.000 MHz, spacing=12.5 kHz
     const int iden = 1, type = 1, tdma = 0;
     const long base5 = 851000000 / 5; // store base in units of 5 Hz
@@ -227,28 +146,39 @@ main(void) {
         mbt[17] = 0x02; // CHAN-R lo (0x1002)
         mbt[18] = 0x00; // SYS CLASS
 
-        g_neigh_count = 0;
-        g_neigh[0] = g_neigh[1] = 0;
         long cc = 0, w = 0;
         int sid = 0;
-        (void)cc;
-        (void)w;
-        (void)sid; // unused outputs here
-        int sh = p25_test_decode_mbt_with_iden(mbt, (int)sizeof(mbt), iden, type, tdma, base5, spac125, &cc, &w, &sid);
+        int nb_count = 0;
+        long nb_freqs[P25_NB_MAX] = {0};
+        p25_test_iden_config cfg = {
+            .iden = iden,
+            .type = type,
+            .tdma = tdma,
+            .base = base5,
+            .spac = spac125,
+        };
+        p25_test_mbt_outputs outputs = {
+            .cc = &cc,
+            .wacn = &w,
+            .sysid = &sid,
+            .nb_count = &nb_count,
+            .nb_freqs = nb_freqs,
+        };
+        int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &cfg, &outputs);
         if (sh != 0) {
             return 20;
         }
 
         long want1 = 851000000 + 1 * 100 * 125; // 851.0125 MHz
         long want2 = 851000000 + 2 * 100 * 125; // 851.0250 MHz
-        rc |= expect_eq_long("neigh count", g_neigh_count, 1);
-        rc |= expect_eq_long("neigh f1", g_neigh[0], want1);
+        rc |= expect_eq_long("neigh count", nb_count, 1);
+        rc |= expect_eq_long("neigh f1", nb_freqs[0], want1);
         (void)want2;
     }
 
     // Case B: Adjacent Status Broadcast (0x3C)
     // After Layer 2 enrichment, 0x3C records adjacent-site metadata via
-    // p25_nb_add_ex() without promoting the frequency to a tuneable current-site
+    // p25_nb_record_update() without promoting the frequency to a tuneable current-site
     // CC candidate. Verify via neighbor table.
     // CHAN-R is the uplink side of the explicit channel and must not become
     // a separate downlink CC candidate.

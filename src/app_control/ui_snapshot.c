@@ -21,7 +21,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "frontend_internal.h"
 #include "snapshot_internal.h"
-#include "telemetry_hooks_impl.h"
 
 static dsd_state g_pub;     // latest published by demod thread
 static dsd_state g_consume; // last copied out for UI
@@ -365,16 +364,6 @@ dsd_app_get_latest_live_snapshot(void) {
     }
     dsd_mutex_unlock(&g_mu);
     return &g_consume;
-}
-
-void
-ui_terminal_telemetry_publish_snapshot(const dsd_state* state) {
-    dsd_app_telemetry_publish_snapshot(state);
-}
-
-const dsd_state*
-ui_get_latest_snapshot(void) {
-    return dsd_app_get_latest_snapshot();
 }
 
 static void

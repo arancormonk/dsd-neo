@@ -314,7 +314,7 @@ class ReedSolomon_63 {
         return 0;
     }
 
-    struct LegacyDecodeState {
+    struct DecodeState {
         int elp[NN - KK + 2][NN - KK];
         int d[NN - KK + 2];
         int l[NN - KK + 2];
@@ -372,7 +372,7 @@ class ReedSolomon_63 {
     }
 
     static void
-    initialize_berlekamp_state(LegacyDecodeState& state) {
+    initialize_berlekamp_state(DecodeState& state) {
         state.d[0] = 0;
         state.d[1] = state.s[1];
         state.elp[0][0] = 0;
@@ -388,7 +388,7 @@ class ReedSolomon_63 {
     }
 
     void
-    advance_berlekamp_without_discrepancy(LegacyDecodeState& state, int u) const {
+    advance_berlekamp_without_discrepancy(DecodeState& state, int u) const {
         state.l[u + 1] = state.l[u];
         for (int i = 0; i <= state.l[u]; i++) {
             state.elp[u + 1][i] = state.elp[u][i];
@@ -397,7 +397,7 @@ class ReedSolomon_63 {
     }
 
     static int
-    select_berlekamp_q(const LegacyDecodeState& state, int u) {
+    select_berlekamp_q(const DecodeState& state, int u) {
         int q = u - 1;
         while ((q > 0) && (state.d[q] == -1)) {
             q--;
@@ -413,7 +413,7 @@ class ReedSolomon_63 {
     }
 
     void
-    update_berlekamp_with_discrepancy(LegacyDecodeState& state, int u, int q) const {
+    update_berlekamp_with_discrepancy(DecodeState& state, int u, int q) const {
         if (state.l[u] > state.l[q] + u - q) {
             state.l[u + 1] = state.l[u];
         } else {
@@ -435,7 +435,7 @@ class ReedSolomon_63 {
     }
 
     void
-    compute_next_discrepancy(LegacyDecodeState& state, int u) const {
+    compute_next_discrepancy(DecodeState& state, int u) const {
         if (state.s[u + 1] != -1) {
             state.d[u + 1] = alpha_to[state.s[u + 1]];
         } else {
@@ -450,7 +450,7 @@ class ReedSolomon_63 {
     }
 
     int
-    run_berlekamp_iterations(LegacyDecodeState& state) const {
+    run_berlekamp_iterations(DecodeState& state) const {
         int u = 0;
         do {
             u++;
@@ -562,7 +562,7 @@ class ReedSolomon_63 {
     }
 
     int
-    run_legacy_decode(int* recd, LegacyDecodeState& state) const {
+    run_decode(int* recd, DecodeState& state) const {
         initialize_berlekamp_state(state);
         int u = run_berlekamp_iterations(state);
         if (state.l[u] > TT) {
@@ -823,14 +823,14 @@ class ReedSolomon_63 {
      parity part of the transmitted codeword).  Of course, these insoluble cases
      can be returned as error flags to the calling routine if desired.   */
     {
-        LegacyDecodeState state;
+        DecodeState state;
         convert_poly_to_index_word(input, recd);
         if (!compute_index_syndromes(recd, state.s)) {
             convert_index_to_poly_word(recd);
             return 0;
         }
 
-        int irrecoverable_error = run_legacy_decode(recd, state);
+        int irrecoverable_error = run_decode(recd, state);
         if (irrecoverable_error) {
             convert_index_to_poly_word(recd);
         }

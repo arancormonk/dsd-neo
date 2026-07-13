@@ -80,7 +80,8 @@ Connect(char* hostname, int portno) {
 }
 
 static dsd_trunk_tune_result
-return_to_cc_result(dsd_opts* opts, dsd_state* state) {
+return_to_cc_result(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_return_to_cc_called++;
@@ -90,7 +91,7 @@ return_to_cc_result(dsd_opts* opts, dsd_state* state) {
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc_result = return_to_cc_result;
+    hooks.return_to_cc_request = return_to_cc_result;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -165,7 +166,7 @@ setup_tuned_tdma(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t** ctx) {
     state->lasttg = 1234;
     state->lasttgR = 5678;
 
-    p25_sm_init(opts, state);
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
     *ctx = p25_sm_get_ctx();
     (*ctx)->state = P25_SM_TUNED;
     (*ctx)->vc_is_tdma = 1;
@@ -192,7 +193,6 @@ test_pre_ess_single_slot_stays_tuned(void) {
     rc |= expect_eq("pre-ess single slot: still tuned", ctx->state == P25_SM_TUNED, 1);
     rc |= expect_eq("pre-ess single slot: pending voice stays inactive", ctx->slots[0].voice_active, 0);
     rc |= expect_eq("pre-ess single slot: gate closed", state.p25_p2_audio_allowed[0], 0);
-    rc |= expect_eq("pre-ess single slot: pending marker set", state.p25_p2_enc_lockout_muted[0], 1);
     rc |= expect_eq("pre-ess single slot: pending crypto state", state.p25_crypto_state[0],
                     DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     rc |= expect_eq("pre-ess single slot: deadline started", ctx->slots[0].crypto_attempt_m > 0.0, 1);
@@ -253,7 +253,6 @@ test_pre_ess_opposite_clear_slot_stays_tuned(void) {
     rc |= expect_eq("opposite clear slot: pending ess voice inactive", ctx->slots[1].voice_active, 0);
     rc |= expect_eq("opposite clear slot: clear gate open", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_eq("opposite clear slot: locked gate closed", state.p25_p2_audio_allowed[1], 0);
-    rc |= expect_eq("opposite clear slot: pending marker set", state.p25_p2_enc_lockout_muted[1], 1);
     rc |= expect_eq("opposite clear slot: pending crypto state", state.p25_crypto_state[1],
                     DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     return rc;
@@ -277,7 +276,6 @@ test_clear_regroup_override_survives_voice_burst(void) {
     int rc = 0;
     rc |= expect_eq("clear regroup: crypto remains clear", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     rc |= expect_eq("clear regroup: audio gate remains open", state.p25_p2_audio_allowed[0], 1);
-    rc |= expect_eq("clear regroup: lockout marker remains clear", state.p25_p2_enc_lockout_muted[0], 0);
     rc |= expect_eq("clear regroup: voice activity emitted", ctx->slots[0].voice_active, 1);
     return rc;
 }
@@ -303,7 +301,6 @@ test_private_voice_ignores_regroup_clear_key_collision(void) {
     rc |= expect_eq("private patch collision: crypto pending", state.p25_crypto_state[0],
                     DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     rc |= expect_eq("private patch collision: audio gate closed", state.p25_p2_audio_allowed[0], 0);
-    rc |= expect_eq("private patch collision: lockout marker set", state.p25_p2_enc_lockout_muted[0], 1);
     rc |= expect_eq("private patch collision: voice activity suppressed", ctx->slots[0].voice_active, 0);
     return rc;
 }
@@ -318,7 +315,6 @@ test_encrypted_follow_tracks_activity_while_media_is_muted(void) {
     state.currentslot = 0;
     state.dmr_so = 0x40;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-    state.p25_p2_enc_lockout_muted[0] = 1;
     state.p25_p2_audio_allowed[0] = 0;
 
     p25_sm_emit_ptt(&opts, &state, 0);

@@ -67,9 +67,10 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
 
 static int g_return_to_cc_called = 0;
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_return_to_cc_called++;
     if (opts) {
         opts->p25_is_tuned = 0;
@@ -79,26 +80,17 @@ return_to_cc(dsd_opts* opts, dsd_state* state) {
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc = return_to_cc;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
 // Minimal utility used by TDULC path (MSB-first)
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return v;
-}
-
 // LCW path external helpers (not exercised by this test; provide no-op stubs for link)
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -200,13 +192,6 @@ encode_reedsolomon_24_12_13(char* data, char* parity) {
 }
 
 int
-getDibit(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    return 0;
-}
-
-int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
     (void)state;
@@ -282,9 +267,16 @@ main(void) {
     state.p25_chan_tdma_explicit[iden] = 1; // FDMA known
 
     // Initialize SM and tune to a VC via a group grant
-    p25_sm_init(&opts, &state);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
     int channel = (iden << 12) | 0x000A;
-    p25_sm_on_group_grant(&opts, &state, channel, /*svc*/ 0, /*tg*/ 1234, /*src*/ 5678);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &state,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = channel,
+                                   .tg = 1234,
+                                   .src = 5678,
+                                   .svc_bits = 0,
+                                   .is_group = 1});
     rc |= expect_eq_int("tuned after grant", opts.p25_is_tuned, 1);
 
     // TDULC should not immediately bounce back to CC

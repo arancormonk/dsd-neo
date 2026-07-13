@@ -27,6 +27,6 @@ dsd_bootstrap_enable_ftz_daz_if_enabled(void) {
     unsigned int mxcsr = _mm_getcsr();
     mxcsr |= (1u << 15) | (1u << 6); // FTZ | DAZ
     _mm_setcsr(mxcsr);
-    LOG_NOTICE("Enabled SSE FTZ/DAZ (env DSD_NEO_FTZ_DAZ)\n");
+    LOG_INFO("NOTICE: Enabled SSE FTZ/DAZ (env DSD_NEO_FTZ_DAZ)\n");
 #endif
 }

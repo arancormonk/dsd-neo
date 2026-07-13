@@ -18,6 +18,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
@@ -31,6 +32,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p2_frame_internal.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -45,13 +47,6 @@ extern int16_t p2llr[1400];
 extern int16_t p2xllr[1400];
 extern int ess_a[2][168];
 extern int16_t ess_a_llr[2][168];
-extern void p25_p2_frame_reset(void);
-extern void process_ESS(dsd_opts* opts, dsd_state* state);
-extern void p25p2_test_teardown_call(dsd_opts* opts, dsd_state* state);
-extern void p25p2_test_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
-extern void p25p2_test_process_isch(dsd_opts* opts, dsd_state* state, int framing_index);
-extern void p25p2_test_process_p2_duid(dsd_opts* opts, dsd_state* state);
-extern void p25p2_test_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 
 static int g_ess_hard_rc = 0;
 static int g_ess_soft_min_success = -1;
@@ -125,12 +120,16 @@ rtl_stream_p25p2_err_update(int slot, int a, int b, int c, int d, int e) {
     (void)e;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-getTimeC_buf(char out[9]) {
-    if (out) {
-        DSD_MEMCPY(out, "00:00:00", 9);
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
+    (void)timestamp;
+    (void)format;
+    if (!out || out_size == 0) {
+        return 0;
     }
+    DSD_SNPRINTF(out, out_size, "%s", "00:00:00");
+    return 1;
 }
 
 void
@@ -253,31 +252,6 @@ p25_lfsr128_slot(dsd_state* state, int slot) {
     g_lfsr128_last_slot = slot;
 }
 
-/* RS decoders */
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ez_rs28_facch(int* payload, int* parity) {
-    (void)payload;
-    (void)parity;
-    return 0;
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ez_rs28_sacch(int* payload, int* parity) {
-    (void)payload;
-    (void)parity;
-    return 0;
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ez_rs28_ess(int* payload, int* parity) {
-    (void)payload;
-    (void)parity;
-    return g_ess_hard_rc;
-}
-
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 isch_lookup(uint64_t isch) {
@@ -296,7 +270,7 @@ isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]) {
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-ez_rs28_facch_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
+ez_rs28_facch(int* payload, int* parity, const int* erasures, int n_erasures) {
     (void)payload;
     (void)parity;
     (void)erasures;
@@ -307,7 +281,7 @@ ez_rs28_facch_soft(int* payload, int* parity, const int* erasures, int n_erasure
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-ez_rs28_sacch_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
+ez_rs28_sacch(int* payload, int* parity, const int* erasures, int n_erasures) {
     (void)payload;
     (void)parity;
     (void)erasures;
@@ -318,9 +292,12 @@ ez_rs28_sacch_soft(int* payload, int* parity, const int* erasures, int n_erasure
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-ez_rs28_ess_soft(int* payload, int* parity, const int* erasures, int n_erasures) {
+ez_rs28_ess(int* payload, int* parity, const int* erasures, int n_erasures) {
     (void)parity;
     (void)erasures;
+    if (n_erasures == 0) {
+        return g_ess_hard_rc;
+    }
     g_ess_soft_calls++;
     g_ess_soft_last_n = n_erasures;
     if (g_ess_soft_min_success >= 0 && n_erasures >= g_ess_soft_min_success) {
@@ -524,7 +501,7 @@ test_ess_soft_accepts_deep_erasure(void) {
     g_ess_soft_success_rc = 20;
     g_ess_soft_mutate_algid = 0x80;
 
-    process_ESS(&opts, &state);
+    p25p2_process_ess(&opts, &state, 0);
 
     if (state.p25_p2_rs_ess_ok == 1 && state.p25_p2_rs_ess_err == 0 && state.p25_p2_rs_ess_corr == 20
         && state.p25_p2_soft_ess_ok == 1 && state.p25_p2_soft_ess_max_depth == 20 && state.payload_algid == 0x80
@@ -551,7 +528,7 @@ test_ess_soft_failure_counts_once(void) {
     g_ess_hard_rc = -1;
     g_ess_soft_min_success = -1;
 
-    process_ESS(&opts, &state);
+    p25p2_process_ess(&opts, &state, 0);
 
     if (state.p25_p2_rs_ess_ok == 0 && state.p25_p2_rs_ess_err == 1 && state.p25_p2_soft_ess_ok == 0) {
         printf("PASS\n");
@@ -580,7 +557,7 @@ test_ess_des_manual_key_preserves_audio_gate(void) {
     state.dmrburstL = 20;
     set_ess_payload_bits(&state, 0, 0x81, 0x2468, 0x1122334455667788ULL);
 
-    process_ESS(&opts, &state);
+    p25p2_process_ess(&opts, &state, 0);
 
     if (state.payload_algid == 0x81 && state.payload_keyid == 0x2468 && state.payload_miP == 0x1122334455667788ULL
         && state.p25_p2_audio_allowed[0] == 1 && state.p25_p2_rs_ess_ok == 1) {
@@ -613,7 +590,7 @@ test_ess_aes_slot1_loaded_key_preserves_audio_gate(void) {
     state.aes_key_segments[1] = 4U;
     set_ess_payload_bits(&state, 1, 0x84, 0x1357, 0x0123456789ABCDEFULL);
 
-    process_ESS(&opts, &state);
+    p25p2_process_ess(&opts, &state, 0);
 
     if (state.payload_algidR == 0x84 && state.payload_keyidR == 0x1357 && state.payload_miN == 0x0123456789ABCDEFULL
         && state.p25_p2_audio_allowed[1] == 1 && state.p25_p2_rs_ess_ok == 1 && g_lfsr128_calls == 1
@@ -644,16 +621,16 @@ test_ess_allow_list_blocks_clear_audio_gate(void) {
     state.dmrburstL = 20;
     set_ess_payload_bits(&state, 0, 0x80, 0x0000, 0x0000000000000000ULL);
 
-    process_ESS(&opts, &state);
+    p25p2_process_ess(&opts, &state, 0);
 
-    if (state.payload_algid == 0x80 && state.p25_p2_audio_allowed[0] == 0 && state.p25_p2_enc_lockout_muted[0] == 0
-        && state.p25_p2_rs_ess_ok == 1) {
+    if (state.payload_algid == 0x80 && state.p25_p2_audio_allowed[0] == 0
+        && state.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR && state.p25_p2_rs_ess_ok == 1) {
         printf("PASS\n");
         return 0;
     }
 
-    printf("FAIL (alg=0x%02X gate=%d marker=%u ok=%u)\n", state.payload_algid, state.p25_p2_audio_allowed[0],
-           state.p25_p2_enc_lockout_muted[0], state.p25_p2_rs_ess_ok);
+    printf("FAIL (alg=0x%02X gate=%d crypto=%d ok=%u)\n", state.payload_algid, state.p25_p2_audio_allowed[0],
+           (int)state.p25_crypto_state[0], state.p25_p2_rs_ess_ok);
     return 1;
 }
 
@@ -677,7 +654,7 @@ test_ess_decode_failure_refreshes_existing_crypto_state(void) {
     g_ess_hard_rc = -1;
     g_ess_soft_min_success = -1;
 
-    process_ESS(&opts, &state);
+    p25p2_process_ess(&opts, &state, 0);
 
     if (state.p25_p2_rs_ess_err == 1 && state.p25_p2_rs_ess_ok == 0 && g_lfsrp_calls == 1 && g_lfsr128_calls == 0
         && state.p25_crypto_state[0] == DSD_P25_CRYPTO_DECRYPTABLE && state.p25_p2_audio_allowed[0] == 1) {
@@ -711,7 +688,7 @@ test_ess_decode_failure_refreshes_existing_aes_state(void) {
     g_ess_hard_rc = -1;
     g_ess_soft_min_success = -1;
 
-    process_ESS(&opts, &state);
+    p25p2_process_ess(&opts, &state, 0);
 
     if (state.p25_p2_rs_ess_err == 1 && g_lfsrp_calls == 1 && g_lfsr128_calls == 1 && g_lfsr128_last_slot == 1
         && state.p25_crypto_state[1] == DSD_P25_CRYPTO_DECRYPTABLE && state.p25_p2_audio_allowed[1] == 1) {
@@ -738,7 +715,7 @@ test_facchc_success_routes_opcode_and_counters(void) {
     g_facch_success_rc = 3;
     seed_xcch_opcode(2, 5);
 
-    p25p2_test_process_facchc(&opts, &state, 2);
+    p25p2_process_facchc(&opts, &state, 2);
 
     int rc = 0;
     rc |= expect_int("facch ok", (int)state.p25_p2_rs_facch_ok, 1);
@@ -771,7 +748,7 @@ test_facchc_failure_preserves_mac_and_counts_error(void) {
     g_facch_min_success = 99;
     seed_xcch_opcode(0, 3);
 
-    p25p2_test_process_facchc(&opts, &state, 0);
+    p25p2_process_facchc(&opts, &state, 0);
 
     int rc = 0;
     rc |= expect_int("facch failure ok", (int)state.p25_p2_rs_facch_ok, 0);
@@ -803,7 +780,7 @@ test_sacchc_dynamic_erasure_success_maps_inverse_slot(void) {
     g_sacch_success_rc = 4;
     seed_xcch_opcode(1, 6);
 
-    p25p2_test_process_sacchc(&opts, &state, 1);
+    p25p2_process_sacchc(&opts, &state, 1);
 
     int rc = 0;
     rc |= expect_int("sacch ok", (int)state.p25_p2_rs_sacch_ok, 1);
@@ -835,7 +812,7 @@ test_isch_channel_one_location_sets_scramble_offset(void) {
     p2bit[320] = 1;
     g_isch_lookup_result = (1 << 5) | (0 << 3);
     state.p2_scramble_offset = -1;
-    p25p2_test_process_isch(&opts, &state, 3);
+    p25p2_process_isch(&opts, &state, 3);
 
     int rc = 0;
     rc |= expect_int("isch loc0 channel", state.p2_vch_chan_num, 1);
@@ -843,18 +820,18 @@ test_isch_channel_one_location_sets_scramble_offset(void) {
 
     g_isch_lookup_result = (1 << 5) | (1 << 3);
     state.p2_scramble_offset = -1;
-    p25p2_test_process_isch(&opts, &state, 1);
+    p25p2_process_isch(&opts, &state, 1);
     rc |= expect_int("isch loc1 offset", state.p2_scramble_offset, 3);
 
     g_isch_lookup_result = (1 << 5) | (2 << 3);
     state.p2_scramble_offset = -1;
-    p25p2_test_process_isch(&opts, &state, 2);
+    p25p2_process_isch(&opts, &state, 2);
     rc |= expect_int("isch loc2 offset", state.p2_scramble_offset, 6);
 
     g_isch_lookup_result = -1;
     state.p2_vch_chan_num = 7;
     state.p2_scramble_offset = 42;
-    p25p2_test_process_isch(&opts, &state, 0);
+    p25p2_process_isch(&opts, &state, 0);
     rc |= expect_int("isch invalid preserves channel", state.p2_vch_chan_num, 7);
     rc |= expect_int("isch invalid preserves offset", state.p2_scramble_offset, 42);
 
@@ -872,8 +849,8 @@ test_duid_exact_or_null_soft_metrics_preserve_hard_decision(void) {
     uint8_t unreliable[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
     int rc = 0;
-    rc |= expect_int("duid exact with unreliable metrics", p25p2_duid_lookup_soft_test(0x17U, unreliable), 1);
-    rc |= expect_int("duid null metrics uses hard table", p25p2_duid_lookup_soft_test(0x17U, NULL), 1);
+    rc |= expect_int("duid exact with unreliable metrics", p25p2_duid_lookup_soft(0x17U, unreliable), 1);
+    rc |= expect_int("duid null metrics uses hard table", p25p2_duid_lookup_soft(0x17U, NULL), 1);
 
     if (rc == 0) {
         printf("PASS\n");
@@ -898,7 +875,7 @@ test_isch_reliability_clamps_llr_magnitude(void) {
     p2llr[321] = -123;
     g_isch_lookup_result = -1;
 
-    p25p2_test_process_isch(&opts, &state, 0);
+    p25p2_process_isch(&opts, &state, 0);
 
     int rc = 0;
     rc |= expect_int("isch clamp high reliability", g_isch_last_reliab[0], 255);
@@ -917,8 +894,8 @@ static void
 seed_teardown_dirty_state(dsd_state* state) {
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
-    state->p25_p2_enc_lockout_muted[0] = 1;
-    state->p25_p2_enc_lockout_muted[1] = 1;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     state->p25_p2_audio_ring_count[0] = 2;
     state->p25_p2_audio_ring_count[1] = 3;
     state->voice_counter[0] = 7;
@@ -948,8 +925,8 @@ expect_teardown_common_reset(const dsd_state* state) {
     int rc = 0;
     rc |= expect_int("teardown gate left", state->p25_p2_audio_allowed[0], 0);
     rc |= expect_int("teardown gate right", state->p25_p2_audio_allowed[1], 0);
-    rc |= expect_int("teardown marker left", state->p25_p2_enc_lockout_muted[0], 0);
-    rc |= expect_int("teardown marker right", state->p25_p2_enc_lockout_muted[1], 0);
+    rc |= expect_int("teardown crypto left", state->p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
+    rc |= expect_int("teardown crypto right", state->p25_crypto_state[1], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_int("teardown ring left", state->p25_p2_audio_ring_count[0], 0);
     rc |= expect_int("teardown ring right", state->p25_p2_audio_ring_count[1], 0);
     rc |= expect_int("teardown voice counter left", state->voice_counter[0], 0);
@@ -990,7 +967,7 @@ test_teardown_flushes_partial_int16_audio_and_resets_call_state(void) {
     state.s_l4[2][17] = 123;
     state.s_r4[4][31] = -234;
 
-    p25p2_test_teardown_call(&opts, &state);
+    p25p2_teardown_call(&opts, &state);
 
     int rc = 0;
     rc |= expect_int("teardown playback calls", g_ss18_calls, 1);
@@ -1021,7 +998,7 @@ test_teardown_without_partial_int16_audio_skips_playback_but_clears_state(void) 
     opts.pulse_digi_rate_out = 8000;
     seed_teardown_dirty_state(&state);
 
-    p25p2_test_teardown_call(&opts, &state);
+    p25p2_teardown_call(&opts, &state);
 
     int rc = 0;
     rc |= expect_int("teardown no-audio playback calls", g_ss18_calls, 0);
@@ -1052,8 +1029,6 @@ test_duid_invalid_burst_aborts_without_reopening_crypto(void) {
     state.payload_algidR = 0x84;
     state.payload_keyidR = 0x1357;
     state.p2_is_lcch = 1;
-    state.p25_p2_enc_lockout_muted[0] = 1;
-    state.p25_p2_enc_lockout_muted[1] = 1;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     state.fourv_counter[0] = 3;
@@ -1063,7 +1038,7 @@ test_duid_invalid_burst_aborts_without_reopening_crypto(void) {
     seed_duid_bits(0, 0x03U);
     seed_duid_bits(1, 0x03U);
 
-    p25p2_test_process_p2_duid(&opts, &state);
+    p25p2_process_duid(&opts, &state);
 
     int rc = 0;
     rc |= expect_int("invalid abort alg left preserved", state.payload_algid, 0x81);
@@ -1071,8 +1046,6 @@ test_duid_invalid_burst_aborts_without_reopening_crypto(void) {
     rc |= expect_int("invalid abort alg right preserved", state.payload_algidR, 0x84);
     rc |= expect_int("invalid abort key right preserved", state.payload_keyidR, 0x1357);
     rc |= expect_int("invalid abort lcch", state.p2_is_lcch, 0);
-    rc |= expect_int("invalid abort marker left sticky", state.p25_p2_enc_lockout_muted[0], 1);
-    rc |= expect_int("invalid abort marker right sticky", state.p25_p2_enc_lockout_muted[1], 1);
     rc |= expect_int("invalid abort state left sticky", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
     rc |= expect_int("invalid abort state right sticky", state.p25_crypto_state[1], DSD_P25_CRYPTO_BLOCKED);
     rc |= expect_int("invalid abort fourv left", state.fourv_counter[0], 0);
@@ -1122,7 +1095,7 @@ test_duid_abort_resolves_staged_rekey(void) {
     seed_duid_bits(2, 0x65U); // 2V stages the new ESS identity
     seed_duid_bits(3, 0x03U); // second invalid DUID aborts before post-timeslot
 
-    p25p2_test_process_p2_duid(&opts, &state);
+    p25p2_process_duid(&opts, &state);
 
     int rc = 0;
     rc |= expect_int("abort rekey partial drain calls", g_ss18_calls, 1);
@@ -1172,7 +1145,7 @@ test_duid_lcch_release_defers_during_vc_grace(void) {
     state.p25_last_vc_tune_time = now;
     state.p25_cfg_vc_grace_s = 60.0;
 
-    p25p2_test_process_p2_duid(&opts, &state);
+    p25p2_process_duid(&opts, &state);
 
     int rc = 0;
     rc |= expect_int("grace release force", state.p25_sm_force_release, 0);
@@ -1213,7 +1186,7 @@ test_duid_lcch_release_tears_down_after_vc_grace(void) {
     state.p25_last_vc_tune_time = now - 10;
     state.p25_cfg_vc_grace_s = 0.25;
 
-    p25p2_test_process_p2_duid(&opts, &state);
+    p25p2_process_duid(&opts, &state);
 
     int rc = 0;
     rc |= expect_int("post-grace release force", state.p25_sm_force_release, 1);
@@ -1317,7 +1290,7 @@ main(void) {
     /* Test 5: P2 DUID soft fallback only recovers invalid hard decisions */
     printf("Test 5: DUID soft fallback preserves valid hard decisions... ");
     uint8_t duid_reliab[8] = {200, 200, 200, 200, 200, 200, 200, 5};
-    int valid_decoded = p25p2_duid_lookup_soft_test(0x07U, duid_reliab);
+    int valid_decoded = p25p2_duid_lookup_soft(0x07U, duid_reliab);
     if (valid_decoded == 1) {
         printf("PASS\n");
     } else {
@@ -1329,7 +1302,7 @@ main(void) {
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[6] = 5;
     duid_reliab[7] = 5; /* 0x03 -> 0x00 is the cheapest canonical candidate. */
-    int recovered_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
+    int recovered_decoded = p25p2_duid_lookup_soft(0x03U, duid_reliab);
     if (recovered_decoded == 0) {
         printf("PASS\n");
     } else {
@@ -1339,7 +1312,7 @@ main(void) {
 
     printf("Test 7: DUID soft fallback rejects high-confidence invalid bits... ");
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
-    int high_confidence_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
+    int high_confidence_decoded = p25p2_duid_lookup_soft(0x03U, duid_reliab);
     if (high_confidence_decoded == -1) {
         printf("PASS\n");
     } else {
@@ -1350,7 +1323,7 @@ main(void) {
     printf("Test 8: DUID soft fallback recovers weak 0x80 MSB... ");
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[0] = 5;
-    int sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
+    int sentinel_decoded = p25p2_duid_lookup_soft(0x80U, duid_reliab);
     if (sentinel_decoded == 0) {
         printf("PASS\n");
     } else {
@@ -1360,7 +1333,7 @@ main(void) {
 
     printf("Test 9: DUID soft fallback preserves high-confidence 0x80 guard... ");
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
-    sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
+    sentinel_decoded = p25p2_duid_lookup_soft(0x80U, duid_reliab);
     if (sentinel_decoded == -1) {
         printf("PASS\n");
     } else {
@@ -1372,7 +1345,7 @@ main(void) {
     DSD_MEMSET(duid_reliab, 200, sizeof(duid_reliab));
     duid_reliab[0] = 5;
     duid_reliab[1] = 5;
-    sentinel_decoded = p25p2_duid_lookup_soft_test(0x80U, duid_reliab);
+    sentinel_decoded = p25p2_duid_lookup_soft(0x80U, duid_reliab);
     if (sentinel_decoded == -1) {
         printf("PASS\n");
     } else {
@@ -1386,7 +1359,7 @@ main(void) {
     duid_reliab[5] = 5;
     duid_reliab[6] = 5; /* 0x03 -> 0x00 decodes to 0. */
     duid_reliab[7] = 5;
-    int tied_decoded = p25p2_duid_lookup_soft_test(0x03U, duid_reliab);
+    int tied_decoded = p25p2_duid_lookup_soft(0x03U, duid_reliab);
     if (tied_decoded == -1) {
         printf("PASS\n");
     } else {

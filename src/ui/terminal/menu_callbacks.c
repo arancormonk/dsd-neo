@@ -76,7 +76,7 @@ cb_event_log_set(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_EVENT_LOG_SET, path);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_EVENT_LOG_SET, path, NULL);
         ui_statusf("Applying event log output...");
     }
 }
@@ -88,7 +88,7 @@ cb_static_wav(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_WAV_STATIC_OPEN, path);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_WAV_STATIC_OPEN, path, NULL);
         ui_statusf("Applying static WAV output...");
     }
 }
@@ -100,7 +100,7 @@ cb_raw_wav(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_WAV_RAW_OPEN, path);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_WAV_RAW_OPEN, path, NULL);
         ui_statusf("Applying raw WAV output...");
     }
 }
@@ -112,7 +112,7 @@ cb_dsp_out(void* v, const char* name) {
         return;
     }
     if (name && *name) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_DSP_OUT_SET, name);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_DSP_OUT_SET, name, NULL);
         ui_statusf("Applying DSP output path...");
     }
 }
@@ -124,7 +124,7 @@ cb_import_chan(void* v, const char* p) {
         return;
     }
     if (p && *p) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, p);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_IMPORT_CHANNEL_MAP, p, NULL);
         ui_statusf("Importing channel map...");
     }
 }
@@ -136,7 +136,7 @@ cb_import_group(void* v, const char* p) {
         return;
     }
     if (p && *p) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_IMPORT_GROUP_LIST, p);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_IMPORT_GROUP_LIST, p, NULL);
         ui_statusf("Importing group list...");
     }
 }
@@ -148,7 +148,7 @@ cb_keys_dec(void* v, const char* p) {
         return;
     }
     if (p && *p) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_IMPORT_KEYS_DEC, p);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_IMPORT_KEYS_DEC, p, NULL);
         ui_statusf("Importing keys (DEC)...");
     }
 }
@@ -160,7 +160,7 @@ cb_keys_hex(void* v, const char* p) {
         return;
     }
     if (p && *p) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_IMPORT_KEYS_HEX, p);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_IMPORT_KEYS_HEX, p, NULL);
         ui_statusf("Importing keys (HEX)...");
     }
 }
@@ -174,7 +174,7 @@ ui_submit_config_metadata(int autosave_enabled, const char* path) {
     payload.autosave_enabled = autosave_enabled ? 1 : 0;
     DSD_SNPRINTF(payload.path, sizeof payload.path, "%s", path ? path : "");
     payload.path[sizeof payload.path - 1] = '\0';
-    (void)dsd_app_command_set_config_metadata(&payload);
+    (void)dsd_app_command_set_config_metadata_tracked(&payload, NULL);
 }
 
 void
@@ -196,7 +196,7 @@ cb_config_load(void* v, const char* path) {
     }
 
     ui_submit_config_metadata(1, path);
-    (void)dsd_app_command_apply_config(&cfg);
+    (void)dsd_app_command_apply_config_tracked(&cfg, NULL);
     ui_statusf("Config loaded from %s", path);
 }
 
@@ -230,7 +230,7 @@ chooser_done_config_profile(void* u, int sel) {
             ui_statusf("Failed to load profile %s from %s", profile, pctx->path);
         } else {
             ui_submit_config_metadata(0, pctx->path);
-            (void)dsd_app_command_apply_config(&cfg);
+            (void)dsd_app_command_apply_config_tracked(&cfg, NULL);
             ui_statusf("Profile loaded: %s", profile);
         }
     }
@@ -269,7 +269,7 @@ cb_setmod_bw(void* v, int ok, int bw) {
     if (ok) {
         int adjusted = 0;
         int32_t hz = (int32_t)clamp_int_with_notice("Rigctl BW", bw, 0, 25000, &adjusted);
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_RIGCTL_SET_MOD_BW, hz);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_RIGCTL_SET_MOD_BW, hz, NULL);
         if (!adjusted) {
             ui_statusf("Applying Rigctl BW: %d Hz", (int)hz);
         }
@@ -286,7 +286,7 @@ cb_tg_hold(void* v, int ok, int tg) {
         int adjusted = 0;
         int tg_safe = clamp_int_with_notice("TG Hold", tg, 0, 2147483647, &adjusted);
         uint32_t t = (uint32_t)tg_safe;
-        (void)dsd_app_command_set_u32(DSD_APP_CMD_TG_HOLD_SET, t);
+        (void)dsd_app_command_set_u32_tracked(DSD_APP_CMD_TG_HOLD_SET, t, NULL);
         if (!adjusted) {
             ui_statusf("Applying TG Hold: %u", t);
         }
@@ -307,7 +307,7 @@ cb_hangtime(void* v, int ok, double s) {
             adjusted = 1;
             ui_statusf("Hangtime adjusted to %.3f (range >= 0)", d);
         }
-        (void)dsd_app_command_set_double(DSD_APP_CMD_HANGTIME_SET, d);
+        (void)dsd_app_command_set_double_tracked(DSD_APP_CMD_HANGTIME_SET, d, NULL);
         if (!adjusted) {
             ui_statusf("Applying hangtime: %.3f s", d);
         }
@@ -324,7 +324,7 @@ cb_slot_pref(void* v, int ok, int p) {
         int adjusted = 0;
         p = clamp_int_with_notice("Slot preference", p, 1, 2, &adjusted);
         int32_t pref01 = p - 1;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_SLOT_PREF_SET, pref01);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_SLOT_PREF_SET, pref01, NULL);
         if (!adjusted) {
             ui_statusf("Applying slot preference: %d", p);
         }
@@ -340,7 +340,7 @@ cb_slots_on(void* v, int ok, int m) {
     if (ok) {
         int adjusted = 0;
         int32_t mask = (int32_t)clamp_int_with_notice("Slot mask", m, 0, 3, &adjusted);
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_SLOTS_ONOFF_SET, mask);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_SLOTS_ONOFF_SET, mask, NULL);
         if (!adjusted) {
             ui_statusf("Applying slot mask: %d", (int)mask);
         }
@@ -356,7 +356,7 @@ cb_tyt_ap(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_KEY_TYT_AP_SET, s);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_KEY_TYT_AP_SET, s, NULL);
         ui_statusf("TYT AP keystream set requested");
     }
 }
@@ -368,7 +368,7 @@ cb_retevis_rc2(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_KEY_RETEVIS_RC2_SET, s);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_KEY_RETEVIS_RC2_SET, s, NULL);
         ui_statusf("Retevis AP keystream set requested");
     }
 }
@@ -380,7 +380,7 @@ cb_tyt_ep(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_KEY_TYT_EP_SET, s);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_KEY_TYT_EP_SET, s, NULL);
         ui_statusf("TYT EP keystream set requested");
     }
 }
@@ -392,7 +392,7 @@ cb_ken_scr(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_KEY_KEN_SCR_SET, s);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_KEY_KEN_SCR_SET, s, NULL);
         ui_statusf("Kenwood scrambler keystream set requested");
     }
 }
@@ -404,7 +404,7 @@ cb_anytone_bp(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_KEY_ANYTONE_BP_SET, s);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_KEY_ANYTONE_BP_SET, s, NULL);
         ui_statusf("Anytone BP keystream set requested");
     }
 }
@@ -416,7 +416,7 @@ cb_xor_ks(void* v, const char* s) {
         return;
     }
     if (s && *s) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_KEY_XOR_SET, s);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_KEY_XOR_SET, s, NULL);
         ui_statusf("XOR keystream set requested");
     }
 }
@@ -435,7 +435,7 @@ cb_key_basic(void* v, int ok, int val) {
             vdec = 255ULL;
         }
         uint32_t k = (uint32_t)vdec;
-        (void)dsd_app_command_set_u32(DSD_APP_CMD_KEY_BASIC_SET, k);
+        (void)dsd_app_command_set_u32_tracked(DSD_APP_CMD_KEY_BASIC_SET, k, NULL);
     }
 }
 
@@ -451,7 +451,7 @@ cb_key_scrambler(void* v, int ok, int val) {
             vdec = 0x7FFFULL;
         }
         uint32_t r = (uint32_t)vdec;
-        (void)dsd_app_command_set_u32(DSD_APP_CMD_KEY_SCRAMBLER_SET, r);
+        (void)dsd_app_command_set_u32_tracked(DSD_APP_CMD_KEY_SCRAMBLER_SET, r, NULL);
     }
 }
 
@@ -465,7 +465,7 @@ cb_key_rc4des(void* v, const char* text) {
         unsigned long long th = 0ULL;
         if (parse_hex_u64(text, &th)) {
             uint64_t r = th;
-            (void)dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, r);
+            (void)dsd_app_command_set_u64_tracked(DSD_APP_CMD_KEY_RC4DES_SET, r, NULL);
         }
     }
 }
@@ -548,7 +548,7 @@ cb_hytera_step(void* u, const char* text) {
 
     const dsd_app_hytera_key_payload p = {hc->H, hc->K1, hc->K2, hc->K3, hc->K4};
 
-    (void)dsd_app_command_set_hytera_key(&p);
+    (void)dsd_app_command_set_hytera_key_tracked(&p, NULL);
     ui_statusf("Hytera key set");
     free(hc);
 }
@@ -588,7 +588,7 @@ cb_aes_step(void* u, const char* text) {
 
     const dsd_app_aes_key_payload p = {ac->K1, ac->K2, ac->K3, ac->K4};
 
-    (void)dsd_app_command_set_aes_key(&p);
+    (void)dsd_app_command_set_aes_key_tracked(&p, NULL);
     free(ac);
 }
 
@@ -633,7 +633,7 @@ cb_p2_step(void* u, const char* text) {
 
     const dsd_app_p25_p2_params_payload p = {pc->w, pc->s, pc->n};
 
-    (void)dsd_app_command_set_p25_p2_params(&p);
+    (void)dsd_app_command_set_p25_p2_params_tracked(&p, NULL);
     free(pc);
 }
 
@@ -646,7 +646,7 @@ cb_io_save_symbol_capture(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_SYMCAP_OPEN, path);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_SYMCAP_OPEN, path, NULL);
         ui_statusf("Symbol capture open requested");
     }
 }
@@ -658,7 +658,7 @@ cb_io_read_symbol_bin(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_SYMBOL_IN_OPEN, path);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_SYMBOL_IN_OPEN, path, NULL);
         ui_statusf("Symbol input open requested");
     }
 }
@@ -682,7 +682,7 @@ cb_udp_out_port(void* u, int ok, int port) {
 
     DSD_SNPRINTF(payload.host, sizeof payload.host, "%s", ctx->host);
     payload.port = port;
-    (void)dsd_app_command_set_endpoint(DSD_APP_CMD_UDP_OUT_CFG, payload.host, payload.port);
+    (void)dsd_app_command_set_endpoint_tracked(DSD_APP_CMD_UDP_OUT_CFG, payload.host, payload.port, NULL);
     ui_statusf("UDP out requested: %s:%d", ctx->host, ctx->port);
     free(ctx);
 }
@@ -721,7 +721,7 @@ cb_tcp_port(void* u, int ok, int port) {
 
     DSD_SNPRINTF(payload.host, sizeof payload.host, "%s", ctx->host);
     payload.port = ctx->port;
-    (void)dsd_app_command_set_endpoint(DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, payload.host, payload.port);
+    (void)dsd_app_command_set_endpoint_tracked(DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, payload.host, payload.port, NULL);
     ui_statusf("TCP connect requested: %s:%d", ctx->host, ctx->port);
     free(ctx);
 }
@@ -760,7 +760,7 @@ cb_udp_in_port(void* u, int ok, int port) {
 
     DSD_SNPRINTF(payload.bind, sizeof payload.bind, "%s", ctx->addr);
     payload.port = ctx->port;
-    (void)dsd_app_command_set_udp_input(payload.bind, payload.port);
+    (void)dsd_app_command_set_udp_input_tracked(payload.bind, payload.port, NULL);
     ui_statusf("UDP input set requested: %s:%d", ctx->addr, ctx->port);
     free(ctx);
 }
@@ -799,7 +799,7 @@ cb_rig_port(void* u, int ok, int port) {
 
     DSD_SNPRINTF(payload.host, sizeof payload.host, "%s", ctx->host);
     payload.port = ctx->port;
-    (void)dsd_app_command_set_endpoint(DSD_APP_CMD_RIGCTL_CONNECT_CFG, payload.host, payload.port);
+    (void)dsd_app_command_set_endpoint_tracked(DSD_APP_CMD_RIGCTL_CONNECT_CFG, payload.host, payload.port, NULL);
     ui_statusf("Rigctl connect requested: %s:%d", ctx->host, ctx->port);
     free(ctx);
 }
@@ -826,7 +826,7 @@ cb_switch_to_wav(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_INPUT_WAV_SET, path);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_INPUT_WAV_SET, path, NULL);
         ui_statusf("WAV input requested: %s", path);
     }
 }
@@ -840,10 +840,10 @@ cb_switch_to_symbol(void* v, const char* path) {
     if (path && *path) {
         size_t len = strlen(path);
         if (len >= 4 && dsd_strcasecmp(path + len - 4, ".bin") == 0) {
-            (void)dsd_app_command_set_string(DSD_APP_CMD_SYMBOL_IN_OPEN, path);
+            (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_SYMBOL_IN_OPEN, path, NULL);
             ui_statusf("Symbol input open requested");
         } else {
-            (void)dsd_app_command_set_string(DSD_APP_CMD_INPUT_SYM_STREAM_SET, path);
+            (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_INPUT_SYM_STREAM_SET, path, NULL);
             ui_statusf("Symbol stream input requested");
         }
     }
@@ -861,7 +861,7 @@ cb_gain_dig(void* u, int ok, double g) {
         int adjusted = 0;
         g = clamp_double_with_notice("Digital gain", g, 0.0, 50.0, &adjusted);
         int32_t v = (int32_t)g;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, v);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_GAIN_SET, v, NULL);
         if (!adjusted) {
             ui_statusf("Applying digital gain: %.1f", g);
         }
@@ -878,7 +878,7 @@ cb_gain_ana(void* u, int ok, double g) {
         int adjusted = 0;
         g = clamp_double_with_notice("Analog gain", g, 0.0, 100.0, &adjusted);
         int32_t v = (int32_t)g;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_AGAIN_SET, v);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_AGAIN_SET, v, NULL);
         if (!adjusted) {
             ui_statusf("Applying analog gain: %.1f", g);
         }
@@ -895,7 +895,7 @@ cb_input_vol(void* u, int ok, int m) {
         int adjusted = 0;
         m = clamp_int_with_notice("Input volume", m, 1, 16, &adjusted);
         int32_t v = m;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_INPUT_VOL_SET, v);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_INPUT_VOL_SET, v, NULL);
         if (!adjusted) {
             ui_statusf("Applying input volume: %dX", m);
         }
@@ -912,7 +912,7 @@ cb_rtl_dev(void* u, int ok, int i) {
     }
     if (ok) {
         int32_t v = i;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_DEV, v);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_RTL_SET_DEV, v, NULL);
     }
 }
 
@@ -926,7 +926,7 @@ cb_rtl_freq(void* u, int ok, int f) {
         int adjusted = 0;
         f = clamp_int_with_notice("RTL frequency", f, 0, 2147483647, &adjusted);
         uint32_t v = (uint32_t)f;
-        (void)dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, v);
+        (void)dsd_app_command_set_u32_tracked(DSD_APP_CMD_RTL_SET_FREQ, v, NULL);
     }
 }
 
@@ -940,7 +940,7 @@ cb_rtl_gain(void* u, int ok, int g) {
         int adjusted = 0;
         g = clamp_int_with_notice("RTL gain", g, 0, 49, &adjusted);
         int32_t v = g;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_GAIN, v);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_RTL_SET_GAIN, v, NULL);
         if (!adjusted) {
             ui_statusf("Applying RTL gain: %d", g);
         }
@@ -957,7 +957,7 @@ cb_rtl_ppm(void* u, int ok, int p) {
         int adjusted = 0;
         p = clamp_int_with_notice("RTL PPM", p, -200, 200, &adjusted);
         int32_t v = p;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_PPM, v);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_RTL_SET_PPM, v, NULL);
         if (!adjusted) {
             ui_statusf("Applying RTL PPM: %d", p);
         }
@@ -988,7 +988,7 @@ cb_rtl_bw(void* u, int ok, int bw) {
         }
         bw = best;
         int32_t v = bw;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_BW, v);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_RTL_SET_BW, v, NULL);
         if (!adjusted) {
             ui_statusf("Applying RTL BW: %d kHz", bw);
         }
@@ -1003,7 +1003,7 @@ cb_rtl_sql(void* u, int ok, double dB) {
     }
     if (ok) {
         double v = dB;
-        (void)dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, v);
+        (void)dsd_app_command_set_double_tracked(DSD_APP_CMD_RTL_SET_SQL_DB, v, NULL);
     }
 }
 
@@ -1017,7 +1017,7 @@ cb_rtl_vol(void* u, int ok, int m) {
         int adjusted = 0;
         m = clamp_int_with_notice("RTL monitor gain", m, 0, 3, &adjusted);
         int32_t v = m;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_VOL_MULT, v);
+        (void)dsd_app_command_set_i32_tracked(DSD_APP_CMD_RTL_SET_VOL_MULT, v, NULL);
         if (!adjusted) {
             ui_statusf("Applying RTL monitor gain: %dX", m);
         }
@@ -1037,7 +1037,7 @@ cb_input_warn(void* v, int ok, double thr) {
     }
     int adjusted = 0;
     thr = clamp_double_with_notice("Input warning threshold", thr, -200.0, 0.0, &adjusted);
-    (void)dsd_app_command_set_double(DSD_APP_CMD_INPUT_WARN_DB_SET, thr);
+    (void)dsd_app_command_set_double_tracked(DSD_APP_CMD_INPUT_WARN_DB_SET, thr, NULL);
     env_set_double("DSD_NEO_INPUT_WARN_DB", thr);
     if (!adjusted) {
         ui_statusf("Applying input warning threshold: %.1f dBFS", thr);
@@ -1111,7 +1111,7 @@ cb_tcp_prebuf(void* v, int ok, int ms) {
     }
     env_set_int("DSD_NEO_TCP_PREBUF_MS", ms);
     if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
-        (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
+        (void)dsd_app_command_action_tracked(DSD_APP_CMD_RTL_RESTART, NULL);
     }
 }
 
@@ -1127,7 +1127,7 @@ cb_tcp_rcvbuf(void* v, int ok, int sz) {
         env_set_int("DSD_NEO_TCP_RCVBUF", sz);
     }
     if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
-        (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
+        (void)dsd_app_command_action_tracked(DSD_APP_CMD_RTL_RESTART, NULL);
     }
 }
 
@@ -1143,7 +1143,7 @@ cb_tcp_rcvtimeo(void* v, int ok, int ms) {
         env_set_int("DSD_NEO_TCP_RCVTIMEO", ms);
     }
     if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL) {
-        (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
+        (void)dsd_app_command_action_tracked(DSD_APP_CMD_RTL_RESTART, NULL);
     }
 }
 
@@ -1156,7 +1156,7 @@ cb_lr_custom(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_LRRP_SET_CUSTOM, path);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_LRRP_SET_CUSTOM, path, NULL);
         ui_statusf("LRRP custom output requested");
     }
 }
@@ -1212,7 +1212,7 @@ void
 cb_m17_user_data(void* u, const char* text) {
     M17Ctx* mc = (M17Ctx*)u;
     if (mc && mc->c && text && *text) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_M17_USER_DATA_SET, text);
+        (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_M17_USER_DATA_SET, text, NULL);
         ui_statusf("M17 user data set requested");
     }
     free(mc);
@@ -1243,7 +1243,7 @@ chooser_done_pulse_out(void* u, int sel) {
     if (pc) {
         if (sel >= 0 && sel < pc->n) {
             const char* name = pc->names[sel];
-            (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_OUT_SET, name);
+            (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_PULSE_OUT_SET, name, NULL);
             ui_statusf("Pulse out requested: %s", name);
         }
         chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);
@@ -1257,7 +1257,7 @@ chooser_done_pulse_in(void* u, int sel) {
     if (pc) {
         if (sel >= 0 && sel < pc->n) {
             const char* name = pc->names[sel];
-            (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_IN_SET, name);
+            (void)dsd_app_command_set_string_tracked(DSD_APP_CMD_PULSE_IN_SET, name, NULL);
             ui_statusf("Pulse in requested: %s", name);
         }
         chooser_free_lists(pc->names, pc->bufs, pc->n, pc->labels);

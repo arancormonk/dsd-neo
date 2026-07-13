@@ -37,6 +37,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "p25_trunk_sm_internal.h"
 
 static int do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
                       int arm_failed_vc_backoff_on_accept, int recover_stale_ctx);
@@ -789,7 +790,7 @@ p25_enc_tg_cache_choose_slot(dsd_state* state, time_t now) {
     return idx;
 }
 
-static void
+void
 p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int target, int is_group) {
     if (!opts || !state || target <= 0 || opts->trunk_tune_enc_calls != 0) {
         return;
@@ -819,11 +820,6 @@ p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int target, i
     p25_sm_diagf(opts, state, NULL, "enc_tg_cache_arm", "kind=%s target=%d idx=%d until=%ld",
                  is_group ? "group" : "private", target, idx, (long)until);
     sm_log(opts, state, "enc-tg-cache-arm");
-}
-
-void
-p25_sm_note_encrypted_call(dsd_opts* opts, dsd_state* state, int tg) {
-    p25_sm_note_encrypted_call_typed(opts, state, tg, 1);
 }
 
 void
@@ -1450,7 +1446,7 @@ p25_grant_try_tune_vc(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, dsd_opt
     p25_sm_diagf(opts, state, ctx, "grant_tune_attempt",
                  "ch=0x%04X freq=%ld slot=%d tdma=%d sps=%d tg=%d src=%d dst=%d", ev->channel & 0xFFFF, freq, slot,
                  vc_is_tdma, ted_sps, ev->tg, ev->src, ev->dst);
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, ted_sps);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, ted_sps, NULL);
     if (dsd_trunk_tune_result_is_ok(tune_result)) {
         p25_grant_commit_decoder_tune(opts, state, freq);
         *out_ted_sps = ted_sps;
@@ -2380,7 +2376,7 @@ p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
                  state ? ((state->p25_cc_freq != 0) ? state->p25_cc_freq : state->trunk_cc_freq) : 0,
                  ctx->vc_channel & 0xFFFF, ctx->vc_tg, had_force_release, ctx->vc_is_tdma, ctx->vc_data_call,
                  state ? state->p25_cc_is_tdma : 0, cc_ted_sps(opts, state));
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc_with_id(opts, state, out_request_id);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, out_request_id);
     if (out_tune_result) {
         *out_tune_result = tune_result;
     }
@@ -2744,8 +2740,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
                      p25_diag_freq_in_current_site_candidates(state, cand), p25_diag_freq_in_lcn_list(state, cand),
                      p25_diag_freq_in_neighbors(state, cand));
         uint64_t tune_request_id = 0U;
-        dsd_trunk_tune_result tune_result =
-            dsd_trunk_tuning_hook_tune_to_cc_with_id(opts, state, cand, sps, &tune_request_id);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps, &tune_request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=current-site-candidate freq=%ld result=%s", cand,
                          p25_tune_result_name(tune_result));
@@ -2771,8 +2766,7 @@ try_next_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
                      p25_diag_freq_in_current_site_candidates(state, cand), p25_diag_freq_in_lcn_list(state, cand),
                      p25_diag_freq_in_neighbors(state, cand));
         uint64_t tune_request_id = 0U;
-        dsd_trunk_tune_result tune_result =
-            dsd_trunk_tuning_hook_tune_to_cc_with_id(opts, state, cand, sps, &tune_request_id);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cand, sps, &tune_request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             p25_sm_diagf(opts, state, ctx, "hunt_tune_result", "source=%s freq=%ld result=%s", source, cand,
                          p25_tune_result_name(tune_result));
@@ -3248,7 +3242,7 @@ p25_cqpsk_retry_tune(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, 
     state->symbolCenter = dsd_opts_symbol_center(ted_sps);
     p25_sm_diagf(opts, state, ctx, "cqpsk_retry_attempt", "freq=%ld ch=0x%04X sps=%d", ctx->vc_freq_hz,
                  ctx->vc_channel & 0xFFFF, ted_sps);
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, ctx->vc_freq_hz, ted_sps);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, ctx->vc_freq_hz, ted_sps, NULL);
     if (dsd_trunk_tune_result_is_ok(tune_result)) {
         p25_sm_diagf(opts, state, ctx, "cqpsk_retry_result", "freq=%ld result=%s", ctx->vc_freq_hz,
                      p25_tune_result_name(tune_result));
@@ -3555,11 +3549,6 @@ p25_sm_slot_grant_newer_than(int slot, double observed_m) {
  * ============================================================================ */
 
 void
-p25_sm_emit(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
-    p25_sm_event(p25_sm_get_ctx(), opts, state, ev);
-}
-
-void
 p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot) {
     p25_sm_event_t ev = p25_sm_ev_ptt(slot);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
@@ -3613,41 +3602,6 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
         ctx = p25_sm_get_ctx();
     }
     do_release(ctx, opts, state, reason ? reason : "explicit-release", 0, 1);
-}
-
-int
-p25_sm_audio_allowed(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
-    if (!ctx) {
-        ctx = p25_sm_get_ctx();
-    }
-    if (!ctx || ctx->state != P25_SM_TUNED) {
-        return 0;
-    }
-    if (!state) {
-        return 0;
-    }
-
-    int s = (slot >= 0 && slot <= 1) ? slot : 0;
-    return state->p25_p2_audio_allowed[s] ? 1 : 0;
-}
-
-void
-p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algid, int keyid) {
-    if (!ctx) {
-        ctx = p25_sm_get_ctx();
-    }
-    if (!ctx || !state) {
-        return;
-    }
-
-    int s = (slot >= 0 && slot <= 1) ? slot : 0;
-
-    // Store encryption info in slot context
-    ctx->slots[s].algid = algid;
-    ctx->slots[s].keyid = keyid;
-
-    // Update audio gating in state (single source of truth)
-    state->p25_p2_audio_allowed[s] = p25_crypto_audio_ready(state, s) ? 1 : 0;
 }
 
 /* ============================================================================
@@ -3859,22 +3813,6 @@ p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg) {
         state->p25_ga_tg[idx] = tg;
     }
     state->p25_ga_last_seen[idx] = time(NULL);
-}
-
-void
-p25_ga_remove(dsd_state* state, uint32_t rid, uint16_t tg) {
-    if (!state || rid == 0 || tg == 0) {
-        return;
-    }
-    int idx = p25_ga_find_idx(state, rid, tg);
-    if (idx >= 0) {
-        state->p25_ga_rid[idx] = 0;
-        state->p25_ga_tg[idx] = 0;
-        state->p25_ga_last_seen[idx] = 0;
-        if (state->p25_ga_count > 0) {
-            state->p25_ga_count--;
-        }
-    }
 }
 
 void

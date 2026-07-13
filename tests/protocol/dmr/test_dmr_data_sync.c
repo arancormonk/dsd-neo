@@ -123,8 +123,8 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
-                          const uint8_t* reliab98) {
+dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                       const uint8_t* reliab98) {
     (void)opts;
     g_handler_calls++;
     g_handler_slot = state->currentslot;

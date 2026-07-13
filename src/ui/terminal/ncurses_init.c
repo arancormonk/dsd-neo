@@ -26,7 +26,7 @@ static int s_stderr_suppressed = 0;
 static int s_saved_stderr_fd = -1;
 
 void
-ncursesOpen(dsd_opts* opts, dsd_state* state) {
+dsd_terminal_open(dsd_opts* opts, dsd_state* state) {
 
     UNUSED(opts);
     UNUSED(state);
@@ -124,7 +124,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-ncursesClose(void) {
+dsd_terminal_close(void) {
     // Restore stderr so exit-time logs (e.g., ring stats) are visible.
     if (s_stderr_suppressed) {
         fflush(stderr);

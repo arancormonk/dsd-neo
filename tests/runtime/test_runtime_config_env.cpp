@@ -88,7 +88,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_CACHE_DIR",
         "DSD_NEO_CC_CACHE",
         "DSD_NEO_CHANNEL_LPF",
-        "DSD_NEO_COMBINE_ROT",
         "DSD_NEO_CONFIG",
         "DSD_NEO_COSTAS_BW",
         "DSD_NEO_COSTAS_DAMPING",
@@ -176,7 +175,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_TUNER_AUTOGAIN_UP_STEP_DB",
         "DSD_NEO_TUNER_BW_HZ",
         "DSD_NEO_TUNER_XTAL_HZ",
-        "DSD_NEO_UPSAMPLE_FP",
         "DSD_NEO_WINDOW_FREEZE",
         NULL,
     };
@@ -1921,8 +1919,6 @@ test_dsp_misc_env(void) {
      * runtime parser. The invalid-value section later reloads a fresh snapshot so
      * each rejected knob can be checked against its documented default.
      */
-    setenv("DSD_NEO_COMBINE_ROT", "0", 1);
-    setenv("DSD_NEO_UPSAMPLE_FP", "0", 1);
     setenv("DSD_NEO_RESAMP", "96000", 1);
     setenv("DSD_NEO_COSTAS_BW", "0.02", 1);
     setenv("DSD_NEO_COSTAS_DAMPING", "0.7", 1);
@@ -1948,22 +1944,6 @@ test_dsp_misc_env(void) {
         return rc;
     }
 
-    rc = expect_int_eq(cfg->combine_rot_is_set, 1, 1501, "combine_rot_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->combine_rot, 0, 1502, "combine_rot");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->upsample_fp_is_set, 1, 1503, "upsample_fp_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->upsample_fp, 0, 1504, "upsample_fp");
-    if (rc != 0) {
-        return rc;
-    }
     rc = expect_int_eq(cfg->resamp_is_set, 1, 1505, "resamp_is_set");
     if (rc != 0) {
         return rc;
@@ -2121,8 +2101,6 @@ test_dsp_misc_env(void) {
      * Each second-pass assertion should see parser defaults, not leftovers from
      * the valid snapshot above.
      */
-    unsetenv("DSD_NEO_COMBINE_ROT");
-    unsetenv("DSD_NEO_UPSAMPLE_FP");
     unsetenv("DSD_NEO_RESAMP");
     unsetenv("DSD_NEO_COSTAS_BW");
     unsetenv("DSD_NEO_COSTAS_DAMPING");

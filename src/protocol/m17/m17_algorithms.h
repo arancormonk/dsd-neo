@@ -130,7 +130,6 @@ int m17_scrambler_apply_bits(uint8_t subtype, uint32_t seed, uint16_t frame_numb
 uint8_t m17_aes_key_bytes_for_subtype(uint8_t subtype);
 void m17_aes_build_counter(const uint8_t nonce[M17_AES_NONCE_BYTES], uint16_t frame_number,
                            uint8_t counter[M17_AES_COUNTER_BYTES]);
-uint32_t m17_aes_nonce_timestamp(const uint8_t nonce[M17_AES_NONCE_BYTES]);
 int m17_packet_frame_count_for_app_bytes(uint16_t app_bytes, uint8_t* last_frame_bytes);
 int m17_packet_app_bytes_from_eof(uint8_t full_frames, uint8_t last_frame_bytes, uint16_t* app_bytes);
 int m17_packet_metadata_byte(uint8_t eof, uint8_t value, uint8_t* metadata_byte);
@@ -155,7 +154,6 @@ uint16_t m17_lsf_encode_type1_bits(const uint8_t type1_flush_bits[M17_LSF_TYPE1_
 void m17_stream_build_type1_bits(uint16_t frame_number, const uint8_t* payload_bits, uint8_t* type1_flush_bits);
 int m17_stream_parse_type1_bits(const uint8_t* type1_bits, uint16_t* frame_number, uint8_t* payload_bits);
 uint16_t m17_stream_next_frame_counter(uint16_t frame_counter);
-void m17_stream_copy_payload_chunk(const uint8_t* input_bits, uint16_t valid_bits, uint8_t* payload_bits);
 void m17_stream_pack_payload_halves(const uint8_t* first_half_bits, const uint8_t* second_half_bits,
                                     uint8_t* payload_bits);
 void m17_stream_encode_type1_bits(const uint8_t* type1_flush_bits, uint8_t* punctured_bits);

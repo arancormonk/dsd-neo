@@ -96,14 +96,14 @@ reset_dmr_buffers(dsd_state* state) {
 }
 
 static void
-reset_dmr_sample_history(dsd_state* state) {
-    // DMR sample history buffer reset (resample-on-sync support)
+reset_symbol_history(dsd_state* state) {
+    // Symbol history buffer reset (sync calibration and resampling support)
     // Note: Buffer allocation preserved; only reset indices.
-    if (state->dmr_sample_history && state->dmr_sample_history_size > 0) {
-        DSD_MEMSET(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);
+    if (state->symbol_history && state->symbol_history_size > 0) {
+        DSD_MEMSET(state->symbol_history, 0, sizeof(float) * state->symbol_history_size);
     }
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
+    state->symbol_history_head = 0;
+    state->symbol_history_count = 0;
 }
 
 static void
@@ -268,7 +268,7 @@ static void DSD_ATTR_UNUSED_FN
 resetState(dsd_state* state) {
     reset_primary_buffers(state);
     reset_dmr_buffers(state);
-    reset_dmr_sample_history(state);
+    reset_symbol_history(state);
     reset_sync_tracking_state(state);
     reset_error_histograms(state);
     reset_misc_runtime_state(state);

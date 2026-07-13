@@ -10,6 +10,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -20,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -47,15 +49,13 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     (void)slot;
 }
 
-void
-getTimeC_buf(char out[9]) { // HH:MM:SS
-    // Not asserting exact value in this test; but keep deterministic if used
-    DSD_SNPRINTF(out, 9, "%s", "12:34:56");
-}
-
-void
-getDateS_buf(char out[11]) { // YYYY/MM/DD
-    DSD_SNPRINTF(out, 11, "%s", "2001/02/03");
+int
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out,
+                          size_t out_size) { // deterministic if used
+    (void)timestamp;
+    const char* value = (format == DSD_LOCAL_DATETIME_DATE_SLASH) ? "2001/02/03" : "12:34:56";
+    DSD_SNPRINTF(out, out_size, "%s", value);
+    return 1;
 }
 
 // Additional stubs to satisfy dmr_pdu.c when linked directly

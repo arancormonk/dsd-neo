@@ -99,7 +99,14 @@ main(void) {
     st.p25_iden_fdma[iden].populated = 1;
     st.p25_chan_tdma_explicit[iden] = 1;
     unsigned int before = st.p25_sm_tune_count;
-    p25_sm_on_group_grant(&opts, &st, channel, 0, /*tg*/ 1234, /*src*/ 5678);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = channel,
+                                   .tg = 1234,
+                                   .src = 5678,
+                                   .svc_bits = 0,
+                                   .is_group = 1});
     rc |= expect_true("tune allowed provisional", st.p25_sm_tune_count == before + 1);
     rc |= expect_true("tuned flag set", opts.p25_is_tuned == 1);
     rc |= expect_true("vc freq set", st.p25_vc_freq[0] != 0);

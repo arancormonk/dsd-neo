@@ -3,6 +3,8 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <assert.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdbool.h>
@@ -57,11 +59,21 @@ main(void) {
     for (int i = 0; i < 16; i++) {
         bits[i] = (uint8_t)((val >> (15 - i)) & 1);
     }
-    uint64_t out = ConvertBitIntoBytes(bits, 16);
+    uint64_t out = convert_bits_into_output(bits, 16);
     assert(out == 0xABCDULL);
 
+    const uint64_t value64 = UINT64_C(0xFEDCBA9876543210);
+    uint8_t bits64[64];
+    for (uint32_t i = 0; i < 64U; i++) {
+        bits64[i] = (uint8_t)((value64 >> (63U - i)) & 1U);
+    }
+    assert(convert_bits_into_output(bits64, 64U) == value64);
+
+    const uint8_t masked_bits[9] = {3U, 2U, 5U, 4U, 7U, 6U, 9U, 8U, 11U};
+    assert(convert_bits_into_output(masked_bits, 9U) == UINT64_C(0x155));
+
     // Zero-length converts to 0
-    assert(ConvertBitIntoBytes(bits, 0) == 0ULL);
+    assert(convert_bits_into_output(bits, 0) == 0ULL);
 
     test_hamming17123_single_bit_correction();
     test_hamming17123_uncorrectable_word_is_rejected();

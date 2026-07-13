@@ -148,7 +148,7 @@ test_conflicting_scan_modes_fail_before_live_setup(void) {
 
     opts->trunk_scan_enabled = 1;
     opts->scanner_mode = 1;
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = expect_true("conflicting scan modes rejected", rc != 0);
     free_test_runtime(opts, state);
@@ -165,7 +165,7 @@ test_m17_udp_input_and_output_specs(void) {
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "m17udp:rx.example:17000");
     DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "m17udp:tx.example:17001");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("m17 run ok", rc == 0);
@@ -187,7 +187,7 @@ test_m17_userdata_is_normalized_during_common_setup(void) {
     }
 
     DSD_SNPRINTF(state->m17dat, sizeof state->m17dat, "%s", "M17:31:n0call:all:16000:7");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("m17 userdata run ok", rc == 0);
@@ -210,7 +210,7 @@ test_udp_input_defaults_and_null_output(void) {
     }
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("udp run ok", rc == 0);
@@ -233,7 +233,7 @@ test_rtltcp_tuning_tokens_and_bias(void) {
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s",
                  "rtltcp:radio.local:1234:769.00625M:28:3:24:-47:5:bias=off");
     opts->rtl_bias_tee = 1;
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("rtltcp run ok", rc == 0);
@@ -266,7 +266,7 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     opts->rtlsdr_ppm_error = -2;
     opts->rtl_squelch_level = 0.25;
     opts->rtl_bias_tee = 1;
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("rtltcp invalid run ok", rc == 0);
@@ -287,7 +287,7 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     }
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:short.example:7777:450M:11:bias=on");
     opts->rtl_bias_tee = 0;
-    rc = dsd_engine_run(opts, state);
+    rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     test_rc |= expect_true("rtltcp partial run ok", rc == 0);
     test_rc |= expect_true("rtltcp partial host", strcmp(opts->rtltcp_hostname, "short.example") == 0);
@@ -310,7 +310,7 @@ test_soapy_setup_normalizes_args_and_tuning(void) {
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s",
                  "soapy:driver=test,serial=ABC:450.5M:7:2:12:-33:3");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("soapy run ok", rc == 0);
@@ -334,7 +334,7 @@ test_iq_replay_guard_and_requested_setup(void) {
     }
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     int test_rc = expect_true("direct iqreplay rejected", rc != 0);
     free_test_runtime(opts, state);
 
@@ -343,7 +343,7 @@ test_iq_replay_guard_and_requested_setup(void) {
     }
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq");
     opts->iq_replay_requested = 1;
-    rc = dsd_engine_run(opts, state);
+    rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     test_rc |= expect_true("requested iqreplay accepted", rc == 0);
     test_rc |= expect_true("requested iqreplay state", opts->iq_replay_active == 1 && opts->rtltcp_enabled == 0
                                                            && opts->audio_in_type == AUDIO_IN_RTL);

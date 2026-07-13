@@ -67,7 +67,7 @@ test_history_basic_ops(void) {
     rc = dsd_symbol_history_init(&state, 2);
     check_int("reinit return", 0, rc);
     check_int("reinit count", 0, dsd_symbol_history_count(&state));
-    check_int("reinit size", 2, state.dmr_sample_history_size);
+    check_int("reinit size", 2, state.symbol_history_size);
 
     dsd_symbol_history_push(&state, 4.0f);
     dsd_symbol_history_push(&state, 5.0f);
@@ -82,7 +82,7 @@ test_history_basic_ops(void) {
 
     /* Free */
     dsd_symbol_history_free(&state);
-    check_int("count after free", 0, state.dmr_sample_history_count);
+    check_int("count after free", 0, state.symbol_history_count);
 
     printf("test_history_basic_ops: passed\n\n");
 }
@@ -101,8 +101,8 @@ test_history_guards(void) {
     dsd_symbol_history_reset(&state);
     dsd_symbol_history_free(NULL);
 
-    check_int("guard size unchanged", 0, state.dmr_sample_history_size);
-    check_int("guard count unchanged", 0, state.dmr_sample_history_count);
+    check_int("guard size unchanged", 0, state.symbol_history_size);
+    check_int("guard count unchanged", 0, state.symbol_history_count);
 
     printf("test_history_guards: passed\n\n");
 }

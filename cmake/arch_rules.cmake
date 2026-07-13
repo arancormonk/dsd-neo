@@ -297,7 +297,7 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
                     "(^|.*/)(dsd_ncurses_|ncurses_|menu_)[^/]*\\.h$"
                 OR _ARCH_RULES_HEADER
                     MATCHES
-                    "(^|.*/)(commands_internal|frontend_internal|snapshot_internal|telemetry_hooks_impl)\\.h$"
+                    "(^|.*/)(commands_internal|frontend_internal|snapshot_internal)\\.h$"
             )
                 message(
                     SEND_ERROR

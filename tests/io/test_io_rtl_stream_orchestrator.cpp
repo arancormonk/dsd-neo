@@ -118,7 +118,7 @@ dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* s
 }
 
 extern "C" uint32_t
-dsd_rtl_stream_output_generation(void) {
+rtl_stream_output_generation(void) {
     return g_stub.output_generation;
 }
 

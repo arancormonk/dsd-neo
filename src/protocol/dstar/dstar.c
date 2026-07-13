@@ -34,7 +34,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
         const int* x = dstar_interleave_x;
 
         for (i = 0; i < 72; i++) {
-            int dibit = getDibit(opts, state);
+            int dibit = get_dibit_and_analog_signal(opts, state, NULL);
             ambe_fr[*w][*x] = dibit & 1;
             w++;
             x++;
@@ -45,7 +45,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
         if (j != 20) {
             for (i = 0; i < 24; i++) {
                 //slow data
-                sd[(j * 24) + i] = (uint8_t)getDibit(opts, state);
+                sd[(j * 24) + i] = (uint8_t)get_dibit_and_analog_signal(opts, state, NULL);
             }
         }
 

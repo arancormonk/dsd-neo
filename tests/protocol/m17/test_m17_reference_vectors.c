@@ -9,20 +9,10 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/ecdsa.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-uint64_t
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t value = 0ULL;
-    for (uint32_t i = 0U; i < n; i++) {
-        value = (value << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return value;
-}
 
 static int
 expect_u32(const char* label, uint32_t got, uint32_t want) {

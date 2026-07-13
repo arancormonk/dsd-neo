@@ -31,14 +31,16 @@ struct RtlSdrContext;
 // Strong stub to capture VC tuning attempts from the SM path
 static int g_tunes = 0;
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)freq;
     (void)ted_sps;
     g_tunes++;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 // No-op stubs to satisfy link of LCW path helpers
@@ -68,32 +70,24 @@ rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
     return 0;
 }
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq = trunk_tune_to_freq;
-    hooks.return_to_cc = return_to_cc;
+    hooks.tune_to_freq_request = trunk_tune_to_freq;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
-// Minimal ConvertBitIntoBytes (MSB-first) and no-op alias/GPS helpers for LCW
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return out;
-}
-
+// No-op alias/GPS helpers for LCW
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {

@@ -137,7 +137,7 @@ interactive_configure_rtl_input(dsd_opts* opts, int* src) {
     char freq[64];
     prompt_string("Center frequency in Hz (K/M/G suffix ok, e.g., 851.375M or 851375000)", "", freq, sizeof freq);
     if (freq[0] == '\0') {
-        LOG_WARNING("No frequency entered; falling back to PulseAudio input.\n");
+        LOG_WARN("WARNING: No frequency entered; falling back to PulseAudio input.\n");
         *src = 1;
         return;
     }
@@ -151,7 +151,7 @@ interactive_configure_rtl_input(dsd_opts* opts, int* src) {
                  sql, vol);
 #else
     (void)opts;
-    LOG_WARNING("RTL-SDR support not enabled in this build.\n");
+    LOG_WARN("WARNING: RTL-SDR support not enabled in this build.\n");
     *src = 1;
 #endif
 }
@@ -181,7 +181,7 @@ interactive_configure_file_input(dsd_opts* opts, dsd_state* state, int* src) {
     char path[1024];
     prompt_string("Path to WAV/BIN/RAW/SYM file", "", path, sizeof path);
     if (path[0] == '\0') {
-        LOG_WARNING("No file provided; falling back to PulseAudio input.\n");
+        LOG_WARN("WARNING: No file provided; falling back to PulseAudio input.\n");
         *src = 1;
         return;
     }
@@ -287,15 +287,15 @@ interactive_maybe_import_channel_map(dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (!path_is_regular_file(cpath)) {
-        LOG_WARNING("Channel map file not found: %s — skipping import.\n", cpath);
+        LOG_WARN("WARNING: Channel map file not found: %s — skipping import.\n", cpath);
         return;
     }
     DSD_STRNCPY(opts->chan_in_file, cpath, sizeof opts->chan_in_file - 1);
     opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
     if (csvChanImport(opts, state) == 0) {
-        LOG_NOTICE("Imported channel map from %s\n", opts->chan_in_file);
+        LOG_INFO("NOTICE: Imported channel map from %s\n", opts->chan_in_file);
     } else {
-        LOG_WARNING("Failed to import channel map from %s\n", opts->chan_in_file);
+        LOG_WARN("WARNING: Failed to import channel map from %s\n", opts->chan_in_file);
     }
 }
 
@@ -307,19 +307,19 @@ interactive_maybe_import_group_list(dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (!path_is_regular_file(gpath)) {
-        LOG_WARNING("Group list file not found: %s — skipping import.\n", gpath);
+        LOG_WARN("WARNING: Group list file not found: %s — skipping import.\n", gpath);
         return;
     }
     DSD_STRNCPY(opts->group_in_file, gpath, sizeof opts->group_in_file - 1);
     opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
     if (csvGroupImport(opts, state) == 0) {
-        LOG_NOTICE("Imported group list from %s\n", opts->group_in_file);
+        LOG_INFO("NOTICE: Imported group list from %s\n", opts->group_in_file);
     } else {
-        LOG_WARNING("Failed to import group list from %s\n", opts->group_in_file);
+        LOG_WARN("WARNING: Failed to import group list from %s\n", opts->group_in_file);
     }
     if (prompt_yes_no("Use group list as allow/white list?", 0)) {
         opts->trunk_use_allow_list = 1;
-        LOG_NOTICE("Allow/white list: Enabled.\n");
+        LOG_INFO("NOTICE: Allow/white list: Enabled.\n");
     }
 }
 
@@ -339,7 +339,7 @@ interactive_maybe_configure_trunking(int mode, int src, dsd_opts* opts, dsd_stat
         }
         opts->use_rigctl = 1;
     }
-    LOG_NOTICE("Trunking: Enabled.\n");
+    LOG_INFO("NOTICE: Trunking: Enabled.\n");
     interactive_maybe_import_channel_map(opts, state);
     interactive_maybe_import_group_list(opts, state);
 }
@@ -388,14 +388,14 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    LOG_NOTICE("No CLI arguments detected — starting interactive setup.\n");
-    LOG_NOTICE("Press Enter to accept defaults in [brackets].\n");
+    LOG_INFO("NOTICE: No CLI arguments detected — starting interactive setup.\n");
+    LOG_INFO("NOTICE: Press Enter to accept defaults in [brackets].\n");
 
     int src = interactive_choose_input_source();
     interactive_configure_input_source(opts, state, &src);
 
     if (src == 1) {
-        LOG_NOTICE("PulseAudio selected; choose devices.\n");
+        LOG_INFO("NOTICE: PulseAudio selected; choose devices.\n");
         dsd_bootstrap_choose_audio_input(opts);
         dsd_bootstrap_choose_audio_output(opts);
     }
@@ -410,5 +410,5 @@ dsd_bootstrap_interactive(dsd_opts* opts, dsd_state* state) {
     interactive_maybe_configure_output(opts, src);
     interactive_maybe_enable_terminal_frontend(opts);
 
-    LOG_NOTICE("Interactive setup complete.\n");
+    LOG_INFO("NOTICE: Interactive setup complete.\n");
 }

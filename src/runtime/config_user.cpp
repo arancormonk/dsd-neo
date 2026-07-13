@@ -14,6 +14,7 @@
 #include <cmath>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -144,11 +145,6 @@ struct decode_mode_name_map_t {
     const char* value;
 };
 
-struct decode_mode_alias_map_t {
-    const char* alias;
-    dsdneoUserDecodeMode mode;
-};
-
 } // namespace
 
 static const decode_mode_name_map_t k_decode_mode_names[] = {
@@ -157,11 +153,6 @@ static const decode_mode_name_map_t k_decode_mode_names[] = {
     {DSDCFG_MODE_X2TDMA, "x2tdma"},     {DSDCFG_MODE_YSF, "ysf"},       {DSDCFG_MODE_DSTAR, "dstar"},
     {DSDCFG_MODE_EDACS_PV, "edacs_pv"}, {DSDCFG_MODE_DPMR, "dpmr"},     {DSDCFG_MODE_M17, "m17"},
     {DSDCFG_MODE_TDMA, "tdma"},         {DSDCFG_MODE_ANALOG, "analog"},
-};
-
-static const decode_mode_alias_map_t k_decode_mode_aliases[] = {
-    {"p25p1_only", DSDCFG_MODE_P25P1},  {"p25p2_only", DSDCFG_MODE_P25P2},      {"edacs", DSDCFG_MODE_EDACS_PV},
-    {"provoice", DSDCFG_MODE_EDACS_PV}, {"analog_monitor", DSDCFG_MODE_ANALOG},
 };
 
 static const char*
@@ -175,12 +166,9 @@ decode_mode_to_ini_name(dsdneoUserDecodeMode mode) {
 }
 
 int
-user_config_parse_decode_mode_value(const char* val, dsdneoUserDecodeMode* out_mode, int* used_compat_alias) {
+user_config_parse_decode_mode_value(const char* val, dsdneoUserDecodeMode* out_mode) {
     if (!val || !*val || !out_mode) {
         return -1;
-    }
-    if (used_compat_alias) {
-        *used_compat_alias = 0;
     }
 
     for (size_t i = 0; i < sizeof(k_decode_mode_names) / sizeof(k_decode_mode_names[0]); i++) {
@@ -189,25 +177,7 @@ user_config_parse_decode_mode_value(const char* val, dsdneoUserDecodeMode* out_m
             return 0;
         }
     }
-    for (size_t i = 0; i < sizeof(k_decode_mode_aliases) / sizeof(k_decode_mode_aliases[0]); i++) {
-        if (dsd_strcasecmp(val, k_decode_mode_aliases[i].alias) == 0) {
-            *out_mode = k_decode_mode_aliases[i].mode;
-            if (used_compat_alias) {
-                *used_compat_alias = 1;
-            }
-            return 0;
-        }
-    }
-
     return -1;
-}
-
-int
-user_config_is_mode_decode_key(const char* section, const char* key) {
-    if (!section || !key) {
-        return 0;
-    }
-    return dsd_strcasecmp(section, "mode") == 0 && dsd_strcasecmp(key, "decode") == 0;
 }
 
 static void
@@ -241,18 +211,33 @@ split_colon_tokens(char* scratch, size_t scratch_size, const char* in, char** ou
     return count;
 }
 
-static int
-parse_int_atoi_compat(const char* text) {
-    if (!text || *text == '\0') {
-        return 0;
+static void
+snapshot_parse_optional_int_token(char* const* tokens, size_t token_count, size_t index, int* value, int* is_set) {
+    if (!tokens || !value || index >= token_count) {
+        return;
     }
-    errno = 0;
-    char* end = NULL;
-    long v = strtol(text, &end, 10);
-    if (end == text || (end && *end != '\0') || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
-        return 0;
+    if (dsd_parse_int_strict(tokens[index], 10, INT_MIN, INT_MAX, value) != 0) {
+        *value = 0;
     }
-    return (int)v;
+    if (is_set) {
+        *is_set = 1;
+    }
+}
+
+static void
+snapshot_copy_optional_token(char* const* tokens, size_t token_count, size_t index, char* dst, size_t dst_size) {
+    if (tokens && index < token_count) {
+        copy_token_string(dst, dst_size, tokens[index]);
+    }
+}
+
+static void
+snapshot_parse_rtl_tuning_tokens(char* const* tokens, size_t token_count, size_t gain_index, dsdneoUserConfig* cfg) {
+    snapshot_parse_optional_int_token(tokens, token_count, gain_index, &cfg->rtl_gain, NULL);
+    snapshot_parse_optional_int_token(tokens, token_count, gain_index + 1, &cfg->rtl_ppm, &cfg->rtl_ppm_is_set);
+    snapshot_parse_optional_int_token(tokens, token_count, gain_index + 2, &cfg->rtl_bw_khz, NULL);
+    snapshot_parse_optional_int_token(tokens, token_count, gain_index + 3, &cfg->rtl_sql, NULL);
+    snapshot_parse_optional_int_token(tokens, token_count, gain_index + 4, &cfg->rtl_volume, NULL);
 }
 
 static int
@@ -386,28 +371,9 @@ snapshot_parse_rtl_device_spec(const char* audio_in_dev, dsdneoUserConfig* cfg) 
     char buf[1024];
     char* tok[9] = {0};
     size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
-    if (n > 1) {
-        cfg->rtl_device = parse_int_atoi_compat(tok[1]);
-    }
-    if (n > 2) {
-        copy_token_string(cfg->rtl_freq, sizeof cfg->rtl_freq, tok[2]);
-    }
-    if (n > 3) {
-        cfg->rtl_gain = parse_int_atoi_compat(tok[3]);
-    }
-    if (n > 4) {
-        cfg->rtl_ppm = parse_int_atoi_compat(tok[4]);
-        cfg->rtl_ppm_is_set = 1;
-    }
-    if (n > 5) {
-        cfg->rtl_bw_khz = parse_int_atoi_compat(tok[5]);
-    }
-    if (n > 6) {
-        cfg->rtl_sql = parse_int_atoi_compat(tok[6]);
-    }
-    if (n > 7) {
-        cfg->rtl_volume = parse_int_atoi_compat(tok[7]);
-    }
+    snapshot_parse_optional_int_token(tok, n, 1, &cfg->rtl_device, NULL);
+    snapshot_copy_optional_token(tok, n, 2, cfg->rtl_freq, sizeof cfg->rtl_freq);
+    snapshot_parse_rtl_tuning_tokens(tok, n, 3, cfg);
 }
 
 static void
@@ -419,31 +385,10 @@ snapshot_parse_rtltcp_device_spec(const char* audio_in_dev, dsdneoUserConfig* cf
     char buf[1024];
     char* tok[10] = {0};
     size_t n = split_colon_tokens(buf, sizeof buf, audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
-    if (n > 1) {
-        copy_token_string(cfg->rtltcp_host, sizeof cfg->rtltcp_host, tok[1]);
-    }
-    if (n > 2) {
-        cfg->rtltcp_port = parse_int_atoi_compat(tok[2]);
-    }
-    if (n > 3) {
-        copy_token_string(cfg->rtl_freq, sizeof cfg->rtl_freq, tok[3]);
-    }
-    if (n > 4) {
-        cfg->rtl_gain = parse_int_atoi_compat(tok[4]);
-    }
-    if (n > 5) {
-        cfg->rtl_ppm = parse_int_atoi_compat(tok[5]);
-        cfg->rtl_ppm_is_set = 1;
-    }
-    if (n > 6) {
-        cfg->rtl_bw_khz = parse_int_atoi_compat(tok[6]);
-    }
-    if (n > 7) {
-        cfg->rtl_sql = parse_int_atoi_compat(tok[7]);
-    }
-    if (n > 8) {
-        cfg->rtl_volume = parse_int_atoi_compat(tok[8]);
-    }
+    snapshot_copy_optional_token(tok, n, 1, cfg->rtltcp_host, sizeof cfg->rtltcp_host);
+    snapshot_parse_optional_int_token(tok, n, 2, &cfg->rtltcp_port, NULL);
+    snapshot_copy_optional_token(tok, n, 3, cfg->rtl_freq, sizeof cfg->rtl_freq);
+    snapshot_parse_rtl_tuning_tokens(tok, n, 4, cfg);
 }
 
 static void
@@ -471,7 +416,9 @@ snapshot_parse_host_port_spec(const char* audio_in_dev, char* host, size_t host_
         copy_token_string(host, host_size, tok[1]);
     }
     if (n > 2) {
-        *port = parse_int_atoi_compat(tok[2]);
+        if (dsd_parse_int_strict(tok[2], 10, INT_MIN, INT_MAX, port) != 0) {
+            *port = 0;
+        }
     }
 }
 
@@ -1512,8 +1459,7 @@ static void
 snapshot_alerts_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_alerts = 1;
     cfg->call_alert_enabled = opts->call_alert ? 1 : 0;
-    cfg->call_alert_events = opts->call_alert ? dsd_call_alert_normalize_events(opts->call_alert_events)
-                                              : dsd_call_alert_mask_events(opts->call_alert_events);
+    cfg->call_alert_events = dsd_call_alert_mask_events(opts->call_alert_events);
 }
 
 static void
@@ -1545,9 +1491,11 @@ static void
 snapshot_dsp_config(dsdneoUserConfig* cfg) {
     cfg->has_dsp = 1;
     const char* iqb = getenv("DSD_NEO_IQ_BALANCE");
-    cfg->iq_balance = (parse_int_atoi_compat(iqb) != 0) ? 1 : 0;
+    int parsed = 0;
+    cfg->iq_balance = (dsd_parse_int_strict(iqb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
     const char* dcb = getenv("DSD_NEO_IQ_DC_BLOCK");
-    cfg->iq_dc_block = (parse_int_atoi_compat(dcb) != 0) ? 1 : 0;
+    parsed = 0;
+    cfg->iq_dc_block = (dsd_parse_int_strict(dcb, 10, INT_MIN, INT_MAX, &parsed) == 0 && parsed != 0) ? 1 : 0;
 }
 
 void
@@ -1629,7 +1577,7 @@ render_template_default_value(FILE* stream, const dsdcfg_schema_entry_t* e) {
 
 static void
 render_template_schema_entry(FILE* stream, const dsdcfg_schema_entry_t* e) {
-    if (!stream || !e || e->deprecated) {
+    if (!stream || !e) {
         return;
     }
     DSD_FPRINTF(stream, "# %s\n", e->description);

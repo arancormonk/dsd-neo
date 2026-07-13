@@ -4,7 +4,6 @@
  */
 
 #include <dsd-neo/app_control/frontend.h>
-#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -29,38 +28,6 @@ copy_text(char* dst, size_t dst_size, const char* src) {
     }
     DSD_SNPRINTF(dst, dst_size, "%s", src ? src : "");
     dst[dst_size - 1] = '\0';
-}
-
-static void
-frontend_copy_display_opts(const dsd_frontend_display_opts* src, dsd_frontend_common_display_opts* common,
-                           dsd_frontend_terminal_display_opts* terminal) {
-    if (!src) {
-        return;
-    }
-    if (common) {
-        common->constellation = src->constellation;
-        common->const_gate_qpsk = src->const_gate_qpsk;
-        common->const_gate_other = src->const_gate_other;
-        common->const_norm_mode = src->const_norm_mode;
-        common->eye_view = src->eye_view;
-        common->fsk_hist_view = src->fsk_hist_view;
-        common->spectrum_view = src->spectrum_view;
-        common->show_dsp_panel = src->show_dsp_panel;
-        common->show_p25_metrics = src->show_p25_metrics;
-        common->show_p25_neighbors = src->show_p25_neighbors;
-        common->show_p25_iden_plan = src->show_p25_iden_plan;
-        common->show_p25_cc_candidates = src->show_p25_cc_candidates;
-        common->show_channels = src->show_channels;
-        common->show_p25_affiliations = src->show_p25_affiliations;
-        common->show_p25_group_affiliations = src->show_p25_group_affiliations;
-        common->show_p25_callsign_decode = src->show_p25_callsign_decode;
-    }
-    if (terminal) {
-        terminal->terminal_compact = src->terminal_compact;
-        terminal->terminal_history = src->terminal_history;
-        terminal->eye_unicode = src->eye_unicode;
-        terminal->eye_color = src->eye_color;
-    }
 }
 
 static void
@@ -155,7 +122,8 @@ frontend_status_copy_radio_opts(dsd_frontend_status* out, const dsd_opts* opts) 
 static void
 frontend_status_copy_opts(dsd_frontend_status* out, const dsd_opts* opts) {
     out->frontend_kind = opts->frontend_kind;
-    frontend_copy_display_opts(&opts->frontend_display, &out->display, &out->terminal_display);
+    out->display = opts->frontend_display;
+    out->terminal_display = opts->frontend_terminal_display;
     frontend_status_copy_audio_opts(out, opts);
     frontend_status_copy_endpoint_opts(out, opts);
     frontend_status_copy_recording_opts(out, opts);

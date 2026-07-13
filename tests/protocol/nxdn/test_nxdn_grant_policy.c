@@ -51,25 +51,6 @@ free_test_state(dsd_state* st) {
  * Pulling NXDN_decode_VCALL_ASSGN from nxdn_element.c requires auxiliary
  * symbols that are irrelevant to this focused grant-policy test.
  */
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0U; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-convert_bits_into_output(const uint8_t* input, int len) {
-    if (input == NULL || len <= 0) {
-        return 0ULL;
-    }
-    return ConvertBitIntoBytes(input, (uint32_t)len);
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
@@ -230,8 +211,9 @@ dsd_time_monotonic_ns(void) {
     return 0ULL;
 }
 
-static void
-hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+static dsd_trunk_tune_result
+hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     g_tune_count++;
     g_last_tune_freq = freq;
@@ -242,18 +224,22 @@ hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) 
     if (state) {
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-static void
-hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+static dsd_trunk_tune_result
+hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)freq;
     (void)ted_sps;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-static void
-hook_return_to_cc(dsd_opts* opts, dsd_state* state) {
+static dsd_trunk_tune_result
+hook_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     if (opts) {
         opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
@@ -261,6 +247,7 @@ hook_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (state) {
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
@@ -337,9 +324,9 @@ main(void) {
     st->trunk_chan_map[chan] = freq;
 
     dsd_trunk_tuning_hooks hooks = {
-        .tune_to_freq = hook_tune_to_freq,
-        .tune_to_cc = hook_tune_to_cc,
-        .return_to_cc = hook_return_to_cc,
+        .tune_to_freq_request = hook_tune_to_freq,
+        .tune_to_cc_request = hook_tune_to_cc,
+        .return_to_cc_request = hook_return_to_cc,
     };
     dsd_trunk_tuning_hooks_set(hooks);
 
