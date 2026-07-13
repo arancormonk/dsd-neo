@@ -52,7 +52,7 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - Built‑in trunking workflow
 
-  - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `--frontend terminal`).
+  - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `--frontend terminal`; `-N` is the short alias).
   - Rotate one tuner across CSV-defined P25 trunk, DMR trunk, and one-frequency DMR targets with `--trunk-scan targets.csv`.
   - On‑the‑fly retune control via rigctl (`-U`) for external SDR front-ends (e.g., SDR++). For RTL/RTL‑TCP input, DSD-neo retunes directly (optional external UDP retune control can be enabled on loopback with `--rtl-udp-control <port>`; remote exposure requires `--rtl-udp-control-bind <ipv4>`; see `docs/udp-control.md`).
 

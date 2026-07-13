@@ -4,7 +4,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 
 ## Cheatsheet
 
-- Help: `dsd-neo -h` | UI/logs: `--frontend terminal`, `-Z` | List devices: `-O`
+- Help: `dsd-neo -h` | UI/logs: `--frontend terminal` (`-N` alias), `-Z` | List devices: `-O`
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host[:port]] | udp[:bind_addr[:port]] | m17udp[:bind_addr[:port]] | -`
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`
@@ -104,7 +104,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 ## Display & UI
 
-- `--frontend terminal` Use the terminal UI
+- `--frontend terminal` Use the terminal UI (`-N` is the supported short alias)
 - `-Z` Log MBE/PDU payloads to the console (verbose)
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)

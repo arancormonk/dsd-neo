@@ -276,6 +276,43 @@ test_frontend_terminal_option_sets_terminal_kind(void) {
 }
 
 static int
+test_N_short_option_enables_terminal_frontend(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-N";
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = 0;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->frontend_kind != DSD_FRONTEND_TERMINAL) {
+        DSD_FPRINTF(stderr, "expected -N to enable terminal frontend, got frontend_kind=%d\n", opts->frontend_kind);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 expect_numeric_parse_error(const char* option, const char* value) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -1474,6 +1511,80 @@ test_bootstrap_config_trunking_preserves_terminal_frontend(void) {
     if (opts->frontend_kind != DSD_FRONTEND_TERMINAL) {
         DSD_FPRINTF(stderr, "expected --frontend terminal to set terminal kind, got frontend_kind=%d\n",
                     opts->frontend_kind);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_config_trunking_preserves_N_terminal_alias(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "[input]\n"
+                             "source = \"rtl\"\n"
+                             "rtl_device = 0\n"
+                             "rtl_freq = \"100000000\"\n"
+                             "\n"
+                             "[output]\n"
+                             "frontend = \"none\"\n"
+                             "\n"
+                             "[trunking]\n"
+                             "enabled = true\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_in_tmpdir_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create external temp ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "-N";
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(4, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected -N terminal alias bootstrap continue, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    if (argc_effective != 2 || !state->cli_argv || !state->cli_argv[1] || strcmp(state->cli_argv[1], "-N") != 0) {
+        DSD_FPRINTF(stderr, "expected compacted CLI to retain -N, argc=%d arg1=%s\n", argc_effective,
+                    (argc_effective > 1 && state->cli_argv && state->cli_argv[1]) ? state->cli_argv[1] : "(missing)");
+        test_rc = 1;
+    }
+    if (opts->trunk_enable != 1) {
+        DSD_FPRINTF(stderr, "expected config trunking preserved with -N, got trunk_enable=%d\n", opts->trunk_enable);
+        test_rc = 1;
+    }
+    if (opts->frontend_kind != DSD_FRONTEND_TERMINAL) {
+        DSD_FPRINTF(stderr, "expected -N to override configured frontend, got frontend_kind=%d\n", opts->frontend_kind);
         test_rc = 1;
     }
 
@@ -5985,6 +6096,7 @@ main(void) {
     rc |= test_invalid_option_returns_error_and_does_not_exit();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_frontend_terminal_option_sets_terminal_kind();
+    rc |= test_N_short_option_enables_terminal_frontend();
     rc |= test_numeric_options_reject_trailing_junk();
     rc |= test_H_loads_aes256_key_for_both_slots();
     rc |= test_H_zero_key_keeps_dmr_encrypted_audio_muted();
@@ -6000,6 +6112,7 @@ main(void) {
     rc |= test_bootstrap_treats_lone_ini_as_config();
     rc |= test_bootstrap_accepts_explicit_config_path_outside_cwd();
     rc |= test_bootstrap_config_trunking_preserves_terminal_frontend();
+    rc |= test_bootstrap_config_trunking_preserves_N_terminal_alias();
     rc |= test_bootstrap_missing_explicit_config_keeps_autosave_path();
     rc |= test_bootstrap_rejects_too_long_explicit_config_path();
     rc |= test_bootstrap_guard_rejects_invalid_arguments();
