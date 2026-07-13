@@ -2389,6 +2389,7 @@ rtl_device_copy_cstr(char* dst, size_t dst_size, const char* src) {
     dst[dst_size - 1] = '\0';
 }
 
+#if defined(USE_SOAPYSDR) || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 static std::string
 soapy_trim_copy(const std::string& value) {
     size_t start = 0;
@@ -2401,6 +2402,7 @@ soapy_trim_copy(const std::string& value) {
     }
     return value.substr(start, end - start);
 }
+#endif
 
 #ifdef USE_SOAPYSDR
 template <typename Fn>
