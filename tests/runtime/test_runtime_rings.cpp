@@ -4,6 +4,7 @@
  */
 
 #include <atomic>
+#include <cmath>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/ring.h>
 #include <stdint.h>
@@ -59,7 +60,7 @@ main(void) {
     const float expected[6] = {10.0f, 20.0f, 30.0f, 40.0f, 50.0f, 60.0f};
     bool values_match = true;
     for (size_t i = 0; i < 6U; i++) {
-        if (out[i] != expected[i]) {
+        if (std::fabs(out[i] - expected[i]) > 1.0e-6f) {
             values_match = false;
             break;
         }

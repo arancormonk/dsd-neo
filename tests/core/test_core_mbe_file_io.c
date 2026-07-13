@@ -1293,9 +1293,9 @@ test_open_mbe_in_file_accepts_sdrtrunk_extension(void) {
         (void)remove_dir(dir);
         return 1;
     }
-    FILE* f = fopen(path, "wb");
+    FILE* f = dsd_fopen_private(path, "wb");
     if (!f) {
-        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", path, strerror(errno));
+        DSD_FPRINTF(stderr, "dsd_fopen_private(%s) failed: %s\n", path, strerror(errno));
         (void)remove_dir(dir);
         return 1;
     }
