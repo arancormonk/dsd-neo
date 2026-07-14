@@ -150,9 +150,11 @@ typedef struct {
     int vc_channel;
     int vc_tg;
     int vc_src;
-    int vc_is_tdma;          // 1 if TDMA channel, 0 if single-carrier
-    int vc_data_call;        // 1 if the accepted grant is data, 0 if voice
-    int vc_cqpsk_retry_done; // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
+    int vc_is_tdma;             // 1 if TDMA channel, 0 if single-carrier
+    int vc_data_call;           // 1 if the accepted grant is data, 0 if voice
+    int vc_cqpsk_retry_done;    // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
+    int vc_reacquire_eligible;  // 1 while a newly tuned TDMA voice channel has no decoded activity
+    int vc_reacquire_attempted; // 1 after the one-shot CQPSK soft recovery check for this VC tune
 
     // Short-lived identity guard for a voice call ended by MAC_END_PTT. This
     // prevents a trailing CC grant for that exact call from causing a VC/CC
@@ -175,6 +177,7 @@ typedef struct {
     double t_cc_sync_m;          // Monotonic time of last CC sync
     double t_cc_tune_m;          // Monotonic time of last CC tune awaiting decode
     double t_cc_reacquire_m;     // Monotonic time a soft CQPSK reacquire was queued
+    double t_vc_reacquire_m;     // Monotonic time a VC soft CQPSK reacquire was queued
     double t_hunt_try_m;         // Monotonic time of last CC candidate attempt
     uint64_t cc_tune_request_id; // Runtime request awaiting asynchronous tune completion
     int cc_tune_pending;         // 1 while the tuner/output pipeline is still changing channels

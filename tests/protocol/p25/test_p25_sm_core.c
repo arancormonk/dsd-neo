@@ -263,6 +263,54 @@ clear_decoder_vc_tune_state(dsd_opts* opts, dsd_state* state) {
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
 }
 
+#ifdef USE_RADIO
+static void
+init_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int audio_in_type, int is_tdma,
+                               int data_call) {
+    const long vc_freq = 851125000;
+    const double tune_m = dsd_time_now_monotonic_s() - 0.9;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->audio_in_type = audio_in_type;
+    opts->trunk_hangtime = 5.0f;
+    opts->p25_grant_voice_to_s = 3.0;
+    opts->p25_retune_backoff_s = 2.0;
+    state->p25_cc_freq = 851000000;
+    state->trunk_cc_freq = 851000000;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = vc_freq;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = vc_freq;
+    state->p25_p2_active_slot = is_tdma ? 0 : -1;
+    state->p25_vc_cqpsk_pref = 1;
+    state->p25_last_vc_tune_time_m = tune_m;
+    state->last_vc_sync_time_m = tune_m;
+
+    p25_sm_init_ctx(ctx, opts, state);
+    ctx->state = P25_SM_TUNED;
+    ctx->vc_freq_hz = vc_freq;
+    ctx->vc_channel = (9 << 12) | 2;
+    ctx->vc_tg = 1234;
+    ctx->vc_src = 42;
+    ctx->vc_is_tdma = is_tdma;
+    ctx->vc_data_call = data_call;
+    ctx->t_tune_m = tune_m;
+    ctx->t_voice_m = 0.0;
+    ctx->vc_reacquire_eligible = 1;
+    ctx->vc_reacquire_attempted = 0;
+    ctx->t_vc_reacquire_m = 0.0;
+    ctx->slots[0].grant_active = 1;
+    ctx->slots[0].freq_hz = vc_freq;
+    ctx->slots[0].channel = ctx->vc_channel;
+    ctx->slots[0].tg = ctx->vc_tg;
+    ctx->slots[0].target_id = ctx->vc_tg;
+    ctx->slots[0].src = ctx->vc_src;
+    ctx->slots[0].is_group = 1;
+    ctx->slots[0].data_call = data_call;
+    ctx->slots[0].last_grant_m = tune_m;
+}
+#endif
+
 int
 main(void) {
     static dsd_opts opts;
@@ -2012,9 +2060,94 @@ main(void) {
     assert(ctx20.slots[0].grant_active == 1);
     assert(s20.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     assert(s20.p25_retune_block_until == 0);
+
+    // 30) An already-selected CQPSK P25P2 VC gets one demodulator-only
+    // recovery attempt without moving the original grant or tune deadline.
+    static dsd_opts o20v;
+    static dsd_state s20v;
+    p25_sm_ctx_t ctx20v;
+    install_cc_reacquire_hooks();
+    g_cc_reacquire_cqpsk = 1;
+    g_cc_reacquire_request_rc = 1;
+    g_cc_reacquire_request_calls = 0;
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
+    const double vc_tune_boundary_m = ctx20v.t_tune_m;
+    const double vc_grant_boundary_m = ctx20v.slots[0].last_grant_m;
+    const double vc_watchdog_tune_boundary_m = s20v.p25_last_vc_tune_time_m;
+    const double vc_watchdog_sync_boundary_m = s20v.last_vc_sync_time_m;
+    const int vc_hardware_tunes_before = g_result_tune_to_freq_calls;
+    g_result_return_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 1);
+    assert(ctx20v.vc_reacquire_attempted == 1);
+    assert(ctx20v.t_vc_reacquire_m > vc_tune_boundary_m);
+    assert(fabs(ctx20v.t_tune_m - vc_tune_boundary_m) <= cc_sync_epsilon_s);
+    assert(fabs(ctx20v.slots[0].last_grant_m - vc_grant_boundary_m) <= cc_sync_epsilon_s);
+    assert(fabs(s20v.p25_last_vc_tune_time_m - vc_watchdog_tune_boundary_m) <= cc_sync_epsilon_s);
+    assert(fabs(s20v.last_vc_sync_time_m - vc_watchdog_sync_boundary_m) <= cc_sync_epsilon_s);
+    assert(g_result_tune_to_freq_calls == vc_hardware_tunes_before);
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx20v.state == P25_SM_TUNED);
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 1);
+
+    p25_sm_event_t recovered_active = p25_sm_ev_active(0);
+    p25_sm_event(&ctx20v, &o20v, &s20v, &recovered_active);
+    assert(ctx20v.vc_reacquire_eligible == 0);
+    assert(ctx20v.t_vc_reacquire_m == 0.0);
+    assert(ctx20v.slots[0].voice_active == 1);
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 1);
+
+    // If recovery still produces no activity, the existing forced-release and
+    // failed-VC backoff path remains authoritative.
+    g_cc_reacquire_request_calls = 0;
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 1);
+    s20v.p25_sm_force_release = 1;
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(ctx20v.state == P25_SM_ON_CC);
+    assert(ctx20v.vc_reacquire_eligible == 0);
+    assert(ctx20v.vc_reacquire_attempted == 0);
+    assert(ctx20v.t_vc_reacquire_m == 0.0);
+    assert(s20v.p25_retune_block_freq == 851125000);
+    assert(s20v.p25_retune_block_slot == 0);
+    assert(s20v.p25_retune_block_until > time(NULL));
+
+    // Valid activity, C4FM, non-RTL input, P25P1, and data grants must not
+    // request the CQPSK VC recovery.
+    g_cc_reacquire_request_calls = 0;
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
+    p25_sm_event_t early_ptt = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx20v, &o20v, &s20v, &early_ptt);
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 0);
+    assert(ctx20v.vc_reacquire_eligible == 0);
+
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
+    g_cc_reacquire_cqpsk = 0;
+    const int c4fm_tunes_before = g_result_tune_to_freq_calls;
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 0);
+    assert(g_result_tune_to_freq_calls == c4fm_tunes_before);
+
+    g_cc_reacquire_cqpsk = 1;
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, 0, 1, 0);
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 0);
+
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 0, 0);
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 0);
+
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 1);
+    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 0);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
 #endif
 
-    // 29) A concurrent stale-context release must not reset a release already in progress.
+    // 31) A concurrent stale-context release must not reset a release already in progress.
     static dsd_opts o21;
     static dsd_state s21;
     DSD_MEMSET(&o21, 0, sizeof(o21));

@@ -373,7 +373,7 @@ main(void) {
     failed |= expect_int_eq("inactive fsk reacquire leaves cached symbols", cache_pending, 4);
 
     rtl_stream_test_cqpsk_reacquire_result cqpsk_reacquire = {};
-    rc = rtl_stream_test_cqpsk_reacquire(1, 11U, 5, &cqpsk_reacquire);
+    rc = rtl_stream_test_cqpsk_reacquire(1, 4800, 10, 11U, 5, &cqpsk_reacquire);
     failed |= expect_int_eq("cqpsk reacquire helper rc", rc, 0);
     failed |= expect_int_eq("cqpsk reacquire request queued", cqpsk_reacquire.request_rc, 1);
     failed |= expect_int_eq("cqpsk reacquire duplicate coalesced", cqpsk_reacquire.second_request_rc, 1);
@@ -408,7 +408,22 @@ main(void) {
     failed |= expect_int_eq("cqpsk reacquire preserves ted sps", cqpsk_reacquire.ted_sps_after, 10);
 
     cqpsk_reacquire = {};
-    rc = rtl_stream_test_cqpsk_reacquire(0, 9U, 4, &cqpsk_reacquire);
+    rc = rtl_stream_test_cqpsk_reacquire(1, 6000, 8, 7U, 3, &cqpsk_reacquire);
+    failed |= expect_int_eq("P25P2 cqpsk reacquire helper rc", rc, 0);
+    failed |= expect_int_eq("P25P2 cqpsk reacquire request queued", cqpsk_reacquire.request_rc, 1);
+    failed |= expect_int_eq("P25P2 cqpsk reacquire consumed", cqpsk_reacquire.consumed, 1);
+    failed |= expect_generation_changed("P25P2 cqpsk reacquire bumps generation", cqpsk_reacquire.generation_before,
+                                        cqpsk_reacquire.generation_after);
+    failed |= expect_size_eq("P25P2 cqpsk reacquire clears queued ring", cqpsk_reacquire.used_after, 0U);
+    failed |= expect_int_eq("P25P2 cqpsk reacquire resets cached symbols", cqpsk_reacquire.cache_pending_after, 0);
+    failed |= expect_double_near("P25P2 cqpsk reacquire re-arms ted phase", cqpsk_reacquire.ted_mu_after, 17.0, 1e-7);
+    failed |= expect_int_eq("P25P2 cqpsk reacquire preserves symbol rate", cqpsk_reacquire.symbol_rate_after, 6000);
+    failed |= expect_int_eq("P25P2 cqpsk reacquire preserves channel profile", cqpsk_reacquire.channel_profile_after,
+                            RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    failed |= expect_int_eq("P25P2 cqpsk reacquire preserves ted sps", cqpsk_reacquire.ted_sps_after, 8);
+
+    cqpsk_reacquire = {};
+    rc = rtl_stream_test_cqpsk_reacquire(0, 4800, 10, 9U, 4, &cqpsk_reacquire);
     failed |= expect_int_eq("inactive cqpsk reacquire helper rc", rc, 0);
     failed |= expect_int_eq("inactive cqpsk reacquire no-op", cqpsk_reacquire.request_rc, 0);
     failed |= expect_int_eq("inactive cqpsk reacquire not consumed", cqpsk_reacquire.consumed, 0);

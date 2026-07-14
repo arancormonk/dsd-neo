@@ -8738,16 +8738,16 @@ rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached
 }
 
 static void
-cqpsk_reacquire_test_init_demod(struct demod_state* test_demod, int active_cqpsk) {
+cqpsk_reacquire_test_init_demod(struct demod_state* test_demod, int active_cqpsk, int symbol_rate_hz, int ted_sps) {
     DSD_MEMSET(test_demod, 0, sizeof(*test_demod));
     test_demod->output_kind = active_cqpsk ? DSD_DEMOD_OUTPUT_SYMBOL_CQPSK : DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     test_demod->cqpsk_enable = active_cqpsk ? 1 : 0;
-    test_demod->symbol_rate_hz = 4800;
+    test_demod->symbol_rate_hz = symbol_rate_hz;
     test_demod->symbol_levels = 4;
     test_demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
-    test_demod->ted_sps = 10;
-    test_demod->ted_sps_override = 10;
-    test_demod->ted_state.twice_sps = 20;
+    test_demod->ted_sps = ted_sps;
+    test_demod->ted_sps_override = ted_sps;
+    test_demod->ted_state.twice_sps = 2 * ted_sps;
     test_demod->ted_state.mu = 4.5f;
     test_demod->ted_state.dl[0] = 3.0f;
     test_demod->ted_state.dl_index = 7;
@@ -8800,9 +8800,9 @@ cqpsk_reacquire_test_capture_result(const struct demod_state* test_demod,
 }
 
 extern "C" int
-rtl_stream_test_cqpsk_reacquire(int active_cqpsk, size_t queued_samples, int cached_symbols,
-                                rtl_stream_test_cqpsk_reacquire_result* out_result) {
-    if (!out_result || cached_symbols < 0) {
+rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sps, size_t queued_samples,
+                                int cached_symbols, rtl_stream_test_cqpsk_reacquire_result* out_result) {
+    if (!out_result || symbol_rate_hz <= 0 || ted_sps < 2 || cached_symbols < 0) {
         return -1;
     }
     *out_result = {};
@@ -8815,7 +8815,7 @@ rtl_stream_test_cqpsk_reacquire(int active_cqpsk, size_t queued_samples, int cac
     }
 
     static struct demod_state test_demod;
-    cqpsk_reacquire_test_init_demod(&test_demod, active_cqpsk);
+    cqpsk_reacquire_test_init_demod(&test_demod, active_cqpsk, symbol_rate_hz, ted_sps);
 
     const int prev_output_kind = demod.output_kind;
     const int prev_cqpsk = demod.cqpsk_enable;

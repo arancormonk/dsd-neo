@@ -53,6 +53,7 @@ static atomic_int g_p25_sm_release_lock = 0;
 #define P25_CC_HUNT_ACQUIRE_GRACE_S             2.0
 #define P25_CC_RETURN_REACQUIRE_DELAY_S         2.0
 #define P25_CC_RETURN_REACQUIRE_MIN_REMAINING_S 1.0
+#define P25_VC_CQPSK_REACQUIRE_DELAY_S          0.8
 
 static const char*
 p25_tune_result_name(dsd_trunk_tune_result result) {
@@ -333,6 +334,45 @@ p25_sm_reset_cc_reacquire_tracking(p25_sm_ctx_t* ctx) {
     }
     ctx->t_cc_reacquire_m = 0.0;
     ctx->cc_reacquire_attempted = 0;
+}
+
+static void
+p25_sm_reset_vc_reacquire_tracking(p25_sm_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->t_vc_reacquire_m = 0.0;
+    ctx->vc_reacquire_eligible = 0;
+    ctx->vc_reacquire_attempted = 0;
+}
+
+static void
+p25_sm_note_vc_decode_activity(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, const char* source, int slot,
+                               double now_m) {
+    if (!ctx || !ctx->vc_reacquire_eligible) {
+        return;
+    }
+    if (now_m <= 0.0) {
+        now_m = dsd_time_now_monotonic_s();
+    }
+    if (ctx->t_vc_reacquire_m > 0.0) {
+        p25_sm_diagf(opts, state, ctx, "vc_reacquire_result",
+                     "result=activity source=%s slot=%d latency=%.3f freq=%ld ch=0x%04X", source ? source : "unknown",
+                     slot, now_m - ctx->t_vc_reacquire_m, ctx->vc_freq_hz, ctx->vc_channel & 0xFFFF);
+    }
+    ctx->t_vc_reacquire_m = 0.0;
+    ctx->vc_reacquire_eligible = 0;
+}
+
+static void
+p25_sm_log_vc_reacquire_no_activity(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, const char* reason) {
+    if (!ctx || ctx->t_vc_reacquire_m <= 0.0) {
+        return;
+    }
+    const double now_m = dsd_time_now_monotonic_s();
+    p25_sm_diagf(opts, state, ctx, "vc_reacquire_result",
+                 "result=no-activity reason=%s elapsed=%.3f freq=%ld ch=0x%04X", reason ? reason : "unknown",
+                 now_m - ctx->t_vc_reacquire_m, ctx->vc_freq_hz, ctx->vc_channel & 0xFFFF);
 }
 
 static void
@@ -1484,6 +1524,8 @@ p25_grant_initialize_timing(p25_sm_ctx_t* ctx, dsd_state* state, double now_m, i
         p25_grant_refresh_reused_carrier_watchdogs(state, now_m);
     } else {
         ctx->vc_cqpsk_retry_done = 0;
+        p25_sm_reset_vc_reacquire_tracking(ctx);
+        ctx->vc_reacquire_eligible = (ctx->vc_is_tdma && !data_call) ? 1 : 0;
     }
 }
 
@@ -2149,6 +2191,7 @@ handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, in
 
     double now_m = dsd_time_now_monotonic_s();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
+    p25_sm_note_vc_decode_activity(ctx, (dsd_opts*)opts, state, why, s, now_m);
 
     if (opts && state && opts->trunk_tune_enc_calls == 0 && p25_crypto_companion_suppressed(state, s)) {
         // The lockout policy may have been enabled after follow mode marked
@@ -2251,6 +2294,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     }
 
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
+    p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, dsd_time_now_monotonic_s());
     int preserve_recent_grant = p25_voice_end_preserve_recent_idle_grant(ctx, s, is_explicit_end, observed_m);
 
     // Mark voice inactive but keep last_active_m for hangtime tracking
@@ -2436,6 +2480,7 @@ handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const
     }
 
     const int slot = ev->slot;
+    p25_sm_note_vc_decode_activity(ctx, opts, state, "crypto-pending", slot, dsd_time_now_monotonic_s());
     const dsd_p25_crypto_state previous = state->p25_crypto_state[slot];
     p25_crypto_mark_encrypted_pending(state, slot);
     if (state->p25_crypto_state[slot] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
@@ -2467,6 +2512,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     }
 
     int slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
+    p25_sm_note_vc_decode_activity(ctx, opts, state, "enc", slot, dsd_time_now_monotonic_s());
     int algid = ev->algid;
     int tg = ev->tg;
     int allow_audio = 0;
@@ -2576,6 +2622,7 @@ p25_release_clear_context(p25_sm_ctx_t* ctx) {
     ctx->vc_data_call = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
+    p25_sm_reset_vc_reacquire_tracking(ctx);
     ctx->release_count++;
     ctx->cc_return_count++;
 }
@@ -2755,6 +2802,7 @@ p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const ch
         return 0;
     }
 
+    p25_sm_log_vc_reacquire_no_activity(ctx, opts, state, reason);
     if (had_force_release || arm_failed_vc_backoff_on_accept) {
         p25_arm_failed_vc_retune_backoff(ctx, opts, state);
     }
@@ -3065,6 +3113,7 @@ p25_sm_handle_vc_sync_event(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* 
     }
     double now_m = dsd_time_now_monotonic_s();
     int sync_slot = p25_sm_vc_sync_slot(ctx, state, slot);
+    p25_sm_note_vc_decode_activity(ctx, (dsd_opts*)opts, state, "sync", sync_slot, now_m);
     ctx->t_voice_m = now_m;
     if (sync_slot >= 0 && sync_slot <= 1 && ctx->slots[sync_slot].grant_active && !ctx->slots[sync_slot].data_call) {
         ctx->slots[sync_slot].last_active_m = now_m;
@@ -3430,11 +3479,68 @@ p25_sm_tick_tuned_check_hangtime(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
 
 #ifdef USE_RADIO
 static int
+p25_vc_cqpsk_reacquire_candidate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double now_m,
+                                 double dt_tune) {
+    if (!ctx || !opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    if (ctx->state != P25_SM_TUNED || !ctx->vc_is_tdma || ctx->vc_data_call || !ctx->vc_reacquire_eligible
+        || ctx->vc_reacquire_attempted || dt_tune < P25_VC_CQPSK_REACQUIRE_DELAY_S) {
+        return 0;
+    }
+    if (ctx->t_voice_m > 0.0 || ctx->slots[0].voice_active || ctx->slots[1].voice_active
+        || !p25_sm_has_pending_voice_grant(ctx, state)) {
+        return 0;
+    }
+
+    double timeout_start_m = p25_sm_pending_voice_grant_timeout_start_m(ctx, state);
+    if (ctx->t_tune_m > timeout_start_m) {
+        timeout_start_m = ctx->t_tune_m;
+    }
+    if (ctx->config.grant_timeout_s > 0.0 && timeout_start_m > 0.0
+        && (now_m - timeout_start_m) >= ctx->config.grant_timeout_s) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+p25_sm_tick_try_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, double now_m,
+                                   double dt_tune) {
+    if (!p25_vc_cqpsk_reacquire_candidate(ctx, opts, state, now_m, dt_tune)) {
+        return 0;
+    }
+
+    int cqpsk = 0;
+    int timing = 0;
+    (void)dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk, &timing);
+    if (!cqpsk) {
+        return 0;
+    }
+
+    const uint32_t generation = dsd_rtl_stream_metrics_hook_stream_generation();
+    const double snr_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
+    ctx->vc_reacquire_attempted = 1;
+    const int request_rc = dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire();
+    if (request_rc > 0) {
+        ctx->t_vc_reacquire_m = now_m;
+    }
+    const char* result = request_rc > 0 ? "queued" : (request_rc == 0 ? "inactive" : "unavailable");
+    p25_sm_diagf(opts, state, ctx, "vc_reacquire_request",
+                 "result=%s rc=%d elapsed=%.3f cqpsk=%d timing=%d snr_db=%.3f generation=%u pref=%d freq=%ld "
+                 "ch=0x%04X",
+                 result, request_rc, dt_tune, cqpsk, timing, snr_db, generation, state->p25_vc_cqpsk_pref,
+                 ctx->vc_freq_hz, ctx->vc_channel & 0xFFFF);
+    return 1;
+}
+
+static int
 p25_cqpsk_retry_candidate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double dt_tune) {
     if (!ctx || !opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
         return 0;
     }
-    if (!ctx->vc_is_tdma || ctx->vc_cqpsk_retry_done || dt_tune < 0.8 || state->p25_vc_cqpsk_pref == 1) {
+    if (!ctx->vc_is_tdma || ctx->vc_cqpsk_retry_done || dt_tune < P25_VC_CQPSK_REACQUIRE_DELAY_S
+        || state->p25_vc_cqpsk_pref == 1) {
         return 0;
     }
     return 1;
@@ -3532,7 +3638,17 @@ p25_sm_tick_tuned_try_cqpsk_retry(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
     if (ctx->t_voice_m > 0.0 && !p25_sm_has_pending_voice_grant(ctx, state) && !p25_sm_has_pending_data_grant(ctx)) {
         return;
     }
-    p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, now_m - ctx->t_tune_m);
+    const double dt_tune = now_m - ctx->t_tune_m;
+#ifdef USE_RADIO
+    double vc_acquire_start_m = ctx->t_tune_m;
+    if (state && state->p25_last_vc_tune_time_m > vc_acquire_start_m && state->p25_last_vc_tune_time_m <= now_m) {
+        vc_acquire_start_m = state->p25_last_vc_tune_time_m;
+    }
+    if (p25_sm_tick_try_vc_cqpsk_reacquire(ctx, opts, state, now_m, now_m - vc_acquire_start_m)) {
+        return;
+    }
+#endif
+    p25_sm_tick_try_cqpsk_retry(ctx, opts, state, now_m, dt_tune);
 }
 
 static void

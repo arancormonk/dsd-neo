@@ -144,6 +144,18 @@ seed_fdma_iden(dsd_state* state, int iden) {
     state->p25_chan_tdma_explicit[iden] = 1;
 }
 
+#ifdef USE_RADIO
+static void
+seed_tdma_iden(dsd_state* state, int iden) {
+    state->p25_iden_tdma[iden].base_freq = 851000000L / 5L;
+    state->p25_iden_tdma[iden].chan_type = 3;
+    state->p25_iden_tdma[iden].chan_spac = 100;
+    state->p25_iden_tdma[iden].trust = 2;
+    state->p25_iden_tdma[iden].populated = 1;
+    state->p25_chan_tdma_explicit[iden] = 2;
+}
+#endif
+
 static int
 read_file(const char* path, char* out, size_t out_size) {
     if (!path || !out || out_size == 0) {
@@ -218,6 +230,28 @@ main(void) {
     state.last_cc_sync_time_m = dsd_time_now_monotonic_s() + 0.001;
     state.p25_last_cc_msg_time_m = state.last_cc_sync_time_m;
     p25_sm_tick_ctx(&ctx, &opts, &state);
+
+    seed_tdma_iden(&state, 2);
+    state.p25_vc_cqpsk_pref = 1;
+    p25_sm_event_t vc_grant = p25_sm_ev_group_grant((2 << 12) | 10, 0, 2345, 6789, 0);
+    p25_sm_event(&ctx, &opts, &state, &vc_grant);
+    ctx.t_tune_m = dsd_time_now_monotonic_s() - 0.9;
+    state.p25_last_vc_tune_time_m = ctx.t_tune_m;
+    p25_sm_tick_ctx(&ctx, &opts, &state);
+    p25_sm_event_t vc_active = p25_sm_ev_active(0);
+    p25_sm_event(&ctx, &opts, &state, &vc_active);
+    p25_sm_release(&ctx, &opts, &state, "diag-vc-release");
+
+    state.last_cc_sync_time_m = dsd_time_now_monotonic_s() + 0.001;
+    state.p25_last_cc_msg_time_m = state.last_cc_sync_time_m;
+    p25_sm_tick_ctx(&ctx, &opts, &state);
+    vc_grant.src = 6790;
+    p25_sm_event(&ctx, &opts, &state, &vc_grant);
+    ctx.t_tune_m = dsd_time_now_monotonic_s() - 0.9;
+    state.p25_last_vc_tune_time_m = ctx.t_tune_m;
+    p25_sm_tick_ctx(&ctx, &opts, &state);
+    state.p25_sm_force_release = 1;
+    p25_sm_tick_ctx(&ctx, &opts, &state);
 #endif
 
     static dsd_opts hunt_opts;
@@ -239,7 +273,7 @@ main(void) {
     dsd_p25_sm_log_close(&opts);
     dsd_p25_sm_log_close(&hunt_opts);
 
-    char output[16384];
+    char output[24576];
     int rc = read_file(path, output, sizeof output);
     (void)remove(path);
     if (rc != 0) {
@@ -259,6 +293,13 @@ main(void) {
     rc |= expect_contains(output, "generation=42");
     rc |= expect_contains(output, "reacquire_attempted=1");
     rc |= expect_contains(output, "soft_reacquire=1");
+    rc |= expect_contains(output, "event=vc_reacquire_request");
+    rc |= expect_contains(output, "pref=1");
+    rc |= expect_contains(output, "event=vc_reacquire_result");
+    rc |= expect_contains(output, "result=activity");
+    rc |= expect_contains(output, "source=active");
+    rc |= expect_contains(output, "result=no-activity");
+    rc |= expect_contains(output, "reason=release-forced");
 #endif
     rc |= expect_contains(output, "event=cc_lost");
     rc |= expect_contains(output, "reason=timeout");
