@@ -198,10 +198,14 @@ main(void) {
     rc |= expect_contains(output, "event=grant_tune_result");
     rc |= expect_contains(output, "result=ok");
     rc |= expect_contains(output, "event=release_cc_result");
+    rc |= expect_contains(output, "origin=return");
+    rc |= expect_contains(output, "effective_grace=5.000");
     rc |= expect_contains(output, "event=cc_lost");
     rc |= expect_contains(output, "reason=timeout");
     rc |= expect_contains(output, "event=hunt_tune_attempt");
     rc |= expect_contains(output, "source=current-site-candidate");
+    rc |= expect_contains(output, "origin=hunt-probe");
+    rc |= expect_contains(output, "effective_grace=2.000");
     rc |= expect_contains(output, "freq=852000000");
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

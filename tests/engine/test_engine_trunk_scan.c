@@ -93,6 +93,8 @@ p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_sta
     ctx->state = P25_SM_ON_CC;
     ctx->cc_tune_request_id = 0U;
     ctx->cc_tune_pending = 0;
+    ctx->cc_sync_pending = 1;
+    ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_RETURN;
     ctx->t_cc_sync_m = tune_start_m;
     ctx->t_cc_tune_m = tune_start_m;
     ctx->t_hunt_try_m = 0.0;
@@ -118,6 +120,7 @@ p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
     ctx->cc_tune_request_id = request_id;
     ctx->cc_tune_pending = 1;
     ctx->cc_sync_pending = 1;
+    ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_RETURN;
     ctx->t_cc_tune_m = 0.0;
     if (state) {
         state->p25_cc_eval_start_m = 0.0;
@@ -1434,6 +1437,7 @@ test_p25_scan_retune_restarts_pending_cc_acquisition(void) {
     const double timestamp_epsilon_s = 1.0e-9;
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || !restored_ctx || restored_ctx->cc_sync_pending != 1
         || restored_ctx->state != P25_SM_ON_CC || restored_ctx->t_cc_sync_m <= 1.0
+        || restored_ctx->cc_acquisition_origin != P25_SM_CC_ACQUISITION_RETURN
         || !(fabs(restored_ctx->t_cc_tune_m - restored_ctx->t_cc_sync_m) <= timestamp_epsilon_s)
         || restored_ctx->t_hunt_try_m != 0.0 || state.p25_sm_mode != DSD_P25_SM_MODE_ON_CC
         || state.p25_cc_freq != 853000000 || state.trunk_cc_freq != 853000000 || state.p25_cc_eval_freq != 853000000

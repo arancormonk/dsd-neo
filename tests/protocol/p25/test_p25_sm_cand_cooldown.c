@@ -100,6 +100,7 @@ main(void) {
     ctx->t_cc_sync_m = pending_m;
     ctx->t_cc_tune_m = pending_m;
     ctx->cc_sync_pending = 1;
+    ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_HUNT_PROBE;
     st2.last_cc_sync_time_m = pending_m;
     st2.p25_cc_eval_freq = A;
     st2.p25_cc_eval_start_m = pending_m;
@@ -107,6 +108,7 @@ main(void) {
     g_last_tuned_cc = 0;
     p25_sm_tick_ctx(p25_sm_get_ctx(), &o2, &st2);
     assert(g_last_tuned_cc == B);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
 
     // A controller timeout is an in-flight tune, not the start of CC acquisition.
     static dsd_opts o3;
@@ -129,6 +131,7 @@ main(void) {
     assert(ctx->cc_tune_pending == 1);
     assert(ctx->cc_tune_request_id != 0U);
     assert(ctx->t_cc_tune_m == 0.0);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
     assert(st3.p25_cc_eval_freq == A);
     assert(st3.p25_cc_eval_start_m == 0.0);
 
@@ -146,6 +149,7 @@ main(void) {
     assert(ctx->cc_tune_pending == 0);
     assert(ctx->cc_sync_pending == 1);
     assert(ctx->t_cc_tune_m > 0.0);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
     assert(fabs(st3.p25_cc_eval_start_m - ctx->t_cc_tune_m) <= timestamp_epsilon_s);
 
     // Only the post-completion acquisition window can fail A and advance to B.
@@ -171,6 +175,7 @@ main(void) {
     assert(g_tune_to_cc_calls == 3);
     assert(ctx->state == P25_SM_HUNTING);
     assert(ctx->cc_sync_pending == 0);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_NONE);
     assert(ctx->t_cc_sync_m > stale_decoded_m);
     assert(dsd_trunk_tuning_pending_request() == failed_request);
     assert(!dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
