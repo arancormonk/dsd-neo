@@ -206,6 +206,12 @@ parse_frontend_kind_value(const char* val, dsd_frontend_kind* out_frontend) {
         *out_frontend = DSD_FRONTEND_TERMINAL;
         return 0;
     }
+    if (dsd_strcasecmp(val, "native") == 0) {
+        /* The retired native provider never rendered. Preserve persisted
+         * configs by translating its spelling to the equivalent headless mode. */
+        *out_frontend = DSD_FRONTEND_NONE;
+        return 0;
+    }
     return -1;
 }
 
@@ -246,7 +252,7 @@ apply_input_source_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* v
         if (parse_input_source_value(val, &source) == 0) {
             cfg->input_source = source;
         }
-    } else if (strcmp(key_lc, "pulse_source") == 0) {
+    } else if (strcmp(key_lc, "pulse_source") == 0 || strcmp(key_lc, "pulse_input") == 0) {
         copy_text_value(cfg->pulse_input, sizeof cfg->pulse_input, val);
     }
 }
@@ -269,7 +275,7 @@ apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val,
         (void)apply_integer_setting(val, 0, mode, &cfg->rtl_sql);
     } else if (strcmp(key_lc, "rtl_volume") == 0) {
         (void)apply_integer_setting(val, 1, mode, &cfg->rtl_volume);
-    } else if (strcmp(key_lc, "auto_ppm") == 0) {
+    } else if (strcmp(key_lc, "auto_ppm") == 0 || strcmp(key_lc, "rtl_auto_ppm") == 0) {
         int b = 0;
         if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->rtl_auto_ppm = b;
@@ -349,12 +355,17 @@ apply_output_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* 
         if (parse_output_backend_value(val, &backend) == 0) {
             cfg->output_backend = backend;
         }
-    } else if (strcmp(key_lc, "pulse_sink") == 0) {
+    } else if (strcmp(key_lc, "pulse_sink") == 0 || strcmp(key_lc, "pulse_output") == 0) {
         copy_text_value(cfg->pulse_output, sizeof cfg->pulse_output, val);
     } else if (strcmp(key_lc, "frontend") == 0) {
         dsd_frontend_kind frontend = DSD_FRONTEND_NONE;
         if (parse_frontend_kind_value(val, &frontend) == 0) {
             set_config_frontend_kind(cfg, frontend);
+        }
+    } else if (strcmp(key_lc, "ncurses_ui") == 0) {
+        int enabled = 0;
+        if (user_config_parse_bool_value(val, &enabled) == 0) {
+            set_config_frontend_kind(cfg, enabled ? DSD_FRONTEND_TERMINAL : DSD_FRONTEND_NONE);
         }
     }
 }
@@ -438,7 +449,7 @@ apply_trunk_scan_section_key(dsdneoUserConfig* cfg, const char* key_lc, const ch
 
 static void
 apply_logging_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (strcmp(key_lc, "event_log") == 0) {
+    if (strcmp(key_lc, "event_log") == 0 || strcmp(key_lc, "event_log_file") == 0) {
         copy_path_expanded(cfg->event_log, sizeof cfg->event_log, val);
     } else if (strcmp(key_lc, "frame_log") == 0) {
         copy_path_expanded(cfg->frame_log, sizeof cfg->frame_log, val);
@@ -458,17 +469,17 @@ set_alert_event(dsdneoUserConfig* cfg, int event, int enabled) {
 
 static void
 apply_alerts_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (strcmp(key_lc, "enabled") == 0) {
+    if (strcmp(key_lc, "enabled") == 0 || strcmp(key_lc, "call_alert") == 0) {
         int b = 0;
         if (user_config_parse_bool_value(val, &b) == 0) {
             cfg->call_alert_enabled = b;
         }
-    } else if (strcmp(key_lc, "voice_start") == 0) {
+    } else if (strcmp(key_lc, "voice_start") == 0 || strcmp(key_lc, "start") == 0) {
         int b = 0;
         if (user_config_parse_bool_value(val, &b) == 0) {
             set_alert_event(cfg, DSD_CALL_ALERT_EVENT_VOICE_START, b);
         }
-    } else if (strcmp(key_lc, "voice_end") == 0) {
+    } else if (strcmp(key_lc, "voice_end") == 0 || strcmp(key_lc, "end") == 0) {
         int b = 0;
         if (user_config_parse_bool_value(val, &b) == 0) {
             set_alert_event(cfg, DSD_CALL_ALERT_EVENT_VOICE_END, b);
@@ -696,10 +707,7 @@ dsd_user_config_load(const char* path, dsdneoUserConfig* cfg) {
 
     /* Process includes first (they provide base values that can be overridden) */
     const char* stack[1] = {root_path};
-    int include_rc = process_includes(root_path, cfg, 0, stack, 1);
-    if (include_rc != 0) {
-        return include_rc;
-    }
+    (void)process_includes(root_path, cfg, 0, stack, 1);
 
     /* Now load the main config (which overrides included values) */
     return user_config_load_no_reset(root_path, cfg);
@@ -958,7 +966,7 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
         const char* including_path = include_stack_size > 0 ? include_stack[include_stack_size - 1] : NULL;
         if (dsd_path_resolve_relative_to_file(including_path, inc_path, resolved_inc_path, sizeof resolved_inc_path)
             != 0) {
-            return -1;
+            continue;
         }
         DSD_SNPRINTF(inc_path, sizeof inc_path, "%s", resolved_inc_path);
         inc_path[sizeof inc_path - 1] = '\0';
@@ -966,18 +974,16 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
             continue; /* skip circular include */
         }
         if (depth >= DSD_USER_CONFIG_MAX_INCLUDE_DEPTH) {
-            return -1;
+            continue;
         }
 
-        /* First process any nested includes in the included file */
-        int include_rc = process_nested_includes(inc_path, cfg, depth, include_stack, include_stack_size);
-        if (include_rc != 0) {
-            return include_rc;
-        }
-        /* Then load the included file's config values */
-        int load_rc = user_config_load_no_reset(inc_path, cfg);
-        if (load_rc != 0) {
-            return load_rc;
+        /* Apply each optional include atomically. Missing, unreadable, or invalid includes are skipped without
+         * discarding values already composed from earlier includes. Nested includes retain their normal precedence
+         * below the file that names them. */
+        dsdneoUserConfig candidate = *cfg;
+        (void)process_nested_includes(inc_path, &candidate, depth, include_stack, include_stack_size);
+        if (user_config_load_no_reset(inc_path, &candidate) == 0) {
+            *cfg = candidate;
         }
     }
 
@@ -1143,10 +1149,7 @@ dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoU
 
     /* Process includes first (they provide base values that can be overridden) */
     const char* stack[1] = {root_path};
-    int include_rc = process_includes(root_path, cfg, 0, stack, 1);
-    if (include_rc != 0) {
-        return include_rc;
-    }
+    (void)process_includes(root_path, cfg, 0, stack, 1);
 
     /* Now load the main config (which overrides included values) */
     int rc = user_config_load_no_reset(root_path, cfg);

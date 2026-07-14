@@ -9,8 +9,8 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
 - Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
-- Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
-- Modes: `-fa | -fs | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
+- Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
+- Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
@@ -105,6 +105,8 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 ## Display & UI
 
 - `--frontend terminal` Use the terminal UI (`-N` is the supported short alias)
+- `--frontend native` remains accepted and maps to headless mode. The retired native provider was a non-rendering
+  scaffold; this keeps existing invocations working without restoring its provider/threading layer.
 - `-Z` Log MBE/PDU payloads to the console (verbose)
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
@@ -116,6 +118,7 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - For RTL-family inputs, the optional DSP panel shows post-channel-filter `Squelch` power against the SQL threshold.
   This is separate from the raw receiver `RF Level` health line.
 - UI hotkeys and menu navigation: `docs/ui-terminal.md`
+- `-j` P25: force-enable LCW explicit retune (format `0x44`; enabled by default)
 - `-^` P25: prefer CC candidates during control channel hunt
 
 ### P25 Follower (Advanced)
@@ -184,6 +187,8 @@ Windows console runs:
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload
 - `-r <files>` Play saved MBE files
 - `-c <file>` Save symbol captures to a .bin file
+- `--symbol-capture-format <soft|legacy>` Select the current soft/v2 writer. `legacy` remains accepted as an alias; it
+  does not reactivate the removed one-byte writer.
   The current writer emits `DSDNSYM2` version 2 records with soft-decision metrics. The reader also accepts historical
   headerless dibit captures so persisted files remain replayable; a file carrying `DSDNSYM2` magic with an unsupported
   version or record size is rejected rather than reinterpreted as headerless data. Remove the headerless reader after
@@ -225,6 +230,8 @@ Notes
 
 - `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
 - `-n <num>` Analog output gain (0–100%)
+- `-nm` Compatibility spelling for the retired DMR mono override. It is accepted without changing the active preset;
+  DMR uses the current mixer, and the removed mono decoder is not reactivated.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
 - `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3)
@@ -236,7 +243,7 @@ Notes
 - Auto: `-fa`
 - Passive analog monitor: `-fA`
 - Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
-- DMR simplex (BS/MS): `-fs`
+- DMR simplex (BS/MS): `-fs`; `-fr` remains accepted as an alias for the same current DMR preset/mixer
 - P25 Phase 1 only: `-f1`
 - P25 Phase 2 only (6000 sps): `-f2`
 - D‑STAR: `-fd`
@@ -500,6 +507,7 @@ Digital SNR squelch
 
 Capture/retune behavior
 
+- `DSD_NEO_COMBINE_ROT=0|1` — select the two-pass or combined CU8 rotation transform (default 1)
 - `DSD_NEO_DISABLE_FS4_SHIFT=1` — disable +fs/4 capture shift
 - `DSD_NEO_OUTPUT_CLEAR_ON_RETUNE=1` — clear output on retune
 - `DSD_NEO_RETUNE_DRAIN_MS=<ms>` — drain time before retune
@@ -596,6 +604,7 @@ Debug (verbose/developer)
 
 - `DSD_NEO_DEBUG_SYNC=1` — verbose sync detection output
 - `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK Gardner/Costas/FLL-band-edge state output
+- `DSD_NEO_SYNC_WARMSTART=0` — disable sync warm-start calibration
 
 ## Handy Examples
 

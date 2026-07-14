@@ -14,6 +14,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
@@ -536,6 +538,34 @@ test_warm_start_prefill_clamps_to_internal_buffer(void) {
     printf("test_warm_start_prefill_clamps_to_internal_buffer: passed\n\n");
 }
 
+static void
+test_warm_start_disabled_env(void) {
+    printf("=== test_warm_start_disabled_env ===\n");
+
+    static struct dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[4];
+    attach_history_fixture(&state, history, 4);
+
+    static struct dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    for (int i = 0; i < 4; i++) {
+        dsd_symbol_history_push(&state, (i < 2) ? -3.0f : 3.0f);
+    }
+
+    (void)dsd_setenv("DSD_NEO_SYNC_WARMSTART", "0", 1);
+    dsd_neo_config_init();
+
+    dsd_warm_start_result_t result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 4);
+    check_int("thresholds disabled", DSD_WARM_START_DISABLED, result);
+    result = dsd_sync_warm_start_center_outer_only(&state, 4);
+    check_int("center disabled", DSD_WARM_START_DISABLED, result);
+
+    (void)dsd_unsetenv("DSD_NEO_SYNC_WARMSTART");
+    dsd_neo_config_init();
+    printf("test_warm_start_disabled_env: passed\n\n");
+}
+
 int
 main(void) {
     printf("Generic Sync Calibration Module Tests\n");
@@ -555,6 +585,7 @@ main(void) {
     test_null_handling();
     test_buffer_prefill();
     test_warm_start_prefill_clamps_to_internal_buffer();
+    test_warm_start_disabled_env();
     printf("======================================\n");
     printf("Tests: %d, Failures: %d\n", g_test_count, g_fail_count);
 

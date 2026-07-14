@@ -360,6 +360,7 @@ struct rtl_device {
     std::atomic<int> capture_reconfigure_hold{0};
     /* Backend selector: 0 = USB (librtlsdr), 1 = rtl_tcp, 2 = SoapySDR */
     int backend = 0;
+    int live_combine_rotate_enabled = 1;
     int replay_fs4_shift_enabled = 0;
     int replay_historical_cu8_two_pass = 0;
     uint32_t replay_initial_sample_rate_hz = 0U;
@@ -476,7 +477,7 @@ rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int
         combine_active = s->replay_historical_cu8_two_pass ? 0 : 1;
     } else {
         fs4_active = fs4_shift_capture_active(s);
-        combine_active = 1;
+        combine_active = (s && s->live_combine_rotate_enabled) ? 1 : 0;
     }
     if (out_fs4_active) {
         *out_fs4_active = fs4_active;
@@ -489,11 +490,10 @@ rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int
     }
 }
 
-/* Persisted IQ metadata may select the historical CU8 transform. Keep that
- * decoder private to replay; live input and new captures always use the
- * combined bias-127.5 transform. */
+/* Persisted IQ metadata and the live transform policy may select the two-pass
+ * CU8 transform. New captures use the combined bias-127.5 transform by default. */
 static uint32_t
-rtl_replay_apply_historical_cu8_rotation(unsigned char* buf, uint32_t len, uint32_t phase) {
+rtl_apply_two_pass_cu8_rotation(unsigned char* buf, uint32_t len, uint32_t phase) {
     uint32_t cur_phase = phase & 3U;
     if (!buf || len < 2U) {
         return cur_phase;
@@ -524,7 +524,7 @@ rtl_replay_apply_historical_cu8_rotation(unsigned char* buf, uint32_t len, uint3
 }
 
 static void
-rtl_replay_widen_historical_cu8(const unsigned char* src, float* dst, uint32_t len) {
+rtl_widen_two_pass_cu8(const unsigned char* src, float* dst, uint32_t len) {
     if (!src || !dst || len == 0U) {
         return;
     }
@@ -544,8 +544,8 @@ rtl_process_u8_chunk(const struct rtl_device* s, unsigned char* src, float* dst,
     if (fs4_shift_active && combine_rotate_active) {
         cur_phase = (int)widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, (uint32_t)cur_phase);
     } else if (use_two_pass) {
-        cur_phase = (int)rtl_replay_apply_historical_cu8_rotation(src, (uint32_t)len, (uint32_t)cur_phase);
-        rtl_replay_widen_historical_cu8(src, dst, (uint32_t)len);
+        cur_phase = (int)rtl_apply_two_pass_cu8_rotation(src, (uint32_t)len, (uint32_t)cur_phase);
+        rtl_widen_two_pass_cu8(src, dst, (uint32_t)len);
     } else {
         widen_u8_to_f32_bias127(src, dst, (uint32_t)len);
     }
@@ -4674,6 +4674,8 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->capture_retune_count.store(0, std::memory_order_relaxed);
     dev->capture_mute_pending_bytes.store(0U, std::memory_order_relaxed);
     dev->capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_INACTIVE, std::memory_order_relaxed);
+    const dsdneoRuntimeConfig* runtime_config = dsd_neo_get_config();
+    dev->live_combine_rotate_enabled = runtime_config ? (runtime_config->combine_rot != 0) : 1;
     dev->replay_fs4_shift_enabled = 0;
     dev->replay_historical_cu8_two_pass = 0;
     DSD_MEMSET(&dev->replay_cfg, 0, sizeof(dev->replay_cfg));

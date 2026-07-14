@@ -259,6 +259,7 @@ test_metadata_round_trip_capture_open_close(void) {
     cfg.demod_rate_hz = 48000;
     cfg.offset_tuning_enabled = 0;
     cfg.fs4_shift_enabled = 1;
+    cfg.combine_rotate_enabled = 0;
     cfg.muted_bytes_excluded = 1;
     DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl");
     DSD_SNPRINTF(cfg.source_args, sizeof(cfg.source_args), "%s", "dev=\\\"0\\\"\\\\tcp");
@@ -300,6 +301,7 @@ test_metadata_round_trip_capture_open_close(void) {
         rc |= expect_u32("metadata_version", replay_cfg.metadata_version, 1);
         rc |= expect_int("contains_retunes", replay_cfg.contains_retunes, 0);
         rc |= expect_u32("capture_retune_count", replay_cfg.capture_retune_count, 0);
+        rc |= expect_int("persisted two-pass CU8 transform", replay_cfg.historical_cu8_two_pass, 1);
         rc |= expect_true("resolved data path uses metadata directory", strcmp(replay_cfg.data_path, data_path) == 0);
         rc |= expect_true("capture_drops reflects odd-byte carry drop", replay_cfg.capture_drops >= 1);
     }
@@ -336,6 +338,7 @@ test_metadata_v2_events_round_trip(void) {
     cfg.post_downsample = 1;
     cfg.demod_rate_hz = 48000;
     cfg.fs4_shift_enabled = 1;
+    cfg.combine_rotate_enabled = 1;
     cfg.muted_bytes_excluded = 1;
     DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl");
     DSD_SNPRINTF(cfg.source_args, sizeof(cfg.source_args), "%s", "dev=0");

@@ -980,8 +980,8 @@ p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm
         policy_ctx.encrypted_call = 0;
     }
     if (policy_ctx.is_indiv) {
-        return dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)ev->src, (uint32_t)ev->dst,
-                                                   policy_ctx.encrypted_call, policy_ctx.data_call, out_decision);
+        return dsd_tg_policy_evaluate_private_grant(opts, state, (uint32_t)ev->src, (uint32_t)ev->dst,
+                                                    policy_ctx.encrypted_call, policy_ctx.data_call, out_decision);
     }
     return p25_grant_eval_group_policy(opts, state, ev, &policy_ctx, out_decision);
 }

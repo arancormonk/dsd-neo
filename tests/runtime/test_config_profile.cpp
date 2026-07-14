@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <errno.h>
 #include <stdio.h>
@@ -278,6 +279,130 @@ test_profile_bool_spellings(void) {
     }
     if (cfg.trunk_tune_enc_calls != 0) {
         DSD_FPRINTF(stderr, "FAIL: expected tune_enc_calls disabled by documented boolean spelling\n");
+        result = 1;
+    }
+
+    (void)remove(path);
+    return result;
+}
+
+static int
+test_deprecated_keys_translate_to_canonical_fields(void) {
+    static const char* ini = "[input]\n"
+                             "pulse_input = \"compat-source\"\n"
+                             "rtl_auto_ppm = true\n"
+                             "[output]\n"
+                             "pulse_output = \"compat-sink\"\n"
+                             "ncurses_ui = true\n"
+                             "[logging]\n"
+                             "event_log_file = \"/tmp/dsd-neo-compat-events.log\"\n"
+                             "[alerts]\n"
+                             "call_alert = true\n"
+                             "start = false\n"
+                             "end = false\n"
+                             "[mode]\n"
+                             "decode = provoice\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    int result = 0;
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: deprecated config keys failed to load (rc=%d)\n", load_rc);
+        result = 1;
+    }
+    if (strcmp(cfg.pulse_input, "compat-source") != 0 || !cfg.rtl_auto_ppm) {
+        DSD_FPRINTF(stderr, "FAIL: deprecated input keys did not populate canonical input settings\n");
+        result = 1;
+    }
+    if (strcmp(cfg.pulse_output, "compat-sink") != 0 || !cfg.frontend_kind_is_set || !cfg.frontend_kind) {
+        DSD_FPRINTF(stderr, "FAIL: deprecated output keys did not populate canonical output settings\n");
+        result = 1;
+    }
+    if (strcmp(cfg.event_log, "/tmp/dsd-neo-compat-events.log") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: event_log_file did not populate event_log\n");
+        result = 1;
+    }
+    if (!cfg.call_alert_enabled || (cfg.call_alert_events & DSD_CALL_ALERT_EVENT_VOICE_START) != 0
+        || (cfg.call_alert_events & DSD_CALL_ALERT_EVENT_VOICE_END) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: deprecated alert keys did not populate canonical alert settings\n");
+        result = 1;
+    }
+    if (cfg.decode_mode != DSDCFG_MODE_EDACS_PV) {
+        DSD_FPRINTF(stderr, "FAIL: provoice decode alias did not select EDACS/ProVoice mode\n");
+        result = 1;
+    }
+
+    (void)remove(path);
+    return result;
+}
+
+static int
+test_profile_decode_mode_compat_aliases(void) {
+    static const char* ini = "[mode]\n"
+                             "decode = auto\n"
+                             "[profile.alias_p25p1]\n"
+                             "mode.decode = p25p1_only\n"
+                             "[profile.alias_p25p2]\n"
+                             "mode.decode = p25p2_only\n"
+                             "[profile.alias_analog]\n"
+                             "mode.decode = analog_monitor\n"
+                             "[profile.alias_edacs]\n"
+                             "mode.decode = edacs\n"
+                             "[profile.alias_provoice]\n"
+                             "mode.decode = provoice\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    struct decode_alias_case {
+        const char* profile_name;
+        dsdneoUserDecodeMode expected_mode;
+    } cases[] = {
+        {"alias_p25p1", DSDCFG_MODE_P25P1},       {"alias_p25p2", DSDCFG_MODE_P25P2},
+        {"alias_analog", DSDCFG_MODE_ANALOG},     {"alias_edacs", DSDCFG_MODE_EDACS_PV},
+        {"alias_provoice", DSDCFG_MODE_EDACS_PV},
+    };
+
+    int result = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsdneoUserConfig cfg;
+        int load_rc = dsd_user_config_load_profile(path, cases[i].profile_name, &cfg);
+        if (load_rc != 0 || cfg.decode_mode != cases[i].expected_mode) {
+            DSD_FPRINTF(stderr, "FAIL: decode alias profile %s (rc=%d expected=%d actual=%d)\n", cases[i].profile_name,
+                        load_rc, (int)cases[i].expected_mode, (int)cfg.decode_mode);
+            result = 1;
+        }
+    }
+
+    (void)remove(path);
+    return result;
+}
+
+static int
+test_profile_native_frontend_alias_selects_headless(void) {
+    static const char* ini = "[output]\n"
+                             "frontend = terminal\n"
+                             "[profile.compat_native]\n"
+                             "output.frontend = native\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load_profile(path, "compat_native", &cfg);
+    int result = 0;
+    if (load_rc != 0 || !cfg.frontend_kind_is_set || cfg.frontend_kind != DSD_FRONTEND_NONE) {
+        DSD_FPRINTF(stderr, "FAIL: native frontend alias did not select headless mode (rc=%d set=%d kind=%d)\n",
+                    load_rc, cfg.frontend_kind_is_set, (int)cfg.frontend_kind);
         result = 1;
     }
 
@@ -726,22 +851,32 @@ test_inline_comments_in_include_and_profile(void) {
 }
 
 static int
-test_invalid_includes_are_rejected(void) {
+test_invalid_optional_includes_preserve_root_config(void) {
     char missing_path[DSD_TEST_PATH_MAX];
     if (write_temp_config("", missing_path, sizeof missing_path) != 0) {
         return 1;
     }
     (void)remove(missing_path);
 
-    char missing_include_ini[DSD_TEST_PATH_MAX + 32];
-    DSD_SNPRINTF(missing_include_ini, sizeof missing_include_ini, "include = \"%s\"\n", missing_path);
+    char missing_include_ini[DSD_TEST_PATH_MAX + 160];
+    DSD_SNPRINTF(missing_include_ini, sizeof missing_include_ini,
+                 "include = \"%s\"\n"
+                 "[mode]\n"
+                 "decode = dmr\n"
+                 "[profile.override]\n"
+                 "mode.decode = p25p1\n",
+                 missing_path);
 
     struct invalid_include_case {
         const char* label;
         const char* contents;
     } cases[] = {
         {"missing include", missing_include_ini},
-        {"empty include path", "include = \"\"\n"},
+        {"empty include path", "include = \"\"\n"
+                               "[mode]\n"
+                               "decode = dmr\n"
+                               "[profile.override]\n"
+                               "mode.decode = p25p1\n"},
     };
 
     int result = 0;
@@ -753,10 +888,16 @@ test_invalid_includes_are_rejected(void) {
 
         dsdneoUserConfig cfg;
         int load_rc = dsd_user_config_load(main_path, &cfg);
-        int profile_load_rc = dsd_user_config_load_profile(main_path, NULL, &cfg);
-        if (load_rc == 0 || profile_load_rc == 0) {
-            DSD_FPRINTF(stderr, "FAIL: %s should be rejected (load=%d profile_load=%d)\n", cases[i].label, load_rc,
-                        profile_load_rc);
+        if (load_rc != 0 || cfg.decode_mode != DSDCFG_MODE_DMR) {
+            DSD_FPRINTF(stderr, "FAIL: %s discarded the root config (load=%d mode=%d)\n", cases[i].label, load_rc,
+                        (int)cfg.decode_mode);
+            result = 1;
+        }
+
+        int profile_load_rc = dsd_user_config_load_profile(main_path, "override", &cfg);
+        if (profile_load_rc != 0 || cfg.decode_mode != DSDCFG_MODE_P25P1) {
+            DSD_FPRINTF(stderr, "FAIL: %s discarded the root profile (load=%d mode=%d)\n", cases[i].label,
+                        profile_load_rc, (int)cfg.decode_mode);
             result = 1;
         }
 
@@ -782,7 +923,7 @@ test_include_depth_boundary(void) {
         }
     }
 
-    int write_failed = write_config_file(paths[0], "include = \"level1.ini\"\n")
+    int write_failed = write_config_file(paths[0], "include = \"level1.ini\"\n[mode]\ndecode = dmr\n")
                        || write_config_file(paths[1], "include = \"level2.ini\"\n")
                        || write_config_file(paths[2], "include = \"level3.ini\"\n")
                        || write_config_file(paths[3], "[input]\nsource = \"rtl\"\n")
@@ -805,9 +946,15 @@ test_include_depth_boundary(void) {
 
     if (write_config_file(paths[3], "include = \"level4.ini\"\n") != 0) {
         result = 1;
-    } else if (dsd_user_config_load_profile(paths[0], NULL, &cfg) == 0) {
-        DSD_FPRINTF(stderr, "FAIL: include level 4 should be rejected\n");
-        result = 1;
+    } else {
+        load_rc = dsd_user_config_load_profile(paths[0], NULL, &cfg);
+        if (load_rc != 0 || cfg.decode_mode != DSDCFG_MODE_DMR || cfg.input_source != DSDCFG_INPUT_UNSET) {
+            DSD_FPRINTF(stderr,
+                        "FAIL: over-depth include should be skipped without discarding root settings "
+                        "(rc=%d source=%d mode=%d)\n",
+                        load_rc, (int)cfg.input_source, (int)cfg.decode_mode);
+            result = 1;
+        }
     }
 
     for (size_t i = 0; i < sizeof paths / sizeof paths[0]; i++) {
@@ -822,7 +969,7 @@ test_include_persisted_v1_load_boundary(void) {
     struct persisted_include_case {
         const char* label;
         const char* contents;
-        int should_load;
+        int include_should_apply;
     } cases[] = {
         {"persisted version 1 include", "version = 1\n\n[input]\nsource = \"rtl\"\nrtl_device = 4\n", 1},
         {"unsupported version include", "version = 2\n\n[input]\nsource = \"rtl\"\nrtl_device = 4\n", 0},
@@ -836,8 +983,8 @@ test_include_persisted_v1_load_boundary(void) {
             return 1;
         }
 
-        char main_ini[DSD_TEST_PATH_MAX + 64];
-        DSD_SNPRINTF(main_ini, sizeof main_ini, "include = \"%s\"\n", included_path);
+        char main_ini[DSD_TEST_PATH_MAX + 96];
+        DSD_SNPRINTF(main_ini, sizeof main_ini, "include = \"%s\"\n[mode]\ndecode = dmr\n", included_path);
         char main_path[DSD_TEST_PATH_MAX];
         if (write_temp_config(main_ini, main_path, sizeof main_path) != 0) {
             (void)remove(included_path);
@@ -846,14 +993,18 @@ test_include_persisted_v1_load_boundary(void) {
 
         dsdneoUserConfig cfg;
         int load_rc = dsd_user_config_load_profile(main_path, NULL, &cfg);
-        if (cases[i].should_load) {
+        if (load_rc != 0 || cfg.decode_mode != DSDCFG_MODE_DMR) {
+            DSD_FPRINTF(stderr, "%s discarded the root config (rc=%d mode=%d)\n", cases[i].label, load_rc,
+                        (int)cfg.decode_mode);
+            result = 1;
+        } else if (cases[i].include_should_apply) {
             if (load_rc != 0 || cfg.input_source != DSDCFG_INPUT_RTL || cfg.rtl_device != 4) {
                 DSD_FPRINTF(stderr, "%s should load through include/profile processing (rc=%d)\n", cases[i].label,
                             load_rc);
                 result = 1;
             }
-        } else if (load_rc == 0) {
-            DSD_FPRINTF(stderr, "%s should be rejected\n", cases[i].label);
+        } else if (cfg.input_source == DSDCFG_INPUT_RTL || cfg.rtl_device == 4) {
+            DSD_FPRINTF(stderr, "%s should be skipped without applying values\n", cases[i].label);
             result = 1;
         }
 
@@ -924,6 +1075,9 @@ main(void) {
     rc |= test_load_with_profile_override();
     rc |= test_profile_multiple_overrides();
     rc |= test_profile_bool_spellings();
+    rc |= test_deprecated_keys_translate_to_canonical_fields();
+    rc |= test_profile_decode_mode_compat_aliases();
+    rc |= test_profile_native_frontend_alias_selects_headless();
     rc |= test_unknown_profile();
     rc |= test_list_profiles();
     rc |= test_list_profiles_empty();
@@ -933,7 +1087,7 @@ main(void) {
     rc |= test_include_directive();
     rc |= test_include_override();
     rc |= test_inline_comments_in_include_and_profile();
-    rc |= test_invalid_includes_are_rejected();
+    rc |= test_invalid_optional_includes_preserve_root_config();
     rc |= test_include_depth_boundary();
     rc |= test_include_persisted_v1_load_boundary();
     rc |= test_relative_include_resolves_from_config_directory();

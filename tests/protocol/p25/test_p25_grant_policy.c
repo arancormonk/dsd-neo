@@ -579,7 +579,7 @@ main(void) {
                                    .src = 9002,
                                    .svc_bits = 0x00,
                                    .is_group = 0});
-    rc |= expect_true("private unknown blocked in allow-list", st.p25_sm_tune_count == before);
+    rc |= expect_true("private unknown allowed in allow-list", st.p25_sm_tune_count == before + 1);
 
     // Explicit data grant wrappers force data-call policy without rewriting service bits.
     {

@@ -130,6 +130,8 @@ uint8_t m17_aes_key_bytes_for_subtype(uint8_t subtype);
 void m17_aes_build_counter(const uint8_t nonce[M17_AES_NONCE_BYTES], uint16_t frame_number,
                            uint8_t counter[M17_AES_COUNTER_BYTES]);
 int m17_packet_frame_count_for_app_bytes(uint16_t app_bytes, uint8_t* last_frame_bytes);
+int m17_packet_prepare_sms_payload(const char* text, uint8_t* packed, uint8_t* full_bits, uint16_t* app_len,
+                                   int* frame_count, uint8_t* last_frame_bytes, uint16_t* crc);
 int m17_packet_app_bytes_from_eof(uint8_t full_frames, uint8_t last_frame_bytes, uint16_t* app_bytes);
 int m17_packet_metadata_byte(uint8_t eof, uint8_t value, uint8_t* metadata_byte);
 int m17_packet_parse_metadata_byte(uint8_t metadata_byte, uint8_t* eof, uint8_t* value);

@@ -106,10 +106,19 @@ int dsd_symbol_history_count(const struct dsd_state* state);
  */
 typedef enum {
     DSD_WARM_START_OK = 0,         /**< Warm-start applied successfully */
-    DSD_WARM_START_NO_HISTORY = 1, /**< Not enough symbols in history */
-    DSD_WARM_START_DEGENERATE = 2, /**< Span too small (degenerate signal) */
-    DSD_WARM_START_NULL_STATE = 3, /**< NULL state pointer */
+    DSD_WARM_START_DISABLED = 1,   /**< Warm-start disabled by runtime policy */
+    DSD_WARM_START_NO_HISTORY = 2, /**< Not enough symbols in history */
+    DSD_WARM_START_DEGENERATE = 3, /**< Span too small (degenerate signal) */
+    DSD_WARM_START_NULL_STATE = 4, /**< NULL state pointer */
 } dsd_warm_start_result_t;
+
+/**
+ * @brief Return whether sync warm-start is enabled by runtime policy.
+ *
+ * `DSD_NEO_SYNC_WARMSTART=0` disables warm-start without selecting a different
+ * calibration implementation.
+ */
+int dsd_sync_warm_start_enabled(void);
 
 /**
  * @brief Warm-start slicer thresholds from outer-only sync pattern.

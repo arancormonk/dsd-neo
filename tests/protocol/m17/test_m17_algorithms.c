@@ -338,6 +338,57 @@ test_packet_layout_helpers(void) {
 }
 
 static int
+test_packet_sms_payload_layout(void) {
+    uint8_t packed[M17_PACKET_MAX_TOTAL_BYTES];
+    uint8_t full_bits[M17_PACKET_MAX_FRAMES * M17_PACKET_CHUNK_BITS];
+    uint16_t app_len = 0U;
+    uint16_t crc = 0U;
+    int frames = 0;
+    uint8_t last = 0U;
+    int err = 0;
+
+    err |= expect_int("packet SMS null text",
+                      m17_packet_prepare_sms_payload(NULL, packed, full_bits, &app_len, &frames, &last, &crc), -1);
+    err |= expect_int("packet SMS null output",
+                      m17_packet_prepare_sms_payload("x", NULL, full_bits, &app_len, &frames, &last, &crc), -1);
+
+    DSD_MEMSET(packed, 0xA5, sizeof(packed));
+    DSD_MEMSET(full_bits, 0xA5, sizeof(full_bits));
+    err |= expect_int("packet SMS short layout",
+                      m17_packet_prepare_sms_payload("hi", packed, full_bits, &app_len, &frames, &last, &crc), 0);
+    err |= expect_int("packet SMS short app length", app_len, 4);
+    err |= expect_int("packet SMS short frame count", frames, 1);
+    err |= expect_int("packet SMS short last bytes", last, 6);
+    err |= expect_u32("packet SMS protocol", packed[0], 0x05U);
+    err |= expect_u32("packet SMS text h", packed[1], 'h');
+    err |= expect_u32("packet SMS text i", packed[2], 'i');
+    err |= expect_u32("packet SMS terminator", packed[3], 0U);
+    err |= expect_u32("packet SMS CRC", crc, m17_crc16(packed, app_len));
+    err |= expect_u32("packet SMS CRC high", packed[app_len], (uint8_t)(crc >> 8U));
+    err |= expect_u32("packet SMS CRC low", packed[app_len + 1U], (uint8_t)(crc & 0xFFU));
+    for (size_t bit = 0U; bit < 32U; bit++) {
+        const uint8_t expected = (uint8_t)((packed[bit / 8U] >> (7U - (bit % 8U))) & 1U);
+        err |= expect_u32("packet SMS bit packing", full_bits[bit], expected);
+    }
+
+    char long_text[M17_PACKET_MAX_APPLICATION_BYTES + 64U];
+    for (size_t i = 0U; i < sizeof(long_text) - 1U; i++) {
+        long_text[i] = (char)('A' + (i % 26U));
+    }
+    long_text[sizeof(long_text) - 1U] = '\0';
+    err |= expect_int("packet SMS maximum layout",
+                      m17_packet_prepare_sms_payload(long_text, packed, full_bits, &app_len, &frames, &last, &crc), 0);
+    err |= expect_int("packet SMS maximum app length", app_len, M17_PACKET_MAX_APPLICATION_BYTES);
+    err |= expect_int("packet SMS maximum frame count", frames, M17_PACKET_MAX_FRAMES);
+    err |= expect_int("packet SMS maximum last bytes", last, M17_PACKET_CHUNK_BYTES);
+    err |= expect_u32("packet SMS maximum last text", packed[M17_PACKET_MAX_APPLICATION_BYTES - 2U],
+                      (uint8_t)long_text[M17_PACKET_MAX_APPLICATION_BYTES - 3U]);
+    err |= expect_u32("packet SMS maximum terminator", packed[M17_PACKET_MAX_APPLICATION_BYTES - 1U], 0U);
+    err |= expect_u32("packet SMS maximum CRC", crc, m17_crc16(packed, app_len));
+    return err;
+}
+
+static int
 test_base40_encode(void) {
     int err = 0;
     err |= expect_u64("AB1CD", m17_encode_b40_callsign(0ULL, "AB1CD"), 0x9FDD51ULL);
@@ -935,6 +986,7 @@ main(void) {
     err |= test_dibit_symbol_mapping();
     err |= test_physical_words();
     err |= test_packet_layout_helpers();
+    err |= test_packet_sms_payload_layout();
     err |= test_base40_encode();
     err |= test_randomizer_and_puncturing_tables();
     err |= test_fec_stage_helpers();

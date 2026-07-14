@@ -313,6 +313,93 @@ test_N_short_option_enables_terminal_frontend(void) {
 }
 
 static int
+test_frontend_native_alias_selects_equivalent_headless_frontend(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->frontend_kind = DSD_FRONTEND_TERMINAL;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--frontend";
+    char arg2[] = "native";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE || argc_effective != 1) {
+        DSD_FPRINTF(stderr, "expected native alias parse success, got rc=%d argc=%d exit_rc=%d\n", rc, argc_effective,
+                    exit_rc);
+        test_rc = 1;
+    }
+    if (opts->frontend_kind != DSD_FRONTEND_NONE) {
+        DSD_FPRINTF(stderr, "expected native scaffold alias to select headless frontend, got frontend_kind=%d\n",
+                    opts->frontend_kind);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_compatibility_short_options_use_current_facilities(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    opts->p25_lcw_retune = 0;
+    opts->dmr_stereo = 0;
+    opts->pulse_digi_rate_out = 48000;
+    opts->pulse_digi_out_channels = 1;
+
+    char arg0[] = "dsd-neo";
+    char arg_j[] = "-j";
+    char* argv_j[] = {arg0, arg_j, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv_j, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE || opts->p25_lcw_retune != 1) {
+        DSD_FPRINTF(stderr, "expected -j to enable current LCW retune policy, got rc=%d retune=%u\n", rc,
+                    (unsigned)opts->p25_lcw_retune);
+        test_rc = 1;
+    }
+
+    char arg_nm[] = "-nm";
+    char* argv_nm[] = {arg0, arg_nm, NULL};
+    exit_rc = -1;
+    rc = dsd_parse_args(2, argv_nm, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE || opts->dmr_stereo != 0 || opts->pulse_digi_rate_out != 48000
+        || opts->pulse_digi_out_channels != 1) {
+        DSD_FPRINTF(stderr, "expected -nm to preserve the active preset, got rc=%d stereo=%d rate=%d channels=%d\n", rc,
+                    opts->dmr_stereo, opts->pulse_digi_rate_out, opts->pulse_digi_out_channels);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 expect_numeric_parse_error(const char* option, const char* value) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -3849,6 +3936,83 @@ test_iq_capture_max_mb_missing_value_returns_error(void) {
 }
 
 static int
+test_symbol_capture_format_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--symbol-capture-format");
+}
+
+static int
+test_symbol_capture_format_aliases_use_canonical_writer(void) {
+    static const char* const options[] = {
+        "--symbol-capture-format=soft",
+        "--symbol-capture-format=legacy",
+    };
+    int test_rc = 0;
+
+    for (size_t i = 0; i < sizeof options / sizeof options[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[64];
+        DSD_SNPRINTF(arg1, sizeof arg1, "%s", options[i]);
+        char* argv[] = {arg0, arg1, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || argc_effective != 1) {
+            DSD_FPRINTF(stderr, "expected %s to select canonical symbol writer, got rc=%d argc=%d exit_rc=%d\n",
+                        options[i], rc, argc_effective, exit_rc);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    return test_rc;
+}
+
+static int
+test_symbol_capture_format_rejects_unknown_value(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--symbol-capture-format=hard";
+    char* argv[] = {arg0, arg1, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected unknown symbol capture format error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_iq_capture_max_mb_rejects_invalid_values(void) {
     const char* invalid_options[] = {
         "--iq-capture-max-mb=",
@@ -4894,6 +5058,63 @@ test_f_edacs_presets_match_reference_modes(void) {
             DSD_FPRINTF(stderr, "unexpected %s EDACS profile rate=%d channels=%d gfsk=%d rf_mod=%d output=%s\n",
                         cases[i].arg, opts->pulse_digi_rate_out, opts->pulse_digi_out_channels, opts->mod_gfsk,
                         state->rf_mod, opts->output_name);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    return test_rc;
+}
+
+static int
+test_f_fr_alias_uses_current_dmr_preset(void) {
+    static const struct {
+        int with_c4fm_lock;
+        int mod_c4fm;
+        int mod_gfsk;
+        int rf_mod;
+    } cases[] = {
+        {0, 0, 1, 2},
+        {1, 1, 0, 0},
+    };
+
+    int test_rc = 0;
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg_mc[] = "-mc";
+        char arg_fr[] = "-fr";
+        char* argv[] = {arg0, cases[i].with_c4fm_lock ? arg_mc : arg_fr, cases[i].with_c4fm_lock ? arg_fr : NULL, NULL};
+        int argc = cases[i].with_c4fm_lock ? 3 : 2;
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+
+        if (rc != DSD_PARSE_CONTINUE || opts->frame_dmr != 1 || opts->frame_dstar != 0 || opts->frame_p25p1 != 0
+            || opts->frame_p25p2 != 0 || opts->dmr_stereo != 1 || opts->pulse_digi_rate_out != 8000
+            || opts->pulse_digi_out_channels != 2 || strcmp(opts->output_name, "DMR") != 0
+            || opts->mod_cli_lock != cases[i].with_c4fm_lock || opts->mod_c4fm != cases[i].mod_c4fm
+            || opts->mod_qpsk != 0 || opts->mod_gfsk != cases[i].mod_gfsk || state->rf_mod != cases[i].rf_mod) {
+            DSD_FPRINTF(stderr,
+                        "unexpected -fr canonical mapping rc=%d frame=%d stereo=%d rate=%d channels=%d "
+                        "lock=%d mod=%d/%d/%d rf_mod=%d output=%s\n",
+                        rc, opts->frame_dmr, opts->dmr_stereo, opts->pulse_digi_rate_out, opts->pulse_digi_out_channels,
+                        opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod,
+                        opts->output_name);
             test_rc = 1;
         }
 
@@ -6097,6 +6318,8 @@ main(void) {
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_frontend_terminal_option_sets_terminal_kind();
     rc |= test_N_short_option_enables_terminal_frontend();
+    rc |= test_frontend_native_alias_selects_equivalent_headless_frontend();
+    rc |= test_compatibility_short_options_use_current_facilities();
     rc |= test_numeric_options_reject_trailing_junk();
     rc |= test_H_loads_aes256_key_for_both_slots();
     rc |= test_H_zero_key_keeps_dmr_encrypted_audio_muted();
@@ -6158,6 +6381,9 @@ main(void) {
     rc |= test_iq_capture_format_missing_value_returns_error();
     rc |= test_iq_capture_max_mb_missing_value_returns_error();
     rc |= test_iq_capture_max_mb_rejects_invalid_values();
+    rc |= test_symbol_capture_format_missing_value_returns_error();
+    rc |= test_symbol_capture_format_aliases_use_canonical_writer();
+    rc |= test_symbol_capture_format_rejects_unknown_value();
     rc |= test_iq_replay_long_options_parse();
     rc |= test_iq_replay_audio_classifier_respects_radio_guard();
     rc |= test_iq_replay_rate_missing_value_returns_error();
@@ -6188,6 +6414,7 @@ main(void) {
     rc |= test_f_ysf_preset_applies_cli_profile();
     rc |= test_f_dpmr_and_m17_presets_match_documented_letters();
     rc |= test_f_edacs_presets_match_reference_modes();
+    rc |= test_f_fr_alias_uses_current_dmr_preset();
     rc |= test_f_dmr_preset_selects_gfsk();
     rc |= test_mg_before_f_dmr_keeps_gfsk_lock();
     rc |= test_mc_before_f_dmr_preserves_c4fm_lock();

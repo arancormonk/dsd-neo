@@ -237,6 +237,11 @@ struct decode_mode_name_map_t {
     const char* value;
 };
 
+struct decode_mode_alias_map_t {
+    const char* alias;
+    dsdneoUserDecodeMode mode;
+};
+
 } // namespace
 
 static const decode_mode_name_map_t k_decode_mode_names[] = {
@@ -245,6 +250,13 @@ static const decode_mode_name_map_t k_decode_mode_names[] = {
     {DSDCFG_MODE_X2TDMA, "x2tdma"},     {DSDCFG_MODE_YSF, "ysf"},       {DSDCFG_MODE_DSTAR, "dstar"},
     {DSDCFG_MODE_EDACS_PV, "edacs_pv"}, {DSDCFG_MODE_DPMR, "dpmr"},     {DSDCFG_MODE_M17, "m17"},
     {DSDCFG_MODE_TDMA, "tdma"},         {DSDCFG_MODE_ANALOG, "analog"},
+};
+
+/* Read-only compatibility spellings are translated directly to the current decode-mode enum. Canonical config
+ * rendering continues to use k_decode_mode_names. */
+static const decode_mode_alias_map_t k_decode_mode_aliases[] = {
+    {"p25p1_only", DSDCFG_MODE_P25P1},  {"p25p2_only", DSDCFG_MODE_P25P2},      {"edacs", DSDCFG_MODE_EDACS_PV},
+    {"provoice", DSDCFG_MODE_EDACS_PV}, {"analog_monitor", DSDCFG_MODE_ANALOG},
 };
 
 static const char*
@@ -266,6 +278,12 @@ user_config_parse_decode_mode_value(const char* val, dsdneoUserDecodeMode* out_m
     for (size_t i = 0; i < sizeof(k_decode_mode_names) / sizeof(k_decode_mode_names[0]); i++) {
         if (dsd_strcasecmp(val, k_decode_mode_names[i].value) == 0) {
             *out_mode = k_decode_mode_names[i].mode;
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof(k_decode_mode_aliases) / sizeof(k_decode_mode_aliases[0]); i++) {
+        if (dsd_strcasecmp(val, k_decode_mode_aliases[i].alias) == 0) {
+            *out_mode = k_decode_mode_aliases[i].mode;
             return 0;
         }
     }
@@ -1548,7 +1566,8 @@ static void
 snapshot_alerts_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_alerts = 1;
     cfg->call_alert_enabled = opts->call_alert ? 1 : 0;
-    cfg->call_alert_events = dsd_call_alert_mask_events(opts->call_alert_events);
+    cfg->call_alert_events = opts->call_alert ? dsd_call_alert_normalize_events(opts->call_alert_events)
+                                              : dsd_call_alert_mask_events(opts->call_alert_events);
 }
 
 static void

@@ -225,6 +225,8 @@ typedef struct dsdneoRuntimeConfig {
     int cqpsk_sync_inv;
     int cqpsk_sync_neg_is_set;
     int cqpsk_sync_neg;
+    int sync_warmstart_is_set;
+    int sync_warmstart_enable;
 
     /* DMR / trunking timers */
     int dmr_hangtime_is_set;
@@ -379,6 +381,8 @@ typedef struct dsdneoRuntimeConfig {
     int mt_enable;
 
     /* Frontend tuning behavior */
+    int combine_rot_is_set;
+    int combine_rot;
     int fs4_shift_disable_is_set;
     int fs4_shift_disable;
     int output_clear_on_retune_is_set;

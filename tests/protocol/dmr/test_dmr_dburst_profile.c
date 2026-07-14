@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_dburst_profile.h"
 #include "dsd-neo/core/safe_api.h"
 
 static int g_pi_calls;
@@ -32,6 +33,7 @@ static int g_block_assembler_calls;
 static uint8_t g_block_assembler_last_len;
 static uint8_t g_block_assembler_last_burst;
 static uint8_t g_block_assembler_last_type;
+static uint8_t g_block_assembler_last_bytes[25];
 static int g_lip_calls;
 static int g_reset_blocks_calls;
 static uint32_t g_bptc_extract_errors;
@@ -59,6 +61,7 @@ reset_handler_counters(void) {
     g_block_assembler_last_len = 0;
     g_block_assembler_last_burst = 0;
     g_block_assembler_last_type = 0;
+    DSD_MEMSET(g_block_assembler_last_bytes, 0, sizeof(g_block_assembler_last_bytes));
     g_lip_calls = 0;
     g_reset_blocks_calls = 0;
     g_bptc_extract_errors = 0;
@@ -233,11 +236,15 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
                     uint8_t type) {
     (void)opts;
     (void)state;
-    (void)block_bytes;
     g_block_assembler_calls++;
     g_block_assembler_last_len = block_len;
     g_block_assembler_last_burst = databurst;
     g_block_assembler_last_type = type;
+    if (block_bytes != NULL) {
+        const size_t copy_len =
+            block_len < sizeof(g_block_assembler_last_bytes) ? block_len : sizeof(g_block_assembler_last_bytes);
+        DSD_MEMCPY(g_block_assembler_last_bytes, block_bytes, copy_len);
+    }
 }
 
 void
@@ -259,6 +266,15 @@ static int
 expect_u8(const char* tag, uint8_t got, uint8_t want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %u want %u\n", tag, (unsigned)got, (unsigned)want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_u32(const char* tag, uint32_t got, uint32_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got 0x%08X want 0x%08X\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -318,6 +334,68 @@ prepare_handler_state(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8
     }
 }
 
+typedef struct {
+    uint8_t databurst;
+    uint8_t confirmed;
+    uint8_t header_format;
+    const char* subtype;
+    uint32_t crcmask;
+    uint8_t flags;
+    uint8_t crclen;
+    uint8_t pdu_len;
+    uint8_t pdu_start;
+} expected_profile;
+
+static int
+test_profile_contracts(void) {
+    static const expected_profile expected[] = {
+        {0x00U, 0U, 1U, " PI  ", 0x6969U, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0x01U, 0U, 1U, " VLC ", 0x969696U, DMR_DBURST_F_BPTC | DMR_DBURST_F_LC, 24U, 12U, 0U},
+        {0x02U, 0U, 1U, " TLC ", 0x999999U, DMR_DBURST_F_BPTC | DMR_DBURST_F_LC, 24U, 12U, 0U},
+        {0x03U, 0U, 1U, " CSBK ", 0xA5A5U, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0x04U, 0U, 1U, " MBCH ", 0xAAAAU, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0x05U, 0U, 1U, " MBCC ", 0U, DMR_DBURST_F_BPTC, 0U, 12U, 0U},
+        {0x06U, 0U, 1U, " DATA ", 0xCCCCU, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0x07U, 0U, 1U, " R12U ", 0x0F0U, DMR_DBURST_F_BPTC, 9U, 12U, 0U},
+        {0x07U, 1U, 1U, " R12C ", 0x0F0U, DMR_DBURST_F_BPTC, 9U, 10U, 2U},
+        {0x07U, 0U, 0U, " UDTU ", 0x0F0U, DMR_DBURST_F_BPTC | DMR_DBURST_F_UDT, 9U, 12U, 0U},
+        {0x07U, 1U, 0U, " UDTC ", 0x0F0U, DMR_DBURST_F_BPTC | DMR_DBURST_F_UDT, 9U, 10U, 2U},
+        {0x08U, 0U, 1U, " R34U ", 0x1FFU, DMR_DBURST_F_TRELLIS, 9U, 18U, 0U},
+        {0x08U, 1U, 1U, " R34C ", 0x1FFU, DMR_DBURST_F_TRELLIS, 9U, 16U, 2U},
+        {0x09U, 0U, 1U, " IDLE ", 0U, 0U, 0U, 0U, 0U},
+        {0x0AU, 0U, 1U, " R_1U ", 0x10FU, DMR_DBURST_F_FULL, 9U, 24U, 0U},
+        {0x0AU, 1U, 1U, " R_1C ", 0x10FU, DMR_DBURST_F_FULL, 9U, 22U, 2U},
+        {0x0BU, 0U, 1U, " USBD ", 0x3333U, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0xEBU, 0U, 1U, NULL, 0U, DMR_DBURST_F_EMB, 5U, 9U, 0U},
+        {0x40U, 0U, 1U, " _UNK ", 0U, DMR_DBURST_F_FULL, 0U, 25U, 0U},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
+        const expected_profile* want = &expected[i];
+        dmr_dburst_profile got;
+        dmr_dburst_profile_resolve(want->databurst, want->confirmed, want->header_format, &got);
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] flags", i);
+        rc |= expect_u8(tag, got.flags, want->flags);
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] crc length", i);
+        rc |= expect_u8(tag, got.crclen, want->crclen);
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] crc mask", i);
+        rc |= expect_u32(tag, got.crcmask, want->crcmask);
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] PDU length", i);
+        rc |= expect_u8(tag, got.pdu_len, want->pdu_len);
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] PDU start", i);
+        rc |= expect_u8(tag, got.pdu_start, want->pdu_start);
+        if ((got.subtype == NULL) != (want->subtype == NULL)
+            || (got.subtype != NULL && strcmp(got.subtype, want->subtype) != 0)) {
+            DSD_FPRINTF(stderr, "profile[%zu] subtype: got '%s' want '%s'\n", i, got.subtype ? got.subtype : "(null)",
+                        want->subtype ? want->subtype : "(null)");
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 static int
 test_handler_dispatch_paths(void) {
     int rc = 0;
@@ -359,10 +437,13 @@ test_handler_dispatch_paths(void) {
     rc |= expect_u8("udtc-block-len", g_block_assembler_last_len, 10U);
 
     prepare_handler_state(&opts, &state, info, 0x08U, 0U, 1U, AUDIO_IN_SYMBOL_BIN);
+    g_r34_hard_bytes[0] = 0x42U;
+    g_r34_soft_bytes[0] = 0x99U;
     dmr_data_burst_handler(&opts, &state, info, 0x08U, NULL);
     rc |= expect_u8("r34u-block-call", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r34u-block-burst", g_block_assembler_last_burst, 0x08U);
     rc |= expect_u8("r34u-block-len", g_block_assembler_last_len, 18U);
+    rc |= expect_u8("r34u-symbol-replay-uses-canonical-hard-decoder", g_block_assembler_last_bytes[0], 0x42U);
 
     prepare_handler_state(&opts, &state, info, 0x0AU, 0U, 1U, 0);
     dmr_data_burst_handler(&opts, &state, info, 0x0AU, NULL);
@@ -380,6 +461,7 @@ test_handler_dispatch_paths(void) {
     rc |= expect_u8("embedded-flco-call", (uint8_t)g_flco_calls, 1U);
     rc |= expect_u8("embedded-flco-type", g_flco_last_type, 3U);
     rc |= expect_u8("embedded-crc-correct", (uint8_t)g_flco_last_crc_correct, 1U);
+    rc |= expect_u8("embedded-clears-head", state.data_p_head[1], 0U);
 
     return rc;
 }
@@ -507,12 +589,14 @@ test_trellis_candidate_and_fallback_paths(void) {
     dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
     rc |= expect_u8("r34u-soft-fallback-dispatches", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r34u-soft-fallback-len", g_block_assembler_last_len, 18U);
+    rc |= expect_u8("r34u-soft-fallback-payload", g_block_assembler_last_bytes[2], 0xA5U);
     return rc;
 }
 
 int
 main(void) {
     int rc = 0;
+    rc |= test_profile_contracts();
     rc |= test_handler_dispatch_paths();
     rc |= test_handler_additional_dispatch_paths();
     rc |= test_bptc_ras_and_usbd_services();

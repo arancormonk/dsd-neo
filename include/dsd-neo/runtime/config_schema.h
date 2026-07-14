@@ -82,12 +82,14 @@ typedef struct {
 
 /**
  * @brief Get the number of schema entries.
- * @return Total number of defined configuration keys.
+ * Compatibility aliases are intentionally excluded so schema enumeration and
+ * generated templates expose canonical keys only.
+ * @return Total number of canonical configuration keys.
  */
 int dsdcfg_schema_count(void);
 
 /**
- * @brief Get a schema entry by index.
+ * @brief Get a canonical schema entry by index.
  * @param index Index into schema array (0 to count-1).
  * @return Pointer to schema entry, or NULL if index out of range.
  */
@@ -95,6 +97,9 @@ const dsdcfg_schema_entry_t* dsdcfg_schema_get(int index);
 
 /**
  * @brief Find a schema entry by section and key name.
+ *
+ * Unlike schema enumeration, lookup also recognizes deprecated read-only
+ * compatibility aliases so validators can type-check existing config files.
  * @param section Section name (case-insensitive).
  * @param key Key name (case-insensitive).
  * @return Pointer to schema entry, or NULL if not found.

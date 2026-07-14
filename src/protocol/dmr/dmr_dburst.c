@@ -29,26 +29,10 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dmr_dburst_profile.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-enum {
-    DMR_DBURST_F_BPTC = 1U << 0U,
-    DMR_DBURST_F_TRELLIS = 1U << 1U,
-    DMR_DBURST_F_EMB = 1U << 2U,
-    DMR_DBURST_F_LC = 1U << 3U,
-    DMR_DBURST_F_FULL = 1U << 4U,
-    DMR_DBURST_F_UDT = 1U << 7U,
-};
-
-typedef struct {
-    const char* subtype;
-    uint32_t crcmask;
-    uint8_t flags;
-    uint8_t crclen;
-    uint8_t pdu_len;
-} dmr_dburst_profile;
 
 typedef struct {
     dsd_opts* opts;
@@ -112,8 +96,8 @@ dmr_dburst_ctx_init(dmr_data_burst_ctx* ctx, dsd_opts* opts, dsd_state* state, u
     ctx->burst = -1;
 }
 
-static void
-dmr_dburst_apply_base_profile(dmr_data_burst_ctx* ctx) {
+void
+dmr_dburst_profile_resolve(uint8_t databurst, uint8_t confirmed_data, uint8_t header_format, dmr_dburst_profile* out) {
     static const dmr_dburst_profile profiles[12] = {
         [0x00] = {.subtype = " PI  ", .crcmask = 0x6969, .flags = DMR_DBURST_F_BPTC, .crclen = 16, .pdu_len = 12},
         [0x01] = {.subtype = " VLC ",
@@ -137,62 +121,69 @@ dmr_dburst_apply_base_profile(dmr_data_burst_ctx* ctx) {
         [0x0B] = {.subtype = " USBD ", .crcmask = 0x3333, .flags = DMR_DBURST_F_BPTC, .crclen = 16, .pdu_len = 12},
     };
 
-    if (ctx->databurst <= 0x0B) {
-        const dmr_dburst_profile* p = &profiles[ctx->databurst];
-        ctx->is_bptc = (p->flags & DMR_DBURST_F_BPTC) != 0;
-        ctx->is_trellis = (p->flags & DMR_DBURST_F_TRELLIS) != 0;
-        ctx->is_emb = (p->flags & DMR_DBURST_F_EMB) != 0;
-        ctx->is_lc = (p->flags & DMR_DBURST_F_LC) != 0;
-        ctx->is_full = (p->flags & DMR_DBURST_F_FULL) != 0;
-        ctx->crclen = p->crclen;
-        ctx->crcmask = p->crcmask;
-        ctx->pdu_len = p->pdu_len;
-        if (p->subtype != NULL) {
-            DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), "%s", p->subtype);
+    if (out == NULL) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+
+    if (databurst <= 0x0B) {
+        *out = profiles[databurst];
+    } else if (databurst == 0xEB) {
+        out->flags = DMR_DBURST_F_EMB;
+        out->crclen = 5;
+        out->pdu_len = 9;
+    } else {
+        out->subtype = " _UNK ";
+        out->flags = DMR_DBURST_F_FULL;
+        out->pdu_len = 25;
+    }
+
+    if (databurst == 0x07) {
+        if (confirmed_data == 1) {
+            out->pdu_len = 10;
+            out->pdu_start = 2;
+            out->subtype = " R12C ";
         }
-        return;
+        if (header_format == 0) {
+            out->flags |= DMR_DBURST_F_UDT;
+            if (confirmed_data == 1) {
+                out->subtype = " UDTC ";
+            } else {
+                out->subtype = " UDTU ";
+            }
+        }
+    } else if (databurst == 0x08) {
+        if (confirmed_data == 1) {
+            out->pdu_len = 16;
+            out->pdu_start = 2;
+            out->subtype = " R34C ";
+        }
+    } else if (databurst == 0x0A) {
+        if (confirmed_data == 1) {
+            out->pdu_len = 22;
+            out->pdu_start = 2;
+            out->subtype = " R_1C ";
+        }
     }
-
-    if (ctx->databurst == 0xEB) {
-        ctx->crclen = 5;
-        ctx->is_emb = 1;
-        ctx->pdu_len = 9;
-        return;
-    }
-
-    ctx->is_full = 1;
-    ctx->pdu_len = 25;
-    DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " _UNK ");
 }
 
 static void
-dmr_dburst_apply_dynamic_profile(dmr_data_burst_ctx* ctx) {
-    if (ctx->databurst == 0x07) {
-        if (ctx->state->data_conf_data[ctx->slot] == 1) {
-            ctx->pdu_len = 10;
-            ctx->pdu_start = 2;
-            DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " R12C ");
-        }
-        if (ctx->state->data_header_format[ctx->slot] == 0) {
-            ctx->is_udt = 1;
-            if (ctx->state->data_conf_data[ctx->slot] == 1) {
-                DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " UDTC ");
-            } else {
-                DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " UDTU ");
-            }
-        }
-    } else if (ctx->databurst == 0x08) {
-        if (ctx->state->data_conf_data[ctx->slot] == 1) {
-            ctx->pdu_len = 16;
-            ctx->pdu_start = 2;
-            DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " R34C ");
-        }
-    } else if (ctx->databurst == 0x0A) {
-        if (ctx->state->data_conf_data[ctx->slot] == 1) {
-            ctx->pdu_len = 22;
-            ctx->pdu_start = 2;
-            DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), " R_1C ");
-        }
+dmr_dburst_apply_profile(dmr_data_burst_ctx* ctx) {
+    dmr_dburst_profile profile;
+    dmr_dburst_profile_resolve(ctx->databurst, ctx->state->data_conf_data[ctx->slot],
+                               ctx->state->data_header_format[ctx->slot], &profile);
+    ctx->is_bptc = (profile.flags & DMR_DBURST_F_BPTC) != 0;
+    ctx->is_trellis = (profile.flags & DMR_DBURST_F_TRELLIS) != 0;
+    ctx->is_emb = (profile.flags & DMR_DBURST_F_EMB) != 0;
+    ctx->is_lc = (profile.flags & DMR_DBURST_F_LC) != 0;
+    ctx->is_full = (profile.flags & DMR_DBURST_F_FULL) != 0;
+    ctx->is_udt = (profile.flags & DMR_DBURST_F_UDT) != 0;
+    ctx->crclen = profile.crclen;
+    ctx->crcmask = profile.crcmask;
+    ctx->pdu_len = profile.pdu_len;
+    ctx->pdu_start = profile.pdu_start;
+    if (profile.subtype != NULL) {
+        DSD_SNPRINTF(ctx->state->fsubtype, sizeof(ctx->state->fsubtype), "%s", profile.subtype);
     }
 }
 
@@ -765,8 +756,7 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
     dmr_data_burst_ctx ctx;
     dmr_dburst_ctx_init(&ctx, opts, state, info, databurst, reliab98);
 
-    dmr_dburst_apply_base_profile(&ctx);
-    dmr_dburst_apply_dynamic_profile(&ctx);
+    dmr_dburst_apply_profile(&ctx);
 
     if (!dmr_dburst_keeps_data_p_head(ctx.databurst)) {
         state->data_p_head[ctx.slot] = 0;

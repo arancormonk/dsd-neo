@@ -462,7 +462,7 @@ metadata_write_feature_fields(FILE* fp, const dsd_iq_capture_config* cfg, const 
     if (write_json_bool_field(fp, "fs4_shift_enabled", cfg->fs4_shift_enabled, 0) != 0) {
         return -1;
     }
-    if (write_json_bool_field(fp, "combine_rotate_enabled", 1, 0) != 0) {
+    if (write_json_bool_field(fp, "combine_rotate_enabled", cfg->combine_rotate_enabled, 0) != 0) {
         return -1;
     }
     if (write_json_bool_field(fp, "muted_bytes_excluded", cfg->muted_bytes_excluded, 0) != 0) {

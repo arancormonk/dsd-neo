@@ -146,6 +146,8 @@ config_snapshot_equals_block_b(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(cqpsk_sync_inv);
     CONFIG_EQ_FIELD(cqpsk_sync_neg_is_set);
     CONFIG_EQ_FIELD(cqpsk_sync_neg);
+    CONFIG_EQ_FIELD(sync_warmstart_is_set);
+    CONFIG_EQ_FIELD(sync_warmstart_enable);
     CONFIG_EQ_FIELD(dmr_hangtime_is_set);
     CONFIG_EQ_FIELD(dmr_grant_timeout_is_set);
     CONFIG_EQ_FIELD(p25_hangtime_is_set);
@@ -268,6 +270,8 @@ config_snapshot_equals_block_d(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(audio_lpf_cutoff_hz);
     CONFIG_EQ_FIELD(mt_is_set);
     CONFIG_EQ_FIELD(mt_enable);
+    CONFIG_EQ_FIELD(combine_rot_is_set);
+    CONFIG_EQ_FIELD(combine_rot);
     CONFIG_EQ_FIELD(fs4_shift_disable_is_set);
     CONFIG_EQ_FIELD(fs4_shift_disable);
     CONFIG_EQ_FIELD(output_clear_on_retune_is_set);
@@ -510,6 +514,9 @@ default_cache_dir(char* dst, size_t dst_size) {
 static void
 config_init_defaults(dsdneoRuntimeConfig& c) {
     /* Defaults for centralized knobs (may be overridden by env parsing below). */
+    c.sync_warmstart_enable = 1;
+    c.combine_rot = 1;
+
     c.dmr_hangtime_s = 2.0;
     c.dmr_grant_timeout_s = 4.0;
 
@@ -658,6 +665,13 @@ config_init_cqpsk(dsdneoRuntimeConfig& c) {
     /* CQPSK runtime toggles */
     config_init_cqpsk_toggle(c);
     config_init_cqpsk_sync(c);
+
+    /* Keep the warm-start safety switch at the canonical calibration boundary. */
+    const char* warmstart = getenv("DSD_NEO_SYNC_WARMSTART");
+    c.sync_warmstart_is_set = env_is_set(warmstart);
+    if (c.sync_warmstart_is_set && strcmp(warmstart, "0") == 0) {
+        c.sync_warmstart_enable = 0;
+    }
 }
 
 static void
@@ -1096,6 +1110,14 @@ config_init_mt_and_retune(dsdneoRuntimeConfig& c) {
     const char* mt = getenv("DSD_NEO_MT");
     c.mt_is_set = env_is_set(mt);
     c.mt_enable = (c.mt_is_set && mt[0] == '1') ? 1 : 0;
+
+    /* Select the current combined CU8 transform or its supported two-pass equivalent. */
+    const char* combine_rot = getenv("DSD_NEO_COMBINE_ROT");
+    c.combine_rot_is_set = env_is_set(combine_rot);
+    if (c.combine_rot_is_set) {
+        int value = 0;
+        c.combine_rot = env_parse_int_strict(combine_rot, &value) ? (value != 0) : 0;
+    }
 
     /* Disable fs/4 capture shift */
     const char* dfs4 = getenv("DSD_NEO_DISABLE_FS4_SHIFT");

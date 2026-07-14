@@ -194,8 +194,12 @@ source = "rtl"  # overrides anything from includes
 - Include directives must appear **before** any section headers.
 - Paths support expansion (`~`, `$VAR`, `${VAR}`).
 - Three include hops are accepted (root → level 1 → level 2 → level 3, four
-  files total); an include from level 3 that would create level 4 is an error.
-- Missing, unreadable, empty, or unresolvable include paths are errors.
+  files total). Runtime loading skips a deeper include and continues with the
+  including and root files; `--validate-config` reports the excess depth.
+- Optional includes that are missing, unreadable, empty, unresolvable, or use
+  an unsupported persisted version are skipped during normal startup so they
+  cannot discard the root configuration. `--validate-config` still reports
+  these problems as errors.
 - Circular includes are detected and silently skipped.
 - Included files are processed first; main file values override includes.
 - Profile sections in included files are ignored (profiles are only read
@@ -272,6 +276,7 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `source` | ENUM | Input source type (`pulse|rtl|rtltcp|soapy|file|tcp|udp`) | `pulse` |
 | `pulse_source` | STRING | PulseAudio source device | (empty) |
+| `pulse_input` | STRING | Deprecated read alias for `pulse_source` | (empty) |
 | `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
 | `rtl_freq` | FREQ | RTL-SDR frequency | `851.375M` |
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
@@ -280,6 +285,7 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_sql` | INT (-100-0) | Squelch level | `0` |
 | `rtl_volume` | INT (1-3) | RTL monitor/non-symbol gain multiplier | `2` |
 | `auto_ppm` | BOOL | Enable carrier/error-based RTL auto-PPM correction | `false` |
+| `rtl_auto_ppm` | BOOL | Deprecated read alias for `auto_ppm` | `false` |
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
 | `soapy_args` | STRING | SoapySDR device selection args (from SoapySDRUtil `--find`/`--probe`) | (empty) |
@@ -302,7 +308,9 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `backend` | ENUM | Audio output backend (`pulse|null`) | `pulse` |
 | `pulse_sink` | STRING | PulseAudio sink device | (empty) |
-| `frontend` | ENUM | Frontend implementation (`none|terminal`) | `none` |
+| `pulse_output` | STRING | Deprecated read alias for `pulse_sink` | (empty) |
+| `frontend` | ENUM | Frontend implementation (`none|terminal`); deprecated `native` values load as `none` | `none` |
+| `ncurses_ui` | BOOL | Deprecated read alias; `true` selects `terminal`, `false` selects `none` | `false` |
 
 **[mode] section:**
 | Key | Type | Description | Default |
@@ -334,6 +342,7 @@ small subset is exposed as config keys for convenience (for example
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `event_log` | PATH | Event history log file path | (empty) |
+| `event_log_file` | PATH | Deprecated read alias for `event_log` | (empty) |
 | `frame_log` | PATH | Frame trace log file path | (empty) |
 | `p25_sm_log` | PATH | P25 state-machine health log file path | (empty) |
 
@@ -341,8 +350,11 @@ small subset is exposed as config keys for convenience (for example
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `enabled` | BOOL | Enable audible call-alert beeps | `false` |
+| `call_alert` | BOOL | Deprecated read alias for `enabled` | `false` |
 | `voice_start` | BOOL | Beep when a voice call starts | `true` |
+| `start` | BOOL | Deprecated read alias for `voice_start` | `true` |
 | `voice_end` | BOOL | Beep when a voice call ends | `true` |
+| `end` | BOOL | Deprecated read alias for `voice_end` | `true` |
 | `data` | BOOL | Beep when a data call is logged | `true` |
 
 **[recording] section:**
@@ -472,7 +484,8 @@ Output format:
   - Use `SoapySDRUtil --find` / `SoapySDRUtil --probe="<args>"` to discover valid `soapy_args`.
 
 - **PulseAudio (`source = "pulse"`)**: Use `pulse_source` to specify
-  a particular input device.
+  a particular input device. The older `pulse_input` spelling remains a
+  read-only compatibility alias.
 
 - **TCP (`source = "tcp"`)**: Set `tcp_host` (port optional) to switch
   the input to TCP PCM audio (raw PCM16LE mono). Sample rate uses the
@@ -494,6 +507,9 @@ Output format:
 The `decode` key in `[mode]` configures the frame types and modulation.
 Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `nxdn48`, `nxdn96`,
 `x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`, `analog`.
+Persisted compatibility values `p25p1_only`, `p25p2_only`, `edacs`,
+`provoice`, and `analog_monitor` are translated to their canonical modes when
+read. Generated configurations always use the canonical values above.
 
 `decode = "auto"` preserves the protocol candidates already established by
 initialization and any active configuration/profile overlay; it does not replace
@@ -715,6 +731,12 @@ retains a narrow read-only exception for those user-owned files: integer value
 every other version are rejected. Remove this exception after the support window
 for configs generated by those releases ends, or after a migration tool that
 strips the line is provided and required.
+
+Deprecated key and decode-value aliases listed above are likewise translated
+directly into current settings while loading existing files and profiles. They
+are not emitted by template or config writers; saving through a current writer
+therefore migrates the file to canonical spellings without retaining separate
+legacy state.
 
 Older releases also wrote per-system P25 control-channel candidate files under
 `DSD_NEO_CACHE_DIR`. The current decoder can read those files, controlled by

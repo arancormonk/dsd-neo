@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/runtime/config.h>
 #include <math.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -30,6 +31,16 @@ float_compare_asc(const void* a, const void* b) {
         return 1;
     }
     return 0;
+}
+
+int
+dsd_sync_warm_start_enabled(void) {
+    const dsdneoRuntimeConfig* config = dsd_neo_get_config();
+    if (config == NULL) {
+        dsd_neo_config_init();
+        config = dsd_neo_get_config();
+    }
+    return (config && config->sync_warmstart_enable) ? 1 : 0;
 }
 
 static float*
@@ -143,6 +154,10 @@ dsd_symbol_history_count(const dsd_state* state) {
 
 dsd_warm_start_result_t
 dsd_sync_warm_start_thresholds_outer_only(const dsd_opts* opts, dsd_state* state, int sync_len) {
+    if (!dsd_sync_warm_start_enabled()) {
+        return DSD_WARM_START_DISABLED;
+    }
+
     /* Validate state */
     if (state == NULL) {
         return DSD_WARM_START_NULL_STATE;
@@ -218,6 +233,10 @@ dsd_sync_warm_start_thresholds_outer_only(const dsd_opts* opts, dsd_state* state
 
 dsd_warm_start_result_t
 dsd_sync_warm_start_center_outer_only(dsd_state* state, int sync_len) {
+    if (!dsd_sync_warm_start_enabled()) {
+        return DSD_WARM_START_DISABLED;
+    }
+
     if (state == NULL) {
         return DSD_WARM_START_NULL_STATE;
     }

@@ -2427,18 +2427,6 @@ m17_pkt_prepare_lsf(m17_pkt_ctx* ctx) {
 }
 
 static void
-m17_pkt_pack_bytes_to_bits(m17_pkt_ctx* ctx) {
-    const int padded_bytes = ctx->block * M17_PACKET_CHUNK_BYTES;
-    DSD_MEMSET(ctx->m17_p1_full, 0, sizeof(ctx->m17_p1_full));
-    for (int byte_index = 0; byte_index < padded_bytes; byte_index++) {
-        const uint8_t byte = ctx->m17_p1_packed[byte_index];
-        for (int bit = 0; bit < 8; bit++) {
-            ctx->m17_p1_full[(byte_index * 8) + bit] = (byte >> (7 - bit)) & 1U;
-        }
-    }
-}
-
-static void
 m17_pkt_prepare_payload_layout(m17_pkt_ctx* ctx) {
     const size_t max_sms_text = M17_PACKET_MAX_APPLICATION_BYTES - 2U;
     const size_t text_len = strnlen(ctx->text, max_sms_text);
@@ -2452,18 +2440,10 @@ m17_pkt_prepare_payload_layout(m17_pkt_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, "\n");
 
-    DSD_MEMSET(ctx->m17_p1_packed, 0, sizeof(ctx->m17_p1_packed));
-    ctx->m17_p1_packed[0] = 0x05U;
-    DSD_MEMCPY(&ctx->m17_p1_packed[1], ctx->text, text_len);
-    ctx->app_len = (uint16_t)(1U + text_len + 1U);
-    ctx->crc_cmp = m17_crc16(ctx->m17_p1_packed, ctx->app_len);
-    ctx->m17_p1_packed[ctx->app_len] = (uint8_t)(ctx->crc_cmp >> 8U);
-    ctx->m17_p1_packed[ctx->app_len + 1U] = (uint8_t)(ctx->crc_cmp & 0xFFU);
-
     uint8_t last_frame_bytes = 0U;
-    ctx->block = m17_packet_frame_count_for_app_bytes(ctx->app_len, &last_frame_bytes);
+    (void)m17_packet_prepare_sms_payload(ctx->text, ctx->m17_p1_packed, ctx->m17_p1_full, &ctx->app_len, &ctx->block,
+                                         &last_frame_bytes, &ctx->crc_cmp);
     ctx->lst = last_frame_bytes;
-    m17_pkt_pack_bytes_to_bits(ctx);
 }
 
 static void

@@ -871,6 +871,15 @@ test_call_alert_off_selection_survives_ui_command_path(void) {
         "call alert toggle with empty selection suppresses data event",
         dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA), 0);
 
+    /* Older runtime state used enabled+zero as the representation for all
+     * events. Saving that state must preserve its effective behavior. */
+    opts->call_alert = 1;
+    opts->call_alert_events = 0;
+    dsd_snapshot_opts_to_user_config(opts, state, &snap);
+    rc |= expect_int_eq("enabled legacy call alert snapshot keeps master", snap.call_alert_enabled, 1);
+    rc |= expect_int_eq("enabled legacy call alert snapshot normalizes all events", snap.call_alert_events,
+                        DSD_CALL_ALERT_EVENT_ALL);
+
     free_test_runtime(&runtime);
     return rc;
 }

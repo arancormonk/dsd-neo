@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
 
@@ -290,6 +291,42 @@ m17_packet_frame_count_for_app_bytes(uint16_t app_bytes, uint8_t* last_frame_byt
         *last_frame_bytes = last;
     }
     return (int)frames;
+}
+
+int
+m17_packet_prepare_sms_payload(const char* text, uint8_t* packed, uint8_t* full_bits, uint16_t* app_len,
+                               int* frame_count, uint8_t* last_frame_bytes, uint16_t* crc) {
+    if (text == NULL || packed == NULL || full_bits == NULL || app_len == NULL || frame_count == NULL
+        || last_frame_bytes == NULL || crc == NULL) {
+        return -1;
+    }
+
+    const size_t max_text = M17_PACKET_MAX_APPLICATION_BYTES - 2U;
+    size_t text_len = 0U;
+    while (text_len < max_text && text[text_len] != '\0') {
+        text_len++;
+    }
+
+    DSD_MEMSET(packed, 0, M17_PACKET_MAX_TOTAL_BYTES);
+    DSD_MEMSET(full_bits, 0, M17_PACKET_MAX_FRAMES * M17_PACKET_CHUNK_BITS);
+    packed[0] = 0x05U;
+    DSD_MEMCPY(packed + 1U, text, text_len);
+    *app_len = (uint16_t)(1U + text_len + 1U);
+    *crc = m17_crc16(packed, *app_len);
+    packed[*app_len] = (uint8_t)(*crc >> 8U);
+    packed[*app_len + 1U] = (uint8_t)(*crc & 0xFFU);
+
+    *frame_count = m17_packet_frame_count_for_app_bytes(*app_len, last_frame_bytes);
+    if (*frame_count < 0) {
+        return -1;
+    }
+    const size_t padded_bytes = (size_t)*frame_count * M17_PACKET_CHUNK_BYTES;
+    for (size_t byte = 0U; byte < padded_bytes; byte++) {
+        for (size_t bit = 0U; bit < 8U; bit++) {
+            full_bits[(byte * 8U) + bit] = (uint8_t)((packed[byte] >> (7U - bit)) & 1U);
+        }
+    }
+    return 0;
 }
 
 _Static_assert((((M17_PACKET_MAX_FRAMES - 1U) * M17_PACKET_CHUNK_BYTES) + M17_PACKET_CHUNK_BYTES - M17_PACKET_CRC_BYTES)

@@ -871,7 +871,7 @@ tg_policy_apply_group_tune_blocks(const dsd_opts* opts, int encrypted, int data_
 
 static void DSD_ATTR_USED
 tg_policy_apply_private_tune_blocks(const dsd_opts* opts, int encrypted, int data_call, int src_match, int dst_match,
-                                    dsd_tg_policy_decision* out) {
+                                    int allow_unlisted, dsd_tg_policy_decision* out) {
     if (!out) {
         return;
     }
@@ -887,7 +887,7 @@ tg_policy_apply_private_tune_blocks(const dsd_opts* opts, int encrypted, int dat
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
     }
-    if (opts && opts->trunk_use_allow_list == 1 && !src_match && !dst_match) {
+    if (opts && opts->trunk_use_allow_list == 1 && !allow_unlisted && !src_match && !dst_match) {
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ALLOWLIST;
     }
@@ -945,9 +945,9 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
     return 0;
 }
 
-int
-dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
-                                    int encrypted, int data_call, dsd_tg_policy_decision* out) {
+static int
+tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst, int encrypted,
+                                int data_call, int allow_unlisted, dsd_tg_policy_decision* out) {
     dsd_tg_policy_entry src_entry;
     dsd_tg_policy_entry dst_entry;
     const dsd_tg_policy_entry* chosen = NULL;
@@ -970,7 +970,7 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
 
     mode_blocking = tg_policy_private_mode_is_blocking(src_match, &src_entry, dst_match, &dst_entry);
     tg_policy_private_set_hold_state(state, src, dst, out, &hold_mismatch);
-    tg_policy_apply_private_tune_blocks(opts, encrypted, data_call, src_match, dst_match, out);
+    tg_policy_apply_private_tune_blocks(opts, encrypted, data_call, src_match, dst_match, allow_unlisted, out);
     if (mode_blocking) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_MODE);
     }
@@ -983,6 +983,18 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
     }
 
     return 0;
+}
+
+int
+dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
+                                    int encrypted, int data_call, dsd_tg_policy_decision* out) {
+    return tg_policy_evaluate_private_call(opts, state, src, dst, encrypted, data_call, 0, out);
+}
+
+int
+dsd_tg_policy_evaluate_private_grant(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
+                                     int encrypted, int data_call, dsd_tg_policy_decision* out) {
+    return tg_policy_evaluate_private_call(opts, state, src, dst, encrypted, data_call, 1, out);
 }
 
 static void

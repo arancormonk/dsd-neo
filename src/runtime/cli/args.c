@@ -298,6 +298,12 @@ cli_parse_frontend_kind(const char* in, dsd_frontend_kind* out) {
         *out = DSD_FRONTEND_TERMINAL;
         return 1;
     }
+    if (dsd_strcasecmp(in, "native") == 0) {
+        /* The former native provider was a non-rendering scaffold. Keep the
+         * accepted spelling by mapping it to the equivalent headless frontend. */
+        *out = DSD_FRONTEND_NONE;
+        return 1;
+    }
     return 0;
 }
 
@@ -559,6 +565,19 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             iq_capture_max_mb_cli = argv[i] + 20;                                                                      \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--symbol-capture-format") == 0) {                                                         \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--symbol-capture-format requires a value (soft|legacy)\n");                                 \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            symbol_capture_format_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                     \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--symbol-capture-format=", 24) == 0) {                                                   \
+            symbol_capture_format_cli = argv[i] + 24;                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--iq-replay") == 0) {                                                                     \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--iq-replay requires a path value\n");                                                      \
@@ -793,7 +812,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         }                                                                                                              \
         if (strcmp(argv[i], "--frontend") == 0) {                                                                      \
             if (i + 1 >= argc) {                                                                                       \
-                LOG_ERROR("--frontend requires a value (none|terminal)\n");                                            \
+                LOG_ERROR("--frontend requires a value (none|terminal|native)\n");                                     \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
@@ -986,6 +1005,17 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         opts->iq_capture_max_bytes = mb * 1024ULL * 1024ULL;                                                           \
     }                                                                                                                  \
                                                                                                                        \
+    if (symbol_capture_format_cli) {                                                                                   \
+        if (strcmp(symbol_capture_format_cli, "soft") != 0 && strcmp(symbol_capture_format_cli, "legacy") != 0) {      \
+            LOG_ERROR("Invalid --symbol-capture-format value \"%s\" (expected soft or legacy)\n",                      \
+                      symbol_capture_format_cli);                                                                      \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        LOG_INFO("NOTICE: Symbol capture format: soft/v2%s\n",                                                         \
+                 strcmp(symbol_capture_format_cli, "legacy") == 0 ? " (legacy spelling accepted)" : "");               \
+    }                                                                                                                  \
+                                                                                                                       \
     if (iq_replay_cli) {                                                                                               \
         opts->iq_replay_requested = 1;                                                                                 \
         DSD_SNPRINTF(opts->iq_replay_path, sizeof(opts->iq_replay_path), "%s", iq_replay_cli);                         \
@@ -1175,12 +1205,16 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
     if (frontend_cli) {                                                                                                \
         dsd_frontend_kind frontend = DSD_FRONTEND_NONE;                                                                \
         if (!cli_parse_frontend_kind(frontend_cli, &frontend)) {                                                       \
-            LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal)\n", frontend_cli);                     \
+            LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal|native)\n", frontend_cli);              \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
         opts->frontend_kind = frontend;                                                                                \
-        LOG_INFO("NOTICE: Frontend: %s\n", cli_frontend_kind_name(frontend));                                          \
+        if (dsd_strcasecmp(frontend_cli, "native") == 0) {                                                             \
+            LOG_INFO("NOTICE: Frontend: native compatibility alias uses headless mode\n");                             \
+        } else {                                                                                                       \
+            LOG_INFO("NOTICE: Frontend: %s\n", cli_frontend_kind_name(frontend));                                      \
+        }                                                                                                              \
     }                                                                                                                  \
                                                                                                                        \
     /* Apply input volume and warn threshold */                                                                        \
@@ -1402,6 +1436,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* iq_capture_cli = NULL;
     const char* iq_capture_format_cli = NULL;
     const char* iq_capture_max_mb_cli = NULL;
+    const char* symbol_capture_format_cli = NULL;
     const char* iq_replay_cli = NULL;
     const char* iq_replay_rate_cli = NULL;
     const char* iq_info_cli = NULL;
@@ -1491,6 +1526,11 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         case '8':                                                                                                      \
             opts->monitor_input_audio = 1;                                                                             \
             LOG_INFO("NOTICE: Experimental Raw Analog Source Monitoring Enabled (Pulse Audio Only!)\n");               \
+            break;                                                                                                     \
+        case 'j':                                                                                                      \
+            /* Compatibility spelling for the current default/on policy. */                                            \
+            opts->p25_lcw_retune = 1;                                                                                  \
+            LOG_INFO("NOTICE: P25: LCW explicit retune (0x44) forced ON.\n");                                          \
             break;                                                                                                     \
         case '^':                                                                                                      \
             opts->p25_prefer_candidates = 1;                                                                           \
@@ -1909,6 +1949,12 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         }                                                                                                              \
         case 'n': {                                                                                                    \
+            if (optarg[0] == 'm' && optarg[1] == '\0') {                                                               \
+                /* Accept the retired mono override without changing the active preset. DMR presets already select     \
+                 * the current dual-slot mixer; non-DMR audio routing must remain untouched. */                        \
+                LOG_INFO("NOTICE: -nm compatibility alias accepted; DMR uses the current preset mixer.\n");            \
+                break;                                                                                                 \
+            }                                                                                                          \
             double parsed_ga = 0.0;                                                                                    \
             if (!cli_parse_double_option("-n", optarg, &parsed_ga, out_exit_rc)) {                                     \
                 return DSD_PARSE_ERROR;                                                                                \
@@ -2010,8 +2056,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             opts->analog_only = 0;                                                                                     \
             opts->monitor_input_audio = 0;                                                                             \
                                                                                                                        \
+            const char decode_preset = optarg[0] == 'r' ? 's' : optarg[0];                                             \
             dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;                                                        \
-            if (dsd_decode_mode_from_cli_preset(optarg[0], &core_mode) == 0                                            \
+            if (dsd_decode_mode_from_cli_preset(decode_preset, &core_mode) == 0                                        \
                 && dsd_apply_decode_mode_preset(core_mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0) {         \
                 cli_decode_timing_mode = core_mode;                                                                    \
                 cli_decode_timing_seen = 1;                                                                            \
@@ -2025,6 +2072,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     case '1': LOG_INFO("NOTICE: Decoding only P25 Phase 1 frames.\n"); break;                          \
                     case '2': LOG_INFO("NOTICE: Decoding only P25 Phase 2 frames.\n"); break;                          \
                     case 's': LOG_INFO("NOTICE: Decoding only DMR frames.\n"); break;                                  \
+                    case 'r':                                                                                          \
+                        LOG_INFO("NOTICE: -fr compatibility alias uses the current DMR dual-slot mixer.\n");           \
+                        break;                                                                                         \
                     case 'i': LOG_INFO("NOTICE: Decoding only NXDN48 frames.\n"); break;                               \
                     case 'n': LOG_INFO("NOTICE: Decoding only NXDN96 frames.\n"); break;                               \
                     case 'y': LOG_INFO("NOTICE: Decoding only YSF frames.\n"); break;                                  \
@@ -2517,7 +2567,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     int cli_manual_timing_center = 0;
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
-                       "89:Ek:I:J:O^N"))
+                       "89:Ek:I:J:O^Nj"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
     }

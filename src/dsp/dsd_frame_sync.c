@@ -488,6 +488,9 @@ frame_sync_fit_p25_cqpsk_raw_levels(const float sum[4], const int count[4], fram
 static dsd_warm_start_result_t
 frame_sync_fit_p25_cqpsk_raw_sync(const frame_sync_match_ctx* ctx, const char* raw_window, int sync_len,
                                   frame_sync_p25_cqpsk_raw_fit_t* out_fit) {
+    if (!dsd_sync_warm_start_enabled()) {
+        return DSD_WARM_START_DISABLED;
+    }
     if (!ctx || !ctx->state || !raw_window) {
         return DSD_WARM_START_NULL_STATE;
     }

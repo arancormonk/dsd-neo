@@ -5249,6 +5249,8 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
     cfg->demod_rate_hz = (uint32_t)demod.rate_out;
     cfg->offset_tuning_enabled = dongle.offset_tuning ? 1 : 0;
     cfg->fs4_shift_enabled = (!dongle.offset_tuning && !disable_fs4_shift) ? 1 : 0;
+    const dsdneoRuntimeConfig* runtime_config = dsd_neo_get_config();
+    cfg->combine_rotate_enabled = runtime_config ? (runtime_config->combine_rot != 0) : 1;
     cfg->muted_bytes_excluded = 1;
     DSD_SNPRINTF(cfg->source_backend, sizeof(cfg->source_backend), "%s", capture_backend_name(source_kind));
     capture_backend_args(opts, source_kind, cfg->source_args, sizeof(cfg->source_args));

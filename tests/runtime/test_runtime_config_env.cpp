@@ -88,6 +88,7 @@ unset_all_runtime_env(void) {
         "DSD_NEO_CACHE_DIR",
         "DSD_NEO_CC_CACHE",
         "DSD_NEO_CHANNEL_LPF",
+        "DSD_NEO_COMBINE_ROT",
         "DSD_NEO_CONFIG",
         "DSD_NEO_COSTAS_BW",
         "DSD_NEO_COSTAS_DAMPING",
@@ -155,6 +156,7 @@ unset_all_runtime_env(void) {
         "DSD_NEO_RT_PRIO_USB",
         "DSD_NEO_RT_SCHED",
         "DSD_NEO_SNR_SQL_DB",
+        "DSD_NEO_SYNC_WARMSTART",
         "DSD_NEO_TCP_AUTOTUNE",
         "DSD_NEO_TCP_BUFSZ",
         "DSD_NEO_TCPIN_BACKOFF_MS",
@@ -957,6 +959,49 @@ test_cqpsk_sync_env(void) {
     unsetenv("DSD_NEO_CQPSK_SYNC_INV");
     unsetenv("DSD_NEO_CQPSK_SYNC_NEG");
     return 0;
+}
+
+static int
+test_compat_runtime_switches(void) {
+    unsetenv("DSD_NEO_SYNC_WARMSTART");
+    unsetenv("DSD_NEO_COMBINE_ROT");
+    dsd_neo_config_init();
+
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int rc = expect(cfg != NULL, 1050, "cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->sync_warmstart_is_set, 0, 1051, "sync warm-start default source");
+    rc |= expect_int_eq(cfg->sync_warmstart_enable, 1, 1052, "sync warm-start default enabled");
+    rc |= expect_int_eq(cfg->combine_rot_is_set, 0, 1053, "combine rotation default source");
+    rc |= expect_int_eq(cfg->combine_rot, 1, 1054, "combine rotation default enabled");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_SYNC_WARMSTART", "0", 1);
+    setenv("DSD_NEO_COMBINE_ROT", "0", 1);
+    dsd_neo_config_init();
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->sync_warmstart_is_set, 1, 1060, "sync warm-start disabled source");
+    rc |= expect_int_eq(cfg->sync_warmstart_enable, 0, 1061, "sync warm-start disabled");
+    rc |= expect_int_eq(cfg->combine_rot_is_set, 1, 1062, "combine rotation disabled source");
+    rc |= expect_int_eq(cfg->combine_rot, 0, 1063, "combine rotation disabled");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_SYNC_WARMSTART", "1", 1);
+    setenv("DSD_NEO_COMBINE_ROT", "1", 1);
+    dsd_neo_config_init();
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->sync_warmstart_enable, 1, 1070, "sync warm-start enabled");
+    rc |= expect_int_eq(cfg->combine_rot, 1, 1071, "combine rotation enabled");
+
+    unsetenv("DSD_NEO_SYNC_WARMSTART");
+    unsetenv("DSD_NEO_COMBINE_ROT");
+    return rc;
 }
 
 static int
@@ -2376,6 +2421,10 @@ main(void) {
         return rc;
     }
     rc = test_cqpsk_sync_env();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_compat_runtime_switches();
     if (rc != 0) {
         return rc;
     }

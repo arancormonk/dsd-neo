@@ -137,6 +137,7 @@ fill_capture_cfg(dsd_iq_capture_config* cfg, const char* data_path, const char* 
     cfg->demod_rate_hz = 48000U;
     cfg->offset_tuning_enabled = 0;
     cfg->fs4_shift_enabled = fs4_shift_enabled ? 1 : 0;
+    cfg->combine_rotate_enabled = 1;
     cfg->muted_bytes_excluded = 1;
     DSD_SNPRINTF(cfg->source_backend, sizeof(cfg->source_backend), "%s", "rtl");
     DSD_SNPRINTF(cfg->source_args, sizeof(cfg->source_args), "%s", "dev=0");

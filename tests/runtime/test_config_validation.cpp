@@ -777,6 +777,49 @@ test_validate_stream_accepts_profile_inherited_targets_csv(void) {
 }
 
 static int
+test_compat_aliases_validate_without_unknown_key_warnings(void) {
+    static const char* ini = "[input]\n"
+                             "pulse_input = compat-source\n"
+                             "rtl_auto_ppm = true\n"
+                             "[output]\n"
+                             "pulse_output = compat-sink\n"
+                             "ncurses_ui = true\n"
+                             "[logging]\n"
+                             "event_log_file = /tmp/dsd-neo-compat-events.log\n"
+                             "[alerts]\n"
+                             "call_alert = true\n"
+                             "start = true\n"
+                             "end = false\n"
+                             "[mode]\n"
+                             "decode = analog_monitor\n"
+                             "[profile.compat]\n"
+                             "mode.decode = p25p1_only\n"
+                             "output.ncurses_ui = false\n"
+                             "output.frontend = native\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof diags);
+    int validate_rc = dsd_user_config_validate(path, &diags);
+    int result = 0;
+    if (validate_rc != 0 || diags.error_count != 0 || diags.warning_count != 0) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: persisted compatibility aliases should validate cleanly "
+                    "(rc=%d errors=%d warnings=%d)\n",
+                    validate_rc, diags.error_count, diags.warning_count);
+        result = 1;
+    }
+
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_unknown_key_warning(void) {
     static const char* ini = "[input]\n"
                              "source = \"pulse\"\n"
@@ -1426,6 +1469,7 @@ main(void) {
     rc |= test_validate_stream_runs_composed_trunk_scan_checks();
     rc |= test_validate_stream_runs_profile_composed_checks();
     rc |= test_validate_stream_accepts_profile_inherited_targets_csv();
+    rc |= test_compat_aliases_validate_without_unknown_key_warnings();
     rc |= test_unknown_key_warning();
     rc |= test_unknown_section_warning();
     rc |= test_invalid_enum_error();

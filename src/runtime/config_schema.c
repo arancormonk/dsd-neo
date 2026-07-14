@@ -107,7 +107,21 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"dsp", "iq_dc_block", "Enable RTL I/Q DC blocker", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
 };
 
+/* Deprecated persisted spellings remain accepted for read compatibility, but are deliberately kept out of the
+ * enumerated schema so generated templates expose only canonical keys. */
+static const dsdcfg_schema_entry_t s_compat_alias_schema[] = {
+    {"input", "pulse_input", "Deprecated alias for pulse_source", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"input", "rtl_auto_ppm", "Deprecated alias for auto_ppm", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"output", "pulse_output", "Deprecated alias for pulse_sink", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"output", "ncurses_ui", "Deprecated boolean alias for frontend", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"logging", "event_log_file", "Deprecated alias for event_log", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"alerts", "call_alert", "Deprecated alias for enabled", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"alerts", "start", "Deprecated alias for voice_start", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"alerts", "end", "Deprecated alias for voice_end", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+};
+
 static const int s_schema_count = sizeof(s_schema) / sizeof(s_schema[0]);
+static const int s_compat_alias_schema_count = sizeof(s_compat_alias_schema) / sizeof(s_compat_alias_schema[0]);
 
 int
 dsdcfg_schema_count(void) {
@@ -130,6 +144,12 @@ dsdcfg_schema_find(const char* section, const char* key) {
     for (int i = 0; i < s_schema_count; i++) {
         if (dsd_strcasecmp(s_schema[i].section, section) == 0 && dsd_strcasecmp(s_schema[i].key, key) == 0) {
             return &s_schema[i];
+        }
+    }
+    for (int i = 0; i < s_compat_alias_schema_count; i++) {
+        if (dsd_strcasecmp(s_compat_alias_schema[i].section, section) == 0
+            && dsd_strcasecmp(s_compat_alias_schema[i].key, key) == 0) {
+            return &s_compat_alias_schema[i];
         }
     }
     return NULL;

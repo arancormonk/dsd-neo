@@ -117,6 +117,15 @@ int dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* sta
                                       int encrypted, int data_call, dsd_tg_policy_decision* out);
 int dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
                                         int encrypted, int data_call, dsd_tg_policy_decision* out);
+/**
+ * @brief Evaluate a private grant while allowing entirely unlisted endpoints.
+ *
+ * Explicit source/destination policy entries and all non-allow-list gates still
+ * apply. This is used by grant paths where group IDs and radio IDs are separate
+ * namespaces, so an absent radio-ID entry is not itself a denial.
+ */
+int dsd_tg_policy_evaluate_private_grant(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
+                                         int encrypted, int data_call, dsd_tg_policy_decision* out);
 int dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
 int dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, dsd_tg_policy_upsert_mode mode);
 int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata);

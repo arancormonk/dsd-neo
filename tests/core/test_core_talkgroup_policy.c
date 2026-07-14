@@ -399,6 +399,11 @@ test_evaluator_behaviors(void) {
     rc |= expect_true("private allowlist blocked",
                       decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
 
+    rc |= expect_true("private grant unknown eval",
+                      dsd_tg_policy_evaluate_private_grant(opts, st, 1, 2, 0, 0, &decision) == 0);
+    rc |= expect_true("private grant unknown allowed",
+                      decision.tune_allowed == 1 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) == 0);
+
     rc |= expect_true("private with known src",
                       dsd_tg_policy_evaluate_private_call(opts, st, 900, 901, 0, 0, &decision) == 0);
     rc |= expect_true("private known src allowed", decision.tune_allowed == 1);
@@ -408,6 +413,10 @@ test_evaluator_behaviors(void) {
     rc |= expect_true("private mode block",
                       dsd_tg_policy_evaluate_private_call(opts, st, 900, 901, 0, 0, &decision) == 0);
     rc |= expect_true("private mode block reason",
+                      decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0);
+    rc |= expect_true("private grant still evaluates explicit blocks",
+                      dsd_tg_policy_evaluate_private_grant(opts, st, 900, 901, 0, 0, &decision) == 0);
+    rc |= expect_true("private grant explicit block reason",
                       decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0);
 
     free_test_state(st);
