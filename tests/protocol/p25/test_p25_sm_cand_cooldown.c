@@ -14,6 +14,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -100,6 +101,7 @@ main(void) {
     ctx->t_cc_sync_m = pending_m;
     ctx->t_cc_tune_m = pending_m;
     ctx->cc_sync_pending = 1;
+    ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_HUNT_PROBE;
     st2.last_cc_sync_time_m = pending_m;
     st2.p25_cc_eval_freq = A;
     st2.p25_cc_eval_start_m = pending_m;
@@ -107,6 +109,69 @@ main(void) {
     g_last_tuned_cc = 0;
     p25_sm_tick_ctx(p25_sm_get_ctx(), &o2, &st2);
     assert(g_last_tuned_cc == B);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
+
+    // A candidate carried into a normal return must remain eligible for the
+    // full return grace, then clear without cooldown after decoded CC activity.
+    static dsd_opts o_return;
+    static dsd_state st_return;
+    init_basic(&o_return, &st_return);
+    (void)dsd_trunk_cc_candidates_add(&st_return, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    ctx = p25_sm_get_ctx();
+    ctx->config.cc_grace_s = 5.0;
+    st_return.p25_cc_eval_freq = A;
+    const double return_tune_m = dsd_time_now_monotonic_s() - 4.0;
+    st_return.p25_last_cc_msg_time_m = return_tune_m - 0.25;
+    assert(p25_sm_restart_pending_cc_acquisition(ctx, &o_return, &st_return, return_tune_m, "test-return") == 1);
+    assert(fabs(st_return.p25_cc_eval_start_m - ctx->t_cc_tune_m) <= timestamp_epsilon_s);
+
+    const dsd_trunk_cc_candidates* return_candidates = dsd_trunk_cc_candidates_peek(&st_return);
+    assert(return_candidates != NULL);
+    assert(return_candidates->count == 1);
+    assert(return_candidates->cool_until[0] == 0.0);
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(ctx, &o_return, &st_return);
+    assert(g_last_tuned_cc == 0);
+    assert(ctx->state == P25_SM_ON_CC);
+    assert(ctx->cc_sync_pending == 1);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
+    assert(st_return.p25_cc_eval_freq == A);
+    assert(return_candidates->cool_until[0] == 0.0);
+
+    const double decoded_return_m = dsd_time_now_monotonic_s();
+    st_return.last_cc_sync_time_m = decoded_return_m;
+    st_return.p25_last_cc_msg_time_m = decoded_return_m;
+    p25_sm_tick_ctx(ctx, &o_return, &st_return);
+    assert(ctx->cc_sync_pending == 0);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_NONE);
+    assert(st_return.p25_cc_eval_freq == 0);
+    assert(return_candidates->cool_until[0] == 0.0);
+
+    // A return that exhausts its full grace still cools the failed candidate
+    // and advances to the next hunt probe.
+    static dsd_opts o_return_timeout;
+    static dsd_state st_return_timeout;
+    init_basic(&o_return_timeout, &st_return_timeout);
+    (void)dsd_trunk_cc_candidates_add(&st_return_timeout, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st_return_timeout, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    ctx = p25_sm_get_ctx();
+    ctx->config.cc_grace_s = 5.0;
+    st_return_timeout.p25_cc_eval_freq = A;
+    const double expired_return_m = dsd_time_now_monotonic_s() - 5.5;
+    st_return_timeout.p25_last_cc_msg_time_m = expired_return_m - 0.25;
+    assert(p25_sm_restart_pending_cc_acquisition(ctx, &o_return_timeout, &st_return_timeout, expired_return_m,
+                                                 "test-return-timeout")
+           == 1);
+
+    const dsd_trunk_cc_candidates* expired_candidates = dsd_trunk_cc_candidates_peek(&st_return_timeout);
+    assert(expired_candidates != NULL);
+    assert(expired_candidates->count == 2);
+    g_last_tuned_cc = 0;
+    p25_sm_tick_ctx(ctx, &o_return_timeout, &st_return_timeout);
+    assert(g_last_tuned_cc == B);
+    assert(expired_candidates->cool_until[0] > dsd_time_now_monotonic_s());
+    assert(st_return_timeout.p25_cc_eval_freq == B);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
 
     // A controller timeout is an in-flight tune, not the start of CC acquisition.
     static dsd_opts o3;
@@ -129,6 +194,7 @@ main(void) {
     assert(ctx->cc_tune_pending == 1);
     assert(ctx->cc_tune_request_id != 0U);
     assert(ctx->t_cc_tune_m == 0.0);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
     assert(st3.p25_cc_eval_freq == A);
     assert(st3.p25_cc_eval_start_m == 0.0);
 
@@ -146,6 +212,7 @@ main(void) {
     assert(ctx->cc_tune_pending == 0);
     assert(ctx->cc_sync_pending == 1);
     assert(ctx->t_cc_tune_m > 0.0);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
     assert(fabs(st3.p25_cc_eval_start_m - ctx->t_cc_tune_m) <= timestamp_epsilon_s);
 
     // Only the post-completion acquisition window can fail A and advance to B.
@@ -171,6 +238,7 @@ main(void) {
     assert(g_tune_to_cc_calls == 3);
     assert(ctx->state == P25_SM_HUNTING);
     assert(ctx->cc_sync_pending == 0);
+    assert(ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_NONE);
     assert(ctx->t_cc_sync_m > stale_decoded_m);
     assert(dsd_trunk_tuning_pending_request() == failed_request);
     assert(!dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));

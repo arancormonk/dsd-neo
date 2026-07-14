@@ -418,6 +418,8 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
                             script->name, "completed return starts acquisition timer");
     }
     rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, flow->name, script->name, "returned to ON_CC");
+    rc |= matrix_expect(fixture->ctx.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN, mode->name, flow->name,
+                        script->name, "return uses full-grace acquisition origin");
     rc |=
         matrix_expect(fixture->opts->trunk_is_tuned == 0, mode->name, flow->name, script->name, "tuned flags cleared");
     rc |= matrix_expect(fixture->state->p25_vc_freq[0] == 0 && fixture->state->p25_vc_freq[1] == 0, mode->name,
@@ -741,6 +743,8 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
     if (dsd_trunk_tune_result_is_ok(first_result)) {
         rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, "cc-hunt", result_name,
                             "accepted cc hunt returns ON_CC");
+        rc |= matrix_expect(fixture->ctx.cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE, mode->name,
+                            "cc-hunt", result_name, "accepted cc hunt uses probe acquisition origin");
         rc |= matrix_expect(fixture->state->p25_cc_eval_freq == candidate, mode->name, "cc-hunt", result_name,
                             "accepted candidate is under evaluation");
         if (first_result == DSD_TRUNK_TUNE_RESULT_PENDING) {

@@ -661,6 +661,8 @@ main(void) {
     rc |= expect_true("p25-rtl-nocarrier-reenables-slots", opts->slot1_on == 1 && opts->slot2_on == 1);
     rc |= expect_true("p25-rtl-nocarrier-clear-tuned", opts->trunk_is_tuned == 0);
     rc |= expect_true("p25-rtl-nocarrier-clear-vc", state->p25_vc_freq[0] == 0 && state->p25_vc_freq[1] == 0);
+    rc |= expect_true("p25-rtl-nocarrier-uses-return-grace",
+                      p25_sm_get_ctx()->cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
 
     // A controller wait timeout remains correlated until the controller
     // publishes the physical retune result.
@@ -684,6 +686,7 @@ main(void) {
     rc |= expect_true(
         "p25-rtl-nocarrier-timeout-waits-for-completion",
         pending_ctx->cc_tune_pending == 1 && pending_ctx->t_cc_tune_m == 0.0 && pending_cc_request_id != 0U
+            && pending_ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN
             && dsd_trunk_tuning_request_status(pending_cc_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_PENDING);
     rc |= expect_true("p25-rtl-nocarrier-timeout-serializes-tune", g_p25_tick_guard_held_during_tune == 1);
     int guard_released = p25_sm_tick_guard_try_enter();
@@ -696,7 +699,8 @@ main(void) {
     dsd_trunk_tuning_request_publish(pending_cc_request_id, DSD_TRUNK_TUNE_RESULT_OK);
     p25_sm_tick_ctx(pending_ctx, opts, state);
     rc |= expect_true("p25-rtl-nocarrier-completion-starts-acquisition",
-                      pending_ctx->cc_tune_pending == 0 && pending_ctx->t_cc_tune_m > 0.0);
+                      pending_ctx->cc_tune_pending == 0 && pending_ctx->t_cc_tune_m > 0.0
+                          && pending_ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
     rc |= expect_true("p25-rtl-nocarrier-completion-opens-frame-gate",
                       dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;

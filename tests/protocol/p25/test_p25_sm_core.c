@@ -812,11 +812,47 @@ main(void) {
     assert(ctx18.state == P25_SM_ON_CC);
     assert(o18.trunk_is_tuned == 0);
     assert(s18.last_cc_sync_time_m > stale_seed_cc_sync_m);
+    assert(ctx18.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
 
     int cc_calls_before_seeded_release_tick = g_result_tune_to_cc_calls;
+    int vc_calls_before_seeded_release_tick = g_result_tune_to_freq_calls;
+    const double seeded_return_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    ctx18.t_cc_sync_m = seeded_return_tune_m;
+    ctx18.t_cc_tune_m = seeded_return_tune_m;
+    s18.last_cc_sync_time_m = seeded_return_tune_m;
+    s18.p25_last_cc_msg_time_m = seeded_return_tune_m - 0.25;
+    p25_sm_event(&ctx18, &o18, &s18, &ev9);
+    assert(g_result_tune_to_freq_calls == vc_calls_before_seeded_release_tick);
+    assert(ctx18.state == P25_SM_ON_CC);
+    assert(ctx18.cc_sync_pending == 1);
     p25_sm_tick_ctx(&ctx18, &o18, &s18);
     assert(ctx18.state == P25_SM_ON_CC);
     assert(g_result_tune_to_cc_calls == cc_calls_before_seeded_release_tick);
+    assert(ctx18.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
+
+    s18.last_cc_sync_time = time(NULL);
+    s18.last_cc_sync_time_m = seeded_return_tune_m + 0.25;
+    s18.p25_last_cc_msg_time = s18.last_cc_sync_time;
+    s18.p25_last_cc_msg_time_m = seeded_return_tune_m + 0.25;
+    p25_sm_event(&ctx18, &o18, &s18, &ev9);
+    assert(g_result_tune_to_freq_calls == vc_calls_before_seeded_release_tick + 1);
+    assert(ctx18.state == P25_SM_TUNED);
+    assert(ctx18.cc_sync_pending == 0);
+    assert(ctx18.cc_acquisition_origin == P25_SM_CC_ACQUISITION_NONE);
+
+    p25_sm_release(&ctx18, &o18, &s18, "seeded-release-timeout");
+    assert(g_result_return_to_cc_calls == 2);
+    assert(ctx18.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
+    const double expired_seeded_return_m = dsd_time_now_monotonic_s() - 5.5;
+    ctx18.t_cc_sync_m = expired_seeded_return_m;
+    ctx18.t_cc_tune_m = expired_seeded_return_m;
+    s18.last_cc_sync_time_m = expired_seeded_return_m;
+    s18.p25_last_cc_msg_time_m = expired_seeded_return_m - 0.25;
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    p25_sm_tick_ctx(&ctx18, &o18, &s18);
+    assert(g_result_tune_to_cc_calls == cc_calls_before_seeded_release_tick + 1);
+    assert(ctx18.state == P25_SM_HUNTING);
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
     // 20) Grants observed before decoded CC activity after a CC retune must not pull us back to a VC.
     static dsd_opts o18aa;
@@ -840,6 +876,7 @@ main(void) {
     ctx18aa.t_cc_sync_m = pending_grant_cc_tune_m - 0.25;
     ctx18aa.t_cc_tune_m = pending_grant_cc_tune_m;
     ctx18aa.cc_sync_pending = 1;
+    ctx18aa.cc_acquisition_origin = P25_SM_CC_ACQUISITION_RETURN;
     s18aa.last_cc_sync_time_m = pending_grant_cc_tune_m - 0.10;
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
     g_result_tune_to_freq_calls = 0;
@@ -872,7 +909,7 @@ main(void) {
     assert(ctx18aa.state == P25_SM_TUNED);
     assert(ctx18aa.cc_sync_pending == 0);
 
-    // 21) A CC retune that does not produce decoded CC activity should hunt before full stale-CC grace.
+    // 21) An active hunt probe without decoded CC activity should advance before full stale-CC grace.
     static dsd_opts o18b;
     static dsd_state s18b;
     DSD_MEMSET(&o18b, 0, sizeof(o18b));
@@ -889,6 +926,7 @@ main(void) {
     ctx18b.t_cc_sync_m = pending_cc_tune_m;
     ctx18b.t_cc_tune_m = pending_cc_tune_m;
     ctx18b.cc_sync_pending = 1;
+    ctx18b.cc_acquisition_origin = P25_SM_CC_ACQUISITION_HUNT_PROBE;
     s18b.last_cc_sync_time = time(NULL) - 3;
     s18b.last_cc_sync_time_m = pending_cc_tune_m;
     g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -898,6 +936,7 @@ main(void) {
     assert(g_result_tune_to_cc_calls == 1);
     assert(g_last_tuned_cc == 852000000);
     assert(ctx18b.state == P25_SM_ON_CC);
+    assert(ctx18b.cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE);
 
     // 22) HUNTING must keep grants blocked until decoded CC activity proves reacquisition,
     // then recover even when that activity is not a grant.
@@ -922,6 +961,7 @@ main(void) {
     ctx18c.t_cc_sync_m = hunting_pending_tune_m;
     ctx18c.t_cc_tune_m = hunting_pending_tune_m;
     ctx18c.cc_sync_pending = 1;
+    ctx18c.cc_acquisition_origin = P25_SM_CC_ACQUISITION_HUNT_PROBE;
     s18c.last_cc_sync_time = time(NULL) - 3;
     s18c.last_cc_sync_time_m = hunting_pending_tune_m;
     s18c.p25_last_cc_msg_time_m = hunting_pending_tune_m - 0.25;
@@ -960,6 +1000,7 @@ main(void) {
     assert(ctx18c.state == P25_SM_ON_CC);
     assert(ctx18c.cc_sync_pending == 0);
     assert(ctx18c.t_cc_tune_m == 0.0);
+    assert(ctx18c.cc_acquisition_origin == P25_SM_CC_ACQUISITION_NONE);
     assert(fabs(ctx18c.t_cc_sync_m - s18c.p25_last_cc_msg_time_m) <= cc_sync_epsilon_s);
 
     g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
@@ -998,6 +1039,7 @@ main(void) {
     assert(p25_sm_restart_pending_cc_acquisition(&ctx18d, &o18d, &s18d, external_cc_tune_m, "test-retune") == 1);
     assert(ctx18d.state == P25_SM_ON_CC);
     assert(ctx18d.cc_sync_pending == 1);
+    assert(ctx18d.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
     assert(fabs(ctx18d.t_cc_sync_m - external_cc_tune_m) <= cc_sync_epsilon_s);
     assert(fabs(ctx18d.t_cc_tune_m - external_cc_tune_m) <= cc_sync_epsilon_s);
     assert(ctx18d.t_hunt_try_m == 0.0);
@@ -1027,6 +1069,7 @@ main(void) {
     assert(early_grant_request_id != 0U);
     dsd_trunk_tuning_request_mark_ready(early_grant_request_id);
     assert(p25_sm_await_pending_cc_tune(&ctx18e, &o18e, &s18e, early_grant_request_id, "test-early-grant") == 1);
+    assert(ctx18e.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
     dsd_trunk_tuning_request_publish(early_grant_request_id, DSD_TRUNK_TUNE_RESULT_OK);
 
     double early_grant_completion_m = 0.0;
@@ -1044,6 +1087,7 @@ main(void) {
     p25_sm_event(&ctx18e, &o18e, &s18e, &ev9);
     assert(ctx18e.cc_tune_pending == 0);
     assert(ctx18e.cc_sync_pending == 0);
+    assert(ctx18e.cc_acquisition_origin == P25_SM_CC_ACQUISITION_NONE);
     assert(g_result_tune_to_freq_calls == 1);
     assert(ctx18e.state == P25_SM_TUNED);
 
@@ -1067,6 +1111,7 @@ main(void) {
     assert(p25_sm_await_pending_cc_tune(&ctx18f, &o18f, &s18f, decoded_before_resolution_request_id,
                                         "test-decoded-before-resolution")
            == 1);
+    assert(ctx18f.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
     dsd_trunk_tuning_request_publish(decoded_before_resolution_request_id, DSD_TRUNK_TUNE_RESULT_OK);
 
     double decoded_before_resolution_completion_m = 0.0;
@@ -1085,8 +1130,90 @@ main(void) {
     assert(ctx18f.cc_tune_pending == 0);
     assert(ctx18f.cc_sync_pending == 0);
     assert(ctx18f.t_cc_tune_m == 0.0);
+    assert(ctx18f.cc_acquisition_origin == P25_SM_CC_ACQUISITION_NONE);
     assert(fabs(ctx18f.t_cc_sync_m - decoded_before_resolution_m) <= cc_sync_epsilon_s);
     assert(ctx18f.state == P25_SM_ON_CC);
+
+    // An asynchronously completed external return also receives the full configured grace.
+    static dsd_opts o18g;
+    static dsd_state s18g;
+    DSD_MEMSET(&o18g, 0, sizeof(o18g));
+    DSD_MEMSET(&s18g, 0, sizeof(s18g));
+    o18g.trunk_enable = 1;
+    s18g.p25_cc_freq = 851000000;
+    s18g.trunk_cc_freq = 851000000;
+    p25_sm_ctx_t ctx18g;
+    p25_sm_init_ctx(&ctx18g, &o18g, &s18g);
+    ctx18g.config.cc_grace_s = 5.0;
+
+    const uint64_t async_return_request_id = dsd_trunk_tuning_request_begin();
+    assert(async_return_request_id != 0U);
+    dsd_trunk_tuning_request_mark_ready(async_return_request_id);
+    assert(p25_sm_await_pending_cc_tune(&ctx18g, &o18g, &s18g, async_return_request_id, "test-async-return") == 1);
+    assert(ctx18g.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
+    dsd_trunk_tuning_request_publish(async_return_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    p25_sm_tick_ctx(&ctx18g, &o18g, &s18g);
+    assert(ctx18g.cc_tune_pending == 0);
+    assert(ctx18g.cc_sync_pending == 1);
+    assert(ctx18g.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
+
+    const double async_return_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    ctx18g.t_cc_sync_m = async_return_tune_m;
+    ctx18g.t_cc_tune_m = async_return_tune_m;
+    s18g.last_cc_sync_time_m = async_return_tune_m;
+    s18g.p25_last_cc_msg_time_m = async_return_tune_m - 0.25;
+    g_result_tune_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx18g, &o18g, &s18g);
+    assert(g_result_tune_to_cc_calls == 0);
+    assert(ctx18g.state == P25_SM_ON_CC);
+    assert(ctx18g.cc_sync_pending == 1);
+
+    // Configured grace values below the hunt cap, including zero, remain authoritative.
+    static dsd_opts o18h;
+    static dsd_state s18h;
+    DSD_MEMSET(&o18h, 0, sizeof(o18h));
+    DSD_MEMSET(&s18h, 0, sizeof(s18h));
+    o18h.trunk_enable = 1;
+    s18h.p25_cc_freq = 851000000;
+    s18h.trunk_cc_freq = 851000000;
+    p25_sm_ctx_t ctx18h;
+    p25_sm_init_ctx(&ctx18h, &o18h, &s18h);
+    ctx18h.config.cc_grace_s = 1.0;
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18h, &o18h, &s18h, dsd_time_now_monotonic_s(), "test-short-return")
+           == 1);
+    const double short_return_tune_m = dsd_time_now_monotonic_s() - 1.5;
+    ctx18h.t_cc_sync_m = short_return_tune_m;
+    ctx18h.t_cc_tune_m = short_return_tune_m;
+    s18h.last_cc_sync_time_m = short_return_tune_m;
+    s18h.p25_last_cc_msg_time_m = short_return_tune_m - 0.25;
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    g_result_tune_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx18h, &o18h, &s18h);
+    assert(g_result_tune_to_cc_calls == 1);
+    assert(ctx18h.state == P25_SM_HUNTING);
+
+    static dsd_opts o18i;
+    static dsd_state s18i;
+    DSD_MEMSET(&o18i, 0, sizeof(o18i));
+    DSD_MEMSET(&s18i, 0, sizeof(s18i));
+    o18i.trunk_enable = 1;
+    s18i.p25_cc_freq = 851000000;
+    s18i.trunk_cc_freq = 851000000;
+    p25_sm_ctx_t ctx18i;
+    p25_sm_init_ctx(&ctx18i, &o18i, &s18i);
+    ctx18i.config.cc_grace_s = 0.0;
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18i, &o18i, &s18i, dsd_time_now_monotonic_s(), "test-zero-return")
+           == 1);
+    const double zero_return_tune_m = dsd_time_now_monotonic_s() - 0.1;
+    ctx18i.t_cc_sync_m = zero_return_tune_m;
+    ctx18i.t_cc_tune_m = zero_return_tune_m;
+    s18i.last_cc_sync_time_m = zero_return_tune_m;
+    s18i.p25_last_cc_msg_time_m = zero_return_tune_m - 0.05;
+    g_result_tune_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx18i, &o18i, &s18i);
+    assert(g_result_tune_to_cc_calls == 1);
+    assert(ctx18i.state == P25_SM_HUNTING);
+    g_result_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
     // 25) Stale SM context after a no-carrier VC clear must not skip the next same-RF tune.
     static dsd_opts o19a;

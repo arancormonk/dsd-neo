@@ -53,6 +53,12 @@ typedef enum {
     P25_SM_HUNTING,  // Lost CC, searching candidates
 } p25_sm_state_e;
 
+typedef enum {
+    P25_SM_CC_ACQUISITION_NONE = 0,
+    P25_SM_CC_ACQUISITION_RETURN,
+    P25_SM_CC_ACQUISITION_HUNT_PROBE,
+} p25_sm_cc_acquisition_origin_e;
+
 enum {
     // Grant decoder sentinel for opcodes that do not carry service options.
     // Passing svc_bits=0 explicitly clears the service option.
@@ -100,7 +106,7 @@ typedef struct {
 typedef struct {
     double hangtime_s;      // Hangtime after voice ends (default 2.0s)
     double grant_timeout_s; // Max wait for voice after grant (default 3.0s)
-    double cc_grace_s;      // Wait before CC hunting (default 5.0s)
+    double cc_grace_s;      // CC acquisition/loss grace; active hunt probes are capped at 2.0s
 } p25_sm_config_t;
 
 /* ============================================================================
@@ -161,6 +167,7 @@ typedef struct {
     uint64_t cc_tune_request_id; // Runtime request awaiting asynchronous tune completion
     int cc_tune_pending;         // 1 while the tuner/output pipeline is still changing channels
     int cc_sync_pending;         // 1 until a completed CC tune is followed by decoded CC sync
+    p25_sm_cc_acquisition_origin_e cc_acquisition_origin; // Origin of pending decoded-CC acquisition
 
     // Statistics (for debugging/UI)
     uint32_t tune_count;
@@ -227,7 +234,9 @@ void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_stat
  * @brief Start CC acquisition after a completed external retune.
  *
  * Refreshes the acquisition baseline and returns the context to ON_CC so the
- * normal acquisition watchdog grants the completed tune its full grace period.
+ * normal acquisition watchdog grants the completed tune its full configured
+ * grace period. The two-second acquisition bound applies only to active hunt
+ * probes initiated by the state machine.
  *
  * @param ctx State machine context.
  * @param opts Decoder options.
@@ -243,7 +252,9 @@ int p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd
  * @brief Hold CC acquisition until an exact asynchronous retune completes.
  *
  * No acquisition deadline begins until the supplied request completes, even
- * for a previously synchronized parked context.
+ * for a previously synchronized parked context. After completion, external
+ * returns receive the full configured grace period; the two-second bound
+ * applies only to active hunt probes initiated by the state machine.
  *
  * @param ctx State machine context.
  * @param opts Decoder options.
