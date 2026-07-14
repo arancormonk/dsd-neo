@@ -1968,7 +1968,7 @@ test_process_mbe_frame_ambe2_routes_slot2_error_state(void) {
 }
 
 static int
-test_process_mbe_frame_dstar_stages_second_float_fixture(void) {
+test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -1984,6 +1984,7 @@ test_process_mbe_frame_dstar_stages_second_float_fixture(void) {
     char ambe_fr[4][24] = {{0}};
     char expected_ambe_d[49] = {0};
     float expected_audio[160] = {0};
+    float expected_right_stage[160] = {0};
     char expected_err_str[96] = {0};
     int expected_errs = -1;
     int expected_errs2 = -1;
@@ -1996,6 +1997,7 @@ test_process_mbe_frame_dstar_stages_second_float_fixture(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
+    opts.dmr_stereo = 1;
     opts.wav_out_f = wav_out;
     opts.dmr_stereo_wav = 1;
     mbe_initMbeParms(&expected_cur, &expected_prev, &expected_prev_enhanced);
@@ -2007,6 +2009,10 @@ test_process_mbe_frame_dstar_stages_second_float_fixture(void) {
 
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    state.currentslot = 1;
+    state.audio_out_temp_bufR[0] = -4321.0F;
+    state.f_r[0] = 1234.0F;
+    expected_right_stage[0] = state.f_r[0];
 
     processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
 
@@ -2015,6 +2021,8 @@ test_process_mbe_frame_dstar_stages_second_float_fixture(void) {
     rc |= expect_eq_int("dstar-second status", strcmp(state.err_str, expected_err_str), 0);
     rc |= expect_eq_mem("dstar-second temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
     rc |= expect_eq_mem("dstar-second staged left", state.f_l, expected_audio, sizeof(expected_audio));
+    rc |= expect_eq_mem("dstar-second leaves stale right unstaged", state.f_r, expected_right_stage,
+                        sizeof(expected_right_stage));
     rc |= expect_eq_int("dstar-second keeps right errs", state.errsR, 0);
     rc |= expect_eq_int("dstar-second wav output opened", wav_out != NULL, 1);
     if (wav_out) {
@@ -2045,6 +2053,7 @@ test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio(void) {
     char ambe_fr[4][24] = {{0}};
     char ambe_d[49] = {0};
     float expected_audio[160] = {0};
+    float expected_right_stage[160] = {0};
     char expected_err_str[96] = {0};
     int expected_errs = -1;
     int expected_errs2 = -1;
@@ -2058,6 +2067,7 @@ test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
+    opts.dmr_stereo = 1;
     opts.mbe_out_f = mbe_out;
     opts.wav_out_f = wav_out;
     opts.static_wav_file = 1;
@@ -2083,6 +2093,9 @@ test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio(void) {
     state.payload_algidR = 0x21;
     state.RR = 0x0102030405ULL;
     state.dropR = 5;
+    state.audio_out_temp_bufR[0] = -4321.0F;
+    state.f_r[0] = 1234.0F;
+    expected_right_stage[0] = state.f_r[0];
 
     processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
 
@@ -2094,6 +2107,8 @@ test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio(void) {
     rc |= expect_eq_int("x2-slot2 status", strcmp(state.err_strR, expected_err_str), 0);
     rc |= expect_eq_mem("x2-slot2 temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
     rc |= expect_eq_mem("x2-slot2 staged left", state.f_l, expected_audio, sizeof(expected_audio));
+    rc |= expect_eq_mem("x2-slot2 leaves stale right unstaged", state.f_r, expected_right_stage,
+                        sizeof(expected_right_stage));
     rc |= expect_eq_int("x2-slot2 mbe output opened", mbe_out != NULL, 1);
     if (mbe_out) {
         rc |= expect_eq_int("x2-slot2 mbe flush", fflush(mbe_out), 0);
@@ -2162,7 +2177,7 @@ main(void) {
     rc |= test_process_mbe_frame_provoice_updates_debug_errors_without_p25_history();
     rc |= test_process_mbe_frame_hard_provoice_stages_audio();
     rc |= test_process_mbe_frame_ambe2_routes_slot2_error_state();
-    rc |= test_process_mbe_frame_dstar_stages_second_float_fixture();
+    rc |= test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state();
     rc |= test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio();
 
     if (rc == 0) {

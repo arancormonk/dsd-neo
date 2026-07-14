@@ -1524,6 +1524,26 @@ mbe_post_other_audio(const dsd_opts* opts, dsd_state* state) {
 }
 
 static int
+mbe_post_uses_mono_left_staging(const dsd_state* state) {
+    return DSD_SYNC_IS_X2TDMA(state->synctype) || DSD_SYNC_IS_DSTAR(state->synctype);
+}
+
+static void
+mbe_post_mono_left_audio(const dsd_opts* opts, dsd_state* state) {
+    int frame_errors = state->errs2;
+    if (DSD_SYNC_IS_X2TDMA(state->synctype) && state->currentslot == 1) {
+        frame_errors = state->errs2R;
+    }
+    state->debug_audio_errors += frame_errors;
+
+    if (opts->floating_point == 1) {
+        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
+    } else {
+        processAudio(opts, state);
+    }
+}
+
+static int
 mbe_post_allow_mono_wav(const dsd_opts* opts, const dsd_state* state) {
     if (opts->static_wav_file != 0 || opts->wav_out_f == NULL || opts->dmr_stereo != 0) {
         return 0;
@@ -1569,9 +1589,13 @@ mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
 
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    mbe_post_left_audio(opts, state, frame_ctx);
-    mbe_post_right_audio(opts, state, frame_ctx);
-    mbe_post_other_audio(opts, state);
+    if (mbe_post_uses_mono_left_staging(state)) {
+        mbe_post_mono_left_audio(opts, state);
+    } else {
+        mbe_post_left_audio(opts, state, frame_ctx);
+        mbe_post_right_audio(opts, state, frame_ctx);
+        mbe_post_other_audio(opts, state);
+    }
     mbe_post_wav_outputs(opts, state);
 
     if (opts->audio_out_type == 9) {
