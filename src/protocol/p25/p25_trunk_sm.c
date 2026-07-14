@@ -3080,6 +3080,10 @@ p25_sm_tick_on_cc_eval_cooldown(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_sta
     if (!ctx || !state || state->p25_cc_eval_freq == 0) {
         return;
     }
+    // Return acquisition owns the longer deadline and applies cooldown on timeout.
+    if (ctx->cc_sync_pending && ctx->t_cc_tune_m > 0.0 && ctx->cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN) {
+        return;
+    }
     eval_dt = (state->p25_cc_eval_start_m > 0.0) ? (now_m - state->p25_cc_eval_start_m) : 0.0;
     if (eval_dt < eval_window_s) {
         return;
