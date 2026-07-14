@@ -16,7 +16,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -27,52 +26,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-struct RtlSdrContext;
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* buffer_in, uint32_t bit_length) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < bit_length; i++) {
-        out = (out << 1) | (uint64_t)(buffer_in[i] & 1U);
-    }
-    return out;
-}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -397,7 +350,7 @@ test_lcw_network_status_primary_cc_and_voice_guard(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.p25_cc_freq = 851000000L;
     state.trunk_cc_freq = 851000000L;
     state.p2_wacn = 0x11111;

@@ -87,7 +87,7 @@ radio protocols and vendor privacy modes. These helpers include AES, DES/TDEA,
 RC4, RC2, and protocol-specific keystream handling.
 
 Those algorithms are not a general-purpose security boundary for DSD-neo users.
-Legacy algorithms such as DES, RC4, and RC2 are retained only so DSD-neo can
+Weak algorithms such as DES, RC4, and RC2 are retained only so DSD-neo can
 decode interoperable protocol traffic when a user is legally authorized and
 explicitly supplies the required key or keystream material. They should not be
 used as a basis for new systems or new confidentiality designs.

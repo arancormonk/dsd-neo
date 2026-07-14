@@ -14,7 +14,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
-#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -89,9 +88,6 @@ seed_companion_crypto_state(dsd_state* state, int slot, int lockout_enabled, int
         crypto_state = DSD_P25_CRYPTO_DECRYPTABLE;
     }
     state->p25_crypto_state[slot] = crypto_state;
-    state->p25_p2_enc_lockout_muted[slot] =
-        (uint8_t)((crypto_state == DSD_P25_CRYPTO_ENCRYPTED_PENDING || crypto_state == DSD_P25_CRYPTO_BLOCKED) ? 1U
-                                                                                                               : 0U);
 }
 
 static int
@@ -264,7 +260,6 @@ run_fs4_clear_plus_blocked_mono_case(int clear_slot, int matching_hold) {
     st.p25_p2_audio_allowed[clear_slot ^ 1] = 0;
     st.p25_crypto_state[clear_slot] = DSD_P25_CRYPTO_CLEAR;
     st.p25_crypto_state[clear_slot ^ 1] = DSD_P25_CRYPTO_BLOCKED;
-    st.p25_p2_enc_lockout_muted[clear_slot ^ 1] = 1U;
     if (matching_hold) {
         st.lasttg = 100;
         st.lasttgR = 100;
@@ -311,8 +306,6 @@ run_fs4_reverse_mute_case(dsd_p25_crypto_state crypto_state, int expect_audio) {
     st.aout_gainR = 49.0f;
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_crypto_state[0] = crypto_state;
-    st.p25_p2_enc_lockout_muted[0] =
-        (uint8_t)(crypto_state == DSD_P25_CRYPTO_ENCRYPTED_PENDING || crypto_state == DSD_P25_CRYPTO_BLOCKED);
 
     fill_f32_frame(frame, 384.0f);
     rc |= expect_eq("fs4 reverse mute push", p25_p2_audio_ring_push(&st, 0, frame), 1);
@@ -355,7 +348,6 @@ run_ss18_clear_plus_blocked_hold_case(int clear_slot) {
     st.p25_p2_audio_allowed[clear_slot ^ 1] = 0;
     st.p25_crypto_state[clear_slot] = DSD_P25_CRYPTO_CLEAR;
     st.p25_crypto_state[clear_slot ^ 1] = DSD_P25_CRYPTO_BLOCKED;
-    st.p25_p2_enc_lockout_muted[clear_slot ^ 1] = 1U;
 
     for (int i = 0; i < 160; i++) {
         st.s_l4[0][i] = (clear_slot == 0) ? 100 : -3000;
@@ -893,36 +885,6 @@ main(void) {
     int rc = 0;
     static dsd_state st;
     DSD_MEMSET(&st, 0, sizeof(st));
-
-    int encL = -1, encR = -1;
-
-    // Case A: slot1 muted (enc), slot2 clear → encL=1, encR=0
-    st.p25_p2_audio_allowed[0] = 0;
-    st.p25_p2_audio_allowed[1] = 1;
-    rc |= expect_eq("gate ret A", dsd_p25p2_mixer_gate(&st, &encL, &encR), 0);
-    rc |= expect_eq("A encL", encL, 1);
-    rc |= expect_eq("A encR", encR, 0);
-
-    // Case B: slot1 clear, slot2 muted → encL=0, encR=1
-    st.p25_p2_audio_allowed[0] = 1;
-    st.p25_p2_audio_allowed[1] = 0;
-    rc |= expect_eq("gate ret B", dsd_p25p2_mixer_gate(&st, &encL, &encR), 0);
-    rc |= expect_eq("B encL", encL, 0);
-    rc |= expect_eq("B encR", encR, 1);
-
-    // Case C: both clear → encL=0, encR=0
-    st.p25_p2_audio_allowed[0] = 1;
-    st.p25_p2_audio_allowed[1] = 1;
-    rc |= expect_eq("gate ret C", dsd_p25p2_mixer_gate(&st, &encL, &encR), 0);
-    rc |= expect_eq("C encL", encL, 0);
-    rc |= expect_eq("C encR", encR, 0);
-
-    // Case D: both muted → encL=1, encR=1
-    st.p25_p2_audio_allowed[0] = 0;
-    st.p25_p2_audio_allowed[1] = 0;
-    rc |= expect_eq("gate ret D", dsd_p25p2_mixer_gate(&st, &encL, &encR), 0);
-    rc |= expect_eq("D encL", encL, 1);
-    rc |= expect_eq("D encR", encR, 1);
 
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_blast});
     rc |= run_fs4_left_active_case(/*enc_lockout_enabled*/ 1, /*expect_right_silent*/ 1, /*muted_slot_algid*/ 0,

@@ -68,7 +68,7 @@ main(void) {
     rc |= expect_eq_str("fallback denom=2", buf, " (FDMA 0003 S2)");
 
     // Case 4: Explicit FDMA must not show a TDMA suffix even if the system has
-    // Phase 2 voice and the legacy TDMA bit is stale.
+    // Phase 2 voice and the system-wide TDMA indication is set.
     static dsd_state st4;
     DSD_MEMSET(&st4, 0, sizeof st4);
     st4.p25_sys_is_tdma = 1;

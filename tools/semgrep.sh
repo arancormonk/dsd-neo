@@ -106,7 +106,11 @@ if git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
       DIR_TARGETS=()
       while IFS= read -r path; do
         DIR_TARGETS+=("$path")
-      done < <(git ls-files -- "$target")
+      done < <(git ls-files --cached --others --exclude-standard -- "$target" | while IFS= read -r path; do
+        if [[ -f "$path" ]]; then
+          printf '%s\n' "$path"
+        fi
+      done)
       if [[ ${#DIR_TARGETS[@]} -gt 0 ]]; then
         EXPANDED_TARGETS+=("${DIR_TARGETS[@]}")
       else

@@ -155,28 +155,3 @@ dsd_app_frontend_history_event_sort_time(const char* event_text, time_t fallback
     }
     return parsed;
 }
-
-int
-ui_history_get_mode(void) {
-    return dsd_app_frontend_history_get_mode();
-}
-
-void
-ui_history_set_mode(int mode) {
-    dsd_app_frontend_history_set_mode(mode);
-}
-
-int
-ui_history_cycle_mode(void) {
-    return dsd_app_frontend_history_cycle_mode();
-}
-
-size_t
-ui_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode) {
-    return dsd_app_frontend_history_compact_event_text(out, out_size, event_text, mode);
-}
-
-time_t
-ui_history_event_sort_time(const char* event_text, time_t fallback_time) {
-    return dsd_app_frontend_history_event_sort_time(event_text, fallback_time);
-}

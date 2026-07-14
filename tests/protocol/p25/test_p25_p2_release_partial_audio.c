@@ -8,7 +8,7 @@
  *
  * Short P25p2 calls can end before a full 18-frame superframe is available for
  * playSynthesizedVoiceSS18(), causing the buffered audio to be dropped when
- * returning to the control channel. Verify that p25_sm_on_release() triggers a
+ * returning to the control channel. Verify that p25_sm_release() triggers a
  * best-effort flush that clears the buffered short frames so short calls are
  * still audible.
  */
@@ -18,7 +18,6 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -30,40 +29,33 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
-// Minimal IO stubs (avoid actual tuning/audio devices in unit tests)
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
 static int g_return_to_cc_called = 0;
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_return_to_cc_called++;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
-    dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc = return_to_cc;
-    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
 }
 
 static int g_p25p2_flush_called = 0;
@@ -89,17 +81,6 @@ install_p25_optional_hooks(void) {
     dsd_p25_optional_hooks_set(hooks);
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
@@ -119,7 +100,7 @@ main(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
 
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_group_calls = 1;
     opts.floating_point = 0;
     opts.pulse_digi_rate_out = 8000;
@@ -138,9 +119,16 @@ main(void) {
     st.p25_iden_tdma[id].populated = 1;
     st.p25_chan_tdma_explicit[id] = 2; // TDMA known
 
-    p25_sm_init(&opts, &st);
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &st);
     int ch_tdma = (id << 12) | 0x0001;
-    p25_sm_on_group_grant(&opts, &st, ch_tdma, 0, 1234, 5678);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = ch_tdma,
+                                   .tg = 1234,
+                                   .src = 5678,
+                                   .svc_bits = 0,
+                                   .is_group = 1});
 
     // Simulate a short call that buffered some audio but ended before the
     // normal SS18 playback cadence. Also simulate gates already cleared.
@@ -153,7 +141,7 @@ main(void) {
 
     g_return_to_cc_called = 0;
     g_p25p2_flush_called = 0;
-    p25_sm_on_release(&opts, &st);
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     rc |= expect_eq_int("return_to_cc called", g_return_to_cc_called, 1);
     rc |= expect_eq_int("flush called", g_p25p2_flush_called, 1);
 
@@ -163,6 +151,8 @@ main(void) {
     rc |= expect_eq_int("voice_counter[0] reset", st.voice_counter[0], 0);
     rc |= expect_eq_int("voice_counter[1] reset", st.voice_counter[1], 0);
 
+    dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){0});
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

@@ -18,11 +18,7 @@
 extern "C" {
 #endif
 
-typedef enum DSD_ATTR_PACKED {
-    DSD_FRONTEND_NONE = 0,
-    DSD_FRONTEND_TERMINAL = 1,
-    DSD_FRONTEND_NATIVE = 2
-} dsd_frontend_kind;
+typedef enum DSD_ATTR_PACKED { DSD_FRONTEND_NONE = 0, DSD_FRONTEND_TERMINAL = 1 } dsd_frontend_kind;
 
 typedef struct dsd_frontend_common_display_opts {
     int constellation;
@@ -49,33 +45,6 @@ typedef struct dsd_frontend_terminal_display_opts {
     uint8_t eye_unicode;
     uint8_t eye_color;
 } dsd_frontend_terminal_display_opts;
-
-/*
- * Combined storage shape retained for dsd_opts and terminal compatibility.
- * Frontend-facing status exposes the split common/terminal structures above.
- */
-typedef struct dsd_frontend_display_opts {
-    int constellation;
-    float const_gate_qpsk;
-    float const_gate_other;
-    uint8_t const_norm_mode;
-    uint8_t terminal_compact;
-    uint8_t terminal_history;
-    uint8_t eye_view;
-    uint8_t fsk_hist_view;
-    uint8_t spectrum_view;
-    uint8_t eye_unicode;
-    uint8_t eye_color;
-    uint8_t show_dsp_panel;
-    uint8_t show_p25_metrics;
-    uint8_t show_p25_neighbors;
-    uint8_t show_p25_iden_plan;
-    uint8_t show_p25_cc_candidates;
-    uint8_t show_channels;
-    uint8_t show_p25_affiliations;
-    uint8_t show_p25_group_affiliations;
-    uint8_t show_p25_callsign_decode;
-} dsd_frontend_display_opts;
 
 #ifdef __cplusplus
 }

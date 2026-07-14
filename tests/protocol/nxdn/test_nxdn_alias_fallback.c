@@ -18,16 +18,6 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
 static int
 expect_str(const char* tag, const char* got, const char* want) {
     if (strcmp(got, want) != 0) {

@@ -55,7 +55,7 @@ typedef enum {
 
 enum {
     // Grant decoder sentinel for opcodes that do not carry service options.
-    // Passing svc_bits=0 remains an explicit clear service option for compatibility.
+    // Passing svc_bits=0 explicitly clears the service option.
     P25_SM_SVC_UNKNOWN = -1,
 };
 
@@ -211,8 +211,8 @@ void p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25
  *
  * Control-channel grant decoders call this before gating on state->p25_cc_freq
  * so the first live grant can establish the CC frequency for return-to-CC
- * behavior. The generic trunk CC alias is preferred when it is already known.
- * Otherwise the tuner is sampled only while legacy tune flags indicate the
+ * behavior. The generic trunk-owner CC is preferred when it is already known.
+ * Otherwise the tuner is sampled only while P25-specific tune state indicates the
  * decoder is parked on the control channel; voice-channel tunes are ignored.
  * Live P25 Phase 2 LCCH context seeds a TDMA CC modulation hint; ordinary
  * Phase 2 traffic sync leaves the hint unchanged. Live P25 Phase 1 sync clears
@@ -308,19 +308,6 @@ p25_sm_ctx_t* p25_sm_get_ctx(void);
 void p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
 
 /**
- * @brief Check if audio output is allowed for a slot.
- *
- * Centralized audio gating decision. Decoders should call this before
- * pushing audio to output buffers.
- *
- * @param ctx State machine context (NULL to use global).
- * @param state Decoder state.
- * @param slot Slot index (0 or 1, -1 for P1).
- * @return 1 if audio is allowed, 0 if muted.
- */
-int p25_sm_audio_allowed(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot);
-
-/**
  * @brief Check whether a TDMA slot has an accepted grant newer than a captured event time.
  *
  * Decoders use this after processing a MAC payload but before clearing IDLE
@@ -333,33 +320,9 @@ int p25_sm_audio_allowed(const p25_sm_ctx_t* ctx, const dsd_state* state, int sl
  */
 int p25_sm_slot_grant_newer_than(int slot, double observed_m);
 
-/**
- * @brief Update audio gating for a slot based on current encryption state.
- *
- * Called when encryption parameters are received to update allow_audio.
- *
- * @param ctx State machine context.
- * @param state Decoder state.
- * @param slot Slot index.
- * @param algid Algorithm ID.
- * @param keyid Key ID.
- */
-void p25_sm_update_audio_gate(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int algid, int keyid);
-
 /* ============================================================================
  * Public API - Convenience Emit Functions (use global singleton)
  * ============================================================================ */
-
-/**
- * @brief Emit an event to the global state machine.
- *
- * Convenience function for decoders to emit events without managing context.
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- * @param ev Event to emit.
- */
-void p25_sm_emit(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
 
 /**
  * @brief Emit PTT event for a slot.
@@ -412,67 +375,6 @@ void p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int 
  */
 void p25_sm_emit_crypto_pending(dsd_opts* opts, dsd_state* state, int slot);
 
-/* ============================================================================
- * Public API - Neighbor/CC Candidate Management
- * ============================================================================ */
-
-/**
- * @brief Process neighbor frequency update from control channel.
- *
- * Adds frequencies to the CC candidate list for hunting.
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- * @param freqs Array of neighbor frequencies in Hz.
- * @param count Number of frequencies in array.
- */
-void p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count);
-
-/**
- * @brief Get next CC candidate frequency for hunting.
- *
- * @param state Decoder state.
- * @param out_freq Output: next candidate frequency in Hz.
- * @return 1 if a candidate was found, 0 if none available.
- */
-int p25_sm_next_cc_candidate(dsd_state* state, long* out_freq);
-
-/* ============================================================================
- * Public API - Legacy Compatibility Wrappers
- * ============================================================================ */
-
-/**
- * @brief Initialize any internal P25 trunking state.
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- */
-void p25_sm_init(dsd_opts* opts, dsd_state* state);
-
-/**
- * @brief Handle a group voice channel grant (explicit form).
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- * @param channel Voice channel number.
- * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
- * @param tg Talkgroup.
- * @param src Source RID.
- */
-void p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
-
-/**
- * @brief Handle a group data channel grant (explicit data policy form).
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- * @param channel Data channel number.
- * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
- * @param tg Talkgroup.
- * @param src Source RID.
- */
-void p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
-
 /**
  * @brief Apply group grant policy side effects without attempting route/tune.
  *
@@ -488,76 +390,6 @@ void p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, i
  * @param src Source RID.
  */
 void p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src);
-
-/**
- * @brief Handle an individual (unit-to-unit/telephone) voice channel grant.
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- * @param channel Voice channel number.
- * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
- * @param dst Destination RID.
- * @param src Source RID.
- */
-void p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src);
-
-/**
- * @brief Handle an individual data channel grant (explicit data policy form).
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- * @param channel Data channel number.
- * @param svc_bits Service options associated with the grant, or P25_SM_SVC_UNKNOWN when absent.
- * @param dst Destination RID.
- * @param src Source RID.
- */
-void p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src);
-
-/**
- * @brief Handle an explicit release/end-of-call indication.
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- */
-void p25_sm_on_release(dsd_opts* opts, dsd_state* state);
-
-/**
- * @brief Notify the SM that a Queued Response (QUE_RSP) was received.
- *
- * Requests a release with reason "queued-rsp"; the release path is idempotent
- * unless the SM or legacy tune flags indicate a voice-channel tune is active.
- * Always increments the queued response telemetry counter.
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- * @param svc_type Service type from the QUE_RSP message.
- * @param reason_code Reason code from the QUE_RSP message.
- * @param target Target address from the QUE_RSP message.
- */
-void p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
-
-/**
- * @brief Notify the SM that a Deny Response (DENY_RSP) was received.
- *
- * Requests a release with reason "deny-rsp"; the release path is idempotent
- * unless the SM or legacy tune flags indicate a voice-channel tune is active.
- * Always increments the deny response telemetry counter.
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- * @param svc_type Service type from the DENY_RSP message.
- * @param reason_code Reason code from the DENY_RSP message.
- * @param target Target address from the DENY_RSP message.
- */
-void p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target);
-
-/**
- * @brief Optional periodic heartbeat/tick for safety fallback.
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- */
-void p25_sm_tick(dsd_opts* opts, dsd_state* state);
 
 /* ============================================================================
  * Helper: SACCH slot mapping
@@ -704,18 +536,6 @@ p25_sm_ev_crypto_pending(int slot) {
 void p25_patch_update(dsd_state* state, int sgid, int is_patch, int active);
 
 /**
- * @brief Compose a compact summary string for active patch SGIDs.
- *
- * Example output: "P: 069,142".
- *
- * @param state Decoder state (read-only).
- * @param out Destination buffer for summary string.
- * @param cap Capacity of destination buffer.
- * @return Length written (0 when none active).
- */
-int p25_patch_compose_summary(const dsd_state* state, char* out, size_t cap);
-
-/**
  * @brief Add a Working Group ID to an SGID entry (creates/activates if needed).
  *
  * @param state Decoder state holding patch context.
@@ -753,14 +573,6 @@ int p25_patch_compose_details(const dsd_state* state, char* out, size_t cap);
  * @param wgid Working Group ID to remove.
  */
 void p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid);
-/**
- * @brief Remove a WUID membership from an SG record.
- *
- * @param state Decoder state holding patch context.
- * @param sgid Super Group ID.
- * @param wuid Working Unit ID to remove.
- */
-void p25_patch_remove_wuid(dsd_state* state, int sgid, uint32_t wuid);
 /**
  * @brief Clear all membership and status for an SG record.
  *
@@ -870,14 +682,6 @@ void p25_aff_tick(dsd_state* state);
  */
 void p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg);
 /**
- * @brief Remove a group affiliation (RID to TG).
- *
- * @param state Decoder state holding group affiliation table.
- * @param rid Radio ID.
- * @param tg Talkgroup to remove.
- */
-void p25_ga_remove(dsd_state* state, uint32_t rid, uint16_t tg);
-/**
  * @brief Age/cleanup group affiliation entries (call at ~1 Hz).
  *
  * @param state Decoder state holding group affiliation table.
@@ -885,7 +689,7 @@ void p25_ga_remove(dsd_state* state, uint32_t rid, uint16_t tg);
 void p25_ga_tick(dsd_state* state);
 
 /**
- * @brief Emit a single encryption lockout event for a talkgroup.
+ * @brief Emit a single encryption lockout event for a group or private target.
  *
  * Records transient encrypted-call state and pushes the corresponding event to history/log exactly once per TG until
  * scrubbed.
@@ -893,22 +697,12 @@ void p25_ga_tick(dsd_state* state);
  * @param opts Decoder options.
  * @param state Decoder state.
  * @param slot 0 for FDMA/left, 1 for TDMA/right.
- * @param tg Talkgroup.
+ * @param target Group or private target.
  * @param svc_bits Optional service bits (pass 0 if unknown).
+ * @param is_group Nonzero for a group target, zero for a private target.
  */
-void p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits);
-
-/**
- * @brief Record transient encrypted-call state for a talkgroup without emitting a user-visible event.
- *
- * Used by lockout paths that already own event-history reporting. The record expires with the effective P25 retune
- * backoff window and is never written to persistent talkgroup policy.
- *
- * @param opts Decoder options.
- * @param state Decoder state.
- * @param tg Talkgroup proven encrypted.
- */
-void p25_sm_note_encrypted_call(dsd_opts* opts, dsd_state* state, int tg);
+void p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int target, int svc_bits,
+                                     int is_group);
 
 /**
  * @brief Clear all transient blocked-call classifications.

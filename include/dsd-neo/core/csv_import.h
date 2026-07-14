@@ -22,7 +22,6 @@ extern "C" {
 
 int csvGroupImport(const dsd_opts* opts, dsd_state* state);
 int csvGroupImportPath(const char* group_file_path, dsd_state* state);
-int csvLCNImport(const dsd_opts* opts, dsd_state* state);
 int csvChanImport(const dsd_opts* opts, dsd_state* state);
 int csvKeyImportDec(const dsd_opts* opts, dsd_state* state);
 int csvKeyImportHex(const dsd_opts* opts, dsd_state* state);

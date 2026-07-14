@@ -35,7 +35,6 @@ target_sources(
         shutdown.c
         log.cpp
         mem.cpp
-        comp.c
         ring.cpp
         input_ring.cpp
         worker_pool.cpp

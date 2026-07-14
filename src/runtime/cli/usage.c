@@ -5,8 +5,7 @@
 
 /**
  * @file
- * @brief CLI usage/help text implementation - moved from apps/dsd-cli/main.c
- *        to make runtime CLI self-contained.
+ * @brief CLI usage/help text implementation.
  */
 
 #include <dsd-neo/runtime/cli.h>
@@ -32,14 +31,14 @@ dsd_cli_usage_section_intro(void) {
     printf("\n");
     printf("Display Options:\n");
     printf("      --frontend <none|terminal|native>  Select frontend implementation\n");
+    printf("                 native is accepted as a headless alias for the retired non-rendering scaffold\n");
     printf("                 dsd-neo --frontend terminal 2> console_log.txt\n");
     printf("  -N            Enable terminal frontend (alias for --frontend terminal)\n");
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("      --frame-log <file>    Append one-line timestamped frame trace output\n");
     printf("      --p25-sm-log <file>   Append P25 state-machine decision diagnostics\n");
-    printf("      --symbol-capture-format <fmt>  Symbol capture format (soft|legacy; default soft)\n");
-    printf("  -j            Force-enable P25 LCW explicit retune (format 0x44; default is enabled)\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
+    printf("  -j            Force-enable P25 LCW explicit retune (enabled by default)\n");
     printf("      --p25-vc-grace <s>     P25: Seconds after VC tune before eligible to return to CC\n");
     printf("      --p25-min-follow-dwell <s>  P25: Minimum follow dwell after first voice\n");
     printf("      --p25-grant-voice-timeout <s>  P25: Max seconds from grant to voice before returning\n");
@@ -101,7 +100,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -g <float>    Audio Digital Output Gain  (Default: 0 = Auto;        )\n");
     printf("                                           (Manual:  1 = 2%%; 50 = 100%%)\n");
     printf("  -n <float>    Audio Analog  Output Gain  (Default: 0 = Auto; 0-100%%  )\n");
-    printf("  -nm           Enable legacy DMR mono audio path (same as -n m)\n");
+    printf("  -nm           Accept the retired DMR mono override; current preset mixing remains active\n");
     printf("  -6 <file>     Output raw audio .wav file (48K/1). (WARNING! Large File Sizes 1 Hour ~= 360 MB)\n");
     printf("  -7 <dir>      Create/Use Custom directory for Per Call decoded .wav file saving.\n");
     printf("                 (Use ./folder for Nested Directory!)\n");
@@ -128,6 +127,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -Q <file>     Specify Filename for OK-DMRlib Structured File Output. (placed in DSP folder)\n");
     printf("  -Q <file>     Specify Filename for M17 Float Stream Output. (placed in DSP folder)\n");
     printf("  -c <file>     Output symbol capture to .bin file\n");
+    printf("      --symbol-capture-format <soft|legacy>  Select soft/v2 output (legacy is an alias)\n");
     printf("  -q            Reverse Mute - Mute Unencrypted Voice and Unmute Encrypted Voice\n");
     printf("  -V <num>      TDMA Voice Synthesis: 0=Off, 1=Slot1, 2=Slot2, 3=Both; Default is 3\n");
     printf("  -z <num>      TDMA slot preference: 0=Slot1, 1=Slot2, 2=Auto; default is 2\n");
@@ -222,7 +222,7 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fA           Passive Analog Audio Monitor\n");
     printf("  -ft           TDMA Trunking P25p1 Control and Voice, P25p2 Trunked Channels, and DMR\n");
     printf("  -fs           DMR TDMA BS and MS Simplex\n");
-    printf("  -fr           DMR TDMA BS/MS Simplex (legacy mono alias; same as -fs -nm)\n");
+    printf("  -fr           DMR TDMA BS and MS Simplex (compatibility alias for the current -fs path)\n");
     printf("  -f1           Decode only P25 Phase 1\n");
     printf("  -f2           Decode only P25 Phase 2 (6000 sps) **\n");
     printf("  -fd           Decode only DSTAR\n");
@@ -287,7 +287,6 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
 static void
 dsd_cli_usage_section_advanced_key_options(void) {
     printf("  -b <dec>      Manually Enter Basic Privacy Key (Decimal Value of Key Number)\n");
-    printf("                 (NOTE: This used to be the 'K' option!)\n");
     printf("\n");
     printf("  -H <hex>      Manually Enter Hytera 10/32/64 Char Basic Privacy Hex Key (see example below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");

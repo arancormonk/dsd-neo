@@ -11,6 +11,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #if !DSD_PLATFORM_WIN_NATIVE
+#include <errno.h>
 #include <netinet/in.h>
 #endif
 #include <stdio.h>
@@ -23,6 +24,16 @@
 
 static struct sockaddr_in address;
 static struct sockaddr_in addressA;
+
+static int
+m17_socket_receive_error_is_retryable(void) {
+    const int error = dsd_socket_get_error();
+#if DSD_PLATFORM_WIN_NATIVE
+    return error == WSAEINTR || error == WSAEWOULDBLOCK || error == WSAETIMEDOUT;
+#else
+    return error == EINTR || error == EAGAIN || (EWOULDBLOCK != EAGAIN && error == EWOULDBLOCK) || error == ETIMEDOUT;
+#endif
+}
 
 void
 udp_socket_blaster(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data) {
@@ -62,6 +73,10 @@ m17_socket_receiver(const dsd_opts* opts, void* data) {
     //receive data from socket
     err = dsd_socket_recvfrom(opts->udp_sockfd, data, 1000, 0, (struct sockaddr*)&address,
                               &len); //was MSG_WAITALL, but that seems to be = 256
+
+    if (err < 0 && m17_socket_receive_error_is_retryable()) {
+        return 0;
+    }
 
     return err;
 }

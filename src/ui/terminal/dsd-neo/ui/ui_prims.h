@@ -26,9 +26,6 @@ extern "C" {
 
 /** @brief Create a boxed ncurses window with keypad + nonblocking input. */
 WINDOW* ui_make_window(int h, int w, int y, int x);
-/** @brief Destroy a window and null the caller's pointer. */
-void ui_destroy_window(WINDOW** win);
-
 /** @brief Commit all pending window updates to the physical screen (double buffering). */
 void ui_commit_frame(void);
 

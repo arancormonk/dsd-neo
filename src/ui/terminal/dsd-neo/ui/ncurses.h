@@ -5,10 +5,9 @@
 
 /**
  * @file
- * @brief Legacy ncurses UI entrypoints.
+ * @brief Terminal UI lifecycle, rendering, and input entry points.
  *
- * Declares the ncurses UI lifecycle and input handlers implemented in
- * `src/ui/terminal/`.
+ * Declares the terminal UI entry points implemented in `src/ui/terminal/`.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_NCURSES_H_
@@ -23,12 +22,11 @@
 extern "C" {
 #endif
 
-void ncursesOpen(dsd_opts* opts, dsd_state* state);
-void ncursesPrinter(dsd_opts* opts, dsd_state* state);
-void ncursesMenu(dsd_opts* opts, dsd_state* state);
-void ncursesClose(void);
+void dsd_terminal_open(dsd_opts* opts, dsd_state* state);
+void dsd_terminal_render(dsd_opts* opts, dsd_state* state);
+void dsd_terminal_close(void);
 
-uint8_t ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c);
+uint8_t dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c);
 
 /* Shared EDACS channel occupancy map used across ncurses UI modules. */
 extern unsigned long long int edacs_channel_tree[33][6];

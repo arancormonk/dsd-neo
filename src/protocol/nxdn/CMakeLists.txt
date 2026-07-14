@@ -5,6 +5,7 @@ target_sources(
     PRIVATE
         nxdn_alias_decode.c
         nxdn_convolution.c
+        nxdn_crc.c
         nxdn_dcr_utils.c
         nxdn_descramble.c
         nxdn_deperm.c

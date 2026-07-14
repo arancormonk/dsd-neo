@@ -7,12 +7,15 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/fec/bptc.h>
+#include <dsd-neo/fec/dmr_late_entry.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -50,50 +53,6 @@ dmr_run_lfsr_for_verified_alg(dsd_state* state, int algid) {
         LFSR128d(state);
         DSD_FPRINTF(stderr, "\n");
     }
-}
-
-static uint64_t
-dmr_pack_le_fragments(const dsd_state* state, uint8_t slot_idx, uint8_t vc_base) {
-    static const uint8_t shifts[9] = {32, 28, 24, 20, 16, 12, 8, 4, 0};
-    uint64_t packed = 0;
-    uint8_t shift_idx = 0;
-
-    for (uint8_t frag_col = 0; frag_col < 3; frag_col++) {
-        for (uint8_t frag_row = 0; frag_row < 3; frag_row++) {
-            packed |= (uint64_t)state->late_entry_mi_fragment[slot_idx][vc_base + frag_row][frag_col]
-                      << shifts[shift_idx++];
-        }
-    }
-
-    return packed;
-}
-
-static void
-dmr_decode_golay_triplet(uint64_t mi_test, uint64_t go_test, int g[3], uint64_t* mi_corrected, uint64_t* go_corrected,
-                         uint8_t mi_bits[36]) {
-    unsigned char mi_go_bits[24];
-
-    for (int j = 0; j < 3; j++) {
-        for (int i = 0; i < 12; i++) {
-            mi_go_bits[i] = ((mi_test << (i + j * 12)) & 0x800000000) >> 35;
-            mi_go_bits[i + 12] = ((go_test << (i + j * 12)) & 0x800000000) >> 35;
-        }
-
-        g[j] = Golay_24_12_decode(mi_go_bits) ? 1 : 0;
-
-        for (int i = 0; i < 12; i++) {
-            *mi_corrected = *mi_corrected << 1;
-            *mi_corrected |= mi_go_bits[i];
-            *go_corrected = *go_corrected << 1;
-            *go_corrected |= mi_go_bits[i + 12];
-            mi_bits[i + (j * 12)] = mi_go_bits[i];
-        }
-    }
-}
-
-static int
-dmr_golay_triplet_all_pass(const int g[3]) {
-    return g[0] && g[1] && g[2];
 }
 
 static void
@@ -178,6 +137,21 @@ dmr_print_hytera_refresh(const dsd_state* state, uint8_t slot_idx) {
 }
 
 static void
+dmr_print_rc4_refresh(const dsd_state* state, uint8_t slot_idx) {
+    const char* slot_label = (slot_idx == 0U) ? " Slot 1" : " Slot 2";
+    const int algid = (slot_idx == 0U) ? state->payload_algid : state->payload_algidR;
+    const int keyid = (slot_idx == 0U) ? state->payload_keyid : state->payload_keyidR;
+    const unsigned long long mi = (slot_idx == 0U) ? state->payload_mi : state->payload_miR;
+
+    DSD_FPRINTF(stderr, "%s", KYEL);
+    DSD_FPRINTF(stderr, "%s", slot_label);
+    DSD_FPRINTF(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", algid, keyid);
+    DSD_FPRINTF(stderr, " MI(32): %08llX;", mi);
+    DSD_FPRINTF(stderr, " RC4;");
+    DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+static void
 dmr_print_kirisun_refresh(const dsd_state* state, uint8_t slot_idx) {
     const char* slot_label = (slot_idx == 0U) ? " Slot 1" : " Slot 2";
     const int algid = (slot_idx == 0U) ? state->payload_algid : state->payload_algidR;
@@ -224,7 +198,8 @@ dmr_alg_refresh_slot(dsd_state* state, uint8_t slot_idx) {
     }
 
     if (algid == 0x21) {
-        LFSR(state);
+        *payload_mi = dmr_mi_advance32((uint32_t)*payload_mi);
+        dmr_print_rc4_refresh(state, slot_idx);
         DSD_FPRINTF(stderr, "\n");
     }
 
@@ -252,9 +227,9 @@ dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t
 
     //collect our fragments and place them into storage
     if (vc < 8) {
-        state->late_entry_mi_fragment[slot_idx][vc][0] = (uint64_t)ConvertBitIntoBytes(&ambe_fr[3][0], 4);
-        state->late_entry_mi_fragment[slot_idx][vc][1] = (uint64_t)ConvertBitIntoBytes(&ambe_fr2[3][0], 4);
-        state->late_entry_mi_fragment[slot_idx][vc][2] = (uint64_t)ConvertBitIntoBytes(&ambe_fr3[3][0], 4);
+        state->late_entry_mi_fragment[slot_idx][vc][0] = (uint64_t)convert_bits_into_output(&ambe_fr[3][0], 4);
+        state->late_entry_mi_fragment[slot_idx][vc][1] = (uint64_t)convert_bits_into_output(&ambe_fr2[3][0], 4);
+        state->late_entry_mi_fragment[slot_idx][vc][2] = (uint64_t)convert_bits_into_output(&ambe_fr3[3][0], 4);
     }
 
     if (vc == 6) {
@@ -268,34 +243,11 @@ dmr_late_entry_mi(dsd_opts* opts, dsd_state* state) {
 
     uint8_t slot = state->currentslot;
     uint8_t slot_idx = (slot >= 2U) ? 1U : slot;
-    int g[3];
-
-    uint64_t mi_test = dmr_pack_le_fragments(state, slot_idx, 1);
-    uint64_t go_test = dmr_pack_le_fragments(state, slot_idx, 4);
-    uint64_t mi_corrected = 0;
-    uint64_t go_corrected = 0;
-
-    uint8_t mi_bits[36];
-    DSD_MEMSET(mi_bits, 0, sizeof(mi_bits));
-    uint8_t mi_crc_cmp = 0;
-    uint8_t mi_crc_ext = 1;
-    uint8_t mi_crc_ok = 0;
-
-    dmr_decode_golay_triplet(mi_test, go_test, g, &mi_corrected, &go_corrected, mi_bits);
-
-    unsigned long long int mi_final = 0;
-    mi_final = (mi_corrected >> 4) & 0xFFFFFFFF;
-
-    mi_crc_ext = (uint8_t)ConvertBitIntoBytes(&mi_bits[32], 4);
-    mi_crc_cmp = crc4(mi_bits, 32);
-    if (mi_crc_ext == mi_crc_cmp) {
-        mi_crc_ok = 1;
-    }
-
-    //debug -- working now
-    // DSD_FPRINTF(stderr, " LE MI: %09llX; CRC EXT: %X; CRC CMP: %X; \n", mi_corrected, mi_crc_ext, mi_crc_cmp);
-
-    const int golay_all_pass = dmr_golay_triplet_all_pass(g);
+    dsd_dmr_late_entry_result result = {0};
+    const int golay_all_pass =
+        dsd_dmr_late_entry_decode(&state->late_entry_mi_fragment[slot_idx][0][0], &result) ? 1 : 0;
+    const unsigned long long int mi_final = result.mi;
+    const uint8_t mi_crc_ok = result.crc_ok ? 1U : 0U;
 
     // If PI/SB didn't provide ALG/Key ID but we have a valid LE MI and a manually provided key,
     // infer the ALG ID from key size so users don't need to force `-0` in common RC4/DES cases.
@@ -745,31 +697,4 @@ crc3(uint8_t bits[], unsigned int len) {
         crc = (crc << 1) + buf[len + i];
     }
     return crc;
-}
-
-uint8_t
-crc4(uint8_t bits[], unsigned int len) {
-    uint8_t crc = 0;
-    unsigned int K = 4;
-    //x^4+x+1
-    const uint8_t poly[5] = {1, 0, 0, 1, 1};
-    uint8_t buf[256];
-    if (len + K > sizeof(buf)) {
-        return 0;
-    }
-    DSD_MEMSET(buf, 0, sizeof(buf));
-    for (unsigned int i = 0; i < len; i++) {
-        buf[i] = bits[i];
-    }
-    for (unsigned int i = 0; i < len; i++) {
-        if (buf[i]) {
-            for (unsigned int j = 0; j < K + 1; j++) {
-                buf[i + j] ^= poly[j];
-            }
-        }
-    }
-    for (unsigned int i = 0; i < K; i++) {
-        crc = (crc << 1) + buf[len + i];
-    }
-    return crc ^ 0xF; //invert
 }

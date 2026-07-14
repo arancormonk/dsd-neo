@@ -27,7 +27,6 @@
 #include "dsd-neo/protocol/p25/p25_crypto.h"
 #include "dsd-neo/protocol/p25/p25_lfsr.h"
 #include "dsd-neo/protocol/p25/p25_status_symbol.h"
-#include "dsd-neo/protocol/p25/p25_trunk_sm.h"
 #include "dsd-neo/protocol/p25/p25p1_check_hdu.h"
 #include "dsd-neo/runtime/p25_optional_hooks.h"
 
@@ -54,16 +53,6 @@ p25p1_llr_reliability(const int16_t* llr, int bit_count) {
         }
     }
     return (uint8_t)min_reliability;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1U) | (uint64_t)(BufferIn[i] & 1U);
-    }
-    return out;
 }
 
 static int g_resolve_entry_algid;
@@ -96,7 +85,6 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
         resolved = (scalar_key || aes_key) ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_BLOCKED;
     }
     state->p25_crypto_state[0] = resolved;
-    state->p25_p2_enc_lockout_muted[0] = (resolved == DSD_P25_CRYPTO_BLOCKED) ? 1U : 0U;
     state->p25_p2_audio_allowed[0] = 0;
     return resolved;
 }
@@ -108,7 +96,6 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
 #endif
 
 static int g_lfsr128_calls;
-static int g_release_calls;
 static int g_watchdog_calls;
 static int g_write_event_calls;
 static int g_push_event_calls;
@@ -185,9 +172,8 @@ p25_status_accum_ensure_started(dsd_state* state) {
 }
 
 void
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     (void)state;
-    (void)opts;
 }
 
 uint64_t
@@ -239,20 +225,6 @@ void
 LFSR128(dsd_state* state) {
     (void)state;
     g_lfsr128_calls++;
-}
-
-void
-p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    g_release_calls++;
-}
-
-void
-p25_sm_note_encrypted_call(dsd_opts* opts, dsd_state* state, int tg) {
-    (void)opts;
-    (void)state;
-    (void)tg;
 }
 
 int
@@ -336,7 +308,6 @@ dsd_p25_optional_hook_init_event_history(Event_History_I* event_struct, uint8_t 
 static void
 reset_hook_counters(void) {
     g_lfsr128_calls = 0;
-    g_release_calls = 0;
     g_watchdog_calls = 0;
     g_write_event_calls = 0;
     g_push_event_calls = 0;
@@ -718,7 +689,6 @@ test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state(void) {
     rc |= expect_u64("hdu resolver sees prior MI", g_resolve_entry_mi, 0ULL);
     rc |= expect_int("good hdu xl flag", state.xl_is_hdu, 1);
     rc |= expect_int("good hdu aes lfsr", g_lfsr128_calls, 1);
-    rc |= expect_int("good hdu no lockout release", g_release_calls, 0);
 
     return rc;
 }
@@ -761,8 +731,8 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(g_event_history, 0, sizeof(g_event_history));
     state.event_history_s = g_event_history;
-    opts.p25_trunk = 1;
-    opts.p25_is_tuned = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
     DSD_SNPRINTF(opts.event_out_file, sizeof(opts.event_out_file), "%s", "events.log");
     state.lasttg = 1234;
     g_lookup_label = "Secure TG";
@@ -773,8 +743,7 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     rc |= expect_int("lockout preserves kid", state.payload_keyid, 0x2A2A);
     rc |= expect_u64("lockout preserves mi", state.payload_miP, 0xAABBCCDD10203040ULL);
     rc |= expect_int("lockout crypto state", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
-    rc |= expect_int("lockout marker", state.p25_p2_enc_lockout_muted[0], 1);
-    rc |= expect_int("lockout direct helper does not release", g_release_calls, 0);
+    rc |= expect_int("lockout gate", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
     rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);
     rc |= expect_int("lockout logging delegated", g_watchdog_calls, 0);

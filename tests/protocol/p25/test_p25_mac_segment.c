@@ -10,7 +10,6 @@
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,12 +25,10 @@
 #define setenv dsd_test_setenv
 
 // Forward declare config init to keep test dependencies narrow.
-struct dsd_opts;
+void dsd_neo_config_init(void);
 
-void dsd_neo_config_init(const struct dsd_opts* opts);
-
-// Test shim entrypoint (provided by dsd-neo_proto_p25)
-void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len);
+// Test shim entrypoint implemented in tests/test_support/p25_test_shim.c.
+void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
 
 // Minimal stubs to satisfy linked objects from the P25 proto library
 typedef struct dsd_opts dsd_opts;
@@ -40,14 +37,6 @@ typedef struct dsd_state dsd_state;
 static int g_apx_alias_header_calls;
 static int g_l3h_alias_calls;
 static int g_nmea_harris_calls;
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -90,39 +79,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     g_nmea_harris_calls++;
 }
 
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bw) {
-    (void)sockfd;
-    (void)bw;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
 static int
 parse_len_fields(const char* s, int* lenB, int* lenC) {
     const char* p = strstr(s, "\"lenB\":");
@@ -148,7 +104,7 @@ static int
 run_case(int type, uint8_t opcode, int expectB, int expectC) {
     // Ensure JSON output is enabled
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_mac_segment") != 0) {
@@ -160,7 +116,7 @@ run_case(int type, uint8_t opcode, int expectB, int expectC) {
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[0] = 1;      // mark header present so MCO heuristic applies on FACCH
     mac[1] = opcode; // opcode with low 6 bits interpreted as MCO
-    p25_test_process_mac_vpdu(type, mac, 24);
+    p25_test_process_mac_vpdu_ex(type, mac, 24, 0, 0);
 
     dsd_test_capture_stderr_end(&cap);
 
@@ -197,7 +153,7 @@ static int
 run_payload_len_case(const char* tag, int type, uint8_t opcode, uint8_t mfid, uint8_t payload_len, int expectB,
                      int expectC) {
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, tag) != 0) {
@@ -211,7 +167,7 @@ run_payload_len_case(const char* tag, int type, uint8_t opcode, uint8_t mfid, ui
     mac[1] = opcode;
     mac[2] = mfid;
     mac[3] = payload_len;
-    p25_test_process_mac_vpdu(type, mac, 24);
+    p25_test_process_mac_vpdu_ex(type, mac, 24, 0, 0);
 
     dsd_test_capture_stderr_end(&cap);
 
@@ -245,7 +201,7 @@ run_payload_len_case(const char* tag, int type, uint8_t opcode, uint8_t mfid, ui
 static int
 run_tdma_paging_len_case(const char* tag, uint8_t opcode, uint8_t count_bits, int expectB, int expectC) {
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, tag) != 0) {
@@ -261,7 +217,7 @@ run_tdma_paging_len_case(const char* tag, uint8_t opcode, uint8_t count_bits, in
         mac[1 + expectB] = 0x30; // following fixed-length MAC structure proves alignment
         mac[2 + expectB] = 0x00;
     }
-    p25_test_process_mac_vpdu(1 /* SACCH */, mac, 24);
+    p25_test_process_mac_vpdu_ex(1 /* SACCH */, mac, 24, 0, 0);
 
     dsd_test_capture_stderr_end(&cap);
 
@@ -320,8 +276,6 @@ run_direct_segment_parse_cases(void) {
     rc |= expect_int("three segment len 1", res.segments[1].length, 5);
     rc |= expect_int("three segment offset 2", res.segments[2].offset, 10);
     rc |= expect_int("three segment len 2", res.segments[2].length, 5);
-    rc |= expect_int("compat lenB", res.len_b, 5);
-    rc |= expect_int("compat lenC", res.len_c, 5);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x82;
@@ -339,8 +293,6 @@ run_direct_segment_parse_cases(void) {
     rc |= expect_int("generic harris len 1", res.segments[1].length, 5);
     rc |= expect_int("generic harris offset 2", res.segments[2].offset, 10);
     rc |= expect_int("generic harris len 2", res.segments[2].length, 5);
-    rc |= expect_int("generic harris compat lenB", res.len_b, 5);
-    rc |= expect_int("generic harris compat lenC", res.len_c, 5);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x88;
@@ -365,8 +317,6 @@ run_direct_segment_parse_cases(void) {
     }
     rc |= expect_int("null fills remaining count", res.segment_count, 1);
     rc |= expect_int("null fills remaining len", res.segments[0].length, 19);
-    rc |= expect_int("null fills remaining compat lenB", res.len_b, 19);
-    rc |= expect_int("null fills remaining compat lenC", res.len_c, 0);
 
     const uint8_t bridged_ops[] = {0x69U, 0x7FU, 0xEFU};
     for (size_t i = 0; i < sizeof(bridged_ops) / sizeof(bridged_ops[0]); i++) {
@@ -379,7 +329,6 @@ run_direct_segment_parse_cases(void) {
         rc |= expect_int("bridged later segment count", res.segment_count, 2);
         rc |= expect_int("bridged later segment offset", res.segments[1].offset, 5);
         rc |= expect_int("bridged later segment len", res.segments[1].length, 14);
-        rc |= expect_int("bridged later segment compat lenC", res.len_c, 14);
     }
 
     DSD_MEMSET(mac, 0, sizeof(mac));
@@ -388,8 +337,6 @@ run_direct_segment_parse_cases(void) {
         return 407;
     }
     rc |= expect_int("unsupported first count", res.segment_count, 0);
-    rc |= expect_int("unsupported first compat lenB", res.len_b, 0);
-    rc |= expect_int("unsupported first compat lenC", res.len_c, 16);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0xA0;
@@ -439,7 +386,6 @@ run_direct_segment_parse_cases(void) {
         return 405;
     }
     rc |= expect_int("truncated third segment count", res.segment_count, 2);
-    rc |= expect_int("truncated third compat lenC", res.len_c, 5);
 
     return rc;
 }
@@ -455,7 +401,7 @@ run_offset_relative_vpdu_cases(void) {
     mac[6] = 0x91;
     mac[7] = 0x90;
     mac[8] = 0x06;
-    p25_test_process_mac_vpdu(1, mac, 24);
+    p25_test_process_mac_vpdu_ex(1, mac, 24, 0, 0);
     rc |= expect_int("offset motorola alias header", g_apx_alias_header_calls, 1);
 
     g_l3h_alias_calls = 0;
@@ -464,7 +410,7 @@ run_offset_relative_vpdu_cases(void) {
     mac[6] = 0xA8;
     mac[7] = 0xA4;
     mac[8] = 0x06;
-    p25_test_process_mac_vpdu(1, mac, 24);
+    p25_test_process_mac_vpdu_ex(1, mac, 24, 0, 0);
     rc |= expect_int("offset harris alias", g_l3h_alias_calls, 1);
 
     g_apx_alias_header_calls = 0;
@@ -475,7 +421,7 @@ run_offset_relative_vpdu_cases(void) {
     mac[6] = 0x91;
     mac[7] = 0x90;
     mac[8] = 0x06;
-    p25_test_process_mac_vpdu(1, mac, 24);
+    p25_test_process_mac_vpdu_ex(1, mac, 24, 0, 0);
     rc |= expect_int("handler scratch keeps next segment", g_apx_alias_header_calls, 1);
 
     g_nmea_harris_calls = 0;
@@ -485,7 +431,7 @@ run_offset_relative_vpdu_cases(void) {
     mac[7] = 0xAA;
     mac[8] = 0xA4;
     mac[9] = 0x11;
-    p25_test_process_mac_vpdu(1, mac, 24);
+    p25_test_process_mac_vpdu_ex(1, mac, 24, 0, 0);
     rc |= expect_int("truncated shifted harris gps", g_nmea_harris_calls, 0);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
@@ -494,7 +440,7 @@ run_offset_relative_vpdu_cases(void) {
     mac[11] = 0x8B;
     mac[12] = 0x90;
     mac[13] = 0x05;
-    p25_test_process_mac_vpdu(1, mac, 24);
+    p25_test_process_mac_vpdu_ex(1, mac, 24, 0, 0);
 
     return rc;
 }

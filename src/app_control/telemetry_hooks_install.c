@@ -4,7 +4,6 @@
  */
 
 #include <dsd-neo/app_control/frontend_runtime.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -14,7 +13,6 @@
 
 #include "commands_internal.h"
 #include "snapshot_internal.h"
-#include "telemetry_hooks_impl.h"
 
 static atomic_int g_redraw_requested = 0;
 
@@ -33,7 +31,7 @@ dsd_app_request_redraw(void) {
 }
 
 int
-dsd_app_consume_redraw_requested(void) {
+dsd_app_frontend_redraw_consume(void) {
     return atomic_exchange(&g_redraw_requested, 0);
 }
 
@@ -58,24 +56,4 @@ void
 dsd_app_frontend_runtime_stop(void) {
     dsd_runtime_set_control_pump(NULL);
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
-}
-
-void
-dsd_app_frontend_redraw_request(void) {
-    dsd_app_request_redraw();
-}
-
-int
-dsd_app_frontend_redraw_consume(void) {
-    return dsd_app_consume_redraw_requested();
-}
-
-void
-ui_terminal_telemetry_request_redraw(void) {
-    dsd_app_request_redraw();
-}
-
-void
-ui_terminal_install_telemetry_hooks(void) {
-    dsd_app_install_telemetry_hooks();
 }

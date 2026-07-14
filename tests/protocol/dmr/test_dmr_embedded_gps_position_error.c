@@ -13,12 +13,12 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -30,7 +30,6 @@
 
 void dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
 void apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
-void harris_gps(dsd_opts* opts, dsd_state* state, int slot, uint8_t* input);
 void lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input);
 void nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int type);
 void nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot);
@@ -44,51 +43,25 @@ static uint8_t g_watchdog_slot;
 static char g_watchdog_data[128];
 
 // Minimal stubs for direct link with dsd_gps.c
-uint64_t
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    const uint8_t* p = BufferIn;
-    uint32_t n = BitLength;
-
-    while (n--) {
-        out = (out << 1) | (uint64_t)(*p++ & 1);
-    }
-
-    return out;
-}
-
 const char*
 dsd_degrees_glyph(void) {
     return "";
 }
 
-void
-getTime_buf(char out[7]) {
-    DSD_SNPRINTF(out, 7, "%s", "000000");
-}
-
-void
-getTimeC_buf(char out[9]) {
-    DSD_SNPRINTF(out, 9, "%s", "00:00:00");
-}
-
-void
-getDate_buf(char out[9]) {
-    DSD_SNPRINTF(out, 9, "%s", "00000000");
-}
-
-void
-getDateS_buf(char out[11]) {
-    DSD_SNPRINTF(out, 11, "%s", "0000/00/00");
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-convert_bits_into_output(const uint8_t* input, int len) {
-    if (len <= 0) {
-        return 0;
+int
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
+    (void)timestamp;
+    const char* value;
+    switch (format) {
+        case DSD_LOCAL_DATETIME_TIME_COMPACT: value = "000000"; break;
+        case DSD_LOCAL_DATETIME_TIME_COLON: value = "00:00:00"; break;
+        case DSD_LOCAL_DATETIME_DATE_COMPACT: value = "00000000"; break;
+        case DSD_LOCAL_DATETIME_DATE_SLASH: value = "0000/00/00"; break;
+        case DSD_LOCAL_DATETIME_DATE_HYPHEN: value = "0000-00-00"; break;
+        default: value = ""; break;
     }
-    return ConvertBitIntoBytes(input, (uint32_t)len);
+    DSD_SNPRINTF(out, out_size, "%s", value);
+    return 1;
 }
 
 void
@@ -317,30 +290,6 @@ test_lip_and_vendor_gps(dsd_opts* opts, dsd_state* st) {
         rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "Last Fix", "apx-event");
     }
 
-    {
-        uint8_t bits[160];
-        DSD_MEMSET(bits, 0, sizeof bits);
-        st->currentslot = 0;
-        st->lastsrc = 0x445566;
-        DSD_MEMSET(st->dmr_embedded_gps[0], 0, sizeof st->dmr_embedded_gps[0]);
-        set_bits_msb(bits, (int)sizeof bits, 40, 1234U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 58, 30U, 6);
-        set_bits_msb(bits, (int)sizeof bits, 65, 41U, 7);
-        bits[72] = 1U;
-        set_bits_msb(bits, (int)sizeof bits, 72, 5678U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 90, 15U, 6);
-        set_bits_msb(bits, (int)sizeof bits, 96, 87U, 8);
-        set_bits_msb(bits, (int)sizeof bits, 104, 3723U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 120, 90U, 8);
-        set_bits_msb(bits, (int)sizeof bits, 128, 0x8000U, 16);
-
-        harris_gps(opts, st, 0, bits);
-
-        rc |= expect_has_substr(st->dmr_embedded_gps[0], "GPS:", "legacy-harris-gps");
-        rc |= expect_has_substr(st->dmr_embedded_gps[0], "41.", "legacy-harris-lat");
-        rc |= expect_has_substr(st->dmr_embedded_gps[0], "87.", "legacy-harris-lon");
-    }
-
     return rc;
 }
 
@@ -410,6 +359,7 @@ main(void) {
 
     uint8_t lc_bits[80];
     DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
+    st.currentslot = 0;
 
     // pos_err == 5: less than 200km (200000m)
     {

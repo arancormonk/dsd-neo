@@ -4,15 +4,15 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
 
 #include "../../src/app_control/commands_internal.h"
-#include "../../src/app_control/snapshot_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "telemetry_hooks_impl.h"
+#include "snapshot_internal.h"
 
 static dsd_telemetry_hooks g_hooks;
 static int g_snapshot_calls;
@@ -61,13 +61,13 @@ main(void) {
 
     assert(g_snapshot_calls == 1);
     assert(g_opts_snapshot_calls == 1);
-    assert(dsd_app_consume_redraw_requested() == 1);
-    assert(dsd_app_consume_redraw_requested() == 0);
+    assert(dsd_app_frontend_redraw_consume() == 1);
+    assert(dsd_app_frontend_redraw_consume() == 0);
 
-    ui_terminal_telemetry_request_redraw();
-    assert(dsd_app_consume_redraw_requested() == 1);
+    dsd_app_request_redraw();
+    assert(dsd_app_frontend_redraw_consume() == 1);
 
-    ui_terminal_install_telemetry_hooks();
+    dsd_app_install_telemetry_hooks();
     assert(g_hooks.request_redraw == dsd_app_request_redraw);
     return 0;
 }

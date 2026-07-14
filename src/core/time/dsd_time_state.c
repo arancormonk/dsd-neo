@@ -26,23 +26,3 @@ dsd_mark_vc_sync(dsd_state* state) {
     state->last_vc_sync_time = time(NULL);
     state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
 }
-
-void
-dsd_clear_cc_sync(dsd_state* state) {
-    if (!state) {
-        return;
-    }
-    state->last_cc_sync_time = 0;
-    state->last_cc_sync_time_m = 0.0;
-    state->p25_last_cc_msg_time = 0;
-    state->p25_last_cc_msg_time_m = 0.0;
-}
-
-void
-dsd_clear_vc_sync(dsd_state* state) {
-    if (!state) {
-        return;
-    }
-    state->last_vc_sync_time = 0;
-    state->last_vc_sync_time_m = 0.0;
-}

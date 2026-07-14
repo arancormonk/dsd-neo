@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_cach.h"
 #include "dmr_confidence.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -40,7 +41,7 @@ typedef struct dmr_data_sync_ctx_s {
     dsd_opts* opts;
     dsd_state* state;
     int* dibit_p;
-    uint8_t* rel_p;
+    dsd_dibit_soft_t* soft_p;
     char sync[25];
     char syncdata[48];
     uint8_t cachdata[25];
@@ -60,9 +61,9 @@ dmr_data_sync_init_ctx(dmr_data_sync_ctx* ctx, dsd_opts* opts, dsd_state* state)
     ctx->opts = opts;
     ctx->state = state;
     ctx->dibit_p = state->dmr_payload_p - 90;
-    ctx->rel_p = NULL;
-    if (state->dmr_reliab_buf && state->dmr_reliab_p) {
-        ctx->rel_p = state->dmr_reliab_p - 90;
+    ctx->soft_p = NULL;
+    if (state->dmr_soft_buf && state->dmr_soft_p) {
+        ctx->soft_p = state->dmr_soft_p - 90;
     }
     ctx->cach_okay = -1;
 }
@@ -73,11 +74,11 @@ dmr_data_read_cached_dibit(dmr_data_sync_ctx* ctx, int stereo_idx, int advance_r
     int dibit = *ctx->dibit_p;
     ctx->dibit_p++;
     if (advance_rel) {
-        if (ctx->rel_p) {
+        if (ctx->soft_p) {
             if (rel_value != NULL) {
-                *rel_value = *ctx->rel_p;
+                *rel_value = ctx->soft_p->reliability;
             }
-            ctx->rel_p++;
+            ctx->soft_p++;
         } else if (rel_value != NULL) {
             *rel_value = rel_default;
         }
@@ -196,17 +197,14 @@ dmr_data_read_live_dibit(dmr_data_sync_ctx* ctx, int stereo_idx, uint8_t* rel_va
 
 static int
 dmr_data_collect_cach(dmr_data_sync_ctx* ctx) {
-    static const int cachInterleave[24] = {
-        0, 7, 8, 9, 1, 10, 11, 12, 2, 13, 14, 15, 3, 16, 4, 17, 18, 19, 5, 20, 21, 22, 6, 23,
-    };
     uint8_t tact_bits[7];
     int i;
     int dibit;
 
     for (i = 0; i < 12; i++) {
         dibit = dmr_data_read_cached_dibit(ctx, i, 1, NULL, 0);
-        ctx->cachdata[cachInterleave[((size_t)i * 2)]] = (uint8_t)(1 & (dibit >> 1));
-        ctx->cachdata[cachInterleave[((size_t)i * 2) + 1]] = (uint8_t)(1 & dibit);
+        ctx->cachdata[dmr_cach_interleave[((size_t)i * 2)]] = (uint8_t)(1 & (dibit >> 1));
+        ctx->cachdata[dmr_cach_interleave[((size_t)i * 2) + 1]] = (uint8_t)(1 & dibit);
     }
 
     for (i = 0; i < 7; i++) {
@@ -319,7 +317,7 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
     ctx->burst =
         (uint8_t)((ctx->SlotType[4] << 3) + (ctx->SlotType[5] << 2) + (ctx->SlotType[6] << 1) + ctx->SlotType[7]);
 
-    if (ctx->state->dmr_ms_mode == 0 && ctx->opts->dmr_mono == 0) {
+    if (ctx->state->dmr_ms_mode == 0) {
         dmr_confidence_result confidence =
             dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code, ctx->burst);
         if (confidence == DMR_CONFIDENCE_REJECT) {
@@ -365,8 +363,8 @@ dmr_data_dispatch_burst(dmr_data_sync_ctx* ctx) {
     if (ctx->burst == 6 || ctx->burst == 7 || ctx->burst == 8 || ctx->burst == 10) {
         dmr_sm_emit_data_sync(ctx->opts, ctx->state, ctx->state->currentslot);
     }
-    dmr_data_burst_handler_ex(ctx->opts, ctx->state, ctx->info, ctx->burst, ctx->rel98);
-    if (ctx->state->dmr_ms_mode == 0 && ctx->opts->dmr_mono == 0) {
+    dmr_data_burst_handler(ctx->opts, ctx->state, ctx->info, ctx->burst, ctx->rel98);
+    if (ctx->state->dmr_ms_mode == 0) {
         (void)dmr_cach(ctx->opts, ctx->state, ctx->cachdata);
     }
     DSD_FPRINTF(stderr, "\n");
@@ -386,9 +384,7 @@ dmr_data_finalize(dsd_opts* opts, dsd_state* state, unsigned int SlotTypeOk, int
         skipDibit(opts, state, 12 + 49 + 5);
     }
 
-#define CON_TUNEAWAY
-#ifdef CON_TUNEAWAY
-    if (opts->trunk_enable == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1) && state->is_con_plus == 1) {
+    if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->is_con_plus == 1) {
         int clear = 0;
         if (state->dmrburstL == 9 && state->dmrburstR == 9) {
             clear = 1;
@@ -400,7 +396,6 @@ dmr_data_finalize(dsd_opts* opts, dsd_state* state, unsigned int SlotTypeOk, int
             state->last_vc_sync_time_m = 0.0;
         }
     }
-#endif
 }
 
 void

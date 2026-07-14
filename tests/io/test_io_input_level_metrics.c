@@ -144,24 +144,6 @@ test_cf32_metrics(void) {
     assert(dsd_input_level_metrics_from_cf32(hot, 1000U, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, NULL) == -1);
 }
 
-static void
-test_fsk_symbol_clip_metric_is_not_rf_clipping(void) {
-    dsd_input_level_snapshot snapshot;
-    assert(dsd_input_level_metrics_from_fsk_clip(12.5f, 256U, &snapshot) == 0);
-    classify(&snapshot);
-    assert(snapshot.source == DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL);
-    assert(snapshot.status == DSD_INPUT_LEVEL_UNKNOWN);
-    assert(dsd_input_level_source_is_rf(snapshot.source) == 0);
-    assert(snapshot.sample_count == 256U);
-    assert(fabs(snapshot.clip_pct - 12.5) < 1e-6);
-
-    assert(dsd_input_level_metrics_from_fsk_clip(-2.0f, 12U, &snapshot) == 0);
-    assert(snapshot.clip_pct == 0.0);
-    assert(dsd_input_level_metrics_from_fsk_clip(12.5f, 0U, &snapshot) == -1);
-    assert(dsd_input_level_metrics_from_fsk_clip(NAN, 12U, &snapshot) == -1);
-    assert(dsd_input_level_metrics_from_fsk_clip(12.5f, 12U, NULL) == -1);
-}
-
 int
 main(void) {
     test_pcm_i16_metrics_with_step_and_guards();
@@ -169,6 +151,5 @@ main(void) {
     test_cu8_metrics();
     test_cs16_metrics();
     test_cf32_metrics();
-    test_fsk_symbol_clip_metric_is_not_rf_clipping();
     return 0;
 }

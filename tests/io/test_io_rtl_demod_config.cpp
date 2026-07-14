@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "rtl_stream_test_support.h"
 
 extern demod_state demod;
 extern std::atomic<double> g_snr_c4fm_db;
@@ -489,22 +490,6 @@ expect_rtl_metrics_exports_and_toggles(void) {
         DSD_FPRINTF(stderr, "RTL carrier lock returned non-boolean value=%d\n", carrier_lock);
         rc = 1;
     }
-    (void)rtl_stream_get_residual_cfo_hz();
-
-    // Resetting Costas state clears phase/error accumulators but preserves tuned frequency.
-    rtl_stream_reset_costas();
-    rc |= expect_double_near("RTL reset Costas preserves frequency", demod.costas_state.freq, 0.020, 1e-6);
-    rc |= expect_double_near("RTL reset Costas clears phase", demod.costas_state.phase, 0.0, 1e-6);
-    rc |= expect_double_near("RTL reset Costas clears error", demod.costas_state.error, 0.0, 1e-6);
-    rc |= expect_double_near("RTL reset Costas clears smoothed error", demod.costas_state.error_smooth, 0.0, 1e-6);
-    rc |= expect_double_near("RTL reset Costas diff prev real", demod.cqpsk_diff_prev_r, 1.0, 1e-6);
-    rc |= expect_double_near("RTL reset Costas diff prev imag", demod.cqpsk_diff_prev_j, 0.0, 1e-6);
-    rc |= expect_int_eq("RTL reset Costas clears exported error", rtl_stream_get_costas_err_q14(), 0);
-    rc |= expect_int_eq("RTL reset Costas metrics snapshot", rtl_stream_get_costas_metrics(&metrics), 0);
-    rc |= expect_int_eq("RTL reset Costas smooth metric", metrics.err_smooth_avg_q14, 0);
-    rc |= expect_int_eq("RTL reset Costas raw metric", metrics.err_raw_avg_q14, 0);
-    rc |= expect_int_eq("RTL reset Costas confidence metric", metrics.confidence_avg_q14, 0);
-    rc |= expect_int_eq("RTL reset Costas zero confidence metric", metrics.zero_conf_pct, 0);
 
     g_snr_c4fm_db.store(11.25, std::memory_order_relaxed);
     g_snr_qpsk_db.store(12.50, std::memory_order_relaxed);
@@ -541,11 +526,6 @@ expect_rtl_metrics_exports_and_toggles(void) {
     rc |= expect_int_eq(
         "RTL auto PPM status snapshot",
         rtl_stream_auto_ppm_get_status(&enabled, &snr_db, &df_hz, &est_ppm, &last_dir, &cooldown, &locked), 0);
-    int training = rtl_stream_auto_ppm_training_active();
-    if (training != 0 && training != 1) {
-        DSD_FPRINTF(stderr, "RTL auto PPM training returned non-boolean value=%d\n", training);
-        rc = 1;
-    }
     int ppm = 123;
     rc |= expect_int_eq("RTL auto PPM lock snapshot", rtl_stream_auto_ppm_get_lock(&ppm, &snr_db, &df_hz), 0);
     rc |= expect_int_eq("RTL auto PPM accepts null lock outputs",
@@ -559,7 +539,6 @@ expect_public_control_wrapper_contracts(void) {
 
     // Null/default wrapper calls must be safe before any demodulator state is active.
     rc |= expect_int_eq("RTL output rate rejects null context", (int)rtl_stream_output_rate(nullptr), 0);
-    rc |= expect_int_eq("RTL monitor rate rejects null context", (int)rtl_stream_monitor_rate(nullptr), 0);
     rc |= expect_int_eq("RTL active state defaults inactive", rtl_stream_is_active(), 0);
 
     DSD_MEMSET(&demod, 0, sizeof(demod));
@@ -597,9 +576,10 @@ expect_public_control_wrapper_contracts(void) {
     channel_profile = -1;
     rc |= expect_int_eq("RTL symbol profile ignores invalid channel profile",
                         rtl_stream_set_symbol_profile(9600, 2, 999), 0);
-    rc |= expect_int_eq("RTL symbol profile snapshot compact", rtl_stream_get_symbol_profile(&symbol_rate, &levels), 0);
-    rc |= expect_int_eq("RTL compact profile rate", symbol_rate, 9600);
-    rc |= expect_int_eq("RTL compact profile levels", levels, 2);
+    rc |= expect_int_eq("RTL symbol profile snapshot after update",
+                        rtl_stream_get_symbol_profile_full(&symbol_rate, &levels, nullptr), 0);
+    rc |= expect_int_eq("RTL updated profile rate", symbol_rate, 9600);
+    rc |= expect_int_eq("RTL updated profile levels", levels, 2);
     rc |= expect_int_eq("RTL invalid channel profile leaves previous channel",
                         rtl_stream_get_symbol_profile_full(nullptr, nullptr, &channel_profile), 0);
     rc |= expect_int_eq("RTL retained channel profile", channel_profile, DSD_CH_LPF_PROFILE_6K25);
@@ -692,73 +672,6 @@ expect_direct_output_open_rate_uses_demod_rate(void) {
     rc |= expect_int_eq("CQPSK direct output rate helper rc", helper_rc, 0);
     rc |= expect_int_eq("CQPSK direct output publishes demod rate", (int)output_rate_hz, 24000);
     rc |= expect_int_eq("CQPSK direct output disables resampler", resamp_enabled, 0);
-    return rc;
-}
-
-static int
-expect_parse_compatibility_matrix(void) {
-    int rc = 0;
-
-    int int_ok[10] = {};
-    int int_values[10] = {};
-    int double_ok[8] = {};
-    double double_values[8] = {};
-    rc |= expect_int_eq("parse compatibility rejects null int status",
-                        rtl_stream_test_parse_compat_matrix(NULL, int_values,
-                                                            sizeof(int_values) / sizeof(int_values[0]), double_ok,
-                                                            double_values, sizeof(double_ok) / sizeof(double_ok[0])),
-                        -1);
-    rc |= expect_int_eq("parse compatibility rejects null int values",
-                        rtl_stream_test_parse_compat_matrix(int_ok, NULL, sizeof(int_values) / sizeof(int_values[0]),
-                                                            double_ok, double_values,
-                                                            sizeof(double_ok) / sizeof(double_ok[0])),
-                        -1);
-    rc |= expect_int_eq("parse compatibility rejects short int arrays",
-                        rtl_stream_test_parse_compat_matrix(int_ok, int_values, 9U, double_ok, double_values,
-                                                            sizeof(double_ok) / sizeof(double_ok[0])),
-                        -1);
-    rc |= expect_int_eq("parse compatibility rejects null double status",
-                        rtl_stream_test_parse_compat_matrix(int_ok, int_values,
-                                                            sizeof(int_values) / sizeof(int_values[0]), NULL,
-                                                            double_values, sizeof(double_ok) / sizeof(double_ok[0])),
-                        -1);
-    rc |= expect_int_eq("parse compatibility rejects null double values",
-                        rtl_stream_test_parse_compat_matrix(int_ok, int_values,
-                                                            sizeof(int_values) / sizeof(int_values[0]), double_ok, NULL,
-                                                            sizeof(double_ok) / sizeof(double_ok[0])),
-                        -1);
-    rc |=
-        expect_int_eq("parse compatibility rejects short double arrays",
-                      rtl_stream_test_parse_compat_matrix(
-                          int_ok, int_values, sizeof(int_values) / sizeof(int_values[0]), double_ok, double_values, 7U),
-                      -1);
-    rc |= expect_int_eq("parse compatibility matrix helper",
-                        rtl_stream_test_parse_compat_matrix(int_ok, int_values, sizeof(int_ok) / sizeof(int_ok[0]),
-                                                            double_ok, double_values,
-                                                            sizeof(double_ok) / sizeof(double_ok[0])),
-                        0);
-    rc |= expect_int_eq("parse int rejects null text", int_ok[0], 0);
-    rc |= expect_int_eq("parse int rejects empty text", int_ok[1], 0);
-    rc |= expect_int_eq("parse int rejects null output", int_ok[2], 0);
-    rc |= expect_int_eq("parse int accepts positive", int_ok[3], 1);
-    rc |= expect_int_eq("parse int positive value", int_values[3], 42);
-    rc |= expect_int_eq("parse int accepts negative", int_ok[4], 1);
-    rc |= expect_int_eq("parse int negative value", int_values[4], -17);
-    rc |= expect_int_eq("parse int rejects alpha", int_ok[5], 0);
-    rc |= expect_int_eq("parse int rejects suffix", int_ok[6], 0);
-    rc |= expect_int_eq("parse int rejects ERANGE", int_ok[7], 0);
-    rc |= expect_int_eq("parse int rejects high overflow", int_ok[8], 0);
-    rc |= expect_int_eq("parse int rejects low overflow", int_ok[9], 0);
-    rc |= expect_int_eq("parse double rejects null text", double_ok[0], 0);
-    rc |= expect_int_eq("parse double rejects empty text", double_ok[1], 0);
-    rc |= expect_int_eq("parse double rejects null output", double_ok[2], 0);
-    rc |= expect_int_eq("parse double accepts positive", double_ok[3], 1);
-    rc |= expect_double_near("parse double positive value", double_values[3], 3.25, 1e-12);
-    rc |= expect_int_eq("parse double accepts negative", double_ok[4], 1);
-    rc |= expect_double_near("parse double negative value", double_values[4], -2.5, 1e-12);
-    rc |= expect_int_eq("parse double rejects suffix", double_ok[5], 0);
-    rc |= expect_int_eq("parse double rejects alpha", double_ok[6], 0);
-    rc |= expect_int_eq("parse double rejects ERANGE", double_ok[7], 0);
     return rc;
 }
 
@@ -918,7 +831,6 @@ static int
 expect_private_policy_matrices(void) {
     int rc = 0;
 
-    rc |= expect_parse_compatibility_matrix();
     rc |= expect_source_policy_matrix();
     rc |= expect_mode_policy_matrix();
     rc |= expect_fsk_profile_policy_matrix();

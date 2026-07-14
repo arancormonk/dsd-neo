@@ -8,97 +8,19 @@
  * IDEN tables and drives the channel→frequency calculator.
  */
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_test_shim.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Test shim helper (exposed by protocol library)
-int p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_base, int* out_spac, int* out_type,
-                             int* out_tdma, long* out_freq);
-
-static void
-sm_noop_init(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
-}
-
-static void
-sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)dst;
-    (void)src;
-}
-
-static void
-sm_noop_on_release(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
-    (void)opts;
-    (void)state;
-    (void)freqs;
-    (void)count;
-}
-
-static void
-sm_noop_tick(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static int
-sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
-    (void)state;
-    (void)out_freq;
-    return 0;
-}
-
-static p25_sm_api
-sm_noop_api(void) {
-    p25_sm_api api = {0};
-    api.init = sm_noop_init;
-    api.on_group_grant = sm_noop_on_group_grant;
-    api.on_indiv_grant = sm_noop_on_indiv_grant;
-    api.on_release = sm_noop_on_release;
-    api.on_neighbor_update = sm_noop_on_neighbor_update;
-    api.next_cc_candidate = sm_noop_next_cc_candidate;
-    api.tick = sm_noop_tick;
-    return api;
-}
-
 // Additional stubs referenced by MAC VPDU path (unused in this test)
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -158,11 +80,6 @@ expect_eq_int(const char* tag, int got, int want) {
 int
 main(void) {
     int rc = 0;
-
-    {
-        p25_sm_api api = sm_noop_api();
-        p25_sm_set_api(&api);
-    }
 
     // Craft a minimal ALT MBT PDU carrying Identifier Update (UHF/VHF, opcode 0x74)
     // IDEN=1, spacing=100 (12.5 kHz), base=851.000000 MHz (base field in 5 Hz units)

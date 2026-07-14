@@ -146,7 +146,7 @@ dsd_cli_compact_args(int argc, char** argv) {
     }
 
     // Remove recognized long options so short-option getopt() sees remaining tokens.
-    // Keep argv[0] as the program name and compact in place for legacy callers.
+    // Keep argv[0] as the program name and compact in place for downstream parsing phases.
     int w = 1;
     for (int i = 1, advance = 1; i < argc; i += advance) {
         advance = 1;

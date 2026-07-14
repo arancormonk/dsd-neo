@@ -282,7 +282,7 @@ test_aes_nonzero_mi_keeps_ofb_path(void) {
         iv[i] = (uint8_t)i;
     }
     DSD_MEMSET(stream, 0, sizeof(stream));
-    aes_ofb_keystream_output(iv, ctx.aes_key, stream, /*AES-128*/ 0, 3);
+    aes_ofb_keystream_output(iv, ctx.aes_key, stream, DSD_AES_KEY_128, 3);
 
     rc |= expect_int("aes ofb ctx end", ctx.end, 16);
     rc |= expect_int("aes ofb decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
@@ -342,7 +342,7 @@ test_des_decrypts_window_with_manual_key_fallback(void) {
     rc |= expect_int("des manual key fallback", ctx.rkey != 0ULL, 1);
     fill_pattern(plaintext, (size_t)ctx.end, 0x52);
     DSD_MEMSET(stream, 0, sizeof(stream));
-    des_multi_keystream_output(ctx.mi, ctx.rkey, stream, 1, (ctx.end / 8) + 1);
+    des_ofb_keystream_output(ctx.mi, ctx.rkey, stream, (ctx.end / 8) + 1);
     xor_stream_into_payload(&state, slot, ctx.start, plaintext, stream, (size_t)ctx.end);
 
     rc |= expect_int("des decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);

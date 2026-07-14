@@ -117,7 +117,7 @@ test_visibility_and_state_labels(void) {
     rc |= expect_str("invert all active", lbl_invert_all(&ctx, b, sizeof(b)), "Toggle Signal Inversion [Active]");
     opts.payload = 0;
     rc |= expect_str("payload inactive", lbl_toggle_payload(&ctx, b, sizeof(b)), "Toggle Payload Logging [Inactive]");
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     rc |= expect_str("trunk active", lbl_trunk(&ctx, b, sizeof(b)), "Toggle Trunking [Active]");
     opts.scanner_mode = 0;
     rc |= expect_str("scanner inactive", lbl_scan(&ctx, b, sizeof(b)), "Toggle Scanning Mode [Inactive]");
@@ -187,7 +187,7 @@ test_call_alert_slot_and_muting_labels(void) {
                      "Call Alert Events [Off]");
     opts.call_alert = 1;
     opts.call_alert_events = 0;
-    rc |= expect_str("call alert all when enabled with default", lbl_call_alert_events(&ctx, b, sizeof(b)),
+    rc |= expect_str("call alert zero mask defaults to all", lbl_call_alert_events(&ctx, b, sizeof(b)),
                      "Call Alert Events [All]");
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_DATA;
     rc |= expect_str("call alert start data", lbl_call_alert_events(&ctx, b, sizeof(b)),

@@ -54,21 +54,6 @@ size_t dsd_app_frontend_history_compact_event_text(char* out, size_t out_size, c
  */
 time_t dsd_app_frontend_history_event_sort_time(const char* event_text, time_t fallback_time);
 
-/** @brief Compatibility alias for terminal UI callers. */
-int ui_history_get_mode(void);
-
-/** @brief Compatibility alias for terminal UI callers. */
-void ui_history_set_mode(int mode);
-
-/** @brief Compatibility alias for terminal UI callers. */
-int ui_history_cycle_mode(void);
-
-/** @brief Compatibility alias for terminal UI callers. */
-size_t ui_history_compact_event_text(char* out, size_t out_size, const char* event_text, int mode);
-
-/** @brief Compatibility alias for terminal UI callers. */
-time_t ui_history_event_sort_time(const char* event_text, time_t fallback_time);
-
 #ifdef __cplusplus
 }
 #endif

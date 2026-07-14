@@ -34,19 +34,8 @@ test_des_ofb_known_vector(void) {
     uint8_t output[sizeof(expect)];
     DSD_MEMSET(output, 0, sizeof(output));
 
-    des_multi_keystream_output(0x0123456789ABCDEFULL, 0x133457799BBCDFF1ULL, output, 1, 2);
+    des_ofb_keystream_output(0x0123456789ABCDEFULL, 0x133457799BBCDFF1ULL, output, 2);
     return expect_bytes("des ofb vector", output, expect, sizeof(expect));
-}
-
-static int
-test_des_ofb_type_fallback_compatibility(void) {
-    static const uint8_t expect[] = {0x85, 0xE8, 0x13, 0x54, 0x0F, 0x0A, 0xB4, 0x05,
-                                     0x67, 0xAE, 0x7A, 0x29, 0x61, 0xDF, 0xA3, 0x45};
-    uint8_t output[sizeof(expect)];
-    DSD_MEMSET(output, 0, sizeof(output));
-
-    des_multi_keystream_output(0x0123456789ABCDEFULL, 0x133457799BBCDFF1ULL, output, 7, 2);
-    return expect_bytes("des ofb type fallback", output, expect, sizeof(expect));
 }
 
 static int
@@ -62,8 +51,8 @@ test_des_xl_fast_forward_offsets(void) {
     sync_output[213] = 0xA5;
     late_output[213] = 0x5A;
 
-    des_multi_keystream_output(0x0123456789ABCDEFULL, 0x133457799BBCDFF1ULL, sync_output, 2, 0);
-    des_multi_keystream_output(0x0123456789ABCDEFULL, 0x133457799BBCDFF1ULL, late_output, 2, 1);
+    des_xl_keystream_output(0x0123456789ABCDEFULL, 0x133457799BBCDFF1ULL, sync_output, 0);
+    des_xl_keystream_output(0x0123456789ABCDEFULL, 0x133457799BBCDFF1ULL, late_output, 1);
 
     int rc = 0;
     rc |= expect_bytes("des-xl sync offset", sync_output, sync_expect, sizeof(sync_expect));
@@ -74,31 +63,24 @@ test_des_xl_fast_forward_offsets(void) {
 }
 
 static int
-test_tdea_tofb_known_vector_and_type_compatibility(void) {
+test_tdea_tofb_known_vector(void) {
     static const uint8_t key[24] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x23, 0x45, 0x67, 0x89,
                                     0xAB, 0xCD, 0xEF, 0x01, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23};
     static const uint8_t expect[] = {0xF2, 0xAF, 0xD8, 0x4E, 0xE8, 0x09, 0xE2, 0xB5,
                                      0x5E, 0x96, 0x2F, 0x92, 0x23, 0x78, 0x89, 0x5D};
-    uint8_t type_one[sizeof(expect)];
-    uint8_t other_type[sizeof(expect)];
-    DSD_MEMSET(type_one, 0, sizeof(type_one));
-    DSD_MEMSET(other_type, 0, sizeof(other_type));
+    uint8_t output[sizeof(expect)];
+    DSD_MEMSET(output, 0, sizeof(output));
 
-    tdea_multi_keystream_output(0x0123456789ABCDEFULL, key, type_one, 1, 2);
-    tdea_multi_keystream_output(0x0123456789ABCDEFULL, key, other_type, 7, 2);
+    tdea_tofb_keystream_output(0x0123456789ABCDEFULL, key, output, 2);
 
-    int rc = 0;
-    rc |= expect_bytes("tdea tofb vector", type_one, expect, sizeof(expect));
-    rc |= expect_bytes("tdea type compatibility", other_type, expect, sizeof(expect));
-    return rc;
+    return expect_bytes("tdea tofb vector", output, expect, sizeof(expect));
 }
 
 int
 main(void) {
     int rc = 0;
     rc |= test_des_ofb_known_vector();
-    rc |= test_des_ofb_type_fallback_compatibility();
     rc |= test_des_xl_fast_forward_offsets();
-    rc |= test_tdea_tofb_known_vector_and_type_compatibility();
+    rc |= test_tdea_tofb_known_vector();
     return rc;
 }

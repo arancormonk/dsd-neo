@@ -14,8 +14,8 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
-#include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <stdint.h>
@@ -91,46 +91,40 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int* status_count,
-          P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
+read_dibit_update_soft_data(dsd_opts* opts, dsd_state* state, char* buffer, unsigned int count, int* status_count,
+                            P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
     (void)opts;
     (void)state;
     (void)status_count;
-    for (unsigned int idx = 0; idx < length && idx < 6; idx++) {
-        word[idx] = g_read_word_bits[idx];
-    }
-    if (soft_dibits != NULL && soft_dibit_index != NULL) {
-        for (int idx = 0; idx < 3; idx++) {
-            soft_dibits[*soft_dibit_index + idx].llr[0] = (int16_t)(30 + idx);
-            soft_dibits[*soft_dibit_index + idx].llr[1] = (int16_t)(-(40 + idx));
+    if (count == 6) {
+        DSD_MEMCPY(buffer, g_read_word_bits, sizeof(g_read_word_bits));
+        if (soft_dibits != NULL && soft_dibit_index != NULL) {
+            for (int idx = 0; idx < 3; idx++) {
+                soft_dibits[*soft_dibit_index + idx].llr[0] = (int16_t)(30 + idx);
+                soft_dibits[*soft_dibit_index + idx].llr[1] = (int16_t)(-(40 + idx));
+            }
+            *soft_dibit_index += 3;
         }
-        *soft_dibit_index += 3;
+        return;
     }
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-read_hamm_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count, P25P1SoftDibit* soft_dibits,
-                 int* soft_dibit_index) {
-    (void)opts;
-    (void)state;
-    (void)status_count;
-    for (int idx = 0; idx < 4; idx++) {
-        parity[idx] = g_read_parity_bits[idx];
-    }
-    if (soft_dibits != NULL && soft_dibit_index != NULL) {
-        for (int idx = 0; idx < 2; idx++) {
-            soft_dibits[*soft_dibit_index + idx].llr[0] = (int16_t)(50 + idx);
-            soft_dibits[*soft_dibit_index + idx].llr[1] = (int16_t)(-(60 + idx));
+    if (count == 4) {
+        DSD_MEMCPY(buffer, g_read_parity_bits, sizeof(g_read_parity_bits));
+        if (soft_dibits != NULL && soft_dibit_index != NULL) {
+            for (int idx = 0; idx < 2; idx++) {
+                soft_dibits[*soft_dibit_index + idx].llr[0] = (int16_t)(50 + idx);
+                soft_dibits[*soft_dibit_index + idx].llr[1] = (int16_t)(-(60 + idx));
+            }
+            *soft_dibit_index += 2;
         }
-        *soft_dibit_index += 2;
+        return;
     }
+    DSD_MEMSET(buffer, 0, count);
 }
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-check_and_fix_hamming_10_6_3(char* hex, char* parity) {
-    (void)hex;
+hamming_10_6_3_decode(char* data, const char* parity) {
+    (void)data;
     (void)parity;
     return g_hard_hamming_result;
 }
@@ -181,7 +175,7 @@ static int
 test_ldu_input_guards_and_status_symbol(void) {
     static dsd_opts opts;
     static dsd_state state;
-    char hex[6] = {0};
+    const char hex[6] = {0};
     int status_count = 34;
     int soft_index = 0;
     DSD_MEMSET(&opts, 0, sizeof(opts));

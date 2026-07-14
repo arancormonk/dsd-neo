@@ -12,11 +12,11 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 
-#include "telemetry_hooks_impl.h"
+#include "snapshot_internal.h"
 
 static void
 test_initial_snapshot_is_absent(void) {
-    assert(ui_get_latest_opts_snapshot() == NULL);
+    assert(dsd_app_get_latest_opts_snapshot() == NULL);
 }
 
 static void
@@ -31,12 +31,12 @@ test_publish_copies_latest_options(void) {
     opts.rtlsdr_ppm_error = -2;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.0125M");
 
-    ui_terminal_telemetry_publish_opts_snapshot(&opts);
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
     opts.audio_in_type = AUDIO_IN_TCP;
     opts.rtlsdr_center_freq = 0U;
     opts.audio_in_dev[0] = '\0';
 
-    snap = ui_get_latest_opts_snapshot();
+    snap = dsd_app_get_latest_opts_snapshot();
     assert(snap != NULL);
     assert(snap->audio_in_type == AUDIO_IN_RTL);
     assert(snap->audio_out == 1);
@@ -54,15 +54,15 @@ test_republish_updates_stable_consumer_copy(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     opts.audio_in_type = AUDIO_IN_WAV;
     opts.wav_sample_rate = 48000;
-    ui_terminal_telemetry_publish_opts_snapshot(&opts);
-    first = ui_get_latest_opts_snapshot();
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    first = dsd_app_get_latest_opts_snapshot();
     assert(first != NULL);
     assert(first->audio_in_type == AUDIO_IN_WAV);
 
     opts.audio_in_type = AUDIO_IN_UDP;
     opts.udp_portno = 7355;
-    ui_terminal_telemetry_publish_opts_snapshot(&opts);
-    second = ui_get_latest_opts_snapshot();
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    second = dsd_app_get_latest_opts_snapshot();
     assert(second == first);
     assert(second->audio_in_type == AUDIO_IN_UDP);
     assert(second->udp_portno == 7355);

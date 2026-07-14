@@ -23,7 +23,10 @@ Optional compiled dependencies are:
 - SoapySDR 0.8.1 or newer for non-RTL SDR devices; the CMake package must
   export an imported target (`SoapySDR` or `SoapySDR::SoapySDR`)
 - Codec2 for additional vocoder paths
-- libcurl for rdio-scanner API uploads
+- libcurl 7.56.0 or newer for rdio-scanner API uploads. Builds older than
+  7.85 use the integer protocol-mask option needed by the Ubuntu 20.04
+  AppImage toolchain; remove that branch when portable packaging no longer
+  supports libcurl below 7.85.
 - PortAudio on non-Windows builds when selected
 - help2man for generated man pages
 

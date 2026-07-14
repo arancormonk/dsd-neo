@@ -16,10 +16,8 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/platform/sockets.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -43,6 +41,7 @@ static const char* g_responses[MAX_RESPONSES];
 static size_t g_response_count;
 static size_t g_response_index;
 static dsd_socket_t g_create_result;
+static int g_send_result;
 static int g_resolve_result;
 static int g_connect_result;
 static int g_close_count;
@@ -52,22 +51,11 @@ static unsigned int g_last_timeout_ms;
 static int g_setsockopt_count;
 static int g_last_setsockopt_level;
 static int g_last_setsockopt_name;
-static int g_sleep_count;
-static int g_sendto_count;
-static unsigned char g_last_sendto_payload[8];
-static size_t g_last_sendto_len;
-static int g_last_sendto_port;
 static int g_rtl_tune_calls;
 static uint32_t g_rtl_tune_freq;
 static int g_rtl_tune_result;
 static uint32_t g_rtl_last_applied_freq;
 static dsdneoRuntimeConfig g_config;
-
-bool dsd_rigctl_test_get_signal_level(dsd_socket_t sockfd, double* dB);
-bool dsd_rigctl_test_get_squelch_level(dsd_socket_t sockfd, double* dB);
-bool dsd_rigctl_test_set_squelch_level(dsd_socket_t sockfd, double dB);
-bool dsd_rigctl_test_get_signal_level_ex(dsd_socket_t sockfd, double* dB, int n_samp);
-void dsd_rigctl_test_rtl_udp_tune(dsd_opts* opts, dsd_state* state, long int frequency);
 
 static void
 reset_stubs(void) {
@@ -77,6 +65,7 @@ reset_stubs(void) {
     g_response_count = 0;
     g_response_index = 0;
     g_create_result = 41;
+    g_send_result = -2;
     g_resolve_result = 0;
     g_connect_result = 0;
     g_close_count = 0;
@@ -86,11 +75,6 @@ reset_stubs(void) {
     g_setsockopt_count = 0;
     g_last_setsockopt_level = 0;
     g_last_setsockopt_name = 0;
-    g_sleep_count = 0;
-    g_sendto_count = 0;
-    DSD_MEMSET(g_last_sendto_payload, 0, sizeof(g_last_sendto_payload));
-    g_last_sendto_len = 0;
-    g_last_sendto_port = 0;
     g_rtl_tune_calls = 0;
     g_rtl_tune_freq = 0U;
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -134,15 +118,7 @@ dsd_neo_get_config(void) {
 }
 
 void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts;
-}
-
-void
-dsd_sleep_ms(unsigned int ms) {
-    (void)ms;
-    g_sleep_count++;
-}
+dsd_neo_config_init(void) {}
 
 dsd_socket_t
 dsd_socket_create(int domain, int type, int protocol) {
@@ -209,27 +185,8 @@ dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     DSD_MEMCPY(g_commands[g_command_count], buf, copy_len);
     g_commands[g_command_count][copy_len] = '\0';
     g_command_count++;
-    return (int)len;
-}
-
-int
-dsd_socket_sendto(dsd_socket_t sock, const void* buf, size_t len, int flags, const struct sockaddr* dest_addr,
-                  int addrlen) {
-    (void)sock;
-    (void)flags;
-    (void)addrlen;
-    g_sendto_count++;
-    g_last_sendto_len = len;
-    size_t copy_len = len;
-    if (copy_len > sizeof(g_last_sendto_payload)) {
-        copy_len = sizeof(g_last_sendto_payload);
-    }
-    if (buf && copy_len > 0U) {
-        DSD_MEMCPY(g_last_sendto_payload, buf, copy_len);
-    }
-    if (dest_addr) {
-        const struct sockaddr_in* in = (const struct sockaddr_in*)dest_addr;
-        g_last_sendto_port = ntohs(in->sin_port);
+    if (g_send_result != -2) {
+        return g_send_result;
     }
     return (int)len;
 }
@@ -306,6 +263,18 @@ test_setfreq_success_failure_and_cache(void) {
     assert(!SetFreq(100, 851025000L));
     assert(g_command_count == 2);
     assert(strcmp(g_commands[1], "F 851025000\n") == 0);
+
+    reset_stubs();
+    assert(!SetFreq(110, 851037500L));
+    assert(g_command_count == 1);
+
+    reset_stubs();
+    g_send_result = -1;
+    assert(!SetFreq(111, 851050000L));
+
+    reset_stubs();
+    g_send_result = 2;
+    assert(!SetFreq(112, 851062500L));
     return 0;
 }
 
@@ -328,6 +297,14 @@ test_setmodulation_fallback_and_cache(void) {
     assert(g_command_count == 4);
     assert(strcmp(g_commands[2], "M NFM 25000\n") == 0);
     assert(strcmp(g_commands[3], "M FM 25000\n") == 0);
+
+    reset_stubs();
+    assert(!SetModulation(113, 6250));
+    assert(g_command_count == 1);
+
+    reset_stubs();
+    g_send_result = 1;
+    assert(!SetModulation(114, 7500));
     return 0;
 }
 
@@ -355,6 +332,7 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
 
     assert(io_control_set_freq(NULL, &state, 851000000L) == -1);
     assert(io_control_set_freq(&opts, &state, 0L) == -1);
+    assert(io_control_set_freq(&opts, &state, 851000000L) == -1);
     assert(g_command_count == 0);
 
     opts.use_rigctl = 1;
@@ -368,6 +346,33 @@ test_io_control_set_freq_validation_and_rigctl_dispatch(void) {
     assert(g_command_count == 2);
     assert(strcmp(g_commands[0], "M NFM 12500\n") == 0);
     assert(strcmp(g_commands[1], "F 851050000\n") == 0);
+
+    reset_stubs();
+    opts.rtlsdr_center_freq = 851050000U;
+    push_response("RPRT 1\n");
+    assert(io_control_set_freq(&opts, &state, 851062500L) == -1);
+    assert(opts.rtlsdr_center_freq == 851050000U);
+
+    reset_stubs();
+    opts.rigctl_sockfd = DSD_INVALID_SOCKET;
+    assert(io_control_set_freq(&opts, &state, 851075000L) == -1);
+    assert(g_command_count == 0);
+    return 0;
+}
+
+static int
+test_io_control_set_freq_rejects_missing_rtl_context(void) {
+    reset_stubs();
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 851000000U;
+
+    assert(io_control_set_freq(&opts, &state, 851075000L) == -1);
+    assert(g_rtl_tune_calls == 0);
+    assert(opts.rtlsdr_center_freq == 851000000U);
     return 0;
 }
 
@@ -435,107 +440,6 @@ test_io_control_set_freq_retains_accepted_rtl_timeout_target(void) {
     return 0;
 }
 
-static int
-test_signal_and_squelch_helpers(void) {
-    reset_stubs();
-    double value = -999.0;
-    push_response("12.34\n");
-    assert(dsd_rigctl_test_get_signal_level(104, &value));
-    assert(value == 12.3);
-    assert(g_command_count == 1);
-    assert(strcmp(g_commands[0], "l\n") == 0);
-
-    reset_stubs();
-    value = -999.0;
-    push_response("0.0\n");
-    assert(!dsd_rigctl_test_get_signal_level(104, &value));
-    assert(value == 0.0);
-
-    reset_stubs();
-    value = -999.0;
-    push_response("12.0 trailing\n");
-    assert(!dsd_rigctl_test_get_signal_level(104, &value));
-    assert(value == -999.0);
-
-    reset_stubs();
-    value = -999.0;
-    push_response("-45.66\n");
-    assert(dsd_rigctl_test_get_squelch_level(104, &value));
-    assert(value == -45.7);
-    assert(g_command_count == 1);
-    assert(strcmp(g_commands[0], "l SQL\n") == 0);
-
-    reset_stubs();
-    push_response("RPRT 1");
-    assert(!dsd_rigctl_test_get_squelch_level(104, &value));
-
-    reset_stubs();
-    push_response("RPRT 0");
-    assert(dsd_rigctl_test_set_squelch_level(104, 4.5));
-    assert(g_command_count == 1);
-    assert(strcmp(g_commands[0], "L SQL 4.500000\n") == 0);
-
-    reset_stubs();
-    push_response("RPRT 1");
-    assert(!dsd_rigctl_test_set_squelch_level(104, 4.5));
-    return 0;
-}
-
-static int
-test_signal_level_average_tolerates_failed_samples(void) {
-    reset_stubs();
-    double value = -999.0;
-    push_response("10.04\n");
-    push_response("RPRT 1");
-    push_response("14.04\n");
-
-    assert(dsd_rigctl_test_get_signal_level_ex(105, &value, 3));
-    assert(value == 12.0);
-    assert(g_command_count == 3);
-    assert(g_sleep_count == 3);
-    assert(strcmp(g_commands[0], "l\n") == 0);
-    assert(strcmp(g_commands[1], "l\n") == 0);
-    assert(strcmp(g_commands[2], "l\n") == 0);
-    return 0;
-}
-
-static int
-test_legacy_udp_tune_payload_and_cache(void) {
-    reset_stubs();
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    opts.rtl_udp_port = 6021;
-
-    dsd_rigctl_test_rtl_udp_tune(&opts, &state, 0x12345678L);
-    assert(opts.rtlsdr_center_freq == 0x12345678U);
-    assert(g_sendto_count == 1);
-    assert(g_last_sendto_len == 5U);
-    assert(g_last_sendto_port == 6021);
-    assert(g_last_sendto_payload[0] == 0x00);
-    assert(g_last_sendto_payload[1] == 0x78);
-    assert(g_last_sendto_payload[2] == 0x56);
-    assert(g_last_sendto_payload[3] == 0x34);
-    assert(g_last_sendto_payload[4] == 0x12);
-    assert(g_close_count == 1);
-
-    dsd_rigctl_test_rtl_udp_tune(&opts, &state, 0x12345678L);
-    assert(g_sendto_count == 1);
-
-    dsd_rigctl_test_rtl_udp_tune(&opts, &state, 0x12345679L);
-    assert(g_sendto_count == 2);
-
-    reset_stubs();
-    g_create_result = DSD_INVALID_SOCKET;
-    opts.rtlsdr_center_freq = 0;
-    dsd_rigctl_test_rtl_udp_tune(&opts, &state, 0x12345680L);
-    assert(opts.rtlsdr_center_freq == 0x12345680U);
-    assert(g_sendto_count == 0);
-    assert(g_close_count == 0);
-    return 0;
-}
-
 int
 main(void) {
     int rc = 0;
@@ -545,12 +449,10 @@ main(void) {
     rc |= test_setmodulation_fallback_and_cache();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
+    rc |= test_io_control_set_freq_rejects_missing_rtl_context();
     rc |= test_io_control_set_freq_propagates_rtl_deferred();
     rc |= test_io_control_set_freq_caches_applied_rtl_frequency();
     rc |= test_io_control_set_freq_retains_accepted_rtl_timeout_target();
-    rc |= test_signal_and_squelch_helpers();
-    rc |= test_signal_level_average_tolerates_failed_samples();
-    rc |= test_legacy_udp_tune_payload_and_cache();
     return rc;
 }
 

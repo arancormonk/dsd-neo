@@ -191,7 +191,7 @@ test_public_guards_do_not_render(void) {
     ui_print_learned_lcns(NULL, &state);
     ui_print_learned_lcns(&opts, NULL);
     ui_print_learned_lcns(&opts, &state);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     ui_print_learned_lcns(&opts, &state);
 
     assert(g_header_calls == 0);
@@ -281,7 +281,7 @@ test_public_render_applies_color_and_p25_legend(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     state.carrier = 1;
     state.synctype = DSD_SYNC_P25P2_POS;
     add_trunk_channel(&state, 0x1234, 851012500L);
@@ -305,7 +305,7 @@ test_public_render_uses_idle_color_without_p25_legend(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     state.carrier = 0;
     state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
     state.trunk_lcn_freq[0] = 852012500L;

@@ -9,20 +9,10 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/ecdsa.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-uint64_t
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t value = 0ULL;
-    for (uint32_t i = 0U; i < n; i++) {
-        value = (value << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return value;
-}
 
 static int
 expect_u32(const char* label, uint32_t got, uint32_t want) {
@@ -275,7 +265,7 @@ test_bert_reference(void) {
     uint16_t lfsr = M17_REF_BERT_INITIAL_LFSR;
     uint8_t payload_bits[M17_BERT_PAYLOAD_BITS];
     uint8_t packed[sizeof(M17_REF_BERT_PAYLOAD_PACKED_BYTES)];
-    uint8_t type1[M17_BERT_TYPE1_FLUSH_BITS];
+    uint8_t type1[M17_BERT_TYPE1_FLUSH_BITS] = {0};
     uint8_t randomized[M17_PAYLOAD_BITS];
     uint8_t dibits[M17_FRAME_SYMBOLS];
     uint16_t consumed = 0U;
@@ -285,7 +275,7 @@ test_bert_reference(void) {
     bits_to_bytes_padded(payload_bits, M17_BERT_PAYLOAD_BITS, packed, sizeof(packed));
     err |= expect_bytes("BERT packed payload", packed, M17_REF_BERT_PAYLOAD_PACKED_BYTES, sizeof(packed));
 
-    m17_bert_build_type1_bits(payload_bits, type1);
+    DSD_MEMCPY(type1, payload_bits, sizeof(payload_bits));
     err |=
         expect_int("BERT RF encode bits", m17_bert_encode_type1_bits(type1, randomized, &consumed), M17_PAYLOAD_BITS);
     err |= expect_int("BERT RF consumed", consumed, M17_BERT_TYPE2_BITS);
@@ -305,14 +295,14 @@ test_aes_reference(void) {
     err |= expect_bytes("AES masked counter", counter, M17_REF_AES_COUNTER, sizeof(counter));
 
     DSD_MEMCPY(data, M17_REF_AES_PLAINTEXT, sizeof(data));
-    aes_ctr_xcrypt_bytes(counter, M17_REF_AES128_KEY, data, 0, sizeof(data));
+    aes_ctr_xcrypt_bytes(counter, M17_REF_AES128_KEY, data, DSD_AES_KEY_128, sizeof(data));
     err |= expect_bytes("AES final-frame ciphertext", data, M17_REF_AES_CIPHERTEXT, sizeof(data));
 
     DSD_MEMCPY(full_counter, M17_REF_AES_NONCE, sizeof(M17_REF_AES_NONCE));
     full_counter[14] = 0xFFU;
     full_counter[15] = 0xFFU;
     DSD_MEMCPY(data, M17_REF_AES_PLAINTEXT, sizeof(data));
-    aes_ctr_xcrypt_bytes(full_counter, M17_REF_AES128_KEY, data, 0, sizeof(data));
+    aes_ctr_xcrypt_bytes(full_counter, M17_REF_AES128_KEY, data, DSD_AES_KEY_128, sizeof(data));
     err |= expect_int("AES full 16-bit counter differs", memcmp(data, M17_REF_AES_CIPHERTEXT, sizeof(data)) == 0, 0);
     err |= build_stream_frame_hash(M17_REF_AES_TRANSMITTED_FN, M17_REF_AES_CIPHERTEXT, 1U,
                                    M17_REF_AES_STREAM_FRAME_DIBIT_FNV64, "AES stream frame");
@@ -322,11 +312,10 @@ test_aes_reference(void) {
 static int
 test_signature_reference(void) {
     int err = 0;
-    struct m17_signature_collector collector;
+    struct m17_signature_collector collector = {0};
     static const uint16_t signature_fns[4] = {M17_STREAM_SIGNATURE_FN0, M17_STREAM_SIGNATURE_FN1,
                                               M17_STREAM_SIGNATURE_FN2, M17_STREAM_SIGNATURE_FN3};
 
-    m17_signature_collector_reset(&collector);
     for (size_t i = 0U; i < 4U; i++) {
         const int want = (i == 3U) ? 1 : 0;
         err |= expect_int("signature collector",

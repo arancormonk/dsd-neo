@@ -10,16 +10,13 @@ target_link_libraries(
 
 if(DSD_ENABLE_TERMINAL_UI)
     target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_TERMINAL_UI=1)
+    target_include_directories(
+        dsd-neo
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
     target_link_libraries(dsd-neo PRIVATE dsd-neo_ui_terminal)
 else()
     target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_TERMINAL_UI=0)
-endif()
-
-if(DSD_ENABLE_NATIVE_UI)
-    target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_NATIVE_UI=1)
-    target_link_libraries(dsd-neo PRIVATE dsd-neo_ui_native)
-else()
-    target_compile_definitions(dsd-neo PRIVATE DSD_CLI_HAS_NATIVE_UI=0)
 endif()
 
 # Target include directories (prefer target-scoped over global)
@@ -31,9 +28,6 @@ endif()
 if(CODEC2_FOUND)
     target_include_directories(dsd-neo SYSTEM PRIVATE ${CODEC2_INCLUDE_DIRS})
 endif()
-
-# mbelib-neo is always used (no legacy mbelib fallback)
-target_compile_definitions(dsd-neo PRIVATE USE_MBELIB_NEO)
 
 target_link_libraries(dsd-neo PRIVATE dsd-neo_warnings)
 

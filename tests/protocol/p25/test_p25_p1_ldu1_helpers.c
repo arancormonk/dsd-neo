@@ -15,7 +15,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/timing.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
@@ -53,22 +52,11 @@ static int g_status_classify_calls;
 static int g_audio_play_calls;
 static int g_active_calls;
 static int g_last_status_dibit;
-static const dsd_opts* g_last_classify_opts;
 static uint32_t g_last_policy_id;
 static uint8_t g_last_policy_source;
 static dsd_tg_policy_upsert_mode g_last_policy_upsert_mode;
 static char g_last_policy_mode[8];
 static char g_last_policy_name[32];
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1) | (uint64_t)(BufferIn[i] & 1U);
-    }
-    return out;
-}
 
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -162,9 +150,8 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 }
 
 void
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     g_status_classify_calls++;
-    g_last_classify_opts = opts;
     if (state != NULL) {
         state->p25_ss_classification = P25_SS_CLASS_INFRASTRUCTURE;
     }
@@ -183,7 +170,7 @@ process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count) {
 }
 
 void
-p25p1_play_imbe_audio(dsd_opts* opts, dsd_state* state) {
+dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_audio_play_calls++;
@@ -285,7 +272,6 @@ reset_hook_counters(void) {
     g_audio_play_calls = 0;
     g_active_calls = 0;
     g_last_status_dibit = -1;
-    g_last_classify_opts = NULL;
     g_last_policy_id = 0U;
     g_last_policy_source = 0U;
     g_last_policy_upsert_mode = 0;
@@ -503,16 +489,16 @@ test_ldu1_activity_is_independent_of_media_gate(void) {
     opts.trunk_tune_enc_calls = 1;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
 
-    p25p1_ldu1_process_imbe_frame(&opts, &state, &status_count, '0', 1);
+    p25p1_ldu1_process_imbe_frame(&opts, &state, &status_count, 1);
     rc |= expect_int("blocked follow call emits activity", g_active_calls, 1);
     rc |= expect_int("blocked follow call keeps media muted", g_audio_play_calls, 0);
 
-    p25p1_ldu1_process_imbe_frame(&opts, &state, &status_count, '1', 0);
+    p25p1_ldu1_process_imbe_frame(&opts, &state, &status_count, 0);
     rc |= expect_int("non-activity frame does not emit", g_active_calls, 1);
     rc |= expect_int("blocked non-activity frame stays muted", g_audio_play_calls, 0);
 
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
-    p25p1_ldu1_process_imbe_frame(&opts, &state, &status_count, '2', 1);
+    p25p1_ldu1_process_imbe_frame(&opts, &state, &status_count, 1);
     rc |= expect_int("clear frame emits activity", g_active_calls, 2);
     rc |= expect_int("clear frame plays audio", g_audio_play_calls, 1);
     return rc;
@@ -580,10 +566,6 @@ test_ldu1_finalize_status_feeds_trailing_symbol(void) {
     rc |= expect_int("status add calls", g_status_add_calls, 1);
     rc |= expect_int("status trailing dibit", g_last_status_dibit, 3);
     rc |= expect_int("status classify calls", g_status_classify_calls, 1);
-    if (g_last_classify_opts != &opts) {
-        DSD_FPRINTF(stderr, "status classify opts pointer mismatch\n");
-        rc = 1;
-    }
     rc |= expect_int("status classification side effect", state.p25_ss_classification, P25_SS_CLASS_INFRASTRUCTURE);
     return rc;
 }

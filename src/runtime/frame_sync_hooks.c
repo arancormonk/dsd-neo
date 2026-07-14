@@ -24,11 +24,11 @@ dsd_frame_sync_hook_p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dsd_frame_sync_hook_p25_sm_on_release(dsd_opts* opts, dsd_state* state) {
-    if (!g_frame_sync_hooks.p25_sm_on_release) {
+dsd_frame_sync_hook_p25_sm_release(dsd_opts* opts, dsd_state* state) {
+    if (!g_frame_sync_hooks.p25_sm_release) {
         return;
     }
-    g_frame_sync_hooks.p25_sm_on_release(opts, state);
+    g_frame_sync_hooks.p25_sm_release(opts, state);
 }
 
 void

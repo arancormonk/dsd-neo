@@ -11,12 +11,13 @@
  * 2025-02 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
 #include <stdint.h>
@@ -149,8 +150,8 @@ void
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
 
     UNUSED(opts);
-    uint8_t ta_len = (uint8_t)ConvertBitIntoBytes(&lc_bits[32], 8); //len in blocks of associated talker alias
-    uint8_t sn = (uint8_t)ConvertBitIntoBytes(&lc_bits[56], 4);
+    uint8_t ta_len = (uint8_t)convert_bits_into_output(&lc_bits[32], 8); //len in blocks of associated talker alias
+    uint8_t sn = (uint8_t)convert_bits_into_output(&lc_bits[56], 4);
     DSD_FPRINTF(stderr, " SN: %X;", sn);
     DSD_FPRINTF(stderr, " BN: 0/%d;", ta_len);
 
@@ -164,11 +165,12 @@ void
 apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
 
     UNUSED(opts);
-    uint8_t bn = (uint8_t)ConvertBitIntoBytes(&lc_bits[16], 8); //current block number
-    uint8_t sn = (uint8_t)ConvertBitIntoBytes(&lc_bits[24], 4); //is a static value on all block sequences
+    uint8_t bn = (uint8_t)convert_bits_into_output(&lc_bits[16], 8); //current block number
+    uint8_t sn = (uint8_t)convert_bits_into_output(&lc_bits[24], 4); //is a static value on all block sequences
     uint8_t ta_len =
-        (uint8_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][32], 8); //len in blocks pulled from stored header
-    uint16_t header = (uint16_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][0], 16); //header check, should be 0x1590
+        (uint8_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][32], 8); //len in blocks pulled from stored header
+    uint16_t header =
+        (uint16_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][0], 16); //header check, should be 0x1590
 
     if (ta_len == 0
         || header != 0x1590) //checkdown, make sure we have an up to date header for this with a good len value
@@ -178,7 +180,7 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
         DSD_FPRINTF(stderr, " SN: %X;", sn);
         DSD_FPRINTF(stderr, " Partial: ");
         for (uint8_t i = 7; i < 18; i++) {
-            DSD_FPRINTF(stderr, "%0X", (uint8_t)ConvertBitIntoBytes(&lc_bits[0 + (i * 4)], 4));
+            DSD_FPRINTF(stderr, "%0X", (uint8_t)convert_bits_into_output(&lc_bits[0 + (i * 4)], 4));
         }
 
         //clear out now stale storage
@@ -210,7 +212,7 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
             //evaluate the storage and determine how many octets/bits are present at this point (expanded to two octets each, CRC with a 00xx pattern failed this)
             for (int16_t i = 0; i < 184; i++) //(3072-128)/16
             {
-                uint16_t bytes = (uint16_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][72 + 56 + (i * 16)], 16);
+                uint16_t bytes = (uint16_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][72 + 56 + (i * 16)], 16);
                 if (bytes == 0) {
                     break;
                 } else {
@@ -231,9 +233,9 @@ void
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
 
     UNUSED(opts);
-    uint8_t ta_len = (uint8_t)ConvertBitIntoBytes(&lc_bits[40], 8);
-    uint8_t sn = (uint8_t)ConvertBitIntoBytes(&lc_bits[64], 4);
-    uint8_t bn = (uint8_t)ConvertBitIntoBytes(&lc_bits[56], 8);
+    uint8_t ta_len = (uint8_t)convert_bits_into_output(&lc_bits[40], 8);
+    uint8_t sn = (uint8_t)convert_bits_into_output(&lc_bits[64], 4);
+    uint8_t bn = (uint8_t)convert_bits_into_output(&lc_bits[56], 8);
     DSD_FPRINTF(stderr, " SN: %X;",
                 sn); //NOTE: vPDU header is also a partial block, and has a block num and SN value in it
     DSD_FPRINTF(stderr, " BN: %d/%d;", bn, ta_len);
@@ -261,11 +263,12 @@ void
 apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
 
     UNUSED(opts);
-    uint8_t bn = (uint8_t)ConvertBitIntoBytes(&lc_bits[24], 8); //current block number
-    uint8_t sn = (uint8_t)ConvertBitIntoBytes(&lc_bits[32], 4); //is a static value on all block sequences
+    uint8_t bn = (uint8_t)convert_bits_into_output(&lc_bits[24], 8); //current block number
+    uint8_t sn = (uint8_t)convert_bits_into_output(&lc_bits[32], 4); //is a static value on all block sequences
     uint8_t ta_len =
-        (uint8_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][32], 8); //len in blocks pulled from stored header
-    uint16_t header = (uint16_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][0], 16); //header check, should be 0x9190
+        (uint8_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][32], 8); //len in blocks pulled from stored header
+    uint16_t header =
+        (uint16_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][0], 16); //header check, should be 0x9190
 
     if (ta_len == 0 || header != 0x9190) {
         DSD_FPRINTF(stderr, " Missing Header");
@@ -273,7 +276,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
         DSD_FPRINTF(stderr, " SN: %X;", sn);
         DSD_FPRINTF(stderr, " Partial: ");
         for (uint8_t i = 9; i < 32; i++) { //double check and adjust
-            DSD_FPRINTF(stderr, "%0X", (uint8_t)ConvertBitIntoBytes(&lc_bits[0 + (i * 4)], 4));
+            DSD_FPRINTF(stderr, "%0X", (uint8_t)convert_bits_into_output(&lc_bits[0 + (i * 4)], 4));
         }
 
         //clear out now stale storage
@@ -311,7 +314,7 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
             //evaluate the storage and determine how many octets/bits are present at this point (expanded to two octets each, CRC with a 00xx pattern failed this)
             for (int16_t i = 0; i < 184; i++) //(3072-128)/16
             {
-                uint16_t bytes = (uint16_t)ConvertBitIntoBytes(&state->dmr_pdu_sf[slot][72 + 56 + (i * 16)], 16);
+                uint16_t bytes = (uint16_t)convert_bits_into_output(&state->dmr_pdu_sf[slot][72 + 56 + (i * 16)], 16);
                 if (bytes == 0) {
                     break;
                 } else {
@@ -338,10 +341,10 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     //debug, dump completed data set
 
     //extract CRC
-    uint16_t crc_ext = (uint16_t)ConvertBitIntoBytes(&input[(72 + num_bits - 16)], 16);
+    uint16_t crc_ext = (uint16_t)convert_bits_into_output(&input[(72 + num_bits - 16)], 16);
 
     //compute CRC
-    uint16_t crc_cmp = ComputeCrcCCITT16d(&input[72], num_bits - 16);
+    uint16_t crc_cmp = dsd_crc_ccitt16_bits(&input[72], (size_t)(num_bits - 16));
 
     //print comparison
     if (crc_ext != crc_cmp) {
@@ -352,9 +355,9 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     if (crc_ext == crc_cmp) {
 
         //extract fully qualified SUID
-        uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&input[72], 20);
-        uint32_t sys = (uint32_t)ConvertBitIntoBytes(&input[92], 12);
-        uint32_t rid = (uint32_t)ConvertBitIntoBytes(&input[104], 24);
+        uint32_t wacn = (uint32_t)convert_bits_into_output(&input[72], 20);
+        uint32_t sys = (uint32_t)convert_bits_into_output(&input[92], 12);
+        uint32_t rid = (uint32_t)convert_bits_into_output(&input[104], 24);
 
         //print fully qualified SUID
         DSD_FPRINTF(stderr, "\n FQ-SUID: %05X.%03X.%06X (%d);", wacn, sys, rid, rid);
@@ -373,7 +376,7 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
         }
 
         for (uint16_t i = 0; i < num_bytes; i++) {
-            encoded[i] = (uint8_t)ConvertBitIntoBytes(&input[ptr], 8);
+            encoded[i] = (uint8_t)convert_bits_into_output(&input[ptr], 8);
             ptr += 8;
         }
 
@@ -450,9 +453,9 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
     }
 
     //fully qualified SUID
-    uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&input[72], 20);
-    uint32_t sys = (uint32_t)ConvertBitIntoBytes(&input[92], 12);
-    uint32_t rid = (uint32_t)ConvertBitIntoBytes(&input[104], 24);
+    uint32_t wacn = (uint32_t)convert_bits_into_output(&input[72], 20);
+    uint32_t sys = (uint32_t)convert_bits_into_output(&input[92], 12);
+    uint32_t rid = (uint32_t)convert_bits_into_output(&input[104], 24);
 
     DSD_SNPRINTF(fqs, sizeof fqs, " FQ-SUID: %05X:%03X.%06X (%d);", wacn, sys, rid, rid);
     uint8_t slot_idx = alias_slot_index(slot);
@@ -681,7 +684,7 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
 void
 l3h_embedded_alias_blocks_phase1(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
 
-    uint8_t op = (uint8_t)ConvertBitIntoBytes(&lc_bits[0], 8);
+    uint8_t op = (uint8_t)convert_bits_into_output(&lc_bits[0], 8);
     if (op < 0x32U || op > 0x35U) {
         return;
     }
@@ -689,7 +692,7 @@ l3h_embedded_alias_blocks_phase1(const dsd_opts* opts, dsd_state* state, uint8_t
     uint8_t bytes[7];
     DSD_MEMSET(bytes, 0, sizeof(bytes));
     for (uint8_t i = 0; i < 7; i++) {
-        bytes[i] = (uint8_t)ConvertBitIntoBytes(&lc_bits[16 + (i * 8)], 8);
+        bytes[i] = (uint8_t)convert_bits_into_output(&lc_bits[16 + (i * 8)], 8);
     }
 
     uint8_t slot_idx = alias_slot_index(slot);
@@ -830,7 +833,7 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
     uint8_t alias[24];
     DSD_MEMSET(alias, 0, sizeof(alias));
     for (int16_t i = 0; i < len; i++) {
-        alias[i] = (uint8_t)ConvertBitIntoBytes(&input[16 + (i * 7)], 7);
+        alias[i] = (uint8_t)convert_bits_into_output(&input[16 + (i * 7)], 7);
         DSD_FPRINTF(stderr, "%c", alias[i]);
         if (alias[i] == 0x2C) { //change a comma to a dot
             alias[i] = 0x2E;
@@ -863,8 +866,8 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
 
 void
 dmr_talker_alias_lc_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
-    uint8_t format = (uint8_t)ConvertBitIntoBytes(&lc_bits[16], 2);
-    uint8_t block_len = (uint8_t)ConvertBitIntoBytes(&lc_bits[18], 5);
+    uint8_t format = (uint8_t)convert_bits_into_output(&lc_bits[16], 2);
+    uint8_t block_len = (uint8_t)convert_bits_into_output(&lc_bits[18], 5);
     uint8_t char_size = 0;
 
     if (format == 0) {
@@ -908,7 +911,6 @@ dmr_talker_alias_lc_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
 
 void
 dmr_talker_alias_lc_blocks(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, const uint8_t* lc_bits) {
-    UNUSED(opts); //delete if we don't use this, but may want it if we dump alias to a file later on
     uint8_t char_size = state->dmr_alias_char_size[slot];
     uint16_t ptr = 0;
 
@@ -962,17 +964,17 @@ dmr_talker_alias_effective_len(const uint8_t* bits, uint8_t char_size, uint16_t 
     uint16_t last = 0;
     for (uint16_t i = 0; i < max_chars; i++) {
         if (char_size == 7) {
-            uint8_t character = (uint8_t)ConvertBitIntoBytes((uint8_t*)&bits[((size_t)i * 7)], 7);
+            uint8_t character = (uint8_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 7)], 7);
             if (character >= 0x21 && character <= 0x7E) {
                 last = i + 1;
             }
         } else if (char_size == 8) {
-            uint8_t character = (uint8_t)ConvertBitIntoBytes((uint8_t*)&bits[((size_t)i * 8)], 8);
+            uint8_t character = (uint8_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 8)], 8);
             if (character >= 0x21 && character != 0x7F && character != 0xFF) {
                 last = i + 1;
             }
         } else if (char_size == 16) {
-            uint16_t character = (uint16_t)ConvertBitIntoBytes((uint8_t*)&bits[((size_t)i * 16)], 16);
+            uint16_t character = (uint16_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 16)], 16);
             if (character >= 0x21 && character != 0x7F && character != 0xFFFF) {
                 last = i + 1;
             }
@@ -1009,7 +1011,7 @@ dmr_talker_alias_append_char(char* alias_string, size_t alias_size, char charact
 static void
 dmr_talker_alias_decode_iso7(const uint8_t* bits, uint16_t end, char* alias_string, size_t alias_size) {
     for (uint16_t i = 0; i < end; i++) {
-        uint8_t character = (uint8_t)ConvertBitIntoBytes((uint8_t*)&bits[((size_t)i * 7)], 7);
+        uint8_t character = (uint8_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 7)], 7);
         if (character >= 0x20 && character <= 0x7E) {
             DSD_FPRINTF(stderr, "%c", character);
             dmr_talker_alias_append_char(alias_string, alias_size, (char)character);
@@ -1023,7 +1025,7 @@ dmr_talker_alias_decode_iso7(const uint8_t* bits, uint16_t end, char* alias_stri
 static void
 dmr_talker_alias_decode_iso8(const uint8_t* bits, uint16_t end, char* alias_string, size_t alias_size) {
     for (uint16_t i = 0; i < end; i++) {
-        uint8_t character = (uint8_t)ConvertBitIntoBytes((uint8_t*)&bits[((size_t)i * 8)], 8);
+        uint8_t character = (uint8_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 8)], 8);
         if (character >= 0x20 && character != 0x7F && character != 0xFF) {
             DSD_FPRINTF(stderr, "%c", character);
             dmr_talker_alias_append_char(alias_string, alias_size, (char)character);
@@ -1069,7 +1071,7 @@ dmr_talker_alias_decode_utf16(const uint8_t* bits, uint16_t end, char* alias_str
         LC_ALL,
         ""); //needed when encoded alias contains Chinese (or probably any non-roman charset that isn't default on users terminal)
     for (uint16_t i = 0; i < end; i++) {
-        uint16_t character = (uint16_t)ConvertBitIntoBytes((uint8_t*)&bits[((size_t)i * 16)], 16);
+        uint16_t character = (uint16_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 16)], 16);
         dmr_talker_alias_print_utf16_char(character);
         dmr_talker_alias_collect_utf16_char(character, alias_string, alias_size);
     }

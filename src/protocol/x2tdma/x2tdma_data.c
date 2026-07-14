@@ -66,24 +66,6 @@ x2tdma_read_cach(const dsd_opts* opts, dsd_state* state, int** dibit_p, char cac
     cachdata[12] = 0;
 }
 
-#ifdef X2TDMA_DUMP
-static void
-x2tdma_dump_dibit_bits(const char* dibits, int dibit_count) {
-    int k = 0;
-    char bits[49];
-
-    for (int i = 0; i < dibit_count; i++) {
-        int dibit = dibits[i];
-        bits[k] = (1 & (dibit >> 1)) + 48; // bit 1
-        k++;
-        bits[k] = (1 & dibit) + 48; // bit 0
-        k++;
-    }
-    bits[dibit_count * 2] = 0;
-    DSD_FPRINTF(stderr, "%s ", bits);
-}
-#endif
-
 static void
 x2tdma_read_slot_type(const dsd_opts* opts, int** dibit_p, char cc[4], char bursttype[5]) {
     int dibit = x2tdma_read_dibit(opts, dibit_p);
@@ -175,10 +157,6 @@ processX2TDMAdata(dsd_opts* opts, dsd_state* state) {
     // CACH
     x2tdma_read_cach(opts, state, &dibit_p, cachdata);
 
-#ifdef X2TDMA_DUMP
-    x2tdma_dump_dibit_bits(cachdata, 12);
-#endif
-
     // current slot
     dibit_p += 49;
 
@@ -192,10 +170,6 @@ processX2TDMAdata(dsd_opts* opts, dsd_state* state) {
 
     // signaling data or sync
     x2tdma_read_sync(opts, &dibit_p, sync, syncdata);
-
-#ifdef X2TDMA_DUMP
-    x2tdma_dump_dibit_bits(syncdata, 24);
-#endif
 
     x2tdma_mark_slot_on_data_sync(state, sync);
 

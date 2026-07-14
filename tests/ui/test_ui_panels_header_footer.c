@@ -92,7 +92,7 @@ test_header_compact_renders_without_banner_color(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.frontend_display.terminal_compact = 1;
+    opts.frontend_terminal_display.terminal_compact = 1;
 
     reset_calls();
     ui_panel_header_render(&opts, &state);
@@ -111,8 +111,8 @@ test_header_compact_trunk_restores_trunk_color(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.frontend_display.terminal_compact = 1;
-    opts.p25_trunk = 1;
+    opts.frontend_terminal_display.terminal_compact = 1;
+    opts.trunk_enable = 1;
 
     reset_calls();
     ui_panel_header_render(&opts, &state);

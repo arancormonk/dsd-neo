@@ -42,7 +42,6 @@ static float g_rtl_ted_gain;
 static int g_rtl_timing_bias;
 static int g_rtl_auto_ppm;
 static int g_rtl_tuner_autogain;
-static const dsd_state* g_frontend_state;
 static int g_rtl_output_kind;
 static int g_ted_child_visible;
 
@@ -168,22 +167,6 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
     return 0;
 }
 
-int
-dsd_app_frontend_auto_ppm_enabled(int configured) {
-    if (g_frontend_state && g_frontend_state->rtl_ctx) {
-        return g_rtl_auto_ppm;
-    }
-    return configured ? 1 : 0;
-}
-
-int
-dsd_app_frontend_tuner_autogain_enabled(int configured) {
-    if (g_frontend_state && g_frontend_state->rtl_ctx) {
-        return g_rtl_tuner_autogain;
-    }
-    return configured ? 1 : 0;
-}
-
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {
@@ -224,7 +207,6 @@ reset_fixture(dsd_opts* opts, dsd_state* state, UiCtx* ctx) {
     g_ted_child_visible = 0;
     ctx->opts = opts;
     ctx->state = state;
-    g_frontend_state = state;
 }
 
 static int
@@ -247,7 +229,6 @@ test_radio_modulation_predicates(void) {
     opts.mod_qpsk = 0;
     opts.mod_gfsk = 1;
     rc |= expect_int("live cqpsk snaps qpsk", ui_current_mod(&ctx), 1);
-    rc |= expect_int("cq predicate", dsp_cq_on(&ctx), 1);
 
     g_rtl_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
     rc |= expect_int("ted hidden for fsk discriminator", is_ted_allowed(&ctx), 0);

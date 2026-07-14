@@ -79,17 +79,6 @@ dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out) {
 }
 
 int
-dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
-    if (g_rtl_stream_metrics_hooks.set_symbol_profile) {
-        return g_rtl_stream_metrics_hooks.set_symbol_profile(symbol_rate_hz, levels, channel_profile);
-    }
-    (void)symbol_rate_hz;
-    (void)levels;
-    (void)channel_profile;
-    return 0;
-}
-
-int
 dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                                 int ted_sps) {
     if (g_rtl_stream_metrics_hooks.apply_demod_profile) {
@@ -97,8 +86,11 @@ dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rat
                                                               ted_sps);
     }
     (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    (void)levels;
+    (void)channel_profile;
     (void)ted_sps;
-    return dsd_rtl_stream_metrics_hook_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+    return -1;
 }
 
 int

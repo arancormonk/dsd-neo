@@ -44,7 +44,7 @@ main(void) {
     int got = 123;
     float sample = -1.0f;
 
-    assert(dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) == 0);
+    assert(dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) == -1);
     assert(got == 0);
     assert(dsd_rtl_stream_io_hook_return_pwr(state) == 0.0);
 
@@ -53,7 +53,7 @@ main(void) {
 
     got = 123;
     sample = -1.0f;
-    assert(dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) == 0);
+    assert(dsd_rtl_stream_io_hook_read(state, &sample, 1, &got) == -1);
     assert(got == 0);
     assert(dsd_rtl_stream_io_hook_return_pwr(state) == 0.0);
 
@@ -72,6 +72,15 @@ main(void) {
     assert(got == 1);
     assert(sample == 42.0f);
     assert(g_last_rtl_ctx == (const void*)state->rtl_ctx);
+
+    got = 123;
+    assert(dsd_rtl_stream_io_hook_read(state, NULL, 1, &got) == -1);
+    assert(got == 0);
+    assert(g_read_calls == 1);
+    got = 123;
+    assert(dsd_rtl_stream_io_hook_read(state, &sample, 0, &got) == -1);
+    assert(got == 0);
+    assert(g_read_calls == 1);
 
     assert(dsd_rtl_stream_io_hook_return_pwr(state) == 123.45);
     assert(g_return_pwr_calls == 1);

@@ -260,18 +260,6 @@ soapy_profile_parse_name(const std::string& value, SoapyProfileId* out_id) {
         *out_id = it->id;
         return true;
     }
-    if (equals_ci(value, "sdr-play")) {
-        *out_id = SoapyProfileId::Sdrplay;
-        return true;
-    }
-    if (equals_ci(value, "rtl")) {
-        *out_id = SoapyProfileId::Rtlsdr;
-        return true;
-    }
-    if (equals_ci(value, "usrp")) {
-        *out_id = SoapyProfileId::Uhd;
-        return true;
-    }
     return false;
 }
 

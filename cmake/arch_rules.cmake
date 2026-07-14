@@ -135,16 +135,8 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
     endif()
 
     set(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA OFF)
-    if(_ARCH_RULES_REL MATCHES "^(src/ui/|include/dsd-neo/ui/)")
+    if(_ARCH_RULES_REL MATCHES "^src/ui/")
         set(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA ON)
-    endif()
-
-    set(_ARCH_RULES_NATIVE_UI_AREA OFF)
-    if(
-        _ARCH_RULES_REL MATCHES "^src/ui/native/"
-        OR _ARCH_RULES_REL STREQUAL "include/dsd-neo/ui/native_provider.h"
-    )
-        set(_ARCH_RULES_NATIVE_UI_AREA ON)
     endif()
 
     set(_ARCH_RULES_PUBLIC_FRONTEND_AREA OFF)
@@ -231,7 +223,7 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         endforeach()
     endif()
 
-    if(_ARCH_RULES_NATIVE_UI_AREA OR _ARCH_RULES_PUBLIC_FRONTEND_AREA)
+    if(_ARCH_RULES_PUBLIC_FRONTEND_AREA)
         file(
             STRINGS "${_ARCH_RULES_ABS}"
             _ARCH_RULES_CURSES_TOKEN_LINES
@@ -278,39 +270,6 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             _ARCH_RULES_HEADER
             "${_ARCH_RULES_LINE}"
         )
-
-        if(_ARCH_RULES_NATIVE_UI_AREA)
-            if(
-                _ARCH_RULES_HEADER MATCHES "^dsd-neo/core/"
-                OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/io/"
-                OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/protocol/"
-                OR (
-                    _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/"
-                    AND NOT _ARCH_RULES_HEADER STREQUAL "dsd-neo/ui/native_provider.h"
-                )
-                OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/ncurses"
-                OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/menu_"
-                OR _ARCH_RULES_HEADER STREQUAL "dsd-neo/platform/curses_compat.h"
-                OR _ARCH_RULES_HEADER MATCHES "(^|.*/)(curses|ncurses)\\.h$"
-                OR _ARCH_RULES_HEADER
-                    MATCHES
-                    "(^|.*/)(dsd_ncurses_|ncurses_|menu_)[^/]*\\.h$"
-                OR _ARCH_RULES_HEADER
-                    MATCHES
-                    "(^|.*/)(commands_internal|frontend_internal|snapshot_internal|telemetry_hooks_impl)\\.h$"
-            )
-                message(
-                    SEND_ERROR
-                    "ARCH_RULES: ${_ARCH_RULES_REL}: native UI must use app-control boundary, not '${_ARCH_RULES_HEADER}'"
-                )
-                math(
-                    EXPR
-                    _ARCH_RULES_VIOLATIONS
-                    "${_ARCH_RULES_VIOLATIONS} + 1"
-                )
-                continue()
-            endif()
-        endif()
 
         if(_ARCH_RULES_PUBLIC_FRONTEND_AREA)
             if(
@@ -436,7 +395,7 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         endif()
 
         if(_ARCH_RULES_HEADER STREQUAL "dsd-neo/platform/curses_compat.h")
-            if(NOT _ARCH_RULES_REL MATCHES "^(src/ui/|include/dsd-neo/ui/)")
+            if(NOT _ARCH_RULES_REL MATCHES "^src/ui/")
                 message(
                     SEND_ERROR
                     "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden curses wrapper include '${_ARCH_RULES_HEADER}'"
@@ -460,7 +419,6 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
                         STREQUAL
                         "include/dsd-neo/platform/curses_compat.h"
                     OR _ARCH_RULES_REL MATCHES "^src/ui/"
-                    OR _ARCH_RULES_REL MATCHES "^include/dsd-neo/ui/"
                 )
             )
                 message(
@@ -477,65 +435,6 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         endif()
     endforeach()
 endforeach()
-
-set(_ARCH_RULES_NATIVE_UI_CMAKE
-    "${_ARCH_RULES_ROOT_DIR}/src/ui/native/CMakeLists.txt"
-)
-if(EXISTS "${_ARCH_RULES_NATIVE_UI_CMAKE}")
-    file(READ "${_ARCH_RULES_NATIVE_UI_CMAKE}" _ARCH_RULES_NATIVE_UI_CMAKE_TEXT)
-    string(
-        REGEX MATCHALL
-            "target_link_libraries[ \t\r\n]*\\([^\\)]*dsd-neo_ui_native[^\\)]*\\)"
-        _ARCH_RULES_NATIVE_UI_LINK_BLOCKS
-        "${_ARCH_RULES_NATIVE_UI_CMAKE_TEXT}"
-    )
-    foreach(
-        _ARCH_RULES_NATIVE_UI_LINK_BLOCK
-        IN
-        LISTS _ARCH_RULES_NATIVE_UI_LINK_BLOCKS
-    )
-        set(_ARCH_RULES_NATIVE_UI_FORBIDDEN_LINKS
-            "dsd-neo_ui_terminal"
-            "dsd-neo_core"
-            "dsd-neo_engine"
-            "dsd-neo_dispatch"
-            "dsd-neo_io_[A-Za-z0-9_]*"
-            "dsd-neo_proto_[A-Za-z0-9_]*"
-            "CURSES_LIBRARIES"
-            "Curses::[A-Za-z0-9_:-]*"
-            "PDCurses[A-Za-z0-9_:-]*"
-            "ncurses[A-Za-z0-9_:-]*"
-            "curses[A-Za-z0-9_:-]*"
-        )
-        foreach(
-            _ARCH_RULES_NATIVE_UI_FORBIDDEN_LINK
-            IN
-            LISTS _ARCH_RULES_NATIVE_UI_FORBIDDEN_LINKS
-        )
-            if(
-                _ARCH_RULES_NATIVE_UI_LINK_BLOCK
-                    MATCHES
-                    "(^|[ \t\r\n()])${_ARCH_RULES_NATIVE_UI_FORBIDDEN_LINK}($|[ \t\r\n()])"
-            )
-                string(
-                    REGEX REPLACE "[\r\n\t ]+"
-                    " "
-                    _ARCH_RULES_NATIVE_UI_LINK_BLOCK_ONE_LINE
-                    "${_ARCH_RULES_NATIVE_UI_LINK_BLOCK}"
-                )
-                message(
-                    SEND_ERROR
-                    "ARCH_RULES: src/ui/native/CMakeLists.txt: dsd-neo_ui_native must not link forbidden backend/terminal dependency in '${_ARCH_RULES_NATIVE_UI_LINK_BLOCK_ONE_LINE}'"
-                )
-                math(
-                    EXPR
-                    _ARCH_RULES_VIOLATIONS
-                    "${_ARCH_RULES_VIOLATIONS} + 1"
-                )
-            endif()
-        endforeach()
-    endforeach()
-endif()
 
 if(_ARCH_RULES_VIOLATIONS GREATER 0)
     message(

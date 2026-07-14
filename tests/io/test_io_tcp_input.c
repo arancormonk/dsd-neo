@@ -65,10 +65,6 @@ main(void) {
         DSD_FPRINTF(stderr, "NULL context reported valid\n");
         return 1;
     }
-    if (tcp_input_get_socket(NULL) != DSD_INVALID_SOCKET) {
-        DSD_FPRINTF(stderr, "NULL context returned a real descriptor\n");
-        return 1;
-    }
     int16_t sample = 123;
     if (tcp_input_read_sample(NULL, &sample) != 0 || sample != 123) {
         DSD_FPRINTF(stderr, "NULL read changed output or reported success\n");
@@ -97,13 +93,6 @@ main(void) {
         close(fd);
         return 1;
     }
-    if (tcp_input_get_socket(ctx) != (dsd_socket_t)fd) {
-        DSD_FPRINTF(stderr, "TCP input did not preserve caller descriptor\n");
-        tcp_input_close(ctx);
-        close(fd);
-        return 1;
-    }
-
     const int16_t expected[] = {4660, INT16_MIN, INT16_MAX};
     for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
         sample = 0;

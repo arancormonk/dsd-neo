@@ -297,7 +297,7 @@ act_config_save_as(void* v) {
 void
 act_crc_relax(void* v) {
     UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_CRC_RELAX_TOGGLE);
+    (void)dsd_app_command_action(DSD_APP_CMD_AGGR_SYNC_TOGGLE);
 }
 
 void
@@ -1031,11 +1031,6 @@ switch_to_symbol(void* vctx) {
 }
 
 void
-switch_to_tcp(void* vctx) {
-    io_tcp_direct_link(vctx);
-}
-
-void
 switch_to_udp(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     UdpInCtx* u = (UdpInCtx*)calloc(1, sizeof(UdpInCtx));
@@ -1053,11 +1048,6 @@ switch_out_pulse(void* vctx) {
     UiCtx* c = (UiCtx*)vctx;
     const char* idx = c->opts->pa_output_idx[0] ? c->opts->pa_output_idx : "";
     (void)dsd_app_command_set_string(DSD_APP_CMD_PULSE_OUT_SET, idx);
-}
-
-void
-switch_out_udp(void* vctx) {
-    io_set_udp_out(vctx);
 }
 
 void
@@ -1247,7 +1237,9 @@ rtl_set_gain(void* v) {
 void
 rtl_set_ppm(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("PPM error (-200..200)", dsd_app_frontend_requested_ppm(), cb_rtl_ppm, c);
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    ui_prompt_open_int_async("PPM error (-200..200)", metrics.requested_ppm, cb_rtl_ppm, c);
 }
 
 void
@@ -1349,7 +1341,9 @@ act_iq_dc_k_dn(void* v) {
 void
 act_ted_gain_up(void* v) {
     UNUSED(v);
-    float g = dsd_app_frontend_ted_gain();
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    float g = metrics.ted_gain;
     int g_milli = (int)(g * 1000.0f + 0.5f);
     if (g_milli < 500) {
         g_milli += 5;
@@ -1361,7 +1355,9 @@ act_ted_gain_up(void* v) {
 void
 act_ted_gain_dn(void* v) {
     UNUSED(v);
-    float g = dsd_app_frontend_ted_gain();
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    float g = metrics.ted_gain;
     int g_milli = (int)(g * 1000.0f + 0.5f);
     if (g_milli > 10) {
         g_milli -= 5;

@@ -19,11 +19,9 @@ static int
 ui_handle_trunk_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
-    if (opts->p25_trunk == 1) {
-        opts->p25_trunk = 0;
+    if (opts->trunk_enable == 1) {
         opts->trunk_enable = 0;
     } else {
-        opts->p25_trunk = 1;
         opts->trunk_enable = 1;
     }
     return 1;
@@ -33,7 +31,6 @@ static int
 ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     opts->scanner_mode = opts->scanner_mode ? 0 : 1;
-    opts->p25_trunk = 0;
     opts->trunk_enable = 0;
     (void)state;
     return 1;
@@ -43,7 +40,7 @@ static int
 ui_handle_trunk_group_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)state;
     (void)c;
-    if (opts->p25_trunk == 1) {
+    if (opts->trunk_enable == 1) {
         opts->trunk_tune_group_calls = opts->trunk_tune_group_calls ? 0 : 1;
     }
     return 1;

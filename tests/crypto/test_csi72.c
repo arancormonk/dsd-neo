@@ -3,7 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <stdint.h>
@@ -12,15 +11,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
-
-void
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    for (int i = 0; i < len; i++) {
-        for (int bit = 0; bit < 8; bit++) {
-            output[(i * 8) + bit] = (uint8_t)((input[i] >> (7 - bit)) & 1U);
-        }
-    }
-}
 
 static int
 expect_int(const char* label, int got, int want) {

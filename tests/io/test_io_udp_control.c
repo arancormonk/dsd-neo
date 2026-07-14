@@ -150,7 +150,7 @@ test_invalid_bind_address_fails(void) {
         udp_control_stop(ctrl);
         return 1;
     }
-    ctrl = udp_control_start(0, retune_cb);
+    ctrl = udp_control_start_bound("127.0.0.1", 0, retune_cb);
     if (ctrl) {
         DSD_FPRINTF(stderr, "expected port 0 to disable UDP control\n");
         udp_control_stop(ctrl);

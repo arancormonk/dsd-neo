@@ -15,19 +15,14 @@ extern "C" {
 
 /**
  * @file
- * @brief Minimal DMR utility CRC/bit helper API used by tests.
+ * @brief DMR utility CRC/bit helpers shared by production decoder paths and tests.
  */
-
-/** @brief Pack a bit buffer into an integer, consuming bits MSB-first. */
-uint64_t ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength);
 
 /** @brief DMR SlotType Hamming(17,12,3) decode/correction helper. */
 bool Hamming17123(uint8_t* d);
 
 /** @brief Compute CCITT CRC-16 over DMR data buffer. */
 uint16_t ComputeCrcCCITT(const uint8_t* DMRData);
-/** @brief Compute CCITT CRC-16 over an arbitrary bit buffer (bit array). */
-uint16_t ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len);
 /** @brief Compute and optionally correct CRC for full link control block. */
 uint32_t ComputeAndCorrectFullLinkControlCrc(uint8_t* FullLinkControlDataBytes, uint32_t* CRCComputed,
                                              uint32_t CRCMask);
@@ -40,8 +35,6 @@ uint32_t ComputeCrc32Bit(const uint8_t* DMRData, uint32_t NbData);
 
 /** @brief Compute 3-bit CRC for provided bit array. */
 uint8_t crc3(uint8_t bits[], unsigned int len);
-/** @brief Compute 4-bit CRC for provided bit array. */
-uint8_t crc4(uint8_t bits[], unsigned int len);
 /** @brief Compute 7-bit CRC for provided bit array. */
 uint8_t crc7(uint8_t bits[], unsigned int len);
 /** @brief Compute 8-bit CRC for provided bit array. */

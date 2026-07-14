@@ -94,7 +94,7 @@ dsd_window_max_attenuation(dsd_window_type_t window_type) {
  *       taps[n] = 0.54 - 0.46 * cos((2 * GR_M_PI * n) / M);
  * where M = ntaps - 1
  */
-void
+static void
 dsd_window_hamming(int ntaps, float* taps_out) {
     float M = (float)(ntaps - 1);
 
@@ -111,7 +111,7 @@ dsd_window_hamming(int ntaps, float* taps_out) {
  *       taps[n] = 0.5 - 0.5 * cos((2 * GR_M_PI * n) / M);
  * where M = ntaps - 1
  */
-void
+static void
 dsd_window_hann(int ntaps, float* taps_out) {
     float M = (float)(ntaps - 1);
 

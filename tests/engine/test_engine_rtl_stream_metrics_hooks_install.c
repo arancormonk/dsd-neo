@@ -247,12 +247,6 @@ main(void) {
 
     assert(dsd_rtl_stream_metrics_hook_stream_generation() == 123456U);
     assert(g_generation_calls == 1);
-    assert(dsd_rtl_stream_metrics_hook_set_symbol_profile(4800, 2, 4) == 7);
-    assert(g_set_symbol_profile_calls == 1);
-    assert(g_last_symbol_rate == 4800);
-    assert(g_last_symbol_levels == 2);
-    assert(g_last_symbol_profile == 4);
-
     g_family_calls = 0;
     g_ted_clear_calls = 0;
     g_ted_set_calls = 0;
@@ -270,7 +264,7 @@ main(void) {
     assert(g_ted_set_calls == 1);
     assert(g_last_ted_sps == 8);
     assert(g_ted_set_order == 3);
-    assert(g_set_symbol_profile_calls == 2);
+    assert(g_set_symbol_profile_calls == 1);
     assert(g_last_symbol_rate == 6000);
     assert(g_last_symbol_levels == 4);
     assert(g_last_symbol_profile == 5);
@@ -283,14 +277,14 @@ main(void) {
     assert(g_family_calls == 0);
     assert(g_ted_clear_calls == 2);
     assert(g_ted_set_calls == 2);
-    assert(g_set_symbol_profile_calls == 3);
+    assert(g_set_symbol_profile_calls == 2);
 
     g_runtime_config.cqpsk_enable = 1;
     assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(0, 4800, 4, 3, 10) == 7);
     assert(g_family_calls == 0);
     assert(g_ted_clear_calls == 3);
     assert(g_ted_set_calls == 3);
-    assert(g_set_symbol_profile_calls == 4);
+    assert(g_set_symbol_profile_calls == 3);
 
     int cqpsk_enable = -1;
     int cqpsk_timing = -1;

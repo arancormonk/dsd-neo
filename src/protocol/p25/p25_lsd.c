@@ -18,7 +18,8 @@
  *   bits16[8..15]  = parity bits (bit 8 is MSB of parity byte)
  */
 
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
@@ -32,8 +33,8 @@ p25_lsd_fec_16x8(uint8_t* bits16) {
     }
 
     // Assemble bytes (MSB-first) from bit array
-    uint8_t data = (uint8_t)ConvertBitIntoBytes(bits16, 8);
-    uint8_t parity = (uint8_t)ConvertBitIntoBytes(bits16 + 8, 8);
+    uint8_t data = (uint8_t)convert_bits_into_output(bits16, 8);
+    uint8_t parity = (uint8_t)convert_bits_into_output(bits16 + 8, 8);
 
     uint8_t expected = lsd_parity[data];
     uint8_t synd = (uint8_t)(parity ^ expected);

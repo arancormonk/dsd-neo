@@ -54,17 +54,11 @@ static void
 test_power_helpers(void) {
     const short constant_samples[] = {1000, 1000, 1000, 1000};
     assert(raw_pwr(constant_samples, 4, 1) == 0.0);
-    assert(raw_rms(constant_samples, 4, 1) == 0.0);
     assert(raw_pwr(constant_samples, 0, 1) == 0.0);
 
     const short alternating_samples[] = {32767, -32768, 32767, -32768};
     double short_power = raw_pwr(alternating_samples, 4, 1);
     assert(short_power > 0.99 && short_power <= 1.0);
-
-    const float float_samples[] = {32767.0f, -32768.0f, 32767.0f, -32768.0f};
-    double float_power = raw_pwr_f(float_samples, 4, 1);
-    assert(float_power > 0.99 && float_power <= 1.0);
-    assert(raw_pwr_f(float_samples, 0, 1) == 0.0);
 
     assert(pwr_to_dB(0.0) == -120.0);
     assert(pwr_to_dB(2.0) == 0.0);

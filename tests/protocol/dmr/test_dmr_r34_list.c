@@ -8,16 +8,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_r34_reference_vectors.h"
 #include "dsd-neo/core/safe_api.h"
-
-static void
-fill_payload(uint8_t payload[18], uint32_t seed) {
-    uint32_t x = seed;
-    for (int i = 0; i < 18; i++) {
-        x = x * 1103515245u + 12345u;
-        payload[i] = (uint8_t)(x >> 24);
-    }
-}
 
 static void
 assert_metrics_sorted(const dmr_r34_candidate* candidates, int count) {
@@ -38,63 +30,54 @@ candidate_contains_payload(const dmr_r34_candidate* candidates, int count, const
 
 static void
 test_clean_payload_is_first_candidate(void) {
-    uint8_t payload[18];
-    uint8_t dibits[98];
+    const dmr_r34_reference_vector* reference = &k_dmr_r34_reference_vectors[0];
     dmr_r34_candidate candidates[16];
     int count = 0;
 
-    fill_payload(payload, 0x3456789au);
-    assert(dmr_r34_encode(payload, dibits) == 0);
-    assert(dmr_r34_viterbi_decode_list(dibits, NULL, candidates, 16, &count) == 0);
+    assert(dmr_r34_viterbi_decode_list(reference->dibits, NULL, candidates, 16, &count) == 0);
     assert(count == 16);
     assert_metrics_sorted(candidates, count);
     assert(candidates[0].metric == 0);
-    assert(memcmp(candidates[0].bytes18, payload, 18) == 0);
+    assert(memcmp(candidates[0].bytes18, reference->payload, 18) == 0);
 }
 
 static void
 test_weighted_clean_payload_is_first_candidate(void) {
-    uint8_t payload[18];
-    uint8_t dibits[98];
+    const dmr_r34_reference_vector* reference = &k_dmr_r34_reference_vectors[1];
     uint8_t reliability[98];
     dmr_r34_candidate candidates[16];
     int count = 0;
 
-    fill_payload(payload, 0x55667788u);
-    assert(dmr_r34_encode(payload, dibits) == 0);
     DSD_MEMSET(reliability, 200, sizeof(reliability));
-    assert(dmr_r34_viterbi_decode_list(dibits, reliability, candidates, 16, &count) == 0);
+    assert(dmr_r34_viterbi_decode_list(reference->dibits, reliability, candidates, 16, &count) == 0);
     assert(count == 16);
     assert_metrics_sorted(candidates, count);
     assert(candidates[0].metric == 0);
-    assert(memcmp(candidates[0].bytes18, payload, 18) == 0);
+    assert(memcmp(candidates[0].bytes18, reference->payload, 18) == 0);
 }
 
 static void
 test_candidate_list_retains_clean_payload_after_single_dibit_error(void) {
-    uint8_t payload[18];
+    const dmr_r34_reference_vector* reference = &k_dmr_r34_reference_vectors[2];
     uint8_t dibits[98];
     dmr_r34_candidate candidates[32];
     int count = 0;
 
-    fill_payload(payload, 0x10203040u);
-    assert(dmr_r34_encode(payload, dibits) == 0);
+    DSD_MEMCPY(dibits, reference->dibits, sizeof(dibits));
     dibits[37] = (uint8_t)((dibits[37] + 1u) & 0x3u);
 
     assert(dmr_r34_viterbi_decode_list(dibits, NULL, candidates, 32, &count) == 0);
     assert(count == 32);
     assert_metrics_sorted(candidates, count);
-    assert(candidate_contains_payload(candidates, count, payload));
+    assert(candidate_contains_payload(candidates, count, reference->payload));
 }
 
 static void
 test_invalid_arguments_are_rejected(void) {
-    uint8_t payload[18] = {0};
     uint8_t dibits[98] = {0};
     dmr_r34_candidate candidates[2];
     int count = 0;
 
-    assert(dmr_r34_encode(payload, dibits) == 0);
     assert(dmr_r34_viterbi_decode_list(NULL, NULL, candidates, 2, &count) != 0);
     assert(dmr_r34_viterbi_decode_list(dibits, NULL, NULL, 2, &count) != 0);
     assert(dmr_r34_viterbi_decode_list(dibits, NULL, candidates, 0, &count) != 0);

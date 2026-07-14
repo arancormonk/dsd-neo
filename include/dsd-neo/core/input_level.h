@@ -38,7 +38,6 @@ typedef enum DSD_ATTR_PACKED dsd_input_level_source {
     DSD_INPUT_LEVEL_SOURCE_RTL_TCP_CU8 = 3,
     DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16 = 4,
     DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32 = 5,
-    DSD_INPUT_LEVEL_SOURCE_FSK_SYMBOL = 6,
 } dsd_input_level_source;
 
 typedef struct dsd_input_level_snapshot {
@@ -76,8 +75,6 @@ int dsd_input_level_metrics_from_cs16(const int16_t* samples, size_t count, dsd_
                                       dsd_input_level_snapshot* out);
 int dsd_input_level_metrics_from_cf32(const float* samples, size_t count, dsd_input_level_source source,
                                       dsd_input_level_snapshot* out);
-int dsd_input_level_metrics_from_fsk_clip(float clip_pct, uint64_t symbols, dsd_input_level_snapshot* out);
-
 int dsd_input_level_format_advisory(const dsd_input_level_snapshot* snapshot, char* out, size_t out_size);
 void dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_snapshot* snapshot,
                              unsigned int notify_mask);

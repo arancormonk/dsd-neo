@@ -97,7 +97,7 @@ dsd_trunk_cc_candidates_peek(const dsd_state* state) {
 }
 
 int
-dsd_trunk_cc_candidates_add_with_flags(dsd_state* state, long freq_hz, int bump_added, uint8_t flags) {
+dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added, uint8_t flags) {
     if (!state || freq_hz == 0) {
         return 0;
     }
@@ -137,13 +137,7 @@ dsd_trunk_cc_candidates_add_with_flags(dsd_state* state, long freq_hz, int bump_
 }
 
 int
-dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added) {
-    return dsd_trunk_cc_candidates_add_with_flags(state, freq_hz, bump_added, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
-}
-
-int
-dsd_trunk_cc_candidates_next_with_flags(dsd_state* state, double now_monotonic_s, uint8_t required_flags,
-                                        long* out_freq_hz) {
+dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8_t required_flags, long* out_freq_hz) {
     if (!state || !out_freq_hz) {
         return 0;
     }
@@ -171,11 +165,6 @@ dsd_trunk_cc_candidates_next_with_flags(dsd_state* state, double now_monotonic_s
         }
     }
     return 0;
-}
-
-int
-dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, long* out_freq_hz) {
-    return dsd_trunk_cc_candidates_next_with_flags(state, now_monotonic_s, 0, out_freq_hz);
 }
 
 void

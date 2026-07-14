@@ -206,7 +206,7 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
 

@@ -43,7 +43,7 @@ During configure, confirm Soapy availability from the status line:
 - `SoapySDR backend enabled: ON (available: ON)`
 
 If availability is `OFF`, install SoapySDR 0.8.1 or newer development packages and the module for your radio, then
-reconfigure. Older 0.7.x CMake package compatibility is intentionally not supported.
+reconfigure.
 
 ## 2) Discover device arguments
 

@@ -4,16 +4,13 @@
  */
 
 #include <dsd-neo/app_control/frontend.h>
-#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include <string.h>
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
-#include "frontend_internal.h"
 #include "snapshot_internal.h"
 
 #ifdef USE_RADIO
@@ -21,183 +18,6 @@
 #endif
 
 enum { FRONTEND_SNR_INVALID_DB = -50 };
-
-static void
-copy_text(char* dst, size_t dst_size, const char* src) {
-    if (!dst || dst_size == 0) {
-        return;
-    }
-    DSD_SNPRINTF(dst, dst_size, "%s", src ? src : "");
-    dst[dst_size - 1] = '\0';
-}
-
-static void
-frontend_copy_display_opts(const dsd_frontend_display_opts* src, dsd_frontend_common_display_opts* common,
-                           dsd_frontend_terminal_display_opts* terminal) {
-    if (!src) {
-        return;
-    }
-    if (common) {
-        common->constellation = src->constellation;
-        common->const_gate_qpsk = src->const_gate_qpsk;
-        common->const_gate_other = src->const_gate_other;
-        common->const_norm_mode = src->const_norm_mode;
-        common->eye_view = src->eye_view;
-        common->fsk_hist_view = src->fsk_hist_view;
-        common->spectrum_view = src->spectrum_view;
-        common->show_dsp_panel = src->show_dsp_panel;
-        common->show_p25_metrics = src->show_p25_metrics;
-        common->show_p25_neighbors = src->show_p25_neighbors;
-        common->show_p25_iden_plan = src->show_p25_iden_plan;
-        common->show_p25_cc_candidates = src->show_p25_cc_candidates;
-        common->show_channels = src->show_channels;
-        common->show_p25_affiliations = src->show_p25_affiliations;
-        common->show_p25_group_affiliations = src->show_p25_group_affiliations;
-        common->show_p25_callsign_decode = src->show_p25_callsign_decode;
-    }
-    if (terminal) {
-        terminal->terminal_compact = src->terminal_compact;
-        terminal->terminal_history = src->terminal_history;
-        terminal->eye_unicode = src->eye_unicode;
-        terminal->eye_color = src->eye_color;
-    }
-}
-
-static void
-frontend_status_copy_audio_opts(dsd_frontend_status* out, const dsd_opts* opts) {
-    out->audio_in_type = opts->audio_in_type;
-    out->audio_out_type = opts->audio_out_type;
-    out->audio_out = opts->audio_out;
-    copy_text(out->audio_in_dev, sizeof out->audio_in_dev, opts->audio_in_dev);
-    copy_text(out->audio_out_dev, sizeof out->audio_out_dev, opts->audio_out_dev);
-    copy_text(out->pa_input_idx, sizeof out->pa_input_idx, opts->pa_input_idx);
-    copy_text(out->pa_output_idx, sizeof out->pa_output_idx, opts->pa_output_idx);
-}
-
-static void
-frontend_status_copy_endpoint_opts(dsd_frontend_status* out, const dsd_opts* opts) {
-    copy_text(out->tcp_hostname, sizeof out->tcp_hostname, opts->tcp_hostname);
-    out->tcp_portno = opts->tcp_portno;
-    copy_text(out->udp_hostname, sizeof out->udp_hostname, opts->udp_hostname);
-    out->udp_portno = opts->udp_portno;
-    copy_text(out->udp_in_bindaddr, sizeof out->udp_in_bindaddr, opts->udp_in_bindaddr);
-    out->udp_in_portno = opts->udp_in_portno;
-    copy_text(out->rigctlhostname, sizeof out->rigctlhostname, opts->rigctlhostname);
-    out->rigctlportno = opts->rigctlportno;
-    out->use_rigctl = opts->use_rigctl;
-}
-
-static void
-frontend_status_copy_recording_opts(dsd_frontend_status* out, const dsd_opts* opts) {
-    out->payload_logging = opts->payload;
-    out->event_log_enabled = opts->event_out_file[0] != '\0' ? 1 : 0;
-    copy_text(out->event_log_path, sizeof out->event_log_path, opts->event_out_file);
-    out->per_call_wav_enabled = opts->dmr_stereo_wav;
-    out->per_call_wav_active = (opts->dmr_stereo_wav && (opts->wav_out_f || opts->wav_out_fR)) ? 1 : 0;
-    out->static_wav_enabled = opts->static_wav_file;
-    out->static_wav_active = (opts->static_wav_file && opts->wav_out_f) ? 1 : 0;
-    copy_text(out->wav_out_dir, sizeof out->wav_out_dir, opts->wav_out_dir);
-    copy_text(out->wav_out_file, sizeof out->wav_out_file, opts->wav_out_file);
-    copy_text(out->wav_out_file_raw, sizeof out->wav_out_file_raw, opts->wav_out_file_raw);
-    out->symbol_capture_active = opts->symbol_out_f ? 1 : 0;
-    out->symbol_playback_active =
-        (opts->symbolfile != NULL
-         && (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT))
-            ? 1
-            : 0;
-    copy_text(out->symbol_out_file, sizeof out->symbol_out_file, opts->symbol_out_file);
-}
-
-static void
-frontend_status_copy_connection_opts(dsd_frontend_status* out, const dsd_opts* opts) {
-    out->tcp_audio_connected = (opts->audio_in_type == AUDIO_IN_TCP && opts->tcp_in_ctx != NULL) ? 1 : 0;
-    out->udp_input_active = (opts->audio_in_type == AUDIO_IN_UDP && opts->udp_in_ctx != NULL) ? 1 : 0;
-    out->rigctl_connected = (opts->use_rigctl && opts->rigctl_sockfd != DSD_INVALID_SOCKET) ? 1 : 0;
-    out->rtl_input_active = (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_started) ? 1 : 0;
-}
-
-static void
-frontend_status_copy_control_opts(dsd_frontend_status* out, const dsd_opts* opts) {
-    out->trunk_use_allow_list = opts->trunk_use_allow_list;
-    out->trunk_tune_group_calls = opts->trunk_tune_group_calls;
-    out->trunk_tune_private_calls = opts->trunk_tune_private_calls;
-    out->trunk_tune_data_calls = opts->trunk_tune_data_calls;
-    out->trunk_tune_enc_calls = opts->trunk_tune_enc_calls;
-    out->p25_lcw_retune = opts->p25_lcw_retune;
-    out->p25_prefer_candidates = opts->p25_prefer_candidates;
-    out->call_alert = opts->call_alert;
-    out->call_alert_events = opts->call_alert_events;
-    out->slot_preference = opts->slot_preference;
-    out->slot1_on = opts->slot1_on;
-    out->slot2_on = opts->slot2_on;
-    out->trunk_hangtime = opts->trunk_hangtime;
-    out->p25_trunk = opts->p25_trunk;
-    out->trunk_enable = opts->trunk_enable;
-    out->scanner_mode = opts->scanner_mode;
-}
-
-static void
-frontend_status_copy_radio_opts(dsd_frontend_status* out, const dsd_opts* opts) {
-    out->rtl_dev_index = opts->rtl_dev_index;
-    out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
-    out->rtl_gain_value = opts->rtl_gain_value;
-    out->rtlsdr_ppm_error = opts->rtlsdr_ppm_error;
-    out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
-    out->rtl_squelch_level = opts->rtl_squelch_level;
-    out->rtl_volume_multiplier = opts->rtl_volume_multiplier;
-    out->rtl_bias_tee = opts->rtl_bias_tee;
-    out->rtltcp_autotune = opts->rtltcp_autotune;
-    out->rtl_auto_ppm = opts->rtl_auto_ppm;
-    out->input_warn_db = opts->input_warn_db;
-    out->input_volume_multiplier = opts->input_volume_multiplier;
-}
-
-static void
-frontend_status_copy_opts(dsd_frontend_status* out, const dsd_opts* opts) {
-    out->frontend_kind = opts->frontend_kind;
-    frontend_copy_display_opts(&opts->frontend_display, &out->display, &out->terminal_display);
-    frontend_status_copy_audio_opts(out, opts);
-    frontend_status_copy_endpoint_opts(out, opts);
-    frontend_status_copy_recording_opts(out, opts);
-    frontend_status_copy_connection_opts(out, opts);
-    frontend_status_copy_control_opts(out, opts);
-    frontend_status_copy_radio_opts(out, opts);
-}
-
-static void
-frontend_status_copy_state(dsd_frontend_status* out, const dsd_state* state) {
-    out->config_autosave_enabled = state->config_autosave_enabled;
-    copy_text(out->config_autosave_path, sizeof out->config_autosave_path, state->config_autosave_path);
-    out->p2_wacn = state->p2_wacn;
-    out->p2_sysid = state->p2_sysid;
-    out->p2_cc = state->p2_cc;
-    out->tg_hold = (uint32_t)state->tg_hold;
-    out->lasttg = (uint32_t)state->lasttg;
-    out->lasttgR = (uint32_t)state->lasttgR;
-}
-
-void
-dsd_app_frontend_status_from_opts_state(const dsd_opts* opts, const dsd_state* state, dsd_frontend_status* out) {
-    if (!out) {
-        return;
-    }
-    DSD_MEMSET(out, 0, sizeof(*out));
-    if (opts) {
-        frontend_status_copy_opts(out, opts);
-    }
-    if (state) {
-        frontend_status_copy_state(out, state);
-    }
-}
-
-int
-dsd_app_frontend_get_status(dsd_frontend_status* out) {
-    if (!out) {
-        return -1;
-    }
-    dsd_app_frontend_status_from_opts_state(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), out);
-    return 0;
-}
 
 static void
 frontend_metrics_defaults(dsd_frontend_metrics* out, const dsd_opts* opts) {
@@ -306,8 +126,8 @@ frontend_metrics_from_radio(const dsd_opts* opts, const dsd_state* state, dsd_fr
 }
 #endif
 
-int
-dsd_app_frontend_get_metrics_from_opts_state(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
+static int
+frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out) {
     if (!out) {
         return -1;
     }
@@ -321,10 +141,10 @@ dsd_app_frontend_get_metrics_from_opts_state(const dsd_opts* opts, const dsd_sta
     return 0;
 }
 
-int
-dsd_app_frontend_get_metrics_from_opts_state_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state,
-                                                                dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
-    int rc = dsd_app_frontend_get_metrics_from_opts_state(opts, state, out);
+static int
+frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                        unsigned int snr_fallbacks) {
+    int rc = frontend_get_metrics(opts, state, out);
     if (rc != 0) {
         return rc;
     }
@@ -334,14 +154,13 @@ dsd_app_frontend_get_metrics_from_opts_state_with_snr_fallbacks(const dsd_opts* 
 
 int
 dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
-    return dsd_app_frontend_get_metrics_from_opts_state(dsd_app_get_latest_opts_snapshot(),
-                                                        dsd_app_get_latest_snapshot(), out);
+    return frontend_get_metrics(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), out);
 }
 
 int
 dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
-    return dsd_app_frontend_get_metrics_from_opts_state_with_snr_fallbacks(
-        dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), out, snr_fallbacks);
+    return frontend_get_metrics_with_snr_fallbacks(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(),
+                                                   out, snr_fallbacks);
 }
 
 int
@@ -381,80 +200,4 @@ dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     }
     return 0;
 #endif
-}
-
-int
-dsd_app_frontend_spectrum_get_size(void) {
-#ifdef USE_RADIO
-    return rtl_stream_spectrum_get_size();
-#else
-    return 0;
-#endif
-}
-
-int
-dsd_app_frontend_spectrum_set_size(int n) {
-#ifdef USE_RADIO
-    return rtl_stream_spectrum_set_size(n);
-#else
-    (void)n;
-    return -1;
-#endif
-}
-
-int
-dsd_app_frontend_requested_ppm_from_opts(const dsd_opts* opts) {
-#ifdef USE_RADIO
-    return rtl_stream_get_requested_ppm(opts);
-#else
-    return opts ? opts->rtlsdr_ppm_error : 0;
-#endif
-}
-
-int
-dsd_app_frontend_requested_ppm(void) {
-    return dsd_app_frontend_requested_ppm_from_opts(dsd_app_get_latest_opts_snapshot());
-}
-
-float
-dsd_app_frontend_ted_gain(void) {
-#ifdef USE_RADIO
-    return rtl_stream_get_ted_gain();
-#else
-    return 0.0f;
-#endif
-}
-
-int
-dsd_app_frontend_auto_ppm_enabled_from_state(const dsd_state* state, int configured) {
-#ifdef USE_RADIO
-    if (state && state->rtl_ctx) {
-        return rtl_stream_get_auto_ppm();
-    }
-#else
-    (void)state;
-#endif
-    return configured ? 1 : 0;
-}
-
-int
-dsd_app_frontend_auto_ppm_enabled(int configured) {
-    return dsd_app_frontend_auto_ppm_enabled_from_state(dsd_app_get_latest_snapshot(), configured);
-}
-
-int
-dsd_app_frontend_tuner_autogain_enabled_from_state(const dsd_state* state, int configured) {
-#ifdef USE_RADIO
-    if (state && state->rtl_ctx) {
-        return rtl_stream_get_tuner_autogain();
-    }
-#else
-    (void)state;
-#endif
-    return configured ? 1 : 0;
-}
-
-int
-dsd_app_frontend_tuner_autogain_enabled(int configured) {
-    return dsd_app_frontend_tuner_autogain_enabled_from_state(dsd_app_get_latest_snapshot(), configured);
 }

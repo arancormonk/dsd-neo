@@ -220,24 +220,11 @@ p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_res
         out->segments[i].length = 0;
     }
     out->type = type;
-    out->len_a = 0;
     out->mfid = (uint8_t)mac[2];
     out->opcode = (uint8_t)mac[1];
-    out->len_b = 0;
-    out->len_c = 0;
     out->segment_count = 0;
 
     (void)p25p2_mac_parse_segments(type, mac, out);
-
-    if (out->segment_count > 0) {
-        out->len_a = out->segments[0].offset;
-        out->len_b = out->segments[0].length;
-    } else {
-        out->len_c = p25p2_mac_capacity(type);
-    }
-    if (out->segment_count > 1) {
-        out->len_c = out->segments[1].length;
-    }
 
     return 0;
 }

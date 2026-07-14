@@ -12,11 +12,9 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <errno.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,8 +29,6 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
 #define setenv dsd_test_setenv
 
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
@@ -42,22 +38,13 @@ static uint32_t g_nmea_harris_src;
 static int g_nmea_harris_slot;
 
 // Runtime config
-void dsd_neo_config_init(const dsd_opts* opts);
+void dsd_neo_config_init(void);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
 // Test shims
-void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len);
 void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
 
 // Stubs referenced by MAC VPDU path
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -95,41 +82,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     g_nmea_harris_calls++;
     g_nmea_harris_src = src;
     g_nmea_harris_slot = slot;
-}
-
-// Rigctl/rtl stubs
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
 }
 
 static int
@@ -219,7 +171,7 @@ static void
 seed_metadata_only_state(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof *opts);
     DSD_MEMSET(state, 0, sizeof *state);
-    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     state->p25_cc_freq = 851000000L;
@@ -243,8 +195,6 @@ expect_metadata_only_state(const char* tag, const dsd_opts* opts, const dsd_stat
     int rc = 0;
     char label[128];
 
-    DSD_SNPRINTF(label, sizeof label, "%s p25 tuned", tag);
-    rc |= expect_eq_long(label, opts->p25_is_tuned, 0);
     DSD_SNPRINTF(label, sizeof label, "%s trunk tuned", tag);
     rc |= expect_eq_long(label, opts->trunk_is_tuned, 0);
     DSD_SNPRINTF(label, sizeof label, "%s vc0", tag);
@@ -619,7 +569,7 @@ run_sccb_full_cache_preservation_case(void) {
     }
     setenv("DSD_NEO_CACHE_DIR", dir, 1);
     setenv("DSD_NEO_CC_CACHE", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     static dsd_opts opts;
     dsd_state* state = NULL;
@@ -641,7 +591,9 @@ run_sccb_full_cache_preservation_case(void) {
     state->p2_siteid = 0x03;
 
     char cache_path[1024];
-    if (!p25_cc_build_cache_path(state, cache_path, sizeof(cache_path))) {
+    int n = DSD_SNPRINTF(cache_path, sizeof cache_path, "%s/p25_cc_%05llX_%03llX_R%03llu_S%03llu.txt", dir,
+                         state->p2_wacn, state->p2_sysid, state->p2_rfssid, state->p2_siteid);
+    if (n <= 0 || (size_t)n >= sizeof cache_path) {
         dsd_state_ext_free_all(state);
         free(state);
         return 1;
@@ -1032,8 +984,7 @@ static void
 seed_vendor_display_only_state(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof *opts);
     DSD_MEMSET(state, 0, sizeof *state);
-    opts->p25_trunk = 1;
-    opts->p25_is_tuned = 0;
+    opts->trunk_enable = 1;
     opts->trunk_is_tuned = 0;
     state->p25_cc_freq = 851000000L;
     state->lasttg = 0x1111;
@@ -1055,8 +1006,6 @@ expect_vendor_display_only_state(const char* tag, const dsd_opts* opts, const ds
     int rc = 0;
     char label[128];
 
-    DSD_SNPRINTF(label, sizeof label, "%s p25 tuned", tag);
-    rc |= expect_eq_long(label, opts->p25_is_tuned, 0);
     DSD_SNPRINTF(label, sizeof label, "%s trunk tuned", tag);
     rc |= expect_eq_long(label, opts->trunk_is_tuned, 0);
     DSD_SNPRINTF(label, sizeof label, "%s cc freq", tag);
@@ -1372,7 +1321,7 @@ run_cases(void) {
         DSD_MEMSET(mac, 0, sizeof mac);
         mac[1] = 0x01; // PTT
         mac[2] = 0x00; // standard MFID
-        p25_test_process_mac_vpdu(1 /*SACCH*/, mac, 24);
+        p25_test_process_mac_vpdu_ex(1 /*SACCH*/, mac, 24, 0, 0);
     }
 
     // Case 2: FACCH, IDLE opcode (0x03)
@@ -1382,7 +1331,7 @@ run_cases(void) {
         mac[0] = 1;    // header-present hint
         mac[1] = 0x03; // IDLE
         mac[2] = 0x00;
-        p25_test_process_mac_vpdu(0 /*FACCH*/, mac, 24);
+        p25_test_process_mac_vpdu_ex(0 /*FACCH*/, mac, 24, 0, 0);
     }
 
     // Case 3: Unknown opcode with no header (no MCO) to trigger unknown-length path
@@ -1630,7 +1579,7 @@ int
 main(void) {
     // Enable JSON emission to exercise emit paths
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     // Capture stderr to a temp file to avoid polluting test logs; we don't need to parse it here.
     dsd_test_capture_stderr cap;

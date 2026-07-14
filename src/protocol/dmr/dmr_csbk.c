@@ -17,6 +17,8 @@
  * 2023-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -43,8 +45,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-#define PCLEAR_TUNE_AWAY //disable if slower return is preferred
 
 static void
 dmr_csbk_print_group_label(const dsd_state* state, uint32_t id) {
@@ -89,52 +89,14 @@ dmr_policy_tune_allowed(const dsd_opts* opts, const dsd_state* state, uint32_t t
     DSD_MEMSET(&decision, 0, sizeof(decision));
 
     if (is_group_call) {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, data_call,
-                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, data_call, &decision);
     } else {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call,
-                                                 DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                 DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call, &decision);
     }
     if (out_decision) {
         *out_decision = decision;
     }
     return rc == 0 && decision.tune_allowed;
-}
-
-static const char*
-dmr_policy_block_reason_label(uint32_t block_reasons) {
-    if (block_reasons & DSD_TG_POLICY_BLOCK_HOLD) {
-        return "hold";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED) {
-        return "private-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_GROUP_DISABLED) {
-        return "group-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_DATA_DISABLED) {
-        return "data-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
-        return "enc-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) {
-        return "allowlist";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_MODE) {
-        return "mode";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_AUDIO) {
-        return "audio";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_RECORD) {
-        return "record";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_STREAM) {
-        return "stream";
-    }
-    return "policy";
 }
 
 static void
@@ -147,7 +109,7 @@ dmr_policy_log_block(const dsd_opts* opts, int is_group_call, uint32_t target, u
         return;
     }
     DSD_FPRINTF(stderr, "\n DMR %s grant blocked (%s): target=%u source=%u;", is_group_call ? "group" : "private",
-                dmr_policy_block_reason_label(decision->block_reasons), target, source);
+                dsd_tg_policy_block_reason_label(decision->block_reasons), target, source);
 }
 
 static void dmr_gateway_identifier(uint32_t source, uint32_t target);
@@ -402,16 +364,16 @@ dmr_cspdu_pf0_update_slot_grant_state(dsd_state* state, int slot, uint32_t targe
 
 static uint16_t
 dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], long int* freq) {
-    uint8_t mbc_cdeftype = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[112], 4);
-    unsigned long long int mbc_cdefparms = (unsigned long long int)ConvertBitIntoBytes(&cs_pdu_bits[118], 58);
+    uint8_t mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
+    unsigned long long int mbc_cdefparms = (unsigned long long int)convert_bits_into_output(&cs_pdu_bits[118], 58);
     if (mbc_cdeftype != 0) {
         DSD_FPRINTF(stderr, "\n  MBC Channel Grant - Unknown Parms: %015llX", mbc_cdefparms);
         return 0;
     }
 
-    uint16_t mbc_lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[118], 12);
-    uint16_t mbc_abs_rx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[153], 10);
-    uint16_t mbc_abs_rx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[163], 13);
+    uint16_t mbc_lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
+    uint16_t mbc_abs_rx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[153], 10);
+    uint16_t mbc_abs_rx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[163], 13);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "  RX APCN: %04d; RX INT: %d; RX STEP: %d;", mbc_lpchannum, mbc_abs_rx_int, mbc_abs_rx_step);
     *freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
@@ -544,14 +506,14 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
         DSD_FPRINTF(stderr, " %s", dmr_csbk_grant_opcode_name((uint8_t)csbk_o));
     }
 
-    uint16_t lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 12);
+    uint16_t lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
     dmr_cspdu_pf0_print_channel_kind(lpchannum);
 
-    uint16_t pluschannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 13) + 1;
+    uint16_t pluschannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 13) + 1;
     uint8_t lcn = cs_pdu_bits[28];
     uint8_t st2 = cs_pdu_bits[30];
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "  LPCN: %04d; TS: %d; LPCN+TS: %04d; Target: %08d - Source: %08d ", lpchannum, lcn + 1,
@@ -580,11 +542,11 @@ static void
 dmr_cspdu_pf0_move_resolve_freq(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t* move_lpcn,
                                 long int* move_freq) {
     if (*move_lpcn == 0xFFF) {
-        uint8_t mbc_cdeftype = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[112], 4);
+        uint8_t mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
         if (mbc_cdeftype == 0) {
-            uint16_t mbc_lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[118], 12);
-            uint16_t mbc_abs_rx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[153], 10);
-            uint16_t mbc_abs_rx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[163], 13);
+            uint16_t mbc_lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
+            uint16_t mbc_abs_rx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[153], 10);
+            uint16_t mbc_abs_rx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[163], 13);
             *move_lpcn = mbc_lpchannum;
             *move_freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
             dmr_learn_chan_map(opts, state, *move_lpcn, *move_freq);
@@ -651,10 +613,10 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
     DSD_FPRINTF(stderr, " Move (C_MOVE) ");
 
     long int move_freq = 0;
-    uint16_t move_lpcn = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 12);
+    uint16_t move_lpcn = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
     uint8_t move_ts = cs_pdu_bits[28];
-    uint32_t mv_target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t mv_source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t mv_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t mv_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
     int tslot = (int)(move_ts & 1);
     char suf[24];
 
@@ -712,11 +674,11 @@ dmr_cspdu_pf0_handle_p_maint(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " P_MAINT -");
-    uint16_t pm_res1 = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 12);
-    uint8_t pm_kind = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[28], 3);
+    uint16_t pm_res1 = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
+    uint8_t pm_kind = (uint8_t)convert_bits_into_output(&cs_pdu_bits[28], 3);
     uint8_t pm_res2 = cs_pdu_bits[31];
-    uint32_t pm_target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t pm_source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t pm_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t pm_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     if (pm_kind == 0) {
         DSD_FPRINTF(stderr, "Disconnect; ");
@@ -759,11 +721,11 @@ dmr_cspdu_pf0_handle_acks(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, i
         DSD_FPRINTF(stderr, " P_ACKU Inbound Payload; ");
     }
 
-    uint8_t response_info = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 7);
-    uint8_t reason_code = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[23], 8);
+    uint8_t response_info = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 7);
+    uint8_t reason_code = (uint8_t)convert_bits_into_output(&cs_pdu_bits[23], 8);
     uint8_t ack_res1 = cs_pdu_bits[31];
-    uint32_t ack_target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t ack_source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t ack_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t ack_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     DSD_FPRINTF(stderr, "Response: %02X; Reason: %02X; ", response_info, reason_code);
     if (ack_res1) {
@@ -785,8 +747,8 @@ dmr_cspdu_pf0_handle_c_rand(int csbk_o) {
 
 static void
 dmr_cspdu_pf0_print_tier2_target_source(const char* label, uint8_t cs_pdu_bits[]) {
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "%s", label);
     DSD_FPRINTF(stderr, "Target [%d] - Source [%d] ", target, source);
@@ -860,14 +822,14 @@ dmr_cspdu_pf0_handle_c_ahoy(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o,
         return;
     }
 
-    uint16_t svc_opt = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 7);
+    uint16_t svc_opt = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 7);
     uint8_t svc_flag = cs_pdu_bits[23];
     uint8_t als_flag = cs_pdu_bits[24];
     uint8_t ahoy_gi = cs_pdu_bits[25];
-    uint8_t ahoy_bf = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[26], 2);
-    uint8_t svc_kind = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[28], 4);
-    uint32_t ahoy_target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t ahoy_source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint8_t ahoy_bf = (uint8_t)convert_bits_into_output(&cs_pdu_bits[26], 2);
+    uint8_t svc_kind = (uint8_t)convert_bits_into_output(&cs_pdu_bits[28], 4);
+    uint32_t ahoy_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t ahoy_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
     char ahoy_str[200];
     const char* svc_print = NULL;
     const char* svc_append = NULL;
@@ -903,10 +865,10 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
 
     uint8_t content = cs_pdu_bits[16];
     uint8_t gi = cs_pdu_bits[17];
-    uint8_t res = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[18], 6);
-    uint8_t blocks = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[24], 8);
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint8_t res = (uint8_t)convert_bits_into_output(&cs_pdu_bits[18], 6);
+    uint8_t blocks = (uint8_t)convert_bits_into_output(&cs_pdu_bits[24], 8);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Preamble CSBK - ");
@@ -915,8 +877,8 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
     DSD_FPRINTF(stderr, content == 0 ? "CSBK - " : "Data - ");
 
     if (strcmp(state->dmr_branding_sub, "XPT ") == 0) {
-        target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 16);
-        source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[64], 16);
+        target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[40], 16);
+        source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[64], 16);
         if (gi == 0) {
             uint8_t target_hash[24];
             for (int i = 0; i < 16; i++) {
@@ -929,10 +891,10 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
         }
     } else if (strcmp(state->dmr_branding_sub, "Cap+ ") == 0) {
         if (gi == 0) {
-            target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 16);
+            target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[40], 16);
         }
-        source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[64], 16);
-        int rest = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[60], 4);
+        source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[64], 16);
+        int rest = (uint32_t)convert_bits_into_output(&cs_pdu_bits[60], 4);
         DSD_FPRINTF(stderr, "Source: %d - Target: %d - Rest LSN: %d", source, target, rest);
     } else {
         DSD_FPRINTF(stderr, "Source: %d - Target: %d ", source, target);
@@ -974,11 +936,11 @@ dmr_cspdu_pf0_handle_p_protect(const dsd_opts* opts, dsd_state* state, uint8_t c
         return;
     }
 
-    uint16_t reserved = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 12);
-    uint8_t p_kind = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[28], 3);
+    uint16_t reserved = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
+    uint8_t p_kind = (uint8_t)convert_bits_into_output(&cs_pdu_bits[28], 3);
     uint8_t gi = cs_pdu_bits[31];
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Protect (P_PROTECT) -");
@@ -1201,18 +1163,12 @@ dmr_cspdu_pf0_handle_p_clear(dsd_opts* opts, dsd_state* state, int csbk_o, int c
     clear = dmr_cspdu_pf0_p_clear_compute(opts, state);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Clear (P_CLEAR) ");
-#ifdef PCLEAR_TUNE_AWAY
     if (opts->trunk_enable != 1) {
         return;
     }
     dmr_cspdu_pf0_p_clear_mark_slots_idle(state);
     clear = dmr_cspdu_pf0_p_clear_log_status(state, clear, csbk_fid, pslot, oslot);
     dmr_cspdu_pf0_p_clear_emit_release(opts, state, clear);
-#else
-    UNUSED(clear);
-    UNUSED(pslot);
-    UNUSED(oslot);
-#endif
 }
 
 typedef struct {
@@ -1245,28 +1201,28 @@ typedef struct {
 
 static void
 dmr_cspdu_pf0_c_bcast_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_pf0_c_bcast_fields* f) {
-    f->a_type = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 5);
-    f->bparms1 = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[21], 14);
+    f->a_type = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 5);
+    f->bparms1 = (uint16_t)convert_bits_into_output(&cs_pdu_bits[21], 14);
     for (int i = 0; i < 14; i++) {
         f->bpbits1[i] = cs_pdu_bits[21 + i];
     }
 
     f->reg_req = cs_pdu_bits[35];
-    f->backoff = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[36], 4);
-    f->syscode = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 14);
-    f->bparms2 = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    f->backoff = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36], 4);
+    f->syscode = (uint16_t)convert_bits_into_output(&cs_pdu_bits[40], 14);
+    f->bparms2 = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
     for (int i = 0; i < 24; i++) {
         f->bpbits2[i] = cs_pdu_bits[56 + i];
     }
 
-    f->mbc_csbko = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[98], 6);
-    f->mbc_res = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[104], 4);
-    f->mbc_cc = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[108], 4);
-    f->mbc_cdeftype = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[112], 4);
-    f->mbc_res2 = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[116], 2);
-    f->mbc_cdefparms = (unsigned long long)ConvertBitIntoBytes(&cs_pdu_bits[118], 58);
+    f->mbc_csbko = (uint8_t)convert_bits_into_output(&cs_pdu_bits[98], 6);
+    f->mbc_res = (uint8_t)convert_bits_into_output(&cs_pdu_bits[104], 4);
+    f->mbc_cc = (uint8_t)convert_bits_into_output(&cs_pdu_bits[108], 4);
+    f->mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
+    f->mbc_res2 = (uint8_t)convert_bits_into_output(&cs_pdu_bits[116], 2);
+    f->mbc_cdefparms = (unsigned long long)convert_bits_into_output(&cs_pdu_bits[118], 58);
 
-    f->a_channel = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[12], 12);
+    f->a_channel = (uint16_t)convert_bits_into_output(&f->bpbits2[12], 12);
 }
 
 static void
@@ -1293,11 +1249,11 @@ dmr_cspdu_pf0_c_bcast_print_type(uint8_t a_type) {
 
 static void
 dmr_cspdu_pf0_c_bcast_parse_abs_freqs(const uint8_t cs_pdu_bits[], dmr_cspdu_pf0_c_bcast_abs_freqs* abs_freqs) {
-    abs_freqs->lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[118], 12);
-    abs_freqs->abs_tx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[130], 10);
-    abs_freqs->abs_tx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[140], 13);
-    abs_freqs->abs_rx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[153], 10);
-    abs_freqs->abs_rx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[163], 13);
+    abs_freqs->lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
+    abs_freqs->abs_tx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[130], 10);
+    abs_freqs->abs_tx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[140], 13);
+    abs_freqs->abs_rx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[153], 10);
+    abs_freqs->abs_rx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[163], 13);
     abs_freqs->freqr = (abs_freqs->abs_rx_int * 1000000L) + (abs_freqs->abs_rx_step * 125L);
     abs_freqs->freqt = (abs_freqs->abs_tx_int * 1000000L) + (abs_freqs->abs_tx_step * 125L);
 }
@@ -1370,7 +1326,7 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
     if (next > 0 && next != cur) {
         const long previous_cc = state->trunk_cc_freq;
         state->trunk_cc_freq = next;
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             state->trunk_cc_freq = previous_cc;
             return;
@@ -1381,13 +1337,13 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint8_t ann_res = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[0], 4);
-    uint8_t cc_ch1 = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[4], 4);
-    uint8_t cc_ch2 = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[8], 4);
+    uint8_t ann_res = (uint8_t)convert_bits_into_output(&f->bpbits1[0], 4);
+    uint8_t cc_ch1 = (uint8_t)convert_bits_into_output(&f->bpbits1[4], 4);
+    uint8_t cc_ch2 = (uint8_t)convert_bits_into_output(&f->bpbits1[8], 4);
     uint8_t ch1_flag = f->bpbits1[12];
     uint8_t ch2_flag = f->bpbits1[13];
-    uint16_t bcast_ch1 = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[0], 12);
-    uint16_t bcast_ch2 = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[12], 12);
+    uint16_t bcast_ch1 = (uint16_t)convert_bits_into_output(&f->bpbits2[0], 12);
+    uint16_t bcast_ch2 = (uint16_t)convert_bits_into_output(&f->bpbits2[12], 12);
 
     DSD_FPRINTF(stderr, "\n");
     if (ann_res) {
@@ -1424,10 +1380,10 @@ dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_call_timer(const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint16_t t_emerg_timer = (uint16_t)ConvertBitIntoBytes(&f->bpbits1[0], 9);
-    uint8_t t_packet_timer = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[9], 5);
-    uint16_t t_msms_timer = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[0], 12);
-    uint16_t t_msline_timer = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[12], 12);
+    uint16_t t_emerg_timer = (uint16_t)convert_bits_into_output(&f->bpbits1[0], 9);
+    uint8_t t_packet_timer = (uint8_t)convert_bits_into_output(&f->bpbits1[9], 5);
+    uint16_t t_msms_timer = (uint16_t)convert_bits_into_output(&f->bpbits2[0], 12);
+    uint16_t t_msline_timer = (uint16_t)convert_bits_into_output(&f->bpbits2[12], 12);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Timers - Emergency: %d; Packet: %d; MS-MS: %d; Line: %d; ", t_emerg_timer, t_packet_timer,
                 t_msms_timer, t_msline_timer);
@@ -1452,16 +1408,16 @@ dmr_cspdu_pf0_c_bcast_offset_minutes(uint8_t lt_off_fr) {
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_local_time(const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint8_t lt_day = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[0], 5);
-    uint8_t lt_mon = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[5], 4);
-    uint8_t lt_off = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[9], 4);
+    uint8_t lt_day = (uint8_t)convert_bits_into_output(&f->bpbits1[0], 5);
+    uint8_t lt_mon = (uint8_t)convert_bits_into_output(&f->bpbits1[5], 4);
+    uint8_t lt_off = (uint8_t)convert_bits_into_output(&f->bpbits1[9], 4);
     uint8_t lt_off_sign = f->bpbits1[13];
-    uint8_t lt_hour = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[0], 5);
-    uint8_t lt_mins = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[5], 6);
-    uint8_t lt_secs = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[11], 6);
-    uint8_t lt_dofw = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[17], 3);
-    uint8_t lt_off_fr = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[20], 2);
-    uint8_t lt_res = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[22], 2);
+    uint8_t lt_hour = (uint8_t)convert_bits_into_output(&f->bpbits2[0], 5);
+    uint8_t lt_mins = (uint8_t)convert_bits_into_output(&f->bpbits2[5], 6);
+    uint8_t lt_secs = (uint8_t)convert_bits_into_output(&f->bpbits2[11], 6);
+    uint8_t lt_dofw = (uint8_t)convert_bits_into_output(&f->bpbits2[17], 3);
+    uint8_t lt_off_fr = (uint8_t)convert_bits_into_output(&f->bpbits2[20], 2);
+    uint8_t lt_res = (uint8_t)convert_bits_into_output(&f->bpbits2[22], 2);
 
     int offset = lt_off_sign ? -(int)lt_off : (int)lt_off;
     int localhour = lt_off_sign ? (int)lt_hour - (int)lt_off : (int)lt_hour + (int)lt_off;
@@ -1508,9 +1464,9 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
                                               int csbk_fid, const dmr_cspdu_pf0_c_bcast_fields* f) {
     uint8_t active_ava = f->bpbits2[0];
     uint8_t active_con = f->bpbits2[1];
-    uint8_t c_chan_pri = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[2], 3);
-    uint8_t a_chan_pri = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[5], 3);
-    uint8_t a_reserved = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[8], 4);
+    uint8_t c_chan_pri = (uint8_t)convert_bits_into_output(&f->bpbits2[2], 3);
+    uint8_t a_chan_pri = (uint8_t)convert_bits_into_output(&f->bpbits2[5], 3);
+    uint8_t a_reserved = (uint8_t)convert_bits_into_output(&f->bpbits2[8], 4);
 
     DSD_FPRINTF(stderr, "\n");
     dmr_decode_syscode(opts, state, (uint8_t*)cs_pdu_bits, csbk_fid, 1);
@@ -1549,8 +1505,8 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_gen_site_params(const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint8_t csi = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[0], 8);
-    uint8_t nin = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[16], 8);
+    uint8_t csi = (uint8_t)convert_bits_into_output(&f->bpbits1[0], 8);
+    uint8_t nin = (uint8_t)convert_bits_into_output(&f->bpbits2[16], 8);
     uint8_t hibernate_flag = f->bpbits2[1];
     uint8_t reg_tg_sub = f->bpbits2[16];
 
@@ -1561,9 +1517,9 @@ dmr_cspdu_pf0_c_bcast_handle_gen_site_params(const dmr_cspdu_pf0_c_bcast_fields*
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_mass_reg(const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint8_t reg_window = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[5], 4);
-    uint8_t aloha_mask = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[9], 5);
-    uint8_t reg_address = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[16], 8);
+    uint8_t reg_window = (uint8_t)convert_bits_into_output(&f->bpbits1[5], 4);
+    uint8_t aloha_mask = (uint8_t)convert_bits_into_output(&f->bpbits1[9], 5);
+    uint8_t reg_address = (uint8_t)convert_bits_into_output(&f->bpbits2[16], 8);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Reg Window: %X; Aloha Mask: %02X; Target: %d; ", reg_window, aloha_mask, reg_address);
@@ -1695,8 +1651,8 @@ dmr_cspdu_cap_plus_handle_3b(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     DSD_MEMSET(nr, 0, sizeof(nr));
 
     for (int i = 0; i < 6; i++) {
-        nl[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[32 + (i * 8)], 4);
-        nr[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[36 + (i * 8)], 4);
+        nl[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[32 + (i * 8)], 4);
+        nr[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36 + (i * 8)], 4);
         if (nl[i]) {
             DSD_FPRINTF(stderr, "Site: %d Rest: %d; ", nl[i], nr[i]);
         }
@@ -1731,10 +1687,10 @@ typedef struct {
 
 static void
 dmr_cspdu_cap_plus_3e_init_ctx(dmr_cap_plus_3e_ctx* ctx, const uint8_t cs_pdu_bits[]) {
-    ctx->fl = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 2);
+    ctx->fl = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 2);
     ctx->ts = cs_pdu_bits[18];
     ctx->res = cs_pdu_bits[19];
-    ctx->rest_channel = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[20], 4);
+    ctx->rest_channel = (uint8_t)convert_bits_into_output(&cs_pdu_bits[20], 4);
     ctx->active_group_count = 0;
     ctx->bank_one = 0;
     ctx->bank_two = 0;
@@ -1803,7 +1759,7 @@ static void
 dmr_cspdu_cap_plus_3e_parse_group_banks(dsd_state* state, dmr_cap_plus_3e_ctx* ctx) {
     uint8_t b2_start = 0;
 
-    ctx->bank_one = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][24], 8);
+    ctx->bank_one = (uint8_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][24], 8);
     for (int i = 0; i < 8; i++) {
         ctx->ch[i] = state->cap_plus_csbk_bits[ctx->ts][i + 24];
         if (ctx->ch[i] == 1) {
@@ -1812,7 +1768,7 @@ dmr_cspdu_cap_plus_3e_parse_group_banks(dsd_state* state, dmr_cap_plus_3e_ctx* c
     }
 
     ctx->bank_two =
-        (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][32 + (ctx->active_group_count * 8)], 8);
+        (uint8_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][32 + (ctx->active_group_count * 8)], 8);
     b2_start = ctx->active_group_count;
     if (ctx->bank_two == 0) {
         return;
@@ -1830,7 +1786,7 @@ static int
 dmr_cspdu_cap_plus_3e_parse_private_bank_one(dsd_state* state, dmr_cap_plus_3e_ctx* ctx) {
     int k = 0;
     uint8_t pdflag =
-        (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][40 + (ctx->active_group_count * 8)], 8);
+        (uint8_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][40 + (ctx->active_group_count * 8)], 8);
     if (pdflag == 0) {
         return 0;
     }
@@ -1843,7 +1799,7 @@ dmr_cspdu_cap_plus_3e_parse_private_bank_one(dsd_state* state, dmr_cap_plus_3e_c
             continue;
         }
         DSD_FPRINTF(stderr, " LSN %02d:", i + 1);
-        uint16_t private_target = (uint16_t)ConvertBitIntoBytes(
+        uint16_t private_target = (uint16_t)convert_bits_into_output(
             &state->cap_plus_csbk_bits[ctx->ts][56 + (k * 16) + (ctx->active_group_count * 8)], 16);
         DSD_FPRINTF(stderr, " TGT %d;", private_target);
         k++;
@@ -1856,7 +1812,7 @@ dmr_cspdu_cap_plus_3e_parse_private_bank_one(dsd_state* state, dmr_cap_plus_3e_c
 
 static void
 dmr_cspdu_cap_plus_3e_parse_private_bank_two(dsd_state* state, dmr_cap_plus_3e_ctx* ctx, int pd_b2) {
-    uint8_t pdflag2 = (uint8_t)ConvertBitIntoBytes(
+    uint8_t pdflag2 = (uint8_t)convert_bits_into_output(
         &state->cap_plus_csbk_bits[ctx->ts][56 + (ctx->active_group_count * 8) + (pd_b2 * 16)], 8);
     int k = 0;
 
@@ -1872,7 +1828,7 @@ dmr_cspdu_cap_plus_3e_parse_private_bank_two(dsd_state* state, dmr_cap_plus_3e_c
             continue;
         }
         DSD_FPRINTF(stderr, " LSN %02d:", i + 1);
-        uint16_t private_target = (uint16_t)ConvertBitIntoBytes(
+        uint16_t private_target = (uint16_t)convert_bits_into_output(
             &state->cap_plus_csbk_bits[ctx->ts][64 + (k * 16) + (ctx->active_group_count * 8) + (pd_b2 * 16)], 16);
         DSD_FPRINTF(stderr, " TGT %d;", private_target);
         k++;
@@ -1962,7 +1918,7 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
         DSD_FPRINTF(stderr, "LSN %02d: ", i + 1);
 
         if (ctx->ch[i] == 1) {
-            uint16_t tg = (uint16_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][(k * 8) + 32], 8);
+            uint16_t tg = (uint16_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][(k * 8) + 32], 8);
             DSD_FPRINTF(stderr, tg ? "%5d;  " : "Group;  ", tg);
             if (opts->trunk_tune_group_calls == 1) {
                 ctx->t_tg[i] = tg;
@@ -1976,7 +1932,7 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
         }
 
         if (ctx->pch[i] == 1) {
-            uint16_t tg = (uint16_t)ConvertBitIntoBytes(
+            uint16_t tg = (uint16_t)convert_bits_into_output(
                 &state->cap_plus_csbk_bits[ctx->ts][(ctx->active_group_count * 8) + (x * 16) + 56], 16);
             DSD_FPRINTF(stderr, tg ? "%5d;  " : " P||D;  ", tg);
             if (opts->trunk_tune_private_calls == 1) {
@@ -2034,7 +1990,7 @@ dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dm
 
         const long int grant_freq = state->trunk_chan_map[j + 1];
         const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             break;
         }
@@ -2061,7 +2017,7 @@ dmr_cspdu_cap_plus_3e_dump_payload(const dsd_opts* opts, dsd_state* state, const
     DSD_FPRINTF(stderr, "%s\n", KYEL);
     DSD_FPRINTF(stderr, " CAP+ Multi Block PDU \n  ");
     for (int i = 0; i < (10 + (block_num * 7)); i++) {
-        uint8_t fl_bytes = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][((size_t)i * 8)], 8);
+        uint8_t fl_bytes = (uint8_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][((size_t)i * 8)], 8);
         DSD_FPRINTF(stderr, "[%02X]", fl_bytes);
         if (i == 17 || i == 35) {
             DSD_FPRINTF(stderr, "\n  ");
@@ -2345,7 +2301,7 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
         if (state->trunk_chan_map[lcn] != 0) {
             dsd_trunk_tune_result tune_result =
-                dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0);
+                dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0, NULL);
             if (!dsd_trunk_tune_result_is_ok(tune_result)) {
                 DSD_SNPRINTF(state->active_channel[tslot], sizeof(state->active_channel[tslot]), "%s",
                              prev_active_channel);
@@ -2454,7 +2410,7 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
         if (slot_idx >= t_tg_count) {
             continue;
         }
-        uint16_t tg = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[i * 8 + 32], 8);
+        uint16_t tg = (uint16_t)convert_bits_into_output(&cs_pdu_bits[i * 8 + 32], 8);
 
         if (i == 0 || i == 2 || i == 4) {
             DSD_FPRINTF(stderr, "\n LCN %d - ", xpt_lcn);
@@ -2545,11 +2501,11 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_MEMSET(t_tg, 0, sizeof(t_tg));
 
-    xpt_seq = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[0], 2);
-    xpt_free = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 4);
+    xpt_seq = (uint8_t)convert_bits_into_output(&cs_pdu_bits[0], 2);
+    xpt_free = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 4);
     xpt_bank = (xpt_seq <= 2 && xpt_seq != 0) ? (uint8_t)(xpt_seq * 6) : 0;
     for (int i = 0; i < 6; i++) {
-        xpt_ch[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[20 + (i * 2)], 2);
+        xpt_ch[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[20 + (i * 2)], 2);
     }
 
     DSD_FPRINTF(stderr, " Hytera XPT Site Status - Free LCN: %d SN: %d", xpt_free, xpt_seq);
@@ -2595,10 +2551,10 @@ dmr_cspdu_xpt_handle_adjacent(uint8_t cs_pdu_bits[], dsd_state* state, int csbk_
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "%s", KYEL);
 
-    xpt_sn = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[0], 2);
+    xpt_sn = (uint8_t)convert_bits_into_output(&cs_pdu_bits[0], 2);
     for (int i = 0; i < 4; i++) {
-        xpt_site_id[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16 + (i * 16)], 5);
-        xpt_site_rp[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[24 + (i * 16)], 4);
+        xpt_site_id[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16 + (i * 16)], 5);
+        xpt_site_rp[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[24 + (i * 16)], 4);
     }
 
     DSD_FPRINTF(stderr, " Hytera XPT CSBK 0x0B - SN: %d", xpt_sn);
@@ -2722,7 +2678,6 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     else if (opts->dmr_crc_relaxed_default) {
         state->last_cc_sync_time = time(NULL);
         state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
@@ -2786,26 +2741,26 @@ dmr_syscode_decode_model(uint8_t model, uint8_t* cs_pdu_bits, uint16_t* net, uin
 
     switch (model) {
         case 0:
-            *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 9);
-            *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[51], 3);
+            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 9);
+            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[51], 3);
             *site_bits = 3;
             DSD_SNPRINTF(model_str, model_str_sz, "%s", "Tiny");
             break;
         case 1:
-            *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 7);
-            *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[49], 5);
+            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 7);
+            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[49], 5);
             *site_bits = 5;
             DSD_SNPRINTF(model_str, model_str_sz, "%s", "Small");
             break;
         case 2:
-            *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 4);
-            *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[46], 8);
+            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 4);
+            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[46], 8);
             *site_bits = 8;
             DSD_SNPRINTF(model_str, model_str_sz, "%s", "Large");
             break;
         default:
-            *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 2);
-            *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[44], 10);
+            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 2);
+            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[44], 10);
             *site_bits = 10;
             DSD_SNPRINTF(model_str, model_str_sz, "%s", "Huge");
             break;
@@ -2854,15 +2809,15 @@ dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* 
     uint8_t reserved = cs_pdu_bits[16];
     uint8_t tsccas = cs_pdu_bits[17];
     uint8_t sync = cs_pdu_bits[18];
-    uint8_t version = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[19], 3);
+    uint8_t version = (uint8_t)convert_bits_into_output(&cs_pdu_bits[19], 3);
     uint8_t offset = cs_pdu_bits[22];
     uint8_t active = cs_pdu_bits[23];
-    uint8_t mask = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[24], 5);
-    uint8_t sf = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[29], 2);
-    uint8_t nrandwait = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[31], 4);
+    uint8_t mask = (uint8_t)convert_bits_into_output(&cs_pdu_bits[24], 5);
+    uint8_t sf = (uint8_t)convert_bits_into_output(&cs_pdu_bits[29], 2);
+    uint8_t nrandwait = (uint8_t)convert_bits_into_output(&cs_pdu_bits[31], 4);
     uint8_t regreq = cs_pdu_bits[35];
-    uint8_t backoff = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[36], 4);
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint8_t backoff = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36], 4);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     if (n != 0) {
         uint16_t display_net = dmr_tiii_display_net(net, n);
@@ -2951,17 +2906,17 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
         }
     }
 
-    syscode = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 14);
+    syscode = (uint16_t)convert_bits_into_output(&cs_pdu_bits[40], 14);
     if (type == 0) {
         state->dmr_t3_syscode = syscode;
     }
 
-    model = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 2);
+    model = (uint8_t)convert_bits_into_output(&cs_pdu_bits[40], 2);
     dmr_syscode_decode_model(model, cs_pdu_bits, &net, &site, &site_bits, model_str, sizeof(model_str));
 
     n = dmr_syscode_effective_split_n(opts, state, csbk_fid, site_bits, &is_capmax);
     sub_mask = dmr_tiii_subsite_mask(n);
-    par = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[54], 2);
+    par = (uint8_t)convert_bits_into_output(&cs_pdu_bits[54], 2);
     dmr_syscode_set_partition_label(par, par_str, sizeof(par_str));
 
     if (type == 0) {

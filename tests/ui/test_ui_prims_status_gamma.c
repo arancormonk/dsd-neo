@@ -16,7 +16,6 @@
 
 static int g_fake_stdscr_storage;
 static int g_fake_window_storage;
-static int g_other_window_storage;
 WINDOW* stdscr;
 
 static int g_rows;
@@ -33,8 +32,6 @@ static int g_wtimeout_count;
 static int g_wtimeout_delay;
 static int g_wborder_count;
 static int g_wnoutrefresh_count;
-static int g_delwin_count;
-static WINDOW* g_delwin_arg;
 static int g_doupdate_count;
 static int g_wmove_count;
 static int g_last_move_y;
@@ -74,8 +71,6 @@ reset_curses_stubs(void) {
     g_wtimeout_delay = -1;
     g_wborder_count = 0;
     g_wnoutrefresh_count = 0;
-    g_delwin_count = 0;
-    g_delwin_arg = NULL;
     g_doupdate_count = 0;
     g_wmove_count = 0;
     g_last_move_y = -1;
@@ -140,13 +135,6 @@ int
 wnoutrefresh(WINDOW* win) {
     assert(win == g_newwin_result);
     g_wnoutrefresh_count++;
-    return OK;
-}
-
-int
-delwin(WINDOW* win) {
-    g_delwin_count++;
-    g_delwin_arg = win;
     return OK;
 }
 
@@ -339,16 +327,6 @@ test_window_lifecycle_contracts(void) {
     assert(g_wtimeout_count == 0);
     assert(g_wborder_count == 0);
     assert(g_wnoutrefresh_count == 0);
-
-    reset_curses_stubs();
-    win = (WINDOW*)&g_other_window_storage;
-    ui_destroy_window(&win);
-    assert(g_delwin_count == 1);
-    assert(g_delwin_arg == (WINDOW*)&g_other_window_storage);
-    assert(win == NULL);
-    ui_destroy_window(NULL);
-    ui_destroy_window(&win);
-    assert(g_delwin_count == 1);
 
     ui_commit_frame();
     assert(g_doupdate_count == 1);

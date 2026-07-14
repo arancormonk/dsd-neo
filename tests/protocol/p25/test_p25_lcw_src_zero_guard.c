@@ -18,10 +18,11 @@
  * LCW with source=0, and asserts that lastsrc is preserved.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,9 +36,6 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
-uint64_t ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength);
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
 
 static int g_nmea_harris_calls;
@@ -54,49 +52,23 @@ static uint16_t g_last_alias_prefix;
 
 /* ── Strong stubs (same set used by test_p25_lcw_call_term) ────────────── */
 
-bool
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return true;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return true;
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.return_to_cc = return_to_cc;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -109,7 +81,7 @@ apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
     (void)state;
     g_apx_alias_header_calls++;
     g_last_alias_slot = slot;
-    g_last_alias_prefix = (uint16_t)ConvertBitIntoBytes(lc_bits, 16);
+    g_last_alias_prefix = (uint16_t)convert_bits_into_output(lc_bits, 16);
 }
 
 void
@@ -119,7 +91,7 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
     (void)state;
     g_apx_alias_block_calls++;
     g_last_alias_slot = slot;
-    g_last_alias_prefix = (uint16_t)ConvertBitIntoBytes(lc_bits, 16);
+    g_last_alias_prefix = (uint16_t)convert_bits_into_output(lc_bits, 16);
 }
 
 void
@@ -129,7 +101,7 @@ l3h_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
     (void)state;
     g_l3h_alias_block_calls++;
     g_last_alias_slot = slot;
-    g_last_alias_prefix = (uint16_t)ConvertBitIntoBytes(lc_bits, 16);
+    g_last_alias_prefix = (uint16_t)convert_bits_into_output(lc_bits, 16);
 }
 
 void
@@ -140,7 +112,7 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     g_tait_alias_calls++;
     g_last_alias_slot = slot;
     g_tait_alias_len = len;
-    g_last_alias_prefix = (uint16_t)ConvertBitIntoBytes(input, 16);
+    g_last_alias_prefix = (uint16_t)convert_bits_into_output(input, 16);
 }
 
 void
@@ -149,7 +121,7 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
     g_apx_gps_calls++;
-    g_last_alias_prefix = (uint16_t)ConvertBitIntoBytes(lc_bits, 16);
+    g_last_alias_prefix = (uint16_t)convert_bits_into_output(lc_bits, 16);
 }
 
 void
@@ -159,20 +131,8 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)state;
     g_nmea_harris_calls++;
     g_nmea_harris_src = src;
-    g_nmea_harris_prefix = (uint16_t)ConvertBitIntoBytes(input, 16);
+    g_nmea_harris_prefix = (uint16_t)convert_bits_into_output(input, 16);
     (void)slot;
-}
-
-/* ── Minimal ConvertBitIntoBytes (MSB-first) used by LCW ──────────────── */
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return out;
 }
 
 /* ── Bit-packing helper ───────────────────────────────────────────────── */
@@ -753,7 +713,8 @@ main(void) {
         set_bits_msb(lcw, 16, 8, 0x5A);
         set_bits_msb(lcw, 40, 8, 0xC3);
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
-        rc |= expect_true("HarrisGPS_block1_prefix", (uint16_t)ConvertBitIntoBytes(st.dmr_pdu_sf[0], 16) == 0x2AA4);
+        rc |=
+            expect_true("HarrisGPS_block1_prefix", (uint16_t)convert_bits_into_output(st.dmr_pdu_sf[0], 16) == 0x2AA4);
         rc |= expect_true("HarrisGPS_block1_payload_copy", st.dmr_pdu_sf[0][40] == 0 && st.dmr_pdu_sf[0][41] == 1);
 
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -782,7 +743,6 @@ main(void) {
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&st, 0, sizeof st);
-        opts.p25_is_tuned = 1;
         opts.trunk_is_tuned = 1;
         st.p25_vc_freq[0] = 851000000;
         st.p25_vc_freq[1] = 851000000;
@@ -802,9 +762,8 @@ main(void) {
         rc |= expect_contains("MFIDA4_0x0A_neutral_label", out, "Data/Return-to-Control Indication");
         rc |= expect_contains("MFIDA4_0x0A_source", out, "SRC: 1193046");
         rc |= expect_contains("MFIDA4_0x0A_target", out, "TGT: 11259375");
-        rc |= expect_true("MFIDA4_0x0A_no_release", opts.p25_is_tuned == 1 && opts.trunk_is_tuned == 1
-                                                        && st.p25_vc_freq[0] == 851000000
-                                                        && st.p25_vc_freq[1] == 851000000);
+        rc |= expect_true("MFIDA4_0x0A_no_release",
+                          opts.trunk_is_tuned == 1 && st.p25_vc_freq[0] == 851000000 && st.p25_vc_freq[1] == 851000000);
     }
 
     /*

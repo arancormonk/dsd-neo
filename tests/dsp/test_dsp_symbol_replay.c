@@ -9,7 +9,6 @@
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -23,6 +22,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,6 +30,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "symbol_test_support.h"
 #include "test_support.h"
 
 static int g_cleanup_calls = 0;
@@ -38,19 +39,6 @@ static int
 symbol_level_matches(float got, uint8_t dibit) {
     return fabsf(got - dsd_symbol_level_from_dibit(dibit)) <= 1e-6f;
 }
-
-void dsd_symbol_test_select_window(int rf_mod, int synctype, int lastsynctype, int freeze_window, int* l_edge,
-                                   int* r_edge);
-int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, int rf_mod, int jitter,
-                                        int have_sync, int symbol_span, int start_i, int* jitter_after);
-int dsd_symbol_test_is_m17_sync(int lastsynctype);
-float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
-                                           int rtl_symbol_rate_output, int cqpsk_symbol_rate);
-unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);
-#ifdef USE_RADIO
-int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
-int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);
-#endif
 
 dsd_socket_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -76,7 +64,7 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-cleanupAndExit(dsd_opts* opts, dsd_state* state) {
+dsd_request_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_cleanup_calls++;
@@ -89,15 +77,6 @@ dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
     (void)state;
     (void)old_rate_hz;
     (void)new_rate_hz;
-}
-
-double
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-raw_pwr_f(const float* samples, int len, int step) {
-    (void)samples;
-    (void)len;
-    (void)step;
-    return 0.0;
 }
 
 double
@@ -314,7 +293,7 @@ test_missing_symbol_file_returns_error_symbol(void) {
 }
 
 static void
-test_invalid_soft_header_replays_as_legacy_bytes(void) {
+assert_unsupported_soft_header_is_rejected(uint8_t version, uint8_t record_size) {
     static dsd_opts opts;
     static dsd_state state;
     init_symbol_replay_fixture(&opts, &state);
@@ -322,7 +301,7 @@ test_invalid_soft_header_replays_as_legacy_bytes(void) {
     assert(opts.symbolfile != NULL);
 
     unsigned char header[DSD_SYMBOL_CAPTURE_SOFT_HEADER_SIZE] = {
-        'D', 'S', 'D', 'N', 'S', 'Y', 'M', '2', 3, DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE, 0, 0, 0, 0, 0, 0,
+        'D', 'S', 'D', 'N', 'S', 'Y', 'M', '2', version, record_size, 0, 0, 0, 0, 0, 0,
     };
     assert(fwrite(header, 1, sizeof(header), opts.symbolfile) == sizeof(header));
     rewind(opts.symbolfile);
@@ -330,15 +309,19 @@ test_invalid_soft_header_replays_as_legacy_bytes(void) {
     exitflag = 0;
 
     float symbol = getSymbol(&opts, &state, 0);
-    assert(symbol_level_matches(symbol, (uint8_t)('D' & 3)));
-    assert(state.symbol_replay_format == DSD_SYMBOL_REPLAY_FORMAT_LEGACY);
+    assert(symbol == 0.0f);
+    assert(opts.symbolfile == NULL);
+    assert(state.symbol_replay_format == DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN);
     assert(state.symbol_replay_header_checked == 1);
     assert(state.symbol_replay_has_soft == 0);
-    assert(state.symbolc == ('D' & 3));
-    assert(g_cleanup_calls == 0);
+    assert(g_cleanup_calls == 1);
+    assert(exitflag == 1);
+}
 
-    fclose(opts.symbolfile);
-    opts.symbolfile = NULL;
+static void
+test_unsupported_soft_headers_are_rejected(void) {
+    assert_unsupported_soft_header_is_rejected(3U, DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE);
+    assert_unsupported_soft_header_is_rejected(2U, DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE + 1U);
 }
 
 static void
@@ -570,7 +553,7 @@ main(void) {
     test_short_file_falls_back_to_legacy_replay();
     test_debug_replay_reopens_and_reprobes();
     test_missing_symbol_file_returns_error_symbol();
-    test_invalid_soft_header_replays_as_legacy_bytes();
+    test_unsupported_soft_headers_are_rejected();
     test_soft_header_without_record_cleans_up_at_eof();
     test_float_symbol_replay_scales_values();
     test_float_symbol_replay_eof_sets_exitflag();

@@ -19,7 +19,9 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include <mbelib-neo/mbelib.h>
 #include "core/audio/dsd_audio2_internal.h"
+#include "core/audio/dsd_audio_internal.h"
 #include "dsd-neo/core/audio.h"
 #include "dsd-neo/core/audio_filters.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -31,7 +33,6 @@
 #include "dsd-neo/runtime/log.h"
 #include "dsd-neo/runtime/p25_p2_audio_ring.h"
 #include "dsd-neo/runtime/udp_audio_hooks.h"
-#include "mbelib.h"
 
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
@@ -119,6 +120,14 @@ sf_write_short(SNDFILE* sndfile, const short* ptr, sf_count_t items) {
     (void)sndfile;
     (void)ptr;
     return items;
+}
+
+void
+dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
+    (void)context;
+    if (file != NULL && samples != NULL && sample_count > 0) {
+        (void)sf_write_short(file, samples, sample_count);
+    }
 }
 
 void
@@ -676,18 +685,15 @@ test_p25p2_encrypted_lockout_slot_helper(void) {
     int rc = 0;
     state.payload_algidR = 0x81;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    state.p25_p2_enc_lockout_muted[1] = 1U;
     rc |= expect_int("p25p2 right encrypted without key locks out",
                      dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1), 1);
     state.RR = 0x1234;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
-    state.p25_p2_enc_lockout_muted[1] = 0U;
     rc |= expect_int("p25p2 right key suppresses lockout", dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1),
                      0);
     state.RR = 0;
     opts.trunk_tune_enc_calls = 1;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-    state.p25_p2_enc_lockout_muted[1] = 1U;
     rc |= expect_int("p25p2 pending state remains slot-suppressed",
                      dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1), 1);
     opts.trunk_tune_enc_calls = 0;

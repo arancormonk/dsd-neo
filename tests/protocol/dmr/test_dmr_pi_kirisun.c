@@ -3,13 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -18,22 +19,42 @@
 
 static void
 load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
-    uint8_t info[11];
-    uint8_t encoded[16];
+    static const struct {
+        uint16_t value;
+        uint8_t codeword[16];
+    } fixtures[] = {
+        {0x008U, {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0}},
+        {0x023U, {0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1}},
+        {0x094U, {0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0}},
+        {0x109U, {0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0}},
+        {0x112U, {0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1}},
+        {0x124U, {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1}},
+        {0x12DU, {0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0}},
+        {0x133U, {0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1}},
+        {0x225U, {0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1}},
+        {0x2E6U, {0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1}},
+        {0x30FU, {0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0}},
+        {0x313U, {0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0}},
+        {0x428U, {1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0}},
+        {0x643U, {1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 1}},
+    };
+
+    const uint8_t* encoded = NULL;
     uint8_t data_matrix[32];
     uint8_t interleaved[32];
-    DSD_MEMSET(info, 0, sizeof(info));
-    DSD_MEMSET(encoded, 0, sizeof(encoded));
     DSD_MEMSET(data_matrix, 0, sizeof(data_matrix));
     DSD_MEMSET(interleaved, 0, sizeof(interleaved));
 
-    for (int i = 0; i < 11; i++) {
-        info[i] = (uint8_t)((sb_value >> (10 - i)) & 1U);
+    for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
+        if (fixtures[i].value == sb_value) {
+            encoded = fixtures[i].codeword;
+            break;
+        }
     }
+    assert(encoded != NULL);
 
-    Hamming_16_11_4_encode(info, encoded);
     for (int i = 0; i < 16; i++) {
-        data_matrix[i] = encoded[i] & 1U;
+        data_matrix[i] = encoded[i];
         data_matrix[16 + i] = data_matrix[i];
     }
 
@@ -64,17 +85,6 @@ build_txi_value(uint8_t opcode, uint8_t delay) {
         low_bits[i] = (uint8_t)((low8 >> (7 - i)) & 1U);
     }
     return (uint16_t)(((uint16_t)crc3(low_bits, 8U) << 8U) | low8);
-}
-
-static uint8_t
-hytera_pi_checksum(const uint8_t pi[10]) {
-    uint8_t checksum = 0;
-    for (int i = 0; i < 9; i++) {
-        checksum = (uint8_t)((checksum + pi[i]) & 0xFFU);
-    }
-    checksum = (uint8_t)(~checksum & 0xFFU);
-    checksum++;
-    return checksum;
 }
 
 static void
@@ -329,7 +339,7 @@ test_pi_hytera_enhanced_checksum_sets_slot1_fields(void) {
     state.currentslot = 1;
     state.RR = 0x123456789AULL;
     uint8_t pi[10] = {0x02, 0x68, 0x34, 0x01, 0x23, 0x45, 0x67, 0x89, 0x00, 0x00};
-    pi[9] = hytera_pi_checksum(pi);
+    pi[9] = 0x09U;
     dmr_pi(&opts, &state, pi, 1, 0);
 
     assert((state.dmr_soR & 0x40U) != 0U);
@@ -351,7 +361,7 @@ test_pi_hytera_slot0_checksum_key_and_error_paths(void) {
     state.currentslot = 0;
     state.R = 0x0102030405ULL;
     uint8_t pi[10] = {0x02, 0x68, 0x21, 0x10, 0x32, 0x54, 0x76, 0x98, 0x00, 0x00};
-    pi[9] = hytera_pi_checksum(pi);
+    pi[9] = 0xD1U;
     dmr_pi(&opts, &state, pi, 1, 0);
 
     assert((state.dmr_so & 0x40U) != 0U);
@@ -414,15 +424,17 @@ test_alg_refresh_advances_kirisun_mi(void) {
 }
 
 static void
-test_lfsr_refresh_updates_slot1_variants(void) {
+test_alg_refresh_updates_slot1_variants(void) {
+    static dsd_opts opts;
     static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
     state.currentslot = 1;
     state.payload_algidR = 0x21;
     state.payload_keyidR = 0x66;
     state.payload_miR = 0x89ABCDEFULL;
-    LFSR(&state);
+    dmr_alg_refresh(&opts, &state);
     assert(state.payload_miR != 0x89ABCDEFULL);
 
     state.payload_algidR = 0x24;
@@ -630,7 +642,7 @@ main(void) {
     test_pi_hytera_slot0_checksum_key_and_error_paths();
     test_pi_refreshes_sync_time_when_trunk_tuned();
     test_alg_refresh_advances_kirisun_mi();
-    test_lfsr_refresh_updates_slot1_variants();
+    test_alg_refresh_updates_slot1_variants();
     test_hytera_refresh_advances_feedback_branch();
     test_sbrc_kirisun_gate_rejects_non_kirisun_calls();
     test_sbrc_kirisun_gate_accepts_kirisun_calls();

@@ -67,6 +67,7 @@ target_sources(
     dsd-neo_fuzz_core_csv_import
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/core/file/dsd_import.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
         ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
 )
 

@@ -8,7 +8,7 @@
  * @brief Input ring buffer API for interleaved I/Q float samples.
  *
  * Declares the simple SPSC input ring and operations to reserve, commit,
- * write, and blockingly read samples with wrap-around handling.
+ * and blockingly read samples with wrap-around handling.
  */
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_INPUT_RING_H_
@@ -61,15 +61,6 @@ input_ring_free(const struct input_ring_state* r) {
 static inline int
 input_ring_is_empty(const struct input_ring_state* r) {
     return r->head.load() == r->tail.load();
-}
-
-/**
- * @brief Clear the input ring head/tail indices.
- */
-static inline void
-input_ring_clear(struct input_ring_state* r) {
-    r->tail.store(0);
-    r->head.store(0);
 }
 
 /**
@@ -151,15 +142,6 @@ int input_ring_reserve(struct input_ring_state* r, size_t min_needed, float** p1
  * @param produced  Number of samples produced to commit.
  */
 void input_ring_commit(struct input_ring_state* r, size_t produced);
-
-/**
- * @brief Write samples to the input ring, blocking if necessary.
- *
- * @param r     Input ring buffer state.
- * @param data  Source samples to write.
- * @param count Number of samples to write.
- */
-void input_ring_write(struct input_ring_state* r, const float* data, size_t count);
 
 /**
  * @brief Read up to max_count samples from the input ring, blocking until available.

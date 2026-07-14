@@ -17,14 +17,15 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** @brief Decode a P25 trunking PDU (MPDU) and update decoder state. */
-void p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte);
+/** @brief Decode a bounded P25 trunking PDU (MPDU) and update decoder state. */
+int p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len);
 
 #ifdef __cplusplus
 }

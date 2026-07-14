@@ -11,14 +11,13 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/ui/ui_cmd.h>
-#include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,7 +25,6 @@
 #include <string.h>
 #include "command_dispatch.h"
 
-#include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/ui/menu_core.h"
@@ -76,8 +74,8 @@ static int g_snapshot_calls;
 static dsd_app_config_metadata_payload g_config_metadata;
 static int g_config_metadata_calls;
 
-int
-dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
+static int
+capture_command(int cmd_id, const void* payload, size_t payload_sz) {
     g_cmd.id = cmd_id;
     g_cmd.n = payload_sz;
     if (payload_sz > sizeof(g_cmd.data)) {
@@ -93,42 +91,42 @@ dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz) {
 
 int
 dsd_app_command_action(int cmd_id) {
-    return dsd_app_post_cmd(cmd_id, NULL, 0U);
+    return capture_command(cmd_id, NULL, 0U);
 }
 
 int
 dsd_app_command_set_i32(int cmd_id, int32_t value) {
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 int
 dsd_app_command_set_u8(int cmd_id, uint8_t value) {
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 int
 dsd_app_command_set_u32(int cmd_id, uint32_t value) {
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 int
 dsd_app_command_set_u64(int cmd_id, uint64_t value) {
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 int
 dsd_app_command_set_double(int cmd_id, double value) {
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 int
 dsd_app_command_set_float(int cmd_id, float value) {
-    return dsd_app_post_cmd(cmd_id, &value, sizeof value);
+    return capture_command(cmd_id, &value, sizeof value);
 }
 
 int
 dsd_app_command_set_string(int cmd_id, const char* value) {
-    return dsd_app_post_cmd(cmd_id, value, value ? strlen(value) + 1U : 0U);
+    return capture_command(cmd_id, value, value ? strlen(value) + 1U : 0U);
 }
 
 int
@@ -136,40 +134,32 @@ dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port) {
     dsd_app_endpoint_payload payload = {0};
     DSD_SNPRINTF(payload.host, sizeof payload.host, "%s", host ? host : "");
     payload.port = port;
-    return dsd_app_post_cmd(cmd_id, &payload, sizeof payload);
-}
-
-int
-dsd_app_command_set_udp_input(const char* bind, int32_t port) {
-    dsd_app_udp_input_payload payload = {0};
-    DSD_SNPRINTF(payload.bind, sizeof payload.bind, "%s", bind ? bind : "");
-    payload.port = port;
-    return dsd_app_post_cmd(DSD_APP_CMD_UDP_INPUT_CFG, &payload, sizeof payload);
+    return capture_command(cmd_id, &payload, sizeof payload);
 }
 
 int
 dsd_app_command_set_p25_p2_params(const dsd_app_p25_p2_params_payload* payload) {
-    return dsd_app_post_cmd(DSD_APP_CMD_P25_P2_PARAMS_SET, payload, payload ? sizeof *payload : 0U);
+    return capture_command(DSD_APP_CMD_P25_P2_PARAMS_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 int
 dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload) {
-    return dsd_app_post_cmd(DSD_APP_CMD_KEY_HYTERA_SET, payload, payload ? sizeof *payload : 0U);
+    return capture_command(DSD_APP_CMD_KEY_HYTERA_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 int
 dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload) {
-    return dsd_app_post_cmd(DSD_APP_CMD_KEY_AES_SET, payload, payload ? sizeof *payload : 0U);
+    return capture_command(DSD_APP_CMD_KEY_AES_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 int
 dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload) {
-    return dsd_app_post_cmd(DSD_APP_CMD_DSP_OP, payload, payload ? sizeof *payload : 0U);
+    return capture_command(DSD_APP_CMD_DSP_OP, payload, payload ? sizeof *payload : 0U);
 }
 
 int
 dsd_app_command_apply_config(const dsdneoUserConfig* config) {
-    return dsd_app_post_cmd(DSD_APP_CMD_CONFIG_APPLY, config, config ? sizeof *config : 0U);
+    return capture_command(DSD_APP_CMD_CONFIG_APPLY, config, config ? sizeof *config : 0U);
 }
 
 int
@@ -179,7 +169,7 @@ dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* paylo
         g_config_metadata = *payload;
     }
     g_config_metadata_calls++;
-    return dsd_app_post_cmd(DSD_APP_CMD_CONFIG_METADATA_SET, payload, payload ? sizeof *payload : 0U);
+    return capture_command(DSD_APP_CMD_CONFIG_METADATA_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 void ui_statusf(const char* fmt, ...) DSD_ATTR_FORMAT(printf, 1, 2);
@@ -194,8 +184,8 @@ ui_statusf(const char* fmt, ...) {
 }
 
 void
-ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t cap, void* user,
-                                 ui_prompt_string_done_fn on_done) {
+ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                            void* user) {
     DSD_SNPRINTF(g_prompt.title, sizeof g_prompt.title, "%s", title ? title : "");
     DSD_SNPRINTF(g_prompt.prefill, sizeof g_prompt.prefill, "%s", prefill ? prefill : "");
     g_prompt.cap = cap;
@@ -206,7 +196,7 @@ ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t 
 }
 
 void
-ui_prompt_open_int_async_impl(const char* title, int initial, void* user, ui_prompt_int_done_fn cb) {
+ui_prompt_open_int_async(const char* title, int initial, ui_prompt_int_done_fn cb, void* user) {
     DSD_SNPRINTF(g_prompt.title, sizeof g_prompt.title, "%s", title ? title : "");
     g_prompt.initial_int = initial;
     g_prompt.user = user;
@@ -216,7 +206,7 @@ ui_prompt_open_int_async_impl(const char* title, int initial, void* user, ui_pro
 }
 
 void
-ui_prompt_open_double_async_impl(const char* title, double initial, void* user, ui_prompt_double_done_fn cb) {
+ui_prompt_open_double_async(const char* title, double initial, ui_prompt_double_done_fn cb, void* user) {
     (void)title;
     (void)initial;
     (void)user;
@@ -254,21 +244,6 @@ void
 env_reparse_runtime_cfg(dsd_opts* opts) {
     (void)opts;
     g_reparse_calls++;
-}
-
-int
-parse_hex_u64(const char* s, unsigned long long* out) {
-    if (!s || !*s || !out) {
-        return 0;
-    }
-    errno = 0;
-    char* end = NULL;
-    unsigned long long v = strtoull(s, &end, 16);
-    if (errno != 0 || !end || *end != '\0') {
-        return 0;
-    }
-    *out = v;
-    return 1;
 }
 
 int

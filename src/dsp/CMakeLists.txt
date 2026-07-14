@@ -10,6 +10,7 @@ target_sources(
         costas.cpp
         resampler.cpp
         halfband.cpp
+        mmse_interp.cpp
         ted.cpp
         fsk_modem.c
         firdes.cpp
@@ -102,6 +103,37 @@ target_link_libraries(
 )
 
 target_link_libraries(dsd-neo_dsp PRIVATE dsd-neo_warnings dsd-neo_feature_pvc)
+
+if(BUILD_TESTING)
+    # Test seams are compiled into a private archive so the shipped DSP archive
+    # never exposes hook-only symbols or depends on a test preprocessor mode.
+    get_target_property(_dsd_neo_dsp_private_sources dsd-neo_dsp SOURCES)
+    add_library(dsd-neo_dsp_private_test_support STATIC)
+    target_sources(
+        dsd-neo_dsp_private_test_support
+        PRIVATE ${_dsd_neo_dsp_private_sources}
+    )
+    target_include_directories(
+        dsd-neo_dsp_private_test_support
+        PUBLIC ${PROJECT_SOURCE_DIR}/include
+        PRIVATE ${_PUBLIC_INCLUDES}
+    )
+    target_compile_definitions(
+        dsd-neo_dsp_private_test_support
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    if(_avx2_flags)
+        target_compile_definitions(
+            dsd-neo_dsp_private_test_support
+            PRIVATE $<$<COMPILE_LANGUAGE:CXX>:DSD_NEO_DSP_HAVE_AVX2_IMPL=1>
+        )
+    endif()
+    target_link_libraries(
+        dsd-neo_dsp_private_test_support
+        PUBLIC dsd-neo_runtime dsd-neo_feature_radio dsd-neo_feature_rtlsdr
+        PRIVATE dsd-neo_warnings dsd-neo_feature_pvc
+    )
+endif()
 
 install(
     TARGETS dsd-neo_dsp

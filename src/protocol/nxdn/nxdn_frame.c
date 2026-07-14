@@ -23,6 +23,8 @@
  * Boston, MA 02110-1301, USA.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -31,7 +33,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -48,13 +49,6 @@
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include "dsd-neo/core/secret_redaction.h"
 #endif
-
-// #define NXDN_DEBUG_LICH         //print LICH debug info on err on payload == 1
-// #define NXDN_LICH_OFFBITS_CHECK //optional strict filter for encoded LICH "off bits"
-// NOTE:
-// The offbits check was observed to reject otherwise-decodable NXDN frames on
-// marginal signals (notably NXDN96 trunking). Keep it disabled by default and
-// rely on parity/LICH-type validation below for robust sync handling.
 
 typedef struct {
     uint8_t dbuf[182];
@@ -186,9 +180,9 @@ nxdn_frame_ctx_init(nxdn_frame_ctx* ctx) {
 static void
 nxdn_collect_lich(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
     for (int i = 0; i < 8; i++) {
-        uint8_t rel = 255;
-        ctx->lich_dibits[i] = ctx->dbuf[i] = (uint8_t)getDibitWithReliability(opts, state, &rel);
-        ctx->dbuf_reliab[i] = rel;
+        dsd_dibit_soft_t soft = {.reliability = 255};
+        ctx->lich_dibits[i] = ctx->dbuf[i] = (uint8_t)getDibitSoft(opts, state, &soft);
+        ctx->dbuf_reliab[i] = soft.reliability;
     }
 
     nxdn_descramble_with_seed(ctx->lich_dibits, 8, state->nxdn_pn95_seed);
@@ -202,28 +196,8 @@ nxdn_collect_lich(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
         ctx->lich_bits[(i * 2) + 0] = (ctx->lich_dibits[i] >> 1) & 1;
         ctx->lich_bits[(i * 2) + 1] = (ctx->lich_dibits[i] >> 0) & 1;
     }
-    ctx->lich_bits_hex = (uint16_t)ConvertBitIntoBytes(ctx->lich_bits, 16);
+    ctx->lich_bits_hex = (uint16_t)convert_bits_into_output(ctx->lich_bits, 16);
 }
-
-#ifdef NXDN_LICH_OFFBITS_CHECK
-static int
-nxdn_validate_lich_offbits(const dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
-    uint8_t lich_off_hex = 0;
-    for (int i = 0; i < 8; i++) {
-        lich_off_hex += ctx->lich_bits[(i * 2) + 1];
-    }
-    if (lich_off_hex < 7) {
-#ifdef NXDN_DEBUG_LICH
-        if (opts->payload == 1) {
-            DSD_FPRINTF(stderr, "  Lich Off Bit Fill Error: %d / 8; \n", lich_off_hex);
-        }
-#endif
-        nxdn_mark_bad_sync(state);
-        return 0;
-    }
-    return 1;
-}
-#endif
 
 static void
 nxdn_prepare_lich_parity(nxdn_frame_ctx* ctx) {
@@ -242,37 +216,25 @@ nxdn_prepare_lich_parity(nxdn_frame_ctx* ctx) {
 }
 
 static int
-nxdn_validate_lich_parity(const dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
+nxdn_validate_lich_parity(dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->lich_parity_received == ctx->lich_parity_computed) {
         return 1;
     }
-#ifdef NXDN_DEBUG_LICH
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "  Lich Parity Error %02X / %04X\n", ctx->lich_full, ctx->lich_bits_hex);
-    }
-#else
-    UNUSED(opts);
-#endif
     nxdn_mark_bad_sync(state);
     return 0;
 }
 
 static int
 nxdn_validate_lich_direction(const dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if ((ctx->lich % 2) != 0 || opts->p25_trunk != 1) {
+    if ((ctx->lich % 2) != 0 || opts->trunk_enable != 1) {
         return 1;
     }
-#ifdef NXDN_DEBUG_LICH
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "  Simplex/Inbound NXDN lich on trunking system - type 0x%02X\n", ctx->lich);
-    }
-#endif
     nxdn_mark_bad_sync(state);
     return 0;
 }
 
 static int
-nxdn_apply_lich_profile(const dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
+nxdn_apply_lich_profile(dsd_state* state, nxdn_frame_ctx* ctx) {
     for (size_t i = 0; i < (sizeof(k_nxdn_lich_profiles) / sizeof(k_nxdn_lich_profiles[0])); i++) {
         const nxdn_lich_profile* profile = &k_nxdn_lich_profiles[i];
         if (profile->lich != ctx->lich) {
@@ -294,14 +256,6 @@ nxdn_apply_lich_profile(const dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* 
         return 1;
     }
 
-#ifdef NXDN_DEBUG_LICH
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "  false sync or unsupported NXDN lich type L: %02X / LH: %04X\n", ctx->lich,
-                    ctx->lich_bits_hex);
-    }
-#else
-    UNUSED(opts);
-#endif
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     nxdn_mark_bad_sync(state);
@@ -316,55 +270,40 @@ nxdn_mark_carrier_sync_active(dsd_state* state) {
 }
 
 static void
-nxdn_print_lich_debug_payload(const dsd_opts* opts, const nxdn_frame_ctx* ctx) {
-#ifdef NXDN_DEBUG_LICH
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "L: %02X / LH: %04X; ", ctx->lich, ctx->lich_bits_hex);
-    }
-#else
-    UNUSED(opts);
-    UNUSED(ctx);
-#endif
-}
-
-static void
-nxdn_print_idas_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
+nxdn_print_idas_sync_banner(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         printFrameSync(opts, state, "IDAS D ", 0, "-");
     }
-    nxdn_print_lich_debug_payload(opts, ctx);
 }
 
 static void
-nxdn_print_dcr_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
+nxdn_print_dcr_sync_banner(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         printFrameSync(opts, state, "JPN DCR", 0, "-");
     }
-    nxdn_print_lich_debug_payload(opts, ctx);
 }
 
 static void
-nxdn_print_normal_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
+nxdn_print_normal_sync_banner(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         printFrameSync(opts, state, "NXDN48 ", 0, "-");
     } else {
         printFrameSync(opts, state, "NXDN96 ", 0, "-");
     }
-    nxdn_print_lich_debug_payload(opts, ctx);
 }
 
 static void
 nxdn_print_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->idas) {
-        nxdn_print_idas_sync_banner(opts, state, ctx);
+        nxdn_print_idas_sync_banner(opts, state);
         return;
     }
     if (ctx->sacch2) {
-        nxdn_print_dcr_sync_banner(opts, state, ctx);
+        nxdn_print_dcr_sync_banner(opts, state);
         return;
     }
     if (ctx->voice || ctx->facch || ctx->sacch || ctx->facch2 || ctx->udch || ctx->cac) {
-        nxdn_print_normal_sync_banner(opts, state, ctx);
+        nxdn_print_normal_sync_banner(opts, state);
     }
 }
 
@@ -449,7 +388,7 @@ nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nx
     }
 
     if (freq) {
-        limazulu = ComputeCrcCCITT16d(hash_bits, 24);
+        limazulu = dsd_crc_ccitt16_bits(hash_bits, 24U);
     }
     limazulu = limazulu & 0xFFFF;
 
@@ -658,20 +597,14 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_frame_ctx_init(&ctx);
     nxdn_collect_lich(opts, state, &ctx);
 
-#ifdef NXDN_LICH_OFFBITS_CHECK
-    if (!nxdn_validate_lich_offbits(opts, state, &ctx)) {
-        goto END;
-    }
-#endif
-
     nxdn_prepare_lich_parity(&ctx);
-    if (!nxdn_validate_lich_parity(opts, state, &ctx)) {
+    if (!nxdn_validate_lich_parity(state, &ctx)) {
         goto END;
     }
     if (!nxdn_validate_lich_direction(opts, state, &ctx)) {
         goto END;
     }
-    if (!nxdn_apply_lich_profile(opts, state, &ctx)) {
+    if (!nxdn_apply_lich_profile(state, &ctx)) {
         goto END;
     }
 
@@ -679,9 +612,9 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_print_sync_banner(opts, state, &ctx);
 
     for (int i = 0; i < 174; i++) {
-        uint8_t rel = 255;
-        ctx.dbuf[i + 8] = (uint8_t)getDibitWithReliability(opts, state, &rel);
-        ctx.dbuf_reliab[i + 8] = rel;
+        dsd_dibit_soft_t soft = {.reliability = 255};
+        ctx.dbuf[i + 8] = (uint8_t)getDibitSoft(opts, state, &soft);
+        ctx.dbuf_reliab[i + 8] = soft.reliability;
     }
 
     nxdn_descramble_with_seed(ctx.dbuf, 182, state->nxdn_pn95_seed);
@@ -710,52 +643,3 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 END:
     nxdn_finalize_sync_reject(state);
 }
-
-#ifdef DSD_NEO_TEST_HOOKS
-int
-dsd_neo_nxdn_test_route_decoded_lich(dsd_opts* opts, dsd_state* state, uint8_t lich, const uint8_t bits[364],
-                                     const uint8_t reliab[364]) {
-    if (opts == NULL || state == NULL || bits == NULL || reliab == NULL) {
-        return -1;
-    }
-
-    nxdn_frame_ctx ctx;
-    nxdn_frame_ctx_init(&ctx);
-    ctx.lich = lich;
-
-    if (!nxdn_validate_lich_direction(opts, state, &ctx)) {
-        goto END;
-    }
-    if (!nxdn_apply_lich_profile(opts, state, &ctx)) {
-        goto END;
-    }
-
-    nxdn_mark_carrier_sync_active(state);
-
-    for (size_t i = 0U; i < 182U; i++) {
-        const size_t idx = i * 2U;
-        ctx.dbuf[i] = (uint8_t)(((bits[idx] & 1U) << 1) | (bits[idx + 1U] & 1U));
-        ctx.dbuf_reliab[i] = reliab[idx];
-    }
-    nxdn_unpack_payload_fields(&ctx);
-
-    ctx.lich_rf = (ctx.lich >> 5) & 0x3;
-    ctx.direction = (ctx.lich % 2 == 0) ? 0 : 1;
-
-    nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
-    if (opts->scanner_mode == 1) {
-        state->last_cc_sync_time = time(NULL) + 2;
-    }
-
-    nxdn_print_voice_or_data_and_sync_lfsr(state, &ctx);
-    nxdn_update_sacch_mode(state, ctx.lich);
-    nxdn_decode_control_channels(opts, state, &ctx);
-    nxdn_process_voice_and_mbe(opts, state, &ctx);
-    nxdn_handle_post_voice_facch2_lfsr(state, &ctx);
-    return 1;
-
-END:
-    nxdn_finalize_sync_reject(state);
-    return 0;
-}
-#endif

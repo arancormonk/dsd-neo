@@ -142,11 +142,6 @@ dmr_sm_ctx_t* dmr_sm_get_ctx(void);
  * ============================================================================ */
 
 /**
- * @brief Emit an event to the global state machine.
- */
-void dmr_sm_emit(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev);
-
-/**
  * @brief Emit voice sync event for a slot.
  */
 void dmr_sm_emit_voice_sync(dsd_opts* opts, dsd_state* state, int slot);
@@ -160,11 +155,6 @@ void dmr_sm_emit_data_sync(dsd_opts* opts, dsd_state* state, int slot);
  * @brief Emit release event.
  */
 void dmr_sm_emit_release(dsd_opts* opts, dsd_state* state, int slot);
-
-/**
- * @brief Emit CC sync event.
- */
-void dmr_sm_emit_cc_sync(dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Emit a group voice grant event.
@@ -181,11 +171,6 @@ void dmr_sm_emit_indiv_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int
  */
 void dmr_sm_init(const dsd_opts* opts, const dsd_state* state);
 
-/**
- * @brief Periodic tick for the global state machine singleton.
- */
-void dmr_sm_tick(dsd_opts* opts, dsd_state* state);
-
 /* ============================================================================
  * Public API - Neighbor/CC Candidate Management
  * ============================================================================ */
@@ -194,11 +179,6 @@ void dmr_sm_tick(dsd_opts* opts, dsd_state* state);
  * @brief Update neighbor/alternate control channel list.
  */
 void dmr_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count);
-
-/**
- * @brief Fetch the next candidate CC frequency.
- */
-int dmr_sm_next_cc_candidate(dsd_state* state, long* out_freq);
 
 /* ============================================================================
  * Helper: Create events

@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief OP25-compatible Gardner timing recovery for CQPSK symbol synchronization.
+ * @brief State shared by the OP25-compatible Gardner timing recovery.
  */
 
 #ifndef DSP_TED_H
@@ -14,16 +14,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* TED Configuration structure (GNU Radio-style native float) */
-typedef struct {
-    int enabled;
-    int sps; /* nominal samples per symbol. At 48 kHz: P25P1=10, P25P2=8, NXDN=20 */
-    /* OP25-compatible Gardner parameters (from p25_demodulator.py) */
-    float gain_mu;    /* mu loop gain, default 0.025 (OP25 default) */
-    float gain_omega; /* omega loop gain, default 0.1 * gain_mu^2 */
-    float omega_rel;  /* relative omega limit, default 0.002 (±0.2%) */
-} ted_config_t;
 
 /* Delay line size for MMSE interpolation (matches OP25's NUM_COMPLEX) */
 #define TED_DL_SIZE 100
@@ -70,78 +60,6 @@ void ted_init_state(ted_state_t* state);
  * @param state TED state to soft-reset.
  */
 void ted_soft_reset(ted_state_t* state);
-
-/**
- * @brief OP25-compatible Gardner timing recovery with decimation to symbol rate.
- *
- * Uses 8-tap MMSE polyphase interpolation (matching GNU Radio's interpolator)
- * with OP25's Gardner algorithm for symbol timing recovery. This implementation
- * decimates from sample rate to symbol rate, outputting one complex sample per
- * symbol.
- *
- * Key features:
- *   - 8-tap MMSE polyphase interpolation with linear coefficient interpolation
- *   - Circular delay line with doubled storage for wrap-free access
- *   - OP25's Gardner error formula: (last - current) * mid
- *   - Dual-loop update: both omega (symbol period) and mu (phase)
- *   - Lock detector based on Yair Linn's research
- *
- * @param config TED configuration (gain_mu, gain_omega, omega_rel, sps).
- * @param state  TED state (mu, omega, last_sample, delay_line).
- * @param x      Input/output interleaved I/Q buffer. On output, contains
- *               symbol-rate samples.
- * @param N      Pointer to buffer length (interleaved floats). Updated with
- *               output length (will be smaller due to decimation).
- * @param y      Work buffer for symbol-rate output (must be at least size N).
- * @note This function decimates to symbol rate and is designed for CQPSK paths.
- *       Do not use for non-CQPSK paths that expect sample-rate data downstream.
- */
-void gardner_timing_adjust(const ted_config_t* config, ted_state_t* state, float* x, int* N, float* y);
-
-/**
- * @brief Return the current smoothed TED residual (EMA of Gardner error).
- *
- * Positive values indicate a persistent "sample early" bias (center → right),
- * negative values indicate "sample late" (center → left). Zero means no bias
- * or TED disabled. Returns float for full precision.
- */
-static inline float
-ted_residual(const ted_state_t* s) {
-    return s ? s->e_ema : 0.0f;
-}
-
-/**
- * @brief Return the lock detector accumulator value (Yair Linn method).
- *
- * Positive values indicate good lock (symbol energy >> mid-symbol energy).
- * Negative values indicate poor lock or unlocked state.
- * Threshold of ~0.5 * lock_count is a reasonable lock indicator.
- *
- * @return Lock accumulator value, or 0 if state is NULL.
- */
-static inline float
-ted_lock_accum(const ted_state_t* s) {
-    return s ? s->lock_accum : 0.0f;
-}
-
-/**
- * @brief Check if TED is locked (simplified threshold check).
- *
- * Uses Yair Linn's method: compares eye-center vs mid-symbol energy.
- * Returns true if the normalized lock metric exceeds a threshold.
- *
- * @param s TED state.
- * @param threshold Lock threshold (default ~0.4 is reasonable).
- * @return Non-zero if locked, zero otherwise.
- */
-static inline int
-ted_is_locked(const ted_state_t* s, float threshold) {
-    if (!s || s->lock_count <= 0) {
-        return 0;
-    }
-    float normalized = s->lock_accum / (float)s->lock_count;
-    return normalized > threshold ? 1 : 0;
-}
 
 #ifdef __cplusplus
 }

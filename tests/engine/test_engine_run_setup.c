@@ -16,10 +16,55 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_START_WRAP)
+static int g_rtl_create_calls = 0;
+static int g_rtl_start_calls = 0;
+static int g_rtl_destroy_calls = 0;
+static int g_rtl_create_result = 0;
+static int g_rtl_start_result = 0;
+static int g_fake_rtl_context = 0;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int
+__wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
+    (void)opts;
+    g_rtl_create_calls++;
+    *out_ctx = g_rtl_create_result == 0 ? (RtlSdrContext*)&g_fake_rtl_context : NULL;
+    return g_rtl_create_result;
+}
+
+int
+__wrap_rtl_stream_start(RtlSdrContext* ctx) {
+    (void)ctx;
+    g_rtl_start_calls++;
+    return g_rtl_start_result;
+}
+
+int
+__wrap_rtl_stream_destroy(RtlSdrContext* ctx) {
+    (void)ctx;
+    g_rtl_destroy_calls++;
+    return 0;
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+
+static void
+reset_rtl_start_fakes(int create_result, int start_result) {
+    g_rtl_create_calls = 0;
+    g_rtl_start_calls = 0;
+    g_rtl_destroy_calls = 0;
+    g_rtl_create_result = create_result;
+    g_rtl_start_result = start_result;
+}
 #endif
 
 static int
@@ -148,7 +193,7 @@ test_conflicting_scan_modes_fail_before_live_setup(void) {
 
     opts->trunk_scan_enabled = 1;
     opts->scanner_mode = 1;
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = expect_true("conflicting scan modes rejected", rc != 0);
     free_test_runtime(opts, state);
@@ -165,7 +210,7 @@ test_m17_udp_input_and_output_specs(void) {
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "m17udp:rx.example:17000");
     DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "m17udp:tx.example:17001");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("m17 run ok", rc == 0);
@@ -187,7 +232,7 @@ test_m17_userdata_is_normalized_during_common_setup(void) {
     }
 
     DSD_SNPRINTF(state->m17dat, sizeof state->m17dat, "%s", "M17:31:n0call:all:16000:7");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("m17 userdata run ok", rc == 0);
@@ -202,6 +247,66 @@ test_m17_userdata_is_normalized_during_common_setup(void) {
 }
 
 static int
+test_m17_stream_encoder_rejects_unsupported_input(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    opts->playfiles = 0;
+    opts->m17encoder = 1;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "m17udp:rx.example:17000");
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+
+    int test_rc = expect_true("M17 stream encoder rejects non-PCM input", rc != 0);
+    free_test_runtime(opts, state);
+    return test_rc;
+}
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_START_WRAP)
+static int
+test_m17_stream_encoder_propagates_rtl_start_failures(void) {
+    int test_rc = 0;
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    opts->playfiles = 0;
+    opts->m17encoder = 1;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    reset_rtl_start_fakes(-1, 0);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+
+    test_rc |= expect_true("M17 RTL create failure rejects startup", rc != 0);
+    test_rc |= expect_true("M17 RTL create failure stops before start",
+                           g_rtl_create_calls == 1 && g_rtl_start_calls == 0 && g_rtl_destroy_calls == 0);
+    test_rc |=
+        expect_true("M17 RTL create failure clears stream state", opts->rtl_started == 0 && state->rtl_ctx == NULL);
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->playfiles = 0;
+    opts->m17encoder = 1;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234");
+    reset_rtl_start_fakes(0, -1);
+    rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+
+    test_rc |= expect_true("M17 RTL start failure rejects startup", rc != 0);
+    test_rc |= expect_true("M17 RTL start failure destroys context",
+                           g_rtl_create_calls == 1 && g_rtl_start_calls == 1 && g_rtl_destroy_calls == 1);
+    test_rc |=
+        expect_true("M17 RTL start failure clears stream state", opts->rtl_started == 0 && state->rtl_ctx == NULL);
+    free_test_runtime(opts, state);
+    return test_rc;
+}
+#endif
+
+static int
 test_udp_input_defaults_and_null_output(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
@@ -210,7 +315,7 @@ test_udp_input_defaults_and_null_output(void) {
     }
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "udp");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("udp run ok", rc == 0);
@@ -223,6 +328,78 @@ test_udp_input_defaults_and_null_output(void) {
 }
 
 static int
+test_udp_output_connection_failure_is_fatal(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "udp:invalid host:23456");
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+
+    int test_rc = expect_true("UDP output connection failure rejects setup", rc != 0);
+    test_rc |= expect_true("UDP output connection failure preserves requested output",
+                           strcmp(opts->audio_out_dev, "udp:invalid host:23456") == 0);
+    test_rc |= expect_true("UDP output connection failure does not select another backend", opts->audio_out_type == 9);
+
+    free_test_runtime(opts, state);
+    return test_rc;
+}
+
+static int
+test_tcp_connection_failure_is_fatal(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    opts->frame_m17 = 0;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:127.0.0.1:0");
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+
+    int test_rc = expect_true("TCP connection failure rejects setup", rc != 0);
+    test_rc |= expect_true("TCP connection failure preserves requested input",
+                           strcmp(opts->audio_in_dev, "tcp:127.0.0.1:0") == 0);
+    test_rc |= expect_true("TCP connection failure does not select Pulse", opts->audio_in_type != AUDIO_IN_PULSE);
+
+    free_test_runtime(opts, state);
+    return test_rc;
+}
+
+#ifndef USE_RADIO
+static int
+test_unavailable_radio_inputs_are_rejected(void) {
+    static const char* const specs[] = {
+        "rtl",
+        "rtltcp:127.0.0.1:1234",
+        "soapy:driver=test",
+    };
+    int test_rc = 0;
+
+    for (size_t i = 0; i < sizeof specs / sizeof specs[0]; i++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+
+        opts->playfiles = 0;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", specs[i]);
+        int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+
+        test_rc |= expect_true("unavailable radio input rejects setup", rc != 0);
+        test_rc |= expect_true("unavailable radio input preserves requested device",
+                               strcmp(opts->audio_in_dev, specs[i]) == 0);
+
+        free_test_runtime(opts, state);
+    }
+    return test_rc;
+}
+#endif
+
+static int
 test_rtltcp_tuning_tokens_and_bias(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
@@ -233,7 +410,7 @@ test_rtltcp_tuning_tokens_and_bias(void) {
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s",
                  "rtltcp:radio.local:1234:769.00625M:28:3:24:-47:5:bias=off");
     opts->rtl_bias_tee = 1;
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("rtltcp run ok", rc == 0);
@@ -266,7 +443,7 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     opts->rtlsdr_ppm_error = -2;
     opts->rtl_squelch_level = 0.25;
     opts->rtl_bias_tee = 1;
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("rtltcp invalid run ok", rc == 0);
@@ -287,7 +464,7 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     }
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:short.example:7777:450M:11:bias=on");
     opts->rtl_bias_tee = 0;
-    rc = dsd_engine_run(opts, state);
+    rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     test_rc |= expect_true("rtltcp partial run ok", rc == 0);
     test_rc |= expect_true("rtltcp partial host", strcmp(opts->rtltcp_hostname, "short.example") == 0);
@@ -310,7 +487,7 @@ test_soapy_setup_normalizes_args_and_tuning(void) {
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s",
                  "soapy:driver=test,serial=ABC:450.5M:7:2:12:-33:3");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
 
     int test_rc = 0;
     test_rc |= expect_true("soapy run ok", rc == 0);
@@ -334,7 +511,7 @@ test_iq_replay_guard_and_requested_setup(void) {
     }
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq");
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     int test_rc = expect_true("direct iqreplay rejected", rc != 0);
     free_test_runtime(opts, state);
 
@@ -343,7 +520,7 @@ test_iq_replay_guard_and_requested_setup(void) {
     }
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "iqreplay:/tmp/capture.iq");
     opts->iq_replay_requested = 1;
-    rc = dsd_engine_run(opts, state);
+    rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     test_rc |= expect_true("requested iqreplay accepted", rc == 0);
     test_rc |= expect_true("requested iqreplay state", opts->iq_replay_active == 1 && opts->rtltcp_enabled == 0
                                                            && opts->audio_in_type == AUDIO_IN_RTL);
@@ -358,7 +535,16 @@ main(void) {
     rc |= test_conflicting_scan_modes_fail_before_live_setup();
     rc |= test_m17_udp_input_and_output_specs();
     rc |= test_m17_userdata_is_normalized_during_common_setup();
+    rc |= test_m17_stream_encoder_rejects_unsupported_input();
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_START_WRAP)
+    rc |= test_m17_stream_encoder_propagates_rtl_start_failures();
+#endif
     rc |= test_udp_input_defaults_and_null_output();
+    rc |= test_udp_output_connection_failure_is_fatal();
+    rc |= test_tcp_connection_failure_is_fatal();
+#ifndef USE_RADIO
+    rc |= test_unavailable_radio_inputs_are_rejected();
+#endif
     rc |= test_rtltcp_tuning_tokens_and_bias();
     rc |= test_rtltcp_invalid_and_partial_tuning_tokens();
     rc |= test_soapy_setup_normalizes_args_and_tuning();

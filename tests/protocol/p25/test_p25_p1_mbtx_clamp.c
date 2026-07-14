@@ -8,9 +8,7 @@
  * and diagnostic notice is emitted.
  */
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <errno.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +16,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_test_shim.h"
 #include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -25,119 +24,7 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Shim: decode one MBT using seeded IDEN parameters and return fields
-int p25_test_decode_mbt_with_iden(const unsigned char* mbt, int mbt_len, int iden, int type, int tdma, long base,
-                                  int spac, long* out_cc, long* out_wacn, int* out_sysid);
-
-static void
-sm_noop_init(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
-}
-
-static void
-sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)dst;
-    (void)src;
-}
-
-static void
-sm_noop_on_release(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
-    (void)opts;
-    (void)state;
-    (void)freqs;
-    (void)count;
-}
-
-static void
-sm_noop_tick(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static int
-sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
-    (void)state;
-    (void)out_freq;
-    return 0;
-}
-
-static p25_sm_api
-sm_noop_api(void) {
-    p25_sm_api api = {0};
-    api.init = sm_noop_init;
-    api.on_group_grant = sm_noop_on_group_grant;
-    api.on_indiv_grant = sm_noop_on_indiv_grant;
-    api.on_release = sm_noop_on_release;
-    api.on_neighbor_update = sm_noop_on_neighbor_update;
-    api.next_cc_candidate = sm_noop_next_cc_candidate;
-    api.tick = sm_noop_tick;
-    return api;
-}
-
-// Additional stubs referenced by linked objects (rigctl/rtl streaming)
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
 // Alias decode helpers stubbed
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -189,11 +76,6 @@ int
 main(void) {
     int rc = 0;
 
-    {
-        p25_sm_api api = sm_noop_api();
-        p25_sm_set_api(&api);
-    }
-
     // Build ALT MBT NET_STS_BCST with CHAN-T referencing iden=1 while we seed iden=0 only.
     uint8_t mbt[48];
     DSD_MEMSET(mbt, 0, sizeof(mbt));
@@ -219,8 +101,20 @@ main(void) {
     long cc = -1, wacn = -1;
     int sysid = -1;
     // Seed only iden=0 (different than CHAN-T’s iden=1) so mapping should be rejected.
-    int sh = p25_test_decode_mbt_with_iden(mbt, (int)sizeof(mbt), /*iden*/ 0, /*type*/ 1, /*tdma*/ 0,
-                                           /*base*/ 851000000 / 5, /*spac*/ 100, &cc, &wacn, &sysid);
+    const p25_test_iden_config iden_cfg = {
+        .iden = 0,
+        .type = 1,
+        .tdma = 0,
+        .base = 851000000 / 5,
+        .spac = 100,
+    };
+    const p25_test_mbt_outputs outputs = {
+        .cc = &cc,
+        .wacn = &wacn,
+        .sysid = &sysid,
+        .inspect_iden = -1,
+    };
+    int sh = p25_test_decode_mbt_with_iden_nb(mbt, (int)sizeof(mbt), &iden_cfg, &outputs);
     if (sh != 0) {
         DSD_FPRINTF(stderr, "shim failed: %d\n", sh);
         return 102;

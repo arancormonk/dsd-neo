@@ -74,7 +74,6 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     } else if (g_get_frame_sync_calls == 5) {
         // Start another correlated tune while trunking owns dispatch, then
         // leave it pending across the next continuously synchronized frame.
-        opts->p25_trunk = 1;
         opts->trunk_enable = 1;
         g_failed_tune_request = dsd_trunk_tuning_request_begin();
         dsd_trunk_tuning_request_mark_ready(g_failed_tune_request);
@@ -84,7 +83,6 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
         // this or the following conventional frame.
         dsd_trunk_tuning_request_publish(g_failed_tune_request, DSD_TRUNK_TUNE_RESULT_FAILED);
         g_failed_gate_seen = !dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation());
-        opts->p25_trunk = 0;
         opts->trunk_enable = 0;
     }
     if (g_get_frame_sync_calls <= 7) {
@@ -137,7 +135,7 @@ main(void) {
     hooks.tick = fake_trunk_scan_tick;
     dsd_trunk_scan_hooks_set(hooks);
 
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
     dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
 
     int test_rc = 0;

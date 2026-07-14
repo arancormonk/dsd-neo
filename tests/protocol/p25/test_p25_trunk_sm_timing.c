@@ -12,7 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -24,35 +24,30 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
-// Stubs
-bool
-SetFreq(int sockfd, long int freq) { // NOLINT(misc-use-internal-linkage)
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(int sockfd, int bandwidth) { // NOLINT(misc-use-internal-linkage)
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-return_to_cc(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
-struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
 
-int
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) { // NOLINT(misc-use-internal-linkage)
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
 }
 
 static int
@@ -67,7 +62,7 @@ expect_eq_int(const char* tag, int got, int want) {
 static void
 setup_opts(dsd_opts* opts, int input_rate_hz) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    opts->p25_trunk = 1;
+    opts->trunk_enable = 1;
     opts->trunk_tune_group_calls = 1;
     if (input_rate_hz > 0) {
         opts->audio_in_type = AUDIO_IN_WAV;
@@ -151,10 +146,12 @@ run_timing_case(int input_rate_hz, int expected_tdma_sps, int expected_fdma_sps)
 int
 main(void) {
     int rc = 0;
+    install_trunk_tuning_hooks();
 
     rc |= run_timing_case(0, 8, 10);
     rc |= run_timing_case(96000, 16, 20);
 
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

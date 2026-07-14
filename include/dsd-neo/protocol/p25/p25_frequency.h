@@ -41,14 +41,19 @@ typedef struct {
 } p25_freq_trace_t;
 
 long int process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel);
-long int process_channel_to_freq_with_mode(const dsd_opts* opts, dsd_state* state, int channel, int prefer_tdma);
 long int process_channel_to_freq_trace(const dsd_opts* opts, dsd_state* state, int channel, p25_freq_trace_t* trace);
 long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel);
 long int nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel);
 
 void p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out, size_t outsz);
 int p25_channel_type_is_tdma(int chan_type);
-int p25_channel_type_slots_per_carrier(int chan_type);
+
+static inline int
+p25_channel_type_slots_per_carrier(int chan_type) {
+    const int type = chan_type & 0xF;
+    return type <= 2 ? 1 : (type == 4 ? 4 : 2);
+}
+
 void p25_invalidate_chan_map_for_iden(dsd_state* state, int iden);
 
 /**

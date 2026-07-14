@@ -17,7 +17,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -89,9 +88,8 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 }
 
 void
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     (void)state;
-    (void)opts;
     ++g_status_classify_calls;
 }
 
@@ -109,7 +107,6 @@ p25_crypto_reset_slot(dsd_state* state, int slot) {
     }
     state->p25_crypto_state[slot] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_p2_audio_allowed[slot] = 0;
-    state->p25_p2_enc_lockout_muted[slot] = 0U;
 }
 
 static void
@@ -159,7 +156,6 @@ assert_common_tdu_state(const dsd_opts* opts, const dsd_state* state) {
     assert(g_sm_tdu_calls == 1);
     assert(strcmp(state->call_string[0], "                     ") == 0);
     assert(strcmp(state->call_string[1], "                     ") == 0);
-    assert(state->p25_p1_last_tdu != (time_t)0);
     assert(state->p25_p1_last_tdu_m > 0.0);
     assert(state->payload_miP == 0);
     assert(state->payload_algid == 0);

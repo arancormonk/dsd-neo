@@ -62,8 +62,7 @@ dsd_isatty(int fd) {
 }
 
 void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts;
+dsd_neo_config_init(void) {
     ++g_config_init_calls;
     g_config_available = 1;
     DSD_MEMSET(&g_config, 0, sizeof g_config);
@@ -285,7 +284,6 @@ test_rtltcp_trunking_imports_group_allow_list_and_null_output(void) {
     rc |= with_stdin_text(input, dsd_bootstrap_interactive, &opts, &state);
     rc |= expect_str("rtltcp-audio-in", opts.audio_in_dev, "rtltcp:host.example:2345:851.375M:30:-5:12:7:2");
     rc |= expect_int("rtltcp-decode-mode", g_last_decode_mode, DSDCFG_MODE_P25P1);
-    rc |= expect_int("rtltcp-trunk-p25", opts.p25_trunk, 1);
     rc |= expect_int("rtltcp-trunk-enable", opts.trunk_enable, 1);
     rc |= expect_str("rtltcp-channel-file", opts.chan_in_file, "chan.csv");
     rc |= expect_str("rtltcp-group-file", opts.group_in_file, "group.csv");

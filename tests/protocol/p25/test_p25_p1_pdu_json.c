@@ -7,9 +7,10 @@
  * Verify P25 Phase 1 PDU JSON emission for data SAPs.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +28,7 @@
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
 typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
-void dsd_neo_config_init(const dsd_opts* opts);
+void dsd_neo_config_init(void);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
 // Use a local shim that sets up real opts/state in a separate TU.
@@ -73,36 +74,6 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     g_utf8_calls++;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (!input || !output || len <= 0) {
-        return;
-    }
-    int k = 0;
-    for (int i = 0; i < len; i++) {
-        output[k++] = (input[i] >> 7) & 1;
-        output[k++] = (input[i] >> 6) & 1;
-        output[k++] = (input[i] >> 5) & 1;
-        output[k++] = (input[i] >> 4) & 1;
-        output[k++] = (input[i] >> 3) & 1;
-        output[k++] = (input[i] >> 2) & 1;
-        output[k++] = (input[i] >> 1) & 1;
-        output[k++] = (input[i] >> 0) & 1;
-    }
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    // Simple MSB-first packer
-    uint64_t v = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (BufferIn[i] & 1);
-    }
-    return v;
-}
-
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
@@ -115,7 +86,7 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
 
     char prefix[7];
     for (int i = 0; i < 6; i++) {
-        prefix[i] = (char)ConvertBitIntoBytes(input + ((size_t)i * 8U), 8);
+        prefix[i] = (char)convert_bits_into_output(input + ((size_t)i * 8U), 8);
     }
     prefix[6] = '\0';
     if (strcmp(prefix, "$GPRMC") != 0) {
@@ -133,40 +104,6 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)state;
     (void)len;
     (void)input;
-}
-
-// Additional stubs referenced by linked objects (rigctl/rtl streaming)
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
 }
 
 static int
@@ -264,7 +201,7 @@ int
 main(void) {
     int rc = 0;
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_p1_pdu_json") != 0) {

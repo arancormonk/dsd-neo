@@ -8,6 +8,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include <assert.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -32,7 +33,8 @@ enum {
 
 static int dibit_calls;
 static int soft_symbol_calls;
-static int soft_mbe_calls;
+static int mbe_frame_calls;
+static int voice_play_calls;
 static int slow_data_calls;
 static int ui_calls;
 static int watchdog_history_calls;
@@ -46,7 +48,8 @@ static void
 reset_counters(void) {
     dibit_calls = 0;
     soft_symbol_calls = 0;
-    soft_mbe_calls = 0;
+    mbe_frame_calls = 0;
+    voice_play_calls = 0;
     slow_data_calls = 0;
     ui_calls = 0;
     watchdog_history_calls = 0;
@@ -58,9 +61,10 @@ reset_counters(void) {
 }
 
 int
-getDibit(dsd_opts* opts, dsd_state* state) {
+get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)state;
+    (void)out_analog_signal;
     int value = dibit_calls & 3;
     dibit_calls++;
     return value;
@@ -77,16 +81,44 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
 }
 
 void
-soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
     (void)opts;
     (void)state;
     assert(imbe_fr == NULL);
     assert(ambe_fr != NULL);
     assert(imbe7100_fr == NULL);
-    if (soft_mbe_calls == 0) {
+    if (mbe_frame_calls == 0) {
         DSD_MEMCPY(captured_ambe_frame, ambe_fr, sizeof(captured_ambe_frame));
     }
-    soft_mbe_calls++;
+    mbe_frame_calls++;
+}
+
+void
+playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    voice_play_calls++;
+}
+
+void
+playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    voice_play_calls++;
+}
+
+void
+playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    voice_play_calls++;
+}
+
+void
+playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    voice_play_calls++;
 }
 
 void
@@ -132,7 +164,8 @@ dstar_header_decode_soft(struct dsd_state* state, const float soft_symbols[DSD_D
 static void
 assert_voice_loop_counts(int expected_ui_calls) {
     assert(dibit_calls == DSTAR_EXPECTED_VOICE_DIBITS + DSTAR_EXPECTED_SLOW_DIBITS);
-    assert(soft_mbe_calls == DSTAR_VOICE_FRAMES);
+    assert(mbe_frame_calls == DSTAR_VOICE_FRAMES);
+    assert(voice_play_calls == DSTAR_VOICE_FRAMES);
     assert(slow_data_calls == 1);
     assert(ui_calls == expected_ui_calls);
     assert(watchdog_history_calls == DSTAR_VOICE_FRAMES);
@@ -161,6 +194,8 @@ test_voice_process_without_ncurses(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
     reset_counters();
 
     processDSTAR(&opts, &state);
@@ -178,6 +213,8 @@ test_voice_process_with_ncurses_refresh(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 2;
     opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     reset_counters();
 
@@ -194,6 +231,8 @@ test_header_process_captures_header_then_voice(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
     reset_counters();
 
     processDSTAR_HD(&opts, &state);

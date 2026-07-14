@@ -8,13 +8,11 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int dsd_app_post_cmd(int cmd_id, const void* payload, size_t payload_sz);
 int dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus

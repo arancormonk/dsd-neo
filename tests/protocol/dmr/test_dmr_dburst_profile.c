@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -17,6 +18,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_dburst_profile.h"
 #include "dsd-neo/core/safe_api.h"
 
 static int g_pi_calls;
@@ -31,6 +33,7 @@ static int g_block_assembler_calls;
 static uint8_t g_block_assembler_last_len;
 static uint8_t g_block_assembler_last_burst;
 static uint8_t g_block_assembler_last_type;
+static uint8_t g_block_assembler_last_bytes[25];
 static int g_lip_calls;
 static int g_reset_blocks_calls;
 static uint32_t g_bptc_extract_errors;
@@ -42,7 +45,6 @@ static int g_r34_list_status;
 static int g_r34_list_count;
 static uint8_t g_r34_soft_bytes[18];
 static uint8_t g_r34_hard_bytes[18];
-static uint8_t g_r34_legacy_bytes[18];
 static dmr_r34_candidate g_r34_candidates[4];
 
 static void
@@ -59,6 +61,7 @@ reset_handler_counters(void) {
     g_block_assembler_last_len = 0;
     g_block_assembler_last_burst = 0;
     g_block_assembler_last_type = 0;
+    DSD_MEMSET(g_block_assembler_last_bytes, 0, sizeof(g_block_assembler_last_bytes));
     g_lip_calls = 0;
     g_reset_blocks_calls = 0;
     g_bptc_extract_errors = 0;
@@ -70,7 +73,6 @@ reset_handler_counters(void) {
     g_r34_list_count = 0;
     DSD_MEMSET(g_r34_soft_bytes, 0, sizeof(g_r34_soft_bytes));
     DSD_MEMSET(g_r34_hard_bytes, 0, sizeof(g_r34_hard_bytes));
-    DSD_MEMSET(g_r34_legacy_bytes, 0, sizeof(g_r34_legacy_bytes));
     DSD_MEMSET(g_r34_candidates, 0, sizeof(g_r34_candidates));
 }
 
@@ -80,39 +82,6 @@ dsd_fopen_private(const char* path, const char* mode) {
     (void)path;
     (void)mode;
     return NULL;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-pack_bit_array_into_byte_array(const uint8_t* bits, uint8_t* bytes, int len) {
-    if (len <= 0) {
-        return;
-    }
-    const size_t byte_count = (size_t)len;
-    DSD_MEMSET(bytes, 0, byte_count * sizeof(uint8_t));
-    for (size_t byte = 0U; byte < byte_count; byte++) {
-        for (size_t bit = 0U; bit < 8U; bit++) {
-            bytes[byte] = (uint8_t)((bytes[byte] << 1U) | (bits[(byte * 8U) + bit] & 1U));
-        }
-    }
-}
-
-enum {
-    TEST_DBURST_F_BPTC = 1U << 0U,
-    TEST_DBURST_F_TRELLIS = 1U << 1U,
-    TEST_DBURST_F_LC = 1U << 3U,
-    TEST_DBURST_F_FULL = 1U << 4U,
-    TEST_DBURST_F_UDT = 0x80U,
-};
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t value = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        value = (value << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return value;
 }
 
 uint16_t
@@ -216,13 +185,6 @@ dmr_r34_viterbi_decode_list(const uint8_t* dibits, const uint8_t* reliab, dmr_r3
     return g_r34_list_status;
 }
 
-uint32_t
-dmr_34(const uint8_t* input, uint8_t treturn[18]) {
-    (void)input;
-    DSD_MEMCPY(treturn, g_r34_legacy_bytes, 18U);
-    return 0;
-}
-
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
     (void)opts;
@@ -274,11 +236,15 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
                     uint8_t type) {
     (void)opts;
     (void)state;
-    (void)block_bytes;
     g_block_assembler_calls++;
     g_block_assembler_last_len = block_len;
     g_block_assembler_last_burst = databurst;
     g_block_assembler_last_type = type;
+    if (block_bytes != NULL) {
+        const size_t copy_len =
+            block_len < sizeof(g_block_assembler_last_bytes) ? block_len : sizeof(g_block_assembler_last_bytes);
+        DSD_MEMCPY(g_block_assembler_last_bytes, block_bytes, copy_len);
+    }
 }
 
 void
@@ -350,156 +316,6 @@ write_confirmed_crc9_bytes(uint8_t* bytes, uint8_t dbsn, uint16_t crc_mask) {
     pack_bit_array_into_byte_array(bits, bytes, 18);
 }
 
-static int
-capture_profile(uint8_t databurst, uint8_t conf_data, uint8_t header_format, uint8_t* pdu_len, uint8_t* pdu_start,
-                uint8_t* crclen, uint32_t* crcmask, uint8_t* flags, char subtype[8], uint8_t* data_p_head) {
-    static dsd_opts opts;
-    static dsd_state state;
-    dsd_neo_dmr_test_dburst_profile_result result;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-
-    state.currentslot = 1;
-    state.data_p_head[1] = 1;
-    state.data_conf_data[1] = conf_data;
-    state.data_header_format[1] = header_format;
-    if (!dsd_neo_dmr_test_dburst_profile(&opts, &state, databurst, 1, &result)) {
-        return 0;
-    }
-
-    *pdu_len = result.pdu_len;
-    *pdu_start = result.pdu_start;
-    *crclen = result.crclen;
-    *crcmask = result.crcmask;
-    *flags = result.flags;
-    DSD_SNPRINTF(subtype, 8U, "%s", result.subtype);
-    *data_p_head = result.data_p_head;
-    return 1;
-}
-
-static int
-test_base_profiles(void) {
-    int rc = 0;
-    uint8_t pdu_len = 0;
-    uint8_t pdu_start = 0xFFU;
-    uint8_t crclen = 0;
-    uint32_t crcmask = 0;
-    uint8_t flags = 0;
-    uint8_t data_p_head = 0;
-    char subtype[8];
-    DSD_MEMSET(subtype, 0, sizeof(subtype));
-
-    rc |= expect_u8(
-        "pi-profile-ok",
-        (uint8_t)capture_profile(0x00U, 0U, 1U, &pdu_len, &pdu_start, &crclen, &crcmask, &flags, subtype, &data_p_head),
-        1U);
-    rc |= expect_str("pi-subtype", subtype, " PI  ");
-    rc |= expect_u8("pi-pdu-len", pdu_len, 12U);
-    rc |= expect_u8("pi-pdu-start", pdu_start, 0U);
-    rc |= expect_u8("pi-crclen", crclen, 16U);
-    rc |= expect_u32("pi-crcmask", crcmask, 0x6969U);
-    rc |= expect_u8("pi-flags", flags, TEST_DBURST_F_BPTC);
-    rc |= expect_u8("pi-clears-data-p-head", data_p_head, 0U);
-
-    rc |= expect_u8(
-        "vlc-profile-ok",
-        (uint8_t)capture_profile(0x01U, 0U, 1U, &pdu_len, &pdu_start, &crclen, &crcmask, &flags, subtype, &data_p_head),
-        1U);
-    rc |= expect_str("vlc-subtype", subtype, " VLC ");
-    rc |= expect_u8("vlc-flags", flags, TEST_DBURST_F_BPTC | TEST_DBURST_F_LC);
-    rc |= expect_u8("vlc-crclen", crclen, 24U);
-    rc |= expect_u32("vlc-crcmask", crcmask, 0x969696U);
-
-    rc |= expect_u8(
-        "r34-profile-ok",
-        (uint8_t)capture_profile(0x08U, 0U, 1U, &pdu_len, &pdu_start, &crclen, &crcmask, &flags, subtype, &data_p_head),
-        1U);
-    rc |= expect_str("r34-subtype", subtype, " R34U ");
-    rc |= expect_u8("r34-pdu-len", pdu_len, 18U);
-    rc |= expect_u8("r34-flags", flags, TEST_DBURST_F_TRELLIS);
-    rc |= expect_u8("r34-keeps-data-p-head", data_p_head, 1U);
-    return rc;
-}
-
-static int
-test_dynamic_profiles(void) {
-    int rc = 0;
-    uint8_t pdu_len = 0;
-    uint8_t pdu_start = 0;
-    uint8_t crclen = 0;
-    uint32_t crcmask = 0;
-    uint8_t flags = 0;
-    uint8_t data_p_head = 0;
-    char subtype[8];
-    DSD_MEMSET(subtype, 0, sizeof(subtype));
-
-    rc |= expect_u8(
-        "r12c-profile-ok",
-        (uint8_t)capture_profile(0x07U, 1U, 1U, &pdu_len, &pdu_start, &crclen, &crcmask, &flags, subtype, &data_p_head),
-        1U);
-    rc |= expect_str("r12c-subtype", subtype, " R12C ");
-    rc |= expect_u8("r12c-pdu-len", pdu_len, 10U);
-    rc |= expect_u8("r12c-pdu-start", pdu_start, 2U);
-    rc |= expect_u8("r12c-crclen", crclen, 9U);
-    rc |= expect_u8("r12c-flags", flags, TEST_DBURST_F_BPTC);
-
-    rc |= expect_u8(
-        "udtc-profile-ok",
-        (uint8_t)capture_profile(0x07U, 1U, 0U, &pdu_len, &pdu_start, &crclen, &crcmask, &flags, subtype, &data_p_head),
-        1U);
-    rc |= expect_str("udtc-subtype", subtype, " UDTC ");
-    rc |= expect_u8("udtc-pdu-len", pdu_len, 10U);
-    rc |= expect_u8("udtc-flags", flags, TEST_DBURST_F_BPTC | TEST_DBURST_F_UDT);
-
-    rc |= expect_u8(
-        "r34c-profile-ok",
-        (uint8_t)capture_profile(0x08U, 1U, 1U, &pdu_len, &pdu_start, &crclen, &crcmask, &flags, subtype, &data_p_head),
-        1U);
-    rc |= expect_str("r34c-subtype", subtype, " R34C ");
-    rc |= expect_u8("r34c-pdu-len", pdu_len, 16U);
-    rc |= expect_u8("r34c-pdu-start", pdu_start, 2U);
-
-    rc |= expect_u8(
-        "full-confirmed-profile-ok",
-        (uint8_t)capture_profile(0x0AU, 1U, 1U, &pdu_len, &pdu_start, &crclen, &crcmask, &flags, subtype, &data_p_head),
-        1U);
-    rc |= expect_str("full-confirmed-subtype", subtype, " R_1C ");
-    rc |= expect_u8("full-confirmed-pdu-len", pdu_len, 22U);
-    rc |= expect_u8("full-confirmed-pdu-start", pdu_start, 2U);
-    rc |= expect_u8("full-confirmed-flags", flags, TEST_DBURST_F_FULL);
-    return rc;
-}
-
-static int
-test_special_profiles(void) {
-    int rc = 0;
-    uint8_t pdu_len = 0;
-    uint8_t pdu_start = 0;
-    uint8_t crclen = 0;
-    uint32_t crcmask = 0;
-    uint8_t flags = 0;
-    uint8_t data_p_head = 0;
-    char subtype[8];
-    DSD_MEMSET(subtype, 0, sizeof(subtype));
-
-    rc |= expect_u8(
-        "embedded-profile-ok",
-        (uint8_t)capture_profile(0xEBU, 0U, 1U, &pdu_len, &pdu_start, &crclen, &crcmask, &flags, subtype, &data_p_head),
-        1U);
-    rc |= expect_u8("embedded-pdu-len", pdu_len, 9U);
-    rc |= expect_u8("embedded-crclen", crclen, 5U);
-    rc |= expect_u8("embedded-clears-data-p-head", data_p_head, 0U);
-
-    rc |= expect_u8(
-        "unknown-profile-ok",
-        (uint8_t)capture_profile(0x40U, 0U, 1U, &pdu_len, &pdu_start, &crclen, &crcmask, &flags, subtype, &data_p_head),
-        1U);
-    rc |= expect_str("unknown-subtype", subtype, " _UNK ");
-    rc |= expect_u8("unknown-pdu-len", pdu_len, 25U);
-    rc |= expect_u8("unknown-flags", flags, TEST_DBURST_F_FULL);
-    return rc;
-}
-
 static void
 prepare_handler_state(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst, uint8_t conf_data,
                       uint8_t header_format, int audio_in_type) {
@@ -518,6 +334,68 @@ prepare_handler_state(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8
     }
 }
 
+typedef struct {
+    uint8_t databurst;
+    uint8_t confirmed;
+    uint8_t header_format;
+    const char* subtype;
+    uint32_t crcmask;
+    uint8_t flags;
+    uint8_t crclen;
+    uint8_t pdu_len;
+    uint8_t pdu_start;
+} expected_profile;
+
+static int
+test_profile_contracts(void) {
+    static const expected_profile expected[] = {
+        {0x00U, 0U, 1U, " PI  ", 0x6969U, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0x01U, 0U, 1U, " VLC ", 0x969696U, DMR_DBURST_F_BPTC | DMR_DBURST_F_LC, 24U, 12U, 0U},
+        {0x02U, 0U, 1U, " TLC ", 0x999999U, DMR_DBURST_F_BPTC | DMR_DBURST_F_LC, 24U, 12U, 0U},
+        {0x03U, 0U, 1U, " CSBK ", 0xA5A5U, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0x04U, 0U, 1U, " MBCH ", 0xAAAAU, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0x05U, 0U, 1U, " MBCC ", 0U, DMR_DBURST_F_BPTC, 0U, 12U, 0U},
+        {0x06U, 0U, 1U, " DATA ", 0xCCCCU, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0x07U, 0U, 1U, " R12U ", 0x0F0U, DMR_DBURST_F_BPTC, 9U, 12U, 0U},
+        {0x07U, 1U, 1U, " R12C ", 0x0F0U, DMR_DBURST_F_BPTC, 9U, 10U, 2U},
+        {0x07U, 0U, 0U, " UDTU ", 0x0F0U, DMR_DBURST_F_BPTC | DMR_DBURST_F_UDT, 9U, 12U, 0U},
+        {0x07U, 1U, 0U, " UDTC ", 0x0F0U, DMR_DBURST_F_BPTC | DMR_DBURST_F_UDT, 9U, 10U, 2U},
+        {0x08U, 0U, 1U, " R34U ", 0x1FFU, DMR_DBURST_F_TRELLIS, 9U, 18U, 0U},
+        {0x08U, 1U, 1U, " R34C ", 0x1FFU, DMR_DBURST_F_TRELLIS, 9U, 16U, 2U},
+        {0x09U, 0U, 1U, " IDLE ", 0U, 0U, 0U, 0U, 0U},
+        {0x0AU, 0U, 1U, " R_1U ", 0x10FU, DMR_DBURST_F_FULL, 9U, 24U, 0U},
+        {0x0AU, 1U, 1U, " R_1C ", 0x10FU, DMR_DBURST_F_FULL, 9U, 22U, 2U},
+        {0x0BU, 0U, 1U, " USBD ", 0x3333U, DMR_DBURST_F_BPTC, 16U, 12U, 0U},
+        {0xEBU, 0U, 1U, NULL, 0U, DMR_DBURST_F_EMB, 5U, 9U, 0U},
+        {0x40U, 0U, 1U, " _UNK ", 0U, DMR_DBURST_F_FULL, 0U, 25U, 0U},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
+        const expected_profile* want = &expected[i];
+        dmr_dburst_profile got;
+        dmr_dburst_profile_resolve(want->databurst, want->confirmed, want->header_format, &got);
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] flags", i);
+        rc |= expect_u8(tag, got.flags, want->flags);
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] crc length", i);
+        rc |= expect_u8(tag, got.crclen, want->crclen);
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] crc mask", i);
+        rc |= expect_u32(tag, got.crcmask, want->crcmask);
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] PDU length", i);
+        rc |= expect_u8(tag, got.pdu_len, want->pdu_len);
+        DSD_SNPRINTF(tag, sizeof(tag), "profile[%zu] PDU start", i);
+        rc |= expect_u8(tag, got.pdu_start, want->pdu_start);
+        if ((got.subtype == NULL) != (want->subtype == NULL)
+            || (got.subtype != NULL && strcmp(got.subtype, want->subtype) != 0)) {
+            DSD_FPRINTF(stderr, "profile[%zu] subtype: got '%s' want '%s'\n", i, got.subtype ? got.subtype : "(null)",
+                        want->subtype ? want->subtype : "(null)");
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 static int
 test_handler_dispatch_paths(void) {
     int rc = 0;
@@ -526,7 +404,7 @@ test_handler_dispatch_paths(void) {
     uint8_t info[196];
 
     prepare_handler_state(&opts, &state, info, 0x03U, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x03U);
+    dmr_data_burst_handler(&opts, &state, info, 0x03U, NULL);
     rc |= expect_u8("csbk-call", (uint8_t)g_cspdu_calls, 1U);
     rc |= expect_u8("csbk-clears-head", state.data_p_head[1], 0U);
     rc |= expect_u8("csbk-crc-fails-with-stub-mask", (uint8_t)g_cspdu_last_crc_correct, 0U);
@@ -534,52 +412,56 @@ test_handler_dispatch_paths(void) {
 
     prepare_handler_state(&opts, &state, info, 0x04U, 0U, 1U, 0);
     state.data_block_counter[1] = 7;
-    dmr_data_burst_handler(&opts, &state, info, 0x04U);
+    dmr_data_burst_handler(&opts, &state, info, 0x04U, NULL);
     rc |= expect_u8("mbch-block-call", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("mbch-block-type", g_block_assembler_last_type, 2U);
     rc |= expect_u8("mbch-header-valid", state.data_header_valid[1], 1U);
     rc |= expect_u8("mbch-counter-reset", state.data_block_counter[1], 0U);
 
     prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x06U);
+    dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
     rc |= expect_u8("data-header-call", (uint8_t)g_dheader_calls, 1U);
     rc |= expect_u8("data-header-keeps-head", state.data_p_head[1], 1U);
     rc |= expect_u8("data-header-crc-fails-with-stub-mask", (uint8_t)g_dheader_last_crc_correct, 0U);
 
     prepare_handler_state(&opts, &state, info, 0x07U, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x07U);
+    dmr_data_burst_handler(&opts, &state, info, 0x07U, NULL);
     rc |= expect_u8("r12u-block-call", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r12u-block-type", g_block_assembler_last_type, 1U);
     rc |= expect_u8("r12u-block-len", g_block_assembler_last_len, 12U);
 
     prepare_handler_state(&opts, &state, info, 0x07U, 1U, 0U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x07U);
+    dmr_data_burst_handler(&opts, &state, info, 0x07U, NULL);
     rc |= expect_u8("udtc-block-call", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("udtc-block-type", g_block_assembler_last_type, 3U);
     rc |= expect_u8("udtc-block-len", g_block_assembler_last_len, 10U);
 
     prepare_handler_state(&opts, &state, info, 0x08U, 0U, 1U, AUDIO_IN_SYMBOL_BIN);
-    dmr_data_burst_handler(&opts, &state, info, 0x08U);
+    g_r34_hard_bytes[0] = 0x42U;
+    g_r34_soft_bytes[0] = 0x99U;
+    dmr_data_burst_handler(&opts, &state, info, 0x08U, NULL);
     rc |= expect_u8("r34u-block-call", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r34u-block-burst", g_block_assembler_last_burst, 0x08U);
     rc |= expect_u8("r34u-block-len", g_block_assembler_last_len, 18U);
+    rc |= expect_u8("r34u-symbol-replay-uses-canonical-hard-decoder", g_block_assembler_last_bytes[0], 0x42U);
 
     prepare_handler_state(&opts, &state, info, 0x0AU, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x0AU);
+    dmr_data_burst_handler(&opts, &state, info, 0x0AU, NULL);
     rc |= expect_u8("full-rate-block-call", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("full-rate-block-burst", g_block_assembler_last_burst, 0x0AU);
     rc |= expect_u8("full-rate-block-len", g_block_assembler_last_len, 24U);
 
     prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x0BU);
+    dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
     rc |= expect_u8("usbd-lip-call", (uint8_t)g_lip_calls, 1U);
     rc |= expect_str("usbd-subtype", state.fsubtype, " USBD ");
 
     prepare_handler_state(&opts, &state, info, 0xEBU, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0xEBU);
+    dmr_data_burst_handler(&opts, &state, info, 0xEBU, NULL);
     rc |= expect_u8("embedded-flco-call", (uint8_t)g_flco_calls, 1U);
     rc |= expect_u8("embedded-flco-type", g_flco_last_type, 3U);
     rc |= expect_u8("embedded-crc-correct", (uint8_t)g_flco_last_crc_correct, 1U);
+    rc |= expect_u8("embedded-clears-head", state.data_p_head[1], 0U);
 
     return rc;
 }
@@ -592,29 +474,29 @@ test_handler_additional_dispatch_paths(void) {
     uint8_t info[196];
 
     prepare_handler_state(&opts, &state, info, 0x00U, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x00U);
+    dmr_data_burst_handler(&opts, &state, info, 0x00U, NULL);
     rc |= expect_u8("pi-call", (uint8_t)g_pi_calls, 1U);
     rc |= expect_u8("pi-clears-head", state.data_p_head[1], 0U);
 
     prepare_handler_state(&opts, &state, info, 0x01U, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x01U);
+    dmr_data_burst_handler(&opts, &state, info, 0x01U, NULL);
     rc |= expect_u8("vlc-flco-call", (uint8_t)g_flco_calls, 1U);
     rc |= expect_u8("vlc-flco-type", g_flco_last_type, 1U);
     rc |= expect_u8("vlc-crc-correct", (uint8_t)g_flco_last_crc_correct, 1U);
 
     prepare_handler_state(&opts, &state, info, 0x02U, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x02U);
+    dmr_data_burst_handler(&opts, &state, info, 0x02U, NULL);
     rc |= expect_u8("tlc-flco-call", (uint8_t)g_flco_calls, 1U);
     rc |= expect_u8("tlc-flco-type", g_flco_last_type, 2U);
 
     prepare_handler_state(&opts, &state, info, 0x05U, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x05U);
+    dmr_data_burst_handler(&opts, &state, info, 0x05U, NULL);
     rc |= expect_u8("mbcc-block-call", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("mbcc-block-type", g_block_assembler_last_type, 2U);
     rc |= expect_u8("mbcc-block-len", g_block_assembler_last_len, 12U);
 
     prepare_handler_state(&opts, &state, info, 0x40U, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x40U);
+    dmr_data_burst_handler(&opts, &state, info, 0x40U, NULL);
     rc |= expect_str("unknown-handler-subtype", state.fsubtype, " _UNK ");
     rc |= expect_u8("unknown-handler-no-assembler", (uint8_t)g_block_assembler_calls, 0U);
     return rc;
@@ -629,7 +511,7 @@ test_bptc_ras_and_usbd_services(void) {
 
     prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
     g_bptc_reserved[2] = 1U;
-    dmr_data_burst_handler(&opts, &state, info, 0x06U);
+    dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
     rc |= expect_u8("ras-data-header-call", (uint8_t)g_dheader_calls, 1U);
     rc |= expect_u8("ras-crc-presented-correct", (uint8_t)g_dheader_last_crc_correct, 1U);
     rc |= expect_u8("ras-header-valid", state.data_block_crc_valid[1][0], 1U);
@@ -637,13 +519,13 @@ test_bptc_ras_and_usbd_services(void) {
     prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
     g_bptc_reserved[2] = 1U;
     write_byte_bits(g_bptc_bits, 8U, 0x68U);
-    dmr_data_burst_handler(&opts, &state, info, 0x06U);
+    dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
     rc |= expect_u8("ras-disabled-by-proprietary-header-call", (uint8_t)g_dheader_calls, 1U);
     rc |= expect_u8("ras-disabled-crc-stays-failed", (uint8_t)g_dheader_last_crc_correct, 0U);
 
     prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
     write_byte_bits(g_bptc_bits, 0U, 0x90U);
-    dmr_data_burst_handler(&opts, &state, info, 0x0BU);
+    dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
     rc |= expect_u8("usbd-reserved-service-no-lip", (uint8_t)g_lip_calls, 0U);
     rc |= expect_str("usbd-reserved-service-subtype", state.fsubtype, " USBD ");
     return rc;
@@ -659,7 +541,7 @@ test_confirmed_sequence_paths(void) {
     prepare_handler_state(&opts, &state, info, 0x07U, 1U, 1U, 0);
     state.data_block_counter[1] = 4U;
     write_confirmed_crc9_payload(g_bptc_bits, 12U, 0U);
-    dmr_data_burst_handler(&opts, &state, info, 0x07U);
+    dmr_data_burst_handler(&opts, &state, info, 0x07U, NULL);
     rc |= expect_u8("r12c-crc-records-failure", state.data_block_crc_valid[1][4], 0U);
     rc |= expect_u8("r12c-non-aggressive-seeds-dbsn", state.data_dbsn_have[1], 1U);
     rc |= expect_u8("r12c-expected-dbsn", state.data_dbsn_expected[1], 13U);
@@ -671,7 +553,7 @@ test_confirmed_sequence_paths(void) {
     state.data_dbsn_expected[1] = 7U;
     state.data_block_counter[1] = 5U;
     write_confirmed_crc9_payload(info, 5U, 0x10FU);
-    dmr_data_burst_handler(&opts, &state, info, 0x0AU);
+    dmr_data_burst_handler(&opts, &state, info, 0x0AU, NULL);
     rc |= expect_u8("full-confirmed-crc-records-pass", state.data_block_crc_valid[1][5], 1U);
     rc |= expect_u8("full-confirmed-seq-reset", (uint8_t)g_reset_blocks_calls, 1U);
     rc |= expect_u8("full-confirmed-seq-suppresses-dispatch", (uint8_t)g_block_assembler_calls, 0U);
@@ -695,7 +577,7 @@ test_trellis_candidate_and_fallback_paths(void) {
     g_r34_list_count = 2;
     write_confirmed_crc9_bytes(g_r34_candidates[0].bytes18, 3U, 0U);
     write_confirmed_crc9_bytes(g_r34_candidates[1].bytes18, 9U, 0x1FFU);
-    dmr_data_burst_handler_ex(&opts, &state, info, 0x08U, reliab);
+    dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
     rc |= expect_u8("r34c-list-crc-records-pass", state.data_block_crc_valid[1][6], 1U);
     rc |= expect_u8("r34c-list-updates-dbsn", state.data_dbsn_expected[1], 10U);
     rc |= expect_u8("r34c-list-dispatches", (uint8_t)g_block_assembler_calls, 1U);
@@ -704,18 +586,17 @@ test_trellis_candidate_and_fallback_paths(void) {
     prepare_handler_state(&opts, &state, info, 0x08U, 0U, 1U, 0);
     DSD_MEMSET(reliab, 13, sizeof(reliab));
     g_r34_soft_bytes[2] = 0xA5U;
-    dmr_data_burst_handler_ex(&opts, &state, info, 0x08U, reliab);
+    dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
     rc |= expect_u8("r34u-soft-fallback-dispatches", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r34u-soft-fallback-len", g_block_assembler_last_len, 18U);
+    rc |= expect_u8("r34u-soft-fallback-payload", g_block_assembler_last_bytes[2], 0xA5U);
     return rc;
 }
 
 int
 main(void) {
     int rc = 0;
-    rc |= test_base_profiles();
-    rc |= test_dynamic_profiles();
-    rc |= test_special_profiles();
+    rc |= test_profile_contracts();
     rc |= test_handler_dispatch_paths();
     rc |= test_handler_additional_dispatch_paths();
     rc |= test_bptc_ras_and_usbd_services();

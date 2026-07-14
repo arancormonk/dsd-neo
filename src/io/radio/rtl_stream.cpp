@@ -7,8 +7,8 @@
  * @file
  * @brief RAII orchestrator for RTL-SDR stream lifecycle and control.
  *
- * Wraps legacy C streaming control with a C++ class managing start/stop,
- * tuning, and reads with error propagation. Intended as a safer API surface.
+ * Manages the global radio backend's start/stop, tuning, reads, and error
+ * propagation behind the public context API.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -21,18 +21,13 @@
 #include "dsd-neo/core/safe_api.h"
 
 extern "C" {
-// Local forward declarations for legacy functions now hidden from public headers
+// Backend operations hidden from the installed context API.
 int dsd_rtl_stream_open(dsd_opts* opts);
-void dsd_rtl_stream_close(void);
 int dsd_rtl_stream_read(float* out, size_t count, dsd_opts* opts, const dsd_state* state);
-uint32_t dsd_rtl_stream_output_generation(void);
+uint32_t rtl_stream_output_generation(void);
 int dsd_rtl_stream_tune(dsd_opts* opts, long int frequency);
-int dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t token);
-unsigned int dsd_rtl_stream_output_rate(void);
+int dsd_rtl_stream_tune_tagged(dsd_opts* opts, long int frequency, uint64_t request_id);
 int dsd_rtl_stream_soft_stop(void);
-int rtl_stream_request_ppm(dsd_opts* opts, int ppm);
-int rtl_stream_adjust_ppm(dsd_opts* opts, int delta);
-int rtl_stream_get_requested_ppm(const dsd_opts* opts);
 void dsd_rtl_stream_register_requested_ppm_opts(dsd_opts* active_opts, dsd_opts* caller_opts);
 void dsd_rtl_stream_unregister_requested_ppm_opts(dsd_opts* active_opts, dsd_opts* caller_opts);
 }
@@ -58,12 +53,9 @@ copy_opts(const dsd_opts* src) {
 }
 } // namespace
 
-RtlSdrOrchestrator::RtlSdrOrchestrator(const dsd_opts& opts) : RtlSdrOrchestrator(opts, nullptr) {}
-
-RtlSdrOrchestrator::RtlSdrOrchestrator(const dsd_opts& opts, dsd_opts* caller_opts)
-    : opts_(copy_opts(&opts)), caller_opts_(caller_opts), started_(false), last_error_code_(0) {
+RtlSdrOrchestrator::RtlSdrOrchestrator(dsd_opts& opts) : opts_(copy_opts(&opts)), caller_opts_(&opts), started_(false) {
     if (opts_) {
-        dsd_rtl_stream_register_requested_ppm_opts(opts_, caller_opts_);
+        dsd_rtl_stream_register_requested_ppm_opts(opts_, &opts);
     }
 }
 
@@ -89,16 +81,13 @@ RtlSdrOrchestrator::start() {
         return 0;
     }
     if (!opts_) {
-        last_error_code_ = -1;
-        return last_error_code_;
+        return -1;
     }
     int r = dsd_rtl_stream_open(opts_);
     if (r < 0) {
-        last_error_code_ = r;
         return r;
     }
     started_ = true;
-    last_error_code_ = 0;
     return 0;
 }
 
@@ -118,21 +107,9 @@ RtlSdrOrchestrator::stop() {
      * exitflag=1 and terminate the whole application when merely closing the
      * menu. The soft-stop mirrors cleanup (threads, rings, device) without
      * requesting process exit.
-     */
+    */
     dsd_rtl_stream_soft_stop();
     started_ = false;
-    last_error_code_ = 0;
-    return 0;
-}
-
-int
-RtlSdrOrchestrator::soft_stop() {
-    if (!started_) {
-        return 0;
-    }
-    dsd_rtl_stream_soft_stop();
-    started_ = false;
-    last_error_code_ = 0;
     return 0;
 }
 
@@ -144,61 +121,30 @@ RtlSdrOrchestrator::soft_stop() {
 int
 RtlSdrOrchestrator::tune(uint32_t center_freq_hz) {
     if (!started_) {
-        last_error_code_ = -1;
-        return last_error_code_;
+        return -1;
     }
     if (!opts_) {
-        last_error_code_ = -2;
-        return last_error_code_;
+        return -2;
     }
     int rc = dsd_rtl_stream_tune(opts_, (long int)center_freq_hz);
     if (rc != 0) {
-        last_error_code_ = rc;
         return rc;
     }
-    last_error_code_ = 0;
     return 0;
 }
 
 int
-RtlSdrOrchestrator::tune_tagged(uint32_t center_freq_hz, uint64_t token) {
+RtlSdrOrchestrator::tune_tagged(uint32_t center_freq_hz, uint64_t request_id) {
     if (!started_) {
-        last_error_code_ = -1;
-        return last_error_code_;
+        return -1;
     }
     if (!opts_) {
-        last_error_code_ = -2;
-        return last_error_code_;
+        return -2;
     }
-    if (token == 0U) {
-        last_error_code_ = RTL_STREAM_TUNE_FAILED;
-        return last_error_code_;
+    if (request_id == 0U) {
+        return RTL_STREAM_TUNE_FAILED;
     }
-    int rc = dsd_rtl_stream_tune_tagged(opts_, (long int)center_freq_hz, token);
-    last_error_code_ = rc;
-    return rc;
-}
-
-int
-RtlSdrOrchestrator::request_ppm(int ppm) {
-    if (!opts_) {
-        last_error_code_ = -2;
-        return last_error_code_;
-    }
-    int rc = rtl_stream_request_ppm(opts_, ppm);
-    last_error_code_ = rc;
-    return rc;
-}
-
-int
-RtlSdrOrchestrator::adjust_ppm(int delta) {
-    if (!opts_) {
-        last_error_code_ = -2;
-        return last_error_code_;
-    }
-    int rc = rtl_stream_adjust_ppm(opts_, delta);
-    last_error_code_ = rc;
-    return rc;
+    return dsd_rtl_stream_tune_tagged(opts_, (long int)center_freq_hz, request_id);
 }
 
 /**
@@ -211,19 +157,16 @@ RtlSdrOrchestrator::adjust_ppm(int delta) {
 int
 RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
     if (!started_) {
-        last_error_code_ = -1;
-        return last_error_code_;
+        return -1;
     }
     if (!opts_) {
-        last_error_code_ = -2;
-        return last_error_code_;
+        return -2;
     }
     const bool replay_active = opts_->iq_replay_active != 0;
     for (;;) {
-        const uint32_t generation_before = dsd_rtl_stream_output_generation();
+        const uint32_t generation_before = rtl_stream_output_generation();
         int got = dsd_rtl_stream_read(out, count, opts_, nullptr);
         if (got < 0) {
-            last_error_code_ = got;
             return got;
         }
         /* Replay RESET/rewind boundaries wait for the submitted demod
@@ -233,28 +176,10 @@ RtlSdrOrchestrator::read(float* out, size_t count, int& out_got) {
          * batch can starve forever on a short looping capture. Live retunes do
          * not have this ordering guarantee and must still reject a stale
          * handoff. */
-        if (!replay_active && dsd_rtl_stream_output_generation() != generation_before) {
+        if (!replay_active && rtl_stream_output_generation() != generation_before) {
             continue;
         }
         out_got = got;
-        last_error_code_ = 0;
         return 0;
     }
-}
-
-/**
- * @brief Current output sample rate in Hz.
- * @return Output sample rate in Hz.
- */
-unsigned int
-RtlSdrOrchestrator::output_rate() {
-    return dsd_rtl_stream_output_rate();
-}
-
-int
-RtlSdrOrchestrator::requested_ppm() const {
-    if (!opts_) {
-        return 0;
-    }
-    return rtl_stream_get_requested_ppm(opts_);
 }

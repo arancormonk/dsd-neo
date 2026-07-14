@@ -14,7 +14,7 @@
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -240,11 +240,11 @@ bootstrap_handle_loaded_user_config(dsd_opts* opts, dsd_state* state, const boot
     *user_cfg_loaded = 1;
     if (explicit_profile_selected) {
         state->config_autosave_enabled = 0;
-        LOG_NOTICE("Autosave disabled for profiled config %s to avoid overwriting profile sections.\n", cfg_path);
-        LOG_NOTICE("Loaded user config from %s (profile: %s)\n", cfg_path, args->profile_cli);
+        LOG_INFO("NOTICE: Autosave disabled for profiled config %s to avoid overwriting profile sections.\n", cfg_path);
+        LOG_INFO("NOTICE: Loaded user config from %s (profile: %s)\n", cfg_path, args->profile_cli);
         return;
     }
-    LOG_NOTICE("Loaded user config from %s\n", cfg_path);
+    LOG_INFO("NOTICE: Loaded user config from %s\n", cfg_path);
 }
 
 static int
@@ -256,7 +256,7 @@ bootstrap_handle_failed_user_config_load(const bootstrap_cli_args* args, int exp
         return DSD_BOOTSTRAP_ERROR;
     }
     if (args->config_path_cli || config_env || args->enable_config_cli) {
-        LOG_WARNING("Failed to load config file from %s; proceeding without config.\n", cfg_path);
+        LOG_WARN("WARNING: Failed to load config file from %s; proceeding without config.\n", cfg_path);
     }
     return DSD_BOOTSTRAP_CONTINUE;
 }
@@ -517,7 +517,7 @@ bootstrap_handle_validate_config(const bootstrap_cli_args* args, const char* con
         exit_code = 2;
     }
 
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
     bootstrap_set_exit_rc(out_exit_rc, exit_code);
     return DSD_BOOTSTRAP_EXIT;
 }
@@ -572,8 +572,8 @@ bootstrap_handle_list_profiles(const bootstrap_cli_args* args, const char* confi
 }
 
 static const char*
-bootstrap_get_config_env_path(const dsd_opts* opts) {
-    dsd_neo_config_init(opts);
+bootstrap_get_config_env_path(void) {
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* rcfg = dsd_neo_get_config();
     if (rcfg && rcfg->config_path_is_set) {
         return rcfg->config_path;
@@ -621,7 +621,7 @@ bootstrap_record_effective_cli_args(dsd_state* state, char** argv, int argc_effe
 static void
 bootstrap_apply_runtime_config_after_cli(dsd_opts* opts, dsd_state* state) {
     /* Re-parse env-derived config after CLI mapping (CLI sets DSD_NEO_* env overrides). */
-    dsd_neo_config_init(opts);
+    dsd_neo_config_init();
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, state);
 }
 
@@ -664,7 +664,6 @@ bootstrap_apply_trunk_cli_gating(dsd_opts* opts, int argc_effective, char** argv
                                  int explicit_profile_selected) {
     if (bootstrap_effective_cli_has_trunking_override(argc_effective, argv) && user_cfg_loaded && !opts->trunk_cli_seen
         && !explicit_profile_selected) {
-        opts->p25_trunk = 0;
         opts->trunk_enable = 0;
     }
 }
@@ -689,15 +688,15 @@ bootstrap_handle_post_parse_actions(const bootstrap_cli_args* args, dsd_opts* op
 
 static void
 bootstrap_log_startup_banner(void) {
-    LOG_NOTICE("------------------------------------------------------------------------------\n");
-    LOG_NOTICE("| Digital Speech Decoder: DSD-neo %s (%s) \n", GIT_TAG, GIT_HASH);
-    LOG_NOTICE("------------------------------------------------------------------------------\n");
+    LOG_INFO("NOTICE: ------------------------------------------------------------------------------\n");
+    LOG_INFO("NOTICE: | Digital Speech Decoder: DSD-neo %s (%s) \n", GIT_TAG, GIT_HASH);
+    LOG_INFO("NOTICE: ------------------------------------------------------------------------------\n");
 
     const char* versionstr = mbe_versionString();
-    LOG_NOTICE("MBElib-neo Version: %s\n", versionstr);
+    LOG_INFO("NOTICE: MBElib-neo Version: %s\n", versionstr);
 
 #ifdef USE_CODEC2
-    LOG_NOTICE("CODEC2 Support Enabled\n");
+    LOG_INFO("NOTICE: CODEC2 Support Enabled\n");
 #endif
 }
 
@@ -707,7 +706,7 @@ bootstrap_maybe_run_interactive(const bootstrap_cli_args* args, int argc, int us
     if (args->force_bootstrap_cli || (argc <= 1 && !user_cfg_loaded)) {
         if (args->force_bootstrap_cli) {
             dsd_unsetenv("DSD_NEO_NO_BOOTSTRAP");
-            dsd_neo_config_init(opts);
+            dsd_neo_config_init();
         }
         dsd_bootstrap_interactive(opts, state);
     }
@@ -726,7 +725,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     bootstrap_parse_cli_args(argc, argv, &args);
     bootstrap_apply_positional_ini_shortcut(argc, argv, &args);
 
-    const char* config_env = bootstrap_get_config_env_path(opts);
+    const char* config_env = bootstrap_get_config_env_path();
 
     const int explicit_profile_selected = (args.profile_cli && *args.profile_cli) ? 1 : 0;
     int user_cfg_loaded = 0;

@@ -287,7 +287,7 @@ watchdog_event_source_id(const dsd_opts* opts, const dsd_state* state, uint8_t s
     }
 
     if (DSD_SYNC_IS_EDACS(state->lastsynctype)) {
-        return (opts->p25_is_tuned == 1) ? state->lastsrc : 0;
+        return (opts->trunk_is_tuned == 1) ? state->lastsrc : 0;
     }
 
     return source_id;
@@ -682,7 +682,7 @@ watchdog_event_current_apply_dpmr(const dsd_state* state, watchdog_event_current
 static void
 watchdog_event_current_apply_edacs(const dsd_opts* opts, dsd_state* state, watchdog_event_current_ctx* ctx) {
     ctx->source_id = 0;
-    if (opts->p25_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1) {
         ctx->source_id = state->lastsrc;
         ctx->channel = state->edacs_tuned_lcn;
     }
@@ -1051,8 +1051,8 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     char timestr[9];
     char datestr[11];
     time_t now = time(NULL);
-    getTimeN_buf(now, timestr);
-    getDateN_buf(now, datestr);
+    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
     watchdog_event_current_update_item(opts, state, slot, event_struct, &ctx);
 
@@ -1090,8 +1090,8 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
 
     char timestr[9];
     char datestr[11];
-    getTimeN_buf(now, timestr);
-    getDateN_buf(now, datestr);
+    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
     DSD_SNPRINTF(item->event_string, sizeof item->event_string, "%s %s %s", datestr, timestr, status_string);
 }
@@ -1116,8 +1116,8 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
 
     char timestr[9];
     char datestr[11];
-    getTimeN_buf(time(NULL), timestr);
-    getDateN_buf(time(NULL), datestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
     char event_string[2000];
     DSD_MEMSET(event_string, 0, sizeof(event_string));

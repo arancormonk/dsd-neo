@@ -6,18 +6,20 @@
 /*
  * P25 Phase 1 TDULC parser test → LCW retune (format 0x44).
  *
- * Feeds deterministic 6×12-bit data words via read_word() stub to form an LCW
+ * Feeds deterministic 6×12-bit data words through the canonical dibit reader to form an LCW
  * with format 0x44, service=0x00, TG=0x4567, CHAN-T=0x100A. Stubs FEC and
- * analog readers to bypass error correction. Asserts trunk SM gets a group
- * grant when LCW retune is enabled and CC is known.
+ * analog readers to bypass error correction. Asserts the canonical trunk SM
+ * accepts a group grant when LCW retune is enabled and CC is known.
  */
 
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -29,86 +31,37 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+}
+
 void processTDULC(dsd_opts* opts, dsd_state* state);
 
-// Trunk SM hooks capture
-static int g_called = 0;
-static int g_channel = -1;
-static int g_svc = -1;
-static int g_tg = -1;
-static int g_src = -1;
 static int g_rs_hard_result = 0;
 static int g_rs_soft_result = 1;
 static int g_rs_soft_called = 0;
-
-static void
-sm_noop_init(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_on_group_grant_capture(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    g_called++;
-    g_channel = channel;
-    g_svc = svc_bits;
-    g_tg = tg;
-    g_src = src;
-    // Model the synchronous crypto classification performed by the default
-    // state-machine grant handler.
-    state->p25_crypto_state[0] = (svc_bits & 0x40) != 0 ? DSD_P25_CRYPTO_ENCRYPTED_PENDING : DSD_P25_CRYPTO_CLEAR;
-}
-
-static void
-sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)dst;
-    (void)src;
-}
-
-static void
-sm_noop_on_release(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
-    (void)opts;
-    (void)state;
-    (void)freqs;
-    (void)count;
-}
-
-static void
-sm_noop_tick(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static int
-sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
-    (void)state;
-    (void)out_freq;
-    return 0;
-}
-
-static p25_sm_api
-sm_test_api(void) {
-    p25_sm_api api = {0};
-    api.init = sm_noop_init;
-    api.on_group_grant = sm_on_group_grant_capture;
-    api.on_indiv_grant = sm_noop_on_indiv_grant;
-    api.on_release = sm_noop_on_release;
-    api.on_neighbor_update = sm_noop_on_neighbor_update;
-    api.next_cc_candidate = sm_noop_next_cc_candidate;
-    api.tick = sm_noop_tick;
-    return api;
-}
 
 // Alias helpers referenced by LCW path
 void
@@ -167,16 +120,6 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 }
 
 // Minimal utility used by p25_lcw (MSB-first)
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return v;
-}
-
 // FEC stubs (bypass corrections)
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -187,13 +130,6 @@ check_and_fix_golay_24_12(char* dodeca, char* parity, int* fixed_errors) {
         *fixed_errors = 0;
     }
     return 0; // no irrecoverable errors
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-encode_golay_24_12(char* data, char* parity) {
-    (void)data;
-    (void)parity;
 }
 
 int
@@ -214,13 +150,6 @@ check_and_fix_reedsolomon_24_12_13_soft(char* data, char* parity, const int* era
     return 0;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-encode_reedsolomon_24_12_13(char* data, char* parity) {
-    (void)data;
-    (void)parity;
-}
-
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25p1_rs_24_12_13_soft_reliability(char* data, const char* parity, const uint8_t* data_reliab,
@@ -231,13 +160,6 @@ p25p1_rs_24_12_13_soft_reliability(char* data, const char* parity, const uint8_t
     (void)parity_reliab;
     g_rs_soft_called++;
     return g_rs_soft_result;
-}
-
-int
-getDibit(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    return 0;
 }
 
 int
@@ -252,10 +174,10 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     return 0;
 }
 
-// Scripted 12-bit words fed into read_word() in the order TDULC expects:
-// dodeca_data[5]..[0], then dodeca_parity[5]..[0]
-static char g_words[12][12];
+// Scripted 12-bit words fed into the canonical reader in TDULC data-word order.
+static char g_words[6][12];
 static int g_word_index = 0;
+static int g_read_parity_next = 0;
 
 // Helper: write MSB-first bits of an 8- or 16-bit value into an array
 static void
@@ -328,42 +250,36 @@ build_lcw_words(uint8_t lc_format, uint8_t mfid, uint8_t svc, uint16_t group1, u
     DSD_MEMCPY(ordered[5], g_words[5], 12); // data[0]
     DSD_MEMCPY(g_words, ordered, sizeof(ordered));
 
-    // Parity words (not used by stubs): fill with zeros for indices 6..11 in read order parity[5]..[0]
-    for (int w = 6; w < 12; w++) {
-        DSD_MEMSET(g_words[w], 0, 12);
-    }
-
     g_word_index = 0;
+    g_read_parity_next = 0;
 }
 
-// Reader stubs used by TDULC
+// Canonical reader fixture used by TDULC.
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-read_word(dsd_opts* opts, dsd_state* state, char* word, unsigned int length, int* status_count,
-          P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
+read_dibit_update_soft_data(dsd_opts* opts, dsd_state* state, char* buffer, unsigned int count, int* status_count,
+                            P25P1SoftDibit* soft_dibits, int* soft_dibit_index) {
     (void)opts;
     (void)state;
     (void)status_count;
     (void)soft_dibits;
     (void)soft_dibit_index;
-    if (length != 12 || g_word_index >= 12) {
-        DSD_MEMSET(word, 0, length);
+    if (count != 12) {
+        DSD_MEMSET(buffer, 0, count);
         return;
     }
-    DSD_MEMCPY(word, g_words[g_word_index], 12);
-    g_word_index++;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-read_golay24_parity(dsd_opts* opts, dsd_state* state, char* parity, int* status_count, P25P1SoftDibit* soft_dibits,
-                    int* soft_dibit_index) {
-    (void)opts;
-    (void)state;
-    (void)status_count;
-    (void)soft_dibits;
-    (void)soft_dibit_index;
-    DSD_MEMSET(parity, 0, 12);
+    if (g_read_parity_next) {
+        DSD_MEMSET(buffer, 0, 12);
+        g_read_parity_next = 0;
+        return;
+    }
+    if (g_word_index < 6) {
+        DSD_MEMCPY(buffer, g_words[g_word_index], 12);
+        g_word_index++;
+    } else {
+        DSD_MEMSET(buffer, 0, 12);
+    }
+    g_read_parity_next = 1;
 }
 
 static int
@@ -413,11 +329,7 @@ expect_blank_call_string(const char* tag, const char* value) {
 int
 main(void) {
     int rc = 0;
-
-    {
-        p25_sm_api api = sm_test_api();
-        p25_sm_set_api(&api);
-    }
+    install_trunk_tuning_hooks();
 
     // Case 1: Retune enabled (baseline)
     build_lcw_words(0x44, 0x00, 0x00, 0x4567, 0x100A, 0x0000);
@@ -425,11 +337,11 @@ main(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.p25_lcw_retune = 1;
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_enc_calls = 1;
-    opts.p25_is_tuned = 0;
+    opts.trunk_is_tuned = 0;
     opts.floating_point = 1;
     opts.audio_gain = 3.5F;
     opts.payload = 0;
@@ -451,16 +363,17 @@ main(void) {
     state.aout_gain = 0.25F;
     DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "left active");
     DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "right active");
-    g_called = 0;
     g_rs_hard_result = 0;
     g_rs_soft_result = 1;
     g_rs_soft_called = 0;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &opts, &state);
     processTDULC(&opts, &state);
-    rc |= expect_eq_int("grant called", g_called, 1);
-    rc |= expect_eq_int("grant channel", g_channel, 0x100A);
-    rc |= expect_eq_int("grant svc", g_svc, 0x00);
-    rc |= expect_eq_int("grant tg", g_tg, 0x4567);
-    rc |= expect_eq_int("grant src", g_src, lastsrc);
+    rc |= expect_eq_int("grant called", (int)ctx->grant_count, 1);
+    rc |= expect_eq_int("grant channel", ctx->vc_channel, 0x100A);
+    rc |= expect_eq_int("grant svc", ctx->slots[0].svc_bits, 0x00);
+    rc |= expect_eq_int("grant tg", ctx->vc_tg, 0x4567);
+    rc |= expect_eq_int("grant src", ctx->vc_src, lastsrc);
     rc |= expect_eq_int("tdulc duid count", (int)state.p25_p1_duid_tdulc, 1);
     rc |= expect_eq_int("tdulc emergency cleared", state.p25_call_emergency[0], 0);
     rc |= expect_eq_int("tdulc priority cleared", state.p25_call_priority[0], 0);
@@ -468,7 +381,6 @@ main(void) {
     rc |= expect_blank_call_string("tdulc left call string blanked", state.call_string[0]);
     rc |= expect_blank_call_string("tdulc right call string blanked", state.call_string[1]);
     rc |= expect_eq_float("tdulc gain reset", state.aout_gain, opts.audio_gain);
-    rc |= expect_true("tdulc wall time recorded", state.p25_p1_last_tdu != 0);
     rc |= expect_true("tdulc monotonic time recorded", state.p25_p1_last_tdu_m > 0.0);
     rc |= expect_true("tdulc vc sync time refreshed", state.last_vc_sync_time_m > 0.0);
     rc |= expect_eq_int("tdulc preserves dispatched grant crypto", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
@@ -476,30 +388,29 @@ main(void) {
     // Case 2: Retune disabled → no grant
     build_lcw_words(0x44, 0x00, 0x00, 0x1234, 0x100A, 0x0000);
     opts.p25_lcw_retune = 0;
-    g_called = 0;
+    p25_sm_init_ctx(ctx, &opts, &state);
     processTDULC(&opts, &state);
-    rc |= expect_eq_int("retune disabled", g_called, 0);
+    rc |= expect_eq_int("retune disabled", (int)ctx->grant_count, 0);
 
     // Case 3: Encrypted svc under lockout reaches key-aware grant classification.
     build_lcw_words(0x44, 0x00, 0x40 /*ENC*/, 0x2222, 0x100A, 0x0000);
     opts.p25_lcw_retune = 1;
     opts.trunk_tune_enc_calls = 0;
-    g_called = 0;
+    p25_sm_init_ctx(ctx, &opts, &state);
     processTDULC(&opts, &state);
-    rc |= expect_eq_int("encrypted grant dispatched", g_called, 1);
-    rc |= expect_eq_int("encrypted grant svc", g_svc, 0x40);
-    rc |= expect_eq_int("encrypted grant tg", g_tg, 0x2222);
+    rc |= expect_eq_int("encrypted grant dispatched", (int)ctx->grant_count, 1);
     rc |= expect_eq_int("encrypted grant classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
     // Case 4: Malformed/unsupported format (0x00) → no grant
     build_lcw_words(0x00, 0x00, 0x00, 0x3333, 0x100A, 0x0000);
     opts.trunk_tune_enc_calls = 1;
-    g_called = 0;
+    p25_sm_init_ctx(ctx, &opts, &state);
     processTDULC(&opts, &state);
-    rc |= expect_eq_int("unsupported format", g_called, 0);
+    rc |= expect_eq_int("unsupported format", (int)ctx->grant_count, 0);
 
     // Case 5: Hard Reed-Solomon failure recovered by soft reliability still dispatches LCW.
     build_lcw_words(0x44, 0x00, 0x00, 0x3456, 0x100A, 0x0000);
+    dsd_state_ext_free_all(&state);
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.p25_lcw_retune = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -514,18 +425,20 @@ main(void) {
     state.p25_iden_fdma[1].trust = 2;
     state.p25_iden_fdma[1].populated = 1;
     state.p25_chan_tdma_explicit[1] = 1;
-    g_called = 0;
     g_rs_hard_result = 1;
     g_rs_soft_result = 0;
     g_rs_soft_called = 0;
+    p25_sm_init_ctx(ctx, &opts, &state);
     processTDULC(&opts, &state);
     rc |= expect_eq_int("soft rs called", g_rs_soft_called, 1);
     rc |= expect_eq_int("soft rs recovered", (int)state.p25_p1_soft_rs_ok, 1);
     rc |= expect_eq_int("soft rs fec ok", (int)state.p25_p1_voice_fec_ok, 1);
     rc |= expect_eq_int("soft rs fec err", (int)state.p25_p1_voice_fec_err, 0);
-    rc |= expect_eq_int("soft rs dispatch", g_called, 1);
-    rc |= expect_eq_int("soft rs grant tg", g_tg, 0x3456);
+    rc |= expect_eq_int("soft rs dispatch", (int)ctx->grant_count, 1);
+    rc |= expect_eq_int("soft rs grant tg", ctx->vc_tg, 0x3456);
 
+    dsd_state_ext_free_all(&state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
 

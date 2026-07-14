@@ -6,33 +6,33 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "ysf_frame.h"
+#include "ysf_internal.h"
 
-typedef struct mbe_parms mbe_parms;
-typedef struct mbe_process_result mbe_process_result;
-
-uint64_t ConvertBitIntoBytes(const uint8_t* bits, uint32_t n);         // NOLINT(misc-use-internal-linkage)
 void LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state); // NOLINT(misc-use-internal-linkage)
-uint16_t ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len);         // NOLINT(misc-use-internal-linkage)
 int Connect(char* hostname, int portno);                               // NOLINT(misc-use-internal-linkage)
-int __wrap_getDibit(dsd_opts* opts, dsd_state* state);                 // NOLINT(misc-use-internal-linkage)
+int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state,
+                                       int* out_analog_signal); // NOLINT(misc-use-internal-linkage)
 void __wrap_processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
                             char imbe7100_fr[7][24]); // NOLINT(misc-use-internal-linkage)
-int __wrap_dsd_mbe_process_ambe2450_dataf(float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
-                                          const char ambe_d[49], mbe_parms* cur_mp, mbe_parms* prev_mp,
-                                          mbe_parms* prev_mp_enhanced,
-                                          mbe_process_result* result); // NOLINT(misc-use-internal-linkage)
+int __wrap_mbe_processAmbe2450Dataf(float* aout_buf, mbe_process_result* result, const char ambe_d[49],
+                                    mbe_parms* cur_mp, mbe_parms* prev_mp,
+                                    mbe_parms* prev_mp_enhanced); // NOLINT(misc-use-internal-linkage)
 
 static uint8_t g_dibit_stream[512];
 static size_t g_dibit_stream_len;
@@ -45,9 +45,10 @@ static int g_mbe_inbound_errs2[5];
 
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-__wrap_getDibit(dsd_opts* opts, dsd_state* state) {
+__wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)state;
+    (void)out_analog_signal;
     if (g_dibit_stream_pos >= g_dibit_stream_len) {
         return 0;
     }
@@ -89,27 +90,11 @@ encode_k5_bits_to_dibits(const uint8_t* bits, size_t bit_count, uint8_t* dibits)
     }
 }
 
-uint64_t
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t value = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        value = (value << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return value;
-}
-
 void
 LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) {
     (void)buffer_in;
     (void)buffer_out;
     (void)state;
-}
-
-uint16_t
-ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
-    (void)buf;
-    (void)len;
-    return 0;
 }
 
 int
@@ -121,28 +106,22 @@ Connect(char* hostname, int portno) {
 
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
-__wrap_dsd_mbe_process_ambe2450_dataf(float* aout_buf, int* errs, int* errs2, char* err_str, size_t err_str_size,
-                                      const char ambe_d[49], mbe_parms* cur_mp, mbe_parms* prev_mp,
-                                      mbe_parms* prev_mp_enhanced, mbe_process_result* result) {
+__wrap_mbe_processAmbe2450Dataf(float* aout_buf, mbe_process_result* result, const char ambe_d[49], mbe_parms* cur_mp,
+                                mbe_parms* prev_mp, mbe_parms* prev_mp_enhanced) {
     (void)ambe_d;
     (void)cur_mp;
     (void)prev_mp;
     (void)prev_mp_enhanced;
-    (void)result;
 
     assert(g_mbe_call_count < 5);
-    g_mbe_inbound_errs2[g_mbe_call_count] = *errs2;
-    if (errs != NULL) {
-        *errs = 4 + g_mbe_call_count;
-    }
-    if (err_str != NULL && err_str_size > 0U) {
-        DSD_SNPRINTF(err_str, err_str_size, "stub-%d", g_mbe_call_count);
-    }
+    g_mbe_inbound_errs2[g_mbe_call_count] = result->total_errors;
+    result->total_errors = 4 + g_mbe_call_count;
+    result->protected_errors = result->total_errors;
     for (size_t i = 0; i < 160U; i++) {
         aout_buf[i] = (float)(g_mbe_call_count + 1);
     }
     g_mbe_call_count++;
-    return 0;
+    return result->total_errors;
 }
 
 static void
@@ -168,7 +147,7 @@ append_ysf_crc(uint8_t fich_bits[48]) {
         for (size_t bit = 0; bit < 16U; bit++) {
             fich_bits[32U + bit] = (uint8_t)((crc >> (15U - bit)) & 1U);
         }
-        if (dsd_neo_ysf_test_crc16(fich_bits, 48) == 0U) {
+        if (ysf_crc16(fich_bits, 48) == 0U) {
             return;
         }
     }
@@ -201,7 +180,7 @@ append_crc_to_payload(uint8_t* bits, size_t total_bits) {
         for (size_t bit = 0; bit < 16U; bit++) {
             bits[(total_bits - 16U) + bit] = (uint8_t)((crc >> (15U - bit)) & 1U);
         }
-        if (dsd_neo_ysf_test_crc16(bits, (int)total_bits) == 0U) {
+        if (ysf_crc16(bits, (int)total_bits) == 0U) {
             return;
         }
     }
@@ -380,15 +359,9 @@ append_vd_type1_blocks(const uint8_t dch[180], uint8_t voice_seed) {
 
 static void
 append_type2_vech_dibits(uint8_t error_bit) {
-    static const uint8_t vd2_interleave[104] = {
-        0,  26, 52, 78, 1,  27, 53, 79, 2,  28, 54, 80, 3,  29,  55, 81, 4,  30,  56, 82, 5,  31,  57, 83, 6,  32,
-        58, 84, 7,  33, 59, 85, 8,  34, 60, 86, 9,  35, 61, 87,  10, 36, 62, 88,  11, 37, 63, 89,  12, 38, 64, 90,
-        13, 39, 65, 91, 14, 40, 66, 92, 15, 41, 67, 93, 16, 42,  68, 94, 17, 43,  69, 95, 18, 44,  70, 96, 19, 45,
-        71, 97, 20, 46, 72, 98, 21, 47, 73, 99, 22, 48, 74, 100, 23, 49, 75, 101, 24, 50, 76, 102, 25, 51, 77, 103};
-
     for (size_t i = 0; i < 52U; i++) {
-        uint8_t msb_index = vd2_interleave[i * 2U];
-        uint8_t lsb_index = vd2_interleave[(i * 2U) + 1U];
+        uint8_t msb_index = dsd_ysf_vd2_interleave_index(i * 2U);
+        uint8_t lsb_index = dsd_ysf_vd2_interleave_index((i * 2U) + 1U);
         uint8_t desired_msb = 0U;
         uint8_t desired_lsb = (lsb_index == 103U) ? error_bit : 0U;
         uint8_t source_msb = desired_msb ^ test_ysf_pn95_bit(msb_index);
@@ -408,7 +381,7 @@ test_dch_csd1_tracks_destination_and_source(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits(payload, 20U, bits);
 
-    dsd_neo_ysf_test_decode_dch(&state, 0, 0, 0, 0, 0, bits);
+    ysf_dch_decode(&state, 0, 0, 0, 0, 0, bits);
 
     assert(strcmp(state.ysf_tgt, "DESTCALL01") == 0);
     assert(strcmp(state.ysf_src, "SRCCALL02") == 0);
@@ -423,7 +396,7 @@ test_dch_rid_mode_preserves_target_and_source_state(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits("DSTR1SRCR2FULLSRC003", 20U, bits);
 
-    dsd_neo_ysf_test_decode_dch(&state, 0, 0, 0, 0, 1, bits);
+    ysf_dch_decode(&state, 0, 0, 0, 0, 1, bits);
 
     assert(strcmp(state.ysf_tgt, "DSTR1SRCR2") == 0);
     assert(strcmp(state.ysf_src, "FULLSRC003") == 0);
@@ -431,7 +404,7 @@ test_dch_rid_mode_preserves_target_and_source_state(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits("RID01RID02", 10U, bits);
 
-    dsd_neo_ysf_test_decode_dch2(&state, 0, 0, 0, 5, 1, bits);
+    ysf_dch_decode2(&state, 0, 0, 0, 5, 1, bits);
 
     assert(strcmp(state.ysf_tgt, "RID01RID02") == 0);
     assert(strcmp(state.ysf_src, "FULLSRC003") == 0);
@@ -447,7 +420,7 @@ test_dch_csd2_tracks_uplink_and_downlink(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits(payload, 20U, bits);
 
-    dsd_neo_ysf_test_decode_dch(&state, 1, 0, 0, 0, 0, bits);
+    ysf_dch_decode(&state, 1, 0, 0, 0, 0, bits);
 
     assert(strcmp(state.ysf_upl, "UPLINK0001") == 0);
     assert(strcmp(state.ysf_dnl, "DOWNLINK02") == 0);
@@ -465,7 +438,7 @@ test_dch_text_clears_and_sanitizes_segments(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits(payload, sizeof(payload), bits);
 
-    dsd_neo_ysf_test_decode_dch(&state, 2, 0, 0, 1, 0, bits);
+    ysf_dch_decode(&state, 2, 0, 0, 1, 0, bits);
 
     assert(state.ysf_txt[0][0] == 'A');
     assert(state.ysf_txt[0][1] == ' ');
@@ -484,28 +457,28 @@ test_dch2_tracks_destination_source_links_and_remarks(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     pack_bytes_to_bits("DEST2CALL3", 10U, bits);
-    dsd_neo_ysf_test_decode_dch2(&state, 0, 0, 0, 5, 0, bits);
+    ysf_dch_decode2(&state, 0, 0, 0, 5, 0, bits);
     assert(strcmp(state.ysf_tgt, "DEST2CALL3") == 0);
 
     pack_bytes_to_bits("SRC2CALL45", 10U, bits);
-    dsd_neo_ysf_test_decode_dch2(&state, 0, 0, 1, 5, 0, bits);
+    ysf_dch_decode2(&state, 0, 0, 1, 5, 0, bits);
     assert(strcmp(state.ysf_src, "SRC2CALL45") == 0);
 
     pack_bytes_to_bits("UP2CALL678", 10U, bits);
-    dsd_neo_ysf_test_decode_dch2(&state, 0, 0, 2, 5, 0, bits);
+    ysf_dch_decode2(&state, 0, 0, 2, 5, 0, bits);
     assert(strcmp(state.ysf_upl, "UP2CALL678") == 0);
 
     pack_bytes_to_bits("DN2CALL901", 10U, bits);
-    dsd_neo_ysf_test_decode_dch2(&state, 0, 0, 3, 5, 0, bits);
+    ysf_dch_decode2(&state, 0, 0, 3, 5, 0, bits);
     assert(strcmp(state.ysf_dnl, "DN2CALL901") == 0);
 
     pack_bytes_to_bits("RM1AARM2BB", 10U, bits);
-    dsd_neo_ysf_test_decode_dch2(&state, 0, 0, 4, 5, 0, bits);
+    ysf_dch_decode2(&state, 0, 0, 4, 5, 0, bits);
     assert(strcmp(state.ysf_rm1, "RM1AA") == 0);
     assert(strcmp(state.ysf_rm2, "RM2BB") == 0);
 
     pack_bytes_to_bits("RM3CCRM4DD", 10U, bits);
-    dsd_neo_ysf_test_decode_dch2(&state, 0, 0, 5, 5, 0, bits);
+    ysf_dch_decode2(&state, 0, 0, 5, 5, 0, bits);
     assert(strcmp(state.ysf_rm3, "RM3CC") == 0);
     assert(strcmp(state.ysf_rm4, "RM4DD") == 0);
 }
@@ -515,13 +488,13 @@ test_ysf_crc16_known_values(void) {
     uint8_t bits[48];
 
     DSD_MEMSET(bits, 0, sizeof(bits));
-    assert(dsd_neo_ysf_test_crc16(bits, 0) == 0xFFFFU);
-    assert(dsd_neo_ysf_test_crc16(bits, 48) == 0xFFFFU);
+    assert(ysf_crc16(bits, 0) == 0xFFFFU);
+    assert(ysf_crc16(bits, 48) == 0xFFFFU);
 
     for (size_t i = 0; i < sizeof(bits); i++) {
         bits[i] = (uint8_t)((i * 3U) & 1U);
     }
-    assert(dsd_neo_ysf_test_crc16(bits, 48) == 0x2DF0U);
+    assert(ysf_crc16(bits, 48) == 0x2DF0U);
 }
 
 static void
@@ -536,26 +509,26 @@ test_ysf_fich_conv_decodes_fields_and_failures(void) {
 
     encode_fich_input(fich_bits, 0, 0, input);
     DSD_MEMSET(dest, 0xA5, sizeof(dest));
-    assert(dsd_neo_ysf_test_conv_fich(input, dest, &v_error) == 0);
+    assert(ysf_conv_fich(input, dest, &v_error) == 0);
     assert(v_error != UINT32_MAX);
     assert(memcmp(dest, fich_bits, 32U) == 0);
-    assert(ConvertBitIntoBytes(&dest[0], 2U) == 1U);
-    assert(ConvertBitIntoBytes(&dest[4], 2U) == 3U);
-    assert(ConvertBitIntoBytes(&dest[6], 2U) == 2U);
-    assert(ConvertBitIntoBytes(&dest[8], 2U) == 1U);
-    assert(ConvertBitIntoBytes(&dest[10], 3U) == 5U);
-    assert(ConvertBitIntoBytes(&dest[13], 3U) == 6U);
-    assert(ConvertBitIntoBytes(&dest[18], 3U) == 4U);
+    assert(convert_bits_into_output(&dest[0], 2U) == 1U);
+    assert(convert_bits_into_output(&dest[4], 2U) == 3U);
+    assert(convert_bits_into_output(&dest[6], 2U) == 2U);
+    assert(convert_bits_into_output(&dest[8], 2U) == 1U);
+    assert(convert_bits_into_output(&dest[10], 3U) == 5U);
+    assert(convert_bits_into_output(&dest[13], 3U) == 6U);
+    assert(convert_bits_into_output(&dest[18], 3U) == 4U);
     assert(dest[21] == 1U);
-    assert(ConvertBitIntoBytes(&dest[22], 2U) == 2U);
+    assert(convert_bits_into_output(&dest[22], 2U) == 2U);
     assert(dest[24] == 1U);
-    assert(ConvertBitIntoBytes(&dest[25], 7U) == 42U);
+    assert(convert_bits_into_output(&dest[25], 7U) == 42U);
 
     encode_fich_input(fich_bits, 1, 0, input);
-    assert(dsd_neo_ysf_test_conv_fich(input, dest, NULL) == -2);
+    assert(ysf_conv_fich(input, dest, NULL) == -2);
 
     encode_fich_input(fich_bits, 0, 1, input);
-    assert(dsd_neo_ysf_test_conv_fich(input, dest, NULL) != 0);
+    assert(ysf_conv_fich(input, dest, NULL) != 0);
 }
 
 static void
@@ -578,7 +551,7 @@ test_ysf_type2_ambe_majority_and_tail_bits(void) {
         vech_bits[81U + i] = (uint8_t)(i & 1U);
     }
 
-    dsd_neo_ysf_test_build_type2_ambe(vech_bits, temp, ambe_d);
+    ysf_build_type2_ambe(vech_bits, temp, ambe_d);
 
     assert(temp[0] == 1U);
     assert(temp[1] == 0U);
@@ -601,7 +574,7 @@ test_ysf_conv_dch_decodes_valid_csd1_and_rejects_crc_error(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     encode_dch_payload_to_input("DCHDST0001DCHSRC0002", 20U, input, 176U, 9U, 0);
 
-    assert(dsd_neo_ysf_test_conv_dch(&opts, &state, 0, 0, 0, 0, 0, input) == 0);
+    assert(ysf_conv_dch(&opts, &state, 0, 0, 0, 0, 0, input) == 0);
     assert(strcmp(state.ysf_tgt, "DCHDST0001") == 0);
     assert(strcmp(state.ysf_src, "DCHSRC0002") == 0);
 
@@ -609,7 +582,7 @@ test_ysf_conv_dch_decodes_valid_csd1_and_rejects_crc_error(void) {
     DSD_SNPRINTF(state.ysf_src, sizeof(state.ysf_src), "%s", "UNCHANGED");
     encode_dch_payload_to_input("BADDST0001BADSRC0002", 20U, input, 176U, 9U, 1);
 
-    assert(dsd_neo_ysf_test_conv_dch(&opts, &state, 0, 0, 0, 0, 0, input) == -2);
+    assert(ysf_conv_dch(&opts, &state, 0, 0, 0, 0, 0, input) == -2);
     assert(strcmp(state.ysf_tgt, "UNCHANGED") == 0);
     assert(strcmp(state.ysf_src, "UNCHANGED") == 0);
 }
@@ -624,13 +597,13 @@ test_ysf_conv_dch2_decodes_valid_source_and_rejects_crc_error(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     encode_dch_payload_to_input("DCH2SRC789", 10U, input, 96U, 5U, 0);
 
-    assert(dsd_neo_ysf_test_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == 0);
+    assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == 0);
     assert(strcmp(state.ysf_src, "DCH2SRC789") == 0);
 
     DSD_SNPRINTF(state.ysf_src, sizeof(state.ysf_src), "%s", "UNCHANGED");
     encode_dch_payload_to_input("DCH2BAD789", 10U, input, 96U, 5U, 1);
 
-    assert(dsd_neo_ysf_test_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == -2);
+    assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == -2);
     assert(strcmp(state.ysf_src, "UNCHANGED") == 0);
 }
 
@@ -752,7 +725,7 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     assert(state.ysf_fi == 1U);
     assert(state.ysf_dt == 2U);
     assert(strcmp(state.ysf_src, "VD2SRC4444") == 0);
-    assert(strcmp(state.err_str, "stub-4") == 0);
+    assert(strcmp(state.err_str, "========") == 0);
     assert(state.f_l[0] == 5.0F);
     assert(state.f_l[159] == 5.0F);
 }

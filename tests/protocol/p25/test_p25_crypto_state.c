@@ -134,7 +134,6 @@ test_begin_and_sticky_unknown(void) {
 
     int rc = 0;
     rc |= expect_int("encrypted grant pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
-    rc |= expect_int("encrypted grant marker", state.p25_p2_enc_lockout_muted[0], 1);
     rc |= expect_int("encrypted grant gate", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("encrypted grant ring purged", state.p25_p2_audio_ring_count[0], 0);
     rc |= expect_int("encrypted grant companion ring preserved", state.p25_p2_audio_ring_count[1], 3);
@@ -175,7 +174,7 @@ test_algorithm_and_manual_key_resolution(void) {
     rc |=
         expect_int("definitive clear ALGID",
                    p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, 101), DSD_P25_CRYPTO_CLEAR);
-    rc |= expect_int("clear marker removed", state.p25_p2_enc_lockout_muted[0], 0);
+    rc |= expect_int("clear classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     rc |= expect_int("clear preserves user mute setting", opts.unmute_encrypted_p25, 0);
     state.p25_p2_audio_allowed[0] = 1;
     rc |= expect_int("ALGID zero preserves definitive clear",
@@ -186,7 +185,7 @@ test_algorithm_and_manual_key_resolution(void) {
     rc |= expect_int("missing DES key blocked",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x1001, 1, 101),
                      DSD_P25_CRYPTO_BLOCKED);
-    rc |= expect_int("missing key marker", state.p25_p2_enc_lockout_muted[0], 1);
+    rc |= expect_int("missing key gate", state.p25_p2_audio_allowed[0], 0);
 
     state.R = 0x0102030405060708ULL;
     rc |= expect_int("manual DES key decryptable",
@@ -297,8 +296,8 @@ test_imported_key_activation_is_slot_aware(void) {
     state.currentslot = 1;
     state.payload_keyidR = aes_kid;
     state.RR = 0ULL;
-    keyring(&opts, &state);
-    rc |= expect_u64("compatibility keyring uses current slot", state.RR, 0x1111222233334444ULL);
+    keyring_activate_slot(&opts, &state, state.currentslot);
+    rc |= expect_u64("keyring activates explicit slot", state.RR, 0x1111222233334444ULL);
 
     rc |= expect_int("missing imported key blocked",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x81, 0x3456, 0x3333, 201),

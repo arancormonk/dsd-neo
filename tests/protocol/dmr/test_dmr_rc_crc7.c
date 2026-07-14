@@ -8,8 +8,9 @@
  * Verifies masked extraction (mask 0x7A) against crc7 over 4-bit opcode.
  */
 
-#include <assert.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
+#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"

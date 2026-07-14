@@ -20,6 +20,7 @@ extern "C" {
 
 void dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* initial_state);
 void dsd_app_frontend_runtime_stop(void);
+int dsd_app_frontend_redraw_consume(void);
 
 #ifdef __cplusplus
 }

@@ -12,17 +12,14 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -40,16 +37,6 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     return 0;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (uint64_t)(BufferIn[i] & 1U);
-    }
-    return v;
 }
 
 void
@@ -83,39 +70,6 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-bool
-SetFreq(dsd_socket_t sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(dsd_socket_t sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-long int
-GetCurrentFreq(dsd_socket_t sockfd) {
-    (void)sockfd;
-    return 0;
-}
-
-struct RtlSdrContext;
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
@@ -139,14 +93,14 @@ dsd_drain_audio_output(dsd_opts* opts) {
 }
 
 static dsd_trunk_tune_result
-test_return_to_cc(dsd_opts* opts, dsd_state* state) {
+test_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_return_to_cc_calls++;
     if (g_return_to_cc_result != DSD_TRUNK_TUNE_RESULT_OK) {
         return g_return_to_cc_result;
     }
 
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
@@ -240,7 +194,7 @@ main(void) {
     const long next_cc = 852000000L;
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .return_to_cc_result = test_return_to_cc,
+        .return_to_cc_request = test_return_to_cc,
     });
 
     init_env(&opts, &state);

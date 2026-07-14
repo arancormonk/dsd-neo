@@ -10,7 +10,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,8 +17,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-struct RtlSdrContext;
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -29,15 +26,6 @@ struct RtlSdrContext;
 // Use shim to avoid pulling in external deps like mbelib.
 int p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
                            long* out_freq);
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output,
-                                 int len) { // NOLINT(misc-use-internal-linkage)
-    (void)input;
-    (void)output;
-    (void)len;
-}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -79,34 +67,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
     (void)input;
     (void)src;
     (void)slot;
-}
-
-bool
-SetFreq(int sockfd, long int freq) { // NOLINT(misc-use-internal-linkage)
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(int sockfd, int bw) { // NOLINT(misc-use-internal-linkage)
-    (void)sockfd;
-    (void)bw;
-    return false;
-}
-
-void
-return_to_cc(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-}
-struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
-
-int
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) { // NOLINT(misc-use-internal-linkage)
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
 }
 
 static int

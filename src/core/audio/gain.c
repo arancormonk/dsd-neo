@@ -16,9 +16,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <math.h>
-#include <string.h>
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static inline int
@@ -87,7 +86,7 @@ agf_process_20_sample_block(float samp[160], int block_idx, float df, float gain
         samp[idx] = samp[idx] / df;
         samp[idx] = agf_clip_sample(samp[idx], mmin, mmax);
 
-        // Preserve legacy averaging behavior (first 20 entries each block).
+        // Preserve established averaging behavior (first 20 entries each block).
         *aavg += fabsf(samp[i]);
         samp[idx] *= gain * 0.8f;
     }
@@ -116,20 +115,16 @@ agf_update_slot_gain(dsd_state* state, int slot, float aavg) {
     }
 }
 
-// Older float-path autogain used by DMR/P25 mixers.
-// Behavior is intentionally preserved while splitting logic for readability.
+// Float-path autogain used by DMR/P25 mixers.
 void
 agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot) {
-    float empty[160];
-    DSD_MEMSET(empty, 0.0f, sizeof(empty));
-
     float mmax = 0.90f;
     float mmin = -0.90f;
     float aavg = 0.0f;  //average of the absolute value
     float df = 3277.0f; //test value
     float gain = agf_effective_gain(opts, state);
 
-    // Determine whether or not to run gain on 'empty' floating samples
+    // Skip silent blocks.
     if (audio_is_all_zero_f(samp, 160)) {
         return;
     }
@@ -138,15 +133,12 @@ agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot) {
         df = agf_slot_decimation(state, slot, df);
         agf_process_20_sample_block(samp, j, df, gain, mmin, mmax, &aavg);
 
-        //debug
-        // DSD_FPRINTF(stderr, "\nS%d - DF = %f AAVG = %f", slot, df, aavg);
         agf_update_slot_gain(state, slot, aavg);
         aavg = 0.0f; //reset
     }
 }
 
-// Automatic gain for short mono paths (analog and some digital mono).
-// Kept identical to the original implementation in dsd_audio2.c.
+// Automatic gain for PCM16 mono paths (analog and selected digital modes).
 void
 agsm(dsd_opts* opts, dsd_state* state, short* input, int len) {
     UNUSED(opts);
@@ -155,7 +147,7 @@ agsm(dsd_opts* opts, dsd_state* state, short* input, int len) {
         return;
     }
 
-    /* Legacy target level for analog monitor path (PCM16 scale). */
+    /* Target level for the analog monitor path (PCM16 scale). */
     const float nom = 4800.0f;
     float max_abs = 0.0f;
     for (int i = 0; i < len; i++) {

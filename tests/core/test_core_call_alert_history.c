@@ -86,16 +86,12 @@ getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
     return DSD_SNPRINTF(buffer, 7, "%02d-%02d%01d", a, f, s);
 }
 
-void
-getTimeN_buf(time_t t, char out[9]) {
-    UNUSED(t);
-    DSD_SNPRINTF(out, 9, "00:00:00");
-}
-
-void
-getDateN_buf(time_t t, char out[11]) {
-    UNUSED(t);
-    DSD_SNPRINTF(out, 11, "2026-04-30");
+int
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
+    UNUSED(timestamp);
+    const char* value = (format == DSD_LOCAL_DATETIME_DATE_HYPHEN) ? "2026-04-30" : "00:00:00";
+    DSD_SNPRINTF(out, out_size, "%s", value);
+    return 1;
 }
 
 void
@@ -387,7 +383,7 @@ test_edacs_service_string_appends_past_pointer_size(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.lastsrc = 1201;
     state.lasttg = 0x0123;
@@ -704,7 +700,7 @@ test_edacs_ea_mode_current_event_and_unknown_lid(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.lastsrc = 0x800U;
     state.lasttg = 0x0123U;
@@ -725,7 +721,7 @@ test_edacs_ea_mode_current_event_and_unknown_lid(void) {
                             "LID: __UNK;");
 
     reset_fixture(&opts, &state, event_history);
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.ea_mode = 1;
     state.lastsrc = 77001U;

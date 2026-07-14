@@ -19,12 +19,14 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
@@ -121,19 +123,14 @@ p25p1_ldu1_init_decode_ctx(dsd_state* state, ldu1_decode_ctx_t* ctx) {
 }
 
 static void
-p25p1_ldu1_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, char trace_digit, int emit_active) {
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = trace_digit;
-#else
-    UNUSED(trace_digit);
-#endif
+p25p1_ldu1_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, int emit_active) {
     process_IMBE(opts, state, status_count);
     if (emit_active) {
         // SM event: ACTIVE (P1 uses slot 0).
         p25_sm_emit_active(opts, state, 0);
     }
     if (p25_crypto_audio_permitted(opts, state, 0)) {
-        p25p1_play_imbe_audio(opts, state);
+        dsd_play_synthesized_voice(opts, state);
     }
 }
 
@@ -190,35 +187,35 @@ p25p1_ldu1_collect_lsd(dsd_opts* opts, dsd_state* state, ldu1_decode_ctx_t* ctx)
 
 static void
 p25p1_ldu1_collect_voice_and_data(dsd_opts* opts, dsd_state* state, ldu1_decode_ctx_t* ctx) {
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '0', 1);
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '1', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 1);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
     p25p1_ldu1_read_hex_block(opts, state, ctx->hex_data, 11, &ctx->status_count, ctx->soft_dibits,
                               &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '2', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
     p25p1_ldu1_read_hex_block(opts, state, ctx->hex_data, 7, &ctx->status_count, ctx->soft_dibits,
                               &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '3', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
     p25p1_ldu1_read_hex_block(opts, state, ctx->hex_data, 3, &ctx->status_count, ctx->soft_dibits,
                               &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '4', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
     p25p1_ldu1_read_hex_block(opts, state, ctx->hex_parity, 11, &ctx->status_count, ctx->soft_dibits,
                               &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '5', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
     p25p1_ldu1_read_hex_block(opts, state, ctx->hex_parity, 7, &ctx->status_count, ctx->soft_dibits,
                               &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '6', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
     p25p1_ldu1_read_hex_block(opts, state, ctx->hex_parity, 3, &ctx->status_count, ctx->soft_dibits,
                               &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '7', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
     p25p1_ldu1_collect_lsd(opts, state, ctx);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '8', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
 }
 
 static void
@@ -229,7 +226,7 @@ p25p1_ldu1_finalize_status(dsd_opts* opts, dsd_state* state) {
     p25_status_accum_add(state, ss);
 
     // Classify accumulated status symbols and set advisory AFC gate flag.
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 }
 
 static int
@@ -293,23 +290,14 @@ p25p1_ldu1_build_lcw_buffers(const uint8_t lcformat[9], const uint8_t mfid[9], c
     DSD_MEMSET(LCW_bytes, 0, 9);
     DSD_MEMSET(LCW_bits, 0, 72);
 
-    LCW_bytes[0] = (uint8_t)ConvertBitIntoBytes(&lcformat[0], 8);
-    LCW_bytes[1] = (uint8_t)ConvertBitIntoBytes(&mfid[0], 8);
+    LCW_bytes[0] = (uint8_t)convert_bits_into_output(&lcformat[0], 8);
+    LCW_bytes[1] = (uint8_t)convert_bits_into_output(&mfid[0], 8);
     for (int i = 0; i < 7; i++) {
         ptrdiff_t o = (ptrdiff_t)i * 8;
-        LCW_bytes[i + 2] = (uint8_t)ConvertBitIntoBytes(&lcinfo[o], 8);
+        LCW_bytes[i + 2] = (uint8_t)convert_bits_into_output(&lcinfo[o], 8);
     }
 
-    for (int i = 0, j = 0; i < 9; i++, j += 8) {
-        LCW_bits[j + 0] = (LCW_bytes[i] >> 7) & 0x01;
-        LCW_bits[j + 1] = (LCW_bytes[i] >> 6) & 0x01;
-        LCW_bits[j + 2] = (LCW_bytes[i] >> 5) & 0x01;
-        LCW_bits[j + 3] = (LCW_bytes[i] >> 4) & 0x01;
-        LCW_bits[j + 4] = (LCW_bytes[i] >> 3) & 0x01;
-        LCW_bits[j + 5] = (LCW_bytes[i] >> 2) & 0x01;
-        LCW_bits[j + 6] = (LCW_bytes[i] >> 1) & 0x01;
-        LCW_bits[j + 7] = (LCW_bytes[i] >> 0) & 0x01;
-    }
+    unpack_byte_array_into_bit_array(LCW_bytes, LCW_bits, 9);
 }
 
 static void

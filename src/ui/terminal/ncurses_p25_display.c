@@ -33,9 +33,6 @@
 #ifdef USE_RTLSDR
 #endif
 
-/* Alias for shared last synctype tracking (defined in ncurses_utils.c) */
-#define lls ncurses_last_synctype
-
 static int
 ui_is_p25_synctype(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype) || DSD_SYNC_IS_P25P2(synctype);
@@ -61,9 +58,7 @@ ui_fdma_denom(const dsd_state* state, int iden) {
 
 static int
 ui_tdma_denom(const p25_iden_entry_t* tdma) {
-    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-    int type = tdma->chan_type & 0xF;
-    int denom = slots_per_carrier[type];
+    int denom = p25_channel_type_slots_per_carrier(tdma->chan_type);
     return (denom > 0) ? denom : 1;
 }
 
@@ -434,7 +429,7 @@ compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
 
 static int
 ui_print_p25_sync_metric(const dsd_state* state) {
-    int cur = lls;
+    int cur = ncurses_last_synctype;
     int prev = state->lastsynctype;
     const char* cur_s = dsd_synctype_to_string(cur);
     const char* prev_s = dsd_synctype_to_string(prev);
@@ -600,7 +595,7 @@ ui_print_p2_rs_metric(const dsd_state* state) {
 
 static int
 ui_print_p25p2_metrics(const dsd_opts* opts, const dsd_state* state, int is_p25p1, int is_p25p2) {
-    if (!is_p25p2 && !(is_p25p1 && opts && opts->p25_trunk == 1)) {
+    if (!is_p25p2 && !(is_p25p1 && opts && opts->trunk_enable == 1)) {
         return 0;
     }
     int lines = 0;
@@ -915,7 +910,7 @@ ui_print_p25_service_metric(const dsd_state* state) {
 
 static int
 ui_print_p25_trunk_metrics(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || opts->p25_trunk != 1) {
+    if (!opts || opts->trunk_enable != 1) {
         return 0;
     }
     int lines = 0;
@@ -1023,14 +1018,14 @@ ui_print_p25p1_sm_timers_metric(const dsd_state* state) {
     double dt_vc = ui_time_diff_maybe_monotonic(now, state->last_vc_sync_time, nowm, state->last_vc_sync_time_m);
     double dt_tune =
         ui_time_diff_maybe_monotonic(now, state->p25_last_vc_tune_time, nowm, state->p25_last_vc_tune_time_m);
-    double tdu_age = ui_time_diff_maybe_monotonic(now, state->p25_p1_last_tdu, nowm, state->p25_p1_last_tdu_m);
+    double tdu_age = (state->p25_p1_last_tdu_m > 0.0) ? nowm - state->p25_p1_last_tdu_m : -1.0;
     printw("| SM Timers: dCC=%4.1fs dVC=%4.1fs dTune=%4.1fs TDU_age=%4.1fs\n", dt_cc, dt_vc, dt_tune, tdu_age);
     return 1;
 }
 
 static int
 ui_print_p25p1_sm_flags_metric(const dsd_opts* opts, const dsd_state* state) {
-    int tuned = (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) ? 1 : 0;
+    int tuned = (opts->trunk_is_tuned == 1) ? 1 : 0;
     int tick = p25_sm_in_tick();
     const char* hold = (state->tg_hold != 0) ? "on" : "-";
     printw("| SM Flags: tuned:%d force_rel:%d tick:%d hold:%s\n", tuned, state->p25_sm_force_release ? 1 : 0, tick,
@@ -1049,7 +1044,7 @@ ui_print_p25p1_policy_metric(const dsd_opts* opts) {
 
 static int
 ui_print_p25p1_sm_metrics(const dsd_opts* opts, const dsd_state* state, int is_p25p1) {
-    if (!is_p25p1 || !opts || opts->p25_trunk != 1) {
+    if (!is_p25p1 || !opts || opts->trunk_enable != 1) {
         return 0;
     }
     int lines = 0;
@@ -1079,8 +1074,8 @@ ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     int lines = 0;
-    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
-    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
+    int is_p25p1 = DSD_SYNC_IS_P25P1(ncurses_last_synctype);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     lines += ui_print_p25_core_metrics(state, is_p25p1, is_p25p2);
     lines += ui_print_p25p2_metrics(opts, state, is_p25p1, is_p25p2);
     lines += ui_print_p25_rtl_metrics(is_p25p1, is_p25p2);
@@ -1096,7 +1091,7 @@ ui_print_p25_cc_candidates(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
@@ -1133,7 +1128,7 @@ ui_print_p25_secondary_ccs(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
     if (state->p25_secondary_cc_count <= 0) {

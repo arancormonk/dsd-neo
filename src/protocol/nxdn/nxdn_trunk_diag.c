@@ -120,10 +120,11 @@ nxdn_trunk_diag_log_missing_channel_once(const dsd_opts* opts, dsd_state* state,
     }
 
     if (context && context[0] != '\0') {
-        LOG_NOTICE("NXDN trunking: %s: CH %u has no frequency mapping in chan_csv (%s)\n", context, channel,
-                   opts->chan_in_file);
+        LOG_INFO("NOTICE: NXDN trunking: %s: CH %u has no frequency mapping in chan_csv (%s)\n", context, channel,
+                 opts->chan_in_file);
     } else {
-        LOG_NOTICE("NXDN trunking: CH %u has no frequency mapping in chan_csv (%s)\n", channel, opts->chan_in_file);
+        LOG_INFO("NOTICE: NXDN trunking: CH %u has no frequency mapping in chan_csv (%s)\n", channel,
+                 opts->chan_in_file);
     }
 }
 
@@ -199,5 +200,5 @@ nxdn_trunk_diag_log_summary(const dsd_opts* opts, const dsd_state* state) {
     nxdn_trunk_diag_summary_append_overflow(msg, sizeof msg, &used, total, shown);
     nxdn_trunk_diag_summary_finalize(msg, sizeof msg, used);
 
-    LOG_NOTICE("%s", msg);
+    LOG_INFO("NOTICE: %s", msg);
 }

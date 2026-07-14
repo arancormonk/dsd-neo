@@ -29,17 +29,10 @@ enum {
     P25_FREQ_MODE_TDMA = 1,
 };
 
-static const int k_p25_slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-
 int
 p25_channel_type_is_tdma(int chan_type) {
     int type = chan_type & 0xF;
     return p25_channel_type_slots_per_carrier(type) > 1 ? 1 : 0;
-}
-
-int
-p25_channel_type_slots_per_carrier(int chan_type) {
-    return k_p25_slots_per_carrier[chan_type & 0xF];
 }
 
 void
@@ -358,11 +351,6 @@ process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int channel) {
 }
 
 long int
-process_channel_to_freq_with_mode(const dsd_opts* opts, dsd_state* state, int channel, int prefer_tdma) {
-    return p25_channel_to_freq_impl(opts, state, channel, prefer_tdma ? P25_FREQ_MODE_TDMA : P25_FREQ_MODE_FDMA, NULL);
-}
-
-long int
 process_channel_to_freq_trace(const dsd_opts* opts, dsd_state* state, int channel, p25_freq_trace_t* trace) {
     return p25_channel_to_freq_impl(opts, state, channel, P25_FREQ_MODE_AUTO, trace);
 }
@@ -391,7 +379,7 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
     int use_tdma_denom = 0;
     const p25_iden_entry_t* entry = p25_select_iden_entry(state, iden, P25_FREQ_MODE_AUTO, &use_tdma_denom);
 
-    // Read chan_type from the selected entry instead of the old flat array
+    // Derive the channel type from the selected FDMA/TDMA identity entry.
     int type = entry->chan_type & 0xF;
     int denom = 1;
     if (use_tdma_denom) {

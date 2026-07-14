@@ -4,9 +4,9 @@
  */
 
 #include "ysf_frame.h"
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/fec/viterbi.h>
-#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -17,10 +17,11 @@ enum {
     DSD_YSF_BITS_PER_BYTE = 8,
     DSD_YSF_PN95_TABLE_BITS = 512,
     DSD_YSF_PN95_SEED = 0x1C9,
+    DSD_YSF_VD2_INTERLEAVE_COLUMNS = 26,
+    DSD_YSF_VD2_INTERLEAVE_DEPTH = 4,
 };
 
 static const uint8_t DSD_YSF_PUNCTURE_NONE[4] = {1U, 1U, 1U, 1U};
-static const char DSD_YSF_EVENT_PLACEHOLDER[] = "BUMBLEBEETUNA";
 static const uint8_t DSD_YSF_FR_INTERLEAVE[144] = {
     0, 7,  12, 19, 24, 31, 36, 43, 48, 55, 60, 67, 72, 79, 84, 91, 96,  103, 108, 115, 120, 127, 132, 139,
     1, 6,  13, 18, 25, 30, 37, 42, 49, 54, 61, 66, 73, 78, 85, 90, 97,  102, 109, 114, 121, 126, 133, 138,
@@ -30,38 +31,18 @@ static const uint8_t DSD_YSF_FR_INTERLEAVE[144] = {
     5, 10, 17, 22, 29, 34, 41, 46, 53, 58, 65, 70, 77, 82, 89, 94, 101, 106, 113, 118, 125, 130, 137, 142,
 };
 
-static void
-ysf_unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, size_t len) {
-    size_t k = 0U;
-    for (size_t i = 0; i < len; i++) {
-        output[k++] = (input[i] >> 7) & 1U;
-        output[k++] = (input[i] >> 6) & 1U;
-        output[k++] = (input[i] >> 5) & 1U;
-        output[k++] = (input[i] >> 4) & 1U;
-        output[k++] = (input[i] >> 3) & 1U;
-        output[k++] = (input[i] >> 2) & 1U;
-        output[k++] = (input[i] >> 1) & 1U;
-        output[k++] = input[i] & 1U;
-    }
-}
-
-static void
-ysf_pack_bit_array_into_byte_array(const uint8_t* input, uint8_t* output, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        uint8_t byte = 0U;
-        for (size_t bit = 0; bit < DSD_YSF_BITS_PER_BYTE; bit++) {
-            byte = (uint8_t)((byte << 1U) | (input[(i * DSD_YSF_BITS_PER_BYTE) + bit] & 1U));
-        }
-        output[i] = byte;
-    }
-}
-
 static uint8_t
 ysf_pn95_next(uint16_t* lfsr) {
     uint8_t bit = (uint8_t)(*lfsr & 1U);
     uint16_t feedback = (uint16_t)(((*lfsr >> 4U) ^ *lfsr) & 1U);
     *lfsr = (uint16_t)((*lfsr >> 1U) | (feedback << 8U));
     return bit;
+}
+
+uint8_t
+dsd_ysf_vd2_interleave_index(size_t serial_bit_index) {
+    return (uint8_t)(((serial_bit_index % DSD_YSF_VD2_INTERLEAVE_DEPTH) * DSD_YSF_VD2_INTERLEAVE_COLUMNS)
+                     + (serial_bit_index / DSD_YSF_VD2_INTERLEAVE_DEPTH));
 }
 
 uint8_t
@@ -133,9 +114,9 @@ dsd_ysf_soft_viterbi_decode(const uint8_t* dibits, size_t dibit_count, size_t de
         viterbi_decode_punctured(decoded, soft_bits, DSD_YSF_PUNCTURE_NONE, (uint16_t)input_bits,
                                  (uint16_t)(sizeof(DSD_YSF_PUNCTURE_NONE) / sizeof(DSD_YSF_PUNCTURE_NONE[0])));
 
-    ysf_unpack_byte_array_into_bit_array(decoded, temp_bits, decoded_bytes + 1U);
+    unpack_byte_array_into_bit_array(decoded, temp_bits, (int)(decoded_bytes + 1U));
     DSD_MEMCPY(out_bits, temp_bits + offset_bits, output_bits);
-    ysf_pack_bit_array_into_byte_array(out_bits, out_bytes, output_bytes);
+    pack_bit_array_into_byte_array(out_bits, out_bytes, (int)output_bytes);
     return error;
 }
 
@@ -150,7 +131,7 @@ dsd_ysf_event_text_should_print(const dsd_state* state) {
         return false;
     }
 
-    return strncmp(item->event_string, DSD_YSF_EVENT_PLACEHOLDER, strlen(DSD_YSF_EVENT_PLACEHOLDER)) != 0;
+    return true;
 }
 
 void

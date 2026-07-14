@@ -75,7 +75,6 @@ option(
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
 option(DSD_ENABLE_TERMINAL_UI "Enable ncurses/PDCurses terminal frontend" ON)
-option(DSD_ENABLE_NATIVE_UI "Enable native frontend scaffold" OFF)
 set(DSD_SOAPYSDR_MIN_VERSION "0.8.1")
 option(
     DSD_REQUIRE_RTLSDR
@@ -506,7 +505,7 @@ endif()
 find_package(LibSndFile REQUIRED)
 find_package(OpenSSL 3.0 REQUIRED)
 
-# Require mbelib-neo 2.x (no legacy mbelib fallback). The 2.x ABI provides the
+# Require mbelib-neo 2.x. Its ABI provides the
 # soft-decision frame decode and result-based processing APIs used by dsd-neo.
 set(_DSD_MBE_REQUIRED_VERSION 2.0)
 find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
@@ -518,49 +517,30 @@ else()
         "mbe-neo package found but exported targets are missing"
     )
 endif()
-# Ensure includes for legacy-style #include <mbelib.h>
-# by adding the directory that directly contains mbelib.h
+# Test and analyzer targets compile some mbe-consuming sources directly, so
+# retain the package include root independently of link propagation.
 get_target_property(
     _MBE_TARGET_INCLUDE_DIRS
     ${MBE_LINK_TARGET}
     INTERFACE_INCLUDE_DIRECTORIES
 )
 if(NOT _MBE_TARGET_INCLUDE_DIRS)
-    set(_MBE_TARGET_INCLUDE_DIRS "")
-endif()
-set(_MBE_INCLUDE_HINTS "")
-foreach(_MBE_TARGET_INCLUDE_DIR IN LISTS _MBE_TARGET_INCLUDE_DIRS)
-    if(
-        IS_ABSOLUTE "${_MBE_TARGET_INCLUDE_DIR}"
-        AND NOT _MBE_TARGET_INCLUDE_DIR MATCHES "^\\$<"
+    message(
+        FATAL_ERROR
+        "mbe-neo package found but its exported target has no include directories"
     )
-        list(
-            APPEND _MBE_INCLUDE_HINTS
-            "${_MBE_TARGET_INCLUDE_DIR}"
-            "${_MBE_TARGET_INCLUDE_DIR}/mbelib-neo"
-        )
-    endif()
-endforeach()
-find_path(
-    MBE_INCLUDE_DIR
-    NAMES mbelib.h
-    HINTS ${_MBE_INCLUDE_HINTS}
-    PATH_SUFFIXES mbelib-neo
-)
-if(NOT MBE_INCLUDE_DIR)
-    message(FATAL_ERROR "mbe-neo 2.x package found, but mbelib.h was not found")
 endif()
 
 include(CheckCSourceCompiles)
-set(_DSD_SAVED_CMAKE_REQUIRED_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
 set(_DSD_SAVED_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+set(_DSD_SAVED_CMAKE_REQUIRED_LIBRARIES "${CMAKE_REQUIRED_LIBRARIES}")
 if(DEFINED CMAKE_TRY_COMPILE_TARGET_TYPE)
     set(_DSD_HAD_CMAKE_TRY_COMPILE_TARGET_TYPE TRUE)
     set(_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE
         "${CMAKE_TRY_COMPILE_TARGET_TYPE}"
     )
 endif()
-set(CMAKE_REQUIRED_INCLUDES "${MBE_INCLUDE_DIR}")
+set(CMAKE_REQUIRED_LIBRARIES ${MBE_LINK_TARGET})
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     string(APPEND CMAKE_REQUIRED_FLAGS " -Werror=implicit-function-declaration")
 endif()
@@ -570,7 +550,7 @@ check_c_source_compiles(
     [[
 #include <stddef.h>
 #include <stdint.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 
 int main(void) {
     const mbe_soft_bit imbe_soft[8][23] = {{{0}}};
@@ -608,8 +588,8 @@ int main(void) {
 ]]
     DSD_HAVE_MBE_NEO_SOFT_API
 )
-set(CMAKE_REQUIRED_INCLUDES "${_DSD_SAVED_CMAKE_REQUIRED_INCLUDES}")
 set(CMAKE_REQUIRED_FLAGS "${_DSD_SAVED_CMAKE_REQUIRED_FLAGS}")
+set(CMAKE_REQUIRED_LIBRARIES "${_DSD_SAVED_CMAKE_REQUIRED_LIBRARIES}")
 if(_DSD_HAD_CMAKE_TRY_COMPILE_TARGET_TYPE)
     set(CMAKE_TRY_COMPILE_TARGET_TYPE
         "${_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE}"
@@ -619,8 +599,8 @@ else()
 endif()
 unset(_DSD_HAD_CMAKE_TRY_COMPILE_TARGET_TYPE)
 unset(_DSD_SAVED_CMAKE_TRY_COMPILE_TARGET_TYPE)
-unset(_DSD_SAVED_CMAKE_REQUIRED_INCLUDES)
 unset(_DSD_SAVED_CMAKE_REQUIRED_FLAGS)
+unset(_DSD_SAVED_CMAKE_REQUIRED_LIBRARIES)
 if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
     message(
         FATAL_ERROR
@@ -771,7 +751,7 @@ else()
 endif()
 
 find_package(CODEC2)
-find_package(CURL)
+find_package(CURL 7.56.0)
 
 # Audio backend selection
 option(
@@ -794,12 +774,7 @@ else()
     message(STATUS "Audio backend: PulseAudio")
 endif()
 
-# Aggregate include directories; when using the modern package, we still add
-# the mbelib-neo leaf include directory so #include <mbelib.h> continues to work.
-set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR})
-if(MBE_INCLUDE_DIR)
-    list(APPEND _PUBLIC_INCLUDES ${MBE_INCLUDE_DIR})
-endif()
+set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${_MBE_TARGET_INCLUDE_DIRS})
 
 # Audio backend includes and libraries
 set(AUDIO_SYSTEM_LIBS "")

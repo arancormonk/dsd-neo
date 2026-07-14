@@ -38,6 +38,10 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/protocol/p25/p25_cc_candidates.h"
+#if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
+#include "trunk_scan_internal.h"
+#include "trunk_scan_test_support.h"
+#endif
 
 #if LONG_MAX < 4294967295LL
 #define DSD_TRUNK_SCAN_MAX_FREQUENCY_HZ ((uint32_t)LONG_MAX)
@@ -196,9 +200,7 @@ typedef struct {
     dsd_trunk_scan_snapshot scratch_snapshot;
     size_t count;
     size_t active;
-    int saved_p25_trunk;
     int saved_trunk_enable;
-    int saved_p25_is_tuned;
     int saved_trunk_is_tuned;
     int saved_mod_c4fm;
     int saved_mod_qpsk;
@@ -213,8 +215,10 @@ typedef struct {
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
+#if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 static int g_trunk_scan_now_override;
 static double g_trunk_scan_now_m;
+#endif
 static const char k_trunk_scan_csv_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes";
 
 enum {
@@ -224,20 +228,26 @@ enum {
 
 static double
 trunk_scan_now_m(void) {
+#if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
     return g_trunk_scan_now_override ? g_trunk_scan_now_m : dsd_time_now_monotonic_s();
+#else
+    return dsd_time_now_monotonic_s();
+#endif
 }
 
+#if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 void
-dsd_engine_trunk_scan_test_set_now(double now_m) {
+trunk_scan_test_set_now(double now_m) {
     g_trunk_scan_now_override = 1;
     g_trunk_scan_now_m = now_m;
 }
 
 void
-dsd_engine_trunk_scan_test_clear_now(void) {
+trunk_scan_test_clear_now(void) {
     g_trunk_scan_now_override = 0;
     g_trunk_scan_now_m = 0.0;
 }
+#endif
 
 static void scan_set_error(char* err, size_t err_sz, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 3, 4);
 
@@ -1406,21 +1416,11 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, 
     trunk_scan_restore_saved_mod_gain_opts(opts, coord);
     trunk_scan_apply_target_mod_opts(opts, target);
     trunk_scan_apply_target_gain_opts(opts, target);
-    opts->p25_is_tuned = 0;
     opts->trunk_is_tuned = 0;
     switch (target->type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-            opts->p25_trunk = 1;
-            opts->trunk_enable = 1;
-            break;
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-            opts->p25_trunk = 0;
-            opts->trunk_enable = 1;
-            break;
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
-            opts->p25_trunk = 0;
-            opts->trunk_enable = 0;
-            break;
+        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK: opts->trunk_enable = 1; break;
+        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: opts->trunk_enable = 0; break;
     }
 }
 
@@ -1560,16 +1560,14 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
         state->p25_cc_freq = freq;
         state->trunk_cc_freq = freq;
-        return dsd_trunk_tuning_hook_tune_to_cc_with_id(opts, state, freq, trunk_scan_p25_cc_sps(opts, state),
-                                                        out_request_id);
+        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_p25_cc_sps(opts, state), out_request_id);
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
         state->p25_cc_freq = 0;
         state->trunk_cc_freq = freq;
-        return dsd_trunk_tuning_hook_tune_to_cc_with_id(opts, state, freq, trunk_scan_dmr_sps(opts, state),
-                                                        out_request_id);
+        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
     }
-    return dsd_engine_scan_tune_to_freq_with_id(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
+    return dsd_engine_scan_tune_to_freq(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
 }
 
 static int
@@ -1595,7 +1593,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt, &tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         rt->retry_until_m = now_m + 2.0;
-        LOG_WARNING("Trunk scan target '%s' retune failed; cooling down briefly\n", rt->target.id);
+        LOG_WARN("WARNING: Trunk scan target '%s' retune failed; cooling down briefly\n", rt->target.id);
         return -1;
     }
 
@@ -1624,7 +1622,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
         rt->tune_pending = 0;
     }
     rt->retry_until_m = 0.0;
-    LOG_NOTICE("Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
+    LOG_INFO("NOTICE: Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
     return 0;
 }
 
@@ -1683,11 +1681,11 @@ trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coor
         return 1;
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-        return (rt->p25_ctx.cc_tune_pending || opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1
+        return (rt->p25_ctx.cc_tune_pending || opts->trunk_is_tuned == 1
                 || p25_sm_get_state(&rt->p25_ctx) == P25_SM_TUNED);
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
-        return (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
+        return (opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
     }
     double now_m = trunk_scan_now_m();
     double hold_s = (double)rt->target.activity_hold_ms / 1000.0;
@@ -1700,9 +1698,7 @@ trunk_scan_restore_saved_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord)
         return;
     }
     trunk_scan_restore_saved_mod_gain_opts(opts, coord);
-    opts->p25_trunk = coord->saved_p25_trunk;
     opts->trunk_enable = coord->saved_trunk_enable;
-    opts->p25_is_tuned = coord->saved_p25_is_tuned;
     opts->trunk_is_tuned = coord->saved_trunk_is_tuned;
 }
 
@@ -1711,9 +1707,7 @@ trunk_scan_capture_saved_opts(dsd_trunk_scan_coord* coord, const dsd_opts* opts)
     if (!coord || !opts) {
         return;
     }
-    coord->saved_p25_trunk = opts->p25_trunk;
     coord->saved_trunk_enable = opts->trunk_enable;
-    coord->saved_p25_is_tuned = opts->p25_is_tuned;
     coord->saved_trunk_is_tuned = opts->trunk_is_tuned;
     coord->saved_mod_c4fm = opts->mod_c4fm;
     coord->saved_mod_qpsk = opts->mod_qpsk;
@@ -1735,7 +1729,7 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
         || !scan_target_list_has_rtl_gain_override(list)) {
         return;
     }
-    LOG_WARNING("Trunk scan rtl_gain target overrides require RTL-family input; ignoring target gain settings\n");
+    LOG_WARN("WARNING: Trunk scan rtl_gain target overrides require RTL-family input; ignoring target gain settings\n");
 }
 
 static void
@@ -1811,7 +1805,7 @@ trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtim
     rt->tune_request_id = 0U;
     rt->tune_pending = 0;
     rt->retry_until_m = now_m + 2.0;
-    LOG_WARNING("Trunk scan target '%s' asynchronous retune failed; cooling down briefly\n", rt->target.id);
+    LOG_WARN("WARNING: Trunk scan target '%s' asynchronous retune failed; cooling down briefly\n", rt->target.id);
     (void)state;
     return -1;
 }
@@ -1899,12 +1893,9 @@ dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_
     dsd_tg_policy_decision decision;
     int rc = 0;
     if (is_private) {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call,
-                                                 DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                 DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision);
     } else {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call,
-                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
     }
     if (rc == 0 && decision.tune_allowed) {
         rt->last_allowed_activity_m = trunk_scan_now_m();
@@ -1996,7 +1987,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     if (trunk_scan_switch_to(opts, state, coord, 0, 0) != 0 && coord->count > 1) {
         trunk_scan_advance(opts, state, coord);
     }
-    LOG_NOTICE("Trunk scan enabled with %zu targets\n", coord->count);
+    LOG_INFO("NOTICE: Trunk scan enabled with %zu targets\n", coord->count);
     return 0;
 }
 
@@ -2011,11 +2002,13 @@ dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, NULL, NULL);
 }
 
+#ifdef DSD_TRUNK_SCAN_TEST_CLOCK
 size_t
 dsd_engine_trunk_scan_active_index(const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
     return coord ? coord->active : (size_t)-1;
 }
+#endif
 
 size_t
 dsd_engine_trunk_scan_target_count(const dsd_state* state) {

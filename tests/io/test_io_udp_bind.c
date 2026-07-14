@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
- * Regression test: legacy UDPBind must honor explicit bind addresses and use
+ * Regression test: UDPBind must honor explicit bind addresses and use
  * loopback when the caller does not provide one.
  */
 

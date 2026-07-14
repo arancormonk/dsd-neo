@@ -20,7 +20,6 @@
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
@@ -496,7 +495,8 @@ p25_build_aes_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint8_
     lfsr_64_to_128(aes_iv);
 
     int nblocks = (len / 16) + 1;
-    aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, (alg_id == 0x84) ? 2 : 0, nblocks);
+    const dsd_aes_key_size key_size = (alg_id == 0x84) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+    aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, key_size, nblocks);
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n AES-%s keystream ready", (alg_id == 0x84) ? "256" : "128");
@@ -518,8 +518,8 @@ p25_build_des_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
     }
 
     int nblocks = (len / 8) + 1;
-    // codeql[cpp/weak-cryptographic-algorithm] DES is required for legacy P25 interoperability.
-    des_multi_keystream_output(mi, des_key, ks_bytes, 1, nblocks);
+    // codeql[cpp/weak-cryptographic-algorithm] DES is required for active P25 interoperability.
+    des_ofb_keystream_output(mi, des_key, ks_bytes, nblocks);
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n DES56 keystream ready");
@@ -549,7 +549,7 @@ p25_build_rc4_pdu_keystream(const dsd_opts* opts, const dsd_state* state, uint16
         return 1;
     }
 
-    // codeql[cpp/weak-cryptographic-algorithm] RC4/ADP is required for legacy P25 interoperability.
+    // codeql[cpp/weak-cryptographic-algorithm] RC4/ADP is required for active P25 interoperability.
     rc4_block_output(256, 13, len, rc4_kiv, ks_bytes);
 
     if (opts->payload == 1) {
@@ -601,21 +601,21 @@ p25_decode_es_header(const dsd_opts* opts, dsd_state* state, uint8_t* input, uin
     unpack_byte_array_into_bit_array(input, bits, 13);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
-    unsigned long long int mi = (unsigned long long int)ConvertBitIntoBytes(bits, 64);
-    uint8_t mi_res = (uint8_t)ConvertBitIntoBytes(bits + 64, 8);
-    uint8_t alg_id = (uint8_t)ConvertBitIntoBytes(bits + 72, 8);
-    uint16_t key_id = (uint16_t)ConvertBitIntoBytes(bits + 80, 16);
+    unsigned long long int mi = (unsigned long long int)convert_bits_into_output(bits, 64);
+    uint8_t mi_res = (uint8_t)convert_bits_into_output(bits + 64, 8);
+    uint8_t alg_id = (uint8_t)convert_bits_into_output(bits + 72, 8);
+    uint16_t key_id = (uint16_t)convert_bits_into_output(bits + 80, 16);
     DSD_FPRINTF(stderr, "\n ES Aux Encryption Header; ALG: %02X; KEY ID: %04X; MI: %016llX; ", alg_id, key_id, mi);
     if (mi_res != 0) {
         DSD_FPRINTF(stderr, " RES: %02X;", mi_res);
     }
 
     //The Auxiliary Header signals the actual SAP value of the encrypted message (this byte is not encrypted)
-    uint8_t aux_res = (uint8_t)ConvertBitIntoBytes(
+    uint8_t aux_res = (uint8_t)convert_bits_into_output(
         &bits[96],
         2); //these two bits should always be signalled as 1's, so 0b11, and if combined with the 2ndary SAP, 0xC0 if SAP == 0x00
     uint8_t aux_sap =
-        (uint8_t)ConvertBitIntoBytes(&bits[98], 6); //the SAP of the message that is encrypted immediately after
+        (uint8_t)convert_bits_into_output(&bits[98], 6); //the SAP of the message that is encrypted immediately after
     char aux_sap_string[99];
     p25_decode_sap(aux_sap, aux_sap_string, sizeof aux_sap_string);
     DSD_FPRINTF(stderr, "%s", KNRM);
@@ -641,37 +641,6 @@ p25_decode_es_header(const dsd_opts* opts, dsd_state* state, uint8_t* input, uin
     return encrypted;
 }
 
-//alternate configuration for this (no Aux SAP)
-uint8_t
-p25_decode_es_header_2(const dsd_opts* opts, const dsd_state* state, uint8_t* input, int* ptr, int len) {
-
-    uint8_t encrypted = 0;
-
-    uint8_t bits[12 * 8];
-    DSD_MEMSET(bits, 0, sizeof(bits));
-    unpack_byte_array_into_bit_array(input, bits, 12);
-
-    DSD_FPRINTF(stderr, "%s", KYEL);
-    uint8_t alg_id = (uint8_t)ConvertBitIntoBytes(bits + 0, 8);
-    uint16_t key_id = (uint16_t)ConvertBitIntoBytes(bits + 8, 16);
-    unsigned long long int mi = (unsigned long long int)ConvertBitIntoBytes(bits + 24, 64);
-    uint8_t mi_res = (uint8_t)ConvertBitIntoBytes(bits + 88, 8);
-    DSD_FPRINTF(stderr, "\n ES Aux Encryption Header 2; ALG: %02X; KEY ID: %04X; MI: %016llX;", alg_id, key_id, mi);
-    if (mi_res != 0) {
-        DSD_FPRINTF(stderr, " RES: %02X;", mi_res);
-    }
-    DSD_FPRINTF(stderr, "%s", KNRM);
-
-    //Decrypt PDU
-    if (alg_id != 0x80) {
-        encrypted = p25_decrypt_pdu(opts, state, input + 12, alg_id, key_id, mi, len - 12);
-    }
-
-    *ptr += 12;
-
-    return encrypted;
-}
-
 //SAP 31 //Extended Addressing
 void
 p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t* sap, int* ptr) {
@@ -682,11 +651,11 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* inp
     DSD_MEMSET(bits, 0, sizeof(bits));
     unpack_byte_array_into_bit_array(input, bits, 12);
 
-    uint8_t ea_sap = (uint8_t)ConvertBitIntoBytes(bits + 10, 6);
-    uint8_t ea_mfid = (uint8_t)ConvertBitIntoBytes(bits + 16, 6);
-    uint32_t ea_llid = (uint32_t)ConvertBitIntoBytes(bits + 24, 24);
-    uint32_t ea_res = (uint32_t)ConvertBitIntoBytes(bits + 48, 32);
-    uint16_t ea_crc = (uint16_t)ConvertBitIntoBytes(bits + 80, 16);
+    uint8_t ea_sap = (uint8_t)convert_bits_into_output(bits + 10, 6);
+    uint8_t ea_mfid = (uint8_t)convert_bits_into_output(bits + 16, 6);
+    uint32_t ea_llid = (uint32_t)convert_bits_into_output(bits + 24, 24);
+    uint32_t ea_res = (uint32_t)convert_bits_into_output(bits + 48, 32);
+    uint16_t ea_crc = (uint16_t)convert_bits_into_output(bits + 80, 16);
 
     DSD_FPRINTF(stderr, "\n Extended Addressing Header; MFID: %02X; SRC LLID: %d; RES: %08X; CRC: %04X; ", ea_mfid,
                 ea_llid, ea_res, ea_crc);

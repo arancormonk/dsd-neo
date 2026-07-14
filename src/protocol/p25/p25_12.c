@@ -7,16 +7,11 @@
  * 2023-10 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/fec/trellis34.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
-
-static const uint8_t p25_interleave[98] = {
-    0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73, 80, 81, 88, 89, 96,
-    97, 2,  3,  10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 50, 51, 58, 59, 66, 67, 74, 75, 82, 83, 90, 91,
-    4,  5,  12, 13, 20, 21, 28, 29, 36, 37, 44, 45, 52, 53, 60, 61, 68, 69, 76, 77, 84, 85, 92, 93, 6,
-    7,  14, 15, 22, 23, 30, 31, 38, 39, 46, 47, 54, 55, 62, 63, 70, 71, 78, 79, 86, 87, 94, 95};
 
 //this is a dibit-pair to trellis dibit transition matrix (SDRTrunk and Ossmann)
 //when evaluating hamming distance, we want to use this xor the dibit-pair nib,
@@ -139,7 +134,7 @@ p25_12_soft_llr_list(const uint8_t* input, const int16_t* bit_llr196, p25_12_can
     int16_t llr_dei[196];
     DSD_MEMSET(llr_dei, 0, sizeof(llr_dei));
     for (int i = 0; i < 98; i++) {
-        int p = p25_interleave[i];
+        int p = dsd_trellis_interleave_98[i];
         llr_dei[(p * 2) + 0] = bit_llr196[(i * 2) + 0];
         llr_dei[(p * 2) + 1] = bit_llr196[(i * 2) + 1];
     }
@@ -186,7 +181,7 @@ p25_12_soft_llr(const uint8_t* input, const int16_t* bit_llr196, uint8_t treturn
     int16_t llr_dei[196];
     DSD_MEMSET(llr_dei, 0, sizeof(llr_dei));
     for (i = 0; i < 98; i++) {
-        int p = p25_interleave[i];
+        int p = dsd_trellis_interleave_98[i];
         llr_dei[(p * 2) + 0] = bit_llr196[(i * 2) + 0];
         llr_dei[(p * 2) + 1] = bit_llr196[(i * 2) + 1];
     }

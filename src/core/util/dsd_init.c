@@ -11,11 +11,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/dsp/dmr_sync.h>
+#include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/shutdown.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
@@ -58,8 +58,8 @@ init_opts_display_and_audio_defaults(dsd_opts* opts) {
     opts->frontend_display.const_norm_mode = 0; // default: radial percentile normalization
     opts->frontend_display.eye_view = 0;
     opts->frontend_display.fsk_hist_view = 0;
-    opts->frontend_display.eye_unicode = 1;              //default On for clearer rendering
-    opts->frontend_display.eye_color = 1;                //default On when terminal supports color
+    opts->frontend_terminal_display.eye_unicode = 1;     //default On for clearer rendering
+    opts->frontend_terminal_display.eye_color = 1;       //default On when terminal supports color
     opts->frontend_display.show_dsp_panel = 0;           // hide compact DSP panel by default
     opts->frontend_display.show_p25_metrics = 0;         // hide P25 metrics by default
     opts->frontend_display.show_p25_neighbors = 0;       // hide P25 Neighbors by default
@@ -108,7 +108,6 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->p25_sm_log_file[0] = 0;
     //csv import filenames
     opts->group_in_file[0] = 0;
-    opts->lcn_in_file[0] = 0;
     opts->chan_in_file[0] = 0;
     opts->key_in_file[0] = 0;
     //end import filenames
@@ -122,7 +121,6 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->p25_sm_log_write_error_reported = 0;
     opts->symbol_out_file_creation_time = time(NULL);
     opts->symbol_out_file_is_auto = 0;
-    opts->symbol_capture_format = DSD_SYMBOL_CAPTURE_FORMAT_SOFT;
     opts->mbe_out = 0;
     opts->mbe_outR = 0; //second slot on a TDMA system
     opts->wav_out_f = NULL;
@@ -183,8 +181,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
         2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
     // Generic input volume for non-RTL inputs (Pulse/WAV/TCP/UDP)
     opts->input_volume_multiplier = 1;
-    opts->rtl_udp_port =
-        0; //set UDP port for RTL remote -- 0 by default, will be making this optional for some external/legacy use cases (edacs-fm, etc)
+    opts->rtl_udp_port = 0; // external RTL retune control is disabled by default
     DSD_SNPRINTF(opts->rtl_udp_bindaddr, sizeof opts->rtl_udp_bindaddr, "%s", "127.0.0.1");
     opts->rtl_dsp_bw_khz = 48;  // DSP baseband kHz (4,6,8,12,16,24,48). Not tuner IF BW.
     opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
@@ -233,14 +230,13 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "AUTO");
     opts->pulse_flush = 1; //set 0 to flush, 1 for flushed
     opts->frontend_kind = DSD_FRONTEND_NONE;
-    opts->frontend_display.terminal_compact = 0;
-    opts->frontend_display.terminal_history = 1;
+    opts->frontend_terminal_display.terminal_compact = 0;
+    opts->frontend_terminal_display.terminal_history = 1;
 #ifdef LIMAZULUTWEAKS
-    opts->frontend_display.terminal_compact = 1;
+    opts->frontend_terminal_display.terminal_compact = 1;
 #endif
     opts->payload = 0;
     opts->inverted_dpmr = 0;
-    opts->dmr_mono = 0;
     opts->dmr_stereo = 1;
     opts->aggressive_framesync = 1;
     /* DMR: strict CRC gating by default (use -F to relax, like other protocols). */
@@ -314,9 +310,8 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
 
 static void
 init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
-    opts->p25_trunk = 0;                  //0 disabled, 1 is enabled
-    opts->trunk_enable = opts->p25_trunk; // keep alias in sync
-    opts->p25_is_tuned = 0;               //set to 1 if currently on VC, set back to 0 on carrier drop
+    opts->trunk_enable = 0;
+    opts->trunk_is_tuned = 0;
     // Default hangtime aligned with OP25 (2s) while still releasing promptly after calls.
     opts->trunk_hangtime = 2.0f;
 
@@ -404,11 +399,6 @@ initOpts(dsd_opts* opts) {
     init_opts_trunking_and_filter_defaults(opts);
 } //initopts
 
-static void*
-aligned_alloc_64(size_t size) {
-    return dsd_aligned_alloc(64, size);
-}
-
 static void
 init_state_extension_slots(dsd_state* state) {
     for (int ext_i = 0; ext_i < DSD_STATE_EXT_MAX; ext_i++) {
@@ -419,19 +409,14 @@ init_state_extension_slots(dsd_state* state) {
 
 static void
 init_state_core_buffers(dsd_state* state) {
-    state->dibit_buf = aligned_alloc_64(sizeof(int) * 1000000);
+    state->dibit_buf = dsd_aligned_alloc(64, sizeof(int) * 1000000);
     state->dibit_buf_p = state->dibit_buf + 200;
     DSD_MEMSET(state->dibit_buf, 0, sizeof(int) * 200);
     //dmr buffer -- double check this set up
-    state->dmr_payload_buf = aligned_alloc_64(sizeof(int) * 1000000);
+    state->dmr_payload_buf = dsd_aligned_alloc(64, sizeof(int) * 1000000);
     state->dmr_payload_p = state->dmr_payload_buf + 200;
     DSD_MEMSET(state->dmr_payload_buf, 0, sizeof(int) * 200);
-    state->dmr_reliab_buf = aligned_alloc_64(sizeof(uint8_t) * 1000000);
-    if (state->dmr_reliab_buf) {
-        state->dmr_reliab_p = state->dmr_reliab_buf + 200;
-        DSD_MEMSET(state->dmr_reliab_buf, 0, sizeof(uint8_t) * 200);
-    }
-    state->dmr_soft_buf = aligned_alloc_64(sizeof(dsd_dibit_soft_t) * 1000000);
+    state->dmr_soft_buf = dsd_aligned_alloc(64, sizeof(dsd_dibit_soft_t) * 1000000);
     if (state->dmr_soft_buf) {
         state->dmr_soft_p = state->dmr_soft_buf + 200;
         DSD_MEMSET(state->dmr_soft_buf, 0, sizeof(dsd_dibit_soft_t) * 200);
@@ -441,13 +426,13 @@ init_state_core_buffers(dsd_state* state) {
 
     // Symbol history buffer for resample-on-sync (SDRTrunk-style)
     // Note: Buffer stores symbols (one per dibit decision), not raw audio samples
-    state->dmr_sample_history_size = DMR_SAMPLE_HISTORY_SIZE; // ~427ms at 4800 sym/s
-    state->dmr_sample_history = aligned_alloc_64(sizeof(float) * state->dmr_sample_history_size);
-    if (state->dmr_sample_history) {
-        DSD_MEMSET(state->dmr_sample_history, 0, sizeof(float) * state->dmr_sample_history_size);
+    state->symbol_history_size = DSD_SYMBOL_HISTORY_SIZE; // ~427ms at 4800 sym/s
+    state->symbol_history = dsd_aligned_alloc(64, sizeof(float) * state->symbol_history_size);
+    if (state->symbol_history) {
+        DSD_MEMSET(state->symbol_history, 0, sizeof(float) * state->symbol_history_size);
     }
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
+    state->symbol_history_head = 0;
+    state->symbol_history_count = 0;
 
     state->repeat = 0;
 
@@ -496,8 +481,8 @@ init_state_core_buffers(dsd_state* state) {
 
 static void
 init_state_audio_output_buffers(dsd_state* state) {
-    state->audio_out_buf = aligned_alloc_64(sizeof(short) * 1000000);
-    state->audio_out_bufR = aligned_alloc_64(sizeof(short) * 1000000);
+    state->audio_out_buf = dsd_aligned_alloc(64, sizeof(short) * 1000000);
+    state->audio_out_bufR = dsd_aligned_alloc(64, sizeof(short) * 1000000);
     DSD_MEMSET(state->audio_out_buf, 0, 100 * sizeof(short));
     DSD_MEMSET(state->audio_out_bufR, 0, 100 * sizeof(short));
     //analog/raw signal audio buffers
@@ -506,8 +491,8 @@ init_state_audio_output_buffers(dsd_state* state) {
     DSD_MEMSET(state->analog_out, 0, sizeof(state->analog_out));
     state->audio_out_buf_p = state->audio_out_buf + 100;
     state->audio_out_buf_pR = state->audio_out_bufR + 100;
-    state->audio_out_float_buf = aligned_alloc_64(sizeof(float) * 1000000);
-    state->audio_out_float_bufR = aligned_alloc_64(sizeof(float) * 1000000);
+    state->audio_out_float_buf = dsd_aligned_alloc(64, sizeof(float) * 1000000);
+    state->audio_out_float_bufR = dsd_aligned_alloc(64, sizeof(float) * 1000000);
     DSD_MEMSET(state->audio_out_float_buf, 0, 100 * sizeof(float));
     DSD_MEMSET(state->audio_out_float_bufR, 0, 100 * sizeof(float));
     state->audio_out_float_buf_p = state->audio_out_float_buf + 100;
@@ -743,9 +728,6 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
     DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));
-    state->p25_p2_enc_lockout_muted[0] = 0;
-    state->p25_p2_enc_lockout_muted[1] = 0;
-
     state->K = 0;
     state->R = 0;
     state->RR = 0;
@@ -897,11 +879,6 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_p2_soft_ess_ok = 0;
     state->p25_p2_soft_ess_max_depth = 0;
     state->p25_p1_soft_combined_ok = 0;
-    state->p25_p2_enc_lo_early = 0;
-    state->p25_p2_enc_pending[0] = 0;
-    state->p25_p2_enc_pending[1] = 0;
-    state->p25_p2_enc_pending_ttg[0] = 0;
-    state->p25_p2_enc_pending_ttg[1] = 0;
     state->p25_p2_active_slot = -1;
     DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     state->p25_cc_is_tdma =
@@ -910,9 +887,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_vc_cqpsk_pref = -1;
     state->p25_vc_cqpsk_override = -1;
 
-    //experimental symbol file capture read throttle
-    state->symbol_throttle = 0; //0 = auto pace from symbol timing
-    state->use_throttle = 0;    //only use throttle if set to 1
+    state->use_throttle = 0;
     state->symbol_replay_next_deadline_ns = 0;
 
     state->p2_scramble_offset = 0;
@@ -1036,7 +1011,7 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     //embedded signalling
     DSD_MEMSET(state->dmr_embedded_signalling, 0, sizeof(state->dmr_embedded_signalling));
 
-    //dmr talker alias new/fixed stuff
+    // DMR talker alias assembly state
     DSD_MEMSET(state->dmr_alias_format, 0, sizeof(state->dmr_alias_format));
     DSD_MEMSET(state->dmr_alias_block_len, 0, sizeof(state->dmr_alias_block_len));
     DSD_MEMSET(state->dmr_alias_char_size, 0, sizeof(state->dmr_alias_char_size));
@@ -1254,11 +1229,11 @@ freeState(dsd_state* state) {
     state->audio_out_float_bufR = NULL;
     state->audio_out_float_buf_pR = NULL;
 
-    dsd_aligned_free(state->dmr_sample_history);
-    state->dmr_sample_history = NULL;
-    state->dmr_sample_history_size = 0;
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
+    dsd_aligned_free(state->symbol_history);
+    state->symbol_history = NULL;
+    state->symbol_history_size = 0;
+    state->symbol_history_head = 0;
+    state->symbol_history_count = 0;
 
     dsd_aligned_free(state->dibit_buf);
     state->dibit_buf = NULL;
@@ -1267,10 +1242,6 @@ freeState(dsd_state* state) {
     dsd_aligned_free(state->dmr_payload_buf);
     state->dmr_payload_buf = NULL;
     state->dmr_payload_p = NULL;
-
-    dsd_aligned_free(state->dmr_reliab_buf);
-    state->dmr_reliab_buf = NULL;
-    state->dmr_reliab_p = NULL;
 
     dsd_aligned_free(state->dmr_soft_buf);
     state->dmr_soft_buf = NULL;

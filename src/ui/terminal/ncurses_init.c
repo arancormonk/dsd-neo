@@ -26,7 +26,7 @@ static int s_stderr_suppressed = 0;
 static int s_saved_stderr_fd = -1;
 
 void
-ncursesOpen(dsd_opts* opts, dsd_state* state) {
+dsd_terminal_open(dsd_opts* opts, dsd_state* state) {
 
     UNUSED(opts);
     UNUSED(state);
@@ -57,7 +57,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
         init_pair(8, COLOR_BLACK, COLOR_WHITE);   // Black on White
         init_pair(9, COLOR_RED, COLOR_WHITE);     // Red on White
         init_pair(10, COLOR_BLUE, COLOR_WHITE);   // Blue on White
-        /* Quality bands for SNR sparkline and RTL spectrum visualizers */
+        /* Quality bands for RTL spectrum visualizers */
         init_pair(11, COLOR_GREEN, COLOR_BLACK);  // good/high
         init_pair(12, COLOR_YELLOW, COLOR_BLACK); // moderate/mid
         init_pair(13, COLOR_RED, COLOR_BLACK);    // poor/low
@@ -124,7 +124,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-ncursesClose(void) {
+dsd_terminal_close(void) {
     // Restore stderr so exit-time logs (e.g., ring stats) are visible.
     if (s_stderr_suppressed) {
         fflush(stderr);

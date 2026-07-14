@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Coverage runner for repository sources.
-# Defaults to a clean project-wide src/ report. For the old protocol-only slice,
-# run with COVERAGE_SCOPE=protocol and optionally set PROTO_COVERAGE="p25 dmr nxdn".
+# Coverage runner for repository-owned production sources.
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 BUILD_DIR="$ROOT_DIR/build/coverage-debug"
 BUILD_PRESET=${BUILD_PRESET:-coverage-debug-clean}
 TEST_PRESET=${TEST_PRESET:-coverage-debug}
-COVERAGE_SCOPE=${COVERAGE_SCOPE:-src}
 LCOV_BRANCH_ARGS=(--branch-coverage)
 LCOV_IGNORE_ERRORS=(--ignore-errors "negative,inconsistent,unused,mismatch")
 GENHTML_IGNORE_ERRORS=(--ignore-errors inconsistent)
@@ -33,33 +30,11 @@ pushd "$BUILD_DIR" > /dev/null
 # tolerant of those counters while still surfacing lcov warnings on stderr.
 lcov "${LCOV_BRANCH_ARGS[@]}" --capture --directory . --output-file coverage.info "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
 
-case "$COVERAGE_SCOPE" in
-  src | project)
-    REPORT_NAME="coverage.src.info"
-    REPORT_DIR="coverage_html"
-    REPORT_LABEL="project src/ excluding src/third_party"
-    lcov "${LCOV_BRANCH_ARGS[@]}" --extract coverage.info "${ROOT_DIR}/src/*" -o "$REPORT_NAME" \
-      "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
-    ;;
-  protocol)
-    REPORT_NAME="coverage.protocol.info"
-    REPORT_DIR="coverage_protocol_html"
-    PROTO_COVERAGE=${PROTO_COVERAGE:-"p25 dmr"}
-    REPORT_LABEL="protocol slice (${PROTO_COVERAGE}) + fec"
-    EXTRACT_ARGS=()
-    for proto in $PROTO_COVERAGE; do
-      EXTRACT_ARGS+=("${ROOT_DIR}/src/protocol/${proto}/*")
-    done
-    EXTRACT_ARGS+=("${ROOT_DIR}/src/fec/*")
-    lcov "${LCOV_BRANCH_ARGS[@]}" --extract coverage.info "${EXTRACT_ARGS[@]}" -o "$REPORT_NAME" \
-      "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
-    ;;
-  *)
-    echo "Unknown COVERAGE_SCOPE: $COVERAGE_SCOPE" >&2
-    echo "Expected one of: src, project, protocol" >&2
-    exit 1
-    ;;
-esac
+REPORT_NAME="coverage.src.info"
+REPORT_DIR="coverage_html"
+REPORT_LABEL="project src/ excluding src/third_party"
+lcov "${LCOV_BRANCH_ARGS[@]}" --extract coverage.info "${ROOT_DIR}/src/*" -o "$REPORT_NAME" \
+  "${LCOV_IGNORE_ERRORS[@]}" > /dev/null
 
 FILTERED_REPORT="${REPORT_NAME%.info}.filtered.info"
 lcov "${LCOV_BRANCH_ARGS[@]}" --remove "$REPORT_NAME" "${THIRD_PARTY_EXCLUDES[@]}" -o "$FILTERED_REPORT" \

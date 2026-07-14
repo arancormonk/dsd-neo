@@ -3,24 +3,15 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#ifndef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-#error "DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS must be enabled for this test."
-#endif
-
-#include <atomic>
-#include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/io/iq_types.h>
-#include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <mutex>
-#include <thread>
 #include "dsd-neo/core/safe_api.h"
+#include "rtl_stream_test_support.h"
 
 extern "C" uint64_t rtl_device_test_coalesce_capture_mute_duration(uint64_t* pending_bytes, uint64_t duration_bytes,
                                                                    size_t alignment);
@@ -29,8 +20,6 @@ extern "C" void rtl_device_test_end_capture_reconfigure_with_odd_carry(int* out_
                                                                        int* out_mute_byte_phase);
 extern "C" int rtl_device_test_begin_capture_reconfigure_without_writer(int* out_hold);
 extern "C" int rtl_device_test_usb_reconfigure_discards_samples(size_t input_bytes, size_t* out_ring_used);
-extern "C" int rtl_device_test_soapy_config_settings_visibility(size_t config_size, const char* settings,
-                                                                int* out_seen);
 extern "C" void rtl_device_test_replay_dispatch_reset_event_state(int* phase, int* have_carry, uint8_t* carry_byte);
 extern "C" int rtl_device_test_replay_event_boundary_drained(size_t ring_used, uint64_t submitted_gen,
                                                              uint64_t consumed_gen);
@@ -61,7 +50,7 @@ struct rtl_device_test_replay_convert_block_request {
     int format;
     const char* capture_stage;
     int fs4_shift_enabled;
-    int combine_rotate_enabled;
+    int historical_cu8_two_pass;
     const uint8_t* raw_block;
     size_t raw_bytes;
     size_t out_cap_f32;
@@ -82,81 +71,6 @@ extern "C" int rtl_device_test_misc_string_helpers(char* tuner_labels, size_t tu
 extern "C" int rtl_device_test_tcp_policy_helpers(size_t* bufsz_out, size_t bufsz_count, int* waitall_out,
                                                   size_t waitall_count, uint64_t* delta_out, size_t delta_count,
                                                   int* agc_out);
-extern "C" int dsd_rtl_stream_test_tune_completion_result(int wait_result, int completion_result);
-extern "C" int dsd_rtl_stream_test_manual_retune_completion_result(int retune_rc, int reconfigured, uint32_t target_hz,
-                                                                   uint32_t applied_freq_hz);
-extern "C" int dsd_rtl_stream_test_tune_failure_reconciles_applied(uint32_t requested_freq_hz, uint32_t applied_freq_hz,
-                                                                   long int* out_opts_freq,
-                                                                   uint32_t* out_capture_freq_hz);
-extern "C" int
-dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz, uint32_t* out_full_rate_hz,
-                                                     int* out_full_rate_out_hz, uint32_t* out_partial_freq_hz,
-                                                     uint32_t* out_partial_rate_hz, int* out_partial_rate_out_hz);
-extern "C" int dsd_rtl_stream_test_ppm_store_if_applied(int ppm_rc, int requested_ppm, int* out_ppm_error);
-extern "C" int dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, int* out_second_result);
-extern "C" int dsd_rtl_stream_test_cancel_queued_tagged_retune(uint64_t token, int* out_pending_after,
-                                                               int* out_completion_result);
-extern "C" int dsd_rtl_stream_test_cancel_queued_tagged_retune_order(uint64_t active_token, uint64_t queued_token,
-                                                                     int* out_active_result, int* out_cancelled_result);
-extern "C" int dsd_rtl_stream_test_tune_completion_callback_registered(void);
-extern "C" int dsd_rtl_stream_test_retune_without_controller_rejected(void);
-
-namespace {
-struct TaggedTuneCompletionState {
-    int calls;
-    uint64_t token;
-    rtl_stream_tune_result result;
-    uint32_t output_generation;
-};
-
-static void
-tagged_tune_completion(uint64_t token, rtl_stream_tune_result result, void* user_data) {
-    auto* state = static_cast<TaggedTuneCompletionState*>(user_data);
-    if (!state) {
-        return;
-    }
-    state->calls++;
-    state->token = token;
-    state->result = result;
-    state->output_generation = rtl_stream_output_generation();
-}
-
-struct BlockingTuneCompletionState {
-    std::mutex mutex;
-    std::condition_variable ready;
-    bool entered = false;
-    bool release = false;
-    int calls = 0;
-};
-
-static void
-blocking_tune_completion(uint64_t token, rtl_stream_tune_result result, void* user_data) {
-    (void)token;
-    (void)result;
-    auto* state = static_cast<BlockingTuneCompletionState*>(user_data);
-    std::unique_lock<std::mutex> lock(state->mutex);
-    state->calls++;
-    state->entered = true;
-    state->ready.notify_all();
-    state->ready.wait(lock, [state] { return state->release; });
-}
-
-struct OrderedTuneCompletionState {
-    int calls = 0;
-    uint64_t tokens[2] = {};
-    rtl_stream_tune_result results[2] = {};
-};
-
-static void
-ordered_tune_completion(uint64_t token, rtl_stream_tune_result result, void* user_data) {
-    auto* state = static_cast<OrderedTuneCompletionState*>(user_data);
-    if (state->calls < 2) {
-        state->tokens[state->calls] = token;
-        state->results[state->calls] = result;
-    }
-    state->calls++;
-}
-} // namespace
 
 static int
 expect_int_eq(const char* label, int got, int want) {
@@ -185,14 +99,30 @@ expect_u64_eq(const char* label, uint64_t got, uint64_t want) {
     return 0;
 }
 
+namespace {
+struct TaggedTuneCompletionState {
+    int calls;
+    uint64_t request_id;
+    rtl_stream_tune_result result;
+};
+
+void
+tagged_tune_completion(uint64_t request_id, rtl_stream_tune_result result, void* user_data) {
+    auto* state = static_cast<TaggedTuneCompletionState*>(user_data);
+    state->calls++;
+    state->request_id = request_id;
+    state->result = result;
+}
+} // namespace
+
 static int
-call_replay_convert_block(int format, const char* capture_stage, int fs4_shift_enabled, int combine_rotate_enabled,
+call_replay_convert_block(int format, const char* capture_stage, int fs4_shift_enabled, int historical_cu8_two_pass,
                           const uint8_t* raw_block, size_t raw_bytes, size_t out_cap_f32, int start_phase,
                           int start_have_carry, uint8_t start_carry_byte, float* out_f32, size_t out_f32_count,
                           int* out_phase, int* out_have_carry, uint8_t* out_carry_byte) {
     rtl_device_test_replay_convert_block_request request{
-        format,    capture_stage, fs4_shift_enabled, combine_rotate_enabled, raw_block,
-        raw_bytes, out_cap_f32,   start_phase,       start_have_carry,       start_carry_byte};
+        format,    capture_stage, fs4_shift_enabled, historical_cu8_two_pass, raw_block,
+        raw_bytes, out_cap_f32,   start_phase,       start_have_carry,        start_carry_byte};
     return rtl_device_test_replay_convert_block(&request, out_f32, out_f32_count, out_phase, out_have_carry,
                                                 out_carry_byte);
 }
@@ -277,15 +207,15 @@ main(void) {
     size_t used_while_pending = 0U;
     generation_before = 0U;
     generation_after = 0U;
-    rc = rtl_stream_test_untagged_timeout_read_gate(5U, &read_while_pending, &used_while_pending,
-                                                    &read_after_failed_completion, &read_after_recovery,
-                                                    &generation_before, &generation_after);
-    failed |= expect_int_eq("untagged timeout read gate helper rc", rc, 0);
-    failed |= expect_int_eq("untagged timeout blocks queued output", read_while_pending, 0);
-    failed |= expect_size_eq("untagged timeout preserves queued output", used_while_pending, 5U);
-    failed |= expect_generation_changed("untagged timeout invalidates handed-off samples", generation_before,
-                                        generation_after);
-    failed |= expect_int_eq("failed untagged completion reopens recovered output", read_after_failed_completion, 1);
+    rc = rtl_stream_test_tune_timeout_read_gate(5U, &read_while_pending, &used_while_pending,
+                                                &read_after_failed_completion, &read_after_recovery, &generation_before,
+                                                &generation_after);
+    failed |= expect_int_eq("tune timeout read gate helper rc", rc, 0);
+    failed |= expect_int_eq("tune timeout blocks queued output", read_while_pending, 0);
+    failed |= expect_size_eq("tune timeout preserves queued output", used_while_pending, 5U);
+    failed |=
+        expect_generation_changed("tune timeout invalidates handed-off samples", generation_before, generation_after);
+    failed |= expect_int_eq("failed completion reopens recovered output", read_after_failed_completion, 1);
     failed |= expect_int_eq("successful recovery reopens queued output", read_after_recovery, 1);
 
     cache_pending = -1;
@@ -335,142 +265,28 @@ main(void) {
     failed |= expect_int_eq("second completion keeps ok result", second_completion_result, RTL_STREAM_TUNE_OK);
 
     TaggedTuneCompletionState tagged_completion = {};
-    uint64_t coalesced_token = 0U;
+    uint32_t owner_freq_hz = 0U;
+    uint32_t owner_profile_freq_hz = 0U;
+    uint64_t owner_token = 0U;
+    int owner_completion_result = RTL_STREAM_TUNE_OK;
+    const uint64_t expected_owner_token = UINT64_C(0x1111222233334444);
     rtl_stream_register_tune_completion_callback(tagged_tune_completion, &tagged_completion);
-    rc = rtl_stream_test_tagged_completion_boundary(UINT64_C(0x1111222233334444), UINT64_C(0xAAAABBBBCCCCDDDD), 5U,
-                                                    &coalesced_token, &generation_before, &generation_after);
+    rc = rtl_stream_test_tagged_retune_ownership(expected_owner_token, 0U, RTL_STREAM_TUNE_FAILED, &owner_freq_hz,
+                                                 &owner_profile_freq_hz, &owner_token, &owner_completion_result);
     rtl_stream_register_tune_completion_callback(nullptr, nullptr);
-    failed |= expect_int_eq("tagged completion boundary helper rc", rc, 0);
-    failed |= expect_u64_eq("conflicting tagged tune keeps owner", coalesced_token, UINT64_C(0x1111222233334444));
-    failed |= expect_int_eq("conflicting tagged tune publishes owner completion", tagged_completion.calls, 1);
-    failed |= expect_u64_eq("tagged owner callback token", tagged_completion.token, UINT64_C(0x1111222233334444));
-    failed |= expect_int_eq("tagged owner callback result", tagged_completion.result, RTL_STREAM_TUNE_OK);
+    failed |= expect_int_eq("tagged retune ownership helper rc", rc, 0);
+    failed |= expect_int_eq("untagged contender preserves owner frequency", (int)owner_freq_hz, 855000000);
+    failed |= expect_int_eq("untagged contender preserves owner profile", (int)owner_profile_freq_hz, 855000000);
+    failed |= expect_u64_eq("untagged contender preserves owner token", owner_token, expected_owner_token);
+    failed |= expect_int_eq("failed owner completion is retained", owner_completion_result, RTL_STREAM_TUNE_FAILED);
+    failed |= expect_int_eq("failed owner completion is published once", tagged_completion.calls, 1);
+    failed |= expect_u64_eq("failed owner completion keeps request token", tagged_completion.request_id,
+                            expected_owner_token);
     failed |=
-        expect_generation_changed("completion follows output generation boundary", generation_before, generation_after);
-    failed |= expect_generation_eq("callback observes drained output generation", tagged_completion.output_generation,
-                                   generation_after);
+        expect_int_eq("failed owner callback keeps terminal result", tagged_completion.result, RTL_STREAM_TUNE_FAILED);
 
-    tagged_completion = {};
-    coalesced_token = UINT64_MAX;
-    rtl_stream_register_tune_completion_callback(tagged_tune_completion, &tagged_completion);
-    rc = rtl_stream_test_tagged_completion_boundary(UINT64_C(0x1020304050607080), 0U, 5U, &coalesced_token,
-                                                    &generation_before, &generation_after);
-    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
-    failed |= expect_int_eq("untagged conflict boundary helper rc", rc, 0);
-    failed |= expect_u64_eq("untagged conflict keeps tagged owner", coalesced_token, UINT64_C(0x1020304050607080));
-    failed |= expect_int_eq("untagged conflict publishes owner completion", tagged_completion.calls, 1);
-    failed |= expect_u64_eq("untagged conflict callback token", tagged_completion.token, UINT64_C(0x1020304050607080));
-    failed |= expect_int_eq("untagged conflict callback result", tagged_completion.result, RTL_STREAM_TUNE_OK);
-    failed |= expect_generation_changed("untagged conflict drains owner output", generation_before, generation_after);
-    failed |= expect_generation_eq("untagged conflict callback follows output boundary",
-                                   tagged_completion.output_generation, generation_after);
-
-    tagged_completion = {};
-    coalesced_token = 0U;
-    rtl_stream_register_tune_completion_callback(tagged_tune_completion, &tagged_completion);
-    rc = rtl_stream_test_tagged_completion_boundary(0U, UINT64_C(0x5566778899AABBCC), 5U, &coalesced_token,
-                                                    &generation_before, &generation_after);
-    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
-    failed |= expect_int_eq("tagged upgrade boundary helper rc", rc, 0);
-    failed |= expect_u64_eq("tagged request upgrades untagged work", coalesced_token, UINT64_C(0x5566778899AABBCC));
-    failed |= expect_int_eq("tagged upgrade publishes one completion", tagged_completion.calls, 1);
-    failed |= expect_u64_eq("tagged upgrade callback token", tagged_completion.token, UINT64_C(0x5566778899AABBCC));
-    failed |= expect_int_eq("tagged upgrade callback result", tagged_completion.result, RTL_STREAM_TUNE_OK);
-    failed |= expect_generation_changed("tagged upgrade drains output", generation_before, generation_after);
-    failed |= expect_generation_eq("tagged upgrade callback follows output boundary",
-                                   tagged_completion.output_generation, generation_after);
-
-    tagged_completion = {};
-    int pending_after_cancel = -1;
-    int cancelled_completion_result = RTL_STREAM_TUNE_OK;
-    rtl_stream_register_tune_completion_callback(tagged_tune_completion, &tagged_completion);
-    rc = dsd_rtl_stream_test_cancel_queued_tagged_retune(UINT64_C(0xCAFEBABE11223344), &pending_after_cancel,
-                                                         &cancelled_completion_result);
-    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
-    failed |= expect_int_eq("queued tagged cancellation helper rc", rc, 0);
-    failed |= expect_int_eq("queued tagged cancellation clears pending work", pending_after_cancel, 0);
-    failed |= expect_int_eq("queued tagged cancellation records failed result", cancelled_completion_result,
-                            RTL_STREAM_TUNE_FAILED);
-    failed |= expect_int_eq("queued tagged cancellation publishes once", tagged_completion.calls, 1);
-    failed |= expect_u64_eq("queued tagged cancellation preserves token", tagged_completion.token,
-                            UINT64_C(0xCAFEBABE11223344));
-    failed |=
-        expect_int_eq("queued tagged cancellation callback result", tagged_completion.result, RTL_STREAM_TUNE_FAILED);
-
-    OrderedTuneCompletionState ordered_completion = {};
-    int active_completion_result = RTL_STREAM_TUNE_FAILED;
-    cancelled_completion_result = RTL_STREAM_TUNE_OK;
-    rtl_stream_register_tune_completion_callback(ordered_tune_completion, &ordered_completion);
-    rc = dsd_rtl_stream_test_cancel_queued_tagged_retune_order(UINT64_C(0x1010101010101010),
-                                                               UINT64_C(0x2020202020202020), &active_completion_result,
-                                                               &cancelled_completion_result);
-    rtl_stream_register_tune_completion_callback(nullptr, nullptr);
-    failed |= expect_int_eq("active and queued cancellation order helper rc", rc, 0);
-    failed |= expect_int_eq("active request keeps its completion result", active_completion_result, RTL_STREAM_TUNE_OK);
-    failed |= expect_int_eq("queued request keeps its cancellation result", cancelled_completion_result,
-                            RTL_STREAM_TUNE_FAILED);
-    failed |= expect_int_eq("ordered cancellation publishes both completions", ordered_completion.calls, 2);
-    failed |= expect_u64_eq("active completion retains first token", ordered_completion.tokens[0],
-                            UINT64_C(0x1010101010101010));
-    failed |= expect_int_eq("active completion is successful", ordered_completion.results[0], RTL_STREAM_TUNE_OK);
-    failed |= expect_u64_eq("cancelled completion retains queued token", ordered_completion.tokens[1],
-                            UINT64_C(0x2020202020202020));
-    failed |= expect_int_eq("queued completion failed", ordered_completion.results[1], RTL_STREAM_TUNE_FAILED);
     failed |= expect_int_eq("retune without controller is rejected",
                             dsd_rtl_stream_test_retune_without_controller_rejected(), 1);
-
-    BlockingTuneCompletionState blocking_completion = {};
-    std::atomic<int> unregister_returned{0};
-    int blocking_publish_rc = -1;
-    uint64_t blocking_token = 0U;
-    uint32_t blocking_generation_before = 0U;
-    uint32_t blocking_generation_after = 0U;
-    rtl_stream_register_tune_completion_callback(blocking_tune_completion, &blocking_completion);
-    std::thread publisher([&] {
-        blocking_publish_rc = rtl_stream_test_tagged_completion_boundary(
-            UINT64_C(0x3030303030303030), UINT64_C(0x3030303030303030), 5U, &blocking_token,
-            &blocking_generation_before, &blocking_generation_after);
-    });
-    bool callback_entered = false;
-    {
-        std::unique_lock<std::mutex> lock(blocking_completion.mutex);
-        callback_entered = blocking_completion.ready.wait_for(
-            lock, std::chrono::seconds(1), [&blocking_completion] { return blocking_completion.entered; });
-        if (!callback_entered) {
-            blocking_completion.release = true;
-        }
-    }
-    blocking_completion.ready.notify_all();
-    failed |= expect_int_eq("blocking completion callback entered", callback_entered ? 1 : 0, 1);
-    if (callback_entered) {
-        std::thread unregister_thread([&] {
-            rtl_stream_register_tune_completion_callback(nullptr, nullptr);
-            unregister_returned.store(1, std::memory_order_release);
-        });
-        int callback_still_registered = 1;
-        for (int i = 0; i < 1000 && callback_still_registered; i++) {
-            callback_still_registered = dsd_rtl_stream_test_tune_completion_callback_registered();
-            if (callback_still_registered) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-        }
-        failed |= expect_int_eq("unregister removes callback before waiting", callback_still_registered, 0);
-        failed |= expect_int_eq("unregister waits for in-flight callback",
-                                unregister_returned.load(std::memory_order_acquire), 0);
-        {
-            std::lock_guard<std::mutex> lock(blocking_completion.mutex);
-            blocking_completion.release = true;
-        }
-        blocking_completion.ready.notify_all();
-        unregister_thread.join();
-        failed |= expect_int_eq("unregister returns after callback exits",
-                                unregister_returned.load(std::memory_order_acquire), 1);
-    } else {
-        rtl_stream_register_tune_completion_callback(nullptr, nullptr);
-    }
-    publisher.join();
-    failed |= expect_int_eq("blocking completion publish helper rc", blocking_publish_rc, 0);
-    failed |= expect_int_eq("blocking completion invoked once", blocking_completion.calls, 1);
 
     uint32_t full_restore_freq_hz = 0U;
     uint32_t full_restore_rate_hz = 0U;
@@ -609,17 +425,6 @@ main(void) {
     failed |= expect_int_eq("retune gain profile keeps manual mode", gain_is_auto, 0);
     failed |= expect_int_eq("retune gain profile keeps autogain-is-set", autogain_is_set, 1);
     failed |= expect_int_eq("retune gain profile keeps autogain off", autogain_on, 0);
-
-    int settings_seen = -1;
-    failed |= expect_int_eq("legacy Soapy config settings visibility helper",
-                            rtl_device_test_soapy_config_settings_visibility(RTL_SOAPY_CONFIG_LEGACY_SIZE,
-                                                                             "biasT_ctrl=false", &settings_seen),
-                            0);
-    failed |= expect_int_eq("legacy Soapy config ignores appended settings", settings_seen, 0);
-    failed |= expect_int_eq(
-        "sized Soapy config settings visibility helper",
-        rtl_device_test_soapy_config_settings_visibility(RTL_SOAPY_CONFIG_SIZE, "biasT_ctrl=false", &settings_seen), 0);
-    failed |= expect_int_eq("sized Soapy config observes appended settings", settings_seen, 1);
 
     /*
      * USB apply/readback checks keep retry behavior explicit: apply failures are
@@ -885,6 +690,17 @@ main(void) {
     failed |= expect_int_eq("replay CU8 odd tail conversion count", rc, 2);
     failed |= expect_int_eq("replay CU8 odd tail retained", convert_have_carry, 1);
     failed |= expect_int_eq("replay CU8 odd tail byte", (int)convert_carry_byte, 129);
+
+    const uint8_t historical_cu8[] = {10U, 11U, 20U, 21U};
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CU8, "", 1, 1, historical_cu8, sizeof(historical_cu8), 8U, 0, 0, 0U,
+                                   converted, sizeof(converted) / sizeof(converted[0]), &convert_phase,
+                                   &convert_have_carry, &convert_carry_byte);
+    failed |= expect_int_eq("historical CU8 conversion count", rc, 4);
+    failed |= expect_double_near("historical CU8 phase0 I", converted[0], (10.0 - 128.0) / 127.5, 1e-6);
+    failed |= expect_double_near("historical CU8 phase0 Q", converted[1], (11.0 - 128.0) / 127.5, 1e-6);
+    failed |= expect_double_near("historical CU8 phase1 I", converted[2], (234.0 - 128.0) / 127.5, 1e-6);
+    failed |= expect_double_near("historical CU8 phase1 Q", converted[3], (20.0 - 128.0) / 127.5, 1e-6);
+    failed |= expect_int_eq("historical CU8 phase advance", convert_phase, 2);
 
     float cf32_samples[] = {1.0f, 2.0f, 3.0f, 4.0f};
     uint8_t cf32_raw[sizeof(cf32_samples)] = {};

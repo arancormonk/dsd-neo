@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/config.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/ted.h"
+#include "mmse_interp.h"
 
 static void fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff, int n_taps);
 
@@ -37,7 +38,7 @@ static inline bool
 debug_cqpsk_enabled(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     return cfg && cfg->debug_cqpsk_enable;
@@ -52,108 +53,6 @@ fll_band_edge_clear_delay(dsd_fll_band_edge_state_t* f) {
         f->delay_r[i] = 0.0f;
         f->delay_i[i] = 0.0f;
     }
-}
-
-/* MMSE interpolator parameters - match OP25/GNU Radio */
-#define MMSE_NTAPS  8
-#define MMSE_NSTEPS 16
-
-/* GNU Radio MMSE 8-tap polyphase interpolator coefficients (subset at 1/16 steps) */
-static const float mmse_taps[MMSE_NSTEPS + 1][MMSE_NTAPS] = {
-    /* Row 0/128 (mu=0): output = sample[4] */
-    {0.00000e+00f, 0.00000e+00f, 0.00000e+00f, 0.00000e+00f, 1.00000e+00f, 0.00000e+00f, 0.00000e+00f, 0.00000e+00f},
-    /* Row 8/128 (mu=0.0625) */
-    {-1.23337e-03f, 6.84261e-03f, -2.24178e-02f, 6.57852e-02f, 9.83392e-01f, -4.04519e-02f, 9.56876e-03f,
-     -1.54221e-03f},
-    /* Row 16/128 (mu=0.125) */
-    {-2.43121e-03f, 1.35716e-02f, -4.49929e-02f, 1.36968e-01f, 9.55956e-01f, -7.43154e-02f, 1.80759e-02f,
-     -2.94361e-03f},
-    /* Row 24/128 (mu=0.1875) */
-    {-3.55283e-03f, 1.99599e-02f, -6.70018e-02f, 2.12443e-01f, 9.18329e-01f, -1.01501e-01f, 2.53295e-02f,
-     -4.16581e-03f},
-    /* Row 32/128 (mu=0.25) */
-    {-4.55932e-03f, 2.57844e-02f, -8.77011e-02f, 2.91006e-01f, 8.71305e-01f, -1.22047e-01f, 3.11866e-02f,
-     -5.17776e-03f},
-    /* Row 40/128 (mu=0.3125) */
-    {-5.41467e-03f, 3.08323e-02f, -1.06342e-01f, 3.71376e-01f, 8.15826e-01f, -1.36111e-01f, 3.55525e-02f,
-     -5.95620e-03f},
-    /* Row 48/128 (mu=0.375) */
-    {-6.08674e-03f, 3.49066e-02f, -1.22185e-01f, 4.52218e-01f, 7.52958e-01f, -1.43968e-01f, 3.83800e-02f,
-     -6.48585e-03f},
-    /* Row 56/128 (mu=0.4375) */
-    {-6.54823e-03f, 3.78315e-02f, -1.34515e-01f, 5.32164e-01f, 6.83875e-01f, -1.45993e-01f, 3.96678e-02f,
-     -6.75943e-03f},
-    /* Row 64/128 (mu=0.5): midpoint */
-    {-6.77751e-03f, 3.94578e-02f, -1.42658e-01f, 6.09836e-01f, 6.09836e-01f, -1.42658e-01f, 3.94578e-02f,
-     -6.77751e-03f},
-    /* Row 72/128 (mu=0.5625) */
-    {-6.73929e-03f, 3.95900e-02f, -1.46043e-01f, 6.92808e-01f, 5.22267e-01f, -1.33190e-01f, 3.75341e-02f,
-     -6.50285e-03f},
-    /* Row 80/128 (mu=0.625) */
-    {-6.48585e-03f, 3.83800e-02f, -1.43968e-01f, 7.52958e-01f, 4.52218e-01f, -1.22185e-01f, 3.49066e-02f,
-     -6.08674e-03f},
-    /* Row 88/128 (mu=0.6875) */
-    {-5.95620e-03f, 3.55525e-02f, -1.36111e-01f, 8.15826e-01f, 3.71376e-01f, -1.06342e-01f, 3.08323e-02f,
-     -5.41467e-03f},
-    /* Row 96/128 (mu=0.75) */
-    {-5.17776e-03f, 3.11866e-02f, -1.22047e-01f, 8.71305e-01f, 2.91006e-01f, -8.77011e-02f, 2.57844e-02f,
-     -4.55932e-03f},
-    /* Row 104/128 (mu=0.8125) */
-    {-4.16581e-03f, 2.53295e-02f, -1.01501e-01f, 9.18329e-01f, 2.12443e-01f, -6.70018e-02f, 1.99599e-02f,
-     -3.55283e-03f},
-    /* Row 112/128 (mu=0.875) */
-    {-2.94361e-03f, 1.80759e-02f, -7.43154e-02f, 9.55956e-01f, 1.36968e-01f, -4.49929e-02f, 1.35716e-02f,
-     -2.43121e-03f},
-    /* Row 120/128 (mu=0.9375) */
-    {-1.54221e-03f, 9.56876e-03f, -4.04519e-02f, 9.83392e-01f, 6.57852e-02f, -2.24178e-02f, 6.84261e-03f,
-     -1.23337e-03f},
-    /* Row 128/128 (mu=1.0): output = sample[3] */
-    {0.00000e+00f, 0.00000e+00f, 0.00000e+00f, 1.00000e+00f, 0.00000e+00f, 0.00000e+00f, 0.00000e+00f, 0.00000e+00f},
-};
-
-/* 8-tap MMSE FIR interpolation */
-static inline float
-mmse_interp_8tap(const float* s, float mu) {
-    float idx_f = mu * (float)MMSE_NSTEPS;
-    int idx_lo = (int)idx_f;
-    float frac = idx_f - (float)idx_lo;
-
-    if (idx_lo < 0) {
-        idx_lo = 0;
-        frac = 0.0f;
-    }
-    if (idx_lo >= MMSE_NSTEPS) {
-        idx_lo = MMSE_NSTEPS - 1;
-        frac = 1.0f;
-    }
-    int idx_hi = idx_lo + 1;
-
-    const float* taps_lo = mmse_taps[idx_lo];
-    const float* taps_hi = mmse_taps[idx_hi];
-    float one_minus_frac = 1.0f - frac;
-
-    float acc = 0.0f;
-    for (int k = 0; k < MMSE_NTAPS; k++) {
-        float tap = one_minus_frac * taps_lo[k] + frac * taps_hi[k];
-        acc += tap * s[k];
-    }
-    return acc;
-}
-
-/* Complex MMSE interpolation */
-static inline void
-mmse_interp_cc(const float* dl, float mu, float* out_r, float* out_j) {
-    float sr[MMSE_NTAPS];
-    float sj[MMSE_NTAPS];
-
-    for (int k = 0; k < MMSE_NTAPS; k++) {
-        const size_t kk = (size_t)k;
-        sr[k] = dl[kk * 2];
-        sj[k] = dl[kk * 2 + 1];
-    }
-
-    *out_r = mmse_interp_8tap(sr, mu);
-    *out_j = mmse_interp_8tap(sj, mu);
 }
 
 /* Saturating clip equivalent to GNU Radio's branchless_clip. */
@@ -246,7 +145,7 @@ op25_gardner_gain_mu_for_state(const demod_state* d, const ted_state_t* ted) {
     const float requested = (d && d->ted_gain > 0.0f) ? d->ted_gain : 0.025f;
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     if ((d && d->ted_gain_is_set) || (cfg && cfg->ted_gain_is_set)) {
@@ -478,7 +377,7 @@ gardner_reinit_state(demod_state* d, ted_state_t* ted, int sps, int is_first_ini
     ted->omega_max = *omega * (1.0f + ted->omega_rel);
 
     const int twice_sps_op25 = 2 * (int)ceilf(ted->omega_max);
-    const int twice_sps_mmse = (int)ceilf(ted->omega_max / 2.0f) + MMSE_NTAPS + 1;
+    const int twice_sps_mmse = (int)ceilf(ted->omega_max / 2.0f) + DSD_MMSE_INTERP_TAPS + 1;
     const int twice_sps_required = (twice_sps_op25 > twice_sps_mmse) ? twice_sps_op25 : twice_sps_mmse;
     if (twice_sps_required > TED_DL_SIZE) {
         if (!g_warned_ted_dl_oversize) {
@@ -592,14 +491,14 @@ gardner_compute_half_timing(float mu, float omega, int* half_sps, float* half_mu
 static inline int
 gardner_interpolate_symbol(const gardner_loop_context_t* ctx, int half_sps, float half_mu, float* mid_r, float* mid_j,
                            float* sym_r, float* sym_j) {
-    const int max_mid_idx = ctx->dl_index + MMSE_NTAPS - 1;
-    const int max_sym_idx = ctx->dl_index + half_sps + MMSE_NTAPS - 1;
+    const int max_mid_idx = ctx->dl_index + DSD_MMSE_INTERP_TAPS - 1;
+    const int max_sym_idx = ctx->dl_index + half_sps + DSD_MMSE_INTERP_TAPS - 1;
     if (max_mid_idx >= 2 * ctx->twice_sps || max_sym_idx >= 2 * ctx->twice_sps) {
         return 0;
     }
 
-    mmse_interp_cc(ctx->dl + (size_t)ctx->dl_index * 2, ctx->mu, mid_r, mid_j);
-    mmse_interp_cc(ctx->dl + (size_t)(ctx->dl_index + half_sps) * 2, half_mu, sym_r, sym_j);
+    dsd_mmse_interp_complex_8tap(ctx->dl + (size_t)ctx->dl_index * 2, ctx->mu, mid_r, mid_j);
+    dsd_mmse_interp_complex_8tap(ctx->dl + (size_t)(ctx->dl_index + half_sps) * 2, half_mu, sym_r, sym_j);
     return 1;
 }
 
@@ -879,29 +778,6 @@ fll_commit_loop(dsd_fll_band_edge_state_t* f, const fll_loop_context_t* ctx) {
 } // namespace
 
 /*
- * Reset Costas loop state for fresh carrier acquisition on retune.
- *
- * Per OP25's costas_reset() in p25_demodulator_dev.py:574-576:
- *   self.costas.set_frequency(0)
- *   self.costas.set_phase(0)
- *
- * Unlike the old combined block, we now reset BOTH phase and frequency
- * because the Costas loop operates at symbol rate after diff_phasor,
- * and there's no shared state with Gardner.
- */
-extern "C" void
-dsd_costas_reset(dsd_costas_loop_state_t* c) {
-    if (!c) {
-        return;
-    }
-    c->phase = 0.0f;
-    c->freq = 0.0f;
-    c->error = 0.0f;
-    c->error_smooth = 0.0f;
-    c->initialized = 0;
-}
-
-/*
  * OP25-compatible Gardner timing recovery block.
  *
  * Direct port of OP25's gardner_cc_impl::general_work() from:
@@ -920,7 +796,7 @@ dsd_costas_reset(dsd_costas_loop_state_t* c) {
  *     5. Update lock detector (Yair Linn method)
  *   Output: Symbol-rate complex samples (timing corrected, NOT carrier corrected)
  *
- * Key differences from old combined block:
+ * Separation from the carrier-recovery stage:
  *   - NO NCO rotation applied to input samples
  *   - NO phase error computation or Costas tracking
  *   - Output is raw symbols, not carrier-corrected
@@ -1083,21 +959,6 @@ op25_costas_loop_cc(struct demod_state* d) {
 
     costas_commit_loop(c, &ctx);
     costas_store_metrics(d, &ctx.metrics, pairs);
-}
-
-/*
- * Reset FLL band-edge state for fresh frequency acquisition.
- */
-extern "C" void
-dsd_fll_band_edge_reset(dsd_fll_band_edge_state_t* f) {
-    if (!f) {
-        return;
-    }
-    f->phase = 0.0f;
-    f->freq = 0.0f;
-    fll_band_edge_clear_delay(f);
-    f->delay_idx = 0;
-    /* Don't clear initialized or taps - they can be reused */
 }
 
 /*

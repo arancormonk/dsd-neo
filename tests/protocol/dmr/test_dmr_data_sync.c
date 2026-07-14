@@ -123,8 +123,8 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
-                          const uint8_t* reliab98) {
+dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                       const uint8_t* reliab98) {
     (void)opts;
     g_handler_calls++;
     g_handler_slot = state->currentslot;
@@ -194,17 +194,17 @@ fill_sync_payload(int payload[90], const char* sync) {
 }
 
 static void
-prepare_state(dsd_state* state, int payload[90], uint8_t reliab[90]) {
+prepare_state(dsd_state* state, int payload[90], dsd_dibit_soft_t soft[90]) {
     DSD_MEMSET(state, 0, sizeof(*state));
     for (size_t i = 0; i < 90U; i++) {
         payload[i] = (int)(i & 3U);
-        reliab[i] = (uint8_t)(40U + i);
+        soft[i].reliability = (uint8_t)(40U + i);
     }
     fill_sync_payload(payload, DMR_BS_DATA_SYNC);
 
     state->dmr_payload_p = payload + 90;
-    state->dmr_reliab_buf = reliab;
-    state->dmr_reliab_p = reliab + 90;
+    state->dmr_soft_buf = soft;
+    state->dmr_soft_p = soft + 90;
     state->dmr_stereo = 1;
     for (size_t i = 0; i < 144U; i++) {
         state->dmr_stereo_payload[i] = (int)((i + 1U) & 3U);
@@ -228,12 +228,11 @@ test_data_sync_dispatches_burst_and_reliability(void) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
-    static uint8_t reliab[90];
+    static dsd_dibit_soft_t reliab[90];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_state(&state, payload, reliab);
     reset_fixture();
 
-    opts.dmr_mono = 1;
     dmr_data_sync(&opts, &state);
 
     assert(g_handler_calls == 1);
@@ -245,15 +244,14 @@ test_data_sync_dispatches_burst_and_reliability(void) {
     assert(g_skip_calls == 0);
     assert(state.currentslot == 1);
     assert(state.color_code == 5);
-    assert(state.dmr_color_code == 5);
     assert(state.dmrburstR == 7U);
     assert(strcmp(state.slot1light, " slot1 ") == 0);
     assert(strcmp(state.slot2light, "[slot2]") == 0);
-    assert(g_handler_reliab[0] == reliab[12]);
-    assert(g_handler_reliab[48] == reliab[60]);
+    assert(g_handler_reliab[0] == reliab[12].reliability);
+    assert(g_handler_reliab[48] == reliab[60].reliability);
     assert(g_handler_reliab[49] == state.dmr_stereo_reliab[95]);
     assert(g_handler_reliab[97] == state.dmr_stereo_reliab[143]);
-    assert(g_cach_calls == 0);
+    assert(g_cach_calls == 1);
 }
 
 static void
@@ -261,13 +259,12 @@ test_cach_failure_resets_without_dispatch(void) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
-    static uint8_t reliab[90];
+    static dsd_dibit_soft_t reliab[90];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_state(&state, payload, reliab);
     reset_fixture();
     g_hamming_ok = 0;
 
-    opts.dmr_mono = 1;
     dmr_data_sync(&opts, &state);
 
     assert(g_handler_calls == 0);
@@ -281,7 +278,7 @@ test_golay_failure_resets_and_skips_live_tail(void) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
-    static uint8_t reliab[90];
+    static dsd_dibit_soft_t reliab[90];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_state(&state, payload, reliab);
     reset_fixture();
@@ -308,7 +305,7 @@ test_live_second_half_reliability_and_debug_output(void) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
-    static uint8_t reliab[90];
+    static dsd_dibit_soft_t reliab[90];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_state(&state, payload, reliab);
     reset_fixture();
@@ -319,7 +316,6 @@ test_live_second_half_reliability_and_debug_output(void) {
     state.umid = 30;
     state.max = 40;
     opts.dmr_debug_burst = 1;
-    opts.dmr_mono = 1;
     prepare_live_symbols(40, 3);
 
     dmr_data_sync(&opts, &state);
@@ -331,6 +327,7 @@ test_live_second_half_reliability_and_debug_output(void) {
     assert(g_skip_calls == 66);
     assert(g_live_dibit_index == 54);
     assert(g_debug_format_calls == 1);
+    assert(g_cach_calls == 1);
 }
 
 static uint8_t
@@ -338,7 +335,7 @@ run_live_reliability_symbol(int symbol) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
-    static uint8_t reliab[90];
+    static dsd_dibit_soft_t reliab[90];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_state(&state, payload, reliab);
     reset_fixture();
@@ -348,7 +345,6 @@ run_live_reliability_symbol(int symbol) {
     state.center = 20;
     state.umid = 30;
     state.max = 40;
-    opts.dmr_mono = 1;
     prepare_live_symbols(symbol, 3);
 
     dmr_data_sync(&opts, &state);
@@ -370,7 +366,7 @@ test_direct_mode_sync_overrides_cach_slot(void) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
-    static uint8_t reliab[90];
+    static dsd_dibit_soft_t reliab[90];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_state(&state, payload, reliab);
     reset_fixture();
@@ -378,7 +374,6 @@ test_direct_mode_sync_overrides_cach_slot(void) {
     for (size_t i = 0; i < 24U; i++) {
         state.dmr_stereo_payload[66U + i] = payload[66U + i];
     }
-    opts.dmr_mono = 1;
     g_decoded_slot = 1;
 
     dmr_data_sync(&opts, &state);
@@ -397,11 +392,17 @@ test_confidence_pending_and_reject_gate_dispatch(void) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
-    static uint8_t reliab[90];
+    static dsd_dibit_soft_t reliab[90];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_state(&state, payload, reliab);
     reset_fixture();
-    opts.dmr_mono = 0;
+    state.dmr_stereo = 0;
+    state.min = 0;
+    state.lmid = 10;
+    state.center = 20;
+    state.umid = 30;
+    state.max = 40;
+    prepare_live_symbols(40, 3);
     g_confidence_result = DMR_CONFIDENCE_PENDING;
 
     dmr_data_sync(&opts, &state);
@@ -414,7 +415,6 @@ test_confidence_pending_and_reject_gate_dispatch(void) {
 
     prepare_state(&state, payload, reliab);
     reset_fixture();
-    opts.dmr_mono = 0;
     g_confidence_result = DMR_CONFIDENCE_REJECT;
 
     dmr_data_sync(&opts, &state);
@@ -430,12 +430,11 @@ test_connect_plus_idle_bursts_clear_tuned_sync_times(void) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
-    static uint8_t reliab[90];
+    static dsd_dibit_soft_t reliab[90];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     prepare_state(&state, payload, reliab);
     reset_fixture();
 
-    opts.dmr_mono = 1;
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
     state.is_con_plus = 1;

@@ -22,11 +22,6 @@
 
 static unsigned char Hamming_7_4_m_corr[8]; //!< single bit error correction by syndrome index
 
-//!< Generator matrix of bits
-static const unsigned char Hamming_7_4_m_G[7 * 4] = {
-    1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1,
-};
-
 //!< Parity check matrix of bits
 static const unsigned char Hamming_7_4_m_H[7 * 3] = {
     1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1,
@@ -37,13 +32,6 @@ static const unsigned char Hamming_7_4_m_H[7 * 3] = {
 // ========================================================================================
 
 static unsigned char Hamming_12_8_m_corr[16]; //!< single bit error correction by syndrome index
-
-//!< Generator matrix of bits
-static const unsigned char Hamming_12_8_m_G[12 * 8] = {
-    1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0,
-    1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0,
-    0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1,
-};
 
 //!< Parity check matrix of bits
 static const unsigned char Hamming_12_8_m_H[12 * 4] = {
@@ -56,13 +44,6 @@ static const unsigned char Hamming_12_8_m_H[12 * 4] = {
 
 static unsigned char Hamming_13_9_m_corr[16]; //!< single bit error correction by syndrome index
 
-//!< Generator matrix of bits
-static const unsigned char Hamming_13_9_m_G[13 * 9] = {
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0,
-    0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0,
-    0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1};
-
 //!< Parity check matrix of bits
 static const unsigned char Hamming_13_9_m_H[13 * 4] = {
     1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0,
@@ -73,15 +54,6 @@ static const unsigned char Hamming_13_9_m_H[13 * 4] = {
 // ========================================================================================
 
 static unsigned char Hamming_15_11_m_corr[16]; //!< single bit error correction by syndrome index
-
-//!< Generator matrix of bits
-static const unsigned char Hamming_15_11_m_G[15 * 11] = {
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0,
-    0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
-    0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1,
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1,
-};
 
 //!< Parity check matrix of bits
 static const unsigned char Hamming_15_11_m_H[15 * 4] = {
@@ -94,14 +66,6 @@ static const unsigned char Hamming_15_11_m_H[15 * 4] = {
 
 static unsigned char Hamming_16_11_4_m_corr[32]; //!< single bit error correction by syndrome index
 
-//!< Generator matrix of bits
-static const unsigned char Hamming_16_11_4_m_G[16 * 11] = {
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0,
-    0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
-    0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
-    1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1};
-
 //!< Parity check matrix of bits
 static const unsigned char Hamming_16_11_4_m_H[16 * 5] = {1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1,
                                                           1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1,
@@ -112,15 +76,6 @@ static const unsigned char Hamming_16_11_4_m_H[16 * 5] = {1, 1, 1, 1, 0, 1, 0, 1
 
 static unsigned char Golay_20_8_m_corr[4096][3]; //!< up to 3 bit error correction by syndrome index
 
-//!< Generator matrix of bits
-static const unsigned char Golay_20_8_m_G[20 * 8] = {
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1,
-    1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1,
-    0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0,
-    0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0,
-    1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1,
-};
-
 //!< Parity check matrix of bits
 static const unsigned char Golay_20_8_m_H[20 * 12] = {
     0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
@@ -130,33 +85,6 @@ static const unsigned char Golay_20_8_m_H[20 * 12] = {
     1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0,
     0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-};
-
-// ========================================================================================
-
-static unsigned char Golay_23_12_m_corr[2048][3]; //!< up to 3 bit error correction by syndrome index
-
-//!< Generator matrix of bits
-static const unsigned char Golay_23_12_m_G[23 * 12] = {
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0,
-    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0,
-    0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0,
-    1, 1, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0,
-    1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1,
-};
-
-//!< Parity check matrix of bits
-static const unsigned char Golay_23_12_m_H[23 * 11] = {
-    1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1,
-    1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0,
-    0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0,
-    1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
-    1, 1, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
 };
 
 // ========================================================================================
@@ -191,13 +119,6 @@ static const unsigned char Golay_24_12_m_H[24 * 12] = {
 
 static unsigned char QR_16_7_6_m_corr[512][2]; //!< up to 2 bit error correction by syndrome index
 
-//!< Generator matrix of bits
-static const unsigned char QR_16_7_6_m_G[16 * 7] = {
-    1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0,
-    0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0,
-    1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1,
-};
-
 //!< Parity check matrix of bits
 static const unsigned char QR_16_7_6_m_H[16 * 9] = {
     0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1,
@@ -219,22 +140,6 @@ Hamming_7_4_init(void) {
     Hamming_7_4_m_corr[4] = 4;
     Hamming_7_4_m_corr[2] = 5;
     Hamming_7_4_m_corr[1] = 6;
-}
-
-// Not very efficient but encode is used for unit testing only
-void
-Hamming_7_4_encode(const unsigned char* origBits, unsigned char* encodedBits) {
-    DSD_MEMSET(encodedBits, 0, 7);
-
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 7; j++) {
-            encodedBits[j] += origBits[i] * Hamming_7_4_m_G[7 * i + j];
-        }
-    }
-
-    for (int i = 0; i < 7; i++) {
-        encodedBits[i] %= 2;
-    }
 }
 
 bool
@@ -279,22 +184,6 @@ Hamming_12_8_init(void) {
     Hamming_12_8_m_corr[4] = 9;
     Hamming_12_8_m_corr[2] = 10;
     Hamming_12_8_m_corr[1] = 11;
-}
-
-// Not very efficient but encode is used for unit testing only
-void
-Hamming_12_8_encode(const unsigned char* origBits, unsigned char* encodedBits) {
-    DSD_MEMSET(encodedBits, 0, 12);
-
-    for (int i = 0; i < 8; i++) {
-        for (int j = 0; j < 12; j++) {
-            encodedBits[j] += origBits[i] * Hamming_12_8_m_G[12 * i + j];
-        }
-    }
-
-    for (int i = 0; i < 12; i++) {
-        encodedBits[i] %= 2;
-    }
 }
 
 bool
@@ -361,22 +250,6 @@ Hamming_13_9_init(void) {
     Hamming_13_9_m_corr[4] = 10;
     Hamming_13_9_m_corr[2] = 11;
     Hamming_13_9_m_corr[1] = 12;
-}
-
-// Not very efficient but encode is used for unit testing only
-void
-Hamming_13_9_encode(const unsigned char* origBits, unsigned char* encodedBits) {
-    DSD_MEMSET(encodedBits, 0, 13);
-
-    for (int i = 0; i < 9; i++) {
-        for (int j = 0; j < 13; j++) {
-            encodedBits[j] += origBits[i] * Hamming_13_9_m_G[13 * i + j];
-        }
-    }
-
-    for (int i = 0; i < 13; i++) {
-        encodedBits[i] %= 2;
-    }
 }
 
 bool
@@ -449,22 +322,6 @@ Hamming_15_11_init(void) {
     Hamming_15_11_m_corr[4] = 12;
     Hamming_15_11_m_corr[2] = 13;
     Hamming_15_11_m_corr[1] = 14;
-}
-
-// Not very efficient but encode is used for unit testing only
-void
-Hamming_15_11_encode(const unsigned char* origBits, unsigned char* encodedBits) {
-    DSD_MEMSET(encodedBits, 0, 15);
-
-    for (int i = 0; i < 11; i++) {
-        for (int j = 0; j < 15; j++) {
-            encodedBits[j] += origBits[i] * Hamming_15_11_m_G[15 * i + j];
-        }
-    }
-
-    for (int i = 0; i < 15; i++) {
-        encodedBits[i] %= 2;
-    }
 }
 
 bool
@@ -540,22 +397,6 @@ Hamming_16_11_4_init(void) {
     Hamming_16_11_4_m_corr[4] = 13;
     Hamming_16_11_4_m_corr[2] = 14;
     Hamming_16_11_4_m_corr[1] = 15;
-}
-
-// Not very efficient but encode is used for unit testing only
-void
-Hamming_16_11_4_encode(const unsigned char* origBits, unsigned char* encodedBits) {
-    DSD_MEMSET(encodedBits, 0, 16);
-
-    for (int i = 0; i < 11; i++) {
-        for (int j = 0; j < 16; j++) {
-            encodedBits[j] += origBits[i] * Hamming_16_11_4_m_G[16 * i + j];
-        }
-    }
-
-    for (int i = 0; i < 16; i++) {
-        encodedBits[i] %= 2;
-    }
 }
 
 bool
@@ -697,23 +538,7 @@ Golay_20_8_init(void) {
     }
 }
 
-// Not very efficient but encode is used for unit testing only
-void
-Golay_20_8_encode(const unsigned char* origBits, unsigned char* encodedBits) {
-    DSD_MEMSET(encodedBits, 0, 20);
-
-    for (int i = 0; i < 8; i++) {
-        for (int j = 0; j < 20; j++) {
-            encodedBits[j] += origBits[i] * Golay_20_8_m_G[20 * i + j];
-        }
-    }
-
-    for (int i = 0; i < 20; i++) {
-        encodedBits[i] %= 2;
-    }
-}
-
-// golay (20,8) hamming-weight of 6 reliably corrects at most 2 bit-errors
+// Golay (20,8) has Hamming weight 6 and reliably corrects at most two bit errors.
 bool
 Golay_20_8_decode(unsigned char* rxBits) {
     unsigned int syndromeI = 0; // syndrome index
@@ -754,155 +579,6 @@ Golay_20_8_decode(unsigned char* rxBits) {
         //being stingy and only allowing 1 error, may wreck some good data decodes,
         //decided to play it safe with 2
         if (correction > 2) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-// ========================================================================================
-
-void
-Golay_23_12_init(void) {
-    DSD_MEMSET(Golay_23_12_m_corr, 0xFF, sizeof(Golay_23_12_m_corr));
-
-    for (int i1 = 0; i1 < 12; i1++) {
-        for (int i2 = i1 + 1; i2 < 12; i2++) {
-            for (int i3 = i2 + 1; i3 < 12; i3++) {
-                // 3 bit patterns
-                int syndromeI = 0;
-
-                for (int ir = 0; ir < 11; ir++) {
-                    syndromeI +=
-                        ((Golay_23_12_m_H[23 * ir + i1] + Golay_23_12_m_H[23 * ir + i2] + Golay_23_12_m_H[23 * ir + i3])
-                         % 2)
-                        << (10 - ir);
-                }
-
-                Golay_23_12_m_corr[syndromeI][0] = i1;
-                Golay_23_12_m_corr[syndromeI][1] = i2;
-                Golay_23_12_m_corr[syndromeI][2] = i3;
-            }
-
-            // 2 bit patterns
-            int syndromeI = 0;
-
-            for (int ir = 0; ir < 11; ir++) {
-                syndromeI += ((Golay_23_12_m_H[23 * ir + i1] + Golay_23_12_m_H[23 * ir + i2]) % 2) << (10 - ir);
-            }
-
-            Golay_23_12_m_corr[syndromeI][0] = i1;
-            Golay_23_12_m_corr[syndromeI][1] = i2;
-
-            // 1 possible bit flip left in the parity part
-            for (int ip = 0; ip < 11; ip++) {
-                int syndromeIP = syndromeI ^ (1 << (10 - ip));
-                Golay_23_12_m_corr[syndromeIP][0] = i1;
-                Golay_23_12_m_corr[syndromeIP][1] = i2;
-                Golay_23_12_m_corr[syndromeIP][2] = 12 + ip;
-            }
-        }
-
-        // single bit patterns
-        int syndromeI = 0;
-
-        for (int ir = 0; ir < 11; ir++) {
-            syndromeI += Golay_23_12_m_H[23 * ir + i1] << (10 - ir);
-        }
-
-        Golay_23_12_m_corr[syndromeI][0] = i1;
-
-        for (int ip1 = 0; ip1 < 11; ip1++) // 1 more bit flip in parity
-        {
-            int syndromeIP1 = syndromeI ^ (1 << (10 - ip1));
-            Golay_23_12_m_corr[syndromeIP1][0] = i1;
-            Golay_23_12_m_corr[syndromeIP1][1] = 12 + ip1;
-
-            for (int ip2 = ip1 + 1; ip2 < 11; ip2++) // 1 more bit flip in parity
-            {
-                int syndromeIP2 = syndromeIP1 ^ (1 << (10 - ip2));
-                Golay_23_12_m_corr[syndromeIP2][0] = i1;
-                Golay_23_12_m_corr[syndromeIP2][1] = 12 + ip1;
-                Golay_23_12_m_corr[syndromeIP2][2] = 12 + ip2;
-            }
-        }
-    }
-
-    // no bit patterns (in message) -> all in parity
-    for (int ip1 = 0; ip1 < 11; ip1++) // 1 bit flip in parity
-    {
-        int syndromeIP1 = (1 << (10 - ip1));
-        Golay_23_12_m_corr[syndromeIP1][0] = 12 + ip1;
-
-        for (int ip2 = ip1 + 1; ip2 < 11; ip2++) // 1 more bit flip in parity
-        {
-            int syndromeIP2 = syndromeIP1 ^ (1 << (10 - ip2));
-            Golay_23_12_m_corr[syndromeIP2][0] = 12 + ip1;
-            Golay_23_12_m_corr[syndromeIP2][1] = 12 + ip2;
-
-            for (int ip3 = ip2 + 1; ip3 < 11; ip3++) // 1 more bit flip in parity
-            {
-                int syndromeIP3 = syndromeIP2 ^ (1 << (10 - ip3));
-                Golay_23_12_m_corr[syndromeIP3][0] = 12 + ip1;
-                Golay_23_12_m_corr[syndromeIP3][1] = 12 + ip2;
-                Golay_23_12_m_corr[syndromeIP3][2] = 12 + ip3;
-            }
-        }
-    }
-}
-
-// Not very efficient but encode is used for unit testing only
-void
-Golay_23_12_encode(const unsigned char* origBits, unsigned char* encodedBits) {
-    DSD_MEMSET(encodedBits, 0, 23);
-
-    for (int i = 0; i < 12; i++) // orig bits
-    {
-        for (int j = 0; j < 23; j++) // codeword bits
-        {
-            encodedBits[j] += origBits[i] * Golay_23_12_m_G[23 * i + j];
-        }
-    }
-
-    for (int i = 0; i < 23; i++) {
-        encodedBits[i] %= 2;
-    }
-}
-
-bool
-Golay_23_12_decode(unsigned char* rxBits) {
-    unsigned int syndromeI = 0; // syndrome index
-
-    for (int is = 0; is < 11; is++) {
-        syndromeI += (((rxBits[0] * Golay_23_12_m_H[23 * is + 0]) + (rxBits[1] * Golay_23_12_m_H[23 * is + 1])
-                       + (rxBits[2] * Golay_23_12_m_H[23 * is + 2]) + (rxBits[3] * Golay_23_12_m_H[23 * is + 3])
-                       + (rxBits[4] * Golay_23_12_m_H[23 * is + 4]) + (rxBits[5] * Golay_23_12_m_H[23 * is + 5])
-                       + (rxBits[6] * Golay_23_12_m_H[23 * is + 6]) + (rxBits[7] * Golay_23_12_m_H[23 * is + 7])
-                       + (rxBits[8] * Golay_23_12_m_H[23 * is + 8]) + (rxBits[9] * Golay_23_12_m_H[23 * is + 9])
-                       + (rxBits[10] * Golay_23_12_m_H[23 * is + 10]) + (rxBits[11] * Golay_23_12_m_H[23 * is + 11])
-                       + (rxBits[12] * Golay_23_12_m_H[23 * is + 12]) + (rxBits[13] * Golay_23_12_m_H[23 * is + 13])
-                       + (rxBits[14] * Golay_23_12_m_H[23 * is + 14]) + (rxBits[15] * Golay_23_12_m_H[23 * is + 15])
-                       + (rxBits[16] * Golay_23_12_m_H[23 * is + 16]) + (rxBits[17] * Golay_23_12_m_H[23 * is + 17])
-                       + (rxBits[18] * Golay_23_12_m_H[23 * is + 18]) + (rxBits[19] * Golay_23_12_m_H[23 * is + 19])
-                       + (rxBits[20] * Golay_23_12_m_H[23 * is + 20]) + (rxBits[21] * Golay_23_12_m_H[23 * is + 21])
-                       + (rxBits[22] * Golay_23_12_m_H[23 * is + 22]))
-                      % 2)
-                     << (10 - is);
-    }
-
-    if (syndromeI > 0) {
-        int i = 0;
-
-        for (; i < 3; i++) {
-            if (Golay_23_12_m_corr[syndromeI][i] == 0xFF) {
-                break;
-            } else {
-                rxBits[Golay_23_12_m_corr[syndromeI][i]] ^= 1; // flip bit
-            }
-        }
-
-        if (i == 0) {
             return false;
         }
     }
@@ -1001,7 +677,7 @@ Golay_24_12_init(void) {
     }
 }
 
-// Not very efficient but encode is used for unit testing only, I think this is wrong for M17
+// Encode the extended Golay codeword used by the M17 LICH path.
 void
 Golay_24_12_encode(const unsigned char* origBits, unsigned char* encodedBits) {
     DSD_MEMSET(encodedBits, 0, 24);
@@ -1107,22 +783,6 @@ QR_16_7_6_init(void) {
     }
 }
 
-// Not very efficient but encode is used for unit testing only
-void
-QR_16_7_6_encode(const unsigned char* origBits, unsigned char* encodedBits) {
-    DSD_MEMSET(encodedBits, 0, 16);
-
-    for (int i = 0; i < 7; i++) {
-        for (int j = 0; j < 16; j++) {
-            encodedBits[j] += origBits[i] * QR_16_7_6_m_G[16 * i + j];
-        }
-    }
-
-    for (int i = 0; i < 16; i++) {
-        encodedBits[i] %= 2;
-    }
-}
-
 bool
 QR_16_7_6_decode(unsigned char* rxBits) {
     //2 bit errors or less
@@ -1171,7 +831,6 @@ InitAllFecFunction(void) {
     Hamming_15_11_init();
     Hamming_16_11_4_init();
     Golay_20_8_init();
-    Golay_23_12_init();
     Golay_24_12_init();
     QR_16_7_6_init();
 } /* End InitAllFEC() */

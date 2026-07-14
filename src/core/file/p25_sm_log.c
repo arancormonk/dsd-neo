@@ -110,8 +110,8 @@ dsd_p25_sm_logf(dsd_opts* opts, const char* format, ...) {
     time_t now = time(NULL);
     char timestr[9];
     char datestr[11];
-    getTimeN_buf(now, timestr);
-    getDateN_buf(now, datestr);
+    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
     if (DSD_FPRINTF(opts->p25_sm_log_f, "%s %s %s\n", datestr, timestr, line) < 0) {
         if (!opts->p25_sm_log_write_error_reported) {

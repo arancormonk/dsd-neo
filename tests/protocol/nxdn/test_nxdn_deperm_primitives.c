@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,6 +20,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_internal.h"
 
 static int
 expect_u8_at(const char* tag, size_t index, uint8_t got, uint8_t want) {
@@ -111,7 +113,7 @@ test_depermute_matrices(void) {
         DSD_MEMSET(deperm, 0xA5, sizeof(deperm));
         DSD_MEMSET(deperm_rel, 0x5A, sizeof(deperm_rel));
 
-        dsd_neo_nxdn_test_depermute_12_5(input, reliab, deperm, deperm_rel);
+        nxdn_depermute_rel_u8(input, reliab, 60U, PERM_12_5, deperm, deperm_rel);
         rc |= expect_matrix_deperm("deperm-12x5", input, reliab, deperm, deperm_rel, sizeof(input), 12U);
     }
 
@@ -124,7 +126,7 @@ test_depermute_matrices(void) {
         DSD_MEMSET(deperm, 0xA5, sizeof(deperm));
         DSD_MEMSET(deperm_rel, 0x5A, sizeof(deperm_rel));
 
-        dsd_neo_nxdn_test_depermute_16_9(input, reliab, deperm, deperm_rel);
+        nxdn_depermute_rel_u8(input, reliab, 144U, PERM_16_9, deperm, deperm_rel);
         rc |= expect_matrix_deperm("deperm-16x9", input, reliab, deperm, deperm_rel, sizeof(input), 16U);
     }
 
@@ -137,7 +139,7 @@ test_depermute_matrices(void) {
         DSD_MEMSET(deperm, 0xA5, sizeof(deperm));
         DSD_MEMSET(deperm_rel, 0x5A, sizeof(deperm_rel));
 
-        dsd_neo_nxdn_test_depermute_12_25(input, reliab, deperm, deperm_rel);
+        nxdn_depermute_rel(input, reliab, 300U, PERM_12_25, deperm, deperm_rel);
         rc |= expect_matrix_deperm("deperm-12x25", input, reliab, deperm, deperm_rel, sizeof(input), 12U);
     }
 
@@ -150,7 +152,7 @@ test_depermute_matrices(void) {
         DSD_MEMSET(deperm, 0xA5, sizeof(deperm));
         DSD_MEMSET(deperm_rel, 0x5A, sizeof(deperm_rel));
 
-        dsd_neo_nxdn_test_depermute_12_29(input, reliab, deperm, deperm_rel);
+        nxdn_depermute_rel(input, reliab, 348U, PERM_12_29, deperm, deperm_rel);
         rc |= expect_matrix_deperm("deperm-12x29", input, reliab, deperm, deperm_rel, sizeof(input), 12U);
     }
 
@@ -187,7 +189,7 @@ test_depuncture_12_5(void) {
     DSD_MEMSET(depunc, 0xA5, sizeof(depunc));
     DSD_MEMSET(depunc_rel, 0x5A, sizeof(depunc_rel));
 
-    dsd_neo_nxdn_test_depuncture_12_5(deperm, deperm_rel, depunc, depunc_rel);
+    nxdn_depuncture_12_5_rel(deperm, deperm_rel, depunc, depunc_rel);
     for (size_t group = 0U; group < 6U; group++) {
         rc |= expect_depuncture_12_5_group(deperm, deperm_rel, depunc, depunc_rel, group * 10U, group * 12U);
     }
@@ -206,7 +208,7 @@ test_depuncture_16_9(void) {
     DSD_MEMSET(depunc, 0xA5, sizeof(depunc));
     DSD_MEMSET(depunc_rel, 0x5A, sizeof(depunc_rel));
 
-    dsd_neo_nxdn_test_depuncture_16_9(deperm, deperm_rel, depunc, depunc_rel);
+    nxdn_depuncture_16_9_rel(deperm, deperm_rel, depunc, depunc_rel);
     for (size_t i = 0U; i < 144U; i += 3U) {
         const size_t out = (i / 3U) * 4U;
         rc |= expect_u8_at("depunc-16-9-bit-a", out, depunc[out], deperm[i]);
@@ -234,7 +236,7 @@ test_depuncture_12_group(void) {
     DSD_MEMSET(depunc, 0xA5, sizeof(depunc));
     DSD_MEMSET(depunc_rel, 0x5A, sizeof(depunc_rel));
 
-    dsd_neo_nxdn_test_depuncture_12_group(deperm, deperm_rel, 2U, depunc, depunc_rel);
+    nxdn_depuncture_12_group_rel(deperm, deperm_rel, 2U, depunc, depunc_rel);
     for (size_t group = 0U; group < 2U; group++) {
         for (size_t i = 0U; i < sizeof(map); i++) {
             const size_t out = (group * sizeof(map)) + i;
@@ -272,9 +274,6 @@ test_crc_helpers(void) {
         pattern171[i] = (uint8_t)((i * 7U + 3U) & 1U);
     }
 
-    rc |= expect_int("load empty", load_i(empty, 0), 0);
-    rc |= expect_int("load pattern8", load_i(pattern8, (int)sizeof(pattern8)), 0xB2);
-
     rc |= expect_u8_at("crc6 empty", 0U, crc6(empty, 0), 63U);
     rc |= expect_u8_at("crc6 zeros6", 0U, crc6(zeros6, (int)sizeof(zeros6)), 24U);
     rc |= expect_u8_at("crc6 ones6", 0U, crc6(ones6, (int)sizeof(ones6)), 0U);
@@ -291,69 +290,54 @@ test_crc_helpers(void) {
 
 static int
 test_bit_window_and_state_helpers(void) {
-    static const uint8_t bytes[3] = {0xA5U, 0x3CU, 0x01U};
-    static const uint8_t expected_bits[24] = {1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    uint8_t bits[24];
-    uint8_t roundtrip[3];
     uint8_t trellis[8];
     static dsd_state state;
     int rc = 0;
 
-    DSD_MEMSET(bits, 0xA5, sizeof(bits));
-    DSD_MEMSET(roundtrip, 0, sizeof(roundtrip));
-    dsd_neo_nxdn_test_unpack_bytes_msb(bytes, sizeof(bytes), bits);
-    for (size_t i = 0U; i < sizeof(bits); i++) {
-        rc |= expect_u8_at("unpack-msb", i, bits[i], expected_bits[i]);
-    }
-    dsd_neo_nxdn_test_pack_bits_msb(bits, sizeof(roundtrip), roundtrip);
-    for (size_t i = 0U; i < sizeof(roundtrip); i++) {
-        rc |= expect_u8_at("pack-msb", i, roundtrip[i], bytes[i]);
-    }
-    rc |= expect_u8_at("bits-to-u16", 0U, (uint8_t)dsd_neo_nxdn_test_bits_to_u16(bits, 8), bytes[0]);
-    rc |= expect_u8_at("dcr-sb0-call", 0U, (uint8_t)dsd_neo_nxdn_test_dcr_is_sb0_message_type(0x01U), 1U);
-    rc |= expect_u8_at("dcr-sb0-idle", 0U, (uint8_t)dsd_neo_nxdn_test_dcr_is_sb0_message_type(0x02U), 0U);
-    rc |= expect_u8_at("sacch-sf2-part", 0U, (uint8_t)dsd_neo_nxdn_test_sacch_part_of_frame(2U), 1U);
-    rc |= expect_u8_at("sacch-sf1-part", 0U, (uint8_t)dsd_neo_nxdn_test_sacch_part_of_frame(1U), 2U);
-    rc |= expect_u8_at("sacch-sf0-part", 0U, (uint8_t)dsd_neo_nxdn_test_sacch_part_of_frame(0U), 3U);
-    rc |= expect_u8_at("sacch-sf3-invalid", 0U, (uint8_t)dsd_neo_nxdn_test_sacch_part_of_frame(3U), 0U);
+    rc |= expect_u8_at("dcr-sb0-call", 0U, (uint8_t)nxdn_dcr_is_sb0_message_type(0x01U), 1U);
+    rc |= expect_u8_at("dcr-sb0-idle", 0U, (uint8_t)nxdn_dcr_is_sb0_message_type(0x02U), 0U);
+    rc |= expect_u8_at("sacch-sf2-part", 0U, (uint8_t)nxdn_sacch_part_of_frame(2U), 1U);
+    rc |= expect_u8_at("sacch-sf1-part", 0U, (uint8_t)nxdn_sacch_part_of_frame(1U), 2U);
+    rc |= expect_u8_at("sacch-sf0-part", 0U, (uint8_t)nxdn_sacch_part_of_frame(0U), 3U);
+    rc |= expect_u8_at("sacch-sf3-invalid", 0U, (uint8_t)nxdn_sacch_part_of_frame(3U), 0U);
 
     DSD_MEMSET(trellis, 0, sizeof(trellis));
     trellis[2] = 1U;
     trellis[4] = 1U;
     trellis[7] = 1U;
-    rc |= expect_u8_at("ran-from-trellis", 0U, (uint8_t)dsd_neo_nxdn_test_ran_from_trellis(trellis), 0x29U);
+    rc |= expect_u8_at("ran-from-trellis", 0U, (uint8_t)nxdn_ran_from_trellis(trellis), 0x29U);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_miN = 0x11U;
     state.R = 0x12345U;
-    dsd_neo_nxdn_test_reset_payload_seed_if_forced(&state);
+    nxdn_reset_payload_seed_if_forced(&state);
     rc |= expect_u8_at("seed-not-forced", 0U, (uint8_t)state.payload_miN, 0x11U);
     state.nxdn_cipher_type = 1;
-    dsd_neo_nxdn_test_reset_payload_seed_if_forced(&state);
+    nxdn_reset_payload_seed_if_forced(&state);
     rc |= expect_u8_at("seed-forced-cipher-low", 0U, (uint8_t)state.payload_miN, 0x45U);
     state.payload_miN = 0x22U;
     state.nxdn_cipher_type = 0;
     state.M = 1;
-    dsd_neo_nxdn_test_reset_payload_seed_if_forced(&state);
+    nxdn_reset_payload_seed_if_forced(&state);
     rc |= expect_u8_at("seed-forced-m-low", 0U, (uint8_t)state.payload_miN, 0x45U);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.payload_miN = 0x33U;
     state.R = 0x2468U;
     state.M = 1;
-    dsd_neo_nxdn_test_prepare_sacch_payload_seed(&state, 0);
+    nxdn_prepare_sacch_payload_seed(&state, 0);
     rc |= expect_int("prepare-part0-forced-seed", (int)state.payload_miN, 0x2468);
 
     state.payload_miN = 0x44U;
     state.nxdn_cipher_type = 0;
     state.M = 1;
-    dsd_neo_nxdn_test_prepare_sacch_payload_seed(&state, 2);
+    nxdn_prepare_sacch_payload_seed(&state, 2);
     rc |= expect_int("prepare-noncipher-nonzero-part-preserves-seed", (int)state.payload_miN, 0x44);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.R = 0x2468U;
     state.nxdn_cipher_type = 1;
-    dsd_neo_nxdn_test_prepare_sacch_payload_seed(&state, 2);
+    nxdn_prepare_sacch_payload_seed(&state, 2);
     rc |= expect_int("prepare-cipher-part-advances-seed", (int)state.payload_miN,
                      (int)advance_nxdn_lfsr_seed(0x2468U, 8));
     return rc;
@@ -437,7 +421,7 @@ test_sacch_state_update(void) {
     state.nxdn_part_of_frame = 0;
     make_sacch_trellis(trellis, 2U, 0x15U);
 
-    dsd_neo_nxdn_test_sacch_state_update(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
+    nxdn_handle_sacch(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
     rc |= expect_int("sacch-sf-good-part", state.nxdn_part_of_frame, 1);
     rc |= expect_int("sacch-sf-good-ran", (int)state.nxdn_ran, 0x15);
     rc |= expect_int("sacch-sf-good-last-ran", (int)state.nxdn_last_ran, 0x15);
@@ -453,7 +437,7 @@ test_sacch_state_update(void) {
     state.nxdn_part_of_frame = 0;
     make_sacch_trellis(trellis, 1U, 0x09U);
 
-    dsd_neo_nxdn_test_sacch_state_update(&opts, &state, trellis, m_data, 0x10U, 0x10U);
+    nxdn_handle_sacch(&opts, &state, trellis, m_data, 0x10U, 0x10U);
     rc |= expect_int("sacch-sf-out-of-order-part", state.nxdn_part_of_frame, 2);
     rc |= expect_u8_at("sacch-sf-out-of-order-reset-prior-segcrc", 0U, state.nxdn_sacch_frame_segcrc[0], 1U);
     rc |= expect_u8_at("sacch-sf-out-of-order-current-segcrc", 2U, state.nxdn_sacch_frame_segcrc[2], 0U);
@@ -469,7 +453,7 @@ test_sacch_state_update(void) {
     state.nxdn_part_of_frame = 1;
     make_sacch_trellis(trellis, 1U, 0x2AU);
 
-    dsd_neo_nxdn_test_sacch_state_update(&opts, &state, trellis, m_data, 0x01U, 0x00U);
+    nxdn_handle_sacch(&opts, &state, trellis, m_data, 0x01U, 0x00U);
     rc |= expect_int("sacch-sf-bad-crc-part", state.nxdn_part_of_frame, 2);
     rc |= expect_u8_at("sacch-sf-bad-crc-segcrc", 2U, state.nxdn_sacch_frame_segcrc[2], 1U);
     rc |= expect_u8_at("sacch-sf-bad-crc-reset-other", 0U, state.nxdn_sacch_frame_segcrc[0], 1U);
@@ -484,7 +468,7 @@ test_sacch_state_update(void) {
     state.payload_miN = 0x11U;
     make_sacch_trellis(trellis, 3U, 0x3FU);
 
-    dsd_neo_nxdn_test_sacch_state_update(&opts, &state, trellis, m_data, 0x01U, 0x00U);
+    nxdn_handle_sacch(&opts, &state, trellis, m_data, 0x01U, 0x00U);
     rc |= expect_int("sacch-nsf-bad-crc-part-reset", state.nxdn_part_of_frame, 0);
     rc |= expect_int("sacch-nsf-bad-crc-forced-seed", (int)state.payload_miN, 0x2468);
     rc |= expect_sacch_reset_to_ones(&state);
@@ -508,7 +492,7 @@ test_sacch2_state_update(void) {
     write_bits_msb(trellis, 8U, 2U, 0x01U);
     write_bits_msb(trellis, 10U, 9U, 0x123U);
 
-    dsd_neo_nxdn_test_sacch2_state_update(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
     rc |= expect_u8_at("sacch2-good-message-type", 0U, state.nxdn_dcr_sf_message_type, 0x01U);
     rc |= expect_u8_at("sacch2-good-segcrc", 2U, state.nxdn_sacch_frame_segcrc[2], 0U);
     rc |= expect_u8_at("sacch2-single-copy-cipher-msb", 0U, state.dmr_pdu_sf[0][0], 0U);
@@ -530,7 +514,7 @@ test_sacch2_state_update(void) {
     write_bits_msb(trellis, 8U, 2U, 0x00U);
     write_bits_msb(trellis, 10U, 9U, 0x055U);
 
-    dsd_neo_nxdn_test_sacch2_state_update(&opts, &state, trellis, m_data, 0x11U, 0x11U);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x11U, 0x11U);
     rc |= expect_u8_at("sacch2-complete-message-type", 0U, state.nxdn_dcr_sf_message_type, 0x02U);
     rc |= expect_sacch_reset_to_ones(&state);
     rc |= expect_u8_at("sacch2-complete-clears-pdu", 0U, state.dmr_pdu_sf[0][0], 0U);
@@ -541,7 +525,7 @@ test_sacch2_state_update(void) {
     state.payload_miN = 0x55U;
     make_sacch2_trellis(trellis, 1U, 2U, 0x1EU);
 
-    dsd_neo_nxdn_test_sacch2_state_update(&opts, &state, trellis, m_data, 0x01U, 0x00U);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x01U, 0x00U);
     rc |= expect_u8_at("sacch2-bad-crc-message-type", 0U, state.nxdn_dcr_sf_message_type, 0xFFU);
     rc |= expect_u8_at("sacch2-bad-crc-segcrc", 2U, state.nxdn_sacch_frame_segcrc[2], 1U);
     rc |= expect_int("sacch2-bad-crc-seed-clear", (int)state.payload_miN, 0);
@@ -583,12 +567,12 @@ test_cac_crc_failure_reset(void) {
     state.aes_ivR[0] = 0x5AU;
 
     for (int i = 0; i < 10; i++) {
-        dsd_neo_nxdn_test_cac_state_update(&opts, &state, trellis, m_data, 1U);
+        nxdn_handle_cac(&opts, &state, trellis, m_data, 1U);
     }
     rc |= expect_int("cac-before-threshold-carrier", state.carrier, 1);
     rc |= expect_int("cac-before-threshold-format", state.data_header_format[0], 9);
 
-    dsd_neo_nxdn_test_cac_state_update(&opts, &state, trellis, m_data, 1U);
+    nxdn_handle_cac(&opts, &state, trellis, m_data, 1U);
     rc |= expect_int("cac-reset-synctype", state.synctype, DSD_SYNC_NONE);
     rc |= expect_int("cac-reset-last-sync", state.lastsynctype, DSD_SYNC_NONE);
     rc |= expect_int("cac-reset-carrier", state.carrier, 0);
@@ -605,7 +589,7 @@ test_cac_crc_failure_reset(void) {
     rc |= expect_int("cac-reset-payload-mi", (int)state.payload_mi, 0);
     rc |= expect_u8_at("cac-reset-aes-iv", 0U, state.aes_ivR[0], 0U);
 
-    dsd_neo_nxdn_test_cac_state_update(&opts, &state, trellis, m_data, 1U);
+    nxdn_handle_cac(&opts, &state, trellis, m_data, 1U);
     rc |= expect_int("cac-counter-cleared-after-reset", state.carrier, 0);
     return rc;
 }
@@ -627,7 +611,7 @@ test_pich_tch_dcr_csm_alias_state(void) {
     state.nxdn_dcr_sf_message_type = 0x01U;
     make_csm_trellis(trellis, csm_digits);
 
-    dsd_neo_nxdn_test_pich_tch_state_update(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
+    nxdn_handle_pich_tch(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
     rc |= expect_str("pich-csm-alias", state.generic_talker_alias[0], "CSM 123456789");
     rc |= expect_str("pich-csm-event-alias", histories[0].Event_History_Items[0].alias, "CSM 123456789; ");
 
@@ -636,7 +620,7 @@ test_pich_tch_dcr_csm_alias_state(void) {
                  "KEEP; ");
     state.nxdn_dcr_sf_message_type = 0x02U;
 
-    dsd_neo_nxdn_test_pich_tch_state_update(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
+    nxdn_handle_pich_tch(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
     rc |= expect_str("pich-non-sb0-keeps-alias", state.generic_talker_alias[0], "KEEP");
     rc |= expect_str("pich-non-sb0-keeps-event-alias", histories[0].Event_History_Items[0].alias, "KEEP; ");
     return rc;
@@ -654,7 +638,7 @@ test_facch2_udch_crc_state_update(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     make_facch2_trellis(trellis, 1U, 0x2AU, 0x10U);
 
-    dsd_neo_nxdn_test_facch2_udch_state_update(&opts, &state, trellis, m_data, 0x456U, 0x456U, 1U);
+    nxdn_handle_facch2_udch(&opts, &state, trellis, m_data, 0x456U, 0x456U, 1U);
     rc |= expect_int("facch2-good-ran", (int)state.nxdn_last_ran, 0x2A);
     rc |= expect_int("facch2-good-part", state.nxdn_part_of_frame, 2);
     rc |= expect_u8_at("facch2-good-format", 0U, state.data_header_format[0], 1U);
@@ -667,7 +651,7 @@ test_facch2_udch_crc_state_update(void) {
     state.NxdnElementsContent.MessageType = 0x22U;
     state.NxdnElementsContent.VCallCrcIsGood = 0U;
 
-    dsd_neo_nxdn_test_facch2_udch_state_update(&opts, &state, trellis, m_data, 0x456U, 0x457U, 1U);
+    nxdn_handle_facch2_udch(&opts, &state, trellis, m_data, 0x456U, 0x457U, 1U);
     rc |= expect_int("facch2-bad-keeps-ran", (int)state.nxdn_last_ran, 0x33);
     rc |= expect_int("facch2-bad-part-reset", state.nxdn_part_of_frame, 0);
     rc |= expect_u8_at("facch2-bad-keeps-format", 0U, state.data_header_format[0], 9U);
@@ -677,22 +661,23 @@ test_facch2_udch_crc_state_update(void) {
 
 static int
 test_facch3_udch2_crc_state_update(void) {
-    uint8_t bits[160];
-    uint8_t bytes[24];
+    struct nxdn_facch3_udch2_message message;
     static dsd_opts opts;
     static dsd_state state;
     int rc = 0;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(bytes, 0, sizeof(bytes));
-    for (size_t i = 0U; i < sizeof(bytes); i++) {
-        bytes[i] = (uint8_t)(0x30U + i);
+    DSD_MEMSET(&message, 0, sizeof(message));
+    for (size_t i = 0U; i < sizeof(message.bytes); i++) {
+        message.bytes[i] = (uint8_t)(0x30U + i);
     }
 
     DSD_MEMSET(&state, 0, sizeof(state));
-    make_facch3_bits(bits, 0x10U);
+    make_facch3_bits(message.bits, 0x10U);
 
-    dsd_neo_nxdn_test_facch3_udch2_state_update(&opts, &state, bits, bytes, 0x123U, 0x123U, 0x456U, 0x456U, 1U);
+    message.crc[0] = message.check[0] = 0x123U;
+    message.crc[1] = message.check[1] = 0x456U;
+    nxdn_handle_facch3_udch2_soft(&opts, &state, &message, 1U);
     rc |= expect_u8_at("facch3-good-format", 0U, state.data_header_format[0], 1U);
     rc |= expect_u8_at("facch3-good-message-type", 0U, state.NxdnElementsContent.MessageType, 0x10U);
     rc |= expect_u8_at("facch3-good-crc", 0U, state.NxdnElementsContent.VCallCrcIsGood, 1U);
@@ -701,7 +686,8 @@ test_facch3_udch2_crc_state_update(void) {
     state.NxdnElementsContent.MessageType = 0x22U;
     state.NxdnElementsContent.VCallCrcIsGood = 0U;
 
-    dsd_neo_nxdn_test_facch3_udch2_state_update(&opts, &state, bits, bytes, 0x123U, 0x124U, 0x456U, 0x456U, 0U);
+    message.check[0] = 0x124U;
+    nxdn_handle_facch3_udch2_soft(&opts, &state, &message, 0U);
     rc |= expect_u8_at("udch2-bad-keeps-format", 0U, state.data_header_format[0], 9U);
     rc |= expect_u8_at("udch2-bad-skips-elements", 0U, state.NxdnElementsContent.MessageType, 0x22U);
     rc |= expect_u8_at("udch2-bad-keeps-crc", 0U, state.NxdnElementsContent.VCallCrcIsGood, 0U);
@@ -710,8 +696,7 @@ test_facch3_udch2_crc_state_update(void) {
 
 static int
 test_facch3_udch2_split_block_storage_and_crc_gate(void) {
-    uint8_t bits[160];
-    uint8_t bytes[24];
+    struct nxdn_facch3_udch2_message message;
     uint8_t trellis0[96];
     uint8_t trellis1[96];
     uint8_t m_data0[12];
@@ -721,8 +706,9 @@ test_facch3_udch2_split_block_storage_and_crc_gate(void) {
     int rc = 0;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(bits, 0xA5, sizeof(bits));
-    DSD_MEMSET(bytes, 0x5A, sizeof(bytes));
+    DSD_MEMSET(&message, 0, sizeof(message));
+    DSD_MEMSET(message.bits, 0xA5, sizeof(message.bits));
+    DSD_MEMSET(message.bytes, 0x5A, sizeof(message.bytes));
     for (size_t i = 0U; i < sizeof(trellis0); i++) {
         trellis0[i] = (uint8_t)((i + 1U) & 1U);
         trellis1[i] = (uint8_t)(i & 1U);
@@ -733,28 +719,30 @@ test_facch3_udch2_split_block_storage_and_crc_gate(void) {
         m_data1[i] = (uint8_t)(0x80U + i);
     }
 
-    dsd_neo_nxdn_test_facch3_udch2_store_block(bits, bytes, 1U, trellis1, m_data1);
+    nxdn_store_facch3_udch2_block(&message, 1U, trellis1, m_data1);
     for (size_t i = 0U; i < 80U; i++) {
-        rc |= expect_u8_at("facch3-split-first-half-untouched", i, bits[i], 0xA5U);
-        rc |= expect_u8_at("facch3-split-second-half", i, bits[i + 80U], trellis1[i]);
+        rc |= expect_u8_at("facch3-split-first-half-untouched", i, message.bits[i], 0xA5U);
+        rc |= expect_u8_at("facch3-split-second-half", i, message.bits[i + 80U], trellis1[i]);
     }
     for (size_t i = 0U; i < 12U; i++) {
-        rc |= expect_u8_at("facch3-split-first-bytes-untouched", i, bytes[i], 0x5AU);
-        rc |= expect_u8_at("facch3-split-second-bytes", i, bytes[i + 12U], m_data1[i]);
+        rc |= expect_u8_at("facch3-split-first-bytes-untouched", i, message.bytes[i], 0x5AU);
+        rc |= expect_u8_at("facch3-split-second-bytes", i, message.bytes[i + 12U], m_data1[i]);
     }
 
-    dsd_neo_nxdn_test_facch3_udch2_store_block(bits, bytes, 0U, trellis0, m_data0);
+    nxdn_store_facch3_udch2_block(&message, 0U, trellis0, m_data0);
     for (size_t i = 0U; i < 80U; i++) {
-        rc |= expect_u8_at("facch3-split-first-half", i, bits[i], trellis0[i]);
-        rc |= expect_u8_at("facch3-split-second-half-preserved", i, bits[i + 80U], trellis1[i]);
+        rc |= expect_u8_at("facch3-split-first-half", i, message.bits[i], trellis0[i]);
+        rc |= expect_u8_at("facch3-split-second-half-preserved", i, message.bits[i + 80U], trellis1[i]);
     }
     for (size_t i = 0U; i < 12U; i++) {
-        rc |= expect_u8_at("facch3-split-first-bytes", i, bytes[i], m_data0[i]);
-        rc |= expect_u8_at("facch3-split-second-bytes-preserved", i, bytes[i + 12U], m_data1[i]);
+        rc |= expect_u8_at("facch3-split-first-bytes", i, message.bytes[i], m_data0[i]);
+        rc |= expect_u8_at("facch3-split-second-bytes-preserved", i, message.bytes[i + 12U], m_data1[i]);
     }
 
     DSD_MEMSET(&state, 0, sizeof(state));
-    dsd_neo_nxdn_test_facch3_udch2_state_update(&opts, &state, bits, bytes, 0x111U, 0x111U, 0x222U, 0x222U, 1U);
+    message.crc[0] = message.check[0] = 0x111U;
+    message.crc[1] = message.check[1] = 0x222U;
+    nxdn_handle_facch3_udch2_soft(&opts, &state, &message, 1U);
     rc |= expect_u8_at("facch3-split-good-format", 0U, state.data_header_format[0], 1U);
     rc |= expect_u8_at("facch3-split-good-message-type", 0U, state.NxdnElementsContent.MessageType, 0x10U);
     rc |= expect_u8_at("facch3-split-good-crc", 0U, state.NxdnElementsContent.VCallCrcIsGood, 1U);
@@ -762,7 +750,8 @@ test_facch3_udch2_split_block_storage_and_crc_gate(void) {
     state.data_header_format[0] = 9U;
     state.NxdnElementsContent.MessageType = 0x22U;
     state.NxdnElementsContent.VCallCrcIsGood = 0U;
-    dsd_neo_nxdn_test_facch3_udch2_state_update(&opts, &state, bits, bytes, 0x111U, 0x111U, 0x222U, 0x223U, 0U);
+    message.check[1] = 0x223U;
+    nxdn_handle_facch3_udch2_soft(&opts, &state, &message, 0U);
     rc |= expect_u8_at("udch2-split-bad-keeps-format", 0U, state.data_header_format[0], 9U);
     rc |= expect_u8_at("udch2-split-bad-keeps-message-type", 0U, state.NxdnElementsContent.MessageType, 0x22U);
     rc |= expect_u8_at("udch2-split-bad-keeps-crc", 0U, state.NxdnElementsContent.VCallCrcIsGood, 0U);

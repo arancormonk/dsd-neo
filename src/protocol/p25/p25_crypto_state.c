@@ -27,7 +27,6 @@ p25_crypto_reset_slot(dsd_state* state, int slot) {
     state->p25_crypto_state[slot] = DSD_P25_CRYPTO_UNKNOWN;
     DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
     state->p25_p2_audio_allowed[slot] = 0;
-    state->p25_p2_enc_lockout_muted[slot] = 0U;
 
     if (slot == 0) {
         state->DMRvcL = 0;

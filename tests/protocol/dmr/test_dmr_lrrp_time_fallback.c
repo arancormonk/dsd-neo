@@ -9,7 +9,6 @@
  * timestamp should not be printed to stderr.
  */
 
-#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -20,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -47,40 +47,19 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     (void)slot;
 }
 
-void
-getTimeC_buf(char out[9]) { // HH:MM:SS
-    // Not asserting exact value in this test; but keep deterministic if used
-    DSD_SNPRINTF(out, 9, "%s", "12:34:56");
-}
-
-void
-getDateS_buf(char out[11]) { // YYYY/MM/DD
-    DSD_SNPRINTF(out, 11, "%s", "2001/02/03");
+int
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out,
+                          size_t out_size) { // deterministic if used
+    (void)timestamp;
+    const char* value = (format == DSD_LOCAL_DATETIME_DATE_SLASH) ? "2001/02/03" : "12:34:56";
+    DSD_SNPRINTF(out, out_size, "%s", value);
+    return 1;
 }
 
 // Additional stubs to satisfy dmr_pdu.c when linked directly
 int
 dsd_unicode_supported(void) {
     return 0;
-}
-
-void
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (!input || !output || len <= 0) {
-        return;
-    }
-
-    int k = 0;
-    for (int i = 0; i < len; i++) {
-        output[k++] = (input[i] >> 7) & 1;
-        output[k++] = (input[i] >> 6) & 1;
-        output[k++] = (input[i] >> 5) & 1;
-        output[k++] = (input[i] >> 4) & 1;
-        output[k++] = (input[i] >> 3) & 1;
-        output[k++] = (input[i] >> 2) & 1;
-        output[k++] = (input[i] >> 1) & 1;
-        output[k++] = (input[i] >> 0) & 1;
-    }
 }
 
 void

@@ -175,11 +175,3 @@ tcp_input_is_valid(const tcp_input_ctx* ctx) {
     }
     return ctx->valid;
 }
-
-dsd_socket_t
-tcp_input_get_socket(const tcp_input_ctx* ctx) {
-    if (!ctx) {
-        return DSD_INVALID_SOCKET;
-    }
-    return ctx->sockfd;
-}

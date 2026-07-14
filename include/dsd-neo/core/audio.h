@@ -73,6 +73,15 @@ void playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state); // short stereo 
 /** @brief Play synthesized voice (short stereo mix 18V superframe). */
 void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state); // short stereo mix 18V Superframe
 
+/**
+ * @brief Play one synthesized voice frame using the configured sample format and channel count.
+ *
+ * Selects short or float output from `opts->floating_point` and mono or
+ * stereo output from `opts->pulse_digi_out_channels`. Unsupported values and
+ * null arguments produce no output.
+ */
+void dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state);
+
 /** @brief Apply float-domain gain to 160-sample block for given slot. */
 void agf(const dsd_opts* opts, dsd_state* state, float samp[160], int slot); // float gain control
 /** @brief Apply short-domain gain to buffer of given length. */
@@ -87,23 +96,8 @@ void analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len
 /** @brief Multiply float buffer by gain factor in-place. */
 void audio_apply_gain_f32(float* buf, size_t n, float gain);
 
-/** @brief Legacy analog monitor 6x upsampler (sample repetition). */
+/** @brief Analog monitor 6x sample-repetition upsampler. */
 void upsample(dsd_state* state, float invalue);
-
-/**
- * @brief Generate one linear interpolation block that ends on the current sample.
- *
- * This legacy helper is retained for compatibility/tests. Low-rate PCM input
- * staging now uses the FIR/polyphase resampler in `dsd-neo/dsp/resampler.h`.
- *
- * @param previous Previous input sample.
- * @param current Current input sample.
- * @param factor Number of output samples to generate.
- * @param out Destination buffer.
- * @param out_cap Destination capacity in samples.
- * @return Number of samples written, or 0 on invalid arguments.
- */
-size_t dsd_audio_linear_upsample_block_f32(float previous, float current, size_t factor, float* out, size_t out_cap);
 
 /**
  * @brief Rescale decoder timing/filter state between two effective PCM rates.
@@ -131,13 +125,15 @@ void dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_
 void dsd_audio_apply_input_sample_rate(dsd_opts* opts, dsd_state* state, int old_effective_rate_hz, int sample_rate_hz);
 
 /**
- * @brief Open a mono PCM input file as either a WAV-family container or legacy raw PCM.
+ * @brief Open a mono PCM input file as either a WAV-family container or headerless raw PCM.
  *
  * `.wav` paths are treated as true WAV containers only when the file starts
  * with a supported WAV-family header such as `RIFF`, `RIFX`, or `RF64`
- * followed by `WAVE`. Headerless captures, including legacy discriminator
- * dumps that merely use a `.wav` suffix, fall back to mono 16-bit
- * little-endian raw PCM at the configured sample rate.
+ * followed by `WAVE`. Headerless discriminator captures that merely use a
+ * `.wav` suffix fall back to mono 16-bit
+ * little-endian raw PCM at the configured sample rate. This fallback remains
+ * for persisted captures produced by older deployments; remove the mislabeled
+ * `.wav` branch after those captures are migrated or their support window ends.
  *
  * @param path Input path to open.
  * @param configured_sample_rate_hz Configured raw PCM sample rate.
@@ -165,8 +161,6 @@ void audio_mix_interleave_stereo_s16(const short* left, const short* right, size
 void audio_mix_mono_from_slots_f32(const float* left, const float* right, size_t n, int l_on, int r_on,
                                    float* mono_out);
 
-/** @brief Simple P25 P2 per-slot mixer gate used by tests (maps p25_p2_audio_allowed -> enc flags). */
-int dsd_p25p2_mixer_gate(const dsd_state* state, int* encL, int* encR);
 /** @brief Return 1 when P25p2 decode should queue audio for the slot under decrypt and media policy. */
 int dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg);
 
@@ -209,7 +203,7 @@ int dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot);
  */
 int dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key);
 
-/** @brief Legacy UI beeper helper (used by ncurses call-alert and events). */
+/** @brief Terminal call-alert and event beeper. */
 void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 
 /** @brief Open input audio device based on opts. Returns 0 on success. */

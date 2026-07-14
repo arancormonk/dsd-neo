@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -23,12 +24,37 @@
 static dsd_opts g_opts;
 static dsd_state g_state;
 
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+}
+
 static void
 reset_test_state(void) {
     dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
-    g_opts.p25_trunk = 1;
     g_opts.trunk_enable = 1;
     g_opts.trunk_hangtime = 2.0f; // op25 TGID_HOLD_TIME
     g_opts.trunk_tune_group_calls = 1;
@@ -238,48 +264,6 @@ test_singleton(void) {
     return 0;
 }
 
-// Test: Audio allowed query
-static int
-test_audio_allowed(void) {
-    reset_test_state();
-    g_state.trunk_chan_map[0x1234] = 851500000;
-
-    p25_sm_ctx_t ctx;
-    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
-
-    // Before grant, audio not allowed
-    if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 0) {
-        DSD_FPRINTF(stderr, "FAIL: Audio should not be allowed before grant\n");
-        return 1;
-    }
-
-    // Grant + PTT
-    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
-    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-
-    ev = p25_sm_ev_ptt(0);
-    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-
-    // PTT alone doesn't enable audio - that's handled by MAC_PTT in xcch.c
-    // which sets p25_p2_audio_allowed. Simulate what xcch.c does:
-    g_state.p25_p2_audio_allowed[0] = 1;
-
-    // Now audio should be allowed (via legacy state)
-    if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 1) {
-        DSD_FPRINTF(stderr, "FAIL: Audio should be allowed when p25_p2_audio_allowed is set\n");
-        return 1;
-    }
-
-    // Test that disabling it works
-    g_state.p25_p2_audio_allowed[0] = 0;
-    if (p25_sm_audio_allowed(&ctx, &g_state, 0) != 0) {
-        DSD_FPRINTF(stderr, "FAIL: Audio should not be allowed when p25_p2_audio_allowed is cleared\n");
-        return 1;
-    }
-
-    return 0;
-}
-
 // Test: SACCH slot mapping helper
 static int
 test_sacch_slot_mapping(void) {
@@ -425,7 +409,6 @@ test_tdma_enc_lockout_slot_does_not_block_release(void) {
     g_state.p25_p2_audio_allowed[1] = 1;
 
     g_state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    g_state.p25_p2_enc_lockout_muted[1] = 1U;
     ev = p25_sm_ev_enc(1, 0x84, 0x1234, 1001);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
@@ -615,6 +598,7 @@ test_tdma_enc_respects_media_policy(void) {
 int
 main(void) {
     int fail = 0;
+    install_trunk_tuning_hooks();
 
     printf("Testing P25 SM (4-state model)...\n");
 
@@ -626,7 +610,6 @@ main(void) {
     fail += test_state_names();
     fail += test_config_defaults();
     fail += test_singleton();
-    fail += test_audio_allowed();
     fail += test_sacch_slot_mapping();
     fail += test_tdma_partial_end_stays_tuned();
     fail += test_tdma_pending_other_slot_blocks_release();
@@ -636,8 +619,9 @@ main(void) {
 
     if (fail) {
         printf("FAILED: %d test(s)\n", fail);
-        return 1;
+    } else {
+        printf("PASSED: All P25 SM tests\n");
     }
-    printf("PASSED: All P25 SM tests\n");
-    return 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    return fail ? 1 : 0;
 }

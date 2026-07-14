@@ -29,10 +29,6 @@
 #define DSD_NEO_IVDEP
 #endif
 
-#ifndef DSD_NEO_ALIGN
-#define DSD_NEO_ALIGN 64
-#endif
-
 #if defined(__GNUC__) || defined(__clang__)
 #define DSD_NEO_RESTRICT __restrict__
 #else

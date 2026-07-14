@@ -187,35 +187,22 @@ static const char* DMRBusrtTypes[32] = {
 
 };
 
-#define lls ncurses_last_synctype
-
-/* Factor render function. For now this function simply wraps
- * the legacy drawing path; the body will be migrated here later
- * without changing behavior. */
-static void
-ui_draw_frame(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-    /* Drawing implementation lives in the block below and will be
-       moved here in a follow-up to keep behavior identical. */
-}
-
 static void
 ui_update_sync_and_edacs_tree(const dsd_state* state) {
     if (state == NULL) {
         return;
     }
 
-    //set lls sync types
+    // Keep the last detected sync type available while carrier state changes.
     if (state->synctype != DSD_SYNC_NONE) {
-        lls = state->synctype;
+        ncurses_last_synctype = state->synctype;
     }
 
     //EDACS Channel Tree
-    if (DSD_SYNC_IS_EDACS(lls) && state->carrier == 1) {
+    if (DSD_SYNC_IS_EDACS(ncurses_last_synctype) && state->carrier == 1) {
 
         if (state->edacs_vc_lcn != -1) {
-            edacs_channel_tree[state->edacs_vc_lcn][0] = lls;
+            edacs_channel_tree[state->edacs_vc_lcn][0] = ncurses_last_synctype;
             edacs_channel_tree[state->edacs_vc_lcn][1] = state->edacs_vc_lcn;
             edacs_channel_tree[state->edacs_vc_lcn][2] = state->lasttg;
             //EDACS standard does not provide source LIDs on channel update messages; instead, for the sake of display, let's
@@ -332,8 +319,9 @@ ui_print_rtl_gain_field(dsd_opts* opts) {
 static void
 ui_print_rtl_ppm_field(const dsd_opts* opts) {
     (void)opts;
-    int requested_ppm = dsd_app_frontend_requested_ppm();
-    printw(" PPM: %i;", requested_ppm); //Adjust manually now with { and }
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    printw(" PPM: %i;", metrics.requested_ppm); //Adjust manually now with { and }
 }
 
 static void
@@ -671,7 +659,7 @@ ui_render_trunking_call_filters_plain(const dsd_opts* opts) {
 
 static void
 ui_render_trunking_call_filters(const dsd_opts* opts) {
-    if (!(opts->p25_trunk == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL))) {
+    if (!(opts->trunk_enable == 1 && (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL))) {
         return;
     }
 #ifdef PRETTY_COLORS
@@ -758,7 +746,7 @@ ui_render_edacs_mode_toggles_plain(dsd_state* state) {
 static void
 ui_render_edacs_mode_toggles(const dsd_opts* opts, dsd_state* state) {
     //print additional information for EDACS modes and toggles
-    if (!(opts->p25_trunk == 1 && opts->frame_provoice == 1)) {
+    if (!(opts->trunk_enable == 1 && opts->frame_provoice == 1)) {
         return;
     }
 #ifdef PRETTY_COLORS
@@ -905,8 +893,8 @@ ui_print_rtl_visual_aids_controls(dsd_opts* opts, int nfft) {
     }
     printw("  Eye: %s (%c)", opts->frontend_display.eye_view ? "On" : "Off", DSD_KEY_EYE_VIEW);
     if (opts->frontend_display.eye_view == 1) {
-        printw("  Uni: %s (%c) Col: %s (%c)", opts->frontend_display.eye_unicode ? "On" : "off", DSD_KEY_EYE_UNICODE,
-               opts->frontend_display.eye_color ? "On" : "Off", DSD_KEY_EYE_COLOR);
+        printw("  Uni: %s (%c) Col: %s (%c)", opts->frontend_terminal_display.eye_unicode ? "On" : "off",
+               DSD_KEY_EYE_UNICODE, opts->frontend_terminal_display.eye_color ? "On" : "Off", DSD_KEY_EYE_COLOR);
     }
     printw("  Hist: %s (%c)", opts->frontend_display.fsk_hist_view ? "On" : "Off", DSD_KEY_FSK_HIST);
     printw("  Spec: %s (%c)", opts->frontend_display.spectrum_view ? "On" : "Off", DSD_KEY_SPECTRUM);
@@ -940,8 +928,9 @@ ui_render_rtl_visual_aids(dsd_opts* opts, dsd_state* state) {
     /* Only show RTL-SDR section and render visualizers when RTL input is active */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         ui_print_header(ui_audio_in_is_soapy(opts) ? "SoapySDR Visual Aids" : "RTL-SDR Visual Aids");
-        int nfft = dsd_app_frontend_spectrum_get_size();
-        ui_print_rtl_visual_aids_controls(opts, nfft);
+        dsd_frontend_metrics metrics;
+        (void)dsd_app_frontend_get_metrics(&metrics);
+        ui_print_rtl_visual_aids_controls(opts, metrics.spectrum_size);
         ui_render_rtl_visual_aid_panels(opts, state);
     }
 #else
@@ -997,10 +986,10 @@ ui_render_audio_decode_header_fields(dsd_opts* opts, const dsd_state* state) {
     }
 
     ui_print_header("Audio Decode");
-    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+    if (opts->trunk_enable == 1 && (opts->trunk_is_tuned == 1)) {
         ui_print_kv_line("Tuner state", "Busy");
     }
-    if (opts->p25_trunk == 1 && (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0)) {
+    if (opts->trunk_enable == 1 && (opts->trunk_is_tuned == 0)) {
         ui_print_kv_line("Tuner state", "Free");
     }
     ui_print_label_pad("Demod/Rate");
@@ -1142,8 +1131,8 @@ ui_render_audio_decode_section(dsd_opts* opts, const dsd_state* state, int level
     ui_render_audio_decode_levels(opts, state, level);
 
     /* Hide generic Voice Error line when P25 is active, but keep slot toggles */
-    int is_p25p1_active = DSD_SYNC_IS_P25P1(lls);
-    int is_p25p2_active = DSD_SYNC_IS_P25P2(lls);
+    int is_p25p1_active = DSD_SYNC_IS_P25P1(ncurses_last_synctype);
+    int is_p25p2_active = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     int is_p25_active = is_p25p1_active || is_p25p2_active;
 
     if (opts->dmr_stereo == 0) {
@@ -1206,8 +1195,8 @@ ui_print_wrapped_panel_item(const char* buf, int len, int cols, int* line_used) 
 
 static void
 ui_render_p25_metric_toggles(const dsd_opts* opts, const dsd_state* state) {
-    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
-    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
+    int is_p25p1 = DSD_SYNC_IS_P25P1(ncurses_last_synctype);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     if (!(is_p25p1 || is_p25p2)) {
         return;
     }
@@ -1217,7 +1206,7 @@ ui_render_p25_metric_toggles(const dsd_opts* opts, const dsd_state* state) {
         (void)ui_print_p25_metrics(opts, state);
         ui_print_hr();
     }
-    if (opts->frontend_display.show_p25_cc_candidates == 1 && opts->p25_trunk == 1) {
+    if (opts->frontend_display.show_p25_cc_candidates == 1 && opts->trunk_enable == 1) {
         ui_print_header("P25 CC Candidates");
         ui_print_p25_cc_candidates(opts, state);
         ui_print_hr();
@@ -1239,8 +1228,8 @@ ui_render_p25_metric_toggles(const dsd_opts* opts, const dsd_state* state) {
 
 static void
 ui_render_p25_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
-    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
-    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
+    int is_p25p1 = DSD_SYNC_IS_P25P1(ncurses_last_synctype);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     if (!(opts->frontend_display.show_p25_affiliations == 1 && (is_p25p1 || is_p25p2))) {
         return;
     }
@@ -1288,8 +1277,8 @@ ui_render_p25_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
 
 static void
 ui_render_p25_group_affiliations_panel(const dsd_opts* opts, dsd_state* state) {
-    int is_p25p1 = DSD_SYNC_IS_P25P1(lls);
-    int is_p25p2 = DSD_SYNC_IS_P25P2(lls);
+    int is_p25p1 = DSD_SYNC_IS_P25P1(ncurses_last_synctype);
+    int is_p25p2 = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     if (!(opts->frontend_display.show_p25_group_affiliations == 1 && (is_p25p1 || is_p25p2))) {
         return;
     }
@@ -1723,8 +1712,8 @@ ui_render_event_history_section(const dsd_state* state) {
 static void
 ui_render_call_info_dstar(dsd_state* state) {
     //DSTAR
-    if (DSD_SYNC_IS_DSTAR(lls)) {
-        printw("| %s ", dsd_synctype_to_string(lls));
+    if (DSD_SYNC_IS_DSTAR(ncurses_last_synctype)) {
+        printw("| %s ", dsd_synctype_to_string(ncurses_last_synctype));
         printw("\n");
         printw("| RPT2: %s", state->dstar_rpt2);
         printw(" RPT1: %s", state->dstar_rpt1);
@@ -1774,8 +1763,8 @@ ui_print_m17_encryption_details(dsd_state* state) {
 static void
 ui_render_call_info_m17(dsd_state* state) {
     //M17
-    if (lls == DSD_SYNC_M17_STR_POS || lls == DSD_SYNC_M17_STR_NEG || lls == DSD_SYNC_M17_LSF_POS
-        || lls == DSD_SYNC_M17_LSF_NEG) {
+    if (ncurses_last_synctype == DSD_SYNC_M17_STR_POS || ncurses_last_synctype == DSD_SYNC_M17_STR_NEG
+        || ncurses_last_synctype == DSD_SYNC_M17_LSF_POS || ncurses_last_synctype == DSD_SYNC_M17_LSF_NEG) {
 
         printw("| ");
         printw("M17: ");
@@ -1830,7 +1819,7 @@ ui_render_call_info_m17(dsd_state* state) {
 static void
 ui_render_call_info_ysf(dsd_state* state) {
     //YSF
-    if (DSD_SYNC_IS_YSF(lls)) {
+    if (DSD_SYNC_IS_YSF(ncurses_last_synctype)) {
         printw("| ");
         printw("Fusion - ");
         //insert data type and frame information
@@ -1945,11 +1934,11 @@ ui_nxdn_is_idas(const dsd_state* state) {
 
 static void
 ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int idas) {
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
     printw("| ");
-    if (opts->p25_is_tuned == 0) {
+    if (opts->trunk_is_tuned == 0) {
         printw(idas ? "Monitoring RTCH2 Channel" : "Monitoring RCCH Channel");
         if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
             long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
@@ -2092,7 +2081,7 @@ ui_render_nxdn_active_channels_and_tg_hold(const dsd_opts* opts, const dsd_state
 static void
 ui_render_call_info_nxdn(const dsd_opts* opts, const dsd_state* state) {
     //NXDN
-    if (!DSD_SYNC_IS_NXDN(lls)) {
+    if (!DSD_SYNC_IS_NXDN(ncurses_last_synctype)) {
         return;
     }
 
@@ -2107,7 +2096,7 @@ ui_render_call_info_nxdn(const dsd_opts* opts, const dsd_state* state) {
 static void
 ui_render_call_info_dpmr(const dsd_opts* opts, dsd_state* state) {
     //dPMR
-    if (DSD_SYNC_IS_DPMR(lls)) {
+    if (DSD_SYNC_IS_DPMR(ncurses_last_synctype)) {
         printw("| DCC: [%i] ", state->dpmr_color_code);
         printw("TGT: [%s] SRC: [%s] ", state->dpmr_target_id, state->dpmr_caller_id);
         printw("\n| ");
@@ -2134,7 +2123,7 @@ ui_render_edacs_site_header(const dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    if (opts->trunk_is_tuned == 0 && opts->p25_is_tuned == 0) {
+    if (opts->trunk_is_tuned == 0) {
         printw("| Monitoring CC - LCN [%02d]\n", state->edacs_cc_lcn);
     } else {
         printw("| Monitoring VC - LCN [%02d]\n", state->edacs_tuned_lcn);
@@ -2309,7 +2298,7 @@ ui_render_edacs_lcn_row(const dsd_opts* opts, const dsd_state* state, int lcn) {
         }
     }
 
-    if (lcn == state->edacs_tuned_lcn && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+    if (lcn == state->edacs_tuned_lcn && (opts->trunk_is_tuned == 1)) {
         printw(" **T**");
     }
     printw("\n");
@@ -2318,7 +2307,7 @@ ui_render_edacs_lcn_row(const dsd_opts* opts, const dsd_state* state, int lcn) {
 static void
 ui_render_call_info_edacs(const dsd_opts* opts, dsd_state* state) {
     //EDACS and ProVoice
-    if (!DSD_SYNC_IS_EDACS(lls)) {
+    if (!DSD_SYNC_IS_EDACS(ncurses_last_synctype)) {
         return;
     }
 
@@ -2575,13 +2564,13 @@ ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
 static void
 ui_render_p25_dmr_header(const dsd_opts* opts, dsd_state* state) {
     printw("| ");
-    if (DSD_SYNC_IS_DMR_BS(lls)) {
+    if (DSD_SYNC_IS_DMR_BS(ncurses_last_synctype)) {
         ui_render_p25_dmr_header_dmr_bs(state);
-    } else if (DSD_SYNC_IS_DMR_MS(lls)) {
+    } else if (DSD_SYNC_IS_DMR_MS(ncurses_last_synctype)) {
         printw("DMR MS - DCC: %02i; ", state->dmr_color_code);
-    } else if (DSD_SYNC_IS_P25P1(lls)) {
+    } else if (DSD_SYNC_IS_P25P1(ncurses_last_synctype)) {
         ui_render_p25_dmr_header_p25p1(opts, state);
-    } else if (DSD_SYNC_IS_P25P2(lls)) {
+    } else if (DSD_SYNC_IS_P25P2(ncurses_last_synctype)) {
         ui_render_p25_dmr_header_p25p2(opts, state);
     }
 }
@@ -2857,12 +2846,12 @@ ui_render_p25_dmr_active_channels_line(const dsd_opts* opts, const dsd_state* st
 
 static void
 ui_render_p25_dmr_tuned_freq_line(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
 
     printw("|        | ");
-    if (opts->p25_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1) {
         long int vc = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
         if (vc == 0) {
             vc = ui_guess_active_vc_freq(state);
@@ -2881,7 +2870,7 @@ ui_render_p25_dmr_tuned_freq_line(const dsd_opts* opts, const dsd_state* state) 
 
 static void
 ui_render_call_info_p25_dmr(const dsd_opts* opts, dsd_state* state) {
-    if (!(DSD_SYNC_IS_P25(lls) || DSD_SYNC_IS_DMR(lls))) {
+    if (!(DSD_SYNC_IS_P25(ncurses_last_synctype) || DSD_SYNC_IS_DMR(ncurses_last_synctype))) {
         return;
     }
 
@@ -2932,8 +2921,8 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_render_event_history_section(state);
 }
 
-static void
-ui_ncurses_printer_impl(dsd_opts* opts, dsd_state* state) {
+void
+dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
     /* Guard against null opts. Without opts we cannot render safely. */
     if (!opts) {
         return;
@@ -2947,8 +2936,7 @@ ui_ncurses_printer_impl(dsd_opts* opts, dsd_state* state) {
 
     ui_update_sync_and_edacs_tree(state);
 
-    //Start Printing Section (render factored function placeholder)
-    ui_draw_frame(opts, state);
+    //Start Printing Section
     erase();
     ui_panel_header_render(opts, state);
     if (state) {
@@ -2972,9 +2960,4 @@ ui_ncurses_printer_impl(dsd_opts* opts, dsd_state* state) {
     if (ui_menu_is_open()) {
         ui_menu_tick(opts, state);
     }
-}
-
-void
-ncursesPrinter(dsd_opts* opts, dsd_state* state) {
-    ui_ncurses_printer_impl(opts, state);
 }

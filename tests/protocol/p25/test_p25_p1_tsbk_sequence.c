@@ -14,7 +14,6 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
-#include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -32,13 +31,26 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-static const uint8_t k_p25_interleave[98] = {
-    0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73, 80, 81, 88, 89, 96,
-    97, 2,  3,  10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 50, 51, 58, 59, 66, 67, 74, 75, 82, 83, 90, 91,
-    4,  5,  12, 13, 20, 21, 28, 29, 36, 37, 44, 45, 52, 53, 60, 61, 68, 69, 76, 77, 84, 85, 92, 93, 6,
-    7,  14, 15, 22, 23, 30, 31, 38, 39, 46, 47, 54, 55, 62, 63, 70, 71, 78, 79, 86, 87, 94, 95};
+// CRC-valid reference block for 00 00 00 10 0A 11 11 00 01 01 AE 8E.
+static const uint8_t k_group_grant_1111_dibits[98] = {
+    0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 2, 1, 3, 2, 3, 2, 0, 2, 3, 2, 3, 1, 2, 2, 2, 1, 0, 2, 0, 2, 0, 2, 3,
+    0, 0, 2, 3, 0, 3, 0, 0, 2, 0, 2, 0, 2, 2, 2, 2, 1, 0, 2, 0, 2, 0, 2, 3, 2, 0, 1, 3, 2, 3, 2, 0, 2,
+    0, 2, 0, 2, 1, 0, 3, 3, 0, 2, 0, 2, 0, 2, 0, 2, 2, 2, 3, 0, 3, 0, 0, 2, 3, 0, 3, 0, 1, 2, 1, 2,
+};
 
-static const uint8_t k_p25_dtm[16] = {2, 12, 1, 15, 14, 0, 13, 3, 9, 7, 10, 4, 5, 11, 6, 8};
+// CRC-valid reference block for 80 00 00 10 0A 22 22 00 02 02 7A 83.
+static const uint8_t k_group_grant_2222_dibits[98] = {
+    0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 2, 1, 2, 1, 2, 1, 0, 2, 2, 1, 1, 3, 2, 2, 1, 1, 2, 1, 0, 2, 0, 2, 3,
+    0, 0, 2, 0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 3, 2, 1, 0, 2, 0, 2, 0, 2, 3, 2, 0, 1, 2, 1, 2, 1, 0, 2,
+    0, 2, 0, 2, 1, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 2, 2, 0, 1, 0, 1, 0, 2, 0, 1, 0, 1, 2, 2, 3, 3,
+};
+
+// CRC-valid reference block for BB 00 00 AB CD E1 23 81 23 00 51 97.
+static const uint8_t k_network_status_dibits[98] = {
+    0, 1, 1, 1, 0, 2, 0, 1, 2, 0, 0, 3, 3, 2, 1, 2, 3, 2, 1, 1, 3, 0, 3, 1, 1, 1, 1, 0, 0, 2, 0, 2, 2,
+    2, 1, 1, 1, 2, 0, 1, 2, 1, 0, 1, 0, 2, 0, 0, 1, 3, 1, 2, 0, 2, 0, 2, 2, 2, 3, 3, 2, 1, 2, 1, 0, 2,
+    2, 1, 0, 2, 3, 2, 0, 0, 1, 0, 0, 2, 0, 2, 1, 0, 2, 3, 3, 0, 3, 3, 3, 0, 3, 3, 0, 2, 3, 0, 0, 3,
+};
 
 static uint8_t g_stream[3 * 101];
 static int g_stream_len = 0;
@@ -48,80 +60,6 @@ static int g_mac_group[3] = {0};
 static int g_mac_source[3] = {0};
 static int g_status_count = 0;
 static long g_channel_freq = 0;
-
-static void
-bytes_to_tdibits(const uint8_t bytes[12], uint8_t tdibits[49]) {
-    for (int i = 0; i < 48; i++) {
-        tdibits[i] = (uint8_t)((bytes[i / 4] >> (6 - (2 * (i % 4)))) & 3U);
-    }
-    tdibits[48] = 0;
-}
-
-static void
-encode_12_to_dibits(const uint8_t bytes[12], uint8_t dibits[98]) {
-    uint8_t tdibits[49];
-    uint8_t deint[98];
-    bytes_to_tdibits(bytes, tdibits);
-
-    uint8_t prev = 0;
-    for (int i = 0; i < 49; i++) {
-        uint8_t next = tdibits[i] & 3U;
-        uint8_t nibble = k_p25_dtm[(prev << 2) | next] & 0xFU;
-        deint[(i * 2) + 0] = (uint8_t)((nibble >> 2) & 3U);
-        deint[(i * 2) + 1] = (uint8_t)(nibble & 3U);
-        prev = next;
-    }
-
-    for (int i = 0; i < 98; i++) {
-        dibits[i] = deint[k_p25_interleave[i]];
-    }
-}
-
-static void
-bytes_to_bits80(const uint8_t bytes[12], uint8_t bits[80]) {
-    for (int i = 0; i < 80; i++) {
-        bits[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1U);
-    }
-}
-
-static void
-append_crc16(uint8_t bytes[12]) {
-    uint8_t bits[80];
-    bytes_to_bits80(bytes, bits);
-    uint16_t crc = ComputeCrcCCITT16b(bits, 80);
-    bytes[10] = (uint8_t)(crc >> 8);
-    bytes[11] = (uint8_t)(crc & 0xFF);
-}
-
-static void
-build_group_grant_tsbk(uint8_t out[12], uint8_t lb, uint16_t group, uint32_t source) {
-    DSD_MEMSET(out, 0, 12);
-    out[0] = lb ? 0x80U : 0x00U;
-    out[1] = 0x00;
-    out[2] = 0x00;
-    out[3] = 0x10;
-    out[4] = 0x0A;
-    out[5] = (uint8_t)(group >> 8);
-    out[6] = (uint8_t)(group & 0xFF);
-    out[7] = (uint8_t)((source >> 16) & 0xFF);
-    out[8] = (uint8_t)((source >> 8) & 0xFF);
-    out[9] = (uint8_t)(source & 0xFF);
-    append_crc16(out);
-}
-
-static void
-build_network_status_tsbk(uint8_t out[12], uint32_t wacn, uint16_t sysid, uint16_t channel) {
-    DSD_MEMSET(out, 0, 12);
-    out[0] = 0x80U | 0x3BU;
-    out[1] = 0x00;
-    out[3] = (uint8_t)((wacn >> 12) & 0xFFU);
-    out[4] = (uint8_t)((wacn >> 4) & 0xFFU);
-    out[5] = (uint8_t)(((wacn & 0x0FU) << 4) | ((sysid >> 8) & 0x0FU));
-    out[6] = (uint8_t)(sysid & 0xFFU);
-    out[7] = (uint8_t)(channel >> 8);
-    out[8] = (uint8_t)(channel & 0xFFU);
-    append_crc16(out);
-}
 
 static void
 append_tsbk_stream_block(const uint8_t dibits[98], int* skipdibit) {
@@ -151,36 +89,25 @@ reset_decode_counters(void) {
 
 static void
 build_two_block_stream(void) {
-    uint8_t block[12];
-    uint8_t dibits[98];
     int skipdibit = 36 - 14;
 
     DSD_MEMSET(g_stream, 0, sizeof(g_stream));
     g_stream_len = 0;
     g_stream_pos = 0;
 
-    build_group_grant_tsbk(block, 0, 0x1111, 0x000101);
-    encode_12_to_dibits(block, dibits);
-    append_tsbk_stream_block(dibits, &skipdibit);
-
-    build_group_grant_tsbk(block, 1, 0x2222, 0x000202);
-    encode_12_to_dibits(block, dibits);
-    append_tsbk_stream_block(dibits, &skipdibit);
+    append_tsbk_stream_block(k_group_grant_1111_dibits, &skipdibit);
+    append_tsbk_stream_block(k_group_grant_2222_dibits, &skipdibit);
 }
 
 static void
 build_network_status_stream(void) {
-    uint8_t block[12];
-    uint8_t dibits[98];
     int skipdibit = 36 - 14;
 
     DSD_MEMSET(g_stream, 0, sizeof(g_stream));
     g_stream_len = 0;
     g_stream_pos = 0;
 
-    build_network_status_tsbk(block, 0xABCDE, 0x123, 0x8123);
-    encode_12_to_dibits(block, dibits);
-    append_tsbk_stream_block(dibits, &skipdibit);
+    append_tsbk_stream_block(k_network_status_dibits, &skipdibit);
 }
 
 int
@@ -212,9 +139,8 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 }
 
 void
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     (void)state;
-    (void)opts;
 }
 
 void
@@ -253,42 +179,25 @@ p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* st
     (void)state;
 }
 
-void
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
+static p25_sm_ctx_t g_sm_ctx;
+
+p25_sm_ctx_t*
+p25_sm_get_ctx(void) {
+    return &g_sm_ctx;
 }
 
 void
-p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    (void)ctx;
     (void)opts;
     (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
-}
-
-void
-p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)dst;
-    (void)src;
+    (void)ev;
 }
 
 int
 dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
-                                    int encrypted, int data_call, dsd_tg_policy_private_allowlist_mode allowlist_mode,
-                                    dsd_tg_policy_hold_behavior hold_behavior, dsd_tg_policy_decision* out) {
+                                    int encrypted, int data_call, dsd_tg_policy_decision* out) {
     (void)state;
-    (void)hold_behavior;
     if (!out) {
         return -1;
     }
@@ -314,7 +223,7 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
     }
-    if (opts && opts->trunk_use_allow_list == 1 && allowlist_mode == DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK) {
+    if (opts && opts->trunk_use_allow_list == 1) {
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ALLOWLIST;
     }
@@ -322,25 +231,15 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
 }
 
 void
-p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
+p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    (void)ctx;
     (void)opts;
     (void)state;
-    (void)svc_type;
-    (void)reason_code;
-    (void)target;
+    (void)reason;
 }
 
 void
-p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
-    (void)opts;
-    (void)state;
-    (void)svc_type;
-    (void)reason_code;
-    (void)target;
-}
-
-void
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     (void)freqs;
@@ -518,7 +417,7 @@ main(void) {
     g_channel_freq = 863812500;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.p25_cc_freq = 851000000;
     state.trunk_cc_freq = 851000000;
     state.p25_cc_is_tdma = 1;

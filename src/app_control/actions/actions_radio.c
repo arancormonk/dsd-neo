@@ -35,16 +35,11 @@ ui_modulation_demod_rate(const dsd_opts* opts, const dsd_state* state) {
 
 #ifdef USE_RADIO
 static int
-ui_uses_wide_4800_profile(const dsd_opts* opts) {
-    return opts && (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1);
-}
-
-static int
 ui_rtl_channel_profile(const dsd_opts* opts, int symbol_rate_hz, int cqpsk) {
     if (cqpsk) {
         return RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
     }
-    if (symbol_rate_hz == 4800 && !ui_uses_wide_4800_profile(opts)) {
+    if (symbol_rate_hz == 4800 && !dsd_opts_uses_wide_4800_profile(opts)) {
         return RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
     }
     return RTL_STREAM_CHANNEL_PROFILE_12K5;

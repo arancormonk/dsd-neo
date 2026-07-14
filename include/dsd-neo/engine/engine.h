@@ -22,8 +22,6 @@ typedef struct {
     void* context;
 } dsd_engine_lifecycle_hooks;
 
-int dsd_engine_run(dsd_opts* opts, dsd_state* state);
-
 /**
  * Run the engine with optional live-run lifecycle hooks.
  *

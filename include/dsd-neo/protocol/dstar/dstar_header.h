@@ -15,9 +15,6 @@ struct dsd_state;
  * @brief D-STAR header decode interface.
  */
 
-/** @brief Decode a coded D-STAR header into state fields (hard decision). */
-void dstar_header_decode(struct dsd_state* state, int radioheaderbuffer[DSD_DSTAR_HEADER_CODED_BITS]);
-
 /** @brief Decode a coded D-STAR header using soft-decision Viterbi decoding. */
 void dstar_header_decode_soft(struct dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]);
 

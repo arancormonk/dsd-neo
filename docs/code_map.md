@@ -100,11 +100,10 @@ depending directly on protocol headers. The runtime provides a small hook table 
 - Path: `src/app_control`, `include/dsd-neo/app_control`
 - Target: `dsd-neo_app_control`
 - Responsibilities:
-  - Copied frontend snapshots, status, metrics, paged event history, and UI message state
-  - Typed app command descriptors, command queue dispatch, tracked command results, and menu service helpers
+  - Frontend metrics and raw telemetry snapshots used by the terminal renderer
+  - Command queue dispatch and menu service helpers
   - Frontend runtime/control-pump glue and telemetry hook installation
-  - Public frontend boundary headers under `<dsd-neo/app_control/...>`; new frontends should use these APIs instead of
-    reading decoder, IO, or protocol internals directly
+  - Public frontend boundary headers under `<dsd-neo/app_control/...>`
 - Build files: `src/app_control/CMakeLists.txt`
 
 ## DSP
@@ -124,7 +123,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 - FM/FSK conditioning: I/Q DC blocker get/set.
 - Spectral/diagnostics: constellation/eye/spectrum getters, spectrum FFT size set/get, SNR getters/estimates for
   C4FM/CQPSK/GFSK.
-- Front-end assists: tuner autogain get/set, IQ balance toggle/get, resampler target set, auto-PPM query/lock/toggle.
+- Front-end assists: tuner autogain get/set, IQ balance toggle/get, and auto-PPM query/lock/toggle.
 
 ## IO
 
@@ -141,11 +140,12 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
 Key public headers:
 
-- RTL shim API: `include/dsd-neo/io/rtl_stream_c.h`
+- RTL stream C API: `include/dsd-neo/io/rtl_stream_c.h`
 - RTL C++ orchestrator: `include/dsd-neo/io/rtl_stream.h` (class `RtlSdrOrchestrator`)
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
-- Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl.h`, `include/dsd-neo/io/m17_udp.h`
+- Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
+  `include/dsd-neo/io/m17_udp.h`
 - UDP control API: `include/dsd-neo/io/udp_control.h`
 - UDP audio output: `include/dsd-neo/io/udp_audio.h` (implemented in `src/io/audio_backends/udp_audio.c`)
 - UDP/TCP PCM input: `include/dsd-neo/io/udp_input.h`, `include/dsd-neo/io/tcp_input.h`
@@ -192,13 +192,12 @@ Notes:
 
 Key public headers (selection):
 
-- DMR: `<dsd-neo/protocol/dmr/dmr_const.h>`, `<dsd-neo/protocol/dmr/dmr_utils_api.h>`,
-  `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
+- DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>`
 - NXDN: `<dsd-neo/protocol/nxdn/nxdn_const.h>`
 - D‑STAR: `<dsd-neo/protocol/dstar/dstar_const.h>`, `<dsd-neo/protocol/dstar/dstar_header.h>`
-- ProVoice/EDACS/X2: `<dsd-neo/protocol/provoice/provoice_const.h>`, `<dsd-neo/protocol/x2tdma/x2tdma_const.h>`
+- ProVoice/EDACS: `<dsd-neo/protocol/provoice/provoice_const.h>`
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 
@@ -211,25 +210,24 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 ## UI
 
-- Path: `src/ui`, `include/dsd-neo/ui`
-- Targets: `dsd-neo_ui_terminal`; optional `dsd-neo_ui_native` when `DSD_ENABLE_NATIVE_UI=ON`
+- Path: `src/ui`
+- Target: `dsd-neo_ui_terminal`
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
-  - Frontend-facing status, control, and DSP/RTL metrics flow through `include/dsd-neo/app_control/frontend.h` and
-    app-control commands; terminal UI code must not include IO/RTL headers directly.
+  - Frontend-facing controls and DSP/RTL metrics normally flow through app-control commands and
+    `include/dsd-neo/app_control/frontend.h`. The terminal frontend retains a small set of terminal-private backend
+    integrations.
   - Radio-driven UI controls are gated by `USE_RADIO`; visualizers consume app-control frontend metric APIs.
 
-Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`, `src/ui/native/CMakeLists.txt`
+Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`
 
 Key public headers:
 
-- Provider descriptors: `include/dsd-neo/ui/terminal_provider.h`, `include/dsd-neo/ui/native_provider.h`
-- Safe compatibility wrappers: `include/dsd-neo/ui/ui_cmd.h`, `include/dsd-neo/ui/ui_dsp_cmd.h`,
-  `include/dsd-neo/ui/ui_history.h`, `include/dsd-neo/ui/ui_snapshot.h`,
-  `include/dsd-neo/ui/ui_opts_snapshot.h`
+- Frontend commands, history, metrics, and lifecycle: `include/dsd-neo/app_control/commands.h`,
+  `include/dsd-neo/app_control/history.h`, `include/dsd-neo/app_control/frontend.h`, and
+  `include/dsd-neo/app_control/frontend_runtime.h`
 - Terminal-only headers live under `src/ui/terminal/dsd-neo/ui/` and are private to the terminal target/tests.
-  Native UI code must use copied app-control snapshots and command APIs instead of these headers.
 
 ### Adding Menu Items
 
@@ -243,8 +241,8 @@ Key public headers:
     composition in `src/ui/terminal/menus/menu_defs.c`). Set `id`, `label`, optional `help`, and `.on_select`.
   - For nested menus, set `.submenu` and `.submenu_len` to a child array.
 - Keep UI/business logic separate:
-  - Do not perform device or file operations directly in `dsd_ncurses_menu.c`. Use services instead to make behavior
-    testable and reusable by other front-ends.
+  - Do not perform device or file operations directly in menu callbacks. Use services instead to make behavior
+    testable and reusable across command entry points.
 - Prompts and exit:
   - Use the nonblocking prompt overlays provided by the menu core (string/int/double/confirm equivalents handled
     asynchronously). Handlers can set `exitflag` to request immediate exit; the loop will return.
@@ -259,18 +257,18 @@ Key public headers:
 - IO: `<dsd-neo/io/...>`
 - FEC: `<dsd-neo/fec/...>`
 - Crypto: `<dsd-neo/crypto/...>`
-- UI provider/wrapper headers: `<dsd-neo/ui/...>`
 - Protocols: `<dsd-neo/protocol/<name>/...>`
 
 Additional includes of interest:
 
 - Runtime: `<dsd-neo/runtime/cli.h>`, `<dsd-neo/runtime/frame_sync_hooks.h>`, `<dsd-neo/runtime/telemetry.h>`
 - IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`,
-  `<dsd-neo/io/rtl_demod_config.h>`, `<dsd-neo/io/rtl_metrics.h>`, `<dsd-neo/io/control.h>`, `<dsd-neo/io/rigctl.h>`,
-  `<dsd-neo/io/m17_udp.h>`, `<dsd-neo/io/udp_audio.h>`, `<dsd-neo/io/udp_control.h>`, `<dsd-neo/io/udp_input.h>`,
+  `<dsd-neo/io/rtl_demod_config.h>`, `<dsd-neo/io/rtl_metrics.h>`, `<dsd-neo/io/control.h>`,
+  `<dsd-neo/io/rigctl_client.h>`, `<dsd-neo/io/m17_udp.h>`, `<dsd-neo/io/udp_audio.h>`,
+  `<dsd-neo/io/udp_control.h>`, `<dsd-neo/io/udp_input.h>`,
   `<dsd-neo/io/tcp_input.h>`
-- UI: provider headers plus safe compatibility wrappers in `include/dsd-neo/ui`; terminal internals are private under
-  `src/ui/terminal/dsd-neo/ui`
+- App-control/UI: command, history, metrics, and lifecycle APIs live in `include/dsd-neo/app_control`; terminal internals
+  are private under `src/ui/terminal/dsd-neo/ui`
 
 ## Build Targets
 
@@ -303,4 +301,4 @@ External dependencies (resolved via CMake):
 - Required: OpenSSL 3.x libcrypto; LibSndFile; an audio backend (PulseAudio by default, PortAudio on Windows); MBE
   vocoder (`mbe-neo` 2.x).
 - Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
-- Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl.
+- Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl >= 7.56.0.

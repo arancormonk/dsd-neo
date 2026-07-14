@@ -264,14 +264,16 @@ ui_prompt_close_all(void) {
     DSD_MEMSET(&g_prompt, 0, sizeof(g_prompt));
 }
 
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t cap, void* user,
-                                 ui_prompt_string_done_fn on_done) {
+ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                            void* user_ctx) {
     ui_prompt_close_all();
     g_prompt.active = 1;
     g_prompt.title = title;
     g_prompt.on_done_str = on_done;
-    g_prompt.user = user;
+    g_prompt.user = user_ctx;
     if (cap < 2) {
         cap = 2;
     }
@@ -281,7 +283,7 @@ ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t 
     if (!g_prompt.buf) {
         // Allocation failed: immediately signal cancel to ensure user context can be freed.
         if (on_done) {
-            on_done(user, NULL);
+            on_done(user_ctx, NULL);
         }
         g_prompt.active = 0;
         return;
@@ -293,6 +295,8 @@ ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t 
         g_prompt.cursor = g_prompt.len;
     }
 }
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
 
 static void
 ui_prompt_int_finish(void* u, const char* text) {
@@ -350,39 +354,47 @@ ui_prompt_double_finish(void* u, const char* text) {
     free(pdc);
 }
 
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_prompt_open_int_async_impl(const char* title, int initial, void* user, ui_prompt_int_done_fn cb) {
+ui_prompt_open_int_async(const char* title, int initial, ui_prompt_int_done_fn cb, void* user_ctx) {
     char pre[64];
     DSD_SNPRINTF(pre, sizeof pre, "%d", initial);
     PromptIntCtx* pic = (PromptIntCtx*)calloc(1, sizeof(PromptIntCtx));
     if (!pic) {
         // Allocation failed: immediately signal cancel so caller can clean up.
         if (cb) {
-            cb(user, 0, 0);
+            cb(user_ctx, 0, 0);
         }
         return;
     }
     pic->cb = cb;
-    pic->user = user;
+    pic->user = user_ctx;
     ui_prompt_open_string_async(title, pre, 64, ui_prompt_int_finish, pic);
 }
 
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
+
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_prompt_open_double_async_impl(const char* title, double initial, void* user, ui_prompt_double_done_fn cb) {
+ui_prompt_open_double_async(const char* title, double initial, ui_prompt_double_done_fn cb, void* user_ctx) {
     char pre[64];
     DSD_SNPRINTF(pre, sizeof pre, "%.6f", initial);
     PromptDblCtx* pdc = (PromptDblCtx*)calloc(1, sizeof(PromptDblCtx));
     if (!pdc) {
         // Allocation failed: immediately signal cancel so caller can clean up.
         if (cb) {
-            cb(user, 0, 0.0);
+            cb(user_ctx, 0, 0.0);
         }
         return;
     }
     pdc->cb = cb;
-    pdc->user = user;
+    pdc->user = user_ctx;
     ui_prompt_open_string_async(title, pre, 64, ui_prompt_double_finish, pdc);
 }
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
 
 // ---- Prompt active/handle_key/render for menu_core delegation ----
 
@@ -1037,12 +1049,14 @@ ui_chooser_finish(int sel) {
     }
 }
 
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_chooser_start_impl(const char* title, const char* const* items, int count, void* user, ui_chooser_done_fn on_done) {
+ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done, void* user_ctx) {
     if (!items || count <= 0) {
         ui_chooser_close();
         if (on_done) {
-            on_done(user, -1);
+            on_done(user_ctx, -1);
         }
         return;
     }
@@ -1054,12 +1068,14 @@ ui_chooser_start_impl(const char* title, const char* const* items, int count, vo
     g_chooser.top = 0;
     g_chooser.page_rows = 0;
     g_chooser.on_done = on_done;
-    g_chooser.user = user;
+    g_chooser.user = user_ctx;
     if (g_chooser.win) {
         delwin(g_chooser.win);
         g_chooser.win = NULL;
     }
 }
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
 
 void
 ui_chooser_close(void) {

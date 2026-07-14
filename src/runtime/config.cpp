@@ -251,10 +251,6 @@ config_snapshot_equals_block_c(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(auto_ppm_zerolock_hz);
     CONFIG_EQ_FIELD(auto_ppm_freeze_is_set);
     CONFIG_EQ_FIELD(auto_ppm_freeze_enable);
-    CONFIG_EQ_FIELD(combine_rot_is_set);
-    CONFIG_EQ_FIELD(combine_rot);
-    CONFIG_EQ_FIELD(upsample_fp_is_set);
-    CONFIG_EQ_FIELD(upsample_fp);
     return true;
 }
 
@@ -274,6 +270,8 @@ config_snapshot_equals_block_d(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(audio_lpf_cutoff_hz);
     CONFIG_EQ_FIELD(mt_is_set);
     CONFIG_EQ_FIELD(mt_enable);
+    CONFIG_EQ_FIELD(combine_rot_is_set);
+    CONFIG_EQ_FIELD(combine_rot);
     CONFIG_EQ_FIELD(fs4_shift_disable_is_set);
     CONFIG_EQ_FIELD(fs4_shift_disable);
     CONFIG_EQ_FIELD(output_clear_on_retune_is_set);
@@ -517,6 +515,7 @@ static void
 config_init_defaults(dsdneoRuntimeConfig& c) {
     /* Defaults for centralized knobs (may be overridden by env parsing below). */
     c.sync_warmstart_enable = 1;
+    c.combine_rot = 1;
 
     c.dmr_hangtime_s = 2.0;
     c.dmr_grant_timeout_s = 4.0;
@@ -662,21 +661,17 @@ config_init_cqpsk_sync(dsdneoRuntimeConfig& c) {
 }
 
 static void
-config_init_sync_warmstart(dsdneoRuntimeConfig& c) {
-    /* Sync warm-start (kill-switch): DSD_NEO_SYNC_WARMSTART=0 disables. */
-    const char* sw = getenv("DSD_NEO_SYNC_WARMSTART");
-    c.sync_warmstart_is_set = env_is_set(sw);
-    if (c.sync_warmstart_is_set && strcmp(sw, "0") == 0) {
-        c.sync_warmstart_enable = 0;
-    }
-}
-
-static void
 config_init_cqpsk(dsdneoRuntimeConfig& c) {
     /* CQPSK runtime toggles */
     config_init_cqpsk_toggle(c);
     config_init_cqpsk_sync(c);
-    config_init_sync_warmstart(c);
+
+    /* Keep the warm-start safety switch at the canonical calibration boundary. */
+    const char* warmstart = getenv("DSD_NEO_SYNC_WARMSTART");
+    c.sync_warmstart_is_set = env_is_set(warmstart);
+    if (c.sync_warmstart_is_set && strcmp(warmstart, "0") == 0) {
+        c.sync_warmstart_enable = 0;
+    }
 }
 
 static void
@@ -1007,27 +1002,7 @@ config_init_auto_ppm(dsdneoRuntimeConfig& c) {
 }
 
 static void
-config_init_rotation_and_resamp(dsdneoRuntimeConfig& c) {
-    /* COMBINE_ROT */
-    const char* cr = getenv("DSD_NEO_COMBINE_ROT");
-    c.combine_rot_is_set = env_is_set(cr);
-    if (c.combine_rot_is_set) {
-        int v = 0;
-        c.combine_rot = env_parse_int_strict(cr, &v) ? (v != 0) : 0;
-    } else {
-        c.combine_rot = 1;
-    }
-
-    /* UPSAMPLE_FP */
-    const char* ufp = getenv("DSD_NEO_UPSAMPLE_FP");
-    c.upsample_fp_is_set = env_is_set(ufp);
-    if (c.upsample_fp_is_set) {
-        int v = 0;
-        c.upsample_fp = env_parse_int_strict(ufp, &v) ? (v != 0) : 0;
-    } else {
-        c.upsample_fp = 1;
-    }
-
+config_init_resamp(dsdneoRuntimeConfig& c) {
     /* RESAMP */
     const char* rs = getenv("DSD_NEO_RESAMP");
     c.resamp_is_set = env_is_set(rs);
@@ -1135,6 +1110,14 @@ config_init_mt_and_retune(dsdneoRuntimeConfig& c) {
     const char* mt = getenv("DSD_NEO_MT");
     c.mt_is_set = env_is_set(mt);
     c.mt_enable = (c.mt_is_set && mt[0] == '1') ? 1 : 0;
+
+    /* Select the current combined CU8 transform or its supported two-pass equivalent. */
+    const char* combine_rot = getenv("DSD_NEO_COMBINE_ROT");
+    c.combine_rot_is_set = env_is_set(combine_rot);
+    if (c.combine_rot_is_set) {
+        int value = 0;
+        c.combine_rot = env_parse_int_strict(combine_rot, &value) ? (value != 0) : 0;
+    }
 
     /* Disable fs/4 capture shift */
     const char* dfs4 = getenv("DSD_NEO_DISABLE_FS4_SHIFT");
@@ -1250,16 +1233,10 @@ config_init_iq_and_channel_lpf(dsdneoRuntimeConfig& c) {
 /**
  * @brief Parse environment variables and initialize the runtime configuration.
  *
- * Precedence note: future CLI/opts may override env values; currently opts
- * are not applied beyond presence for future extension.
- *
- * @param opts Decoder options for potential precedence overrides.
  * @note Safe to call multiple times; the most recent call wins.
  */
 void
-dsd_neo_config_init(const dsd_opts* opts) {
-    (void)opts; /* precedence hook reserved for future CLI/opts overrides */
-
+dsd_neo_config_init(void) {
     dsdneoRuntimeConfig c{};
     config_init_defaults(c);
     config_init_paths_and_cache(c);
@@ -1272,7 +1249,7 @@ dsd_neo_config_init(const dsd_opts* opts) {
     config_init_rtl_and_tuner(c);
     config_init_tuner_autogain(c);
     config_init_auto_ppm(c);
-    config_init_rotation_and_resamp(c);
+    config_init_resamp(c);
     config_init_costas_ted(c);
     config_init_deemph_audio(c);
     config_init_mt_and_retune(c);

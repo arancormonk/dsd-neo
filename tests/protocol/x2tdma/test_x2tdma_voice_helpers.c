@@ -7,6 +7,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -25,18 +26,20 @@ static int g_get_len;
 static int g_get_pos;
 static int g_skip_calls;
 static int g_skip_total;
-static int g_soft_calls;
-static int g_soft_first_bit[8];
+static int g_mbe_calls;
+static int g_mbe_first_bit[8];
+static int g_play_calls[4];
 
 static void
 reset_stubs(void) {
     DSD_MEMSET(g_get_queue, 0, sizeof(g_get_queue));
-    DSD_MEMSET(g_soft_first_bit, 0, sizeof(g_soft_first_bit));
+    DSD_MEMSET(g_mbe_first_bit, 0, sizeof(g_mbe_first_bit));
+    DSD_MEMSET(g_play_calls, 0, sizeof(g_play_calls));
     g_get_len = 0;
     g_get_pos = 0;
     g_skip_calls = 0;
     g_skip_total = 0;
-    g_soft_calls = 0;
+    g_mbe_calls = 0;
 }
 
 static int
@@ -66,9 +69,10 @@ append_sync(const char sync[25], int inverted) {
 }
 
 int
-getDibit(dsd_opts* opts, dsd_state* state) {
+get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
     (void)opts;
     (void)state;
+    (void)out_analog_signal;
     assert(g_get_pos < g_get_len);
     return g_get_queue[g_get_pos++];
 }
@@ -82,14 +86,42 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 }
 
 void
-soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
+processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
     (void)opts;
     (void)state;
     (void)imbe_fr;
     (void)imbe7100_fr;
     assert(ambe_fr != NULL);
-    assert(g_soft_calls < (int)(sizeof(g_soft_first_bit) / sizeof(g_soft_first_bit[0])));
-    g_soft_first_bit[g_soft_calls++] = ambe_fr[0][0];
+    assert(g_mbe_calls < (int)(sizeof(g_mbe_first_bit) / sizeof(g_mbe_first_bit[0])));
+    g_mbe_first_bit[g_mbe_calls++] = ambe_fr[0][0];
+}
+
+void
+playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_play_calls[0]++;
+}
+
+void
+playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_play_calls[1]++;
+}
+
+void
+playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_play_calls[2]++;
+}
+
+void
+playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_play_calls[3]++;
 }
 
 #include "../../../src/protocol/x2tdma/x2tdma_voice.c"
@@ -227,6 +259,8 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
     reset_stubs();
     append_zeros(18 + 36);
 
@@ -234,7 +268,8 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     ctx.mutecurrentslot = 0;
     x2tdma_process_voice_frames(&opts, &state, &ctx);
     assert(state.firstframe == 0);
-    assert(g_soft_calls == 1);
+    assert(g_mbe_calls == 1);
+    assert(g_play_calls[2] == 1);
     assert(g_get_pos == 54);
 
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
@@ -243,7 +278,8 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     state.firstframe = 0;
     ctx.mutecurrentslot = 0;
     x2tdma_process_voice_frames(&opts, &state, &ctx);
-    assert(g_soft_calls == 3);
+    assert(g_mbe_calls == 3);
+    assert(g_play_calls[2] == 3);
     assert(g_get_pos == 54);
 
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
@@ -251,7 +287,8 @@ test_voice_frame_dispatch_gates_first_frame_and_mute(void) {
     append_zeros(18 + 36);
     ctx.mutecurrentslot = 1;
     x2tdma_process_voice_frames(&opts, &state, &ctx);
-    assert(g_soft_calls == 0);
+    assert(g_mbe_calls == 0);
+    assert(g_play_calls[2] == 1);
     assert(g_get_pos == 54);
 }
 
@@ -266,6 +303,8 @@ test_slot_iteration_voice_and_data_state(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 2;
     DSD_MEMSET(dibits, 0, sizeof(dibits));
     reset_stubs();
     set_slot_from_cach(dibits, 0, opts.inverted_x2tdma);
@@ -280,7 +319,8 @@ test_slot_iteration_voice_and_data_state(void) {
     assert(strcmp(state.slot0light, "[SLOT0]") == 0);
     assert(strcmp(state.slot1light, " slot1 ") == 0);
     assert(ctx.mutecurrentslot == 0);
-    assert(g_soft_calls == 3);
+    assert(g_mbe_calls == 3);
+    assert(g_play_calls[1] == 3);
     assert(g_skip_calls == 1);
     assert(g_skip_total == 54);
     assert(g_get_pos == g_get_len);
@@ -300,7 +340,8 @@ test_slot_iteration_voice_and_data_state(void) {
     assert(strcmp(state.slot0light, " slot0 ") == 0);
     assert(ctx.mutecurrentslot == 1);
     assert(ctx.msMode == 1);
-    assert(g_soft_calls == 0);
+    assert(g_mbe_calls == 0);
+    assert(g_play_calls[1] == 1);
     assert(g_skip_calls == 1);
     assert(g_skip_total == 54);
 }

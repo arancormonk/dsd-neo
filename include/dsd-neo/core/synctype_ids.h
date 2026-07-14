@@ -206,7 +206,7 @@ extern "C" {
  * @brief Convert a synctype value to a human-readable string.
  *
  * This function safely maps synctype values to descriptive strings, handling
- * both the standard range (0-43) covered by the legacy SyncTypes[] array and
+ * both the standard range (0-43) covered by the base SyncTypes[] table and
  * extended M17 types (76-77, 86-87, 98-101).
  *
  * @param synctype The sync type value to convert.

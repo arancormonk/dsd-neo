@@ -20,9 +20,15 @@
 extern "C" {
 #endif
 
-void des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
-                                int len);
-void tdea_multi_keystream_output(unsigned long long int mi, const uint8_t* key, uint8_t* output, int type, int len);
+/** @brief Generate DES-OFB keystream blocks from a packed message indicator and key. */
+void des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int nblocks);
+
+/** @brief Generate a DES-XL keystream; late_entry selects the shorter LFSR fast-forward. */
+void des_xl_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output,
+                             int late_entry);
+
+/** @brief Generate TDEA output-feedback keystream blocks from a packed message indicator. */
+void tdea_tofb_keystream_output(unsigned long long int mi, const uint8_t* key, uint8_t* output, int nblocks);
 
 #ifdef __cplusplus
 }

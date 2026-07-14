@@ -6,9 +6,12 @@
 // Smoke test: relaxed header acceptance for SAP=4 (IP-based) with CRC fail
 
 #include <assert.h>
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/unicode.h>
@@ -181,32 +184,32 @@ rc4_block_output(int drop, int keylen, int meslen, const uint8_t* key, uint8_t* 
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, dsd_aes_key_size key_size,
+                         int nblocks) {
     (void)iv;
     (void)key;
     (void)output;
-    (void)type;
+    (void)key_size;
     (void)nblocks;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-aes_ecb_decrypt_blocks(const uint8_t* input, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ecb_decrypt_blocks(const uint8_t* input, const uint8_t* key, uint8_t* output, dsd_aes_key_size key_size,
+                       int nblocks) {
     (void)input;
     (void)key;
     (void)output;
-    (void)type;
+    (void)key_size;
     (void)nblocks;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
-                           int nblocks) {
+des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int nblocks) {
     (void)mi;
     (void)key_ulli;
     (void)output;
-    (void)type;
     (void)nblocks;
 }
 
@@ -325,7 +328,7 @@ append_type2_crc16(uint8_t* block, size_t block_len) {
             bits[(i * 8U) + bit] = (uint8_t)((block[i] >> (7U - bit)) & 1U);
         }
     }
-    uint32_t crc = ComputeCrcCCITT16d(bits, (uint16_t)((block_len * 8U) - 16U));
+    uint32_t crc = dsd_crc_ccitt16_bits(bits, (block_len * 8U) - 16U);
     block[block_len - 2U] = (uint8_t)((crc >> 8U) & 0xFFU);
     block[block_len - 1U] = (uint8_t)(crc & 0xFFU);
 }

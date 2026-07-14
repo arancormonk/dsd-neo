@@ -68,7 +68,6 @@ The benchmark target includes:
 The RTL benchmark target includes:
 
 - CU8 ingest into the input ring for contiguous and wrap-around reservations.
-- The legacy two-pass rotate+widen ingest path for comparison against the combined path.
 - CS16 ingest conversion for Soapy-style signed sample input.
 - Post-demod spectrum snapshot updates used by the UI/metrics path.
 - 512-sample direct-output batch reads.

@@ -4,7 +4,7 @@
  */
 
 /*
- * P25 neighbor update spam test: stress p25_sm_on_neighbor_update with
+ * P25 neighbor update spam test: stress p25_cc_record_neighbor_frequencies with
  * many updates and assert neighbors do not become tuneable CC candidates.
  */
 
@@ -12,10 +12,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -29,43 +27,9 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
 #define setenv dsd_test_setenv
 
 // Stubs for radio control
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return true;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return true;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
 
 static int
 expect_true(const char* tag, int cond) {
@@ -83,12 +47,12 @@ main(void) {
     static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     // Set system identity so SM can label candidates; disable on-disk cache via env
     st.p2_wacn = 0xABCDE;
     st.p2_sysid = 0x123;
     setenv("DSD_NEO_CC_CACHE", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     // Timing start for rough performance guard
     double elapsed_ms = 0.0;
@@ -107,7 +71,7 @@ main(void) {
                 st.p25_cc_freq = f[k]; // sometimes match current CC to test dedup
             }
         }
-        p25_sm_on_neighbor_update(&opts, &st, f, n);
+        p25_cc_record_neighbor_frequencies(&opts, &st, f, n);
         rc |= expect_true("neighbor<=max", st.p25_nb_count >= 0 && st.p25_nb_count <= P25_NB_MAX);
     }
 
@@ -122,17 +86,17 @@ main(void) {
 #endif
 
     // Generic neighbor updates must not seed the CC hunt list. Only validated
-    // current-site candidates should be tuneable by p25_sm_next_cc_candidate().
+    // Current-site candidates should be tuneable by p25_cc_next_candidate().
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&st);
     const int count = cc ? cc->count : 0;
     rc |= expect_true("neighbor-not-candidates", count == 0);
 
     long out = 0;
-    rc |= expect_true("neighbor-next-empty", p25_sm_next_cc_candidate(&st, &out) == 0);
+    rc |= expect_true("neighbor-next-empty", p25_cc_next_candidate(&st, &out) == 0);
 
     (void)p25_cc_add_candidate(&st, 852500000L, 1);
     out = 0;
-    rc |= expect_true("validated-next-ok", p25_sm_next_cc_candidate(&st, &out) == 1);
+    rc |= expect_true("validated-next-ok", p25_cc_next_candidate(&st, &out) == 1);
     rc |= expect_true("validated-next-freq", out == 852500000L);
 
     return rc;

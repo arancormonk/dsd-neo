@@ -35,7 +35,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -46,43 +45,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-struct RtlSdrContext;
-
-/* Stubs for external hooks referenced by the frequency module */
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
 
 /* --------------------------------------------------------------------------
  * xorshift32 PRNG — simple, fast, deterministic for reproducibility.
@@ -114,9 +76,6 @@ prng_range(uint32_t lo, uint32_t hi) {
     uint32_t range = hi - lo + 1;
     return lo + (prng_next() % range);
 }
-
-/* ChannelType slots-per-carrier mapping (must match p25_frequency.c) */
-static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
 
 /* Number of iterations per property */
 #define PBT_ITERATIONS 10000
@@ -241,7 +200,7 @@ test_property_p2_tdma_formula(void) {
          * TDMA: denom = slots_per_carrier[chan_type]
          * step = chan_number / denom (integer division)
          * freq = (base_freq * 5) + (step * chan_spac * 125) */
-        int denom = slots_per_carrier[chan_type & 0xF];
+        int denom = p25_channel_type_slots_per_carrier((int)chan_type);
         int step = (int)chan_number / denom;
         long expected = ((long)base_freq * 5L) + ((long)step * (long)chan_spac * 125L);
 

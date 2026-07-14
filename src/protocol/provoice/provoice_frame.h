@@ -16,11 +16,8 @@ enum {
 typedef int (*dsd_provoice_next_dibit_fn)(void* user, int* out_dibit);
 typedef char dsd_provoice_imbe_frame[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
 
-int dsd_provoice_load_imbe_frame_pair_impl(void* user, dsd_provoice_imbe_frame frame1, dsd_provoice_imbe_frame frame2,
-                                           dsd_provoice_next_dibit_fn next_dibit);
-
-#define dsd_provoice_load_imbe_frame_pair(next_dibit, user, frame1, frame2)                                            \
-    dsd_provoice_load_imbe_frame_pair_impl((user), (frame1), (frame2), (next_dibit))
+int dsd_provoice_load_imbe_frame_pair(dsd_provoice_next_dibit_fn next_dibit, void* user_ctx,
+                                      dsd_provoice_imbe_frame frame1, dsd_provoice_imbe_frame frame2);
 
 #ifdef __cplusplus
 }

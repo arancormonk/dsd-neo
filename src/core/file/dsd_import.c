@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: ISC
 #include <ctype.h>
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -82,48 +84,6 @@ trim_ws(char* s) {
     return s + start;
 }
 
-static int
-hex_nibble_value(unsigned char c, int* out_nibble) {
-    if (!out_nibble) {
-        return 0;
-    }
-    if (c >= '0' && c <= '9') {
-        *out_nibble = (int)(c - '0');
-        return 1;
-    }
-    if (c >= 'a' && c <= 'f') {
-        *out_nibble = 10 + (int)(c - 'a');
-        return 1;
-    }
-    if (c >= 'A' && c <= 'F') {
-        *out_nibble = 10 + (int)(c - 'A');
-        return 1;
-    }
-    return 0;
-}
-
-static int
-parse_hex_digits_u64_strict(const unsigned char* token, const unsigned char* end, unsigned long long* out) {
-    unsigned long long v = 0ULL;
-    int digits = 0;
-    for (const unsigned char* p = token; p != end; p++) {
-        int nib = -1;
-        if (!hex_nibble_value(*p, &nib)) {
-            return 0;
-        }
-        if (digits >= 16) {
-            return 0;
-        }
-        v = (v << 4) | (unsigned long long)nib;
-        digits++;
-    }
-    if (digits == 0) {
-        return 0;
-    }
-    *out = v;
-    return 1;
-}
-
 static const char*
 skip_ascii_space(const char* token) {
     while (*token != '\0' && is_ascii_space((unsigned char)*token)) {
@@ -157,7 +117,12 @@ parse_hex_u64_strict(const char* token, unsigned long long* out) {
         return 0;
     }
 
-    return parse_hex_digits_u64_strict((const unsigned char*)token, end, out);
+    uint64_t parsed = 0U;
+    if (dsd_parse_hex_u64_n(token, (size_t)(end - (const unsigned char*)token), &parsed) != 0) {
+        return 0;
+    }
+    *out = (unsigned long long)parsed;
+    return 1;
 }
 
 static int
@@ -214,23 +179,6 @@ parse_dec_long_strict(const char* token, long int* out) {
     }
     *out = v;
     return 1;
-}
-
-static uint16_t
-compute_crc_ccitt16_bits(const uint8_t* buf, uint32_t len) {
-    uint16_t crc = 0x0000;
-    const uint16_t polynomial = 0x1021;
-    if (!buf) {
-        return 0;
-    }
-    for (uint32_t i = 0; i < len; i++) {
-        if ((((crc >> 15) & 1u) ^ (buf[i] & 1u)) != 0u) {
-            crc = (uint16_t)((crc << 1) ^ polynomial);
-        } else {
-            crc = (uint16_t)(crc << 1);
-        }
-    }
-    return (uint16_t)(crc ^ 0xFFFFu);
 }
 
 static size_t
@@ -499,8 +447,8 @@ group_apply_optional_bool_field(const char* filename, unsigned int row_count, co
         return;
     }
     if (br == GROUP_PARSE_VALUE_INVALID) {
-        LOG_WARNING("Group file '%s' row %u has invalid %s value '%s'; using default.\n", filename, row_count, label,
-                    token);
+        LOG_WARN("WARNING: Group file '%s' row %u has invalid %s value '%s'; using default.\n", filename, row_count,
+                 label, token);
     }
 }
 
@@ -516,8 +464,8 @@ group_apply_priority_field(const group_policy_header* header, const char* filena
         if (pr == GROUP_PARSE_VALUE_OK) {
             entry->priority = parsed_priority;
         } else if (pr == GROUP_PARSE_VALUE_INVALID) {
-            LOG_WARNING("Group file '%s' row %u has invalid priority '%s'; defaulting to 0.\n", filename, row_count,
-                        fields[3]);
+            LOG_WARN("WARNING: Group file '%s' row %u has invalid priority '%s'; defaulting to 0.\n", filename,
+                     row_count, fields[3]);
             entry->priority = 0;
         }
     }
@@ -535,8 +483,8 @@ group_apply_preempt_field(const group_policy_header* header, const char* filenam
         if (br == GROUP_PARSE_VALUE_OK) {
             entry->preempt = parsed ? 1u : 0u;
         } else if (br == GROUP_PARSE_VALUE_INVALID) {
-            LOG_WARNING("Group file '%s' row %u has invalid preempt value '%s'; defaulting to false.\n", filename,
-                        row_count, fields[4]);
+            LOG_WARN("WARNING: Group file '%s' row %u has invalid preempt value '%s'; defaulting to false.\n", filename,
+                     row_count, fields[4]);
             entry->preempt = 0;
         }
     }
@@ -568,8 +516,8 @@ group_enforce_media_constraints(const char* filename, unsigned int row_count, ds
     }
     if (mode_blocking) {
         if ((has_audio && entry->audio) || (has_record && entry->record) || (has_stream && entry->stream)) {
-            LOG_WARNING("Group file '%s' row %u has blocking mode with enabled media flags; forcing media off.\n",
-                        filename, row_count);
+            LOG_WARN("WARNING: Group file '%s' row %u has blocking mode with enabled media flags; forcing media off.\n",
+                     filename, row_count);
         }
         entry->audio = 0u;
         entry->record = 0u;
@@ -577,8 +525,8 @@ group_enforce_media_constraints(const char* filename, unsigned int row_count, ds
         return;
     }
     if (entry->audio == 0u && ((has_record && entry->record) || (has_stream && entry->stream))) {
-        LOG_WARNING("Group file '%s' row %u sets audio off with record/stream on; forcing record/stream off.\n",
-                    filename, row_count);
+        LOG_WARN("WARNING: Group file '%s' row %u sets audio off with record/stream on; forcing record/stream off.\n",
+                 filename, row_count);
         entry->record = 0u;
         entry->stream = 0u;
     }
@@ -617,9 +565,9 @@ group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_ra
     }
     if (rc == 1) {
         if (!is_range) {
-            LOG_WARNING("Group file '%s' row %u has invalid exact entry and was skipped.\n", filename, row_count);
+            LOG_WARN("WARNING: Group file '%s' row %u has invalid exact entry and was skipped.\n", filename, row_count);
         } else {
-            LOG_WARNING("Group file '%s' row %u has invalid range and was skipped.\n", filename, row_count);
+            LOG_WARN("WARNING: Group file '%s' row %u has invalid range and was skipped.\n", filename, row_count);
         }
     }
 }
@@ -663,22 +611,23 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
             header = group_parse_policy_header(header_copy);
             if (header.policy_active && header.invalid_order && !warned_header_order) {
                 warned_header_order = 1;
-                LOG_WARNING(
-                    "Group file '%s' header optional policy columns are out of order; ignoring mismatched and later "
-                    "optional columns.\n",
-                    filename);
+                LOG_WARN("WARNING: Group file '%s' header optional policy columns are out of order; ignoring "
+                         "mismatched and later "
+                         "optional columns.\n",
+                         filename);
             }
             continue; //don't want labels
         }
 
         field_count = group_split_csv_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
         if (field_count < 3) {
-            LOG_WARNING("Group file '%s' row %u missing required fields; skipping.\n", filename, row_count);
+            LOG_WARN("WARNING: Group file '%s' row %u missing required fields; skipping.\n", filename, row_count);
             continue;
         }
 
         if (!group_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
-            LOG_WARNING("Group file '%s' row %u has invalid id '%s'; skipping.\n", filename, row_count, fields[0]);
+            LOG_WARN("WARNING: Group file '%s' row %u has invalid id '%s'; skipping.\n", filename, row_count,
+                     fields[0]);
             continue;
         }
 
@@ -690,8 +639,8 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
     }
 
     if (dropped_policy_alloc_rows > 0) {
-        LOG_WARNING("Group file '%s' skipped %zu rows due to policy allocation failure.\n", filename,
-                    dropped_policy_alloc_rows);
+        LOG_WARN("WARNING: Group file '%s' skipped %zu rows due to policy allocation failure.\n", filename,
+                 dropped_policy_alloc_rows);
     }
 
     fclose(fp);
@@ -704,64 +653,6 @@ csvGroupImport(const dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     return csvGroupImportPath(opts->group_in_file, state);
-}
-
-//LCN import for EDACS, migrated to channel map (channel map does both)
-int
-csvLCNImport(const dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state || opts->lcn_in_file[0] == '\0') {
-        return -1;
-    }
-
-    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
-    char buffer[BSIZE];
-    FILE* fp = csv_open_user_read_file("lcn file", opts->lcn_in_file, filename, sizeof filename);
-    if (fp == NULL) {
-        return -1;
-    }
-    int row_count = 0;
-    int warned_capacity = 0;
-    const int lcn_capacity = (int)(sizeof(state->trunk_lcn_freq) / sizeof(state->trunk_lcn_freq[0]));
-
-    while (fgets(buffer, BSIZE, fp)) {
-        row_count++;
-        if (row_count == 1) {
-            continue; //don't want labels
-        }
-        char* saveptr = NULL;
-        const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
-        while (field) {
-            int lcn_index = state->lcn_freq_count;
-            if (lcn_index < 0) {
-                lcn_index = 0;
-                state->lcn_freq_count = 0;
-            }
-            if (lcn_index >= lcn_capacity) {
-                if (!warned_capacity) {
-                    LOG_WARNING("LCN file '%s' has more than %d frequencies; ignoring extra fields.\n", filename,
-                                lcn_capacity);
-                    warned_capacity = 1;
-                }
-                field = dsd_strtok_r(NULL, ",", &saveptr);
-                continue;
-            }
-
-            long int freq = 0;
-            if (parse_dec_long_strict(field, &freq)) {
-                state->trunk_lcn_freq[lcn_index] = freq;
-            } else {
-                state->trunk_lcn_freq[lcn_index] = 0;
-            }
-            state->lcn_freq_count++; //keep tally of number of Frequencies imported
-            LOG_INFO("LCN [%d] [%ld]", lcn_index + 1, state->trunk_lcn_freq[lcn_index]);
-            LOG_INFO("\n");
-
-            field = dsd_strtok_r(NULL, ",", &saveptr);
-        }
-        LOG_INFO("LCN Count %d\n", state->lcn_freq_count);
-    }
-    fclose(fp);
-    return 0;
 }
 
 static void
@@ -820,7 +711,7 @@ csv_key_import_dec_normalize_keynumber(const char* field) {
     for (int i = 0; i < 24; i++) {
         hash_bits[i] = (uint8_t)(((keynumber << i) & 0x800000ULL) >> 23); // load into array for CRC16
     }
-    const uint16_t hash = compute_crc_ccitt16_bits(hash_bits, 24);
+    const uint16_t hash = dsd_crc_ccitt16_bits(hash_bits, 24U);
     LOG_INFO("Hashed ");
     return hash & 0xFFFFULL; // make sure its no larger than 16-bits
 }
@@ -1021,7 +912,8 @@ vertex_ks_find_or_add_index(vertex_map_tmp_t* tmp, unsigned long long key, const
     for (int i = 0; i < tmp->count; i++) {
         if (tmp->key[i] == key) {
             *out_idx = i;
-            LOG_WARNING("Vertex KS CSV '%s' line %d: duplicate key, replacing previous mapping.\n", path, row_count);
+            LOG_WARN("WARNING: Vertex KS CSV '%s' line %d: duplicate key, replacing previous mapping.\n", path,
+                     row_count);
             return 0;
         }
     }
@@ -1109,7 +1001,7 @@ vertex_ks_apply_to_state(dsd_state* state, const vertex_map_tmp_t* tmp, const ch
     state->vertex_ks_counter[1] = 0;
     state->vertex_ks_warned[0] = 0;
     state->vertex_ks_warned[1] = 0;
-    LOG_NOTICE("Loaded %d Vertex key->keystream mappings from '%s'.\n", tmp->count, path);
+    LOG_INFO("NOTICE: Loaded %d Vertex key->keystream mappings from '%s'.\n", tmp->count, path);
 }
 
 //Hex Variant of Key Import

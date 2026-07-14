@@ -8,19 +8,21 @@
  * LWVMOBILE
  * 2023-07 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
+#include <dsd-neo/core/bit_packing.h>
+
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
-#include <dsd-neo/core/mbe_api.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/colors.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,26 +30,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "ysf_frame.h"
-
-//half-rate (from NXDN)
-static const int YnW[36] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-                            0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2};
-
-static const int YnX[36] = {23, 10, 22, 9, 21, 8,  20, 7, 19, 6, 18, 5, 17, 4, 16, 3, 15, 2,
-                            14, 1,  13, 0, 12, 10, 11, 9, 10, 8, 9,  7, 8,  6, 7,  5, 6,  4};
-
-static const int YnY[36] = {0, 2, 0, 2, 0, 2, 0, 2, 0, 3, 0, 3, 1, 3, 1, 3, 1, 3,
-                            1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3};
-
-static const int YnZ[36] = {5,  3, 4,  2, 3,  1, 2,  0, 1,  13, 0,  12, 22, 11, 21, 10, 20, 9,
-                            19, 8, 18, 7, 17, 6, 16, 5, 15, 4,  14, 3,  13, 2,  12, 1,  11, 0};
-
-//M = 26, depth of 4; -- from DSDcc
-static const int vd2Interleave[104] = {
-    0,  26, 52, 78, 1,  27, 53, 79, 2,  28, 54, 80, 3,  29,  55, 81, 4,  30,  56, 82, 5,  31,  57, 83, 6,  32,
-    58, 84, 7,  33, 59, 85, 8,  34, 60, 86, 9,  35, 61, 87,  10, 36, 62, 88,  11, 37, 63, 89,  12, 38, 64, 90,
-    13, 39, 65, 91, 14, 40, 66, 92, 15, 41, 67, 93, 16, 42,  68, 94, 17, 43,  69, 95, 18, 44,  70, 96, 19, 45,
-    71, 97, 20, 46, 72, 98, 21, 47, 73, 99, 22, 48, 74, 100, 23, 49, 75, 101, 24, 50, 76, 102, 25, 51, 77, 103};
+#include "ysf_internal.h"
 
 static void
 ysf_dch_decode_csd1(dsd_state* state, const char dch_bytes[20], uint8_t cm) {
@@ -127,8 +110,8 @@ ysf_dch_decode_text(dsd_state* state, const char dch_bytes[20], uint8_t fn, uint
     }
 }
 
-static void
-ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, const uint8_t input[]) {
+void
+ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, const uint8_t input[160]) {
     //TODO: Per Call WAV files using these strings
     int i;
     char dch_bytes[20];
@@ -137,7 +120,7 @@ ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
     UNUSED(bt);
 
     for (i = 0; i < 20; i++) {
-        dch_bytes[i] = (char)ConvertBitIntoBytes(&input[(size_t)i * 8u], 8);
+        dch_bytes[i] = (char)convert_bits_into_output(&input[(size_t)i * 8u], 8);
     }
 
     switch (bn) { //using bn here so we can use the frame number for sorting the text messages found in here
@@ -185,15 +168,15 @@ ysf_dch_decode2_remarks(const char* label1, char* dst1, const char* label2, char
     ysf_store_text_field(label2, dch_bytes + 5, 5, dst2, " ");
 }
 
-static void
-ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, const uint8_t input[]) {
+void
+ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, const uint8_t input[80]) {
     char dch_bytes[20];
     DSD_MEMSET(dch_bytes, 0, sizeof(dch_bytes));
 
     UNUSED3(bn, bt, ft);
 
     for (int i = 0; i < 10; i++) {
-        dch_bytes[i] = (char)ConvertBitIntoBytes(&input[(size_t)i * 8u], 8);
+        dch_bytes[i] = (char)convert_bits_into_output(&input[(size_t)i * 8u], 8);
     }
 
     switch (fn) {
@@ -207,12 +190,12 @@ ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft
     }
 }
 
-static inline uint16_t
-crc16ysf(const uint8_t buf[], int len) {
+uint16_t
+ysf_crc16(const uint8_t bits[], int len) {
     uint32_t poly = (1 << 12) + (1 << 5) + (1 << 0);
     uint32_t crc = 0;
     for (int i = 0; i < len; i++) {
-        uint8_t bit = buf[i] & 1;
+        uint8_t bit = bits[i] & 1;
         crc = ((crc << 1) | bit) & 0x1ffff;
         if (crc & 0x10000) {
             crc = (crc & 0xffff) ^ poly;
@@ -222,29 +205,10 @@ crc16ysf(const uint8_t buf[], int len) {
     return crc & 0xffff;
 }
 
-#ifdef DSD_NEO_TEST_HOOKS
-void
-dsd_neo_ysf_test_decode_dch(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
-                            const uint8_t input[160]) {
-    ysf_dch_decode(state, bn, bt, fn, ft, cm, input);
-}
-
-void
-dsd_neo_ysf_test_decode_dch2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
-                             const uint8_t input[80]) {
-    ysf_dch_decode2(state, bn, bt, fn, ft, cm, input);
-}
-
-uint16_t
-dsd_neo_ysf_test_crc16(const uint8_t* bits, int len) {
-    return crc16ysf(bits, len);
-}
-#endif
-
 //modified version of nxdn_deperm_facch1 -- this one for V/D Type 2 CC DCH (100 dibit version)
-static int
+int
 ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
-              uint8_t input[]) {
+              uint8_t input[100]) {
 
     int i, j, err;
     uint8_t trellis_buf[100];
@@ -264,7 +228,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
 
     uint32_t v_error = dsd_ysf_soft_viterbi_decode(buf, 100U, 13U, 8U, 96U, trellis_buf, m_data);
 
-    uint16_t crc = crc16ysf(trellis_buf, 96);
+    uint16_t crc = ysf_crc16(trellis_buf, 96);
     if (crc != 0) {
         err = -2; // crc failure
     }
@@ -274,7 +238,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
     //reload after de-whitening
     DSD_MEMSET(m_data, 0, sizeof(m_data));
     for (i = 0; i < 12; i++) {
-        m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[(size_t)i * 8u], 8);
+        m_data[i] = (uint8_t)convert_bits_into_output(&trellis_buf[(size_t)i * 8u], 8);
     }
 
     //decode the callsign, etc, found in the DCH when no errors
@@ -298,18 +262,10 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
     return err;
 }
 
-#ifdef DSD_NEO_TEST_HOOKS
-int
-dsd_neo_ysf_test_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
-                           uint8_t cm, uint8_t input[100]) {
-    return ysf_conv_dch2(opts, state, bn, bt, fn, ft, cm, input);
-}
-#endif
-
 //modified version of nxdn_deperm_facch1 -- this one for Full Rate, Type 1 CC, Headers and Terminators DCH (180 dibit version)
-static int
+int
 ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
-             uint8_t input[]) {
+             uint8_t input[180]) {
     int i, j, err;
     uint8_t trellis_buf[190];
     uint8_t m_data[100];
@@ -328,7 +284,7 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
 
     uint32_t v_error = dsd_ysf_soft_viterbi_decode(buf, 180U, 23U, 8U, 176U, trellis_buf, m_data);
 
-    uint16_t crc = crc16ysf(trellis_buf, 176);
+    uint16_t crc = ysf_crc16(trellis_buf, 176);
     if (crc != 0) {
         err = -2; // crc failure
     }
@@ -338,7 +294,7 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
     //reload after de-whitening
     DSD_MEMSET(m_data, 0, sizeof(m_data));
     for (i = 0; i < 22; i++) {
-        m_data[i] = (uint8_t)ConvertBitIntoBytes(&trellis_buf[(size_t)i * 8u], 8);
+        m_data[i] = (uint8_t)convert_bits_into_output(&trellis_buf[(size_t)i * 8u], 8);
     }
 
     //decode the callsign, etc, found in the DCH when no errors
@@ -362,16 +318,8 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
     return err;
 }
 
-#ifdef DSD_NEO_TEST_HOOKS
-int
-dsd_neo_ysf_test_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
-                          uint8_t cm, uint8_t input[180]) {
-    return ysf_conv_dch(opts, state, bn, bt, fn, ft, cm, input);
-}
-#endif
-
 //modified version of nxdn_deperm_facch1
-static int
+int
 ysf_conv_fich(const uint8_t input[100], uint8_t dest[32], uint32_t* v_error_out) {
     if (input == NULL || dest == NULL) {
         return -1;
@@ -429,7 +377,7 @@ ysf_conv_fich(const uint8_t input[100], uint8_t dest[32], uint32_t* v_error_out)
         fich_bits[(12 * 3) + i] = trellis_buf[i + 72];
     }
 
-    uint16_t crc = crc16ysf(fich_bits, 48);
+    uint16_t crc = ysf_crc16(fich_bits, 48);
     if (crc != 0) {
         err = -2; // crc failure
     }
@@ -437,20 +385,6 @@ ysf_conv_fich(const uint8_t input[100], uint8_t dest[32], uint32_t* v_error_out)
     DSD_MEMCPY(dest, fich_bits, 32); //copy minus the crc16
     return err;
 }
-
-#ifdef DSD_NEO_TEST_HOOKS
-int
-dsd_neo_ysf_test_conv_fich(const uint8_t input[100], uint8_t dest[32], uint32_t* v_error_out) {
-    if (input == NULL) {
-        return -1;
-    }
-    uint8_t local_input[100];
-    for (size_t i = 0; i < sizeof(local_input); i++) {
-        local_input[i] = (uint8_t)(input[i] & 0x03U);
-    }
-    return ysf_conv_fich(local_input, dest, v_error_out);
-}
-#endif
 
 static void
 ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop) {
@@ -462,12 +396,11 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
     state->synctype = DSD_SYNC_NXDN_POS;
 
     for (; start < stop; start++) {
-        const int *w = YnW, *x = YnX, *y = YnY, *z = YnZ;
-
         //debug
         // DSD_FPRINTF(stderr, " DBUF = ");
 
-        for (i = 0; i < 36; i++) {
+        for (i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+            const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
 
             //debug
             // DSD_FPRINTF(stderr, "%d", dbuf[(start*36)+i]);
@@ -476,13 +409,8 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
             uint8_t b2 = dbuf[(start * 36) + i] & 1;
 
             //should all be loaded back to back
-            ambe_fr[*w][*x] = (char)b1;
-            ambe_fr[*y][*z] = (char)b2;
-
-            w++;
-            x++;
-            y++;
-            z++;
+            ambe_fr[map->high_row][map->high_col] = (char)b1;
+            ambe_fr[map->low_row][map->low_col] = (char)b2;
         }
 
         processMbeFrame(opts, state, NULL, ambe_fr, NULL);
@@ -493,29 +421,14 @@ ysf_ehr(dsd_opts* opts, dsd_state* state, uint8_t dbuf[180], int start, int stop
             if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
                 writeSynthesizedVoice(opts, state);
             }
-
-            if (opts->pulse_digi_out_channels == 1) {
-                playSynthesizedVoiceMS(opts, state);
-            }
-
-            if (opts->pulse_digi_out_channels == 2) {
-                playSynthesizedVoiceSS(opts, state);
-            }
         }
 
         if (opts->floating_point == 1) //float audio is really quiet now (look into it)
         {
 
             DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-
-            if (opts->pulse_digi_out_channels == 1) {
-                playSynthesizedVoiceFM(opts, state);
-            }
-
-            if (opts->pulse_digi_out_channels == 2) {
-                playSynthesizedVoiceFS(opts, state);
-            }
         }
+        dsd_play_synthesized_voice(opts, state);
     }
 
     if (opts->payload == 1) {
@@ -553,25 +466,10 @@ ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool run_process_audi
             writeSynthesizedVoice(opts, state);
         }
 
-        if (opts->pulse_digi_out_channels == 1) {
-            playSynthesizedVoiceMS(opts, state);
-        }
-
-        if (opts->pulse_digi_out_channels == 2) {
-            playSynthesizedVoiceSS(opts, state);
-        }
-        return;
+    } else {
+        DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
     }
-
-    DSD_MEMCPY(state->f_l, state->audio_out_temp_buf, sizeof(state->f_l));
-
-    if (opts->pulse_digi_out_channels == 1) {
-        playSynthesizedVoiceFM(opts, state);
-    }
-
-    if (opts->pulse_digi_out_channels == 2) {
-        playSynthesizedVoiceFS(opts, state);
-    }
+    dsd_play_synthesized_voice(opts, state);
 }
 
 static void
@@ -594,22 +492,22 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* l
     info->v_error = UINT32_MAX;
 
     for (int i = 0; i < 100; i++) {
-        fichrawdibits[i] = getDibit(opts, state);
+        fichrawdibits[i] = get_dibit_and_analog_signal(opts, state, NULL);
     }
 
     info->err = ysf_conv_fich(fichrawdibits, info->fich_decode, &info->v_error);
     if (info->err == 0) {
-        info->fi = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[0], 2);
-        info->cm = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[4], 2);
-        info->bn = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[6], 2);
-        info->bt = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[8], 2);
-        info->fn = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[10], 3);
-        info->ft = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[13], 3);
-        info->mr = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[18], 3);
+        info->fi = (uint8_t)convert_bits_into_output(&info->fich_decode[0], 2);
+        info->cm = (uint8_t)convert_bits_into_output(&info->fich_decode[4], 2);
+        info->bn = (uint8_t)convert_bits_into_output(&info->fich_decode[6], 2);
+        info->bt = (uint8_t)convert_bits_into_output(&info->fich_decode[8], 2);
+        info->fn = (uint8_t)convert_bits_into_output(&info->fich_decode[10], 3);
+        info->ft = (uint8_t)convert_bits_into_output(&info->fich_decode[13], 3);
+        info->mr = (uint8_t)convert_bits_into_output(&info->fich_decode[18], 3);
         info->vp = info->fich_decode[21];
-        info->dt = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[22], 2);
+        info->dt = (uint8_t)convert_bits_into_output(&info->fich_decode[22], 2);
         info->st = info->fich_decode[24];
-        info->sc = (uint8_t)ConvertBitIntoBytes(&info->fich_decode[25], 7);
+        info->sc = (uint8_t)convert_bits_into_output(&info->fich_decode[25], 7);
 
         state->ysf_dt = info->dt;
         state->ysf_fi = info->fi;
@@ -714,7 +612,7 @@ ysf_print_fich_payload(const dsd_opts* opts, const ysf_fich_info* info) {
         }
         DSD_FPRINTF(stderr, " FICH: ");
         for (int i = 0; i < 4; i++) {
-            DSD_FPRINTF(stderr, "[%02X]", (uint8_t)ConvertBitIntoBytes(&info->fich_decode[(size_t)i * 8], 8));
+            DSD_FPRINTF(stderr, "[%02X]", (uint8_t)convert_bits_into_output(&info->fich_decode[(size_t)i * 8], 8));
         }
     }
 }
@@ -739,10 +637,10 @@ ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
 
     for (int i = 0; i < 5; i++) {
         for (int j = 0; j < 36; j++) {
-            dbuf[(i * 36) + j] = getDibit(opts, state);
+            dbuf[(i * 36) + j] = get_dibit_and_analog_signal(opts, state, NULL);
         }
         for (int j = 0; j < 36; j++) {
-            vbuf[(i * 36) + j] = getDibit(opts, state);
+            vbuf[(i * 36) + j] = get_dibit_and_analog_signal(opts, state, NULL);
         }
     }
 
@@ -754,18 +652,18 @@ static void
 ysf_read_type2_vech_bits(dsd_opts* opts, dsd_state* state, uint8_t vech_bits[104]) {
     int k = 0;
     for (int j = 0; j < 52; j++) {
-        int dibit = getDibit(opts, state);
+        int dibit = get_dibit_and_analog_signal(opts, state, NULL);
         uint8_t b1 = (uint8_t)((dibit >> 1) & 1);
         uint8_t b2 = (uint8_t)(dibit & 1);
-        uint8_t msb = (uint8_t)vd2Interleave[k++];
-        uint8_t lsb = (uint8_t)vd2Interleave[k++];
+        uint8_t msb = dsd_ysf_vd2_interleave_index((size_t)k++);
+        uint8_t lsb = dsd_ysf_vd2_interleave_index((size_t)k++);
 
         vech_bits[msb] = b1 ^ dsd_ysf_pn95_bit(msb);
         vech_bits[lsb] = b2 ^ dsd_ysf_pn95_bit(lsb);
     }
 }
 
-static void
+void
 ysf_build_type2_ambe(const uint8_t vech_bits[104], uint8_t temp[512], char ambe_d[49]) {
     static const uint8_t majority[8] = {0, 0, 0, 1, 0, 1, 1, 1};
     int l = 0;
@@ -787,13 +685,6 @@ ysf_build_type2_ambe(const uint8_t vech_bits[104], uint8_t temp[512], char ambe_
     }
 }
 
-#ifdef DSD_NEO_TEST_HOOKS
-void
-dsd_neo_ysf_test_build_type2_ambe(const uint8_t vech_bits[104], uint8_t temp[512], char ambe_d[49]) {
-    ysf_build_type2_ambe(vech_bits, temp, ambe_d);
-}
-#endif
-
 static void
 ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
     uint8_t dbuf[190];
@@ -805,7 +696,7 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
     DSD_MEMSET(dbuf, 0, sizeof(dbuf));
     for (int i = 0; i < 5; i++) {
         for (int j = 0; j < 20; j++) {
-            dbuf[d++] = getDibit(opts, state);
+            dbuf[d++] = get_dibit_and_analog_signal(opts, state, NULL);
         }
 
         DSD_MEMSET(vech_bits, 0, sizeof(vech_bits));
@@ -818,9 +709,22 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
         state->errs2 = vech_bits[103];
         state->debug_audio_errors += state->errs2;
 
-        (void)dsd_mbe_process_ambe2450_dataf(state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
-                                             sizeof(state->err_str), ambe_d, state->cur_mp, state->prev_mp,
-                                             state->prev_mp_enhanced, NULL);
+        mbe_process_result result;
+        mbe_initProcessResult(&result);
+        result.total_errors = state->errs2;
+        result.protected_errors = result.total_errors;
+        int ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, &result, ambe_d, state->cur_mp, state->prev_mp,
+                                           state->prev_mp_enhanced);
+        if (ret < 0) {
+            mbe_synthesizeSilencef(state->audio_out_temp_buf);
+            state->errs = 0;
+            state->errs2 = 0;
+            state->err_str[0] = '\0';
+        } else {
+            state->errs = ((result.flags & MBE_PROCESS_FLAG_C0_VALID) != 0u) ? result.c0_errors : result.total_errors;
+            state->errs2 = result.total_errors;
+            mbe_formatProcessResult(state->err_str, sizeof(state->err_str), &result);
+        }
 
         if (dsd_frame_detail_enabled(opts)) {
             PrintAMBEData(opts, state, ambe_d);
@@ -842,7 +746,7 @@ ysf_collect_full_rate_csd3_dch(dsd_opts* opts, dsd_state* state, uint8_t dbuf[19
     for (int bank = 0; bank < 6; bank++) {
         for (int j = 0; j < 36; j++) {
             if (bank != 5) {
-                dbuf[(bank * 36) + j] = getDibit(opts, state);
+                dbuf[(bank * 36) + j] = get_dibit_and_analog_signal(opts, state, NULL);
             } else {
                 skipDibit(opts, state, 1);
             }
@@ -853,7 +757,7 @@ ysf_collect_full_rate_csd3_dch(dsd_opts* opts, dsd_state* state, uint8_t dbuf[19
 static void
 ysf_read_full_rate_imbe_raw(dsd_opts* opts, dsd_state* state, uint8_t imbe_raw[144]) {
     for (int j = 0; j < 72; j++) {
-        int dibit = getDibit(opts, state);
+        int dibit = get_dibit_and_analog_signal(opts, state, NULL);
         imbe_raw[(j * 2) + 0] = (uint8_t)((dibit >> 1) & 1);
         imbe_raw[(j * 2) + 1] = (uint8_t)(dibit & 1);
     }
@@ -907,7 +811,7 @@ ysf_handle_full_rate_data(dsd_opts* opts, dsd_state* state, const ysf_fich_info*
 
     for (int i = 0; i < 10; i++) {
         for (int j = 0; j < 36; j++) {
-            dbuf_fr[i % 2][((i / 2) * 36) + j] = getDibit(opts, state);
+            dbuf_fr[i % 2][((i / 2) * 36) + j] = get_dibit_and_analog_signal(opts, state, NULL);
         }
     }
 

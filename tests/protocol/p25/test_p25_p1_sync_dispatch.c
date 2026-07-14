@@ -3,9 +3,9 @@
  * Focused checks for P25 Phase 1 sync constants and dispatch routing.
  */
 
+#include <mbelib-neo/mbelib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "mbelib.h"
 
 #include <assert.h>
 #include <dsd-neo/core/dibit.h>
@@ -27,7 +27,7 @@
 int dsd_dispatch_matches_p25p1(int synctype);
 void dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
 
-static char g_test_duid[3] = "03";
+static uint8_t g_test_duid = 0x3U;
 static int g_check_result = NID_OK;
 static int g_new_nac = 0x293;
 static int g_error_count;
@@ -40,7 +40,7 @@ static int g_status_classify_calls;
 
 static void
 reset_stub_state(void) {
-    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "03");
+    g_test_duid = 0x3U;
     g_check_result = NID_OK;
     g_new_nac = 0x293;
     g_error_count = 0;
@@ -64,36 +64,16 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     return 0;
 }
 
-int
-getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
-    (void)opts;
-    (void)state;
-    if (out_reliability != NULL) {
-        *out_reliability = 255;
-    }
-    return 0;
-}
-
-int
-check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, int observed_nac, int* new_nac,
-                                 char* new_duid, unsigned char parity, uint8_t parity_reliab, int* error_count) {
+struct p25p1_nid_result
+p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observed_nac, unsigned char parity,
+                 uint8_t parity_reliab) {
     (void)bch_code;
     (void)reliab63;
     (void)parity;
     (void)parity_reliab;
     g_last_observed_nac = observed_nac;
-    if (new_nac != NULL) {
-        *new_nac = g_new_nac;
-    }
-    if (new_duid != NULL) {
-        new_duid[0] = g_test_duid[0];
-        new_duid[1] = g_test_duid[1];
-        new_duid[2] = '\0';
-    }
-    if (error_count != NULL) {
-        *error_count = g_error_count;
-    }
-    return g_check_result;
+    struct p25p1_nid_result result = {(enum NidResult)g_check_result, g_new_nac, g_test_duid, g_error_count};
+    return result;
 }
 
 void
@@ -149,9 +129,8 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 }
 
 void
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     (void)state;
-    (void)opts;
     ++g_status_classify_calls;
 }
 
@@ -229,7 +208,7 @@ test_simple_tdu_dispatch_defaults(void) {
     reset_stub_state();
 
     state.synctype = DSD_SYNC_P25P1_POS;
-    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "03");
+    g_test_duid = 0x3U;
     dsd_dispatch_handle_p25p1(&opts, &state);
 
     assert(state.nac == 0x293);
@@ -249,7 +228,7 @@ seed_stale_data_call_display(dsd_state* state) {
 }
 
 static void
-expect_stale_data_call_display_cleared(const char* duid, unsigned int expected_burst, const char* expected_subtype) {
+expect_stale_data_call_display_cleared(uint8_t duid, unsigned int expected_burst, const char* expected_subtype) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -259,7 +238,7 @@ expect_stale_data_call_display_cleared(const char* duid, unsigned int expected_b
     state.synctype = DSD_SYNC_P25P1_POS;
     seed_stale_data_call_display(&state);
 
-    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "%s", duid);
+    g_test_duid = duid;
     dsd_dispatch_handle_p25p1(&opts, &state);
 
     assert(state.dmrburstL == expected_burst);
@@ -271,13 +250,13 @@ expect_stale_data_call_display_cleared(const char* duid, unsigned int expected_b
 static void
 test_p25p1_dispatch_clears_stale_data_call_display(void) {
     static const struct {
-        const char* duid;
+        uint8_t duid;
         unsigned int expected_burst;
         const char* expected_subtype;
     } cases[] = {
-        {"00", 25, " HDU          "}, {"11", 26, " LDU1         "}, {"22", 27, " LDU2         "},
-        {"33", 28, " TDULC        "}, {"03", 28, " TDU          "}, {"13", 29, " TSBK         "},
-        {"30", 29, " MPDU         "}, {"44", 0, "              "},
+        {0x0U, 25, " HDU          "}, {0x5U, 26, " LDU1         "}, {0xAU, 27, " LDU2         "},
+        {0xFU, 28, " TDULC        "}, {0x3U, 28, " TDU          "}, {0x7U, 29, " TSBK         "},
+        {0xCU, 29, " MPDU         "}, {0xFFU, 0, "              "},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -323,7 +302,7 @@ test_p25p1_nid_correction_and_failure_state(void) {
     g_check_result = NID_PARITY_OVERRIDE;
     g_error_count = 3;
     g_new_nac = 0x321;
-    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "03");
+    g_test_duid = 0x3U;
 
     dsd_dispatch_handle_p25p1(&opts, &state);
 
@@ -338,7 +317,7 @@ test_p25p1_nid_correction_and_failure_state(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_stub_state();
     g_check_result = NID_DECODE_FAIL;
-    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "11");
+    g_test_duid = 0x5U;
 
     dsd_dispatch_handle_p25p1(&opts, &state);
 
@@ -347,6 +326,58 @@ test_p25p1_nid_correction_and_failure_state(void) {
     assert(state.lastp25type == 0);
     assert(strcmp(state.fsubtype, "              ") == 0);
     assert(g_status_classify_calls == 1);
+}
+
+static void
+test_p25p1_nac_update_guards(void) {
+    static const int invalid_nacs[] = {0, 0xFFF};
+
+    for (size_t i = 0; i < sizeof(invalid_nacs) / sizeof(invalid_nacs[0]); i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_stub_state();
+
+        state.synctype = DSD_SYNC_P25P1_POS;
+        state.nac = 0x2AA;
+        state.p2_cc = 0x2AAULL;
+        g_new_nac = invalid_nacs[i];
+        g_error_count = 2;
+        g_test_duid = 0x0U;
+
+        dsd_dispatch_handle_p25p1(&opts, &state);
+
+        assert(g_last_observed_nac == 0x2AA);
+        assert(state.nac == 0x2AA);
+        assert(state.p2_cc == 0x2AAULL);
+        assert(state.nid_corrections_total == 2U);
+        assert(state.debug_header_errors == 1U);
+        assert(state.nid_failures_total == 0U);
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.nac = 0x234;
+    state.p2_cc = 0x123ULL;
+    state.p2_hardset = 1;
+    g_new_nac = 0x321;
+    g_error_count = 1;
+    g_test_duid = 0x0U;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_last_observed_nac == 0x123);
+    assert(state.nac == 0x321);
+    assert(state.p2_cc == 0x123ULL);
+    assert(state.nid_corrections_total == 1U);
+    assert(state.debug_header_errors == 1U);
+    assert(state.nid_failures_total == 0U);
 }
 
 static void
@@ -359,7 +390,7 @@ test_p25p1_mbe_output_and_resume_side_effects(void) {
 
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
     opts.mbe_out_f = (FILE*)0x1;
-    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "00");
+    g_test_duid = 0x0U;
 
     dsd_dispatch_handle_p25p1(&opts, &state);
 
@@ -375,7 +406,7 @@ test_p25p1_mbe_output_and_resume_side_effects(void) {
     opts.mbe_out_f = (FILE*)0x1;
     opts.mbe_out_fR = (FILE*)0x2;
     opts.resume = 1;
-    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "13");
+    g_test_duid = 0x7U;
 
     dsd_dispatch_handle_p25p1(&opts, &state);
 
@@ -391,7 +422,7 @@ test_p25p1_mbe_output_and_resume_side_effects(void) {
     reset_stub_state();
     opts.resume = 1;
     state.numtdulc = 1;
-    DSD_SNPRINTF(g_test_duid, sizeof(g_test_duid), "33");
+    g_test_duid = 0xFU;
 
     dsd_dispatch_handle_p25p1(&opts, &state);
 
@@ -408,6 +439,7 @@ main(void) {
     test_p25p1_dispatch_clears_stale_data_call_display();
     test_p25p1_observed_nac_priority();
     test_p25p1_nid_correction_and_failure_state();
+    test_p25p1_nac_update_guards();
     test_p25p1_mbe_output_and_resume_side_effects();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;

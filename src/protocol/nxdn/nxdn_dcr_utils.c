@@ -3,50 +3,18 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
-
-static uint8_t
-nxdn_bits_to_u8(const uint8_t* bits, size_t start, size_t nbits) {
-    if (bits == NULL || nbits == 0U || nbits > 8U) {
-        return 0U;
-    }
-    uint8_t v = 0U;
-    for (size_t i = 0U; i < nbits; i++) {
-        v = (uint8_t)((v << 1U) | (bits[start + i] & 1U));
-    }
-    return v;
-}
-
-static uint16_t
-nxdn_bits_to_u16(const uint8_t* bits, size_t start, size_t nbits) {
-    if (bits == NULL || nbits == 0U || nbits > 16U) {
-        return 0U;
-    }
-    uint16_t v = 0U;
-    for (size_t i = 0U; i < nbits; i++) {
-        v = (uint16_t)((v << 1U) | (bits[start + i] & 1U));
-    }
-    return v;
-}
-
-static uint16_t
-nxdn_load_i_u16(const uint8_t val[], int len) {
-    uint16_t acc = 0U;
-    for (int i = 0; i < len; i++) {
-        acc = (uint16_t)((acc << 1U) | (uint16_t)(val[i] & 1U));
-    }
-    return acc;
-}
 
 uint8_t
 nxdn_scch_crc7_check_from_trellis(const uint8_t trellis_bits[32]) {
     if (trellis_bits == NULL) {
         return 0U;
     }
-    return nxdn_bits_to_u8(trellis_bits, 25U, 7U);
+    return (uint8_t)convert_bits_into_output(&trellis_bits[25U], 7U);
 }
 
 uint16_t
@@ -70,7 +38,7 @@ crc12f(const uint8_t buf[], int len) {
         s[10] = a ^ s[11];
         s[11] = a;
     }
-    return nxdn_load_i_u16(s, 12);
+    return (uint16_t)convert_bits_into_output(s, 12U);
 }
 
 uint16_t
@@ -97,7 +65,7 @@ crc15(const uint8_t buf[], int len) {
         s[13] = s[14];
         s[14] = a;
     }
-    return nxdn_load_i_u16(s, 15);
+    return (uint16_t)convert_bits_into_output(s, 15U);
 }
 
 uint16_t
@@ -110,7 +78,7 @@ nxdn_facch_crc12_payload_from_trellis(const uint8_t trellis_bits[96]) {
 
 uint16_t
 nxdn_facch_crc12_check_from_trellis(const uint8_t trellis_bits[96]) {
-    return nxdn_bits_to_u16(trellis_bits, 80U, 12U);
+    return (uint16_t)convert_bits_into_output(&trellis_bits[80U], 12U);
 }
 
 uint16_t
@@ -123,7 +91,7 @@ nxdn_facch2_udch_crc15_payload_from_trellis(const uint8_t trellis_bits[208]) {
 
 uint16_t
 nxdn_facch2_udch_crc15_check_from_trellis(const uint8_t trellis_bits[208]) {
-    return nxdn_bits_to_u16(trellis_bits, 184U, 15U);
+    return (uint16_t)convert_bits_into_output(&trellis_bits[184U], 15U);
 }
 
 int
@@ -145,7 +113,7 @@ nxdn_dcr_decode_csm_alias(const uint8_t trellis_bits[96], char* out, size_t out_
 
     char digits[10];
     for (size_t i = 0U; i < 9U; i++) {
-        uint8_t nibble = nxdn_bits_to_u8(trellis_bits, i * 4U, 4U);
+        uint8_t nibble = (uint8_t)convert_bits_into_output(&trellis_bits[i * 4U], 4U);
         if (nibble > 9U) {
             out[0] = '\0';
             return 0;

@@ -7,21 +7,19 @@
  * Exercise P_CLEAR with TG Hold override forcing immediate SM release.
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <assert.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
-#include <stdbool.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -29,15 +27,6 @@
 #endif
 
 // Stubs and helpers (same pattern as other DMR tests)
-uint64_t
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (BufferIn[i] & 1);
-    }
-    return v;
-}
-
 void
 watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
@@ -68,38 +57,6 @@ rotate_symbol_out_file(dsd_opts* o, dsd_state* s) {
     (void)o;
     (void)s;
 }
-struct RtlSdrContext;
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* c, uint32_t f) {
-    (void)c;
-    (void)f;
-    return 0;
-}
-
-bool
-SetFreq(dsd_socket_t sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(dsd_socket_t sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-long int
-GetCurrentFreq(dsd_socket_t sockfd) {
-    (void)sockfd;
-    return 0;
-}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -115,33 +72,28 @@ crc8(uint8_t bits[], unsigned int len) {
     return 0xFF;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_drain_audio_output(dsd_opts* opts) {
-    (void)opts;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+static dsd_trunk_tune_result
+test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     if (!opts || !state || freq <= 0) {
-        return;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     opts->trunk_is_tuned = 1;
-    state->last_vc_sync_time = time(NULL);
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+static dsd_trunk_tune_result
+test_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     if (opts) {
         opts->trunk_is_tuned = 0;
     }
     if (state) {
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
@@ -168,6 +120,10 @@ main(int argc, char** argv) {
     static dsd_opts opts;
     static dsd_state state;
     init_env(&opts, &state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_to_freq,
+        .return_to_cc_request = test_return_to_cc,
+    });
     // 1) Tune to VC via SM grant call
     dmr_sm_emit_group_grant(&opts, &state, /*freq_hz*/ 852000000, /*lpcn*/ 0, /*tg*/ 1234, /*src*/ 42);
     assert(opts.trunk_is_tuned == 1);
@@ -180,6 +136,7 @@ main(int argc, char** argv) {
     build_pclear(bits, bytes);
     dmr_cspdu(&opts, &state, bits, bytes, 1, 0);
     assert(opts.trunk_is_tuned == 0);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     printf("DMR_T3_FORCE_RELEASE: OK\n");
     return 0;
 }

@@ -46,14 +46,13 @@ typedef struct {
     dsdcfg_type_t type;      /**< Value type */
     int min_val;             /**< Minimum value (for INT type) */
     int max_val;             /**< Maximum value (for INT type, 0 = no max) */
-    int deprecated;          /**< Non-zero if key is deprecated */
 } dsdcfg_schema_entry_t;
 
 /**
  * @brief Diagnostic severity levels.
  */
 typedef enum DSD_ATTR_PACKED {
-    DSDCFG_DIAG_INFO = 0, /**< Informational (e.g., deprecated key usage) */
+    DSDCFG_DIAG_INFO = 0, /**< Informational message */
     DSDCFG_DIAG_WARNING,  /**< Warning (e.g., unknown key, out of range) */
     DSDCFG_DIAG_ERROR     /**< Error (e.g., type mismatch, parse failure) */
 } dsdcfg_diag_level_t;
@@ -64,6 +63,7 @@ typedef enum DSD_ATTR_PACKED {
 typedef struct {
     dsdcfg_diag_level_t level; /**< Severity level */
     int line_number;           /**< Line number in config file (0 if N/A) */
+    char source_path[256];     /**< Included-file path (empty for the root config) */
     char section[64];          /**< Section name where issue occurred */
     char key[64];              /**< Key name where issue occurred */
     char message[256];         /**< Human-readable diagnostic message */
@@ -82,12 +82,14 @@ typedef struct {
 
 /**
  * @brief Get the number of schema entries.
- * @return Total number of defined configuration keys.
+ * Compatibility aliases are intentionally excluded so schema enumeration and
+ * generated templates expose canonical keys only.
+ * @return Total number of canonical configuration keys.
  */
 int dsdcfg_schema_count(void);
 
 /**
- * @brief Get a schema entry by index.
+ * @brief Get a canonical schema entry by index.
  * @param index Index into schema array (0 to count-1).
  * @return Pointer to schema entry, or NULL if index out of range.
  */
@@ -95,34 +97,14 @@ const dsdcfg_schema_entry_t* dsdcfg_schema_get(int index);
 
 /**
  * @brief Find a schema entry by section and key name.
+ *
+ * Unlike schema enumeration, lookup also recognizes deprecated read-only
+ * compatibility aliases so validators can type-check existing config files.
  * @param section Section name (case-insensitive).
  * @param key Key name (case-insensitive).
  * @return Pointer to schema entry, or NULL if not found.
  */
 const dsdcfg_schema_entry_t* dsdcfg_schema_find(const char* section, const char* key);
-
-/**
- * @brief Get human-readable description for a config key.
- * @param section Section name.
- * @param key Key name.
- * @return Description string or NULL if key unknown.
- */
-const char* dsd_config_key_description(const char* section, const char* key);
-
-/**
- * @brief Check if a config key is deprecated.
- * @param section Section name.
- * @param key Key name.
- * @return 1 if deprecated, 0 otherwise (including unknown keys).
- */
-int dsd_config_key_is_deprecated(const char* section, const char* key);
-
-/**
- * @brief Get the type name as a string for display.
- * @param type Schema type enum value.
- * @return String name (e.g., "string", "int", "bool").
- */
-const char* dsdcfg_type_name(dsdcfg_type_t type);
 
 /**
  * @brief Initialize a diagnostics collection.

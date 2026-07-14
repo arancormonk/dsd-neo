@@ -69,13 +69,9 @@ void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
 void dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                      uint32_t source, int is_private, int encrypted, int data_call);
-size_t dsd_engine_trunk_scan_active_index(const dsd_state* state);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
 int dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
-
-void dsd_engine_trunk_scan_test_set_now(double now_m);
-void dsd_engine_trunk_scan_test_clear_now(void);
 
 #ifdef __cplusplus
 }

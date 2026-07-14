@@ -3,10 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#ifndef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
-#error "DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS must be enabled for this test."
-#endif
-
 #include <cstdint>
 #include <cstdio>
 #include <dsd-neo/core/opts.h>
@@ -18,6 +14,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
+#include "rtl_stream_test_support.h"
 #include "test_support.h"
 
 static int
@@ -137,7 +134,7 @@ test_replay_retune_rejected_quickly(void) {
     prepare_replay_opts(opts.get(), metadata_path);
 
     RtlSdrContext* ctx = NULL;
-    rc |= expect_int_eq("rtl_stream_create_mirrored", rtl_stream_create_mirrored(opts.get(), &ctx), 0);
+    rc |= expect_int_eq("rtl_stream_create", rtl_stream_create(opts.get(), &ctx), 0);
     if (rc != 0 || !ctx) {
         if (ctx) {
             rtl_stream_destroy(ctx);
@@ -152,7 +149,7 @@ test_replay_retune_rejected_quickly(void) {
     }
 
     uint64_t t0 = dsd_time_monotonic_ns();
-    int retune_rc = rtl_stream_test_request_retune(ctx, 851500000U, 500);
+    int retune_rc = dsd_rtl_stream_test_request_retune(851500000L, 500);
     uint64_t elapsed_ns = dsd_time_monotonic_ns() - t0;
     uint64_t elapsed_ms = elapsed_ns / 1000000ULL;
 

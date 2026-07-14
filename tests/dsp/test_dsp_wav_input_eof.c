@@ -6,7 +6,6 @@
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
@@ -15,6 +14,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +49,7 @@ dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-cleanupAndExit(dsd_opts* opts, dsd_state* state) {
+dsd_request_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_cleanup_calls++;
@@ -62,15 +62,6 @@ dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_
     (void)state;
     (void)old_rate_hz;
     (void)new_rate_hz;
-}
-
-double
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-raw_pwr_f(const float* samples, int len, int step) {
-    (void)samples;
-    (void)len;
-    (void)step;
-    return 0.0;
 }
 
 double

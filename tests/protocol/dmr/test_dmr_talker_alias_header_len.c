@@ -23,28 +23,6 @@
 
 static int g_unicode_supported;
 
-// Minimal stubs needed to link `src/core/util/dsd_alias.c` in isolation.
-uint16_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
-    (void)buf;
-    (void)len;
-    return 0;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    const uint8_t* p = BufferIn;
-    uint32_t n = BitLength;
-
-    while (n--) {
-        out = (out << 1) | (uint64_t)(*p++ & 1u);
-    }
-    return out;
-}
-
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_unicode_supported(void) {

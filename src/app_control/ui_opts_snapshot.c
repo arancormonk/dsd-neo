@@ -10,7 +10,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "snapshot_internal.h"
-#include "telemetry_hooks_impl.h"
 
 static dsd_opts g_pub_opts;     // latest published
 static dsd_opts g_consume_opts; // last copied out for UI
@@ -55,14 +54,4 @@ dsd_app_get_latest_opts_snapshot(void) {
     }
     dsd_mutex_unlock(&g_opts_mu);
     return &g_consume_opts;
-}
-
-void
-ui_terminal_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
-    dsd_app_telemetry_publish_opts_snapshot(opts);
-}
-
-const dsd_opts*
-ui_get_latest_opts_snapshot(void) {
-    return dsd_app_get_latest_opts_snapshot();
 }

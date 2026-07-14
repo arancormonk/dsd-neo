@@ -34,13 +34,15 @@ Path handling:
 
 Metadata is JSON with `format: "dsd-neo-iq"`.
 
-- `version: 1` is used for legacy single-segment captures with no replay event timeline.
+- `version: 1` identifies historical single-segment captures with no replay event timeline.
 - `version: 2` is used when the capture contains a replay event timeline.
 
 The writer records:
 
 - sample format (`cu8` or `cf32`), sample rate, and tuned centers.
-- capture-time transform policy (`fs4_shift_enabled`, `combine_rotate_enabled`, `offset_tuning_enabled`).
+- capture-time transform policy (`fs4_shift_enabled`, `offset_tuning_enabled`, `combine_rotate_enabled`). CU8 captures
+  record the active `DSD_NEO_COMBINE_ROT` selection: the combined transform by default, or the supported two-pass
+  equivalent when explicitly disabled.
 - replay rate-chain fields (`base_decimation`, `post_downsample`, `demod_rate_hz`).
 - source identity (`source_backend`, `source_args`).
 - finalized byte/counter fields (`data_bytes`, `capture_drops`, `capture_drop_blocks`, `input_ring_drops`).
@@ -60,7 +62,7 @@ Event objects contain:
 - `duration_bytes`: required for `MUTE`; omitted muted data duration in capture-data bytes.
 - `center_frequency_hz`, `capture_center_frequency_hz`, and `sample_rate_hz`: required for `RETUNE` and `RESET`.
 
-The legacy summary fields remain present. `contains_retunes` and `capture_retune_count` summarize retune activity, while
+The integrity summary fields remain present. `contains_retunes` and `capture_retune_count` summarize retune activity, while
 the v2 `events` array provides the ordering needed for replay.
 
 `--iq-info` reports:
@@ -79,6 +81,8 @@ rounds down to sample alignment. Zero effective bytes are rejected for `--iq-rep
 
 - `--iq-capture` and `--iq-replay` are mutually exclusive in one invocation.
 - Single-segment v1 captures continue to replay unchanged.
+- CU8 metadata with `combine_rotate_enabled: false` selects the two-pass byte rotation and bias-128 widening so captures
+  made under that transform policy replay identically.
 - Retuned captures are replayable only when they include a v2 event timeline. Older retuned v1 captures with
   `contains_retunes: true` and no `events` array are rejected because they do not preserve enough ordering data to replay
   safely.

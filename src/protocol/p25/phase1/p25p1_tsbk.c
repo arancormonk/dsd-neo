@@ -32,6 +32,7 @@
 #include <time.h>
 #include "../p25_cc_update.h"
 #include "../p25_mfid90_utils.h"
+#include "../p25_response_reason.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -151,9 +152,9 @@ tsbk_decode_block(dsd_opts* opts, dsd_state* state, int* skipdibit, tsbk_decode_
 }
 
 static void
-tsbk_update_fec_counters(const dsd_opts* opts, dsd_state* state, int err) {
+tsbk_update_fec_counters(dsd_state* state, int err) {
     if (err == 0) {
-        p25_sm_note_cc_activity(opts, state, "p25p1-tsbk");
+        p25_sm_note_cc_activity(state);
         state->p25_p1_fec_ok++;
 #ifdef USE_RTLSDR
         dsd_rtl_stream_metrics_hook_p25p1_ber_update(1, 0);
@@ -237,9 +238,10 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
                  channel, suf, sg);
     state->last_active_time = time(NULL);
     DSD_FPRINTF(stderr, "\n");
-    if (opts->p25_trunk == 1 && freq != 0) {
+    if (opts->trunk_enable == 1 && freq != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
-        p25_sm_on_group_grant(opts, state, channel, service_options, sg, source_address);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, sg, source_address, service_options);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
 
@@ -260,13 +262,15 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
                  suf1, sg1);
     state->last_active_time = time(NULL);
     DSD_FPRINTF(stderr, "\n");
-    if (opts->p25_trunk == 1 && ch1 != 0 && freq1 != 0) {
+    if (opts->trunk_enable == 1 && ch1 != 0 && freq1 != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
-        p25_sm_on_group_grant(opts, state, ch1, P25_SM_SVC_UNKNOWN, sg1, /*src*/ 0);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(ch1, 0, sg1, /*src*/ 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
-    if (opts->p25_trunk == 1 && ch2 != 0 && freq2 != 0) {
+    if (opts->trunk_enable == 1 && ch2 != 0 && freq2 != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
-        p25_sm_on_group_grant(opts, state, ch2, P25_SM_SVC_UNKNOWN, sg2, /*src*/ 0);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(ch2, 0, sg2, /*src*/ 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
 
@@ -287,7 +291,7 @@ tsbk_channel_is_present(uint16_t channel) {
 
 static int
 tsbk_can_tune_data_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
-    if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
+    if (!opts || !state || opts->trunk_enable != 1 || opts->trunk_is_tuned != 0 || freq == 0) {
         return 0;
     }
     p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
@@ -306,17 +310,15 @@ tsbk_handle_individual_data_channel_grant(dsd_opts* opts, dsd_state* state,
     if (tsbk_channel_is_present(channel)) {
         freq = process_channel_to_freq(opts, state, channel);
     }
-    if (opts && state && opts->p25_trunk == 1 && tsbk_channel_is_present(channel) && freq != 0) {
+    if (opts && state && opts->trunk_enable == 1 && tsbk_channel_is_present(channel) && freq != 0) {
         dsd_tg_policy_decision decision;
-        if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 1,
-                                                DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                != 0
+        if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 1, &decision) != 0
             || !decision.tune_allowed) {
             return 1;
         }
         if (tsbk_can_tune_data_grant(opts, state, freq)) {
-            p25_sm_on_indiv_data_grant(opts, state, channel, P25_SM_SVC_UNKNOWN, target, source);
+            p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channel, 0, target, source, P25_SM_SVC_UNKNOWN);
+            p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
         }
     }
     return 1;
@@ -336,7 +338,8 @@ tsbk_handle_group_data_channel_grant(dsd_opts* opts, dsd_state* state, const uin
         freq = process_channel_to_freq(opts, state, channel);
     }
     if (tsbk_channel_is_present(channel) && tsbk_can_tune_data_grant(opts, state, freq)) {
-        p25_sm_on_group_data_grant(opts, state, channel, svc_bits, group, src);
+        p25_sm_event_t ev = p25_sm_ev_group_data_grant(channel, 0, group, src, svc_bits);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
     return 1;
 }
@@ -394,68 +397,6 @@ tsbk_handle_standard_osp_data_channel(dsd_opts* opts, dsd_state* state, const ui
     return 0;
 }
 
-static const char*
-tsbk_queued_reason_str(uint8_t code) {
-    switch (code) {
-        case 0x10: return "Requesting Unit Busy Other Service";
-        case 0x20: return "Target Unit Busy Other Service";
-        case 0x2F: return "Target Unit Queued This Call";
-        case 0x30: return "Target Group Currently Active";
-        case 0x40: return "Channel Resources Unavailable";
-        case 0x41: return "Telephone Resources Unavailable";
-        case 0x42: return "Data Resources Unavailable";
-        case 0x50: return "Superseding Service Currently Active";
-        default: break;
-    }
-
-    if (code <= 0x7F) {
-        return "Reserved";
-    }
-    return "User/System Defined";
-}
-
-static const char*
-tsbk_deny_reason_str(uint8_t code) {
-    static const struct {
-        uint8_t code;
-        const char* text;
-    } k_deny_reasons[] = {
-        {0x10, "Requesting Unit Not Valid"},
-        {0x11, "Requesting Unit Not Authorized"},
-        {0x20, "Target Unit Not Valid"},
-        {0x21, "Target Unit Not Authorized"},
-        {0x2F, "Target Unit Refused Call"},
-        {0x30, "Target Group Not Valid"},
-        {0x31, "Target Group Not Authorized"},
-        {0x40, "Invalid Dialing"},
-        {0x41, "Telephone Number Not Authorized"},
-        {0x42, "PSTN Not Valid"},
-        {0x50, "Call Timeout"},
-        {0x51, "Landline Terminated Call"},
-        {0x52, "Subscriber Unit Terminated Call"},
-        {0x5F, "Call Preempted"},
-        {0x60, "Site Access Denial"},
-        {0x67, "PTT Collide"},
-        {0x77, "PTT Bonk"},
-        {0xF0, "Call Options Not Valid For Service"},
-        {0xF1, "Protection Service Option Not Valid"},
-        {0xF2, "Duplex Service Option Not Valid"},
-        {0xF3, "Circuit/Packet Mode Option Not Valid"},
-        {0xFF, "System Does Not Support Service"},
-    };
-
-    for (size_t i = 0; i < sizeof(k_deny_reasons) / sizeof(k_deny_reasons[0]); i++) {
-        if (k_deny_reasons[i].code == code) {
-            return k_deny_reasons[i].text;
-        }
-    }
-
-    if (code <= 0x5E) {
-        return "Reserved";
-    }
-    return "User/System Defined";
-}
-
 static void
 tsbk_handle_mfid90_extended_function(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
     int class_id = tsbk_byte[2];
@@ -499,7 +440,7 @@ tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t t
     int addl_info = tsbk_u24(tsbk_byte, 4);
     int target_addr = tsbk_u24(tsbk_byte, 7);
     const char* reason_str =
-        is_deny ? tsbk_deny_reason_str((uint8_t)reason_code) : tsbk_queued_reason_str((uint8_t)reason_code);
+        is_deny ? p25_deny_response_reason((uint8_t)reason_code) : p25_queued_response_reason((uint8_t)reason_code);
 
     DSD_FPRINTF(stderr, "\n MFID90 (Moto) %s Response\n", is_deny ? "Deny" : "Queued");
     DSD_FPRINTF(stderr, "  SVC [%02X] Reason [%s]", svc_type, reason_str);
@@ -515,10 +456,14 @@ tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t t
     DSD_FPRINTF(stderr, " Target [%d]\n", target_addr);
     state->last_active_time = time(NULL);
 
-    if (is_deny) {
-        p25_sm_on_deny_response(opts, state, svc_type, reason_code, target_addr);
-    } else {
-        p25_sm_on_queued_response(opts, state, svc_type, reason_code, target_addr);
+    if (opts) {
+        if (is_deny) {
+            state->p25_sm_deny_count++;
+            p25_sm_release(p25_sm_get_ctx(), opts, state, "deny-rsp");
+        } else {
+            state->p25_sm_queued_count++;
+            p25_sm_release(p25_sm_get_ctx(), opts, state, "queued-rsp");
+        }
     }
 }
 
@@ -999,7 +944,7 @@ tsbk_handle_mfid90_isp_messages(const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
 }
 
 static void
-tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
+tsbk_handle_network_status(const dsd_opts* opts, dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
     int lra = tsbk_byte[2];
     long int wacn = (tsbk_byte[3] << 12) | (tsbk_byte[4] << 4) | (tsbk_byte[5] >> 4);
     int sysid = ((tsbk_byte[5] & 0xF) << 8) | tsbk_byte[6];
@@ -1025,7 +970,7 @@ tsbk_handle_network_status(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_
     }
     if (accepted_cc) {
         const long neigh[1] = {state->p25_cc_freq};
-        p25_sm_on_neighbor_update(opts, state, neigh, 1);
+        p25_cc_record_neighbor_frequencies(opts, state, neigh, 1);
         if (state->trunk_lcn_freq[0] == 0 || state->trunk_lcn_freq[0] != state->p25_cc_freq) {
             state->trunk_lcn_freq[0] = state->p25_cc_freq;
         }
@@ -1086,7 +1031,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
         DSD_MEMSET(PDU, 0, sizeof(PDU));
 
         int err = tsbk_decode_block(opts, state, &skipdibit, &ctx);
-        tsbk_update_fec_counters(opts, state, err);
+        tsbk_update_fec_counters(state, err);
 
         int MFID = ctx.tsbk_byte[1];
         int protectbit = (ctx.tsbk_byte[0] >> 6) & 0x1;
@@ -1102,7 +1047,7 @@ processTSBK(dsd_opts* opts, dsd_state* state) {
     DSD_FPRINTF(stderr, "%s", KNRM);
     DSD_FPRINTF(stderr, "\n");
 
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 
     // When on a CC, rotate the symbol out file every hour, if enabled
     rotate_symbol_out_file(opts, state);

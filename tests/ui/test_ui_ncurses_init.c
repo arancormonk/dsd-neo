@@ -233,8 +233,8 @@ test_non_tty_stderr_is_not_suppressed(void) {
     reset_stubs();
     g_isatty_result = 0;
 
-    ncursesOpen(NULL, NULL);
-    ncursesClose();
+    dsd_terminal_open(NULL, NULL);
+    dsd_terminal_close();
 
     assert(g_unicode_init_calls == 1);
     assert(g_initscr_calls == 1);
@@ -257,9 +257,9 @@ test_tty_stderr_suppressed_once_and_restored(void) {
     g_isatty_result = 1;
     g_dup_result = 42;
 
-    ncursesOpen(NULL, NULL);
-    ncursesOpen(NULL, NULL);
-    ncursesClose();
+    dsd_terminal_open(NULL, NULL);
+    dsd_terminal_open(NULL, NULL);
+    dsd_terminal_close();
 
     assert(g_dup_calls == 1);
     assert(g_fopen_private_calls == 1);
@@ -274,7 +274,7 @@ test_tty_stderr_suppressed_once_and_restored(void) {
     assert(g_closed_fd[0] == 42);
     assert(g_endwin_calls == 1);
 
-    ncursesClose();
+    dsd_terminal_close();
     assert(g_dup2_calls == 2);
     assert(g_close_calls == 1);
     assert(g_endwin_calls == 2);
@@ -287,8 +287,8 @@ test_devnull_open_failure_closes_backup(void) {
     g_dup_result = 77;
     g_devnull_open_ok = 0;
 
-    ncursesOpen(NULL, NULL);
-    ncursesClose();
+    dsd_terminal_open(NULL, NULL);
+    dsd_terminal_close();
 
     assert(g_dup_calls == 1);
     assert(g_fopen_private_calls == 1);

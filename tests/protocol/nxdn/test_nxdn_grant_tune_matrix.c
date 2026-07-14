@@ -14,6 +14,8 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -74,51 +76,12 @@ static long g_last_tune_freq = 0;
  * Pulling focused grant handlers from nxdn_element.c requires auxiliary
  * symbols that are irrelevant to this matrix.
  */
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0U; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-convert_bits_into_output(const uint8_t* input, int len) {
-    if (!input || len <= 0) {
-        return 0ULL;
-    }
-    return ConvertBitIntoBytes(input, (uint32_t)len);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (!input || !output || len <= 0) {
-        return;
-    }
-    DSD_MEMSET(output, 0, (size_t)len * sizeof(uint8_t));
-    for (int i = 0; i < len; i++) {
-        output[i] = (uint8_t)((input[i / 8] >> (7 - (i % 8))) & 1U);
-    }
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     (void)opts;
     (void)state;
     (void)MessageType;
-}
-
-uint32_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_message_crc32(const uint8_t* input, int len) {
-    (void)input;
-    (void)len;
-    return 0U;
 }
 
 void
@@ -221,22 +184,21 @@ LFSR128n(dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
-                           int len) {
+des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int nblocks) {
     (void)mi;
     (void)key_ulli;
     (void)output;
-    (void)type;
-    (void)len;
+    (void)nblocks;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, dsd_aes_key_size key_size,
+                         int nblocks) {
     (void)iv;
     (void)key;
     (void)output;
-    (void)type;
+    (void)key_size;
     (void)nblocks;
 }
 
@@ -254,13 +216,13 @@ dsd_time_monotonic_ns(void) {
 }
 
 static dsd_trunk_tune_result
-nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     g_tune_count++;
     g_last_tune_freq = freq;
     if (dsd_trunk_tune_result_is_ok(g_tune_result)) {
         if (opts) {
-            opts->p25_is_tuned = 1;
             opts->trunk_is_tuned = 1;
         }
         if (state) {
@@ -276,7 +238,7 @@ nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_
 static void
 nxdn_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = nxdn_hook_tune_to_freq;
+    hooks.tune_to_freq_request = nxdn_hook_tune_to_freq;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -335,7 +297,6 @@ nxdn_setup_fixture(const nxdn_case* test_case) {
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
 
-    g_opts.p25_trunk = 1;
     g_opts.trunk_enable = 1;
     g_opts.trunk_tune_group_calls = 1;
     g_opts.trunk_tune_private_calls = 1;
@@ -388,8 +349,7 @@ nxdn_run_tune_result_case(const nxdn_case* test_case, dsd_trunk_tune_result resu
                       "tune frequency matches map");
 
     if (accepted) {
-        rc |= nxdn_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, test_case->name, result_name,
-                          "accepted tune set tuned flags");
+        rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, test_case->name, result_name, "accepted tune set tuned flags");
         rc |= nxdn_expect(g_state.p25_vc_freq[0] == test_case->expected_freq
                               && g_state.trunk_vc_freq[0] == test_case->expected_freq,
                           test_case->name, result_name, "accepted tune set VC frequency state");
@@ -398,7 +358,7 @@ nxdn_run_tune_result_case(const nxdn_case* test_case, dsd_trunk_tune_result resu
         rc |= nxdn_expect(g_state.nxdn_sacch_frame_segment[0][0] == 1, test_case->name, result_name,
                           "accepted tune reset SACCH segments");
     } else {
-        rc |= nxdn_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, test_case->name, result_name,
+        rc |= nxdn_expect(g_opts.trunk_is_tuned == 0, test_case->name, result_name,
                           "rejected tune left tuned flags clear");
         rc |= nxdn_expect(g_state.p25_vc_freq[0] == 0 && g_state.trunk_vc_freq[0] == 0, test_case->name, result_name,
                           "rejected tune left VC frequency state clear");
@@ -455,8 +415,7 @@ nxdn_run_no_tune_guard_case(const nxdn_case* base_case, nxdn_guard_kind guard, c
     int rc = 0;
     rc |= nxdn_expect(g_tune_count == 0, test_case.name, guard_name, "guard did not attempt tune");
     rc |= nxdn_expect(g_last_tune_freq == 0, test_case.name, guard_name, "guard left tune frequency clear");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, test_case.name, guard_name,
-                      "guard left tuned flags clear");
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 0, test_case.name, guard_name, "guard left tuned flags clear");
     rc |= nxdn_expect(g_state.p25_vc_freq[0] == 0 && g_state.trunk_vc_freq[0] == 0, test_case.name, guard_name,
                       "guard left VC frequency state clear");
     rc |=
@@ -476,7 +435,7 @@ nxdn_run_retry_after_reject_case(const nxdn_case* test_case) {
 
     int rc = 0;
     rc |= nxdn_expect(g_tune_count == 1, test_case->name, "retry-after-deferred", "deferred tune attempted");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 0 && g_state.trunk_vc_freq[0] == 0, test_case->name,
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 0 && g_state.trunk_vc_freq[0] == 0, test_case->name,
                       "retry-after-deferred", "deferred tune left state clear");
 
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -485,7 +444,7 @@ nxdn_run_retry_after_reject_case(const nxdn_case* test_case) {
     rc |= nxdn_expect(g_tune_count == 2, test_case->name, "retry-after-deferred", "later grant retried tune");
     rc |= nxdn_expect(g_last_tune_freq == test_case->expected_freq, test_case->name, "retry-after-deferred",
                       "retried tune frequency matches map");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, test_case->name, "retry-after-deferred",
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, test_case->name, "retry-after-deferred",
                       "retried tune set tuned flags");
     rc |= nxdn_expect(g_state.p25_vc_freq[0] == test_case->expected_freq
                           && g_state.trunk_vc_freq[0] == test_case->expected_freq,
@@ -500,7 +459,6 @@ nxdn_run_duplicate_no_tune_case(void) {
     };
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     nxdn_setup_fixture(&duplicate);
-    g_opts.p25_is_tuned = 1;
     g_opts.trunk_is_tuned = 1;
     g_state.last_vc_sync_time = time(NULL);
     g_state.p25_vc_freq[0] = duplicate.expected_freq;
@@ -512,8 +470,7 @@ nxdn_run_duplicate_no_tune_case(void) {
 
     int rc = 0;
     rc |= nxdn_expect(g_tune_count == 0, duplicate.name, "duplicate", "duplicate grant did not tune");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, duplicate.name, "duplicate",
-                      "duplicate grant preserved tuned flags");
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, duplicate.name, "duplicate", "duplicate grant preserved tuned flags");
     rc |= nxdn_expect(g_state.p25_vc_freq[0] == duplicate.expected_freq, duplicate.name, "duplicate",
                       "duplicate grant preserved existing VC frequency");
     return rc;
@@ -540,7 +497,6 @@ nxdn_run_active_other_tg_no_tune_case(void) {
     const long existing_freq = 936912500L;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     nxdn_setup_fixture(&active);
-    g_opts.p25_is_tuned = 1;
     g_opts.trunk_is_tuned = 1;
     g_state.p25_vc_freq[0] = existing_freq;
     g_state.trunk_vc_freq[0] = existing_freq;
@@ -550,7 +506,7 @@ nxdn_run_active_other_tg_no_tune_case(void) {
 
     int rc = 0;
     rc |= nxdn_expect(g_tune_count == 0, active.name, "active-other-tg", "active non-held call did not retune");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, active.name, "active-other-tg",
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, active.name, "active-other-tg",
                       "active non-held call preserved tuned flags");
     rc |= nxdn_expect(g_state.p25_vc_freq[0] == existing_freq && g_state.trunk_vc_freq[0] == existing_freq, active.name,
                       "active-other-tg", "active non-held call preserved VC frequency");
@@ -565,7 +521,6 @@ nxdn_run_hold_match_retune_case(void) {
     const long existing_freq = 936912500L;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     nxdn_setup_fixture(&hold);
-    g_opts.p25_is_tuned = 1;
     g_opts.trunk_is_tuned = 1;
     g_state.tg_hold = hold.target;
     g_state.last_vc_sync_time = time(NULL);

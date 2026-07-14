@@ -19,16 +19,21 @@
 extern "C" {
 #endif
 
-void getTime_buf(char out[7]);  /* HHmmss */
-void getTimeC_buf(char out[9]); /* HH:MM:SS */
-void getTimeN_buf(time_t t, char out[9]);
-void getTimeF_buf(time_t t, char out[7]);
+typedef enum {
+    DSD_LOCAL_DATETIME_TIME_COMPACT = 0, /**< HHmmss */
+    DSD_LOCAL_DATETIME_TIME_COLON,       /**< HH:MM:SS */
+    DSD_LOCAL_DATETIME_DATE_COMPACT,     /**< YYYYMMDD */
+    DSD_LOCAL_DATETIME_DATE_SLASH,       /**< YYYY/MM/DD */
+    DSD_LOCAL_DATETIME_DATE_HYPHEN,      /**< YYYY-MM-DD */
+} dsd_local_datetime_format;
 
-void getDate_buf(char out[9]);   /* YYYYMMDD */
-void getDateH_buf(char out[11]); /* YYYY-MM-DD */
-void getDateS_buf(char out[11]); /* YYYY/MM/DD */
-void getDateN_buf(time_t t, char out[11]);
-void getDateF_buf(time_t t, char out[9]);
+/**
+ * Format a local calendar date or time for an explicit timestamp.
+ *
+ * On local-time conversion failure, writes the format's zero-value fallback.
+ * Returns 1 on success and 0 on conversion failure or invalid arguments.
+ */
+int dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size);
 
 #ifdef __cplusplus
 }

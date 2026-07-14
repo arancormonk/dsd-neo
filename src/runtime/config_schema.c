@@ -18,113 +18,110 @@
 
 static const dsdcfg_schema_entry_t s_schema[] = {
     /* [input] section */
-    {"input", "source", "Input source type", "pulse", "pulse|rtl|rtltcp|soapy|file|tcp|udp", DSDCFG_TYPE_ENUM, 0, 0, 0},
-    {"input", "pulse_source", "PulseAudio source device name", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
-    {"input", "pulse_input", "PulseAudio input device (alias for pulse_source)", "", NULL, DSDCFG_TYPE_STRING, 0, 0,
-     1}, /* deprecated alias */
-    {"input", "rtl_device", "RTL-SDR device index (0-based)", "0", NULL, DSDCFG_TYPE_INT, 0, 255, 0},
-    {"input", "rtl_freq", "RTL-SDR frequency (supports K/M/G suffix)", "851.375M", NULL, DSDCFG_TYPE_FREQ, 0, 0, 0},
-    {"input", "rtl_gain", "RTL-SDR gain in dB (0 for AGC)", "0", NULL, DSDCFG_TYPE_INT, 0, 49, 0},
-    {"input", "rtl_ppm", "RTL-SDR frequency correction in PPM", "0", NULL, DSDCFG_TYPE_INT, -1000, 1000, 0},
-    {"input", "rtl_bw_khz", "RTL-SDR DSP bandwidth in kHz", "48", NULL, DSDCFG_TYPE_INT, 4, 48, 0},
-    {"input", "rtl_sql", "RTL-SDR squelch level in dB (0 to disable)", "0", NULL, DSDCFG_TYPE_INT, -100, 0, 0},
-    {"input", "rtl_volume", "RTL-SDR volume multiplier", "2", NULL, DSDCFG_TYPE_INT, 1, 3, 0},
-    {"input", "auto_ppm", "Enable carrier/error-based RTL auto-PPM correction", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0,
-     0},
-    {"input", "rtl_auto_ppm", "Enable carrier/error-based RTL auto-PPM correction (alias for auto_ppm)", "false", NULL,
-     DSDCFG_TYPE_BOOL, 0, 0, 1}, /* deprecated alias */
-    {"input", "rtltcp_host", "RTL-TCP server hostname or IP", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
-    {"input", "rtltcp_port", "RTL-TCP server port", "1234", NULL, DSDCFG_TYPE_INT, 1, 65535, 0},
-    {"input", "soapy_args", "SoapySDR device selection args string", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
+    {"input", "source", "Input source type", "pulse", "pulse|rtl|rtltcp|soapy|file|tcp|udp", DSDCFG_TYPE_ENUM, 0, 0},
+    {"input", "pulse_source", "PulseAudio source device name", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"input", "rtl_device", "RTL-SDR device index (0-based)", "0", NULL, DSDCFG_TYPE_INT, 0, 255},
+    {"input", "rtl_freq", "RTL-SDR frequency (supports K/M/G suffix)", "851.375M", NULL, DSDCFG_TYPE_FREQ, 0, 0},
+    {"input", "rtl_gain", "RTL-SDR gain in dB (0 for AGC)", "0", NULL, DSDCFG_TYPE_INT, 0, 49},
+    {"input", "rtl_ppm", "RTL-SDR frequency correction in PPM", "0", NULL, DSDCFG_TYPE_INT, -1000, 1000},
+    {"input", "rtl_bw_khz", "RTL-SDR DSP bandwidth in kHz", "48", NULL, DSDCFG_TYPE_INT, 4, 48},
+    {"input", "rtl_sql", "RTL-SDR squelch level in dB (0 to disable)", "0", NULL, DSDCFG_TYPE_INT, -100, 0},
+    {"input", "rtl_volume", "RTL-SDR volume multiplier", "2", NULL, DSDCFG_TYPE_INT, 1, 3},
+    {"input", "auto_ppm", "Enable carrier/error-based RTL auto-PPM correction", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"input", "rtltcp_host", "RTL-TCP server hostname or IP", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"input", "rtltcp_port", "RTL-TCP server port", "1234", NULL, DSDCFG_TYPE_INT, 1, 65535},
+    {"input", "soapy_args", "SoapySDR device selection args string", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"input", "soapy_profile", "SoapySDR profile", "auto", "auto|generic|airspy|sdrplay|hackrf|lime|pluto|rtlsdr|uhd",
-     DSDCFG_TYPE_ENUM, 0, 0, 0},
-    {"input", "soapy_stream_format", "SoapySDR RX stream format", "auto", "auto|cf32|cs16", DSDCFG_TYPE_ENUM, 0, 0, 0},
-    {"input", "soapy_antenna", "SoapySDR RX antenna name", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
-    {"input", "soapy_clock", "SoapySDR clock source name", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
+     DSDCFG_TYPE_ENUM, 0, 0},
+    {"input", "soapy_stream_format", "SoapySDR RX stream format", "auto", "auto|cf32|cs16", DSDCFG_TYPE_ENUM, 0, 0},
+    {"input", "soapy_antenna", "SoapySDR RX antenna name", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"input", "soapy_clock", "SoapySDR clock source name", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"input", "soapy_settings", "SoapySDR device/RX setting overrides (key=value[,rx:key=value])", "", NULL,
-     DSDCFG_TYPE_STRING, 0, 0, 0},
-    {"input", "soapy_gains", "SoapySDR named gain stages (NAME:dB[,NAME:dB])", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
+     DSDCFG_TYPE_STRING, 0, 0},
+    {"input", "soapy_gains", "SoapySDR named gain stages (NAME:dB[,NAME:dB])", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"input", "soapy_bandwidth_hz", "SoapySDR hardware bandwidth in Hz (-1 profile, 0 auto)", "-1", NULL,
-     DSDCFG_TYPE_INT, -1, 20000000, 0},
-    {"input", "file_path", "Input audio file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
-    {"input", "file_sample_rate", "Input file sample rate in Hz", "48000", NULL, DSDCFG_TYPE_INT, 8000, 192000, 0},
-    {"input", "tcp_host", "TCP direct input hostname", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
-    {"input", "tcp_port", "TCP direct input port", "7355", NULL, DSDCFG_TYPE_INT, 1, 65535, 0},
-    {"input", "udp_addr", "UDP input bind address", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
-    {"input", "udp_port", "UDP input port", "7355", NULL, DSDCFG_TYPE_INT, 1, 65535, 0},
+     DSDCFG_TYPE_INT, -1, 20000000},
+    {"input", "file_path", "Input audio file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"input", "file_sample_rate", "Input file sample rate in Hz", "48000", NULL, DSDCFG_TYPE_INT, 8000, 192000},
+    {"input", "tcp_host", "TCP direct input hostname", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"input", "tcp_port", "TCP direct input port", "7355", NULL, DSDCFG_TYPE_INT, 1, 65535},
+    {"input", "udp_addr", "UDP input bind address", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"input", "udp_port", "UDP input port", "7355", NULL, DSDCFG_TYPE_INT, 1, 65535},
 
     /* [output] section */
-    {"output", "backend", "Audio output backend", "pulse", "pulse|null", DSDCFG_TYPE_ENUM, 0, 0, 0},
-    {"output", "pulse_sink", "PulseAudio sink device name", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
-    {"output", "pulse_output", "PulseAudio output device (alias for pulse_sink)", "", NULL, DSDCFG_TYPE_STRING, 0, 0,
-     1}, /* deprecated alias */
-    {"output", "frontend", "Frontend implementation", "none", "none|terminal|native", DSDCFG_TYPE_ENUM, 0, 0, 0},
-    {"output", "ncurses_ui", "Enable terminal frontend (alias for frontend)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0,
-     1}, /* deprecated alias */
+    {"output", "backend", "Audio output backend", "pulse", "pulse|null", DSDCFG_TYPE_ENUM, 0, 0},
+    {"output", "pulse_sink", "PulseAudio sink device name", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"output", "frontend", "Frontend implementation", "none", "none|terminal", DSDCFG_TYPE_ENUM, 0, 0},
 
     /* [mode] section */
     {"mode", "decode", "Decode mode preset", "auto",
-     "auto|p25p1|p25p2|dmr|nxdn48|nxdn96|x2tdma|ysf|dstar|edacs_pv|dpmr|m17|tdma|analog", DSDCFG_TYPE_ENUM, 0, 0, 0},
-    {"mode", "demod", "Demodulator path (auto/C4FM/GFSK/QPSK)", "auto", "auto|c4fm|gfsk|qpsk", DSDCFG_TYPE_ENUM, 0, 0,
-     0},
+     "auto|p25p1|p25p2|dmr|nxdn48|nxdn96|x2tdma|ysf|dstar|edacs_pv|dpmr|m17|tdma|analog", DSDCFG_TYPE_ENUM, 0, 0},
+    {"mode", "demod", "Demodulator path (auto/C4FM/GFSK/QPSK)", "auto", "auto|c4fm|gfsk|qpsk", DSDCFG_TYPE_ENUM, 0, 0},
 
     /* [trunking] section */
-    {"trunking", "enabled", "Enable trunking support", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"trunking", "chan_csv", "Channel map CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
-    {"trunking", "group_csv", "Group list CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
-    {"trunking", "allow_list", "Use group.csv as allow list (vs block list)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"trunking", "tune_group_calls", "Tune to group voice calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"trunking", "tune_private_calls", "Tune to private/individual calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"trunking", "tune_data_calls", "Tune to data channel grants", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"trunking", "enabled", "Enable trunking support", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunking", "chan_csv", "Channel map CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunking", "group_csv", "Group list CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunking", "allow_list", "Use group.csv as allow list (vs block list)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunking", "tune_group_calls", "Tune to group voice calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunking", "tune_private_calls", "Tune to private/individual calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunking", "tune_data_calls", "Tune to data channel grants", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunking", "tune_enc_calls", "Follow P25 encrypted grants without key lockout", "true", NULL, DSDCFG_TYPE_BOOL, 0,
-     0, 0},
+     0},
 
     /* [trunk_scan] section */
-    {"trunk_scan", "enabled", "Enable single-tuner trunk scan mode", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"trunk_scan", "targets_csv", "Trunk scan target list CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
-    {"trunk_scan", "idle_dwell_ms", "Default idle dwell per scan target", "3000", NULL, DSDCFG_TYPE_INT, 250, 600000,
-     0},
+    {"trunk_scan", "enabled", "Enable single-tuner trunk scan mode", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunk_scan", "targets_csv", "Trunk scan target list CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "idle_dwell_ms", "Default idle dwell per scan target", "3000", NULL, DSDCFG_TYPE_INT, 250, 600000},
     {"trunk_scan", "activity_hold_ms", "Default conventional DMR activity hold", "1200", NULL, DSDCFG_TYPE_INT, 250,
-     600000, 0},
+     600000},
 
     /* [logging] section */
-    {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
-    {"logging", "frame_log", "Frame trace log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
-    {"logging", "p25_sm_log", "P25 state-machine health log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
+    {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"logging", "frame_log", "Frame trace log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"logging", "p25_sm_log", "P25 state-machine health log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
 
     /* [alerts] section */
-    {"alerts", "enabled", "Enable audible call-alert beeps", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"alerts", "call_alert", "Enable audible call-alert beeps (alias for enabled)", "false", NULL, DSDCFG_TYPE_BOOL, 0,
-     0, 1},
-    {"alerts", "voice_start", "Beep when a voice call starts", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"alerts", "start", "Beep when a voice call starts (alias for voice_start)", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0,
-     1},
-    {"alerts", "voice_end", "Beep when a voice call ends", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"alerts", "end", "Beep when a voice call ends (alias for voice_end)", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 1},
-    {"alerts", "data", "Beep when a data call is logged", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"alerts", "enabled", "Enable audible call-alert beeps", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"alerts", "voice_start", "Beep when a voice call starts", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"alerts", "voice_end", "Beep when a voice call ends", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"alerts", "data", "Beep when a data call is logged", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
 
     /* [recording] section */
-    {"recording", "per_call_wav", "Enable per-call WAV output", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"recording", "per_call_wav_dir", "Per-call WAV output directory", "./WAV", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
-    {"recording", "static_wav", "Static decoded voice WAV output file", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
-    {"recording", "raw_wav", "Raw (48 kHz) audio WAV output file", "", NULL, DSDCFG_TYPE_PATH, 0, 0, 0},
-    {"recording", "rdio_mode", "rdio-scanner export mode", "off", "off|dirwatch|api|both", DSDCFG_TYPE_ENUM, 0, 0, 0},
-    {"recording", "rdio_system_id", "rdio-scanner numeric system ID", "0", NULL, DSDCFG_TYPE_INT, 0, 65535, 0},
-    {"recording", "rdio_api_url", "rdio-scanner API base URL", "http://127.0.0.1:3000", NULL, DSDCFG_TYPE_STRING, 0, 0,
-     0},
-    {"recording", "rdio_api_key", "rdio-scanner API key", "", NULL, DSDCFG_TYPE_STRING, 0, 0, 0},
+    {"recording", "per_call_wav", "Enable per-call WAV output", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"recording", "per_call_wav_dir", "Per-call WAV output directory", "./WAV", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"recording", "static_wav", "Static decoded voice WAV output file", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"recording", "raw_wav", "Raw (48 kHz) audio WAV output file", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"recording", "rdio_mode", "rdio-scanner export mode", "off", "off|dirwatch|api|both", DSDCFG_TYPE_ENUM, 0, 0},
+    {"recording", "rdio_system_id", "rdio-scanner numeric system ID", "0", NULL, DSDCFG_TYPE_INT, 0, 65535},
+    {"recording", "rdio_api_url", "rdio-scanner API base URL", "http://127.0.0.1:3000", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"recording", "rdio_api_key", "rdio-scanner API key", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"recording", "rdio_upload_timeout_ms", "rdio API upload timeout in milliseconds", "5000", NULL, DSDCFG_TYPE_INT,
-     100, 120000, 0},
-    {"recording", "rdio_upload_retries", "rdio API upload attempts per call", "1", NULL, DSDCFG_TYPE_INT, 0, 10, 0},
+     100, 120000},
+    {"recording", "rdio_upload_retries", "rdio API upload attempts per call", "1", NULL, DSDCFG_TYPE_INT, 0, 10},
     {"recording", "rdio_api_delete_after_upload", "Delete per-call WAV after successful API-only upload", "false", NULL,
-     DSDCFG_TYPE_BOOL, 0, 0, 0},
+     DSDCFG_TYPE_BOOL, 0, 0},
 
     /* [dsp] section */
-    {"dsp", "iq_balance", "Enable RTL IQ balance (image suppression)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
-    {"dsp", "iq_dc_block", "Enable RTL I/Q DC blocker", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0, 0},
+    {"dsp", "iq_balance", "Enable RTL IQ balance (image suppression)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"dsp", "iq_dc_block", "Enable RTL I/Q DC blocker", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+};
+
+/* Deprecated persisted spellings remain accepted for read compatibility, but are deliberately kept out of the
+ * enumerated schema so generated templates expose only canonical keys. */
+static const dsdcfg_schema_entry_t s_compat_alias_schema[] = {
+    {"input", "pulse_input", "Deprecated alias for pulse_source", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"input", "rtl_auto_ppm", "Deprecated alias for auto_ppm", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"output", "pulse_output", "Deprecated alias for pulse_sink", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"output", "ncurses_ui", "Deprecated boolean alias for frontend", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"logging", "event_log_file", "Deprecated alias for event_log", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"alerts", "call_alert", "Deprecated alias for enabled", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"alerts", "start", "Deprecated alias for voice_start", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"alerts", "end", "Deprecated alias for voice_end", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
 };
 
 static const int s_schema_count = sizeof(s_schema) / sizeof(s_schema[0]);
+static const int s_compat_alias_schema_count = sizeof(s_compat_alias_schema) / sizeof(s_compat_alias_schema[0]);
 
 int
 dsdcfg_schema_count(void) {
@@ -149,32 +146,13 @@ dsdcfg_schema_find(const char* section, const char* key) {
             return &s_schema[i];
         }
     }
-    return NULL;
-}
-
-const char*
-dsd_config_key_description(const char* section, const char* key) {
-    const dsdcfg_schema_entry_t* e = dsdcfg_schema_find(section, key);
-    return e ? e->description : NULL;
-}
-
-int
-dsd_config_key_is_deprecated(const char* section, const char* key) {
-    const dsdcfg_schema_entry_t* e = dsdcfg_schema_find(section, key);
-    return e ? e->deprecated : 0;
-}
-
-const char*
-dsdcfg_type_name(dsdcfg_type_t type) {
-    switch (type) {
-        case DSDCFG_TYPE_STRING: return "string";
-        case DSDCFG_TYPE_INT: return "int";
-        case DSDCFG_TYPE_BOOL: return "bool";
-        case DSDCFG_TYPE_ENUM: return "enum";
-        case DSDCFG_TYPE_PATH: return "path";
-        case DSDCFG_TYPE_FREQ: return "freq";
-        default: return "unknown";
+    for (int i = 0; i < s_compat_alias_schema_count; i++) {
+        if (dsd_strcasecmp(s_compat_alias_schema[i].section, section) == 0
+            && dsd_strcasecmp(s_compat_alias_schema[i].key, key) == 0) {
+            return &s_compat_alias_schema[i];
+        }
     }
+    return NULL;
 }
 
 void
@@ -211,6 +189,7 @@ dsdcfg_diags_add(dsdcfg_diagnostics_t* diags, dsdcfg_diag_level_t level, int lin
     dsdcfg_diagnostic_t* d = &diags->items[diags->count++];
     d->level = level;
     d->line_number = line;
+    d->source_path[0] = '\0';
 
     d->section[0] = '\0';
     if (section) {
@@ -258,6 +237,7 @@ dsdcfg_diags_print(const dsdcfg_diagnostics_t* diags, FILE* stream, const char* 
 
     for (int i = 0; i < diags->count; i++) {
         const dsdcfg_diagnostic_t* d = &diags->items[i];
+        const char* diagnostic_path = d->source_path[0] ? d->source_path : path;
         const char* level_str = "info";
         if (d->level == DSDCFG_DIAG_WARNING) {
             level_str = "warning";
@@ -265,8 +245,8 @@ dsdcfg_diags_print(const dsdcfg_diagnostics_t* diags, FILE* stream, const char* 
             level_str = "error";
         }
 
-        if (path && d->line_number > 0) {
-            DSD_FPRINTF(stream, "%s:%d: %s", path, d->line_number, level_str);
+        if (diagnostic_path && d->line_number > 0) {
+            DSD_FPRINTF(stream, "%s:%d: %s", diagnostic_path, d->line_number, level_str);
         } else if (d->line_number > 0) {
             DSD_FPRINTF(stream, "line %d: %s", d->line_number, level_str);
         } else {

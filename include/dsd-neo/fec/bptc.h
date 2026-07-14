@@ -17,7 +17,6 @@
 extern "C" {
 #endif
 
-extern const uint8_t BPTCInterleavingIndex[196];
 extern const uint8_t BPTCDeInterleavingIndex[196];
 extern const uint8_t DeInterleaveReverseChannelBptc[32];
 extern const uint8_t DeInterleaveReverseChannelBptcPlacement[32];

@@ -30,7 +30,6 @@
 
 #include <dsd-neo/platform/platform.h>
 
-#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #ifdef __cplusplus
@@ -102,15 +101,13 @@ void p25_status_accum_add(dsd_state* state, int dibit_value);
  *   - empty or all-0x02 patterns remain UNKNOWN
  *
  * Sets state->p25_ss_classification and state->p25_afc_gate_allow. The gate
- * result is advisory unless opts->p25_afc_status_gate_enable is set by the
- * caller path that consumes it. Increments the appropriate classification
+ * result is advisory; the caller path decides whether to consume it. Increments the appropriate classification
  * counter (p25_afc_allowed_count or p25_afc_suppressed_count).
  *
  * @param state Decoder state containing the accumulator fields and gate output.
  *              If NULL, the function is a no-op.
- * @param opts  Decoder options, reserved for future classification policy.
  */
-void p25_status_accum_classify(dsd_state* state, const dsd_opts* opts);
+void p25_status_accum_classify(dsd_state* state);
 
 #ifdef __cplusplus
 }

@@ -6,7 +6,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
-#include <string.h>
+#include <stddef.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -15,19 +15,15 @@
 static const dsd_protocol_handler*
 dsd_find_protocol_handler(int synctype) {
     const dsd_protocol_handler* handler = dsd_protocol_handlers;
-    const dsd_protocol_handler* fallback = NULL;
 
     while (handler->name != NULL) {
         if (handler->matches_synctype != NULL && handler->matches_synctype(synctype)) {
             return handler;
         }
-        if (fallback == NULL && strcmp(handler->name, "P25P1") == 0) {
-            fallback = handler;
-        }
         handler++;
     }
 
-    return fallback;
+    return NULL;
 }
 
 void

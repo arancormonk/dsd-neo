@@ -6,7 +6,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"

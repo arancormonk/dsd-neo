@@ -7,7 +7,6 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <math.h>
 #include <stdint.h>
@@ -55,12 +54,8 @@ add_policy(dsd_state* state, uint32_t id, const char* mode, const char* name) {
 }
 
 static int
-test_unicode_wrappers_and_shared_sync_state(void) {
+test_shared_sync_state(void) {
     int rc = 0;
-    rc |= expect_int_eq("unicode wrapper delegates", ui_unicode_supported(), dsd_unicode_supported());
-    rc |= expect_int_eq("block glyph wrapper delegates", ui_block_glyphs_supported(),
-                        dsd_unicode_block_glyphs_supported());
-
     rc |= expect_int_eq("initial sync type", ncurses_last_synctype, DSD_SYNC_NONE);
     ncurses_last_synctype = DSD_SYNC_P25P1_POS;
     rc |= expect_int_eq("shared sync type is mutable", ncurses_last_synctype, DSD_SYNC_P25P1_POS);
@@ -186,7 +181,7 @@ test_lockout_label_policy_lookup(void) {
 int
 main(void) {
     int rc = 0;
-    rc |= test_unicode_wrappers_and_shared_sync_state();
+    rc |= test_shared_sync_state();
     rc |= test_int_selection_helpers();
     rc |= test_percentiles_u8();
     rc |= test_lockout_label_policy_lookup();

@@ -6,6 +6,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <assert.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -13,7 +15,6 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -60,12 +61,14 @@ bytes_to_bits(uint8_t* bits, const uint8_t* bytes, size_t nbytes) {
 
 static void
 build_tact(uint8_t out[7], uint8_t lcss) {
-    unsigned char orig[4] = {0, 0, (uint8_t)((lcss >> 1U) & 1U), (uint8_t)(lcss & 1U)};
-    unsigned char enc[7];
-    Hamming_7_4_encode(orig, enc);
-    for (int i = 0; i < 7; i++) {
-        out[i] = enc[i] & 1U;
-    }
+    static const uint8_t codewords[4][7] = {
+        {0, 0, 0, 0, 0, 0, 0},
+        {0, 0, 0, 1, 0, 1, 1},
+        {0, 0, 1, 0, 1, 1, 0},
+        {0, 0, 1, 1, 1, 0, 1},
+    };
+    assert(lcss < 4U);
+    DSD_MEMCPY(out, codewords[lcss], 7U);
 }
 
 static void
@@ -170,17 +173,6 @@ run_completed_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[36]) {
     assert(dmr_cach(opts, state, cach[3]) == 0U);
 }
 
-static uint8_t
-hytera_checksum(const uint8_t bytes[8]) {
-    uint8_t checksum = 0;
-    for (size_t i = 0; i < 8; i++) {
-        checksum = (uint8_t)((checksum + bytes[i]) & 0xFFU);
-    }
-    checksum = (uint8_t)(~checksum & 0xFFU);
-    checksum++;
-    return checksum;
-}
-
 static int s_scan_activity_calls = 0;
 static uint32_t s_scan_activity_target = 0;
 static uint32_t s_scan_activity_source = 0;
@@ -210,7 +202,8 @@ clear_scan_hooks(void) {
 }
 
 static dsd_trunk_tune_result
-capture_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+capture_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)ted_sps;
@@ -442,7 +435,7 @@ test_hytera_enhanced_flco_uses_secondary_checksum(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     uint8_t bytes[9] = {0x02U, 0x68U, 0x34U, 0x01U, 0x23U, 0x45U, 0x67U, 0x89U, 0x00U};
-    bytes[8] = hytera_checksum(bytes);
+    bytes[8] = 0x09U;
 
     uint8_t bits[80];
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -881,6 +874,30 @@ test_completed_slco_tier3_site_parameters_update_state(void) {
 }
 
 static void
+test_completed_slco_activity_uses_each_slot_value(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36];
+    char out[2048];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    write_bits_u64(slco, 0U, 0x1U, 4U);
+    write_bits_u64(slco, 4U, 0x4U, 4U);
+    write_bits_u64(slco, 8U, 0x5U, 4U);
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_slco_slot_activity") == 0);
+    run_completed_slco(&opts, &state, slco);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(read_file_to_buffer(cap.path, out, sizeof(out)) == 0);
+    (void)remove(cap.path);
+    assert(strstr(out, "TS1: Res 4") != NULL);
+    assert(strstr(out, "TS2: Res 5") != NULL);
+}
+
+static void
 test_completed_slco_connect_plus_and_xpt_update_site_state(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -926,7 +943,6 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     DSD_MEMSET(slco, 0, sizeof(slco));
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
-    opts.p25_is_tuned = 1;
     state.tg_hold = 99U;
     state.lasttg = 11;
     state.lasttgR = 22;
@@ -940,7 +956,7 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     s_tune_to_cc_calls = 0;
     s_tune_to_cc_freq = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .tune_to_cc_result = capture_tune_to_cc,
+        .tune_to_cc_request = capture_tune_to_cc,
     });
 
     write_bits_u64(slco, 0U, 0xFU, 4U);
@@ -953,7 +969,6 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     assert(s_tune_to_cc_calls == 1);
     assert(s_tune_to_cc_freq == 851250000L);
     assert(opts.trunk_is_tuned == 0);
-    assert(opts.p25_is_tuned == 0);
     assert(state.trunk_vc_freq[0] == 0);
     assert(state.p25_vc_freq[0] == 0);
 }
@@ -979,6 +994,7 @@ main(void) {
     test_encrypted_flco_lockout_inserts_policy_and_event_history();
     test_encrypted_flco_allowed_tuning_skips_lockout_policy();
     test_completed_slco_tier3_site_parameters_update_state();
+    test_completed_slco_activity_uses_each_slot_value();
     test_completed_slco_connect_plus_and_xpt_update_site_state();
     test_completed_slco_capacity_plus_hold_returns_to_rest_channel();
     printf("DMR FLCO privacy modes: OK\n");

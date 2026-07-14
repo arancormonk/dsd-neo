@@ -133,10 +133,8 @@ void inv_m17(void* v);
 void switch_to_pulse(void* vctx);
 void switch_to_wav(void* vctx);
 void switch_to_symbol(void* vctx);
-void switch_to_tcp(void* vctx);
 void switch_to_udp(void* vctx);
 void switch_out_pulse(void* vctx);
-void switch_out_udp(void* vctx);
 void switch_out_toggle_mute(void* vctx);
 
 // ---- Key entry actions ----

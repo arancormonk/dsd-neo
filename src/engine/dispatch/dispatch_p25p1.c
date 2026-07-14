@@ -15,14 +15,24 @@
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
 #include <dsd-neo/runtime/colors.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "protocol_dispatch_impl.h"
+
+enum {
+    P25P1_DUID_HDU = 0x0,
+    P25P1_DUID_TDU = 0x3,
+    P25P1_DUID_LDU1 = 0x5,
+    P25P1_DUID_TSBK = 0x7,
+    P25P1_DUID_LDU2 = 0xA,
+    P25P1_DUID_MPDU = 0xC,
+    P25P1_DUID_TDULC = 0xF,
+    P25P1_DUID_INVALID = 0xFF,
+};
 
 static int
 p25p1_valid_observed_nac(unsigned long long nac) {
@@ -83,17 +93,18 @@ p25p1_read_nac_bits(dsd_opts* opts, dsd_state* state, char bch_code[63], uint8_t
     }
 }
 
-static void
-p25p1_read_duid_bits(dsd_opts* opts, dsd_state* state, char duid[3], char bch_code[63], uint8_t bch_reliab[63],
-                     int* index_bch_code) {
+static uint8_t
+p25p1_read_duid_bits(dsd_opts* opts, dsd_state* state, char bch_code[63], uint8_t bch_reliab[63], int* index_bch_code) {
     int i;
+    uint8_t duid = 0;
     dsd_dibit_soft_t soft;
 
     for (i = 0; i < 2; i++) {
         int dibit = getDibitSoft(opts, state, &soft);
-        duid[i] = (char)(dibit + '0');
+        duid = (uint8_t)((duid << 2) | (uint8_t)(dibit & 0x3));
         p25p1_append_bch_bits(bch_code, bch_reliab, index_bch_code, dibit, &soft);
     }
+    return duid;
 }
 
 static void
@@ -109,18 +120,17 @@ p25p1_read_bch_soft_dibits(dsd_opts* opts, dsd_state* state, char bch_code[63], 
 }
 
 static void
-p25p1_read_nid_fields(dsd_opts* opts, dsd_state* state, char duid[3], char bch_code[63], uint8_t bch_reliab[63],
+p25p1_read_nid_fields(dsd_opts* opts, dsd_state* state, uint8_t* duid, char bch_code[63], uint8_t bch_reliab[63],
                       unsigned char* parity, uint8_t* parity_reliab) {
     int index_bch_code = 0;
     int dibit;
-    uint8_t rel;
     dsd_dibit_soft_t soft;
 
     p25p1_read_nac_bits(opts, state, bch_code, bch_reliab, &index_bch_code);
-    p25p1_read_duid_bits(opts, state, duid, bch_code, bch_reliab, &index_bch_code);
+    *duid = p25p1_read_duid_bits(opts, state, bch_code, bch_reliab, &index_bch_code);
     p25p1_read_bch_soft_dibits(opts, state, bch_code, bch_reliab, &index_bch_code, 3);
 
-    dibit = getDibitWithReliability(opts, state, &rel);
+    dibit = getDibitSoft(opts, state, NULL);
     p25_status_accum_add(state, dibit);
 
     p25p1_read_bch_soft_dibits(opts, state, bch_code, bch_reliab, &index_bch_code, 20);
@@ -148,43 +158,41 @@ p25p1_apply_nac_update(dsd_state* state, int new_nac) {
 }
 
 static void
-p25p1_apply_duid_update(dsd_state* state, char duid[3], const char new_duid[3]) {
-    if (strcmp(new_duid, duid) != 0) {
-        duid[0] = new_duid[0];
-        duid[1] = new_duid[1];
+p25p1_apply_duid_update(dsd_state* state, uint8_t* duid, uint8_t new_duid) {
+    if (new_duid != *duid) {
+        *duid = new_duid;
         state->debug_header_errors++;
     }
 }
 
 static void
-p25p1_handle_nid_decode_success(const dsd_opts* opts, dsd_state* state, char duid[3], int check_result, int error_count,
-                                int new_nac, const char new_duid[3]) {
-    if (error_count > 0) {
-        state->nid_corrections_total += (unsigned int)error_count;
+p25p1_handle_nid_decode_success(const dsd_opts* opts, dsd_state* state, uint8_t* duid,
+                                const struct p25p1_nid_result* decoded) {
+    if (decoded->error_count > 0) {
+        state->nid_corrections_total += (unsigned int)decoded->error_count;
     }
-    if (check_result == NID_PARITY_OVERRIDE) {
+    if (decoded->status == NID_PARITY_OVERRIDE) {
         state->nid_parity_overrides++;
         if (opts->verbose > 1) {
-            DSD_FPRINTF(stderr, " [NID parity override, %d corrections]", error_count);
+            DSD_FPRINTF(stderr, " [NID parity override, %d corrections]", decoded->error_count);
         }
     }
 
-    p25p1_apply_nac_update(state, new_nac);
-    p25p1_apply_duid_update(state, duid, new_duid);
+    p25p1_apply_nac_update(state, decoded->nac);
+    p25p1_apply_duid_update(state, duid, decoded->duid);
 }
 
 static void
-p25p1_handle_nid_decode_failure(const dsd_opts* opts, dsd_state* state, char duid[3], int check_result) {
+p25p1_handle_nid_decode_failure(const dsd_opts* opts, dsd_state* state, uint8_t* duid, enum NidResult status) {
     state->nid_failures_total++;
 
-    if (check_result == NID_PARITY_MISMATCH && opts->verbose > 0) {
+    if (status == NID_PARITY_MISMATCH && opts->verbose > 0) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " NID PARITY MISMATCH ");
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 
-    duid[0] = 'E';
-    duid[1] = 'E';
+    *duid = P25P1_DUID_INVALID;
     state->debug_header_critical_errors++;
 }
 
@@ -192,29 +200,25 @@ p25p1_handle_nid_decode_failure(const dsd_opts* opts, dsd_state* state, char dui
  * Mark the static helper roots used by the public dispatch entrypoint. CodeQL's
  * manual C/C++ database can miss this local call chain and report all children.
  */
-static void DSD_ATTR_USED
-p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state, char duid[3]) {
+static uint8_t DSD_ATTR_USED
+p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state) {
     char bch_code[63];
     uint8_t bch_reliab[63];
     unsigned char parity;
     uint8_t parity_reliab;
-    int new_nac;
-    char new_duid[3];
-    int check_result;
-    int error_count = 0;
     int observed_nac;
+    uint8_t duid = P25P1_DUID_INVALID;
 
-    duid[2] = 0;
-    p25p1_read_nid_fields(opts, state, duid, bch_code, bch_reliab, &parity, &parity_reliab);
+    p25p1_read_nid_fields(opts, state, &duid, bch_code, bch_reliab, &parity, &parity_reliab);
 
     observed_nac = p25p1_observed_nac(state);
-    check_result = check_NID_with_observed_nac_soft(bch_code, bch_reliab, observed_nac, &new_nac, new_duid, parity,
-                                                    parity_reliab, &error_count);
-    if (check_result > 0) {
-        p25p1_handle_nid_decode_success(opts, state, duid, check_result, error_count, new_nac, new_duid);
+    struct p25p1_nid_result decoded = p25p1_nid_decode(bch_code, bch_reliab, observed_nac, parity, parity_reliab);
+    if (decoded.status > 0) {
+        p25p1_handle_nid_decode_success(opts, state, &duid, &decoded);
     } else {
-        p25p1_handle_nid_decode_failure(opts, state, duid, check_result);
+        p25p1_handle_nid_decode_failure(opts, state, &duid, decoded.status);
     }
+    return duid;
 }
 
 static void
@@ -380,39 +384,36 @@ p25p1_handle_mpdu(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-p25p1_handle_unknown_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) {
+p25p1_handle_unknown_duid(dsd_opts* opts, dsd_state* state, uint8_t duid) {
     state->lastp25type = 0;
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), "              ");
 
     if (opts->errorbars == 1) {
         printFrameInfo(opts, state);
-        DSD_FPRINTF(stderr, " duid:%s \n", duid);
+        if (duid <= 0xFU) {
+            DSD_FPRINTF(stderr, " duid:%u%u \n", (unsigned int)(duid >> 2), (unsigned int)(duid & 0x3U));
+        } else {
+            DSD_FPRINTF(stderr, " duid:EE \n");
+        }
     }
 
     p25_status_accum_reset(state);
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 }
 
 static void DSD_ATTR_USED
-p25p1_dispatch_by_duid(dsd_opts* opts, dsd_state* state, const char duid[3]) {
+p25p1_dispatch_by_duid(dsd_opts* opts, dsd_state* state, uint8_t duid) {
     p25p1_clear_pdu_summary_display(state);
 
-    if (strcmp(duid, "00") == 0) {
-        p25p1_handle_hdu(opts, state);
-    } else if (strcmp(duid, "11") == 0) {
-        p25p1_handle_ldu1(opts, state);
-    } else if (strcmp(duid, "22") == 0) {
-        p25p1_handle_ldu2(opts, state);
-    } else if (strcmp(duid, "33") == 0) {
-        p25p1_handle_tdulc(opts, state);
-    } else if (strcmp(duid, "03") == 0) {
-        p25p1_handle_tdu(opts, state);
-    } else if (strcmp(duid, "13") == 0) {
-        p25p1_handle_tsbk(opts, state);
-    } else if (strcmp(duid, "30") == 0) {
-        p25p1_handle_mpdu(opts, state);
-    } else {
-        p25p1_handle_unknown_duid(opts, state, duid);
+    switch (duid) {
+        case P25P1_DUID_HDU: p25p1_handle_hdu(opts, state); break;
+        case P25P1_DUID_LDU1: p25p1_handle_ldu1(opts, state); break;
+        case P25P1_DUID_LDU2: p25p1_handle_ldu2(opts, state); break;
+        case P25P1_DUID_TDULC: p25p1_handle_tdulc(opts, state); break;
+        case P25P1_DUID_TDU: p25p1_handle_tdu(opts, state); break;
+        case P25P1_DUID_TSBK: p25p1_handle_tsbk(opts, state); break;
+        case P25P1_DUID_MPDU: p25p1_handle_mpdu(opts, state); break;
+        default: p25p1_handle_unknown_duid(opts, state, duid); break;
     }
 }
 
@@ -423,9 +424,7 @@ dsd_dispatch_matches_p25p1(int synctype) {
 
 void
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
-    char duid[3];
-
     p25_status_accum_reset(state);
-    p25p1_decode_nid_and_duid(opts, state, duid);
+    uint8_t duid = p25p1_decode_nid_and_duid(opts, state);
     p25p1_dispatch_by_duid(opts, state, duid);
 }

@@ -262,13 +262,13 @@ test_trunk_actions(void) {
     cmd.id = DSD_APP_CMD_TRUNK_TOGGLE;
     cmd.n = 0;
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
-    rc |= expect_int("trunk toggle enables p25 trunk", opts.p25_trunk, 1);
+    rc |= expect_int("trunk toggle enables trunking", opts.trunk_enable, 1);
     rc |= expect_int("trunk toggle enables trunk tune", opts.trunk_enable, 1);
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
-    rc |= expect_int("trunk toggle disables p25 trunk", opts.p25_trunk, 0);
+    rc |= expect_int("trunk toggle disables trunking", opts.trunk_enable, 0);
     rc |= expect_int("trunk toggle disables trunk tune", opts.trunk_enable, 0);
 
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_group_calls = 1;
     cmd.id = DSD_APP_CMD_TRUNK_GROUP_TOGGLE;
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
@@ -324,7 +324,7 @@ test_trunk_actions(void) {
     cmd.n = 0;
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
     rc |= expect_int("scanner toggle enables scanner", opts.scanner_mode, 1);
-    rc |= expect_int("scanner toggle disables trunking", opts.p25_trunk, 0);
+    rc |= expect_int("scanner toggle disables trunking", opts.trunk_enable, 0);
 
     opts.trunk_use_allow_list = 0;
     opts.trunk_tune_private_calls = 1;

@@ -17,9 +17,7 @@
 extern "C" {
 #endif
 
-double raw_rms(const short* samples, int len, int step);
 double raw_pwr(const short* samples, int len, int step);
-double raw_pwr_f(const float* samples, int len, int step);
 double pwr_to_dB(double mean_power);
 double dB_to_pwr(double dB);
 

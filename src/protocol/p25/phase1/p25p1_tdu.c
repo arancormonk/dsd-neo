@@ -13,7 +13,6 @@
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdio.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -64,7 +63,6 @@ processTDU(dsd_opts* opts, dsd_state* state) {
 
     // Mark Phase 1 termination boundary for early teardown and reset
     // encryption indicators so the next LDU starts muted
-    state->p25_p1_last_tdu = time(NULL);
     state->p25_p1_last_tdu_m = dsd_time_now_monotonic_s();
     // Reset encryption indicators at TDU boundary so the next LDU starts muted
     // until we positively identify clear payload (prevents brief encrypted bursts).
@@ -73,7 +71,7 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     state->payload_keyid = 0;
 
     // Classify accumulated status symbols and set advisory AFC gate flag.
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 
     // SM event: TDU (P1 terminator)
     p25_sm_emit_tdu(opts, state);

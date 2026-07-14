@@ -30,23 +30,8 @@ void dmrMSBootstrap(dsd_opts* opts, dsd_state* state);
 void dmrMSData(dsd_opts* opts, dsd_state* state);
 
 void dmr_data_sync(dsd_opts* opts, dsd_state* state);
-void dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst);
-void dmr_data_burst_handler_ex(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
-                               const uint8_t* reliab98);
-#ifdef DSD_NEO_TEST_HOOKS
-typedef struct {
-    uint8_t pdu_len;
-    uint8_t pdu_start;
-    uint8_t crclen;
-    uint32_t crcmask;
-    uint8_t flags;
-    char subtype[8];
-    uint8_t data_p_head;
-} dsd_neo_dmr_test_dburst_profile_result;
-
-int dsd_neo_dmr_test_dburst_profile(dsd_opts* opts, dsd_state* state, uint8_t databurst, uint8_t slot,
-                                    dsd_neo_dmr_test_dburst_profile_result* result);
-#endif
+void dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst,
+                            const uint8_t* reliab98);
 
 void dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
@@ -74,8 +59,6 @@ void dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t sou
               const uint8_t* DMR_PDU, uint8_t pdu_crc_ok);
 void dmr_locn(const dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 
-uint32_t dmr_34(const uint8_t* input, uint8_t treturn[18]);
-
 void dmr_alg_reset(dsd_opts* opts, dsd_state* state);
 void dmr_alg_refresh(dsd_opts* opts, dsd_state* state);
 void dmr_refresh_algids_on_error(dsd_opts* opts, dsd_state* state);
@@ -83,7 +66,6 @@ void dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, ui
                                 uint8_t ambe_fr2[4][24], uint8_t ambe_fr3[4][24]);
 void dmr_late_entry_mi(dsd_opts* opts, dsd_state* state);
 void dmr_sbrc(const dsd_opts* opts, dsd_state* state, uint8_t power);
-void LFSR(dsd_state* state);
 void LFSR64(dsd_state* state);
 void LFSR128d(dsd_state* state);
 void hytera_enhanced_alg_refresh(dsd_state* state);

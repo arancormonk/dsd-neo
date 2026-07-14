@@ -28,31 +28,21 @@ static long g_last_tuned_cc = 0;
 static int g_tune_to_cc_calls = 0;
 static dsd_trunk_tune_result g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-void
-trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) { // NOLINT(misc-use-internal-linkage)
+static dsd_trunk_tune_result
+trunk_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)ted_sps;
     g_last_tuned_cc = freq;
-}
-
-static dsd_trunk_tune_result
-trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
-    (void)request_id;
-    trunk_tune_to_cc(opts, state, freq, ted_sps);
     g_tune_to_cc_calls++;
     return g_tune_to_cc_result;
-}
-
-static dsd_trunk_tune_result
-trunk_tune_to_cc_legacy_result(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    return trunk_tune_to_cc_request(opts, state, freq, ted_sps, 0U);
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_cc = trunk_tune_to_cc;
+    hooks.tune_to_cc_request = trunk_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -60,11 +50,11 @@ static void
 init_basic(dsd_opts* o, dsd_state* s) {
     DSD_MEMSET(o, 0, sizeof(*o));
     DSD_MEMSET(s, 0, sizeof(*s));
-    o->p25_trunk = 1;
+    o->trunk_enable = 1;
     o->trunk_hangtime = 0.2f; // short for test
     o->p25_prefer_candidates = 1;
     s->p25_cc_freq = 851000000;
-    p25_sm_init(o, s);
+    p25_sm_init_ctx(p25_sm_get_ctx(), o, s);
 }
 
 int
@@ -77,14 +67,14 @@ main(void) {
     // Two candidates A, B
     long A = 852000000;
     long B = 853000000;
-    (void)dsd_trunk_cc_candidates_add(&st, A, 0);
-    (void)dsd_trunk_cc_candidates_add(&st, B, 0);
+    (void)dsd_trunk_cc_candidates_add(&st, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     // Force CC hunt
     st.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
 
     // First tick: should tune to A
     g_last_tuned_cc = 0;
-    p25_sm_tick(&o, &st);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o, &st);
     assert(g_last_tuned_cc == A);
 
     // Simulate evaluation window expiry with no CC activity to trigger cooldown for A
@@ -94,14 +84,14 @@ main(void) {
 
     // Next tick: cooldown applied; next hunt should pick B
     g_last_tuned_cc = 0;
-    p25_sm_tick(&o, &st);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o, &st);
     assert(g_last_tuned_cc == B);
 
     static dsd_opts o2;
     static dsd_state st2;
     init_basic(&o2, &st2);
-    (void)dsd_trunk_cc_candidates_add(&st2, A, 0);
-    (void)dsd_trunk_cc_candidates_add(&st2, B, 0);
+    (void)dsd_trunk_cc_candidates_add(&st2, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st2, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     double pending_m = dsd_time_now_monotonic_s() - 2.5;
@@ -115,24 +105,24 @@ main(void) {
     st2.p25_cc_eval_start_m = pending_m;
 
     g_last_tuned_cc = 0;
-    p25_sm_tick(&o2, &st2);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o2, &st2);
     assert(g_last_tuned_cc == B);
 
     // A controller timeout is an in-flight tune, not the start of CC acquisition.
     static dsd_opts o3;
     static dsd_state st3;
     init_basic(&o3, &st3);
-    (void)dsd_trunk_cc_candidates_add(&st3, A, 0);
-    (void)dsd_trunk_cc_candidates_add(&st3, B, 0);
+    (void)dsd_trunk_cc_candidates_add(&st3, A, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    (void)dsd_trunk_cc_candidates_add(&st3, B, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     st3.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
     dsd_trunk_tuning_hooks pending_hooks = {0};
-    pending_hooks.tune_to_cc_request = trunk_tune_to_cc_request;
+    pending_hooks.tune_to_cc_request = trunk_tune_to_cc;
     dsd_trunk_tuning_hooks_set(pending_hooks);
     g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     g_tune_to_cc_calls = 0;
     g_last_tuned_cc = 0;
 
-    p25_sm_tick(&o3, &st3);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o3, &st3);
     ctx = p25_sm_get_ctx();
     assert(g_tune_to_cc_calls == 1);
     assert(g_last_tuned_cc == A);
@@ -143,15 +133,15 @@ main(void) {
     assert(st3.p25_cc_eval_start_m == 0.0);
 
     // Repeated watchdog ticks cannot cool A or queue B before completion.
-    p25_sm_tick(&o3, &st3);
-    p25_sm_tick(&o3, &st3);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o3, &st3);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o3, &st3);
     assert(g_tune_to_cc_calls == 1);
     assert(ctx->cc_tune_pending == 1);
     assert(ctx->t_cc_tune_m == 0.0);
 
     uint64_t pending_request = ctx->cc_tune_request_id;
     dsd_trunk_tuning_request_complete(pending_request, DSD_TRUNK_TUNE_RESULT_OK);
-    p25_sm_tick(&o3, &st3);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o3, &st3);
     assert(g_tune_to_cc_calls == 1);
     assert(ctx->cc_tune_pending == 0);
     assert(ctx->cc_sync_pending == 1);
@@ -164,7 +154,7 @@ main(void) {
     ctx->t_cc_tune_m = pending_m;
     st3.last_cc_sync_time_m = pending_m;
     st3.p25_cc_eval_start_m = pending_m;
-    p25_sm_tick(&o3, &st3);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o3, &st3);
     assert(g_tune_to_cc_calls == 2);
     assert(g_last_tuned_cc == B);
 
@@ -177,7 +167,7 @@ main(void) {
     g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     dsd_trunk_tuning_request_publish(failed_request, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(!dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
-    p25_sm_tick(&o3, &st3);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o3, &st3);
     assert(g_tune_to_cc_calls == 3);
     assert(ctx->state == P25_SM_HUNTING);
     assert(ctx->cc_sync_pending == 0);
@@ -186,7 +176,7 @@ main(void) {
     assert(!dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
 
     // Stale decoded activity cannot masquerade as acquisition after failure.
-    p25_sm_tick(&o3, &st3);
+    p25_sm_tick_ctx(p25_sm_get_ctx(), &o3, &st3);
     assert(ctx->state == P25_SM_HUNTING);
 
     // A later successful replacement commits the new target and reopens dispatch.
@@ -196,27 +186,6 @@ main(void) {
     assert(dsd_trunk_tuning_pending_request() == 0U);
     assert(dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
 
-    // Legacy PENDING hooks are accepted without a correlation ID or wait state.
-    static dsd_opts o4;
-    static dsd_state st4;
-    init_basic(&o4, &st4);
-    (void)dsd_trunk_cc_candidates_add(&st4, A, 0);
-    st4.last_cc_sync_time_m = dsd_time_now_monotonic_s() - 10.0;
-    dsd_trunk_tuning_hooks legacy_hooks = {0};
-    legacy_hooks.tune_to_cc_result = trunk_tune_to_cc_legacy_result;
-    dsd_trunk_tuning_hooks_set(legacy_hooks);
-    g_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
-    g_tune_to_cc_calls = 0;
-
-    p25_sm_tick(&o4, &st4);
-    ctx = p25_sm_get_ctx();
-    assert(g_tune_to_cc_calls == 1);
-    assert(ctx->cc_tune_pending == 0);
-    assert(ctx->cc_tune_request_id == 0U);
-    assert(ctx->t_cc_tune_m > 0.0);
-    assert(fabs(st4.p25_cc_eval_start_m - ctx->t_cc_tune_m) <= timestamp_epsilon_s);
-    assert(dsd_trunk_tuning_pending_request() == 0U);
-    assert(dsd_trunk_tuning_frame_is_current(dsd_trunk_tuning_generation()));
     return 0;
 }
 

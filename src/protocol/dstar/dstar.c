@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -34,18 +35,19 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
         const int* x = dstar_interleave_x;
 
         for (i = 0; i < 72; i++) {
-            int dibit = getDibit(opts, state);
+            int dibit = get_dibit_and_analog_signal(opts, state, NULL);
             ambe_fr[*w][*x] = dibit & 1;
             w++;
             x++;
         }
 
-        soft_mbe(opts, state, NULL, ambe_fr, NULL);
+        processMbeFrame(opts, state, NULL, ambe_fr, NULL);
+        dsd_play_synthesized_voice(opts, state);
 
         if (j != 20) {
             for (i = 0; i < 24; i++) {
                 //slow data
-                sd[(j * 24) + i] = (uint8_t)getDibit(opts, state);
+                sd[(j * 24) + i] = (uint8_t)get_dibit_and_analog_signal(opts, state, NULL);
             }
         }
 

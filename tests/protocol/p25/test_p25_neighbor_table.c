@@ -4,7 +4,7 @@
  */
 
 /* P25 neighbor table unit tests: metadata preservation, self-entry rejection,
- * CC rotation, LRU eviction, and input guards for p25_nb_add_ex(). */
+ * CC rotation, LRU eviction, and typed update input guards. */
 
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
@@ -23,19 +23,22 @@
 
 /* --- Metadata preservation ------------------------------------------------ */
 
-/* Zero-fill update via p25_nb_add() must not clobber existing metadata. */
+/* A frequency-only update must not clobber existing metadata. */
 static void
 test_metadata_zero_fill_preserves(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     assert(st != NULL);
 
-    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x0B);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 4, .cfva = 0x0B, .cfva_valid = 1U},
+                             });
     assert(st->p25_nb_count == 1);
 
     time_t first_seen = st->p25_nb_entries[0].last_seen;
 
     /* SM callback path — zero metadata. */
-    p25_nb_add(st, 852675000);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){.freq = 852675000});
 
     assert(st->p25_nb_entries[0].sysid == 0x100);
     assert(st->p25_nb_entries[0].rfss == 1);
@@ -52,8 +55,14 @@ test_same_site_refreshes_metadata(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     assert(st != NULL);
 
-    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x0B);
-    p25_nb_add_ex(st, 852700000, 0x100, 1, 4, 0x03);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 4, .cfva = 0x0B, .cfva_valid = 1U},
+                             });
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852700000,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 4, .cfva = 0x03, .cfva_valid = 1U},
+                             });
 
     assert(st->p25_nb_count == 1);
     assert(st->p25_nb_entries[0].freq == 852700000);
@@ -71,8 +80,14 @@ test_same_frequency_distinct_sites_remain_separate(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     assert(st != NULL);
 
-    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x0B);
-    p25_nb_add_ex(st, 852675000, 0x100, 2, 5, 0x03);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 4, .cfva = 0x0B, .cfva_valid = 1U},
+                             });
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.sysid = 0x100, .rfss = 2, .site = 5, .cfva = 0x03, .cfva_valid = 1U},
+                             });
 
     assert(st->p25_nb_count == 2);
     assert(st->p25_nb_entries[0].freq == 852675000);
@@ -91,8 +106,14 @@ test_unknown_sysid_same_site_merges(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     assert(st != NULL);
 
-    p25_nb_add_ex(st, 852675000, 0, 1, 4, 0x02);
-    p25_nb_add_ex(st, 852675000, 0x123, 1, 4, 0x03);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.rfss = 1, .site = 4, .cfva = 0x02, .cfva_valid = 1U},
+                             });
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.sysid = 0x123, .rfss = 1, .site = 4, .cfva = 0x03, .cfva_valid = 1U},
+                             });
 
     assert(st->p25_nb_count == 1);
     assert(st->p25_nb_entries[0].freq == 852675000);
@@ -101,7 +122,10 @@ test_unknown_sysid_same_site_merges(void) {
     assert(st->p25_nb_entries[0].site == 4);
     assert(st->p25_nb_entries[0].cfva == 0x03);
 
-    p25_nb_add_ex(st, 852675000, 0, 1, 4, 0x0B);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.rfss = 1, .site = 4, .cfva = 0x0B, .cfva_valid = 1U},
+                             });
     assert(st->p25_nb_count == 1);
     assert(st->p25_nb_entries[0].sysid == 0x123);
     assert(st->p25_nb_entries[0].cfva == 0x0B);
@@ -115,8 +139,14 @@ test_distinct_known_sysids_remain_separate(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     assert(st != NULL);
 
-    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x02);
-    p25_nb_add_ex(st, 852675000, 0x200, 1, 4, 0x03);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 4, .cfva = 0x02, .cfva_valid = 1U},
+                             });
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.sysid = 0x200, .rfss = 1, .site = 4, .cfva = 0x03, .cfva_valid = 1U},
+                             });
 
     assert(st->p25_nb_count == 2);
     assert(st->p25_nb_entries[0].sysid == 0x100);
@@ -135,14 +165,20 @@ test_self_entry_rejected(void) {
 
     st->p25_cc_freq = 852312500;
 
-    p25_nb_add_ex(st, 852312500, 0x100, 1, 5, 0x03);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852312500,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 5, .cfva = 0x03, .cfva_valid = 1U},
+                             });
     assert(st->p25_nb_count == 0);
 
-    p25_nb_add(st, 852312500);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){.freq = 852312500});
     assert(st->p25_nb_count == 0);
 
     /* Different frequency is accepted. */
-    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x0B);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 4, .cfva = 0x0B, .cfva_valid = 1U},
+                             });
     assert(st->p25_nb_count == 1);
 
     free(st);
@@ -155,11 +191,17 @@ test_cc_rotation_accepts_old(void) {
     assert(st != NULL);
 
     st->p25_cc_freq = 852312500;
-    p25_nb_add_ex(st, 852312500, 0x100, 1, 5, 0x03);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852312500,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 5, .cfva = 0x03, .cfva_valid = 1U},
+                             });
     assert(st->p25_nb_count == 0);
 
     st->p25_cc_freq = 853000000;
-    p25_nb_add_ex(st, 852312500, 0x100, 1, 5, 0x03);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852312500,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 5, .cfva = 0x03, .cfva_valid = 1U},
+                             });
     assert(st->p25_nb_count == 1);
     assert(st->p25_nb_entries[0].freq == 852312500);
     assert(st->p25_nb_entries[0].sysid == 0x100);
@@ -175,7 +217,7 @@ test_nsb_cc_update_rejects_different_freq_while_voice_tuned(void) {
     assert(opts != NULL);
     assert(st != NULL);
 
-    opts->p25_is_tuned = 1;
+    opts->trunk_is_tuned = 1;
     st->p25_cc_freq = 769768750;
     st->trunk_cc_freq = 769768750;
 
@@ -216,7 +258,6 @@ test_nsb_cc_update_rejects_stale_p25_alias_while_voice_tuned(void) {
     assert(opts != NULL);
     assert(st != NULL);
 
-    opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     st->p25_cc_freq = 769768750;
     st->trunk_cc_freq = 769868750;
@@ -237,7 +278,6 @@ test_nsb_cc_update_accepts_trunk_alias_while_voice_tuned(void) {
     assert(opts != NULL);
     assert(st != NULL);
 
-    opts->p25_is_tuned = 1;
     opts->trunk_is_tuned = 1;
     st->p25_cc_freq = 769768750;
     st->trunk_cc_freq = 769868750;
@@ -276,7 +316,10 @@ test_new_entry_fields(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     assert(st != NULL);
 
-    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x0B);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                 .freq = 852675000,
+                                 .announcement = {.sysid = 0x100, .rfss = 1, .site = 4, .cfva = 0x0B, .cfva_valid = 1U},
+                             });
 
     assert(st->p25_nb_count == 1);
     assert(st->p25_nb_entries[0].freq == 852675000);
@@ -296,7 +339,17 @@ test_multiple_distinct_entries(void) {
 
     long freqs[5] = {851000000, 852000000, 853000000, 854000000, 855000000};
     for (int i = 0; i < 5; i++) {
-        p25_nb_add_ex(st, freqs[i], (uint16_t)(0x100 + i), (uint8_t)(i + 1), (uint8_t)(10 * (i + 1)), 0x0F);
+        p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                     .freq = freqs[i],
+                                     .announcement =
+                                         {
+                                             .sysid = (uint16_t)(0x100 + i),
+                                             .rfss = (uint8_t)(i + 1),
+                                             .site = (uint8_t)(10 * (i + 1)),
+                                             .cfva = 0x0F,
+                                             .cfva_valid = 1U,
+                                         },
+                                 });
     }
     assert(st->p25_nb_count == 5);
     for (int i = 0; i < 5; i++) {
@@ -318,7 +371,17 @@ test_lru_eviction(void) {
 
     for (int i = 0; i < P25_NB_MAX; i++) {
         long freq = 851000000 + (long)i * 25000;
-        p25_nb_add_ex(st, freq, (uint16_t)(i + 1), (uint8_t)(i % 16), (uint8_t)(i % 8), 0x0F);
+        p25_nb_record_update(st, &(p25_neighbor_record_update_t){
+                                     .freq = freq,
+                                     .announcement =
+                                         {
+                                             .sysid = (uint16_t)(i + 1),
+                                             .rfss = (uint8_t)(i % 16),
+                                             .site = (uint8_t)(i % 8),
+                                             .cfva = 0x0F,
+                                             .cfva_valid = 1U,
+                                         },
+                                 });
         st->p25_nb_entries[i].last_seen = 1000 + i;
     }
     assert(st->p25_nb_count == P25_NB_MAX);
@@ -326,7 +389,11 @@ test_lru_eviction(void) {
     /* Entry 0 is oldest (last_seen=1000). */
     long oldest_freq = st->p25_nb_entries[0].freq;
 
-    p25_nb_add_ex(st, 860000000, 0xFFF, 15, 7, 0x0A);
+    p25_nb_record_update(st,
+                         &(p25_neighbor_record_update_t){
+                             .freq = 860000000,
+                             .announcement = {.sysid = 0xFFF, .rfss = 15, .site = 7, .cfva = 0x0A, .cfva_valid = 1U},
+                         });
     assert(st->p25_nb_count == P25_NB_MAX);
 
     int found_oldest = 0, found_new = 0;
@@ -352,10 +419,10 @@ test_null_and_invalid_freq(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     assert(st != NULL);
 
-    p25_nb_add_ex(NULL, 852675000, 0x100, 1, 4, 0x0B); /* no crash */
-    p25_nb_add_ex(st, 0, 0x100, 1, 4, 0x0B);
+    p25_nb_record_update(NULL, &(p25_neighbor_record_update_t){.freq = 852675000}); /* no crash */
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){.freq = 0});
     assert(st->p25_nb_count == 0);
-    p25_nb_add_ex(st, -1, 0x100, 1, 4, 0x0B);
+    p25_nb_record_update(st, &(p25_neighbor_record_update_t){.freq = -1});
     assert(st->p25_nb_count == 0);
 
     free(st);
@@ -369,11 +436,15 @@ test_keepalive_refreshes_timestamp(void) {
     dsd_state* st = calloc(1, sizeof(*st));
     assert(st != NULL);
 
-    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x0B);
+    const p25_neighbor_record_update_t update = {
+        .freq = 852675000,
+        .announcement = {.sysid = 0x100, .rfss = 1, .site = 4, .cfva = 0x0B, .cfva_valid = 1U},
+    };
+    p25_nb_record_update(st, &update);
     st->p25_nb_entries[0].last_seen -= 60; /* simulate age */
     time_t old_seen = st->p25_nb_entries[0].last_seen;
 
-    p25_nb_add_ex(st, 852675000, 0x100, 1, 4, 0x0B);
+    p25_nb_record_update(st, &update);
     assert(st->p25_nb_entries[0].last_seen > old_seen);
     assert(st->p25_nb_count == 1);
 
@@ -498,7 +569,7 @@ test_pending_neighbor_merge_preserves_metadata(void) {
         .lra_valid = 1,
         .cfva_valid = 1,
     };
-    assert(p25_announce_neighbor_channel_ex(opts, st, &rich) == 0);
+    assert(p25_announce_neighbor_channel(opts, st, &rich) == 0);
     assert(st->p25_pending_announcement_count == 1);
 
     const p25_neighbor_channel_announcement_t sparse = {
@@ -507,7 +578,7 @@ test_pending_neighbor_merge_preserves_metadata(void) {
         .rfss = 4,
         .site = 5,
     };
-    assert(p25_announce_neighbor_channel_ex(opts, st, &sparse) == 0);
+    assert(p25_announce_neighbor_channel(opts, st, &sparse) == 0);
     assert(st->p25_pending_announcement_count == 1);
     assert(st->p25_pending_announcements[0].wacn_valid == 1);
     assert(st->p25_pending_announcements[0].wacn == 0xABCDE);

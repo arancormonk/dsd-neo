@@ -41,7 +41,7 @@ set_mt_config(const char* value) {
     } else {
         unsetenv("DSD_NEO_MT");
     }
-    dsd_neo_config_init(nullptr);
+    dsd_neo_config_init();
 }
 
 static void
@@ -105,7 +105,7 @@ main(void) {
     test_disabled_mode_runs_synchronously();
     test_enabled_mode_runs_and_tears_down();
     unsetenv("DSD_NEO_MT");
-    dsd_neo_config_init(nullptr);
+    dsd_neo_config_init();
     return 0;
 }
 

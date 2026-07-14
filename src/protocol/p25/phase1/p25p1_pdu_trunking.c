@@ -57,11 +57,7 @@ typedef struct {
 enum {
     P25_MBT_AMBTC_OPCODE_INDEX = 7,
     P25_MBT_UMBTC_OPCODE_INDEX = 12,
-    P25_MBT_LEGACY_MAX_LEN = 48,
 };
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len);
 
 static int
 p25_mbt_opcode_index(uint8_t fmt) {
@@ -71,16 +67,6 @@ p25_mbt_opcode_index(uint8_t fmt) {
      * contiguous MPDU buffer that opcode is byte 12 and payload starts at 13.
      */
     return (fmt == 0x17) ? P25_MBT_AMBTC_OPCODE_INDEX : P25_MBT_UMBTC_OPCODE_INDEX;
-}
-
-static size_t
-p25_mbt_declared_len(const uint8_t* mpdu_byte) {
-    if (!mpdu_byte) {
-        return 0U;
-    }
-
-    size_t declared = ((size_t)(mpdu_byte[6] & 0x7FU) + 1U) * 12U;
-    return declared <= P25_MBT_LEGACY_MAX_LEN ? declared : P25_MBT_LEGACY_MAX_LEN;
 }
 
 static int
@@ -219,7 +205,7 @@ p25_mbt_is_ambtc(const p25p1_mbt_fields* fields) {
 
 static int
 p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) {
-    if (!opts || !state || opts->p25_trunk != 1 || opts->p25_is_tuned != 0 || freq == 0) {
+    if (!opts || !state || opts->trunk_enable != 1 || opts->trunk_is_tuned != 0 || freq == 0) {
         return 0;
     }
     p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
@@ -232,7 +218,8 @@ p25p1_pdu_dispatch_group_grant(dsd_opts* opts, dsd_state* state, int channel, in
     // The trunk state machine owns group-grant policy so patched supergroup
     // grants can be evaluated against their member talkgroups.
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_on_group_grant(opts, state, channel, svc_bits, group, src);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, group, src, svc_bits);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     } else {
         p25_sm_apply_group_grant_policy(opts, state, channel, svc_bits, group, src);
     }
@@ -325,7 +312,7 @@ p25_print_voice_svc_common(const dsd_opts* opts, dsd_state* state, int svc) {
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
+p25_handle_mbt_net_sts_broadcast(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int lra = mpdu_byte[3];
     int sysid = ((mpdu_byte[4] & 0xF) << 8) | mpdu_byte[5];
     int res_a = mpdu_byte[8];
@@ -362,7 +349,7 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
         }
 
         const long neigh[1] = {ct_freq};
-        p25_sm_on_neighbor_update(opts, state, neigh, 1);
+        p25_cc_record_neighbor_frequencies(opts, state, neigh, 1);
         p25_confirm_idens_for_current_site(state);
     } else if (ct_freq > 0) {
         DSD_FPRINTF(stderr, "\n  P25 MBT NET_STS: ignoring CC update while voice-tuned (freq=%ld)", ct_freq);
@@ -372,7 +359,7 @@ p25_handle_mbt_net_sts_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t
 }
 
 static void DSD_ATTR_USED
-p25_handle_mbt_rfss_status_broadcast(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
+p25_handle_mbt_rfss_status_broadcast(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
     int lra = mpdu_byte[3];
     int lsysid = ((mpdu_byte[4] & 0xF) << 8) | mpdu_byte[5];
     int rfssid = mpdu_byte[12];
@@ -391,7 +378,7 @@ p25_handle_mbt_rfss_status_broadcast(dsd_opts* opts, dsd_state* state, const uin
     (void)process_channel_to_freq(opts, state, channelr);
 
     const long neigh2[1] = {f1};
-    p25_sm_on_neighbor_update(opts, state, neigh2, 1);
+    p25_cc_record_neighbor_frequencies(opts, state, neigh2, 1);
 
     if (state->p2_sysid != 0 && (uint16_t)lsysid != state->p2_sysid) {
         return;
@@ -430,7 +417,7 @@ p25_handle_mbt_adjacent_status_broadcast(const dsd_opts* opts, dsd_state* state,
         .lra_valid = 1U,
         .cfva_valid = 1U,
     };
-    (void)p25_announce_neighbor_channel_ex(opts, state, &announcement);
+    (void)p25_announce_neighbor_channel(opts, state, &announcement);
 }
 
 static void DSD_ATTR_USED
@@ -560,15 +547,15 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     dsd_tg_policy_decision decision;
     if (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target,
                                             p25p1_pdu_private_prefilter_encrypted(opts, svc), (svc & 0x10) ? 1 : 0,
-                                            DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                            DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                            &decision)
             != 0
         || !decision.tune_allowed) {
         return;
     }
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
-        p25_sm_on_indiv_grant(opts, state, channelt, svc, (int)target, (int)source);
+        p25_sm_event_t ev = p25_sm_ev_indiv_grant(channelt, 0, (int)target, (int)source, svc);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
 
@@ -682,16 +669,14 @@ p25_handle_mbt_individual_data_channel_grant(dsd_opts* opts, dsd_state* state, c
     }
 
     dsd_tg_policy_decision decision;
-    if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, (svc & 0x40) ? 1 : 0, 1,
-                                            DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                            DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-            != 0
+    if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, (svc & 0x40) ? 1 : 0, 1, &decision) != 0
         || !decision.tune_allowed) {
         return;
     }
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_on_indiv_data_grant(opts, state, channelt, svc, (int)target, (int)source);
+        p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channelt, 0, (int)target, (int)source, svc);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
 
@@ -713,7 +698,8 @@ p25_handle_mbt_group_data_channel_grant(dsd_opts* opts, dsd_state* state, const 
     (void)process_channel_to_freq(opts, state, channelr);
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_on_group_data_grant(opts, state, channelt, svc, (int)group, (int)source);
+        p25_sm_event_t ev = p25_sm_ev_group_data_grant(channelt, 0, (int)group, (int)source, svc);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
 
@@ -721,15 +707,14 @@ static int DSD_ATTR_USED
 p25_telephone_call_policy_allows(const dsd_opts* opts, const dsd_state* state, uint32_t target, int svc) {
     dsd_tg_policy_decision decision;
     return dsd_tg_policy_evaluate_private_call(opts, state, 0, target, p25p1_pdu_private_prefilter_encrypted(opts, svc),
-                                               (svc & 0x10) ? 1 : 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
+                                               (svc & 0x10) ? 1 : 0, &decision)
                == 0
            && decision.tune_allowed;
 }
 
 static void DSD_ATTR_USED
 p25_telephone_update_nontrunk_vc_freq(const dsd_opts* opts, dsd_state* state, uint32_t target, long int freq) {
-    if (opts->p25_trunk != 0) {
+    if (opts->trunk_enable != 0) {
         return;
     }
 
@@ -778,7 +763,8 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
     }
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_on_indiv_grant(opts, state, channel, svc, (int)target, 0);
+        p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, 0, (int)target, 0, svc);
+        p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 
     p25_telephone_update_nontrunk_vc_freq(opts, state, target, freq);
@@ -1060,7 +1046,7 @@ p25_handle_mbt_inbound_opcode(const uint8_t* mpdu_byte, size_t mpdu_len, const p
 }
 
 static int
-p25_handle_mbt_site_status_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
+p25_handle_mbt_site_status_opcode(const dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len,
                                   const p25p1_mbt_fields* fields) {
     switch (fields->opcode) {
         case 0x3B:
@@ -1239,15 +1225,8 @@ p25_handle_mbt_standard_opcode(dsd_opts* opts, dsd_state* state, const uint8_t* 
     return p25_handle_mbt_affiliation_roaming_opcode(state, mpdu_byte, mpdu_len, fields);
 }
 
-//trunking data delivered via PDU format
-void
-p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte) {
-    (void)p25_decode_pdu_trunking_bounded(opts, state, mpdu_byte, p25_mbt_declared_len(mpdu_byte));
-}
-
 int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len) {
+p25_decode_pdu_trunking(dsd_opts* opts, dsd_state* state, const uint8_t* mpdu_byte, size_t mpdu_len) {
     p25p1_mbt_fields fields;
     if (!p25_parse_mbt_fields_checked(mpdu_byte, mpdu_len, &fields)) {
         DSD_FPRINTF(stderr, " ALT MBT - short payload (got %zu)", mpdu_len);
@@ -1262,7 +1241,7 @@ p25_decode_pdu_trunking_bounded(dsd_opts* opts, dsd_state* state, const uint8_t*
         return 0;
     }
 
-    p25_sm_note_cc_activity(opts, state, "p25p1-mbt");
+    p25_sm_note_cc_activity(state);
 
     if (p25_mbt_has_unsupported_survey_format(&fields)) {
         DSD_FPRINTF(stderr, " - broadcast format %02X not handled", fields.fmt);

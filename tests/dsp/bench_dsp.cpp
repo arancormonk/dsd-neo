@@ -376,15 +376,35 @@ bench_input_ring(const BenchOptions& opts) {
     }
 
     ran += run_case(opts, "input_ring_read_block", "sample", (double)kBlock, [&]() -> float {
-        input_ring_clear(&ring);
-        input_ring_write(&ring, in.data(), kBlock);
+        ring.tail.store(0U);
+        ring.head.store(0U);
+        float* p1 = NULL;
+        float* p2 = NULL;
+        size_t n1 = 0U;
+        size_t n2 = 0U;
+        int grant = input_ring_reserve(&ring, kBlock, &p1, &n1, &p2, &n2);
+        if (grant != (int)kBlock || n1 != kBlock || n2 != 0U) {
+            return -1.0f;
+        }
+        DSD_MEMCPY(p1, in.data(), kBlock * sizeof(float));
+        input_ring_commit(&ring, kBlock);
         int got = input_ring_read_block(&ring, out.data(), kBlock);
         return out[0] + out[kBlock - 1] + (float)got;
     });
 
     ran += run_case(opts, "input_ring_read_reserve", "sample", (double)kBlock, [&]() -> float {
-        input_ring_clear(&ring);
-        input_ring_write(&ring, in.data(), kBlock);
+        ring.tail.store(0U);
+        ring.head.store(0U);
+        float* write_p1 = NULL;
+        float* write_p2 = NULL;
+        size_t write_n1 = 0U;
+        size_t write_n2 = 0U;
+        int grant = input_ring_reserve(&ring, kBlock, &write_p1, &write_n1, &write_p2, &write_n2);
+        if (grant != (int)kBlock || write_n1 != kBlock || write_n2 != 0U) {
+            return -1.0f;
+        }
+        DSD_MEMCPY(write_p1, in.data(), kBlock * sizeof(float));
+        input_ring_commit(&ring, kBlock);
         float* p1 = NULL;
         float* p2 = NULL;
         size_t n1 = 0;
@@ -426,22 +446,10 @@ bench_output_ring(const BenchOptions& opts) {
     ring.write_timeouts.store(0);
     ring.read_timeouts.store(0);
 
-    ran += run_case(opts, "output_ring_read_one", "sample", (double)kBlock, [&]() -> float {
-        ring_clear(&ring);
-        ring_write_no_signal(&ring, in.data(), kBlock);
-        float sum = 0.0f;
-        for (size_t i = 0; i < kBlock; i++) {
-            float sample = 0.0f;
-            if (ring_read_one(&ring, &sample) == 0) {
-                sum += sample;
-            }
-        }
-        return sum;
-    });
-
     ran += run_case(opts, "output_ring_read_batch", "sample", (double)kBlock, [&]() -> float {
         ring_clear(&ring);
-        ring_write_no_signal(&ring, in.data(), kBlock);
+        DSD_MEMCPY(ring.buffer, in.data(), kBlock * sizeof(float));
+        ring.head.store(kBlock);
         int got = ring_read_batch(&ring, out.data(), kBlock);
         return out[0] + out[(got > 0) ? (size_t)got - 1U : 0U] + (float)got;
     });
@@ -458,14 +466,12 @@ bench_u8_widen(const BenchOptions& opts) {
     int ran = 0;
     constexpr uint32_t kBytes = 16384;
     std::vector<unsigned char> in(kBytes);
-    std::vector<unsigned char> legacy(kBytes);
     std::vector<float> out(kBytes);
     uint32_t seed = 0x9e3779b9u;
     for (uint32_t i = 0; i < kBytes; i++) {
         seed = seed * 1664525u + 1013904223u;
         in[i] = (unsigned char)((seed >> 24) & 0xffu);
     }
-    legacy = in;
 
     ran += run_case(opts, "widen_u8_to_f32_bias127", "byte", (double)kBytes, [&]() -> float {
         widen_u8_to_f32_bias127(in.data(), out.data(), kBytes);
@@ -473,16 +479,9 @@ bench_u8_widen(const BenchOptions& opts) {
     });
 
     uint32_t combined_phase = 0;
-    ran += run_case(opts, "widen_rotate90_u8_to_f32_bias127", "byte", (double)kBytes, [&]() -> float {
+    ran += run_case(opts, "widen_rotate90_u8_to_f32_bias127_phase", "byte", (double)kBytes, [&]() -> float {
         combined_phase = widen_rotate90_u8_to_f32_bias127_phase(in.data(), out.data(), kBytes, combined_phase);
         return out[0] + out[kBytes - 1] + (float)combined_phase;
-    });
-
-    uint32_t legacy_phase = 0;
-    ran += run_case(opts, "rotate90_u8_then_widen_bias128", "byte", (double)kBytes, [&]() -> float {
-        legacy_phase = rotate90_u8_inplace_phase(legacy.data(), kBytes, legacy_phase);
-        widen_u8_to_f32_bias128_scalar(legacy.data(), out.data(), kBytes);
-        return out[0] + out[kBytes - 1] + (float)legacy_phase;
     });
 
     return ran;
@@ -1085,7 +1084,7 @@ bench_full_demod(const BenchOptions& opts) {
 int
 main(int argc, char** argv) {
     BenchOptions opts = parse_options(argc, argv);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     if (opts.format == OutputFormat::Text && !opts.list_cases) {
         std::printf("DSD-neo DSP benchmark\n");

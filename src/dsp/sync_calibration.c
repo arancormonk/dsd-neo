@@ -7,12 +7,10 @@
  * @file
  * @brief Generic sync calibration module implementation.
  *
- * Provides protocol-agnostic warm-start threshold initialization from
- * outer-only sync patterns. This module wraps the existing DMR sample
- * history infrastructure to provide a clean API for all supported protocols.
+ * Provides protocol-agnostic symbol history and warm-start threshold
+ * initialization from outer-only sync patterns.
  */
 
-#include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/dsp/sync_calibration.h>
@@ -20,7 +18,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -34,6 +31,16 @@ float_compare_asc(const void* a, const void* b) {
         return 1;
     }
     return 0;
+}
+
+int
+dsd_sync_warm_start_enabled(void) {
+    const dsdneoRuntimeConfig* config = dsd_neo_get_config();
+    if (config == NULL) {
+        dsd_neo_config_init();
+        config = dsd_neo_get_config();
+    }
+    return (config && config->sync_warmstart_enable) ? 1 : 0;
 }
 
 static float*
@@ -95,111 +102,42 @@ dsd_sync_compute_cluster_means(const float* syms, int sync_len, int split, float
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Environment Variable Kill-Switch
- *
- * DSD_NEO_SYNC_WARMSTART=0 disables warm-start for safe rollout/debugging.
- * ───────────────────────────────────────────────────────────────────────────── */
-
-int
-dsd_sync_warm_start_enabled(void) {
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (!cfg) {
-        dsd_neo_config_init(NULL);
-        cfg = dsd_neo_get_config();
-    }
-    return (cfg && cfg->sync_warmstart_enable) ? 1 : 0;
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
  * Symbol History Management
  *
- * These functions wrap the existing DMR sample history infrastructure
- * (state->dmr_sample_history*) to provide a protocol-agnostic API.
+ * Decoder-state initialization, reset, and cleanup own the buffer lifecycle.
  * ───────────────────────────────────────────────────────────────────────────── */
-
-int
-dsd_symbol_history_init(dsd_state* state, int symbols) {
-    if (state == NULL || symbols <= 0) {
-        return -1;
-    }
-
-    /* Free existing buffer if present */
-    if (state->dmr_sample_history != NULL) {
-        free(state->dmr_sample_history);
-        state->dmr_sample_history = NULL;
-    }
-
-    state->dmr_sample_history_size = symbols;
-    state->dmr_sample_history = (float*)malloc(sizeof(float) * (size_t)symbols);
-    if (state->dmr_sample_history == NULL) {
-        state->dmr_sample_history_size = 0;
-        return -1;
-    }
-
-    DSD_MEMSET(state->dmr_sample_history, 0, sizeof(float) * (size_t)symbols);
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
-
-    return 0;
-}
-
-void
-dsd_symbol_history_free(dsd_state* state) {
-    if (state == NULL) {
-        return;
-    }
-
-    if (state->dmr_sample_history != NULL) {
-        free(state->dmr_sample_history);
-        state->dmr_sample_history = NULL;
-    }
-    state->dmr_sample_history_size = 0;
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
-}
-
-void
-dsd_symbol_history_reset(dsd_state* state) {
-    if (state == NULL || state->dmr_sample_history == NULL) {
-        return;
-    }
-
-    DSD_MEMSET(state->dmr_sample_history, 0, sizeof(float) * (size_t)state->dmr_sample_history_size);
-    state->dmr_sample_history_head = 0;
-    state->dmr_sample_history_count = 0;
-}
 
 void
 dsd_symbol_history_push(dsd_state* state, float symbol) {
-    if (state == NULL || state->dmr_sample_history == NULL) {
+    if (state == NULL || state->symbol_history == NULL) {
         return;
     }
 
-    state->dmr_sample_history[state->dmr_sample_history_head] = symbol;
-    state->dmr_sample_history_head = (state->dmr_sample_history_head + 1) % state->dmr_sample_history_size;
-    if (state->dmr_sample_history_count < state->dmr_sample_history_size) {
-        state->dmr_sample_history_count++;
+    state->symbol_history[state->symbol_history_head] = symbol;
+    state->symbol_history_head = (state->symbol_history_head + 1) % state->symbol_history_size;
+    if (state->symbol_history_count < state->symbol_history_size) {
+        state->symbol_history_count++;
     }
 }
 
 float
 dsd_symbol_history_get_back(const dsd_state* state, int back) {
-    if (state == NULL || state->dmr_sample_history == NULL) {
+    if (state == NULL || state->symbol_history == NULL) {
         return 0.0f;
     }
 
-    if (back < 0 || back >= state->dmr_sample_history_count) {
+    if (back < 0 || back >= state->symbol_history_count) {
         return 0.0f;
     }
 
     /* back=0 is most recent, which is at head-1 */
-    int idx = state->dmr_sample_history_head - 1 - back;
+    int idx = state->symbol_history_head - 1 - back;
     while (idx < 0) {
-        idx += state->dmr_sample_history_size;
+        idx += state->symbol_history_size;
     }
-    idx = idx % state->dmr_sample_history_size;
+    idx = idx % state->symbol_history_size;
 
-    return state->dmr_sample_history[idx];
+    return state->symbol_history[idx];
 }
 
 int
@@ -207,7 +145,7 @@ dsd_symbol_history_count(const dsd_state* state) {
     if (state == NULL) {
         return 0;
     }
-    return state->dmr_sample_history_count;
+    return state->symbol_history_count;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -216,7 +154,6 @@ dsd_symbol_history_count(const dsd_state* state) {
 
 dsd_warm_start_result_t
 dsd_sync_warm_start_thresholds_outer_only(const dsd_opts* opts, dsd_state* state, int sync_len) {
-    /* Check kill-switch */
     if (!dsd_sync_warm_start_enabled()) {
         return DSD_WARM_START_DISABLED;
     }
@@ -227,7 +164,7 @@ dsd_sync_warm_start_thresholds_outer_only(const dsd_opts* opts, dsd_state* state
     }
 
     /* Check history availability */
-    if (state->dmr_sample_history == NULL || state->dmr_sample_history_count < sync_len) {
+    if (state->symbol_history == NULL || state->symbol_history_count < sync_len) {
         return DSD_WARM_START_NO_HISTORY;
     }
 
@@ -295,9 +232,7 @@ dsd_sync_warm_start_thresholds_outer_only(const dsd_opts* opts, dsd_state* state
 }
 
 dsd_warm_start_result_t
-dsd_sync_warm_start_center_outer_only(dsd_opts* opts, dsd_state* state, int sync_len) {
-    UNUSED(opts);
-
+dsd_sync_warm_start_center_outer_only(dsd_state* state, int sync_len) {
     if (!dsd_sync_warm_start_enabled()) {
         return DSD_WARM_START_DISABLED;
     }
@@ -310,7 +245,7 @@ dsd_sync_warm_start_center_outer_only(dsd_opts* opts, dsd_state* state, int sync
         return DSD_WARM_START_DEGENERATE;
     }
 
-    if (state->dmr_sample_history == NULL || state->dmr_sample_history_count < sync_len) {
+    if (state->symbol_history == NULL || state->symbol_history_count < sync_len) {
         return DSD_WARM_START_NO_HISTORY;
     }
 

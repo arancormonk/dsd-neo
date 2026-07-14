@@ -13,7 +13,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -26,74 +25,41 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
 // Strong stub to capture VC tuning attempts from the SM path
 static int g_tunes = 0;
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)freq;
     (void)ted_sps;
     g_tunes++;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 // No-op stubs to satisfy link of LCW path helpers
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
 
-bool
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq = trunk_tune_to_freq;
-    hooks.return_to_cc = return_to_cc;
+    hooks.tune_to_freq_request = trunk_tune_to_freq;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
-// Minimal ConvertBitIntoBytes (MSB-first) and no-op alias/GPS helpers for LCW
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return out;
-}
-
+// No-op alias/GPS helpers for LCW
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -176,7 +142,7 @@ main(void) {
     install_trunk_tuning_hooks();
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.p25_lcw_retune = 1;
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_enc_calls = 0;
@@ -209,11 +175,11 @@ main(void) {
 
     // Trunking disabled: a decoded 0x44 grant may update display state, but it
     // must not be treated as a trunking grant.
-    opts.p25_trunk = 0;
+    opts.trunk_enable = 0;
     g_tunes = 0;
     p25_lcw(&opts, &st, lcw, 0);
     rc |= expect_eq_int("no trunk->no-tune", g_tunes, 0);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
 
     // Retune disabled should warn only once and never dispatch a grant.
     opts.p25_lcw_retune = 0;
@@ -262,9 +228,8 @@ main(void) {
         static dsd_state vc_st;
         DSD_MEMSET(&vc_opts, 0, sizeof vc_opts);
         DSD_MEMSET(&vc_st, 0, sizeof vc_st);
-        vc_opts.p25_trunk = 1;
+        vc_opts.trunk_enable = 1;
         vc_opts.p25_lcw_retune = 0;
-        vc_opts.p25_is_tuned = 1;
         vc_opts.trunk_is_tuned = 1;
         vc_opts.audio_in_type = AUDIO_IN_RTL;
         vc_opts.rtlsdr_center_freq = 852112500U;
@@ -283,7 +248,7 @@ main(void) {
         static dsd_state vc_st;
         DSD_MEMSET(&vc_opts, 0, sizeof vc_opts);
         DSD_MEMSET(&vc_st, 0, sizeof vc_st);
-        vc_opts.p25_trunk = 1;
+        vc_opts.trunk_enable = 1;
         vc_opts.p25_lcw_retune = 1;
         vc_opts.trunk_tune_group_calls = 1;
         vc_opts.audio_in_type = AUDIO_IN_RTL;

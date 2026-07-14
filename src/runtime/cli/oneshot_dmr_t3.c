@@ -5,8 +5,7 @@
 
 /**
  * @file
- * @brief DMR TIII LCN calculator one-shot utility - moved from apps/dsd-cli/main.c
- *        to make runtime CLI self-contained.
+ * @brief DMR TIII LCN calculator one-shot utility.
  */
 
 #include <dsd-neo/runtime/cli.h>
@@ -171,7 +170,7 @@ resolve_runtime_config(void) {
     if (cfg) {
         return cfg;
     }
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     return dsd_neo_get_config();
 }
 

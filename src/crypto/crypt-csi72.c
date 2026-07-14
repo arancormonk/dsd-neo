@@ -4,11 +4,12 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
@@ -45,46 +46,6 @@ csi_collect_hex_digits(const char* input, char* out, size_t out_cap) {
     return w;
 }
 
-static int
-csi_hex_nibble(char c, int* value) {
-    if (!value) {
-        return -1;
-    }
-
-    if (c >= '0' && c <= '9') {
-        *value = c - '0';
-        return 0;
-    }
-    if (c >= 'a' && c <= 'f') {
-        *value = 10 + (c - 'a');
-        return 0;
-    }
-    if (c >= 'A' && c <= 'F') {
-        *value = 10 + (c - 'A');
-        return 0;
-    }
-    return -1;
-}
-
-static int
-csi_parse_hex_bytes(const char* hex, size_t nhex, uint8_t* out, size_t out_len) {
-    if (!hex || !out || (out_len * 2U) != nhex) {
-        return -1;
-    }
-
-    for (size_t i = 0; i < out_len; i++) {
-        int hi = 0;
-        int lo = 0;
-        char c0 = hex[i * 2U];
-        char c1 = hex[i * 2U + 1U];
-        if (csi_hex_nibble(c0, &hi) != 0 || csi_hex_nibble(c1, &lo) != 0) {
-            return -1;
-        }
-        out[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return 0;
-}
-
 int
 connect_systems_ee72_key_creation(dsd_state* state, const char* input, int show_keys) {
     if (!state || !input) {
@@ -100,7 +61,7 @@ connect_systems_ee72_key_creation(dsd_state* state, const char* input, int show_
 
     uint8_t key[9];
     DSD_MEMSET(key, 0, sizeof(key));
-    if (csi_parse_hex_bytes(hex, nhex, key, sizeof(key)) != 0) {
+    if (dsd_parse_hex_bytes_exact(hex, nhex, key, sizeof(key)) != 0) {
         DSD_FPRINTF(stderr, "DMR EE72 key parse failed: invalid hex string\n");
         return -1;
     }
@@ -122,15 +83,10 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
     char interleaved[72];
     DSD_MEMSET(interleaved, 0, sizeof(interleaved));
 
-    const int *w = dmr_ambe_interleave_w, *x = dmr_ambe_interleave_x, *y = dmr_ambe_interleave_y,
-              *z = dmr_ambe_interleave_z;
-    for (int8_t i = 0; i < 36; i++) {
-        interleaved[(i * 2) + 0] = ambe_fr[*w][*x];
-        interleaved[(i * 2) + 1] = ambe_fr[*y][*z];
-        w++;
-        x++;
-        y++;
-        z++;
+    for (int8_t i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
+        interleaved[(i * 2) + 0] = ambe_fr[map->high_row][map->high_col];
+        interleaved[(i * 2) + 1] = ambe_fr[map->low_row][map->low_col];
     }
 
     uint8_t ks_bytes[9];
@@ -147,17 +103,10 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
         interleaved[i] ^= (char)ks_bits[71 - i];
     }
 
-    w = dmr_ambe_interleave_w;
-    x = dmr_ambe_interleave_x;
-    y = dmr_ambe_interleave_y;
-    z = dmr_ambe_interleave_z;
     int k = 0;
-    for (int8_t i = 0; i < 36; i++) {
-        ambe_fr[*w][*x] = interleaved[k++];
-        ambe_fr[*y][*z] = interleaved[k++];
-        w++;
-        x++;
-        y++;
-        z++;
+    for (int8_t i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
+        ambe_fr[map->high_row][map->high_col] = interleaved[k++];
+        ambe_fr[map->low_row][map->low_col] = interleaved[k++];
     }
 }

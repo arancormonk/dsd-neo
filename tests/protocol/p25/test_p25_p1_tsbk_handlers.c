@@ -70,11 +70,6 @@ static int g_neighbor_update_count;
 static int g_neighbor_update_last_count;
 static long g_neighbor_update_last_freq;
 static int g_confirm_idens_count;
-static int g_queued_count;
-static int g_deny_count;
-static int g_last_response_svc;
-static int g_last_response_reason;
-static int g_last_response_target;
 static int g_process_channel_count;
 static int g_last_process_channel;
 static long int g_channel_freq;
@@ -129,14 +124,6 @@ p25_patch_remove_wgid(dsd_state* state, int sgid, int wgid) {
     g_remove_wgid_count++;
     g_last_sg = sgid;
     g_last_wgid = wgid;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_patch_remove_wuid(dsd_state* state, int sgid, uint32_t wuid) {
-    (void)state;
-    (void)sgid;
-    (void)wuid;
 }
 
 void
@@ -200,67 +187,56 @@ p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* st
     g_seed_count++;
 }
 
-void
+static p25_sm_ctx_t g_sm_ctx;
+
+p25_sm_ctx_t*
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    g_grant_count++;
-    g_last_grant_channel = channel;
-    g_last_grant_svc = svc_bits;
-    g_last_grant_tg = tg;
-    g_last_grant_src = src;
+p25_sm_get_ctx(void) {
+    return &g_sm_ctx;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_group_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    (void)ctx;
     (void)opts;
     (void)state;
-    g_group_data_grant_count++;
-    g_last_group_data_grant_channel = channel;
-    g_last_group_data_grant_svc = svc_bits;
-    g_last_group_data_grant_tg = tg;
-    g_last_group_data_grant_src = src;
+    if (!ev || ev->type != P25_SM_EV_GRANT) {
+        return;
+    }
+    if (ev->is_group && ev->data_call_override > 0) {
+        g_group_data_grant_count++;
+        g_last_group_data_grant_channel = ev->channel;
+        g_last_group_data_grant_svc = ev->svc_bits;
+        g_last_group_data_grant_tg = ev->tg;
+        g_last_group_data_grant_src = ev->src;
+    } else if (ev->is_group) {
+        g_grant_count++;
+        g_last_grant_channel = ev->channel;
+        g_last_grant_svc = ev->svc_bits;
+        g_last_grant_tg = ev->tg;
+        g_last_grant_src = ev->src;
+    } else if (ev->data_call_override > 0) {
+        g_indiv_data_grant_count++;
+        g_last_indiv_data_grant_channel = ev->channel;
+        g_last_indiv_data_grant_svc = ev->svc_bits;
+        g_last_indiv_data_grant_dst = ev->dst;
+        g_last_indiv_data_grant_src = ev->src;
+    }
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_indiv_data_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
+p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    (void)ctx;
     (void)opts;
     (void)state;
-    g_indiv_data_grant_count++;
-    g_last_indiv_data_grant_channel = channel;
-    g_last_indiv_data_grant_svc = svc_bits;
-    g_last_indiv_data_grant_dst = dst;
-    g_last_indiv_data_grant_src = src;
+    (void)reason;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_queued_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
-    (void)opts;
-    (void)state;
-    g_queued_count++;
-    g_last_response_svc = svc_type;
-    g_last_response_reason = reason_code;
-    g_last_response_target = target;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_deny_response(dsd_opts* opts, dsd_state* state, int svc_type, int reason_code, int target) {
-    (void)opts;
-    (void)state;
-    g_deny_count++;
-    g_last_response_svc = svc_type;
-    g_last_response_reason = reason_code;
-    g_last_response_target = target;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     g_neighbor_update_count++;
@@ -357,9 +333,8 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     (void)state;
-    (void)opts;
 }
 
 int
@@ -411,10 +386,8 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst,
-                                    int encrypted, int data_call, dsd_tg_policy_private_allowlist_mode allowlist_mode,
-                                    dsd_tg_policy_hold_behavior hold_behavior, dsd_tg_policy_decision* out) {
+                                    int encrypted, int data_call, dsd_tg_policy_decision* out) {
     (void)state;
-    (void)hold_behavior;
     if (!out) {
         return -1;
     }
@@ -440,7 +413,7 @@ dsd_tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED;
     }
-    if (opts && opts->trunk_use_allow_list == 1 && allowlist_mode == DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK) {
+    if (opts && opts->trunk_use_allow_list == 1) {
         out->tune_allowed = 0;
         out->block_reasons |= DSD_TG_POLICY_BLOCK_ALLOWLIST;
     }
@@ -486,11 +459,6 @@ reset_calls(void) {
     g_neighbor_update_last_count = 0;
     g_neighbor_update_last_freq = 0;
     g_confirm_idens_count = 0;
-    g_queued_count = 0;
-    g_deny_count = 0;
-    g_last_response_svc = 0;
-    g_last_response_reason = 0;
-    g_last_response_target = 0;
     g_process_channel_count = 0;
     g_last_process_channel = 0;
     g_channel_freq = 0;
@@ -872,6 +840,8 @@ test_standard_isp_metadata_logging_and_no_retune(void) {
         return 1;
     }
     rc |= expect_contains("isp emergency label", out, "Emergency Alarm Request");
+    rc |= expect_contains("isp emergency source", out, "Source [74565]");
+    rc |= expect_contains("isp emergency group", out, "Group [4660][1234]");
     rc |= expect_contains("isp emergency marker", out, "** EMERGENCY **");
 
     DSD_MEMSET(tsbk, 0, sizeof(tsbk));
@@ -1004,8 +974,6 @@ test_standard_isp_metadata_logging_and_no_retune(void) {
     rc |= expect_int("isp no grant callbacks", g_grant_count, 0);
     rc |= expect_int("isp no mac callbacks", g_mac_count, 0);
     rc |= expect_int("isp no frequency lookup", g_process_channel_count, 0);
-    rc |= expect_int("isp no queued callbacks", g_queued_count, 0);
-    rc |= expect_int("isp no deny callbacks", g_deny_count, 0);
 
     DSD_MEMSET(tsbk, 0, sizeof(tsbk));
     tsbk[0] = 0x00;
@@ -1052,7 +1020,7 @@ test_standard_osp_data_channel_metadata_and_dispatch(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_calls();
     g_channel_freq = 851012500;
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -1174,7 +1142,7 @@ test_standard_osp_data_grants_require_control_channel(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -1231,7 +1199,7 @@ test_standard_osp_data_grants_allow_channel_zero(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -1296,7 +1264,7 @@ test_standard_osp_individual_data_allowlist_blocks_unknown(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_calls();
     g_channel_freq = 851012500;
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -1446,7 +1414,7 @@ test_mfid90_grant_seeds_trunk_state(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
 
     uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
     tsbk[2] = 0xA5;
@@ -1483,7 +1451,7 @@ test_mfid90_grant_update_trunk_dispatch(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
 
     uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
     tsbk[2] = 0x11;
@@ -1540,13 +1508,12 @@ test_mfid90_queued_and_deny_callbacks(void) {
     queued[9] = 0xEF;
 
     reset_calls();
+    state.p25_sm_queued_count = 0;
+    state.p25_sm_deny_count = 0;
     tsbk_handle_mfid90(&opts, &state, queued);
     int rc = 0;
-    rc |= expect_int("queued callback count", g_queued_count, 1);
-    rc |= expect_int("queued deny count", g_deny_count, 0);
-    rc |= expect_int("queued svc", g_last_response_svc, 0x15);
-    rc |= expect_int("queued reason", g_last_response_reason, 0x42);
-    rc |= expect_int("queued target", g_last_response_target, 0xABCDEF);
+    rc |= expect_int("queued callback count", (int)state.p25_sm_queued_count, 1);
+    rc |= expect_int("queued deny count", (int)state.p25_sm_deny_count, 0);
     rc |= expect_int("queued active label", strstr(state.active_channel[0], "MOT QUEUED") != NULL, 1);
     rc |= expect_int("queued info label", strstr(state.active_channel[0], "Info: 123456") != NULL, 1);
 
@@ -1559,12 +1526,11 @@ test_mfid90_queued_and_deny_callbacks(void) {
     deny[9] = 0x23;
 
     reset_calls();
+    state.p25_sm_queued_count = 0;
+    state.p25_sm_deny_count = 0;
     tsbk_handle_mfid90(&opts, &state, deny);
-    rc |= expect_int("deny callback count", g_deny_count, 1);
-    rc |= expect_int("deny queued count", g_queued_count, 0);
-    rc |= expect_int("deny svc", g_last_response_svc, 0x02);
-    rc |= expect_int("deny reason", g_last_response_reason, 0x60);
-    rc |= expect_int("deny target", g_last_response_target, 0x000123);
+    rc |= expect_int("deny callback count", (int)state.p25_sm_deny_count, 1);
+    rc |= expect_int("deny queued count", (int)state.p25_sm_queued_count, 0);
     rc |= expect_int("deny active label", strstr(state.active_channel[0], "MOT DENY") != NULL, 1);
     rc |= expect_int("deny reason label", strstr(state.active_channel[0], "Site Access Denial") != NULL, 1);
     rc |= expect_int("deny no info without flag", strstr(state.active_channel[0], "Info:") == NULL, 1);
@@ -1581,9 +1547,10 @@ test_mfid90_queued_and_deny_callbacks(void) {
     deny_aii[9] = 0x23;
 
     reset_calls();
+    state.p25_sm_queued_count = 0;
+    state.p25_sm_deny_count = 0;
     tsbk_handle_mfid90(&opts, &state, deny_aii);
-    rc |= expect_int("deny aii callback count", g_deny_count, 1);
-    rc |= expect_int("deny aii target", g_last_response_target, 0x000123);
+    rc |= expect_int("deny aii callback count", (int)state.p25_sm_deny_count, 1);
     rc |= expect_int("deny aii info label", strstr(state.active_channel[0], "Info: 123456") != NULL, 1);
     return rc;
 }
@@ -1608,8 +1575,8 @@ test_mfid90_ack_display_only(void) {
     reset_calls();
     tsbk_handle_mfid90(&opts, &state, tsbk);
     int rc = 0;
-    rc |= expect_int("ack no queued callback", g_queued_count, 0);
-    rc |= expect_int("ack no deny callback", g_deny_count, 0);
+    rc |= expect_int("ack no queued callback", (int)state.p25_sm_queued_count, 0);
+    rc |= expect_int("ack no deny callback", (int)state.p25_sm_deny_count, 0);
     rc |= expect_int("ack no grant", g_grant_count, 0);
     rc |= expect_int("ack active label", strstr(state.active_channel[0], "MOT ACK") != NULL, 1);
     rc |= expect_int("ack service label", strstr(state.active_channel[0], "Service: 04") != NULL, 1);
@@ -1624,7 +1591,7 @@ test_mfid90_tdma_data_channel_display_only(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
 
     uint8_t tsbk[TSBK_BYTES_PER_BLOCK] = {0};
     tsbk[0] = 0x16;
@@ -1680,7 +1647,7 @@ test_network_status_state_policy(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.p25_is_tuned = 1;
+    opts.trunk_is_tuned = 1;
     state.p25_cc_freq = 860012500;
     state.trunk_cc_freq = 860012500;
     state.p25_cc_is_tdma = 1;

@@ -165,6 +165,18 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing commented voice_start key\n");
         rc = 1;
     }
+    if (strstr(content, "version =") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: template must not emit the persisted version marker\n");
+        rc = 1;
+    }
+    const char* compat_aliases[] = {"pulse_input",    "rtl_auto_ppm", "pulse_output", "ncurses_ui",
+                                    "event_log_file", "call_alert",   "# start =",    "# end ="};
+    for (size_t i = 0; i < sizeof compat_aliases / sizeof compat_aliases[0]; i++) {
+        if (strstr(content, compat_aliases[i]) != NULL) {
+            DSD_FPRINTF(stderr, "FAIL: template emitted read-only compatibility alias %s\n", compat_aliases[i]);
+            rc = 1;
+        }
+    }
 
     free(content);
     return rc;

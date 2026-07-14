@@ -30,7 +30,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
-#include "dsd-neo/runtime/call_alert.h"
 #include "services.h"
 
 #ifdef USE_RADIO
@@ -57,17 +56,6 @@ svc_toggle_all_mutes(dsd_opts* opts) {
 }
 
 int
-svc_toggle_call_alert(dsd_opts* opts) {
-    if (!opts) {
-        return -1;
-    }
-    uint8_t events = dsd_call_alert_mask_events(opts->call_alert_events);
-    opts->call_alert_events = events;
-    opts->call_alert = opts->call_alert ? 0 : (events ? 1 : 0);
-    return 0;
-}
-
-int
 svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
     (void)state;
     if (!opts) {
@@ -80,8 +68,8 @@ svc_enable_per_call_wav(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(wav_file_directory, sizeof wav_file_directory, "%s", opts->wav_out_dir);
     dsd_stat_t st;
     if (dsd_stat_path(wav_file_directory, &st) == -1) {
-        LOG_NOTICE("%s wav file directory does not exist\n", wav_file_directory);
-        LOG_NOTICE("Creating directory %s to save decoded wav files\n", wav_file_directory);
+        LOG_INFO("NOTICE: %s wav file directory does not exist\n", wav_file_directory);
+        LOG_INFO("NOTICE: Creating directory %s to save decoded wav files\n", wav_file_directory);
         dsd_mkdir(wav_file_directory, 0700);
     }
     DSD_FPRINTF(stderr, "\n Per Call Wav File Enabled to Directory: %s;.\n", opts->wav_out_dir);
@@ -133,68 +121,6 @@ svc_open_symbol_in(dsd_opts* opts, dsd_state* state, const char* filename) {
         state->symbol_replay_has_soft = 0;
     }
     return 0;
-}
-
-int
-svc_replay_last_symbol(dsd_opts* opts, dsd_state* state) {
-    (void)state;
-    if (!opts) {
-        return -1;
-    }
-    opts->symbolfile = dsd_fopen_existing_regular_file(opts->audio_in_dev, "rb");
-    if (!opts->symbolfile) {
-        LOG_ERROR("Error, couldn't open %s\n", opts->audio_in_dev);
-        return -1;
-    }
-    dsd_stat_t sb;
-    if (dsd_fstat(dsd_fileno(opts->symbolfile), &sb) != 0) {
-        LOG_ERROR("Error, couldn't stat %s\n", opts->audio_in_dev);
-        fclose(opts->symbolfile);
-        opts->symbolfile = NULL;
-        return -1;
-    }
-    if (!dsd_stat_is_regular(&sb)) {
-        LOG_ERROR("Error, %s is not a regular file\n", opts->audio_in_dev);
-        fclose(opts->symbolfile);
-        opts->symbolfile = NULL;
-        return -1;
-    }
-    opts->audio_in_type = AUDIO_IN_SYMBOL_BIN; // symbol capture bin
-    if (state) {
-        state->symbol_replay_format = DSD_SYMBOL_REPLAY_FORMAT_UNKNOWN;
-        state->symbol_replay_header_checked = 0;
-        state->symbol_replay_has_soft = 0;
-    }
-    return 0;
-}
-
-void
-svc_stop_symbol_playback(dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    if (opts->symbolfile != NULL) {
-        if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
-            fclose(opts->symbolfile);
-        }
-        opts->symbolfile = NULL;
-    }
-    if (opts->audio_out_type == 0) {
-        opts->audio_in_type = AUDIO_IN_PULSE;
-    } else {
-        opts->audio_in_type = AUDIO_IN_STDIN;
-    }
-}
-
-void
-svc_stop_symbol_saving(dsd_opts* opts, dsd_state* state) {
-    if (!opts) {
-        return;
-    }
-    if (opts->symbol_out_f) {
-        closeSymbolOutFile(opts, state);
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", opts->symbol_out_file);
-    }
 }
 
 int
@@ -257,19 +183,6 @@ svc_lrrp_disable(dsd_opts* opts) {
 }
 
 void
-svc_toggle_inversion(dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    int inv = opts->inverted_dmr ? 0 : 1;
-    opts->inverted_dmr = inv;
-    opts->inverted_dpmr = inv;
-    opts->inverted_x2tdma = inv;
-    opts->inverted_ysf = inv;
-    opts->inverted_m17 = inv;
-}
-
-void
 svc_reset_event_history(dsd_state* state) {
     if (!state || !state->event_history_s) {
         return;
@@ -277,15 +190,6 @@ svc_reset_event_history(dsd_state* state) {
     for (uint8_t i = 0; i < 2; i++) {
         init_event_history(&state->event_history_s[i], 0, 255);
     }
-}
-
-void
-svc_toggle_payload(dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    opts->payload = !opts->payload;
-    DSD_FPRINTF(stderr, opts->payload ? "Payload on\n" : "Payload Off\n");
 }
 
 void
@@ -408,30 +312,6 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
 }
 
 // Trunking & control --------------------------------------------------------
-void
-svc_toggle_trunking(dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    opts->p25_trunk = !opts->p25_trunk;
-    opts->trunk_enable = opts->p25_trunk;
-    if (opts->p25_trunk) {
-        opts->scanner_mode = 0;
-    }
-}
-
-void
-svc_toggle_scanner(dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    opts->scanner_mode = !opts->scanner_mode;
-    if (opts->scanner_mode) {
-        opts->p25_trunk = 0;
-        opts->trunk_enable = 0;
-    }
-}
-
 int
 svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
@@ -473,30 +353,6 @@ svc_import_keys_hex(dsd_opts* opts, dsd_state* state, const char* path) {
 }
 
 void
-svc_toggle_tune_group(dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    opts->trunk_tune_group_calls = !opts->trunk_tune_group_calls;
-}
-
-void
-svc_toggle_tune_private(dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    opts->trunk_tune_private_calls = !opts->trunk_tune_private_calls;
-}
-
-void
-svc_toggle_tune_data(dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    opts->trunk_tune_data_calls = !opts->trunk_tune_data_calls;
-}
-
-void
 svc_set_tg_hold(dsd_state* state, unsigned tg) {
     if (!state) {
         return;
@@ -535,14 +391,6 @@ svc_toggle_reverse_mute(dsd_opts* opts) {
         return;
     }
     opts->reverse_mute = !opts->reverse_mute;
-}
-
-void
-svc_toggle_crc_relax(dsd_opts* opts) {
-    if (!opts) {
-        return;
-    }
-    opts->aggressive_framesync = opts->aggressive_framesync ? 0 : 1;
 }
 
 void
@@ -632,14 +480,14 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
     }
     int result = 0;
 
-    /* Tagged P25 retunes hold this guard through their synchronous wait and
+    /* P25 retunes hold this guard through their synchronous wait and
      * orchestrator bookkeeping. Quiesce them before destroying the stream's
      * wait primitives or replacing the context they use. */
     p25_sm_tick_guard_enter();
 
     /* Stop and destroy any existing stream context. */
     if (state->rtl_ctx) {
-        rtl_stream_soft_stop(state->rtl_ctx);
+        rtl_stream_stop(state->rtl_ctx);
         rtl_stream_destroy(state->rtl_ctx);
         state->rtl_ctx = NULL;
     }
@@ -649,7 +497,7 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
     /* If the radio pipeline is the active input, immediately recreate and start the stream
        so changes take effect as soon as the user confirms the setting. */
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        if (rtl_stream_create_mirrored(opts, &state->rtl_ctx) < 0) {
+        if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
             result = -1;
             goto done;
         }
@@ -718,11 +566,6 @@ svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
 }
 
 int
-svc_rtl_set_ppm(dsd_opts* opts, int ppm) {
-    return rtl_stream_request_ppm(opts, ppm);
-}
-
-int
 svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz) {
     if (!opts || !state) {
         return -1;
@@ -780,13 +623,17 @@ svc_rtltcp_set_autotune(dsd_opts* opts, const dsd_state* state, int on) {
     if (!opts) {
         return -1;
     }
-    opts->rtltcp_autotune = on ? 1 : 0;
+    const int requested = on ? 1 : 0;
+    if (state && state->rtl_ctx) {
+        /* Apply live when RTL stream is active. */
+        const int rc = rtl_stream_set_rtltcp_autotune(requested);
+        if (rc != 0) {
+            return rc;
+        }
+    }
+    opts->rtltcp_autotune = requested;
     /* Update env so future restarts inherit */
     dsd_setenv("DSD_NEO_TCP_AUTOTUNE", on ? "1" : "0", 1);
-    if (state && state->rtl_ctx) {
-        /* Apply live when RTL stream is active */
-        rtl_stream_set_rtltcp_autotune(opts->rtltcp_autotune);
-    }
     return 0;
 }
 

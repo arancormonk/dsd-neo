@@ -110,7 +110,7 @@ main(void) {
     state->payload_algidR = 0x89;
     state->payload_keyid = 0x1234;
     state->payload_keyidR = 0x5678;
-    state->p25_p2_enc_lockout_muted[0] = 1U;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state->p25_policy_tg[0] = 0x1234U;
     state->p25_policy_tg[1] = 0x5678U;
     state->p25_mac_frag[0].active = 1U;
@@ -176,8 +176,9 @@ main(void) {
     }
     if (state->payload_mi != 0ULL || state->payload_miR != 0ULL || state->payload_miN != 0ULL
         || state->payload_miP != 0ULL || state->payload_algid != 0 || state->payload_algidR != 0
-        || state->payload_keyid != 0 || state->payload_keyidR != 0 || state->p25_p2_enc_lockout_muted[0] != 0U
-        || state->p25_p2_enc_lockout_muted[1] != 0U || state->p25_policy_tg[0] != 0U || state->p25_policy_tg[1] != 0U) {
+        || state->payload_keyid != 0 || state->payload_keyidR != 0
+        || state->p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN || state->p25_crypto_state[1] != DSD_P25_CRYPTO_UNKNOWN
+        || state->p25_policy_tg[0] != 0U || state->p25_policy_tg[1] != 0U) {
         DSD_FPRINTF(stderr, "initState did not clear payload crypto metadata\n");
         freeState(state);
         free(state);
@@ -215,16 +216,15 @@ main(void) {
         free(state);
         return 19;
     }
-    if (!state->dmr_reliab_buf || state->dmr_reliab_p != state->dmr_reliab_buf + 200 || !state->dmr_soft_buf
-        || state->dmr_soft_p != state->dmr_soft_buf + 200) {
+    if (!state->dmr_soft_buf || state->dmr_soft_p != state->dmr_soft_buf + 200) {
         DSD_FPRINTF(stderr, "initState did not allocate/reset dibit soft-decision buffers\n");
         freeState(state);
         free(state);
         return 9;
     }
     for (int i = 0; i < 200; i++) {
-        if (state->dmr_reliab_buf[i] != 0 || state->dmr_soft_buf[i].reliability != 0
-            || state->dmr_soft_buf[i].llr[0] != 0 || state->dmr_soft_buf[i].llr[1] != 0) {
+        if (state->dmr_soft_buf[i].reliability != 0 || state->dmr_soft_buf[i].llr[0] != 0
+            || state->dmr_soft_buf[i].llr[1] != 0) {
             DSD_FPRINTF(stderr, "initState did not clear dibit soft-decision buffer prefix\n");
             freeState(state);
             free(state);

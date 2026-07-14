@@ -13,6 +13,7 @@
 #include <curses.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -157,7 +158,7 @@ select_k_int_local(int* a, int n, int k) { // NOLINT(misc-use-internal-linkage)
 }
 
 int
-ui_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
+dsd_unicode_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
@@ -232,6 +233,7 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->snr_bias_c4fm = rtl_stream_get_snr_bias_c4fm();
     out->snr_c4fm_db = rtl_stream_get_snr_c4fm();
+    out->spectrum_size = rtl_stream_spectrum_get_size();
     return 0;
 }
 
@@ -248,11 +250,6 @@ dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps) {
 int
 dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     return rtl_stream_spectrum_get(out_db, max_bins, out_rate);
-}
-
-int
-dsd_app_frontend_spectrum_get_size(void) {
-    return rtl_stream_spectrum_get_size();
 }
 
 static int
@@ -660,7 +657,7 @@ test_histogram_and_spectrum_helpers(void) {
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof opts);
     g_has_colors = 1;
-    opts.frontend_display.eye_color = 1;
+    opts.frontend_terminal_display.eye_color = 1;
     render_reset();
     spectrum_draw_cell(&opts, 0, vmax, vmin, vmax, span, 0, 4);
     assert(strcmp(g_render_out, "#") == 0);

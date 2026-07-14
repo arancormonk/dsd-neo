@@ -248,27 +248,4 @@ dsd_mkdtemp(char* tmpl) {
     return tmpl;
 }
 
-int
-dsd_gettimeofday(struct dsd_timeval* tv, void* tz) {
-    (void)tz;
-    if (tv == NULL) {
-        return -1;
-    }
-
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-
-    /* FILETIME is 100-nanosecond intervals since Jan 1, 1601 */
-    /* Convert to Unix epoch (Jan 1, 1970) */
-    /* 116444736000000000 is the number of 100-ns intervals between
-     * Jan 1, 1601 and Jan 1, 1970 */
-    uint64_t filetime_100ns = ((uint64_t)ft.dwHighDateTime << 32) | (uint64_t)ft.dwLowDateTime;
-    uint64_t unix_100ns = filetime_100ns - 116444736000000000ULL;
-
-    tv->tv_sec = (long)(unix_100ns / 10000000ULL);
-    tv->tv_usec = (long)((unix_100ns % 10000000ULL) / 10);
-
-    return 0;
-}
-
 #endif /* DSD_PLATFORM_WIN_NATIVE */

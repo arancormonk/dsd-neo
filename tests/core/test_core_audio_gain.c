@@ -1143,7 +1143,7 @@ test_open_audio_in_device_float_symbol_file_preserves_soft_metadata(void) {
 }
 
 static int
-test_open_audio_in_device_symbol_directory_falls_back_to_pulse(void) {
+test_open_audio_in_device_rejects_symbol_directory(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -1160,8 +1160,8 @@ test_open_audio_in_device_symbol_directory_falls_back_to_pulse(void) {
     state.use_throttle = 1;
     state.symbol_replay_next_deadline_ns = 4567;
 
-    int rc = expect_int_eq("open symbol directory succeeds as fallback", openAudioInDevice(&opts, &state), 0);
-    rc |= expect_int_eq("symbol directory selects pulse fallback", opts.audio_in_type, AUDIO_IN_PULSE);
+    int rc = expect_int_eq("open symbol directory fails", openAudioInDevice(&opts, &state), -1);
+    rc |= expect_int_eq("symbol directory preserves input type", opts.audio_in_type, AUDIO_IN_WAV);
     rc |= expect_true("symbol directory does not open symbol file", opts.symbolfile == NULL);
     rc |= expect_int_eq("symbol directory clears throttle", state.use_throttle, 0);
     rc |= expect_true("symbol directory clears deadline", state.symbol_replay_next_deadline_ns == 0);
@@ -1222,7 +1222,7 @@ main(void) {
     rc |= test_open_audio_in_device_rejects_null_arguments();
     rc |= test_open_audio_in_device_bin_symbol_file_resets_replay_state();
     rc |= test_open_audio_in_device_float_symbol_file_preserves_soft_metadata();
-    rc |= test_open_audio_in_device_symbol_directory_falls_back_to_pulse();
+    rc |= test_open_audio_in_device_rejects_symbol_directory();
     rc |= test_async_output_policy_keeps_file_replays_synchronous();
     return rc;
 }

@@ -161,33 +161,33 @@ dsd_app_request_redraw(void) {
 }
 
 int
-dsd_app_consume_redraw_requested(void) {
+dsd_app_frontend_redraw_consume(void) {
     int requested = g_redraw_requested;
     g_redraw_requested = 0;
     return requested;
 }
 
 void
-ncursesOpen(dsd_opts* opts, dsd_state* state) {
+dsd_terminal_open(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_ncurses_open_calls++;
 }
 
 void
-ncursesClose(void) {
+dsd_terminal_close(void) {
     g_ncurses_close_calls++;
 }
 
 void
-ncursesPrinter(dsd_opts* opts, dsd_state* state) {
+dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
     g_printer_calls++;
     g_printer_opts = opts;
     g_printer_state = state;
 }
 
 uint8_t
-ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
+dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
     (void)opts;
     (void)state;
     g_ncurses_input_calls++;
@@ -291,7 +291,7 @@ test_ui_start_failure_resets_state(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.frontend_display.terminal_history = 2;
+    opts.frontend_terminal_display.terminal_history = 2;
 
     g_create_calls = 0;
     g_join_calls = 0;
@@ -316,7 +316,7 @@ test_ui_start_stop_idempotency_and_control_pump(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    opts.frontend_display.terminal_history = 1;
+    opts.frontend_terminal_display.terminal_history = 1;
 
     g_create_calls = 0;
     g_join_calls = 0;

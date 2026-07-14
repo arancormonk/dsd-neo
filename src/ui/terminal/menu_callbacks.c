@@ -11,6 +11,7 @@
 #include "menu_callbacks.h"
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -462,10 +463,9 @@ cb_key_rc4des(void* v, const char* text) {
         return;
     }
     if (text && *text) {
-        unsigned long long th = 0ULL;
-        if (parse_hex_u64(text, &th)) {
-            uint64_t r = th;
-            (void)dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, r);
+        uint64_t key = 0U;
+        if (dsd_parse_uint64_strict(text, 16, UINT64_MAX, &key) == 0) {
+            (void)dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, key);
         }
     }
 }
@@ -473,11 +473,11 @@ cb_key_rc4des(void* v, const char* text) {
 // ---- Multi-step callbacks ----
 
 static int
-parse_required_hex(const char* text, unsigned long long* out) {
+parse_required_hex(const char* text, uint64_t* out) {
     if (!text || !*text || !out) {
         return 0;
     }
-    return parse_hex_u64(text, out) ? 1 : 0;
+    return dsd_parse_uint64_strict(text, 16, UINT64_MAX, out) == 0;
 }
 
 static const char*
@@ -518,7 +518,7 @@ cb_hytera_step(void* u, const char* text) {
     if (!hc) {
         return;
     }
-    unsigned long long t = 0ULL;
+    uint64_t t = 0U;
     if (!text || !*text) {
         ui_statusf("Hytera key entry canceled");
         free(hc);
@@ -559,7 +559,7 @@ cb_aes_step(void* u, const char* text) {
     if (!ac) {
         return;
     }
-    unsigned long long t = 0ULL;
+    uint64_t t = 0U;
     if (!text || !*text) {
         ui_statusf("AES key entry canceled");
         free(ac);
@@ -598,7 +598,7 @@ cb_p2_step(void* u, const char* text) {
     if (!pc) {
         return;
     }
-    unsigned long long t = 0ULL;
+    uint64_t t = 0U;
     if (!text || !*text) {
         ui_statusf("Phase 2 parameter entry canceled");
         free(pc);
@@ -760,7 +760,7 @@ cb_udp_in_port(void* u, int ok, int port) {
 
     DSD_SNPRINTF(payload.bind, sizeof payload.bind, "%s", ctx->addr);
     payload.port = ctx->port;
-    (void)dsd_app_command_set_udp_input(payload.bind, payload.port);
+    (void)dsd_app_command_set_endpoint(DSD_APP_CMD_UDP_INPUT_CFG, payload.bind, payload.port);
     ui_statusf("UDP input set requested: %s:%d", ctx->addr, ctx->port);
     free(ctx);
 }

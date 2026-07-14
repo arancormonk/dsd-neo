@@ -37,13 +37,6 @@ void nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_
 void nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok);
 
 /**
- * Return whether full Shift-JIS multibyte decoding support is available.
- *
- * When unavailable, decoding falls back to ASCII + half-width katakana.
- */
-int nxdn_alias_shift_jis_full_available(void);
-
-/**
  * Best-effort Shift-JIS style text decode to UTF-8.
  *
  * Uses full Shift-JIS conversion when available at build time. Otherwise,

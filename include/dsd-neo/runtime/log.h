@@ -12,8 +12,7 @@
  * @file
  * @brief Runtime logging interface used across DSD-neo components.
  *
- * Declares log severity levels, the core logging write routine, and convenience
- * macros. The implementation currently forwards messages to `stderr`.
+ * Declares log severity levels, the core write routine, and convenience macros.
  */
 
 /**
@@ -26,26 +25,15 @@ typedef enum DSD_ATTR_PACKED {
     LOG_LEVEL_DEBUG = 3
 } dsd_neo_log_level_t;
 
-typedef void (*dsd_neo_log_sink_write_fn)(dsd_neo_log_level_t level, const char* message, void* context);
-
-typedef struct dsd_neo_log_sink {
-    dsd_neo_log_sink_write_fn write;
-    void* context;
-    int mirror_stderr;
-} dsd_neo_log_sink;
-
 /* Compile-time log level control (default to INFO) */
 #ifndef DSD_NEO_LOG_LEVEL
 #define DSD_NEO_LOG_LEVEL LOG_LEVEL_INFO
 #endif
 
 /**
- * @brief Write a formatted log message to the logging sink.
+ * @brief Write a formatted log message to stderr.
  *
- * Currently forwards to `stderr`. The `level` parameter is reserved for future
- * runtime gating and may be used to filter messages at runtime.
- *
- * @param level  Log severity level (currently not used for filtering).
+ * @param level  Log severity for the message.
  * @param format printf-style format string.
  * @param ...    Variadic arguments corresponding to `format`.
  */
@@ -53,8 +41,6 @@ typedef struct dsd_neo_log_sink {
 extern "C" {
 #endif
 void dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) DSD_ATTR_FORMAT(printf, 2, 3);
-void dsd_neo_log_sink_set(const dsd_neo_log_sink* sink);
-void dsd_neo_log_sink_reset(void);
 #ifdef __cplusplus
 }
 #endif
@@ -91,16 +77,5 @@ void dsd_neo_log_sink_reset(void);
         /* Debug logging disabled */                                                                                   \
     } while (0)
 #endif
-
-/* Convenience macros for specific message types */
-
-/* For warnings with WARNING: prefix */
-#define LOG_WARNING(...)  LOG_WARN("WARNING: " __VA_ARGS__)
-
-/* For notices with NOTICE: prefix */
-#define LOG_NOTICE(...)   LOG_INFO("NOTICE: " __VA_ARGS__)
-
-/* For critical errors that may exit */
-#define LOG_CRITICAL(...) LOG_ERROR(__VA_ARGS__)
 
 #endif /* DSD_NEO_LOG_H */

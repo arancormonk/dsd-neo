@@ -4,7 +4,7 @@
  */
 /*-------------------------------------------------------------------------------
 * dsd_ncurses_handler.c
-* DSD-FME ncurses terminal user input handler
+* Terminal user input handler
 *
 * LWVMOBILE
 * 2025-05 DSD-FME Florida Man Edition
@@ -38,16 +38,6 @@ ncurses_drain_escape_sequence(void) {
     while ((ch2 = getch()) != ERR) {
         (void)ch2;
     }
-}
-
-static void
-ncurses_post_delta_i32(int cmd, int32_t value) {
-    (void)dsd_app_command_set_i32(cmd, value);
-}
-
-static void
-ncurses_post_delta_f32(int cmd, float value) {
-    (void)dsd_app_command_set_float(cmd, value);
 }
 
 static uint32_t DSD_ATTR_USED
@@ -153,21 +143,27 @@ ncurses_handle_escape_or_history(dsd_opts* opts, dsd_state* state, int c) {
 static int DSD_ATTR_USED
 ncurses_handle_delta_keys(int c) {
     switch (c) {
-        case DSD_KEY_GAIN_PLUS: ncurses_post_delta_i32(DSD_APP_CMD_GAIN_DELTA, +1); return 1;
-        case DSD_KEY_GAIN_MINUS: ncurses_post_delta_i32(DSD_APP_CMD_GAIN_DELTA, -1); return 1;
-        case DSD_KEY_AGAIN_PLUS: ncurses_post_delta_i32(DSD_APP_CMD_AGAIN_DELTA, +1); return 1;
-        case DSD_KEY_AGAIN_MINUS: ncurses_post_delta_i32(DSD_APP_CMD_AGAIN_DELTA, -1); return 1;
-        case DSD_KEY_CONST_GATE_DEC: ncurses_post_delta_f32(DSD_APP_CMD_CONST_GATE_DELTA, -0.02f); return 1;
-        case DSD_KEY_CONST_GATE_INC: ncurses_post_delta_f32(DSD_APP_CMD_CONST_GATE_DELTA, +0.02f); return 1;
-        case DSD_KEY_PPM_UP: ncurses_post_delta_i32(DSD_APP_CMD_PPM_DELTA, +1); return 1;
-        case DSD_KEY_PPM_DOWN: ncurses_post_delta_i32(DSD_APP_CMD_PPM_DELTA, -1); return 1;
+        case DSD_KEY_GAIN_PLUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, +1); return 1;
+        case DSD_KEY_GAIN_MINUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, -1); return 1;
+        case DSD_KEY_AGAIN_PLUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_AGAIN_DELTA, +1); return 1;
+        case DSD_KEY_AGAIN_MINUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_AGAIN_DELTA, -1); return 1;
+        case DSD_KEY_CONST_GATE_DEC: (void)dsd_app_command_set_float(DSD_APP_CMD_CONST_GATE_DELTA, -0.02f); return 1;
+        case DSD_KEY_CONST_GATE_INC: (void)dsd_app_command_set_float(DSD_APP_CMD_CONST_GATE_DELTA, +0.02f); return 1;
+        case DSD_KEY_PPM_UP: (void)dsd_app_command_set_i32(DSD_APP_CMD_PPM_DELTA, +1); return 1;
+        case DSD_KEY_PPM_DOWN: (void)dsd_app_command_set_i32(DSD_APP_CMD_PPM_DELTA, -1); return 1;
 #ifdef USE_RTLSDR
-        case DSD_KEY_SPEC_DEC:
-            ncurses_post_delta_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, -(dsd_app_frontend_spectrum_get_size() / 2));
+        case DSD_KEY_SPEC_DEC: {
+            dsd_frontend_metrics metrics;
+            (void)dsd_app_frontend_get_metrics(&metrics);
+            (void)dsd_app_command_set_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, -(metrics.spectrum_size / 2));
             return 1;
-        case DSD_KEY_SPEC_INC:
-            ncurses_post_delta_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, +(dsd_app_frontend_spectrum_get_size()));
+        }
+        case DSD_KEY_SPEC_INC: {
+            dsd_frontend_metrics metrics;
+            (void)dsd_app_frontend_get_metrics(&metrics);
+            (void)dsd_app_command_set_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, +metrics.spectrum_size);
             return 1;
+        }
 #endif
         default: return 0;
     }
@@ -204,7 +200,7 @@ ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c)
 }
 
 uint8_t
-ncurses_input_handler(dsd_opts* opts, dsd_state* state, int c) {
+dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
 
     if (!opts || !state) {
         return 1;

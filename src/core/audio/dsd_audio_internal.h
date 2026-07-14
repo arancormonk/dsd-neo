@@ -8,6 +8,10 @@
 
 #include <dsd-neo/core/opts.h>
 
+#include <sndfile.h>
+
+void dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context);
+
 static inline int
 dsd_audio_input_type_uses_async_output(int audio_in_type, int playfiles, const char* audio_in_dev, int m17decoderip) {
     if (playfiles == 1) {

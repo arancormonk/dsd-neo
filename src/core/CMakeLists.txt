@@ -5,6 +5,7 @@ target_sources(
     PRIVATE
         audio/dsd_audio.c
         audio/dsd_audio2.c
+        audio/dispatch.c
         audio/dsd_audio_gate.c
         audio/gain.c
         audio/mix.c
@@ -12,19 +13,17 @@ target_sources(
         audio/dsd_upsample.c
         vocoder/keyring.c
         vocoder/dsd_mbe.c
-        vocoder/dsd_mbe2.c
         vocoder/dsd_mbe_purge.c
         frames/dsd_frame.c
         frames/dsd_dibit.c
         time/dsd_time.c
         time/dsd_time_state.c
-        util/dsd_cleanup.c
         util/dsd_misc.c
+        util/bit_packing.c
         util/dsd_init.c
         util/dsd_events.c
         util/edacs_afs.c
         util/dsd_alias.c
-        util/dsd_reset.c
         util/talkgroup_policy.c
         util/synctype.c
         file/dsd_file.c

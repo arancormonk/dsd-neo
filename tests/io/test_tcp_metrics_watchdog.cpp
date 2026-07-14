@@ -29,15 +29,6 @@ expect_int(const char* label, int got, int want) {
     return 0;
 }
 
-static int
-expect_true(const char* label, int cond) {
-    if (!cond) {
-        DSD_FPRINTF(stderr, "FAIL: %s\n", label);
-        return 1;
-    }
-    return 0;
-}
-
 /**
  * @brief Watchdog does NOT trigger during 5s grace period even with 0 bytes.
  *
@@ -206,20 +197,16 @@ test_watchdog_latch_survives_reset_until_healthy_window(void) {
     int fired = tcp_metrics_record_recv(&m, 0, conn_ns + 8500000000ULL);
     rc |= expect_int("watchdog fires before reset", fired, 1);
 
-    struct tcp_quality_snapshot snap = tcp_metrics_get_snapshot(&m);
-    rc |= expect_int("watchdog snapshot latched", snap.watchdog_triggered, 1);
+    rc |= expect_int("watchdog event latched", m.watchdog_trigger_latched, 1);
 
     tcp_metrics_reset(&m, 48000);
-    snap = tcp_metrics_get_snapshot(&m);
-    rc |= expect_int("watchdog survives reconnect reset", snap.watchdog_triggered, 1);
+    rc |= expect_int("watchdog survives reconnect reset", m.watchdog_trigger_latched, 1);
 
     uint64_t reset_ns = m.connection_established_ns;
     fired = tcp_metrics_record_recv(&m, 600000, reset_ns + 5500000000ULL);
     rc |= expect_int("healthy window does not fire", fired, 0);
 
-    snap = tcp_metrics_get_snapshot(&m);
-    rc |= expect_int("healthy window clears latch", snap.watchdog_triggered, 0);
-    rc |= expect_true("healthy window ratio is nonzero", snap.throughput_ratio > 0.0f);
+    rc |= expect_int("healthy window clears latch", m.watchdog_trigger_latched, 0);
 
     return rc;
 }

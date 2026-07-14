@@ -43,8 +43,17 @@ check_int(const char* name, int expected, int actual) {
     }
 }
 
+static void
+attach_history_fixture(struct dsd_state* state, float* history, int symbols) {
+    DSD_MEMSET(history, 0, sizeof(*history) * (size_t)symbols);
+    state->symbol_history = history;
+    state->symbol_history_size = symbols;
+    state->symbol_history_head = 0;
+    state->symbol_history_count = 0;
+}
+
 /**
- * @brief Test symbol history initialization and basic operations.
+ * @brief Test symbol history basic operations.
  */
 static void
 test_history_basic_ops(void) {
@@ -52,10 +61,9 @@ test_history_basic_ops(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
-    /* Initialize history */
-    int rc = dsd_symbol_history_init(&state, 64);
-    check_int("init return", 0, rc);
+    attach_history_fixture(&state, history, 64);
     check_int("initial count", 0, dsd_symbol_history_count(&state));
 
     /* Push some symbols */
@@ -64,10 +72,9 @@ test_history_basic_ops(void) {
     dsd_symbol_history_push(&state, 3.0f);
     check_int("count after push", 3, dsd_symbol_history_count(&state));
 
-    rc = dsd_symbol_history_init(&state, 2);
-    check_int("reinit return", 0, rc);
-    check_int("reinit count", 0, dsd_symbol_history_count(&state));
-    check_int("reinit size", 2, state.dmr_sample_history_size);
+    attach_history_fixture(&state, history, 2);
+    check_int("fixture count", 0, dsd_symbol_history_count(&state));
+    check_int("fixture size", 2, state.symbol_history_size);
 
     dsd_symbol_history_push(&state, 4.0f);
     dsd_symbol_history_push(&state, 5.0f);
@@ -76,35 +83,10 @@ test_history_basic_ops(void) {
     check_float("get_back(0)", 5.0f, dsd_symbol_history_get_back(&state, 0), FLOAT_TOL);
     check_float("get_back(1)", 4.0f, dsd_symbol_history_get_back(&state, 1), FLOAT_TOL);
 
-    /* Reset and verify empty */
-    dsd_symbol_history_reset(&state);
+    attach_history_fixture(&state, history, 2);
     check_int("count after reset", 0, dsd_symbol_history_count(&state));
 
-    /* Free */
-    dsd_symbol_history_free(&state);
-    check_int("count after free", 0, state.dmr_sample_history_count);
-
     printf("test_history_basic_ops: passed\n\n");
-}
-
-static void
-test_history_guards(void) {
-    printf("=== test_history_guards ===\n");
-
-    static struct dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
-
-    check_int("init null state", -1, dsd_symbol_history_init(NULL, 8));
-    check_int("init zero symbols", -1, dsd_symbol_history_init(&state, 0));
-
-    dsd_symbol_history_reset(NULL);
-    dsd_symbol_history_reset(&state);
-    dsd_symbol_history_free(NULL);
-
-    check_int("guard size unchanged", 0, state.dmr_sample_history_size);
-    check_int("guard count unchanged", 0, state.dmr_sample_history_count);
-
-    printf("test_history_guards: passed\n\n");
 }
 
 /**
@@ -116,10 +98,9 @@ test_history_wraparound(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[4];
 
-    /* Small buffer for easy wrap testing */
-    int rc = dsd_symbol_history_init(&state, 4);
-    check_int("init return", 0, rc);
+    attach_history_fixture(&state, history, 4);
 
     /* Push 6 symbols to force wrap */
     for (int i = 1; i <= 6; i++) {
@@ -138,7 +119,6 @@ test_history_wraparound(void) {
     /* Out of range should return 0 */
     check_float("get_back(4) oob", 0.0f, dsd_symbol_history_get_back(&state, 4), FLOAT_TOL);
 
-    dsd_symbol_history_free(&state);
     printf("test_history_wraparound: passed\n\n");
 }
 
@@ -151,13 +131,13 @@ test_warm_start_ideal(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
     static struct dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
-    /* Initialize history */
-    dsd_symbol_history_init(&state, 64);
+    attach_history_fixture(&state, history, 64);
 
     /* Push a 24-symbol outer-only sync pattern (12 x +3, 12 x -3) */
     float pattern[] = {+3.0f, -3.0f, +3.0f, +3.0f, +3.0f, +3.0f, -3.0f, -3.0f, +3.0f, -3.0f, +3.0f, +3.0f,
@@ -179,7 +159,6 @@ test_warm_start_ideal(void) {
     check_float("umid", 1.875f, state.umid, FLOAT_TOL);
     check_float("lmid", -1.875f, state.lmid, FLOAT_TOL);
 
-    dsd_symbol_history_free(&state);
     printf("test_warm_start_ideal: passed\n\n");
 }
 
@@ -192,12 +171,13 @@ test_warm_start_dc_offset(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
     static struct dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
-    dsd_symbol_history_init(&state, 64);
+    attach_history_fixture(&state, history, 64);
 
     /* Sync pattern with +0.5 DC offset */
     float dc = 0.5f;
@@ -215,7 +195,6 @@ test_warm_start_dc_offset(void) {
     check_float("min", -2.5f, state.min, FLOAT_TOL);
     check_float("center", 0.5f, state.center, FLOAT_TOL);
 
-    dsd_symbol_history_free(&state);
     printf("test_warm_start_dc_offset: passed\n\n");
 }
 
@@ -231,12 +210,9 @@ test_center_only_warm_start(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
-    static struct dsd_opts opts;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    opts.msize = 64;
-
-    dsd_symbol_history_init(&state, 64);
+    attach_history_fixture(&state, history, 64);
 
     /* Seed state with sentinel values to ensure only center changes. */
     state.center = 123.0f;
@@ -256,7 +232,7 @@ test_center_only_warm_start(void) {
         dsd_symbol_history_push(&state, -3.0f + dc);
     }
 
-    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&opts, &state, 24);
+    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&state, 24);
     check_int("center_only result", DSD_WARM_START_OK, result);
     check_float("center", dc, state.center, FLOAT_TOL);
 
@@ -268,7 +244,6 @@ test_center_only_warm_start(void) {
     check_float("maxref unchanged", 8.0f, state.maxref, FLOAT_TOL);
     check_float("minref unchanged", -8.0f, state.minref, FLOAT_TOL);
 
-    dsd_symbol_history_free(&state);
     printf("test_center_only_warm_start: passed\n\n");
 }
 
@@ -281,12 +256,9 @@ test_center_only_large_bias(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
-    static struct dsd_opts opts;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    opts.msize = 64;
-
-    dsd_symbol_history_init(&state, 64);
+    attach_history_fixture(&state, history, 64);
 
     /* DC bias large enough that both clusters are positive. */
     float dc = 10.0f;
@@ -295,11 +267,10 @@ test_center_only_large_bias(void) {
         dsd_symbol_history_push(&state, -3.0f + dc);
     }
 
-    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&opts, &state, 20);
+    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&state, 20);
     check_int("center_only result", DSD_WARM_START_OK, result);
     check_float("center", dc, state.center, FLOAT_TOL);
 
-    dsd_symbol_history_free(&state);
     printf("test_center_only_large_bias: passed\n\n");
 }
 
@@ -309,35 +280,32 @@ test_center_only_failure_modes(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[8];
 
-    static struct dsd_opts opts;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-
-    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&opts, NULL, 24);
+    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(NULL, 24);
     check_int("center null state", DSD_WARM_START_NULL_STATE, result);
 
-    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 1);
+    result = dsd_sync_warm_start_center_outer_only(&state, 1);
     check_int("center invalid length", DSD_WARM_START_DEGENERATE, result);
 
-    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 4);
+    result = dsd_sync_warm_start_center_outer_only(&state, 4);
     check_int("center no history", DSD_WARM_START_NO_HISTORY, result);
 
-    dsd_symbol_history_init(&state, 8);
+    attach_history_fixture(&state, history, 8);
     dsd_symbol_history_push(&state, -3.0f);
     dsd_symbol_history_push(&state, -3.0f);
     dsd_symbol_history_push(&state, 3.0f);
-    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 3);
+    result = dsd_sync_warm_start_center_outer_only(&state, 3);
     check_int("center singleton high cluster", DSD_WARM_START_DEGENERATE, result);
 
-    dsd_symbol_history_reset(&state);
+    attach_history_fixture(&state, history, 8);
     dsd_symbol_history_push(&state, -0.2f);
     dsd_symbol_history_push(&state, -0.2f);
     dsd_symbol_history_push(&state, 0.2f);
     dsd_symbol_history_push(&state, 0.2f);
-    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 4);
+    result = dsd_sync_warm_start_center_outer_only(&state, 4);
     check_int("center small span", DSD_WARM_START_DEGENERATE, result);
 
-    dsd_symbol_history_free(&state);
     printf("test_center_only_failure_modes: passed\n\n");
 }
 
@@ -347,21 +315,18 @@ test_center_only_large_sync_uses_heap_sorted_copy(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[80];
 
-    static struct dsd_opts opts;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-
-    dsd_symbol_history_init(&state, 80);
+    attach_history_fixture(&state, history, 80);
     for (int i = 0; i < 35; i++) {
         dsd_symbol_history_push(&state, -2.0f);
         dsd_symbol_history_push(&state, 4.0f);
     }
 
-    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&opts, &state, 70);
+    dsd_warm_start_result_t result = dsd_sync_warm_start_center_outer_only(&state, 70);
     check_int("center large sync result", DSD_WARM_START_OK, result);
     check_float("center large sync", 1.0f, state.center, FLOAT_TOL);
 
-    dsd_symbol_history_free(&state);
     printf("test_center_only_large_sync_uses_heap_sorted_copy: passed\n\n");
 }
 
@@ -374,12 +339,13 @@ test_warm_start_insufficient_history(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
     static struct dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
-    dsd_symbol_history_init(&state, 64);
+    attach_history_fixture(&state, history, 64);
 
     /* Push only 10 symbols but request 24 */
     for (int i = 0; i < 10; i++) {
@@ -389,7 +355,6 @@ test_warm_start_insufficient_history(void) {
     dsd_warm_start_result_t result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 24);
     check_int("warm_start result", DSD_WARM_START_NO_HISTORY, result);
 
-    dsd_symbol_history_free(&state);
     printf("test_warm_start_insufficient_history: passed\n\n");
 }
 
@@ -402,12 +367,13 @@ test_warm_start_degenerate(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
     static struct dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 64;
 
-    dsd_symbol_history_init(&state, 64);
+    attach_history_fixture(&state, history, 64);
 
     /* Push all positive symbols (no negative) */
     for (int i = 0; i < 24; i++) {
@@ -418,7 +384,7 @@ test_warm_start_degenerate(void) {
     check_int("warm_start result (all pos)", DSD_WARM_START_DEGENERATE, result);
 
     /* Now test very small span */
-    dsd_symbol_history_reset(&state);
+    attach_history_fixture(&state, history, 64);
     for (int i = 0; i < 12; i++) {
         dsd_symbol_history_push(&state, 0.3f);
         dsd_symbol_history_push(&state, -0.3f);
@@ -427,7 +393,6 @@ test_warm_start_degenerate(void) {
     result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 24);
     check_int("warm_start result (small span)", DSD_WARM_START_DEGENERATE, result);
 
-    dsd_symbol_history_free(&state);
     printf("test_warm_start_degenerate: passed\n\n");
 }
 
@@ -442,6 +407,7 @@ test_warm_start_various_sync_lengths(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
     static struct dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -453,7 +419,7 @@ test_warm_start_various_sync_lengths(void) {
 
     for (int t = 0; t < num_lengths; t++) {
         int sync_len = sync_lengths[t];
-        dsd_symbol_history_init(&state, 64);
+        attach_history_fixture(&state, history, 64);
 
         /* Push alternating +3/-3 pattern */
         for (int i = 0; i < sync_len; i++) {
@@ -471,8 +437,6 @@ test_warm_start_various_sync_lengths(void) {
 
         DSD_SNPRINTF(buf, sizeof(buf), "sync_len=%d min", sync_len);
         check_float(buf, -3.0f, state.min, FLOAT_TOL);
-
-        dsd_symbol_history_free(&state);
     }
 
     printf("test_warm_start_various_sync_lengths: passed\n\n");
@@ -510,12 +474,13 @@ test_buffer_prefill(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
     static struct dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 32;
 
-    dsd_symbol_history_init(&state, 64);
+    attach_history_fixture(&state, history, 64);
 
     /* Push sync pattern */
     for (int i = 0; i < 24; i++) {
@@ -545,7 +510,6 @@ test_buffer_prefill(void) {
         g_fail_count++;
     }
 
-    dsd_symbol_history_free(&state);
     printf("test_buffer_prefill: passed\n\n");
 }
 
@@ -555,12 +519,13 @@ test_warm_start_prefill_clamps_to_internal_buffer(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
 
     static struct dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.msize = 2048;
 
-    dsd_symbol_history_init(&state, 64);
+    attach_history_fixture(&state, history, 64);
     for (int i = 0; i < 24; i++) {
         dsd_symbol_history_push(&state, (i % 2 == 0) ? 3.0f : -3.0f);
     }
@@ -570,7 +535,6 @@ test_warm_start_prefill_clamps_to_internal_buffer(void) {
     check_float("maxbuf last clamped", 3.0f, state.maxbuf[1023], FLOAT_TOL);
     check_float("minbuf last clamped", -3.0f, state.minbuf[1023], FLOAT_TOL);
 
-    dsd_symbol_history_free(&state);
     printf("test_warm_start_prefill_clamps_to_internal_buffer: passed\n\n");
 }
 
@@ -580,27 +544,25 @@ test_warm_start_disabled_env(void) {
 
     static struct dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[4];
+    attach_history_fixture(&state, history, 4);
 
     static struct dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
-
-    dsd_symbol_history_init(&state, 4);
-    dsd_symbol_history_push(&state, -3.0f);
-    dsd_symbol_history_push(&state, -3.0f);
-    dsd_symbol_history_push(&state, 3.0f);
-    dsd_symbol_history_push(&state, 3.0f);
+    for (int i = 0; i < 4; i++) {
+        dsd_symbol_history_push(&state, (i < 2) ? -3.0f : 3.0f);
+    }
 
     (void)dsd_setenv("DSD_NEO_SYNC_WARMSTART", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_warm_start_result_t result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 4);
     check_int("thresholds disabled", DSD_WARM_START_DISABLED, result);
-    result = dsd_sync_warm_start_center_outer_only(&opts, &state, 4);
+    result = dsd_sync_warm_start_center_outer_only(&state, 4);
     check_int("center disabled", DSD_WARM_START_DISABLED, result);
 
     (void)dsd_unsetenv("DSD_NEO_SYNC_WARMSTART");
-    dsd_neo_config_init(NULL);
-    dsd_symbol_history_free(&state);
+    dsd_neo_config_init();
     printf("test_warm_start_disabled_env: passed\n\n");
 }
 
@@ -610,7 +572,6 @@ main(void) {
     printf("======================================\n\n");
 
     test_history_basic_ops();
-    test_history_guards();
     test_history_wraparound();
     test_warm_start_ideal();
     test_warm_start_dc_offset();
@@ -625,7 +586,6 @@ main(void) {
     test_buffer_prefill();
     test_warm_start_prefill_clamps_to_internal_buffer();
     test_warm_start_disabled_env();
-
     printf("======================================\n");
     printf("Tests: %d, Failures: %d\n", g_test_count, g_fail_count);
 

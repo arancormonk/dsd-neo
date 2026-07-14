@@ -440,20 +440,6 @@ test_input_rate_preserves_48k_effective_timing_for_24000(void) {
 }
 
 static int
-test_linear_upsample_block_ends_on_current_sample(void) {
-    float out[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    size_t n = dsd_audio_linear_upsample_block_f32(0.0f, 4.0f, 4, out, 4);
-
-    int rc = 0;
-    rc |= expect_int_eq("linear block writes requested sample count", (int)n, 4);
-    rc |= expect_float_eq("linear block sample 0", out[0], 1.0f);
-    rc |= expect_float_eq("linear block sample 1", out[1], 2.0f);
-    rc |= expect_float_eq("linear block sample 2", out[2], 3.0f);
-    rc |= expect_float_eq("linear block sample 3 reaches current sample", out[3], 4.0f);
-    return rc;
-}
-
-static int
 test_source_effective_input_rate_classifier(void) {
     dsd_opts* opts = alloc_opts();
     if (!opts) {
@@ -899,7 +885,6 @@ main(void) {
     rc |= test_input_rate_rescale_for_44100();
     rc |= test_input_rate_rejects_unsupported_staged_upsample_factor();
     rc |= test_input_rate_preserves_48k_effective_timing_for_24000();
-    rc |= test_linear_upsample_block_ends_on_current_sample();
     rc |= test_source_effective_input_rate_classifier();
     rc |= test_current_input_timing_rate_prefers_active_backend();
     rc |= test_open_audio_in_device_extensionless_raw_uses_headless_rate();

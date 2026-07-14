@@ -23,7 +23,4 @@ void env_set_double(const char* name, double v);
 // After changing env-backed runtime config, re-parse to apply immediately.
 void env_reparse_runtime_cfg(dsd_opts* opts);
 
-// Hex string parsing utility used by key entry callbacks
-int parse_hex_u64(const char* s, unsigned long long* out);
-
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_ENV_H_ */

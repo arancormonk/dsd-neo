@@ -23,9 +23,9 @@
  * ilyacodes
  * 2024-03 rewrite EDACS standard parsing to spec, add reverse-engineered EA messages
  *-----------------------------------------------------------------------------*/
+
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -48,17 +48,18 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <sys/types.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "edacs_internal.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
@@ -75,46 +76,6 @@ edacs_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t samp
         LOG_WARN("%s: wrote %lld/%lld samples to WAV output", context, (long long)written, (long long)sample_count);
     }
 }
-
-#ifdef DSD_NEO_TEST_HOOKS
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-void dsd_neo_edacs_test_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long int msg_1,
-                                            unsigned long long int msg_2);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-const char* dsd_neo_edacs_test_lcn_status_string(int lcn);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-short dsd_neo_edacs_test_apply_input_volume(int multiplier, short sample);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unsigned long long int dsd_neo_edacs_test_vote_frames(unsigned long long int fr_1_4, unsigned long long int fr_2_5,
-                                                      unsigned long long int fr_3_6);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int dsd_neo_edacs_test_update_squelch_count(double pwr, double sql, int count);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int dsd_neo_edacs_test_should_release_voice(unsigned long long int sr, int sql_disabled, time_t start_time,
-                                            double no_sql_watchdog_s);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-void dsd_neo_edacs_test_update_lcn_count(dsd_state* state, int lcn);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-void dsd_neo_edacs_test_build_raw_frames(const int edacs_bit[241], unsigned long long int* fr_1,
-                                         unsigned long long int* fr_2, unsigned long long int* fr_3,
-                                         unsigned long long int* fr_4, unsigned long long int* fr_5,
-                                         unsigned long long int* fr_6);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unsigned long long int dsd_neo_edacs_test_build_symbol_register(const dsd_opts* opts, dsd_state* state,
-                                                                const short analog1[960]);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-void dsd_neo_edacs_test_reset_digitize_overflow(dsd_state* state);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int dsd_neo_edacs_test_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2,
-                                              short* analog3, double* pwr);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-void dsd_neo_edacs_test_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
-                                          const short* analog3);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int dsd_neo_edacs_test_static_wav_downsample(const short* src, short* out, size_t out_count);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-double dsd_neo_edacs_test_no_sql_watchdog_window(double trunk_hangtime);
-#endif
 
 static void
 edacs_print_group_label(const dsd_state* state, uint32_t id) {
@@ -157,8 +118,8 @@ is_dotting_sequence_candidate(uint64_t sr) {
     return (da <= max_bit_errors || db <= max_bit_errors) ? 1 : 0;
 }
 
-static char*
-getLcnStatusString(int lcn) {
+const char*
+edacs_lcn_status_string(int lcn) {
     if (lcn == 26 || lcn == 27) {
         return "[Reserved LCN Status]";
     }
@@ -191,8 +152,8 @@ isFleetCallGroup(int afs, const dsd_state* state) {
 }
 
 //Bitwise vote-compare the three copies of a message received. Note that fr_2 and fr_5 are transmitted inverted.
-static unsigned long long int
-edacsVoteFr(unsigned long long int fr_1_4, unsigned long long int fr_2_5, unsigned long long int fr_3_6) {
+unsigned long long
+edacs_vote_frames(unsigned long long fr_1_4, unsigned long long fr_2_5, unsigned long long fr_3_6) {
     fr_2_5 = (~fr_2_5) & 0xFFFFFFFFFF;
 
     unsigned long long int msg_result = 0;
@@ -211,7 +172,7 @@ edacsVoteFr(unsigned long long int fr_1_4, unsigned long long int fr_2_5, unsign
     return msg_result & 0xFFFFFFFFFF;
 }
 
-static short
+short
 edacs_apply_input_volume(const dsd_opts* opts, short sample) {
     if (opts->input_volume_multiplier <= 1) {
         return sample;
@@ -245,7 +206,7 @@ edacs_fill_analog_block_tcp(dsd_opts* opts, dsd_state* state, short* block) {
             opts->tcp_in_ctx = NULL;
             DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected (EDACS Analog).\n");
             DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
-            cleanupAndExit(opts, state);
+            dsd_request_shutdown(opts, state);
             return 0;
         }
         block[i] = edacs_apply_input_volume(opts, sample);
@@ -253,15 +214,17 @@ edacs_fill_analog_block_tcp(dsd_opts* opts, dsd_state* state, short* block) {
     return 1;
 }
 
-static void
-edacs_fill_analog_block_udp(dsd_opts* opts, short* block) {
+static int
+edacs_fill_analog_block_udp(dsd_opts* opts, dsd_state* state, short* block) {
     short sample = 0;
     for (int i = 0; i < 960; i++) {
         if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&sample)) {
-            sample = 0;
+            dsd_request_shutdown(opts, state);
+            return 0;
         }
         block[i] = edacs_apply_input_volume(opts, sample);
     }
+    return 1;
 }
 
 #ifdef USE_RADIO
@@ -270,12 +233,12 @@ edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block) {
     float rtl_sample = 0.0f;
     for (int i = 0; i < 960; i++) {
         if (!state->rtl_ctx) {
-            cleanupAndExit(opts, state);
+            dsd_request_shutdown(opts, state);
             return 0;
         }
         int got = 0;
         if (dsd_rtl_stream_io_hook_read(state, &rtl_sample, 1, &got) < 0 || got != 1) {
-            cleanupAndExit(opts, state);
+            dsd_request_shutdown(opts, state);
             return 0;
         }
         rtl_sample *= opts->rtl_volume_multiplier;
@@ -286,61 +249,90 @@ edacs_fill_analog_block_rtl(dsd_opts* opts, dsd_state* state, short* block) {
 #endif
 
 static int
-edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
-                             double* pwr) {
-    if (opts->audio_in_type == AUDIO_IN_PULSE) {
-        edacs_fill_analog_block_pulse(opts, analog1);
-        edacs_fill_analog_block_pulse(opts, analog2);
-        edacs_fill_analog_block_pulse(opts, analog3);
-        *pwr = raw_pwr(analog3, 960, 1);
-        return 1;
-    }
+edacs_analog_triplet_args_valid(const dsd_opts* opts, const dsd_state* state, const short* analog1,
+                                const short* analog2, const short* analog3) {
+    return opts != NULL && state != NULL && analog1 != NULL && analog2 != NULL && analog3 != NULL;
+}
 
-    if (opts->audio_in_type == AUDIO_IN_TCP) {
-        if (!edacs_fill_analog_block_tcp(opts, state, analog1)) {
-            return 0;
-        }
-        if (!edacs_fill_analog_block_tcp(opts, state, analog2)) {
-            return 0;
-        }
-        if (!edacs_fill_analog_block_tcp(opts, state, analog3)) {
-            return 0;
-        }
-        *pwr = raw_pwr(analog3, 960, 1);
-        return 1;
-    }
+static void
+edacs_collect_pulse_triplet(dsd_opts* opts, short* analog1, short* analog2, short* analog3, double* pwr) {
+    edacs_fill_analog_block_pulse(opts, analog1);
+    edacs_fill_analog_block_pulse(opts, analog2);
+    edacs_fill_analog_block_pulse(opts, analog3);
+    *pwr = raw_pwr(analog3, 960, 1);
+}
 
-    if (opts->audio_in_type == AUDIO_IN_UDP) {
-        edacs_fill_analog_block_udp(opts, analog1);
-        edacs_fill_analog_block_udp(opts, analog2);
-        edacs_fill_analog_block_udp(opts, analog3);
-        *pwr = raw_pwr(analog3, 960, 1);
-        return 1;
-    }
-
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RADIO
-        if (!edacs_fill_analog_block_rtl(opts, state, analog1)) {
-            return 0;
-        }
-        if (!edacs_fill_analog_block_rtl(opts, state, analog2)) {
-            return 0;
-        }
-        if (!edacs_fill_analog_block_rtl(opts, state, analog3)) {
-            return 0;
-        }
-        *pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-        return 1;
-#else
+static int
+edacs_collect_udp_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
+                          double* pwr) {
+    if (!edacs_fill_analog_block_udp(opts, state, analog1) || !edacs_fill_analog_block_udp(opts, state, analog2)
+        || !edacs_fill_analog_block_udp(opts, state, analog3)) {
         return 0;
-#endif
     }
-
+    *pwr = raw_pwr(analog3, 960, 1);
     return 1;
 }
 
-static unsigned long long int
+static int
+edacs_collect_tcp_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
+                          double* pwr) {
+    if (!edacs_fill_analog_block_tcp(opts, state, analog1)) {
+        return 0;
+    }
+    if (!edacs_fill_analog_block_tcp(opts, state, analog2)) {
+        return 0;
+    }
+    if (!edacs_fill_analog_block_tcp(opts, state, analog3)) {
+        return 0;
+    }
+    *pwr = raw_pwr(analog3, 960, 1);
+    return 1;
+}
+
+#ifdef USE_RADIO
+static int
+edacs_collect_rtl_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
+                          double* pwr) {
+    if (!edacs_fill_analog_block_rtl(opts, state, analog1)) {
+        return 0;
+    }
+    if (!edacs_fill_analog_block_rtl(opts, state, analog2)) {
+        return 0;
+    }
+    if (!edacs_fill_analog_block_rtl(opts, state, analog3)) {
+        return 0;
+    }
+    *pwr = dsd_rtl_stream_io_hook_return_pwr(state);
+    return 1;
+}
+#endif
+
+int
+edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,
+                             double* pwr) {
+    if (!edacs_analog_triplet_args_valid(opts, state, analog1, analog2, analog3) || pwr == NULL) {
+        return 0;
+    }
+
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_PULSE: edacs_collect_pulse_triplet(opts, analog1, analog2, analog3, pwr); return 1;
+        case AUDIO_IN_TCP: return edacs_collect_tcp_triplet(opts, state, analog1, analog2, analog3, pwr);
+        case AUDIO_IN_UDP: return edacs_collect_udp_triplet(opts, state, analog1, analog2, analog3, pwr);
+        case AUDIO_IN_RTL:
+#ifdef USE_RADIO
+            return edacs_collect_rtl_triplet(opts, state, analog1, analog2, analog3, pwr);
+#else
+            return 0;
+#endif
+        default: return 0;
+    }
+}
+
+unsigned long long
 edacs_build_symbol_register(const dsd_opts* opts, dsd_state* state, const short* analog1) {
+    if (opts == NULL || state == NULL || analog1 == NULL) {
+        return 0ULL;
+    }
     unsigned long long int sr = 0;
     for (int i = 0; i < 960; i += 5) {
         sr = sr << 1;
@@ -349,8 +341,11 @@ edacs_build_symbol_register(const dsd_opts* opts, dsd_state* state, const short*
     return sr;
 }
 
-static void
+void
 edacs_reset_digitize_overflow(dsd_state* state) {
+    if (state == NULL) {
+        return;
+    }
     if (state->dibit_buf_p > state->dibit_buf + 900000) {
         state->dibit_buf_p = state->dibit_buf + 200;
     }
@@ -388,50 +383,86 @@ edacs_process_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, s
     }
 }
 
+static int
+edacs_should_emit_pulse_audio(const dsd_opts* opts) {
+    return opts->audio_out == 1 && opts->audio_out_type == 0 && opts->slot1_on == 1;
+}
+
 static void
-edacs_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
-                        const short* analog3) {
-    if (opts->audio_out == 1 && opts->audio_out_type == 0 && opts->slot1_on == 1) {
-        dsd_audio_write(opts->audio_raw_out, analog1, 960);
-        dsd_audio_write(opts->audio_raw_out, analog2, 960);
-        dsd_audio_write(opts->audio_raw_out, analog3, 960);
-    }
+edacs_emit_pulse_audio(dsd_opts* opts, const short* analog1, const short* analog2, const short* analog3) {
+    dsd_audio_write(opts->audio_raw_out, analog1, 960);
+    dsd_audio_write(opts->audio_raw_out, analog2, 960);
+    dsd_audio_write(opts->audio_raw_out, analog3, 960);
+}
 
-    if (opts->audio_out == 1 && opts->audio_out_type == 8) {
-        dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog1);
-        dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog2);
-        dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog3);
-    }
+static int
+edacs_should_emit_udp_audio(const dsd_opts* opts) {
+    return opts->audio_out == 1 && opts->audio_out_type == 8;
+}
 
-    if (opts->audio_out_type == 1 && opts->floating_point == 0 && opts->slot1_on == 1) {
-        ssize_t written = dsd_write(opts->audio_out_fd, analog1, (size_t)960u * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("edacs_analog: failed to write analog1 audio block");
-        }
-        written = dsd_write(opts->audio_out_fd, analog2, (size_t)960u * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("edacs_analog: failed to write analog2 audio block");
-        }
-        written = dsd_write(opts->audio_out_fd, analog3, (size_t)960u * sizeof(short));
-        if (written < 0) {
-            LOG_WARN("edacs_analog: failed to write analog3 audio block");
-        }
+static void
+edacs_emit_udp_audio(const dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
+                     const short* analog3) {
+    dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog1);
+    dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog2);
+    dsd_udp_audio_hook_blast_analog(opts, state, (size_t)960u * sizeof(short), analog3);
+}
+
+static int
+edacs_should_emit_fd_audio(const dsd_opts* opts) {
+    return opts->audio_out_type == 1 && opts->floating_point == 0 && opts->slot1_on == 1;
+}
+
+static void
+edacs_emit_fd_audio_block(int fd, const short* block, const char* label) {
+    if (dsd_write(fd, block, (size_t)960u * sizeof(short)) < 0) {
+        LOG_WARN("edacs_analog: failed to write %s audio block", label);
     }
 }
 
 static void
-edacs_build_static_wav_block(const short* src, short out[320]) {
+edacs_emit_fd_audio(const dsd_opts* opts, const short* analog1, const short* analog2, const short* analog3) {
+    edacs_emit_fd_audio_block(opts->audio_out_fd, analog1, "analog1");
+    edacs_emit_fd_audio_block(opts->audio_out_fd, analog2, "analog2");
+    edacs_emit_fd_audio_block(opts->audio_out_fd, analog3, "analog3");
+}
+
+void
+edacs_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
+                        const short* analog3) {
+    if (!edacs_analog_triplet_args_valid(opts, state, analog1, analog2, analog3)) {
+        return;
+    }
+    if (edacs_should_emit_pulse_audio(opts)) {
+        edacs_emit_pulse_audio(opts, analog1, analog2, analog3);
+    }
+
+    if (edacs_should_emit_udp_audio(opts)) {
+        edacs_emit_udp_audio(opts, state, analog1, analog2, analog3);
+    }
+
+    if (edacs_should_emit_fd_audio(opts)) {
+        edacs_emit_fd_audio(opts, analog1, analog2, analog3);
+    }
+}
+
+int
+edacs_build_static_wav_block(const short* src, short* out, size_t out_count) {
+    if (src == NULL || out == NULL || out_count < 320U) {
+        return -1;
+    }
     for (int i = 0; i < 160; i++) {
         out[((size_t)i * 2) + 0] = src[(size_t)i * 6];
         out[((size_t)i * 2) + 1] = src[(size_t)i * 6];
     }
+    return 0;
 }
 
 static void
 edacs_write_static_wav_block(SNDFILE* wav, const short* src) {
     short ss[320];
     DSD_MEMSET(ss, 0, sizeof(ss));
-    edacs_build_static_wav_block(src, ss);
+    (void)edacs_build_static_wav_block(src, ss, sizeof(ss) / sizeof(ss[0]));
     edacs_write_wav_short_block(wav, ss, 320, "edacs static WAV");
 }
 
@@ -448,7 +479,7 @@ edacs_write_analog_wav(dsd_opts* opts, const short* analog1, const short* analog
     }
 }
 
-static int
+int
 edacs_update_squelch_count(double pwr, double sql, int count) {
     if (pwr < sql) {
         return count - 1;
@@ -488,7 +519,7 @@ edacs_print_analog_status(const dsd_opts* opts, const dsd_state* state, int afs,
     }
 }
 
-static int
+int
 edacs_should_release_voice(unsigned long long int sr, int sql_disabled, time_t start_time, double no_sql_watchdog_s) {
     if (is_dotting_sequence_candidate(sr)) {
         return 1;
@@ -501,7 +532,7 @@ edacs_should_release_voice(unsigned long long int sr, int sql_disabled, time_t s
     return 0;
 }
 
-static double
+double
 edacs_no_sql_watchdog_window(double trunk_hangtime) {
     double no_sql_watchdog_s = trunk_hangtime * 10.0;
     if (no_sql_watchdog_s < 20.0) {
@@ -523,7 +554,7 @@ edacs_print_sql_hit_counter(int count) {
 
 static void edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn);
 
-static void
+void
 edacs_update_lcn_count(dsd_state* state, int lcn) {
     // LCNs >= 26 are reserved status values (queued, busy, denied, etc).
     if (lcn > state->edacs_lcn_count && lcn < 26) {
@@ -552,7 +583,7 @@ static int
 edacs_tune_to_lcn(dsd_opts* opts, dsd_state* state, int lcn) {
     // LCN index is zero-based in trunk_lcn_freq[].
     dsd_trunk_tune_result tune_result =
-        dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0);
+        dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_lcn_freq[lcn - 1], 0, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return 0;
     }
@@ -563,7 +594,7 @@ edacs_tune_to_lcn(dsd_opts* opts, dsd_state* state, int lcn) {
 static void
 edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digital, int call_target,
                           int tune_allowed) {
-    if (!tune_allowed || opts->p25_trunk != 1 || !edacs_lcn_is_tunable(state, lcn)) {
+    if (!tune_allowed || opts->trunk_enable != 1 || !edacs_lcn_is_tunable(state, lcn)) {
         return;
     }
 
@@ -576,38 +607,6 @@ edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digi
     }
 }
 
-#ifdef DEBUG_ANALOG
-static void
-edacs_collect_debug_digitized(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
-                              const short* analog3, uint8_t* d1, uint8_t* d2, uint8_t* d3) {
-    UNUSED(opts);
-    for (int i = 0; i < 192; i++) {
-        d1[i] = digitize(opts, state, (float)analog1[i * 5]);
-        d2[i] = digitize(opts, state, (float)analog2[i * 5]);
-        d3[i] = digitize(opts, state, (float)analog3[i * 5]);
-    }
-}
-
-static void
-edacs_debug_dump_digitized(const dsd_opts* opts, uint8_t* d1, uint8_t* d2, uint8_t* d3) {
-    if (opts->payload != 1) {
-        return;
-    }
-    DSD_FPRINTF(stderr, "\n A_DUMP: ");
-    for (int i = 0; i < 24; i++) {
-        DSD_FPRINTF(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&d1[i * 8], 8));
-    }
-    DSD_FPRINTF(stderr, "\n         ");
-    for (int i = 0; i < 24; i++) {
-        DSD_FPRINTF(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&d2[i * 8], 8));
-    }
-    DSD_FPRINTF(stderr, "\n         ");
-    for (int i = 0; i < 24; i++) {
-        DSD_FPRINTF(stderr, "%02X", (uint8_t)ConvertBitIntoBytes(&d3[i * 8], 8));
-    }
-}
-#endif
-
 //listening to and playing back analog audio
 static void
 edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
@@ -618,12 +617,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     short analog2[960];
     short analog3[960];
 
-#ifdef DEBUG_ANALOG
-    uint8_t d1[192];
-    uint8_t d2[192];
-    uint8_t d3[192];
-#endif
-
     state->last_cc_sync_time = now;
     state->last_vc_sync_time = now;
     state->last_cc_sync_time_m = nowm;
@@ -632,12 +625,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
     DSD_MEMSET(analog1, 0, sizeof(analog1));
     DSD_MEMSET(analog2, 0, sizeof(analog2));
     DSD_MEMSET(analog3, 0, sizeof(analog3));
-
-#ifdef DEBUG_ANALOG
-    DSD_MEMSET(d1, 0, sizeof(d1));
-    DSD_MEMSET(d2, 0, sizeof(d2));
-    DSD_MEMSET(d3, 0, sizeof(d3));
-#endif
 
     double pwr = opts->rtl_squelch_level + 1e-3; // small offset for initial loop phase
     double sql = opts->rtl_squelch_level;
@@ -656,10 +643,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
         unsigned long long int sr = edacs_build_symbol_register(opts, state, analog1);
 
-#ifdef DEBUG_ANALOG
-        edacs_collect_debug_digitized(opts, state, analog1, analog2, analog3, d1, d2, d3);
-#endif
-
         edacs_reset_digitize_overflow(state);
         edacs_process_analog_triplet(opts, state, analog1, analog2, analog3);
         edacs_emit_analog_audio(opts, state, analog1, analog2, analog3);
@@ -675,10 +658,6 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
 
         DSD_FPRINTF(stderr, "%s", KNRM);
         edacs_print_sql_hit_counter(count);
-
-#ifdef DEBUG_ANALOG
-        edacs_debug_dump_digitized(opts, d1, d2, d3);
-#endif
 
         if (count > 0) {
             DSD_FPRINTF(stderr, "\n");
@@ -728,8 +707,7 @@ edacs_capture_current_lcn_frequency(const dsd_opts* opts, dsd_state* state, int 
 
 static void
 edacs_update_trunk_cc_frequency(const dsd_opts* opts, dsd_state* state, int lcn) {
-    if ((opts->trunk_enable != 1 && opts->p25_trunk != 1) || lcn <= 0 || lcn > 25
-        || state->trunk_lcn_freq[lcn - 1] == 0) {
+    if ((opts->trunk_enable != 1) || lcn <= 0 || lcn > 25 || state->trunk_lcn_freq[lcn - 1] == 0) {
         return;
     }
 
@@ -827,7 +805,7 @@ edacs_handle_extended_mt2_adjacent_site(unsigned long long int msg_1) {
     DSD_FPRINTF(stderr, " Adjacent Site");
     if (adj_site > 0) {
         DSD_FPRINTF(stderr, " :: Site ID [%02X][%03d] Index [%d] on CC LCN [%02d]%s", adj_site, adj_site, adj_idx,
-                    adj_lcn, getLcnStatusString(0));
+                    adj_lcn, edacs_lcn_status_string(0));
     } else {
         DSD_FPRINTF(stderr, " :: Total Indexed [%d]", adj_idx);
     }
@@ -874,7 +852,7 @@ edacs_handle_extended_mt2_system_info(const dsd_opts* opts, dsd_state* state, un
         state->edacs_cc_lcn = lcn;
         edacs_update_lcn_count(state, lcn);
         DSD_FPRINTF(stderr, " :: System ID [%04X] CC LCN [%02d]%s", system, state->edacs_cc_lcn,
-                    getLcnStatusString(lcn));
+                    edacs_lcn_status_string(lcn));
 
         if (system != 0) {
             state->edacs_sys_id = system;
@@ -995,7 +973,7 @@ edacs_handle_extended_mt1_tdma_group_call(unsigned long long int msg_1, unsigned
 
     DSD_FPRINTF(stderr, "%s", KGRN);
     DSD_FPRINTF(stderr, " TDMA Group Call :: Group [%05d] Source [%08d] LCN [%02d]%s", group, source, lcn,
-                getLcnStatusString(lcn));
+                edacs_lcn_status_string(lcn));
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
@@ -1007,7 +985,7 @@ edacs_handle_extended_mt1_data_group_call(unsigned long long int msg_1, unsigned
 
     DSD_FPRINTF(stderr, "%s", KBLU);
     DSD_FPRINTF(stderr, " Data Group Call :: Group [%05d] Source [%08d] LCN [%02d]%s", group, source, lcn,
-                getLcnStatusString(lcn));
+                edacs_lcn_status_string(lcn));
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
@@ -1051,7 +1029,8 @@ edacs_handle_extended_mt1_voice_group_call(dsd_opts* opts, dsd_state* state, uns
     } else {
         DSD_FPRINTF(stderr, " Update");
     }
-    DSD_FPRINTF(stderr, " :: Group [%05d] Source [%08d] LCN [%02d]%s", group, source, lcn, getLcnStatusString(lcn));
+    DSD_FPRINTF(stderr, " :: Group [%05d] Source [%08d] LCN [%02d]%s", group, source, lcn,
+                edacs_lcn_status_string(lcn));
     if (is_tx_trunking == 0) {
         DSD_FPRINTF(stderr, " [Message Trunking]");
     }
@@ -1065,9 +1044,7 @@ edacs_handle_extended_mt1_voice_group_call(dsd_opts* opts, dsd_state* state, uns
     int policy_ok;
 
     edacs_print_group_label(state, (uint32_t)group);
-    policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, 0, 0,
-                                                   DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                     == 0
+    policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, 0, 0, &decision) == 0
                  && decision.tune_allowed);
 
     edacs_try_tune_voice_call(opts, state, lcn, is_digital, group, opts->trunk_tune_group_calls == 1 && policy_ok);
@@ -1111,7 +1088,7 @@ edacs_handle_extended_mt1_icall_update(dsd_opts* opts, dsd_state* state, unsigne
         } else {
             DSD_FPRINTF(stderr, " Update");
         }
-        DSD_FPRINTF(stderr, " :: LCN [%02d]%s", lcn, getLcnStatusString(lcn));
+        DSD_FPRINTF(stderr, " :: LCN [%02d]%s", lcn, edacs_lcn_status_string(lcn));
         state->edacs_vc_lcn = lcn;
         state->lasttg = 999999999;
         state->lastsrc = 999999999;
@@ -1130,17 +1107,15 @@ edacs_handle_extended_mt1_icall_update(dsd_opts* opts, dsd_state* state, unsigne
         }
 
         DSD_FPRINTF(stderr, " :: Target [%08d] Source [%08d] LCN [%02d]%s", target, source, lcn,
-                    getLcnStatusString(lcn));
+                    edacs_lcn_status_string(lcn));
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     dsd_tg_policy_decision decision;
-    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0,
-                                                         DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                         DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok =
+        (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0, &decision) == 0
+         && decision.tune_allowed);
 
     edacs_try_tune_voice_call(opts, state, lcn, is_digital, target, opts->trunk_tune_private_calls == 1 && policy_ok);
 }
@@ -1152,7 +1127,7 @@ edacs_handle_extended_mt1_channel_assignment(dsd_state* state, unsigned long lon
 
     DSD_FPRINTF(stderr, "%s", KBLU);
     DSD_FPRINTF(stderr, " Channel Assignment (Unknown Data) :: Source [%08d] LCN [%02d]%s", source, lcn,
-                getLcnStatusString(lcn));
+                edacs_lcn_status_string(lcn));
     DSD_FPRINTF(stderr, "%s", KNRM);
     edacs_update_lcn_count(state, lcn);
 
@@ -1201,13 +1176,11 @@ edacs_handle_extended_mt1_system_all_call(dsd_opts* opts, dsd_state* state, unsi
         DSD_FPRINTF(stderr, " Update");
     }
 
-    DSD_FPRINTF(stderr, " :: Source [%08d] LCN [%02d]%s", source, lcn, getLcnStatusString(lcn));
+    DSD_FPRINTF(stderr, " :: Source [%08d] LCN [%02d]%s", source, lcn, edacs_lcn_status_string(lcn));
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     dsd_tg_policy_decision decision;
-    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)source, 0, 0,
-                                                       DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
+    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)source, 0, 0, &decision) == 0
                      && decision.tune_allowed);
     if (!policy_ok && opts->trunk_use_allow_list == 1) {
         policy_ok = 1;
@@ -1286,7 +1259,7 @@ edacs_standard_mt_a_voice_group_print(int is_digital, int is_emergency, int is_t
     } else {
         DSD_FPRINTF(stderr, " Digital");
     }
-    DSD_FPRINTF(stderr, " Group [%04d] LID [%05d] LCN [%02d]%s", group, lid, lcn, getLcnStatusString(lcn));
+    DSD_FPRINTF(stderr, " Group [%04d] LID [%05d] LCN [%02d]%s", group, lid, lcn, edacs_lcn_status_string(lcn));
     if (is_agency_call == 1) {
         DSD_FPRINTF(stderr, " [Agency]");
     } else if (is_fleet_call == 1) {
@@ -1344,10 +1317,9 @@ edacs_handle_standard_mt_a_voice_group_assignment(dsd_opts* opts, dsd_state* sta
                                               is_fleet_call);
 
     dsd_tg_policy_decision decision;
-    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)lid, 0, 0,
-                                                       DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok =
+        (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)lid, 0, 0, &decision) == 0
+         && decision.tune_allowed);
 
     edacs_try_tune_voice_call(opts, state, lcn, is_digital, group, opts->trunk_tune_group_calls == 1 && policy_ok);
 }
@@ -1380,7 +1352,7 @@ edacs_handle_standard_mt_a_data_call(dsd_state* state, unsigned long long int ms
     } else {
         DSD_FPRINTF(stderr, " <--");
     }
-    DSD_FPRINTF(stderr, " Port [%02d] LCN [%02d]%s", port, lcn, getLcnStatusString(lcn));
+    DSD_FPRINTF(stderr, " Port [%02d] LCN [%02d]%s", port, lcn, edacs_lcn_status_string(lcn));
     DSD_FPRINTF(stderr, "%s", KNRM);
     edacs_update_lcn_count(state, lcn);
 
@@ -1443,7 +1415,7 @@ edacs_handle_standard_mt_b_interconnect_assignment(dsd_state* state, unsigned lo
     } else {
         DSD_FPRINTF(stderr, " Group [%04d]", target);
     }
-    DSD_FPRINTF(stderr, " LCN [%02d]%s", lcn, getLcnStatusString(lcn));
+    DSD_FPRINTF(stderr, " LCN [%02d]%s", lcn, edacs_lcn_status_string(lcn));
     DSD_FPRINTF(stderr, "%s", KNRM);
     edacs_update_lcn_count(state, lcn);
 
@@ -1488,17 +1460,12 @@ edacs_standard_channel_update_policy_ok(const dsd_opts* opts, const dsd_state* s
     dsd_tg_policy_decision decision;
 
     if (is_individual == 0) {
-        return (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, 0, 0, 0,
-                                                  DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                    == 0
+        return (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, 0, 0, 0, &decision) == 0
                 && decision.tune_allowed);
     }
 
-    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, 0, (uint32_t)target, 0, 0,
-                                                         DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                         DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok = dsd_tg_policy_evaluate_private_call(opts, state, 0, (uint32_t)target, 0, 0, &decision) == 0
+                    && decision.tune_allowed;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 0;
     }
@@ -1531,7 +1498,7 @@ edacs_standard_channel_update_print(int is_individual, int is_test_call, int is_
         DSD_FPRINTF(stderr, " Callee [%05d] Caller [%05d]", target, source);
     }
 
-    DSD_FPRINTF(stderr, " LCN [%02d]%s", lcn, getLcnStatusString(lcn));
+    DSD_FPRINTF(stderr, " LCN [%02d]%s", lcn, edacs_lcn_status_string(lcn));
     if (is_agency_call == 1) {
         DSD_FPRINTF(stderr, " [Agency]");
     } else if (is_fleet_call == 1) {
@@ -1613,7 +1580,7 @@ edacs_handle_standard_mt_b_individual_assignment(dsd_opts* opts, dsd_state* stat
     if (target == 0 && source == 0) {
         DSD_FPRINTF(stderr, "%s", KMAG);
         DSD_FPRINTF(stderr, " Test Call Channel Assignment ::");
-        DSD_FPRINTF(stderr, " LCN [%02d]%s", lcn, getLcnStatusString(lcn));
+        DSD_FPRINTF(stderr, " LCN [%02d]%s", lcn, edacs_lcn_status_string(lcn));
 
         state->edacs_vc_lcn = lcn;
         state->lasttg = 999999999;
@@ -1627,7 +1594,8 @@ edacs_handle_standard_mt_b_individual_assignment(dsd_opts* opts, dsd_state* stat
         } else {
             DSD_FPRINTF(stderr, " Digital");
         }
-        DSD_FPRINTF(stderr, " Callee [%05d] Caller [%05d] LCN [%02d]%s", target, source, lcn, getLcnStatusString(lcn));
+        DSD_FPRINTF(stderr, " Callee [%05d] Caller [%05d] LCN [%02d]%s", target, source, lcn,
+                    edacs_lcn_status_string(lcn));
         if (is_tx_trunk == 0) {
             DSD_FPRINTF(stderr, " [Message Trunking]");
         }
@@ -1653,11 +1621,9 @@ edacs_handle_standard_mt_b_individual_assignment(dsd_opts* opts, dsd_state* stat
     dsd_tg_policy_decision decision;
     uint32_t saved_tg_hold = state->tg_hold;
     state->tg_hold = 0;
-    int policy_ok = (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0,
-                                                         DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                         DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok =
+        (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0, &decision) == 0
+         && decision.tune_allowed);
     state->tg_hold = saved_tg_hold;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 0;
@@ -1679,7 +1645,7 @@ edacs_handle_standard_mt_b_console_unkey_drop(unsigned long long int msg_1) {
     } else {
         DSD_FPRINTF(stderr, " Drop");
     }
-    DSD_FPRINTF(stderr, " :: LID [%05d] LCN [%02d]%s", lid, lcn, getLcnStatusString(lcn));
+    DSD_FPRINTF(stderr, " :: LID [%05d] LCN [%02d]%s", lid, lcn, edacs_lcn_status_string(lcn));
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
@@ -1701,7 +1667,7 @@ edacs_handle_standard_mt_d_adjacent_site_cc(unsigned long long int msg_1) {
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " Adjacent Site Control Channel :: Site ID [%02X][%03d] Index [%1d] LCN [%02d]%s", adj_site_id,
-                adj_site_id, adj_site_index, adj_cc_lcn, getLcnStatusString(adj_cc_lcn));
+                adj_site_id, adj_site_index, adj_cc_lcn, edacs_lcn_status_string(adj_cc_lcn));
     edacs_print_adjacent_site_definition(adj_site_id, adj_site_index);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
@@ -1737,7 +1703,7 @@ edacs_handle_standard_mt_d_aux_cc_assignment(unsigned long long int msg_1) {
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " Assignment to Auxiliary CC :: Group [%04d] Aux CC LCN [%02d]%s", group, aux_cc_lcn,
-                getLcnStatusString(aux_cc_lcn));
+                edacs_lcn_status_string(aux_cc_lcn));
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
@@ -1774,7 +1740,7 @@ edacs_handle_standard_mt_d_site_id(const dsd_opts* opts, dsd_state* state, unsig
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " Standard/Networked :: Site ID [%02X][%03d] Priority [%1d] CC LCN [%02d]%s", site_id, site_id,
-                priority, cc_lcn, getLcnStatusString(cc_lcn));
+                priority, cc_lcn, edacs_lcn_status_string(cc_lcn));
     if (is_failsoft == 1) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " [FAILSOFT]");
@@ -1820,7 +1786,7 @@ edacs_handle_standard_mt_d_system_all_call(dsd_opts* opts, dsd_state* state, uns
     } else {
         DSD_FPRINTF(stderr, " Digital");
     }
-    DSD_FPRINTF(stderr, " LID [%05d] LCN [%02d]%s", lid, lcn, getLcnStatusString(lcn));
+    DSD_FPRINTF(stderr, " LID [%05d] LCN [%02d]%s", lid, lcn, edacs_lcn_status_string(lcn));
     if (is_tx_trunk == 0) {
         DSD_FPRINTF(stderr, " [Message Trunking]");
     }
@@ -1841,10 +1807,8 @@ edacs_handle_standard_mt_d_system_all_call(dsd_opts* opts, dsd_state* state, uns
     dsd_tg_policy_decision decision;
     uint32_t saved_tg_hold = state->tg_hold;
     state->tg_hold = 0;
-    int policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)lid, 0, 0,
-                                                       DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                         == 0
-                     && decision.tune_allowed);
+    int policy_ok =
+        dsd_tg_policy_evaluate_group_call(opts, state, 0, (uint32_t)lid, 0, 0, &decision) == 0 && decision.tune_allowed;
     state->tg_hold = saved_tg_hold;
     if (opts->trunk_use_allow_list == 1) {
         policy_ok = 1;
@@ -1993,12 +1957,12 @@ edacs_init_afs_layout(dsd_state* state) {
 static void
 edacs_collect_bits(dsd_opts* opts, dsd_state* state, int edacs_bit[241]) {
     for (int i = 0; i < 240; i++) {
-        edacs_bit[i] = getDibit(opts, state);
+        edacs_bit[i] = get_dibit_and_analog_signal(opts, state, NULL);
     }
 }
 
-static void
-edacs_build_raw_frames(const int edacs_bit[241], unsigned long long int* fr_1, unsigned long long int* fr_2,
+void
+edacs_build_raw_frames(const int* edacs_bit, unsigned long long int* fr_1, unsigned long long int* fr_2,
                        unsigned long long int* fr_3, unsigned long long int* fr_4, unsigned long long int* fr_5,
                        unsigned long long int* fr_6) {
     *fr_1 = 0;
@@ -2017,9 +1981,10 @@ edacs_build_raw_frames(const int edacs_bit[241], unsigned long long int* fr_1, u
     }
 }
 
-static void
+void
 edacs_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long int msg_1,
                           unsigned long long int msg_2) {
+    edacs_init_afs_layout(state);
     unsigned long long int fr_esk_mask = ((unsigned long long int)state->esk_mask) << 20;
     msg_1 ^= fr_esk_mask;
     msg_2 ^= fr_esk_mask;
@@ -2035,131 +2000,14 @@ edacs_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long i
     edacs_print_mode_selection_hint(msg_1, msg_2);
 }
 
-#ifdef DSD_NEO_TEST_HOOKS
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long int msg_1,
-                                       unsigned long long int msg_2) {
-    edacs_init_afs_layout(state);
-    edacs_process_valid_frame(opts, state, msg_1, msg_2);
-}
-
-const char*
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_lcn_status_string(int lcn) {
-    return getLcnStatusString(lcn);
-}
-
-short
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_apply_input_volume(int multiplier, short sample) {
-    static dsd_opts opts;
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    opts.input_volume_multiplier = multiplier;
-    return edacs_apply_input_volume(&opts, sample);
-}
-
-unsigned long long int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_vote_frames(unsigned long long int fr_1_4, unsigned long long int fr_2_5,
-                               unsigned long long int fr_3_6) {
-    return edacsVoteFr(fr_1_4, fr_2_5, fr_3_6);
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_update_squelch_count(double pwr, double sql, int count) {
-    return edacs_update_squelch_count(pwr, sql, count);
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_should_release_voice(unsigned long long int sr, int sql_disabled, time_t start_time,
-                                        double no_sql_watchdog_s) {
-    return edacs_should_release_voice(sr, sql_disabled, start_time, no_sql_watchdog_s);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_update_lcn_count(dsd_state* state, int lcn) {
-    edacs_update_lcn_count(state, lcn);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_build_raw_frames(const int edacs_bit[241], unsigned long long int* fr_1,
-                                    unsigned long long int* fr_2, unsigned long long int* fr_3,
-                                    unsigned long long int* fr_4, unsigned long long int* fr_5,
-                                    unsigned long long int* fr_6) {
-    edacs_build_raw_frames(edacs_bit, fr_1, fr_2, fr_3, fr_4, fr_5, fr_6);
-}
-
-unsigned long long int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_build_symbol_register(const dsd_opts* opts, dsd_state* state, const short analog1[960]) {
-    if (opts == NULL || state == NULL || analog1 == NULL) {
-        return 0ULL;
-    }
-    return edacs_build_symbol_register(opts, state, analog1);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_reset_digitize_overflow(dsd_state* state) {
-    if (state == NULL) {
-        return;
-    }
-    edacs_reset_digitize_overflow(state);
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2,
-                                          short* analog3, double* pwr) {
-    if (opts == NULL || state == NULL || analog1 == NULL || analog2 == NULL || analog3 == NULL || pwr == NULL) {
-        return 0;
-    }
-    return edacs_collect_analog_triplet(opts, state, analog1, analog2, analog3, pwr);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
-                                     const short* analog3) {
-    if (opts == NULL || state == NULL || analog1 == NULL || analog2 == NULL || analog3 == NULL) {
-        return;
-    }
-    edacs_emit_analog_audio(opts, state, analog1, analog2, analog3);
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_static_wav_downsample(const short* src, short* out, size_t out_count) {
-    if (src == NULL || out == NULL || out_count < 320U) {
-        return -1;
-    }
-    short block[320];
-    DSD_MEMSET(block, 0, sizeof(block));
-    edacs_build_static_wav_block(src, block);
-    DSD_MEMCPY(out, block, sizeof(block));
-    return 0;
-}
-
-double
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_neo_edacs_test_no_sql_watchdog_window(double trunk_hangtime) {
-    return edacs_no_sql_watchdog_window(trunk_hangtime);
-}
-#endif
-
 void
 edacs(dsd_opts* opts, dsd_state* state) {
     edacs_init_afs_layout(state);
 
     char timestr[7];
     char datestr[9];
-    getTime_buf(timestr);
-    getDate_buf(datestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
     state->edacs_vc_lcn = -1; //init on negative for ncurses and tuning
 
@@ -2168,7 +2016,7 @@ edacs(dsd_opts* opts, dsd_state* state) {
 
     // If we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel
     //this is a simple quick and dirty solution to fix setting the lastsrc value to something that we don't want in event history
-    if (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1) {
         goto EDACS_END;
     }
 
@@ -2181,8 +2029,8 @@ edacs(dsd_opts* opts, dsd_state* state) {
     edacs_build_raw_frames(edacs_bit, &fr_1, &fr_2, &fr_3, &fr_4, &fr_5, &fr_6);
 
     //Take our 3 copies of the first and second message and vote them to extract the two "error-corrected" messages
-    unsigned long long int msg_1_ec = edacsVoteFr(fr_1, fr_2, fr_3);
-    unsigned long long int msg_2_ec = edacsVoteFr(fr_4, fr_5, fr_6);
+    unsigned long long int msg_1_ec = edacs_vote_frames(fr_1, fr_2, fr_3);
+    unsigned long long int msg_2_ec = edacs_vote_frames(fr_4, fr_5, fr_6);
 
     //Get just the 28-bit message portion
     unsigned long long int msg_1_ec_m = msg_1_ec >> 12;
@@ -2238,14 +2086,12 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
 
     //jump back to CC here
     long int cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-    if ((opts->trunk_enable == 1 || opts->p25_trunk == 1) && cc != 0
-        && (opts->trunk_is_tuned == 1 || opts->p25_is_tuned == 1)) {
+    if ((opts->trunk_enable == 1) && cc != 0 && (opts->trunk_is_tuned == 1)) {
         // Use centralized io/control tuning API
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             return;
         }
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
 
         // EDACS-specific state cleanup

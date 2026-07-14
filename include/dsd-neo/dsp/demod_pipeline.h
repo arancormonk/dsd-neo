@@ -40,8 +40,7 @@ int low_pass_simple(float* signal2, int len, int step);
 void low_pass_real(struct demod_state* s);
 
 /**
- * Perform FM discriminator on interleaved low-passed I/Q to produce audio PCM.
- * Uses the active discriminator configured in fm->discriminator.
+ * Perform FM discrimination on interleaved low-passed I/Q to produce audio PCM.
  *
  * @param fm Demodulator state (uses lowpassed as input, writes to result).
  * @note Renamed to avoid collision with codec2's fm_demod symbol on Windows.
@@ -61,7 +60,7 @@ void raw_demod(struct demod_state* fm);
  * Converts each carrier-corrected differential phasor to a real symbol using
  * `atan2f(Q, I) * (4/pi)`, matching OP25's `multiply_const_ff(4.0/pi)` stage.
  * The output range maps nominal CQPSK decision points to approximately
- * `{-3, -1, +1, +3}` for legacy slicers.
+ * `{-3, -1, +1, +3}` for four-level slicers.
  *
  * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes phase deltas to result).
  */
@@ -100,8 +99,7 @@ float mean_power(const float* samples, int len, int step);
 
 /**
  * Full demodulation pipeline for one block.
- * Applies decimation via half-band cascade and the configured discriminator or
- * CQPSK symbol chain.
+ * Applies decimation via half-band cascade and the selected demodulation chain.
  *
  * @param d Demodulator state (consumes lowpassed, produces result).
  */
