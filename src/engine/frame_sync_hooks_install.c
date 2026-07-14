@@ -16,7 +16,7 @@
 
 static void
 p25_sm_release_from_frame_sync(dsd_opts* opts, dsd_state* state) {
-    p25_sm_release(p25_sm_get_ctx(), opts, state, "explicit-release");
+    p25_sm_release(p25_sm_get_ctx(), opts, state, "frame-sync-no-sync");
 }
 
 void

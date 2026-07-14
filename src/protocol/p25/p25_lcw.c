@@ -671,7 +671,7 @@ p25_lcw_handle_call_termination(p25_lcw_ctx* ctx) {
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
     if (ctx->opts->trunk_enable == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->trunk_is_tuned == 1) {
         ctx->state->p25_sm_force_release = 1;
-        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "explicit-release");
+        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "lcw-call-termination");
     }
 }
 
@@ -822,7 +822,7 @@ p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
     if (ctx->opts->trunk_enable == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->trunk_is_tuned == 1) {
         ctx->state->p25_sm_force_release = 1;
-        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "explicit-release");
+        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "motorola-talker-eot");
     }
 }
 

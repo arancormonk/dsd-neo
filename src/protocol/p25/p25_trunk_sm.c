@@ -49,6 +49,7 @@ static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ct
 static atomic_int g_p25_sm_release_lock = 0;
 
 #define P25_FAILED_VC_RETUNE_BACKOFF_DEFAULT_S  10.0
+#define P25_STALE_REGRANT_GUARD_S               2.0
 #define P25_CC_HUNT_ACQUIRE_GRACE_S             2.0
 #define P25_CC_RETURN_REACQUIRE_DELAY_S         2.0
 #define P25_CC_RETURN_REACQUIRE_MIN_REMAINING_S 1.0
@@ -1132,6 +1133,117 @@ p25_grant_target_id(const p25_sm_event_t* ev, const dsd_tg_policy_decision* deci
     return ev->is_group ? ev->tg : ev->dst;
 }
 
+static int
+p25_grant_ota_target_id(const p25_sm_event_t* ev) {
+    if (!ev) {
+        return 0;
+    }
+    return ev->is_group ? ev->tg : ev->dst;
+}
+
+static void
+p25_stale_regrant_guard_clear(p25_sm_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->t_recent_call_end_m = 0.0;
+    ctx->recent_call_end_freq_hz = 0;
+    ctx->recent_call_end_slot = -1;
+    ctx->recent_call_end_target = 0;
+    ctx->recent_call_end_src = 0;
+    ctx->recent_call_end_is_group = 0;
+    ctx->recent_call_end_valid = 0;
+}
+
+static void
+p25_stale_regrant_guard_arm(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, int slot) {
+    if (!ctx || !ctx->vc_is_tdma || slot < 0 || slot > 1) {
+        return;
+    }
+
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    const int target = slot_ctx->is_group ? slot_ctx->ota_tg : slot_ctx->dst;
+    if (slot_ctx->data_call || slot_ctx->freq_hz <= 0 || target <= 0) {
+        return;
+    }
+
+    ctx->t_recent_call_end_m = dsd_time_now_monotonic_s();
+    ctx->recent_call_end_freq_hz = slot_ctx->freq_hz;
+    ctx->recent_call_end_slot = slot;
+    ctx->recent_call_end_target = target;
+    ctx->recent_call_end_src = slot_ctx->src;
+    ctx->recent_call_end_is_group = slot_ctx->is_group ? 1 : 0;
+    ctx->recent_call_end_valid = 1;
+    p25_sm_diagf(opts, state, ctx, "grant_stale_guard_arm", "freq=%ld slot=%d target=%d src=%d group=%d seconds=%.3f",
+                 ctx->recent_call_end_freq_hz, ctx->recent_call_end_slot, ctx->recent_call_end_target,
+                 ctx->recent_call_end_src, ctx->recent_call_end_is_group, P25_STALE_REGRANT_GUARD_S);
+}
+
+static int
+p25_stale_regrant_guard_active(p25_sm_ctx_t* ctx, double now_m, double* out_age_s) {
+    if (!ctx || !ctx->recent_call_end_valid) {
+        return 0;
+    }
+
+    const double age_s = now_m - ctx->t_recent_call_end_m;
+    if (ctx->t_recent_call_end_m <= 0.0 || age_s < 0.0 || age_s >= P25_STALE_REGRANT_GUARD_S) {
+        p25_stale_regrant_guard_clear(ctx);
+        return 0;
+    }
+    if (out_age_s) {
+        *out_age_s = age_s;
+    }
+    return 1;
+}
+
+static int
+p25_stale_regrant_identity_matches(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq, int slot) {
+    if (!ctx || !ev) {
+        return 0;
+    }
+    const int is_group = ev->is_group ? 1 : 0;
+    const int target = p25_grant_ota_target_id(ev);
+    return freq == ctx->recent_call_end_freq_hz && slot == ctx->recent_call_end_slot
+           && is_group == ctx->recent_call_end_is_group && target == ctx->recent_call_end_target;
+}
+
+static int
+p25_stale_regrant_has_new_source(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev) {
+    return ctx && ev && ctx->recent_call_end_src > 0 && ev->src > 0 && ev->src != ctx->recent_call_end_src;
+}
+
+static int
+p25_grant_stale_regrant_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                                long freq, int slot, int data_call, double now_m) {
+    if (!ctx || !ev || data_call) {
+        return 0;
+    }
+
+    double age_s = 0.0;
+    if (!p25_stale_regrant_guard_active(ctx, now_m, &age_s)
+        || !p25_stale_regrant_identity_matches(ctx, ev, freq, slot)) {
+        return 0;
+    }
+
+    const int is_group = ev->is_group ? 1 : 0;
+    const int target = p25_grant_ota_target_id(ev);
+    // When both grants identify their source, a changed RID proves this is a
+    // new call even though the system reused the same TG, carrier, and slot.
+    if (p25_stale_regrant_has_new_source(ctx, ev)) {
+        p25_sm_diagf(opts, state, ctx, "grant_stale_guard_clear",
+                     "reason=new-source freq=%ld slot=%d target=%d old_src=%d new_src=%d age=%.3f", freq, slot, target,
+                     ctx->recent_call_end_src, ev->src, age_s);
+        p25_stale_regrant_guard_clear(ctx);
+        return 0;
+    }
+
+    p25_sm_diagf(opts, state, ctx, "grant_stale_skip",
+                 "ch=0x%04X freq=%ld slot=%d target=%d src=%d group=%d age=%.3f remaining=%.3f", ev->channel & 0xFFFF,
+                 freq, slot, target, ev->src, is_group, age_s, P25_STALE_REGRANT_GUARD_S - age_s);
+    sm_log(opts, state, "grant-stale-skip");
+    return 1;
+}
+
 static void
 p25_grant_fill_route(dsd_tg_policy_call_route* route, const p25_sm_event_t* ev, long freq, int slot, int needs_retune,
                      int target_id) {
@@ -1874,7 +1986,7 @@ p25_grant_should_clear_slot_only(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
 }
 
 static int
-p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+p25_grant_prepare_route(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                         const dsd_tg_policy_decision* decision, const p25_grant_eval_ctx_t* eval_ctx,
                         p25_grant_route_ctx_t* out) {
     p25_freq_trace_t freq_trace;
@@ -1891,6 +2003,9 @@ p25_grant_prepare_route(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
 
     out->now_m = dsd_time_now_monotonic_s();
     out->slot = channel_slot(state, ev->channel);
+    if (p25_grant_stale_regrant_blocked(ctx, opts, state, ev, out->freq, out->slot, eval_ctx->data_call, out->now_m)) {
+        return 0;
+    }
     if (!eval_ctx->data_call && p25_grant_retune_blocked(opts, state, out->freq, out->slot, ev->channel)) {
         return 0;
     }
@@ -2098,7 +2213,8 @@ p25_voice_end_preserve_recent_idle_grant(const p25_sm_ctx_t* ctx, int slot, int 
 }
 
 static void
-p25_voice_end_try_explicit_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, int is_explicit_end) {
+p25_voice_end_try_explicit_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, int is_explicit_end,
+                                   int arm_stale_regrant_guard) {
     if (!is_explicit_end || ctx->state != P25_SM_TUNED || !opts || !state) {
         return;
     }
@@ -2118,13 +2234,18 @@ p25_voice_end_try_explicit_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
     int other = slot ^ 1;
     if (p25_voice_end_can_release_explicit(ctx, other)) {
         // All active slots terminated - release immediately like P25P1 Call Termination
-        do_release(ctx, opts, state, "call-end", 0, 0);
+        if (arm_stale_regrant_guard) {
+            p25_stale_regrant_guard_arm(ctx, opts, state, slot);
+        }
+        if (!do_release(ctx, opts, state, "call-end", 0, 0) && arm_stale_regrant_guard) {
+            p25_stale_regrant_guard_clear(ctx);
+        }
     }
 }
 
 static void
 handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end,
-                 double observed_m) {
+                 int arm_stale_regrant_guard, double observed_m) {
     if (!ctx) {
         return;
     }
@@ -2151,7 +2272,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     // For explicit call termination (MAC_END_PTT or TDU), check if we should
     // release immediately rather than waiting for hangtime. This matches P25P1
     // behavior where LCW 0x4F (Call Termination) triggers immediate release.
-    p25_voice_end_try_explicit_release(ctx, opts, state, s, is_explicit_end);
+    p25_voice_end_try_explicit_release(ctx, opts, state, s, is_explicit_end, arm_stale_regrant_guard);
 }
 
 static int
@@ -2985,19 +3106,19 @@ p25_sm_handle_event_active(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
 static void
 p25_sm_handle_event_end(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // MAC_END_PTT is an explicit call termination - trigger immediate release check.
-    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1, ev->observed_m);
+    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1, 1, ev->observed_m);
 }
 
 static void
 p25_sm_handle_event_idle(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // MAC_IDLE may occur during brief gaps - use hangtime, not immediate release.
-    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0, ev->observed_m);
+    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0, 0, ev->observed_m);
 }
 
 static void
 p25_sm_handle_event_tdu(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // P1 terminator - explicit call end, trigger immediate release check.
-    handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 1, ev ? ev->observed_m : 0.0);
+    handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 1, 0, ev ? ev->observed_m : 0.0);
 }
 
 static void

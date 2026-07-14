@@ -1544,7 +1544,7 @@ p25p2_duid_dispatch(dsd_opts* opts, dsd_state* state, time_t now, int p2_pending
             p25p2_process_sacchc(opts, state, ts_counter);
             if (p2_pending_release) {
                 p25p2_teardown_call(opts, state);
-                p25_sm_release(NULL, opts, state, "explicit-release");
+                p25_sm_release(NULL, opts, state, "p2-lcch-timeout");
             }
             break;
         case 4:
@@ -1647,7 +1647,7 @@ p25p2_duid_fallback_release(dsd_opts* opts, dsd_state* state) {
     if (no_recent_voice && both_slots_idle && dt_since_tune >= vc_grace) {
         state->p25_sm_force_release = 1;
         p25p2_teardown_call(opts, state);
-        p25_sm_release(NULL, opts, state, "explicit-release");
+        p25_sm_release(NULL, opts, state, "p2-duid-timeout");
     }
 }
 

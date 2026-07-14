@@ -154,6 +154,17 @@ typedef struct {
     int vc_data_call;        // 1 if the accepted grant is data, 0 if voice
     int vc_cqpsk_retry_done; // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
 
+    // Short-lived identity guard for a voice call ended by MAC_END_PTT. This
+    // prevents a trailing CC grant for that exact call from causing a VC/CC
+    // bounce without blocking other calls on the carrier or companion slot.
+    double t_recent_call_end_m;
+    long recent_call_end_freq_hz;
+    int recent_call_end_slot;
+    int recent_call_end_target; // OTA talkgroup for group calls, destination RID for private calls
+    int recent_call_end_src;
+    int recent_call_end_is_group;
+    int recent_call_end_valid;
+
     // Per-slot activity (index 0 = left/P1, index 1 = right)
     p25_sm_slot_ctx_t slots[2];
 

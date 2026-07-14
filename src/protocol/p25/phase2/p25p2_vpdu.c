@@ -761,7 +761,7 @@ p25p2_vpdu_force_release_after_grace(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     state->p25_sm_force_release = 1;
-    p25_sm_release(p25_sm_get_ctx(), opts, state, "explicit-release");
+    p25_sm_release(p25_sm_get_ctx(), opts, state, "mac-release");
     return 1;
 }
 
