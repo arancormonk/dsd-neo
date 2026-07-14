@@ -48,8 +48,10 @@ static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ct
 // threads (watchdog tick + decoder) request release concurrently.
 static atomic_int g_p25_sm_release_lock = 0;
 
-#define P25_FAILED_VC_RETUNE_BACKOFF_DEFAULT_S 10.0
-#define P25_CC_HUNT_ACQUIRE_GRACE_S            2.0
+#define P25_FAILED_VC_RETUNE_BACKOFF_DEFAULT_S  10.0
+#define P25_CC_HUNT_ACQUIRE_GRACE_S             2.0
+#define P25_CC_RETURN_REACQUIRE_DELAY_S         2.0
+#define P25_CC_RETURN_REACQUIRE_MIN_REMAINING_S 1.0
 
 static const char*
 p25_tune_result_name(dsd_trunk_tune_result result) {
@@ -324,6 +326,15 @@ p25_sm_set_expected_cc_nac(p25_sm_ctx_t* ctx, const dsd_state* state, int replac
 }
 
 static void
+p25_sm_reset_cc_reacquire_tracking(p25_sm_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->t_cc_reacquire_m = 0.0;
+    ctx->cc_reacquire_attempted = 0;
+}
+
+static void
 p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double tune_start_m,
                                  const char* source, p25_sm_cc_acquisition_origin_e origin) {
     if (!ctx) {
@@ -331,6 +342,7 @@ p25_sm_start_cc_grace_after_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     }
     ctx->cc_tune_request_id = 0U;
     ctx->cc_tune_pending = 0;
+    p25_sm_reset_cc_reacquire_tracking(ctx);
     ctx->cc_acquisition_origin = origin;
     ctx->t_cc_sync_m = tune_start_m;
     if (state) {
@@ -365,6 +377,7 @@ p25_sm_wait_for_cc_tune_completion(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
     }
     ctx->cc_tune_request_id = request_id;
     ctx->cc_tune_pending = 1;
+    p25_sm_reset_cc_reacquire_tracking(ctx);
     ctx->cc_acquisition_origin = origin;
     ctx->t_cc_tune_m = 0.0;
     ctx->cc_sync_pending = 1;
@@ -407,16 +420,22 @@ p25_sm_refresh_cc_sync_from_state(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_s
         const double decoded_cc_m = state ? state->p25_last_cc_msg_time_m : 0.0;
         if (decoded_cc_m > ctx->t_cc_tune_m) {
             const double tune_m = ctx->t_cc_tune_m;
+            const double reacquire_m = ctx->t_cc_reacquire_m;
+            const int reacquire_attempted = ctx->cc_reacquire_attempted;
             const p25_sm_cc_acquisition_origin_e origin = ctx->cc_acquisition_origin;
             ctx->t_cc_sync_m = decoded_cc_m;
             ctx->t_cc_tune_m = 0.0;
             ctx->cc_sync_pending = 0;
             ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_NONE;
+            p25_sm_reset_cc_reacquire_tracking(ctx);
             p25_sm_set_expected_cc_nac(ctx, state, 1);
             p25_sm_diagf(opts, state, ctx, "cc_reacquired",
-                         "source=%s origin=%s decoded_cc_m=%.3f tune_m=%.3f last_cc_m=%.3f expected_nac=0x%03X",
+                         "source=%s origin=%s decoded_cc_m=%.3f tune_m=%.3f last_cc_m=%.3f expected_nac=0x%03X "
+                         "reacquire_attempted=%d soft_reacquire=%d reacquire_latency=%.3f",
                          trigger ? trigger : "state", p25_sm_cc_acquisition_origin_name(origin), decoded_cc_m, tune_m,
-                         state ? state->last_cc_sync_time_m : 0.0, ctx->expected_cc_nac);
+                         state ? state->last_cc_sync_time_m : 0.0, ctx->expected_cc_nac, reacquire_attempted,
+                         reacquire_m > 0.0 ? 1 : 0,
+                         reacquire_m > 0.0 && decoded_cc_m > reacquire_m ? decoded_cc_m - reacquire_m : 0.0);
             return 1;
         }
         p25_sm_set_expected_cc_nac(ctx, state, 0);
@@ -441,6 +460,7 @@ p25_sm_cancel_pending_cc_acquisition(p25_sm_ctx_t* ctx) {
     ctx->t_cc_tune_m = 0.0;
     ctx->cc_sync_pending = 0;
     ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_NONE;
+    p25_sm_reset_cc_reacquire_tracking(ctx);
 }
 
 // Determine if channel is TDMA based on IDEN hints.
@@ -595,6 +615,7 @@ p25_sm_resolve_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     ctx->t_cc_sync_m = completed_m > 0.0 ? completed_m : dsd_time_now_monotonic_s();
     ctx->cc_sync_pending = 0;
     ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_NONE;
+    p25_sm_reset_cc_reacquire_tracking(ctx);
     ctx->t_hunt_try_m = 0.0;
     p25_sm_diagf(opts, state, ctx, "cc_tune_complete", "request=%llu origin=%s result=%s",
                  (unsigned long long)request_id, p25_sm_cc_acquisition_origin_name(origin),
@@ -1781,6 +1802,7 @@ p25_grant_seed_cc_before_vc_tune(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
     ctx->t_cc_tune_m = 0.0;
     ctx->cc_sync_pending = 0;
     ctx->cc_acquisition_origin = P25_SM_CC_ACQUISITION_NONE;
+    p25_sm_reset_cc_reacquire_tracking(ctx);
     p25_sm_set_expected_cc_nac(ctx, state, 0);
     set_state(ctx, opts, state, P25_SM_ON_CC, "grant-cc-seed");
 }
@@ -3043,6 +3065,66 @@ p25_sm_tick_on_cc_sync_from_state(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_s
     (void)p25_sm_refresh_cc_sync_from_state(ctx, opts, state, "tick");
 }
 
+#ifdef USE_RADIO
+static int
+p25_sm_cc_reacquire_context_ready(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (!ctx || !opts || !state) {
+        return 0;
+    }
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    if (ctx->cc_reacquire_attempted || !ctx->cc_sync_pending || ctx->cc_tune_pending) {
+        return 0;
+    }
+    if (ctx->t_cc_tune_m <= 0.0 || ctx->cc_acquisition_origin != P25_SM_CC_ACQUISITION_RETURN) {
+        return 0;
+    }
+    return 1;
+}
+#endif
+
+static void
+p25_sm_tick_try_cc_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, double now_m, double cc_grace) {
+#ifdef USE_RADIO
+    if (!p25_sm_cc_reacquire_context_ready(ctx, opts, state)) {
+        return;
+    }
+
+    const double acquire_grace = p25_sm_cc_acquire_grace_s(ctx, cc_grace);
+    const double elapsed = now_m - ctx->t_cc_tune_m;
+    const double remaining = acquire_grace - elapsed;
+    if (elapsed < P25_CC_RETURN_REACQUIRE_DELAY_S || remaining < P25_CC_RETURN_REACQUIRE_MIN_REMAINING_S) {
+        return;
+    }
+
+    int cqpsk = 0;
+    int timing = 0;
+    (void)dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk, &timing);
+    if (!cqpsk) {
+        return;
+    }
+
+    const uint32_t generation = dsd_rtl_stream_metrics_hook_stream_generation();
+    const double snr_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
+    ctx->cc_reacquire_attempted = 1;
+    const int request_rc = dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire();
+    if (request_rc > 0) {
+        ctx->t_cc_reacquire_m = now_m;
+    }
+    const char* result = request_rc > 0 ? "queued" : (request_rc == 0 ? "inactive" : "unavailable");
+    p25_sm_diagf(opts, state, ctx, "cc_reacquire_request",
+                 "result=%s rc=%d elapsed=%.3f remaining=%.3f cqpsk=%d timing=%d snr_db=%.3f generation=%u", result,
+                 request_rc, elapsed, remaining, cqpsk, timing, snr_db, generation);
+#else
+    (void)ctx;
+    (void)opts;
+    (void)state;
+    (void)now_m;
+    (void)cc_grace;
+#endif
+}
+
 static int
 p25_sm_tick_on_cc_nac_mismatch(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     if (!ctx || !state || !p25_sm_valid_nac_int(ctx->expected_cc_nac) || !p25_sm_valid_nac_int(state->nac)) {
@@ -3066,6 +3148,7 @@ p25_sm_tick_on_cc_nac_mismatch(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     p25_sm_diagf(opts, state, ctx, "cc_lost", "reason=nac-mismatch expected=0x%03X got=0x%03X consecutive=%d",
                  ctx->expected_cc_nac, state->nac, ctx->nac_mismatch_count);
     ctx->nac_mismatch_count = 0;
+    p25_sm_reset_cc_reacquire_tracking(ctx);
     set_state(ctx, opts, state, P25_SM_HUNTING, "cc-lost-nac-mismatch");
     ctx->t_hunt_try_m = now_m;
     try_next_cc(ctx, opts, state, now_m);
@@ -3159,6 +3242,7 @@ p25_sm_tick_on_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
         return;
     }
     p25_sm_tick_on_cc_sync_from_state(ctx, opts, state);
+    p25_sm_tick_try_cc_reacquire(ctx, opts, state, now_m, cc_grace);
     if (p25_sm_tick_on_cc_nac_mismatch(ctx, opts, state, now_m)) {
         return;
     }
@@ -3186,6 +3270,7 @@ p25_sm_tick_on_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
                      "reason=timeout cc_grace=%.3f last_cc_m=%.3f decoded_cc_m=%.3f now_m=%.3f", cc_grace,
                      state ? state->last_cc_sync_time_m : 0.0, state ? state->p25_last_cc_msg_time_m : 0.0, now_m);
     }
+    p25_sm_reset_cc_reacquire_tracking(ctx);
     set_state(ctx, opts, state, P25_SM_HUNTING, "cc-lost");
     ctx->t_hunt_try_m = now_m;
     try_next_cc(ctx, opts, state, now_m);

@@ -17,6 +17,7 @@ static int g_stream_generation_calls = 0;
 static int g_stream_active_calls = 0;
 static int g_apply_demod_profile_calls = 0;
 static int g_cqpsk_status_calls = 0;
+static int g_cqpsk_reacquire_calls = 0;
 static int g_cqpsk_timing_bias_calls = 0;
 static int g_snr_bias_calls = 0;
 static int g_snr_c4fm_calls = 0;
@@ -105,6 +106,12 @@ fake_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
         *out_cqpsk_timing_active = 3;
     }
     return -7;
+}
+
+static int
+fake_cqpsk_reacquire(void) {
+    g_cqpsk_reacquire_calls++;
+    return 17;
 }
 
 static int
@@ -232,6 +239,7 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk, &timing) == 0);
     assert(cqpsk == 0);
     assert(timing == 0);
+    assert(dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire() == -1);
 
     assert(dsd_rtl_stream_metrics_hook_cqpsk_timing_bias() == 0);
 
@@ -264,6 +272,7 @@ main(void) {
     g_stream_active_calls = 0;
     g_apply_demod_profile_calls = 0;
     g_cqpsk_status_calls = 0;
+    g_cqpsk_reacquire_calls = 0;
     g_cqpsk_timing_bias_calls = 0;
     g_snr_bias_calls = 0;
     g_snr_c4fm_calls = 0;
@@ -289,6 +298,7 @@ main(void) {
     hooks.stream_active = fake_stream_active;
     hooks.apply_demod_profile = fake_apply_demod_profile;
     hooks.cqpsk_status = fake_cqpsk_status;
+    hooks.request_cqpsk_reacquire = fake_cqpsk_reacquire;
     hooks.cqpsk_timing_bias = fake_cqpsk_timing_bias;
     hooks.snr_bias_evm = fake_snr_bias_evm;
     hooks.snr_c4fm_db = fake_snr_c4fm_db;
@@ -341,6 +351,8 @@ main(void) {
     assert(g_cqpsk_status_calls == 1);
     assert(cqpsk == 1);
     assert(timing == 3);
+    assert(dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire() == 17);
+    assert(g_cqpsk_reacquire_calls == 1);
 
     assert(dsd_rtl_stream_metrics_hook_cqpsk_timing_bias() == 123);
     assert(g_cqpsk_timing_bias_calls == 1);

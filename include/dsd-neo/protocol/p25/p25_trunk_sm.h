@@ -163,10 +163,12 @@ typedef struct {
     double t_hangtime_m;         // Monotonic time hangtime started
     double t_cc_sync_m;          // Monotonic time of last CC sync
     double t_cc_tune_m;          // Monotonic time of last CC tune awaiting decode
+    double t_cc_reacquire_m;     // Monotonic time a soft CQPSK reacquire was queued
     double t_hunt_try_m;         // Monotonic time of last CC candidate attempt
     uint64_t cc_tune_request_id; // Runtime request awaiting asynchronous tune completion
     int cc_tune_pending;         // 1 while the tuner/output pipeline is still changing channels
     int cc_sync_pending;         // 1 until a completed CC tune is followed by decoded CC sync
+    int cc_reacquire_attempted;  // 1 after the one-shot soft recovery check for this acquisition
     p25_sm_cc_acquisition_origin_e cc_acquisition_origin; // Origin of pending decoded-CC acquisition
 
     // Statistics (for debugging/UI)

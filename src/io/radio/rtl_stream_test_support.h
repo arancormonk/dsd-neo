@@ -66,6 +66,38 @@ uint64_t rtl_stream_test_replay_acknowledge_discarded_span(uint64_t submitted_ge
 int rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                   int* out_cache_pending_after, uint32_t* out_generation_before,
                                   uint32_t* out_generation_after, int* out_request_rc, int* out_consumed);
+
+typedef struct rtl_stream_test_cqpsk_reacquire_result {
+    size_t used_after;
+    int cache_pending_after;
+    uint32_t generation_before;
+    uint32_t generation_after;
+    int request_rc;
+    int second_request_rc;
+    int consumed;
+    int second_consumed;
+    float fll_freq_before;
+    float fll_freq_after;
+    float fll_phase_after;
+    float costas_freq_after;
+    float costas_phase_after;
+    float costas_error_after;
+    float ted_mu_after;
+    float ted_delay_after;
+    float diff_prev_r_after;
+    float diff_prev_j_after;
+    float cqpsk_agc_before;
+    float cqpsk_agc_after;
+    int resamp_phase_after;
+    int histories_cleared;
+    int output_kind_after;
+    int symbol_rate_after;
+    int channel_profile_after;
+    int ted_sps_after;
+} rtl_stream_test_cqpsk_reacquire_result;
+
+int rtl_stream_test_cqpsk_reacquire(int active_cqpsk, size_t queued_samples, int cached_symbols,
+                                    rtl_stream_test_cqpsk_reacquire_result* out_result);
 int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* out_second_profile,
                                                    uint32_t* out_first_freq_hz, uint32_t* out_second_freq_hz,
                                                    uint32_t* out_first_request_id, uint32_t* out_second_request_id);

@@ -54,6 +54,49 @@ static dsd_mutex_t g_release_hook_mutex;
 static dsd_cond_t g_release_hook_cond;
 static int g_release_hook_entered = 0;
 
+#ifdef USE_RADIO
+static int g_cc_reacquire_cqpsk = 1;
+static int g_cc_reacquire_request_rc = 1;
+static int g_cc_reacquire_request_calls = 0;
+
+static int
+cc_reacquire_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
+    if (out_cqpsk_enable) {
+        *out_cqpsk_enable = g_cc_reacquire_cqpsk;
+    }
+    if (out_cqpsk_timing_active) {
+        *out_cqpsk_timing_active = g_cc_reacquire_cqpsk;
+    }
+    return 0;
+}
+
+static int
+cc_reacquire_request(void) {
+    g_cc_reacquire_request_calls++;
+    return g_cc_reacquire_request_rc;
+}
+
+static uint32_t
+cc_reacquire_generation(void) {
+    return 77U;
+}
+
+static double
+cc_reacquire_snr(void) {
+    return 2.5;
+}
+
+static void
+install_cc_reacquire_hooks(void) {
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.cqpsk_status = cc_reacquire_cqpsk_status;
+    hooks.request_cqpsk_reacquire = cc_reacquire_request;
+    hooks.stream_generation = cc_reacquire_generation;
+    hooks.snr_cqpsk_db = cc_reacquire_snr;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+}
+#endif
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -1167,6 +1210,96 @@ main(void) {
     assert(g_result_tune_to_cc_calls == 0);
     assert(ctx18g.state == P25_SM_ON_CC);
     assert(ctx18g.cc_sync_pending == 1);
+
+#ifdef USE_RADIO
+    // A marginal RTL/CQPSK return receives one soft recovery attempt after two
+    // seconds without moving its tune boundary or extending its deadline.
+    static dsd_opts o18r;
+    static dsd_state s18r;
+    DSD_MEMSET(&o18r, 0, sizeof(o18r));
+    DSD_MEMSET(&s18r, 0, sizeof(s18r));
+    o18r.trunk_enable = 1;
+    o18r.audio_in_type = AUDIO_IN_RTL;
+    s18r.p25_cc_freq = 851000000;
+    s18r.trunk_cc_freq = 851000000;
+    p25_sm_ctx_t ctx18r;
+    p25_sm_init_ctx(&ctx18r, &o18r, &s18r);
+    ctx18r.config.cc_grace_s = 5.0;
+    install_cc_reacquire_hooks();
+    g_cc_reacquire_cqpsk = 1;
+    g_cc_reacquire_request_rc = 1;
+    g_cc_reacquire_request_calls = 0;
+
+    const double early_reacquire_tune_m = dsd_time_now_monotonic_s() - 1.5;
+    assert(
+        p25_sm_restart_pending_cc_acquisition(&ctx18r, &o18r, &s18r, early_reacquire_tune_m, "test-cqpsk-return-early")
+        == 1);
+    s18r.last_cc_sync_time_m = early_reacquire_tune_m;
+    s18r.p25_last_cc_msg_time_m = early_reacquire_tune_m - 0.25;
+    p25_sm_tick_ctx(&ctx18r, &o18r, &s18r);
+    assert(g_cc_reacquire_request_calls == 0);
+    assert(ctx18r.cc_reacquire_attempted == 0);
+
+    const double eligible_reacquire_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18r, &o18r, &s18r, eligible_reacquire_tune_m,
+                                                 "test-cqpsk-return-eligible")
+           == 1);
+    s18r.last_cc_sync_time_m = eligible_reacquire_tune_m;
+    s18r.p25_last_cc_msg_time_m = eligible_reacquire_tune_m - 0.25;
+    g_result_tune_to_cc_calls = 0;
+    p25_sm_tick_ctx(&ctx18r, &o18r, &s18r);
+    assert(g_cc_reacquire_request_calls == 1);
+    assert(g_result_tune_to_cc_calls == 0);
+    assert(ctx18r.state == P25_SM_ON_CC);
+    assert(ctx18r.cc_sync_pending == 1);
+    assert(ctx18r.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN);
+    assert(ctx18r.cc_reacquire_attempted == 1);
+    assert(ctx18r.t_cc_reacquire_m > eligible_reacquire_tune_m);
+    assert(fabs(ctx18r.t_cc_tune_m - eligible_reacquire_tune_m) <= cc_sync_epsilon_s);
+    p25_sm_tick_ctx(&ctx18r, &o18r, &s18r);
+    assert(g_cc_reacquire_request_calls == 1);
+
+    s18r.last_cc_sync_time_m = eligible_reacquire_tune_m + 0.5;
+    s18r.p25_last_cc_msg_time_m = eligible_reacquire_tune_m + 0.5;
+    p25_sm_tick_ctx(&ctx18r, &o18r, &s18r);
+    assert(ctx18r.cc_sync_pending == 0);
+    assert(ctx18r.cc_acquisition_origin == P25_SM_CC_ACQUISITION_NONE);
+    assert(ctx18r.cc_reacquire_attempted == 0);
+    assert(ctx18r.t_cc_reacquire_m == 0.0);
+
+    // A decoded block observed before the recovery check suppresses the reset.
+    const double fast_reacquire_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18r, &o18r, &s18r, fast_reacquire_tune_m, "test-cqpsk-return-fast")
+           == 1);
+    s18r.last_cc_sync_time_m = fast_reacquire_tune_m + 0.25;
+    s18r.p25_last_cc_msg_time_m = fast_reacquire_tune_m + 0.25;
+    p25_sm_tick_ctx(&ctx18r, &o18r, &s18r);
+    assert(g_cc_reacquire_request_calls == 1);
+    assert(ctx18r.cc_sync_pending == 0);
+
+    // C4FM and returns too close to expiry remain untouched.
+    g_cc_reacquire_cqpsk = 0;
+    const double c4fm_reacquire_tune_m = dsd_time_now_monotonic_s() - 2.5;
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18r, &o18r, &s18r, c4fm_reacquire_tune_m, "test-c4fm-return")
+           == 1);
+    s18r.last_cc_sync_time_m = c4fm_reacquire_tune_m;
+    s18r.p25_last_cc_msg_time_m = c4fm_reacquire_tune_m - 0.25;
+    p25_sm_tick_ctx(&ctx18r, &o18r, &s18r);
+    assert(g_cc_reacquire_request_calls == 1);
+    assert(ctx18r.cc_reacquire_attempted == 0);
+
+    g_cc_reacquire_cqpsk = 1;
+    const double late_reacquire_tune_m = dsd_time_now_monotonic_s() - 4.25;
+    assert(p25_sm_restart_pending_cc_acquisition(&ctx18r, &o18r, &s18r, late_reacquire_tune_m, "test-cqpsk-return-late")
+           == 1);
+    s18r.last_cc_sync_time_m = late_reacquire_tune_m;
+    s18r.p25_last_cc_msg_time_m = late_reacquire_tune_m - 0.25;
+    p25_sm_tick_ctx(&ctx18r, &o18r, &s18r);
+    assert(g_cc_reacquire_request_calls == 1);
+    assert(ctx18r.state == P25_SM_ON_CC);
+    assert(ctx18r.cc_reacquire_attempted == 0);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+#endif
 
     // Configured grace values below the hunt cap, including zero, remain authoritative.
     static dsd_opts o18h;

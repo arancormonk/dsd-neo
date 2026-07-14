@@ -44,6 +44,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.stream_generation = rtl_stream_output_generation;
     hooks.apply_demod_profile = rtl_stream_metrics_apply_demod_profile;
     hooks.cqpsk_status = rtl_stream_get_cqpsk_status;
+    hooks.request_cqpsk_reacquire = rtl_stream_request_cqpsk_reacquire;
     hooks.cqpsk_timing_bias = rtl_stream_metrics_cqpsk_timing_bias;
     hooks.snr_bias_evm = rtl_stream_get_snr_bias_evm;
     hooks.snr_c4fm_db = rtl_stream_get_snr_c4fm;

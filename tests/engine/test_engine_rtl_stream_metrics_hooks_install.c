@@ -28,6 +28,7 @@ static int g_family_calls;
 static int g_ted_clear_calls;
 static int g_ted_set_calls;
 static int g_cqpsk_status_calls;
+static int g_cqpsk_reacquire_calls;
 static int g_cqpsk_timing_bias_calls;
 static int g_snr_bias_calls;
 static int g_snr_c4fm_calls;
@@ -139,6 +140,12 @@ rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
         *cqpsk_timing_active = 0;
     }
     return -8;
+}
+
+int
+rtl_stream_request_cqpsk_reacquire(void) {
+    ++g_cqpsk_reacquire_calls;
+    return -14;
 }
 
 int
@@ -292,6 +299,8 @@ main(void) {
     assert(g_cqpsk_status_calls == 1);
     assert(cqpsk_enable == 1);
     assert(cqpsk_timing == 0);
+    assert(dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire() == -14);
+    assert(g_cqpsk_reacquire_calls == 1);
     assert(dsd_rtl_stream_metrics_hook_cqpsk_timing_bias() == -13);
     assert(g_cqpsk_timing_bias_calls == 1);
 

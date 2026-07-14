@@ -313,6 +313,7 @@ static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static std::atomic<uint32_t> g_rtl_output_generation{1};
 static std::atomic<int> g_fsk_reacquire_pending{0};
+static std::atomic<int> g_cqpsk_reacquire_pending{0};
 static std::atomic<int> g_fsk_modem_reset_pending{0};
 static std::atomic<int> g_fsk_modem_config_pending{0};
 static std::atomic<int> g_fsk_modem_config_symbol_rate_hz{4800};
@@ -332,6 +333,7 @@ static std::atomic<uint32_t> g_replay_loop_restart_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
 
 static int rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d);
+static int rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_fsk_modem_config_pending(struct demod_state* d);
 static int rtl_stream_consume_fsk_modem_reset_pending(struct demod_state* d);
 static void rtl_stream_invalidate_fsk_phase_cfo_snapshot(void);
@@ -1174,6 +1176,7 @@ enum class DemodRetuneResetReason : uint8_t {
     DistantFrequencyRetune,
     PpmCorrection,
     FreshStream,
+    CqpskReacquire,
 };
 
 struct DemodRetuneResetPlan {
@@ -1190,6 +1193,7 @@ retune_reset_reason_name(DemodRetuneResetReason reason) {
         case DemodRetuneResetReason::DistantFrequencyRetune: return "distant-frequency";
         case DemodRetuneResetReason::PpmCorrection: return "ppm-correction";
         case DemodRetuneResetReason::FreshStream: return "fresh-stream";
+        case DemodRetuneResetReason::CqpskReacquire: return "cqpsk-reacquire";
         default: return "unknown";
     }
 }
@@ -1207,6 +1211,9 @@ retune_reset_reason_from_name(const char* reason) {
     }
     if (strcmp(reason, "fresh-stream") == 0) {
         return DemodRetuneResetReason::FreshStream;
+    }
+    if (strcmp(reason, "cqpsk-reacquire") == 0) {
+        return DemodRetuneResetReason::CqpskReacquire;
     }
     return DemodRetuneResetReason::FrequencyRetune;
 }
@@ -1576,11 +1583,15 @@ demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
     const bool reset_retained_fll =
         (reason == DemodRetuneResetReason::PpmCorrection || reason == DemodRetuneResetReason::FreshStream
          || reason == DemodRetuneResetReason::DistantFrequencyRetune);
-    demod_handle_sps_transition_reset(s, reason);
+    if (reason != DemodRetuneResetReason::CqpskReacquire) {
+        demod_handle_sps_transition_reset(s, reason);
+    }
     demod_reset_common_state_for_retune(s);
     demod_refresh_fll_band_edge_state(s, reset_retained_fll ? 1 : 0, plan.retained_fll_scale);
     demod_reset_ted_delay_for_retune(s);
-    demod_apply_pending_ted_override(s);
+    if (reason != DemodRetuneResetReason::CqpskReacquire) {
+        demod_apply_pending_ted_override(s);
+    }
     demod_reset_histories_for_output_mode(s);
     demod_log_post_retune_state(s);
 }
@@ -3274,6 +3285,7 @@ static DSD_THREAD_RETURN_TYPE
         int perf_on = rtl_perf_enabled();
         uint64_t perf_full_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
         (void)rtl_stream_consume_fsk_modem_config_pending(d);
+        (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
         int consumed_fsk_reacquire = rtl_stream_consume_fsk_reacquire_pending(d);
         if (!consumed_fsk_reacquire) {
             (void)rtl_stream_consume_fsk_modem_reset_pending(d);
@@ -3599,6 +3611,24 @@ rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d) {
     return 1;
 }
 
+static int
+rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d) {
+    int pending = g_cqpsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
+    if (!pending || !d || (d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && !d->cqpsk_enable)) {
+        return 0;
+    }
+
+    rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
+    DemodRetuneResetPlan reset_plan = {DemodRetuneResetReason::CqpskReacquire, 1.0f};
+    demod_reset_on_retune(d, reset_plan);
+    g_snr_qpsk_acc_reset.store(1, std::memory_order_release);
+    if (debug_cqpsk_enabled()) {
+        DSD_FPRINTF(stderr, "[CQPSKREACQ] consumed output_generation=%u\n",
+                    g_rtl_output_generation.load(std::memory_order_acquire));
+    }
+    return 1;
+}
+
 static void
 controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
                                int mark_reconfigure, DemodRetuneResetReason reset_reason,
@@ -3645,6 +3675,7 @@ controller_enter_reconfigure_gate(struct controller_state* s) {
     s->retune_in_progress.store(1, std::memory_order_release);
     rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
     controller_wait_for_demod_idle(s);
+    g_cqpsk_reacquire_pending.store(0, std::memory_order_release);
     rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
     g_retune_settle_blocks_remaining.store(0, std::memory_order_release);
     g_retune_diag_blocks_remaining.store(0, std::memory_order_release);
@@ -6838,6 +6869,19 @@ rtl_stream_request_fsk_reacquire(void) {
     return 1;
 }
 
+extern "C" int
+rtl_stream_request_cqpsk_reacquire(void) {
+    if (demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && !demod.cqpsk_enable) {
+        return 0;
+    }
+    g_cqpsk_reacquire_pending.store(1, std::memory_order_release);
+    if (debug_cqpsk_enabled()) {
+        DSD_FPRINTF(stderr, "[CQPSKREACQ] requested output_generation=%u\n",
+                    g_rtl_output_generation.load(std::memory_order_acquire));
+    }
+    return 1;
+}
+
 extern "C" void
 rtl_stream_set_ted_sps(int sps) {
     if (sps < 2) {
@@ -8688,6 +8732,129 @@ rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached
     demod.fsk_modem_state = prev_modem;
     g_fsk_reacquire_pending.store(prev_reacquire_pending, std::memory_order_release);
     g_fsk_modem_reset_pending.store(prev_reset_pending, std::memory_order_release);
+    fsk_reacquire_test_reset_output_state();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
+static void
+cqpsk_reacquire_test_init_demod(struct demod_state* test_demod, int active_cqpsk) {
+    DSD_MEMSET(test_demod, 0, sizeof(*test_demod));
+    test_demod->output_kind = active_cqpsk ? DSD_DEMOD_OUTPUT_SYMBOL_CQPSK : DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    test_demod->cqpsk_enable = active_cqpsk ? 1 : 0;
+    test_demod->symbol_rate_hz = 4800;
+    test_demod->symbol_levels = 4;
+    test_demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    test_demod->ted_sps = 10;
+    test_demod->ted_sps_override = 10;
+    test_demod->ted_state.twice_sps = 20;
+    test_demod->ted_state.mu = 4.5f;
+    test_demod->ted_state.dl[0] = 3.0f;
+    test_demod->ted_state.dl_index = 7;
+    dsd_fll_band_edge_init(&test_demod->fll_band_edge_state, test_demod->ted_sps);
+    test_demod->fll_band_edge_state.freq = 0.125f;
+    test_demod->fll_band_edge_state.phase = 0.75f;
+    test_demod->costas_state.freq = 0.25f;
+    test_demod->costas_state.phase = 0.5f;
+    test_demod->costas_state.error = 0.375f;
+    test_demod->costas_state.error_smooth = 0.1875f;
+    test_demod->cqpsk_diff_prev_r = 0.25f;
+    test_demod->cqpsk_diff_prev_j = -0.25f;
+    test_demod->cqpsk_agc_avg = 0.625f;
+    test_demod->hb_hist_i[0][0] = 1.0f;
+    test_demod->hb_hist_q[0][0] = -1.0f;
+    test_demod->channel_lpf_hist_i[0] = 2.0f;
+    test_demod->channel_lpf_hist_q[0] = -2.0f;
+    test_demod->channel_lpf_hist_len = 8;
+    test_demod->resamp_phase = 5;
+    test_demod->resamp_hist_head = 3;
+}
+
+static void
+cqpsk_reacquire_test_capture_result(const struct demod_state* test_demod,
+                                    rtl_stream_test_cqpsk_reacquire_result* out_result) {
+    out_result->generation_after = rtl_stream_output_generation();
+    out_result->used_after = ring_used(&output);
+    out_result->cache_pending_after = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
+    out_result->fll_freq_after = test_demod->fll_band_edge_state.freq;
+    out_result->fll_phase_after = test_demod->fll_band_edge_state.phase;
+    out_result->costas_freq_after = test_demod->costas_state.freq;
+    out_result->costas_phase_after = test_demod->costas_state.phase;
+    out_result->costas_error_after = test_demod->costas_state.error;
+    out_result->ted_mu_after = test_demod->ted_state.mu;
+    out_result->ted_delay_after = test_demod->ted_state.dl[0];
+    out_result->diff_prev_r_after = test_demod->cqpsk_diff_prev_r;
+    out_result->diff_prev_j_after = test_demod->cqpsk_diff_prev_j;
+    out_result->cqpsk_agc_after = test_demod->cqpsk_agc_avg;
+    out_result->resamp_phase_after = test_demod->resamp_phase;
+    out_result->histories_cleared =
+        (test_demod->hb_hist_i[0][0] == 0.0f && test_demod->hb_hist_q[0][0] == 0.0f
+         && test_demod->channel_lpf_hist_i[0] == 0.0f && test_demod->channel_lpf_hist_q[0] == 0.0f
+         && test_demod->channel_lpf_hist_len == 0)
+            ? 1
+            : 0;
+    out_result->output_kind_after = test_demod->output_kind;
+    out_result->symbol_rate_after = test_demod->symbol_rate_hz;
+    out_result->channel_profile_after = test_demod->channel_lpf_profile;
+    out_result->ted_sps_after = test_demod->ted_sps;
+}
+
+extern "C" int
+rtl_stream_test_cqpsk_reacquire(int active_cqpsk, size_t queued_samples, int cached_symbols,
+                                rtl_stream_test_cqpsk_reacquire_result* out_result) {
+    if (!out_result || cached_symbols < 0) {
+        return -1;
+    }
+    *out_result = {};
+
+    int initialized_output = 0;
+    int prepare_rc = fsk_reacquire_test_prepare_output_ring(queued_samples, &initialized_output);
+    if (prepare_rc != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return prepare_rc;
+    }
+
+    static struct demod_state test_demod;
+    cqpsk_reacquire_test_init_demod(&test_demod, active_cqpsk);
+
+    const int prev_output_kind = demod.output_kind;
+    const int prev_cqpsk = demod.cqpsk_enable;
+    struct RtlSdrInternals* prev_stream = g_stream;
+    const int prev_pending = g_cqpsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
+    demod.output_kind = test_demod.output_kind;
+    demod.cqpsk_enable = test_demod.cqpsk_enable;
+    g_stream = NULL;
+
+    ring_clear(&output);
+    output.tail.store(0, std::memory_order_release);
+    output.head.store(queued_samples, std::memory_order_release);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
+
+    out_result->generation_before = rtl_stream_output_generation();
+    out_result->fll_freq_before = test_demod.fll_band_edge_state.freq;
+    out_result->cqpsk_agc_before = test_demod.cqpsk_agc_avg;
+    out_result->request_rc = rtl_stream_request_cqpsk_reacquire();
+    out_result->second_request_rc = rtl_stream_request_cqpsk_reacquire();
+    if (out_result->request_rc > 0
+        && !fsk_reacquire_test_request_state_valid(queued_samples, cached_symbols, out_result->generation_before)) {
+        demod.output_kind = prev_output_kind;
+        demod.cqpsk_enable = prev_cqpsk;
+        g_stream = prev_stream;
+        g_cqpsk_reacquire_pending.store(prev_pending, std::memory_order_release);
+        fsk_reacquire_test_reset_output_state();
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -5;
+    }
+
+    out_result->consumed = rtl_stream_consume_cqpsk_reacquire_pending(&test_demod);
+    out_result->second_consumed = rtl_stream_consume_cqpsk_reacquire_pending(&test_demod);
+    cqpsk_reacquire_test_capture_result(&test_demod, out_result);
+
+    demod.output_kind = prev_output_kind;
+    demod.cqpsk_enable = prev_cqpsk;
+    g_stream = prev_stream;
+    g_cqpsk_reacquire_pending.store(prev_pending, std::memory_order_release);
     fsk_reacquire_test_reset_output_state();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return 0;

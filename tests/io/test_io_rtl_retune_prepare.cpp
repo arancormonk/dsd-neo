@@ -372,6 +372,51 @@ main(void) {
     failed |= expect_size_eq("inactive fsk reacquire leaves queued ring", used_after, 9U);
     failed |= expect_int_eq("inactive fsk reacquire leaves cached symbols", cache_pending, 4);
 
+    rtl_stream_test_cqpsk_reacquire_result cqpsk_reacquire = {};
+    rc = rtl_stream_test_cqpsk_reacquire(1, 11U, 5, &cqpsk_reacquire);
+    failed |= expect_int_eq("cqpsk reacquire helper rc", rc, 0);
+    failed |= expect_int_eq("cqpsk reacquire request queued", cqpsk_reacquire.request_rc, 1);
+    failed |= expect_int_eq("cqpsk reacquire duplicate coalesced", cqpsk_reacquire.second_request_rc, 1);
+    failed |= expect_int_eq("cqpsk reacquire consumed", cqpsk_reacquire.consumed, 1);
+    failed |= expect_int_eq("cqpsk reacquire consumed once", cqpsk_reacquire.second_consumed, 0);
+    failed |= expect_generation_changed("cqpsk reacquire bumps generation", cqpsk_reacquire.generation_before,
+                                        cqpsk_reacquire.generation_after);
+    failed |= expect_size_eq("cqpsk reacquire clears queued ring", cqpsk_reacquire.used_after, 0U);
+    failed |= expect_int_eq("cqpsk reacquire resets cached symbols", cqpsk_reacquire.cache_pending_after, 0);
+    failed |= expect_double_near("cqpsk reacquire preserves coarse fll frequency", cqpsk_reacquire.fll_freq_after,
+                                 cqpsk_reacquire.fll_freq_before, 1e-7);
+    failed |= expect_double_near("cqpsk reacquire resets fll phase", cqpsk_reacquire.fll_phase_after, 0.0, 1e-7);
+    failed |=
+        expect_double_near("cqpsk reacquire resets costas frequency", cqpsk_reacquire.costas_freq_after, 0.0, 1e-7);
+    failed |= expect_double_near("cqpsk reacquire resets costas phase", cqpsk_reacquire.costas_phase_after, 0.0, 1e-7);
+    failed |= expect_double_near("cqpsk reacquire resets costas error", cqpsk_reacquire.costas_error_after, 0.0, 1e-7);
+    failed |= expect_double_near("cqpsk reacquire resets ted delay", cqpsk_reacquire.ted_delay_after, 0.0, 1e-7);
+    failed |= expect_double_near("cqpsk reacquire re-arms ted phase", cqpsk_reacquire.ted_mu_after, 21.0, 1e-7);
+    failed |=
+        expect_double_near("cqpsk reacquire resets differential real", cqpsk_reacquire.diff_prev_r_after, 1.0, 1e-7);
+    failed |=
+        expect_double_near("cqpsk reacquire resets differential imag", cqpsk_reacquire.diff_prev_j_after, 0.0, 1e-7);
+    failed |= expect_double_near("cqpsk reacquire preserves agc", cqpsk_reacquire.cqpsk_agc_after,
+                                 cqpsk_reacquire.cqpsk_agc_before, 1e-7);
+    failed |= expect_int_eq("cqpsk reacquire resets filters", cqpsk_reacquire.histories_cleared, 1);
+    failed |= expect_int_eq("cqpsk reacquire resets resampler phase", cqpsk_reacquire.resamp_phase_after, 0);
+    failed |= expect_int_eq("cqpsk reacquire preserves output kind", cqpsk_reacquire.output_kind_after,
+                            RTL_STREAM_OUTPUT_SYMBOL_CQPSK);
+    failed |= expect_int_eq("cqpsk reacquire preserves symbol rate", cqpsk_reacquire.symbol_rate_after, 4800);
+    failed |= expect_int_eq("cqpsk reacquire preserves channel profile", cqpsk_reacquire.channel_profile_after,
+                            RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    failed |= expect_int_eq("cqpsk reacquire preserves ted sps", cqpsk_reacquire.ted_sps_after, 10);
+
+    cqpsk_reacquire = {};
+    rc = rtl_stream_test_cqpsk_reacquire(0, 9U, 4, &cqpsk_reacquire);
+    failed |= expect_int_eq("inactive cqpsk reacquire helper rc", rc, 0);
+    failed |= expect_int_eq("inactive cqpsk reacquire no-op", cqpsk_reacquire.request_rc, 0);
+    failed |= expect_int_eq("inactive cqpsk reacquire not consumed", cqpsk_reacquire.consumed, 0);
+    failed |= expect_generation_eq("inactive cqpsk reacquire keeps generation", cqpsk_reacquire.generation_before,
+                                   cqpsk_reacquire.generation_after);
+    failed |= expect_size_eq("inactive cqpsk reacquire leaves queued ring", cqpsk_reacquire.used_after, 9U);
+    failed |= expect_int_eq("inactive cqpsk reacquire leaves cached symbols", cqpsk_reacquire.cache_pending_after, 4);
+
     int first_profile = -1;
     int second_profile = -1;
     uint32_t first_freq_hz = 0U;

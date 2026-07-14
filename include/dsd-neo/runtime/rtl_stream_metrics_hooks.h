@@ -31,6 +31,7 @@ typedef struct {
     int (*symbol_profile)(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile);
     uint32_t (*stream_generation)(void);
     int (*cqpsk_status)(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
+    int (*request_cqpsk_reacquire)(void);
     int (*cqpsk_timing_bias)(void);
     double (*snr_bias_evm)(void);
     double (*snr_c4fm_db)(void);
@@ -72,6 +73,7 @@ int dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out);
 int dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
                                                     int channel_profile, int ted_sps);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
+int dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);
 double dsd_rtl_stream_metrics_hook_snr_bias_evm(void);
 double dsd_rtl_stream_metrics_hook_snr_c4fm_db(void);
