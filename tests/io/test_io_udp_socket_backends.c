@@ -13,6 +13,7 @@
 #include <dsd-neo/io/udp_bind.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/sockets.h>
+#include <errno.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -47,6 +48,7 @@ static uint8_t g_last_sendto_data[32];
 static size_t g_last_sendto_len;
 static int g_sendto_result;
 static int g_recvfrom_result;
+static int g_socket_error;
 static uint8_t g_recvfrom_payload[32];
 static size_t g_recvfrom_payload_len;
 
@@ -73,6 +75,7 @@ reset_stubs(void) {
     g_last_sendto_len = 0;
     g_sendto_result = 0;
     g_recvfrom_result = 0;
+    g_socket_error = 0;
     DSD_MEMSET(g_recvfrom_payload, 0, sizeof(g_recvfrom_payload));
     g_recvfrom_payload_len = 0;
 }
@@ -170,6 +173,11 @@ dsd_socket_recvfrom(dsd_socket_t sock, void* buf, size_t len, int flags, struct 
         DSD_MEMCPY(buf, g_recvfrom_payload, copy_len);
     }
     return g_recvfrom_result ? g_recvfrom_result : (int)copy_len;
+}
+
+int
+dsd_socket_get_error(void) {
+    return g_socket_error;
 }
 
 static void
@@ -297,6 +305,37 @@ test_m17_connect_send_and_receive(void) {
 }
 
 static int
+test_m17_receive_error_classification(void) {
+    static dsd_opts opts;
+    uint8_t out[8] = {0};
+    init_opts(&opts);
+
+    reset_stubs();
+    g_recvfrom_result = -1;
+#if DSD_PLATFORM_WIN_NATIVE
+    g_socket_error = WSAETIMEDOUT;
+#else
+    g_socket_error = EAGAIN;
+#endif
+    assert(m17_socket_receiver(&opts, out) == 0);
+
+#if DSD_PLATFORM_WIN_NATIVE
+    g_socket_error = WSAEINTR;
+#else
+    g_socket_error = EINTR;
+#endif
+    assert(m17_socket_receiver(&opts, out) == 0);
+
+#if DSD_PLATFORM_WIN_NATIVE
+    g_socket_error = WSAECONNRESET;
+#else
+    g_socket_error = ECONNRESET;
+#endif
+    assert(m17_socket_receiver(&opts, out) == -1);
+    return 0;
+}
+
+static int
 test_m17_connect_failures(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -381,6 +420,7 @@ main(void) {
     rc |= test_udp_connect_failures();
     rc |= test_udp_connect_success_and_send_paths();
     rc |= test_m17_connect_send_and_receive();
+    rc |= test_m17_receive_error_classification();
     rc |= test_m17_connect_failures();
     rc |= test_udp_bind_paths();
     return rc;

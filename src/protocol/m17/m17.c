@@ -1650,6 +1650,12 @@ m17_scale_input_sample(float sample, int multiplier) {
     return sample;
 }
 
+enum m17_str_read_result {
+    M17_STR_READ_ERROR = -1,
+    M17_STR_READ_STOP = 0,
+    M17_STR_READ_OK = 1,
+};
+
 static int
 m17_str_read_block_pulse(dsd_opts* opts, size_t nsam, int dec, float* sample, short* out, int clip_output) {
     for (size_t i = 0; i < nsam; i++) {
@@ -1661,29 +1667,41 @@ m17_str_read_block_pulse(dsd_opts* opts, size_t nsam, int dec, float* sample, sh
         *sample = m17_scale_input_sample(*sample, opts->input_volume_multiplier);
         out[i] = clip_output ? m17_clip_float_to_short(*sample) : (short)*sample;
     }
-    return 1;
+    return M17_STR_READ_OK;
 }
 
 static int
 m17_str_read_block_stdin(dsd_opts* opts, size_t nsam, int dec, float* sample, short* out) {
+    if (opts->audio_in_file == NULL) {
+        LOG_ERROR("M17 stream encoder has no STDIN audio handle");
+        return M17_STR_READ_ERROR;
+    }
+
     for (size_t i = 0; i < nsam; i++) {
         for (int j = 0; j < dec; j++) {
             short s = 0;
             const sf_count_t result = sf_read_short(opts->audio_in_file, &s, 1);
             if (result != 1) {
+                const int read_error = sf_error(opts->audio_in_file);
+                if (read_error != SF_ERR_NO_ERROR) {
+                    LOG_ERROR("M17 stream encoder failed to read STDIN: %s", sf_strerror(opts->audio_in_file));
+                }
                 sf_close(opts->audio_in_file);
                 opts->audio_in_file = NULL;
+                exitflag = 1;
+                if (read_error != SF_ERR_NO_ERROR) {
+                    return M17_STR_READ_ERROR;
+                }
                 DSD_FPRINTF(stderr, "Connection to STDIN Disconnected.\n");
                 DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
-                exitflag = 1;
-                return 0;
+                return M17_STR_READ_STOP;
             }
             *sample = (float)s;
         }
         *sample = m17_scale_input_sample(*sample, opts->input_volume_multiplier);
         out[i] = m17_clip_float_to_short(*sample);
     }
-    return 1;
+    return M17_STR_READ_OK;
 }
 
 static int
@@ -1698,14 +1716,14 @@ m17_str_read_block_tcp(dsd_opts* opts, size_t nsam, int dec, float* sample, shor
                 DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected.\n");
                 DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
                 exitflag = 1;
-                return 0;
+                return M17_STR_READ_STOP;
             }
             *sample = (float)s;
         }
         *sample = m17_scale_input_sample(*sample, opts->input_volume_multiplier);
         out[i] = m17_clip_float_to_short(*sample);
     }
-    return 1;
+    return M17_STR_READ_OK;
 }
 
 static int
@@ -1716,14 +1734,14 @@ m17_str_read_block_udp(dsd_opts* opts, size_t nsam, int dec, float* sample, shor
             if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
                 DSD_FPRINTF(stderr, "UDP input stopped.\n");
                 exitflag = 1;
-                return 0;
+                return M17_STR_READ_STOP;
             }
             *sample = (float)s;
         }
         *sample = m17_scale_input_sample(*sample, opts->input_volume_multiplier);
         out[i] = clip_output ? m17_clip_float_to_short(*sample) : (short)*sample;
     }
-    return 1;
+    return M17_STR_READ_OK;
 }
 
 static int
@@ -1734,19 +1752,19 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, size_t nsam, int dec, f
         for (int j = 0; j < dec; j++) {
             if (!state->rtl_ctx) {
                 dsd_request_shutdown(opts, state);
-                return 0;
+                return M17_STR_READ_STOP;
             }
             int got = 0;
             if (dsd_rtl_stream_io_hook_read(state, sample, 1, &got) < 0 || got != 1) {
                 dsd_request_shutdown(opts, state);
-                return 0;
+                return M17_STR_READ_STOP;
             }
         }
         *sample *= opts->rtl_volume_multiplier;
         out[i] = clip_output ? m17_clip_float_to_short(*sample) : (short)*sample;
     }
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
-    return 1;
+    return M17_STR_READ_OK;
 #else
     UNUSED(opts);
     UNUSED(state);
@@ -1755,7 +1773,7 @@ m17_str_read_block_rtl(dsd_opts* opts, dsd_state* state, size_t nsam, int dec, f
     UNUSED(sample);
     UNUSED(out);
     UNUSED(clip_output);
-    return 0;
+    return M17_STR_READ_ERROR;
 #endif
 }
 
@@ -1770,23 +1788,25 @@ m17_str_read_audio_block(m17_str_ctx* ctx, short* out, int clip_output) {
             return m17_str_read_block_udp(ctx->opts, ctx->nsam, ctx->dec, &ctx->sample, out, clip_output);
         case AUDIO_IN_RTL:
             return m17_str_read_block_rtl(ctx->opts, ctx->state, ctx->nsam, ctx->dec, &ctx->sample, out, clip_output);
-        default: return 0;
+        default: return M17_STR_READ_ERROR;
     }
 }
 
 static int
 m17_str_read_audio_inputs(m17_str_ctx* ctx) {
-    if (!m17_str_read_audio_block(ctx, ctx->voice1, 1)) {
-        return 0;
+    int result = m17_str_read_audio_block(ctx, ctx->voice1, 1);
+    if (result != M17_STR_READ_OK) {
+        return result;
     }
 
     if (ctx->st == 2) {
         const int clip_output = !(ctx->opts->audio_in_type == AUDIO_IN_UDP || ctx->opts->audio_in_type == AUDIO_IN_RTL);
-        if (!m17_str_read_audio_block(ctx, ctx->voice2, clip_output)) {
-            return 0;
+        result = m17_str_read_audio_block(ctx, ctx->voice2, clip_output);
+        if (result != M17_STR_READ_OK) {
+            return result;
         }
     }
-    return 1;
+    return M17_STR_READ_OK;
 }
 
 static void
@@ -2216,8 +2236,9 @@ m17_str_run_iteration(m17_str_ctx* ctx) {
 
     dsd_runtime_pump_controls(ctx->opts, ctx->state);
     m17_str_apply_monitor_side_state(ctx);
-    if (!m17_str_read_audio_inputs(ctx)) {
-        return 0;
+    const int read_result = m17_str_read_audio_inputs(ctx);
+    if (read_result != M17_STR_READ_OK) {
+        return read_result;
     }
     m17_str_update_input_power(ctx);
     m17_str_apply_filters_and_gain(ctx);
@@ -2231,7 +2252,7 @@ m17_str_run_iteration(m17_str_ctx* ctx) {
     }
 
     m17_str_iter_tail(ctx);
-    return 1;
+    return M17_STR_READ_OK;
 }
 
 static void
@@ -2255,8 +2276,9 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
 
     int result = 0;
     while (!exitflag) {
-        if (!m17_str_run_iteration(&ctx)) {
-            result = -1;
+        const int iteration_result = m17_str_run_iteration(&ctx);
+        if (iteration_result != M17_STR_READ_OK) {
+            result = iteration_result == M17_STR_READ_ERROR ? -1 : 0;
             break;
         }
     }
@@ -3168,8 +3190,9 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
         if (err < 0) {
             return -1;
         }
-
-        m17_ip_dispatch_frame(opts, state, ip_frame, err);
+        if (err > 0) {
+            m17_ip_dispatch_frame(opts, state, ip_frame, err);
+        }
 
         if (dsd_opts_frontend_active(opts)) {
             dsd_telemetry_publish_both_and_redraw(opts, state);

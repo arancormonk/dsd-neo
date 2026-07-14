@@ -16,6 +16,13 @@ extern "C" {
 #endif
 
 int udp_socket_connectM17(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Receive one M17 UDP datagram.
+ *
+ * @return Datagram size, 0 when no data is available yet or an interrupted
+ *         receive should be retried, and -1 on a fatal socket error.
+ */
 int m17_socket_receiver(const dsd_opts* opts, void* data);
 int m17_socket_blaster(const dsd_opts* opts, dsd_state* state, size_t nsam, const void* data);
 

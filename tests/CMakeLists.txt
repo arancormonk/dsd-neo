@@ -4508,7 +4508,10 @@ target_include_directories(
     dsd-neo_test_m17_state_dispatch
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
 )
-target_link_libraries(dsd-neo_test_m17_state_dispatch PRIVATE dsd-neo_proto_m17)
+target_link_libraries(
+    dsd-neo_test_m17_state_dispatch
+    PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
+)
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
 
 add_executable(

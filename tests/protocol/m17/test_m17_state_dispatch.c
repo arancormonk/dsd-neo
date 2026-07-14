@@ -9,16 +9,20 @@
 #include "fixtures/m17_reference_vectors.h"
 
 #include <assert.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/m17_udp_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -27,6 +31,7 @@
 #include "dsd-neo/protocol/m17/m17_tables.h"
 #include "m17_algorithms.h"
 #include "m17_internal.h"
+#include "test_support.h"
 
 struct CODEC2;
 
@@ -123,7 +128,7 @@ codec2_encode(struct CODEC2* codec2_state, unsigned char* bits, short speech[]) 
 int
 codec2_samples_per_frame(struct CODEC2* codec2_state) {
     (void)codec2_state;
-    return 0;
+    return 160;
 }
 #endif
 
@@ -169,6 +174,17 @@ fake_m17_receiver_failure(const dsd_opts* opts, void* data) {
     (void)data;
     g_m17_receiver_calls++;
     return -1;
+}
+
+static int
+fake_m17_receiver_idle_then_shutdown(const dsd_opts* opts, void* data) {
+    (void)opts;
+    (void)data;
+    g_m17_receiver_calls++;
+    if (g_m17_receiver_calls == 2) {
+        exitflag = 1;
+    }
+    return 0;
 }
 
 #ifdef USE_CODEC2
@@ -1628,6 +1644,75 @@ test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
 }
 
 static int
+open_empty_m17_wav_input(char* path, size_t path_size, SNDFILE** input) {
+    if (path == NULL || path_size == 0U || input == NULL) {
+        return -1;
+    }
+    *input = NULL;
+
+    int fd = dsd_test_mkstemp(path, path_size, "m17_stdin_eof");
+    if (fd < 0) {
+        return -1;
+    }
+    if (dsd_close(fd) != 0) {
+        (void)remove(path);
+        return -1;
+    }
+
+    SF_INFO info = {0};
+    info.samplerate = 8000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* output = sf_open(path, SFM_WRITE, &info);
+    if (output == NULL) {
+        (void)remove(path);
+        return -1;
+    }
+    if (sf_close(output) != 0) {
+        (void)remove(path);
+        return -1;
+    }
+
+    DSD_MEMSET(&info, 0, sizeof(info));
+    *input = sf_open(path, SFM_READ, &info);
+    if (*input == NULL) {
+        (void)remove(path);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+test_stream_encoder_treats_stdin_eof_as_clean_shutdown(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char path[DSD_TEST_PATH_MAX] = {0};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    if (open_empty_m17_wav_input(path, sizeof(path), &opts.audio_in_file) != 0) {
+        DSD_FPRINTF(stderr, "failed to create empty M17 stdin fixture: %s\n", sf_strerror(NULL));
+        return 1;
+    }
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    state.m17_can_en = -1;
+    state.m17_rate = 8000;
+    exitflag = 0;
+
+    int err = 0;
+    err |= expect_int("stream encoder treats stdin EOF as success", encodeM17STR(&opts, &state), 0);
+    err |= expect_int("stream encoder closes exhausted stdin", opts.audio_in_file == NULL, 1);
+
+    if (opts.audio_in_file != NULL) {
+        (void)sf_close(opts.audio_in_file);
+        opts.audio_in_file = NULL;
+    }
+    exitflag = 0;
+    (void)remove(path);
+    return err;
+}
+
+static int
 test_ip_decoder_propagates_udp_backend_failure(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1639,6 +1724,27 @@ test_ip_decoder_propagates_udp_backend_failure(void) {
 
     int err = 0;
     err |= expect_int("IP decoder reports UDP bind failure", processM17IPF(&opts, &state), -1);
+
+    state.event_history_s = calloc(2U, sizeof(*state.event_history_s));
+    if (state.event_history_s == NULL) {
+        dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){0});
+        return 1;
+    }
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&state.event_history_s[slot], 0, 255);
+    }
+
+    g_m17_receiver_calls = 0;
+    exitflag = 0;
+    dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){
+        .udp_bind = fake_m17_bind_success,
+        .receiver = fake_m17_receiver_idle_then_shutdown,
+    });
+    err |= expect_int("IP decoder keeps polling after idle receive", processM17IPF(&opts, &state), 0);
+    err |= expect_int("IP decoder polls again after idle receive", g_m17_receiver_calls, 2);
+    exitflag = 0;
+    free(state.event_history_s);
+    state.event_history_s = NULL;
 
     g_m17_receiver_calls = 0;
     dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){
@@ -1683,6 +1789,7 @@ main(void) {
     err |= test_m17_hook_argument_guards();
     err |= test_encoders_propagate_requested_udp_setup_failure();
     err |= test_packet_encoder_monitors_lsf_with_canonical_viterbi();
+    err |= test_stream_encoder_treats_stdin_eof_as_clean_shutdown();
     err |= test_ip_decoder_propagates_udp_backend_failure();
 
     if (err == 0) {
