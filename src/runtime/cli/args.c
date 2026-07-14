@@ -1497,6 +1497,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 
 // Short-option getopt loop migrated to runtime
 
+// clang-format off
 #define DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK()                                                                            \
     switch (c) {                                                                                                       \
         case 'h':                                                                                                      \
@@ -2544,6 +2545,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
     }
+// clang-format on
 
 static int
 dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc,

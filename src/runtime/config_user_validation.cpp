@@ -67,6 +67,23 @@ validate_enum_value_with_diagnostic(const char* val, const char* allowed, dsdcfg
     return 0;
 }
 
+static int
+is_compatible_enum_value(const dsdcfg_schema_entry_t* entry, const char* val) {
+    if (!entry || !val) {
+        return 0;
+    }
+
+    /* Decode-mode compatibility values are translated by the same parser used by normal/profile loading. The
+     * canonical schema list remains suitable for templates and error messages. */
+    if (dsd_strcasecmp(entry->section, "mode") == 0 && dsd_strcasecmp(entry->key, "decode") == 0) {
+        dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
+        return user_config_parse_decode_mode_value(val, &mode) == 0;
+    }
+
+    return dsd_strcasecmp(entry->section, "output") == 0 && dsd_strcasecmp(entry->key, "frontend") == 0
+           && dsd_strcasecmp(val, "native") == 0;
+}
+
 static void
 validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
                      const char* diag_section, const char* diag_key) {
@@ -100,19 +117,9 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
         }
 
         case DSDCFG_TYPE_ENUM:
-            /* Decode-mode compatibility values are translated by the same parser used by normal/profile loading.
-             * The canonical schema list remains suitable for templates and error messages. */
-            if (dsd_strcasecmp(entry->section, "mode") == 0 && dsd_strcasecmp(entry->key, "decode") == 0) {
-                dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
-                if (user_config_parse_decode_mode_value(val, &mode) == 0) {
-                    break;
-                }
+            if (!is_compatible_enum_value(entry, val)) {
+                (void)validate_enum_value_with_diagnostic(val, entry->allowed, diags, line_num, diag_section, diag_key);
             }
-            if (dsd_strcasecmp(entry->section, "output") == 0 && dsd_strcasecmp(entry->key, "frontend") == 0
-                && dsd_strcasecmp(val, "native") == 0) {
-                break;
-            }
-            (void)validate_enum_value_with_diagnostic(val, entry->allowed, diags, line_num, diag_section, diag_key);
             break;
 
         default: break;

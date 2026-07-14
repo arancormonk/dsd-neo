@@ -308,7 +308,7 @@ m17_packet_prepare_sms_payload(const char* text, uint8_t* packed, uint8_t* full_
     }
 
     DSD_MEMSET(packed, 0, M17_PACKET_MAX_TOTAL_BYTES);
-    DSD_MEMSET(full_bits, 0, M17_PACKET_MAX_FRAMES * M17_PACKET_CHUNK_BITS);
+    DSD_MEMSET(full_bits, 0, (size_t)M17_PACKET_MAX_FRAMES * M17_PACKET_CHUNK_BITS);
     packed[0] = 0x05U;
     DSD_MEMCPY(packed + 1U, text, text_len);
     *app_len = (uint16_t)(1U + text_len + 1U);

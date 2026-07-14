@@ -7,6 +7,7 @@
  * Unit tests for config profile support.
  */
 
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
