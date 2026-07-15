@@ -32,6 +32,22 @@ dsd_frame_sync_hook_p25_sm_release(dsd_opts* opts, dsd_state* state) {
 }
 
 void
+dsd_frame_sync_hook_p25_sm_vc_sync(dsd_opts* opts, const dsd_state* state) {
+    if (!g_frame_sync_hooks.p25_sm_vc_sync) {
+        return;
+    }
+    g_frame_sync_hooks.p25_sm_vc_sync(opts, state);
+}
+
+void
+dsd_frame_sync_hook_p25_sm_vc_no_sync(dsd_opts* opts, const dsd_state* state) {
+    if (!g_frame_sync_hooks.p25_sm_vc_no_sync) {
+        return;
+    }
+    g_frame_sync_hooks.p25_sm_vc_no_sync(opts, state);
+}
+
+void
 dsd_frame_sync_hook_eot_cc(dsd_opts* opts, dsd_state* state) {
     if (!g_frame_sync_hooks.eot_cc) {
         return;

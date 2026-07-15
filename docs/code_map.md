@@ -118,6 +118,7 @@ depending directly on protocol headers. The runtime provides a small hook table 
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
 - CQPSK control/status: `rtl_stream_toggle_cqpsk`, `rtl_stream_get_cqpsk_status`,
+  `rtl_stream_request_cqpsk_reacquire`,
   `rtl_stream_set_ted_sps`/`rtl_stream_get_ted_sps`, `rtl_stream_set_ted_gain`/`rtl_stream_get_ted_gain`,
   and CQPSK timing residual via `rtl_stream_cqpsk_timing_bias`.
 - FM/FSK conditioning: I/Q DC blocker get/set.

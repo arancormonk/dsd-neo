@@ -167,6 +167,86 @@ reset(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state, 0, sizeof(*state));
 }
 
+static int g_vc_sync_hook_calls;
+static int g_vc_no_sync_hook_calls;
+static int g_no_carrier_hook_calls;
+static int g_vc_no_sync_hook_order;
+static int g_no_carrier_hook_order;
+static int g_hook_order;
+
+static void
+fake_p25_sm_vc_sync(dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_vc_sync_hook_calls++;
+}
+
+static void
+fake_p25_sm_vc_no_sync(dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_vc_no_sync_hook_calls++;
+    g_vc_no_sync_hook_order = ++g_hook_order;
+}
+
+static void
+fake_no_carrier(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_no_carrier_hook_calls++;
+    g_no_carrier_hook_order = ++g_hook_order;
+}
+
+static void
+test_p25_vc_acquisition_hooks(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    opts.frame_p25p2 = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    g_vc_sync_hook_calls = 0;
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+        .p25_sm_vc_sync = fake_p25_sm_vc_sync,
+    });
+
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+    assert(g_vc_sync_hook_calls == 1);
+    assert(state.last_cc_sync_time == 0);
+    assert(state.last_cc_sync_time_m == 0.0);
+
+    opts.trunk_is_tuned = 0;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+    assert(g_vc_sync_hook_calls == 1);
+    assert(state.last_cc_sync_time != 0);
+    assert(state.last_cc_sync_time_m > 0.0);
+
+    reset(&opts, &state);
+    g_vc_no_sync_hook_calls = 0;
+    g_no_carrier_hook_calls = 0;
+    g_vc_no_sync_hook_order = 0;
+    g_no_carrier_hook_order = 0;
+    g_hook_order = 0;
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+        .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+        .no_carrier = fake_no_carrier,
+    });
+
+    assert(dsd_frame_sync_test_handle_no_sync_timeout(&opts, &state, 1799) == 0);
+    assert(g_vc_no_sync_hook_calls == 0);
+    assert(g_no_carrier_hook_calls == 0);
+    assert(dsd_frame_sync_test_handle_no_sync_timeout(&opts, &state, 1800) == 1);
+    assert(g_vc_no_sync_hook_calls == 1);
+    assert(g_no_carrier_hook_calls == 1);
+    assert(g_vc_no_sync_hook_order < g_no_carrier_hook_order);
+
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+}
+
 static void
 test_sps_hunt_skips_disabled_protocol_rates(void) {
     static dsd_opts opts;
@@ -1493,6 +1573,7 @@ test_p25_trunk_tick_recency(void) {
 
 int
 main(void) {
+    test_p25_vc_acquisition_hooks();
     test_sps_hunt_skips_disabled_protocol_rates();
     test_sps_hunt_profile_updates_timing();
     test_sps_hunt_reconciles_external_timing();

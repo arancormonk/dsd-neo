@@ -1078,9 +1078,10 @@ fll_band_edge_design_filter(dsd_fll_band_edge_state_t* f, int sps, float rolloff
  * This should be called during demod_reset_on_retune() when CQPSK is enabled
  * and the SPS is known.
  *
- * OP25 behavior: On SPS changes (P25p1 CC -> P25p2 VC), OP25 preserves the
- * FLL state (freq, phase, delay line) to maintain lock during transitions.
- * We adopt the same approach here.
+ * The initializer preserves the frequency estimate so callers can retain it
+ * across same-frequency resets and SPS changes. Hardware retune policy remains
+ * the caller's responsibility; rtl_sdr_fm clears the estimate or restores a
+ * seed learned on the target frequency before invoking this initializer.
  */
 extern "C" void
 dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
@@ -1138,29 +1139,26 @@ dsd_fll_band_edge_init(dsd_fll_band_edge_state_t* f, int sps) {
         f->min_freq = -1.0f;
     }
 
-    /* State reset behavior - PRESERVE frequency, reset phase and delay.
+    /* State reset behavior - preserve the caller-provided frequency seed, then
+     * reset phase and delay.
      *
      * OP25 rx.py set_freq() calls demod.reset() which only resets the Costas
-     * loop, NOT the FLL. The FLL frequency estimate is preserved across
-     * hardware retunes.
+     * loop, not the FLL. OP25 commonly performs channel selection within a
+     * wider continuously sampled RF stream, where the receiver oscillator term
+     * remains shared.
      *
-     * This works because the FLL tracks the RTL-SDR's local oscillator offset,
-     * which is primarily determined by crystal PPM error. For an RTL-SDR with
-     * 10 ppm error, the offset scales linearly with frequency:
-     *   - 769 MHz: ~7.69 kHz offset
-     *   - 771 MHz: ~7.71 kHz offset
-     *   - Difference: ~20 Hz
-     *
-     * The FLL can easily track a 20 Hz change, but reacquiring from 0 Hz to
-     * 200+ Hz is much slower and may fail on P25p2 TDMA bursts.
+     * dsd-neo also supports narrow hardware CC/VC retunes. Those hops can move
+     * between transmitters or exciters with different residual offsets, so the
+     * retune layer explicitly clears the seed on an RF frequency change. This
+     * function deliberately does not override that policy decision.
      *
      * Reset:
      *   - Phase: new samples have no phase relationship to old
      *   - Delay lines: must be cleared when filters are redesigned
-     *   - Frequency: PRESERVED (critical for fast reacquisition)
+     *   - Frequency: preserved exactly as seeded by the caller
      */
     f->phase = 0.0f;
-    /* f->freq preserved - LO offset is similar across nearby frequencies */
+    /* f->freq is caller-owned retune policy state. */
     f->delay_idx = 0;
     fll_band_edge_clear_delay(f);
 }

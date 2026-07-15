@@ -206,6 +206,11 @@ p25p2_mac_policy_flag(int svc_bits, int policy_override, int bit) {
     return (svc_bits & bit) ? 1 : 0;
 }
 
+static p25_sm_grant_provenance_e
+p25p2_grant_provenance(int is_update) {
+    return is_update ? P25_SM_GRANT_PROVENANCE_UPDATE : P25_SM_GRANT_PROVENANCE_ASSIGNMENT;
+}
+
 /* Emit a compact JSON line for a P25 Phase 2 MAC PDU when enabled. */
 static void
 p25p2_emit_mac_json_if_enabled(const dsd_state* state, int xch_type, uint8_t mfid, uint8_t opcode, int slot, int len_b,
@@ -242,7 +247,8 @@ p25p2_emit_mac_json_if_enabled(const dsd_state* state, int xch_type, uint8_t mfi
 
 static void
 p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_state* state, int channel, int svc_bits,
-                       int target, int source, int policy_encrypted_override, int policy_data_override) {
+                       int target, int source, p25_sm_grant_provenance_e provenance, int policy_encrypted_override,
+                       int policy_data_override) {
     dsd_tg_policy_decision decision;
     int enc_for_policy = 0;
     int data_for_policy = 0;
@@ -271,7 +277,9 @@ p25p2_mac_handle_indiv(const struct p25p2_mac_result* res, dsd_opts* opts, dsd_s
         p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channel, 0, target, source, svc_bits);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     } else {
-        p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, 0, target, source, svc_bits);
+        p25_sm_event_t ev = provenance == P25_SM_GRANT_PROVENANCE_UPDATE
+                                ? p25_sm_ev_indiv_grant_update(channel, 0, target, source, svc_bits)
+                                : p25_sm_ev_indiv_grant(channel, 0, target, source, svc_bits);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
@@ -640,7 +648,7 @@ p25p2_vpdu_try_group_candidate(dsd_opts* opts, dsd_state* state, const p25p2_vpd
     p25p2_vpdu_print_group_label(state, (uint32_t)candidate->group);
     if (p25p2_vpdu_can_dispatch_grant(opts, state, candidate->freq)) {
         p25_sm_event_t ev =
-            p25_sm_ev_group_grant(candidate->channel, 0, candidate->group, /*source*/ 0, candidate->svc_bits);
+            p25_sm_ev_group_grant_update(candidate->channel, 0, candidate->group, /*source*/ 0, candidate->svc_bits);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
         tuned = (policy->stop_on_tune && !was_tuned && opts && (opts->trunk_is_tuned != 0)) ? 1 : 0;
     }
@@ -761,7 +769,7 @@ p25p2_vpdu_force_release_after_grace(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     state->p25_sm_force_release = 1;
-    p25_sm_release(p25_sm_get_ctx(), opts, state, "explicit-release");
+    p25_sm_release(p25_sm_get_ctx(), opts, state, "mac-release");
     return 1;
 }
 
@@ -894,6 +902,7 @@ typedef struct {
     int source;
     int set_packet_bit;
     int store_slot_svc;
+    p25_sm_grant_provenance_e provenance;
     const char* label;
 } p25p2_group_explicit_grant;
 
@@ -926,7 +935,10 @@ p25p2_vpdu_handle_group_explicit_grant(dsd_opts* opts, dsd_state* state, int slo
     p25p2_vpdu_print_group_label(state, (uint32_t)grant->group);
 
     if (p25p2_vpdu_can_dispatch_grant(opts, state, freq_t)) {
-        p25_sm_event_t ev = p25_sm_ev_group_grant(grant->channelt, 0, grant->group, grant->source, grant->svc);
+        p25_sm_event_t ev =
+            grant->provenance == P25_SM_GRANT_PROVENANCE_UPDATE
+                ? p25_sm_ev_group_grant_update(grant->channelt, 0, grant->group, grant->source, grant->svc)
+                : p25_sm_ev_group_grant(grant->channelt, 0, grant->group, grant->source, grant->svc);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
     p25p2_vpdu_update_playback_if_match(opts, state, grant->group, freq_t);
@@ -1239,6 +1251,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_print_group_label(state, target);
         if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
             p25p2_mac_handle_indiv(&mac_res, opts, state, channel, svc, (int)target, /*src*/ 0,
+                                   p25p2_grant_provenance((MAC[1 + len_a] & 0x01) != 0),
                                    /*policy_encrypted*/ -1, /*policy_data*/ -1);
         }
         if (opts->trunk_enable == 0
@@ -1294,8 +1307,9 @@ p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(p25p2_vpdu_ctx* ctx, int opcode
 
     if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-        p25p2_mac_handle_indiv(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
-                               /*policy_data*/ 0);
+        p25p2_mac_handle_indiv(&mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source,
+                               opcode == 0x46 ? P25_SM_GRANT_PROVENANCE_UPDATE : P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
+                               policy_encrypted, /*policy_data*/ 0);
     }
     p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
 }
@@ -1341,8 +1355,9 @@ p25p2_vpdu_handle_unit_to_unit_grant_extended(p25p2_vpdu_ctx* ctx, int opcode) {
 
     if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-        p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
-                               /*policy_data*/ 0);
+        p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, P25_SM_SVC_UNKNOWN, target, source,
+                               opcode == 0xC6 ? P25_SM_GRANT_PROVENANCE_UPDATE : P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
+                               policy_encrypted, /*policy_data*/ 0);
     }
     p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
 }
@@ -1578,6 +1593,7 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
             .source = 0,
             .set_packet_bit = 0,
             .store_slot_svc = 0,
+            .provenance = P25_SM_GRANT_PROVENANCE_UPDATE,
             .label = "Group Voice Channel Grant Update - Explicit",
         };
         p25p2_vpdu_handle_group_explicit_grant(opts, state, slot & 1, &grant);
@@ -1598,6 +1614,7 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
             .source = source,
             .set_packet_bit = 1,
             .store_slot_svc = 1,
+            .provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
             .label = "Group Voice Channel Grant - Explicit",
         };
         p25p2_vpdu_handle_group_explicit_grant(opts, state, slot & 1, &grant);
@@ -1617,6 +1634,7 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
             .source = 0,
             .set_packet_bit = 0,
             .store_slot_svc = 0,
+            .provenance = P25_SM_GRANT_PROVENANCE_UPDATE,
             .label = "Group Voice Channel Grant Update - Explicit",
         };
         p25p2_vpdu_handle_group_explicit_grant(opts, state, slot & 1, &grant);
@@ -1688,7 +1706,7 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
         if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
             const int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
             p25p2_mac_handle_indiv(&mac_res, opts, state, channelt, P25_SM_SVC_UNKNOWN, (int)target, /*src*/ 0,
-                                   policy_encrypted, /*policy_data*/ 1);
+                                   P25_SM_GRANT_PROVENANCE_ASSIGNMENT, policy_encrypted, /*policy_data*/ 1);
         }
         if (opts->trunk_enable == 0) {
             if (target == state->lasttg || target == state->lasttgR) {
@@ -1956,7 +1974,7 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n");
         // Route through SM for tuning consideration
         if (opts->trunk_enable == 1 && channel != 0 && freq != 0) {
-            p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, sg, /*source*/ 0, svc);
+            p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, sg, /*source*/ 0, svc);
             p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
         }
     }
@@ -4855,8 +4873,8 @@ p25p2_vpdu_handle_harris_data_channel_grant(p25p2_vpdu_ctx* ctx, int opcode) {
 
     if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
-        p25p2_mac_handle_indiv(ctx->mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source, policy_encrypted,
-                               /*policy_data*/ 1);
+        p25p2_mac_handle_indiv(ctx->mac_res, opts, state, channel, P25_SM_SVC_UNKNOWN, target, source,
+                               P25_SM_GRANT_PROVENANCE_ASSIGNMENT, policy_encrypted, /*policy_data*/ 1);
     }
     p25p2_vpdu_update_playback_if_match(opts, state, target, freq);
 }
@@ -5144,8 +5162,9 @@ p25p2_vpdu_handle_multifrag_unit_to_unit_grant(p25p2_vpdu_ctx* ctx, int is_servi
                                     is_service_grant ? "UU-SVC-L" : "UU-UP-L", channelt, suffix, target, source);
 
     if (opts->trunk_tune_private_calls && p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
-        p25p2_mac_handle_indiv(ctx->mac_res, opts, state, channelt, svc, target, source, /*policy_encrypted*/ -1,
-                               /*policy_data*/ -1);
+        p25p2_mac_handle_indiv(ctx->mac_res, opts, state, channelt, svc, target, source,
+                               is_service_grant ? P25_SM_GRANT_PROVENANCE_ASSIGNMENT : P25_SM_GRANT_PROVENANCE_UPDATE,
+                               /*policy_encrypted*/ -1, /*policy_data*/ -1);
     }
 }
 

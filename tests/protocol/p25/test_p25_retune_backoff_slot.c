@@ -24,6 +24,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -157,6 +158,442 @@ seed_exact(dsd_state* st, uint32_t id, const char* mode, const char* name, int p
     row.priority = priority;
     row.preempt = preempt ? 1u : 0u;
     return dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+}
+
+static void
+init_stale_regrant_case(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t* ctx, int id) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    opts->trunk_hangtime = 0.2f;
+    opts->p25_retune_backoff_s = 10.0;
+    state->p25_cc_freq = 851000000;
+    state->p25_chan_iden = id;
+    state->p25_iden_tdma[id].base_freq = 851000000 / 5;
+    state->p25_iden_tdma[id].chan_type = 3;
+    state->p25_iden_tdma[id].chan_spac = 100;
+    state->p25_iden_tdma[id].trust = 2;
+    state->p25_iden_tdma[id].populated = 1;
+    state->p25_chan_tdma_explicit[id] = 2;
+    p25_sm_init_ctx(ctx, opts, state);
+    g_last_tuned_vc = 0;
+    g_tune_to_freq_calls = 0;
+    g_return_to_cc_calls = 0;
+}
+
+static void
+end_tdma_call(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* grant, int slot) {
+    p25_sm_event_t ptt = p25_sm_ev_ptt(slot);
+    p25_sm_event_t end = p25_sm_ev_end(slot);
+    p25_sm_event(ctx, opts, state, grant);
+    p25_sm_event(ctx, opts, state, &ptt);
+    p25_sm_event(ctx, opts, state, &end);
+}
+
+static int
+test_stale_regrant_guard(void) {
+    int rc = 0;
+    const int id = 2;
+    const int ch_slot0 = (id << 12) | 0x0002;
+    const int ch_slot1 = (id << 12) | 0x0003;
+    const int ch_slot1_other_freq = (id << 12) | 0x0005;
+
+    // Constructors retain whether an event is an authoritative assignment or
+    // a source-less update that may merely repeat a stale assignment.
+    {
+        p25_sm_event_t assignment = p25_sm_ev_group_grant(ch_slot1, 0, 5901, 6901, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 5901, 0, P25_SM_SVC_UNKNOWN);
+        rc |= expect_true("assignment provenance retained",
+                          assignment.grant_provenance == P25_SM_GRANT_PROVENANCE_ASSIGNMENT);
+        rc |= expect_true("update provenance retained", update.grant_provenance == P25_SM_GRANT_PROVENANCE_UPDATE);
+    }
+
+    // An immediate ambiguous update for the exact call ended by MAC_END_PTT is
+    // stale. Slot remains part of the assignment identity, so a source-less
+    // companion-slot update is independently eligible.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6001, 7001, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t stale = p25_sm_ev_group_grant_update(ch_slot1, 0, 6001, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t companion = p25_sm_ev_group_grant_update(ch_slot0, 0, 6001, 0, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        rc |= expect_true("stale guard call ended", g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 1
+                                                        && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
+        rc |= expect_true("stale guard armed",
+                          ctx.recent_call_ends[1].valid == 1 && ctx.recent_call_ends[1].freq_hz == g_last_tuned_vc
+                              && ctx.recent_call_ends[1].slot == 1 && ctx.recent_call_ends[1].target == 6001
+                              && fabs(ctx.recent_call_ends[1].last_match_m) <= 1.0e-9);
+        rc |= expect_true("normal end did not arm failed-vc backoff", retune_backoff_empty(&state));
+        mark_cc_reacquired(&state);
+
+        p25_sm_event(&ctx, &opts, &state, &stale);
+        rc |= expect_true("exact stale regrant skipped",
+                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
+
+        p25_sm_event(&ctx, &opts, &state, &companion);
+        rc |= expect_true("source-less companion slot allowed",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.state == P25_SM_TUNED
+                              && ctx.slots[0].grant_active && ctx.recent_call_ends[1].valid == 1);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // An authoritative assignment proves a new call epoch even if the system
+    // reuses the same TG, carrier, slot, and source RID.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6021, 7021, 0);
+        p25_sm_event_t same_rid_rekey = p25_sm_ev_group_grant(ch_slot1, 0, 6021, 7021, 0);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &same_rid_rekey);
+        rc |= expect_true("authoritative same-rid rekey allowed", g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1
+                                                                      && ctx.state == P25_SM_TUNED && ctx.vc_src == 7021
+                                                                      && ctx.recent_call_ends[1].valid == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // After a slow CC reacquisition, one ambiguous exact update may validate
+    // the assignment once the bounded post-END hold has elapsed. Time spent off
+    // the CC does not count as a quiet gap; this path is explicitly a probe.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6051, 7051, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t delayed_update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6051, 0, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        ctx.recent_call_ends[1].end_m = dsd_time_now_monotonic_s() - 4.0;
+        ctx.recent_call_ends[1].last_match_m = 0.0;
+        p25_sm_event(&ctx, &opts, &state, &delayed_update);
+        rc |= expect_true("delayed first exact update probed",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.state == P25_SM_TUNED
+                              && ctx.vc_stale_regrant_probe == 1 && ctx.recent_call_ends[1].valid == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // A different talkgroup on the ended carrier/slot is a different call.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6101, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t replacement = p25_sm_ev_group_grant(ch_slot1, 0, 6102, 0, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &replacement);
+        rc |= expect_true("different talkgroup allowed",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.vc_tg == 6102);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // The same talkgroup and slot on a different RF channel is also eligible.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6201, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t replacement = p25_sm_ev_group_grant(ch_slot1_other_freq, 0, 6201, 0, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        long ended_freq = ctx.recent_call_ends[1].freq_hz;
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &replacement);
+        rc |= expect_true("different frequency allowed",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && g_last_tuned_vc != ended_freq);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // A known source change on an update proves a new call even when TG/RF/slot
+    // are reused.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6301, 7301, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t replacement = p25_sm_ev_group_grant_update(ch_slot1, 0, 6301, 7302, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &replacement);
+        rc |= expect_true("new source allowed", g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1
+                                                    && ctx.vc_src == 7302 && ctx.recent_call_ends[1].valid == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // A follow-up in-band PTT can replace the decoder RID without changing the
+    // original grant identity. The matching END must terminate that live talker
+    // and quarantine the RID accepted from END, not the stale grant RID.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t grant = p25_sm_ev_group_grant(ch_slot1, 0, 6351, 7351, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t ptt = p25_sm_ev_ptt(1);
+
+        p25_sm_event(&ctx, &opts, &state, &grant);
+        state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+        p25_sm_event(&ctx, &opts, &state, &ptt);
+        state.lasttgR = 6351;
+        state.lastsrcR = 7352;
+        p25_sm_event(&ctx, &opts, &state, &ptt);
+        p25_sm_event_t end = p25_sm_ev_end_call_at(1, 6351, 7352, ctx.slots[1].last_start_m + 0.001);
+        p25_sm_event(&ctx, &opts, &state, &end);
+
+        rc |= expect_true("active talker END accepted",
+                          g_return_to_cc_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
+        rc |= expect_true("accepted END RID quarantined",
+                          ctx.recent_call_ends[1].valid == 1 && ctx.recent_call_ends[1].src == 7352);
+
+        mark_cc_reacquired(&state);
+        p25_sm_event_t stale = p25_sm_ev_group_grant_update(ch_slot1, 0, 6351, 7352, P25_SM_SVC_UNKNOWN);
+        p25_sm_event(&ctx, &opts, &state, &stale);
+        rc |= expect_true("accepted END RID update skipped",
+                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // The fixed-network source sentinel is unknown, so it cannot establish a
+    // new call epoch for an otherwise exact trailing update.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6371, 7371, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t sentinel = p25_sm_ev_group_grant_update(ch_slot1, 0, 6371, 0xFFFFFF, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &sentinel);
+        rc |= expect_true("FNE sentinel update skipped", g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0
+                                                             && ctx.state == P25_SM_ON_CC
+                                                             && ctx.recent_call_ends[1].valid == 1);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // When both TDMA slots end before carrier release, keep an independent
+    // quarantine for each call so either trailing update remains suppressed.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t slot0 = p25_sm_ev_group_grant(ch_slot0, 0, 6380, 7380, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t slot1 = p25_sm_ev_group_grant(ch_slot1, 0, 6381, 7381, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t ptt0 = p25_sm_ev_ptt(0);
+        p25_sm_event_t ptt1 = p25_sm_ev_ptt(1);
+        p25_sm_event_t end0 = p25_sm_ev_end(0);
+        p25_sm_event_t end1 = p25_sm_ev_end(1);
+
+        p25_sm_event(&ctx, &opts, &state, &slot0);
+        p25_sm_event(&ctx, &opts, &state, &slot1);
+        p25_sm_event(&ctx, &opts, &state, &ptt0);
+        p25_sm_event(&ctx, &opts, &state, &ptt1);
+        p25_sm_event(&ctx, &opts, &state, &end0);
+        rc |= expect_true("first TDMA END waits for companion",
+                          g_return_to_cc_calls == 0 && ctx.state == P25_SM_TUNED && ctx.slots[0].last_end_m > 0.0);
+        p25_sm_event(&ctx, &opts, &state, &end1);
+        rc |= expect_true("both TDMA END guards retained",
+                          g_return_to_cc_calls == 1 && ctx.state == P25_SM_ON_CC && ctx.recent_call_ends[0].valid == 1
+                              && ctx.recent_call_ends[0].target == 6380 && ctx.recent_call_ends[1].valid == 1
+                              && ctx.recent_call_ends[1].target == 6381);
+
+        mark_cc_reacquired(&state);
+        p25_sm_event_t stale0 = p25_sm_ev_group_grant_update(ch_slot0, 0, 6380, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t stale1 = p25_sm_ev_group_grant_update(ch_slot1, 0, 6381, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event(&ctx, &opts, &state, &stale0);
+        p25_sm_event(&ctx, &opts, &state, &stale1);
+        rc |= expect_true("both TDMA trailing updates skipped",
+                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC
+                              && ctx.recent_call_ends[0].valid == 1 && ctx.recent_call_ends[1].valid == 1);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // Data grants do not participate in voice-call stale suppression.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        opts.trunk_tune_data_calls = 1;
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6401, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t data = p25_sm_ev_group_data_grant(ch_slot1, 0, 6401, 0, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &data);
+        rc |= expect_true("data grant allowed",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.vc_data_call == 1);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // If the immediate CC return is rejected, no guard survives to interfere
+    // with continued signaling on the still-tuned voice carrier.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6451, 0, P25_SM_SVC_UNKNOWN);
+
+        g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        rc |= expect_true("failed call-end return preserves vc",
+                          g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 1 && opts.trunk_is_tuned == 1
+                              && ctx.state == P25_SM_TUNED && ctx.recent_call_ends[1].valid == 0);
+        p25_sm_event(&ctx, &opts, &state, &ended);
+        rc |= expect_true("failed call-end repeat remains eligible",
+                          g_tune_to_freq_calls == 1 && ctx.slots[1].grant_active == 1);
+        g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+        dsd_state_ext_free_all(&state);
+    }
+
+    // A quiet gap proves the old assignment disappeared and permits the next
+    // exact update without consuming the bounded validation probe.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6501, 7501, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6501, 0, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("initial ambiguous regrant skipped",
+                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.recent_call_ends[1].valid == 1);
+
+        ctx.recent_call_ends[1].end_m = dsd_time_now_monotonic_s() - 1.5;
+        ctx.recent_call_ends[1].last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        const double previous_match_m = ctx.recent_call_ends[1].last_match_m;
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("pre-probe continuous update remains skipped",
+                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.recent_call_ends[1].valid == 1
+                              && ctx.recent_call_ends[1].last_match_m > previous_match_m);
+
+        ctx.recent_call_ends[1].end_m = dsd_time_now_monotonic_s() - 4.0;
+        ctx.recent_call_ends[1].last_match_m = dsd_time_now_monotonic_s() - 3.0;
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("quiet stale guard allows call", g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1
+                                                               && ctx.recent_call_ends[1].valid == 0
+                                                               && ctx.vc_stale_regrant_probe == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // Continuous updates receive one validation tune after the post-END hold.
+    // If the probe sees only another END and no voice activity, failed-VC
+    // backoff prevents the next stale cycle from tuning again.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6521, 7521, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6521, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t sync = {.type = P25_SM_EV_VC_SYNC, .slot = 1};
+        p25_sm_event_t end = p25_sm_ev_end(1);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &update);
+        ctx.recent_call_ends[1].end_m = dsd_time_now_monotonic_s() - 2.25;
+        ctx.recent_call_ends[1].last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("continuous exact update gets one probe",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.vc_stale_regrant_probe == 1
+                              && ctx.vc_stale_regrant_probe_slot == 1);
+
+        // Carrier/frame sync alone does not prove that this assignment became
+        // active; require PTT/ACTIVE on the probed slot.
+        p25_sm_event(&ctx, &opts, &state, &sync);
+        p25_sm_event(&ctx, &opts, &state, &end);
+        rc |= expect_true("failed probe arms slot backoff",
+                          g_return_to_cc_calls == 2 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC
+                              && retune_backoff_history_has_slot(&state, g_last_tuned_vc, 1));
+
+        mark_cc_reacquired(&state);
+        ctx.recent_call_ends[1].end_m = dsd_time_now_monotonic_s() - 2.25;
+        ctx.recent_call_ends[1].last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("backoff prevents repeated stale probe",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // Voice activity confirms that a validation tune found a real follow-up.
+    // Its normal call end must not be treated as a failed probe.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6531, 7531, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6531, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t companion_ptt = p25_sm_ev_ptt(0);
+        p25_sm_event_t companion_end = p25_sm_ev_end(0);
+        p25_sm_event_t ptt = p25_sm_ev_ptt(1);
+        p25_sm_event_t end = p25_sm_ev_end(1);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &update);
+        ctx.recent_call_ends[1].end_m = dsd_time_now_monotonic_s() - 2.25;
+        ctx.recent_call_ends[1].last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        p25_sm_event(&ctx, &opts, &state, &update);
+        p25_sm_event(&ctx, &opts, &state, &companion_ptt);
+        rc |= expect_true("companion activity does not confirm stale regrant probe",
+                          ctx.vc_stale_regrant_probe == 1 && ctx.vc_stale_regrant_probe_slot == 1);
+        p25_sm_event(&ctx, &opts, &state, &companion_end);
+        p25_sm_event(&ctx, &opts, &state, &ptt);
+        rc |= expect_true("voice confirms stale regrant probe", g_tune_to_freq_calls == 2
+                                                                    && ctx.vc_stale_regrant_probe == 0
+                                                                    && ctx.vc_stale_regrant_probe_slot == -1);
+
+        p25_sm_event(&ctx, &opts, &state, &end);
+        rc |= expect_true("successful probe ends without failed-vc backoff",
+                          g_return_to_cc_calls == 2 && opts.trunk_is_tuned == 0 && retune_backoff_empty(&state));
+        dsd_state_ext_free_all(&state);
+    }
+
+    // Even continuous ambiguous updates cannot starve later calls forever.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6551, 7551, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6551, 0, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        ctx.recent_call_ends[1].end_m = dsd_time_now_monotonic_s() - 11.0;
+        ctx.recent_call_ends[1].last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("stale guard max age allows call",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.recent_call_ends[1].valid == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    return rc;
 }
 
 int
@@ -629,11 +1066,12 @@ main(void) {
                             && data_after_cancel_ctx.slots[1].grant_active && data_after_cancel_ctx.slots[1].data_call);
 
         p25_sm_event(&data_after_cancel_ctx, &data_after_cancel_opts, &data_after_cancel_st, &data_after_cancel_end);
-        rc |= expect_true("data-after-cancel data remains", data_after_cancel_opts.trunk_is_tuned == 1
-                                                                && g_return_to_cc_calls == 0
-                                                                && data_after_cancel_ctx.slots[0].grant_active == 0
-                                                                && data_after_cancel_ctx.slots[1].grant_active
-                                                                && data_after_cancel_ctx.slots[1].data_call);
+        rc |= expect_true("data-after-cancel data remains",
+                          data_after_cancel_opts.trunk_is_tuned == 1 && g_return_to_cc_calls == 0
+                              && data_after_cancel_ctx.slots[0].grant_active == 0
+                              && data_after_cancel_ctx.slots[1].grant_active && data_after_cancel_ctx.slots[1].data_call
+                              && data_after_cancel_ctx.recent_call_ends[0].valid == 0
+                              && data_after_cancel_ctx.recent_call_ends[1].valid == 0);
 
         data_after_cancel_ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.0;
         data_after_cancel_ctx.t_voice_m = 0.0;
@@ -1155,6 +1593,10 @@ main(void) {
         (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
         dsd_state_ext_free_all(&preempt_st);
     }
+
+    // 17) MAC_END_PTT suppresses only the exact trailing Motorola-style grant
+    // identity, without reusing the broader failed-VC backoff policy.
+    rc |= test_stale_regrant_guard();
 
     dsd_state_ext_free_all(&mixed_st);
     dsd_state_ext_free_all(&data_forced_st);

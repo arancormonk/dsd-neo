@@ -65,6 +65,15 @@ enum {
     P25_SM_SVC_UNKNOWN = -1,
 };
 
+typedef enum {
+    // Callers constructing grant events directly should identify whether the
+    // decoded message starts an assignment or only updates one. UNKNOWN keeps
+    // conservative post-END handling for compatibility with unclassified input.
+    P25_SM_GRANT_PROVENANCE_UNKNOWN = 0,
+    P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
+    P25_SM_GRANT_PROVENANCE_UPDATE,
+} p25_sm_grant_provenance_e;
+
 /* ============================================================================
  * Events
  * ============================================================================ */
@@ -85,18 +94,19 @@ typedef enum {
 
 typedef struct {
     p25_sm_event_type_e type;
-    int slot;               // 0 or 1 for TDMA, -1 for P1/N/A
-    int channel;            // 16-bit channel number (for GRANT)
-    long freq_hz;           // Frequency in Hz (for GRANT)
-    int tg;                 // Talkgroup (for GRANT, 0 if individual)
-    int src;                // Source RID (for GRANT)
-    int dst;                // Destination RID (for individual GRANT)
-    int svc_bits;           // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
-    int is_group;           // 1 for group grant, 0 for individual
-    int algid;              // Algorithm ID (for ENC event)
-    int keyid;              // Key ID (for ENC event)
-    int data_call_override; // 0=infer from svc_bits, 1=force data, -1=force non-data
-    double observed_m;      // Optional monotonic timestamp when the event was observed
+    int slot;                                   // 0 or 1 for TDMA, -1 for P1/N/A
+    int channel;                                // 16-bit channel number (for GRANT)
+    long freq_hz;                               // Frequency in Hz (for GRANT)
+    int tg;                                     // Talkgroup (for GRANT/PTT/END, 0 if individual or unavailable)
+    int src;                                    // Source RID (for GRANT/PTT/END, 0 if unavailable)
+    int dst;                                    // Destination RID (for individual GRANT)
+    int svc_bits;                               // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
+    int is_group;                               // 1 for group grant, 0 for individual
+    p25_sm_grant_provenance_e grant_provenance; // Initial assignment or continuing assignment update
+    int algid;                                  // Algorithm ID (for ENC event)
+    int keyid;                                  // Key ID (for ENC event)
+    int data_call_override;                     // 0=infer from svc_bits, 1=force data, -1=force non-data
+    double observed_m;                          // Optional monotonic timestamp when the event was observed
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -115,6 +125,7 @@ typedef struct {
 
 typedef struct {
     double last_active_m;    // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
+    double last_start_m;     // Monotonic timestamp of the last PTT/ACTIVE call-epoch boundary
     int voice_active;        // 1 if voice is currently active on this slot
     int algid;               // Current algorithm ID for this slot
     int keyid;               // Current key ID for this slot
@@ -132,7 +143,22 @@ typedef struct {
     int enc_override_clear;  // 1 when regroup KEY=0 supplied the current clear classification
     double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
     double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
+    double last_end_m;       // Monotonic timestamp of the last accepted MAC_END_PTT
+    int last_end_tg;         // Talkgroup carried by the last accepted MAC_END_PTT
+    int last_end_src;        // Source RID carried by the last accepted MAC_END_PTT
 } p25_sm_slot_ctx_t;
+
+typedef struct {
+    double end_m;        // Monotonic timestamp when the quarantine was armed
+    double last_match_m; // Monotonic timestamp of the last matching CC update
+    long freq_hz;        // Ended call RF frequency
+    int slot;            // Ended TDMA slot
+    int target;          // OTA talkgroup for group calls, destination RID for private calls
+    int src;             // Source RID accepted from MAC_END_PTT, or an unknown-source value
+    int is_group;        // 1 for group call, 0 for individual/private
+    int probe_attempted; // 1 after the bounded validation tune becomes eligible
+    int valid;           // 1 while matching ambiguous CC updates remain quarantined
+} p25_sm_recent_call_end_t;
 
 /* ============================================================================
  * State Machine Context
@@ -150,9 +176,20 @@ typedef struct {
     int vc_channel;
     int vc_tg;
     int vc_src;
-    int vc_is_tdma;          // 1 if TDMA channel, 0 if single-carrier
-    int vc_data_call;        // 1 if the accepted grant is data, 0 if voice
-    int vc_cqpsk_retry_done; // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
+    int vc_is_tdma;                  // 1 if TDMA channel, 0 if single-carrier
+    int vc_data_call;                // 1 if the accepted grant is data, 0 if voice
+    int vc_cqpsk_retry_done;         // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
+    int vc_reacquire_eligible;       // 1 while a no-sync VC release may use one CQPSK soft recovery attempt
+    int vc_reacquire_attempted;      // 1 after the one-shot CQPSK soft recovery check for this VC tune
+    int vc_stale_regrant_probe;      // 1 while an ambiguous post-END update is being validated on the VC
+    int vc_stale_regrant_probe_slot; // TDMA slot being validated, or -1 when no validation is active
+    uint32_t cc_no_sync_passes;      // Completed frame-sync searches while a returned CC is still undecoded
+    uint32_t vc_no_sync_passes;      // Completed frame-sync searches without P25P2 sync during VC acquisition
+
+    // Per-slot identity quarantines for voice calls ended by MAC_END_PTT.
+    // Ambiguous CC updates for each ended target/carrier/slot are suppressed
+    // until quiet or until one bounded validation tune becomes eligible.
+    p25_sm_recent_call_end_t recent_call_ends[2];
 
     // Per-slot activity (index 0 = left/P1, index 1 = right)
     p25_sm_slot_ctx_t slots[2];
@@ -163,10 +200,15 @@ typedef struct {
     double t_hangtime_m;         // Monotonic time hangtime started
     double t_cc_sync_m;          // Monotonic time of last CC sync
     double t_cc_tune_m;          // Monotonic time of last CC tune awaiting decode
+    double t_cc_reacquire_m;     // Monotonic time a soft CQPSK reacquire was queued
+    double t_cc_first_no_sync_m; // Monotonic time of the first completed no-sync CC search
+    double t_vc_reacquire_m;     // Monotonic time a VC soft CQPSK reacquire was queued
+    double t_vc_first_no_sync_m; // Monotonic time of the first completed no-sync VC search
     double t_hunt_try_m;         // Monotonic time of last CC candidate attempt
     uint64_t cc_tune_request_id; // Runtime request awaiting asynchronous tune completion
     int cc_tune_pending;         // 1 while the tuner/output pipeline is still changing channels
     int cc_sync_pending;         // 1 until a completed CC tune is followed by decoded CC sync
+    int cc_reacquire_attempted;  // 1 after the one-shot soft recovery check for this acquisition
     p25_sm_cc_acquisition_origin_e cc_acquisition_origin; // Origin of pending decoded-CC acquisition
 
     // Statistics (for debugging/UI)
@@ -319,6 +361,49 @@ p25_sm_ctx_t* p25_sm_get_ctx(void);
 void p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
 
 /**
+ * @brief Record exact P25P2 frame sync while acquiring a tuned voice channel.
+ *
+ * This confirms demodulator acquisition and cancels no-sync recovery without
+ * extending voice activity or trunk hangtime. Decoded MAC/voice events remain
+ * authoritative for call activity.
+ */
+void p25_sm_note_vc_frame_sync(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Record a completed frame-sync search while acquiring a returned control channel.
+ *
+ * The first completed no-sync search is progress evidence that permits one
+ * CQPSK demodulator recovery attempt. Hunt probes, pending hardware tunes,
+ * and already-decoded control channels are ignored.
+ */
+void p25_sm_note_cc_no_sync_pass(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Record a completed frame-sync search with no sync on a tuned voice channel.
+ *
+ * Repeated no-sync passes may queue one bounded CQPSK demodulator recovery when
+ * the tuned grant is still awaiting voice. Non-RTL, non-TDMA, active, and data
+ * calls are ignored.
+ */
+void p25_sm_note_vc_no_sync_pass(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Check whether a one-shot VC CQPSK recovery is holding a CC return.
+ *
+ * Generic no-carrier fallback uses this to avoid bypassing a recovery queued
+ * by the P25 frame-sync release path in the same no-sync cycle. The hold is
+ * bounded independently and never extends the original grant timeout.
+ *
+ * @param ctx State machine context.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param now_m Current monotonic timestamp.
+ * @return 1 while the matching VC recovery hold is active, 0 otherwise.
+ */
+int p25_sm_vc_reacquire_hold_active(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state,
+                                    double now_m);
+
+/**
  * @brief Check whether a TDMA slot has an accepted grant newer than a captured event time.
  *
  * Decoders use this after processing a MAC payload but before clearing IDLE
@@ -349,6 +434,23 @@ void p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
  * @brief Emit END event for a slot.
  */
 void p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot);
+
+/**
+ * @brief Emit an identified END event observed at a specific time.
+ *
+ * Phase 2 XCCH decoders use this form so an END for an older call cannot
+ * clear a newer same-slot assignment or media state. A redundant repeated
+ * END is also rejected after the first one has been applied.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param slot Slot index (0 or 1).
+ * @param tg Talkgroup carried by MAC_END_PTT, or 0 when unavailable.
+ * @param src Source RID carried by MAC_END_PTT, or 0 when unavailable.
+ * @param observed_m Monotonic timestamp captured when the END PDU was observed.
+ * @return 1 when slot teardown should be applied, 0 when the END is stale or redundant.
+ */
+int p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int src, double observed_m);
 
 /**
  * @brief Emit IDLE event for a slot.
@@ -435,6 +537,14 @@ p25_sm_ev_group_grant(int channel, long freq_hz, int tg, int src, int svc_bits) 
     ev.src = src;
     ev.svc_bits = svc_bits;
     ev.is_group = 1;
+    ev.grant_provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_group_grant_update(int channel, long freq_hz, int tg, int src, int svc_bits) {
+    p25_sm_event_t ev = p25_sm_ev_group_grant(channel, freq_hz, tg, src, svc_bits);
+    ev.grant_provenance = P25_SM_GRANT_PROVENANCE_UPDATE;
     return ev;
 }
 
@@ -449,6 +559,14 @@ p25_sm_ev_indiv_grant(int channel, long freq_hz, int dst, int src, int svc_bits)
     ev.src = src;
     ev.svc_bits = svc_bits;
     ev.is_group = 0;
+    ev.grant_provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_indiv_grant_update(int channel, long freq_hz, int dst, int src, int svc_bits) {
+    p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, freq_hz, dst, src, svc_bits);
+    ev.grant_provenance = P25_SM_GRANT_PROVENANCE_UPDATE;
     return ev;
 }
 
@@ -487,6 +605,15 @@ p25_sm_ev_end(int slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_END;
     ev.slot = slot;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_end_call_at(int slot, int tg, int src, double observed_m) {
+    p25_sm_event_t ev = p25_sm_ev_end(slot);
+    ev.tg = tg;
+    ev.src = src;
+    ev.observed_m = observed_m;
     return ev;
 }
 

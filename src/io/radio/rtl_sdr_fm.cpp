@@ -177,6 +177,13 @@ static char udp_control_bindaddr[64] = "127.0.0.1";
 namespace {
 
 static const size_t kRetuneCompletionResultSlots = 256U;
+static const size_t kFllRetuneSeedSlots = 16U;
+
+struct FllRetuneSeed {
+    uint32_t center_freq_hz = 0U;
+    float offset_hz = 0.0f;
+    uint64_t last_used = 0U;
+};
 
 struct RtlRetuneProfile {
     int active = 0;
@@ -269,6 +276,11 @@ struct controller_state {
     int retune_complete_results[kRetuneCompletionResultSlots]{};
     /* Last center frequency successfully applied by the controller thread. */
     std::atomic<uint32_t> last_applied_freq_hz{0U};
+    /* Frequency-specific coarse CQPSK carrier estimates. A CC/VC hardware hop
+     * may restore only the target frequency's seed, never the channel being
+     * left. Controller retunes serialize all access to this cache. */
+    FllRetuneSeed fll_retune_seeds[kFllRetuneSeedSlots]{};
+    uint64_t fll_retune_seed_clock = 0U;
     /* Completed capture reconfigure generation. This lets consumer-side
      * holdoffs reset even when the tuned center frequency remains unchanged
      * (for example, live PPM correction on the active stream). */
@@ -313,6 +325,7 @@ static std::atomic<uint32_t> g_retune_settle_seq{0};
 static std::atomic<int> g_retune_settle_blocks_remaining{0};
 static std::atomic<uint32_t> g_rtl_output_generation{1};
 static std::atomic<int> g_fsk_reacquire_pending{0};
+static std::atomic<int> g_cqpsk_reacquire_pending{0};
 static std::atomic<int> g_fsk_modem_reset_pending{0};
 static std::atomic<int> g_fsk_modem_config_pending{0};
 static std::atomic<int> g_fsk_modem_config_symbol_rate_hz{4800};
@@ -332,6 +345,7 @@ static std::atomic<uint32_t> g_replay_loop_restart_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
 
 static int rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d);
+static int rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_fsk_modem_config_pending(struct demod_state* d);
 static int rtl_stream_consume_fsk_modem_reset_pending(struct demod_state* d);
 static void rtl_stream_invalidate_fsk_phase_cfo_snapshot(void);
@@ -1174,11 +1188,19 @@ enum class DemodRetuneResetReason : uint8_t {
     DistantFrequencyRetune,
     PpmCorrection,
     FreshStream,
+    CqpskReacquire,
 };
 
 struct DemodRetuneResetPlan {
     DemodRetuneResetReason reason;
     float retained_fll_scale;
+    bool reset_retained_fll;
+    bool restore_cached_fll;
+    float cached_fll_freq;
+    uint32_t previous_center_freq_hz;
+    uint32_t next_center_freq_hz;
+    int previous_rate_out_hz;
+    int next_rate_out_hz;
 };
 
 } // namespace
@@ -1190,6 +1212,7 @@ retune_reset_reason_name(DemodRetuneResetReason reason) {
         case DemodRetuneResetReason::DistantFrequencyRetune: return "distant-frequency";
         case DemodRetuneResetReason::PpmCorrection: return "ppm-correction";
         case DemodRetuneResetReason::FreshStream: return "fresh-stream";
+        case DemodRetuneResetReason::CqpskReacquire: return "cqpsk-reacquire";
         default: return "unknown";
     }
 }
@@ -1208,6 +1231,9 @@ retune_reset_reason_from_name(const char* reason) {
     if (strcmp(reason, "fresh-stream") == 0) {
         return DemodRetuneResetReason::FreshStream;
     }
+    if (strcmp(reason, "cqpsk-reacquire") == 0) {
+        return DemodRetuneResetReason::CqpskReacquire;
+    }
     return DemodRetuneResetReason::FrequencyRetune;
 }
 
@@ -1219,31 +1245,125 @@ frequency_delta_hz(uint32_t lhs_hz, uint32_t rhs_hz) {
 static DemodRetuneResetPlan
 demod_retune_reset_plan(DemodRetuneResetReason requested_reason, uint32_t previous_center_freq_hz,
                         uint32_t next_center_freq_hz, int previous_rate_out_hz, int next_rate_out_hz) {
-    DemodRetuneResetPlan plan = {requested_reason, 1.0f};
+    const bool reset_for_reason = requested_reason == DemodRetuneResetReason::DistantFrequencyRetune
+                                  || requested_reason == DemodRetuneResetReason::PpmCorrection
+                                  || requested_reason == DemodRetuneResetReason::FreshStream;
+    DemodRetuneResetPlan plan = {requested_reason,
+                                 1.0f,
+                                 reset_for_reason,
+                                 false,
+                                 0.0f,
+                                 previous_center_freq_hz,
+                                 next_center_freq_hz,
+                                 previous_rate_out_hz,
+                                 next_rate_out_hz};
     if (requested_reason != DemodRetuneResetReason::FrequencyRetune) {
         return plan;
     }
 
-    /* Retained band-edge FLL is a useful seed for quick CC/VC hops inside the
-     * same RF band. For unknown or distant retunes, the old normalized NCO can
-     * be a bad rotation seed, so force fresh acquisition instead. */
+    /* A band-edge FLL estimate belongs to the transmitter at the currently
+     * tuned RF frequency. Even nearby trunking channels can be generated by a
+     * different exciter and have a materially different residual offset. A
+     * real RF hop therefore starts fresh unless a seed previously learned on
+     * the target frequency is available. It remains safe to retain and
+     * rate-scale the current estimate when only the DSP rate changes. */
     const uint64_t kMaxRetainedFllRetuneDeltaHz = 25000000ULL;
     if (previous_center_freq_hz == 0 || next_center_freq_hz == 0 || previous_rate_out_hz <= 0 || next_rate_out_hz <= 0
         || frequency_delta_hz(previous_center_freq_hz, next_center_freq_hz) > kMaxRetainedFllRetuneDeltaHz) {
         plan.reason = DemodRetuneResetReason::DistantFrequencyRetune;
+        plan.reset_retained_fll = true;
+        return plan;
+    }
+    if (previous_center_freq_hz != next_center_freq_hz) {
+        plan.reset_retained_fll = true;
         return plan;
     }
 
-    double rf_scale = (double)next_center_freq_hz / (double)previous_center_freq_hz;
     double rate_scale = (double)previous_rate_out_hz / (double)next_rate_out_hz;
-    double retained_fll_scale = rf_scale * rate_scale;
+    double retained_fll_scale = rate_scale;
     if (retained_fll_scale <= 0.25 || retained_fll_scale >= 4.0) {
         plan.reason = DemodRetuneResetReason::DistantFrequencyRetune;
+        plan.reset_retained_fll = true;
         return plan;
     }
 
     plan.retained_fll_scale = (float)retained_fll_scale;
     return plan;
+}
+
+static void
+fll_retune_seed_cache_clear(void) {
+    std::fill_n(controller.fll_retune_seeds, kFllRetuneSeedSlots, FllRetuneSeed{});
+    controller.fll_retune_seed_clock = 0U;
+}
+
+static void
+fll_retune_seed_cache_store(uint32_t center_freq_hz, int rate_out_hz, float normalized_freq) {
+    if (center_freq_hz == 0U || rate_out_hz <= 0 || !std::isfinite(normalized_freq)) {
+        return;
+    }
+    const float offset_hz = normalized_freq * ((float)rate_out_hz / 6.28318530717958647692f);
+    if (!std::isfinite(offset_hz)) {
+        return;
+    }
+
+    FllRetuneSeed* destination = nullptr;
+    for (FllRetuneSeed& seed : controller.fll_retune_seeds) {
+        if (seed.center_freq_hz == center_freq_hz) {
+            destination = &seed;
+            break;
+        }
+        if (!destination || seed.center_freq_hz == 0U || seed.last_used < destination->last_used) {
+            destination = &seed;
+        }
+    }
+    if (!destination) {
+        return;
+    }
+    destination->center_freq_hz = center_freq_hz;
+    destination->offset_hz = offset_hz;
+    destination->last_used = ++controller.fll_retune_seed_clock;
+}
+
+static int
+fll_retune_seed_cache_lookup(uint32_t center_freq_hz, int rate_out_hz, float* out_normalized_freq) {
+    if (center_freq_hz == 0U || rate_out_hz <= 0 || !out_normalized_freq) {
+        return 0;
+    }
+    for (FllRetuneSeed& seed : controller.fll_retune_seeds) {
+        if (seed.center_freq_hz != center_freq_hz || !std::isfinite(seed.offset_hz)) {
+            continue;
+        }
+        *out_normalized_freq = seed.offset_hz * (6.28318530717958647692f / (float)rate_out_hz);
+        seed.last_used = ++controller.fll_retune_seed_clock;
+        return std::isfinite(*out_normalized_freq) ? 1 : 0;
+    }
+    return 0;
+}
+
+static void
+demod_prepare_fll_seed_for_retune(const struct demod_state* s, DemodRetuneResetPlan* plan) {
+    if (!s || !plan) {
+        return;
+    }
+    if (plan->reason == DemodRetuneResetReason::PpmCorrection || plan->reason == DemodRetuneResetReason::FreshStream
+        || plan->reason == DemodRetuneResetReason::DistantFrequencyRetune) {
+        fll_retune_seed_cache_clear();
+        return;
+    }
+    if (plan->reason != DemodRetuneResetReason::FrequencyRetune
+        || plan->previous_center_freq_hz == plan->next_center_freq_hz) {
+        return;
+    }
+
+    fll_retune_seed_cache_store(plan->previous_center_freq_hz, plan->previous_rate_out_hz, s->fll_band_edge_state.freq);
+    float cached_fll_freq = 0.0f;
+    if (fll_retune_seed_cache_lookup(plan->next_center_freq_hz, plan->next_rate_out_hz, &cached_fll_freq)) {
+        plan->reset_retained_fll = false;
+        plan->restore_cached_fll = true;
+        plan->cached_fll_freq = cached_fll_freq;
+        plan->retained_fll_scale = 1.0f;
+    }
 }
 
 static void
@@ -1552,37 +1672,51 @@ demod_reset_histories_for_output_mode(struct demod_state* s) {
 }
 
 static void
-demod_log_post_retune_state(const struct demod_state* s) {
+demod_log_post_retune_state(const struct demod_state* s, const DemodRetuneResetPlan& plan, float fll_freq_before) {
     if (!debug_cqpsk_enabled()) {
         return;
     }
+    const int previous_rate_out_hz = plan.previous_rate_out_hz > 0 ? plan.previous_rate_out_hz : s->rate_out;
+    float fll_be_before_hz = fll_freq_before * ((float)previous_rate_out_hz / 6.28318530717958647692f);
     float fll_be_freq_hz = s->fll_band_edge_state.freq * ((float)s->rate_out / 6.28318530717958647692f);
     float costas_freq_hz =
         s->costas_state.freq
         * (((float)s->rate_out / (float)(s->ted_sps > 0 ? s->ted_sps : 5)) / 6.28318530717958647692f);
     DSD_FPRINTF(stderr,
-                "[RETUNE] ted_sps=%d override=%d cqpsk=%d fll_be_freq=%.1fHz fll_be_phase=%.3f costas_freq=%.1fHz "
-                "costas_phase=%.3f gardner_omega=%.3f gardner_mu=%.3f\n",
-                s->ted_sps, s->ted_sps_override, s->cqpsk_enable, fll_be_freq_hz, s->fll_band_edge_state.phase,
-                costas_freq_hz, s->costas_state.phase, s->ted_state.omega, s->ted_state.mu);
+                "[RETUNE] reason=%s previous_freq=%u next_freq=%u previous_rate=%d next_rate=%d fll_action=%s "
+                "fll_be_before=%.1fHz fll_be_after=%.1fHz ted_sps=%d override=%d cqpsk=%d fll_be_phase=%.3f "
+                "costas_freq=%.1fHz costas_phase=%.3f gardner_omega=%.3f gardner_mu=%.3f\n",
+                retune_reset_reason_name(plan.reason), plan.previous_center_freq_hz, plan.next_center_freq_hz,
+                plan.previous_rate_out_hz, plan.next_rate_out_hz,
+                plan.restore_cached_fll ? "restore-target" : (plan.reset_retained_fll ? "reset" : "retain"),
+                fll_be_before_hz, fll_be_freq_hz, s->ted_sps, s->ted_sps_override, s->cqpsk_enable,
+                s->fll_band_edge_state.phase, costas_freq_hz, s->costas_state.phase, s->ted_state.omega,
+                s->ted_state.mu);
 }
 
-static void
-demod_reset_on_retune(struct demod_state* s, const DemodRetuneResetPlan& plan) {
+static DemodRetuneResetPlan
+demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     if (!s) {
-        return;
+        return plan;
     }
+    const float fll_freq_before = s->fll_band_edge_state.freq;
+    demod_prepare_fll_seed_for_retune(s, &plan);
     DemodRetuneResetReason reason = plan.reason;
-    const bool reset_retained_fll =
-        (reason == DemodRetuneResetReason::PpmCorrection || reason == DemodRetuneResetReason::FreshStream
-         || reason == DemodRetuneResetReason::DistantFrequencyRetune);
-    demod_handle_sps_transition_reset(s, reason);
+    if (reason != DemodRetuneResetReason::CqpskReacquire) {
+        demod_handle_sps_transition_reset(s, reason);
+    }
     demod_reset_common_state_for_retune(s);
-    demod_refresh_fll_band_edge_state(s, reset_retained_fll ? 1 : 0, plan.retained_fll_scale);
+    if (plan.restore_cached_fll) {
+        s->fll_band_edge_state.freq = plan.cached_fll_freq;
+    }
+    demod_refresh_fll_band_edge_state(s, plan.reset_retained_fll ? 1 : 0, plan.retained_fll_scale);
     demod_reset_ted_delay_for_retune(s);
-    demod_apply_pending_ted_override(s);
+    if (reason != DemodRetuneResetReason::CqpskReacquire) {
+        demod_apply_pending_ted_override(s);
+    }
     demod_reset_histories_for_output_mode(s);
-    demod_log_post_retune_state(s);
+    demod_log_post_retune_state(s, plan, fll_freq_before);
+    return plan;
 }
 
 std::atomic<double> g_snr_c4fm_db{-100.0};
@@ -3274,6 +3408,7 @@ static DSD_THREAD_RETURN_TYPE
         int perf_on = rtl_perf_enabled();
         uint64_t perf_full_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
         (void)rtl_stream_consume_fsk_modem_config_pending(d);
+        (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
         int consumed_fsk_reacquire = rtl_stream_consume_fsk_reacquire_pending(d);
         if (!consumed_fsk_reacquire) {
             (void)rtl_stream_consume_fsk_modem_reset_pending(d);
@@ -3599,6 +3734,33 @@ rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d) {
     return 1;
 }
 
+static int
+rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d) {
+    int pending = g_cqpsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
+    if (!pending || !d || (d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && !d->cqpsk_enable)) {
+        return 0;
+    }
+
+    rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
+    const uint32_t center_freq_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    DemodRetuneResetPlan reset_plan = {DemodRetuneResetReason::CqpskReacquire,
+                                       1.0f,
+                                       false,
+                                       false,
+                                       0.0f,
+                                       center_freq_hz,
+                                       center_freq_hz,
+                                       d->rate_out,
+                                       d->rate_out};
+    demod_reset_on_retune(d, reset_plan);
+    g_snr_qpsk_acc_reset.store(1, std::memory_order_release);
+    if (debug_cqpsk_enabled()) {
+        DSD_FPRINTF(stderr, "[CQPSKREACQ] consumed output_generation=%u\n",
+                    g_rtl_output_generation.load(std::memory_order_acquire));
+    }
+    return 1;
+}
+
 static void
 controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts, uint32_t center_freq_hz,
                                int mark_reconfigure, DemodRetuneResetReason reset_reason,
@@ -3645,6 +3807,7 @@ controller_enter_reconfigure_gate(struct controller_state* s) {
     s->retune_in_progress.store(1, std::memory_order_release);
     rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
     controller_wait_for_demod_idle(s);
+    g_cqpsk_reacquire_pending.store(0, std::memory_order_release);
     rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
     g_retune_settle_blocks_remaining.store(0, std::memory_order_release);
     g_retune_diag_blocks_remaining.store(0, std::memory_order_release);
@@ -6838,6 +7001,19 @@ rtl_stream_request_fsk_reacquire(void) {
     return 1;
 }
 
+extern "C" int
+rtl_stream_request_cqpsk_reacquire(void) {
+    if (demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && !demod.cqpsk_enable) {
+        return 0;
+    }
+    g_cqpsk_reacquire_pending.store(1, std::memory_order_release);
+    if (debug_cqpsk_enabled()) {
+        DSD_FPRINTF(stderr, "[CQPSKREACQ] requested output_generation=%u\n",
+                    g_rtl_output_generation.load(std::memory_order_acquire));
+    }
+    return 1;
+}
+
 extern "C" void
 rtl_stream_set_ted_sps(int sps) {
     if (sps < 2) {
@@ -8690,6 +8866,192 @@ rtl_stream_test_fsk_reacquire(int output_kind, size_t queued_samples, int cached
     g_fsk_modem_reset_pending.store(prev_reset_pending, std::memory_order_release);
     fsk_reacquire_test_reset_output_state();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
+static void
+cqpsk_reacquire_test_init_demod(struct demod_state* test_demod, int active_cqpsk, int symbol_rate_hz, int ted_sps) {
+    DSD_MEMSET(test_demod, 0, sizeof(*test_demod));
+    test_demod->output_kind = active_cqpsk ? DSD_DEMOD_OUTPUT_SYMBOL_CQPSK : DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    test_demod->cqpsk_enable = active_cqpsk ? 1 : 0;
+    test_demod->symbol_rate_hz = symbol_rate_hz;
+    test_demod->symbol_levels = 4;
+    test_demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    test_demod->ted_sps = ted_sps;
+    test_demod->ted_sps_override = ted_sps;
+    test_demod->ted_state.twice_sps = 2 * ted_sps;
+    test_demod->ted_state.mu = 4.5f;
+    test_demod->ted_state.dl[0] = 3.0f;
+    test_demod->ted_state.dl_index = 7;
+    dsd_fll_band_edge_init(&test_demod->fll_band_edge_state, test_demod->ted_sps);
+    test_demod->fll_band_edge_state.freq = 0.125f;
+    test_demod->fll_band_edge_state.phase = 0.75f;
+    test_demod->costas_state.freq = 0.25f;
+    test_demod->costas_state.phase = 0.5f;
+    test_demod->costas_state.error = 0.375f;
+    test_demod->costas_state.error_smooth = 0.1875f;
+    test_demod->cqpsk_diff_prev_r = 0.25f;
+    test_demod->cqpsk_diff_prev_j = -0.25f;
+    test_demod->cqpsk_agc_avg = 0.625f;
+    test_demod->hb_hist_i[0][0] = 1.0f;
+    test_demod->hb_hist_q[0][0] = -1.0f;
+    test_demod->channel_lpf_hist_i[0] = 2.0f;
+    test_demod->channel_lpf_hist_q[0] = -2.0f;
+    test_demod->channel_lpf_hist_len = 8;
+    test_demod->resamp_phase = 5;
+    test_demod->resamp_hist_head = 3;
+}
+
+static void
+cqpsk_reacquire_test_capture_result(const struct demod_state* test_demod,
+                                    rtl_stream_test_cqpsk_reacquire_result* out_result) {
+    out_result->generation_after = rtl_stream_output_generation();
+    out_result->used_after = ring_used(&output);
+    out_result->cache_pending_after = dsd_rtl_stream_metrics_hook_symbol_cache_pending();
+    out_result->fll_freq_after = test_demod->fll_band_edge_state.freq;
+    out_result->fll_phase_after = test_demod->fll_band_edge_state.phase;
+    out_result->costas_freq_after = test_demod->costas_state.freq;
+    out_result->costas_phase_after = test_demod->costas_state.phase;
+    out_result->costas_error_after = test_demod->costas_state.error;
+    out_result->ted_mu_after = test_demod->ted_state.mu;
+    out_result->ted_delay_after = test_demod->ted_state.dl[0];
+    out_result->diff_prev_r_after = test_demod->cqpsk_diff_prev_r;
+    out_result->diff_prev_j_after = test_demod->cqpsk_diff_prev_j;
+    out_result->cqpsk_agc_after = test_demod->cqpsk_agc_avg;
+    out_result->resamp_phase_after = test_demod->resamp_phase;
+    out_result->histories_cleared =
+        (test_demod->hb_hist_i[0][0] == 0.0f && test_demod->hb_hist_q[0][0] == 0.0f
+         && test_demod->channel_lpf_hist_i[0] == 0.0f && test_demod->channel_lpf_hist_q[0] == 0.0f
+         && test_demod->channel_lpf_hist_len == 0)
+            ? 1
+            : 0;
+    out_result->output_kind_after = test_demod->output_kind;
+    out_result->symbol_rate_after = test_demod->symbol_rate_hz;
+    out_result->channel_profile_after = test_demod->channel_lpf_profile;
+    out_result->ted_sps_after = test_demod->ted_sps;
+}
+
+extern "C" int
+rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sps, size_t queued_samples,
+                                int cached_symbols, rtl_stream_test_cqpsk_reacquire_result* out_result) {
+    if (!out_result || symbol_rate_hz <= 0 || ted_sps < 2 || cached_symbols < 0) {
+        return -1;
+    }
+    *out_result = {};
+
+    int initialized_output = 0;
+    int prepare_rc = fsk_reacquire_test_prepare_output_ring(queued_samples, &initialized_output);
+    if (prepare_rc != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return prepare_rc;
+    }
+
+    static struct demod_state test_demod;
+    cqpsk_reacquire_test_init_demod(&test_demod, active_cqpsk, symbol_rate_hz, ted_sps);
+
+    const int prev_output_kind = demod.output_kind;
+    const int prev_cqpsk = demod.cqpsk_enable;
+    struct RtlSdrInternals* prev_stream = g_stream;
+    const int prev_pending = g_cqpsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
+    demod.output_kind = test_demod.output_kind;
+    demod.cqpsk_enable = test_demod.cqpsk_enable;
+    g_stream = NULL;
+
+    ring_clear(&output);
+    output.tail.store(0, std::memory_order_release);
+    output.head.store(queued_samples, std::memory_order_release);
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
+    dsd_rtl_stream_metrics_hook_symbol_cache_pending_delta(cached_symbols);
+
+    out_result->generation_before = rtl_stream_output_generation();
+    out_result->fll_freq_before = test_demod.fll_band_edge_state.freq;
+    out_result->cqpsk_agc_before = test_demod.cqpsk_agc_avg;
+    out_result->request_rc = rtl_stream_request_cqpsk_reacquire();
+    out_result->second_request_rc = rtl_stream_request_cqpsk_reacquire();
+    if (out_result->request_rc > 0
+        && !fsk_reacquire_test_request_state_valid(queued_samples, cached_symbols, out_result->generation_before)) {
+        demod.output_kind = prev_output_kind;
+        demod.cqpsk_enable = prev_cqpsk;
+        g_stream = prev_stream;
+        g_cqpsk_reacquire_pending.store(prev_pending, std::memory_order_release);
+        fsk_reacquire_test_reset_output_state();
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -5;
+    }
+
+    out_result->consumed = rtl_stream_consume_cqpsk_reacquire_pending(&test_demod);
+    out_result->second_consumed = rtl_stream_consume_cqpsk_reacquire_pending(&test_demod);
+    cqpsk_reacquire_test_capture_result(&test_demod, out_result);
+
+    demod.output_kind = prev_output_kind;
+    demod.cqpsk_enable = prev_cqpsk;
+    g_stream = prev_stream;
+    g_cqpsk_reacquire_pending.store(prev_pending, std::memory_order_release);
+    fsk_reacquire_test_reset_output_state();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_fll_retune_policy(uint32_t previous_center_freq_hz, uint32_t next_center_freq_hz,
+                                  int previous_rate_out_hz, int next_rate_out_hz,
+                                  rtl_stream_test_fll_retune_result* out_result) {
+    if (!out_result || previous_rate_out_hz <= 0 || next_rate_out_hz <= 0) {
+        return -1;
+    }
+
+    static struct demod_state test_demod;
+    fll_retune_seed_cache_clear();
+    cqpsk_reacquire_test_init_demod(&test_demod, 1, 4800, 10);
+    test_demod.rate_out = next_rate_out_hz;
+    DemodRetuneResetPlan plan =
+        demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, previous_center_freq_hz, next_center_freq_hz,
+                                previous_rate_out_hz, next_rate_out_hz);
+
+    *out_result = {};
+    out_result->fll_freq_before = test_demod.fll_band_edge_state.freq;
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->retained_fll_scale = plan.retained_fll_scale;
+    out_result->reset_retained_fll = plan.reset_retained_fll ? 1 : 0;
+    out_result->restored_cached_fll = plan.restore_cached_fll ? 1 : 0;
+    out_result->distant_frequency_reason = plan.reason == DemodRetuneResetReason::DistantFrequencyRetune ? 1 : 0;
+    out_result->fll_freq_after = test_demod.fll_band_edge_state.freq;
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_fll_retune_cache_round_trip(rtl_stream_test_fll_retune_cache_result* out_result) {
+    if (!out_result) {
+        return -1;
+    }
+    *out_result = {};
+    fll_retune_seed_cache_clear();
+
+    static struct demod_state test_demod;
+    cqpsk_reacquire_test_init_demod(&test_demod, 1, 4800, 10);
+    test_demod.rate_out = 48000;
+    const float cc_fll_freq = test_demod.fll_band_edge_state.freq;
+    const float vc_fll_freq = -0.0625f;
+
+    DemodRetuneResetPlan plan =
+        demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, 770418750U, 769668750U, 48000, 48000);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->first_hop_reset = plan.reset_retained_fll ? 1 : 0;
+    out_result->first_hop_fll_after = test_demod.fll_band_edge_state.freq;
+
+    test_demod.fll_band_edge_state.freq = vc_fll_freq;
+    plan = demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, 769668750U, 770418750U, 48000, 48000);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->cc_restore_used_cache = plan.restore_cached_fll ? 1 : 0;
+    out_result->cc_restore_fll_after = test_demod.fll_band_edge_state.freq;
+    out_result->expected_cc_fll = cc_fll_freq;
+
+    plan = demod_retune_reset_plan(DemodRetuneResetReason::FrequencyRetune, 770418750U, 769668750U, 48000, 48000);
+    plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->vc_restore_used_cache = plan.restore_cached_fll ? 1 : 0;
+    out_result->vc_restore_fll_after = test_demod.fll_band_edge_state.freq;
+    out_result->expected_vc_fll = vc_fll_freq;
+    fll_retune_seed_cache_clear();
     return 0;
 }
 

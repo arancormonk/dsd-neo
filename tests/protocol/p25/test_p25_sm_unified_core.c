@@ -13,6 +13,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -493,6 +494,100 @@ test_tdma_single_slot_end_releases(void) {
     return 0;
 }
 
+// Test: identified MAC_END_PTT events cannot tear down a newer same-slot call,
+// and ending one slot preserves an active companion slot.
+static int
+test_tdma_end_identity_and_order_guards(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 101, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 202, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    g_state.lasttg = 1000;
+    g_state.lastsrc = 101;
+    g_state.lasttgR = 2000;
+    g_state.lastsrcR = 202;
+    g_state.p25_p2_audio_allowed[0] = 1;
+    g_state.p25_p2_audio_allowed[1] = 1;
+
+    ev = p25_sm_ev_end_call_at(1, 1900, 191, ctx.slots[1].last_active_m + 0.001);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[1].voice_active || !ctx.slots[1].grant_active || !g_state.p25_p2_audio_allowed[1]
+        || ctx.slots[1].last_end_m != 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Stale identity END cleared the current slot 1 call\n");
+        return 1;
+    }
+    if (!ctx.slots[0].voice_active || !ctx.slots[0].grant_active || !g_state.p25_p2_audio_allowed[0]) {
+        DSD_FPRINTF(stderr, "FAIL: Stale slot 1 END changed active companion slot 0\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_end_call_at(1, 2000, 202, ctx.slots[1].last_active_m + 0.001);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.slots[1].voice_active || ctx.slots[1].grant_active
+        || g_state.p25_p2_audio_allowed[1] || ctx.slots[1].last_end_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Current slot 1 END was not applied cleanly\n");
+        return 1;
+    }
+    if (!ctx.slots[0].voice_active || !ctx.slots[0].grant_active || !g_state.p25_p2_audio_allowed[0]) {
+        DSD_FPRINTF(stderr, "FAIL: Slot 1 END changed active companion slot 0\n");
+        return 1;
+    }
+
+    // A repeated END is a no-op. The synthetic reopened gate makes an
+    // accidental second application observable without involving XCCH.
+    const double accepted_end_m = ctx.slots[1].last_end_m;
+    g_state.p25_p2_audio_allowed[1] = 1;
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!g_state.p25_p2_audio_allowed[1] || fabs(ctx.slots[1].last_end_m - accepted_end_m) > 1.0e-9) {
+        DSD_FPRINTF(stderr, "FAIL: Repeated END was applied more than once\n");
+        return 1;
+    }
+    g_state.p25_p2_audio_allowed[1] = 0;
+
+    // A newly observed PTT/ACTIVE boundary opens a fresh epoch even if media
+    // policy suppresses voice_active and the TG/source identity is reused.
+    ctx.slots[1].last_start_m = accepted_end_m + 1.0e-9;
+    g_state.p25_p2_audio_allowed[1] = 1;
+    ev = p25_sm_ev_end_call_at(1, 2000, 202, ctx.slots[1].last_start_m + 1.0e-9);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (g_state.p25_p2_audio_allowed[1] || ctx.slots[1].last_end_m <= accepted_end_m) {
+        DSD_FPRINTF(stderr, "FAIL: New same-identity epoch END was mistaken for a repeat\n");
+        return 1;
+    }
+
+    // Even a matching END identity is stale when its captured observation
+    // predates a newly accepted slot assignment.
+    ctx.slots[1].grant_active = 1;
+    ctx.slots[1].target_id = 3000;
+    ctx.slots[1].ota_tg = 3000;
+    ctx.slots[1].src = 303;
+    ctx.slots[1].is_group = 1;
+    ctx.slots[1].last_grant_m = ctx.slots[1].last_end_m + 1.0;
+    g_state.lasttgR = 3000;
+    g_state.lastsrcR = 303;
+    const double before_new_grant = ctx.slots[1].last_grant_m - 0.001;
+    ev = p25_sm_ev_end_call_at(1, 3000, 303, before_new_grant);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[1].grant_active) {
+        DSD_FPRINTF(stderr, "FAIL: END observed before a newer grant cleared that grant\n");
+        return 1;
+    }
+
+    return 0;
+}
+
 // Test: ENC event on P25P2 keeps allow-list and TG-hold blocks closed even
 // when the encrypted call is locally decryptable.
 static int
@@ -615,6 +710,7 @@ main(void) {
     fail += test_tdma_pending_other_slot_blocks_release();
     fail += test_tdma_enc_lockout_slot_does_not_block_release();
     fail += test_tdma_single_slot_end_releases();
+    fail += test_tdma_end_identity_and_order_guards();
     fail += test_tdma_enc_respects_media_policy();
 
     if (fail) {

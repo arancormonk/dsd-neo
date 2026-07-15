@@ -197,7 +197,9 @@ Windows console runs:
 - `-d <dir>` Save raw MBE vocoder frames in this folder
 - `-J <file>` Append event log output
 - `--frame-log <file>` Append frame-level one-line timestamped traces
-- `--p25-sm-log <file>` Append P25 state-machine health and frequency-decision traces
+- `--p25-sm-log <file>` Append P25 state-machine health and frequency-decision traces. Grant traces identify initial
+  assignments versus updates; post-call stale-update handling reports guard, validation-probe, activity, and backoff
+  decisions.
 
 For rdio-scanner API uploads that should not persist on disk, use API-only mode with a RAM-backed per-call WAV directory
 and post-upload deletion, for example `-7 /dev/shm/dsd-neo-rdio -P --rdio-mode api --rdio-api-delete-after-upload`.

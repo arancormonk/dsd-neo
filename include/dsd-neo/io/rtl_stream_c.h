@@ -271,6 +271,17 @@ void rtl_stream_clear_pending_retune_profile(void);
 int rtl_stream_request_fsk_reacquire(void);
 
 /**
+ * @brief Request fresh acquisition for the active RTL CQPSK demod path.
+ *
+ * The request is consumed by the demod thread before the next CQPSK block so
+ * carrier/timing state is not mutated from decoder/control threads. The
+ * coarse FLL frequency estimate is retained while phase, timing, and filter
+ * history are reset. Returns 1 when a request was queued, 0 when RTL CQPSK
+ * output is inactive.
+ */
+int rtl_stream_request_cqpsk_reacquire(void);
+
+/**
  * @brief Return mean power approximation (RMS^2 proxy) for soft squelch.
  * The computation uses a small fixed sample window and matches the reference implementation.
  * @param ctx Stream context (unused).

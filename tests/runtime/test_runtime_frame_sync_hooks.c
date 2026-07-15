@@ -16,15 +16,19 @@
 
 static int g_try_tick_calls;
 static int g_release_calls;
+static int g_vc_sync_calls;
+static int g_vc_no_sync_calls;
 static int g_eot_calls;
 static int g_no_carrier_calls;
 static dsd_opts* g_last_opts;
-static dsd_state* g_last_state;
+static const dsd_state* g_last_state;
 
 static void
 reset_counters(void) {
     g_try_tick_calls = 0;
     g_release_calls = 0;
+    g_vc_sync_calls = 0;
+    g_vc_no_sync_calls = 0;
     g_eot_calls = 0;
     g_no_carrier_calls = 0;
     g_last_opts = NULL;
@@ -32,7 +36,7 @@ reset_counters(void) {
 }
 
 static void
-record_args(dsd_opts* opts, dsd_state* state) {
+record_args(dsd_opts* opts, const dsd_state* state) {
     g_last_opts = opts;
     g_last_state = state;
 }
@@ -46,6 +50,18 @@ hook_try_tick(dsd_opts* opts, dsd_state* state) {
 static void
 hook_release(dsd_opts* opts, dsd_state* state) {
     g_release_calls++;
+    record_args(opts, state);
+}
+
+static void
+hook_vc_sync(dsd_opts* opts, const dsd_state* state) {
+    g_vc_sync_calls++;
+    record_args(opts, state);
+}
+
+static void
+hook_vc_no_sync(dsd_opts* opts, const dsd_state* state) {
+    g_vc_no_sync_calls++;
     record_args(opts, state);
 }
 
@@ -68,11 +84,15 @@ test_empty_hooks_are_noops(dsd_opts* opts, dsd_state* state) {
 
     dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
     dsd_frame_sync_hook_p25_sm_release(opts, state);
+    dsd_frame_sync_hook_p25_sm_vc_sync(opts, state);
+    dsd_frame_sync_hook_p25_sm_vc_no_sync(opts, state);
     dsd_frame_sync_hook_eot_cc(opts, state);
     dsd_frame_sync_hook_no_carrier(opts, state);
 
     assert(g_try_tick_calls == 0);
     assert(g_release_calls == 0);
+    assert(g_vc_sync_calls == 0);
+    assert(g_vc_no_sync_calls == 0);
     assert(g_eot_calls == 0);
     assert(g_no_carrier_calls == 0);
     assert(g_last_opts == NULL);
@@ -84,6 +104,8 @@ test_installed_hooks_forward_args(dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_hooks hooks = {
         .p25_sm_try_tick = hook_try_tick,
         .p25_sm_release = hook_release,
+        .p25_sm_vc_sync = hook_vc_sync,
+        .p25_sm_vc_no_sync = hook_vc_no_sync,
         .eot_cc = hook_eot,
         .no_carrier = hook_no_carrier,
     };
@@ -97,6 +119,16 @@ test_installed_hooks_forward_args(dsd_opts* opts, dsd_state* state) {
 
     dsd_frame_sync_hook_p25_sm_release(opts, state);
     assert(g_release_calls == 1);
+    assert(g_last_opts == opts);
+    assert(g_last_state == state);
+
+    dsd_frame_sync_hook_p25_sm_vc_sync(opts, state);
+    assert(g_vc_sync_calls == 1);
+    assert(g_last_opts == opts);
+    assert(g_last_state == state);
+
+    dsd_frame_sync_hook_p25_sm_vc_no_sync(opts, state);
+    assert(g_vc_no_sync_calls == 1);
     assert(g_last_opts == opts);
     assert(g_last_state == state);
 
@@ -121,11 +153,15 @@ test_partial_reinstall_replaces_table(dsd_opts* opts, dsd_state* state) {
 
     dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
     dsd_frame_sync_hook_p25_sm_release(opts, state);
+    dsd_frame_sync_hook_p25_sm_vc_sync(opts, state);
+    dsd_frame_sync_hook_p25_sm_vc_no_sync(opts, state);
     dsd_frame_sync_hook_eot_cc(opts, state);
     dsd_frame_sync_hook_no_carrier(opts, state);
 
     assert(g_try_tick_calls == 1);
     assert(g_release_calls == 0);
+    assert(g_vc_sync_calls == 0);
+    assert(g_vc_no_sync_calls == 0);
     assert(g_eot_calls == 0);
     assert(g_no_carrier_calls == 1);
     assert(g_last_opts == opts);

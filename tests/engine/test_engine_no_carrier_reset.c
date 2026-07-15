@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -357,6 +358,49 @@ main(void) {
 
     rc |= expect_true("p25-vc-sync-preserves-tuned", opts->trunk_is_tuned == 1);
     rc |= expect_true("p25-vc-sync-preserves-freq", state->p25_vc_freq[0] == 851012500);
+
+#ifdef USE_RADIO
+    // A CQPSK recovery queued by frame sync must also suppress the generic
+    // noCarrier return that runs later in the same no-sync cycle. This hold is
+    // state-machine-owned and does not refresh the voice-sync timestamp.
+    const int saved_audio_in_type = opts->audio_in_type;
+    const double recovery_now_m = dsd_time_now_monotonic_s();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_is_tuned = 1;
+    state->p25_cc_freq = 851000000;
+    state->trunk_cc_freq = 851000000;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time_m = recovery_now_m - 11.0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 851012500;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500;
+
+    p25_sm_ctx_t* recovery_ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(recovery_ctx, opts, state);
+    recovery_ctx->state = P25_SM_TUNED;
+    recovery_ctx->vc_freq_hz = 851012500;
+    recovery_ctx->vc_channel = (2 << 12) | 2;
+    recovery_ctx->vc_tg = 7001;
+    recovery_ctx->vc_is_tdma = 1;
+    recovery_ctx->t_tune_m = recovery_now_m - 1.0;
+    recovery_ctx->t_vc_reacquire_m = recovery_now_m;
+    recovery_ctx->vc_reacquire_eligible = 1;
+    recovery_ctx->vc_reacquire_attempted = 1;
+    recovery_ctx->slots[0].grant_active = 1;
+    recovery_ctx->slots[0].freq_hz = recovery_ctx->vc_freq_hz;
+    recovery_ctx->slots[0].last_grant_m = recovery_ctx->t_tune_m;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("p25-vc-reacquire-hold-preserves-tuned", opts->trunk_is_tuned == 1);
+    rc |= expect_true("p25-vc-reacquire-hold-preserves-freq",
+                      state->p25_vc_freq[0] == 851012500 && state->p25_vc_freq[1] == 851012500);
+    rc |= expect_true("p25-vc-reacquire-hold-preserves-sync-deadline",
+                      fabs(state->last_vc_sync_time_m - (recovery_now_m - 11.0)) <= 1.0e-9);
+
+    recovery_ctx->t_vc_reacquire_m = 0.0;
+    opts->audio_in_type = saved_audio_in_type;
+    p25_sm_init_ctx(recovery_ctx, opts, state);
+#endif
 
     // Once both control and voice sync are stale, the same reset path should
     // clear the tuned flags and cached voice frequencies so scanning can resume

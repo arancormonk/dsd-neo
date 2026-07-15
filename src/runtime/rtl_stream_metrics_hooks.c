@@ -108,6 +108,14 @@ dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_t
 }
 
 int
+dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void) {
+    if (g_rtl_stream_metrics_hooks.request_cqpsk_reacquire) {
+        return g_rtl_stream_metrics_hooks.request_cqpsk_reacquire();
+    }
+    return -1;
+}
+
+int
 dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void) {
     if (g_rtl_stream_metrics_hooks.cqpsk_timing_bias) {
         return g_rtl_stream_metrics_hooks.cqpsk_timing_bias();
