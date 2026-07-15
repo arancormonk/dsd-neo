@@ -13,6 +13,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -549,7 +550,7 @@ test_tdma_end_identity_and_order_guards(void) {
     const double accepted_end_m = ctx.slots[1].last_end_m;
     g_state.p25_p2_audio_allowed[1] = 1;
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (!g_state.p25_p2_audio_allowed[1] || ctx.slots[1].last_end_m != accepted_end_m) {
+    if (!g_state.p25_p2_audio_allowed[1] || fabs(ctx.slots[1].last_end_m - accepted_end_m) > 1.0e-9) {
         DSD_FPRINTF(stderr, "FAIL: Repeated END was applied more than once\n");
         return 1;
     }
