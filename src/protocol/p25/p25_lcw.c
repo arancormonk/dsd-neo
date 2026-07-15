@@ -323,7 +323,7 @@ p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t g
     }
     if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
         && !p25_lcw_format_44_hold_blocks_grant(ctx, group)) {
-        p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, group, (int)ctx->state->lastsrc, ctx->lc_svcopt);
+        p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, group, (int)ctx->state->lastsrc, ctx->lc_svcopt);
         p25_sm_event(p25_sm_get_ctx(), ctx->opts, ctx->state, &ev);
     }
 }

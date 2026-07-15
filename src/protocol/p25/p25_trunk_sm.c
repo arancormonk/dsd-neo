@@ -41,6 +41,7 @@
 
 static int do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
                       int arm_failed_vc_backoff_on_accept, int recover_stale_ctx);
+static int p25_vc_has_observed_voice(const p25_sm_ctx_t* ctx);
 static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx, const char* event,
                          const char* format, ...) DSD_ATTR_FORMAT(printf, 5, 6);
 #ifdef USE_RADIO
@@ -54,6 +55,7 @@ static atomic_int g_p25_sm_release_lock = 0;
 
 #define P25_FAILED_VC_RETUNE_BACKOFF_DEFAULT_S 10.0
 #define P25_STALE_REGRANT_QUIET_S              2.0
+#define P25_STALE_REGRANT_PROBE_DELAY_S        2.0
 #define P25_STALE_REGRANT_MAX_AGE_S            10.0
 #define P25_CC_HUNT_ACQUIRE_GRACE_S            2.0
 #define P25_CC_RETURN_REACQUIRE_NO_SYNC_PASSES 1U
@@ -71,6 +73,15 @@ p25_tune_result_name(dsd_trunk_tune_result result) {
         case DSD_TRUNK_TUNE_RESULT_PENDING: return "pending";
         case DSD_TRUNK_TUNE_RESULT_FAILED: return "failed";
         case DSD_TRUNK_TUNE_RESULT_TIMEOUT: return "timeout";
+        default: return "unknown";
+    }
+}
+
+static const char*
+p25_grant_provenance_name(p25_sm_grant_provenance_e provenance) {
+    switch (provenance) {
+        case P25_SM_GRANT_PROVENANCE_ASSIGNMENT: return "assignment";
+        case P25_SM_GRANT_PROVENANCE_UPDATE: return "update";
         default: return "unknown";
     }
 }
@@ -1236,6 +1247,7 @@ p25_stale_regrant_guard_clear(p25_sm_ctx_t* ctx) {
     ctx->recent_call_end_target = 0;
     ctx->recent_call_end_src = 0;
     ctx->recent_call_end_is_group = 0;
+    ctx->recent_call_end_probe_attempted = 0;
     ctx->recent_call_end_valid = 0;
 }
 
@@ -1261,22 +1273,24 @@ p25_stale_regrant_guard_arm(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* 
     ctx->recent_call_end_target = target;
     ctx->recent_call_end_src = slot_ctx->src;
     ctx->recent_call_end_is_group = slot_ctx->is_group ? 1 : 0;
+    ctx->recent_call_end_probe_attempted = 0;
     ctx->recent_call_end_valid = 1;
     p25_sm_diagf(opts, state, ctx, "grant_stale_guard_arm",
-                 "freq=%ld slot=%d target=%d src=%d group=%d quiet=%.3f max_age=%.3f", ctx->recent_call_end_freq_hz,
-                 ctx->recent_call_end_slot, ctx->recent_call_end_target, ctx->recent_call_end_src,
-                 ctx->recent_call_end_is_group, P25_STALE_REGRANT_QUIET_S, P25_STALE_REGRANT_MAX_AGE_S);
+                 "freq=%ld slot=%d target=%d src=%d group=%d quiet=%.3f probe_after=%.3f max_age=%.3f",
+                 ctx->recent_call_end_freq_hz, ctx->recent_call_end_slot, ctx->recent_call_end_target,
+                 ctx->recent_call_end_src, ctx->recent_call_end_is_group, P25_STALE_REGRANT_QUIET_S,
+                 P25_STALE_REGRANT_PROBE_DELAY_S, P25_STALE_REGRANT_MAX_AGE_S);
 }
 
 static int
-p25_stale_regrant_identity_matches(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq) {
+p25_stale_regrant_identity_matches(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq, int slot) {
     if (!ctx || !ev) {
         return 0;
     }
     const int is_group = ev->is_group ? 1 : 0;
     const int target = p25_grant_ota_target_id(ev);
-    return freq == ctx->recent_call_end_freq_hz && is_group == ctx->recent_call_end_is_group
-           && target == ctx->recent_call_end_target;
+    return freq == ctx->recent_call_end_freq_hz && slot == ctx->recent_call_end_slot
+           && is_group == ctx->recent_call_end_is_group && target == ctx->recent_call_end_target;
 }
 
 static int
@@ -1285,15 +1299,14 @@ p25_stale_regrant_has_new_source(const p25_sm_ctx_t* ctx, const p25_sm_event_t* 
 }
 
 static int
-p25_stale_regrant_clear_for_identified_call(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state,
-                                            const p25_sm_event_t* ev, long freq, int slot, int target, double age_s) {
-    // A companion-slot assignment that identifies a source has enough call
-    // identity to remain eligible. Source-less companion updates are ambiguous
-    // on systems that continue advertising a just-ended call on the paired slot.
-    if (slot != ctx->recent_call_end_slot && ev->src > 0) {
+p25_stale_regrant_clear_for_new_epoch(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state,
+                                      const p25_sm_event_t* ev, long freq, int slot, int target, double age_s) {
+    // A grant/assignment is a new call epoch. Updates describe continuing
+    // assignments and can be indistinguishable from stale post-END traffic.
+    if (ev->grant_provenance == P25_SM_GRANT_PROVENANCE_ASSIGNMENT) {
         p25_sm_diagf(opts, state, ctx, "grant_stale_guard_clear",
-                     "reason=identified-companion freq=%ld ended_slot=%d slot=%d target=%d src=%d age=%.3f", freq,
-                     ctx->recent_call_end_slot, slot, target, ev->src, age_s);
+                     "reason=authoritative-assignment freq=%ld slot=%d target=%d src=%d age=%.3f", freq, slot, target,
+                     ev->src, age_s);
         p25_stale_regrant_guard_clear(ctx);
         return 1;
     }
@@ -1312,28 +1325,10 @@ p25_stale_regrant_clear_for_identified_call(p25_sm_ctx_t* ctx, dsd_opts* opts, c
 }
 
 static int
-p25_grant_stale_regrant_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
-                                long freq, int slot, int data_call, double now_m) {
-    if (!ctx || !ev || data_call) {
-        return 0;
-    }
-
-    if (!ctx->recent_call_end_valid || !p25_stale_regrant_identity_matches(ctx, ev, freq)) {
-        return 0;
-    }
-
-    const double age_s = now_m - ctx->t_recent_call_end_m;
-    if (ctx->t_recent_call_end_m <= 0.0 || age_s < 0.0) {
-        p25_stale_regrant_guard_clear(ctx);
-        return 0;
-    }
-
+p25_stale_regrant_update_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                                 long freq, int slot, double age_s, double now_m, int* out_probe) {
     const int is_group = ev->is_group ? 1 : 0;
     const int target = p25_grant_ota_target_id(ev);
-    if (p25_stale_regrant_clear_for_identified_call(ctx, opts, state, ev, freq, slot, target, age_s)) {
-        return 0;
-    }
-
     // Bound the quarantine even if a system emits ambiguous assignments
     // continuously. This avoids starving a later legitimate call whose grant
     // happens to omit a source identifier.
@@ -1363,14 +1358,60 @@ p25_grant_stale_regrant_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
         return 0;
     }
 
+    // A live follow-up may be represented only by the same source-less update
+    // sequence when its initial assignment was missed during the CC return.
+    // Permit one validation tune after a short hold. If it produces no voice,
+    // the normal grant timeout or immediate END path arms failed-VC backoff.
+    if (age_s >= P25_STALE_REGRANT_PROBE_DELAY_S && !ctx->recent_call_end_probe_attempted) {
+        ctx->recent_call_end_probe_attempted = 1;
+        ctx->t_recent_call_end_last_match_m = now_m;
+        if (out_probe) {
+            *out_probe = 1;
+        }
+        p25_sm_diagf(opts, state, ctx, "grant_stale_probe",
+                     "ch=0x%04X freq=%ld slot=%d target=%d src=%d provenance=%s age=%.3f quiet=%.3f",
+                     ev->channel & 0xFFFF, freq, slot, target, ev->src, p25_grant_provenance_name(ev->grant_provenance),
+                     age_s, quiet_s);
+        return 0;
+    }
+
     p25_sm_diagf(opts, state, ctx, "grant_stale_skip",
-                 "ch=0x%04X freq=%ld ended_slot=%d slot=%d target=%d src=%d group=%d age=%.3f quiet=%.3f "
-                 "remaining=%.3f",
-                 ev->channel & 0xFFFF, freq, ctx->recent_call_end_slot, slot, target, ev->src, is_group, age_s, quiet_s,
-                 P25_STALE_REGRANT_QUIET_S - quiet_s);
+                 "ch=0x%04X freq=%ld ended_slot=%d slot=%d target=%d src=%d group=%d provenance=%s age=%.3f "
+                 "quiet=%.3f remaining=%.3f probe_attempted=%d",
+                 ev->channel & 0xFFFF, freq, ctx->recent_call_end_slot, slot, target, ev->src, is_group,
+                 p25_grant_provenance_name(ev->grant_provenance), age_s, quiet_s, P25_STALE_REGRANT_QUIET_S - quiet_s,
+                 ctx->recent_call_end_probe_attempted);
     ctx->t_recent_call_end_last_match_m = now_m;
     sm_log(opts, state, "grant-stale-skip");
     return 1;
+}
+
+static int
+p25_grant_stale_regrant_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                                long freq, int slot, int data_call, double now_m, int* out_probe) {
+    if (out_probe) {
+        *out_probe = 0;
+    }
+    if (!ctx || !ev || data_call) {
+        return 0;
+    }
+
+    if (!ctx->recent_call_end_valid || !p25_stale_regrant_identity_matches(ctx, ev, freq, slot)) {
+        return 0;
+    }
+
+    const double age_s = now_m - ctx->t_recent_call_end_m;
+    if (ctx->t_recent_call_end_m <= 0.0 || age_s < 0.0) {
+        p25_stale_regrant_guard_clear(ctx);
+        return 0;
+    }
+
+    const int target = p25_grant_ota_target_id(ev);
+    if (p25_stale_regrant_clear_for_new_epoch(ctx, opts, state, ev, freq, slot, target, age_s)) {
+        return 0;
+    }
+
+    return p25_stale_regrant_update_blocked(ctx, opts, state, ev, freq, slot, age_s, now_m, out_probe);
 }
 
 static void
@@ -2054,6 +2095,7 @@ typedef struct {
     dsd_tg_policy_call_route route;
     int slot;
     int target_id;
+    int stale_regrant_probe;
     int needs_retune;
     int clear_policy_slot_only;
     int reused_carrier;
@@ -2097,11 +2139,11 @@ p25_grant_log_freq(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* c
     }
     p25_sm_diagf(opts, state, ctx, "grant_freq",
                  "ch=0x%04X freq=%ld source=%s failure=%s iden=%d type=%d tdma=%d denom=%d step=%d cached=%d "
-                 "ambiguous=%d base=%ld spacing=%ld tg=%d src=%d dst=%d svc=0x%02X",
+                 "ambiguous=%d base=%ld spacing=%ld tg=%d src=%d dst=%d svc=0x%02X provenance=%s",
                  ev->channel & 0xFFFF, freq, freq_trace->source, freq_trace->failure[0] ? freq_trace->failure : "none",
                  freq_trace->iden, freq_trace->chan_type, freq_trace->use_tdma, freq_trace->denom, freq_trace->step,
                  freq_trace->cached, freq_trace->ambiguous, freq_trace->base_hz, freq_trace->spacing_hz, ev->tg,
-                 ev->src, ev->dst, ev->svc_bits);
+                 ev->src, ev->dst, ev->svc_bits, p25_grant_provenance_name(ev->grant_provenance));
 }
 
 static int
@@ -2134,7 +2176,8 @@ p25_grant_prepare_route(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
 
     out->now_m = dsd_time_now_monotonic_s();
     out->slot = channel_slot(state, ev->channel);
-    if (p25_grant_stale_regrant_blocked(ctx, opts, state, ev, out->freq, out->slot, eval_ctx->data_call, out->now_m)) {
+    if (p25_grant_stale_regrant_blocked(ctx, opts, state, ev, out->freq, out->slot, eval_ctx->data_call, out->now_m,
+                                        &out->stale_regrant_probe)) {
         return 0;
     }
     if (!eval_ctx->data_call && p25_grant_retune_blocked(opts, state, out->freq, out->slot, ev->channel)) {
@@ -2177,6 +2220,18 @@ p25_grant_blocked_by_pending_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
                  ev->channel & 0xFFFF, grant->freq, grant->slot, ev->tg, ev->src, ctx->t_cc_tune_m,
                  state ? state->last_cc_sync_time_m : 0.0, state ? state->p25_last_cc_msg_time_m : 0.0);
     return 1;
+}
+
+static void
+p25_grant_start_stale_regrant_probe(p25_sm_ctx_t* ctx, const p25_grant_route_ctx_t* grant) {
+    if (!ctx || !grant) {
+        return;
+    }
+    ctx->vc_stale_regrant_probe = grant->stale_regrant_probe;
+    ctx->vc_stale_regrant_probe_slot = grant->stale_regrant_probe ? grant->slot : -1;
+    if (grant->stale_regrant_probe) {
+        p25_stale_regrant_guard_clear(ctx);
+    }
 }
 
 /* ============================================================================
@@ -2240,6 +2295,7 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     p25_grant_clear_replaced_policy_tg(state, grant.slot, grant.clear_policy_slot_only);
     p25_grant_store_vc_context(ctx, state, ev, grant.freq, grant.target_id, &eval_ctx, grant.now_m, grant.slot,
                                grant.reused_carrier);
+    p25_grant_start_stale_regrant_probe(ctx, &grant);
     p25_grant_store_policy_tg(state, ev, grant.slot, &decision);
     if (!grant.reused_carrier) {
         ctx->tune_count++;
@@ -2251,9 +2307,10 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     (void)dsd_tg_policy_note_active_call(state, &grant.route, &decision, grant.now_m);
     p25_sm_diagf(opts, state, ctx, "grant_accept",
                  "ch=0x%04X freq=%ld slot=%d target=%d ota_tg=%d src=%d needs_retune=%d "
-                 "prio=%d preempt=%d data=%d reused_carrier=%d",
+                 "prio=%d preempt=%d data=%d reused_carrier=%d stale_probe=%d",
                  ev->channel & 0xFFFF, grant.freq, grant.slot, grant.target_id, ev->tg, ev->src, grant.needs_retune,
-                 decision.priority, decision.preempt_requested, eval_ctx.data_call, grant.reused_carrier);
+                 decision.priority, decision.preempt_requested, eval_ctx.data_call, grant.reused_carrier,
+                 grant.stale_regrant_probe);
 
     set_state(ctx, opts, state, P25_SM_TUNED, "grant");
 }
@@ -2280,6 +2337,13 @@ handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, in
 
     double now_m = dsd_time_now_monotonic_s();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
+    if (ctx->vc_stale_regrant_probe && s == ctx->vc_stale_regrant_probe_slot) {
+        p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_stale_probe_result",
+                     "result=activity source=%s slot=%d latency=%.3f freq=%ld ch=0x%04X", why, s,
+                     ctx->t_tune_m > 0.0 ? now_m - ctx->t_tune_m : 0.0, ctx->vc_freq_hz, ctx->vc_channel & 0xFFFF);
+        ctx->vc_stale_regrant_probe = 0;
+        ctx->vc_stale_regrant_probe_slot = -1;
+    }
     p25_sm_note_vc_decode_activity(ctx, (dsd_opts*)opts, state, why, s, now_m);
 
     if (opts && state && opts->trunk_tune_enc_calls == 0 && p25_crypto_companion_suppressed(state, s)) {
@@ -2365,11 +2429,12 @@ p25_voice_end_try_explicit_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
     // PTT/ACTIVE, so we shouldn't wait for it.
     int other = slot ^ 1;
     if (p25_voice_end_can_release_explicit(ctx, other)) {
+        const int failed_stale_probe = ctx->vc_stale_regrant_probe && slot == ctx->vc_stale_regrant_probe_slot;
         // All active slots terminated - release immediately like P25P1 Call Termination
         if (arm_stale_regrant_guard) {
             p25_stale_regrant_guard_arm(ctx, opts, state, slot);
         }
-        if (!do_release(ctx, opts, state, "call-end", 0, 0) && arm_stale_regrant_guard) {
+        if (!do_release(ctx, opts, state, "call-end", failed_stale_probe, 0) && arm_stale_regrant_guard) {
             p25_stale_regrant_guard_clear(ctx);
         }
     }
@@ -2709,6 +2774,8 @@ p25_release_clear_context(p25_sm_ctx_t* ctx) {
     ctx->vc_tg = 0;
     ctx->vc_src = 0;
     ctx->vc_data_call = 0;
+    ctx->vc_stale_regrant_probe = 0;
+    ctx->vc_stale_regrant_probe_slot = -1;
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
     p25_sm_reset_vc_reacquire_tracking(ctx);
@@ -2797,7 +2864,7 @@ p25_arm_failed_vc_retune_fallback_backoff(const p25_sm_ctx_t* ctx, const dsd_opt
 }
 
 static void
-p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
+p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int force_fallback) {
     if (!ctx || !state || ctx->vc_freq_hz <= 0) {
         return;
     }
@@ -2810,7 +2877,7 @@ p25_arm_failed_vc_retune_backoff(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
     time_t until = time(NULL) + backoff_wall;
     int armed_slots = p25_arm_failed_vc_retune_slot_backoffs(ctx, opts, state, backoff_s, until);
     if (armed_slots == 0) {
-        if (p25_vc_has_observed_voice(ctx)) {
+        if (!force_fallback && p25_vc_has_observed_voice(ctx)) {
             return;
         }
         if (ctx->vc_data_call || p25_sm_has_pending_data_grant(ctx)) {
@@ -2859,6 +2926,20 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+static void
+p25_release_handle_failed_vc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
+                             int had_force_release, int arm_failed_vc_backoff_on_accept, int failed_stale_probe) {
+    p25_sm_log_vc_reacquire_no_activity(ctx, opts, state, reason);
+    if (failed_stale_probe) {
+        p25_sm_diagf(opts, state, ctx, "grant_stale_probe_result",
+                     "result=no-activity source=%s slot=%d freq=%ld ch=0x%04X", reason ? reason : "release",
+                     ctx->vc_stale_regrant_probe_slot, ctx->vc_freq_hz, ctx->vc_channel & 0xFFFF);
+    }
+    if (had_force_release || arm_failed_vc_backoff_on_accept || failed_stale_probe) {
+        p25_arm_failed_vc_retune_backoff(ctx, opts, state, failed_stale_probe);
+    }
+}
+
 static int
 p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason,
                    int arm_failed_vc_backoff_on_accept) {
@@ -2866,6 +2947,7 @@ p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const ch
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t tune_request_id = 0U;
     int had_force_release = 0;
+    const int failed_stale_probe = ctx && ctx->vc_stale_regrant_probe;
     if (state) {
         had_force_release = (state->p25_sm_force_release != 0) ? 1 : 0;
         // Clear any pending forced-release request; we're handling teardown now.
@@ -2891,8 +2973,8 @@ p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const ch
     }
 #endif
 
-    p25_sm_diagf(opts, state, ctx, "release_request", "reason=%s force=%d arm_backoff=%d", reason ? reason : "none",
-                 had_force_release, arm_failed_vc_backoff_on_accept);
+    p25_sm_diagf(opts, state, ctx, "release_request", "reason=%s force=%d arm_backoff=%d stale_probe=%d",
+                 reason ? reason : "none", had_force_release, arm_failed_vc_backoff_on_accept, failed_stale_probe);
     sm_log(opts, state, reason);
 
     // Return to CC. On failure/defer, leave VC state untouched so the watchdog
@@ -2903,10 +2985,8 @@ p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const ch
         return 0;
     }
 
-    p25_sm_log_vc_reacquire_no_activity(ctx, opts, state, reason);
-    if (had_force_release || arm_failed_vc_backoff_on_accept) {
-        p25_arm_failed_vc_retune_backoff(ctx, opts, state);
-    }
+    p25_release_handle_failed_vc(ctx, opts, state, reason, had_force_release, arm_failed_vc_backoff_on_accept,
+                                 failed_stale_probe);
 
     p25_release_clear_context(ctx);
     p25_release_clear_decoder_state(opts, state);
@@ -3126,6 +3206,7 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     }
 
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->vc_stale_regrant_probe_slot = -1;
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
 

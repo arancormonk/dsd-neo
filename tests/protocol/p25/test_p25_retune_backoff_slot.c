@@ -200,17 +200,27 @@ test_stale_regrant_guard(void) {
     const int ch_slot1 = (id << 12) | 0x0003;
     const int ch_slot1_other_freq = (id << 12) | 0x0005;
 
-    // An immediate repeat of the exact call ended by MAC_END_PTT is stale. A
-    // source-less companion-slot update is equally ambiguous, while an
-    // identified companion call remains independently eligible.
+    // Constructors retain whether an event is an authoritative assignment or
+    // a source-less update that may merely repeat a stale assignment.
+    {
+        p25_sm_event_t assignment = p25_sm_ev_group_grant(ch_slot1, 0, 5901, 6901, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 5901, 0, P25_SM_SVC_UNKNOWN);
+        rc |= expect_true("assignment provenance retained",
+                          assignment.grant_provenance == P25_SM_GRANT_PROVENANCE_ASSIGNMENT);
+        rc |= expect_true("update provenance retained", update.grant_provenance == P25_SM_GRANT_PROVENANCE_UPDATE);
+    }
+
+    // An immediate ambiguous update for the exact call ended by MAC_END_PTT is
+    // stale. Slot remains part of the assignment identity, so a source-less
+    // companion-slot update is independently eligible.
     {
         static dsd_opts opts;
         static dsd_state state;
         p25_sm_ctx_t ctx;
         init_stale_regrant_case(&opts, &state, &ctx, id);
         p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6001, 7001, P25_SM_SVC_UNKNOWN);
-        p25_sm_event_t companion = p25_sm_ev_group_grant(ch_slot0, 0, 6001, 0, P25_SM_SVC_UNKNOWN);
-        p25_sm_event_t identified_companion = p25_sm_ev_group_grant(ch_slot0, 0, 6001, 7001, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t stale = p25_sm_ev_group_grant_update(ch_slot1, 0, 6001, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t companion = p25_sm_ev_group_grant_update(ch_slot0, 0, 6001, 0, P25_SM_SVC_UNKNOWN);
 
         end_tdma_call(&ctx, &opts, &state, &ended, 1);
         rc |= expect_true("stale guard call ended", g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 1
@@ -222,40 +232,55 @@ test_stale_regrant_guard(void) {
         rc |= expect_true("normal end did not arm failed-vc backoff", retune_backoff_empty(&state));
         mark_cc_reacquired(&state);
 
-        p25_sm_event(&ctx, &opts, &state, &ended);
+        p25_sm_event(&ctx, &opts, &state, &stale);
         rc |= expect_true("exact stale regrant skipped",
                           g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
 
         p25_sm_event(&ctx, &opts, &state, &companion);
-        rc |= expect_true("source-less companion slot skipped",
-                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
-
-        p25_sm_event(&ctx, &opts, &state, &identified_companion);
-        rc |= expect_true("identified companion slot allowed",
+        rc |= expect_true("source-less companion slot allowed",
                           g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.state == P25_SM_TUNED
-                              && ctx.slots[0].grant_active && ctx.recent_call_end_valid == 0);
+                              && ctx.slots[0].grant_active && ctx.recent_call_end_valid == 1);
         dsd_state_ext_free_all(&state);
     }
 
-    // The first ambiguous assignment after a slow CC reacquisition is still
-    // quarantined. Time spent unable to decode the CC is not evidence that the
-    // assignment was quiet.
+    // An authoritative assignment proves a new call epoch even if the system
+    // reuses the same TG, carrier, slot, and source RID.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6021, 7021, 0);
+        p25_sm_event_t same_rid_rekey = p25_sm_ev_group_grant(ch_slot1, 0, 6021, 7021, 0);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &same_rid_rekey);
+        rc |= expect_true("authoritative same-rid rekey allowed", g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1
+                                                                      && ctx.state == P25_SM_TUNED && ctx.vc_src == 7021
+                                                                      && ctx.recent_call_end_valid == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // After a slow CC reacquisition, one ambiguous exact update may validate
+    // the assignment once the bounded post-END hold has elapsed. Time spent off
+    // the CC does not count as a quiet gap; this path is explicitly a probe.
     {
         static dsd_opts opts;
         static dsd_state state;
         p25_sm_ctx_t ctx;
         init_stale_regrant_case(&opts, &state, &ctx, id);
         p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6051, 7051, P25_SM_SVC_UNKNOWN);
-        p25_sm_event_t delayed_companion = p25_sm_ev_group_grant(ch_slot0, 0, 6051, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t delayed_update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6051, 0, P25_SM_SVC_UNKNOWN);
 
         end_tdma_call(&ctx, &opts, &state, &ended, 1);
         mark_cc_reacquired(&state);
         ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 4.0;
         ctx.t_recent_call_end_last_match_m = 0.0;
-        p25_sm_event(&ctx, &opts, &state, &delayed_companion);
-        rc |= expect_true("delayed first companion update skipped",
-                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC
-                              && ctx.t_recent_call_end_last_match_m > 0.0);
+        p25_sm_event(&ctx, &opts, &state, &delayed_update);
+        rc |= expect_true("delayed first exact update probed",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.state == P25_SM_TUNED
+                              && ctx.vc_stale_regrant_probe == 1 && ctx.recent_call_end_valid == 0);
         dsd_state_ext_free_all(&state);
     }
 
@@ -294,14 +319,15 @@ test_stale_regrant_guard(void) {
         dsd_state_ext_free_all(&state);
     }
 
-    // A known source change proves a new call even when TG/RF/slot are reused.
+    // A known source change on an update proves a new call even when TG/RF/slot
+    // are reused.
     {
         static dsd_opts opts;
         static dsd_state state;
         p25_sm_ctx_t ctx;
         init_stale_regrant_case(&opts, &state, &ctx, id);
         p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6301, 7301, P25_SM_SVC_UNKNOWN);
-        p25_sm_event_t replacement = p25_sm_ev_group_grant(ch_slot1, 0, 6301, 7302, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t replacement = p25_sm_ev_group_grant_update(ch_slot1, 0, 6301, 7302, P25_SM_SVC_UNKNOWN);
 
         end_tdma_call(&ctx, &opts, &state, &ended, 1);
         mark_cc_reacquired(&state);
@@ -350,34 +376,111 @@ test_stale_regrant_guard(void) {
         dsd_state_ext_free_all(&state);
     }
 
-    // Continuous ambiguous updates remain quarantined even after the original
-    // post-END interval. Once that exact assignment has been quiet for a full
-    // interval, it may be followed again.
+    // A quiet gap proves the old assignment disappeared and permits the next
+    // exact update without consuming the bounded validation probe.
     {
         static dsd_opts opts;
         static dsd_state state;
         p25_sm_ctx_t ctx;
         init_stale_regrant_case(&opts, &state, &ctx, id);
-        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6501, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6501, 7501, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6501, 0, P25_SM_SVC_UNKNOWN);
 
         end_tdma_call(&ctx, &opts, &state, &ended, 1);
         mark_cc_reacquired(&state);
-        p25_sm_event(&ctx, &opts, &state, &ended);
+        p25_sm_event(&ctx, &opts, &state, &update);
         rc |= expect_true("initial ambiguous regrant skipped",
                           g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.recent_call_end_valid == 1);
 
-        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 4.0;
+        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 1.5;
         ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 0.25;
         const double previous_match_m = ctx.t_recent_call_end_last_match_m;
-        p25_sm_event(&ctx, &opts, &state, &ended);
-        rc |= expect_true("continuous ambiguous regrant remains skipped",
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("pre-probe continuous update remains skipped",
                           g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.recent_call_end_valid == 1
                               && ctx.t_recent_call_end_last_match_m > previous_match_m);
 
+        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 4.0;
         ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 3.0;
-        p25_sm_event(&ctx, &opts, &state, &ended);
-        rc |= expect_true("quiet stale guard allows call",
-                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.recent_call_end_valid == 0);
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("quiet stale guard allows call", g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1
+                                                               && ctx.recent_call_end_valid == 0
+                                                               && ctx.vc_stale_regrant_probe == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // Continuous updates receive one validation tune after the post-END hold.
+    // If the probe sees only another END and no voice activity, failed-VC
+    // backoff prevents the next stale cycle from tuning again.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6521, 7521, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6521, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t sync = {.type = P25_SM_EV_VC_SYNC, .slot = 1};
+        p25_sm_event_t end = p25_sm_ev_end(1);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &update);
+        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 2.25;
+        ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("continuous exact update gets one probe",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.vc_stale_regrant_probe == 1
+                              && ctx.vc_stale_regrant_probe_slot == 1);
+
+        // Carrier/frame sync alone does not prove that this assignment became
+        // active; require PTT/ACTIVE on the probed slot.
+        p25_sm_event(&ctx, &opts, &state, &sync);
+        p25_sm_event(&ctx, &opts, &state, &end);
+        rc |= expect_true("failed probe arms slot backoff",
+                          g_return_to_cc_calls == 2 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC
+                              && retune_backoff_history_has_slot(&state, g_last_tuned_vc, 1));
+
+        mark_cc_reacquired(&state);
+        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 2.25;
+        ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        p25_sm_event(&ctx, &opts, &state, &update);
+        rc |= expect_true("backoff prevents repeated stale probe",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // Voice activity confirms that a validation tune found a real follow-up.
+    // Its normal call end must not be treated as a failed probe.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6531, 7531, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6531, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t companion_ptt = p25_sm_ev_ptt(0);
+        p25_sm_event_t companion_end = p25_sm_ev_end(0);
+        p25_sm_event_t ptt = p25_sm_ev_ptt(1);
+        p25_sm_event_t end = p25_sm_ev_end(1);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        p25_sm_event(&ctx, &opts, &state, &update);
+        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 2.25;
+        ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        p25_sm_event(&ctx, &opts, &state, &update);
+        p25_sm_event(&ctx, &opts, &state, &companion_ptt);
+        rc |= expect_true("companion activity does not confirm stale regrant probe",
+                          ctx.vc_stale_regrant_probe == 1 && ctx.vc_stale_regrant_probe_slot == 1);
+        p25_sm_event(&ctx, &opts, &state, &companion_end);
+        p25_sm_event(&ctx, &opts, &state, &ptt);
+        rc |= expect_true("voice confirms stale regrant probe", g_tune_to_freq_calls == 2
+                                                                    && ctx.vc_stale_regrant_probe == 0
+                                                                    && ctx.vc_stale_regrant_probe_slot == -1);
+
+        p25_sm_event(&ctx, &opts, &state, &end);
+        rc |= expect_true("successful probe ends without failed-vc backoff",
+                          g_return_to_cc_calls == 2 && opts.trunk_is_tuned == 0 && retune_backoff_empty(&state));
         dsd_state_ext_free_all(&state);
     }
 
@@ -387,13 +490,14 @@ test_stale_regrant_guard(void) {
         static dsd_state state;
         p25_sm_ctx_t ctx;
         init_stale_regrant_case(&opts, &state, &ctx, id);
-        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6551, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6551, 7551, 0);
+        p25_sm_event_t update = p25_sm_ev_group_grant_update(ch_slot1, 0, 6551, 0, P25_SM_SVC_UNKNOWN);
 
         end_tdma_call(&ctx, &opts, &state, &ended, 1);
         mark_cc_reacquired(&state);
         ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 11.0;
         ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 0.25;
-        p25_sm_event(&ctx, &opts, &state, &ended);
+        p25_sm_event(&ctx, &opts, &state, &update);
         rc |= expect_true("stale guard max age allows call",
                           g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.recent_call_end_valid == 0);
         dsd_state_ext_free_all(&state);

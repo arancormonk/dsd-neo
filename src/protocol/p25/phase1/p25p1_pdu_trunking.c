@@ -214,11 +214,13 @@ p25p1_pdu_can_tune_grant(const dsd_opts* opts, dsd_state* state, long int freq) 
 
 static void
 p25p1_pdu_dispatch_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int group, int src,
-                               long int freq) {
+                               long int freq, p25_sm_grant_provenance_e provenance) {
     // The trunk state machine owns group-grant policy so patched supergroup
     // grants can be evaluated against their member talkgroups.
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, group, src, svc_bits);
+        p25_sm_event_t ev = provenance == P25_SM_GRANT_PROVENANCE_UPDATE
+                                ? p25_sm_ev_group_grant_update(channel, 0, group, src, svc_bits)
+                                : p25_sm_ev_group_grant(channel, 0, group, src, svc_bits);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     } else {
         p25_sm_apply_group_grant_policy(opts, state, channel, svc_bits, group, src);
@@ -477,7 +479,8 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
-    p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1);
+    p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1,
+                                   P25_SM_GRANT_PROVENANCE_UPDATE);
 }
 
 static void DSD_ATTR_USED
@@ -554,7 +557,8 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     }
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq1)) {
-        p25_sm_event_t ev = p25_sm_ev_indiv_grant(channelt, 0, (int)target, (int)source, svc);
+        p25_sm_event_t ev = opcode == 0x06 ? p25_sm_ev_indiv_grant_update(channelt, 0, (int)target, (int)source, svc)
+                                           : p25_sm_ev_indiv_grant(channelt, 0, (int)target, (int)source, svc);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }
@@ -763,7 +767,8 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
     }
 
     if (p25p1_pdu_can_tune_grant(opts, state, freq)) {
-        p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, 0, (int)target, 0, svc);
+        p25_sm_event_t ev = (opcode & 1) ? p25_sm_ev_indiv_grant_update(channel, 0, (int)target, 0, svc)
+                                         : p25_sm_ev_indiv_grant(channel, 0, (int)target, 0, svc);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 
@@ -809,7 +814,8 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
-    p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1);
+    p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1,
+                                   P25_SM_GRANT_PROVENANCE_ASSIGNMENT);
 }
 
 static void DSD_ATTR_USED

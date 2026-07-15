@@ -58,6 +58,7 @@ static int g_last_grant_channel;
 static int g_last_grant_svc;
 static int g_last_grant_tg;
 static int g_last_grant_src;
+static p25_sm_grant_provenance_e g_last_grant_provenance;
 static int g_last_group_data_grant_channel;
 static int g_last_group_data_grant_svc;
 static int g_last_group_data_grant_tg;
@@ -216,6 +217,7 @@ p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         g_last_grant_svc = ev->svc_bits;
         g_last_grant_tg = ev->tg;
         g_last_grant_src = ev->src;
+        g_last_grant_provenance = ev->grant_provenance;
     } else if (ev->data_call_override > 0) {
         g_indiv_data_grant_count++;
         g_last_indiv_data_grant_channel = ev->channel;
@@ -447,6 +449,7 @@ reset_calls(void) {
     g_last_grant_svc = 0;
     g_last_grant_tg = 0;
     g_last_grant_src = 0;
+    g_last_grant_provenance = P25_SM_GRANT_PROVENANCE_UNKNOWN;
     g_last_group_data_grant_channel = 0;
     g_last_group_data_grant_svc = 0;
     g_last_group_data_grant_tg = 0;
@@ -1436,6 +1439,7 @@ test_mfid90_grant_seeds_trunk_state(void) {
     rc |= expect_int("grant svc", g_last_grant_svc, 0xA5);
     rc |= expect_int("grant tg", g_last_grant_tg, 0x4567);
     rc |= expect_int("grant src", g_last_grant_src, 0x010203);
+    rc |= expect_int("grant provenance", g_last_grant_provenance, P25_SM_GRANT_PROVENANCE_ASSIGNMENT);
     rc |= expect_int("active channel set", strstr(state.active_channel[0], "1234/1234") != NULL, 1);
 
     reset_calls();
@@ -1472,6 +1476,7 @@ test_mfid90_grant_update_trunk_dispatch(void) {
     rc |= expect_int("grant update last channel", g_last_grant_channel, 0x5566);
     rc |= expect_int("grant update last tg", g_last_grant_tg, 0x7788);
     rc |= expect_int("grant update source is zero", g_last_grant_src, 0);
+    rc |= expect_int("grant update provenance", g_last_grant_provenance, P25_SM_GRANT_PROVENANCE_UPDATE);
     rc |= expect_int("grant update active channel", strstr(state.active_channel[0], "1122/1122") != NULL, 1);
 
     tsbk[2] = 0x00;

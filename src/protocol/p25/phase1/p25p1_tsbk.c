@@ -264,12 +264,12 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
     DSD_FPRINTF(stderr, "\n");
     if (opts->trunk_enable == 1 && ch1 != 0 && freq1 != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
-        p25_sm_event_t ev = p25_sm_ev_group_grant(ch1, 0, sg1, /*src*/ 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t ev = p25_sm_ev_group_grant_update(ch1, 0, sg1, /*src*/ 0, P25_SM_SVC_UNKNOWN);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
     if (opts->trunk_enable == 1 && ch2 != 0 && freq2 != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
-        p25_sm_event_t ev = p25_sm_ev_group_grant(ch2, 0, sg2, /*src*/ 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t ev = p25_sm_ev_group_grant_update(ch2, 0, sg2, /*src*/ 0, P25_SM_SVC_UNKNOWN);
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
 }

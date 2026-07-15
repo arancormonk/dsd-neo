@@ -65,6 +65,15 @@ enum {
     P25_SM_SVC_UNKNOWN = -1,
 };
 
+typedef enum {
+    // Callers constructing grant events directly should identify whether the
+    // decoded message starts an assignment or only updates one. UNKNOWN keeps
+    // conservative post-END handling for compatibility with unclassified input.
+    P25_SM_GRANT_PROVENANCE_UNKNOWN = 0,
+    P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
+    P25_SM_GRANT_PROVENANCE_UPDATE,
+} p25_sm_grant_provenance_e;
+
 /* ============================================================================
  * Events
  * ============================================================================ */
@@ -85,18 +94,19 @@ typedef enum {
 
 typedef struct {
     p25_sm_event_type_e type;
-    int slot;               // 0 or 1 for TDMA, -1 for P1/N/A
-    int channel;            // 16-bit channel number (for GRANT)
-    long freq_hz;           // Frequency in Hz (for GRANT)
-    int tg;                 // Talkgroup (for GRANT, 0 if individual)
-    int src;                // Source RID (for GRANT)
-    int dst;                // Destination RID (for individual GRANT)
-    int svc_bits;           // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
-    int is_group;           // 1 for group grant, 0 for individual
-    int algid;              // Algorithm ID (for ENC event)
-    int keyid;              // Key ID (for ENC event)
-    int data_call_override; // 0=infer from svc_bits, 1=force data, -1=force non-data
-    double observed_m;      // Optional monotonic timestamp when the event was observed
+    int slot;                                   // 0 or 1 for TDMA, -1 for P1/N/A
+    int channel;                                // 16-bit channel number (for GRANT)
+    long freq_hz;                               // Frequency in Hz (for GRANT)
+    int tg;                                     // Talkgroup (for GRANT, 0 if individual)
+    int src;                                    // Source RID (for GRANT)
+    int dst;                                    // Destination RID (for individual GRANT)
+    int svc_bits;                               // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
+    int is_group;                               // 1 for group grant, 0 for individual
+    p25_sm_grant_provenance_e grant_provenance; // Initial assignment or continuing assignment update
+    int algid;                                  // Algorithm ID (for ENC event)
+    int keyid;                                  // Key ID (for ENC event)
+    int data_call_override;                     // 0=infer from svc_bits, 1=force data, -1=force non-data
+    double observed_m;                          // Optional monotonic timestamp when the event was observed
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -150,17 +160,20 @@ typedef struct {
     int vc_channel;
     int vc_tg;
     int vc_src;
-    int vc_is_tdma;             // 1 if TDMA channel, 0 if single-carrier
-    int vc_data_call;           // 1 if the accepted grant is data, 0 if voice
-    int vc_cqpsk_retry_done;    // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
-    int vc_reacquire_eligible;  // 1 while a no-sync VC release may use one CQPSK soft recovery attempt
-    int vc_reacquire_attempted; // 1 after the one-shot CQPSK soft recovery check for this VC tune
-    uint32_t cc_no_sync_passes; // Completed frame-sync searches while a returned CC is still undecoded
-    uint32_t vc_no_sync_passes; // Completed frame-sync searches without P25P2 sync during VC acquisition
+    int vc_is_tdma;                  // 1 if TDMA channel, 0 if single-carrier
+    int vc_data_call;                // 1 if the accepted grant is data, 0 if voice
+    int vc_cqpsk_retry_done;         // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
+    int vc_reacquire_eligible;       // 1 while a no-sync VC release may use one CQPSK soft recovery attempt
+    int vc_reacquire_attempted;      // 1 after the one-shot CQPSK soft recovery check for this VC tune
+    int vc_stale_regrant_probe;      // 1 while an ambiguous post-END update is being validated on the VC
+    int vc_stale_regrant_probe_slot; // TDMA slot being validated, or -1 when no validation is active
+    uint32_t cc_no_sync_passes;      // Completed frame-sync searches while a returned CC is still undecoded
+    uint32_t vc_no_sync_passes;      // Completed frame-sync searches without P25P2 sync during VC acquisition
 
     // Identity quarantine for a voice call ended by MAC_END_PTT. Ambiguous CC
-    // updates for the ended target/carrier on either slot extend the quarantine
-    // until quiet. Identified companion-slot calls remain independently eligible.
+    // updates for the ended target/carrier/slot are suppressed until quiet or
+    // until one bounded validation tune becomes eligible. Companion-slot calls
+    // remain independently eligible.
     double t_recent_call_end_m;
     double t_recent_call_end_last_match_m;
     long recent_call_end_freq_hz;
@@ -168,6 +181,7 @@ typedef struct {
     int recent_call_end_target; // OTA talkgroup for group calls, destination RID for private calls
     int recent_call_end_src;
     int recent_call_end_is_group;
+    int recent_call_end_probe_attempted;
     int recent_call_end_valid;
 
     // Per-slot activity (index 0 = left/P1, index 1 = right)
@@ -499,6 +513,14 @@ p25_sm_ev_group_grant(int channel, long freq_hz, int tg, int src, int svc_bits) 
     ev.src = src;
     ev.svc_bits = svc_bits;
     ev.is_group = 1;
+    ev.grant_provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_group_grant_update(int channel, long freq_hz, int tg, int src, int svc_bits) {
+    p25_sm_event_t ev = p25_sm_ev_group_grant(channel, freq_hz, tg, src, svc_bits);
+    ev.grant_provenance = P25_SM_GRANT_PROVENANCE_UPDATE;
     return ev;
 }
 
@@ -513,6 +535,14 @@ p25_sm_ev_indiv_grant(int channel, long freq_hz, int dst, int src, int svc_bits)
     ev.src = src;
     ev.svc_bits = svc_bits;
     ev.is_group = 0;
+    ev.grant_provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_indiv_grant_update(int channel, long freq_hz, int dst, int src, int svc_bits) {
+    p25_sm_event_t ev = p25_sm_ev_indiv_grant(channel, freq_hz, dst, src, svc_bits);
+    ev.grant_provenance = P25_SM_GRANT_PROVENANCE_UPDATE;
     return ev;
 }
 
