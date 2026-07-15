@@ -214,7 +214,8 @@ test_stale_regrant_guard(void) {
                                                         && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
         rc |= expect_true("stale guard armed",
                           ctx.recent_call_end_valid == 1 && ctx.recent_call_end_freq_hz == g_last_tuned_vc
-                              && ctx.recent_call_end_slot == 1 && ctx.recent_call_end_target == 6001);
+                              && ctx.recent_call_end_slot == 1 && ctx.recent_call_end_target == 6001
+                              && ctx.t_recent_call_end_last_match_m == ctx.t_recent_call_end_m);
         rc |= expect_true("normal end did not arm failed-vc backoff", retune_backoff_empty(&state));
         mark_cc_reacquired(&state);
 
@@ -319,7 +320,9 @@ test_stale_regrant_guard(void) {
         dsd_state_ext_free_all(&state);
     }
 
-    // Once the short guard expires, the same identity may be followed again.
+    // Continuous ambiguous updates remain quarantined even after the original
+    // post-END interval. Once that exact assignment has been quiet for a full
+    // interval, it may be followed again.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -329,9 +332,21 @@ test_stale_regrant_guard(void) {
 
         end_tdma_call(&ctx, &opts, &state, &ended, 1);
         mark_cc_reacquired(&state);
-        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 3.0;
         p25_sm_event(&ctx, &opts, &state, &ended);
-        rc |= expect_true("expired stale guard allows call",
+        rc |= expect_true("initial ambiguous regrant skipped",
+                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.recent_call_end_valid == 1);
+
+        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 4.0;
+        ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        const double previous_match_m = ctx.t_recent_call_end_last_match_m;
+        p25_sm_event(&ctx, &opts, &state, &ended);
+        rc |= expect_true("continuous ambiguous regrant remains skipped",
+                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.recent_call_end_valid == 1
+                              && ctx.t_recent_call_end_last_match_m > previous_match_m);
+
+        ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 3.0;
+        p25_sm_event(&ctx, &opts, &state, &ended);
+        rc |= expect_true("quiet stale guard allows call",
                           g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.recent_call_end_valid == 0);
         dsd_state_ext_free_all(&state);
     }

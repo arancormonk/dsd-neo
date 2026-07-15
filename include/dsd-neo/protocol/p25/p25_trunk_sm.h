@@ -153,13 +153,14 @@ typedef struct {
     int vc_is_tdma;             // 1 if TDMA channel, 0 if single-carrier
     int vc_data_call;           // 1 if the accepted grant is data, 0 if voice
     int vc_cqpsk_retry_done;    // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
-    int vc_reacquire_eligible;  // 1 while a newly tuned TDMA voice channel has no decoded activity
+    int vc_reacquire_eligible;  // 1 while a no-sync VC release may use one CQPSK soft recovery attempt
     int vc_reacquire_attempted; // 1 after the one-shot CQPSK soft recovery check for this VC tune
 
-    // Short-lived identity guard for a voice call ended by MAC_END_PTT. This
-    // prevents a trailing CC grant for that exact call from causing a VC/CC
-    // bounce without blocking other calls on the carrier or companion slot.
+    // Identity quarantine for a voice call ended by MAC_END_PTT. Exact
+    // ambiguous CC updates extend the quarantine until they become quiet,
+    // without blocking other calls on the carrier or companion slot.
     double t_recent_call_end_m;
+    double t_recent_call_end_last_match_m;
     long recent_call_end_freq_hz;
     int recent_call_end_slot;
     int recent_call_end_target; // OTA talkgroup for group calls, destination RID for private calls
@@ -333,6 +334,22 @@ p25_sm_ctx_t* p25_sm_get_ctx(void);
  * @param reason Log tag for release reason.
  */
 void p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+
+/**
+ * @brief Check whether a one-shot VC CQPSK recovery is holding a CC return.
+ *
+ * Generic no-carrier fallback uses this to avoid bypassing a recovery queued
+ * by the P25 frame-sync release path in the same no-sync cycle. The hold is
+ * bounded independently and never extends the original grant timeout.
+ *
+ * @param ctx State machine context.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param now_m Current monotonic timestamp.
+ * @return 1 while the matching VC recovery hold is active, 0 otherwise.
+ */
+int p25_sm_vc_reacquire_hold_active(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state,
+                                    double now_m);
 
 /**
  * @brief Check whether a TDMA slot has an accepted grant newer than a captured event time.

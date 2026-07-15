@@ -2062,7 +2062,8 @@ main(void) {
     assert(s20.p25_retune_block_until == 0);
 
     // 30) An already-selected CQPSK P25P2 VC gets one demodulator-only
-    // recovery attempt without moving the original grant or tune deadline.
+    // recovery attempt only when frame sync is otherwise about to abandon a
+    // no-sync tune. Normal grant lead time must not trigger the reset.
     static dsd_opts o20v;
     static dsd_state s20v;
     p25_sm_ctx_t ctx20v;
@@ -2078,6 +2079,12 @@ main(void) {
     const int vc_hardware_tunes_before = g_result_tune_to_freq_calls;
     g_result_return_to_cc_calls = 0;
     p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 0);
+    assert(ctx20v.vc_reacquire_attempted == 0);
+    assert(ctx20v.state == P25_SM_TUNED);
+
+    s20v.p25_sm_force_release = 1;
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(g_cc_reacquire_request_calls == 1);
     assert(ctx20v.vc_reacquire_attempted == 1);
     assert(ctx20v.t_vc_reacquire_m > vc_tune_boundary_m);
@@ -2088,8 +2095,11 @@ main(void) {
     assert(g_result_tune_to_freq_calls == vc_hardware_tunes_before);
     assert(g_result_return_to_cc_calls == 0);
     assert(ctx20v.state == P25_SM_TUNED);
-    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    s20v.p25_sm_force_release = 1;
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(g_cc_reacquire_request_calls == 1);
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx20v.state == P25_SM_TUNED);
 
     p25_sm_event_t recovered_active = p25_sm_ev_active(0);
     p25_sm_event(&ctx20v, &o20v, &s20v, &recovered_active);
@@ -2103,11 +2113,16 @@ main(void) {
     // failed-VC backoff path remains authoritative.
     g_cc_reacquire_request_calls = 0;
     init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
-    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
-    assert(g_cc_reacquire_request_calls == 1);
+    g_result_return_to_cc_calls = 0;
     s20v.p25_sm_force_release = 1;
-    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
+    assert(g_cc_reacquire_request_calls == 1);
+    assert(g_result_return_to_cc_calls == 0);
+    ctx20v.t_vc_reacquire_m = dsd_time_now_monotonic_s() - 1.0;
+    s20v.p25_sm_force_release = 1;
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(ctx20v.state == P25_SM_ON_CC);
+    assert(g_result_return_to_cc_calls == 1);
     assert(ctx20v.vc_reacquire_eligible == 0);
     assert(ctx20v.vc_reacquire_attempted == 0);
     assert(ctx20v.t_vc_reacquire_m == 0.0);
@@ -2116,33 +2131,38 @@ main(void) {
     assert(s20v.p25_retune_block_until > time(NULL));
 
     // Valid activity, C4FM, non-RTL input, P25P1, and data grants must not
-    // request the CQPSK VC recovery.
+    // request the CQPSK VC recovery even on the no-sync release path.
     g_cc_reacquire_request_calls = 0;
     init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
     p25_sm_event_t early_ptt = p25_sm_ev_ptt(0);
     p25_sm_event(&ctx20v, &o20v, &s20v, &early_ptt);
-    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    s20v.p25_sm_force_release = 1;
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(g_cc_reacquire_request_calls == 0);
     assert(ctx20v.vc_reacquire_eligible == 0);
 
     init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
     g_cc_reacquire_cqpsk = 0;
     const int c4fm_tunes_before = g_result_tune_to_freq_calls;
-    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    s20v.p25_sm_force_release = 1;
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(g_cc_reacquire_request_calls == 0);
     assert(g_result_tune_to_freq_calls == c4fm_tunes_before);
 
     g_cc_reacquire_cqpsk = 1;
     init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, 0, 1, 0);
-    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    s20v.p25_sm_force_release = 1;
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(g_cc_reacquire_request_calls == 0);
 
     init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 0, 0);
-    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    s20v.p25_sm_force_release = 1;
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(g_cc_reacquire_request_calls == 0);
 
     init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 1);
-    p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
+    s20v.p25_sm_force_release = 1;
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
     assert(g_cc_reacquire_request_calls == 0);
     dsd_rtl_stream_metrics_hooks_set(NULL);
 #endif

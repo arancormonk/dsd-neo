@@ -1312,6 +1312,9 @@ no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t
     if ((opts->trunk_enable != 1) || (opts->trunk_is_tuned != 1)) {
         return 0;
     }
+    if (p25_sm_vc_reacquire_hold_active(p25_sm_get_ctx(), opts, state, dsd_time_now_monotonic_s())) {
+        return 0;
+    }
 
     double dt = (state->last_vc_sync_time == 0) ? 1e9 : (double)(now - state->last_vc_sync_time);
     return dt > opts->trunk_hangtime;
