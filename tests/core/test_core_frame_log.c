@@ -7,6 +7,7 @@
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/vocoder.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -188,6 +189,62 @@ test_payload_detail_helpers_write_structured_frame_log(void) {
     }
     if (strstr(buf, "FRAME AMBE slot=2 data=FFFFFFFFFFFF80 err=[C] [D]") == NULL) {
         DSD_FPRINTF(stderr, "AMBE frame-log payload mismatch: %s\n", buf);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_gated_soft_voice_helpers_log_without_media_processing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    initOpts(&opts);
+
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_gated_voice_frame_log");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    DSD_SNPRINTF(opts.frame_log_file, sizeof opts.frame_log_file, "%s", path);
+    opts.frame_log_file[sizeof opts.frame_log_file - 1] = '\0';
+
+    dsd_vocoder_soft_bit imbe_soft[8][23] = {{{0}}};
+    dsd_vocoder_soft_bit ambe_soft[4][24] = {{{0}}};
+    for (int row = 0; row < 8; row++) {
+        for (int bit = 0; bit < 23; bit++) {
+            imbe_soft[row][bit].reliability = 255;
+        }
+    }
+    for (int row = 0; row < 4; row++) {
+        for (int bit = 0; bit < 24; bit++) {
+            ambe_soft[row][bit].reliability = 255;
+        }
+    }
+
+    state.p25vc = 7;
+    state.audio_out_temp_buf[0] = 0.25F;
+    dsd_mbe_log_imbe_soft_frame(&opts, &state, imbe_soft);
+    state.currentslot = 1;
+    dsd_mbe_log_ambe_soft_frame(&opts, &state, ambe_soft);
+    dsd_frame_log_close(&opts);
+
+    char buf[1024];
+    int rc = read_text_file(path, buf, sizeof buf);
+    (void)remove(path);
+    if (rc != 0) {
+        return 1;
+    }
+    if (strstr(buf, "FRAME IMBE slot=1") == NULL || strstr(buf, "FRAME AMBE slot=2") == NULL) {
+        DSD_FPRINTF(stderr, "gated soft voice frame log mismatch: %s\n", buf);
+        return 1;
+    }
+    if (state.p25vc != 7 || state.audio_out_temp_buf[0] != 0.25F) {
+        DSD_FPRINTF(stderr, "gated soft voice logging changed media state\n");
         return 1;
     }
     return 0;
@@ -536,6 +593,9 @@ main(void) {
         return 1;
     }
     if (test_payload_detail_helpers_write_structured_frame_log() != 0) {
+        return 1;
+    }
+    if (test_gated_soft_voice_helpers_log_without_media_processing() != 0) {
         return 1;
     }
 #if !defined(_WIN32)

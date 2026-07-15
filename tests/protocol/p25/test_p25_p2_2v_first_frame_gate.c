@@ -240,6 +240,7 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 static int g_mbe_calls = 0;
 static int g_mbe_hard_calls = 0;
 static int g_mbe_soft_calls = 0;
+static int g_ambe_log_calls = 0;
 static int g_mbe_algid[2];
 static int g_mbe_keyid[2];
 
@@ -271,6 +272,15 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
     g_mbe_soft_calls++;
 }
 
+void
+dsd_mbe_log_ambe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit ambe_fr[4][24]) {
+    (void)state;
+    (void)ambe_fr;
+    if (opts && (opts->payload == 1 || opts->frame_log_file[0] != '\0')) {
+        g_ambe_log_calls++;
+    }
+}
+
 static int
 expect_eq(const char* tag, int got, int want) {
     if (got != want) {
@@ -295,6 +305,7 @@ reset_mbe_calls(void) {
     g_mbe_calls = 0;
     g_mbe_hard_calls = 0;
     g_mbe_soft_calls = 0;
+    g_ambe_log_calls = 0;
     DSD_MEMSET(g_mbe_algid, 0, sizeof(g_mbe_algid));
     DSD_MEMSET(g_mbe_keyid, 0, sizeof(g_mbe_keyid));
     g_open_mbe_calls[0] = 0;
@@ -343,6 +354,17 @@ main(void) {
     rc |= expect_eq("slot0 gated: mbe calls", g_mbe_calls, 0);
     rc |= expect_eq("slot0 gated: soft mbe calls", g_mbe_soft_calls, 0);
     rc |= expect_eq("slot0 gated: hard mbe calls", g_mbe_hard_calls, 0);
+    rc |= expect_eq("slot0 gated: AMBE log calls", g_ambe_log_calls, 0);
+
+    // Payload diagnostics remain available while encrypted media stays gated.
+    reset_state(&opts, &st);
+    opts.payload = 1;
+    st.currentslot = 0;
+    st.p25_p2_audio_allowed[0] = 0;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("slot0 gated detail: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("slot0 gated detail: AMBE log calls", g_ambe_log_calls, 2);
 
     // Slot 0: audio allowed -> expect 2 MBE calls (both 2V subframes decoded)
     reset_state(&opts, &st);
