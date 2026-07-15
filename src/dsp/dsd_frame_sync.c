@@ -243,7 +243,7 @@ frame_sync_publish_ui_throttled(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static void
-p25p2_note_sync_activity(const dsd_opts* opts, dsd_state* state) {
+p25p2_note_sync_activity(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
@@ -255,8 +255,9 @@ p25p2_note_sync_activity(const dsd_opts* opts, dsd_state* state) {
      * LCCH/idle after a call ends; refreshing last_vc_sync_time here holds the
      * trunk release path open and delays return to the CC. Voice/MAC handlers
      * update last_vc_sync_time when the call is actually active.
-     */
+    */
     if (voice_tuned) {
+        dsd_frame_sync_hook_p25_sm_vc_sync(opts, state);
         return;
     }
 
@@ -3025,10 +3026,20 @@ frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_
     }
 
     frame_sync_no_sync_sps_hunt(opts, state);
+    dsd_frame_sync_hook_p25_sm_vc_no_sync(opts, state);
     frame_sync_no_sync_try_p25_release(opts, state, now);
     dsd_frame_sync_hook_no_carrier(opts, state);
     return 1;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, int synctest_pos) {
+    frame_sync_runtime_ctx rt = {0};
+    rt.synctest_pos = synctest_pos;
+    return frame_sync_handle_no_sync_timeout(opts, state, &rt, time(NULL));
+}
+#endif
 
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {

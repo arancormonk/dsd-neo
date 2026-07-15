@@ -298,7 +298,9 @@ init_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     ctx->t_voice_m = 0.0;
     ctx->vc_reacquire_eligible = 1;
     ctx->vc_reacquire_attempted = 0;
+    ctx->vc_no_sync_passes = 0U;
     ctx->t_vc_reacquire_m = 0.0;
+    ctx->t_vc_first_no_sync_m = 0.0;
     ctx->slots[0].grant_active = 1;
     ctx->slots[0].freq_hz = vc_freq;
     ctx->slots[0].channel = ctx->vc_channel;
@@ -308,6 +310,15 @@ init_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     ctx->slots[0].is_group = 1;
     ctx->slots[0].data_call = data_call;
     ctx->slots[0].last_grant_m = tune_m;
+}
+
+static void
+age_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_state* state, double age_s) {
+    const double tune_m = dsd_time_now_monotonic_s() - age_s;
+    ctx->t_tune_m = tune_m;
+    ctx->slots[0].last_grant_m = tune_m;
+    state->p25_last_vc_tune_time_m = tune_m;
+    state->last_vc_sync_time_m = tune_m;
 }
 #endif
 
@@ -2105,9 +2116,71 @@ main(void) {
     p25_sm_event(&ctx20v, &o20v, &s20v, &recovered_active);
     assert(ctx20v.vc_reacquire_eligible == 0);
     assert(ctx20v.t_vc_reacquire_m == 0.0);
+    assert(ctx20v.vc_no_sync_passes == 0U);
+    assert(ctx20v.t_vc_first_no_sync_m == 0.0);
     assert(ctx20v.slots[0].voice_active == 1);
     p25_sm_tick_ctx(&ctx20v, &o20v, &s20v);
     assert(g_cc_reacquire_request_calls == 1);
+
+    // Repeated completed no-sync searches can request the same bounded
+    // recovery earlier, but neither a short grant lead nor fewer than three
+    // complete searches is sufficient on its own.
+    g_cc_reacquire_request_calls = 0;
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
+    age_stalled_vc_reacquire_case(&ctx20v, &s20v, 1.5);
+    const double vc_no_sync_reacquire_tune_m = ctx20v.t_tune_m;
+    const int early_reacquire_hardware_tunes = g_result_tune_to_freq_calls;
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    assert(ctx20v.vc_no_sync_passes == 2U);
+    assert(ctx20v.t_vc_first_no_sync_m > ctx20v.t_tune_m);
+    assert(g_cc_reacquire_request_calls == 0);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 1);
+    assert(ctx20v.vc_reacquire_attempted == 1);
+    assert(ctx20v.t_vc_reacquire_m > vc_no_sync_reacquire_tune_m);
+    assert(ctx20v.vc_no_sync_passes == 3U);
+    assert(g_result_tune_to_freq_calls == early_reacquire_hardware_tunes);
+    assert(g_result_return_to_cc_calls == 0);
+    assert(ctx20v.t_tune_m == vc_no_sync_reacquire_tune_m);
+
+    // Exact frame sync is acquisition proof, not voice activity. It cancels
+    // further recovery without starting or extending the call timers.
+    p25_sm_note_vc_frame_sync(&ctx20v, &o20v, &s20v);
+    assert(ctx20v.vc_reacquire_eligible == 0);
+    assert(ctx20v.t_vc_reacquire_m == 0.0);
+    assert(ctx20v.vc_no_sync_passes == 0U);
+    assert(ctx20v.t_vc_first_no_sync_m == 0.0);
+    assert(ctx20v.t_voice_m == 0.0);
+    assert(ctx20v.slots[0].voice_active == 0);
+    assert(ctx20v.slots[0].last_active_m == 0.0);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 1);
+
+    g_cc_reacquire_request_calls = 0;
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    assert(ctx20v.vc_no_sync_passes == 3U);
+    assert(g_cc_reacquire_request_calls == 0);
+    assert(ctx20v.vc_reacquire_attempted == 0);
+    p25_sm_note_vc_frame_sync(&ctx20v, &o20v, &s20v);
+
+    // Do not start an early attempt too close to the original grant timeout.
+    // The existing frame-sync release fallback remains available in that case.
+    init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
+    age_stalled_vc_reacquire_case(&ctx20v, &s20v, 2.2);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    p25_sm_note_vc_no_sync_pass(&ctx20v, &o20v, &s20v);
+    assert(g_cc_reacquire_request_calls == 0);
+    assert(ctx20v.vc_reacquire_attempted == 0);
+    s20v.p25_sm_force_release = 1;
+    p25_sm_release(&ctx20v, &o20v, &s20v, "frame-sync-no-sync");
+    assert(g_cc_reacquire_request_calls == 1);
+    assert(ctx20v.state == P25_SM_TUNED);
+    p25_sm_event(&ctx20v, &o20v, &s20v, &recovered_active);
 
     // If recovery still produces no activity, the existing forced-release and
     // failed-VC backoff path remains authoritative.

@@ -58,7 +58,10 @@ static atomic_int g_p25_sm_release_lock = 0;
 #define P25_CC_RETURN_REACQUIRE_DELAY_S         2.0
 #define P25_CC_RETURN_REACQUIRE_MIN_REMAINING_S 1.0
 #define P25_VC_CQPSK_MODE_RETRY_DELAY_S         0.8
+#define P25_VC_CQPSK_REACQUIRE_MIN_DELAY_S      1.25
+#define P25_VC_CQPSK_REACQUIRE_MIN_REMAINING_S  1.0
 #define P25_VC_CQPSK_REACQUIRE_HOLD_S           0.75
+#define P25_VC_CQPSK_REACQUIRE_NO_SYNC_PASSES   3U
 
 static const char*
 p25_tune_result_name(dsd_trunk_tune_result result) {
@@ -347,8 +350,10 @@ p25_sm_reset_vc_reacquire_tracking(p25_sm_ctx_t* ctx) {
         return;
     }
     ctx->t_vc_reacquire_m = 0.0;
+    ctx->t_vc_first_no_sync_m = 0.0;
     ctx->vc_reacquire_eligible = 0;
     ctx->vc_reacquire_attempted = 0;
+    ctx->vc_no_sync_passes = 0U;
 }
 
 static void
@@ -366,7 +371,17 @@ p25_sm_note_vc_decode_activity(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_stat
                      slot, now_m - ctx->t_vc_reacquire_m, ctx->vc_freq_hz, ctx->vc_channel & 0xFFFF);
     }
     ctx->t_vc_reacquire_m = 0.0;
+    ctx->t_vc_first_no_sync_m = 0.0;
     ctx->vc_reacquire_eligible = 0;
+    ctx->vc_no_sync_passes = 0U;
+}
+
+void
+p25_sm_note_vc_frame_sync(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state) {
+    if (!ctx || ctx->state != P25_SM_TUNED || !ctx->vc_is_tdma || ctx->vc_data_call) {
+        return;
+    }
+    p25_sm_note_vc_decode_activity(ctx, opts, state, "frame-sync", -1, dsd_time_now_monotonic_s());
 }
 
 static void
@@ -3518,10 +3533,22 @@ p25_vc_cqpsk_reacquire_timeout_expired(const p25_sm_ctx_t* ctx, const dsd_state*
 }
 
 static int
-p25_vc_cqpsk_reacquire_candidate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double now_m) {
-    if (!ctx || !opts || !state || opts->audio_in_type != AUDIO_IN_RTL) {
+p25_vc_cqpsk_reacquire_tune_current(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (!ctx || !opts || !state) {
         return 0;
     }
+    if (opts->trunk_enable != 1 || opts->trunk_is_tuned != 1 || ctx->vc_freq_hz <= 0
+        || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0;
+    }
+    return (state->p25_vc_freq[0] == ctx->vc_freq_hz || state->p25_vc_freq[1] == ctx->vc_freq_hz
+            || state->trunk_vc_freq[0] == ctx->vc_freq_hz || state->trunk_vc_freq[1] == ctx->vc_freq_hz)
+               ? 1
+               : 0;
+}
+
+static int
+p25_vc_cqpsk_reacquire_waiting_voice(const p25_sm_ctx_t* ctx, const dsd_state* state) {
     if (ctx->state != P25_SM_TUNED || !ctx->vc_is_tdma || ctx->vc_data_call || !ctx->vc_reacquire_eligible
         || ctx->vc_reacquire_attempted) {
         return 0;
@@ -3530,11 +3557,20 @@ p25_vc_cqpsk_reacquire_candidate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, 
         || !p25_sm_has_pending_voice_grant(ctx, state)) {
         return 0;
     }
+    return 1;
+}
+
+static int
+p25_vc_cqpsk_reacquire_candidate(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double now_m) {
+    if (!p25_vc_cqpsk_reacquire_tune_current(ctx, opts, state) || !p25_vc_cqpsk_reacquire_waiting_voice(ctx, state)) {
+        return 0;
+    }
     return p25_vc_cqpsk_reacquire_timeout_expired(ctx, state, now_m) ? 0 : 1;
 }
 
 static int
-p25_sm_try_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, double now_m) {
+p25_sm_try_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, double now_m,
+                              const char* trigger) {
     if (!p25_vc_cqpsk_reacquire_candidate(ctx, opts, state, now_m)) {
         return 0;
     }
@@ -3556,13 +3592,45 @@ p25_sm_try_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state
     const double timeout_start_m = p25_vc_cqpsk_reacquire_timeout_start_m(ctx, state);
     const double elapsed = timeout_start_m > 0.0 ? now_m - timeout_start_m : 0.0;
     const double remaining = ctx->config.grant_timeout_s > 0.0 ? ctx->config.grant_timeout_s - elapsed : -1.0;
+    const double no_sync_span = ctx->t_vc_first_no_sync_m > 0.0 ? now_m - ctx->t_vc_first_no_sync_m : 0.0;
     const char* result = request_rc > 0 ? "queued" : (request_rc == 0 ? "inactive" : "unavailable");
     p25_sm_diagf(opts, state, ctx, "vc_reacquire_request",
-                 "trigger=frame-sync-no-sync result=%s rc=%d elapsed=%.3f remaining=%.3f cqpsk=%d timing=%d "
-                 "snr_db=%.3f generation=%u pref=%d freq=%ld ch=0x%04X",
-                 result, request_rc, elapsed, remaining, cqpsk, timing, snr_db, generation, state->p25_vc_cqpsk_pref,
-                 ctx->vc_freq_hz, ctx->vc_channel & 0xFFFF);
+                 "trigger=%s result=%s rc=%d elapsed=%.3f remaining=%.3f no_sync_passes=%u no_sync_span=%.3f "
+                 "cqpsk=%d timing=%d snr_db=%.3f generation=%u pref=%d freq=%ld ch=0x%04X",
+                 trigger ? trigger : "unknown", result, request_rc, elapsed, remaining, ctx->vc_no_sync_passes,
+                 no_sync_span, cqpsk, timing, snr_db, generation, state->p25_vc_cqpsk_pref, ctx->vc_freq_hz,
+                 ctx->vc_channel & 0xFFFF);
     return request_rc > 0 ? 1 : 0;
+}
+
+void
+p25_sm_note_vc_no_sync_pass(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state) {
+    const double now_m = dsd_time_now_monotonic_s();
+    if (!p25_vc_cqpsk_reacquire_candidate(ctx, opts, state, now_m) || ctx->t_tune_m <= 0.0 || now_m < ctx->t_tune_m) {
+        return;
+    }
+
+    if (ctx->vc_no_sync_passes < UINT32_MAX) {
+        ctx->vc_no_sync_passes++;
+    }
+    if (ctx->t_vc_first_no_sync_m <= 0.0) {
+        ctx->t_vc_first_no_sync_m = now_m;
+    }
+
+    const double elapsed_tune = now_m - ctx->t_tune_m;
+    if (ctx->vc_no_sync_passes < P25_VC_CQPSK_REACQUIRE_NO_SYNC_PASSES
+        || elapsed_tune < P25_VC_CQPSK_REACQUIRE_MIN_DELAY_S) {
+        return;
+    }
+
+    const double timeout_start_m = p25_vc_cqpsk_reacquire_timeout_start_m(ctx, state);
+    const double elapsed = timeout_start_m > 0.0 ? now_m - timeout_start_m : 0.0;
+    const double remaining = ctx->config.grant_timeout_s > 0.0 ? ctx->config.grant_timeout_s - elapsed : -1.0;
+    if (remaining >= 0.0 && remaining < P25_VC_CQPSK_REACQUIRE_MIN_REMAINING_S) {
+        return;
+    }
+
+    (void)p25_sm_try_vc_cqpsk_reacquire(ctx, opts, state, now_m, "frame-sync-no-progress");
 }
 
 static int
@@ -3576,7 +3644,7 @@ p25_sm_hold_release_for_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, co
         return p25_sm_vc_reacquire_hold_active(ctx, opts, state, now_m);
     }
 
-    return p25_sm_try_vc_cqpsk_reacquire(ctx, opts, state, now_m);
+    return p25_sm_try_vc_cqpsk_reacquire(ctx, opts, state, now_m, "frame-sync-no-sync");
 }
 
 static int
@@ -3635,6 +3703,13 @@ p25_cqpsk_retry_tune(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, 
                  p25_tune_result_name(tune_result));
     sm_log(opts, state, tune_result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "cqpsk-retry-deferred" : "cqpsk-retry-failed");
     return 0;
+}
+#else
+void
+p25_sm_note_vc_no_sync_pass(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state) {
+    (void)ctx;
+    (void)opts;
+    (void)state;
 }
 #endif
 

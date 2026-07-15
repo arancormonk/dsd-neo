@@ -155,6 +155,7 @@ typedef struct {
     int vc_cqpsk_retry_done;    // 1 once we retried VC tune with alternate CQPSK DSP mode for this grant
     int vc_reacquire_eligible;  // 1 while a no-sync VC release may use one CQPSK soft recovery attempt
     int vc_reacquire_attempted; // 1 after the one-shot CQPSK soft recovery check for this VC tune
+    uint32_t vc_no_sync_passes; // Completed frame-sync searches without P25P2 sync during VC acquisition
 
     // Identity quarantine for a voice call ended by MAC_END_PTT. Exact
     // ambiguous CC updates extend the quarantine until they become quiet,
@@ -179,6 +180,7 @@ typedef struct {
     double t_cc_tune_m;          // Monotonic time of last CC tune awaiting decode
     double t_cc_reacquire_m;     // Monotonic time a soft CQPSK reacquire was queued
     double t_vc_reacquire_m;     // Monotonic time a VC soft CQPSK reacquire was queued
+    double t_vc_first_no_sync_m; // Monotonic time of the first completed no-sync VC search
     double t_hunt_try_m;         // Monotonic time of last CC candidate attempt
     uint64_t cc_tune_request_id; // Runtime request awaiting asynchronous tune completion
     int cc_tune_pending;         // 1 while the tuner/output pipeline is still changing channels
@@ -334,6 +336,24 @@ p25_sm_ctx_t* p25_sm_get_ctx(void);
  * @param reason Log tag for release reason.
  */
 void p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+
+/**
+ * @brief Record exact P25P2 frame sync while acquiring a tuned voice channel.
+ *
+ * This confirms demodulator acquisition and cancels no-sync recovery without
+ * extending voice activity or trunk hangtime. Decoded MAC/voice events remain
+ * authoritative for call activity.
+ */
+void p25_sm_note_vc_frame_sync(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Record a completed frame-sync search with no sync on a tuned voice channel.
+ *
+ * Repeated no-sync passes may queue one bounded CQPSK demodulator recovery when
+ * the tuned grant is still awaiting voice. Non-RTL, non-TDMA, active, and data
+ * calls are ignored.
+ */
+void p25_sm_note_vc_no_sync_pass(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Check whether a one-shot VC CQPSK recovery is holding a CC return.

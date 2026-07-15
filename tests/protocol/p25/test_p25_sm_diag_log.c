@@ -235,11 +235,12 @@ main(void) {
     state.p25_vc_cqpsk_pref = 1;
     p25_sm_event_t vc_grant = p25_sm_ev_group_grant((2 << 12) | 10, 0, 2345, 6789, 0);
     p25_sm_event(&ctx, &opts, &state, &vc_grant);
-    ctx.t_tune_m = dsd_time_now_monotonic_s() - 0.9;
+    ctx.t_tune_m = dsd_time_now_monotonic_s() - 1.5;
+    ctx.slots[0].last_grant_m = ctx.t_tune_m;
     state.p25_last_vc_tune_time_m = ctx.t_tune_m;
-    p25_sm_tick_ctx(&ctx, &opts, &state);
-    state.p25_sm_force_release = 1;
-    p25_sm_release(&ctx, &opts, &state, "frame-sync-no-sync");
+    p25_sm_note_vc_no_sync_pass(&ctx, &opts, &state);
+    p25_sm_note_vc_no_sync_pass(&ctx, &opts, &state);
+    p25_sm_note_vc_no_sync_pass(&ctx, &opts, &state);
     p25_sm_event_t vc_active = p25_sm_ev_active(0);
     p25_sm_event(&ctx, &opts, &state, &vc_active);
     p25_sm_release(&ctx, &opts, &state, "diag-vc-release");
@@ -299,6 +300,8 @@ main(void) {
     rc |= expect_contains(output, "reacquire_attempted=1");
     rc |= expect_contains(output, "soft_reacquire=1");
     rc |= expect_contains(output, "event=vc_reacquire_request");
+    rc |= expect_contains(output, "trigger=frame-sync-no-progress");
+    rc |= expect_contains(output, "no_sync_passes=3");
     rc |= expect_contains(output, "trigger=frame-sync-no-sync");
     rc |= expect_contains(output, "pref=1");
     rc |= expect_contains(output, "event=vc_reacquire_result");
