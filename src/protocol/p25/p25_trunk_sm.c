@@ -1479,6 +1479,7 @@ p25_sm_clear_one_slot_activity(p25_sm_ctx_t* ctx, int slot) {
     }
     ctx->slots[slot].voice_active = 0;
     ctx->slots[slot].last_active_m = 0.0;
+    ctx->slots[slot].last_start_m = 0.0;
 }
 
 #ifdef USE_RADIO
@@ -1511,6 +1512,9 @@ p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     ctx->slots[slot].enc_override_clear = 0;
     ctx->slots[slot].last_grant_m = 0.0;
     ctx->slots[slot].crypto_attempt_m = 0.0;
+    ctx->slots[slot].last_end_m = 0.0;
+    ctx->slots[slot].last_end_tg = 0;
+    ctx->slots[slot].last_end_src = 0;
 }
 
 static void
@@ -2329,6 +2333,50 @@ p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, i
     }
 }
 
+static int
+p25_voice_state_slot_tg(const dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+    return slot == 0 ? (int)state->lasttg : (int)state->lasttgR;
+}
+
+static int
+p25_voice_state_slot_src(const dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+    return slot == 0 ? state->lastsrc : state->lastsrcR;
+}
+
+static int
+p25_voice_slot_diag_tg(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
+    const int decoded_tg = p25_voice_state_slot_tg(state, slot);
+    if (decoded_tg > 0) {
+        return decoded_tg;
+    }
+    if (!ctx || slot < 0 || slot > 1) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    if (slot_ctx->is_group && slot_ctx->ota_tg > 0) {
+        return slot_ctx->ota_tg;
+    }
+    return slot_ctx->is_group ? slot_ctx->target_id : 0;
+}
+
+static int
+p25_voice_slot_diag_src(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
+    const int decoded_src = p25_voice_state_slot_src(state, slot);
+    if (decoded_src > 0) {
+        return decoded_src;
+    }
+    if (!ctx || slot < 0 || slot > 1) {
+        return 0;
+    }
+    return ctx->slots[slot].src;
+}
+
 static void
 handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot, const char* why) {
     if (!ctx) {
@@ -2337,6 +2385,7 @@ handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, in
 
     double now_m = dsd_time_now_monotonic_s();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
+    ctx->slots[s].last_start_m = now_m;
     if (ctx->vc_stale_regrant_probe && s == ctx->vc_stale_regrant_probe_slot) {
         p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_stale_probe_result",
                      "result=activity source=%s slot=%d latency=%.3f freq=%ld ch=0x%04X", why, s,
@@ -2365,8 +2414,10 @@ handle_voice_start(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, in
     // This event just marks voice as active for state machine timing purposes.
 
     ctx->t_voice_m = now_m;
-    p25_sm_diagf((dsd_opts*)opts, state, ctx, "voice_activity", "kind=%s slot=%d now_m=%.3f freq=%ld tg=%d", why, slot,
-                 now_m, ctx->vc_freq_hz, ctx->vc_tg);
+    p25_sm_diagf((dsd_opts*)opts, state, ctx, "voice_activity",
+                 "kind=%s slot=%d now_m=%.3f freq=%ld target=%d tg=%d src=%d grant=%d", why, slot, now_m,
+                 ctx->vc_freq_hz, ctx->slots[s].target_id, p25_voice_slot_diag_tg(ctx, state, s),
+                 p25_voice_slot_diag_src(ctx, state, s), ctx->slots[s].grant_active);
     sm_log(opts, state, why);
 }
 
@@ -2397,6 +2448,110 @@ p25_voice_end_can_release_explicit(const p25_sm_ctx_t* ctx, int other) {
         return 1;
     }
     return ctx->slots[other].voice_active ? 0 : 1;
+}
+
+static int
+p25_voice_end_source_known(int src) {
+    // 0 means unavailable. 0xFFFFFF is commonly emitted by the fixed network
+    // equipment and does not identify a subscriber call epoch.
+    return src > 0 && src != 0xFFFFFF;
+}
+
+static int
+p25_voice_end_tg_conflicts(int event_tg, int current_tg) {
+    return event_tg > 0 && current_tg > 0 && event_tg != current_tg;
+}
+
+static int
+p25_voice_end_src_conflicts(int event_src, int current_src) {
+    return p25_voice_end_source_known(event_src) && p25_voice_end_source_known(current_src) && event_src != current_src;
+}
+
+static int
+p25_voice_end_grant_identity_conflicts(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
+    if (!slot_ctx->grant_active) {
+        return 0;
+    }
+    if (slot_ctx->is_group && p25_voice_end_tg_conflicts(ev->tg, slot_ctx->ota_tg)) {
+        return 1;
+    }
+    return p25_voice_end_src_conflicts(ev->src, slot_ctx->src);
+}
+
+static int
+p25_voice_end_active_identity_conflicts(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev, int decoded_tg,
+                                        int decoded_src) {
+    if (!slot_ctx->voice_active) {
+        return 0;
+    }
+    if (p25_voice_end_tg_conflicts(ev->tg, decoded_tg)) {
+        return 1;
+    }
+    return p25_voice_end_src_conflicts(ev->src, decoded_src);
+}
+
+static int
+p25_voice_end_identity_conflicts(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, const p25_sm_event_t* ev) {
+    if (!ctx || !ev || slot < 0 || slot > 1) {
+        return 0;
+    }
+
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    const int decoded_tg = p25_voice_state_slot_tg(state, slot);
+    const int decoded_src = p25_voice_state_slot_src(state, slot);
+
+    // An accepted same-slot assignment is authoritative even before its PTT
+    // arrives. Do not let a delayed END from the preceding call erase it.
+    if (p25_voice_end_grant_identity_conflicts(slot_ctx, ev)) {
+        return 1;
+    }
+
+    // Once voice is active, the per-slot decoder identity is the closest
+    // match to the MAC_END_PTT carried on that traffic channel.
+    return p25_voice_end_active_identity_conflicts(slot_ctx, ev, decoded_tg, decoded_src);
+}
+
+static const char*
+p25_voice_end_newer_event_reason(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
+    if (ev->observed_m <= 0.0) {
+        return NULL;
+    }
+    if (slot_ctx->last_grant_m > ev->observed_m) {
+        return "newer-grant";
+    }
+    if (slot_ctx->last_active_m > ev->observed_m) {
+        return "newer-activity";
+    }
+    if (slot_ctx->last_start_m > ev->observed_m) {
+        return "newer-start";
+    }
+    return NULL;
+}
+
+static int
+p25_voice_end_is_duplicate(const p25_sm_slot_ctx_t* slot_ctx) {
+    return slot_ctx->last_end_m > 0.0 && slot_ctx->last_start_m <= slot_ctx->last_end_m && !slot_ctx->voice_active
+           && !slot_ctx->grant_active;
+}
+
+static const char*
+p25_voice_end_reject_reason(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, const p25_sm_event_t* ev) {
+    if (!ctx || !ev || slot < 0 || slot > 1) {
+        return NULL;
+    }
+
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    const char* newer_event_reason = p25_voice_end_newer_event_reason(slot_ctx, ev);
+    if (newer_event_reason) {
+        return newer_event_reason;
+    }
+    if (p25_voice_end_identity_conflicts(ctx, state, slot, ev)) {
+        return "identity-mismatch";
+    }
+    if (p25_voice_end_is_duplicate(slot_ctx)) {
+        return "duplicate";
+    }
+    return NULL;
 }
 
 static int
@@ -2440,15 +2595,59 @@ p25_voice_end_try_explicit_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
     }
 }
 
+static const char*
+p25_voice_end_event_reject_reason(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, int is_explicit_end,
+                                  int arm_stale_regrant_guard, const p25_sm_event_t* ev) {
+    if (!is_explicit_end || !arm_stale_regrant_guard || !ev) {
+        return NULL;
+    }
+    return p25_voice_end_reject_reason(ctx, state, slot, ev);
+}
+
+static int
+p25_voice_end_event_tg(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, const p25_sm_event_t* ev) {
+    return ev && ev->tg > 0 ? ev->tg : p25_voice_slot_diag_tg(ctx, state, slot);
+}
+
+static int
+p25_voice_end_event_src(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, const p25_sm_event_t* ev) {
+    return ev && ev->src > 0 ? ev->src : p25_voice_slot_diag_src(ctx, state, slot);
+}
+
 static void
-handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end,
-                 int arm_stale_regrant_guard, double observed_m) {
-    if (!ctx) {
+p25_voice_end_record(p25_sm_slot_ctx_t* slot_ctx, int is_explicit_end, int arm_stale_regrant_guard, double now_m,
+                     int tg, int src) {
+    if (!is_explicit_end || !arm_stale_regrant_guard) {
         return;
+    }
+    slot_ctx->last_end_m = now_m;
+    slot_ctx->last_end_tg = tg;
+    slot_ctx->last_end_src = src;
+}
+
+static int
+handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end,
+                 int arm_stale_regrant_guard, const p25_sm_event_t* ev) {
+    if (!ctx) {
+        return 0;
     }
 
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
-    p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, dsd_time_now_monotonic_s());
+    const double observed_m = ev ? ev->observed_m : 0.0;
+    const char* reject_reason =
+        p25_voice_end_event_reject_reason(ctx, state, s, is_explicit_end, arm_stale_regrant_guard, ev);
+    if (reject_reason) {
+        p25_sm_diagf(opts, state, ctx, "voice_end_ignored",
+                     "reason=%s slot=%d event_tg=%d event_src=%d current_tg=%d current_src=%d grant=%d active=%d",
+                     reject_reason, s, ev->tg, ev->src, p25_voice_slot_diag_tg(ctx, state, s),
+                     p25_voice_slot_diag_src(ctx, state, s), ctx->slots[s].grant_active, ctx->slots[s].voice_active);
+        return 0;
+    }
+
+    const double now_m = dsd_time_now_monotonic_s();
+    const int ended_tg = p25_voice_end_event_tg(ctx, state, s, ev);
+    const int ended_src = p25_voice_end_event_src(ctx, state, s, ev);
+    p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, now_m);
     int preserve_recent_grant = p25_voice_end_preserve_recent_idle_grant(ctx, s, is_explicit_end, observed_m);
 
     // Mark voice inactive but keep last_active_m for hangtime tracking
@@ -2459,18 +2658,22 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     if (state && !preserve_recent_grant) {
         (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? s : -1);
     }
+    p25_voice_end_record(&ctx->slots[s], is_explicit_end, arm_stale_regrant_guard, now_m, ended_tg, ended_src);
 
     // NOTE: Audio gating is managed by MAC_END/MAC_IDLE handlers in xcch.c
     // which set p25_p2_audio_allowed[slot] = 0.
 
     sm_log(opts, state, why);
-    p25_sm_diagf(opts, state, ctx, "voice_activity", "kind=%s slot=%d explicit=%d freq=%ld tg=%d other_active=%d", why,
-                 slot, is_explicit_end, ctx->vc_freq_hz, ctx->vc_tg, p25_voice_end_diag_other_active(ctx, state, s));
+    p25_sm_diagf(opts, state, ctx, "voice_activity",
+                 "kind=%s slot=%d explicit=%d freq=%ld target=%d tg=%d src=%d grant=%d other_active=%d", why, slot,
+                 is_explicit_end, ctx->vc_freq_hz, ctx->slots[s].target_id, ended_tg, ended_src,
+                 ctx->slots[s].grant_active, p25_voice_end_diag_other_active(ctx, state, s));
 
     // For explicit call termination (MAC_END_PTT or TDU), check if we should
     // release immediately rather than waiting for hangtime. This matches P25P1
     // behavior where LCW 0x4F (Call Termination) triggers immediate release.
     p25_voice_end_try_explicit_release(ctx, opts, state, s, is_explicit_end, arm_stale_regrant_guard);
+    return 1;
 }
 
 static int
@@ -3337,19 +3540,19 @@ p25_sm_handle_event_active(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
 static void
 p25_sm_handle_event_end(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // MAC_END_PTT is an explicit call termination - trigger immediate release check.
-    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1, 1, ev->observed_m);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1, 1, ev);
 }
 
 static void
 p25_sm_handle_event_idle(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // MAC_IDLE may occur during brief gaps - use hangtime, not immediate release.
-    handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0, 0, ev->observed_m);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0, 0, ev);
 }
 
 static void
 p25_sm_handle_event_tdu(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // P1 terminator - explicit call end, trigger immediate release check.
-    handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 1, 0, ev ? ev->observed_m : 0.0);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 1, 0, ev);
 }
 
 static void
@@ -4191,6 +4394,19 @@ void
 p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot) {
     p25_sm_event_t ev = p25_sm_ev_end(slot);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+}
+
+int
+p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int src, double observed_m) {
+    if (slot < 0 || slot > 1) {
+        return 0;
+    }
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (!ctx->initialized) {
+        p25_sm_init_ctx(ctx, opts, state);
+    }
+    p25_sm_event_t ev = p25_sm_ev_end_call_at(slot, tg, src, observed_m);
+    return handle_voice_end(ctx, opts, state, slot, "end", 1, 1, &ev);
 }
 
 void

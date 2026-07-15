@@ -36,6 +36,10 @@ static unsigned long long int g_vpdu_mac[24];
 static int g_ptt_count[2];
 static int g_active_count[2];
 static int g_end_count[2];
+static int g_end_apply;
+static int g_end_tg[2];
+static int g_end_src[2];
+static double g_end_observed_m[2];
 static int g_idle_count[2];
 static int g_enc_count[2];
 static int g_enc_algid[2];
@@ -158,6 +162,17 @@ p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot) {
     if (slot >= 0 && slot <= 1) {
         g_end_count[slot]++;
     }
+}
+
+int
+p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int src, double observed_m) {
+    p25_sm_emit_end(opts, state, slot);
+    if (slot >= 0 && slot <= 1) {
+        g_end_tg[slot] = tg;
+        g_end_src[slot] = src;
+        g_end_observed_m[slot] = observed_m;
+    }
+    return g_end_apply;
 }
 
 void
@@ -351,6 +366,10 @@ reset_stubs(void) {
     DSD_MEMSET(g_ptt_count, 0, sizeof(g_ptt_count));
     DSD_MEMSET(g_active_count, 0, sizeof(g_active_count));
     DSD_MEMSET(g_end_count, 0, sizeof(g_end_count));
+    g_end_apply = 1;
+    DSD_MEMSET(g_end_tg, 0, sizeof(g_end_tg));
+    DSD_MEMSET(g_end_src, 0, sizeof(g_end_src));
+    DSD_MEMSET(g_end_observed_m, 0, sizeof(g_end_observed_m));
     DSD_MEMSET(g_idle_count, 0, sizeof(g_idle_count));
     DSD_MEMSET(g_enc_count, 0, sizeof(g_enc_count));
     DSD_MEMSET(g_enc_algid, 0, sizeof(g_enc_algid));
@@ -567,7 +586,7 @@ test_facch_public_dispatch_and_crc_gates(void) {
     state.currentslot = 1;
 
     process_FACCH_MAC_PDU(&opts, &state, payload);
-    rc |= expect_int("facch ptt count", g_ptt_count[1], 0);
+    rc |= expect_int("facch ptt count", g_ptt_count[1], 1);
     rc |= expect_int("facch slot1 tg", state.lasttgR, 0x2468);
     rc |= expect_int("facch slot1 src", state.lastsrcR, 0x010204);
     rc |= expect_int("facch slot1 key", state.payload_keyidR, 0x1357);
@@ -721,11 +740,14 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "right call");
     DSD_SNPRINTF(state.dmr_embedded_gps[1], sizeof(state.dmr_embedded_gps[1]), "%s", "gps");
     DSD_SNPRINTF(state.dmr_lrrp_gps[1], sizeof(state.dmr_lrrp_gps[1]), "%s", "lrrp");
-    fill_mac(mac, 0x80, 0, 0, 0);
+    fill_mac(mac, 0x80, 0, 0x445566, 0x3344);
     pack_payload_from_mac(payload, 180, mac, 0x2, 0, 0);
 
     process_SACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("sacch end emitted", g_end_count[1], 1);
+    rc |= expect_int("sacch end identity tg", g_end_tg[1], 0x3344);
+    rc |= expect_int("sacch end identity src", g_end_src[1], 0x445566);
+    rc |= expect_int("sacch end observed timestamp", g_end_observed_m[1] > 0.0 ? 1 : 0, 1);
     rc |= expect_int("sacch end src clear", state.lastsrcR, 0);
     rc |= expect_int("sacch end tg clear", state.lasttgR, 0);
     rc |= expect_int("sacch end alg clear", state.payload_algidR, 0);
@@ -862,7 +884,7 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     fill_mac(mac, 0x80, 0, 0, 0);
 
-    p25p2_xcch_handle_facch_mac_end(&opts, &state, 2);
+    p25p2_xcch_handle_facch_mac_end(&opts, &state, 2, mac);
     p25p2_xcch_handle_facch_mac_idle(&opts, &state, 2, mac);
     p25p2_xcch_handle_facch_mac_active(&opts, &state, 2, mac);
     DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "left call");
@@ -888,12 +910,28 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     state.aes_key_loaded[0] = 1;
     state.aes_key_segments[0] = 2;
     state.p25_p2_audio_allowed[0] = 1;
+    state.lastsrcR = 0x654321;
+    state.lasttgR = 0x7654;
+    state.payload_algidR = 0x80;
+    state.payload_keyidR = 0x1357;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.p25_p2_audio_ring_count[1] = 4;
+    state.voice_counter[1] = 7;
+    state.s_r4[0][0] = -432;
+    state.dmrburstR = 21;
+    opts.mbe_out_fR = (FILE*)0x2;
     opts.mbe_out_f = (FILE*)0x1;
     DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "left call");
+    DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "right call");
+    fill_mac(mac, 0x80, 0, 0x123456, 0x4567);
     pack_payload_from_mac(payload, 156, mac, 0x2, 0, 0);
 
     process_FACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("facch end emitted", g_end_count[0], 1);
+    rc |= expect_int("facch end identity tg", g_end_tg[0], 0x4567);
+    rc |= expect_int("facch end identity src", g_end_src[0], 0x123456);
+    rc |= expect_int("facch end observed timestamp", g_end_observed_m[0] > 0.0 ? 1 : 0, 1);
     rc |= expect_int("facch end src clear", state.lastsrc, 0);
     rc |= expect_int("facch end tg clear", state.lasttg, 0);
     rc |= expect_int("facch end gate clear", state.p25_p2_audio_allowed[0], 0);
@@ -901,6 +939,50 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch end close left", g_close_l_count, 1);
     rc |= expect_int("facch end key clear", (int)state.R, 0);
     rc |= expect_int("facch end call blank", strncmp(state.call_string[0], P25P2_EMPTY_CALL_STRING, 21), 0);
+    rc |= expect_int("facch end companion src preserved", state.lastsrcR, 0x654321);
+    rc |= expect_int("facch end companion tg preserved", state.lasttgR, 0x7654);
+    rc |= expect_int("facch end companion gate preserved", state.p25_p2_audio_allowed[1], 1);
+    rc |= expect_int("facch end companion crypto preserved", state.p25_crypto_state[1], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("facch end companion ring preserved", state.p25_p2_audio_ring_count[1], 4);
+    rc |= expect_int("facch end companion counter preserved", state.voice_counter[1], 7);
+    rc |= expect_int("facch end companion sample preserved", state.s_r4[0][0], -432);
+    rc |= expect_int("facch end companion burst preserved", (int)state.dmrburstR, 21);
+    rc |= expect_int("facch end companion file preserved", opts.mbe_out_fR == (FILE*)0x2 ? 1 : 0, 1);
+    rc |= expect_int("facch end companion call preserved", strncmp(state.call_string[1], "right call", 10), 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    state.currentslot = 0;
+    state.lastsrc = 0xABCDEF;
+    state.lasttg = 0x2468;
+    state.payload_algid = 0x80;
+    state.payload_keyid = 0x4321;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.voice_counter[0] = 6;
+    state.s_l4[0][0] = 765;
+    state.dmrburstL = 21;
+    opts.mbe_out_f = (FILE*)0x1;
+    DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "newer call");
+    fill_mac(mac, 0x80, 0, 0x010203, 0x1357);
+    pack_payload_from_mac(payload, 156, mac, 0x2, 0, 0);
+    g_end_apply = 0;
+
+    process_FACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("facch stale end emitted", g_end_count[0], 1);
+    rc |= expect_int("facch stale end identity tg", g_end_tg[0], 0x1357);
+    rc |= expect_int("facch stale end identity src", g_end_src[0], 0x010203);
+    rc |= expect_int("facch stale end no flush", g_flush_count, 0);
+    rc |= expect_int("facch stale end src preserved", state.lastsrc, 0xABCDEF);
+    rc |= expect_int("facch stale end tg preserved", state.lasttg, 0x2468);
+    rc |= expect_int("facch stale end gate preserved", state.p25_p2_audio_allowed[0], 1);
+    rc |= expect_int("facch stale end crypto preserved", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("facch stale end counter preserved", state.voice_counter[0], 6);
+    rc |= expect_int("facch stale end sample preserved", state.s_l4[0][0], 765);
+    rc |= expect_int("facch stale end burst preserved", (int)state.dmrburstL, 21);
+    rc |= expect_int("facch stale end file preserved", opts.mbe_out_f == (FILE*)0x1 ? 1 : 0, 1);
+    rc |= expect_int("facch stale end call preserved", strncmp(state.call_string[0], "newer call", 10), 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));

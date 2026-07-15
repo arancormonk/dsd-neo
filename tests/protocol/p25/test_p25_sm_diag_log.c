@@ -14,6 +14,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -144,7 +145,6 @@ seed_fdma_iden(dsd_state* state, int iden) {
     state->p25_chan_tdma_explicit[iden] = 1;
 }
 
-#ifdef USE_RADIO
 static void
 seed_tdma_iden(dsd_state* state, int iden) {
     state->p25_iden_tdma[iden].base_freq = 851000000L / 5L;
@@ -154,7 +154,6 @@ seed_tdma_iden(dsd_state* state, int iden) {
     state->p25_iden_tdma[iden].populated = 1;
     state->p25_chan_tdma_explicit[iden] = 2;
 }
-#endif
 
 static int
 read_file(const char* path, char* out, size_t out_size) {
@@ -261,6 +260,33 @@ main(void) {
     p25_sm_release(&ctx, &opts, &state, "frame-sync-no-sync");
 #endif
 
+    static dsd_opts slot_opts;
+    static dsd_state slot_state;
+    DSD_MEMSET(&slot_opts, 0, sizeof slot_opts);
+    DSD_MEMSET(&slot_state, 0, sizeof slot_state);
+    DSD_SNPRINTF(slot_opts.p25_sm_log_file, sizeof slot_opts.p25_sm_log_file, "%s", path);
+    slot_opts.p25_sm_log_file[sizeof slot_opts.p25_sm_log_file - 1] = '\0';
+    slot_opts.trunk_enable = 1;
+    slot_opts.trunk_tune_group_calls = 1;
+    slot_state.p25_cc_freq = 851000000;
+    slot_state.trunk_cc_freq = 851000000;
+    seed_tdma_iden(&slot_state, 2);
+
+    p25_sm_ctx_t slot_ctx;
+    p25_sm_init_ctx(&slot_ctx, &slot_opts, &slot_state);
+    p25_sm_event_t slot0_grant = p25_sm_ev_group_grant((2 << 12) | 10, 0, 2345, 6789, 0);
+    p25_sm_event_t slot1_grant = p25_sm_ev_group_grant((2 << 12) | 11, 0, 3456, 7890, 0);
+    p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot0_grant);
+    p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot1_grant);
+    slot_state.lasttgR = 3456;
+    slot_state.lastsrcR = 7890;
+    slot_state.p25_p2_audio_allowed[1] = 1;
+    p25_sm_event_t slot1_active = p25_sm_ev_active(1);
+    p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot1_active);
+    p25_sm_event_t stale_end = p25_sm_ev_end_call_at(1, 9999, 999, slot_ctx.slots[1].last_active_m + 0.001);
+    p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &stale_end);
+    p25_sm_release(&slot_ctx, &slot_opts, &slot_state, "diag-slot-release");
+
     static dsd_opts hunt_opts;
     static dsd_state hunt_state;
     DSD_MEMSET(&hunt_opts, 0, sizeof hunt_opts);
@@ -278,6 +304,7 @@ main(void) {
     p25_sm_tick_ctx(&hunt_ctx, &hunt_opts, &hunt_state);
 
     dsd_p25_sm_log_close(&opts);
+    dsd_p25_sm_log_close(&slot_opts);
     dsd_p25_sm_log_close(&hunt_opts);
 
     char output[24576];
@@ -312,6 +339,11 @@ main(void) {
     rc |= expect_contains(output, "result=no-activity");
     rc |= expect_contains(output, "reason=frame-sync-no-sync");
 #endif
+    rc |= expect_contains(output, "event=voice_activity");
+    rc |= expect_contains(output, "kind=active slot=1");
+    rc |= expect_contains(output, "target=3456 tg=3456 src=7890 grant=1");
+    rc |= expect_contains(output, "event=voice_end_ignored");
+    rc |= expect_contains(output, "reason=identity-mismatch slot=1 event_tg=9999 event_src=999");
     rc |= expect_contains(output, "event=cc_lost");
     rc |= expect_contains(output, "reason=timeout");
     rc |= expect_contains(output, "event=hunt_tune_attempt");
@@ -324,6 +356,7 @@ main(void) {
 #ifdef USE_RADIO
     dsd_rtl_stream_metrics_hooks_set(NULL);
 #endif
+    dsd_state_ext_free_all(&slot_state);
     return rc;
 }
 

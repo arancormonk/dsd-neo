@@ -97,8 +97,8 @@ typedef struct {
     int slot;                                   // 0 or 1 for TDMA, -1 for P1/N/A
     int channel;                                // 16-bit channel number (for GRANT)
     long freq_hz;                               // Frequency in Hz (for GRANT)
-    int tg;                                     // Talkgroup (for GRANT, 0 if individual)
-    int src;                                    // Source RID (for GRANT)
+    int tg;                                     // Talkgroup (for GRANT/PTT/END, 0 if individual or unavailable)
+    int src;                                    // Source RID (for GRANT/PTT/END, 0 if unavailable)
     int dst;                                    // Destination RID (for individual GRANT)
     int svc_bits;                               // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
     int is_group;                               // 1 for group grant, 0 for individual
@@ -125,6 +125,7 @@ typedef struct {
 
 typedef struct {
     double last_active_m;    // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
+    double last_start_m;     // Monotonic timestamp of the last PTT/ACTIVE call-epoch boundary
     int voice_active;        // 1 if voice is currently active on this slot
     int algid;               // Current algorithm ID for this slot
     int keyid;               // Current key ID for this slot
@@ -142,6 +143,9 @@ typedef struct {
     int enc_override_clear;  // 1 when regroup KEY=0 supplied the current clear classification
     double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
     double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
+    double last_end_m;       // Monotonic timestamp of the last accepted MAC_END_PTT
+    int last_end_tg;         // Talkgroup carried by the last accepted MAC_END_PTT
+    int last_end_src;        // Source RID carried by the last accepted MAC_END_PTT
 } p25_sm_slot_ctx_t;
 
 /* ============================================================================
@@ -429,6 +433,23 @@ void p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
 void p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
+ * @brief Emit an identified END event observed at a specific time.
+ *
+ * Phase 2 XCCH decoders use this form so an END for an older call cannot
+ * clear a newer same-slot assignment or media state. A redundant repeated
+ * END is also rejected after the first one has been applied.
+ *
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param slot Slot index (0 or 1).
+ * @param tg Talkgroup carried by MAC_END_PTT, or 0 when unavailable.
+ * @param src Source RID carried by MAC_END_PTT, or 0 when unavailable.
+ * @param observed_m Monotonic timestamp captured when the END PDU was observed.
+ * @return 1 when slot teardown should be applied, 0 when the END is stale or redundant.
+ */
+int p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int src, double observed_m);
+
+/**
  * @brief Emit IDLE event for a slot.
  */
 void p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot);
@@ -581,6 +602,15 @@ p25_sm_ev_end(int slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_END;
     ev.slot = slot;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_end_call_at(int slot, int tg, int src, double observed_m) {
+    p25_sm_event_t ev = p25_sm_ev_end(slot);
+    ev.tg = tg;
+    ev.src = src;
+    ev.observed_m = observed_m;
     return ev;
 }
 
