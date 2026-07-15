@@ -422,6 +422,39 @@ main(void) {
                             RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
     failed |= expect_int_eq("P25P2 cqpsk reacquire preserves ted sps", cqpsk_reacquire.ted_sps_after, 8);
 
+    rtl_stream_test_fll_retune_result fll_retune = {};
+    rc = rtl_stream_test_fll_retune_policy(770418750U, 769668750U, 48000, 48000, &fll_retune);
+    failed |= expect_int_eq("near RF retune FLL policy helper rc", rc, 0);
+    failed |= expect_int_eq("near RF retune resets prior-channel FLL", fll_retune.reset_retained_fll, 1);
+    failed |= expect_int_eq("near RF retune has no cold target seed", fll_retune.restored_cached_fll, 0);
+    failed |= expect_int_eq("near RF retune keeps normal frequency reason", fll_retune.distant_frequency_reason, 0);
+    failed |= expect_double_near("near RF retune clears prior-channel FLL", fll_retune.fll_freq_after, 0.0, 1e-7);
+
+    fll_retune = {};
+    rc = rtl_stream_test_fll_retune_policy(769668750U, 770418750U, 48000, 48000, &fll_retune);
+    failed |= expect_int_eq("return RF retune FLL policy helper rc", rc, 0);
+    failed |= expect_int_eq("return RF retune resets voice-channel FLL", fll_retune.reset_retained_fll, 1);
+    failed |= expect_double_near("return RF retune clears voice-channel FLL", fll_retune.fll_freq_after, 0.0, 1e-7);
+
+    fll_retune = {};
+    rc = rtl_stream_test_fll_retune_policy(770418750U, 770418750U, 48000, 60000, &fll_retune);
+    failed |= expect_int_eq("same RF rate-change FLL policy helper rc", rc, 0);
+    failed |= expect_int_eq("same RF rate change retains FLL", fll_retune.reset_retained_fll, 0);
+    failed |= expect_double_near("same RF rate change scales FLL", fll_retune.fll_freq_after,
+                                 fll_retune.fll_freq_before * 0.8, 1e-7);
+
+    rtl_stream_test_fll_retune_cache_result fll_cache = {};
+    rc = rtl_stream_test_fll_retune_cache_round_trip(&fll_cache);
+    failed |= expect_int_eq("frequency-specific FLL cache helper rc", rc, 0);
+    failed |= expect_int_eq("cold VC hop resets FLL", fll_cache.first_hop_reset, 1);
+    failed |= expect_double_near("cold VC hop starts from zero", fll_cache.first_hop_fll_after, 0.0, 1e-7);
+    failed |= expect_int_eq("return to CC restores CC-specific FLL", fll_cache.cc_restore_used_cache, 1);
+    failed |= expect_double_near("return to CC uses prior CC FLL", fll_cache.cc_restore_fll_after,
+                                 fll_cache.expected_cc_fll, 1e-7);
+    failed |= expect_int_eq("return to VC restores VC-specific FLL", fll_cache.vc_restore_used_cache, 1);
+    failed |= expect_double_near("return to VC uses prior VC FLL", fll_cache.vc_restore_fll_after,
+                                 fll_cache.expected_vc_fll, 1e-7);
+
     cqpsk_reacquire = {};
     rc = rtl_stream_test_cqpsk_reacquire(0, 4800, 10, 9U, 4, &cqpsk_reacquire);
     failed |= expect_int_eq("inactive cqpsk reacquire helper rc", rc, 0);

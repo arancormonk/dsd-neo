@@ -52,16 +52,16 @@ static int p25_sm_hold_release_for_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opt
 // threads (watchdog tick + decoder) request release concurrently.
 static atomic_int g_p25_sm_release_lock = 0;
 
-#define P25_FAILED_VC_RETUNE_BACKOFF_DEFAULT_S  10.0
-#define P25_STALE_REGRANT_QUIET_S               2.0
-#define P25_CC_HUNT_ACQUIRE_GRACE_S             2.0
-#define P25_CC_RETURN_REACQUIRE_DELAY_S         2.0
-#define P25_CC_RETURN_REACQUIRE_MIN_REMAINING_S 1.0
-#define P25_VC_CQPSK_MODE_RETRY_DELAY_S         0.8
-#define P25_VC_CQPSK_REACQUIRE_MIN_DELAY_S      1.25
-#define P25_VC_CQPSK_REACQUIRE_MIN_REMAINING_S  1.0
-#define P25_VC_CQPSK_REACQUIRE_HOLD_S           0.75
-#define P25_VC_CQPSK_REACQUIRE_NO_SYNC_PASSES   3U
+#define P25_FAILED_VC_RETUNE_BACKOFF_DEFAULT_S 10.0
+#define P25_STALE_REGRANT_QUIET_S              2.0
+#define P25_STALE_REGRANT_MAX_AGE_S            10.0
+#define P25_CC_HUNT_ACQUIRE_GRACE_S            2.0
+#define P25_CC_RETURN_REACQUIRE_NO_SYNC_PASSES 1U
+#define P25_VC_CQPSK_MODE_RETRY_DELAY_S        0.8
+#define P25_VC_CQPSK_REACQUIRE_MIN_DELAY_S     1.25
+#define P25_VC_CQPSK_REACQUIRE_MIN_REMAINING_S 1.0
+#define P25_VC_CQPSK_REACQUIRE_HOLD_S          0.75
+#define P25_VC_CQPSK_REACQUIRE_NO_SYNC_PASSES  3U
 
 static const char*
 p25_tune_result_name(dsd_trunk_tune_result result) {
@@ -341,7 +341,9 @@ p25_sm_reset_cc_reacquire_tracking(p25_sm_ctx_t* ctx) {
         return;
     }
     ctx->t_cc_reacquire_m = 0.0;
+    ctx->t_cc_first_no_sync_m = 0.0;
     ctx->cc_reacquire_attempted = 0;
+    ctx->cc_no_sync_passes = 0U;
 }
 
 static void
@@ -382,6 +384,27 @@ p25_sm_note_vc_frame_sync(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* st
         return;
     }
     p25_sm_note_vc_decode_activity(ctx, opts, state, "frame-sync", -1, dsd_time_now_monotonic_s());
+}
+
+void
+p25_sm_note_cc_no_sync_pass(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    if (!ctx || ctx->state != P25_SM_ON_CC || ctx->cc_tune_pending || !ctx->cc_sync_pending
+        || ctx->cc_acquisition_origin != P25_SM_CC_ACQUISITION_RETURN || ctx->t_cc_tune_m <= 0.0) {
+        return;
+    }
+
+    const double now_m = dsd_time_now_monotonic_s();
+    if (now_m < ctx->t_cc_tune_m) {
+        return;
+    }
+    if (ctx->cc_no_sync_passes < UINT32_MAX) {
+        ctx->cc_no_sync_passes++;
+    }
+    if (ctx->t_cc_first_no_sync_m <= 0.0) {
+        ctx->t_cc_first_no_sync_m = now_m;
+    }
 }
 
 static void
@@ -1229,32 +1252,63 @@ p25_stale_regrant_guard_arm(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* 
     }
 
     ctx->t_recent_call_end_m = dsd_time_now_monotonic_s();
-    ctx->t_recent_call_end_last_match_m = ctx->t_recent_call_end_m;
+    // No CC assignment has been observed since returning from the VC yet. A
+    // zero last-match timestamp makes the first ambiguous update eligible for
+    // quarantine even when CC reacquisition itself took longer than quiet_s.
+    ctx->t_recent_call_end_last_match_m = 0.0;
     ctx->recent_call_end_freq_hz = slot_ctx->freq_hz;
     ctx->recent_call_end_slot = slot;
     ctx->recent_call_end_target = target;
     ctx->recent_call_end_src = slot_ctx->src;
     ctx->recent_call_end_is_group = slot_ctx->is_group ? 1 : 0;
     ctx->recent_call_end_valid = 1;
-    p25_sm_diagf(opts, state, ctx, "grant_stale_guard_arm", "freq=%ld slot=%d target=%d src=%d group=%d quiet=%.3f",
-                 ctx->recent_call_end_freq_hz, ctx->recent_call_end_slot, ctx->recent_call_end_target,
-                 ctx->recent_call_end_src, ctx->recent_call_end_is_group, P25_STALE_REGRANT_QUIET_S);
+    p25_sm_diagf(opts, state, ctx, "grant_stale_guard_arm",
+                 "freq=%ld slot=%d target=%d src=%d group=%d quiet=%.3f max_age=%.3f", ctx->recent_call_end_freq_hz,
+                 ctx->recent_call_end_slot, ctx->recent_call_end_target, ctx->recent_call_end_src,
+                 ctx->recent_call_end_is_group, P25_STALE_REGRANT_QUIET_S, P25_STALE_REGRANT_MAX_AGE_S);
 }
 
 static int
-p25_stale_regrant_identity_matches(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq, int slot) {
+p25_stale_regrant_identity_matches(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, long freq) {
     if (!ctx || !ev) {
         return 0;
     }
     const int is_group = ev->is_group ? 1 : 0;
     const int target = p25_grant_ota_target_id(ev);
-    return freq == ctx->recent_call_end_freq_hz && slot == ctx->recent_call_end_slot
-           && is_group == ctx->recent_call_end_is_group && target == ctx->recent_call_end_target;
+    return freq == ctx->recent_call_end_freq_hz && is_group == ctx->recent_call_end_is_group
+           && target == ctx->recent_call_end_target;
 }
 
 static int
 p25_stale_regrant_has_new_source(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev) {
     return ctx && ev && ctx->recent_call_end_src > 0 && ev->src > 0 && ev->src != ctx->recent_call_end_src;
+}
+
+static int
+p25_stale_regrant_clear_for_identified_call(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state,
+                                            const p25_sm_event_t* ev, long freq, int slot, int target, double age_s) {
+    // A companion-slot assignment that identifies a source has enough call
+    // identity to remain eligible. Source-less companion updates are ambiguous
+    // on systems that continue advertising a just-ended call on the paired slot.
+    if (slot != ctx->recent_call_end_slot && ev->src > 0) {
+        p25_sm_diagf(opts, state, ctx, "grant_stale_guard_clear",
+                     "reason=identified-companion freq=%ld ended_slot=%d slot=%d target=%d src=%d age=%.3f", freq,
+                     ctx->recent_call_end_slot, slot, target, ev->src, age_s);
+        p25_stale_regrant_guard_clear(ctx);
+        return 1;
+    }
+
+    // When both grants identify their source, a changed RID proves this is a
+    // new call even though the system reused the same TG, carrier, and slot.
+    if (p25_stale_regrant_has_new_source(ctx, ev)) {
+        p25_sm_diagf(opts, state, ctx, "grant_stale_guard_clear",
+                     "reason=new-source freq=%ld slot=%d target=%d old_src=%d new_src=%d age=%.3f", freq, slot, target,
+                     ctx->recent_call_end_src, ev->src, age_s);
+        p25_stale_regrant_guard_clear(ctx);
+        return 1;
+    }
+
+    return 0;
 }
 
 static int
@@ -1264,33 +1318,43 @@ p25_grant_stale_regrant_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
         return 0;
     }
 
-    if (!ctx->recent_call_end_valid || !p25_stale_regrant_identity_matches(ctx, ev, freq, slot)) {
+    if (!ctx->recent_call_end_valid || !p25_stale_regrant_identity_matches(ctx, ev, freq)) {
         return 0;
     }
 
     const double age_s = now_m - ctx->t_recent_call_end_m;
-    const double quiet_s = now_m - ctx->t_recent_call_end_last_match_m;
-    if (ctx->t_recent_call_end_m <= 0.0 || ctx->t_recent_call_end_last_match_m <= 0.0 || age_s < 0.0 || quiet_s < 0.0) {
+    if (ctx->t_recent_call_end_m <= 0.0 || age_s < 0.0) {
         p25_stale_regrant_guard_clear(ctx);
         return 0;
     }
 
     const int is_group = ev->is_group ? 1 : 0;
     const int target = p25_grant_ota_target_id(ev);
-    // When both grants identify their source, a changed RID proves this is a
-    // new call even though the system reused the same TG, carrier, and slot.
-    if (p25_stale_regrant_has_new_source(ctx, ev)) {
+    if (p25_stale_regrant_clear_for_identified_call(ctx, opts, state, ev, freq, slot, target, age_s)) {
+        return 0;
+    }
+
+    // Bound the quarantine even if a system emits ambiguous assignments
+    // continuously. This avoids starving a later legitimate call whose grant
+    // happens to omit a source identifier.
+    if (age_s >= P25_STALE_REGRANT_MAX_AGE_S) {
         p25_sm_diagf(opts, state, ctx, "grant_stale_guard_clear",
-                     "reason=new-source freq=%ld slot=%d target=%d old_src=%d new_src=%d age=%.3f", freq, slot, target,
-                     ctx->recent_call_end_src, ev->src, age_s);
+                     "reason=max-age freq=%ld ended_slot=%d slot=%d target=%d src=%d age=%.3f", freq,
+                     ctx->recent_call_end_slot, slot, target, ev->src, age_s);
         p25_stale_regrant_guard_clear(ctx);
         return 0;
     }
 
-    // A matching assignment after a full quiet interval is eligible again.
-    // Continuous source-less Motorola channel updates refresh only this
-    // quarantine timestamp, so they cannot outlive a fixed post-END timer and
-    // force a known-dead VC bounce.
+    const double quiet_s =
+        ctx->t_recent_call_end_last_match_m > 0.0 ? now_m - ctx->t_recent_call_end_last_match_m : 0.0;
+    if (quiet_s < 0.0) {
+        p25_stale_regrant_guard_clear(ctx);
+        return 0;
+    }
+
+    // A matching assignment after a full observed quiet interval is eligible
+    // again. Continuous source-less Motorola updates refresh this timestamp;
+    // the independent maximum-age bound above prevents indefinite starvation.
     if (quiet_s >= P25_STALE_REGRANT_QUIET_S) {
         p25_sm_diagf(opts, state, ctx, "grant_stale_guard_clear",
                      "reason=quiet-gap freq=%ld slot=%d target=%d src=%d age=%.3f quiet=%.3f", freq, slot, target,
@@ -1300,8 +1364,9 @@ p25_grant_stale_regrant_blocked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     }
 
     p25_sm_diagf(opts, state, ctx, "grant_stale_skip",
-                 "ch=0x%04X freq=%ld slot=%d target=%d src=%d group=%d age=%.3f quiet=%.3f remaining=%.3f",
-                 ev->channel & 0xFFFF, freq, slot, target, ev->src, is_group, age_s, quiet_s,
+                 "ch=0x%04X freq=%ld ended_slot=%d slot=%d target=%d src=%d group=%d age=%.3f quiet=%.3f "
+                 "remaining=%.3f",
+                 ev->channel & 0xFFFF, freq, ctx->recent_call_end_slot, slot, target, ev->src, is_group, age_s, quiet_s,
                  P25_STALE_REGRANT_QUIET_S - quiet_s);
     ctx->t_recent_call_end_last_match_m = now_m;
     sm_log(opts, state, "grant-stale-skip");
@@ -3300,7 +3365,7 @@ p25_sm_tick_try_cc_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state*
     const double acquire_grace = p25_sm_cc_acquire_grace_s(ctx, cc_grace);
     const double elapsed = now_m - ctx->t_cc_tune_m;
     const double remaining = acquire_grace - elapsed;
-    if (elapsed < P25_CC_RETURN_REACQUIRE_DELAY_S || remaining < P25_CC_RETURN_REACQUIRE_MIN_REMAINING_S) {
+    if (ctx->cc_no_sync_passes < P25_CC_RETURN_REACQUIRE_NO_SYNC_PASSES || remaining <= 0.0) {
         return;
     }
 
@@ -3318,10 +3383,13 @@ p25_sm_tick_try_cc_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state*
     if (request_rc > 0) {
         ctx->t_cc_reacquire_m = now_m;
     }
+    const double no_sync_span = ctx->t_cc_first_no_sync_m > 0.0 ? now_m - ctx->t_cc_first_no_sync_m : 0.0;
     const char* result = request_rc > 0 ? "queued" : (request_rc == 0 ? "inactive" : "unavailable");
     p25_sm_diagf(opts, state, ctx, "cc_reacquire_request",
-                 "result=%s rc=%d elapsed=%.3f remaining=%.3f cqpsk=%d timing=%d snr_db=%.3f generation=%u", result,
-                 request_rc, elapsed, remaining, cqpsk, timing, snr_db, generation);
+                 "trigger=frame-sync-no-progress result=%s rc=%d elapsed=%.3f remaining=%.3f no_sync_passes=%u "
+                 "no_sync_span=%.3f cqpsk=%d timing=%d snr_db=%.3f generation=%u",
+                 result, request_rc, elapsed, remaining, ctx->cc_no_sync_passes, no_sync_span, cqpsk, timing, snr_db,
+                 generation);
 #else
     (void)ctx;
     (void)opts;

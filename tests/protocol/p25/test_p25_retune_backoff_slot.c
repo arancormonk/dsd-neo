@@ -199,15 +199,17 @@ test_stale_regrant_guard(void) {
     const int ch_slot1 = (id << 12) | 0x0003;
     const int ch_slot1_other_freq = (id << 12) | 0x0005;
 
-    // An immediate repeat of the exact call ended by MAC_END_PTT is stale,
-    // but the companion TDMA slot remains independently eligible.
+    // An immediate repeat of the exact call ended by MAC_END_PTT is stale. A
+    // source-less companion-slot update is equally ambiguous, while an
+    // identified companion call remains independently eligible.
     {
         static dsd_opts opts;
         static dsd_state state;
         p25_sm_ctx_t ctx;
         init_stale_regrant_case(&opts, &state, &ctx, id);
-        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6001, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6001, 7001, P25_SM_SVC_UNKNOWN);
         p25_sm_event_t companion = p25_sm_ev_group_grant(ch_slot0, 0, 6001, 0, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t identified_companion = p25_sm_ev_group_grant(ch_slot0, 0, 6001, 7001, P25_SM_SVC_UNKNOWN);
 
         end_tdma_call(&ctx, &opts, &state, &ended, 1);
         rc |= expect_true("stale guard call ended", g_tune_to_freq_calls == 1 && g_return_to_cc_calls == 1
@@ -215,7 +217,7 @@ test_stale_regrant_guard(void) {
         rc |= expect_true("stale guard armed",
                           ctx.recent_call_end_valid == 1 && ctx.recent_call_end_freq_hz == g_last_tuned_vc
                               && ctx.recent_call_end_slot == 1 && ctx.recent_call_end_target == 6001
-                              && ctx.t_recent_call_end_last_match_m == ctx.t_recent_call_end_m);
+                              && ctx.t_recent_call_end_last_match_m == 0.0);
         rc |= expect_true("normal end did not arm failed-vc backoff", retune_backoff_empty(&state));
         mark_cc_reacquired(&state);
 
@@ -224,8 +226,35 @@ test_stale_regrant_guard(void) {
                           g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
 
         p25_sm_event(&ctx, &opts, &state, &companion);
-        rc |= expect_true("companion slot allowed", g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1
-                                                        && ctx.state == P25_SM_TUNED && ctx.slots[0].grant_active);
+        rc |= expect_true("source-less companion slot skipped",
+                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC);
+
+        p25_sm_event(&ctx, &opts, &state, &identified_companion);
+        rc |= expect_true("identified companion slot allowed",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.state == P25_SM_TUNED
+                              && ctx.slots[0].grant_active && ctx.recent_call_end_valid == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // The first ambiguous assignment after a slow CC reacquisition is still
+    // quarantined. Time spent unable to decode the CC is not evidence that the
+    // assignment was quiet.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6051, 7051, P25_SM_SVC_UNKNOWN);
+        p25_sm_event_t delayed_companion = p25_sm_ev_group_grant(ch_slot0, 0, 6051, 0, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 4.0;
+        ctx.t_recent_call_end_last_match_m = 0.0;
+        p25_sm_event(&ctx, &opts, &state, &delayed_companion);
+        rc |= expect_true("delayed first companion update skipped",
+                          g_tune_to_freq_calls == 1 && opts.trunk_is_tuned == 0 && ctx.state == P25_SM_ON_CC
+                              && ctx.t_recent_call_end_last_match_m > 0.0);
         dsd_state_ext_free_all(&state);
     }
 
@@ -347,6 +376,24 @@ test_stale_regrant_guard(void) {
         ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 3.0;
         p25_sm_event(&ctx, &opts, &state, &ended);
         rc |= expect_true("quiet stale guard allows call",
+                          g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.recent_call_end_valid == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    // Even continuous ambiguous updates cannot starve later calls forever.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        p25_sm_ctx_t ctx;
+        init_stale_regrant_case(&opts, &state, &ctx, id);
+        p25_sm_event_t ended = p25_sm_ev_group_grant(ch_slot1, 0, 6551, 0, P25_SM_SVC_UNKNOWN);
+
+        end_tdma_call(&ctx, &opts, &state, &ended, 1);
+        mark_cc_reacquired(&state);
+        ctx.t_recent_call_end_m = dsd_time_now_monotonic_s() - 11.0;
+        ctx.t_recent_call_end_last_match_m = dsd_time_now_monotonic_s() - 0.25;
+        p25_sm_event(&ctx, &opts, &state, &ended);
+        rc |= expect_true("stale guard max age allows call",
                           g_tune_to_freq_calls == 2 && opts.trunk_is_tuned == 1 && ctx.recent_call_end_valid == 0);
         dsd_state_ext_free_all(&state);
     }

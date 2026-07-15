@@ -26,7 +26,9 @@ p25_sm_vc_sync_from_frame_sync(dsd_opts* opts, const dsd_state* state) {
 
 static void
 p25_sm_vc_no_sync_from_frame_sync(dsd_opts* opts, const dsd_state* state) {
-    p25_sm_note_vc_no_sync_pass(p25_sm_get_ctx(), opts, state);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_note_cc_no_sync_pass(ctx, opts, state);
+    p25_sm_note_vc_no_sync_pass(ctx, opts, state);
 }
 
 void

@@ -98,6 +98,32 @@ typedef struct rtl_stream_test_cqpsk_reacquire_result {
 
 int rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sps, size_t queued_samples,
                                     int cached_symbols, rtl_stream_test_cqpsk_reacquire_result* out_result);
+
+typedef struct rtl_stream_test_fll_retune_result {
+    float fll_freq_before;
+    float fll_freq_after;
+    float retained_fll_scale;
+    int reset_retained_fll;
+    int restored_cached_fll;
+    int distant_frequency_reason;
+} rtl_stream_test_fll_retune_result;
+
+int rtl_stream_test_fll_retune_policy(uint32_t previous_center_freq_hz, uint32_t next_center_freq_hz,
+                                      int previous_rate_out_hz, int next_rate_out_hz,
+                                      rtl_stream_test_fll_retune_result* out_result);
+
+typedef struct rtl_stream_test_fll_retune_cache_result {
+    int first_hop_reset;
+    float first_hop_fll_after;
+    int cc_restore_used_cache;
+    float cc_restore_fll_after;
+    float expected_cc_fll;
+    int vc_restore_used_cache;
+    float vc_restore_fll_after;
+    float expected_vc_fll;
+} rtl_stream_test_fll_retune_cache_result;
+
+int rtl_stream_test_fll_retune_cache_round_trip(rtl_stream_test_fll_retune_cache_result* out_result);
 int rtl_stream_test_retune_profile_request_binding(int* out_first_profile, int* out_second_profile,
                                                    uint32_t* out_first_freq_hz, uint32_t* out_second_freq_hz,
                                                    uint32_t* out_first_request_id, uint32_t* out_second_request_id);

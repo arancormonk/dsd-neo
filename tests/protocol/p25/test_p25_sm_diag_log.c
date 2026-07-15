@@ -226,6 +226,7 @@ main(void) {
     ctx.t_cc_tune_m = reacquire_tune_m;
     state.last_cc_sync_time_m = reacquire_tune_m;
     state.p25_last_cc_msg_time_m = reacquire_tune_m - 0.25;
+    p25_sm_note_cc_no_sync_pass(&ctx, &opts, &state);
     p25_sm_tick_ctx(&ctx, &opts, &state);
     state.last_cc_sync_time_m = dsd_time_now_monotonic_s() + 0.001;
     state.p25_last_cc_msg_time_m = state.last_cc_sync_time_m;
@@ -295,6 +296,7 @@ main(void) {
     rc |= expect_contains(output, "effective_grace=5.000");
 #ifdef USE_RADIO
     rc |= expect_contains(output, "event=cc_reacquire_request");
+    rc |= expect_contains(output, "trigger=frame-sync-no-progress");
     rc |= expect_contains(output, "result=queued");
     rc |= expect_contains(output, "generation=42");
     rc |= expect_contains(output, "reacquire_attempted=1");
