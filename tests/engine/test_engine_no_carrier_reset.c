@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -394,7 +395,7 @@ main(void) {
     rc |= expect_true("p25-vc-reacquire-hold-preserves-freq",
                       state->p25_vc_freq[0] == 851012500 && state->p25_vc_freq[1] == 851012500);
     rc |= expect_true("p25-vc-reacquire-hold-preserves-sync-deadline",
-                      state->last_vc_sync_time_m == recovery_now_m - 11.0);
+                      fabs(state->last_vc_sync_time_m - (recovery_now_m - 11.0)) <= 1.0e-9);
 
     recovery_ctx->t_vc_reacquire_m = 0.0;
     opts->audio_in_type = saved_audio_in_type;

@@ -2149,7 +2149,7 @@ main(void) {
     assert(ctx20v.vc_no_sync_passes == 3U);
     assert(g_result_tune_to_freq_calls == early_reacquire_hardware_tunes);
     assert(g_result_return_to_cc_calls == 0);
-    assert(ctx20v.t_tune_m == vc_no_sync_reacquire_tune_m);
+    assert(fabs(ctx20v.t_tune_m - vc_no_sync_reacquire_tune_m) <= cc_sync_epsilon_s);
 
     // Exact frame sync is acquisition proof, not voice activity. It cancels
     // further recovery without starting or extending the call timers.

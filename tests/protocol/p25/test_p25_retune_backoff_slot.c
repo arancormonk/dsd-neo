@@ -24,6 +24,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -217,7 +218,7 @@ test_stale_regrant_guard(void) {
         rc |= expect_true("stale guard armed",
                           ctx.recent_call_end_valid == 1 && ctx.recent_call_end_freq_hz == g_last_tuned_vc
                               && ctx.recent_call_end_slot == 1 && ctx.recent_call_end_target == 6001
-                              && ctx.t_recent_call_end_last_match_m == 0.0);
+                              && fabs(ctx.t_recent_call_end_last_match_m) <= 1.0e-9);
         rc |= expect_true("normal end did not arm failed-vc backoff", retune_backoff_empty(&state));
         mark_cc_reacquired(&state);
 
