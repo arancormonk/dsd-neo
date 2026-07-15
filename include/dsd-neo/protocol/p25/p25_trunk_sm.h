@@ -148,6 +148,18 @@ typedef struct {
     int last_end_src;        // Source RID carried by the last accepted MAC_END_PTT
 } p25_sm_slot_ctx_t;
 
+typedef struct {
+    double end_m;        // Monotonic timestamp when the quarantine was armed
+    double last_match_m; // Monotonic timestamp of the last matching CC update
+    long freq_hz;        // Ended call RF frequency
+    int slot;            // Ended TDMA slot
+    int target;          // OTA talkgroup for group calls, destination RID for private calls
+    int src;             // Source RID accepted from MAC_END_PTT, or an unknown-source value
+    int is_group;        // 1 for group call, 0 for individual/private
+    int probe_attempted; // 1 after the bounded validation tune becomes eligible
+    int valid;           // 1 while matching ambiguous CC updates remain quarantined
+} p25_sm_recent_call_end_t;
+
 /* ============================================================================
  * State Machine Context
  * ============================================================================ */
@@ -174,19 +186,10 @@ typedef struct {
     uint32_t cc_no_sync_passes;      // Completed frame-sync searches while a returned CC is still undecoded
     uint32_t vc_no_sync_passes;      // Completed frame-sync searches without P25P2 sync during VC acquisition
 
-    // Identity quarantine for a voice call ended by MAC_END_PTT. Ambiguous CC
-    // updates for the ended target/carrier/slot are suppressed until quiet or
-    // until one bounded validation tune becomes eligible. Companion-slot calls
-    // remain independently eligible.
-    double t_recent_call_end_m;
-    double t_recent_call_end_last_match_m;
-    long recent_call_end_freq_hz;
-    int recent_call_end_slot;
-    int recent_call_end_target; // OTA talkgroup for group calls, destination RID for private calls
-    int recent_call_end_src;
-    int recent_call_end_is_group;
-    int recent_call_end_probe_attempted;
-    int recent_call_end_valid;
+    // Per-slot identity quarantines for voice calls ended by MAC_END_PTT.
+    // Ambiguous CC updates for each ended target/carrier/slot are suppressed
+    // until quiet or until one bounded validation tune becomes eligible.
+    p25_sm_recent_call_end_t recent_call_ends[2];
 
     // Per-slot activity (index 0 = left/P1, index 1 = right)
     p25_sm_slot_ctx_t slots[2];
