@@ -36,6 +36,7 @@ static int g_dibit_sequence_len;
 static int g_dibit_sequence[80];
 static int g_open_mbe_calls;
 static int g_vocoder_calls;
+static int g_imbe_log_calls;
 static dsd_vocoder_soft_bit g_last_imbe_soft[8][23];
 static int g_hard_hamming_result;
 static int g_soft_hamming_result;
@@ -87,6 +88,16 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
     (void)imbe7100_fr;
     g_vocoder_calls++;
     DSD_MEMCPY(g_last_imbe_soft, imbe_fr, sizeof(g_last_imbe_soft));
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_mbe_log_imbe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23]) {
+    (void)state;
+    (void)imbe_fr;
+    if (opts && (opts->payload == 1 || opts->frame_log_file[0] != '\0')) {
+        g_imbe_log_calls++;
+    }
 }
 
 void
@@ -298,6 +309,7 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
 
     g_vocoder_calls = 0;
     g_open_mbe_calls = 0;
+    g_imbe_log_calls = 0;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     int rc = 0;
     rc |= expect_int("non-standard c0 skipped", g_vocoder_calls, 0);
@@ -307,7 +319,15 @@ test_ldu_imbe_skip_and_encryption_flag(void) {
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     rc |= expect_int("pending crypto does not open recording", g_open_mbe_calls, 0);
     rc |= expect_int("pending crypto does not dispatch vocoder", g_vocoder_calls, 0);
+    rc |= expect_int("pending crypto without detail does not log IMBE", g_imbe_log_calls, 0);
 
+    opts.payload = 1;
+    process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
+    rc |= expect_int("pending crypto payload detail logs IMBE", g_imbe_log_calls, 1);
+    rc |= expect_int("pending crypto payload detail keeps recording closed", g_open_mbe_calls, 0);
+    rc |= expect_int("pending crypto payload detail bypasses vocoder", g_vocoder_calls, 0);
+
+    opts.payload = 0;
     opts.unmute_encrypted_p25 = 1;
     process_imbe_or_skip_non_standard(&opts, &state, imbe_fr, imbe_soft_fr);
     rc |= expect_int("explicit P25 unmute dispatches pending crypto", g_vocoder_calls, 1);

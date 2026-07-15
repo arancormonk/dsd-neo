@@ -960,6 +960,7 @@ p25p2_decode_and_store_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder
         return;
     }
     if (!p25_crypto_audio_permitted(opts, state, slot) || !state->p25_p2_audio_allowed[slot]) {
+        dsd_mbe_log_ambe_soft_frame(opts, state, ambe_soft);
         p25p2_zero_voice_frame(state, frame_index);
         return;
     }
