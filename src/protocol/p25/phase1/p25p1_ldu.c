@@ -76,6 +76,7 @@ process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr
         return;
     }
     if (!p25_crypto_audio_permitted(opts, state, 0)) {
+        dsd_mbe_log_imbe_soft_frame(opts, state, imbe_soft_fr);
         DSD_MEMSET(state->audio_out_temp_buf, 0, sizeof(state->audio_out_temp_buf));
         return;
     }

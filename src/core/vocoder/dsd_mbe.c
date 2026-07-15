@@ -187,6 +187,34 @@ decode_ambe2450_frame(int* errs, int* errs2, char ambe_fr[4][24], dsd_vocoder_so
     return store_decode_result(ret, errs, errs2, result) >= 0;
 }
 
+void
+dsd_mbe_log_imbe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23]) {
+    if (!state || !imbe_fr || !dsd_frame_detail_enabled(opts)) {
+        return;
+    }
+
+    char imbe_d[88] = {0};
+    mbe_process_result result;
+    if (decode_imbe7200_frame(state, NULL, imbe_fr, imbe_d, &result)) {
+        PrintIMBEData(opts, state, imbe_d);
+    }
+}
+
+void
+dsd_mbe_log_ambe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit ambe_fr[4][24]) {
+    if (!state || !ambe_fr || !dsd_frame_detail_enabled(opts)) {
+        return;
+    }
+
+    int* errs = state->currentslot == 1 ? &state->errsR : &state->errs;
+    int* errs2 = state->currentslot == 1 ? &state->errs2R : &state->errs2;
+    char ambe_d[49] = {0};
+    mbe_process_result result;
+    if (decode_ambe2450_frame(errs, errs2, NULL, ambe_fr, ambe_d, &result)) {
+        PrintAMBEData(opts, state, ambe_d);
+    }
+}
+
 static void
 update_p25_p1_voice_err_hist(dsd_state* state) {
     int len = state->p25_p1_voice_err_hist_len > 0 ? state->p25_p1_voice_err_hist_len : 50;

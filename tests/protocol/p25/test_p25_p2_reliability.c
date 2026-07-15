@@ -206,6 +206,14 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_mbe_log_ambe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit ambe_fr[4][24]) {
+    (void)opts;
+    (void)state;
+    (void)ambe_fr;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 LFSRP(dsd_state* state) {
     (void)state;
     g_lfsrp_calls++;
