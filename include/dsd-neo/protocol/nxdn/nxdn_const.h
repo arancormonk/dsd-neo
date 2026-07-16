@@ -3,6 +3,10 @@
  * @file
  * @brief NXDN protocol constants and lookup tables.
  */
+
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_CONST_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_CONST_H_
+
 #include <stdint.h>
 // Portions Below from Osmocom OP25
 // NXDN Encoder (C) Copyright 2019 Max H. Parke KA1RBI
@@ -67,3 +71,5 @@ static const uint16_t PERM_12_29[] = {
     309, 321, 333, 345, 10,  22,  34,  46,  58,  70,  82,  94,  106, 118, 130, 142, 154, 166, 178, 190, 202, 214,
     226, 238, 250, 262, 274, 286, 298, 310, 322, 334, 346, 11,  23,  35,  47,  59,  71,  83,  95,  107, 119, 131,
     143, 155, 167, 179, 191, 203, 215, 227, 239, 251, 263, 275, 287, 299, 311, 323, 335, 347};
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_NXDN_NXDN_CONST_H_ */
