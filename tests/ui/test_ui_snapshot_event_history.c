@@ -26,6 +26,25 @@ assert_slot_tail(const dsd_state* snap, uint32_t slot0_src, uint32_t slot1_src) 
 }
 
 static void
+mark_history(Event_History_I* history) {
+    history->revision++;
+    if (history->revision == 0U) {
+        history->revision = 1U;
+    }
+}
+
+static void
+assert_history_copy_counts(uint64_t source_slot0, uint64_t source_slot1, uint64_t consumer_slot0,
+                           uint64_t consumer_slot1) {
+    dsd_app_snapshot_event_history_copy_counts counts;
+    dsd_app_snapshot_test_get_event_history_copy_counts(&counts);
+    assert(counts.source_to_published[0] == source_slot0);
+    assert(counts.source_to_published[1] == source_slot1);
+    assert(counts.published_to_consumer[0] == consumer_slot0);
+    assert(counts.published_to_consumer[1] == consumer_slot1);
+}
+
+static void
 assert_render_fields(const dsd_state* snap) {
     dsd_tg_policy_lookup lookup;
     assert(snap != NULL);
@@ -77,8 +96,10 @@ int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     Event_History_I* history = (Event_History_I*)calloc(2U, sizeof(*history));
-    if (!state || !history) {
+    Event_History_I* replacement = (Event_History_I*)calloc(2U, sizeof(*replacement));
+    if (!state || !history || !replacement) {
         DSD_FPRINTF(stderr, "allocation failed\n");
+        free(replacement);
         free(history);
         free(state);
         return 1;
@@ -127,7 +148,10 @@ main(void) {
     history[1].Event_History_Items[1].source_id = 456U;
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
                  "RADIO-123");
+    mark_history(&history[0]);
+    mark_history(&history[1]);
 
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
     dsd_app_telemetry_publish_snapshot(state);
     history[0].Event_History_Items[1].source_id = 999U;
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
@@ -141,21 +165,68 @@ main(void) {
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
     assert_render_fields(snap);
     assert_cc_candidates(snap);
+    assert_history_copy_counts(1U, 1U, 1U, 1U);
 
-    // Updating non-head history rows must refresh the deep-copied snapshot.
+    // Repeated publications with unchanged revisions do not copy either history slot.
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
+    dsd_app_telemetry_publish_snapshot(state);
+    assert_slot_tail(dsd_app_get_latest_snapshot(), 123U, 456U);
+    assert_history_copy_counts(0U, 0U, 0U, 0U);
+
+    // A slot-0-only mutation copies only slot 0 at both snapshot stages.
     history[0].Event_History_Items[1].source_id = 789U;
+    mark_history(&history[0]);
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
+    dsd_app_telemetry_publish_snapshot(state);
+    assert_slot_tail(dsd_app_get_latest_snapshot(), 789U, 456U);
+    assert_history_copy_counts(1U, 0U, 1U, 0U);
+
+    // Slot 1 advances independently from slot 0.
     history[1].Event_History_Items[1].source_id = 987U;
+    mark_history(&history[1]);
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
     dsd_app_telemetry_publish_snapshot(state);
     assert_slot_tail(dsd_app_get_latest_snapshot(), 789U, 987U);
+    assert_history_copy_counts(0U, 1U, 0U, 1U);
 
-    // A reset-like clear with unchanged head rows must also be reflected.
-    DSD_MEMSET(history, 0, 2U * sizeof(*history));
+    // Resetting both histories publishes both cleared slots.
+    DSD_MEMSET(history[0].Event_History_Items, 0, sizeof(history[0].Event_History_Items));
+    DSD_MEMSET(history[1].Event_History_Items, 0, sizeof(history[1].Event_History_Items));
+    mark_history(&history[0]);
+    mark_history(&history[1]);
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
     dsd_app_telemetry_publish_snapshot(state);
     assert_slot_tail(dsd_app_get_latest_snapshot(), 0U, 0U);
+    assert_history_copy_counts(1U, 1U, 1U, 1U);
 
+    // Present-to-null does not copy stale backing storage.
     state->event_history_s = NULL;
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
     dsd_app_telemetry_publish_snapshot(state);
     assert(dsd_app_get_latest_snapshot()->event_history_s == NULL);
+    assert_history_copy_counts(0U, 0U, 0U, 0U);
+
+    // Null-to-present forces both slots, regardless of their last observed revisions.
+    history[0].Event_History_Items[1].source_id = 111U;
+    history[1].Event_History_Items[1].source_id = 222U;
+    mark_history(&history[0]);
+    mark_history(&history[1]);
+    state->event_history_s = history;
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
+    dsd_app_telemetry_publish_snapshot(state);
+    assert_slot_tail(dsd_app_get_latest_snapshot(), 111U, 222U);
+    assert_history_copy_counts(1U, 1U, 1U, 1U);
+
+    // Replacing the source pointer forces both slots even when revisions coincide.
+    replacement[0].revision = history[0].revision;
+    replacement[1].revision = history[1].revision;
+    replacement[0].Event_History_Items[1].source_id = 333U;
+    replacement[1].Event_History_Items[1].source_id = 444U;
+    state->event_history_s = replacement;
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
+    dsd_app_telemetry_publish_snapshot(state);
+    assert_slot_tail(dsd_app_get_latest_snapshot(), 333U, 444U);
+    assert_history_copy_counts(1U, 1U, 1U, 1U);
 
     assert(dsd_tg_policy_make_exact_entry(7777U, "B", "POLICY-ONLY", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     assert(dsd_tg_policy_append_exact(state, &entry) == 0);
@@ -168,6 +239,7 @@ main(void) {
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);
+    free(replacement);
     free(history);
     free(state);
     return 0;

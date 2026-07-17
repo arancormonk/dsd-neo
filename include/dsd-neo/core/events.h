@@ -28,6 +28,18 @@ void init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t st
 void push_event_history(Event_History_I* event_struct);
 
 static inline void
+dsd_event_history_mark_dirty(Event_History_I* event_struct) {
+    if (event_struct == NULL) {
+        return;
+    }
+
+    event_struct->revision++;
+    if (event_struct->revision == 0U) {
+        event_struct->revision = 1U;
+    }
+}
+
+static inline void
 dsd_event_history_item_set_metadata(Event_History* item, dsd_event_severity severity, dsd_event_category category) {
     if (item == NULL) {
         return;

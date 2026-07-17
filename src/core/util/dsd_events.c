@@ -50,6 +50,10 @@ copy_str_field(char* dst, const char* src, size_t cap) {
 //init each event history struct passed into here
 void
 init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
+    if (event_struct == NULL || start >= stop) {
+        return;
+    }
+
     for (uint8_t i = start; i < stop; i++) {
         event_struct->Event_History_Items[i].write = 0;
         event_struct->Event_History_Items[i].color_pair = 4;
@@ -87,10 +91,14 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].event_string[0] = '\0';
         event_struct->Event_History_Items[i].internal_str[0] = '\0';
     }
+    dsd_event_history_mark_dirty(event_struct);
 }
 
 void
 push_event_history(Event_History_I* event_struct) {
+    if (event_struct == NULL) {
+        return;
+    }
 
     //Fixed, had it going in the wrong direction first time
     for (uint8_t i = 254; i >= 1; i--) {
@@ -147,6 +155,7 @@ push_event_history(Event_History_I* event_struct) {
                        event_struct->Event_History_Items[i - 1].internal_str,
                        sizeof event_struct->Event_History_Items[i].internal_str);
     }
+    dsd_event_history_mark_dirty(event_struct);
 }
 
 void
@@ -495,7 +504,7 @@ watchdog_event_build_edacs_sup_str(uint16_t svc_opts, int use_underscore, char* 
 }
 
 static void
-watchdog_event_set_ysf_text_message(dsd_state* state, Event_History_I* event_struct) {
+watchdog_event_set_ysf_text_message(dsd_state* state, Event_History* item) {
     char ysf_emp[21][21];
     DSD_MEMSET(ysf_emp, 0, sizeof(ysf_emp));
 
@@ -504,15 +513,15 @@ watchdog_event_set_ysf_text_message(dsd_state* state, Event_History_I* event_str
         for (uint8_t i = 4; i < 8; i++) {
             for (uint8_t j = 0; j < 20; j++) {
                 if (state->ysf_txt[i][j] != 0x2A) {
-                    event_struct->Event_History_Items[0].text_message[k++] = state->ysf_txt[i][j];
+                    item->text_message[k++] = state->ysf_txt[i][j];
                 } else {
-                    event_struct->Event_History_Items[0].text_message[k++] = 0x20;
+                    item->text_message[k++] = 0x20;
                 }
             }
-            event_struct->Event_History_Items[0].text_message[k] = 0;
+            item->text_message[k] = 0;
         }
     } else {
-        event_struct->Event_History_Items[0].text_message[0] = '\0';
+        item->text_message[0] = '\0';
     }
 }
 
@@ -642,9 +651,9 @@ watchdog_event_current_apply_nxdn(const dsd_state* state, watchdog_event_current
 }
 
 static void
-watchdog_event_current_apply_ysf(dsd_state* state, Event_History_I* event_struct, watchdog_event_current_ctx* ctx) {
+watchdog_event_current_apply_ysf(dsd_state* state, Event_History* item, watchdog_event_current_ctx* ctx) {
     ctx->source_id = watchdog_event_source_ysf(state);
-    watchdog_event_set_ysf_text_message(state, event_struct);
+    watchdog_event_set_ysf_text_message(state, item);
 
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "YSF");
     watchdog_event_set_sanitized_ascii_id(ctx->src_str, sizeof(ctx->src_str), state->ysf_src, 10);
@@ -714,14 +723,14 @@ watchdog_event_current_apply_edacs(const dsd_opts* opts, dsd_state* state, watch
 }
 
 static void
-watchdog_event_current_apply_slot0_overrides(const dsd_opts* opts, dsd_state* state, Event_History_I* event_struct,
+watchdog_event_current_apply_slot0_overrides(const dsd_opts* opts, dsd_state* state, Event_History* item,
                                              watchdog_event_current_ctx* ctx) {
     if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
         watchdog_event_current_apply_nxdn(state, ctx);
     }
 
     if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
-        watchdog_event_current_apply_ysf(state, event_struct, ctx);
+        watchdog_event_current_apply_ysf(state, item, ctx);
     }
 
     if (watchdog_event_is_m17_sync(state->lastsynctype)) {
@@ -760,48 +769,41 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
 }
 
 static void
-watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History_I* event_struct,
-                                   const watchdog_event_current_ctx* ctx) {
-    event_struct->Event_History_Items[0].write = 0;
-    dsd_event_history_item_set_metadata(&event_struct->Event_History_Items[0], ctx->severity, ctx->category);
+watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History* item,
+                                   const watchdog_event_current_ctx* ctx, time_t now) {
+    item->write = 0;
+    dsd_event_history_item_set_metadata(item, ctx->severity, ctx->category);
     if (state->lastsynctype != DSD_SYNC_NONE) {
-        event_struct->Event_History_Items[0].systype = state->lastsynctype;
+        item->systype = state->lastsynctype;
     } else {
-        event_struct->Event_History_Items[0].systype = 39;
+        item->systype = 39;
     }
-    event_struct->Event_History_Items[0].subtype = ctx->subtype;
-    event_struct->Event_History_Items[0].gi = state->gi[slot];
-    event_struct->Event_History_Items[0].sys_id1 = ctx->sys_id1;
-    event_struct->Event_History_Items[0].sys_id2 = ctx->sys_id2;
-    event_struct->Event_History_Items[0].sys_id3 = ctx->sys_id3;
-    event_struct->Event_History_Items[0].sys_id4 = ctx->sys_id4;
-    event_struct->Event_History_Items[0].sys_id5 = ctx->sys_id5;
-    event_struct->Event_History_Items[0].enc = ctx->enc;
-    event_struct->Event_History_Items[0].enc_alg = ctx->alg_id;
-    event_struct->Event_History_Items[0].enc_key = ctx->key_id;
-    event_struct->Event_History_Items[0].mi = ctx->mi;
-    event_struct->Event_History_Items[0].svc = ctx->svc_opts;
-    event_struct->Event_History_Items[0].source_id = ctx->source_id;
-    event_struct->Event_History_Items[0].target_id = ctx->target_id;
-    event_struct->Event_History_Items[0].channel = ctx->channel;
+    item->subtype = ctx->subtype;
+    item->gi = state->gi[slot];
+    item->sys_id1 = ctx->sys_id1;
+    item->sys_id2 = ctx->sys_id2;
+    item->sys_id3 = ctx->sys_id3;
+    item->sys_id4 = ctx->sys_id4;
+    item->sys_id5 = ctx->sys_id5;
+    item->enc = ctx->enc;
+    item->enc_alg = ctx->alg_id;
+    item->enc_key = ctx->key_id;
+    item->mi = ctx->mi;
+    item->svc = ctx->svc_opts;
+    item->source_id = ctx->source_id;
+    item->target_id = ctx->target_id;
+    item->channel = ctx->channel;
     if (opts->playfiles == 0) {
-        event_struct->Event_History_Items[0].event_time = time(NULL);
+        item->event_time = now;
     }
 
-    DSD_SNPRINTF(event_struct->Event_History_Items[0].sysid_string,
-                 sizeof(event_struct->Event_History_Items[0].sysid_string), "%s", ctx->sysid_string);
-    DSD_SNPRINTF(event_struct->Event_History_Items[0].src_str, sizeof(event_struct->Event_History_Items[0].src_str),
-                 "%s", ctx->src_str);
-    DSD_SNPRINTF(event_struct->Event_History_Items[0].tgt_str, sizeof(event_struct->Event_History_Items[0].tgt_str),
-                 "%s", ctx->tgt_str);
-    DSD_SNPRINTF(event_struct->Event_History_Items[0].t_name, sizeof(event_struct->Event_History_Items[0].t_name), "%s",
-                 ctx->t_name);
-    DSD_SNPRINTF(event_struct->Event_History_Items[0].s_name, sizeof(event_struct->Event_History_Items[0].s_name), "%s",
-                 ctx->s_name);
-    DSD_SNPRINTF(event_struct->Event_History_Items[0].t_mode, sizeof(event_struct->Event_History_Items[0].t_mode), "%s",
-                 ctx->t_mode);
-    DSD_SNPRINTF(event_struct->Event_History_Items[0].s_mode, sizeof(event_struct->Event_History_Items[0].s_mode), "%s",
-                 ctx->s_mode);
+    DSD_SNPRINTF(item->sysid_string, sizeof(item->sysid_string), "%s", ctx->sysid_string);
+    DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", ctx->src_str);
+    DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", ctx->tgt_str);
+    DSD_SNPRINTF(item->t_name, sizeof(item->t_name), "%s", ctx->t_name);
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", ctx->s_name);
+    DSD_SNPRINTF(item->t_mode, sizeof(item->t_mode), "%s", ctx->t_mode);
+    DSD_SNPRINTF(item->s_mode, sizeof(item->s_mode), "%s", ctx->s_mode);
 }
 
 static void
@@ -1035,12 +1037,14 @@ watchdog_event_current_append_policy_labels(const watchdog_event_current_ctx* ct
 void
 watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History candidate;
+    DSD_MEMCPY(&candidate, &event_struct->Event_History_Items[0], sizeof(candidate));
 
     watchdog_event_current_ctx ctx;
     watchdog_event_current_init_base(state, slot, &ctx);
 
     if (slot == 0) {
-        watchdog_event_current_apply_slot0_overrides(opts, state, event_struct, &ctx);
+        watchdog_event_current_apply_slot0_overrides(opts, state, &candidate, &ctx);
     }
 
     watchdog_event_current_normalize_p25_crypto(state, slot, &ctx);
@@ -1054,7 +1058,7 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
-    watchdog_event_current_update_item(opts, state, slot, event_struct, &ctx);
+    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now);
 
     char event_string[2000];
     DSD_MEMSET(event_string, 0, sizeof(event_string));
@@ -1062,8 +1066,14 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
                                               sizeof(event_string));
     watchdog_event_current_append_policy_labels(&ctx, event_string, sizeof(event_string));
 
-    DSD_SNPRINTF(event_struct->Event_History_Items[0].event_string,
-                 sizeof(event_struct->Event_History_Items[0].event_string), "%s", event_string);
+    DSD_SNPRINTF(candidate.event_string, sizeof(candidate.event_string), "%s", event_string);
+
+    // The candidate starts as an exact byte copy of the current row, so padding bytes remain identical.
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison,cert-exp42-c,cert-flp37-c)
+    if (memcmp(&candidate, &event_struct->Event_History_Items[0], sizeof(candidate)) != 0) {
+        DSD_MEMCPY(&event_struct->Event_History_Items[0], &candidate, sizeof(candidate));
+        dsd_event_history_mark_dirty(event_struct);
+    }
 
     /* stack buffers; no free */
 }
@@ -1094,6 +1104,7 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
     (void)dsd_format_local_datetime(now, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
 
     DSD_SNPRINTF(item->event_string, sizeof item->event_string, "%s %s %s", datestr, timestr, status_string);
+    dsd_event_history_mark_dirty(event_struct);
 }
 
 void
@@ -1131,6 +1142,7 @@ watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t
     DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].event_string,
                  sizeof state->event_history_s[slot].Event_History_Items[0].event_string, "%s",
                  event_string); // could change this to a strncpy to prevent potential overflow
+    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
 
     dsd_frame_logf(opts, "FRAME DATA slot=%d src=%u dst=%u %s", slot + 1, src, dst, data_string ? data_string : "");
 

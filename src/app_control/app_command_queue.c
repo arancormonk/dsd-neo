@@ -2871,6 +2871,7 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     DSD_SNPRINTF(state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
                  sizeof state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
                  "Target: %d; has been locked out; User Lock Out.", tg);
+    dsd_event_history_mark_dirty(&state->event_history_s[eh_slot]);
     watchdog_event_current(opts, state, eh_slot);
     DSD_SNPRINTF(state->call_string[eh_slot], sizeof state->call_string[eh_slot], "%s",
                  "                     "); // 21 spaces
@@ -2965,6 +2966,7 @@ ui_cmd_handle_symcap_save(dsd_opts* opts, dsd_state* state, const struct dsd_app
         watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
         dsd_event_history_item_set_metadata(&state->event_history_s[0].Event_History_Items[0], DSD_EVENT_SEVERITY_INFO,
                                             DSD_EVENT_CATEGORY_SYSTEM);
+        dsd_event_history_mark_dirty(&state->event_history_s[0]);
         state->lastsrc = 0;
         watchdog_event_history(opts, state, 0);
         watchdog_event_current(opts, state, 0);
@@ -2986,6 +2988,7 @@ ui_cmd_handle_symcap_stop(dsd_opts* opts, dsd_state* state, const struct dsd_app
             watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
             dsd_event_history_item_set_metadata(&state->event_history_s[0].Event_History_Items[0],
                                                 DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_SYSTEM);
+            dsd_event_history_mark_dirty(&state->event_history_s[0]);
             state->lastsrc = 0;
             watchdog_event_history(opts, state, 0);
             watchdog_event_current(opts, state, 0);

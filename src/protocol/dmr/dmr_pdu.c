@@ -102,6 +102,9 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
     //add elipses to indicate this is possibly truncated
 
     //debug
+    if (wr == 1) {
+        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    }
 }
 
 void
@@ -138,6 +141,9 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     }
 
     //add elipses to indicate this is possibly truncated
+    if (wr == 1) {
+        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    }
 }
 
 void
@@ -158,6 +164,7 @@ dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PD
                      state->dmr_lrrp_gps[slot]);
         dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
                                             DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
+        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
     } else {
         if (len >= (127 * 18)) {
             len = 127 * 18; //sanity check of sorts, prevent extra long line print outs in the console
@@ -526,6 +533,7 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
             dmr_lrrp(opts, state, payload_len, src24, dst24, payload, 1);
             dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
                                                 DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
+            dsd_event_history_mark_dirty(&state->event_history_s[slot]);
             return 1;
         case 4004:
             DSD_FPRINTF(stderr, "XCMP;");
@@ -533,6 +541,7 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
                          dst24);
             dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
                                                 DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
+            dsd_event_history_mark_dirty(&state->event_history_s[slot]);
             return 1;
         case 4005: {
             DSD_FPRINTF(stderr, "ARS;");

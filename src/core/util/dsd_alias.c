@@ -15,6 +15,7 @@
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/embedded_alias.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -463,6 +464,7 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
     if (current_call_match) {
         DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].alias,
                      sizeof(state->event_history_s[slot_idx].Event_History_Items[0].alias), "%s; %s", str, fqs);
+        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
     }
 
     if (current_call_match
@@ -808,6 +810,7 @@ l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8
     if (current_call_match) {
         DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].alias,
                      sizeof(state->event_history_s[slot_idx].Event_History_Items[0].alias), "%s", str);
+        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
         if (save_policy) {
             // The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
             l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
@@ -848,6 +851,7 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
     if (state->event_history_s[slot].Event_History_Items[0].source_id == rid) {
         DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
                      sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s", alias);
+        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
     }
 
     if (rid != 0) {
@@ -1113,6 +1117,7 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
     if (state->event_history_s[slot].Event_History_Items[0].source_id == source) {
         DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
                      sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s; ", alias_string);
+        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
     }
     DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "Talker Alias: %s; ",
                  alias_string);

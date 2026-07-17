@@ -11,7 +11,6 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "snapshot_internal.h"
@@ -28,9 +27,20 @@ static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
 static unsigned long long g_pub_seq = 0;
 static unsigned long long g_consume_seq = 0;
-static unsigned long long g_pub_eh_seq = 0;
-static unsigned long long g_consume_eh_seq = 0;
+static uint64_t g_pub_eh_seq[2] = {0};
+static uint64_t g_consume_eh_seq[2] = {0};
+static uint64_t g_pub_eh_source_revision[2] = {0};
+static const Event_History_I* g_pub_eh_source = NULL;
 static int g_pub_eh_present = 0;
+
+#ifdef DSD_NEO_TEST_HOOKS
+static dsd_app_snapshot_event_history_copy_counts g_eh_copy_counts;
+#define UI_SNAPSHOT_COUNT_SOURCE_COPY(slot)   g_eh_copy_counts.source_to_published[(slot)]++
+#define UI_SNAPSHOT_COUNT_CONSUMER_COPY(slot) g_eh_copy_counts.published_to_consumer[(slot)]++
+#else
+#define UI_SNAPSHOT_COUNT_SOURCE_COPY(slot)   ((void)(slot))
+#define UI_SNAPSHOT_COUNT_CONSUMER_COPY(slot) ((void)(slot))
+#endif
 
 #define UI_SNAPSHOT_FIELD_END(field) (offsetof(dsd_state, field) + sizeof(((dsd_state*)0)->field))
 #define UI_SNAPSHOT_COPY_RANGE(dst, src, first, last)                                                                  \
@@ -114,85 +124,6 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, vertex_ks_count, ui_msg);
 }
 
-static int
-ui_event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
-    if (lhs == NULL || rhs == NULL) {
-        return 0;
-    }
-
-    const int scalar_checks[] = {
-        lhs->write == rhs->write,
-        lhs->color_pair == rhs->color_pair,
-        lhs->severity == rhs->severity,
-        lhs->category == rhs->category,
-        lhs->systype == rhs->systype,
-        lhs->subtype == rhs->subtype,
-        lhs->sys_id1 == rhs->sys_id1,
-        lhs->sys_id2 == rhs->sys_id2,
-        lhs->sys_id3 == rhs->sys_id3,
-        lhs->sys_id4 == rhs->sys_id4,
-        lhs->sys_id5 == rhs->sys_id5,
-        lhs->gi == rhs->gi,
-        lhs->enc == rhs->enc,
-        lhs->enc_alg == rhs->enc_alg,
-        lhs->enc_key == rhs->enc_key,
-        lhs->mi == rhs->mi,
-        lhs->svc == rhs->svc,
-        lhs->source_id == rhs->source_id,
-        lhs->target_id == rhs->target_id,
-        lhs->channel == rhs->channel,
-        lhs->event_time == rhs->event_time,
-    };
-    const size_t scalar_count = sizeof(scalar_checks) / sizeof(scalar_checks[0]);
-    for (size_t i = 0; i < scalar_count; i++) {
-        if (!scalar_checks[i]) {
-            return 0;
-        }
-    }
-
-    struct UiByteSpan {
-        const void* left;
-        const void* right;
-        size_t size;
-    };
-    const struct UiByteSpan spans[] = {
-        {lhs->src_str, rhs->src_str, sizeof(lhs->src_str)},
-        {lhs->tgt_str, rhs->tgt_str, sizeof(lhs->tgt_str)},
-        {lhs->t_name, rhs->t_name, sizeof(lhs->t_name)},
-        {lhs->s_name, rhs->s_name, sizeof(lhs->s_name)},
-        {lhs->t_mode, rhs->t_mode, sizeof(lhs->t_mode)},
-        {lhs->s_mode, rhs->s_mode, sizeof(lhs->s_mode)},
-        {lhs->pdu, rhs->pdu, sizeof(lhs->pdu)},
-        {lhs->sysid_string, rhs->sysid_string, sizeof(lhs->sysid_string)},
-        {lhs->alias, rhs->alias, sizeof(lhs->alias)},
-        {lhs->gps_s, rhs->gps_s, sizeof(lhs->gps_s)},
-        {lhs->text_message, rhs->text_message, sizeof(lhs->text_message)},
-        {lhs->event_string, rhs->event_string, sizeof(lhs->event_string)},
-        {lhs->internal_str, rhs->internal_str, sizeof(lhs->internal_str)},
-    };
-    const size_t span_count = sizeof(spans) / sizeof(spans[0]);
-    for (size_t i = 0; i < span_count; i++) {
-        if (memcmp(spans[i].left, spans[i].right, spans[i].size) != 0) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int
-ui_event_history_slot_equal(const Event_History_I* lhs, const Event_History_I* rhs) {
-    if (lhs == NULL || rhs == NULL) {
-        return 0;
-    }
-    const size_t count = sizeof(lhs->Event_History_Items) / sizeof(lhs->Event_History_Items[0]);
-    for (size_t i = 0; i < count; i++) {
-        if (!ui_event_history_item_equal(&lhs->Event_History_Items[i], &rhs->Event_History_Items[i])) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static void
 ensure_mu_init(void) {
     int expected = 0;
@@ -200,6 +131,27 @@ ensure_mu_init(void) {
         dsd_mutex_init(&g_mu);
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_app_snapshot_test_reset_event_history_copy_counts(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    DSD_MEMSET(&g_eh_copy_counts, 0, sizeof(g_eh_copy_counts));
+    dsd_mutex_unlock(&g_mu);
+}
+
+void
+dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_history_copy_counts* counts) {
+    if (counts == NULL) {
+        return;
+    }
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    *counts = g_eh_copy_counts;
+    dsd_mutex_unlock(&g_mu);
+}
+#endif
 
 void
 dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
@@ -210,27 +162,23 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
     dsd_mutex_lock(&g_mu);
     ui_snapshot_copy_render_state(&g_pub, state);
     ui_snapshot_copy_trunk_cc_candidates(&g_pub, state, &g_pub_cc_candidates);
-    // Deep copy pointer-backed UI data (event history for 2 slots) only when changed.
-    // Event history storage is zero-initialized and copied as a whole slot.
+    // Deep copy pointer-backed UI data (event history for 2 slots) only when its revision changes.
     if (state->event_history_s != NULL) {
-        int eh_changed = g_pub_eh_present ? 0 : 1;
-        if (!g_have || !ui_event_history_slot_equal(&g_pub_eh[0], &state->event_history_s[0])) {
-            DSD_MEMCPY(&g_pub_eh[0], &state->event_history_s[0], sizeof(Event_History_I));
-            eh_changed = 1;
+        const int force_copy = !g_have || !g_pub_eh_present || g_pub_eh_source != state->event_history_s;
+        for (size_t slot = 0; slot < 2U; slot++) {
+            const uint64_t source_revision = state->event_history_s[slot].revision;
+            if (force_copy || g_pub_eh_source_revision[slot] != source_revision) {
+                DSD_MEMCPY(&g_pub_eh[slot], &state->event_history_s[slot], sizeof(Event_History_I));
+                g_pub_eh_source_revision[slot] = source_revision;
+                g_pub_eh_seq[slot]++;
+                UI_SNAPSHOT_COUNT_SOURCE_COPY(slot);
+            }
         }
-        if (!g_have || !ui_event_history_slot_equal(&g_pub_eh[1], &state->event_history_s[1])) {
-            DSD_MEMCPY(&g_pub_eh[1], &state->event_history_s[1], sizeof(Event_History_I));
-            eh_changed = 1;
-        }
-        if (eh_changed) {
-            g_pub_eh_seq++;
-        }
+        g_pub_eh_source = state->event_history_s;
         g_pub_eh_present = 1;
         g_pub.event_history_s = g_pub_eh;
     } else {
-        if (g_pub_eh_present) {
-            g_pub_eh_seq++;
-        }
+        g_pub_eh_source = NULL;
         g_pub_eh_present = 0;
         g_pub.event_history_s = NULL;
     }
@@ -254,10 +202,12 @@ dsd_app_get_latest_snapshot(void) {
     }
     // Deep copy event history only when the published history changed.
     if (g_pub.event_history_s != NULL) {
-        if (g_consume_eh_seq != g_pub_eh_seq) {
-            DSD_MEMCPY(&g_consume_eh[0], &g_pub_eh[0], sizeof(Event_History_I));
-            DSD_MEMCPY(&g_consume_eh[1], &g_pub_eh[1], sizeof(Event_History_I));
-            g_consume_eh_seq = g_pub_eh_seq;
+        for (size_t slot = 0; slot < 2U; slot++) {
+            if (g_consume_eh_seq[slot] != g_pub_eh_seq[slot]) {
+                DSD_MEMCPY(&g_consume_eh[slot], &g_pub_eh[slot], sizeof(Event_History_I));
+                g_consume_eh_seq[slot] = g_pub_eh_seq[slot];
+                UI_SNAPSHOT_COUNT_CONSUMER_COPY(slot);
+            }
         }
         g_consume.event_history_s = g_consume_eh;
     } else {

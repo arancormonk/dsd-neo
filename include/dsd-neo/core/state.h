@@ -144,6 +144,7 @@ typedef struct {
 //event history for number of each items above
 typedef struct Event_History_I {
     Event_History Event_History_Items[255];
+    uint64_t revision;
 } Event_History_I;
 
 //new audio filter stuff from: https://github.com/NedSimao/FilteringLibrary

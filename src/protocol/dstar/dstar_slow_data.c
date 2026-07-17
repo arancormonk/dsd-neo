@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -317,6 +318,7 @@ dstar_sd_handle_aprs(dsd_state* state, const uint8_t* sd_bytes) {
     if (start == -1) {
         DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
                      sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dstar_gps);
+        dsd_event_history_mark_dirty(&state->event_history_s[0]);
         return;
     }
 
@@ -324,6 +326,7 @@ dstar_sd_handle_aprs(dsd_state* state, const uint8_t* sd_bytes) {
     dstar_sd_print_aprs_lon(state, aprs, &start, temp, tempa);
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
                  sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dstar_gps);
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
 }
 
 static void
@@ -334,6 +337,7 @@ dstar_sd_handle_text_message(dsd_state* state, dstar_sd_ctx* ctx) {
     DSD_MEMCPY(state->dstar_txt, ctx->strt, sizeof(ctx->strt));
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].text_message,
                  sizeof(state->event_history_s[0].Event_History_Items[0].text_message), "%s", state->dstar_txt);
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
 }
 
 static void

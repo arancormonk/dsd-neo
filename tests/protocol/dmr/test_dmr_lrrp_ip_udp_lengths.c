@@ -513,10 +513,15 @@ main(void) {
         reset_spies();
         const uint8_t text[] = {'A', 'B', 'C'};
         st.event_history_s[0].Event_History_Items[0].text_message[0] = '\0';
+        const uint64_t revision = st.event_history_s[0].revision;
         utf8_to_text(&st, 1, (uint16_t)sizeof text, text);
         if (strcmp(st.event_history_s[0].Event_History_Items[0].text_message, "ABC") != 0) {
             DSD_FPRINTF(stderr, "utf8 text append: got '%s'\n",
                         st.event_history_s[0].Event_History_Items[0].text_message);
+            rc |= 1;
+        }
+        if (st.event_history_s[0].revision != revision + 1U) {
+            DSD_FPRINTF(stderr, "utf8 text append did not advance history revision once\n");
             rc |= 1;
         }
     }

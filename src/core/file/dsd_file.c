@@ -911,6 +911,7 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
             dsd_event_history_item_set_metadata(&state->event_history_s[0].Event_History_Items[0],
                                                 DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_SYSTEM);
+            dsd_event_history_mark_dirty(&state->event_history_s[0]);
             state->lastsrc =
                 0; //this could wipe a call, but usually on TDMA cc's, slot 1 is the control channel, so may never be set when this is run
             watchdog_event_history(opts, state, 0);
@@ -1900,6 +1901,7 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     (void)dsd_parse_long_strict(time_str, 10, 0L, LONG_MAX, &event_seconds);
     time_t event_time = (time_t)event_seconds;
     state->event_history_s[0].Event_History_Items[0].event_time = event_time;
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
 
     char timestr[9];
     char datestr[11];

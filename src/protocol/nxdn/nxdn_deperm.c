@@ -24,6 +24,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -363,6 +364,7 @@ nxdn_handle_dcr_csm_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
         if (state->event_history_s != NULL) {
             DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
                          sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
+            dsd_event_history_mark_dirty(&state->event_history_s[0]);
         }
     } else if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: decode error; ");
@@ -726,6 +728,7 @@ nxdn_update_sacch2_identity_state(dsd_state* state, const struct nxdn_sacch2_fie
     DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "JPN DCR");
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
                  sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", "JPN DCR");
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
     if (fields->sf_fb) {
         state->payload_miN = 0;
     }
