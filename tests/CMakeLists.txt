@@ -3336,6 +3336,17 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_12_list PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_12_LIST COMMAND dsd-neo_test_p25_12_list)
 
+add_executable(
+    dsd-neo_bench_p25_12
+    EXCLUDE_FROM_ALL
+    protocol/p25/bench_p25_12.cpp
+)
+target_include_directories(
+    dsd-neo_bench_p25_12
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_bench_p25_12 PRIVATE dsd-neo_proto_p25)
+
 add_executable(dsd-neo_test_p25_mbf34 protocol/p25/test_p25_mbf34.c)
 target_include_directories(
     dsd-neo_test_p25_mbf34

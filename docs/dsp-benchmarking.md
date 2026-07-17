@@ -1,7 +1,8 @@
-# DSP and RTL Benchmarking
+# DSP, RTL, and Protocol Benchmarking
 
-DSD-neo keeps DSP and RTL performance probes opt-in. They are meant to measure
-proposed architecture changes before changing production behavior.
+DSD-neo keeps DSP, RTL, and targeted protocol performance probes opt-in. They
+are meant to measure proposed architecture changes before changing production
+behavior.
 
 ## Build
 
@@ -18,6 +19,12 @@ For RTL ingest and live-pipeline support cases, build the RTL benchmark too:
 cmake --build --preset perf-bench --target dsd-neo_bench_rtl -j
 ```
 
+For the P25 Phase 1 1/2-rate list decoder, build the protocol benchmark:
+
+```sh
+cmake --build --preset perf-bench --target dsd-neo_bench_p25_12 -j
+```
+
 The preset uses `RelWithDebInfo`, fast math, frame pointers, and tests enabled.
 It keeps LTO and native CPU tuning off so results are easier to compare across
 machines.
@@ -29,6 +36,7 @@ Run all synthetic benchmark cases:
 ```sh
 build/perf-bench/tests/dsd-neo_bench_dsp --iters 3000 --repeat 5
 build/perf-bench/tests/dsd-neo_bench_rtl --iters 3000 --repeat 5
+build/perf-bench/tests/dsd-neo_bench_p25_12 --iters 3000 --repeat 5
 ```
 
 Run one case and emit CSV:
@@ -38,6 +46,8 @@ build/perf-bench/tests/dsd-neo_bench_dsp \
   --case full_demod_cqpsk_p25p1 --iters 3000 --repeat 5 --format csv
 build/perf-bench/tests/dsd-neo_bench_rtl \
   --case rtl_ingest_u8_combined_wrap --iters 3000 --repeat 5 --format csv
+build/perf-bench/tests/dsd-neo_bench_p25_12 \
+  --case p25_12_list_marginal --iters 3000 --repeat 5 --format csv
 ```
 
 List available cases:
@@ -45,6 +55,7 @@ List available cases:
 ```sh
 build/perf-bench/tests/dsd-neo_bench_dsp --list
 build/perf-bench/tests/dsd-neo_bench_rtl --list
+build/perf-bench/tests/dsd-neo_bench_p25_12 --list
 ```
 
 Useful options:
@@ -76,6 +87,10 @@ The RTL benchmark target includes:
 - Post-demod spectrum snapshot updates used by the UI/metrics path.
 - 512-sample direct-output batch reads.
 
+The P25 list-decoder benchmark includes clean high-confidence, marginal/noisy,
+and equal-metric tie-heavy inputs. It reports each complete 49-symbol decode as
+one call and uses the same CSV timing columns as the DSP and RTL benchmarks.
+
 Channel LPF CSV rows include `rate_hz`, `profile`, `tap_count`, and `variant`
 metadata so tap-count and profile changes can be compared directly.
 
@@ -86,11 +101,14 @@ Keep benchmark CSV files outside the repository, for example under `/tmp`:
 ```sh
 build/perf-bench/tests/dsd-neo_bench_dsp --iters 3000 --repeat 5 --format csv > /tmp/dsd-main.csv
 build/perf-bench/tests/dsd-neo_bench_rtl --iters 3000 --repeat 5 --format csv > /tmp/dsd-rtl-main.csv
+build/perf-bench/tests/dsd-neo_bench_p25_12 --iters 3000 --repeat 5 --format csv > /tmp/dsd-p25-main.csv
 # switch branch or apply a patch
 build/perf-bench/tests/dsd-neo_bench_dsp --iters 3000 --repeat 5 --format csv > /tmp/dsd-candidate.csv
 build/perf-bench/tests/dsd-neo_bench_rtl --iters 3000 --repeat 5 --format csv > /tmp/dsd-rtl-candidate.csv
+build/perf-bench/tests/dsd-neo_bench_p25_12 --iters 3000 --repeat 5 --format csv > /tmp/dsd-p25-candidate.csv
 python3 tools/dsp_bench_compare.py /tmp/dsd-main.csv /tmp/dsd-candidate.csv
 python3 tools/dsp_bench_compare.py /tmp/dsd-rtl-main.csv /tmp/dsd-rtl-candidate.csv
+python3 tools/dsp_bench_compare.py /tmp/dsd-p25-main.csv /tmp/dsd-p25-candidate.csv --metric median_ns_per_call
 ```
 
 Focused comparisons are usually more useful than all-case runs:
