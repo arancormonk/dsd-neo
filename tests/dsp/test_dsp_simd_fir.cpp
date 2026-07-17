@@ -15,11 +15,14 @@
  * Covers edge cases: small blocks, odd lengths, history continuity, alignment.
  */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/simd_fir.h>
+#include <memory>
+#include <vector>
 #include "dsd-neo/core/safe_api.h"
 #include "dsp/simd_fir_internal.h"
 
@@ -367,6 +370,330 @@ test_direct_backend_invalid_guards(const char* name, complex_fir_backend_fn fir_
     std::printf("  PASS\n");
     return 0;
 }
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64)            \
+    || defined(_M_ARM64EC)
+
+namespace {
+enum class FixedBufferMode : uint8_t { Aligned, Unaligned, ExactSize };
+} // namespace
+
+static const char*
+fixed_buffer_mode_name(FixedBufferMode mode) {
+    switch (mode) {
+        case FixedBufferMode::Aligned: return "aligned";
+        case FixedBufferMode::Unaligned: return "unaligned";
+        case FixedBufferMode::ExactSize: return "exact-size";
+    }
+    return "unknown";
+}
+
+static float*
+fixed_test_buffer(std::vector<float>* storage, int count, FixedBufferMode mode) {
+    if (mode == FixedBufferMode::ExactSize) {
+        storage->resize((size_t)count);
+        return storage->data();
+    }
+
+    storage->resize((size_t)count + 16U);
+    void* buffer = storage->data();
+    size_t space = storage->size() * sizeof(float);
+    const size_t required = ((size_t)count + 1U) * sizeof(float);
+    float* aligned = static_cast<float*>(std::align(32U, required, buffer, space));
+    return (mode == FixedBufferMode::Unaligned) ? aligned + 1 : aligned;
+}
+
+template <int TapsLen>
+static void
+make_synthetic_halfband_taps(float* taps) {
+    const int center = (TapsLen - 1) >> 1;
+    for (int k = 0; k < TapsLen; k++) {
+        taps[k] = 0.0f;
+    }
+    for (int e = 0; e < center; e += 2) {
+        const float sign = ((e >> 1) & 1) ? -1.0f : 1.0f;
+        const float value = sign * (0.004f + 0.001f * (float)(e + 1));
+        taps[e] = value;
+        taps[TapsLen - 1 - e] = value;
+    }
+    taps[center] = 0.47f;
+}
+
+template <int TapsLen>
+static int
+run_direct_fixed_hb_case(const char* backend, complex_hb_backend_fn fn, const float* taps, const char* tap_name,
+                         int ch_len, FixedBufferMode mode) {
+    const int in_len = ch_len << 1;
+    const int hist_len = TapsLen - 1;
+    const int out_capacity = std::max(ch_len, 2);
+    constexpr float kOutputSentinel = 12345.0f;
+
+    std::vector<float> in_storage;
+    std::vector<float> out_storage;
+    std::vector<float> hist_i_storage;
+    std::vector<float> hist_q_storage;
+    float* in = fixed_test_buffer(&in_storage, in_len, mode);
+    float* out_simd = fixed_test_buffer(&out_storage, out_capacity, mode);
+    float* hist_i_simd = fixed_test_buffer(&hist_i_storage, hist_len, mode);
+    float* hist_q_simd = fixed_test_buffer(&hist_q_storage, hist_len, mode);
+
+    std::vector<float> out_ref((size_t)out_capacity, kOutputSentinel);
+    std::vector<float> hist_i_ref((size_t)hist_len);
+    std::vector<float> hist_q_ref((size_t)hist_len);
+
+    for (int k = 0; k < in_len; k++) {
+        in[k] = (float)(((k * 37 + ch_len * 11) % 257) - 128) * (1.0f / 91.0f);
+    }
+    /* Make the repeated suffix conspicuous, including for odd complex block sizes. */
+    in[in_len - 2] = 8.25f + 0.001f * (float)ch_len;
+    in[in_len - 1] = -6.75f - 0.002f * (float)ch_len;
+    for (int k = 0; k < hist_len; k++) {
+        hist_i_simd[k] = hist_i_ref[(size_t)k] = -1.25f + 0.031f * (float)k;
+        hist_q_simd[k] = hist_q_ref[(size_t)k] = 0.875f - 0.027f * (float)k;
+    }
+    std::fill(out_simd, out_simd + out_capacity, kOutputSentinel);
+
+    const int len_simd = fn(in, in_len, out_simd, hist_i_simd, hist_q_simd, taps, TapsLen);
+    const int len_ref =
+        simd_hb_decim2_complex_scalar(in, in_len, out_ref.data(), hist_i_ref.data(), hist_q_ref.data(), taps, TapsLen);
+    const int expected_len = (ch_len >> 1) << 1;
+
+    if (len_simd != expected_len || len_simd != len_ref) {
+        DSD_FPRINTF(stderr, "  FAIL: %s %s %d-tap size %d length %d/%d (expected %d)\n", backend,
+                    fixed_buffer_mode_name(mode), TapsLen, ch_len, len_simd, len_ref, expected_len);
+        return 1;
+    }
+    if (!arrays_close(out_simd, out_ref.data(), len_simd, kTolerance)) {
+        DSD_FPRINTF(stderr, "  FAIL: %s %s %s %d-tap size %d output mismatch\n", backend, fixed_buffer_mode_name(mode),
+                    tap_name, TapsLen, ch_len);
+        return 1;
+    }
+    if (len_simd == 0 && out_simd[0] != kOutputSentinel) {
+        DSD_FPRINTF(stderr, "  FAIL: %s %s %d-tap zero-output block mutated output\n", backend,
+                    fixed_buffer_mode_name(mode), TapsLen);
+        return 1;
+    }
+    if (!arrays_close(hist_i_simd, hist_i_ref.data(), hist_len, 0.0f)
+        || !arrays_close(hist_q_simd, hist_q_ref.data(), hist_len, 0.0f)) {
+        DSD_FPRINTF(stderr, "  FAIL: %s %s %s %d-tap size %d history mismatch\n", backend, fixed_buffer_mode_name(mode),
+                    tap_name, TapsLen, ch_len);
+        return 1;
+    }
+    return 0;
+}
+
+template <int TapsLen>
+static int
+test_direct_fixed_hb_tap_count(const char* backend, complex_hb_backend_fn fn, const float* canonical_taps,
+                               int vector_load_tail) {
+    alignas(64) float synthetic_taps[TapsLen];
+    make_synthetic_halfband_taps<TapsLen>(synthetic_taps);
+
+    const int sizes[] = {1, 2, 7, 15, 30, 31, 32, 33, 47, 48, 49, 65, 8192, 8193};
+    const float* tap_sets[] = {canonical_taps, synthetic_taps};
+    const char* tap_names[] = {"canonical", "synthetic"};
+    const FixedBufferMode modes[] = {FixedBufferMode::Aligned, FixedBufferMode::Unaligned};
+
+    for (int tap_set = 0; tap_set < 2; tap_set++) {
+        for (FixedBufferMode mode : modes) {
+            for (int ch_len : sizes) {
+                if (run_direct_fixed_hb_case<TapsLen>(backend, fn, tap_sets[tap_set], tap_names[tap_set], ch_len, mode)
+                    != 0) {
+                    return 1;
+                }
+            }
+        }
+    }
+
+    /* The first legal vector block ends exactly at the allocation boundary. */
+    constexpr int center = (TapsLen - 1) >> 1;
+    constexpr int first_vector_n = (center + 1) >> 1;
+    const int exact_vector_ch_len = (first_vector_n << 1) + center + vector_load_tail + 1;
+    for (int tap_set = 0; tap_set < 2; tap_set++) {
+        if (run_direct_fixed_hb_case<TapsLen>(backend, fn, tap_sets[tap_set], tap_names[tap_set], exact_vector_ch_len,
+                                              FixedBufferMode::ExactSize)
+            != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+template <int TapsLen>
+static int
+test_direct_fixed_hb_stream(const char* backend, complex_hb_backend_fn fn, const float* taps) {
+    constexpr int hist_len = TapsLen - 1;
+    const int block_sizes[] = {1, 31, 48, 17, 8193, 2, 65, 32};
+    std::vector<float> hist_i_simd(hist_len);
+    std::vector<float> hist_q_simd(hist_len);
+    std::vector<float> hist_i_ref(hist_len);
+    std::vector<float> hist_q_ref(hist_len);
+
+    for (int k = 0; k < hist_len; k++) {
+        hist_i_simd[(size_t)k] = hist_i_ref[(size_t)k] = 2.0f - 0.041f * (float)k;
+        hist_q_simd[(size_t)k] = hist_q_ref[(size_t)k] = -1.0f + 0.037f * (float)k;
+    }
+
+    int stream_offset = 0;
+    for (int ch_len : block_sizes) {
+        const int in_len = ch_len << 1;
+        std::vector<float> in((size_t)in_len);
+        std::vector<float> out_simd((size_t)std::max(ch_len, 2), 23456.0f);
+        std::vector<float> out_ref((size_t)std::max(ch_len, 2), 23456.0f);
+        for (int k = 0; k < in_len; k++) {
+            in[(size_t)k] = (float)(((stream_offset + k * 19) % 311) - 155) * (1.0f / 73.0f);
+        }
+        in[(size_t)in_len - 2] = 4.5f + 0.01f * (float)ch_len;
+        in[(size_t)in_len - 1] = -3.75f - 0.02f * (float)ch_len;
+        stream_offset += in_len;
+
+        const int len_simd =
+            fn(in.data(), in_len, out_simd.data(), hist_i_simd.data(), hist_q_simd.data(), taps, TapsLen);
+        const int len_ref = simd_hb_decim2_complex_scalar(in.data(), in_len, out_ref.data(), hist_i_ref.data(),
+                                                          hist_q_ref.data(), taps, TapsLen);
+        if (len_simd != len_ref || !arrays_close(out_simd.data(), out_ref.data(), len_simd, kTolerance)
+            || !arrays_close(hist_i_simd.data(), hist_i_ref.data(), hist_len, 0.0f)
+            || !arrays_close(hist_q_simd.data(), hist_q_ref.data(), hist_len, 0.0f)) {
+            DSD_FPRINTF(stderr, "  FAIL: %s %d-tap variable stream block size %d mismatch\n", backend, TapsLen, ch_len);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+test_direct_generic_23tap_hb(const char* backend, complex_hb_backend_fn fn) {
+    constexpr int taps_len = 23;
+    constexpr int hist_len = taps_len - 1;
+    constexpr int ch_len = 127;
+    alignas(64) float taps[taps_len];
+    make_synthetic_halfband_taps<taps_len>(taps);
+    std::vector<float> in((size_t)ch_len * 2U);
+    std::vector<float> out_simd(ch_len);
+    std::vector<float> out_ref(ch_len);
+    std::vector<float> hist_i_simd(hist_len);
+    std::vector<float> hist_q_simd(hist_len);
+    std::vector<float> hist_i_ref(hist_len);
+    std::vector<float> hist_q_ref(hist_len);
+
+    for (int k = 0; k < ch_len * 2; k++) {
+        in[(size_t)k] = (float)((k * 29) % 101 - 50) * 0.025f;
+    }
+    for (int k = 0; k < hist_len; k++) {
+        hist_i_simd[(size_t)k] = hist_i_ref[(size_t)k] = 0.03f * (float)(k - 9);
+        hist_q_simd[(size_t)k] = hist_q_ref[(size_t)k] = -0.02f * (float)(k + 3);
+    }
+
+    const int len_simd =
+        fn(in.data(), ch_len * 2, out_simd.data(), hist_i_simd.data(), hist_q_simd.data(), taps, taps_len);
+    const int len_ref = simd_hb_decim2_complex_scalar(in.data(), ch_len * 2, out_ref.data(), hist_i_ref.data(),
+                                                      hist_q_ref.data(), taps, taps_len);
+    if (len_simd != len_ref || !arrays_close(out_simd.data(), out_ref.data(), len_simd, kTolerance)
+        || !arrays_close(hist_i_simd.data(), hist_i_ref.data(), hist_len, 0.0f)
+        || !arrays_close(hist_q_simd.data(), hist_q_ref.data(), hist_len, 0.0f)) {
+        DSD_FPRINTF(stderr, "  FAIL: %s generic 23-tap fallback mismatch\n", backend);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_direct_hb_cascade(const char* backend, complex_hb_backend_fn fn) {
+    constexpr int stages = 5;
+    constexpr int input_pairs = 8192;
+    const int tap_lengths[stages] = {31, 15, 15, 15, 15};
+    const float* tap_sets[stages] = {hb31_q15_taps, hb_q15_taps, hb_q15_taps, hb_q15_taps, hb_q15_taps};
+    std::vector<float> current_simd((size_t)input_pairs * 2U);
+    std::vector<float> current_ref((size_t)input_pairs * 2U);
+    std::vector<float> hist_i_simd[stages];
+    std::vector<float> hist_q_simd[stages];
+    std::vector<float> hist_i_ref[stages];
+    std::vector<float> hist_q_ref[stages];
+
+    for (int k = 0; k < input_pairs * 2; k++) {
+        current_simd[(size_t)k] = current_ref[(size_t)k] = (float)((k * 43) % 509 - 254) * (1.0f / 127.0f);
+    }
+    for (int stage = 0; stage < stages; stage++) {
+        const int hist_len = tap_lengths[stage] - 1;
+        hist_i_simd[stage].resize((size_t)hist_len);
+        hist_q_simd[stage].resize((size_t)hist_len);
+        hist_i_ref[stage].resize((size_t)hist_len);
+        hist_q_ref[stage].resize((size_t)hist_len);
+        for (int k = 0; k < hist_len; k++) {
+            hist_i_simd[stage][(size_t)k] = hist_i_ref[stage][(size_t)k] =
+                0.1f * (float)(stage + 1) + 0.007f * (float)k;
+            hist_q_simd[stage][(size_t)k] = hist_q_ref[stage][(size_t)k] =
+                -0.2f * (float)(stage + 1) - 0.005f * (float)k;
+        }
+    }
+
+    for (int stage = 0; stage < stages; stage++) {
+        std::vector<float> next_simd(current_simd.size() / 2U);
+        std::vector<float> next_ref(current_ref.size() / 2U);
+        const int taps_len = tap_lengths[stage];
+        const int hist_len = taps_len - 1;
+        const int len_simd = fn(current_simd.data(), (int)current_simd.size(), next_simd.data(),
+                                hist_i_simd[stage].data(), hist_q_simd[stage].data(), tap_sets[stage], taps_len);
+        const int len_ref = simd_hb_decim2_complex_scalar(current_ref.data(), (int)current_ref.size(), next_ref.data(),
+                                                          hist_i_ref[stage].data(), hist_q_ref[stage].data(),
+                                                          tap_sets[stage], taps_len);
+        bool histories_exact = true;
+        const int input_pairs = (int)current_simd.size() >> 1;
+        for (int k = 0; k < hist_len; k++) {
+            const int rel = input_pairs - hist_len + k;
+            histories_exact = histories_exact && hist_i_simd[stage][(size_t)k] == current_simd[(size_t)rel * 2U]
+                              && hist_q_simd[stage][(size_t)k] == current_simd[(size_t)rel * 2U + 1U]
+                              && hist_i_ref[stage][(size_t)k] == current_ref[(size_t)rel * 2U]
+                              && hist_q_ref[stage][(size_t)k] == current_ref[(size_t)rel * 2U + 1U];
+        }
+        if (len_simd != len_ref || len_simd != (int)next_simd.size()
+            || !arrays_close(next_simd.data(), next_ref.data(), len_simd, kTolerance) || !histories_exact
+            || !arrays_close(hist_i_simd[stage].data(), hist_i_ref[stage].data(), hist_len, kTolerance)
+            || !arrays_close(hist_q_simd[stage].data(), hist_q_ref[stage].data(), hist_len, kTolerance)) {
+            DSD_FPRINTF(stderr, "  FAIL: %s five-stage cascade mismatch at stage %d\n", backend, stage);
+            return 1;
+        }
+        current_simd.swap(next_simd);
+        current_ref.swap(next_ref);
+    }
+    return 0;
+}
+
+static int
+test_direct_fixed_hb_kernels(const char* backend, complex_hb_backend_fn fn, int vector_load_tail) {
+    std::printf("Testing direct %s fixed complex HB kernels...\n", backend);
+
+    if (test_direct_fixed_hb_tap_count<15>(backend, fn, hb_q15_taps, vector_load_tail) != 0
+        || test_direct_fixed_hb_tap_count<31>(backend, fn, hb31_q15_taps, vector_load_tail) != 0
+        || test_direct_fixed_hb_stream<15>(backend, fn, hb_q15_taps) != 0
+        || test_direct_fixed_hb_stream<31>(backend, fn, hb31_q15_taps) != 0
+        || test_direct_generic_23tap_hb(backend, fn) != 0 || test_direct_hb_cascade(backend, fn) != 0) {
+        return 1;
+    }
+
+    /* Invalid float lengths must not touch the fixed-kernel histories. */
+    alignas(64) float in[1] = {7.0f};
+    alignas(64) float out[2] = {19.0f, 23.0f};
+    alignas(64) float hist_i[30];
+    alignas(64) float hist_q[30];
+    alignas(64) float hist_i_before[30];
+    alignas(64) float hist_q_before[30];
+    for (int k = 0; k < 30; k++) {
+        hist_i[k] = hist_i_before[k] = (float)(k + 1);
+        hist_q[k] = hist_q_before[k] = (float)(-k - 1);
+    }
+    const int len = fn(in, 1, out, hist_i, hist_q, hb31_q15_taps, 31);
+    if (len != 0 || out[0] != 19.0f || out[1] != 23.0f || !arrays_close(hist_i, hist_i_before, 30, 0.0f)
+        || !arrays_close(hist_q, hist_q_before, 30, 0.0f)) {
+        DSD_FPRINTF(stderr, "  FAIL: %s fixed-kernel invalid guard mutated state\n", backend);
+        return 1;
+    }
+
+    std::printf("  PASS\n");
+    return 0;
+}
+
+#endif
 
 /* Test 63-tap symmetric FIR (channel LPF style) */
 static int
@@ -894,6 +1221,11 @@ main(void) {
     failures += test_direct_complex_fir_backend("sse2", simd_fir_complex_apply_sse2);
     failures += test_direct_complex_hb_backend("sse2", simd_hb_decim2_complex_sse2);
     failures += test_direct_real_hb_backend("sse2", simd_hb_decim2_real_sse2);
+    failures += test_direct_backend_tail_mix("sse2", simd_fir_complex_apply_sse2, simd_hb_decim2_complex_sse2,
+                                             simd_hb_decim2_real_sse2);
+    failures += test_direct_backend_invalid_guards("sse2", simd_fir_complex_apply_sse2, simd_hb_decim2_complex_sse2,
+                                                   simd_hb_decim2_real_sse2);
+    failures += test_direct_fixed_hb_kernels("sse2", simd_hb_decim2_complex_sse2, 7);
 #if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
     if (dsd_neo_cpu_has_avx2_with_os_support()) {
         failures += test_direct_complex_fir_backend("avx2", simd_fir_complex_apply_avx2);
@@ -903,6 +1235,7 @@ main(void) {
                                                  simd_hb_decim2_real_avx2);
         failures += test_direct_backend_invalid_guards("avx2", simd_fir_complex_apply_avx2, simd_hb_decim2_complex_avx2,
                                                        simd_hb_decim2_real_avx2);
+        failures += test_direct_fixed_hb_kernels("avx2", simd_hb_decim2_complex_avx2, 15);
     } else {
         std::printf("Skipping direct AVX2 backend tests: CPU/OS AVX2+FMA support unavailable\n");
     }
@@ -913,6 +1246,11 @@ main(void) {
     failures += test_direct_complex_fir_backend("neon", simd_fir_complex_apply_neon);
     failures += test_direct_complex_hb_backend("neon", simd_hb_decim2_complex_neon);
     failures += test_direct_real_hb_backend("neon", simd_hb_decim2_real_neon);
+    failures += test_direct_backend_tail_mix("neon", simd_fir_complex_apply_neon, simd_hb_decim2_complex_neon,
+                                             simd_hb_decim2_real_neon);
+    failures += test_direct_backend_invalid_guards("neon", simd_fir_complex_apply_neon, simd_hb_decim2_complex_neon,
+                                                   simd_hb_decim2_real_neon);
+    failures += test_direct_fixed_hb_kernels("neon", simd_hb_decim2_complex_neon, 7);
 #endif
 
     if (failures > 0) {

@@ -17,6 +17,21 @@
 
 namespace {
 
+struct ComplexIq {
+    float i;
+    float q;
+};
+
+struct HbComplexBoundary {
+    const float* in;
+    int ch_len;
+    const float* hist_i;
+    const float* hist_q;
+    int hist_len;
+    float last_i;
+    float last_q;
+};
+
 static thread_local std::vector<float> tls_scratch_iq;
 static thread_local std::vector<float> tls_scratch_real;
 
@@ -101,6 +116,139 @@ update_real_history(const float* in, int in_len, float* hist, int hist_len) {
     const int need = hist_len - in_len;
     DSD_MEMMOVE(hist, hist + in_len, (size_t)need * sizeof(float));
     DSD_MEMCPY(hist + need, in, (size_t)in_len * sizeof(float));
+}
+
+/* Load complex samples at indices base and base+2 from contiguous unaligned loads. */
+static inline float32x4_t
+load_iq_stride2_2(const float* base) {
+    const float32x4_t lo = vld1q_f32(base);
+    const float32x4_t hi = vld1q_f32(base + 4);
+    return vcombine_f32(vget_low_f32(lo), vget_low_f32(hi));
+}
+
+static inline ComplexIq
+load_hb_complex_boundary(const HbComplexBoundary& source, int rel) {
+    if (rel < 0) {
+        const int hist_idx = source.hist_len + rel;
+        return {source.hist_i[hist_idx], source.hist_q[hist_idx]};
+    }
+    if (rel < source.ch_len) {
+        return {source.in[rel << 1], source.in[(rel << 1) + 1]};
+    }
+    return {source.last_i, source.last_q};
+}
+
+template <int SideIndex, int SideCount>
+struct HbComplexFixedScalarSide {
+    static inline void
+    apply(const HbComplexBoundary& source, const float* taps, int center_rel, float& acc_i, float& acc_q) {
+        constexpr int even_tap = SideIndex << 1;
+        constexpr int center = (SideCount << 1) - 1;
+        const float coefficient = taps[even_tap];
+        if (coefficient != 0.0f) {
+            constexpr int distance = center - even_tap;
+            const ComplexIq minus = load_hb_complex_boundary(source, center_rel - distance);
+            const ComplexIq plus = load_hb_complex_boundary(source, center_rel + distance);
+            acc_i += coefficient * (minus.i + plus.i);
+            acc_q += coefficient * (minus.q + plus.q);
+        }
+        HbComplexFixedScalarSide<SideIndex + 1, SideCount>::apply(source, taps, center_rel, acc_i, acc_q);
+    }
+};
+
+template <int SideCount>
+struct HbComplexFixedScalarSide<SideCount, SideCount> {
+    static inline void
+    apply(const HbComplexBoundary&, const float*, int, float&, float&) {}
+};
+
+template <int TapsLen>
+static inline ComplexIq
+hb_complex_fixed_accumulate_scalar(const HbComplexBoundary& source, const float* taps, int n) {
+    constexpr int center = (TapsLen - 1) >> 1;
+    constexpr int side_count = (center + 1) >> 1;
+    const int center_rel = n << 1;
+    const ComplexIq center_sample = {source.in[center_rel << 1], source.in[(center_rel << 1) + 1]};
+    ComplexIq acc = {taps[center] * center_sample.i, taps[center] * center_sample.q};
+    HbComplexFixedScalarSide<0, side_count>::apply(source, taps, center_rel, acc.i, acc.q);
+    return acc;
+}
+
+template <int SideIndex, int SideCount>
+struct HbComplexFixedVectorSide {
+    static inline void
+    apply(const float* center_base, const float* taps, float32x4_t& acc0, float32x4_t& acc1) {
+        constexpr int even_tap = SideIndex << 1;
+        constexpr int center = (SideCount << 1) - 1;
+        constexpr int distance_floats = (center - even_tap) << 1;
+        const float coefficient = taps[even_tap];
+        if (coefficient != 0.0f) {
+            const float* minus = center_base - distance_floats;
+            const float* plus = center_base + distance_floats;
+            const float32x4_t sum0 = vaddq_f32(load_iq_stride2_2(minus), load_iq_stride2_2(plus));
+            const float32x4_t sum1 = vaddq_f32(load_iq_stride2_2(minus + 8), load_iq_stride2_2(plus + 8));
+            const float32x4_t tap = vdupq_n_f32(coefficient);
+            acc0 = vfmaq_f32(acc0, tap, sum0);
+            acc1 = vfmaq_f32(acc1, tap, sum1);
+        }
+        HbComplexFixedVectorSide<SideIndex + 1, SideCount>::apply(center_base, taps, acc0, acc1);
+    }
+};
+
+template <int SideCount>
+struct HbComplexFixedVectorSide<SideCount, SideCount> {
+    static inline void
+    apply(const float*, const float*, float32x4_t&, float32x4_t&) {}
+};
+
+template <int TapsLen>
+static int
+hb_complex_decim2_fixed(const float* in, int ch_len, float* out, const float* hist_i, const float* hist_q,
+                        const float* taps, float last_i, float last_q) {
+    static_assert(TapsLen == 15 || TapsLen == 31, "fixed half-band kernel supports 15 or 31 taps");
+    constexpr int center = (TapsLen - 1) >> 1;
+    constexpr int side_count = (center + 1) >> 1;
+    const int out_ch_len = ch_len >> 1;
+    const HbComplexBoundary source = {in, ch_len, hist_i, hist_q, TapsLen - 1, last_i, last_q};
+
+    int n = 0;
+    for (; n < out_ch_len && (n << 1) < center; n++) {
+        const ComplexIq acc = hb_complex_fixed_accumulate_scalar<TapsLen>(source, taps, n);
+        out[n << 1] = acc.i;
+        out[(n << 1) + 1] = acc.q;
+    }
+
+    /* Four outputs use two NEON accumulators; guard each helper's complete load footprint. */
+    for (; n + 3 < out_ch_len && (n << 1) + center + 7 < ch_len; n += 4) {
+        const float* center_base = in + (n << 2);
+        const float32x4_t center_tap = vdupq_n_f32(taps[center]);
+        float32x4_t acc0 = vmulq_f32(center_tap, load_iq_stride2_2(center_base));
+        float32x4_t acc1 = vmulq_f32(center_tap, load_iq_stride2_2(center_base + 8));
+
+        HbComplexFixedVectorSide<0, side_count>::apply(center_base, taps, acc0, acc1);
+        vst1q_f32(out + (n << 1), acc0);
+        vst1q_f32(out + ((n + 2) << 1), acc1);
+    }
+
+    for (; n < out_ch_len; n++) {
+        const ComplexIq acc = hb_complex_fixed_accumulate_scalar<TapsLen>(source, taps, n);
+        out[n << 1] = acc.i;
+        out[(n << 1) + 1] = acc.q;
+    }
+
+    return out_ch_len << 1;
+}
+
+static int
+hb_complex_decim2_fixed_dispatch(const float* in, int ch_len, float* out, float* hist_i, float* hist_q,
+                                 const float* taps, int taps_len) {
+    const float last_i = in[(ch_len - 1) << 1];
+    const float last_q = in[((ch_len - 1) << 1) + 1];
+    const int out_len = taps_len == 15
+                            ? hb_complex_decim2_fixed<15>(in, ch_len, out, hist_i, hist_q, taps, last_i, last_q)
+                            : hb_complex_decim2_fixed<31>(in, ch_len, out, hist_i, hist_q, taps, last_i, last_q);
+    update_complex_history(in, ch_len, hist_i, hist_q, taps_len - 1);
+    return out_len;
 }
 
 } /* namespace */
@@ -195,7 +343,8 @@ simd_fir_complex_apply_neon(const float* in, int in_len, float* out, float* hist
 
 /**
  * NEON complex half-band decimator by 2.
- * Processes 2 output samples (4 floats) at a time.
+ * Fixed 15- and 31-tap kernels process 4 complex outputs directly; other odd
+ * tap counts retain the scratch-backed 2-output kernel.
  */
 extern "C" int
 simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
@@ -203,13 +352,15 @@ simd_hb_decim2_complex_neon(const float* in, int in_len, float* out, float* hist
     if (taps_len < 3 || (taps_len & 1) == 0) {
         return 0;
     }
-
     int ch_len = in_len >> 1;
     if (ch_len <= 0) {
         return 0;
     }
     int out_ch_len = ch_len >> 1;
 
+    if (taps_len == 15 || taps_len == 31) {
+        return hb_complex_decim2_fixed_dispatch(in, ch_len, out, hist_i, hist_q, taps, taps_len);
+    }
     const int center = (taps_len - 1) >> 1;
     const int left_len = taps_len - 1;
     const int pad = center + 2;
