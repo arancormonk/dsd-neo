@@ -53,6 +53,7 @@ simd_hb_decim2_real_avx2(const float* in, int in_len, float* out, float* hist, c
 #include <cstring>
 #include <immintrin.h>
 #include <vector>
+#include <xmmintrin.h>
 #include "dsd-neo/core/safe_api.h"
 
 // NOLINTBEGIN(portability-simd-intrinsics)
@@ -65,6 +66,16 @@ namespace {
 struct ComplexIq {
     float i;
     float q;
+};
+
+struct HbComplexBoundary {
+    const float* in;
+    int ch_len;
+    const float* hist_i;
+    const float* hist_q;
+    int hist_len;
+    float last_i;
+    float last_q;
 };
 
 static inline void
@@ -246,6 +257,140 @@ update_real_history(const float* in, int in_len, float* hist, int hist_len) {
     DSD_MEMCPY(hist + keep, in, (size_t)in_len * sizeof(float));
 }
 
+/*
+ * Load four complex samples at indices base, base+2, base+4, and base+6.
+ * Each source load is contiguous and unaligned; the shuffle first selects the
+ * even complex pair from each 128-bit lane and the 64-bit permutation restores
+ * sample order across the lanes.
+ */
+static inline __m256
+load_iq_stride2_4(const float* base) {
+    const __m256 lo = _mm256_loadu_ps(base);
+    const __m256 hi = _mm256_loadu_ps(base + 8);
+    const __m256 selected = _mm256_shuffle_ps(lo, hi, _MM_SHUFFLE(1, 0, 1, 0));
+    return _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(selected), 0xD8));
+}
+
+static inline ComplexIq
+load_hb_complex_boundary(const HbComplexBoundary& source, int rel) {
+    if (rel < 0) {
+        const int hist_idx = source.hist_len + rel;
+        return {source.hist_i[hist_idx], source.hist_q[hist_idx]};
+    }
+    if (rel < source.ch_len) {
+        return {source.in[rel << 1], source.in[(rel << 1) + 1]};
+    }
+    return {source.last_i, source.last_q};
+}
+
+template <int SideIndex, int SideCount>
+struct HbComplexFixedScalarSide {
+    static inline void
+    apply(const HbComplexBoundary& source, const float* taps, int center_rel, float& acc_i, float& acc_q) {
+        constexpr int even_tap = SideIndex << 1;
+        constexpr int center = (SideCount << 1) - 1;
+        const float coefficient = taps[even_tap];
+        if (coefficient != 0.0f) {
+            constexpr int distance = center - even_tap;
+            const ComplexIq minus = load_hb_complex_boundary(source, center_rel - distance);
+            const ComplexIq plus = load_hb_complex_boundary(source, center_rel + distance);
+            acc_i += coefficient * (minus.i + plus.i);
+            acc_q += coefficient * (minus.q + plus.q);
+        }
+        HbComplexFixedScalarSide<SideIndex + 1, SideCount>::apply(source, taps, center_rel, acc_i, acc_q);
+    }
+};
+
+template <int SideCount>
+struct HbComplexFixedScalarSide<SideCount, SideCount> {
+    static inline void
+    apply(const HbComplexBoundary&, const float*, int, float&, float&) {}
+};
+
+template <int TapsLen>
+static inline ComplexIq
+hb_complex_fixed_accumulate_scalar(const HbComplexBoundary& source, const float* taps, int n) {
+    constexpr int center = (TapsLen - 1) >> 1;
+    constexpr int side_count = (center + 1) >> 1;
+    const int center_rel = n << 1;
+    const ComplexIq center_sample = {source.in[center_rel << 1], source.in[(center_rel << 1) + 1]};
+    ComplexIq acc = {taps[center] * center_sample.i, taps[center] * center_sample.q};
+    HbComplexFixedScalarSide<0, side_count>::apply(source, taps, center_rel, acc.i, acc.q);
+    return acc;
+}
+
+template <int SideIndex, int SideCount>
+struct HbComplexFixedVectorSide {
+    static inline void
+    apply(const float* center_base, const float* taps, __m256& acc0, __m256& acc1) {
+        constexpr int even_tap = SideIndex << 1;
+        constexpr int center = (SideCount << 1) - 1;
+        constexpr int distance_floats = (center - even_tap) << 1;
+        const float coefficient = taps[even_tap];
+        if (coefficient != 0.0f) {
+            const float* minus = center_base - distance_floats;
+            const float* plus = center_base + distance_floats;
+            const __m256 sum0 = _mm256_add_ps(load_iq_stride2_4(minus), load_iq_stride2_4(plus));
+            const __m256 sum1 = _mm256_add_ps(load_iq_stride2_4(minus + 16), load_iq_stride2_4(plus + 16));
+            const __m256 tap = _mm256_set1_ps(coefficient);
+            acc0 = _mm256_fmadd_ps(tap, sum0, acc0);
+            acc1 = _mm256_fmadd_ps(tap, sum1, acc1);
+        }
+        HbComplexFixedVectorSide<SideIndex + 1, SideCount>::apply(center_base, taps, acc0, acc1);
+    }
+};
+
+template <int SideCount>
+struct HbComplexFixedVectorSide<SideCount, SideCount> {
+    static inline void
+    apply(const float*, const float*, __m256&, __m256&) {}
+};
+
+template <int TapsLen>
+static int
+hb_complex_decim2_fixed(const float* in, int ch_len, float* out, const float* hist_i, const float* hist_q,
+                        const float* taps, float last_i, float last_q) {
+    static_assert(TapsLen == 15 || TapsLen == 31, "fixed half-band kernel supports 15 or 31 taps");
+    constexpr int center = (TapsLen - 1) >> 1;
+    constexpr int side_count = (center + 1) >> 1;
+    const int out_ch_len = ch_len >> 1;
+    const HbComplexBoundary source = {in, ch_len, hist_i, hist_q, TapsLen - 1, last_i, last_q};
+
+    int n = 0;
+
+    /* Prefix outputs reach into the split history and stay on the scalar boundary path. */
+    for (; n < out_ch_len && (n << 1) < center; n++) {
+        const ComplexIq acc = hb_complex_fixed_accumulate_scalar<TapsLen>(source, taps, n);
+        out[n << 1] = acc.i;
+        out[(n << 1) + 1] = acc.q;
+    }
+
+    /*
+     * Eight outputs use two YMM accumulators. The final side-tap helper loads
+     * through center_rel + center + 15, including the unused samples within
+     * its second contiguous load, so guard that complete footprint.
+     */
+    for (; n + 7 < out_ch_len && (n << 1) + center + 15 < ch_len; n += 8) {
+        const float* center_base = in + (n << 2);
+        const __m256 center_tap = _mm256_set1_ps(taps[center]);
+        __m256 acc0 = _mm256_fmadd_ps(center_tap, load_iq_stride2_4(center_base), _mm256_setzero_ps());
+        __m256 acc1 = _mm256_fmadd_ps(center_tap, load_iq_stride2_4(center_base + 16), _mm256_setzero_ps());
+
+        HbComplexFixedVectorSide<0, side_count>::apply(center_base, taps, acc0, acc1);
+        _mm256_storeu_ps(out + (n << 1), acc0);
+        _mm256_storeu_ps(out + ((n + 4) << 1), acc1);
+    }
+
+    /* Vector remainder and repeated-last-sample suffix preserve scalar edge behavior. */
+    for (; n < out_ch_len; n++) {
+        const ComplexIq acc = hb_complex_fixed_accumulate_scalar<TapsLen>(source, taps, n);
+        out[n << 1] = acc.i;
+        out[(n << 1) + 1] = acc.q;
+    }
+
+    return out_ch_len << 1;
+}
+
 } // namespace
 
 /**
@@ -308,8 +453,8 @@ simd_fir_complex_apply_avx2(const float* in, int in_len, float* out, float* hist
 
 /**
  * AVX2+FMA complex half-band decimator by 2.
- * Processes 4 output samples (8 floats) at a time.
- * Uses pre-concatenated scratch buffer to eliminate branching in hot loop.
+ * The fixed 15- and 31-tap kernels process 8 complex outputs directly from
+ * the input; other odd tap counts retain the scratch-backed 4-output kernel.
  */
 extern "C" int
 simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
@@ -323,6 +468,17 @@ simd_hb_decim2_complex_avx2(const float* in, int in_len, float* out, float* hist
         return 0;
     }
     const int out_ch_len = ch_len >> 1;
+
+    if (taps_len == 15 || taps_len == 31) {
+        const float last_i = in[in_len - 2];
+        const float last_q = in[in_len - 1];
+        const int out_len = taps_len == 15
+                                ? hb_complex_decim2_fixed<15>(in, ch_len, out, hist_i, hist_q, taps, last_i, last_q)
+                                : hb_complex_decim2_fixed<31>(in, ch_len, out, hist_i, hist_q, taps, last_i, last_q);
+        update_iq_history(in, ch_len, hist_i, hist_q, taps_len - 1);
+        _mm256_zeroupper();
+        return out_len;
+    }
 
     const int center = (taps_len - 1) >> 1;
     const int left_len = taps_len - 1;
