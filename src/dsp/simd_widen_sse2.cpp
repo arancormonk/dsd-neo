@@ -109,8 +109,8 @@ static inline void
 reduce16_u8_sse2(__m128i bytes, dsd_input_level_cu8_moments* local, __m128i* min_bytes, __m128i* max_bytes) {
     const __m128i zero = _mm_setzero_si128();
     const __m128i ones = _mm_set1_epi8(1);
-    const __m128i high254 = _mm_set1_epi8((char)0xfe);
-    const __m128i high255 = _mm_set1_epi8((char)0xff);
+    const __m128i high254 = _mm_set1_epi8(-2);
+    const __m128i high255 = _mm_set1_epi8(-1);
 
     const __m128i sums = _mm_sad_epu8(bytes, zero);
     alignas(16) uint64_t sum_lanes[2];
@@ -165,7 +165,7 @@ widen_u8_to_f32_bias127_moments_sse2(const unsigned char* src, float* dst, uint3
     dsd_input_level_cu8_moments local;
     dsd_input_level_cu8_moments_reset(&local);
     local.count = len;
-    __m128i min_bytes = _mm_set1_epi8((char)0xff);
+    __m128i min_bytes = _mm_set1_epi8(-1);
     __m128i max_bytes = _mm_setzero_si128();
     uint32_t i = 0U;
     for (; i + 15U < len; i += 16U) {
@@ -230,7 +230,7 @@ widen_rotate90_u8_to_f32_bias127_phase_moments_sse2(const unsigned char* src, fl
     dsd_input_level_cu8_moments local;
     dsd_input_level_cu8_moments_reset(&local);
     local.count = (uint64_t)pairs * 2U;
-    __m128i min_bytes = _mm_set1_epi8((char)0xff);
+    __m128i min_bytes = _mm_set1_epi8(-1);
     __m128i max_bytes = _mm_setzero_si128();
     uint32_t n = 0U;
     for (; n + 7U < pairs; n += 8U) {
