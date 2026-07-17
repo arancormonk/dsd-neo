@@ -167,6 +167,7 @@ lip_store_state_strings(dsd_state* state, int slot, const lip_state_strings* gps
 
     DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
                  sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s", state->dmr_embedded_gps[slot]);
+    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
 }
 
 static void DSD_ATTR_USED
@@ -359,6 +360,7 @@ nmea_store_and_report(const dsd_opts* opts, dsd_state* state, int slot, uint32_t
     DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
                  sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "(%f%s, %f%s)", latitude, deg_glyph,
                  longitude, deg_glyph);
+    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
 
     int speed_int = (int)speed_kph;
     int azimuth = (type == 2) ? (int)cog : 0;
@@ -543,6 +545,7 @@ nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32
         DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].gps_s,
                      sizeof state->event_history_s[slot_idx].Event_History_Items[0].gps_s, "%s",
                      state->dmr_embedded_gps[slot_idx]);
+        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
     }
 
     // save to LRRP report for mapping/logging
@@ -584,6 +587,7 @@ dmr_embedded_gps_store_clear_fix(const dsd_opts* opts, dsd_state* state, uint8_t
         DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
                      sizeof state->event_history_s[slot].Event_History_Items[0].gps_s, "%s",
                      state->dmr_embedded_gps[slot]);
+        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
     }
     gps_write_lrrp_compact(opts, src, fix->lat_sf * fix->latitude, fix->lon_sf * fix->longitude, 0, 0);
 }
@@ -754,6 +758,7 @@ apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
                 DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].gps_s,
                              sizeof state->event_history_s[slot_idx].Event_History_Items[0].gps_s, "%s",
                              state->dmr_embedded_gps[slot_idx]);
+                dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
             }
 
             //save to LRRP report for mapping/logging
@@ -850,6 +855,10 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
         nmea_print_invalid_reason(start_value, end_value, checksum_calc, checksum_ext);
     }
 
+    if (have_events) {
+        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
+    }
+
     state->dmr_lrrp_source[slot_idx] = 0U;
     state->dmr_lrrp_target[slot_idx] = 0U;
     return valid;
@@ -908,6 +917,7 @@ nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, ui
         DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
                      sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "(%.6f%s, %.6f%s)", latitude,
                      deg_glyph, longitude, deg_glyph);
+        dsd_event_history_mark_dirty(&state->event_history_s[0]);
 
         uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
         uint32_t target = (uint32_t)state->dmr_lrrp_target[0];

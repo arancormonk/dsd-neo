@@ -113,9 +113,14 @@ test_direct_dmr_alias_decoders(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(st->dmr_pdu_sf[0], 14, sizeof(st->dmr_pdu_sf[0]), '7', 7);
     st->lastsrc = 700001u;
     st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    const uint64_t slot0_revision = st->event_history_s[0].revision;
     dmr_talker_alias_lc_decode(opts, st, 0, 0, 7, 3);
     rc |= expect_str(st->generic_talker_alias[0], "Talker Alias: K,7; ", "iso7 generic alias");
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "K,7; ", "iso7 event alias");
+    if (st->event_history_s[0].revision != slot0_revision + 1U) {
+        DSD_FPRINTF(stderr, "iso7 event alias did not advance history revision once\n");
+        rc = 1;
+    }
     if (st->generic_talker_alias_src[0] != (uint32_t)st->lastsrc) {
         DSD_FPRINTF(stderr, "iso7 generic alias source mismatch\n");
         rc = 1;
@@ -127,9 +132,14 @@ test_direct_dmr_alias_decoders(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(st->dmr_pdu_sf[1], 32, sizeof(st->dmr_pdu_sf[1]), 0x0100U, 16);
     st->lastsrcR = 700002u;
     st->event_history_s[1].Event_History_Items[0].source_id = st->lastsrcR;
+    const uint64_t slot1_revision = st->event_history_s[1].revision;
     dmr_talker_alias_lc_decode(opts, st, 1, 1, 16, 3);
     rc |= expect_str(st->generic_talker_alias[1], "Talker Alias: A *; ", "utf16 generic alias");
     rc |= expect_str(st->event_history_s[1].Event_History_Items[0].alias, "A *; ", "utf16 event alias");
+    if (st->event_history_s[1].revision != slot1_revision + 1U) {
+        DSD_FPRINTF(stderr, "utf16 event alias did not advance history revision once\n");
+        rc = 1;
+    }
     if (st->generic_talker_alias_src[1] != (uint32_t)st->lastsrcR) {
         DSD_FPRINTF(stderr, "utf16 generic alias source mismatch\n");
         rc = 1;

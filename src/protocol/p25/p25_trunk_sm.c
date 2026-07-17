@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -4489,6 +4490,7 @@ p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     if (eh) {
         DSD_SNPRINTF(eh->Event_History_Items[0].internal_str, sizeof eh->Event_History_Items[0].internal_str,
                      "Target: %d; has been locked out; Encryption Lock Out Enabled.", target);
+        dsd_event_history_mark_dirty(eh);
         dsd_p25_optional_hook_watchdog_event_current(opts, state, (uint8_t)(slot & 1));
         if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
                     sizeof eh->Event_History_Items[0].internal_str)

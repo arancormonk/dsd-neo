@@ -951,6 +951,7 @@ dmr_udt_finalize(dmr_udt_ctx* ctx) {
         ctx->state->lastsrcR = ctx->udt_source;
         ctx->state->lasttgR = ctx->udt_target;
     }
+    dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
     watchdog_event_datacall(ctx->opts, ctx->state, ctx->udt_source, ctx->udt_target, ctx->udt_string, ctx->slot);
     if (ctx->slot == 0) {
         ctx->state->lastsrc = 0;
@@ -1198,6 +1199,7 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s,
                      sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s), "%s",
                      ctx->state->dmr_lrrp_gps[ctx->slot]);
+        dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
     }
 
     if (mnis_type != 0x11 && mnis_type != 0x01) {

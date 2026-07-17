@@ -198,11 +198,13 @@ test_packed_nmea_formats(dsd_opts* opts, dsd_state* st) {
         DSD_MEMSET(st->dmr_embedded_gps[0], 0, sizeof st->dmr_embedded_gps[0]);
         DSD_MEMSET(st->event_history_s[0].Event_History_Items[0].gps_s, 0,
                    sizeof st->event_history_s[0].Event_History_Items[0].gps_s);
+        const uint64_t revision = st->event_history_s[0].revision;
         nmea_iec_61162_1(opts, st, bits, 900001U, 2);
 
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "41.500000", "nmea-iec-lat");
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "87.250000", "nmea-iec-lon");
         rc |= expect_has_substr(st->event_history_s[0].Event_History_Items[0].gps_s, "41.500000", "nmea-iec-event-lat");
+        rc |= expect_i("nmea-iec-history-revision", st->event_history_s[0].revision == revision + 1U, 1);
     }
 
     {

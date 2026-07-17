@@ -1076,6 +1076,7 @@ static void
 nxdn_dcall_watchdog(dsd_opts* opts, dsd_state* state, const char* event_text) {
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].text_message,
                  sizeof(state->event_history_s[0].Event_History_Items[0].text_message), "%s", event_text);
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
     const uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
     const uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
     char comp_string[128];
@@ -2224,6 +2225,7 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
         DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
                      sizeof(state->event_history_s[0].Event_History_Items[0].internal_str),
                      "Target: %d; has been locked out; Encryption Lock Out Enabled.", info->destination_id);
+        dsd_event_history_mark_dirty(&state->event_history_s[0]);
         watchdog_event_current(opts, state, 0);
     }
 

@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
@@ -44,6 +45,7 @@ nxdn_alias_publish(dsd_state* state, const char* alias) {
     if (state->event_history_s != NULL) {
         DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
                      sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", alias);
+        dsd_event_history_mark_dirty(&state->event_history_s[0]);
     }
 }
 

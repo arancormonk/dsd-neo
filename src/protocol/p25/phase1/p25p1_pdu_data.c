@@ -913,6 +913,7 @@ p25_store_lrrp_text_for_history(dsd_state* state) {
     DSD_SNPRINTF(state->dmr_lrrp_gps[0], cap, "LRRP: %.*s", (int)maxcpy, src);
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
                  sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
 }
 
 static void

@@ -353,11 +353,15 @@ main(void) {
     // 3) ENC lockout once (SM helper)
     static dsd_opts o4;
     static dsd_state s4;
+    static Event_History_I s4_history[2];
     init_basic(&o4, &s4);
+    DSD_MEMSET(s4_history, 0, sizeof(s4_history));
+    s4.event_history_s = s4_history;
     s4.payload_algid = 0x84;
     s4.payload_keyid = 0x1234;
     s4.payload_miP = 0x1122334455667788ULL;
     p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1);
+    assert(s4_history[0].revision == 1U);
     assert(s4.payload_algid == 0x84);
     assert(s4.payload_keyid == 0x1234);
     assert(s4.payload_miP == 0x1122334455667788ULL);

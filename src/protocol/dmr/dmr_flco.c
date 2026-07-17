@@ -712,6 +712,7 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
         DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str,
                      sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str),
                      "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
+        dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
         watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
     }
     dmr_flco_emit_enc_lockout_action(ctx, gm, gn);

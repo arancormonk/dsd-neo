@@ -848,6 +848,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 853000000L, 854000000L, 2201);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    const uint64_t lockout_history_revision = state.event_history_s[0].revision;
     rc |= expect_int("deferred lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("deferred lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -865,6 +866,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
                      1);
     rc |= expect_str("deferred lockout policy mode", lockout_mode, "B");
     rc |= expect_str("deferred lockout policy name", lockout_name, "LOCKOUT");
+    rc |= expect_true("deferred lockout advances event history revision",
+                      state.event_history_s[0].revision > lockout_history_revision);
     rc |= expect_true("deferred lockout reports cleanup separately",
                       strstr(state.ui_msg, "TG 2201 locked out; return-to-CC tune failed") != NULL);
     freeState(&state);

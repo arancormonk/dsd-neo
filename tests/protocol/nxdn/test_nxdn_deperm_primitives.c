@@ -504,6 +504,7 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-single-last-rid", state.nxdn_last_rid, 777);
     rc |= expect_str("sacch2-single-alias", state.generic_talker_alias[0], "JPN DCR");
     rc |= expect_str("sacch2-single-event-alias", histories[0].Event_History_Items[0].alias, "JPN DCR; ");
+    rc |= expect_int("sacch2-single-event-revision", (int)histories[0].revision, 1);
     rc |= expect_int("sacch2-single-cipher", state.nxdn_cipher_type, 1);
     rc |= expect_int("sacch2-single-enc-lockout", state.dmr_encL, 1);
 
@@ -615,6 +616,7 @@ test_pich_tch_dcr_csm_alias_state(void) {
     nxdn_handle_pich_tch(&opts, &state, trellis, m_data, 0x123U, 0x123U, 0x08U);
     rc |= expect_str("pich-csm-alias", state.generic_talker_alias[0], "CSM 123456789");
     rc |= expect_str("pich-csm-event-alias", histories[0].Event_History_Items[0].alias, "CSM 123456789; ");
+    rc |= expect_int("pich-csm-event-revision", (int)histories[0].revision, 1);
 
     DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "KEEP");
     DSD_SNPRINTF(histories[0].Event_History_Items[0].alias, sizeof(histories[0].Event_History_Items[0].alias), "%s",

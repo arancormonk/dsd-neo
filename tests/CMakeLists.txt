@@ -1956,6 +1956,10 @@ target_include_directories(
     dsd-neo_test_app_control_snapshot_event_history
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+target_compile_definitions(
+    dsd-neo_test_app_control_snapshot_event_history
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
     PRIVATE dsd-neo_platform

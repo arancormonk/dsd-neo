@@ -58,7 +58,7 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "BUILD_TESTING": "OFF",
         "DSD_ENABLE_LTO": "OFF",
-        "DSD_ENABLE_FAST_MATH": "ON",
+        "DSD_ENABLE_FAST_MATH": "OFF",
         "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O2 -g -DNDEBUG -fno-omit-frame-pointer",
         "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -DNDEBUG -fno-omit-frame-pointer"
       }

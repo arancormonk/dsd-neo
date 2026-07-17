@@ -15,6 +15,7 @@
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,11 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+_Static_assert(offsetof(Event_History_I, revision) == sizeof(Event_History) * 255U,
+               "event history revision must follow the existing items");
+_Static_assert(sizeof(Event_History_I) == sizeof(Event_History) * 255U + sizeof(uint64_t),
+               "event history revision must add exactly eight bytes");
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -133,6 +139,15 @@ expect_int(const char* label, int got, int want) {
 }
 
 static int
+expect_u64(const char* label, uint64_t got, uint64_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %llu want %llu\n", label, (unsigned long long)got, (unsigned long long)want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_has_substr(const char* label, const char* haystack, const char* needle) {
     if (haystack == NULL || needle == NULL || strstr(haystack, needle) == NULL) {
         DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", label, needle ? needle : "<null>",
@@ -167,6 +182,65 @@ append_policy_label(dsd_state* state, uint32_t id, const char* mode, const char*
         return -1;
     }
     return dsd_tg_policy_append_exact(state, &row);
+}
+
+static int
+test_event_history_revision_primitives(void) {
+    static Event_History_I histories[2];
+    DSD_MEMSET(histories, 0, sizeof(histories));
+
+    int rc = 0;
+    init_event_history(&histories[0], 3, 3);
+    rc |= expect_u64("empty init leaves revision unchanged", histories[0].revision, 0U);
+
+    init_event_history(&histories[0], 0, 1);
+    rc |= expect_u64("non-empty init advances revision", histories[0].revision, 1U);
+    rc |= expect_int("init sets default color", histories[0].Event_History_Items[0].color_pair, 4);
+    rc |= expect_int("init sets neutral systype", histories[0].Event_History_Items[0].systype, -1);
+    rc |= expect_u64("slot revisions are independent after init", histories[1].revision, 0U);
+
+    histories[0].Event_History_Items[0].source_id = 1234U;
+    push_event_history(&histories[0]);
+    rc |= expect_u64("push advances revision once", histories[0].revision, 2U);
+    rc |= expect_int("push copies the head row", (int)histories[0].Event_History_Items[1].source_id, 1234);
+
+    dsd_event_history_mark_dirty(&histories[1]);
+    rc |= expect_u64("explicit mark advances selected slot", histories[1].revision, 1U);
+    rc |= expect_u64("explicit mark leaves other slot unchanged", histories[0].revision, 2U);
+    dsd_event_history_mark_dirty(NULL);
+
+    histories[1].revision = UINT64_MAX;
+    dsd_event_history_mark_dirty(&histories[1]);
+    rc |= expect_u64("revision wrap skips zero", histories[1].revision, 1U);
+    return rc;
+}
+
+static int
+test_watchdog_current_marks_only_semantic_changes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.playfiles = 1;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.lastsrc = 1234U;
+    state.lasttg = 5678U;
+    state.dmr_color_code = 1U;
+    state.gi[0] = 0;
+
+    const uint64_t initial_revision = event_history[0].revision;
+    watchdog_event_current(&opts, &state, 0);
+    const uint64_t first_revision = event_history[0].revision;
+
+    int rc = expect_u64("first watchdog update advances revision", first_revision, initial_revision + 1U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_u64("identical watchdog update leaves revision unchanged", event_history[0].revision, first_revision);
+
+    state.lastsrc = 4321U;
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_u64("semantic watchdog update advances revision", event_history[0].revision, first_revision + 1U);
+    rc |= expect_u64("watchdog slot update leaves other slot unchanged", event_history[1].revision, 1U);
+    return rc;
 }
 
 static int
@@ -859,6 +933,8 @@ int
 main(void) {
     int rc = 0;
 
+    rc |= test_event_history_revision_primitives();
+    rc |= test_watchdog_current_marks_only_semantic_changes();
     rc |= test_end_only_data_call_does_not_emit_voice_end_alert();
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_data_call_emits_frame_log_record();
