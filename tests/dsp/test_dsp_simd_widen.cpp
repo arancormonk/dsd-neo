@@ -9,21 +9,45 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dsd-neo/core/input_level.h"
 #include "dsd-neo/core/safe_api.h"
 #include "io/radio/rtl_capture_phase.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
+extern "C" void widen_u8_to_f32_bias127_moments_sse2(const unsigned char* src, float* dst, uint32_t len,
+                                                     dsd_input_level_cu8_moments* moments);
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_sse2(const unsigned char* src, float* dst, uint32_t len,
                                                                 uint32_t phase);
+extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_sse2(const unsigned char* src, float* dst,
+                                                                        uint32_t len, uint32_t phase,
+                                                                        dsd_input_level_cu8_moments* moments);
+#if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
+#include "dsp/simd_x86_cpu.h"
+extern "C" void widen_u8_to_f32_bias127_moments_avx2(const unsigned char* src, float* dst, uint32_t len,
+                                                     dsd_input_level_cu8_moments* moments);
+extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_avx2(const unsigned char* src, float* dst,
+                                                                        uint32_t len, uint32_t phase,
+                                                                        dsd_input_level_cu8_moments* moments);
+#endif
 #endif
 
 #if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+extern "C" void widen_u8_to_f32_bias127_moments_neon(const unsigned char* src, float* dst, uint32_t len,
+                                                     dsd_input_level_cu8_moments* moments);
 extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_neon(const unsigned char* src, float* dst, uint32_t len,
                                                                 uint32_t phase);
+extern "C" uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments_neon(const unsigned char* src, float* dst,
+                                                                        uint32_t len, uint32_t phase,
+                                                                        dsd_input_level_cu8_moments* moments);
 #endif
 
+extern "C" void dsd_test_widen_u8_to_f32_bias127_moments_scalar(const unsigned char* src, float* dst, uint32_t len,
+                                                                dsd_input_level_cu8_moments* moments);
 extern "C" uint32_t dsd_test_widen_rotate90_u8_to_f32_bias127_phase_scalar(const unsigned char* src, float* dst,
                                                                            uint32_t len, uint32_t phase);
+extern "C" uint32_t
+dsd_test_widen_rotate90_u8_to_f32_bias127_phase_moments_scalar(const unsigned char* src, float* dst, uint32_t len,
+                                                               uint32_t phase, dsd_input_level_cu8_moments* moments);
 
 static int
 arrays_close(const float* a, const float* b, int n, float tol) {
@@ -96,6 +120,83 @@ process_rot_widen_chunk_with_carry(const unsigned char* src, size_t len, float* 
 }
 
 using widen_backend_fn = unsigned int (*)(const unsigned char*, float*, unsigned int, unsigned int);
+using widen_moments_backend_fn = void (*)(const unsigned char*, float*, unsigned int, dsd_input_level_cu8_moments*);
+using widen_rot_moments_backend_fn = unsigned int (*)(const unsigned char*, float*, unsigned int, unsigned int,
+                                                      dsd_input_level_cu8_moments*);
+
+static int
+moments_equal(const dsd_input_level_cu8_moments* lhs, const dsd_input_level_cu8_moments* rhs) {
+    return lhs->count == rhs->count && lhs->sum == rhs->sum && lhs->sum_sq == rhs->sum_sq
+           && lhs->clipped == rhs->clipped && lhs->min_sample == rhs->min_sample && lhs->max_sample == rhs->max_sample;
+}
+
+static void
+seed_moments(dsd_input_level_cu8_moments* moments) {
+    const unsigned char seed[] = {17U, 254U, 99U};
+    dsd_input_level_cu8_moments_reset(moments);
+    (void)dsd_input_level_cu8_moments_accumulate(moments, seed, sizeof(seed));
+}
+
+static int
+test_plain_moments_backend(const char* name, widen_moments_backend_fn fn) {
+    unsigned char src[256];
+    float dst_full[256] = {0};
+    float dst_split[256] = {0};
+    float ref[256] = {0};
+    for (unsigned int i = 0U; i < 256U; i++) {
+        src[i] = (unsigned char)i;
+    }
+    widen_u8_to_f32_bias127(src, ref, 256U);
+
+    dsd_input_level_cu8_moments full;
+    dsd_input_level_cu8_moments split;
+    dsd_input_level_cu8_moments expected;
+    seed_moments(&full);
+    seed_moments(&split);
+    seed_moments(&expected);
+    (void)dsd_input_level_cu8_moments_accumulate(&expected, src, sizeof(src));
+
+    fn(src, dst_full, 256U, &full);
+    fn(src, dst_split, 95U, &split);
+    fn(src + 95U, dst_split + 95U, 161U, &split);
+    if (!arrays_close(dst_full, ref, 256, 1e-6f) || !arrays_close(dst_split, ref, 256, 1e-6f)
+        || !moments_equal(&full, &expected) || !moments_equal(&split, &expected)) {
+        DSD_FPRINTF(stderr, "%s output or moments: mismatch\n", name);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_rotated_moments_backend(const char* name, widen_rot_moments_backend_fn fn) {
+    unsigned char src[256];
+    float dst_full[256] = {0};
+    float dst_split[256] = {0};
+    float ref[256] = {0};
+    for (unsigned int i = 0U; i < 256U; i++) {
+        src[i] = (unsigned char)i;
+    }
+
+    const unsigned int expected_phase = dsd_test_widen_rotate90_u8_to_f32_bias127_phase_scalar(src, ref, 256U, 3U);
+    dsd_input_level_cu8_moments full;
+    dsd_input_level_cu8_moments split;
+    dsd_input_level_cu8_moments expected;
+    seed_moments(&full);
+    seed_moments(&split);
+    seed_moments(&expected);
+    (void)dsd_input_level_cu8_moments_accumulate(&expected, src, sizeof(src));
+
+    const unsigned int full_phase = fn(src, dst_full, 256U, 3U, &full);
+    unsigned int split_phase = fn(src, dst_split, 94U, 3U, &split);
+    split_phase = fn(src + 94U, dst_split + 94U, 162U, split_phase, &split);
+    if (full_phase != expected_phase || split_phase != expected_phase || !arrays_close(dst_full, ref, 256, 1e-6f)
+        || !arrays_close(dst_split, ref, 256, 1e-6f) || !moments_equal(&full, &expected)
+        || !moments_equal(&split, &expected)) {
+        DSD_FPRINTF(stderr, "%s output, phase, or moments: mismatch\n", name);
+        return 1;
+    }
+    return 0;
+}
 
 static int
 test_rotate_widen_backend(const char* name, widen_backend_fn fn) {
@@ -333,6 +434,44 @@ main(void) {
 
 #if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
     if (test_rotate_widen_backend("SIMD rotate+widen NEON", widen_rotate90_u8_to_f32_bias127_phase_neon) != 0) {
+        return 1;
+    }
+#endif
+
+    if (test_plain_moments_backend("SIMD widen+moments scalar", dsd_test_widen_u8_to_f32_bias127_moments_scalar) != 0
+        || test_rotated_moments_backend("SIMD rotate+widen+moments scalar",
+                                        dsd_test_widen_rotate90_u8_to_f32_bias127_phase_moments_scalar)
+               != 0
+        || test_plain_moments_backend("SIMD widen+moments dispatch", widen_u8_to_f32_bias127_moments) != 0
+        || test_rotated_moments_backend("SIMD rotate+widen+moments dispatch",
+                                        widen_rotate90_u8_to_f32_bias127_phase_moments)
+               != 0) {
+        return 1;
+    }
+
+#if defined(__x86_64__) || defined(_M_X64)
+    if (test_plain_moments_backend("SIMD widen+moments SSE2", widen_u8_to_f32_bias127_moments_sse2) != 0
+        || test_rotated_moments_backend("SIMD rotate+widen+moments SSE2",
+                                        widen_rotate90_u8_to_f32_bias127_phase_moments_sse2)
+               != 0) {
+        return 1;
+    }
+#if defined(DSD_NEO_TEST_HAVE_AVX2_IMPL)
+    if (dsd_neo_cpu_has_avx2_with_os_support()
+        && (test_plain_moments_backend("SIMD widen+moments AVX2", widen_u8_to_f32_bias127_moments_avx2) != 0
+            || test_rotated_moments_backend("SIMD rotate+widen+moments AVX2",
+                                            widen_rotate90_u8_to_f32_bias127_phase_moments_avx2)
+                   != 0)) {
+        return 1;
+    }
+#endif
+#endif
+
+#if defined(__aarch64__) || defined(__arm64) || defined(_M_ARM64) || defined(_M_ARM64EC)
+    if (test_plain_moments_backend("SIMD widen+moments NEON", widen_u8_to_f32_bias127_moments_neon) != 0
+        || test_rotated_moments_backend("SIMD rotate+widen+moments NEON",
+                                        widen_rotate90_u8_to_f32_bias127_phase_moments_neon)
+               != 0) {
         return 1;
     }
 #endif

@@ -14,6 +14,8 @@
 #ifndef DSD_NEO_SIMD_WIDEN_H
 #define DSD_NEO_SIMD_WIDEN_H
 
+#include <dsd-neo/core/input_level.h>
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -50,6 +52,16 @@ typedef void (*dsd_neo_widen_rot_fn)(const unsigned char*, float*, uint32_t);
 void widen_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len);
 
 /**
+ * @brief Widen CU8 bytes and accumulate their exact raw integer moments.
+ *
+ * The conversion is identical to widen_u8_to_f32_bias127(). Moments are
+ * collected from the unmodified source bytes and merged into @p moments once
+ * per call.
+ */
+void widen_u8_to_f32_bias127_moments(const unsigned char* src, float* dst, uint32_t len,
+                                     dsd_input_level_cu8_moments* moments);
+
+/**
  * @brief Rotate 90° (IQ) and widen u8→float centered at 127.5 with explicit phase.
  *
  * Applies the `j^n` sequence starting at `phase & 3`, where phase 0 leaves the
@@ -67,6 +79,15 @@ void widen_u8_to_f32_bias127(const unsigned char* src, float* dst, uint32_t len)
  * @return Next rotation phase after processing the available I/Q pairs.
  */
 uint32_t widen_rotate90_u8_to_f32_bias127_phase(const unsigned char* src, float* dst, uint32_t len, uint32_t phase);
+
+/**
+ * @brief Rotate/widen CU8 pairs and accumulate pre-rotation integer moments.
+ *
+ * As with the conversion-only API, only complete I/Q pairs are processed.
+ * Moments therefore cover `floor(len / 2) * 2` source bytes.
+ */
+uint32_t widen_rotate90_u8_to_f32_bias127_phase_moments(const unsigned char* src, float* dst, uint32_t len,
+                                                        uint32_t phase, dsd_input_level_cu8_moments* moments);
 
 #ifdef __cplusplus
 }

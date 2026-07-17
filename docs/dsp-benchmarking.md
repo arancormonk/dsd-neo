@@ -68,6 +68,10 @@ The benchmark target includes:
 The RTL benchmark target includes:
 
 - CU8 ingest into the input ring for contiguous and wrap-around reservations.
+- Standalone CU8 integer-level reduction at the 16 KiB default block size and
+  256 KiB maximum block size.
+- Production-equivalent CU8 ingest plus level reduction at both block sizes,
+  with benchmark-only `separate` cases retained as the unfused-pass baseline.
 - CS16 ingest conversion for Soapy-style signed sample input.
 - Post-demod spectrum snapshot updates used by the UI/metrics path.
 - 512-sample direct-output batch reads.
@@ -95,6 +99,12 @@ Focused comparisons are usually more useful than all-case runs:
 python3 tools/dsp_bench_compare.py /tmp/dsd-main.csv /tmp/dsd-candidate.csv --filter cqpsk
 python3 tools/dsp_bench_compare.py /tmp/dsd-main.csv /tmp/dsd-candidate.csv --filter channel_lpf
 ```
+
+For CU8 ingest work, capture five-repeat CSV medians for the matching
+`rtl_ingest_u8_metrics_separate_*` and `rtl_ingest_u8_metrics_fused_*` cases.
+The 16 KiB cases represent the normal live block and the 256 KiB cases exercise
+the maximum supported benchmark block. Treat differences below roughly 5% as
+inconclusive unless repeated runs and hardware counters agree.
 
 Use `items_per_second` when throughput is easier to read:
 
@@ -128,6 +138,8 @@ working directory. `DSD_NEO_RTL_PERF_INTERVAL_MS` controls the aggregation
 window and is clamped to 100-60000 ms. CSV rows include ring fill, cumulative
 input drops, ingest timing, `full_demod()` timing, post-demod metrics timing,
 output-write timing, consumer-read timing, SNR, CFO, and carrier lock snapshots.
+For CU8 sources, `ingest_ns` includes the integer level reduction fused into
+widening, rotation, pending-buffer copies, and dropped-tail accounting.
 
 Use live CSV to decide which synthetic cases deserve focused before/after runs.
 For example, high `post_metrics_ns` points at `rtl_metrics_spectrum_*`, while

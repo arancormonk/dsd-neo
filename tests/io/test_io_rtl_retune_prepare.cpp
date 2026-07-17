@@ -40,6 +40,7 @@ extern "C" int rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out
                                                  int* out_phase, int* out_status);
 extern "C" int rtl_device_test_u8_generation_stale_drop(uint64_t* out_drops, int* out_phase, int* out_dev_carry_valid,
                                                         int* out_local_carry_valid, int* out_status);
+extern "C" int rtl_device_test_u8_moment_accounting(dsd_input_level_cu8_moments* out, size_t out_count);
 extern "C" int rtl_device_test_replay_input_level_snapshot(int format, int backend, const char* capture_stage,
                                                            size_t raw_bytes, size_t scratch_cap_f32, int* out_rc,
                                                            int* out_source, uint64_t* out_count);
@@ -94,6 +95,26 @@ static int
 expect_u64_eq(const char* label, uint64_t got, uint64_t want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "FAIL: %s got=%llu want=%llu\n", label, (unsigned long long)got, (unsigned long long)want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_cu8_moments(const char* label, const dsd_input_level_cu8_moments* got, const uint8_t* raw, size_t raw_count) {
+    dsd_input_level_cu8_moments want;
+    dsd_input_level_cu8_moments_reset(&want);
+    if (!got || dsd_input_level_cu8_moments_accumulate(&want, raw, raw_count) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s invalid test input\n", label);
+        return 1;
+    }
+    if (got->count != want.count || got->sum != want.sum || got->sum_sq != want.sum_sq || got->clipped != want.clipped
+        || got->min_sample != want.min_sample || got->max_sample != want.max_sample) {
+        DSD_FPRINTF(stderr, "FAIL: %s got={%llu,%llu,%llu,%llu,%u,%u} want={%llu,%llu,%llu,%llu,%u,%u}\n", label,
+                    (unsigned long long)got->count, (unsigned long long)got->sum, (unsigned long long)got->sum_sq,
+                    (unsigned long long)got->clipped, (unsigned int)got->min_sample, (unsigned int)got->max_sample,
+                    (unsigned long long)want.count, (unsigned long long)want.sum, (unsigned long long)want.sum_sq,
+                    (unsigned long long)want.clipped, (unsigned int)want.min_sample, (unsigned int)want.max_sample);
         return 1;
     }
     return 0;
@@ -860,6 +881,33 @@ main(void) {
     failed |= expect_int_eq("u8 stale-generation advances phase over aligned remainder", u8_phase, 1);
     failed |= expect_int_eq("u8 stale-generation clears device carry", stale_dev_carry_valid, 0);
     failed |= expect_int_eq("u8 stale-generation clears local carry", stale_local_carry_valid, 0);
+
+    dsd_input_level_cu8_moments path_moments[9] = {};
+    rc = rtl_device_test_u8_moment_accounting(path_moments, sizeof(path_moments) / sizeof(path_moments[0]));
+    failed |= expect_int_eq("u8 moment accounting helper rc", rc, 0);
+    const uint8_t common_raw[] = {0U, 1U, 2U, 128U, 254U, 255U};
+    const uint8_t odd_first_raw[] = {3U};
+    const uint8_t odd_second_raw[] = {4U, 5U};
+    const uint8_t tcp_raw[] = {0U, 255U, 1U, 2U, 3U, 4U, 254U, 253U, 128U};
+    const uint8_t replay_raw[] = {0U, 1U, 254U, 255U};
+    if (rc == 0) {
+        failed |= expect_cu8_moments("u8 contiguous ring moments", &path_moments[0], common_raw, sizeof(common_raw));
+        failed |= expect_cu8_moments("u8 wrapped ring moments", &path_moments[1], common_raw, sizeof(common_raw));
+        failed |=
+            expect_cu8_moments("u8 odd first-block moments", &path_moments[2], odd_first_raw, sizeof(odd_first_raw));
+        failed |= expect_cu8_moments("u8 odd second-block excludes old carry", &path_moments[3], odd_second_raw,
+                                     sizeof(odd_second_raw));
+        failed |=
+            expect_cu8_moments("u8 full-ring dropped tail moments", &path_moments[4], common_raw, sizeof(common_raw));
+        failed |= expect_cu8_moments("u8 stale-generation skipped tail moments", &path_moments[5], common_raw,
+                                     sizeof(common_raw));
+        failed |=
+            expect_cu8_moments("rtl-tcp pending/direct/remainder moments", &path_moments[6], tcp_raw, sizeof(tcp_raw));
+        failed |= expect_cu8_moments("modern replay excludes old carry and includes tail", &path_moments[7], replay_raw,
+                                     sizeof(replay_raw));
+        failed |= expect_cu8_moments("legacy replay uses raw pre-rotation bytes", &path_moments[8], replay_raw,
+                                     sizeof(replay_raw));
+    }
 
     /*
      * Miscellaneous RTL helper contracts are pure formatting/alignment rules:

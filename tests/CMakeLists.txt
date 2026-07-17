@@ -4754,6 +4754,13 @@ target_link_libraries(
     dsd-neo_test_dsp_simd_widen
     PRIVATE dsd-neo_dsp_private_test_support
 )
+get_target_property(_dsd_neo_widen_dsp_sources dsd-neo_dsp SOURCES)
+if(_dsd_neo_widen_dsp_sources MATCHES "simd_widen_avx2\\.cpp")
+    target_compile_definitions(
+        dsd-neo_test_dsp_simd_widen
+        PRIVATE DSD_NEO_TEST_HAVE_AVX2_IMPL=1
+    )
+endif()
 add_test(NAME DSP_SIMD_WIDEN COMMAND dsd-neo_test_dsp_simd_widen)
 
 add_executable(dsd-neo_test_dsp_simd_fir dsp/test_dsp_simd_fir.cpp)
