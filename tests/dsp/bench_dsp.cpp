@@ -41,6 +41,11 @@
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
 
+#if defined(__x86_64__) || defined(_M_X64)
+extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
+                                           const float* taps, int taps_len);
+#endif
+
 extern "C" int
 dsd_rtl_stream_should_exit(void) {
     return 0;
@@ -603,13 +608,120 @@ bench_fir(const BenchOptions& opts) {
         return out[0] + out[kInLen - 1] + hist_i[0] + hist_q[0];
     });
 
-    std::vector<float> hb_hist_i(HB_TAPS - 1, 0.0f);
-    std::vector<float> hb_hist_q(HB_TAPS - 1, 0.0f);
-    ran += run_case(opts, "simd_hb_decim2_complex", "pair", (double)kPairs, [&]() -> float {
-        int got = simd_hb_decim2_complex(in.data(), kInLen, out.data(), hb_hist_i.data(), hb_hist_q.data(), hb_q15_taps,
-                                         HB_TAPS);
-        return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
-    });
+    std::vector<float> hb15_hist_i(HB_TAPS - 1, 0.0f);
+    std::vector<float> hb15_hist_q(HB_TAPS - 1, 0.0f);
+    BenchMeta hb15_meta;
+    hb15_meta.tap_count = HB_TAPS;
+    hb15_meta.variant = "fixed";
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_15tap", "pair", (double)kPairs,
+        [&]() -> float {
+            int got = simd_hb_decim2_complex(in.data(), kInLen, out.data(), hb15_hist_i.data(), hb15_hist_q.data(),
+                                             hb_q15_taps, HB_TAPS);
+            return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
+        },
+        &hb15_meta);
+
+    std::vector<float> hb31_hist_i(30, 0.0f);
+    std::vector<float> hb31_hist_q(30, 0.0f);
+    BenchMeta hb31_meta;
+    hb31_meta.tap_count = 31;
+    hb31_meta.variant = "fixed";
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_31tap", "pair", (double)kPairs,
+        [&]() -> float {
+            int got = simd_hb_decim2_complex(in.data(), kInLen, out.data(), hb31_hist_i.data(), hb31_hist_q.data(),
+                                             hb31_q15_taps, 31);
+            return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
+        },
+        &hb31_meta);
+
+    constexpr int kCascadeStages = 5;
+    constexpr int kCascadePairs = 8192;
+    constexpr int kCascadeInLen = kCascadePairs * 2;
+    std::vector<float> cascade_in(kCascadeInLen);
+    std::vector<float> cascade_work_a(kCascadeInLen);
+    std::vector<float> cascade_work_b(kCascadeInLen);
+    std::vector<float> cascade_hist_i[kCascadeStages];
+    std::vector<float> cascade_hist_q[kCascadeStages];
+    fill_noise(&cascade_in, 0x5A17u);
+    for (int stage = 0; stage < kCascadeStages; stage++) {
+        const int hist_len = (stage == 0) ? 30 : HB_TAPS - 1;
+        cascade_hist_i[stage].resize((size_t)hist_len, 0.0f);
+        cascade_hist_q[stage].resize((size_t)hist_len, 0.0f);
+    }
+    BenchMeta cascade_meta;
+    cascade_meta.rate_hz = 1536000;
+    cascade_meta.profile = "rtl_1536k_to_48k";
+    cascade_meta.variant = "31/15/15/15/15";
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_5stage_32x", "input_pair", (double)kCascadePairs,
+        [&]() -> float {
+            const float* src = cascade_in.data();
+            float* dst = cascade_work_a.data();
+            int in_len = kCascadeInLen;
+            for (int stage = 0; stage < kCascadeStages; stage++) {
+                const float* stage_taps = (stage == 0) ? hb31_q15_taps : hb_q15_taps;
+                const int taps_len = (stage == 0) ? 31 : HB_TAPS;
+                const int got = simd_hb_decim2_complex(src, in_len, dst, cascade_hist_i[stage].data(),
+                                                       cascade_hist_q[stage].data(), stage_taps, taps_len);
+                src = dst;
+                in_len = got;
+                dst = (dst == cascade_work_a.data()) ? cascade_work_b.data() : cascade_work_a.data();
+            }
+            return src[0] + src[(in_len > 0) ? in_len - 1 : 0] + cascade_hist_i[0][0] + (float)in_len;
+        },
+        &cascade_meta);
+
+#if defined(__x86_64__) || defined(_M_X64)
+    std::vector<float> sse15_hist_i(HB_TAPS - 1, 0.0f);
+    std::vector<float> sse15_hist_q(HB_TAPS - 1, 0.0f);
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_sse2_15tap", "pair", (double)kPairs,
+        [&]() -> float {
+            int got = simd_hb_decim2_complex_sse2(in.data(), kInLen, out.data(), sse15_hist_i.data(),
+                                                  sse15_hist_q.data(), hb_q15_taps, HB_TAPS);
+            return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
+        },
+        &hb15_meta);
+
+    std::vector<float> sse31_hist_i(30, 0.0f);
+    std::vector<float> sse31_hist_q(30, 0.0f);
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_sse2_31tap", "pair", (double)kPairs,
+        [&]() -> float {
+            int got = simd_hb_decim2_complex_sse2(in.data(), kInLen, out.data(), sse31_hist_i.data(),
+                                                  sse31_hist_q.data(), hb31_q15_taps, 31);
+            return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
+        },
+        &hb31_meta);
+
+    std::vector<float> sse_cascade_hist_i[kCascadeStages];
+    std::vector<float> sse_cascade_hist_q[kCascadeStages];
+    for (int stage = 0; stage < kCascadeStages; stage++) {
+        const int hist_len = (stage == 0) ? 30 : HB_TAPS - 1;
+        sse_cascade_hist_i[stage].resize((size_t)hist_len, 0.0f);
+        sse_cascade_hist_q[stage].resize((size_t)hist_len, 0.0f);
+    }
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_sse2_5stage_32x", "input_pair", (double)kCascadePairs,
+        [&]() -> float {
+            const float* src = cascade_in.data();
+            float* dst = cascade_work_a.data();
+            int in_len = kCascadeInLen;
+            for (int stage = 0; stage < kCascadeStages; stage++) {
+                const float* stage_taps = (stage == 0) ? hb31_q15_taps : hb_q15_taps;
+                const int taps_len = (stage == 0) ? 31 : HB_TAPS;
+                const int got = simd_hb_decim2_complex_sse2(src, in_len, dst, sse_cascade_hist_i[stage].data(),
+                                                            sse_cascade_hist_q[stage].data(), stage_taps, taps_len);
+                src = dst;
+                in_len = got;
+                dst = (dst == cascade_work_a.data()) ? cascade_work_b.data() : cascade_work_a.data();
+            }
+            return src[0] + src[(in_len > 0) ? in_len - 1 : 0] + sse_cascade_hist_i[0][0] + (float)in_len;
+        },
+        &cascade_meta);
+#endif
 
     std::vector<float> real_in(kInLen);
     std::vector<float> real_out(kInLen / 2);
