@@ -128,14 +128,14 @@ p25_12_expand_survivors_for_symbol(uint32_t curr_metric[P25_12_MAX_CANDIDATES],
 }
 
 static void
-p25_12_traceback(const uint8_t* backptr, int final_state, int final_rank, uint8_t states[P25_12_N_SYMS]) {
+p25_12_traceback(uint8_t backptr[P25_12_N_SYMS][P25_12_N_ST][P25_12_MAX_CANDIDATES], int final_state, int final_rank,
+                 uint8_t states[P25_12_N_SYMS]) {
     int state = final_state;
     int rank = final_rank;
     for (int sym_idx = P25_12_N_SYMS; sym_idx > 0;) {
         sym_idx--;
         states[sym_idx] = (uint8_t)state;
-        size_t backptr_index = (((size_t)sym_idx * P25_12_N_ST + (size_t)state) * P25_12_MAX_CANDIDATES) + (size_t)rank;
-        uint8_t predecessor = backptr[backptr_index];
+        uint8_t predecessor = backptr[sym_idx][state][rank];
         state = (predecessor >> 3) & 0x3;
         rank = predecessor & 0x7;
     }
@@ -193,7 +193,7 @@ p25_12_soft_llr_list(const uint8_t* input, const int16_t* bit_llr196, p25_12_can
             }
             uint8_t states[P25_12_N_SYMS];
             uint8_t bytes[12];
-            p25_12_traceback(&backptr[0][0][0], st, rank, states);
+            p25_12_traceback(backptr, st, rank, states);
             p25_12_pack_path_bytes(states, bytes);
             p25_12_insert_candidate(candidates, &out_count, max_candidates, bytes, prev_metric[st][rank]);
         }
