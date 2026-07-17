@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/platform/threading.h>
@@ -225,12 +226,15 @@ reset_ring_at(input_ring_state* ring, size_t index) {
 }
 
 static uint32_t
-process_u8_chunk(const unsigned char* src, float* dst, size_t len, uint32_t phase) {
-    return widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, phase);
+process_u8_chunk(const unsigned char* src, float* dst, size_t len, uint32_t phase,
+                 dsd_input_level_cu8_moments* moments) {
+    return moments ? widen_rotate90_u8_to_f32_bias127_phase_moments(src, dst, (uint32_t)len, phase, moments)
+                   : widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, phase);
 }
 
 static float
-ingest_u8_block(input_ring_state* ring, const unsigned char* src, size_t len, size_t start_index, uint32_t* phase) {
+ingest_u8_block(input_ring_state* ring, const unsigned char* src, size_t len, size_t start_index, uint32_t* phase,
+                dsd_input_level_cu8_moments* moments) {
     reset_ring_at(ring, start_index);
     float *p1 = NULL, *p2 = NULL;
     size_t n1 = 0, n2 = 0;
@@ -246,10 +250,10 @@ ingest_u8_block(input_ring_state* ring, const unsigned char* src, size_t len, si
     size_t w2 = (n2 < rem) ? n2 : rem;
 
     if (w1 > 0U) {
-        *phase = process_u8_chunk(src, p1, w1, *phase);
+        *phase = process_u8_chunk(src, p1, w1, *phase, moments);
     }
     if (w2 > 0U) {
-        *phase = process_u8_chunk(src + w1, p2, w2, *phase);
+        *phase = process_u8_chunk(src + w1, p2, w2, *phase, moments);
     }
     input_ring_commit(ring, w1 + w2);
     return (p1 ? p1[0] : 0.0f)
@@ -257,6 +261,46 @@ ingest_u8_block(input_ring_state* ring, const unsigned char* src, size_t len, si
               : (p1 && w1 > 0U) ? p1[w1 - 1U]
                                 : 0.0f)
            + (float)(*phase);
+}
+
+static float
+cu8_snapshot_checksum(const dsd_input_level_snapshot* snapshot) {
+    return snapshot ? (float)(snapshot->rms_dbfs + snapshot->peak_dbfs + snapshot->clip_pct)
+                          + (float)(snapshot->sample_count & 0xffffU)
+                    : 0.0f;
+}
+
+static float
+measure_cu8_integer_metrics(const unsigned char* src, size_t len) {
+    dsd_input_level_cu8_moments moments;
+    dsd_input_level_snapshot snapshot;
+    dsd_input_level_cu8_moments_reset(&moments);
+    if (dsd_input_level_cu8_moments_accumulate(&moments, src, len) != 0
+        || dsd_input_level_cu8_moments_finalize(&moments, DSD_INPUT_LEVEL_SOURCE_RTL_CU8, &snapshot) != 0) {
+        return -1.0f;
+    }
+    return cu8_snapshot_checksum(&snapshot) + (float)(moments.sum & 0xffU);
+}
+
+static float
+ingest_u8_with_separate_metrics(input_ring_state* ring, const unsigned char* src, size_t len, uint32_t* phase) {
+    dsd_input_level_snapshot snapshot;
+    if (dsd_input_level_metrics_from_cu8(src, len, DSD_INPUT_LEVEL_SOURCE_RTL_CU8, &snapshot) != 0) {
+        return -1.0f;
+    }
+    return ingest_u8_block(ring, src, len, 0U, phase, NULL) + cu8_snapshot_checksum(&snapshot);
+}
+
+static float
+ingest_u8_with_fused_metrics(input_ring_state* ring, const unsigned char* src, size_t len, uint32_t* phase) {
+    dsd_input_level_cu8_moments moments;
+    dsd_input_level_snapshot snapshot;
+    dsd_input_level_cu8_moments_reset(&moments);
+    float checksum = ingest_u8_block(ring, src, len, 0U, phase, &moments);
+    if (dsd_input_level_cu8_moments_finalize(&moments, DSD_INPUT_LEVEL_SOURCE_RTL_CU8, &snapshot) != 0) {
+        return -1.0f;
+    }
+    return checksum + cu8_snapshot_checksum(&snapshot);
 }
 
 static float
@@ -311,16 +355,52 @@ bench_rtl_ingest(const BenchOptions& opts) {
 
     uint32_t combined_phase = 0;
     ran += run_case(opts, "rtl_ingest_u8_combined_contig", "byte", (double)kBytes,
-                    [&]() -> float { return ingest_u8_block(&ring, u8.data(), kBytes, 0U, &combined_phase); });
+                    [&]() -> float { return ingest_u8_block(&ring, u8.data(), kBytes, 0U, &combined_phase, NULL); });
 
     uint32_t wrap_phase = 0;
-    ran += run_case(opts, "rtl_ingest_u8_combined_wrap", "byte", (double)kBytes,
-                    [&]() -> float { return ingest_u8_block(&ring, u8.data(), kBytes, kWrapStart, &wrap_phase); });
+    ran += run_case(opts, "rtl_ingest_u8_combined_wrap", "byte", (double)kBytes, [&]() -> float {
+        return ingest_u8_block(&ring, u8.data(), kBytes, kWrapStart, &wrap_phase, NULL);
+    });
 
     ran += run_case(opts, "rtl_ingest_cs16_contig", "sample", (double)kBytes,
                     [&]() -> float { return ingest_cs16_block(&ring, cs16.data(), kBytes / 2U, 0U); });
 
     input_ring_destroy(&ring);
+
+    constexpr size_t kMaxBytes = static_cast<size_t>(256U) * 1024U;
+    constexpr size_t kMaxRingCap = kMaxBytes + 513U;
+    std::vector<unsigned char> u8_max(kMaxBytes);
+    fill_cu8(&u8_max, 0x89abcdefu);
+    input_ring_state max_ring;
+    if (input_ring_init(&max_ring, kMaxRingCap) != 0) {
+        DSD_FPRINTF(stderr, "maximum input_ring_init failed\n");
+        return ran;
+    }
+
+    ran += run_case(opts, "rtl_cu8_integer_metrics_16k", "byte", (double)u8.size(),
+                    [&]() -> float { return measure_cu8_integer_metrics(u8.data(), u8.size()); });
+    ran += run_case(opts, "rtl_cu8_integer_metrics_256k", "byte", (double)u8_max.size(),
+                    [&]() -> float { return measure_cu8_integer_metrics(u8_max.data(), u8_max.size()); });
+
+    uint32_t separate_phase_16k = 0U;
+    ran += run_case(opts, "rtl_ingest_u8_metrics_separate_16k", "byte", (double)u8.size(), [&]() -> float {
+        return ingest_u8_with_separate_metrics(&max_ring, u8.data(), u8.size(), &separate_phase_16k);
+    });
+    uint32_t fused_phase_16k = 0U;
+    ran += run_case(opts, "rtl_ingest_u8_metrics_fused_16k", "byte", (double)u8.size(), [&]() -> float {
+        return ingest_u8_with_fused_metrics(&max_ring, u8.data(), u8.size(), &fused_phase_16k);
+    });
+
+    uint32_t separate_phase_256k = 0U;
+    ran += run_case(opts, "rtl_ingest_u8_metrics_separate_256k", "byte", (double)u8_max.size(), [&]() -> float {
+        return ingest_u8_with_separate_metrics(&max_ring, u8_max.data(), u8_max.size(), &separate_phase_256k);
+    });
+    uint32_t fused_phase_256k = 0U;
+    ran += run_case(opts, "rtl_ingest_u8_metrics_fused_256k", "byte", (double)u8_max.size(), [&]() -> float {
+        return ingest_u8_with_fused_metrics(&max_ring, u8_max.data(), u8_max.size(), &fused_phase_256k);
+    });
+
+    input_ring_destroy(&max_ring);
     return ran;
 }
 

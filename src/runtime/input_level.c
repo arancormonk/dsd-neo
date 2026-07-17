@@ -228,37 +228,123 @@ dsd_input_level_metrics_from_pcm_f32_i16_scale(const float* samples, size_t coun
     return 0;
 }
 
+static int
+input_level_cu8_moments_valid(const dsd_input_level_cu8_moments* moments) {
+    if (!moments || moments->count == 0U || moments->clipped > moments->count
+        || moments->min_sample > moments->max_sample) {
+        return 0;
+    }
+    if ((moments->count <= UINT64_MAX / 255U && moments->sum > moments->count * 255U)
+        || (moments->count <= UINT64_MAX / 65025U && moments->sum_sq > moments->count * 65025U)) {
+        return 0;
+    }
+    return 1;
+}
+
+int
+dsd_input_level_cu8_moments_merge(dsd_input_level_cu8_moments* moments, const dsd_input_level_cu8_moments* add) {
+    if (!moments || !input_level_cu8_moments_valid(add)) {
+        return -1;
+    }
+
+    dsd_input_level_cu8_moments next = *moments;
+    if (next.count == 0U) {
+        next = *add;
+    } else {
+        if (!input_level_cu8_moments_valid(&next) || UINT64_MAX - next.count < add->count
+            || UINT64_MAX - next.sum < add->sum || UINT64_MAX - next.sum_sq < add->sum_sq
+            || UINT64_MAX - next.clipped < add->clipped) {
+            return -1;
+        }
+        next.count += add->count;
+        next.sum += add->sum;
+        next.sum_sq += add->sum_sq;
+        next.clipped += add->clipped;
+        if (add->min_sample < next.min_sample) {
+            next.min_sample = add->min_sample;
+        }
+        if (add->max_sample > next.max_sample) {
+            next.max_sample = add->max_sample;
+        }
+    }
+    *moments = next;
+    return 0;
+}
+
+void
+dsd_input_level_cu8_moments_reset(dsd_input_level_cu8_moments* moments) {
+    if (!moments) {
+        return;
+    }
+    moments->count = 0U;
+    moments->sum = 0U;
+    moments->sum_sq = 0U;
+    moments->clipped = 0U;
+    moments->min_sample = UINT8_MAX;
+    moments->max_sample = 0U;
+}
+
+int
+dsd_input_level_cu8_moments_accumulate(dsd_input_level_cu8_moments* moments, const uint8_t* samples, size_t count) {
+    if (!moments || !samples || count == 0U || count > UINT64_MAX / 65025U) {
+        return -1;
+    }
+
+    dsd_input_level_cu8_moments add;
+    dsd_input_level_cu8_moments_reset(&add);
+    add.count = (uint64_t)count;
+    for (size_t i = 0U; i < count; i++) {
+        const uint8_t sample = samples[i];
+        add.sum += (uint64_t)sample;
+        add.sum_sq += (uint64_t)sample * (uint64_t)sample;
+        add.clipped += (sample <= 1U || sample >= 254U) ? 1U : 0U;
+        if (sample < add.min_sample) {
+            add.min_sample = sample;
+        }
+        if (sample > add.max_sample) {
+            add.max_sample = sample;
+        }
+    }
+    return dsd_input_level_cu8_moments_merge(moments, &add);
+}
+
+int
+dsd_input_level_cu8_moments_finalize(const dsd_input_level_cu8_moments* moments, dsd_input_level_source source,
+                                     dsd_input_level_snapshot* out) {
+    if (!out || !input_level_cu8_moments_valid(moments)) {
+        return -1;
+    }
+
+    const double count = (double)moments->count;
+    const double mean = (double)moments->sum / count;
+    double variance = (double)moments->sum_sq / count - mean * mean;
+    if (variance < 0.0) {
+        variance = 0.0;
+    }
+    const double full_scale = 127.5;
+    const double low_peak = full_scale - (double)moments->min_sample;
+    const double high_peak = (double)moments->max_sample - full_scale;
+    const double peak = ((low_peak > high_peak) ? low_peak : high_peak) / full_scale;
+    const double mean_power = variance / (full_scale * full_scale);
+    input_level_fill(out, source, mean_power, peak, moments->clipped, moments->count);
+    return 0;
+}
+
+int
+dsd_input_level_metrics_from_cu8_moments(const dsd_input_level_cu8_moments* moments, dsd_input_level_source source,
+                                         dsd_input_level_snapshot* out) {
+    return dsd_input_level_cu8_moments_finalize(moments, source, out);
+}
+
 int
 dsd_input_level_metrics_from_cu8(const uint8_t* samples, size_t count, dsd_input_level_source source,
                                  dsd_input_level_snapshot* out) {
-    if (!out || !samples || count == 0U) {
+    dsd_input_level_cu8_moments moments;
+    dsd_input_level_cu8_moments_reset(&moments);
+    if (!out || dsd_input_level_cu8_moments_accumulate(&moments, samples, count) != 0) {
         return -1;
     }
-    double p = 0.0;
-    double t = 0.0;
-    double peak = 0.0;
-    uint64_t clipped = 0U;
-    const double scale = 1.0 / 127.5;
-    for (size_t i = 0U; i < count; i++) {
-        const uint8_t sample = samples[i];
-        const double s = ((double)sample - 127.5) * scale;
-        const double a = fabs(s);
-        if (a > peak) {
-            peak = a;
-        }
-        if (sample <= 1U || sample >= 254U) {
-            clipped++;
-        }
-        t += s;
-        p += s * s;
-    }
-    double mean_power = p - ((t * t) / (double)count);
-    if (mean_power < 0.0) {
-        mean_power = 0.0;
-    }
-    mean_power /= (double)count;
-    input_level_fill(out, source, mean_power, peak, clipped, (uint64_t)count);
-    return 0;
+    return dsd_input_level_cu8_moments_finalize(&moments, source, out);
 }
 
 int

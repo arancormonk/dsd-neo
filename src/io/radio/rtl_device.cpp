@@ -492,17 +492,43 @@ rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int
 
 /* Persisted IQ metadata and the live transform policy may select the two-pass
  * CU8 transform. New captures use the combined bias-127.5 transform by default. */
+static inline void
+rtl_cu8_moments_add_sample(dsd_input_level_cu8_moments* moments, unsigned char sample) {
+    if (!moments) {
+        return;
+    }
+    moments->count++;
+    moments->sum += (uint64_t)sample;
+    moments->sum_sq += (uint64_t)sample * (uint64_t)sample;
+    moments->clipped += (sample <= 1U || sample >= 254U) ? 1U : 0U;
+    if (sample < moments->min_sample) {
+        moments->min_sample = sample;
+    }
+    if (sample > moments->max_sample) {
+        moments->max_sample = sample;
+    }
+}
+
 static uint32_t
-rtl_apply_two_pass_cu8_rotation(unsigned char* buf, uint32_t len, uint32_t phase) {
+rtl_apply_two_pass_cu8_rotation(unsigned char* buf, uint32_t len, uint32_t phase,
+                                dsd_input_level_cu8_moments* moments) {
     uint32_t cur_phase = phase & 3U;
     if (!buf || len < 2U) {
         return cur_phase;
     }
-    uint32_t pairs = len >> 1;
+    dsd_input_level_cu8_moments local;
+    if (moments) {
+        dsd_input_level_cu8_moments_reset(&local);
+    }
+    const uint32_t pairs = len >> 1;
     for (uint32_t n = 0; n < pairs; n++) {
-        uint32_t idx = n << 1;
-        unsigned char in_i = buf[idx];
-        unsigned char in_q = buf[idx + 1U];
+        const uint32_t idx = n << 1;
+        const unsigned char in_i = buf[idx];
+        const unsigned char in_q = buf[idx + 1U];
+        if (moments) {
+            rtl_cu8_moments_add_sample(&local, in_i);
+            rtl_cu8_moments_add_sample(&local, in_q);
+        }
         switch (cur_phase) {
             case 0: break;
             case 1:
@@ -520,6 +546,12 @@ rtl_apply_two_pass_cu8_rotation(unsigned char* buf, uint32_t len, uint32_t phase
         }
         cur_phase = (cur_phase + 1U) & 3U;
     }
+    if (moments && (len & 1U) != 0U) {
+        rtl_cu8_moments_add_sample(&local, buf[len - 1U]);
+    }
+    if (moments) {
+        (void)dsd_input_level_cu8_moments_merge(moments, &local);
+    }
     return cur_phase;
 }
 
@@ -536,16 +568,20 @@ rtl_widen_two_pass_cu8(const unsigned char* src, float* dst, uint32_t len) {
 
 static inline int
 rtl_process_u8_chunk(const struct rtl_device* s, unsigned char* src, float* dst, size_t len, int fs4_shift_active,
-                     int combine_rotate_active, int use_two_pass, int* phase) {
+                     int combine_rotate_active, int use_two_pass, int* phase, dsd_input_level_cu8_moments* moments) {
     if (!s || !src || !dst || len == 0) {
         return phase ? *phase : 0;
     }
     int cur_phase = phase ? (*phase & 3) : 0;
     if (fs4_shift_active && combine_rotate_active) {
-        cur_phase = (int)widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, (uint32_t)cur_phase);
+        cur_phase = moments ? (int)widen_rotate90_u8_to_f32_bias127_phase_moments(src, dst, (uint32_t)len,
+                                                                                  (uint32_t)cur_phase, moments)
+                            : (int)widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, (uint32_t)cur_phase);
     } else if (use_two_pass) {
-        cur_phase = (int)rtl_apply_two_pass_cu8_rotation(src, (uint32_t)len, (uint32_t)cur_phase);
+        cur_phase = (int)rtl_apply_two_pass_cu8_rotation(src, (uint32_t)len, (uint32_t)cur_phase, moments);
         rtl_widen_two_pass_cu8(src, dst, (uint32_t)len);
+    } else if (moments) {
+        widen_u8_to_f32_bias127_moments(src, dst, (uint32_t)len, moments);
     } else {
         widen_u8_to_f32_bias127(src, dst, (uint32_t)len);
     }
@@ -691,9 +727,14 @@ struct rtl_u8_write_cursor {
     int fs4_shift_active;
     int combine_rotate_active;
     int use_two_pass;
+    dsd_input_level_cu8_moments* moments;
 };
 
 } // namespace
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static std::atomic<int> g_rtl_test_force_u8_generation_stale{0};
+#endif
 
 static inline void
 rtl_write_u8_reserved_segment(const struct rtl_device* s, const rtl_u8_write_cursor* cursor, float* dst,
@@ -709,7 +750,10 @@ rtl_write_u8_reserved_segment(const struct rtl_device* s, const rtl_u8_write_cur
     size_t from_prefix = 0U;
     if (prefix != 0U) {
         rtl_process_u8_chunk(s, pair, dst, 2U, cursor->fs4_shift_active, cursor->combine_rotate_active,
-                             cursor->use_two_pass, cursor->phase);
+                             cursor->use_two_pass, cursor->phase, NULL);
+        if (cursor->moments) {
+            (void)dsd_input_level_cu8_moments_accumulate(cursor->moments, cursor->src + *cursor->done, prefix);
+        }
         *cursor->done += prefix;
         *cursor->need -= prefix;
         from_prefix = 2U;
@@ -717,7 +761,7 @@ rtl_write_u8_reserved_segment(const struct rtl_device* s, const rtl_u8_write_cur
     if (produced_bytes > from_prefix) {
         size_t body = produced_bytes - from_prefix;
         rtl_process_u8_chunk(s, cursor->src + *cursor->done, dst + from_prefix, body, cursor->fs4_shift_active,
-                             cursor->combine_rotate_active, cursor->use_two_pass, cursor->phase);
+                             cursor->combine_rotate_active, cursor->use_two_pass, cursor->phase, cursor->moments);
         *cursor->done += body;
         *cursor->need -= body;
     }
@@ -748,9 +792,42 @@ struct rtl_u8_finalize_state {
     int count_full_reserve;
     int ring_exhausted;
     int generation_stale;
+    dsd_input_level_cu8_moments* moments;
+};
+
+struct rtl_u8_perf_state {
+    int enabled;
+    uint64_t start_ns;
+    uint64_t drops_before;
 };
 
 } // namespace
+
+static inline void
+rtl_finalize_u8_ring_exhaustion(struct rtl_device* s, const rtl_u8_finalize_state* final_state) {
+    if (final_state->moments && final_state->need > 0U) {
+        (void)dsd_input_level_cu8_moments_accumulate(final_state->moments, final_state->src + final_state->done,
+                                                     final_state->need);
+    }
+    size_t dropped =
+        rtl_drop_u8_bytes_preserve_alignment(final_state->src + final_state->done, final_state->need,
+                                             final_state->carry, final_state->phase, final_state->fs4_shift_active);
+    rtl_accumulate_ring_drops(s->input_ring, dropped);
+    if (final_state->count_full_reserve) {
+        s->reserve_full_events++;
+    }
+}
+
+static inline void
+rtl_finalize_u8_trailing_carry(const rtl_u8_finalize_state* final_state) {
+    if (final_state->need != 1U || final_state->done >= final_state->len || final_state->carry->valid) {
+        return;
+    }
+    if (final_state->moments) {
+        (void)dsd_input_level_cu8_moments_accumulate(final_state->moments, final_state->src + final_state->done, 1U);
+    }
+    rtl_capture_u8_byte_carry_save(final_state->carry, final_state->src[final_state->done]);
+}
 
 static inline void
 rtl_finalize_u8_ring_write(struct rtl_device* s, const rtl_u8_finalize_state* final_state) {
@@ -760,36 +837,54 @@ rtl_finalize_u8_ring_write(struct rtl_device* s, const rtl_u8_finalize_state* fi
 
     if (final_state->generation_stale) {
         rtl_clear_capture_alignment_after_discard(s, final_state->carry);
-    } else if (final_state->ring_exhausted) {
-        size_t dropped =
-            rtl_drop_u8_bytes_preserve_alignment(final_state->src + final_state->done, final_state->need,
-                                                 final_state->carry, final_state->phase, final_state->fs4_shift_active);
-        rtl_accumulate_ring_drops(s->input_ring, dropped);
-        if (final_state->count_full_reserve) {
-            s->reserve_full_events++;
-        }
-    } else if (final_state->need == 1U && final_state->done < final_state->len && !final_state->carry->valid) {
-        rtl_capture_u8_byte_carry_save(final_state->carry, final_state->src[final_state->done]);
+        return;
+    }
+    if (final_state->ring_exhausted) {
+        rtl_finalize_u8_ring_exhaustion(s, final_state);
+    } else {
+        rtl_finalize_u8_trailing_carry(final_state);
     }
 
-    if (!final_state->generation_stale) {
-        s->iq_byte_carry = *final_state->carry;
-        if (final_state->fs4_shift_active) {
-            s->rot_phase = *final_state->phase;
-        }
+    s->iq_byte_carry = *final_state->carry;
+    if (final_state->fs4_shift_active) {
+        s->rot_phase = *final_state->phase;
     }
+}
+
+static inline rtl_u8_perf_state
+rtl_u8_perf_begin(const struct rtl_device* s) {
+    rtl_u8_perf_state perf = {};
+    perf.enabled = rtl_perf_enabled();
+    if (perf.enabled) {
+        perf.start_ns = dsd_time_monotonic_ns();
+        perf.drops_before = s->input_ring->producer_drops.load(std::memory_order_relaxed);
+    }
+    return perf;
+}
+
+static inline void
+rtl_u8_perf_end(const struct rtl_device* s, const rtl_u8_perf_state* perf, size_t done) {
+    if (!perf->enabled) {
+        return;
+    }
+    uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
+    uint64_t drops_delta = (drops_after >= perf->drops_before) ? (drops_after - perf->drops_before) : 0ULL;
+    rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf->start_ns, done, drops_delta);
+}
+
+static inline int
+rtl_u8_write_result(int ring_exhausted, int generation_stale) {
+    return generation_stale ? 2 : ring_exhausted;
 }
 
 static int
 rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int fs4_shift_active, int use_two_pass,
-                     int combine_rotate_active, int count_full_reserve) {
+                     int combine_rotate_active, int count_full_reserve, dsd_input_level_cu8_moments* moments) {
     if (!s || !s->input_ring || !src || len == 0) {
         return 0;
     }
 
-    int perf_on = rtl_perf_enabled();
-    uint64_t perf_t0 = perf_on ? dsd_time_monotonic_ns() : 0ULL;
-    uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
+    rtl_u8_perf_state perf = rtl_u8_perf_begin(s);
     size_t done = 0;
     size_t need = len;
     int phase = s->rot_phase & 3;
@@ -818,11 +913,19 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
         }
 
         rtl_u8_write_cursor cursor = {
-            src, &done, &need, &carry, &phase, fs4_shift_active, combine_rotate_active, use_two_pass};
+            src, &done, &need, &carry, &phase, fs4_shift_active, combine_rotate_active, use_two_pass, moments};
         rtl_write_u8_reserved_segment(s, &cursor, p1, w1);
         rtl_write_u8_reserved_segment(s, &cursor, p2, w2);
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        if (g_rtl_test_force_u8_generation_stale.exchange(0, std::memory_order_acq_rel) != 0) {
+            input_ring_request_discard(s->input_ring);
+        }
+#endif
         if (!input_ring_discard_generation_matches(s->input_ring, discard_generation)) {
+            if (moments && need > 0U) {
+                (void)dsd_input_level_cu8_moments_accumulate(moments, src + done, need);
+            }
             generation_stale =
                 rtl_handle_u8_ring_generation_stale(s, src, done, need, &carry, &phase, fs4_shift_active, produced);
             break;
@@ -831,14 +934,11 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
     }
 
     rtl_u8_finalize_state final_state = {
-        src, len, done, need, &carry, &phase, fs4_shift_active, count_full_reserve, ring_exhausted, generation_stale};
+        src,    len, done, need, &carry, &phase, fs4_shift_active, count_full_reserve, ring_exhausted, generation_stale,
+        moments};
     rtl_finalize_u8_ring_write(s, &final_state);
-    if (perf_on) {
-        uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
-        uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
-        rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf_t0, done, drops_delta);
-    }
-    return generation_stale ? 2 : ring_exhausted;
+    rtl_u8_perf_end(s, &perf, done);
+    return rtl_u8_write_result(ring_exhausted, generation_stale);
 }
 
 static inline void
@@ -855,12 +955,12 @@ rtl_u8_input_level_source(const struct rtl_device* s) {
 }
 
 static inline void
-rtl_publish_cu8_input_level(const struct rtl_device* s, const uint8_t* samples, size_t count) {
+rtl_publish_cu8_input_level_moments(const struct rtl_device* s, const dsd_input_level_cu8_moments* moments) {
     dsd_input_level_snapshot snapshot;
-    if (!s || !samples || count == 0U) {
+    if (!s || !moments || moments->count == 0U) {
         return;
     }
-    if (dsd_input_level_metrics_from_cu8(samples, count, rtl_u8_input_level_source(s), &snapshot) == 0) {
+    if (dsd_input_level_cu8_moments_finalize(moments, rtl_u8_input_level_source(s), &snapshot) == 0) {
         rtl_stream_input_level_publish(&snapshot);
     }
 }
@@ -1430,7 +1530,7 @@ static int replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_writ
                                     uint32_t* event_cursor);
 static int replay_convert_block_to_f32(const struct rtl_device* s, const uint8_t* raw_block, size_t out_bytes,
                                        float* f32_block, size_t f32_cap, int* phase, int* have_carry,
-                                       uint8_t* carry_byte);
+                                       uint8_t* carry_byte, dsd_input_level_cu8_moments* moments);
 
 static inline int
 replay_submit_chunk_inputs_valid(const struct rtl_device* s, const float* src, const size_t* out_grant_f32,
@@ -1593,14 +1693,22 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
 
     dsd_input_level_snapshot input_level;
     DSD_MEMSET(&input_level, 0, sizeof(input_level));
+    dsd_input_level_cu8_moments moments;
+    dsd_input_level_cu8_moments_reset(&moments);
+    const int is_cu8 = s->replay_cfg.format == DSD_IQ_FORMAT_CU8;
     int have_input_level =
-        (rtl_prepare_replay_input_level_snapshot(s, raw_block, out_bytes, f32_block, raw_block_bytes, &input_level)
-         == 0);
+        !is_cu8
+        && (rtl_prepare_replay_input_level_snapshot(s, raw_block, out_bytes, f32_block, raw_block_bytes, &input_level)
+            == 0);
 
     int produced = replay_convert_block_to_f32(s, raw_block, out_bytes, f32_block, raw_block_bytes, io->phase,
-                                               io->have_carry, io->carry_byte);
+                                               io->have_carry, io->carry_byte, is_cu8 ? &moments : NULL);
     if (produced <= 0) {
         return 2;
+    }
+    if (is_cu8) {
+        have_input_level =
+            dsd_input_level_cu8_moments_finalize(&moments, rtl_u8_input_level_source(s), &input_level) == 0;
     }
     if (have_input_level) {
         rtl_stream_input_level_publish(&input_level);
@@ -1658,7 +1766,8 @@ replay_enqueue_f32_no_drop(struct rtl_device* s, const float* src, size_t float_
 
 static int
 replay_convert_cu8_to_f32(const struct rtl_device* s, const uint8_t* in, size_t in_bytes, float* out_f32,
-                          size_t out_cap_f32, int* io_phase, int* io_have_carry, uint8_t* io_carry_byte) {
+                          size_t out_cap_f32, int* io_phase, int* io_have_carry, uint8_t* io_carry_byte,
+                          dsd_input_level_cu8_moments* moments) {
     if (!s || !in || !out_f32 || !io_phase || !io_have_carry || !io_carry_byte) {
         return -1;
     }
@@ -1676,7 +1785,10 @@ replay_convert_cu8_to_f32(const struct rtl_device* s, const uint8_t* in, size_t 
         uint8_t pair[2];
         pair[0] = *io_carry_byte;
         pair[1] = in[0];
-        rtl_process_u8_chunk(s, pair, out_f32 + out_pos, 2U, fs4_active, combine_active, use_two_pass, io_phase);
+        rtl_process_u8_chunk(s, pair, out_f32 + out_pos, 2U, fs4_active, combine_active, use_two_pass, io_phase, NULL);
+        if (moments) {
+            (void)dsd_input_level_cu8_moments_accumulate(moments, in, 1U);
+        }
         out_pos += 2U;
         consumed = 1U;
         *io_have_carry = 0;
@@ -1689,12 +1801,15 @@ replay_convert_cu8_to_f32(const struct rtl_device* s, const uint8_t* in, size_t 
             return -1;
         }
         rtl_process_u8_chunk(s, const_cast<unsigned char*>(in + consumed), out_f32 + out_pos, aligned, fs4_active,
-                             combine_active, use_two_pass, io_phase);
+                             combine_active, use_two_pass, io_phase, moments);
         out_pos += aligned;
         consumed += aligned;
     }
 
     if (consumed < in_bytes) {
+        if (moments) {
+            (void)dsd_input_level_cu8_moments_accumulate(moments, in + consumed, 1U);
+        }
         *io_carry_byte = in[consumed];
         *io_have_carry = 1;
     }
@@ -2072,12 +2187,14 @@ replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64
 
 static int
 replay_convert_block_to_f32(const struct rtl_device* s, const uint8_t* raw_block, size_t out_bytes, float* f32_block,
-                            size_t f32_cap, int* phase, int* have_carry, uint8_t* carry_byte) {
+                            size_t f32_cap, int* phase, int* have_carry, uint8_t* carry_byte,
+                            dsd_input_level_cu8_moments* moments) {
     if (!s) {
         return -1;
     }
     if (s->replay_cfg.format == DSD_IQ_FORMAT_CU8) {
-        return replay_convert_cu8_to_f32(s, raw_block, out_bytes, f32_block, f32_cap, phase, have_carry, carry_byte);
+        return replay_convert_cu8_to_f32(s, raw_block, out_bytes, f32_block, f32_cap, phase, have_carry, carry_byte,
+                                         moments);
     }
     if (s->replay_cfg.format == DSD_IQ_FORMAT_CF32) {
         return replay_convert_cf32_to_f32(s, raw_block, out_bytes, f32_block, f32_cap, phase);
@@ -2138,7 +2255,7 @@ rtl_device_test_replay_convert_block(const rtl_device_test_replay_convert_block_
     int have_carry = request->start_have_carry;
     uint8_t carry_byte = request->start_carry_byte;
     int rc = replay_convert_block_to_f32(&dev, request->raw_block, request->raw_bytes, scratch, request->out_cap_f32,
-                                         &phase, &have_carry, &carry_byte);
+                                         &phase, &have_carry, &carry_byte, NULL);
     size_t copy_count =
         rtl_device_test_replay_convert_copy_count(rc, out_f32_count, sizeof(scratch) / sizeof(scratch[0]));
     DSD_MEMCPY(out_f32, scratch, copy_count * sizeof(float));
@@ -2278,9 +2395,11 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
         return;
     }
     rtl_submit_capture_bytes(s, buf, len);
-    rtl_publish_cu8_input_level(s, buf, len);
+    dsd_input_level_cu8_moments moments;
+    dsd_input_level_cu8_moments_reset(&moments);
     /* Convert incoming u8 I/Q and write directly into input ring without extra copy. */
-    rtl_write_u8_to_ring(s, buf, len, fs4_shift_active, use_two_pass, combine_rotate_active, 0);
+    rtl_write_u8_to_ring(s, buf, len, fs4_shift_active, use_two_pass, combine_rotate_active, 0, &moments);
+    rtl_publish_cu8_input_level_moments(s, &moments);
 }
 
 /**
@@ -3653,9 +3772,30 @@ rtl_tcp_ensure_pending_capacity(struct rtl_device* s, size_t needed) {
     return 1;
 }
 
+static void
+rtl_tcp_copy_cu8_with_moments(unsigned char* dst, const unsigned char* src, size_t len,
+                              dsd_input_level_cu8_moments* moments) {
+    if (!dst || !src || len == 0U) {
+        return;
+    }
+    if (!moments) {
+        DSD_MEMCPY(dst, src, len);
+        return;
+    }
+
+    dsd_input_level_cu8_moments local;
+    dsd_input_level_cu8_moments_reset(&local);
+    for (size_t i = 0U; i < len; i++) {
+        const unsigned char sample = src[i];
+        dst[i] = sample;
+        rtl_cu8_moments_add_sample(&local, sample);
+    }
+    (void)dsd_input_level_cu8_moments_merge(moments, &local);
+}
+
 static size_t
 rtl_tcp_fill_pending_slice(struct rtl_device* s, const unsigned char* u8, size_t len, size_t slice,
-                           const struct rtl_u8_transform_policy_state* policy) {
+                           const struct rtl_u8_transform_policy_state* policy, dsd_input_level_cu8_moments* moments) {
     if (!s || !u8 || !policy || s->tcp_pending_len == 0U) {
         return 0U;
     }
@@ -3663,15 +3803,18 @@ rtl_tcp_fill_pending_slice(struct rtl_device* s, const unsigned char* u8, size_t
     size_t missing = (slice > s->tcp_pending_len) ? (slice - s->tcp_pending_len) : 0U;
     size_t take = (missing < len) ? missing : len;
     if (take > 0U && rtl_tcp_ensure_pending_capacity(s, slice) && s->tcp_pending_cap >= (s->tcp_pending_len + take)) {
-        DSD_MEMCPY(s->tcp_pending + s->tcp_pending_len, u8, take);
+        rtl_tcp_copy_cu8_with_moments(s->tcp_pending + s->tcp_pending_len, u8, take, moments);
         s->tcp_pending_len += take;
         consumed += take;
     }
     if (s->tcp_pending_len == slice) {
         int ring_status = rtl_write_u8_to_ring(s, s->tcp_pending, slice, policy->fs4_shift_active, policy->use_two_pass,
-                                               policy->combine_rotate_active, 1);
+                                               policy->combine_rotate_active, 1, NULL);
         s->tcp_pending_len = 0U;
         if (ring_status == 2) {
+            if (moments && take < len) {
+                (void)dsd_input_level_cu8_moments_accumulate(moments, u8 + take, len - take);
+            }
             return len;
         }
     }
@@ -3680,15 +3823,19 @@ rtl_tcp_fill_pending_slice(struct rtl_device* s, const unsigned char* u8, size_t
 
 static void
 rtl_tcp_process_full_slices(struct rtl_device* s, unsigned char* u8, size_t len, size_t slice,
-                            const struct rtl_u8_transform_policy_state* policy, size_t* io_consumed) {
+                            const struct rtl_u8_transform_policy_state* policy, size_t* io_consumed,
+                            dsd_input_level_cu8_moments* moments) {
     if (!s || !u8 || !policy || !io_consumed || slice == 0U) {
         return;
     }
     while ((len - *io_consumed) >= slice) {
         int ring_status = rtl_write_u8_to_ring(s, u8 + *io_consumed, slice, policy->fs4_shift_active,
-                                               policy->use_two_pass, policy->combine_rotate_active, 1);
+                                               policy->use_two_pass, policy->combine_rotate_active, 1, moments);
         *io_consumed += slice;
         if (ring_status == 2) {
+            if (moments && *io_consumed < len) {
+                (void)dsd_input_level_cu8_moments_accumulate(moments, u8 + *io_consumed, len - *io_consumed);
+            }
             *io_consumed = len;
             s->tcp_pending_len = 0U;
             break;
@@ -3700,31 +3847,36 @@ rtl_tcp_process_full_slices(struct rtl_device* s, unsigned char* u8, size_t len,
 }
 
 static void
-rtl_tcp_store_remainder(struct rtl_device* s, const unsigned char* data, size_t rem, int fs4_shift_active) {
+rtl_tcp_store_remainder(struct rtl_device* s, const unsigned char* data, size_t rem, int fs4_shift_active,
+                        dsd_input_level_cu8_moments* moments) {
     if (!s || !data || rem == 0U) {
         return;
     }
     if (!rtl_tcp_ensure_pending_capacity(s, rem)) {
+        if (moments) {
+            (void)dsd_input_level_cu8_moments_accumulate(moments, data, rem);
+        }
         (void)rtl_drop_u8_bytes_preserve_alignment(data, rem, &s->iq_byte_carry, &s->rot_phase, fs4_shift_active);
         return;
     }
-    DSD_MEMCPY(s->tcp_pending, data, rem);
+    rtl_tcp_copy_cu8_with_moments(s->tcp_pending, data, rem, moments);
     s->tcp_pending_len = rem;
 }
 
 static void
 rtl_tcp_reassemble_and_submit(struct rtl_device* s, unsigned char* u8, uint32_t len,
-                              const struct rtl_u8_transform_policy_state* policy) {
+                              const struct rtl_u8_transform_policy_state* policy,
+                              dsd_input_level_cu8_moments* moments) {
     if (!s || !u8 || !policy) {
         return;
     }
     const size_t slice = (s->buf_len > 0 ? (size_t)s->buf_len : 16384U);
-    size_t consumed = rtl_tcp_fill_pending_slice(s, u8, len, slice, policy);
+    size_t consumed = rtl_tcp_fill_pending_slice(s, u8, len, slice, policy, moments);
     if (consumed < len) {
-        rtl_tcp_process_full_slices(s, u8, len, slice, policy, &consumed);
+        rtl_tcp_process_full_slices(s, u8, len, slice, policy, &consumed, moments);
     }
     if (consumed < len) {
-        rtl_tcp_store_remainder(s, u8 + consumed, len - consumed, policy->fs4_shift_active);
+        rtl_tcp_store_remainder(s, u8 + consumed, len - consumed, policy->fs4_shift_active, moments);
     }
 }
 
@@ -3939,8 +4091,10 @@ static DSD_THREAD_RETURN_TYPE
 
         rtl_tcp_account_input_stats(s, len);
         rtl_submit_capture_bytes(s, st.u8, len);
-        rtl_publish_cu8_input_level(s, st.u8, len);
-        rtl_tcp_reassemble_and_submit(s, st.u8, len, &policy);
+        dsd_input_level_cu8_moments moments;
+        dsd_input_level_cu8_moments_reset(&moments);
+        rtl_tcp_reassemble_and_submit(s, st.u8, len, &policy, &moments);
+        rtl_publish_cu8_input_level_moments(s, &moments);
         rtl_tcp_periodic_maintenance(s, &st);
     }
 
@@ -6331,8 +6485,8 @@ rtl_device_test_u8_odd_carry_bridge(size_t* out_used, int* out_phase, int* out_c
 
     unsigned char first[] = {129U};
     unsigned char second[] = {128U, 126U};
-    *out_first_status = rtl_write_u8_to_ring(&dev, first, sizeof(first), 1, 0, 1, 0);
-    *out_second_status = rtl_write_u8_to_ring(&dev, second, sizeof(second), 1, 0, 1, 0);
+    *out_first_status = rtl_write_u8_to_ring(&dev, first, sizeof(first), 1, 0, 1, 0, NULL);
+    *out_second_status = rtl_write_u8_to_ring(&dev, second, sizeof(second), 1, 0, 1, 0, NULL);
     *out_used = input_ring_used(&ring);
     *out_phase = dev.rot_phase;
     *out_carry_valid = dev.iq_byte_carry.valid ? 1 : 0;
@@ -6360,7 +6514,7 @@ rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out_drops, uint64_
     dev.rot_phase = 0;
 
     unsigned char input[] = {130U, 127U, 129U, 126U, 128U, 125U};
-    *out_status = rtl_write_u8_to_ring(&dev, input, sizeof(input), 1, 0, 1, 1);
+    *out_status = rtl_write_u8_to_ring(&dev, input, sizeof(input), 1, 0, 1, 1, NULL);
     *out_used = input_ring_used(&ring);
     *out_drops = ring.producer_drops.load(std::memory_order_acquire);
     *out_full_events = dev.reserve_full_events;
@@ -6395,7 +6549,7 @@ rtl_device_test_u8_generation_stale_drop(uint64_t* out_drops, int* out_phase, in
     size_t produced = 2U;
     *out_status = rtl_handle_u8_ring_generation_stale(&dev, input, done, need, &carry, &phase, 1, produced);
 
-    rtl_u8_finalize_state final_state = {input, sizeof(input), done, need, &carry, &phase, 1, 0, 0, 1};
+    rtl_u8_finalize_state final_state = {input, sizeof(input), done, need, &carry, &phase, 1, 0, 0, 1, NULL};
     rtl_finalize_u8_ring_write(&dev, &final_state);
 
     *out_drops = ring.producer_drops.load(std::memory_order_acquire);
@@ -6404,6 +6558,115 @@ rtl_device_test_u8_generation_stale_drop(uint64_t* out_drops, int* out_phase, in
     *out_local_carry_valid = carry.valid ? 1 : 0;
 
     input_ring_destroy(&ring);
+    return 0;
+}
+
+static int
+rtl_device_test_collect_write_moments(unsigned char* input, size_t input_len, size_t ring_capacity, size_t start_index,
+                                      int use_two_pass, int force_stale, dsd_input_level_cu8_moments* out) {
+    if (!input || input_len == 0U || !out || ring_capacity < 3U || start_index >= ring_capacity) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, ring_capacity) != 0) {
+        return -2;
+    }
+    ring.head.store(start_index, std::memory_order_relaxed);
+    ring.tail.store(start_index, std::memory_order_relaxed);
+
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_USB;
+    dsd_input_level_cu8_moments_reset(out);
+    if (force_stale) {
+        g_rtl_test_force_u8_generation_stale.store(1, std::memory_order_release);
+    }
+    (void)rtl_write_u8_to_ring(&dev, input, input_len, 1, use_two_pass, use_two_pass ? 0 : 1, 1, out);
+    g_rtl_test_force_u8_generation_stale.store(0, std::memory_order_release);
+    input_ring_destroy(&ring);
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_u8_moment_accounting(dsd_input_level_cu8_moments* out, size_t out_count) {
+    if (!out || out_count < 9U) {
+        return -1;
+    }
+
+    unsigned char contiguous[] = {0U, 1U, 2U, 128U, 254U, 255U};
+    unsigned char wrapped[] = {0U, 1U, 2U, 128U, 254U, 255U};
+    unsigned char full[] = {0U, 1U, 2U, 128U, 254U, 255U};
+    unsigned char stale[] = {0U, 1U, 2U, 128U, 254U, 255U};
+    if (rtl_device_test_collect_write_moments(contiguous, sizeof(contiguous), 10U, 0U, 0, 0, &out[0]) != 0
+        || rtl_device_test_collect_write_moments(wrapped, sizeof(wrapped), 10U, 8U, 0, 0, &out[1]) != 0) {
+        return -2;
+    }
+
+    input_ring_state odd_ring{};
+    if (input_ring_init(&odd_ring, 16U) != 0) {
+        return -2;
+    }
+    rtl_device odd_dev{};
+    odd_dev.input_ring = &odd_ring;
+    odd_dev.backend = RTL_BACKEND_USB;
+    unsigned char odd_first[] = {3U};
+    unsigned char odd_second[] = {4U, 5U};
+    dsd_input_level_cu8_moments_reset(&out[2]);
+    dsd_input_level_cu8_moments_reset(&out[3]);
+    (void)rtl_write_u8_to_ring(&odd_dev, odd_first, sizeof(odd_first), 1, 0, 1, 0, &out[2]);
+    (void)rtl_write_u8_to_ring(&odd_dev, odd_second, sizeof(odd_second), 1, 0, 1, 0, &out[3]);
+    input_ring_destroy(&odd_ring);
+
+    if (rtl_device_test_collect_write_moments(full, sizeof(full), 3U, 0U, 0, 0, &out[4]) != 0
+        || rtl_device_test_collect_write_moments(stale, sizeof(stale), 5U, 0U, 0, 1, &out[5]) != 0) {
+        return -2;
+    }
+
+    input_ring_state tcp_ring{};
+    if (input_ring_init(&tcp_ring, 32U) != 0) {
+        return -2;
+    }
+    rtl_device tcp_dev{};
+    tcp_dev.input_ring = &tcp_ring;
+    tcp_dev.backend = RTL_BACKEND_TCP;
+    tcp_dev.buf_len = 4;
+    tcp_dev.tcp_pending = static_cast<unsigned char*>(malloc(4U));
+    if (!tcp_dev.tcp_pending) {
+        input_ring_destroy(&tcp_ring);
+        return -2;
+    }
+    tcp_dev.tcp_pending_cap = 4U;
+    tcp_dev.tcp_pending_len = 2U;
+    tcp_dev.tcp_pending[0] = 91U;
+    tcp_dev.tcp_pending[1] = 92U;
+    unsigned char tcp_input[] = {0U, 255U, 1U, 2U, 3U, 4U, 254U, 253U, 128U};
+    rtl_u8_transform_policy_state policy{1, 1, 0};
+    dsd_input_level_cu8_moments_reset(&out[6]);
+    rtl_tcp_reassemble_and_submit(&tcp_dev, tcp_input, (uint32_t)sizeof(tcp_input), &policy, &out[6]);
+    free(tcp_dev.tcp_pending);
+    input_ring_destroy(&tcp_ring);
+
+    const uint8_t replay_raw[] = {0U, 1U, 254U, 255U};
+    for (int historical = 0; historical <= 1; historical++) {
+        rtl_device replay_dev{};
+        replay_dev.backend = RTL_BACKEND_IQ_REPLAY;
+        replay_dev.replay_cfg.format = DSD_IQ_FORMAT_CU8;
+        replay_dev.replay_fs4_shift_enabled = 1;
+        replay_dev.replay_historical_cu8_two_pass = historical;
+        uint8_t mutable_raw[sizeof(replay_raw)];
+        DSD_MEMCPY(mutable_raw, replay_raw, sizeof(replay_raw));
+        float converted[sizeof(replay_raw) + 1U] = {};
+        int phase = 0;
+        int have_carry = 1;
+        uint8_t carry_byte = 77U;
+        dsd_input_level_cu8_moments_reset(&out[7U + (size_t)historical]);
+        int produced = replay_convert_cu8_to_f32(&replay_dev, mutable_raw, sizeof(mutable_raw), converted,
+                                                 sizeof(converted) / sizeof(converted[0]), &phase, &have_carry,
+                                                 &carry_byte, &out[7U + (size_t)historical]);
+        if (produced <= 0) {
+            return -2;
+        }
+    }
     return 0;
 }
 
