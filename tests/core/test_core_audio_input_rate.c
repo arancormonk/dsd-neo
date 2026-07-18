@@ -31,6 +31,7 @@ static tcp_input_ctx* g_expected_tcp_input_ctx = NULL;
 static dsd_socket_t g_expected_tcp_sockfd = DSD_INVALID_SOCKET;
 static int g_tcp_input_open_calls = 0;
 static int g_tcp_input_close_calls = 0;
+static int g_tcp_input_ctx_sentinel = 0;
 
 static tcp_input_ctx*
 test_tcp_input_open(dsd_socket_t sockfd, int samplerate) {
@@ -643,8 +644,7 @@ test_tcp_input_open_and_close_socket_ownership(void) {
         return 1;
     }
 
-    int fake_tcp_input_ctx = 0;
-    g_expected_tcp_input_ctx = (tcp_input_ctx*)&fake_tcp_input_ctx;
+    g_expected_tcp_input_ctx = (tcp_input_ctx*)&g_tcp_input_ctx_sentinel;
     g_expected_tcp_sockfd = sockfd;
     g_tcp_input_open_calls = 0;
     g_tcp_input_close_calls = 0;
