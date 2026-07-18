@@ -425,6 +425,11 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
     int i;
     int dibit;
     const int* dibit_p;
+    const dsd_dibit_soft_t* soft_p = NULL;
+
+    if (state->dmr_soft_buf != NULL && state->dmr_soft_p != NULL && state->dmr_soft_p >= state->dmr_soft_buf + 90) {
+        soft_p = state->dmr_soft_p - 90;
+    }
 
     //CACH + First Half Payload + Sync = 12 + 54 + 24
     dibit_p = state->dmr_payload_p - 90;
@@ -436,14 +441,17 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
             dibit = (dibit ^ 2) & 3;
         }
         state->dmr_stereo_payload[i] = dibit;
+        state->dmr_stereo_reliab[i] = soft_p != NULL ? soft_p[i].reliability : 200U;
     }
 
     for (i = 0; i < 54; i++) {
-        dibit = get_dibit_and_analog_signal(opts, state, NULL);
+        dsd_dibit_soft_t soft;
+        dibit = getDibitSoft(opts, state, &soft);
         if (opts->inverted_dmr == 1) {
             dibit = (dibit ^ 2) & 3;
         }
         state->dmr_stereo_payload[i + 90] = dibit;
+        state->dmr_stereo_reliab[i + 90] = soft.reliability;
     }
 
     DSD_FPRINTF(stderr, "%s ", timestr);

@@ -870,6 +870,16 @@ dsd_audio_release_input_sources(dsd_opts* opts) {
     dsd_opts_reset_pcm_input_state(opts);
 }
 
+void
+closeAudioInDevice(dsd_opts* opts) {
+    if (opts == NULL) {
+        return;
+    }
+
+    closeAudioInput(opts);
+    dsd_audio_release_input_sources(opts);
+}
+
 static void
 dsd_audio_reset_symbol_replay_pacing(dsd_state* state) {
     if (!state) {

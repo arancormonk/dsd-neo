@@ -24,7 +24,6 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -71,120 +70,43 @@ dmr_data_sync_init_ctx(dmr_data_sync_ctx* ctx, dsd_opts* opts, dsd_state* state)
 static int
 dmr_data_read_cached_dibit(dmr_data_sync_ctx* ctx, int stereo_idx, int advance_rel, uint8_t* rel_value,
                            uint8_t rel_default) {
-    int dibit = *ctx->dibit_p;
-    ctx->dibit_p++;
-    if (advance_rel) {
-        if (ctx->soft_p) {
-            if (rel_value != NULL) {
-                *rel_value = ctx->soft_p->reliability;
-            }
-            ctx->soft_p++;
-        } else if (rel_value != NULL) {
-            *rel_value = rel_default;
-        }
-    }
-    if (ctx->opts->inverted_dmr == 1) {
-        dibit ^= 2;
-    }
+    int dibit;
+    uint8_t reliability = rel_default;
+
     if (ctx->state->dmr_stereo == 1) {
         dibit = (int)ctx->state->dmr_stereo_payload[stereo_idx];
+        reliability = ctx->state->dmr_stereo_reliab[stereo_idx];
     } else {
+        dibit = *ctx->dibit_p;
+        ctx->dibit_p++;
+        if (advance_rel != 0 && ctx->soft_p != NULL) {
+            reliability = ctx->soft_p->reliability;
+            ctx->soft_p++;
+        }
+        if (ctx->opts->inverted_dmr == 1) {
+            dibit ^= 2;
+        }
         ctx->state->dmr_stereo_payload[stereo_idx] = dibit;
+        if (advance_rel != 0) {
+            ctx->state->dmr_stereo_reliab[stereo_idx] = reliability;
+        }
+    }
+    if (advance_rel != 0 && rel_value != NULL) {
+        *rel_value = reliability;
     }
     return dibit;
-}
-
-static int
-dmr_data_compute_rel_base(const dsd_state* state, int symbol) {
-    int rel = 0;
-    if (symbol > state->umid) {
-        int span = state->max - state->umid;
-        if (span < 1) {
-            span = 1;
-        }
-        rel = (symbol - state->umid) * 255 / span;
-    } else if (symbol > state->center) {
-        int d1 = symbol - state->center;
-        int d2 = state->umid - symbol;
-        int span = state->umid - state->center;
-        if (span < 1) {
-            span = 1;
-        }
-        int m = d1 < d2 ? d1 : d2;
-        rel = (m * 510) / span;
-    } else if (symbol >= state->lmid) {
-        int d1 = state->center - symbol;
-        int d2 = symbol - state->lmid;
-        int span = state->center - state->lmid;
-        if (span < 1) {
-            span = 1;
-        }
-        int m = d1 < d2 ? d1 : d2;
-        rel = (m * 510) / span;
-    } else {
-        int span = state->lmid - state->min;
-        if (span < 1) {
-            span = 1;
-        }
-        rel = (state->lmid - symbol) * 255 / span;
-    }
-    if (rel < 0) {
-        rel = 0;
-    }
-    if (rel > 255) {
-        rel = 255;
-    }
-    return rel;
-}
-
-static int
-dmr_data_apply_radio_scale(int rel) {
-#ifdef USE_RADIO
-    double snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
-    if (snr_db < -50.0) {
-        snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_eye_db();
-    }
-    int w256 = 0;
-    if (snr_db > -13.0) {
-        if (snr_db >= 12.0) {
-            w256 = 255;
-        } else {
-            double w = (snr_db + 13.0) / 25.0;
-            if (w < 0.0) {
-                w = 0.0;
-            }
-            if (w > 1.0) {
-                w = 1.0;
-            }
-            w256 = (int)(w * 255.0 + 0.5);
-        }
-    }
-    int scale_num = 204 + (w256 >> 2);
-    int scaled = (rel * scale_num) >> 8;
-    if (scaled > 255) {
-        scaled = 255;
-    }
-    if (scaled < 0) {
-        scaled = 0;
-    }
-    rel = scaled;
-#endif
-    return rel;
 }
 
 static int
 dmr_data_read_live_dibit(dmr_data_sync_ctx* ctx, int stereo_idx, uint8_t* rel_value) {
     int dibit;
     if (ctx->state->dmr_stereo == 0) {
-        int symbol = 0;
-        int rel;
-        dibit = get_dibit_and_analog_signal(ctx->opts, ctx->state, &symbol);
+        dsd_dibit_soft_t soft;
+        dibit = getDibitSoft(ctx->opts, ctx->state, &soft);
         ctx->state->dmr_stereo_payload[stereo_idx] = dibit;
-        rel = dmr_data_compute_rel_base(ctx->state, symbol);
-        rel = dmr_data_apply_radio_scale(rel);
-        ctx->state->dmr_stereo_reliab[stereo_idx] = (uint8_t)rel;
+        ctx->state->dmr_stereo_reliab[stereo_idx] = soft.reliability;
         if (rel_value != NULL) {
-            *rel_value = (uint8_t)rel;
+            *rel_value = soft.reliability;
         }
     } else {
         dibit = (int)ctx->state->dmr_stereo_payload[stereo_idx];

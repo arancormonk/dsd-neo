@@ -20,6 +20,7 @@ target_sources(
         dmr_le.c
         dmr_ms.c
         dmr_pdu.c
+        dmr_text.c
         dmr_pi.c
         dmr_utils.c
 )

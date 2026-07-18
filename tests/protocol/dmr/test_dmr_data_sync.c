@@ -33,8 +33,8 @@ static int g_reset_calls;
 static int g_skip_calls;
 static int g_handler_slot;
 static int g_live_dibit_index;
-static int g_live_symbols[64];
 static int g_live_dibits[64];
+static uint8_t g_live_reliability[64];
 static int g_cach_calls;
 static int g_debug_format_calls;
 static uint8_t g_handler_burst;
@@ -61,8 +61,8 @@ reset_fixture(void) {
     g_handler_burst = 0;
     g_confidence_result = DMR_CONFIDENCE_LOCKED;
     for (size_t i = 0; i < 64U; i++) {
-        g_live_symbols[i] = 0;
         g_live_dibits[i] = 0;
+        g_live_reliability[i] = 0;
     }
     DSD_MEMSET(g_handler_info, 0, sizeof(g_handler_info));
     DSD_MEMSET(g_handler_reliab, 0, sizeof(g_handler_reliab));
@@ -99,15 +99,17 @@ Golay_20_8_decode(unsigned char* rx_bits) {
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
+getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
     (void)state;
     int index = g_live_dibit_index;
     if (index >= (int)(sizeof(g_live_dibits) / sizeof(g_live_dibits[0]))) {
         index = (int)(sizeof(g_live_dibits) / sizeof(g_live_dibits[0])) - 1;
     }
-    if (out_analog_signal != NULL) {
-        *out_analog_signal = g_live_symbols[index];
+    if (out_soft != NULL) {
+        out_soft->reliability = g_live_reliability[index];
+        out_soft->llr[0] = (int16_t)g_live_reliability[index];
+        out_soft->llr[1] = (int16_t)g_live_reliability[index];
     }
     g_live_dibit_index++;
     return g_live_dibits[index] & 3;
@@ -216,10 +218,10 @@ prepare_state(dsd_state* state, int payload[90], dsd_dibit_soft_t soft[90]) {
 }
 
 static void
-prepare_live_symbols(int symbol, int dibit) {
+prepare_live_symbols(uint8_t reliability, int dibit) {
     for (size_t i = 0; i < 64U; i++) {
-        g_live_symbols[i] = symbol;
         g_live_dibits[i] = dibit;
+        g_live_reliability[i] = reliability;
     }
 }
 
@@ -247,8 +249,8 @@ test_data_sync_dispatches_burst_and_reliability(void) {
     assert(state.dmrburstR == 7U);
     assert(strcmp(state.slot1light, " slot1 ") == 0);
     assert(strcmp(state.slot2light, "[slot2]") == 0);
-    assert(g_handler_reliab[0] == reliab[12].reliability);
-    assert(g_handler_reliab[48] == reliab[60].reliability);
+    assert(g_handler_reliab[0] == state.dmr_stereo_reliab[12]);
+    assert(g_handler_reliab[48] == state.dmr_stereo_reliab[60]);
     assert(g_handler_reliab[49] == state.dmr_stereo_reliab[95]);
     assert(g_handler_reliab[97] == state.dmr_stereo_reliab[143]);
     assert(g_cach_calls == 1);
@@ -289,7 +291,7 @@ test_golay_failure_resets_and_skips_live_tail(void) {
     state.center = 20;
     state.umid = 30;
     state.max = 40;
-    prepare_live_symbols(40, 3);
+    prepare_live_symbols(40U, 3);
 
     dmr_data_sync(&opts, &state);
 
@@ -316,14 +318,17 @@ test_live_second_half_reliability_and_debug_output(void) {
     state.umid = 30;
     state.max = 40;
     opts.dmr_debug_burst = 1;
-    prepare_live_symbols(40, 3);
+    prepare_live_symbols(173U, 3);
 
     dmr_data_sync(&opts, &state);
 
     assert(g_handler_calls == 1);
     assert(g_handler_burst == 7U);
-    assert(g_handler_reliab[49] == 255U);
-    assert(g_handler_reliab[97] == 255U);
+    assert(g_handler_reliab[49] == 173U);
+    assert(g_handler_reliab[97] == 173U);
+    assert(state.dmr_stereo_reliab[90] == 173U);
+    assert(state.dmr_stereo_reliab[95] == 173U);
+    assert(state.dmr_stereo_reliab[143] == 173U);
     assert(g_skip_calls == 66);
     assert(g_live_dibit_index == 54);
     assert(g_debug_format_calls == 1);
@@ -331,7 +336,7 @@ test_live_second_half_reliability_and_debug_output(void) {
 }
 
 static uint8_t
-run_live_reliability_symbol(int symbol) {
+run_live_reliability(uint8_t reliability) {
     static dsd_opts opts;
     static dsd_state state;
     static int payload[90];
@@ -345,7 +350,7 @@ run_live_reliability_symbol(int symbol) {
     state.center = 20;
     state.umid = 30;
     state.max = 40;
-    prepare_live_symbols(symbol, 3);
+    prepare_live_symbols(reliability, 3);
 
     dmr_data_sync(&opts, &state);
 
@@ -355,10 +360,10 @@ run_live_reliability_symbol(int symbol) {
 }
 
 static void
-test_live_reliability_interpolation_bands(void) {
-    assert(run_live_reliability_symbol(25) == 255U);
-    assert(run_live_reliability_symbol(15) == 255U);
-    assert(run_live_reliability_symbol(5) == 127U);
+test_live_reliability_is_forwarded_unscaled(void) {
+    assert(run_live_reliability(25U) == 25U);
+    assert(run_live_reliability(128U) == 128U);
+    assert(run_live_reliability(241U) == 241U);
 }
 
 static void
@@ -402,7 +407,7 @@ test_confidence_pending_and_reject_gate_dispatch(void) {
     state.center = 20;
     state.umid = 30;
     state.max = 40;
-    prepare_live_symbols(40, 3);
+    prepare_live_symbols(40U, 3);
     g_confidence_result = DMR_CONFIDENCE_PENDING;
 
     dmr_data_sync(&opts, &state);
@@ -463,7 +468,7 @@ main(void) {
     test_cach_failure_resets_without_dispatch();
     test_golay_failure_resets_and_skips_live_tail();
     test_live_second_half_reliability_and_debug_output();
-    test_live_reliability_interpolation_bands();
+    test_live_reliability_is_forwarded_unscaled();
     test_direct_mode_sync_overrides_cach_slot();
     test_confidence_pending_and_reject_gate_dispatch();
     test_connect_plus_idle_bursts_clear_tuned_sync_times();

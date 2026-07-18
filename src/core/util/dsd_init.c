@@ -802,6 +802,10 @@ init_state_protocol_defaults_b(dsd_state* state) {
     state->data_block_counter[1] = 1;
     state->data_p_head[0] = 0;
     state->data_p_head[1] = 0;
+    state->data_header_dd_format[0] = 0;
+    state->data_header_dd_format[1] = 0;
+    state->data_header_bit_padding[0] = 0;
+    state->data_header_bit_padding[1] = 0;
     state->data_block_poc[0] = 0;
     state->data_block_poc[1] = 0;
     state->data_byte_ctr[0] = 0;

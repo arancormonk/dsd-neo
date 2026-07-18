@@ -208,6 +208,8 @@ void beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len);
 
 /** @brief Open input audio device based on opts. Returns 0 on success. */
 int openAudioInDevice(dsd_opts* opts, dsd_state* state);
+/** @brief Close all input resources owned by the active input device. */
+void closeAudioInDevice(dsd_opts* opts);
 
 /** @brief Parse audio input device string and update opts. */
 void parse_audio_input_string(dsd_opts* opts, char* input);

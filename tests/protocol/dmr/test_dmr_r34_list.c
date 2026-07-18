@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_r34_internal.h"
 #include "dmr_r34_reference_vectors.h"
 #include "dsd-neo/core/safe_api.h"
 
@@ -73,6 +74,49 @@ test_candidate_list_retains_clean_payload_after_single_dibit_error(void) {
 }
 
 static void
+test_all_decoders_require_zero_flushing_state(void) {
+    static const uint8_t expected_hard[18] = {
+        0x02U, 0x55U, 0x0BU, 0x35U, 0x0FU, 0x9FU, 0x83U, 0x82U, 0x35U,
+        0xDAU, 0x49U, 0xFBU, 0x52U, 0xACU, 0xE4U, 0x64U, 0x5BU, 0xA0U,
+    };
+    static const uint8_t expected_soft[18] = {
+        0x02U, 0x55U, 0x0BU, 0x35U, 0x0FU, 0x9FU, 0x83U, 0x82U, 0x35U,
+        0xDAU, 0x49U, 0xFBU, 0x52U, 0xACU, 0xE4U, 0x64U, 0x5AU, 0x28U,
+    };
+    static const uint8_t expected_list[18] = {
+        0x02U, 0x55U, 0x0BU, 0x35U, 0x0FU, 0x9FU, 0x83U, 0x82U, 0x35U,
+        0xDAU, 0x49U, 0xFBU, 0x52U, 0xACU, 0xE4U, 0x64U, 0x5AU, 0x0AU,
+    };
+    const dmr_r34_reference_vector* reference = &k_dmr_r34_reference_vectors[0];
+    uint8_t hard_dibits[98];
+    uint8_t soft_dibits[98];
+    uint8_t reliability[98];
+    uint8_t decoded[18];
+    dmr_r34_candidate candidates[16];
+    int count = 0;
+
+    DSD_MEMCPY(hard_dibits, reference->dibits, sizeof(hard_dibits));
+    hard_dibits[73] = 2U; /* Makes an unterminated state-4 path cheaper than the required state-0 path. */
+    assert(dmr_r34_viterbi_decode(hard_dibits, decoded) == 0);
+    assert(memcmp(decoded, expected_hard, sizeof(decoded)) == 0);
+
+    DSD_MEMCPY(soft_dibits, reference->dibits, sizeof(soft_dibits));
+    soft_dibits[48] = 0U; /* Likewise favors state 4 under the weighted branch metric. */
+    DSD_MEMSET(reliability, 200, sizeof(reliability));
+    assert(dmr_r34_viterbi_decode_soft(soft_dibits, reliability, decoded) == 0);
+    assert(memcmp(decoded, expected_soft, sizeof(decoded)) == 0);
+
+    assert(dmr_r34_viterbi_decode_list(soft_dibits, reliability, candidates, 16, &count) == 0);
+    assert(count == 16);
+    assert(memcmp(candidates[0].bytes18, expected_list, sizeof(expected_list)) == 0);
+    for (int i = 0; i < count; i++) {
+        int forced_metric = -1;
+        assert(dmr_r34_candidate_metric(soft_dibits, reliability, candidates[i].bytes18, &forced_metric) == 0);
+        assert(candidates[i].metric == forced_metric);
+    }
+}
+
+static void
 test_invalid_arguments_are_rejected(void) {
     uint8_t dibits[98] = {0};
     dmr_r34_candidate candidates[2];
@@ -89,6 +133,7 @@ main(void) {
     test_clean_payload_is_first_candidate();
     test_weighted_clean_payload_is_first_candidate();
     test_candidate_list_retains_clean_payload_after_single_dibit_error();
+    test_all_decoders_require_zero_flushing_state();
     test_invalid_arguments_are_rejected();
     printf("DMR_R34_LIST: OK\n");
     return 0;

@@ -41,6 +41,7 @@ static uint8_t g_decode_ip_first_byte;
 static unsigned int g_sd_pdu_calls;
 static uint16_t g_sd_pdu_last_len;
 static uint8_t g_sd_pdu_first_byte;
+static uint8_t g_sd_pdu_crc_valid;
 static unsigned int g_udp_comp_calls;
 static uint16_t g_udp_comp_last_len;
 static uint8_t g_udp_comp_first_byte;
@@ -231,6 +232,17 @@ dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
     g_sd_pdu_calls++;
     g_sd_pdu_last_len = len;
     g_sd_pdu_first_byte = DMR_PDU ? DMR_PDU[0] : 0U;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* dmr_pdu, uint8_t packet_crc_valid) {
+    (void)opts;
+    (void)state;
+    g_sd_pdu_calls++;
+    g_sd_pdu_last_len = len;
+    g_sd_pdu_first_byte = dmr_pdu ? dmr_pdu[0] : 0U;
+    g_sd_pdu_crc_valid = packet_crc_valid;
 }
 
 void
@@ -474,6 +486,7 @@ reset_datacall_spy(void) {
     g_sd_pdu_calls = 0;
     g_sd_pdu_last_len = 0;
     g_sd_pdu_first_byte = 0;
+    g_sd_pdu_crc_valid = 0;
     g_udp_comp_calls = 0;
     g_udp_comp_last_len = 0;
     g_udp_comp_first_byte = 0;
@@ -504,6 +517,10 @@ test_reset_blocks_restores_integer_defaults(void) {
     state.data_header_blocks[1] = 45;
     state.data_header_format[0] = 2;
     state.data_header_format[1] = 3;
+    state.data_header_dd_format[0] = 0x16U;
+    state.data_header_dd_format[1] = 0x18U;
+    state.data_header_bit_padding[0] = 7U;
+    state.data_header_bit_padding[1] = 15U;
     state.data_dbsn_have[0] = 1;
     state.data_dbsn_expected[0] = 9;
 
@@ -515,6 +532,10 @@ test_reset_blocks_restores_integer_defaults(void) {
     assert(state.data_header_blocks[1] == 1);
     assert(state.data_header_format[0] == 7);
     assert(state.data_header_format[1] == 7);
+    assert(state.data_header_dd_format[0] == 0U);
+    assert(state.data_header_dd_format[1] == 0U);
+    assert(state.data_header_bit_padding[0] == 0U);
+    assert(state.data_header_bit_padding[1] == 0U);
     assert(state.data_dbsn_have[0] == 0);
     assert(state.data_dbsn_expected[0] == 0);
 }
@@ -553,6 +574,8 @@ test_udt_iso7_single_block_dispatches_text_event(void) {
     assert(g_datacall_last_slot == 0U);
     assert(strstr(g_datacall_last_text, "ISO7 Text") != NULL);
     assert(strstr(state.event_history_s[0].Event_History_Items[0].text_message, "HELLO") != NULL);
+    assert(state.data_header_dd_format[0] == 0U);
+    assert(state.data_header_bit_padding[0] == 0U);
     assert(state.lastsrc == 0);
     assert(state.lasttg == 0);
     assert(state.data_header_valid[0] == 0);
@@ -752,6 +775,7 @@ test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps(void) {
     assert(g_sd_pdu_calls == 1U);
     assert(g_sd_pdu_last_len == 20U);
     assert(g_sd_pdu_first_byte == 0x83U);
+    assert(g_sd_pdu_crc_valid == 1U);
     assert(g_decode_ip_calls == 0U);
     assert(g_udp_comp_calls == 0U);
 
@@ -894,6 +918,8 @@ test_irrecoverable_header_resets_data_state(void) {
     state.data_block_counter[1] = 9;
     state.data_header_blocks[1] = 9;
     state.data_header_format[1] = 2;
+    state.data_header_dd_format[1] = 0x16U;
+    state.data_header_bit_padding[1] = 23U;
     DSD_SNPRINTF(state.dmr_lrrp_gps[1], sizeof(state.dmr_lrrp_gps[1]), "%s", "stale gps");
 
     dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/0, /*IrrecoverableErrors=*/1);
@@ -904,6 +930,8 @@ test_irrecoverable_header_resets_data_state(void) {
     assert(state.data_block_counter[1] == 1);
     assert(state.data_header_blocks[1] == 1);
     assert(state.data_header_format[1] == 7);
+    assert(state.data_header_dd_format[1] == 0U);
+    assert(state.data_header_bit_padding[1] == 0U);
     assert(strcmp(state.dmr_lrrp_gps[1], "") == 0);
 }
 
@@ -970,7 +998,7 @@ test_short_data_defined_sets_blocks_and_confirmed_flag(void) {
     set_bits(bits, 2, 1U, 2);  // S_AB high bits
     set_bits(bits, 4, 13U, 4); // DPF=13, short data defined
     set_bits(bits, 8, 10U, 4); // SAP=short data
-    set_bits(bits, 12, 1U, 4); // S_AB low bits: total blocks 5
+    set_bits(bits, 12, 1U, 4); // S_AB low bits: total blocks 17
     set_bits(bits, 16, 0x010203U, 24);
     set_bits(bits, 40, 0x040506U, 24);
     set_bits(bits, 64, 18U, 6); // DD format UTF-8
@@ -980,10 +1008,54 @@ test_short_data_defined_sets_blocks_and_confirmed_flag(void) {
 
     assert(state.data_header_format[0] == 13);
     assert(state.data_header_sap[0] == 10);
-    assert(state.data_header_blocks[0] == 5);
+    assert(state.data_header_blocks[0] == 17);
+    assert(state.data_header_dd_format[0] == 0x12U);
+    assert(state.data_header_bit_padding[0] == 7U);
+    assert(state.data_block_poc[0] == 0U);
     assert(state.data_conf_data[0] == 1);
     assert(strstr(state.dmr_lrrp_gps[0], "Short DT") != NULL);
     assert(strstr(state.dmr_lrrp_gps[0], "- RSP REQ") != NULL);
+}
+
+static void
+test_short_data_raw_padding_and_packet_poc_isolation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    state.currentslot = 0;
+    opts.aggressive_framesync = 1;
+
+    set_bits(bits, 4, 14U, 4); // DPF=14, raw short data
+    set_bits(bits, 8, 10U, 4);
+    set_bits(bits, 12, 3U, 4); // appended blocks, not POC
+    set_bits(bits, 72, 11U, 8);
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.data_header_blocks[0] == 3U);
+    assert(state.data_header_bit_padding[0] == 11U);
+    assert(state.data_header_dd_format[0] == 0U);
+    assert(state.data_block_poc[0] == 0U);
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 4, 2U, 4);  // DPF=2 packet data
+    set_bits(bits, 12, 9U, 4); // POC
+    set_bits(bits, 65, 1U, 7);
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.data_block_poc[0] == 9U);
+    assert(state.data_header_dd_format[0] == 0U);
+    assert(state.data_header_bit_padding[0] == 0U);
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 4, 3U, 4);  // DPF=3 packet data
+    set_bits(bits, 12, 6U, 4); // POC
+    set_bits(bits, 65, 1U, 7);
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.data_block_poc[0] == 6U);
 }
 
 static void
@@ -1048,6 +1120,7 @@ main(int argc, char** argv) {
     test_irrecoverable_header_resets_data_state();
     rc |= test_response_header_reports_nack_reason();
     test_short_data_defined_sets_blocks_and_confirmed_flag();
+    test_short_data_raw_padding_and_packet_poc_isolation();
     test_motorola_encryption_header_updates_payload_state();
 
     static dsd_opts opts;
@@ -1085,11 +1158,17 @@ main(int argc, char** argv) {
 
     // Strict (aggressive) mode: should NOT accept when CRC fails
     opts.aggressive_framesync = 1;
+    state.data_header_dd_format[0] = 0x16U;
+    state.data_header_bit_padding[0] = 16U;
+    state.data_block_poc[0] = 7U;
     uint8_t before_format = state.data_header_format[state.currentslot];
     uint8_t before_sap = state.data_header_sap[state.currentslot];
     dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/0, /*IrrecoverableErrors=*/0);
     assert(state.data_header_format[state.currentslot] == before_format); // unchanged
     assert(state.data_header_sap[state.currentslot] == before_sap);
+    assert(state.data_header_dd_format[0] == 0U);
+    assert(state.data_header_bit_padding[0] == 0U);
+    assert(state.data_block_poc[0] == 0U);
 
     // Relaxed mode: should accept header despite CRC failure
     DSD_MEMSET(&state, 0, sizeof(state));

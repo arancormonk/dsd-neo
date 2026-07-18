@@ -592,6 +592,8 @@ struct dsd_state {
     uint8_t data_header_format[2];  //collect format of data header (conf or unconf) per slot
     uint8_t data_header_sap[2];     //collect sap info per slot
     uint8_t data_p_head[2];         //flag for dmr proprietary header to follow
+    uint8_t data_header_dd_format[2];   //transient per-slot DMR Defined Data format
+    uint8_t data_header_bit_padding[2]; //transient per-slot DMR short-data padding in bits
 
     //new stuff below here
     uint8_t data_conf_data[2];   //flag for confirmed data blocks per slot

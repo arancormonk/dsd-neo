@@ -573,12 +573,10 @@ test_open_audio_in_device_extensionless_raw_uses_headless_rate(void) {
     rc |= expect_int_eq("extensionless raw clears throttle", state->use_throttle, 0);
     rc |= expect_true("extensionless raw clears replay deadline", state->symbol_replay_next_deadline_ns == 0);
 
-    if (opts->audio_in_file) {
-        sf_close(opts->audio_in_file);
-        opts->audio_in_file = NULL;
-    }
-    free(opts->audio_in_file_info);
-    opts->audio_in_file_info = NULL;
+    closeAudioInDevice(opts);
+    rc |= expect_true("device close releases extensionless raw file", opts->audio_in_file == NULL);
+    rc |= expect_true("device close releases extensionless raw metadata", opts->audio_in_file_info == NULL);
+    closeAudioInDevice(opts);
     free(state);
     free_opts(opts);
     (void)remove(path);
