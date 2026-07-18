@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "dmr_block_crypto.h"
+#include "dmr_pdu_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -192,7 +193,7 @@ dmr_dheader_parse_fields(const dsd_state* state, const uint8_t dheader_bits[], d
     f->r_class = (uint8_t)convert_bits_into_output(&dheader_bits[72], 2);
     f->r_type = (uint8_t)convert_bits_into_output(&dheader_bits[74], 3);
     f->r_status = (uint8_t)convert_bits_into_output(&dheader_bits[77], 3);
-    f->s_ab_fin = (uint8_t)((s_ab_msb << 2) | s_ab_lsb);
+    f->s_ab_fin = (uint8_t)((s_ab_msb << 4) | s_ab_lsb);
     f->s_source_port = (uint8_t)convert_bits_into_output(&dheader_bits[64], 3);
     f->s_dest_port = (uint8_t)convert_bits_into_output(&dheader_bits[67], 3);
     f->s_status_precoded = (uint8_t)convert_bits_into_output(&dheader_bits[70], 10);
@@ -354,6 +355,8 @@ dmr_dheader_handle_short_data(dsd_state* state, uint8_t slot, const dmr_dheader_
         state->data_header_blocks[slot] = f->s_ab_fin;
     }
     if (f->dpf == 13) {
+        state->data_header_dd_format[slot] = f->dd_format;
+        state->data_header_bit_padding[slot] = f->sd_bp;
         DSD_FPRINTF(stderr, "\n  SD:D [DD_HEAD] - SAP %02d [%s] - BLOCKS %02d - DD %02X - PADb %d - FMT %02X [%s]",
                     f->sap, f->sap_string, f->s_ab_fin, f->dd_format, f->sd_bp, f->dd_format, f->sddd_string);
     }
@@ -362,6 +365,7 @@ dmr_dheader_handle_short_data(dsd_state* state, uint8_t slot, const dmr_dheader_
             DSD_FPRINTF(stderr, "\n  SD:S/P [SP_HEAD] - SAP %02d [%s] - SP %02d - DP %02d - S/P %02X", f->sap,
                         f->sap_string, f->s_source_port, f->s_dest_port, f->s_status_precoded);
         } else {
+            state->data_header_bit_padding[slot] = f->sd_bp;
             DSD_FPRINTF(stderr,
                         "\n  SD:RAW [R_HEAD] - SAP %02d [%s] - BLOCKS %02d - SP %02d - DP %02d - SARQ %d - FMF %d - "
                         "PDb %d",
@@ -531,6 +535,8 @@ dmr_dheader_reset_irrecoverable(dsd_state* state, uint8_t slot) {
     state->data_block_counter[slot] = 1;
     state->data_header_blocks[slot] = 1;
     state->data_header_format[slot] = 7;
+    state->data_header_dd_format[slot] = 0;
+    state->data_header_bit_padding[slot] = 0;
 }
 
 static void
@@ -557,10 +563,14 @@ void
 dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint32_t CRCCorrect,
             uint32_t IrrecoverableErrors) {
     uint8_t slot = state->currentslot;
+    uint8_t inherited_poc = state->data_block_poc[slot];
     dmr_dheader_fields f;
     DSD_MEMSET(&f, 0, sizeof(f));
     dmr_clear_superframe_slot(state, slot);
     state->data_block_counter[slot] = 1;
+    state->data_header_dd_format[slot] = 0;
+    state->data_header_bit_padding[slot] = 0;
+    state->data_block_poc[slot] = 0;
     if (IrrecoverableErrors != 0) {
         dmr_dheader_reset_irrecoverable(state, slot);
         DSD_FPRINTF(stderr, "%s", KNRM);
@@ -578,7 +588,11 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
     if (f.dpf != 15) {
         state->dmr_lrrp_source[slot] = f.source;
         state->dmr_lrrp_target[slot] = f.target;
+    }
+    if (f.dpf == 2 || f.dpf == 3) {
         state->data_block_poc[slot] = f.poc;
+    } else if (f.dpf == 15) {
+        state->data_block_poc[slot] = inherited_poc;
     }
 
     state->data_header_format[slot] = f.dpf;
@@ -1266,7 +1280,8 @@ dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx, int offset) {
     if (sap == 4) {
         decode_ip_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
     } else if (sap == 10) {
-        dmr_sd_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
+        dmr_sd_pdu_process(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot],
+                           (uint8_t)(ctx->crc_correct != 0U));
     } else if (sap == 2 || sap == 3) {
         dmr_udp_comp_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
     } else if (sap == 1 && ctx->state->dmr_pdu_sf[ctx->slot][1] == 0x10) {
@@ -1319,6 +1334,8 @@ dmr_block_type1_clear_header_state(dmr_block_assembler_ctx* ctx) {
     ctx->state->data_header_valid[ctx->slot] = 0;
     ctx->state->data_conf_data[ctx->slot] = 0;
     ctx->state->data_block_poc[ctx->slot] = 0;
+    ctx->state->data_header_dd_format[ctx->slot] = 0;
+    ctx->state->data_header_bit_padding[ctx->slot] = 0;
     ctx->state->data_byte_ctr[ctx->slot] = 0;
     ctx->state->data_ks_start[ctx->slot] = 0;
 }
@@ -1522,6 +1539,8 @@ dmr_block_assembler_reset_type1(dmr_block_assembler_ctx* ctx) {
     ctx->state->data_conf_data[ctx->slot] = 0;
     ctx->state->data_p_head[ctx->slot] = 0;
     ctx->state->data_block_poc[ctx->slot] = 0;
+    ctx->state->data_header_dd_format[ctx->slot] = 0;
+    ctx->state->data_header_bit_padding[ctx->slot] = 0;
     ctx->state->data_byte_ctr[ctx->slot] = 0;
     ctx->state->data_ks_start[ctx->slot] = 0;
     ctx->state->udt_uab_reserved[ctx->slot] = 0;
@@ -1537,6 +1556,8 @@ dmr_block_assembler_reset_type2(dmr_block_assembler_ctx* ctx) {
     ctx->state->data_header_valid[ctx->slot] = 0;
     ctx->state->data_conf_data[ctx->slot] = 0;
     ctx->state->data_p_head[ctx->slot] = 0;
+    ctx->state->data_header_dd_format[ctx->slot] = 0;
+    ctx->state->data_header_bit_padding[ctx->slot] = 0;
     ctx->state->udt_uab_reserved[ctx->slot] = 0;
 }
 
@@ -1580,6 +1601,8 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     state->data_block_counter[0] = 1;
     state->data_block_counter[1] = 1;
     DSD_MEMSET(state->data_block_poc, 0, sizeof(state->data_block_poc));
+    DSD_MEMSET(state->data_header_dd_format, 0, sizeof(state->data_header_dd_format));
+    DSD_MEMSET(state->data_header_bit_padding, 0, sizeof(state->data_header_bit_padding));
     DSD_MEMSET(state->data_byte_ctr, 0, sizeof(state->data_byte_ctr));
     DSD_MEMSET(state->udt_uab_reserved, 0, sizeof(state->udt_uab_reserved));
     DSD_MEMSET(state->data_ks_start, 0, sizeof(state->data_ks_start));

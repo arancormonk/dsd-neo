@@ -5065,6 +5065,28 @@ target_include_directories(
 add_test(NAME DMR_DATA_SYNC COMMAND dsd-neo_test_dmr_data_sync)
 
 add_executable(
+    dsd-neo_test_dmr_text
+    protocol/dmr/test_dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_text
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+add_test(NAME DMR_TEXT COMMAND dsd-neo_test_dmr_text)
+
+add_executable(
+    dsd-neo_test_dmr_discussion_231
+    protocol/dmr/test_dmr_discussion_231.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_discussion_231
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(dsd-neo_test_dmr_discussion_231 PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_DISCUSSION_231 COMMAND dsd-neo_test_dmr_discussion_231)
+
+add_executable(
     dsd-neo_test_dmr_ms_data
     protocol/dmr/test_dmr_ms_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ms.c
@@ -5217,7 +5239,7 @@ add_test(NAME DMR_R34_NOISE COMMAND dsd-neo_test_dmr_r34_noise)
 add_executable(dsd-neo_test_dmr_r34_list protocol/dmr/test_dmr_r34_list.c)
 target_include_directories(
     dsd-neo_test_dmr_r34_list
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(dsd-neo_test_dmr_r34_list PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_R34_LIST COMMAND dsd-neo_test_dmr_r34_list)
@@ -5296,6 +5318,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_fallback
     protocol/dmr/test_dmr_lrrp_time_fallback.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_time_fallback
@@ -5320,6 +5343,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_time_valid
     protocol/dmr/test_dmr_lrrp_time_valid.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_time_valid
@@ -5341,6 +5365,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_token_alignment
     protocol/dmr/test_dmr_lrrp_token_alignment.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_token_alignment
@@ -5364,6 +5389,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_response_token_lengths
     protocol/dmr/test_dmr_lrrp_response_token_lengths.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_response_token_lengths
@@ -5387,6 +5413,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_resync_prefix
     protocol/dmr/test_dmr_lrrp_resync_prefix.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_resync_prefix
@@ -5410,6 +5437,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_position_token_precedence
     protocol/dmr/test_dmr_lrrp_position_token_precedence.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_position_token_precedence
@@ -5434,6 +5462,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_crc_gating
     protocol/dmr/test_dmr_lrrp_crc_gating.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_crc_gating
@@ -5455,6 +5484,7 @@ add_executable(
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
     protocol/dmr/test_dmr_lrrp_ip_udp_lengths.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
@@ -5497,6 +5527,7 @@ add_executable(
     dsd-neo_test_dmr_locn_time_fallback
     protocol/dmr/test_dmr_locn_time_fallback.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
 target_include_directories(
     dsd-neo_test_dmr_locn_time_fallback

@@ -15,6 +15,7 @@
 #include <dsd-neo/fec/trellis34.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/r34_viterbi.h>
+#include "dmr_r34_internal.h"
 
 enum { R34_T = 49, R34_S = 8, R34_K = 32 };
 
@@ -132,19 +133,6 @@ static void
 r34_metric_init_2d(int metric[R34_S][R34_K]) {
     r34_metric_reset_2d(metric);
     metric[0][0] = 0;
-}
-
-static void
-r34_select_end_state(const int metric_prev[R34_S], int* best_s) {
-    int best_m = metric_prev[0];
-    int best = 0;
-    for (int s = 1; s < R34_S; s++) {
-        if (metric_prev[s] < best_m) {
-            best_m = metric_prev[s];
-            best = s;
-        }
-    }
-    *best_s = best;
 }
 
 static void
@@ -330,14 +318,12 @@ r34_run_viterbi_list(uint8_t nibs[R34_T], uint8_t rhi[R34_T], uint8_t rlo[R34_T]
 static int
 r34_collect_final_indices(int metric_prev[R34_S][R34_K], r34_cand_idx idx[R34_S * R34_K]) {
     int idx_n = 0;
-    for (int s = 0; s < R34_S; s++) {
-        for (int r = 0; r < R34_K; r++) {
-            if (metric_prev[s][r] < R34_INF) {
-                idx[idx_n].metric = metric_prev[s][r];
-                idx[idx_n].state = (uint8_t)s;
-                idx[idx_n].rank = (uint8_t)r;
-                idx_n++;
-            }
+    for (int r = 0; r < R34_K; r++) {
+        if (metric_prev[0][r] < R34_INF) {
+            idx[idx_n].metric = metric_prev[0][r];
+            idx[idx_n].state = 0;
+            idx[idx_n].rank = (uint8_t)r;
+            idx_n++;
         }
     }
     return idx_n;
@@ -386,15 +372,12 @@ dmr_r34_viterbi_decode(const uint8_t* dibits98, uint8_t out_bytes18[18]) {
     int metric_prev[R34_S];
     uint8_t backptr[R34_T][R34_S];
     uint8_t states[R34_T];
-    int best_s = 0;
 
     r34_prepare_nibbles(dibits98, nibs);
     r34_map_nibbles_to_points(nibs, obs_point);
     r34_run_viterbi_hard(obs_point, metric_prev, backptr);
 
-    r34_select_end_state(metric_prev, &best_s);
-
-    r34_traceback_states(backptr, best_s, states);
+    r34_traceback_states(backptr, 0, states);
     r34_pack_states_to_bytes(states, out_bytes18);
 
     return 0;
@@ -413,16 +396,50 @@ dmr_r34_viterbi_decode_soft(const uint8_t* dibits98, const uint8_t* reliab98, ui
     int metric_prev[R34_S];
     uint8_t backptr[R34_T][R34_S];
     uint8_t states[R34_T];
-    int best_s = 0;
 
     r34_prepare_nibbles(dibits98, nibs);
     r34_prepare_reliability_weights(reliab98, rhi, rlo, 1);
     r34_run_viterbi_soft(nibs, rhi, rlo, metric_prev, backptr);
 
-    r34_select_end_state(metric_prev, &best_s);
-
-    r34_traceback_states(backptr, best_s, states);
+    r34_traceback_states(backptr, 0, states);
     r34_pack_states_to_bytes(states, out_bytes18);
+    return 0;
+}
+
+int
+dmr_r34_candidate_metric(const uint8_t* dibits98, const uint8_t* reliab98, const uint8_t bytes18[18], int* out_metric) {
+    if (dibits98 == NULL || bytes18 == NULL || out_metric == NULL) {
+        return -1;
+    }
+
+    uint8_t nibs[R34_T];
+    uint8_t rhi[R34_T];
+    uint8_t rlo[R34_T];
+    uint8_t states[R34_T];
+    int metric = 0;
+
+    r34_prepare_nibbles(dibits98, nibs);
+    r34_prepare_reliability_weights(reliab98, rhi, rlo, reliab98 != NULL);
+
+    for (size_t group = 0; group < 6U; group++) {
+        const size_t byte_index = group * 3U;
+        uint32_t packed = ((uint32_t)bytes18[byte_index] << 16) | ((uint32_t)bytes18[byte_index + 1U] << 8)
+                          | (uint32_t)bytes18[byte_index + 2U];
+        for (size_t item = 0; item < 8U; item++) {
+            states[group * 8U + item] = (uint8_t)((packed >> (21U - (item * 3U))) & 0x7U);
+        }
+    }
+    states[48] = 0;
+
+    for (int t = 0; t < R34_T; t++) {
+        uint8_t previous = (t == 0) ? 0 : states[t - 1];
+        uint8_t next = states[t];
+        uint8_t point = dsd_trellis34_fsm[(previous * R34_S) + next];
+        uint8_t expected_nibble = dsd_trellis34_inverse_constellation[point];
+        metric += r34_weighted_nibble_cost(expected_nibble, nibs[t], rhi[t], rlo[t]);
+    }
+
+    *out_metric = metric;
     return 0;
 }
 

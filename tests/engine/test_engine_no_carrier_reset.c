@@ -304,6 +304,10 @@ main(void) {
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
     state->p25_p2_audio_allowed[0] = 1;
     state->p25_p2_audio_allowed[1] = 1;
+    state->data_header_dd_format[0] = 0x16U;
+    state->data_header_dd_format[1] = 0x18U;
+    state->data_header_bit_padding[0] = 16U;
+    state->data_header_bit_padding[1] = 7U;
 
     noCarrier(opts, state);
 
@@ -322,6 +326,9 @@ main(void) {
                                                         && state->p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_true("p25-crypto-audio-gates-reset",
                       state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
+    rc |= expect_true("dmr-short-data-metadata-reset",
+                      state->data_header_dd_format[0] == 0U && state->data_header_dd_format[1] == 0U
+                          && state->data_header_bit_padding[0] == 0U && state->data_header_bit_padding[1] == 0U);
 
     for (int i = 0; i < 200; i++) {
         if (state->dmr_payload_buf[i] != 0) {

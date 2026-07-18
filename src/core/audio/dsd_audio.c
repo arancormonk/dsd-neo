@@ -27,6 +27,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -868,6 +869,20 @@ dsd_audio_release_input_sources(dsd_opts* opts) {
         dsd_net_audio_input_hook_udp_stop(opts);
     }
     dsd_opts_reset_pcm_input_state(opts);
+}
+
+void
+closeAudioInDevice(dsd_opts* opts) {
+    if (opts == NULL) {
+        return;
+    }
+
+    closeAudioInput(opts);
+    dsd_audio_release_input_sources(opts);
+    if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_close(opts->tcp_sockfd);
+        opts->tcp_sockfd = DSD_INVALID_SOCKET;
+    }
 }
 
 static void

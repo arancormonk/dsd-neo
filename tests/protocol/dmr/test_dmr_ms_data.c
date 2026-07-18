@@ -38,6 +38,8 @@ static int g_data_sync_stereo;
 static int g_data_sync_ms_mode;
 static int g_data_sync_directmode;
 static int g_data_sync_payload[144];
+static uint8_t g_data_sync_reliability[144];
+static dsd_dibit_soft_t g_cached_soft[90];
 static int g_mark_vc_sync_calls;
 static int g_fopen_private_calls;
 static int g_process_mbe_calls;
@@ -88,6 +90,8 @@ reset_fixture(void) {
     g_sm_tick_calls = 0;
     DSD_MEMSET(g_stream, 0, sizeof(g_stream));
     DSD_MEMSET(g_data_sync_payload, 0, sizeof(g_data_sync_payload));
+    DSD_MEMSET(g_data_sync_reliability, 0, sizeof(g_data_sync_reliability));
+    DSD_MEMSET(g_cached_soft, 0, sizeof(g_cached_soft));
 }
 
 int
@@ -98,6 +102,19 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     (void)out_analog_signal;
     assert(g_stream_index < (sizeof(g_stream) / sizeof(g_stream[0])));
     return g_stream[g_stream_index++] & 3;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
+    const size_t index = g_stream_index;
+    int dibit = get_dibit_and_analog_signal(opts, state, NULL);
+    if (out_soft != NULL) {
+        out_soft->reliability = (uint8_t)(150U + (index % 80U));
+        out_soft->llr[0] = (int16_t)out_soft->reliability;
+        out_soft->llr[1] = (int16_t)out_soft->reliability;
+    }
+    return dibit;
 }
 
 void
@@ -130,6 +147,7 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     assert(strcmp(state->slot1light, "") == 0);
     assert(strcmp(state->slot2light, "") == 0);
     DSD_MEMCPY(g_data_sync_payload, state->dmr_stereo_payload, sizeof(g_data_sync_payload));
+    DSD_MEMCPY(g_data_sync_reliability, state->dmr_stereo_reliab, sizeof(g_data_sync_reliability));
 }
 
 bool
@@ -343,8 +361,11 @@ prepare_state(dsd_state* state, int payload[90]) {
     DSD_MEMSET(state, 0, sizeof(*state));
     for (size_t i = 0; i < 90U; i++) {
         payload[i] = (int)(i & 3U);
+        g_cached_soft[i].reliability = (uint8_t)(40U + i);
     }
     state->dmr_payload_p = payload + 90;
+    state->dmr_soft_buf = g_cached_soft;
+    state->dmr_soft_p = g_cached_soft + 90;
     state->dmr_color_code = 16;
     state->dmr_stereo = 7;
     state->dmr_ms_mode = 8;
@@ -387,6 +408,10 @@ test_ms_data_collects_payload_and_cleans_state(void) {
     assert(g_data_sync_payload[89] == payload[89]);
     assert(g_data_sync_payload[90] == g_stream[0]);
     assert(g_data_sync_payload[143] == g_stream[53]);
+    assert(g_data_sync_reliability[0] == g_cached_soft[0].reliability);
+    assert(g_data_sync_reliability[89] == g_cached_soft[89].reliability);
+    assert(g_data_sync_reliability[90] == 150U);
+    assert(g_data_sync_reliability[143] == 203U);
     for (size_t i = 0; i < 144U; i++) {
         assert(state.dmr_stereo_payload[i] == 1);
     }

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "dmr_dburst_profile.h"
+#include "dmr_r34_internal.h"
 #include "dsd-neo/core/safe_api.h"
 
 static int g_pi_calls;
@@ -43,6 +44,9 @@ static int g_r34_soft_status;
 static int g_r34_hard_status;
 static int g_r34_list_status;
 static int g_r34_list_count;
+static int g_r34_list_calls;
+static int g_r34_hard_metric;
+static int g_r34_soft_metric;
 static uint8_t g_r34_soft_bytes[18];
 static uint8_t g_r34_hard_bytes[18];
 static dmr_r34_candidate g_r34_candidates[4];
@@ -71,6 +75,9 @@ reset_handler_counters(void) {
     g_r34_hard_status = 0;
     g_r34_list_status = -1;
     g_r34_list_count = 0;
+    g_r34_list_calls = 0;
+    g_r34_hard_metric = 100;
+    g_r34_soft_metric = 50;
     DSD_MEMSET(g_r34_soft_bytes, 0, sizeof(g_r34_soft_bytes));
     DSD_MEMSET(g_r34_hard_bytes, 0, sizeof(g_r34_hard_bytes));
     DSD_MEMSET(g_r34_candidates, 0, sizeof(g_r34_candidates));
@@ -172,6 +179,7 @@ dmr_r34_viterbi_decode_list(const uint8_t* dibits, const uint8_t* reliab, dmr_r3
                             int* out_count) {
     (void)dibits;
     (void)reliab;
+    g_r34_list_calls++;
     if (out != NULL && max_candidates > 0) {
         int count = g_r34_list_count;
         if (count > max_candidates) {
@@ -183,6 +191,32 @@ dmr_r34_viterbi_decode_list(const uint8_t* dibits, const uint8_t* reliab, dmr_r3
         *out_count = g_r34_list_count;
     }
     return g_r34_list_status;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dmr_r34_candidate_metric(const uint8_t* dibits, const uint8_t* reliab, const uint8_t bytes18[18], int* out_metric) {
+    (void)dibits;
+    (void)reliab;
+    if (bytes18 == NULL || out_metric == NULL) {
+        return -1;
+    }
+    if (memcmp(bytes18, g_r34_hard_bytes, 18U) == 0) {
+        *out_metric = g_r34_hard_metric;
+        return 0;
+    }
+    if (memcmp(bytes18, g_r34_soft_bytes, 18U) == 0) {
+        *out_metric = g_r34_soft_metric;
+        return 0;
+    }
+    for (int i = 0; i < g_r34_list_count; i++) {
+        if (memcmp(bytes18, g_r34_candidates[i].bytes18, 18U) == 0) {
+            *out_metric = g_r34_candidates[i].metric;
+            return 0;
+        }
+    }
+    *out_metric = 1000;
+    return 0;
 }
 
 void
@@ -402,6 +436,7 @@ test_handler_dispatch_paths(void) {
     static dsd_opts opts;
     static dsd_state state;
     uint8_t info[196];
+    uint8_t reliab[98];
 
     prepare_handler_state(&opts, &state, info, 0x03U, 0U, 1U, 0);
     dmr_data_burst_handler(&opts, &state, info, 0x03U, NULL);
@@ -437,13 +472,14 @@ test_handler_dispatch_paths(void) {
     rc |= expect_u8("udtc-block-len", g_block_assembler_last_len, 10U);
 
     prepare_handler_state(&opts, &state, info, 0x08U, 0U, 1U, AUDIO_IN_SYMBOL_BIN);
+    DSD_MEMSET(reliab, 17, sizeof(reliab));
     g_r34_hard_bytes[0] = 0x42U;
     g_r34_soft_bytes[0] = 0x99U;
-    dmr_data_burst_handler(&opts, &state, info, 0x08U, NULL);
+    dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
     rc |= expect_u8("r34u-block-call", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r34u-block-burst", g_block_assembler_last_burst, 0x08U);
     rc |= expect_u8("r34u-block-len", g_block_assembler_last_len, 18U);
-    rc |= expect_u8("r34u-symbol-replay-uses-canonical-hard-decoder", g_block_assembler_last_bytes[0], 0x42U);
+    rc |= expect_u8("r34u-symbol-replay-uses-unified-soft-candidate", g_block_assembler_last_bytes[0], 0x99U);
 
     prepare_handler_state(&opts, &state, info, 0x0AU, 0U, 1U, 0);
     dmr_data_burst_handler(&opts, &state, info, 0x0AU, NULL);
@@ -579,6 +615,7 @@ test_trellis_candidate_and_fallback_paths(void) {
     write_confirmed_crc9_bytes(g_r34_candidates[1].bytes18, 9U, 0x1FFU);
     dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
     rc |= expect_u8("r34c-list-crc-records-pass", state.data_block_crc_valid[1][6], 1U);
+    rc |= expect_u8("r34c-list-decoder-used", (uint8_t)g_r34_list_calls, 1U);
     rc |= expect_u8("r34c-list-updates-dbsn", state.data_dbsn_expected[1], 10U);
     rc |= expect_u8("r34c-list-dispatches", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r34c-list-block-len", g_block_assembler_last_len, 16U);
@@ -587,9 +624,45 @@ test_trellis_candidate_and_fallback_paths(void) {
     DSD_MEMSET(reliab, 13, sizeof(reliab));
     g_r34_soft_bytes[2] = 0xA5U;
     dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
+    rc |= expect_u8("r34u-soft-skips-list-decoder", (uint8_t)g_r34_list_calls, 0U);
     rc |= expect_u8("r34u-soft-fallback-dispatches", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r34u-soft-fallback-len", g_block_assembler_last_len, 18U);
     rc |= expect_u8("r34u-soft-fallback-payload", g_block_assembler_last_bytes[2], 0xA5U);
+
+    prepare_handler_state(&opts, &state, info, 0x08U, 1U, 1U, 0);
+    state.data_dbsn_have[1] = 1U;
+    state.data_dbsn_expected[1] = 9U;
+    state.data_block_counter[1] = 7U;
+    DSD_MEMSET(reliab, 19, sizeof(reliab));
+    write_confirmed_crc9_bytes(g_r34_hard_bytes, 9U, 0x1FFU);
+    g_r34_hard_bytes[2] = 0xA1U;
+    g_r34_hard_metric = 120;
+    write_confirmed_crc9_bytes(g_r34_soft_bytes, 9U, 0U);
+    g_r34_soft_bytes[2] = 0xB2U;
+    g_r34_soft_metric = 1;
+    g_r34_list_status = 0;
+    g_r34_list_count = 1;
+    write_confirmed_crc9_bytes(g_r34_candidates[0].bytes18, 9U, 0U);
+    g_r34_candidates[0].bytes18[2] = 0xC3U;
+    g_r34_candidates[0].metric = 0;
+    dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
+    rc |= expect_u8("r34c-valid-hard-candidate-crc", state.data_block_crc_valid[1][7], 1U);
+    rc |= expect_u8("r34c-valid-hard-candidate-retained", g_block_assembler_last_bytes[0], 0xA1U);
+
+    prepare_handler_state(&opts, &state, info, 0x08U, 1U, 1U, 0);
+    state.data_dbsn_have[1] = 1U;
+    state.data_dbsn_expected[1] = 9U;
+    state.data_block_counter[1] = 8U;
+    DSD_MEMSET(reliab, 23, sizeof(reliab));
+    write_confirmed_crc9_bytes(g_r34_hard_bytes, 9U, 0U);
+    g_r34_hard_bytes[2] = 0xD1U;
+    g_r34_hard_metric = 1;
+    write_confirmed_crc9_bytes(g_r34_soft_bytes, 3U, 0x1FFU);
+    g_r34_soft_bytes[2] = 0xD2U;
+    g_r34_soft_metric = 200;
+    dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
+    rc |= expect_u8("r34c-crc-valid-outranks-expected-dbsn", g_block_assembler_last_bytes[0], 0xD2U);
+    rc |= expect_u8("r34c-nonexpected-valid-crc-recorded", state.data_block_crc_valid[1][8], 1U);
     return rc;
 }
 

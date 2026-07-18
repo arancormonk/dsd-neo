@@ -116,13 +116,21 @@ reset_dmr_bs_loop_buffers(dmr_bs_ctx* ctx) {
     DSD_MEMSET(ctx->syncdata, 0, sizeof(ctx->syncdata));
 }
 
+static int
+read_dmr_bs_stream_dibit(dsd_opts* opts, dsd_state* state, int payload_index) {
+    dsd_dibit_soft_t soft;
+    int dibit = getDibitSoft(opts, state, &soft);
+    state->dmr_stereo_payload[payload_index] = dibit;
+    state->dmr_stereo_reliab[payload_index] = soft.reliability;
+    return dibit;
+}
+
 static void
 read_dmr_bs_ambe_segment_stream(dsd_opts* opts, dsd_state* state, char frame[4][24], int payload_offset,
                                 int dibit_count, int interleave_offset, char* redundancy_out) {
     for (int i = 0; i < dibit_count; i++) {
         const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[interleave_offset + i];
-        int dibit = get_dibit_and_analog_signal(opts, state, NULL);
-        state->dmr_stereo_payload[payload_offset + i] = dibit;
+        int dibit = read_dmr_bs_stream_dibit(opts, state, payload_offset + i);
         if (redundancy_out != NULL) {
             redundancy_out[i] = (char)dibit;
         }
@@ -145,8 +153,7 @@ unpack_dmr_bs_ambe_segment_from_payload(const dsd_state* state, char frame[4][24
 static void
 read_dmr_bs_sync_segment(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     for (int i = 0; i < 24; i++) {
-        int dibit = get_dibit_and_analog_signal(opts, state, NULL);
-        state->dmr_stereo_payload[i + 66] = dibit;
+        int dibit = read_dmr_bs_stream_dibit(opts, state, i + 66);
         ctx->sync[i] = (dibit | 1) + 48;
         ctx->syncdata[((size_t)2 * i)] = (1 & (dibit >> 1));
         ctx->syncdata[((size_t)2 * i) + 1] = (1 & dibit);
@@ -176,8 +183,7 @@ extract_dmr_bs_sync_from_payload(const dsd_state* state, int payload_offset, cha
 static int
 collect_dmr_bs_cach_and_tact(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
     for (int i = 0; i < 12; i++) {
-        int dibit = get_dibit_and_analog_signal(opts, state, NULL);
-        state->dmr_stereo_payload[i] = dibit;
+        int dibit = read_dmr_bs_stream_dibit(opts, state, i);
         ctx->cachdata[dmr_cach_interleave[((size_t)i * 2)]] = (1 & (dibit >> 1));
         ctx->cachdata[dmr_cach_interleave[((size_t)i * 2) + 1]] = (1 & dibit);
     }

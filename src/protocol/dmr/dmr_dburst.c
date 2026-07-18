@@ -29,7 +29,9 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dmr_dburst_profile.h"
+#include "dmr_r34_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -410,78 +412,120 @@ dmr_dburst_trellis_candidate_metrics(dmr_data_burst_ctx* ctx, const uint8_t byte
 }
 
 static int
-dmr_dburst_trellis_choose_candidate_index(dmr_data_burst_ctx* ctx, const dmr_r34_candidate* list, int list_n) {
+dmr_dburst_trellis_lower_metric(const dmr_r34_candidate* candidates, int current, int candidate) {
+    if (current < 0 || candidates[candidate].metric < candidates[current].metric) {
+        return candidate;
+    }
+    return current;
+}
+
+static int
+dmr_dburst_trellis_choose_candidate_index(dmr_data_burst_ctx* ctx, const dmr_r34_candidate* candidates,
+                                          int candidate_count) {
     const int have_expected_dbsn = ctx->state->data_dbsn_have[ctx->slot] != 0;
     const uint8_t expected_dbsn = ctx->state->data_dbsn_expected[ctx->slot];
     int best_crc_dbsn = -1;
-    int best_dbsn = -1;
     int best_crc = -1;
+    int best_dbsn = -1;
+    int best_any = -1;
     int ci;
 
-    for (ci = 0; ci < list_n; ci++) {
+    for (ci = 0; ci < candidate_count; ci++) {
         uint8_t cand_dbsn = 0;
         int cand_crc_ok = 0;
-        dmr_dburst_trellis_candidate_metrics(ctx, list[ci].bytes18, &cand_dbsn, &cand_crc_ok);
+        dmr_dburst_trellis_candidate_metrics(ctx, candidates[ci].bytes18, &cand_dbsn, &cand_crc_ok);
+        best_any = dmr_dburst_trellis_lower_metric(candidates, best_any, ci);
 
         if (have_expected_dbsn && cand_dbsn == expected_dbsn) {
-            if (best_dbsn < 0) {
-                best_dbsn = ci;
-            }
             if (cand_crc_ok) {
-                best_crc_dbsn = ci;
-                break;
+                best_crc_dbsn = dmr_dburst_trellis_lower_metric(candidates, best_crc_dbsn, ci);
+            } else {
+                best_dbsn = dmr_dburst_trellis_lower_metric(candidates, best_dbsn, ci);
             }
         }
 
-        if (cand_crc_ok && best_crc < 0) {
-            best_crc = ci;
+        if (cand_crc_ok) {
+            best_crc = dmr_dburst_trellis_lower_metric(candidates, best_crc, ci);
         }
     }
 
     if (best_crc_dbsn >= 0) {
         return best_crc_dbsn;
     }
-    if (best_dbsn >= 0) {
-        return best_dbsn;
-    }
     if (best_crc >= 0) {
         return best_crc;
     }
-    return 0;
+    if (best_dbsn >= 0) {
+        return best_dbsn;
+    }
+    return best_any;
 }
 
 static void
-dmr_dburst_pick_trellis_payload(dmr_data_burst_ctx* ctx, uint8_t tdibits[98], uint8_t trellis_return[18]) {
-    uint8_t trellis_soft[18];
-    uint8_t trellis_hard[18];
-    int have_soft = 0;
-    int have_hard = 0;
-
-    DSD_MEMSET(trellis_soft, 0, sizeof(trellis_soft));
-    DSD_MEMSET(trellis_hard, 0, sizeof(trellis_hard));
-
-    if (ctx->reliab98 != NULL && dmr_r34_viterbi_decode_soft(tdibits, ctx->reliab98, trellis_soft) == 0) {
-        have_soft = 1;
-    }
-    if (dmr_r34_viterbi_decode(tdibits, trellis_hard) == 0) {
-        have_hard = 1;
-    }
-    if (ctx->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN && have_hard) {
-        DSD_MEMCPY(trellis_return, trellis_hard, 18);
+dmr_dburst_trellis_add_candidate(const dmr_data_burst_ctx* ctx, const uint8_t tdibits[98],
+                                 dmr_r34_candidate candidates[], int capacity, int* candidate_count,
+                                 const uint8_t bytes18[18]) {
+    if (*candidate_count >= capacity) {
         return;
     }
-
-    if (ctx->state->data_conf_data[ctx->slot] == 1) {
-        dmr_r34_candidate list[256];
-        int list_n = 0;
-        if (dmr_r34_viterbi_decode_list(tdibits, ctx->reliab98, list, 256, &list_n) == 0 && list_n > 0) {
-            int chosen_i = dmr_dburst_trellis_choose_candidate_index(ctx, list, list_n);
-            DSD_MEMCPY(trellis_return, list[chosen_i].bytes18, 18);
+    for (int i = 0; i < *candidate_count; i++) {
+        if (memcmp(candidates[i].bytes18, bytes18, 18) == 0) {
             return;
         }
     }
 
-    DSD_MEMCPY(trellis_return, have_soft ? trellis_soft : trellis_hard, 18);
+    int metric = 0;
+    if (dmr_r34_candidate_metric(tdibits, ctx->reliab98, bytes18, &metric) != 0) {
+        return;
+    }
+    candidates[*candidate_count].metric = metric;
+    DSD_MEMCPY(candidates[*candidate_count].bytes18, bytes18, 18);
+    (*candidate_count)++;
+}
+
+static int
+dmr_dburst_trellis_lowest_metric_index(const dmr_r34_candidate candidates[], int candidate_count) {
+    int best = -1;
+    for (int i = 0; i < candidate_count; i++) {
+        best = dmr_dburst_trellis_lower_metric(candidates, best, i);
+    }
+    return best;
+}
+
+static void
+dmr_dburst_pick_trellis_payload(dmr_data_burst_ctx* ctx, const uint8_t tdibits[98], uint8_t trellis_return[18]) {
+    enum { R34_LIST_CAPACITY = 32, R34_POOL_CAPACITY = R34_LIST_CAPACITY + 2 };
+
+    dmr_r34_candidate candidates[R34_POOL_CAPACITY];
+    dmr_r34_candidate list[R34_LIST_CAPACITY];
+    uint8_t decoded[18];
+    int candidate_count = 0;
+    int list_count = 0;
+
+    DSD_MEMSET(candidates, 0, sizeof(candidates));
+    DSD_MEMSET(list, 0, sizeof(list));
+    DSD_MEMSET(decoded, 0, sizeof(decoded));
+
+    if (dmr_r34_viterbi_decode(tdibits, decoded) == 0) {
+        dmr_dburst_trellis_add_candidate(ctx, tdibits, candidates, R34_POOL_CAPACITY, &candidate_count, decoded);
+    }
+    if (ctx->reliab98 != NULL && dmr_r34_viterbi_decode_soft(tdibits, ctx->reliab98, decoded) == 0) {
+        dmr_dburst_trellis_add_candidate(ctx, tdibits, candidates, R34_POOL_CAPACITY, &candidate_count, decoded);
+    }
+    if ((ctx->state->data_conf_data[ctx->slot] == 1 || ctx->reliab98 == NULL)
+        && dmr_r34_viterbi_decode_list(tdibits, ctx->reliab98, list, R34_LIST_CAPACITY, &list_count) == 0) {
+        for (int i = 0; i < list_count; i++) {
+            dmr_dburst_trellis_add_candidate(ctx, tdibits, candidates, R34_POOL_CAPACITY, &candidate_count,
+                                             list[i].bytes18);
+        }
+    }
+
+    int chosen = (ctx->state->data_conf_data[ctx->slot] == 1)
+                     ? dmr_dburst_trellis_choose_candidate_index(ctx, candidates, candidate_count)
+                     : dmr_dburst_trellis_lowest_metric_index(candidates, candidate_count);
+    if (chosen >= 0) {
+        DSD_MEMCPY(trellis_return, candidates[chosen].bytes18, 18);
+    }
 }
 
 static void

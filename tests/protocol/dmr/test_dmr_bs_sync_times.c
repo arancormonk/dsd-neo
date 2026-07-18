@@ -51,6 +51,7 @@ static unsigned int g_ui_redraw_calls;
 static unsigned int g_history_calls[2];
 static unsigned int g_current_calls[2];
 static unsigned int g_data_sync_calls;
+static uint8_t g_data_sync_reliability[144];
 static unsigned int g_data_burst_calls;
 static uint8_t g_data_burst_last;
 static unsigned int g_debug_dump_calls;
@@ -94,6 +95,7 @@ reset_spies(void) {
     g_current_calls[0] = 0;
     g_current_calls[1] = 0;
     g_data_sync_calls = 0;
+    DSD_MEMSET(g_data_sync_reliability, 0, sizeof(g_data_sync_reliability));
     g_data_burst_calls = 0;
     g_data_burst_last = 0;
     g_debug_dump_calls = 0;
@@ -183,6 +185,24 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     (void)out_analog_signal;
     if (g_dibit_index >= sizeof(g_dibits)) {
         return 0;
+    }
+    return g_dibits[g_dibit_index++] & 0x3U;
+}
+
+int
+getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
+    (void)opts;
+    (void)state;
+    if (g_dibit_index >= sizeof(g_dibits)) {
+        if (out_soft != NULL) {
+            DSD_MEMSET(out_soft, 0, sizeof(*out_soft));
+        }
+        return 0;
+    }
+    if (out_soft != NULL) {
+        out_soft->reliability = (uint8_t)((g_dibit_index % 251U) + 1U);
+        out_soft->llr[0] = 0;
+        out_soft->llr[1] = 0;
     }
     return g_dibits[g_dibit_index++] & 0x3U;
 }
@@ -315,7 +335,7 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
 void
 dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    DSD_MEMCPY(g_data_sync_reliability, state->dmr_stereo_reliab, sizeof(g_data_sync_reliability));
     g_data_sync_calls++;
 }
 
@@ -567,6 +587,10 @@ test_bs_data_sync_closes_slot_file_and_resets_error_state(void) {
     dmrBS(&opts, &state);
 
     assert(g_data_sync_calls == 1U);
+    assert(g_data_sync_reliability[0] == 1U);
+    assert(g_data_sync_reliability[60] == 61U);
+    assert(g_data_sync_reliability[95] == 96U);
+    assert(g_data_sync_reliability[143] == 144U);
     assert(g_close_right_calls == 1U);
     assert(opts.mbe_out_fR == NULL);
     assert(g_process_mbe_calls == 0U);
