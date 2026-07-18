@@ -12,14 +12,40 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <sys/socket.h>
+#endif
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/resampler.h"
 #include "dsd-neo/platform/file_compat.h"
+#include "dsd-neo/platform/platform.h"
 #include "dsd-neo/platform/posix_compat.h"
+#include "dsd-neo/platform/sockets.h"
+#include "dsd-neo/runtime/net_audio_input_hooks.h"
 #include "test_support.h"
+
+static tcp_input_ctx* g_expected_tcp_input_ctx = NULL;
+static dsd_socket_t g_expected_tcp_sockfd = DSD_INVALID_SOCKET;
+static int g_tcp_input_open_calls = 0;
+static int g_tcp_input_close_calls = 0;
+
+static tcp_input_ctx*
+test_tcp_input_open(dsd_socket_t sockfd, int samplerate) {
+    if (sockfd == g_expected_tcp_sockfd && samplerate == 48000) {
+        g_tcp_input_open_calls++;
+    }
+    return g_expected_tcp_input_ctx;
+}
+
+static void
+test_tcp_input_close(tcp_input_ctx* ctx) {
+    if (ctx == g_expected_tcp_input_ctx) {
+        g_tcp_input_close_calls++;
+    }
+}
 
 static int
 expect_true(const char* label, int cond) {
@@ -55,7 +81,11 @@ alloc_state(void) {
 
 static dsd_opts*
 alloc_opts(void) {
-    return (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    if (opts) {
+        opts->tcp_sockfd = DSD_INVALID_SOCKET;
+    }
+    return opts;
 }
 
 static void
@@ -584,6 +614,73 @@ test_open_audio_in_device_extensionless_raw_uses_headless_rate(void) {
 }
 
 static int
+test_tcp_input_open_and_close_socket_ownership(void) {
+    if (dsd_socket_init() != 0) {
+        DSD_FPRINTF(stderr, "FAIL: socket init\n");
+        return 1;
+    }
+
+    dsd_socket_t sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == DSD_INVALID_SOCKET) {
+        DSD_FPRINTF(stderr, "FAIL: TCP socket create\n");
+        dsd_socket_cleanup();
+        return 1;
+    }
+
+    dsd_opts* opts = alloc_opts();
+    if (!opts) {
+        DSD_FPRINTF(stderr, "FAIL: alloc opts\n");
+        dsd_socket_close(sockfd);
+        dsd_socket_cleanup();
+        return 1;
+    }
+    dsd_state* state = alloc_state();
+    if (!state) {
+        DSD_FPRINTF(stderr, "FAIL: alloc state\n");
+        free_opts(opts);
+        dsd_socket_close(sockfd);
+        dsd_socket_cleanup();
+        return 1;
+    }
+
+    int fake_tcp_input_ctx = 0;
+    g_expected_tcp_input_ctx = (tcp_input_ctx*)&fake_tcp_input_ctx;
+    g_expected_tcp_sockfd = sockfd;
+    g_tcp_input_open_calls = 0;
+    g_tcp_input_close_calls = 0;
+    dsd_net_audio_input_hooks_set(
+        (dsd_net_audio_input_hooks){.tcp_open = test_tcp_input_open, .tcp_close = test_tcp_input_close});
+
+    opts->audio_in_type = AUDIO_IN_TCP;
+    opts->tcp_sockfd = sockfd;
+    opts->wav_sample_rate = 48000;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "tcp:127.0.0.1:7355");
+
+    int rc = expect_int_eq("TCP input opens with staged socket", openAudioInDevice(opts, state), 0);
+    rc |= expect_int_eq("TCP input wrapper receives staged socket", g_tcp_input_open_calls, 1);
+    rc |= expect_true("TCP input open preserves socket ownership", opts->tcp_sockfd == sockfd);
+    rc |= expect_true("TCP input socket remains open", dsd_socket_set_recv_timeout(sockfd, 1) == 0);
+    rc |= expect_true("TCP input open stores wrapper context", opts->tcp_in_ctx == g_expected_tcp_input_ctx);
+
+    closeAudioInDevice(opts);
+    rc |= expect_int_eq("device close releases TCP input context once", g_tcp_input_close_calls, 1);
+    rc |= expect_true("device close clears TCP input context", opts->tcp_in_ctx == NULL);
+    rc |= expect_true("device close invalidates TCP socket", opts->tcp_sockfd == DSD_INVALID_SOCKET);
+    rc |= expect_true("device close closes TCP socket descriptor", dsd_socket_close(sockfd) != 0);
+
+    closeAudioInDevice(opts);
+    rc |= expect_int_eq("repeated device close does not re-close TCP input context", g_tcp_input_close_calls, 1);
+
+    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    g_expected_tcp_input_ctx = NULL;
+    g_expected_tcp_sockfd = DSD_INVALID_SOCKET;
+    free(state);
+    free_opts(opts);
+    dsd_socket_cleanup();
+    return rc;
+}
+
+static int
 test_headerless_wav_suffix_falls_back_to_raw_pcm(void) {
     const short samples[] = {1234, -2345, 3456, -4567};
     char path[DSD_TEST_PATH_MAX] = {0};
@@ -886,6 +983,7 @@ main(void) {
     rc |= test_source_effective_input_rate_classifier();
     rc |= test_current_input_timing_rate_prefers_active_backend();
     rc |= test_open_audio_in_device_extensionless_raw_uses_headless_rate();
+    rc |= test_tcp_input_open_and_close_socket_ownership();
     rc |= test_headerless_wav_suffix_falls_back_to_raw_pcm();
     rc |= test_rifx_wav_suffix_uses_container_metadata();
     rc |= test_rf64_wav_suffix_uses_container_metadata();
