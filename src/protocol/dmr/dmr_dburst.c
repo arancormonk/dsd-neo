@@ -512,7 +512,8 @@ dmr_dburst_pick_trellis_payload(dmr_data_burst_ctx* ctx, const uint8_t tdibits[9
     if (ctx->reliab98 != NULL && dmr_r34_viterbi_decode_soft(tdibits, ctx->reliab98, decoded) == 0) {
         dmr_dburst_trellis_add_candidate(ctx, tdibits, candidates, R34_POOL_CAPACITY, &candidate_count, decoded);
     }
-    if (dmr_r34_viterbi_decode_list(tdibits, ctx->reliab98, list, R34_LIST_CAPACITY, &list_count) == 0) {
+    if ((ctx->state->data_conf_data[ctx->slot] == 1 || ctx->reliab98 == NULL)
+        && dmr_r34_viterbi_decode_list(tdibits, ctx->reliab98, list, R34_LIST_CAPACITY, &list_count) == 0) {
         for (int i = 0; i < list_count; i++) {
             dmr_dburst_trellis_add_candidate(ctx, tdibits, candidates, R34_POOL_CAPACITY, &candidate_count,
                                              list[i].bytes18);

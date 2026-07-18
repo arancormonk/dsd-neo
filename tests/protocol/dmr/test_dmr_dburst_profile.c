@@ -44,6 +44,7 @@ static int g_r34_soft_status;
 static int g_r34_hard_status;
 static int g_r34_list_status;
 static int g_r34_list_count;
+static int g_r34_list_calls;
 static int g_r34_hard_metric;
 static int g_r34_soft_metric;
 static uint8_t g_r34_soft_bytes[18];
@@ -74,6 +75,7 @@ reset_handler_counters(void) {
     g_r34_hard_status = 0;
     g_r34_list_status = -1;
     g_r34_list_count = 0;
+    g_r34_list_calls = 0;
     g_r34_hard_metric = 100;
     g_r34_soft_metric = 50;
     DSD_MEMSET(g_r34_soft_bytes, 0, sizeof(g_r34_soft_bytes));
@@ -177,6 +179,7 @@ dmr_r34_viterbi_decode_list(const uint8_t* dibits, const uint8_t* reliab, dmr_r3
                             int* out_count) {
     (void)dibits;
     (void)reliab;
+    g_r34_list_calls++;
     if (out != NULL && max_candidates > 0) {
         int count = g_r34_list_count;
         if (count > max_candidates) {
@@ -612,6 +615,7 @@ test_trellis_candidate_and_fallback_paths(void) {
     write_confirmed_crc9_bytes(g_r34_candidates[1].bytes18, 9U, 0x1FFU);
     dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
     rc |= expect_u8("r34c-list-crc-records-pass", state.data_block_crc_valid[1][6], 1U);
+    rc |= expect_u8("r34c-list-decoder-used", (uint8_t)g_r34_list_calls, 1U);
     rc |= expect_u8("r34c-list-updates-dbsn", state.data_dbsn_expected[1], 10U);
     rc |= expect_u8("r34c-list-dispatches", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r34c-list-block-len", g_block_assembler_last_len, 16U);
@@ -620,6 +624,7 @@ test_trellis_candidate_and_fallback_paths(void) {
     DSD_MEMSET(reliab, 13, sizeof(reliab));
     g_r34_soft_bytes[2] = 0xA5U;
     dmr_data_burst_handler(&opts, &state, info, 0x08U, reliab);
+    rc |= expect_u8("r34u-soft-skips-list-decoder", (uint8_t)g_r34_list_calls, 0U);
     rc |= expect_u8("r34u-soft-fallback-dispatches", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("r34u-soft-fallback-len", g_block_assembler_last_len, 18U);
     rc |= expect_u8("r34u-soft-fallback-payload", g_block_assembler_last_bytes[2], 0xA5U);

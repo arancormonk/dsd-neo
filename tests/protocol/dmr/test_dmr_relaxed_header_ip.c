@@ -1056,6 +1056,18 @@ test_short_data_raw_padding_and_packet_poc_isolation(void) {
     set_bits(bits, 65, 1U, 7);
     dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
     assert(state.data_block_poc[0] == 6U);
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 4, 15U, 4); // DPF=15 proprietary extension
+    set_bits(bits, 8, 0x77U, 8);
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.data_block_poc[0] == 6U);
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 4, 14U, 4); // A new non-proprietary header must not inherit packet POC.
+    set_bits(bits, 12, 1U, 4);
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.data_block_poc[0] == 0U);
 }
 
 static void

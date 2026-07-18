@@ -563,6 +563,7 @@ void
 dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint32_t CRCCorrect,
             uint32_t IrrecoverableErrors) {
     uint8_t slot = state->currentslot;
+    uint8_t inherited_poc = state->data_block_poc[slot];
     dmr_dheader_fields f;
     DSD_MEMSET(&f, 0, sizeof(f));
     dmr_clear_superframe_slot(state, slot);
@@ -590,6 +591,8 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
     }
     if (f.dpf == 2 || f.dpf == 3) {
         state->data_block_poc[slot] = f.poc;
+    } else if (f.dpf == 15) {
+        state->data_block_poc[slot] = inherited_poc;
     }
 
     state->data_header_format[slot] = f.dpf;
