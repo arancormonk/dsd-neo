@@ -2464,6 +2464,14 @@ p25_voice_close_slot_media(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, 
     ctx->slots[slot].crypto_attempt_m = 0.0;
 }
 
+static int
+p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx) {
+    if (!slot_ctx || !slot_ctx->grant_active) {
+        return 0;
+    }
+    return slot_ctx->voice_active || (slot_ctx->last_start_m > 0.0 && slot_ctx->last_start_m > slot_ctx->last_stop_m);
+}
+
 static void
 p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const p25_sm_slot_ctx_t* slot_ctx,
                                         p25_sm_event_t* out) {
@@ -2478,7 +2486,7 @@ p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const 
     // A source-less PTT/ACTIVE after a completed transmission has no service
     // options for the new epoch. Keep crypto classification pending until
     // ESS/LCW proves it clear instead of inheriting the preceding epoch.
-    const int follows_completed_epoch = slot_ctx->last_start_m > 0.0 && !slot_ctx->voice_active;
+    const int follows_completed_epoch = slot_ctx->last_start_m > 0.0 && !p25_voice_slot_epoch_active(slot_ctx);
     out->svc_bits = follows_completed_epoch ? P25_SM_SVC_UNKNOWN : slot_ctx->svc_bits;
 }
 
@@ -2555,23 +2563,33 @@ p25_voice_start_classify_changes(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm
     const int learned_source = !p25_source_id_known(slot_ctx->src) && p25_source_id_known(call_ev->src);
 
     changes.service_changed = p25_voice_start_service_changed(slot_ctx, call_ev);
-    changes.new_epoch = !slot_ctx->voice_active || target_changed || source_changed;
+    changes.new_epoch = !p25_voice_slot_epoch_active(slot_ctx) || target_changed || source_changed;
     changes.requires_update = changes.new_epoch || changes.service_changed || learned_source;
     return changes;
 }
 
 static int
-p25_voice_start_has_current_p1_crypto(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot,
-                                      const p25_sm_event_t* input) {
-    if (!ctx || !state || !input || ctx->vc_is_tdma || input->identity_valid || slot < 0 || slot > 1
-        || ctx->slots[slot].data_call) {
+p25_voice_start_has_current_p1_crypto(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
+    if (!ctx || !state || ctx->vc_is_tdma || slot < 0 || slot > 1 || ctx->slots[slot].data_call) {
         return 0;
     }
 
-    // A Phase 1 voice grant clears the tuple before the traffic channel is
-    // entered, so a definitive ALGID here was resolved afterward by this
-    // epoch's HDU. Preserve it when the first source-less LDU ACTIVE arrives.
+    // Phase 1 grant and END handling clear the tuple, so a definitive ALGID on
+    // the traffic channel was resolved afterward by the current epoch's HDU.
     return state->payload_algid != 0 && p25_crypto_audio_ready(state, 0);
+}
+
+static int
+p25_voice_start_should_preserve_p1_crypto(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot,
+                                          const p25_sm_event_t* input, const p25_voice_start_changes_t* changes) {
+    if (!input || !changes || !p25_voice_start_has_current_p1_crypto(ctx, state, slot)) {
+        return 0;
+    }
+
+    // An anonymous ACTIVE can be the first lifecycle indication after HDU.
+    // Once that epoch has started, an identity-bearing LCW may refine source
+    // and service options without superseding the authoritative HDU tuple.
+    return !changes->new_epoch || !input->identity_valid;
 }
 
 static void
@@ -2642,7 +2660,7 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
     p25_voice_start_changes_t changes = p25_voice_start_classify_changes(slot_ctx, &call_ev);
     changes.preserve_crypto_classification =
-        changes.new_epoch && p25_voice_start_has_current_p1_crypto(ctx, state, slot, input);
+        p25_voice_start_should_preserve_p1_crypto(ctx, state, slot, input, &changes);
     if (out_new_epoch) {
         *out_new_epoch = changes.new_epoch;
     }
@@ -2775,14 +2793,6 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
     sm_log(opts, state, why);
     p25_sm_update_ui_mode(ctx, state);
     return 1;
-}
-
-static int
-p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx) {
-    if (!slot_ctx || !slot_ctx->grant_active) {
-        return 0;
-    }
-    return slot_ctx->voice_active || (slot_ctx->last_start_m > 0.0 && slot_ctx->last_start_m > slot_ctx->last_stop_m);
 }
 
 static int

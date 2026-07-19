@@ -218,15 +218,67 @@ test_private_ptt_preserves_grant_identity(void) {
 }
 
 static int
-test_p1_hdu_crypto_survives_first_active(void) {
+test_p2_resolved_crypto_survives_pending_active(void) {
     const struct {
+        int svc_bits;
         int algid;
         int keyid;
         uint64_t mi;
         dsd_p25_crypto_state expected;
     } cases[] = {
-        {0x80, 0x1234, UINT64_C(0x0102030405060708), DSD_P25_CRYPTO_CLEAR},
-        {0x81, 0x5678, UINT64_C(0x1112131415161718), DSD_P25_CRYPTO_DECRYPTABLE},
+        {P25_SM_SVC_UNKNOWN, 0x80, 0x1234, UINT64_C(0x0102030405060708), DSD_P25_CRYPTO_CLEAR},
+        {0x40, 0x81, 0x5678, UINT64_C(0x1112131415161718), DSD_P25_CRYPTO_DECRYPTABLE},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        reset_test_state();
+        g_opts.trunk_tune_enc_calls = 0;
+        g_state.trunk_chan_map[0x1234] = 851500000;
+        g_state.p25_chan_tdma_explicit[1] = 2;
+        g_state.R = UINT64_C(0x0123456789ABCDEF);
+
+        p25_sm_ctx_t ctx;
+        p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, cases[i].svc_bits);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, cases[i].svc_bits);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (!ctx.vc_is_tdma || ctx.slots[0].voice_active || ctx.slots[0].last_start_m <= 0.0
+            || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+            DSD_FPRINTF(stderr, "FAIL: Phase 2 pending classification did not retain its started epoch\n");
+            return 1;
+        }
+
+        if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE2, 0, cases[i].algid, cases[i].keyid, cases[i].mi,
+                               1000)
+            != cases[i].expected) {
+            DSD_FPRINTF(stderr, "FAIL: Synthetic Phase 2 metadata did not resolve authoritatively\n");
+            return 1;
+        }
+
+        ev = p25_sm_ev_active(0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (!ctx.slots[0].voice_active || g_state.p25_crypto_state[0] != cases[i].expected
+            || g_state.payload_algid != cases[i].algid || g_state.payload_keyid != cases[i].keyid
+            || g_state.payload_miP != cases[i].mi) {
+            DSD_FPRINTF(stderr, "FAIL: Phase 2 ACTIVE restarted resolved same-epoch crypto classification\n");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+test_p1_hdu_crypto_survives_identity_refinement(void) {
+    const struct {
+        int svc_bits;
+        int algid;
+        int keyid;
+        uint64_t mi;
+        dsd_p25_crypto_state expected;
+    } cases[] = {
+        {0x00, 0x80, 0x1234, UINT64_C(0x0102030405060708), DSD_P25_CRYPTO_CLEAR},
+        {0x40, 0x81, 0x5678, UINT64_C(0x1112131415161718), DSD_P25_CRYPTO_DECRYPTABLE},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -236,7 +288,7 @@ test_p1_hdu_crypto_survives_first_active(void) {
 
         p25_sm_ctx_t ctx;
         p25_sm_init_ctx(&ctx, &g_opts, &g_state);
-        p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0x40);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 0, P25_SM_SVC_UNKNOWN);
         p25_sm_event(&ctx, &g_opts, &g_state, &ev);
         if (ctx.vc_is_tdma || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
             DSD_FPRINTF(stderr, "FAIL: Phase 1 HDU preservation setup did not start pending\n");
@@ -256,6 +308,16 @@ test_p1_hdu_crypto_survives_first_active(void) {
             || g_state.payload_algid != cases[i].algid || g_state.payload_keyid != cases[i].keyid
             || g_state.payload_miP != cases[i].mi || ctx.slots[0].crypto_attempt_m > 0.0) {
             DSD_FPRINTF(stderr, "FAIL: First Phase 1 ACTIVE discarded authoritative HDU crypto metadata\n");
+            return 1;
+        }
+
+        ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, cases[i].svc_bits);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (!ctx.slots[0].voice_active || ctx.slots[0].src != 123 || ctx.slots[0].svc_bits != cases[i].svc_bits
+            || g_state.p25_crypto_state[0] != cases[i].expected || g_state.payload_algid != cases[i].algid
+            || g_state.payload_keyid != cases[i].keyid || g_state.payload_miP != cases[i].mi
+            || ctx.slots[0].crypto_attempt_m > 0.0) {
+            DSD_FPRINTF(stderr, "FAIL: Phase 1 identity LCW discarded authoritative HDU crypto metadata\n");
             return 1;
         }
     }
@@ -1257,7 +1319,8 @@ main(void) {
     fail += test_grant_to_tuned();
     fail += test_ptt_voice_active();
     fail += test_private_ptt_preserves_grant_identity();
-    fail += test_p1_hdu_crypto_survives_first_active();
+    fail += test_p2_resolved_crypto_survives_pending_active();
+    fail += test_p1_hdu_crypto_survives_identity_refinement();
     fail += test_conventional_end_is_follower_noop();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
