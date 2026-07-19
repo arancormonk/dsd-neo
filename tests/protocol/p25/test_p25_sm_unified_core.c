@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
@@ -82,6 +83,19 @@ seed_exact(uint32_t id, const char* mode, const char* name) {
         return 1;
     }
     return dsd_tg_policy_upsert_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+}
+
+static int
+encrypted_call_cache_has(uint32_t target, int is_group) {
+    const time_t now = time(NULL);
+    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
+        if (g_state.p25_enc_tg_cache_tg[i] == target
+            && g_state.p25_enc_tg_cache_is_group[i] == (uint8_t)(is_group ? 1 : 0)
+            && g_state.p25_enc_tg_cache_until[i] > now) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 // Test: Init sets correct initial state
@@ -331,7 +345,8 @@ test_p1_retained_hdu_waits_for_identity(void) {
     reset_test_state();
     g_opts.trunk_use_allow_list = 1;
     g_state.trunk_chan_map[0x1234] = 851500000;
-    if (seed_exact(1000, "A", "ALLOWED") != 0) {
+    g_state.R = UINT64_C(0x0123456789ABCDEF);
+    if (seed_exact(1000, "A", "ALLOWED") != 0 || seed_exact(1001, "A", "FOLLOWUP") != 0) {
         DSD_FPRINTF(stderr, "FAIL: Could not seed retained Phase 1 policy case\n");
         return 1;
     }
@@ -345,23 +360,78 @@ test_p1_retained_hdu_waits_for_identity(void) {
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, 0, 1000) != DSD_P25_CRYPTO_CLEAR) {
-        DSD_FPRINTF(stderr, "FAIL: Retained Phase 1 HDU did not resolve clear\n");
+    const int algid = 0x81;
+    const int keyid = 0x5678;
+    const uint64_t mi = UINT64_C(0x1112131415161718);
+    if (!g_state.p25_p1_identity_pending
+        || p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, 1000)
+               != DSD_P25_CRYPTO_DECRYPTABLE) {
+        DSD_FPRINTF(stderr, "FAIL: Retained Phase 1 HDU did not resolve decryptable\n");
         return 1;
     }
 
     ev = p25_sm_ev_active(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.slots[0].voice_active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
-        || g_state.p25_p2_audio_allowed[0] != 0 || ctx.slots[0].crypto_attempt_m <= 0.0) {
-        DSD_FPRINTF(stderr, "FAIL: Retained Phase 1 follow-up opened before target validation\n");
+    if (ctx.slots[0].voice_active || !g_state.p25_p1_identity_pending
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_DECRYPTABLE || g_state.payload_algid != algid
+        || g_state.payload_keyid != keyid || g_state.payload_miP != mi || g_state.p25_p2_audio_allowed[0] != 0
+        || ctx.slots[0].crypto_attempt_m > 0.0 || p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Retained Phase 1 follow-up discarded HDU crypto or opened before identity\n");
         return 1;
     }
 
-    ev = p25_sm_ev_active_call(0, 1001, 0, 456, 1, 0);
+    ev = p25_sm_ev_active_call(0, 1001, 0, 456, 1, 0x40);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1 || g_state.p25_p2_audio_allowed[0] != 0) {
-        DSD_FPRINTF(stderr, "FAIL: Blocked Phase 1 follow-up was not rejected with audio gated\n");
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].voice_active
+        || g_state.p25_p1_identity_pending || ctx.slots[0].ota_tg != 1001 || ctx.slots[0].src != 456
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_DECRYPTABLE || g_state.payload_algid != algid
+        || g_state.payload_keyid != keyid || g_state.payload_miP != mi || !g_state.p25_p2_audio_allowed[0]
+        || !p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Accepted Phase 1 identity did not apply the retained HDU tuple\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_retained_hdu_defers_lockout_attribution(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    const int algid = 0x84;
+    const int keyid = 0x1234;
+    const uint64_t mi = UINT64_C(0x2122232425262728);
+    if (!g_state.p25_p1_identity_pending
+        || p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, 1000)
+               != DSD_P25_CRYPTO_BLOCKED) {
+        DSD_FPRINTF(stderr, "FAIL: Retained Phase 1 blocked HDU setup failed\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_enc(0, algid, keyid, 1000);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || !ctx.slots[0].grant_active || g_return_requests != 0
+        || encrypted_call_cache_has(1000U, 1) || g_state.payload_algid != algid || g_state.payload_keyid != keyid
+        || g_state.payload_miP != mi) {
+        DSD_FPRINTF(stderr, "FAIL: Anonymous Phase 1 HDU lockout was attributed to the preceding target\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active_call(0, 2000, 0, 456, 1, 0x40);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1 || g_state.p25_p1_identity_pending
+        || encrypted_call_cache_has(1000U, 1) || !encrypted_call_cache_has(2000U, 1)) {
+        DSD_FPRINTF(stderr, "FAIL: Deferred Phase 1 HDU lockout was not attributed to the accepted identity\n");
         return 1;
     }
     return 0;
@@ -1391,6 +1461,7 @@ main(void) {
     fail += test_p2_resolved_crypto_survives_pending_active();
     fail += test_p1_hdu_crypto_survives_identity_refinement();
     fail += test_p1_retained_hdu_waits_for_identity();
+    fail += test_p1_retained_hdu_defers_lockout_attribution();
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_conventional_end_is_follower_noop();
     fail += test_end_clears_voice();

@@ -689,6 +689,8 @@ struct dsd_state {
     int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
     // Authoritative P25 voice crypto classification. Slot 0 is also used by P25 Phase 1.
     dsd_p25_crypto_state p25_crypto_state[2];
+    // Retained Phase 1 carrier requires the next transmission's LCW identity before media or lockout.
+    int p25_p1_identity_pending;
     // ESS identity changes staged until the paired-timeslot audio drain completes.
     dsd_p25_p2_rekey_state p25_p2_rekey[2];
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
