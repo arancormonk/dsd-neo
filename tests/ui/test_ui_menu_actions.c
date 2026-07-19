@@ -1282,12 +1282,6 @@ test_additional_prompt_and_toggle_actions(void) {
     release_prompt_user();
 
     reset_capture();
-    act_set_p25_retune_backoff(&ctx);
-    rc |= expect_str("p25 retune backoff prompt", g_prompt.title, "P25: Retune backoff (s)");
-    rc |= expect_str("p25 retune backoff env", ((P25NumCtx*)g_prompt.user)->name, "DSD_NEO_P25_RETUNE_BACKOFF");
-    release_prompt_user();
-
-    reset_capture();
     act_set_p25_cc_grace(&ctx);
     rc |= expect_str("p25 cc grace prompt", g_prompt.title, "P25: CC hunt grace (s)");
     rc |= expect_str("p25 cc grace env", ((P25NumCtx*)g_prompt.user)->name, "DSD_NEO_P25_CC_GRACE");

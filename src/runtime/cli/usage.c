@@ -42,7 +42,6 @@ dsd_cli_usage_section_intro(void) {
     printf("      --p25-vc-grace <s>     P25: Seconds after VC tune before eligible to return to CC\n");
     printf("      --p25-min-follow-dwell <s>  P25: Minimum follow dwell after first voice\n");
     printf("      --p25-grant-voice-timeout <s>  P25: Max seconds from grant to voice before returning\n");
-    printf("      --p25-retune-backoff <s>  P25: Block immediate re-tune to same VC for N seconds after return\n");
     printf("      --p25-mac-hold <s>     P25: Seconds to keep MAC activity eligible for audio after last MAC\n");
     printf("      --p25-ring-hold <s>    P25: Ring gate window for slot audio activity\n");
     printf("      --p25-cc-grace <s>     P25: CC hunt grace window before treating CC as lost\n");

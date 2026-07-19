@@ -61,8 +61,8 @@ processTDU(dsd_opts* opts, dsd_state* state) {
         state->aout_gain = opts->audio_gain;
     }
 
-    // Mark Phase 1 termination boundary for early teardown and reset
-    // encryption indicators so the next LDU starts muted
+    // Mark the Phase 1 transmission boundary and reset encryption indicators
+    // so the next LDU on this retained carrier starts muted.
     state->p25_p1_last_tdu_m = dsd_time_now_monotonic_s();
     // Reset encryption indicators at TDU boundary so the next LDU starts muted
     // until we positively identify clear payload (prevents brief encrypted bursts).

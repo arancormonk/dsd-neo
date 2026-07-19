@@ -30,7 +30,6 @@
 
 enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
-    DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH = 8,
     DSD_P25_ENC_TG_CACHE_DEPTH = 8,
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
@@ -706,10 +705,9 @@ struct dsd_state {
     time_t p25_p2_last_mac_active[2];
     // Monotonic twins for last MAC_ACTIVE/PTT per slot
     double p25_p2_last_mac_active_m[2];
-    // P25p2 recent MAC_END_PTT timestamps per slot (enables early teardown
-    // once per-slot jitter/audio has drained)
+    // P25p2 recent MAC_END_PTT timestamps per slot (transmission boundaries)
     time_t p25_p2_last_end_ptt[2];
-    // P25p1 recent TDU/TDULC timestamp (enables early teardown on Phase 1)
+    // P25p1 recent TDU/TDULC transmission-boundary timestamp
     double p25_p1_last_tdu_m;
 
     // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
@@ -775,8 +773,8 @@ struct dsd_state {
     unsigned int p25_sm_cc_return_count; // number of actual returns to CC via SM
     unsigned int p25_sm_queued_count;    ///< number of Queued Response (QUE_RSP) messages received
     unsigned int p25_sm_deny_count;      ///< number of Deny Response (DENY_RSP) messages received
-    // One-shot flag to force immediate return-to-CC on explicit MAC_END/IDLE
-    // or policy events; cleared by the SM after handling
+    // One-shot flag to force immediate return-to-CC on physical/policy release;
+    // cleared by the SM after handling.
     int p25_sm_force_release;
     int trunk_sm_force_release; // protocol-agnostic force-release latch
     // Timestamp of last p25_sm_release() (0 when none yet)
@@ -794,19 +792,11 @@ struct dsd_state {
     // Monotonic twin for post-hang watchdog (seconds)
     double p25_sm_posthang_start_m;
 
-    // High-level SM mode for UI/telemetry (distinct from minimal P25p2 follower)
-    // 0=unknown, 1=on CC, 2=on VC (grant-following or armed), 3=hang, 4=hunting CC
+    // High-level SM mode for UI/telemetry. A retained traffic carrier is ARMED
+    // before first voice, FOLLOW while either slot is active, and HANG between
+    // transmissions until the inactivity timer expires.
     int p25_sm_mode;
 
-    // Retune backoff bookkeeping
-    // Blocks immediate re-tune to failed VC/slot pairs after recent no-voice returns
-    time_t p25_retune_block_until;
-    long p25_retune_block_freq;
-    int p25_retune_block_slot; // -1 when N/A
-    unsigned int p25_retune_block_next;
-    time_t p25_retune_block_history_until[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
-    long p25_retune_block_history_freq[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
-    int p25_retune_block_history_slot[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH]; // -1 when N/A
     // Transient encrypted-call cache: blocks encrypted/ambiguous voice grants after proven ENC lockout.
     time_t p25_enc_tg_cache_until[DSD_P25_ENC_TG_CACHE_DEPTH];
     uint32_t p25_enc_tg_cache_tg[DSD_P25_ENC_TG_CACHE_DEPTH];
@@ -816,7 +806,6 @@ struct dsd_state {
     double p25_cfg_vc_grace_s;
     double p25_cfg_grant_voice_to_s;
     double p25_cfg_min_follow_dwell_s;
-    double p25_cfg_retune_backoff_s;
     double p25_cfg_mac_hold_s;
     double p25_cfg_cc_grace_s;
     double p25_cfg_ring_hold_s;        // seconds to honor audio ring after recent MAC

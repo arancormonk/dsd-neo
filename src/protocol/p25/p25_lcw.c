@@ -14,6 +14,7 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
@@ -155,6 +156,10 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
     }
     if (allow_regroup_clear_override && talkgroup > 0
         && (p25_patch_tg_key_is_clear(ctx->state, talkgroup) || p25_patch_sg_key_is_clear(ctx->state, talkgroup))) {
+        // An identity-bearing follow-up starts a clean crypto epoch and closes
+        // its media gate. KEY=0 is already authoritative clear classification,
+        // so reopen the Phase 1 gate immediately for this transmission.
+        ctx->state->p25_p2_audio_allowed[0] = 1;
         return;
     }
     p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
@@ -186,6 +191,7 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 
+    p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt);
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
     p25_lcw_set_call_string_prefix(ctx->state, "   Group ", ctx->lc_svcopt);
 }
@@ -209,6 +215,7 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     ctx->state->dmr_so = ctx->lc_svcopt;
     ctx->state->p25_service_options_valid[0] = 1;
 
+    p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt);
     p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
     p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
 }
@@ -669,10 +676,11 @@ p25_lcw_handle_call_termination(p25_lcw_ctx* ctx) {
     uint32_t tgt = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " Call Termination; TGT: %d;", tgt);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    if (ctx->opts->trunk_enable == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->trunk_is_tuned == 1) {
-        ctx->state->p25_sm_force_release = 1;
-        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "lcw-call-termination");
+    if (tgt == 0x000000U || tgt == 0xFFFFFDU || tgt == 0xFFFFFFU) {
+        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "lcw-network-release");
+        return;
     }
+    p25_sm_emit_end(ctx->opts, ctx->state, 0);
 }
 
 static int
@@ -820,10 +828,7 @@ p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
     uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    if (ctx->opts->trunk_enable == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->trunk_is_tuned == 1) {
-        ctx->state->p25_sm_force_release = 1;
-        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "motorola-talker-eot");
-    }
+    p25_sm_emit_end_call_at(ctx->opts, ctx->state, 0, ctx->state->lasttg, (int)src, dsd_time_now_monotonic_s());
 }
 
 static void

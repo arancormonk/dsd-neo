@@ -57,15 +57,6 @@ main(void) {
     state->trunk_chan_map_used[0] = 0x0123U;
     state->trunk_chan_map_used_count = 1U;
     state->trunk_chan_map_seq = 99U;
-    state->p25_retune_block_until = 1234567890;
-    state->p25_retune_block_freq = 851125000L;
-    state->p25_retune_block_slot = 1;
-    state->p25_retune_block_next = 7U;
-    for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
-        state->p25_retune_block_history_until[i] = 1234567890 + i;
-        state->p25_retune_block_history_freq[i] = 851125000L + i;
-        state->p25_retune_block_history_slot[i] = i % 2;
-    }
     state->p25_enc_tg_cache_next = 3U;
     for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
         state->p25_enc_tg_cache_until[i] = 1234567890 + i;
@@ -288,22 +279,6 @@ main(void) {
         return 4;
     }
 
-    if (state->p25_retune_block_until != 0 || state->p25_retune_block_freq != 0 || state->p25_retune_block_slot != -1
-        || state->p25_retune_block_next != 0U) {
-        DSD_FPRINTF(stderr, "initState did not reset P25 retune backoff state\n");
-        freeState(state);
-        free(state);
-        return 22;
-    }
-    for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
-        if (state->p25_retune_block_history_until[i] != 0 || state->p25_retune_block_history_freq[i] != 0
-            || state->p25_retune_block_history_slot[i] != -1) {
-            DSD_FPRINTF(stderr, "initState did not reset P25 retune backoff history\n");
-            freeState(state);
-            free(state);
-            return 23;
-        }
-    }
     if (state->p25_enc_tg_cache_next != 0U) {
         DSD_FPRINTF(stderr, "initState did not reset P25 encrypted TG cache cursor\n");
         freeState(state);

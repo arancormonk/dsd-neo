@@ -730,12 +730,6 @@ lbl_p25_grant_voice(const void* v, char* b, size_t n) {
 }
 
 const char*
-lbl_p25_retune_backoff(const void* v, char* b, size_t n) {
-    DSD_SNPRINTF(b, n, "P25: Retune backoff (s): %.3f", lbl_p25_num(v, "DSD_NEO_P25_RETUNE_BACKOFF", 0.0));
-    return b;
-}
-
-const char*
 lbl_p25_cc_grace(const void* v, char* b, size_t n) {
     DSD_SNPRINTF(b, n, "P25: CC hunt grace (s): %.3f", lbl_p25_num(v, "DSD_NEO_P25_CC_GRACE", 0.0));
     return b;

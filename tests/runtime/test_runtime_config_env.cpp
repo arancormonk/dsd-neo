@@ -129,7 +129,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_P25_MIN_FOLLOW_DWELL",
         "DSD_NEO_P25P1_ERR_HOLD_PCT",
         "DSD_NEO_P25P1_ERR_HOLD_S",
-        "DSD_NEO_P25_RETUNE_BACKOFF",
         "DSD_NEO_P25_RING_HOLD",
         "DSD_NEO_P25_SOFT_ERASURE_THRESHOLD",
         "DSD_NEO_P25_SOFT_HARD_OVERRIDE",
@@ -1024,7 +1023,6 @@ test_protocol_env_knobs(void) {
 
     setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", "1.0", 1);
     setenv("DSD_NEO_P25_GRANT_VOICE_TO", "2.0", 1);
-    setenv("DSD_NEO_P25_RETUNE_BACKOFF", "3.0", 1);
     setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", "4.0", 1);
     setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", "5.0", 1);
     setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", "6.0", 1);
@@ -1134,14 +1132,6 @@ test_protocol_env_knobs(void) {
     if (rc != 0) {
         return rc;
     }
-    rc = expect_int_eq(cfg->p25_retune_backoff_is_set, 1, 1134, "p25_retune_backoff_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->p25_retune_backoff_s, 3.0, 1e-9, 1135, "p25_retune_backoff_s");
-    if (rc != 0) {
-        return rc;
-    }
     rc = expect_int_eq(cfg->p25_force_release_extra_is_set, 1, 1136, "p25_force_release_extra_is_set");
     if (rc != 0) {
         return rc;
@@ -1237,7 +1227,6 @@ test_protocol_env_knobs(void) {
 
     unsetenv("DSD_NEO_P25_MIN_FOLLOW_DWELL");
     unsetenv("DSD_NEO_P25_GRANT_VOICE_TO");
-    unsetenv("DSD_NEO_P25_RETUNE_BACKOFF");
     unsetenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
     unsetenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
     unsetenv("DSD_NEO_P25P1_ERR_HOLD_PCT");

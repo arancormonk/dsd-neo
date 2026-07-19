@@ -199,16 +199,17 @@ main(void) {
     rc |= expect_eq_int("tg hold mismatch no tune", g_tunes, 0);
     st.tg_hold = 0;
 
-    // Failed-VC backoff must also apply to LCW 0x44 explicit grants.
-    st.p25_retune_block_freq = 851125000;
-    st.p25_retune_block_slot = -1;
-    st.p25_retune_block_until = time(NULL) + 60;
+    // An immediate reassignment remains eligible after an explicit release.
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "test-explicit-release");
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    const double decoded_cc_m = sm->t_cc_tune_m + 0.01;
+    st.last_cc_sync_time = time(NULL);
+    st.last_cc_sync_time_m = decoded_cc_m;
+    st.p25_last_cc_msg_time = st.last_cc_sync_time;
+    st.p25_last_cc_msg_time_m = decoded_cc_m;
     g_tunes = 0;
     p25_lcw(&opts, &st, lcw, 0);
-    rc |= expect_eq_int("clear blocked by backoff", g_tunes, 0);
-    st.p25_retune_block_freq = 0;
-    st.p25_retune_block_slot = -1;
-    st.p25_retune_block_until = 0;
+    rc |= expect_eq_int("clear retunes after release", g_tunes, 1);
 
     // Packet bit set: tuning disabled by default policy (trunk_tune_data_calls=0)
     set_bits_msb(lcw, 16, 8, (unsigned)(svc | 0x10));

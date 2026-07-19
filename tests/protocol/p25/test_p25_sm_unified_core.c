@@ -8,6 +8,7 @@
  * 4-state model: IDLE, ON_CC, TUNED, HUNTING
  */
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -24,6 +25,7 @@
 
 static dsd_opts g_opts;
 static dsd_state g_state;
+static int g_return_requests;
 
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
@@ -39,6 +41,7 @@ test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)opts;
     (void)state;
     (void)request_id;
+    g_return_requests++;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -56,11 +59,18 @@ reset_test_state(void) {
     dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
+    g_return_requests = 0;
     g_opts.trunk_enable = 1;
     g_opts.trunk_hangtime = 2.0f; // op25 TGID_HOLD_TIME
     g_opts.trunk_tune_group_calls = 1;
     g_opts.verbose = 0;
     g_state.p25_cc_freq = 851000000; // Fake CC freq
+}
+
+static void
+expire_traffic_hang(p25_sm_ctx_t* ctx) {
+    ctx->t_hangtime_m = dsd_time_now_monotonic_s() - ctx->config.hangtime_s - 0.1;
+    p25_sm_tick_ctx(ctx, &g_opts, &g_state);
 }
 
 static int
@@ -166,9 +176,8 @@ test_ptt_voice_active(void) {
     return 0;
 }
 
-// Test: END clears voice_active and releases when all slots are inactive
-// For P25P1 (non-TDMA), an explicit END triggers immediate release to CC
-// rather than waiting for hangtime. This matches P25P1 LCW 0x4F behavior.
+// Test: END closes one transmission but retains the traffic allocation until
+// its inactivity hang expires.
 static int
 test_end_clears_voice(void) {
     reset_test_state();
@@ -187,16 +196,23 @@ test_end_clears_voice(void) {
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    // Explicit END triggers immediate release to ON_CC (no hangtime wait)
-    // This is the P25P2 fix: MAC_END_PTT should return to CC immediately
-    // rather than waiting for the 2s hangtime timeout.
-    if (ctx.state != P25_SM_ON_CC) {
-        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC after END (immediate release), got %s\n",
+    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || !ctx.slots[0].grant_active) {
+        DSD_FPRINTF(stderr, "FAIL: Expected retained TUNED allocation after END, got %s\n",
                     p25_sm_state_name(ctx.state));
         return 1;
     }
     if (ctx.slots[0].voice_active != 0) {
         DSD_FPRINTF(stderr, "FAIL: Expected slot[0].voice_active=0 after END\n");
+        return 1;
+    }
+    if (g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: END requested a control-channel return\n");
+        return 1;
+    }
+
+    expire_traffic_hang(&ctx);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Hang expiry did not release exactly once\n");
         return 1;
     }
     return 0;
@@ -326,9 +342,16 @@ test_tdma_partial_end_stays_tuned(void) {
     ev = p25_sm_ev_end(1);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    // Now both slots ended - should release to ON_CC
-    if (ctx.state != P25_SM_ON_CC) {
-        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC after END on both slots, got %s\n", p25_sm_state_name(ctx.state));
+    // Both transmissions have ended, but the physical allocation remains.
+    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Expected retained TDMA carrier after both ENDs, got %s\n",
+                    p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    expire_traffic_hang(&ctx);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: TDMA hang expiry did not release exactly once\n");
         return 1;
     }
 
@@ -369,24 +392,30 @@ test_tdma_pending_other_slot_blocks_release(void) {
                     p25_sm_state_name(ctx.state));
         return 1;
     }
-    if (ctx.slots[0].grant_active != 0 || ctx.slots[1].grant_active != 1) {
-        DSD_FPRINTF(stderr, "FAIL: Expected only slot 1 grant context after slot 0 END\n");
+    if (ctx.slots[0].grant_active != 1 || ctx.slots[1].grant_active != 1) {
+        DSD_FPRINTF(stderr, "FAIL: END discarded a retained slot assignment\n");
         return 1;
     }
 
     ev = p25_sm_ev_end(1);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.state != P25_SM_ON_CC) {
-        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC after both slot grant contexts ended, got %s\n",
+    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Expected retained carrier after both slot transmissions ended, got %s\n",
                     p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    expire_traffic_hang(&ctx);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Pending-slot case did not release on hang expiry\n");
         return 1;
     }
 
     return 0;
 }
 
-// Test: P25P2 TDMA - an encrypted locked-out slot clears its grant context so
-// the opposite slot can release immediately on explicit END.
+// Test: P25P2 TDMA - an encrypted locked-out slot does not keep media active,
+// while the retained carrier still observes normal inactivity hangtime.
 static int
 test_tdma_enc_lockout_slot_does_not_block_release(void) {
     reset_test_state();
@@ -420,20 +449,25 @@ test_tdma_enc_lockout_slot_does_not_block_release(void) {
 
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.state != P25_SM_ON_CC) {
-        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC after clear slot END with encrypted slot muted, got %s\n",
+    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Expected hang retention after clear slot END with encrypted slot muted, got %s\n",
                     p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    expire_traffic_hang(&ctx);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Encrypted companion case did not release on hang expiry\n");
         return 1;
     }
 
     return 0;
 }
 
-// Test: P25P2 TDMA - END on single-slot call releases immediately
-// This tests the bug fix where calls on only one slot were waiting for
-// the full hangtime (10s forced release) instead of releasing on MAC_END_PTT.
+// Test: P25P2 TDMA - END on a single-slot call closes media and retains the
+// carrier for a follow-up transmission.
 static int
-test_tdma_single_slot_end_releases(void) {
+test_tdma_single_slot_end_retains_carrier(void) {
     reset_test_state();
     g_state.trunk_chan_map[0x1234] = 851500000;
     // Mark this channel as TDMA (P25P2)
@@ -468,26 +502,30 @@ test_tdma_single_slot_end_releases(void) {
         return 1;
     }
 
-    // END on slot 0 - should release immediately since slot 1 never had activity
-    // This mimics the real scenario: xcch.c calls p25_sm_emit_end() BEFORE clearing
-    // p25_p2_audio_allowed, so the SM must handle this correctly.
-    // Note: p25_p2_audio_allowed[0] is still 1 AND ring buffer has audio!
+    // END arrives while the decoder gate and jitter ring still contain media.
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    // Should release to ON_CC immediately - not waiting for slot 1
-    if (ctx.state != P25_SM_ON_CC) {
-        DSD_FPRINTF(stderr, "FAIL: Expected ON_CC after END on single-slot TDMA call, got %s\n",
+    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || !ctx.slots[0].grant_active || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Expected retained carrier after END on single-slot TDMA call, got %s\n",
                     p25_sm_state_name(ctx.state));
-        DSD_FPRINTF(stderr, "      (slot 1 never had activity, should not block release)\n");
-        DSD_FPRINTF(stderr, "      audio_allowed[0]=%d audio_allowed[1]=%d\n", g_state.p25_p2_audio_allowed[0],
-                    g_state.p25_p2_audio_allowed[1]);
         return 1;
     }
 
     // Verify the SM cleared audio_allowed for slot 0
     if (g_state.p25_p2_audio_allowed[0] != 0) {
         DSD_FPRINTF(stderr, "FAIL: Expected audio_allowed[0]=0 after END, got %d\n", g_state.p25_p2_audio_allowed[0]);
+        return 1;
+    }
+
+    if (g_state.p25_p2_audio_ring_count[0] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Expected slot 0 jitter ring cleanup at END\n");
+        return 1;
+    }
+
+    expire_traffic_hang(&ctx);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Single-slot hang expiry did not release exactly once\n");
         return 1;
     }
 
@@ -535,7 +573,7 @@ test_tdma_end_identity_and_order_guards(void) {
 
     ev = p25_sm_ev_end_call_at(1, 2000, 202, ctx.slots[1].last_active_m + 0.001);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.state != P25_SM_TUNED || ctx.slots[1].voice_active || ctx.slots[1].grant_active
+    if (ctx.state != P25_SM_TUNED || ctx.slots[1].voice_active || !ctx.slots[1].grant_active
         || g_state.p25_p2_audio_allowed[1] || ctx.slots[1].last_end_m <= 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Current slot 1 END was not applied cleanly\n");
         return 1;
@@ -585,6 +623,125 @@ test_tdma_end_identity_and_order_guards(void) {
         return 1;
     }
 
+    return 0;
+}
+
+// Test: only two matching FACCH END_PTT indications can authoritatively
+// release a fully inactive TDMA carrier. SACCH/general END and intervening
+// activity do not satisfy the heuristic.
+static int
+test_tdma_facch_double_end_release(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    double first_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: First FACCH END released the carrier\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m + 0.5);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Matching FACCH END pair did not release exactly once\n");
+        return 1;
+    }
+
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    first_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_end_call_at(0, 1000, 123, first_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Repeated non-FACCH END released the carrier\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    first_m += 0.2;
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m + 0.5);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Intervening activity did not reset FACCH END qualification\n");
+        return 1;
+    }
+
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(1, 2000, 0, 456, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    first_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m + 0.5);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || !ctx.slots[1].voice_active || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Active companion slot did not block FACCH release\n");
+        return 1;
+    }
+
+    return 0;
+}
+
+static int
+test_inband_target_change_rechecks_policy(void) {
+    reset_test_state();
+    g_opts.trunk_use_allow_list = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    if (seed_exact(1000, "A", "ALLOW") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Could not seed in-band policy case\n");
+        return 1;
+    }
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.tune_count != 1 || !ctx.slots[0].voice_active) {
+        DSD_FPRINTF(stderr, "FAIL: Allowed in-band policy case did not begin\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_ptt_call(0, 1001, 0, 124, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || ctx.tune_count != 1 || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Rejected in-band target did not return to CC without retuning\n");
+        return 1;
+    }
     return 0;
 }
 
@@ -709,8 +866,10 @@ main(void) {
     fail += test_tdma_partial_end_stays_tuned();
     fail += test_tdma_pending_other_slot_blocks_release();
     fail += test_tdma_enc_lockout_slot_does_not_block_release();
-    fail += test_tdma_single_slot_end_releases();
+    fail += test_tdma_single_slot_end_retains_carrier();
     fail += test_tdma_end_identity_and_order_guards();
+    fail += test_tdma_facch_double_end_release();
+    fail += test_inband_target_change_rechecks_policy();
     fail += test_tdma_enc_respects_media_policy();
 
     if (fail) {

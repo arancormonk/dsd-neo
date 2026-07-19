@@ -338,7 +338,6 @@ main(void) {
         cache_opts.trunk_tune_private_calls = 1;
         cache_opts.trunk_tune_data_calls = 1;
         cache_opts.trunk_tune_enc_calls = 0;
-        cache_opts.p25_retune_backoff_s = 10.0;
         cache_st.p25_cc_freq = 851000000;
         seed_fdma_iden(&cache_st, id);
         p25_sm_init_ctx(p25_sm_get_ctx(), &cache_opts, &cache_st);
@@ -772,7 +771,8 @@ main(void) {
                                    .src = 2202,
                                    .svc_bits = 0x00,
                                    .is_group = 1});
-    rc |= expect_true("high preempt candidate tuned", st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("high preempt candidate reused carrier",
+                      st.p25_sm_tune_count == before && p25_sm_get_ctx()->vc_tg == 1202);
 
     // Patch-member priority/preempt displaces using the matched member policy, not the OTA SG's default priority.
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
@@ -800,7 +800,8 @@ main(void) {
                                    .src = 2501,
                                    .svc_bits = 0x00,
                                    .is_group = 1});
-    rc |= expect_true("patch member preempt tunes", st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("patch member preempt reuses carrier",
+                      st.p25_sm_tune_count == before && p25_sm_get_ctx()->vc_tg == 1502);
     rc |= expect_true("patch member preempt policy tg", st.p25_policy_tg[0] == 1502U);
 
     // Same-frequency TDMA grants update one slot without clearing the other slot's patch policy mapping.

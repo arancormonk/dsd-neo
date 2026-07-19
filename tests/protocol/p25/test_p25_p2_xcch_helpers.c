@@ -41,6 +41,7 @@ static int g_end_tg[2];
 static int g_end_src[2];
 static double g_end_observed_m[2];
 static int g_idle_count[2];
+static int g_hangtime_count[2];
 static int g_enc_count[2];
 static int g_enc_algid[2];
 static int g_enc_keyid[2];
@@ -147,6 +148,16 @@ p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 void
+p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group, int svc_bits) {
+    (void)tg;
+    (void)dst;
+    (void)src;
+    (void)is_group;
+    (void)svc_bits;
+    p25_sm_emit_ptt(opts, state, slot);
+}
+
+void
 p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
     (void)state;
@@ -175,6 +186,11 @@ p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
     return g_end_apply;
 }
 
+int
+p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int src, double observed_m) {
+    return p25_sm_emit_end_call_at(opts, state, slot, tg, src, observed_m) ? P25_SM_END_APPLIED : P25_SM_END_IGNORED;
+}
+
 void
 p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
@@ -188,6 +204,15 @@ void
 p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
     (void)observed_m;
     p25_sm_emit_idle(opts, state, slot);
+}
+
+void
+p25_sm_emit_hangtime(dsd_opts* opts, dsd_state* state, int slot) {
+    (void)opts;
+    (void)state;
+    if (slot >= 0 && slot <= 1) {
+        g_hangtime_count[slot]++;
+    }
 }
 
 int
@@ -371,6 +396,7 @@ reset_stubs(void) {
     DSD_MEMSET(g_end_src, 0, sizeof(g_end_src));
     DSD_MEMSET(g_end_observed_m, 0, sizeof(g_end_observed_m));
     DSD_MEMSET(g_idle_count, 0, sizeof(g_idle_count));
+    DSD_MEMSET(g_hangtime_count, 0, sizeof(g_hangtime_count));
     DSD_MEMSET(g_enc_count, 0, sizeof(g_enc_count));
     DSD_MEMSET(g_enc_algid, 0, sizeof(g_enc_algid));
     DSD_MEMSET(g_enc_keyid, 0, sizeof(g_enc_keyid));
@@ -548,7 +574,7 @@ test_slot_ptt_and_end_helpers(void) {
 
     p25p2_xcch_handle_end_slot(&opts, &state, 0, 1);
     rc |= expect_int("end slot0 src clear", state.lastsrc, 0);
-    rc |= expect_int("end slot0 tg clear", state.lasttg, 0);
+    rc |= expect_int("end slot0 tg retained", state.lasttg, 0x2222);
     rc |= expect_int("end slot0 alg clear", state.payload_algid, 0);
     rc |= expect_int("end slot0 key clear", state.payload_keyid, 0);
     rc |= expect_int("end slot0 drop", state.dropL, 256);
@@ -612,13 +638,13 @@ test_facch_public_dispatch_and_crc_gates(void) {
     rc |= expect_int("facch idle vpdu", g_vpdu_count, 1);
     rc |= expect_int("facch idle vpdu type", g_vpdu_type, 0);
     rc |= expect_int("facch idle vpdu entry src clear", g_vpdu_entry_lastsrc[1], 0);
-    rc |= expect_int("facch idle vpdu entry tg clear", g_vpdu_entry_lasttg[1], 0);
+    rc |= expect_int("facch idle vpdu entry tg retained", g_vpdu_entry_lasttg[1], 77);
     rc |= expect_int("facch idle src clear", state.lastsrcR, 0);
-    rc |= expect_int("facch idle tg clear", state.lasttgR, 0);
+    rc |= expect_int("facch idle tg retained", state.lasttgR, 77);
     rc |= expect_int("facch idle gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("facch idle ring reset", g_ring_reset_count[1], 1);
     rc |= expect_int("facch idle packet clear", state.p25_call_is_packet[1], 0);
-    rc |= expect_int("facch idle policy clear", (int)state.p25_policy_tg[1], 0);
+    rc |= expect_int("facch idle policy retained", (int)state.p25_policy_tg[1], 0x5678);
     rc |= expect_int("facch idle service valid clear", state.p25_service_options_valid[1], 0);
     rc |= expect_int("facch idle service clear", state.dmr_soR, 0);
     rc |= expect_int("facch idle call blank", strncmp(state.call_string[1], P25P2_EMPTY_CALL_STRING, 21), 0);
@@ -643,10 +669,10 @@ test_facch_public_dispatch_and_crc_gates(void) {
     process_FACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("facch idle grant emitted", g_idle_count[1], 1);
     rc |= expect_int("facch idle grant vpdu entry src clear", g_vpdu_entry_lastsrc[1], 0);
-    rc |= expect_int("facch idle grant vpdu entry tg clear", g_vpdu_entry_lasttg[1], 0);
+    rc |= expect_int("facch idle grant vpdu entry tg retained", g_vpdu_entry_lasttg[1], 0x2468);
     rc |= expect_int("facch idle grant gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("facch idle grant ring reset", g_ring_reset_count[1], 1);
-    rc |= expect_int("facch idle grant src preserved", state.lastsrcR, 0x010204);
+    rc |= expect_int("facch idle grant source starts clean", state.lastsrcR, 0);
     rc |= expect_int("facch idle grant tg preserved", state.lasttgR, 0x2468);
     rc |= expect_int("facch idle grant packet preserved", state.p25_call_is_packet[1], 1);
     rc |= expect_int("facch idle grant policy preserved", (int)state.p25_policy_tg[1], 0x6789);
@@ -749,7 +775,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch end identity src", g_end_src[1], 0x445566);
     rc |= expect_int("sacch end observed timestamp", g_end_observed_m[1] > 0.0 ? 1 : 0, 1);
     rc |= expect_int("sacch end src clear", state.lastsrcR, 0);
-    rc |= expect_int("sacch end tg clear", state.lasttgR, 0);
+    rc |= expect_int("sacch end tg retained", state.lasttgR, 0x3344);
     rc |= expect_int("sacch end alg clear", state.payload_algidR, 0);
     rc |= expect_int("sacch end keyid clear", state.payload_keyidR, 0);
     rc |= expect_int("sacch end gate clear", state.p25_p2_audio_allowed[1], 0);
@@ -783,7 +809,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch idle burst", (int)state.dmrburstR, 24);
     rc |= expect_int("sacch idle gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("sacch idle packet clear", state.p25_call_is_packet[1], 0);
-    rc |= expect_int("sacch idle policy clear", (int)state.p25_policy_tg[1], 0);
+    rc |= expect_int("sacch idle policy retained", (int)state.p25_policy_tg[1], 0x5678);
     rc |= expect_int("sacch idle service valid clear", state.p25_service_options_valid[1], 0);
     rc |= expect_int("sacch idle service clear", state.dmr_soR, 0);
     rc |= expect_int("sacch idle crypto clear", state.p25_crypto_state[1], DSD_P25_CRYPTO_UNKNOWN);
@@ -933,7 +959,7 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch end identity src", g_end_src[0], 0x123456);
     rc |= expect_int("facch end observed timestamp", g_end_observed_m[0] > 0.0 ? 1 : 0, 1);
     rc |= expect_int("facch end src clear", state.lastsrc, 0);
-    rc |= expect_int("facch end tg clear", state.lasttg, 0);
+    rc |= expect_int("facch end tg retained", state.lasttg, 0x4567);
     rc |= expect_int("facch end gate clear", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("facch end burst", (int)state.dmrburstL, 23);
     rc |= expect_int("facch end close left", g_close_l_count, 1);

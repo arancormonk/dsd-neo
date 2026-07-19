@@ -3,7 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Focused tests for P25 trunk SM timing/backoff/CC-hunt behaviors. */
+/* Focused tests for P25 trunk SM timing, carrier reuse, and CC-hunt behaviors. */
 
 #include <assert.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -276,7 +276,6 @@ init_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     opts->audio_in_type = audio_in_type;
     opts->trunk_hangtime = 5.0f;
     opts->p25_grant_voice_to_s = 3.0;
-    opts->p25_retune_backoff_s = 2.0;
     state->p25_cc_freq = 851000000;
     state->trunk_cc_freq = 851000000;
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = vc_freq;
@@ -684,7 +683,6 @@ main(void) {
     assert(s12.p25_sm_force_release == 0);
     assert(o12.trunk_is_tuned == 0);
     assert(ctx12.state == P25_SM_ON_CC);
-    assert(s12.p25_retune_block_until == 0);
 
     // 15) Verified CC callers seed an unknown CC from the live tuner before leaving the control channel.
     static dsd_opts o13;
@@ -2040,7 +2038,6 @@ main(void) {
     o20.audio_in_type = AUDIO_IN_RTL;
     o20.trunk_hangtime = 5.0f;
     o20.p25_grant_voice_to_s = 0.8;
-    o20.p25_retune_backoff_s = 2.0;
     s20.p25_cc_freq = 851000000;
     s20.trunk_cc_freq = 851000000;
     s20.p25_iden_fdma[id9].base_freq = 851000000 / 5;
@@ -2081,7 +2078,6 @@ main(void) {
     assert(o20.trunk_is_tuned == 1);
     assert(ctx20.slots[0].grant_active == 1);
     assert(s20.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
-    assert(s20.p25_retune_block_until == 0);
 
     // 30) An already-selected CQPSK P25P2 VC gets one demodulator-only
     // recovery attempt only when frame sync is otherwise about to abandon a
@@ -2193,8 +2189,8 @@ main(void) {
     assert(ctx20v.state == P25_SM_TUNED);
     p25_sm_event(&ctx20v, &o20v, &s20v, &recovered_active);
 
-    // If recovery still produces no activity, the existing forced-release and
-    // failed-VC backoff path remains authoritative.
+    // If recovery still produces no activity, the existing forced-release path
+    // remains authoritative.
     g_cc_reacquire_request_calls = 0;
     init_stalled_vc_reacquire_case(&ctx20v, &o20v, &s20v, AUDIO_IN_RTL, 1, 0);
     g_result_return_to_cc_calls = 0;
@@ -2210,9 +2206,6 @@ main(void) {
     assert(ctx20v.vc_reacquire_eligible == 0);
     assert(ctx20v.vc_reacquire_attempted == 0);
     assert(ctx20v.t_vc_reacquire_m == 0.0);
-    assert(s20v.p25_retune_block_freq == 851125000);
-    assert(s20v.p25_retune_block_slot == 0);
-    assert(s20v.p25_retune_block_until > time(NULL));
 
     // Valid activity, C4FM, non-RTL input, P25P1, and data grants must not
     // request the CQPSK VC recovery even on the no-sync release path.
