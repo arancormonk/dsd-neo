@@ -603,6 +603,19 @@ test_slot_ptt_and_end_helpers(void) {
     reset_stubs();
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.gi[0] = 1;
+    state.lasttg = 0xABCDEF;
+    fill_mac(mac, 0x80, 0, 0x010203, 0x4567);
+
+    p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 0, 1);
+    rc |= expect_int("private PTT destination preserved", state.lasttg, 0xABCDEF);
+    rc |= expect_int("private PTT source updated", state.lastsrc, 0x010203);
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 0;
     opts.pulse_digi_rate_out = 8000;
     opts.audio_gain = 4;

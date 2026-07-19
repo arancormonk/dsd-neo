@@ -2504,8 +2504,18 @@ p25_voice_start_build_identity(const p25_sm_ctx_t* ctx, const dsd_state* state, 
 
     if (!input->identity_valid) {
         p25_voice_start_fill_anonymous_identity(state, slot, slot_ctx, out);
-    } else if (!p25_sm_svc_bits_valid(input->svc_bits)) {
-        out->svc_bits = slot_ctx->svc_bits;
+    } else {
+        // Phase 2 MAC_PTT exposes a 16-bit group-address field, but no
+        // 24-bit private destination. Preserve an accepted private assignment
+        // instead of reclassifying that field as an authoritative group.
+        if (!slot_ctx->is_group && input->is_group) {
+            out->is_group = 0;
+            out->tg = 0;
+            out->dst = slot_ctx->dst;
+        }
+        if (!p25_sm_svc_bits_valid(input->svc_bits)) {
+            out->svc_bits = slot_ctx->svc_bits;
+        }
     }
     out->identity_valid = 1;
     return p25_grant_ota_target_id(out) > 0;
@@ -2746,13 +2756,34 @@ p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx) {
 }
 
 static int
+p25_voice_slot_assignment_pending(const p25_sm_slot_ctx_t* slot_ctx) {
+    if (!slot_ctx || !slot_ctx->grant_active || slot_ctx->voice_active) {
+        return 0;
+    }
+    return slot_ctx->data_call || slot_ctx->last_start_m <= 0.0 || slot_ctx->last_start_m > slot_ctx->last_stop_m
+           || slot_ctx->last_grant_m > slot_ctx->last_stop_m;
+}
+
+static int
+p25_voice_slot_retains_carrier(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
+    if (!ctx || slot < 0 || slot > 1) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    if (slot_ctx->voice_active || p25_voice_slot_assignment_pending(slot_ctx)) {
+        return 1;
+    }
+    return state && (state->p25_p2_audio_allowed[slot] || state->p25_p2_audio_ring_count[slot] > 0) ? 1 : 0;
+}
+
+static int
 p25_voice_end_diag_other_active(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
     (void)state;
     if (!ctx || !ctx->vc_is_tdma) {
         return 0;
     }
     int other = slot ^ 1;
-    return p25_voice_slot_epoch_active(&ctx->slots[other]);
+    return p25_voice_slot_epoch_active(&ctx->slots[other]) || p25_voice_slot_assignment_pending(&ctx->slots[other]);
 }
 
 static int
@@ -2915,8 +2946,13 @@ p25_voice_end_log_ignored(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* st
 static int
 handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end,
                  int arm_stale_regrant_guard, const p25_sm_event_t* ev) {
-    if (!ctx || ctx->state != P25_SM_TUNED) {
+    if (!ctx) {
         return 0;
+    }
+    if (ctx->state != P25_SM_TUNED) {
+        // Conventional Phase 2 decoding still owns decoder/media teardown.
+        // Accept END as a follower no-op when no trunk assignment is active.
+        return 1;
     }
 
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
@@ -2985,10 +3021,7 @@ p25_facch_all_slots_inactive(const p25_sm_ctx_t* ctx, const dsd_state* state) {
         return 0;
     }
     for (int slot = 0; slot < 2; slot++) {
-        if (ctx->slots[slot].voice_active) {
-            return 0;
-        }
-        if (state && (state->p25_p2_audio_allowed[slot] || state->p25_p2_audio_ring_count[slot] > 0)) {
+        if (p25_voice_slot_retains_carrier(ctx, state, slot)) {
             return 0;
         }
     }
@@ -3038,11 +3071,8 @@ p25_sm_slot_waiting_for_voice(const p25_sm_ctx_t* ctx, const dsd_state* state, i
     if (!ctx || slot < 0 || slot > 1) {
         return 0;
     }
-    if (ctx->vc_activity_seen) {
-        return 0;
-    }
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
-    if (!slot_ctx->grant_active || slot_ctx->data_call || slot_ctx->voice_active || slot_ctx->last_active_m > 0.0) {
+    if (slot_ctx->data_call || slot_ctx->voice_active || !p25_voice_slot_assignment_pending(slot_ctx)) {
         return 0;
     }
     if (state && state->p25_p2_audio_allowed[slot]) {
@@ -3108,18 +3138,7 @@ p25_voice_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
 
 static int
 p25_voice_other_slot_active(const p25_sm_ctx_t* ctx, const dsd_state* state, int other) {
-    if (!ctx || !state || other < 0 || other > 1) {
-        return 0;
-    }
-    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[other];
-    const int grant_pending =
-        slot_ctx->grant_active
-        && (slot_ctx->data_call || slot_ctx->last_start_m <= 0.0 || slot_ctx->last_start_m > slot_ctx->last_stop_m
-            || slot_ctx->last_grant_m > slot_ctx->last_stop_m);
-    return (slot_ctx->voice_active || grant_pending || state->p25_p2_audio_allowed[other]
-            || state->p25_p2_audio_ring_count[other] > 0)
-               ? 1
-               : 0;
+    return p25_voice_slot_retains_carrier(ctx, state, other);
 }
 
 static int
@@ -4550,7 +4569,7 @@ p25_sm_tick_tuned(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
         return;
     }
     p25_sm_update_ui_mode(ctx, state);
-    if (!ctx->vc_activity_seen) {
+    if (!ctx->vc_activity_seen || p25_sm_has_pending_voice_grant(ctx, state) || p25_sm_has_pending_data_grant(ctx)) {
         p25_sm_tick_tuned_wait_voice(ctx, opts, state, now_m, grant_timeout);
     }
 }

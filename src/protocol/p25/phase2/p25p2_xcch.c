@@ -376,7 +376,13 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
 
     DSD_FPRINTF(stderr, "\n VCH %d - ", slot + 1);
     p25p2_xcch_set_slot_src_if_nonzero(state, slot, src);
-    p25p2_xcch_set_slot_tg(state, slot, tg);
+    // MAC_PTT only carries a 16-bit group-address field. For an accepted
+    // private assignment, the state machine has just restored the 24-bit
+    // destination retained from the grant; do not overwrite it here.
+    const int private_trunk_assignment = opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->gi[slot] == 1;
+    if (!private_trunk_assignment) {
+        p25p2_xcch_set_slot_tg(state, slot, tg);
+    }
 
     DSD_FPRINTF(stderr, "TG %d ", p25p2_xcch_get_slot_tg(state, slot));
     DSD_FPRINTF(stderr, "SRC %d ", src);

@@ -176,6 +176,62 @@ test_ptt_voice_active(void) {
     return 0;
 }
 
+static int
+test_private_ptt_preserves_grant_identity(void) {
+    reset_test_state();
+    g_opts.trunk_tune_private_calls = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_indiv_grant(0x1234, 851500000, 0xABCDEF, 0x010203, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    ev = p25_sm_ev_ptt_call(0, 0, 0, 0x010203, 1, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || ctx.slots[0].is_group || ctx.slots[0].dst != 0xABCDEF
+        || ctx.slots[0].target_id != 0xABCDEF || g_state.gi[0] != 1 || g_state.lasttg != 0xABCDEF) {
+        DSD_FPRINTF(stderr, "FAIL: Zero-address MAC_PTT did not retain the private grant identity\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 0x4567, 0, 0x010203, 1, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || ctx.slots[0].is_group || ctx.slots[0].dst != 0xABCDEF
+        || ctx.slots[0].target_id != 0xABCDEF || g_state.gi[0] != 1 || g_state.lasttg != 0xABCDEF) {
+        DSD_FPRINTF(stderr, "FAIL: Nonzero MAC_PTT group field replaced the private grant identity\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_conventional_end_is_follower_noop(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    const double now_m = dsd_time_now_monotonic_s();
+
+    if (!p25_sm_emit_end_call_at(&g_opts, &g_state, 0, 1000, 123, now_m)) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional SACCH END was rejected by the trunk follower\n");
+        return 1;
+    }
+    if (p25_sm_emit_facch_end_call_at(&g_opts, &g_state, 1, 2000, 456, now_m) != P25_SM_END_APPLIED) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional FACCH END was rejected by the trunk follower\n");
+        return 1;
+    }
+    if (ctx->state != P25_SM_IDLE || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional END follower no-op changed trunk state\n");
+        return 1;
+    }
+    return 0;
+}
+
 // Test: END closes one transmission but retains the traffic allocation until
 // its inactivity hang expires.
 static int
@@ -512,18 +568,61 @@ test_tdma_pending_other_slot_blocks_release(void) {
         DSD_FPRINTF(stderr, "FAIL: END discarded a retained slot assignment\n");
         return 1;
     }
-
-    ev = p25_sm_ev_end(1);
-    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || g_return_requests != 0) {
-        DSD_FPRINTF(stderr, "FAIL: Expected retained carrier after both slot transmissions ended, got %s\n",
-                    p25_sm_state_name(ctx.state));
+    if (ctx.t_hangtime_m > 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Pending companion grant was placed on the shorter traffic hang timer\n");
         return 1;
     }
 
-    expire_traffic_hang(&ctx);
+    double acquisition_m = dsd_time_now_monotonic_s() - ctx.config.hangtime_s - 0.1;
+    ctx.t_tune_m = acquisition_m;
+    ctx.slots[1].last_grant_m = acquisition_m;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Pending companion did not survive until its grant deadline\n");
+        return 1;
+    }
+
+    acquisition_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
+    ctx.t_tune_m = acquisition_m;
+    ctx.slots[1].last_grant_m = acquisition_m;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
     if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
-        DSD_FPRINTF(stderr, "FAIL: Pending-slot case did not release on hang expiry\n");
+        DSD_FPRINTF(stderr, "FAIL: Pending companion did not release on grant timeout\n");
+        return 1;
+    }
+
+    reset_test_state();
+    g_opts.trunk_tune_data_calls = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_group_data_grant(0x1235, 851500000, 1001, 124, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.t_hangtime_m > 0.0 || !ctx.slots[1].grant_active || !ctx.slots[1].data_call) {
+        DSD_FPRINTF(stderr, "FAIL: Pending data companion was placed on the traffic hang timer\n");
+        return 1;
+    }
+    acquisition_m = dsd_time_now_monotonic_s() - ctx.config.hangtime_s - 0.1;
+    ctx.t_tune_m = acquisition_m;
+    ctx.slots[1].last_grant_m = acquisition_m;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Pending data companion did not survive until its grant deadline\n");
+        return 1;
+    }
+    acquisition_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
+    ctx.t_tune_m = acquisition_m;
+    ctx.slots[1].last_grant_m = acquisition_m;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Pending data companion did not release on grant timeout\n");
         return 1;
     }
 
@@ -854,6 +953,28 @@ test_tdma_facch_double_end_release(void) {
         return 1;
     }
 
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    first_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m + 0.5);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || !ctx.slots[1].grant_active || ctx.slots[1].target_id != 2000
+        || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Repeated FACCH END discarded a preexisting pending companion assignment\n");
+        return 1;
+    }
+
     return 0;
 }
 
@@ -1081,6 +1202,8 @@ main(void) {
     fail += test_init_without_cc();
     fail += test_grant_to_tuned();
     fail += test_ptt_voice_active();
+    fail += test_private_ptt_preserves_grant_identity();
+    fail += test_conventional_end_is_follower_noop();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
     fail += test_anonymous_followup_restarts_crypto_pending();
