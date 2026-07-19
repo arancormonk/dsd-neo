@@ -12,6 +12,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -142,6 +143,7 @@ void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrec
 static int
 init_retained_p1_call(dsd_opts* opts, dsd_state* state, int tg, int src) {
     const long freq = 851125000;
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
@@ -199,6 +201,7 @@ test_mfid90_regroup_reassigns_retained_call(void) {
     rc |= expect_eq_int("MFID90 regroup SM target", sm->slots[0].ota_tg, 0x3456);
     rc |= expect_eq_int("MFID90 regroup SM source", sm->slots[0].src, 0x040506);
     rc |= expect_eq_int("MFID90 regroup voice active", sm->slots[0].voice_active, 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -237,6 +240,7 @@ test_rejected_lcw_stops_post_processing(int format) {
     rc |= expect_eq_int("rejected LCW crypto remains reset", state.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_eq_int("rejected LCW crypto timer remains reset", sm->slots[0].crypto_attempt_m > 0.0, 0);
     rc |= expect_eq_int("rejected LCW banner remains blank", strcmp(state.call_string[0], "                     "), 0);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -415,6 +419,7 @@ main(void) {
     rc |= test_rejected_lcw_stops_post_processing(0x00);
     rc |= test_rejected_lcw_stops_post_processing(0x03);
 
+    dsd_state_ext_free_all(&st);
     return rc;
 }
 
