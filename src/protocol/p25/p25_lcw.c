@@ -191,7 +191,9 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 
-    p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt);
+    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt)) {
+        return;
+    }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
     p25_lcw_set_call_string_prefix(ctx->state, "   Group ", ctx->lc_svcopt);
 }
@@ -215,7 +217,9 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     ctx->state->dmr_so = ctx->lc_svcopt;
     ctx->state->p25_service_options_valid[0] = 1;
 
-    p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt);
+    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt)) {
+        return;
+    }
     p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
     p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
 }
@@ -746,6 +750,7 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     }
     ctx->state->gi[0] = 0;
     p25_patch_update(ctx->state, (int)sg, 1, 1);
+    (void)p25_sm_emit_active_call(ctx->opts, ctx->state, 0, (int)sg, 0, (int)src, 1, ctx->lc_svcopt);
 }
 
 static void

@@ -264,6 +264,16 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
         return 1;
     }
 
+    if (opcode == 0x90u && segment->length >= 7 && p25p2_mac_octet(mac, pos + 1) <= 0x01u) {
+        out->tg = (int)((p25p2_mac_octet(mac, pos + 2) << 8) | p25p2_mac_octet(mac, pos + 3));
+        out->dst = 0;
+        out->src = (int)((p25p2_mac_octet(mac, pos + 4) << 16) | (p25p2_mac_octet(mac, pos + 5) << 8)
+                         | p25p2_mac_octet(mac, pos + 6));
+        out->is_group = 1;
+        out->svc_bits = -1;
+        return 1;
+    }
+
     return 0;
 }
 

@@ -9,12 +9,14 @@
  * disabled.
  */
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -27,16 +29,17 @@
 
 // Strong stub to capture VC tuning attempts from the SM path
 static int g_tunes = 0;
+static int g_returns = 0;
 
 dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)request_id;
-    (void)opts;
-    (void)state;
-    (void)freq;
     (void)ted_sps;
     g_tunes++;
+    opts->trunk_is_tuned = 1;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -46,8 +49,10 @@ dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)request_id;
-    (void)opts;
-    (void)state;
+    g_returns++;
+    opts->trunk_is_tuned = 0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -133,6 +138,107 @@ expect_eq_int(const char* tag, int got, int want) {
 }
 
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
+
+static int
+init_retained_p1_call(dsd_opts* opts, dsd_state* state, int tg, int src) {
+    const long freq = 851125000;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    opts->trunk_tune_enc_calls = 1;
+    opts->trunk_hangtime = 2.0F;
+    state->p25_cc_freq = 851000000;
+    state->trunk_cc_freq = 851000000;
+    state->p25_iden_fdma[1].base_freq = 851000000 / 5;
+    state->p25_iden_fdma[1].chan_type = 0;
+    state->p25_iden_fdma[1].chan_spac = 100;
+    state->p25_iden_fdma[1].trust = 2;
+    state->p25_iden_fdma[1].populated = 1;
+    state->p25_chan_tdma_explicit[1] = 1;
+    g_tunes = 0;
+    g_returns = 0;
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, opts, state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x100A, freq, tg, src, 0);
+    p25_sm_event(sm, opts, state, &ev);
+    if (sm->state != P25_SM_TUNED || g_tunes != 1) {
+        return 0;
+    }
+    if (!p25_sm_emit_active_call(opts, state, 0, tg, 0, src, 1, 0)) {
+        return 0;
+    }
+    if (!p25_sm_emit_end_call_at(opts, state, 0, tg, src, dsd_time_now_monotonic_s())) {
+        return 0;
+    }
+    return sm->state == P25_SM_TUNED && sm->slots[0].grant_active && !sm->slots[0].voice_active;
+}
+
+static int
+test_mfid90_regroup_reassigns_retained_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    int rc = 0;
+
+    rc |= expect_eq_int("MFID90 retained fixture", init_retained_p1_call(&opts, &state, 0x1234, 0x010203), 1);
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, 0x00);
+    set_bits_msb(lcw, 8, 8, 0x90);
+    set_bits_msb(lcw, 32, 16, 0x3456);
+    set_bits_msb(lcw, 48, 24, 0x040506);
+
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("MFID90 regroup remains tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_int("MFID90 regroup no retune", g_tunes, 1);
+    rc |= expect_eq_int("MFID90 regroup no release", g_returns, 0);
+    rc |= expect_eq_int("MFID90 regroup SM target", sm->slots[0].ota_tg, 0x3456);
+    rc |= expect_eq_int("MFID90 regroup SM source", sm->slots[0].src, 0x040506);
+    rc |= expect_eq_int("MFID90 regroup voice active", sm->slots[0].voice_active, 1);
+    return rc;
+}
+
+static int
+test_rejected_lcw_stops_post_processing(int format) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    const int old_tg = 0x1234;
+    int rc = 0;
+
+    rc |= expect_eq_int("rejected LCW retained fixture", init_retained_p1_call(&opts, &state, old_tg, 0x010203), 1);
+    if (format == 0x00) {
+        state.tg_hold = old_tg;
+    } else {
+        opts.trunk_tune_private_calls = 0;
+    }
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "stale traffic banner");
+
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, (unsigned)format);
+    set_bits_msb(lcw, 16, 8, 0x40);
+    if (format == 0x00) {
+        set_bits_msb(lcw, 32, 16, 0x3456);
+    } else {
+        set_bits_msb(lcw, 24, 24, 0x034567);
+    }
+    set_bits_msb(lcw, 48, 24, 0x040506);
+
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("rejected LCW returned to CC", sm->state, P25_SM_ON_CC);
+    rc |= expect_eq_int("rejected LCW released once", g_returns, 1);
+    rc |= expect_eq_int("rejected LCW crypto remains reset", state.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
+    rc |= expect_eq_int("rejected LCW crypto timer remains reset", sm->slots[0].crypto_attempt_m > 0.0, 0);
+    rc |= expect_eq_int("rejected LCW banner remains blank", strcmp(state.call_string[0], "                     "), 0);
+    return rc;
+}
 
 int
 main(void) {
@@ -269,6 +375,7 @@ main(void) {
     {
         uint8_t voice_lcw[72];
         const int voice_tg = 0x3456;
+        opts.trunk_tune_private_calls = 1;
         DSD_MEMSET(voice_lcw, 0, sizeof(voice_lcw));
         set_bits_msb(voice_lcw, 0, 8, 0x00);
         set_bits_msb(voice_lcw, 16, 8, 0x40);
@@ -303,6 +410,10 @@ main(void) {
                             DSD_P25_CRYPTO_ENCRYPTED_PENDING);
         rc |= expect_eq_int("encrypted unit user closes audio gate", st.p25_p2_audio_allowed[0], 0);
     }
+
+    rc |= test_mfid90_regroup_reassigns_retained_call();
+    rc |= test_rejected_lcw_stops_post_processing(0x00);
+    rc |= test_rejected_lcw_stops_post_processing(0x03);
 
     return rc;
 }

@@ -427,6 +427,28 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("private voice type", identity.is_group, 0);
     rc |= expect_int("private voice service", identity.svc_bits, 0x42);
 
+    for (int mfid = 0; mfid <= 1; mfid++) {
+        DSD_MEMSET(mac, 0, sizeof(mac));
+        mac[1] = 0x90;
+        mac[2] = (unsigned long long)mfid;
+        mac[3] = 0x45;
+        mac[4] = 0x67;
+        mac[5] = 0x12;
+        mac[6] = 0x34;
+        mac[7] = 0x56;
+        rc |= expect_int("regroup voice identity present", p25p2_mac_decode_voice_identity(1, mac, &identity), 1);
+        rc |= expect_int("regroup voice tg", identity.tg, 0x4567);
+        rc |= expect_int("regroup voice dst", identity.dst, 0);
+        rc |= expect_int("regroup voice src", identity.src, 0x123456);
+        rc |= expect_int("regroup voice type", identity.is_group, 1);
+        rc |= expect_int("regroup voice service unknown", identity.svc_bits, -1);
+    }
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x90;
+    mac[2] = 0x90;
+    rc |= expect_int("vendor regroup collision absent", p25p2_mac_decode_voice_identity(1, mac, &identity), 0);
+
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x30;
     rc |= expect_int("non-voice identity absent", p25p2_mac_decode_voice_identity(0, mac, &identity), 0);
