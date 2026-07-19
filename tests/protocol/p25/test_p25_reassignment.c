@@ -11,6 +11,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -371,13 +372,15 @@ test_p1_tdu_preserves_identified_end_source(void) {
     p25_sm_event(&ctx, &opts, &state, &end);
     const double guard_end_m = ctx.recent_call_ends[0].end_m;
     const double hang_started_m = ctx.t_hangtime_m;
+    const double time_epsilon_s = 1.0e-9;
 
     p25_sm_event_t tdu = p25_sm_ev_tdu();
     p25_sm_event(&ctx, &opts, &state, &tdu);
     rc |= expect_true("identity-less TDU preserved identified END",
                       ctx.slots[0].last_end_tg == 4751 && ctx.slots[0].last_end_src == 5751
-                          && ctx.recent_call_ends[0].src == 5751 && ctx.recent_call_ends[0].end_m == guard_end_m
-                          && ctx.t_hangtime_m == hang_started_m);
+                          && ctx.recent_call_ends[0].src == 5751
+                          && fabs(ctx.recent_call_ends[0].end_m - guard_end_m) <= time_epsilon_s
+                          && fabs(ctx.t_hangtime_m - hang_started_m) <= time_epsilon_s);
 
     ctx.t_hangtime_m = dsd_time_now_monotonic_s() - 3.0;
     p25_sm_tick_ctx(&ctx, &opts, &state);

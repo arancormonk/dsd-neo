@@ -9,6 +9,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -269,6 +270,7 @@ init_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
                                int data_call) {
     const long vc_freq = 851125000;
     const double tune_m = dsd_time_now_monotonic_s() - 0.9;
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
