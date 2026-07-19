@@ -75,7 +75,8 @@ struct p25p2_iden_update {
  */
 int p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_result* out);
 /**
- * Decode the last standard Group Voice, Unit-to-Unit Voice, or Group Regroup Voice structure in a MAC PDU.
+ * Decode the last standard Group Voice, Unit-to-Unit Voice, Telephone Interconnect Voice, or Group Regroup Voice
+ * structure in a MAC PDU.
  *
  * @return 1 when an identity was decoded, 0 when no voice structure is present,
  *         or a negative value on invalid input.

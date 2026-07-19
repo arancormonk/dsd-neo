@@ -378,8 +378,21 @@ p25_lcw_handle_format_45(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_format_46(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
-    DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User");
+    uint16_t timer = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User - Target %d Timer %.1fs", target,
+                (double)timer / 10.0);
+
+    int identity_accepted = p25_lcw_accept_private_voice_user(ctx, target, 0);
+    if (ctx->allow_voice_start && !identity_accepted) {
+        return;
+    }
+    if (identity_accepted) {
+        p25_lcw_set_call_string_prefix(ctx->state, "Telephone ", ctx->lc_svcopt);
+    }
+    DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "TELE Target: %d Timer: %.1fs; ",
+                 target, (double)timer / 10.0);
+    ctx->state->last_active_time = time(NULL);
 }
 
 static void

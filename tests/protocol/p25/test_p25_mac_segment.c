@@ -427,6 +427,21 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("private voice type", identity.is_group, 0);
     rc |= expect_int("private voice service", identity.svc_bits, 0x42);
 
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x03;
+    mac[2] = 0x44;
+    mac[3] = 0x01;
+    mac[4] = 0xF4;
+    mac[5] = 0xAB;
+    mac[6] = 0xCD;
+    mac[7] = 0xEF;
+    rc |= expect_int("telephone voice identity present", p25p2_mac_decode_voice_identity(1, mac, &identity), 1);
+    rc |= expect_int("telephone voice tg", identity.tg, 0);
+    rc |= expect_int("telephone voice dst", identity.dst, 0xABCDEF);
+    rc |= expect_int("telephone voice src", identity.src, 0);
+    rc |= expect_int("telephone voice type", identity.is_group, 0);
+    rc |= expect_int("telephone voice service", identity.svc_bits, 0x44);
+
     for (int mfid = 0; mfid <= 1; mfid++) {
         DSD_MEMSET(mac, 0, sizeof(mac));
         mac[1] = 0x90;
