@@ -821,6 +821,7 @@ test_rejected_voice_events_keep_media_closed(void) {
     state.lasttg = 1000;
     state.lastsrc = 101;
     state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 1;
     state.dmrburstL = 21;
     g_voice_event_accept = 0;
     fill_mac(mac, 0x80, 0, 303, 1001);
@@ -828,9 +829,10 @@ test_rejected_voice_events_keep_media_closed(void) {
     p25p2_xcch_handle_sacch_mac_ptt(&opts, &state, 0, 0, 0, mac);
     rc |= expect_int("rejected sacch ptt emitted", g_ptt_count[0], 1);
     rc |= expect_int("rejected sacch ptt keeps carrier", opts.trunk_is_tuned, 1);
-    rc |= expect_int("rejected sacch ptt keeps old tg", state.lasttg, 1000);
-    rc |= expect_int("rejected sacch ptt keeps old src", state.lastsrc, 101);
+    rc |= expect_int("rejected sacch ptt records denied tg", state.lasttg, 1001);
+    rc |= expect_int("rejected sacch ptt records denied src", state.lastsrc, 303);
     rc |= expect_int("rejected sacch ptt gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_int("rejected sacch ptt companion gate preserved", state.p25_p2_audio_allowed[1], 1);
     rc |= expect_int("rejected sacch ptt burst cleared", (int)state.dmrburstL, 0);
 
     reset_stubs();
@@ -838,6 +840,7 @@ test_rejected_voice_events_keep_media_closed(void) {
     opts.trunk_is_tuned = 1;
     state.lasttgR = 2000;
     state.lastsrcR = 202;
+    state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
     state.dmrburstR = 21;
     g_voice_event_accept = 0;
@@ -846,10 +849,25 @@ test_rejected_voice_events_keep_media_closed(void) {
     p25p2_xcch_handle_facch_mac_ptt(&opts, &state, 1, 0, 0, mac);
     rc |= expect_int("rejected facch ptt emitted", g_ptt_count[1], 1);
     rc |= expect_int("rejected facch ptt keeps carrier", opts.trunk_is_tuned, 1);
-    rc |= expect_int("rejected facch ptt keeps old tg", state.lasttgR, 2000);
-    rc |= expect_int("rejected facch ptt keeps old src", state.lastsrcR, 202);
+    rc |= expect_int("rejected facch ptt records denied tg", state.lasttgR, 2001);
+    rc |= expect_int("rejected facch ptt records denied src", state.lastsrcR, 404);
+    rc |= expect_int("rejected facch ptt companion gate preserved", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_int("rejected facch ptt gate closed", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("rejected facch ptt burst cleared", (int)state.dmrburstR, 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.gi[0] = 1;
+    state.lasttg = 0xABCDEF;
+    state.lastsrc = 101;
+    g_voice_event_accept = 0;
+    fill_mac(mac, 0x80, 0, 303, 0x4567);
+
+    p25p2_xcch_handle_sacch_mac_ptt(&opts, &state, 0, 0, 0, mac);
+    rc |= expect_int("rejected private ptt preserves destination", state.lasttg, 0xABCDEF);
+    rc |= expect_int("rejected private ptt records source", state.lastsrc, 303);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));

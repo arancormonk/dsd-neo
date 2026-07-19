@@ -183,6 +183,23 @@ p25p2_xcch_set_slot_src_if_nonzero(dsd_state* state, int slot, uint32_t src) {
 }
 
 static void
+p25p2_xcch_store_ptt_identity(const dsd_opts* opts, dsd_state* state, const unsigned long long int mac[24], int slot) {
+    const uint32_t src = p25p2_xcch_src_from_mac(mac);
+    const int tg = p25p2_xcch_tg_from_mac(mac);
+
+    p25p2_xcch_set_slot_src_if_nonzero(state, slot, src);
+
+    // MAC_PTT only carries a 16-bit group-address field. For a retained
+    // private assignment, keep the 24-bit destination restored by the state
+    // machine rather than replacing it with that group-address field.
+    const int private_trunk_assignment =
+        opts && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->gi[slot] == 1;
+    if (!private_trunk_assignment) {
+        p25p2_xcch_set_slot_tg(state, slot, tg);
+    }
+}
+
+static void
 p25p2_xcch_clear_slot_source(dsd_state* state, int slot) {
     if (slot == 0) {
         state->lastsrc = 0;
@@ -366,7 +383,6 @@ static void
 p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long long int mac[24], int slot,
                            int always_set_burst) {
     uint32_t src = p25p2_xcch_src_from_mac(mac);
-    int tg = p25p2_xcch_tg_from_mac(mac);
     int allow_audio = 0;
 
     p25p2_xcch_reset_ptt_slot_state(state, slot);
@@ -375,14 +391,7 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
     }
 
     DSD_FPRINTF(stderr, "\n VCH %d - ", slot + 1);
-    p25p2_xcch_set_slot_src_if_nonzero(state, slot, src);
-    // MAC_PTT only carries a 16-bit group-address field. For an accepted
-    // private assignment, the state machine has just restored the 24-bit
-    // destination retained from the grant; do not overwrite it here.
-    const int private_trunk_assignment = opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->gi[slot] == 1;
-    if (!private_trunk_assignment) {
-        p25p2_xcch_set_slot_tg(state, slot, tg);
-    }
+    p25p2_xcch_store_ptt_identity(opts, state, mac, slot);
 
     DSD_FPRINTF(stderr, "TG %d ", p25p2_xcch_get_slot_tg(state, slot));
     DSD_FPRINTF(stderr, "SRC %d ", src);
@@ -540,6 +549,10 @@ p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
     if (!p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(smac), 0, (int)p25p2_xcch_src_from_mac(smac), 1,
                               P25_SM_SVC_UNKNOWN)) {
+        // A companion slot can keep the traffic carrier tuned after this slot
+        // is rejected. Preserve the denied identity so a later ESS decision
+        // cannot evaluate the preceding allowed call and reopen audio.
+        p25p2_xcch_store_ptt_identity(opts, state, smac, slot);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
@@ -642,6 +655,7 @@ p25p2_xcch_handle_facch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
     if (!p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(fmac), 0, (int)p25p2_xcch_src_from_mac(fmac), 1,
                               P25_SM_SVC_UNKNOWN)) {
+        p25p2_xcch_store_ptt_identity(opts, state, fmac, slot);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
