@@ -2544,11 +2544,12 @@ typedef struct {
     int new_epoch;
     int service_changed;
     int requires_update;
+    int preserve_crypto_classification;
 } p25_voice_start_changes_t;
 
 static p25_voice_start_changes_t
 p25_voice_start_classify_changes(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* call_ev) {
-    p25_voice_start_changes_t changes = {0, 0, 0};
+    p25_voice_start_changes_t changes = {0};
     const int target_changed = p25_voice_start_target_changed(slot_ctx, call_ev);
     const int source_changed = p25_voice_start_source_changed(slot_ctx, call_ev);
     const int learned_source = !p25_source_id_known(slot_ctx->src) && p25_source_id_known(call_ev->src);
@@ -2557,6 +2558,39 @@ p25_voice_start_classify_changes(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm
     changes.new_epoch = !slot_ctx->voice_active || target_changed || source_changed;
     changes.requires_update = changes.new_epoch || changes.service_changed || learned_source;
     return changes;
+}
+
+static int
+p25_voice_start_has_current_p1_crypto(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot,
+                                      const p25_sm_event_t* input) {
+    if (!ctx || !state || !input || ctx->vc_is_tdma || input->identity_valid || slot < 0 || slot > 1
+        || ctx->slots[slot].data_call) {
+        return 0;
+    }
+
+    // A Phase 1 voice grant clears the tuple before the traffic channel is
+    // entered, so a definitive ALGID here was resolved afterward by this
+    // epoch's HDU. Preserve it when the first source-less LDU ACTIVE arrives.
+    return state->payload_algid != 0 && p25_crypto_audio_ready(state, 0);
+}
+
+static void
+p25_voice_start_update_crypto(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int logical_slot,
+                              const p25_sm_event_t* call_ev, const p25_grant_eval_ctx_t* eval_ctx,
+                              const p25_voice_start_changes_t* changes, double now_m) {
+    if (changes->preserve_crypto_classification) {
+        ctx->slots[slot].crypto_attempt_m = 0.0;
+        return;
+    }
+    if (!changes->new_epoch && !changes->service_changed) {
+        return;
+    }
+
+    const int restore_clear_audio = state && state->p25_p2_audio_allowed[logical_slot];
+    p25_grant_begin_crypto_classification(ctx, state, call_ev, eval_ctx, slot, 0, now_m);
+    if (restore_clear_audio && p25_crypto_audio_ready(state, logical_slot)) {
+        state->p25_p2_audio_allowed[logical_slot] = 1;
+    }
 }
 
 static void
@@ -2589,13 +2623,7 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     p25_voice_set_state_identity(state, slot, call_ev);
     p25_grant_store_policy_tg(state, call_ev, logical_slot, decision);
     (void)dsd_tg_policy_note_active_call(state, &route, decision, now_m);
-    if (changes->new_epoch || changes->service_changed) {
-        const int restore_clear_audio = state && state->p25_p2_audio_allowed[logical_slot];
-        p25_grant_begin_crypto_classification(ctx, state, call_ev, eval_ctx, slot, 0, now_m);
-        if (restore_clear_audio && p25_crypto_audio_ready(state, logical_slot)) {
-            state->p25_p2_audio_allowed[logical_slot] = 1;
-        }
-    }
+    p25_voice_start_update_crypto(ctx, state, slot, logical_slot, call_ev, eval_ctx, changes, now_m);
 }
 
 static int
@@ -2612,7 +2640,9 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     }
 
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
-    const p25_voice_start_changes_t changes = p25_voice_start_classify_changes(slot_ctx, &call_ev);
+    p25_voice_start_changes_t changes = p25_voice_start_classify_changes(slot_ctx, &call_ev);
+    changes.preserve_crypto_classification =
+        changes.new_epoch && p25_voice_start_has_current_p1_crypto(ctx, state, slot, input);
     if (out_new_epoch) {
         *out_new_epoch = changes.new_epoch;
     }
@@ -2813,7 +2843,7 @@ p25_voice_end_active_identity_conflicts(const p25_sm_slot_ctx_t* slot_ctx, const
     if (!slot_ctx->voice_active) {
         return 0;
     }
-    if (p25_voice_end_tg_conflicts(ev->tg, decoded_tg)) {
+    if (slot_ctx->is_group && p25_voice_end_tg_conflicts(ev->tg, decoded_tg)) {
         return 1;
     }
     return p25_voice_end_src_conflicts(ev->src, decoded_src);

@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
@@ -204,6 +205,59 @@ test_private_ptt_preserves_grant_identity(void) {
         || ctx.slots[0].target_id != 0xABCDEF || g_state.gi[0] != 1 || g_state.lasttg != 0xABCDEF) {
         DSD_FPRINTF(stderr, "FAIL: Nonzero MAC_PTT group field replaced the private grant identity\n");
         return 1;
+    }
+
+    ev = p25_sm_ev_end_call_at(0, 0x4567, 0x010203, ctx.slots[0].last_active_m + 0.001);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].voice_active || !ctx.slots[0].grant_active || ctx.slots[0].last_end_m <= 0.0
+        || ctx.t_hangtime_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Private END treated the MAC group field as the destination identity\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_hdu_crypto_survives_first_active(void) {
+    const struct {
+        int algid;
+        int keyid;
+        uint64_t mi;
+        dsd_p25_crypto_state expected;
+    } cases[] = {
+        {0x80, 0x1234, UINT64_C(0x0102030405060708), DSD_P25_CRYPTO_CLEAR},
+        {0x81, 0x5678, UINT64_C(0x1112131415161718), DSD_P25_CRYPTO_DECRYPTABLE},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        reset_test_state();
+        g_state.trunk_chan_map[0x1234] = 851500000;
+        g_state.R = UINT64_C(0x0123456789ABCDEF);
+
+        p25_sm_ctx_t ctx;
+        p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0x40);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (ctx.vc_is_tdma || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+            DSD_FPRINTF(stderr, "FAIL: Phase 1 HDU preservation setup did not start pending\n");
+            return 1;
+        }
+
+        if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, cases[i].algid, cases[i].keyid, cases[i].mi,
+                               1000)
+            != cases[i].expected) {
+            DSD_FPRINTF(stderr, "FAIL: Synthetic HDU metadata did not resolve authoritatively\n");
+            return 1;
+        }
+
+        ev = p25_sm_ev_active(0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (!ctx.slots[0].voice_active || g_state.p25_crypto_state[0] != cases[i].expected
+            || g_state.payload_algid != cases[i].algid || g_state.payload_keyid != cases[i].keyid
+            || g_state.payload_miP != cases[i].mi || ctx.slots[0].crypto_attempt_m > 0.0) {
+            DSD_FPRINTF(stderr, "FAIL: First Phase 1 ACTIVE discarded authoritative HDU crypto metadata\n");
+            return 1;
+        }
     }
     return 0;
 }
@@ -1203,6 +1257,7 @@ main(void) {
     fail += test_grant_to_tuned();
     fail += test_ptt_voice_active();
     fail += test_private_ptt_preserves_grant_identity();
+    fail += test_p1_hdu_crypto_survives_first_active();
     fail += test_conventional_end_is_follower_noop();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
