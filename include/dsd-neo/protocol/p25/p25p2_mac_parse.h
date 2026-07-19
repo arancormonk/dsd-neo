@@ -43,6 +43,14 @@ struct p25p2_mac_result {
     struct p25p2_mac_segment segments[P25P2_MAC_MAX_SEGMENTS];
 };
 
+struct p25p2_mac_voice_identity {
+    int tg;
+    int dst;
+    int src;
+    int is_group;
+    int svc_bits;
+};
+
 struct p25p2_iden_update {
     uint8_t iden;
     uint8_t chan_type;
@@ -66,6 +74,13 @@ struct p25p2_iden_update {
  * @return 0 on success, negative on error.
  */
 int p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_result* out);
+/**
+ * Decode the last standard Group Voice or Unit-to-Unit Voice structure in a MAC PDU.
+ *
+ * @return 1 when an identity was decoded, 0 when no voice structure is present,
+ *         or a negative value on invalid input.
+ */
+int p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], struct p25p2_mac_voice_identity* out);
 int p25p2_mac_decode_iden_standard(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);
 int p25p2_mac_decode_iden_vuhf(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);
 int p25p2_mac_decode_iden_tdma(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);

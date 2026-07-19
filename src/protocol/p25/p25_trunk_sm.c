@@ -49,6 +49,12 @@ extern void dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state,
 static int do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason, int recover_stale_ctx);
 static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ctx_t* ctx, const char* event,
                          const char* format, ...) DSD_ATTR_FORMAT(printf, 5, 6);
+static void p25_voice_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot);
+static int p25_voice_other_slot_active(const p25_sm_ctx_t* ctx, const dsd_state* state, int other);
+static void p25_voice_clear_slot_burst(dsd_state* state, int slot);
+static void p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot,
+                                                    const char* release_reason, const char* slot_diag,
+                                                    const char* slot_log);
 #ifdef USE_RADIO
 static int p25_sm_hold_release_for_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state,
                                                       const char* reason, double now_m);
@@ -2609,7 +2615,10 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     p25_grant_eval_ctx_t eval_ctx;
     if (!grant_allowed(opts, state, &call_ev, &decision, &eval_ctx)) {
         p25_voice_close_slot_media(ctx, opts, state, slot);
-        (void)do_release(ctx, opts, state, "policy-reject", 0);
+        p25_voice_clear_slot_grant(ctx, state, slot);
+        p25_voice_clear_slot_burst(state, slot);
+        p25_voice_release_or_preserve_companion(ctx, opts, state, slot, "policy-reject", "policy_reject_slot_only",
+                                                "policy-reject-slot-only");
         return 0;
     }
 
@@ -3070,7 +3079,7 @@ p25_sm_pending_voice_grant_timeout_start_m(const p25_sm_ctx_t* ctx, const dsd_st
 }
 
 static void
-p25_enc_lockout_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
+p25_voice_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
     if (!ctx || !state || slot < 0 || slot > 1) {
         return;
     }
@@ -3081,7 +3090,7 @@ p25_enc_lockout_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) 
 }
 
 static int
-p25_enc_lockout_other_slot_active(const p25_sm_ctx_t* ctx, const dsd_state* state, int other) {
+p25_voice_other_slot_active(const p25_sm_ctx_t* ctx, const dsd_state* state, int other) {
     if (!ctx || !state || other < 0 || other > 1) {
         return 0;
     }
@@ -3113,7 +3122,7 @@ p25_enc_lockout_precheck(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_stat
 }
 
 static void
-p25_enc_lockout_clear_slot_burst(dsd_state* state, int slot) {
+p25_voice_clear_slot_burst(dsd_state* state, int slot) {
     if (slot == 0) {
         state->dmrburstL = 0;
     } else {
@@ -3122,20 +3131,21 @@ p25_enc_lockout_clear_slot_burst(dsd_state* state, int slot) {
 }
 
 static void
-p25_enc_lockout_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot,
+                                        const char* release_reason, const char* slot_diag, const char* slot_log) {
     if (!ctx->vc_is_tdma) {
-        do_release(ctx, opts, state, "enc-lockout", 0);
+        do_release(ctx, opts, state, release_reason, 0);
         return;
     }
 
     const int other = slot ^ 1;
-    if (!p25_enc_lockout_other_slot_active(ctx, state, other)) {
-        do_release(ctx, opts, state, "enc-lockout", 0);
+    if (!p25_voice_other_slot_active(ctx, state, other)) {
+        do_release(ctx, opts, state, release_reason, 0);
         return;
     }
 
-    p25_sm_diagf(opts, state, ctx, "enc_lockout_slot_only", "slot=%d other=%d", slot, other);
-    sm_log(opts, state, "enc-lockout-slot-only");
+    p25_sm_diagf(opts, state, ctx, slot_diag, "slot=%d other=%d", slot, other);
+    sm_log(opts, state, slot_log);
 }
 
 static void
@@ -3244,9 +3254,10 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     // Clear voice activity indicator to prevent audio routing logic from
     // treating this locked-out slot as having active voice
     ctx->slots[slot].voice_active = 0;
-    p25_enc_lockout_clear_slot_grant(ctx, state, slot);
-    p25_enc_lockout_clear_slot_burst(state, slot);
-    p25_enc_lockout_release_or_preserve_companion(ctx, opts, state, slot);
+    p25_voice_clear_slot_grant(ctx, state, slot);
+    p25_voice_clear_slot_burst(state, slot);
+    p25_voice_release_or_preserve_companion(ctx, opts, state, slot, "enc-lockout", "enc_lockout_slot_only",
+                                            "enc-lockout-slot-only");
 }
 
 /* ============================================================================
@@ -4445,7 +4456,7 @@ p25_sm_block_expired_crypto_slot(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     p25_crypto_block_pending(state, slot);
     ctx->slots[slot].voice_active = 0;
     if (ctx->vc_is_tdma) {
-        p25_enc_lockout_clear_slot_grant(ctx, state, slot);
+        p25_voice_clear_slot_grant(ctx, state, slot);
     }
     p25_sm_diagf(opts, state, ctx, "crypto_classification_timeout", "slot=%d freq=%ld tg=%d", slot, ctx->vc_freq_hz,
                  ctx->vc_tg);
@@ -4458,7 +4469,7 @@ p25_sm_expired_slot_has_active_companion(const p25_sm_ctx_t* ctx, const dsd_stat
         return 0;
     }
     for (int slot = 0; slot < 2; slot++) {
-        if (expired[slot] && p25_enc_lockout_other_slot_active(ctx, state, slot ^ 1)) {
+        if (expired[slot] && p25_voice_other_slot_active(ctx, state, slot ^ 1)) {
             return 1;
         }
     }

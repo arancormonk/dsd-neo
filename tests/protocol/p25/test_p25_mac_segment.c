@@ -391,6 +391,49 @@ run_direct_segment_parse_cases(void) {
 }
 
 static int
+run_voice_identity_parse_cases(void) {
+    unsigned long long mac[24] = {0};
+    struct p25p2_mac_voice_identity identity;
+    int rc = 0;
+
+    mac[1] = 0x01;
+    mac[2] = 0x81;
+    mac[3] = 0x45;
+    mac[4] = 0x67;
+    mac[5] = 0x12;
+    mac[6] = 0x34;
+    mac[7] = 0x56;
+    rc |= expect_int("group voice identity present", p25p2_mac_decode_voice_identity(1, mac, &identity), 1);
+    rc |= expect_int("group voice tg", identity.tg, 0x4567);
+    rc |= expect_int("group voice dst", identity.dst, 0);
+    rc |= expect_int("group voice src", identity.src, 0x123456);
+    rc |= expect_int("group voice type", identity.is_group, 1);
+    rc |= expect_int("group voice service", identity.svc_bits, 0x81);
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x30;
+    mac[6] = 0x02;
+    mac[7] = 0x42;
+    mac[8] = 0xAB;
+    mac[9] = 0xCD;
+    mac[10] = 0xEF;
+    mac[11] = 0x65;
+    mac[12] = 0x43;
+    mac[13] = 0x21;
+    rc |= expect_int("private voice identity present", p25p2_mac_decode_voice_identity(1, mac, &identity), 1);
+    rc |= expect_int("private voice tg", identity.tg, 0);
+    rc |= expect_int("private voice dst", identity.dst, 0xABCDEF);
+    rc |= expect_int("private voice src", identity.src, 0x654321);
+    rc |= expect_int("private voice type", identity.is_group, 0);
+    rc |= expect_int("private voice service", identity.svc_bits, 0x42);
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x30;
+    rc |= expect_int("non-voice identity absent", p25p2_mac_decode_voice_identity(0, mac, &identity), 0);
+    return rc;
+}
+
+static int
 run_offset_relative_vpdu_cases(void) {
     unsigned char mac[24];
     int rc = 0;
@@ -452,6 +495,10 @@ main(void) {
         return rc;
     }
     rc = run_offset_relative_vpdu_cases();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = run_voice_identity_parse_cases();
     if (rc != 0) {
         return rc;
     }

@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25_xcch.h>
+#include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdint.h>
@@ -147,6 +148,17 @@ p25p2_xcch_get_slot_tg(const dsd_state* state, int slot) {
 static int
 p25p2_xcch_get_slot_src(const dsd_state* state, int slot) {
     return (slot == 0) ? state->lastsrc : state->lastsrcR;
+}
+
+static void
+p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
+    struct p25p2_mac_voice_identity identity;
+    if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
+        p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src, identity.is_group,
+                                identity.svc_bits);
+        return;
+    }
+    p25_sm_emit_active(opts, state, slot);
 }
 
 static void
@@ -592,7 +604,7 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    p25_sm_emit_active(opts, state, slot);
+    p25p2_xcch_emit_active(opts, state, 1, slot, smac);
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
     if (allow_audio) {
@@ -707,7 +719,7 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     process_MAC_VPDU(opts, state, 0, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    p25_sm_emit_active(opts, state, slot);
+    p25p2_xcch_emit_active(opts, state, 0, slot, fmac);
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);

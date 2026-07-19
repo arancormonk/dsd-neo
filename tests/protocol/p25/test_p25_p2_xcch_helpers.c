@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,6 +36,13 @@ static int g_vpdu_enc_pending_slot;
 static unsigned long long int g_vpdu_mac[24];
 static int g_ptt_count[2];
 static int g_active_count[2];
+static int g_active_tg[2];
+static int g_active_dst[2];
+static int g_active_src[2];
+static int g_active_is_group[2];
+static int g_active_svc[2];
+static int g_voice_identity_result;
+static struct p25p2_mac_voice_identity g_voice_identity;
 static int g_end_count[2];
 static int g_end_apply;
 static int g_end_tg[2];
@@ -108,6 +116,16 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 }
 
 int
+p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], struct p25p2_mac_voice_identity* out) {
+    (void)type;
+    (void)mac;
+    if (g_voice_identity_result == 1 && out) {
+        *out = g_voice_identity;
+    }
+    return g_voice_identity_result;
+}
+
+int
 dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
     (void)opts;
     (void)state;
@@ -163,6 +181,19 @@ p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     (void)state;
     if (slot >= 0 && slot <= 1) {
         g_active_count[slot]++;
+    }
+}
+
+void
+p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                        int svc_bits) {
+    p25_sm_emit_active(opts, state, slot);
+    if (slot >= 0 && slot <= 1) {
+        g_active_tg[slot] = tg;
+        g_active_dst[slot] = dst;
+        g_active_src[slot] = src;
+        g_active_is_group[slot] = is_group;
+        g_active_svc[slot] = svc_bits;
     }
 }
 
@@ -390,6 +421,13 @@ reset_stubs(void) {
     DSD_MEMSET(g_vpdu_mac, 0, sizeof(g_vpdu_mac));
     DSD_MEMSET(g_ptt_count, 0, sizeof(g_ptt_count));
     DSD_MEMSET(g_active_count, 0, sizeof(g_active_count));
+    DSD_MEMSET(g_active_tg, 0, sizeof(g_active_tg));
+    DSD_MEMSET(g_active_dst, 0, sizeof(g_active_dst));
+    DSD_MEMSET(g_active_src, 0, sizeof(g_active_src));
+    DSD_MEMSET(g_active_is_group, 0, sizeof(g_active_is_group));
+    DSD_MEMSET(g_active_svc, 0, sizeof(g_active_svc));
+    g_voice_identity_result = 0;
+    DSD_MEMSET(&g_voice_identity, 0, sizeof(g_voice_identity));
     DSD_MEMSET(g_end_count, 0, sizeof(g_end_count));
     g_end_apply = 1;
     DSD_MEMSET(g_end_tg, 0, sizeof(g_end_tg));
@@ -851,6 +889,11 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     state.payload_keyidR = 0x2222;
     state.lasttgR = 0x3456;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
+    g_voice_identity_result = 1;
+    g_voice_identity.tg = 0x4567;
+    g_voice_identity.src = 0x123456;
+    g_voice_identity.is_group = 1;
+    g_voice_identity.svc_bits = 0x81;
     pack_payload_from_mac(payload, 180, mac, 0x4, 0, 0);
 
     process_SACCH_MAC_PDU(&opts, &state, payload);
@@ -860,6 +903,11 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch active burst", (int)state.dmrburstR, 21);
     rc |= expect_int("sacch active does not re-emit enc", g_enc_count[1], 0);
     rc |= expect_int("sacch active timestamp", state.p25_p2_last_mac_active_m[1] > 0.0 ? 1 : 0, 1);
+    rc |= expect_int("sacch active identity tg", g_active_tg[1], 0x4567);
+    rc |= expect_int("sacch active identity dst", g_active_dst[1], 0);
+    rc |= expect_int("sacch active identity src", g_active_src[1], 0x123456);
+    rc |= expect_int("sacch active identity group", g_active_is_group[1], 1);
+    rc |= expect_int("sacch active identity svc", g_active_svc[1], 0x81);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1040,6 +1088,11 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     state.payload_keyidR = 0x7777;
     state.lasttgR = 0x7654;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
+    g_voice_identity_result = 1;
+    g_voice_identity.dst = 0xABCDEF;
+    g_voice_identity.src = 0x654321;
+    g_voice_identity.is_group = 0;
+    g_voice_identity.svc_bits = 0x42;
     pack_payload_from_mac(payload, 156, mac, 0x4, 0, 0);
 
     process_FACCH_MAC_PDU(&opts, &state, payload);
@@ -1049,6 +1102,11 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch active gate", state.p25_p2_audio_allowed[1], 1);
     rc |= expect_int("facch active burst", (int)state.dmrburstR, 21);
     rc |= expect_int("facch active does not re-emit enc", g_enc_count[1], 0);
+    rc |= expect_int("facch active identity tg", g_active_tg[1], 0);
+    rc |= expect_int("facch active identity dst", g_active_dst[1], 0xABCDEF);
+    rc |= expect_int("facch active identity src", g_active_src[1], 0x654321);
+    rc |= expect_int("facch active identity group", g_active_is_group[1], 0);
+    rc |= expect_int("facch active identity svc", g_active_svc[1], 0x42);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
