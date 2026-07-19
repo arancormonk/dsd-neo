@@ -232,6 +232,39 @@ test_followup_reuses_retained_carrier(void) {
     return rc;
 }
 
+static int
+test_same_carrier_assignment_restarts_wait_window(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t ctx;
+    const int channel = (2 << 12) | 2;
+    p25_sm_event_t grant = p25_sm_ev_group_grant(channel, 0, 4451, 5451, 0);
+    p25_sm_event_t ptt = p25_sm_ev_ptt_call(0, 4451, 0, 5451, 1, 0);
+    int rc = 0;
+
+    init_case(&opts, &state, &ctx);
+    p25_sm_event(&ctx, &opts, &state, &grant);
+    p25_sm_event(&ctx, &opts, &state, &ptt);
+    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4451, 5451, dsd_time_now_monotonic_s());
+    p25_sm_event(&ctx, &opts, &state, &end);
+    ctx.t_hangtime_m = dsd_time_now_monotonic_s() - ctx.config.hangtime_s + 0.01;
+    const double previous_tune_m = ctx.t_tune_m;
+
+    p25_sm_event(&ctx, &opts, &state, &grant);
+    rc |= expect_true("same-carrier assignment restarted acquisition",
+                      ctx.state == P25_SM_TUNED && ctx.t_hangtime_m == 0.0 && ctx.vc_activity_seen == 0
+                          && ctx.t_tune_m > previous_tune_m && ctx.slots[0].last_end_m == 0.0 && g_tune_calls == 1);
+    p25_sm_tick_ctx(&ctx, &opts, &state);
+    rc |= expect_true("fresh same-carrier assignment survived immediate tick", g_return_calls == 0);
+
+    age_initial_acquisition(&ctx);
+    p25_sm_tick_ctx(&ctx, &opts, &state);
+    rc |= expect_true("same-carrier assignment retained fresh grant timeout",
+                      g_return_calls == 1 && ctx.state == P25_SM_ON_CC);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // Deterministic event fixture derived from the 20:37:07 Motorola Talk
 // Complete and 20:37:08 TDU sequence in p25_mot.log. Both signals retain the
 // P1 carrier, and the next channel-user activity begins without another tune.
@@ -321,6 +354,43 @@ test_p1_source_less_update_validation(void) {
 }
 
 static int
+test_p1_tdu_preserves_identified_end_source(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t ctx;
+    const int channel = 0x100A;
+    const long freq = 851125000;
+    p25_sm_event_t grant = p25_sm_ev_group_grant(channel, freq, 4751, 5751, 0);
+    p25_sm_event_t ptt = p25_sm_ev_ptt_call(0, 4751, 0, 5751, 1, 0);
+    int rc = 0;
+
+    init_p1_case(&opts, &state, &ctx);
+    p25_sm_event(&ctx, &opts, &state, &grant);
+    p25_sm_event(&ctx, &opts, &state, &ptt);
+    p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4751, 5751, dsd_time_now_monotonic_s());
+    p25_sm_event(&ctx, &opts, &state, &end);
+    const double guard_end_m = ctx.recent_call_ends[0].end_m;
+    const double hang_started_m = ctx.t_hangtime_m;
+
+    p25_sm_event_t tdu = p25_sm_ev_tdu();
+    p25_sm_event(&ctx, &opts, &state, &tdu);
+    rc |= expect_true("identity-less TDU preserved identified END",
+                      ctx.slots[0].last_end_tg == 4751 && ctx.slots[0].last_end_src == 5751
+                          && ctx.recent_call_ends[0].src == 5751 && ctx.recent_call_ends[0].end_m == guard_end_m
+                          && ctx.t_hangtime_m == hang_started_m);
+
+    ctx.t_hangtime_m = dsd_time_now_monotonic_s() - 3.0;
+    p25_sm_tick_ctx(&ctx, &opts, &state);
+    note_cc_reacquired(&ctx, &state);
+    p25_sm_event_t update = p25_sm_ev_group_grant_update(channel, freq, 4751, 5752, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &opts, &state, &update);
+    rc |= expect_true("changed-source update proved new epoch after TDU",
+                      g_tune_calls == 2 && ctx.state == P25_SM_TUNED && ctx.slots[0].src == 5752);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_failed_validation_probe_does_not_loop(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -370,8 +440,10 @@ main(void) {
     rc |= test_assignment_after_timeout();
     rc |= test_assignment_after_explicit_release();
     rc |= test_followup_reuses_retained_carrier();
+    rc |= test_same_carrier_assignment_restarts_wait_window();
     rc |= test_motorola_talk_complete_tdu_fixture();
     rc |= test_p1_source_less_update_validation();
+    rc |= test_p1_tdu_preserves_identified_end_source();
     rc |= test_failed_validation_probe_does_not_loop();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;

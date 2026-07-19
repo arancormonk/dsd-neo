@@ -218,6 +218,119 @@ test_end_clears_voice(void) {
     return 0;
 }
 
+static int
+test_tdma_boundaries_only_hang_after_last_assigned_voice(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    ev = p25_sm_ev_idle(1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.vc_activity_seen || ctx.t_hangtime_m > 0.0 || !ctx.slots[0].grant_active) {
+        DSD_FPRINTF(stderr, "FAIL: Unassigned companion IDLE manufactured traffic activity or hang\n");
+        return 1;
+    }
+
+    const double stale_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
+    ctx.t_tune_m = stale_m;
+    ctx.slots[0].last_grant_m = stale_m;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Unassigned companion IDLE suppressed the grant timeout\n");
+        return 1;
+    }
+
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(1, 2000, 0, 456, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    ev = p25_sm_ev_hangtime(1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || ctx.slots[1].voice_active || ctx.t_hangtime_m > 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Ending one assigned slot armed hang while its companion remained active\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.t_hangtime_m <= 0.0 || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Last assigned voice transition did not arm traffic hang\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_anonymous_followup_restarts_crypto_pending(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || !ctx.slots[0].voice_active) {
+        DSD_FPRINTF(stderr, "FAIL: Initial clear assignment did not enter clear voice\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || ctx.slots[0].svc_bits != P25_SM_SVC_UNKNOWN
+        || ctx.slots[0].voice_active || g_state.p25_p2_audio_allowed[0] != 0 || ctx.slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Anonymous follow-up inherited stale clear crypto classification\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_unassigned_companion_start_is_rejected(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    const double hang_started_m = ctx.t_hangtime_m;
+
+    ev = p25_sm_ev_active_call(1, 2000, 0, 456, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[1].voice_active || ctx.t_hangtime_m != hang_started_m || ctx.state != P25_SM_TUNED
+        || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Unassigned companion ACTIVE bypassed routing policy or canceled hang\n");
+        return 1;
+    }
+    return 0;
+}
+
 // Test: State name function for 4-state model
 static int
 test_state_names(void) {
@@ -301,6 +414,7 @@ static int
 test_tdma_partial_end_stays_tuned(void) {
     reset_test_state();
     g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
     // Mark this channel as TDMA (P25P2)
     g_state.p25_chan_tdma_explicit[1] = 2; // iden=1, explicit TDMA hint
 
@@ -309,6 +423,8 @@ test_tdma_partial_end_stays_tuned(void) {
 
     // Grant on TDMA channel
     p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 456, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     // Should be detected as TDMA
@@ -859,6 +975,9 @@ main(void) {
     fail += test_grant_to_tuned();
     fail += test_ptt_voice_active();
     fail += test_end_clears_voice();
+    fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
+    fail += test_anonymous_followup_restarts_crypto_pending();
+    fail += test_unassigned_companion_start_is_rejected();
     fail += test_state_names();
     fail += test_config_defaults();
     fail += test_singleton();

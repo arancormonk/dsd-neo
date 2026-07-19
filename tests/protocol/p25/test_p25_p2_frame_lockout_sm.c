@@ -116,6 +116,8 @@ setup_tuned_tdma(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t** ctx) {
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
     opts->trunk_tune_enc_calls = 0;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
     state->currentslot = 0;
     state->p25_vc_cqpsk_pref = -1;
     state->p25_vc_cqpsk_override = -1;
@@ -129,6 +131,18 @@ setup_tuned_tdma(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t** ctx) {
     (*ctx)->vc_freq_hz = 851000000;
     (*ctx)->t_tune_m = 1.0;
     (*ctx)->t_voice_m = 1.0;
+    for (int slot = 0; slot < 2; slot++) {
+        p25_sm_slot_ctx_t* slot_ctx = &(*ctx)->slots[slot];
+        const int tg = slot == 0 ? (int)state->lasttg : (int)state->lasttgR;
+        slot_ctx->grant_active = 1;
+        slot_ctx->freq_hz = (*ctx)->vc_freq_hz;
+        slot_ctx->channel = 0x2000 | slot;
+        slot_ctx->target_id = tg;
+        slot_ctx->ota_tg = tg;
+        slot_ctx->tg = tg;
+        slot_ctx->is_group = 1;
+        slot_ctx->svc_bits = 0;
+    }
 }
 
 static int
@@ -272,6 +286,7 @@ test_encrypted_follow_tracks_activity_while_media_is_muted(void) {
     state.dmr_so = 0x40;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
     state.p25_p2_audio_allowed[0] = 0;
+    ctx->slots[0].svc_bits = 0x40;
 
     p25_sm_emit_ptt(&opts, &state, 0);
 

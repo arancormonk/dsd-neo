@@ -129,6 +129,7 @@ typedef struct {
 typedef struct {
     double last_active_m;    // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
     double last_start_m;     // Monotonic timestamp of the last PTT/ACTIVE call-epoch boundary
+    double last_stop_m;      // Monotonic timestamp when the last followed epoch transitioned inactive
     int voice_active;        // 1 if voice is currently active on this slot
     int algid;               // Current algorithm ID for this slot
     int keyid;               // Current key ID for this slot

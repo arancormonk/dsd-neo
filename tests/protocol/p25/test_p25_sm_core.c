@@ -273,6 +273,7 @@ init_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
+    opts->trunk_tune_group_calls = 1;
     opts->audio_in_type = audio_in_type;
     opts->trunk_hangtime = 5.0f;
     opts->p25_grant_voice_to_s = 3.0;
@@ -305,8 +306,10 @@ init_stalled_vc_reacquire_case(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     ctx->slots[0].channel = ctx->vc_channel;
     ctx->slots[0].tg = ctx->vc_tg;
     ctx->slots[0].target_id = ctx->vc_tg;
+    ctx->slots[0].ota_tg = ctx->vc_tg;
     ctx->slots[0].src = ctx->vc_src;
     ctx->slots[0].is_group = 1;
+    ctx->slots[0].svc_bits = 0;
     ctx->slots[0].data_call = data_call;
     ctx->slots[0].last_grant_m = tune_m;
 }
@@ -1796,6 +1799,7 @@ main(void) {
     o19f.trunk_enable = 1;
     o19f.trunk_is_tuned = 1;
     o19f.trunk_tune_enc_calls = 1;
+    o19f.trunk_tune_group_calls = 1;
     s19f.p25_cc_freq = 851000000;
     s19f.p25_vc_freq[0] = s19f.p25_vc_freq[1] = 851000000;
     s19f.trunk_vc_freq[0] = s19f.trunk_vc_freq[1] = 851000000;
@@ -1813,6 +1817,10 @@ main(void) {
     ctx19f.slots[0].freq_hz = 851000000;
     ctx19f.slots[0].channel = tdma_slot0_ch;
     ctx19f.slots[0].target_id = 5501;
+    ctx19f.slots[0].ota_tg = 5501;
+    ctx19f.slots[0].tg = 5501;
+    ctx19f.slots[0].is_group = 1;
+    ctx19f.slots[0].svc_bits = 0x40;
 
     p25_sm_event_t follow_ptt = p25_sm_ev_ptt(0);
     p25_sm_event(&ctx19f, &o19f, &s19f, &follow_ptt);
