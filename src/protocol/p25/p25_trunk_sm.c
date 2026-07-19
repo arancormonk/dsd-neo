@@ -2506,6 +2506,32 @@ p25_voice_start_follows_completed_epoch(const p25_sm_slot_ctx_t* slot_ctx) {
     return slot_ctx && slot_ctx->last_start_m > 0.0 && !p25_voice_slot_epoch_active(slot_ctx);
 }
 
+static int
+p25_voice_start_target_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
+    if (!slot_ctx || !ev || slot_ctx->is_group != (ev->is_group ? 1 : 0)) {
+        return 1;
+    }
+    return ev->is_group ? (slot_ctx->ota_tg != ev->tg) : (slot_ctx->dst != ev->dst);
+}
+
+static int
+p25_voice_start_source_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
+    return slot_ctx && ev && p25_source_id_known(slot_ctx->src) && p25_source_id_known(ev->src)
+           && slot_ctx->src != ev->src;
+}
+
+static int
+p25_voice_start_begins_new_epoch(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
+    return !p25_voice_slot_epoch_active(slot_ctx) || p25_voice_start_target_changed(slot_ctx, ev)
+           || p25_voice_start_source_changed(slot_ctx, ev);
+}
+
+static int
+p25_voice_start_requires_unknown_service(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
+    return p25_voice_start_follows_completed_epoch(slot_ctx) || p25_voice_start_target_changed(slot_ctx, ev)
+           || p25_voice_start_source_changed(slot_ctx, ev);
+}
+
 static void
 p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const p25_sm_slot_ctx_t* slot_ctx,
                                         p25_sm_event_t* out) {
@@ -2550,31 +2576,18 @@ p25_voice_start_build_identity(const p25_sm_ctx_t* ctx, const dsd_state* state, 
         // Phase 2 MAC_PTT exposes a 16-bit group-address field, but no
         // 24-bit private destination. Preserve an accepted private assignment
         // instead of reclassifying that field as an authoritative group.
-        if (!slot_ctx->is_group && input->is_group) {
+        if (input->type == P25_SM_EV_PTT && !slot_ctx->is_group && input->is_group) {
             out->is_group = 0;
             out->tg = 0;
             out->dst = slot_ctx->dst;
         }
         if (!p25_sm_svc_bits_valid(input->svc_bits)) {
-            out->svc_bits = p25_voice_start_follows_completed_epoch(slot_ctx) ? P25_SM_SVC_UNKNOWN : slot_ctx->svc_bits;
+            out->svc_bits =
+                p25_voice_start_requires_unknown_service(slot_ctx, out) ? P25_SM_SVC_UNKNOWN : slot_ctx->svc_bits;
         }
     }
     out->identity_valid = 1;
     return p25_grant_ota_target_id(out) > 0;
-}
-
-static int
-p25_voice_start_target_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
-    if (!slot_ctx || !ev || slot_ctx->is_group != (ev->is_group ? 1 : 0)) {
-        return 1;
-    }
-    return ev->is_group ? (slot_ctx->ota_tg != ev->tg) : (slot_ctx->dst != ev->dst);
-}
-
-static int
-p25_voice_start_source_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
-    return slot_ctx && ev && p25_source_id_known(slot_ctx->src) && p25_source_id_known(ev->src)
-           && slot_ctx->src != ev->src;
 }
 
 static int
@@ -2607,12 +2620,10 @@ p25_p1_identity_clear(dsd_state* state) {
 static p25_voice_start_changes_t
 p25_voice_start_classify_changes(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* call_ev) {
     p25_voice_start_changes_t changes = {0};
-    const int target_changed = p25_voice_start_target_changed(slot_ctx, call_ev);
-    const int source_changed = p25_voice_start_source_changed(slot_ctx, call_ev);
     const int learned_source = !p25_source_id_known(slot_ctx->src) && p25_source_id_known(call_ev->src);
 
     changes.service_changed = p25_voice_start_service_changed(slot_ctx, call_ev);
-    changes.new_epoch = !p25_voice_slot_epoch_active(slot_ctx) || target_changed || source_changed;
+    changes.new_epoch = p25_voice_start_begins_new_epoch(slot_ctx, call_ev);
     changes.requires_update = changes.new_epoch || changes.service_changed || learned_source;
     return changes;
 }

@@ -234,6 +234,35 @@ test_private_ptt_preserves_grant_identity(void) {
 }
 
 static int
+test_authoritative_group_replaces_private_identity(void) {
+    reset_test_state();
+    g_opts.trunk_tune_private_calls = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_indiv_grant(0x1234, 851500000, 0xABCDEF, 0x010203, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 0x4567, 0, 0x010203, 1, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || ctx.slots[0].is_group || ctx.slots[0].target_id != 0xABCDEF) {
+        DSD_FPRINTF(stderr, "FAIL: Private MAC_PTT fixture did not preserve its assignment\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active_call(0, 0x2345, 0, 0x040506, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || !ctx.slots[0].is_group || ctx.slots[0].ota_tg != 0x2345 || ctx.slots[0].dst != 0
+        || ctx.slots[0].target_id != 0x2345 || ctx.slots[0].src != 0x040506 || g_state.gi[0] != 0
+        || g_state.lasttg != 0x2345 || g_state.lastsrc != 0x040506) {
+        DSD_FPRINTF(stderr, "FAIL: Authoritative group ACTIVE retained the preceding private identity\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_p2_resolved_crypto_survives_pending_active(void) {
     const struct {
         int svc_bits;
@@ -497,6 +526,45 @@ test_identified_followup_without_service_restarts_crypto_pending(void) {
         || g_state.p25_p2_audio_allowed[0] != 0 || ctx.slots[0].crypto_attempt_m <= 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Identified follow-up inherited completed-epoch service options\n");
         return 1;
+    }
+    return 0;
+}
+
+static int
+test_missed_end_identity_change_without_service_restarts_crypto_pending(void) {
+    const struct {
+        int tg;
+        int src;
+    } cases[] = {
+        {1001, 123},
+        {1000, 456},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        reset_test_state();
+        g_state.trunk_chan_map[0x1234] = 851500000;
+        g_state.p25_chan_tdma_explicit[1] = 2;
+
+        p25_sm_ctx_t ctx;
+        p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (!ctx.slots[0].voice_active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR) {
+            DSD_FPRINTF(stderr, "FAIL: Missed-END service fixture did not begin clear\n");
+            return 1;
+        }
+
+        ev = p25_sm_ev_active_call(0, cases[i].tg, 0, cases[i].src, 1, P25_SM_SVC_UNKNOWN);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (ctx.slots[0].ota_tg != cases[i].tg || ctx.slots[0].src != cases[i].src
+            || ctx.slots[0].svc_bits != P25_SM_SVC_UNKNOWN || ctx.slots[0].voice_active
+            || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || g_state.p25_p2_audio_allowed[0] != 0
+            || ctx.slots[0].crypto_attempt_m <= 0.0) {
+            DSD_FPRINTF(stderr, "FAIL: Missed-END identity change case %zu inherited preceding service options\n", i);
+            return 1;
+        }
     }
     return 0;
 }
@@ -1546,12 +1614,14 @@ main(void) {
     fail += test_grant_to_tuned();
     fail += test_ptt_voice_active();
     fail += test_private_ptt_preserves_grant_identity();
+    fail += test_authoritative_group_replaces_private_identity();
     fail += test_p2_resolved_crypto_survives_pending_active();
     fail += test_p1_hdu_crypto_survives_identity_refinement();
     fail += test_p1_retained_hdu_waits_for_identity();
     fail += test_p1_retained_hdu_defers_lockout_attribution();
     fail += test_p1_pending_identity_restarts_crypto_without_hdu();
     fail += test_identified_followup_without_service_restarts_crypto_pending();
+    fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();
     fail += test_conventional_end_is_follower_noop();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
