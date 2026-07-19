@@ -201,8 +201,10 @@ test_private_ptt_preserves_grant_identity(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     ev = p25_sm_ev_ptt_call(0, 0x4567, 0, 0x010203, 1, P25_SM_SVC_UNKNOWN);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (!ctx.slots[0].voice_active || ctx.slots[0].is_group || ctx.slots[0].dst != 0xABCDEF
-        || ctx.slots[0].target_id != 0xABCDEF || g_state.gi[0] != 1 || g_state.lasttg != 0xABCDEF) {
+    if (ctx.slots[0].voice_active || ctx.slots[0].is_group || ctx.slots[0].dst != 0xABCDEF
+        || ctx.slots[0].target_id != 0xABCDEF || ctx.slots[0].svc_bits != P25_SM_SVC_UNKNOWN
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || g_state.gi[0] != 1
+        || g_state.lasttg != 0xABCDEF) {
         DSD_FPRINTF(stderr, "FAIL: Nonzero MAC_PTT group field replaced the private grant identity\n");
         return 1;
     }
@@ -320,6 +322,73 @@ test_p1_hdu_crypto_survives_identity_refinement(void) {
             DSD_FPRINTF(stderr, "FAIL: Phase 1 identity LCW discarded authoritative HDU crypto metadata\n");
             return 1;
         }
+    }
+    return 0;
+}
+
+static int
+test_p1_retained_hdu_waits_for_identity(void) {
+    reset_test_state();
+    g_opts.trunk_use_allow_list = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    if (seed_exact(1000, "A", "ALLOWED") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Could not seed retained Phase 1 policy case\n");
+        return 1;
+    }
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, 0, 1000) != DSD_P25_CRYPTO_CLEAR) {
+        DSD_FPRINTF(stderr, "FAIL: Retained Phase 1 HDU did not resolve clear\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].voice_active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || g_state.p25_p2_audio_allowed[0] != 0 || ctx.slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Retained Phase 1 follow-up opened before target validation\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active_call(0, 1001, 0, 456, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1 || g_state.p25_p2_audio_allowed[0] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Blocked Phase 1 follow-up was not rejected with audio gated\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_identified_followup_without_service_restarts_crypto_pending(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_end(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    ev = p25_sm_ev_active_call(0, 1001, 0, 456, 1, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].ota_tg != 1001 || ctx.slots[0].src != 456 || ctx.slots[0].svc_bits != P25_SM_SVC_UNKNOWN
+        || ctx.slots[0].voice_active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || g_state.p25_p2_audio_allowed[0] != 0 || ctx.slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Identified follow-up inherited completed-epoch service options\n");
+        return 1;
     }
     return 0;
 }
@@ -1321,6 +1390,8 @@ main(void) {
     fail += test_private_ptt_preserves_grant_identity();
     fail += test_p2_resolved_crypto_survives_pending_active();
     fail += test_p1_hdu_crypto_survives_identity_refinement();
+    fail += test_p1_retained_hdu_waits_for_identity();
+    fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_conventional_end_is_follower_noop();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();

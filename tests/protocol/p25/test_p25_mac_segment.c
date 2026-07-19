@@ -450,6 +450,38 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("vendor regroup collision absent", p25p2_mac_decode_voice_identity(1, mac, &identity), 0);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0x80;
+    mac[2] = 0x90;
+    mac[3] = 0x41;
+    mac[4] = 0x56;
+    mac[5] = 0x78;
+    mac[6] = 0x23;
+    mac[7] = 0x45;
+    mac[8] = 0x67;
+    rc |= expect_int("Motorola abbreviated regroup identity present",
+                     p25p2_mac_decode_voice_identity(1, mac, &identity), 1);
+    rc |= expect_int("Motorola abbreviated regroup tg", identity.tg, 0x5678);
+    rc |= expect_int("Motorola abbreviated regroup src", identity.src, 0x234567);
+    rc |= expect_int("Motorola abbreviated regroup type", identity.is_group, 1);
+    rc |= expect_int("Motorola abbreviated regroup service", identity.svc_bits, 0x41);
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
+    mac[1] = 0xA0;
+    mac[2] = 0x90;
+    mac[4] = 0x80;
+    mac[5] = 0x67;
+    mac[6] = 0x89;
+    mac[7] = 0x34;
+    mac[8] = 0x56;
+    mac[9] = 0x78;
+    rc |=
+        expect_int("Motorola extended regroup identity present", p25p2_mac_decode_voice_identity(0, mac, &identity), 1);
+    rc |= expect_int("Motorola extended regroup tg", identity.tg, 0x6789);
+    rc |= expect_int("Motorola extended regroup src", identity.src, 0x345678);
+    rc |= expect_int("Motorola extended regroup type", identity.is_group, 1);
+    rc |= expect_int("Motorola extended regroup service", identity.svc_bits, 0x80);
+
+    DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x30;
     rc |= expect_int("non-voice identity absent", p25p2_mac_decode_voice_identity(0, mac, &identity), 0);
     return rc;

@@ -2472,6 +2472,11 @@ p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx) {
     return slot_ctx->voice_active || (slot_ctx->last_start_m > 0.0 && slot_ctx->last_start_m > slot_ctx->last_stop_m);
 }
 
+static int
+p25_voice_start_follows_completed_epoch(const p25_sm_slot_ctx_t* slot_ctx) {
+    return slot_ctx && slot_ctx->last_start_m > 0.0 && !p25_voice_slot_epoch_active(slot_ctx);
+}
+
 static void
 p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const p25_sm_slot_ctx_t* slot_ctx,
                                         p25_sm_event_t* out) {
@@ -2486,7 +2491,7 @@ p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const 
     // A source-less PTT/ACTIVE after a completed transmission has no service
     // options for the new epoch. Keep crypto classification pending until
     // ESS/LCW proves it clear instead of inheriting the preceding epoch.
-    const int follows_completed_epoch = slot_ctx->last_start_m > 0.0 && !p25_voice_slot_epoch_active(slot_ctx);
+    const int follows_completed_epoch = p25_voice_start_follows_completed_epoch(slot_ctx);
     out->svc_bits = follows_completed_epoch ? P25_SM_SVC_UNKNOWN : slot_ctx->svc_bits;
 }
 
@@ -2522,7 +2527,7 @@ p25_voice_start_build_identity(const p25_sm_ctx_t* ctx, const dsd_state* state, 
             out->dst = slot_ctx->dst;
         }
         if (!p25_sm_svc_bits_valid(input->svc_bits)) {
-            out->svc_bits = slot_ctx->svc_bits;
+            out->svc_bits = p25_voice_start_follows_completed_epoch(slot_ctx) ? P25_SM_SVC_UNKNOWN : slot_ctx->svc_bits;
         }
     }
     out->identity_valid = 1;
@@ -2586,10 +2591,12 @@ p25_voice_start_should_preserve_p1_crypto(const p25_sm_ctx_t* ctx, const dsd_sta
         return 0;
     }
 
-    // An anonymous ACTIVE can be the first lifecycle indication after HDU.
-    // Once that epoch has started, an identity-bearing LCW may refine source
-    // and service options without superseding the authoritative HDU tuple.
-    return !changes->new_epoch || !input->identity_valid;
+    // An anonymous ACTIVE can be the first lifecycle indication after HDU on
+    // the initial assignment. After a completed transmission, however, the
+    // retained carrier may now belong to another target. Keep that follow-up
+    // gated until its identity-bearing LCW has passed policy validation.
+    return !changes->new_epoch
+           || (!input->identity_valid && !p25_voice_start_follows_completed_epoch(&ctx->slots[slot]));
 }
 
 static void

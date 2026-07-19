@@ -230,6 +230,35 @@ p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_res
 }
 
 static int
+p25p2_mac_motorola_voice_identity_segment(const unsigned long long mac[24], const struct p25p2_mac_segment* segment,
+                                          struct p25p2_mac_voice_identity* out) {
+    const int pos = 1 + segment->offset;
+    const uint8_t opcode = (uint8_t)p25p2_mac_octet(mac, pos);
+
+    if (segment->length < 8 || p25p2_mac_octet(mac, pos + 1) != 0x90u) {
+        return 0;
+    }
+
+    if (opcode == 0x80u) {
+        out->tg = (int)((p25p2_mac_octet(mac, pos + 3) << 8) | p25p2_mac_octet(mac, pos + 4));
+        out->src = (int)((p25p2_mac_octet(mac, pos + 5) << 16) | (p25p2_mac_octet(mac, pos + 6) << 8)
+                         | p25p2_mac_octet(mac, pos + 7));
+        out->svc_bits = (int)p25p2_mac_octet(mac, pos + 2);
+    } else if (opcode == 0xA0u && segment->length >= 9) {
+        out->tg = (int)((p25p2_mac_octet(mac, pos + 4) << 8) | p25p2_mac_octet(mac, pos + 5));
+        out->src = (int)((p25p2_mac_octet(mac, pos + 6) << 16) | (p25p2_mac_octet(mac, pos + 7) << 8)
+                         | p25p2_mac_octet(mac, pos + 8));
+        out->svc_bits = (int)p25p2_mac_octet(mac, pos + 3);
+    } else {
+        return 0;
+    }
+
+    out->dst = 0;
+    out->is_group = 1;
+    return 1;
+}
+
+static int
 p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct p25p2_mac_segment* segment,
                                  struct p25p2_mac_voice_identity* out) {
     const int pos = 1 + segment->offset;
@@ -274,7 +303,7 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
         return 1;
     }
 
-    return 0;
+    return p25p2_mac_motorola_voice_identity_segment(mac, segment, out);
 }
 
 int
