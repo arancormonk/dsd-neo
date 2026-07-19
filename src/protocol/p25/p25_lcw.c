@@ -89,6 +89,7 @@ typedef struct p25_lcw_ctx {
     uint8_t lc_svcopt;
     uint8_t lc_pf;
     uint8_t lc_sf;
+    uint8_t allow_voice_start;
     int is_standard_mfid;
 } p25_lcw_ctx;
 
@@ -179,6 +180,9 @@ p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t so
     ctx->state->dmr_so = ctx->lc_svcopt;
     ctx->state->p25_service_options_valid[0] = 1;
 
+    if (!ctx->allow_voice_start) {
+        return 0;
+    }
     if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt)) {
         return 0;
     }
@@ -213,6 +217,9 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 
+    if (!ctx->allow_voice_start) {
+        return;
+    }
     if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt)) {
         return;
     }
@@ -756,7 +763,9 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     }
     ctx->state->gi[0] = 0;
     p25_patch_update(ctx->state, (int)sg, 1, 1);
-    (void)p25_sm_emit_active_call(ctx->opts, ctx->state, 0, (int)sg, 0, (int)src, 1, ctx->lc_svcopt);
+    if (ctx->allow_voice_start) {
+        (void)p25_sm_emit_active_call(ctx->opts, ctx->state, 0, (int)sg, 0, (int)src, 1, ctx->lc_svcopt);
+    }
 }
 
 static void
@@ -973,8 +982,9 @@ p25_lcw_handle_unknown_vendor(const p25_lcw_ctx* ctx) {
     }
 }
 
-void
-p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+static void
+p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
+               uint8_t allow_voice_start) {
     UNUSED(irrecoverable_errors);
     if (opts == NULL || state == NULL || lcw_bits == NULL) {
         return;
@@ -991,6 +1001,7 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecovera
     ctx.lc_svcopt = (uint8_t)convert_bits_into_output(&lcw_bits[16], 8);
     ctx.lc_pf = lcw_bits[0];
     ctx.lc_sf = lcw_bits[1];
+    ctx.allow_voice_start = allow_voice_start;
     ctx.is_standard_mfid = (ctx.lc_sf == 1) || ctx.lc_mfid == 0 || ctx.lc_mfid == 1;
 
     if (ctx.lc_pf == 1) {
@@ -1017,4 +1028,14 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecovera
     }
 
     DSD_FPRINTF(stderr, "\n");
+}
+
+void
+p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 1);
+}
+
+void
+p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 0);
 }

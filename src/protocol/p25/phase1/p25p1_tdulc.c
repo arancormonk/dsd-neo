@@ -312,7 +312,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
 
     if (irrecoverable_errors == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        p25_lcw(opts, state, LCW_bits, 0);
+        p25_lcw_from_tdulc(opts, state, LCW_bits, 0);
         DSD_FPRINTF(stderr, "%s", KNRM);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
