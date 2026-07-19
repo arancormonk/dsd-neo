@@ -165,6 +165,28 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
     p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
 }
 
+static int
+p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source) {
+    if (target != 0) {
+        ctx->state->lasttg = target;
+    }
+    if (source != 0) {
+        ctx->state->lastsrc = source;
+    }
+    ctx->state->generic_talker_alias[0][0] = '\0';
+    ctx->state->generic_talker_alias_src[0] = 0;
+    ctx->state->gi[0] = 1;
+    ctx->state->dmr_so = ctx->lc_svcopt;
+    ctx->state->p25_service_options_valid[0] = 1;
+
+    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt)) {
+        return 0;
+    }
+    p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
+    p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
+    return 1;
+}
+
 static void
 p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel User");
@@ -205,23 +227,7 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " - Target %d Source %d", target, source);
 
-    if (target != 0) {
-        ctx->state->lasttg = target;
-    }
-    if (source != 0) {
-        ctx->state->lastsrc = source;
-    }
-    ctx->state->generic_talker_alias[0][0] = '\0';
-    ctx->state->generic_talker_alias_src[0] = 0;
-    ctx->state->gi[0] = 1;
-    ctx->state->dmr_so = ctx->lc_svcopt;
-    ctx->state->p25_service_options_valid[0] = 1;
-
-    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt)) {
-        return;
-    }
-    p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
-    p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
+    (void)p25_lcw_accept_private_voice_user(ctx, target, source);
 }
 
 static void
@@ -393,10 +399,10 @@ p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
 static void
 p25_lcw_handle_format_4a(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Unit to Unit Voice Channel User %s Extended", dsd_unicode_or_ascii("–", "-"));
-    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[16], 24);
-    uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[40], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
+    uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, "TGT: %d; SRC: %d; ", target, src);
-    ctx->state->gi[0] = 1;
+    (void)p25_lcw_accept_private_voice_user(ctx, target, src);
 }
 
 static void

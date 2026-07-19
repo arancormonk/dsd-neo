@@ -438,6 +438,44 @@ test_p1_retained_hdu_defers_lockout_attribution(void) {
 }
 
 static int
+test_p1_pending_identity_restarts_crypto_without_hdu(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_tdu();
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    if (!g_state.p25_p1_identity_pending || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN) {
+        DSD_FPRINTF(stderr, "FAIL: Phase 1 TDU did not arm an unknown follow-up identity\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active(0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].voice_active || !g_state.p25_p1_identity_pending
+        || ctx.slots[0].last_start_m <= ctx.slots[0].last_stop_m
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN) {
+        DSD_FPRINTF(stderr, "FAIL: Anonymous Phase 1 follow-up did not remain muted pending identity\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || g_state.p25_p1_identity_pending
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || !p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Resolved Phase 1 identity did not restart clear crypto classification\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_identified_followup_without_service_restarts_crypto_pending(void) {
     reset_test_state();
     g_state.trunk_chan_map[0x1234] = 851500000;
@@ -582,6 +620,46 @@ test_tdma_boundaries_only_hang_after_last_assigned_voice(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.t_hangtime_m <= 0.0 || g_return_requests != 0) {
         DSD_FPRINTF(stderr, "FAIL: Last assigned voice transition did not arm traffic hang\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_tdma_idle_ends_voice_with_newer_grant(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    const double idle_observed_m = ctx.slots[0].last_grant_m;
+    ev = p25_sm_ev_group_grant_update(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    const double newer_grant_m = ctx.slots[0].last_grant_m;
+    if (!ctx.slots[0].voice_active || newer_grant_m <= idle_observed_m) {
+        DSD_FPRINTF(stderr, "FAIL: TDMA IDLE fixture did not retain active voice with a newer grant\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_idle_at(0, idle_observed_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].voice_active || !ctx.slots[0].grant_active || ctx.slots[0].target_id != 1000
+        || ctx.slots[0].src != 123 || fabs(ctx.slots[0].last_grant_m - newer_grant_m) > 1.0e-9
+        || ctx.t_hangtime_m <= 0.0 || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR
+        || g_state.p25_p2_audio_allowed[0]) {
+        DSD_FPRINTF(stderr, "FAIL: TDMA IDLE did not end voice while preserving its newer grant\n");
+        return 1;
+    }
+
+    expire_traffic_hang(&ctx);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Newer-grant TDMA IDLE did not release after hangtime\n");
         return 1;
     }
     return 0;
@@ -1462,10 +1540,12 @@ main(void) {
     fail += test_p1_hdu_crypto_survives_identity_refinement();
     fail += test_p1_retained_hdu_waits_for_identity();
     fail += test_p1_retained_hdu_defers_lockout_attribution();
+    fail += test_p1_pending_identity_restarts_crypto_without_hdu();
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_conventional_end_is_follower_noop();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
+    fail += test_tdma_idle_ends_voice_with_newer_grant();
     fail += test_anonymous_followup_restarts_crypto_pending();
     fail += test_unassigned_companion_start_is_rejected();
     fail += test_state_names();

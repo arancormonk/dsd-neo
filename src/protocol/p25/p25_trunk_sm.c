@@ -2468,6 +2468,31 @@ p25_voice_close_slot_media(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, 
     ctx->slots[slot].crypto_attempt_m = 0.0;
 }
 
+static void
+p25_voice_close_slot_media_preserve_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+    if (!ctx || slot < 0 || slot > 1) {
+        return;
+    }
+    if (state) {
+        p25_voice_flush_partial_audio(ctx, opts, state, slot);
+        p25_p2_audio_ring_reset(state, slot);
+        p25_voice_close_slot_output(opts, state, slot);
+        state->p25_p2_audio_allowed[slot] = 0;
+    }
+    ctx->slots[slot].voice_active = 0;
+    ctx->slots[slot].last_active_m = 0.0;
+}
+
+static void
+p25_voice_close_slot_media_for_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot,
+                                   int preserve_recent_idle_grant) {
+    if (preserve_recent_idle_grant) {
+        p25_voice_close_slot_media_preserve_grant(ctx, opts, state, slot);
+        return;
+    }
+    p25_voice_close_slot_media(ctx, opts, state, slot);
+}
+
 static int
 p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx) {
     if (!slot_ctx || !slot_ctx->grant_active) {
@@ -2643,11 +2668,12 @@ p25_voice_start_update_crypto(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int
                               const p25_sm_event_t* call_ev, const p25_grant_eval_ctx_t* eval_ctx,
                               const p25_voice_start_changes_t* changes, double now_m) {
     const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
+    const int pending_p1_identity = p25_p1_identity_is_pending(ctx, state, slot);
     if (changes->preserve_crypto_classification && !force_clear) {
         ctx->slots[slot].crypto_attempt_m = 0.0;
         return;
     }
-    if (!changes->new_epoch && !changes->service_changed && !force_clear) {
+    if (!changes->new_epoch && !changes->service_changed && !force_clear && !pending_p1_identity) {
         return;
     }
 
@@ -3000,10 +3026,6 @@ p25_voice_end_event_reject_reason(const p25_sm_ctx_t* ctx, const dsd_state* stat
             return reason;
         }
     }
-    const double observed_m = ev ? ev->observed_m : 0.0;
-    if (p25_voice_end_preserve_recent_idle_grant(ctx, slot, is_explicit_end, observed_m)) {
-        return "newer-grant";
-    }
     if (!p25_voice_slot_epoch_active(&ctx->slots[slot])) {
         return ctx->slots[slot].grant_active ? "inactive" : "no-assignment";
     }
@@ -3065,6 +3087,9 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     const double now_m = dsd_time_now_monotonic_s();
     const int ended_tg = p25_voice_end_event_tg(ctx, state, s, ev);
     const int ended_src = p25_voice_end_event_src(ctx, state, s, ev);
+    const double observed_m = ev ? ev->observed_m : 0.0;
+    const int preserve_recent_idle_grant =
+        p25_voice_end_preserve_recent_idle_grant(ctx, s, is_explicit_end, observed_m);
 
     p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, now_m);
 
@@ -3072,7 +3097,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     if (state) {
         (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? s : -1);
     }
-    p25_voice_close_slot_media(ctx, opts, state, s);
+    p25_voice_close_slot_media_for_end(ctx, opts, state, s, preserve_recent_idle_grant);
     if (state && !ctx->vc_is_tdma && arm_stale_regrant_guard) {
         state->p25_p1_identity_pending = 1;
     }

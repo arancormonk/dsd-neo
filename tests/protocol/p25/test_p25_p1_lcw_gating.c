@@ -206,6 +206,37 @@ test_mfid90_regroup_reassigns_retained_call(void) {
 }
 
 static int
+test_extended_private_resolves_retained_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    const int target = 0x034567;
+    const int source = 0x040506;
+    int rc = 0;
+
+    rc |= expect_eq_int("extended private retained fixture", init_retained_p1_call(&opts, &state, 0x1234, 0x010203), 1);
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, 0x4A);
+    set_bits_msb(lcw, 16, 8, 0x00);
+    set_bits_msb(lcw, 24, 24, (unsigned)target);
+    set_bits_msb(lcw, 48, 24, (unsigned)source);
+
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("extended private remains tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_int("extended private no retune", g_tunes, 1);
+    rc |= expect_eq_int("extended private no release", g_returns, 0);
+    rc |= expect_eq_int("extended private identity accepted", state.p25_p1_identity_pending, 0);
+    rc |= expect_eq_int("extended private SM target", sm->slots[0].dst, target);
+    rc |= expect_eq_int("extended private SM source", sm->slots[0].src, source);
+    rc |= expect_eq_int("extended private SM call kind", sm->slots[0].is_group, 0);
+    rc |= expect_eq_int("extended private voice active", sm->slots[0].voice_active, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_rejected_lcw_stops_post_processing(int format) {
     static dsd_opts opts;
     static dsd_state state;
@@ -416,6 +447,7 @@ main(void) {
     }
 
     rc |= test_mfid90_regroup_reassigns_retained_call();
+    rc |= test_extended_private_resolves_retained_identity();
     rc |= test_rejected_lcw_stops_post_processing(0x00);
     rc |= test_rejected_lcw_stops_post_processing(0x03);
 
