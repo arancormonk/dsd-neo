@@ -3064,6 +3064,14 @@ p25_voice_end_log_ignored(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* st
                  ctx->slots[slot].voice_active, why);
 }
 
+static void
+p25_voice_end_clear_policy_route(const p25_sm_ctx_t* ctx, dsd_state* state, int slot, int preserve_recent_idle_grant) {
+    if (!state || preserve_recent_idle_grant) {
+        return;
+    }
+    (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
+}
+
 static int
 handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end,
                  int arm_stale_regrant_guard, const p25_sm_event_t* ev) {
@@ -3094,9 +3102,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, now_m);
 
     p25_voice_end_record(&ctx->slots[s], is_explicit_end, arm_stale_regrant_guard, now_m, ended_tg, ended_src);
-    if (state) {
-        (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? s : -1);
-    }
+    p25_voice_end_clear_policy_route(ctx, state, s, preserve_recent_idle_grant);
     p25_voice_close_slot_media_for_end(ctx, opts, state, s, preserve_recent_idle_grant);
     if (state && !ctx->vc_is_tdma && arm_stale_regrant_guard) {
         state->p25_p1_identity_pending = 1;

@@ -657,6 +657,16 @@ test_tdma_idle_ends_voice_with_newer_grant(void) {
         return 1;
     }
 
+    dsd_tg_policy_call_route candidate_route = {2000U, 456U, 851500000L, 0x1234, 0, 0};
+    dsd_tg_policy_decision candidate_decision = {0};
+    candidate_decision.priority = 100;
+    candidate_decision.tune_allowed = 1;
+    candidate_decision.preempt_requested = 1;
+    if (!dsd_tg_policy_should_preempt(&g_opts, &g_state, &candidate_route, &candidate_decision, newer_grant_m + 2.0)) {
+        DSD_FPRINTF(stderr, "FAIL: TDMA IDLE discarded the newer grant's active policy route\n");
+        return 1;
+    }
+
     expire_traffic_hang(&ctx);
     if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
         DSD_FPRINTF(stderr, "FAIL: Newer-grant TDMA IDLE did not release after hangtime\n");
