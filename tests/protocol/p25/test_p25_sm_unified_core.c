@@ -827,6 +827,33 @@ test_tdma_facch_double_end_release(void) {
         return 1;
     }
 
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    first_m = dsd_time_now_monotonic_s();
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[1].grant_active || ctx.slots[1].last_grant_m <= first_m) {
+        DSD_FPRINTF(stderr, "FAIL: Companion grant was not recorded after the first FACCH END\n");
+        return 1;
+    }
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 123, first_m + 0.5);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || !ctx.slots[1].grant_active || ctx.slots[1].target_id != 2000
+        || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Repeated FACCH END discarded a newer companion assignment\n");
+        return 1;
+    }
+
     return 0;
 }
 
@@ -897,6 +924,45 @@ test_inband_policy_reject_preserves_tdma_companion(void) {
         || ctx.slots[1].src != 202 || !g_state.p25_p2_audio_allowed[1] || g_state.lasttgR != 2000
         || g_state.lastsrcR != 202) {
         DSD_FPRINTF(stderr, "FAIL: Policy rejection changed the allowed TDMA companion\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_inband_policy_reject_releases_after_companion_ended(void) {
+    reset_test_state();
+    g_opts.trunk_use_allow_list = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    if (seed_exact(1000, "A", "ALLOW-LEFT") != 0 || seed_exact(2000, "A", "ALLOW-RIGHT") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Could not seed ended companion policy case\n");
+        return 1;
+    }
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 101, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 202, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 101, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(1, 2000, 0, 202, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_end_call_at(1, 2000, 202, dsd_time_now_monotonic_s());
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.slots[1].voice_active || !ctx.slots[1].grant_active
+        || ctx.t_hangtime_m > 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Companion END did not leave the active slot in control of the carrier\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active_call(0, 1001, 0, 303, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Ended companion grant left rejected carrier without a release deadline\n");
         return 1;
     }
     return 0;
@@ -1031,6 +1097,7 @@ main(void) {
     fail += test_tdma_facch_double_end_release();
     fail += test_inband_target_change_rechecks_policy();
     fail += test_inband_policy_reject_preserves_tdma_companion();
+    fail += test_inband_policy_reject_releases_after_companion_ended();
     fail += test_tdma_enc_respects_media_policy();
 
     if (fail) {

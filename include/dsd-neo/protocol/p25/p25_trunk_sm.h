@@ -430,8 +430,9 @@ int p25_sm_slot_grant_newer_than(int slot, double observed_m);
 
 /**
  * @brief Emit PTT event for a slot.
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
-void p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot);
+int p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
  * @brief Emit a PTT event carrying an authoritative in-band call identity.
@@ -439,18 +440,23 @@ void p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot);
  * The state machine reopens the call epoch from the retained carrier
  * assignment, re-evaluates policy/crypto, and never invokes the tuner for an
  * accepted identity on the current carrier.
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
-void p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
-                          int svc_bits);
+int p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                         int svc_bits);
 
 /**
  * @brief Emit ACTIVE event for a slot.
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
-void p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
+int p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
 
-/** @brief Emit an ACTIVE event carrying an authoritative in-band call identity. */
-void p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
-                             int svc_bits);
+/**
+ * @brief Emit an ACTIVE event carrying an authoritative in-band call identity.
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
+ */
+int p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                            int svc_bits);
 
 /**
  * @brief Emit END event for a slot.

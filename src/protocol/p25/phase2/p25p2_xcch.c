@@ -150,15 +150,14 @@ p25p2_xcch_get_slot_src(const dsd_state* state, int slot) {
     return (slot == 0) ? state->lastsrc : state->lastsrcR;
 }
 
-static void
+static int
 p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
     struct p25p2_mac_voice_identity identity;
     if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
-        p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src, identity.is_group,
-                                identity.svc_bits);
-        return;
+        return p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src, identity.is_group,
+                                       identity.svc_bits);
     }
-    p25_sm_emit_active(opts, state, slot);
+    return p25_sm_emit_active(opts, state, slot);
 }
 
 static void
@@ -527,16 +526,14 @@ p25p2_xcch_handle_sacch_mac_signal(dsd_opts* opts, dsd_state* state, unsigned lo
 static void
 p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, int mac_offset, int res,
                                 const unsigned long long int smac[24]) {
-    const int was_tuned = opts->trunk_is_tuned;
     DSD_FPRINTF(stderr, " MAC_PTT ");
     DSD_FPRINTF(stderr, "%s", KGRN);
 
     state->p25_p2_last_mac_active[slot] = time(NULL);
     state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
 
-    p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(smac), 0, (int)p25p2_xcch_src_from_mac(smac), 1,
-                         P25_SM_SVC_UNKNOWN);
-    if (was_tuned && !opts->trunk_is_tuned) {
+    if (!p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(smac), 0, (int)p25p2_xcch_src_from_mac(smac), 1,
+                              P25_SM_SVC_UNKNOWN)) {
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
@@ -604,7 +601,9 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    p25p2_xcch_emit_active(opts, state, 1, slot, smac);
+    if (!p25p2_xcch_emit_active(opts, state, 1, slot, smac)) {
+        return;
+    }
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
     if (allow_audio) {
@@ -632,13 +631,11 @@ p25p2_xcch_handle_sacch_mac_hangtime(dsd_opts* opts, dsd_state* state, unsigned 
 static void
 p25p2_xcch_handle_facch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, int mac_offset, int res,
                                 const unsigned long long int fmac[24]) {
-    const int was_tuned = opts->trunk_is_tuned;
     DSD_FPRINTF(stderr, " MAC_PTT  ");
     DSD_FPRINTF(stderr, "%s", KGRN);
 
-    p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(fmac), 0, (int)p25p2_xcch_src_from_mac(fmac), 1,
-                         P25_SM_SVC_UNKNOWN);
-    if (was_tuned && !opts->trunk_is_tuned) {
+    if (!p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(fmac), 0, (int)p25p2_xcch_src_from_mac(fmac), 1,
+                              P25_SM_SVC_UNKNOWN)) {
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
@@ -719,7 +716,9 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     process_MAC_VPDU(opts, state, 0, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    p25p2_xcch_emit_active(opts, state, 0, slot, fmac);
+    if (!p25p2_xcch_emit_active(opts, state, 0, slot, fmac)) {
+        return;
+    }
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);

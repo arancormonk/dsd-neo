@@ -36,6 +36,7 @@ static int g_vpdu_enc_pending_slot;
 static unsigned long long int g_vpdu_mac[24];
 static int g_ptt_count[2];
 static int g_active_count[2];
+static int g_voice_event_accept;
 static int g_active_tg[2];
 static int g_active_dst[2];
 static int g_active_src[2];
@@ -156,38 +157,54 @@ p25_lfsr128_slot(dsd_state* state, int slot) {
     }
 }
 
-void
-p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot) {
-    (void)opts;
-    (void)state;
-    if (slot >= 0 && slot <= 1) {
-        g_ptt_count[slot]++;
+static void
+p25_sm_stub_reject_voice_slot(dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1 || g_voice_event_accept) {
+        return;
+    }
+    state->p25_p2_audio_allowed[slot] = 0;
+    state->p25_policy_tg[slot] = 0;
+    if (slot == 0) {
+        state->dmrburstL = 0;
+    } else {
+        state->dmrburstR = 0;
     }
 }
 
-void
+int
+p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot) {
+    (void)opts;
+    if (slot >= 0 && slot <= 1) {
+        g_ptt_count[slot]++;
+    }
+    p25_sm_stub_reject_voice_slot(state, slot);
+    return g_voice_event_accept;
+}
+
+int
 p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group, int svc_bits) {
     (void)tg;
     (void)dst;
     (void)src;
     (void)is_group;
     (void)svc_bits;
-    p25_sm_emit_ptt(opts, state, slot);
+    return p25_sm_emit_ptt(opts, state, slot);
 }
 
-void
+int
 p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
-    (void)state;
     if (slot >= 0 && slot <= 1) {
         g_active_count[slot]++;
     }
+    p25_sm_stub_reject_voice_slot(state, slot);
+    return g_voice_event_accept;
 }
 
-void
+int
 p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
                         int svc_bits) {
-    p25_sm_emit_active(opts, state, slot);
+    const int accepted = p25_sm_emit_active(opts, state, slot);
     if (slot >= 0 && slot <= 1) {
         g_active_tg[slot] = tg;
         g_active_dst[slot] = dst;
@@ -195,6 +212,7 @@ p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
         g_active_is_group[slot] = is_group;
         g_active_svc[slot] = svc_bits;
     }
+    return accepted;
 }
 
 void
@@ -421,6 +439,7 @@ reset_stubs(void) {
     DSD_MEMSET(g_vpdu_mac, 0, sizeof(g_vpdu_mac));
     DSD_MEMSET(g_ptt_count, 0, sizeof(g_ptt_count));
     DSD_MEMSET(g_active_count, 0, sizeof(g_active_count));
+    g_voice_event_accept = 1;
     DSD_MEMSET(g_active_tg, 0, sizeof(g_active_tg));
     DSD_MEMSET(g_active_dst, 0, sizeof(g_active_dst));
     DSD_MEMSET(g_active_src, 0, sizeof(g_active_src));
@@ -771,6 +790,85 @@ test_sacch_dispatch_and_lcch_crc_abort(void) {
     rc |= expect_int("lcch crc abort clears gate", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("lcch crc abort resets ring", g_ring_reset_count[1], 1);
     rc |= expect_int("lcch crc abort no vpdu", g_vpdu_count, 0);
+
+    return rc;
+}
+
+static int
+test_rejected_voice_events_keep_media_closed(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int mac[24];
+    int rc = 0;
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_is_tuned = 1;
+    state.lasttg = 1000;
+    state.lastsrc = 101;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.dmrburstL = 21;
+    g_voice_event_accept = 0;
+    fill_mac(mac, 0x80, 0, 303, 1001);
+
+    p25p2_xcch_handle_sacch_mac_ptt(&opts, &state, 0, 0, 0, mac);
+    rc |= expect_int("rejected sacch ptt emitted", g_ptt_count[0], 1);
+    rc |= expect_int("rejected sacch ptt keeps carrier", opts.trunk_is_tuned, 1);
+    rc |= expect_int("rejected sacch ptt keeps old tg", state.lasttg, 1000);
+    rc |= expect_int("rejected sacch ptt keeps old src", state.lastsrc, 101);
+    rc |= expect_int("rejected sacch ptt gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_int("rejected sacch ptt burst cleared", (int)state.dmrburstL, 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_is_tuned = 1;
+    state.lasttgR = 2000;
+    state.lastsrcR = 202;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.dmrburstR = 21;
+    g_voice_event_accept = 0;
+    fill_mac(mac, 0x80, 0, 404, 2001);
+
+    p25p2_xcch_handle_facch_mac_ptt(&opts, &state, 1, 0, 0, mac);
+    rc |= expect_int("rejected facch ptt emitted", g_ptt_count[1], 1);
+    rc |= expect_int("rejected facch ptt keeps carrier", opts.trunk_is_tuned, 1);
+    rc |= expect_int("rejected facch ptt keeps old tg", state.lasttgR, 2000);
+    rc |= expect_int("rejected facch ptt keeps old src", state.lastsrcR, 202);
+    rc |= expect_int("rejected facch ptt gate closed", state.p25_p2_audio_allowed[1], 0);
+    rc |= expect_int("rejected facch ptt burst cleared", (int)state.dmrburstR, 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_is_tuned = 1;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.dmrburstL = 21;
+    g_voice_event_accept = 0;
+    g_voice_identity_result = 1;
+    g_voice_identity.tg = 1001;
+    g_voice_identity.src = 303;
+    g_voice_identity.is_group = 1;
+
+    p25p2_xcch_handle_sacch_mac_active(&opts, &state, 0, mac);
+    rc |= expect_int("rejected sacch active emitted", g_active_count[0], 1);
+    rc |= expect_int("rejected sacch active gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_int("rejected sacch active burst cleared", (int)state.dmrburstL, 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_is_tuned = 1;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.dmrburstR = 21;
+    g_voice_event_accept = 0;
+    g_voice_identity_result = 1;
+    g_voice_identity.dst = 2001;
+    g_voice_identity.src = 404;
+    g_voice_identity.is_group = 0;
+
+    p25p2_xcch_handle_facch_mac_active(&opts, &state, 1, mac);
+    rc |= expect_int("rejected facch active emitted", g_active_count[1], 1);
+    rc |= expect_int("rejected facch active gate closed", state.p25_p2_audio_allowed[1], 0);
+    rc |= expect_int("rejected facch active burst cleared", (int)state.dmrburstR, 0);
 
     return rc;
 }
@@ -1286,6 +1384,7 @@ main(void) {
     rc |= test_slot_ptt_and_end_helpers();
     rc |= test_facch_public_dispatch_and_crc_gates();
     rc |= test_sacch_dispatch_and_lcch_crc_abort();
+    rc |= test_rejected_voice_events_keep_media_closed();
     rc |= test_sacch_end_idle_active_hangtime_dispatch();
     rc |= test_facch_active_end_hangtime_and_invalid_slot_guards();
     rc |= test_encrypted_voice_user_stays_locked_through_mac_active();
