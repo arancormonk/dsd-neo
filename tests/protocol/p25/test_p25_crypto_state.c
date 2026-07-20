@@ -174,11 +174,11 @@ test_phase1_clear_conflict_requires_corroboration(void) {
     reset_fixture(&opts, &state);
     opts.unmute_encrypted_p25 = 1;
 
-    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
-    state.dmr_so = 0x04;
-    state.p25_service_options_valid[0] = 1;
-
     int rc = 0;
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
+    rc |= expect_int("P1 begin stores clear grant service", state.dmr_so, 0x04);
+    rc |= expect_int("P1 begin marks grant service valid", state.p25_service_options_valid[0], 1);
+
     rc |= expect_int(
         "first clear-conflict tuple stays pending",
         p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708), 3069),
@@ -212,8 +212,6 @@ test_phase1_clear_conflict_requires_corroboration(void) {
                      1);
 
     p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
-    state.dmr_so = 0x04;
-    state.p25_service_options_valid[0] = 1;
     (void)p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x3132333435363738), 3069);
     rc |= expect_int(
         "clear ALGID resolves quarantined tuple",
@@ -222,8 +220,6 @@ test_phase1_clear_conflict_requires_corroboration(void) {
     rc |= expect_int("clear ALGID clears candidate", state.p25_p1_crypto_conflict.active, 0);
 
     p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
-    state.dmr_so = 0x04;
-    state.p25_service_options_valid[0] = 1;
     state.p25_p1_identity_pending = 1;
     rc |= expect_int(
         "identity-pending tuple remains authoritative until LCW",
@@ -269,6 +265,10 @@ test_phase1_clear_conflict_requires_corroboration(void) {
     rc |= expect_int("Phase 2 resolve retired retained P1 candidate", state.p25_p1_crypto_conflict.active, 0);
     rc |= expect_int("Phase 2 clear audio survives retained P1 candidate", p25_crypto_audio_permitted(&opts, &state, 0),
                      1);
+
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, -1, 0);
+    rc |= expect_int("unknown P1 service clears stale grant bits", state.dmr_so, 0);
+    rc |= expect_int("unknown P1 service clears validity", state.p25_service_options_valid[0], 0);
     return rc;
 }
 

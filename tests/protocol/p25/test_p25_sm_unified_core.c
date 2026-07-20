@@ -837,6 +837,54 @@ test_p1_clear_conflict_restarts_deadline(void) {
 }
 
 static int
+test_p1_grant_hdu_conflict_survives_first_active(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 3069, 4009646, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    if (ctx->state != P25_SM_TUNED || g_state.dmr_so != 0x04 || !g_state.p25_service_options_valid[0]
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR) {
+        DSD_FPRINTF(stderr, "FAIL: Clear Phase 1 grant did not retain service options for HDU reconciliation\n");
+        return 1;
+    }
+
+    const int algid = 0xA0;
+    const int keyid = 0x0064;
+    const uint64_t mi = UINT64_C(0x0102030405060708);
+    g_state.p25_p1_hdu_crypto_fresh = 1;
+    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, 3069)
+            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || !g_state.p25_p1_crypto_conflict.active || ctx->slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Conflicting HDU did not enter Phase 1 quarantine after a clear grant\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active(0);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    if (ctx->state != P25_SM_TUNED || ctx->slots[0].voice_active || !ctx->slots[0].grant_active
+        || !g_state.p25_p1_crypto_conflict.active || !g_state.p25_p1_hdu_crypto_fresh
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || g_state.payload_algid != algid
+        || g_state.payload_keyid != keyid || g_state.payload_miP != mi
+        || p25_crypto_audio_permitted(&g_opts, &g_state, 0) || g_return_requests != 0
+        || encrypted_call_cache_has(3069U, 1)) {
+        DSD_FPRINTF(stderr, "FAIL: First anonymous ACTIVE discarded the quarantined HDU tuple\n");
+        return 1;
+    }
+
+    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, UINT64_C(0x1112131415161718), 3069)
+            != DSD_P25_CRYPTO_BLOCKED
+        || g_state.p25_p1_crypto_conflict.active) {
+        DSD_FPRINTF(stderr, "FAIL: Preserved HDU tuple did not await matching corroboration\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_p1_pending_identity_restarts_crypto_without_hdu(void) {
     reset_test_state();
     g_state.trunk_chan_map[0x1234] = 851500000;
@@ -1997,6 +2045,7 @@ main(void) {
     fail += test_p1_clear_identity_quarantines_conflicting_hdu();
     fail += test_p1_follow_mode_expires_clear_conflict();
     fail += test_p1_clear_conflict_restarts_deadline();
+    fail += test_p1_grant_hdu_conflict_survives_first_active();
     fail += test_p1_pending_identity_restarts_crypto_without_hdu();
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();

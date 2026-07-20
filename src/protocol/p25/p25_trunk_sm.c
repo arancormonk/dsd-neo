@@ -2717,14 +2717,17 @@ p25_voice_start_has_current_p1_crypto(const p25_sm_ctx_t* ctx, const dsd_state* 
     // A definitive ALGID is safe to retain within the current identity, after
     // an explicit boundary, or when a fresh HDU proves it belongs to the
     // transmission that is now occupying a carrier with a missed terminator.
+    // An armed clear-service conflict is also definitive metadata even though
+    // its classification remains pending corroboration.
     return state->payload_algid != 0
-           && (p25_crypto_audio_ready(state, 0) || state->p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
+           && (p25_crypto_audio_ready(state, 0) || state->p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED
+               || state->p25_p1_crypto_conflict.active);
 }
 
 static int
 p25_voice_start_should_preserve_p1_crypto(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot,
                                           const p25_sm_event_t* input, const p25_voice_start_changes_t* changes) {
-    if (!input || !changes || !p25_voice_start_has_current_p1_crypto(ctx, state, slot)) {
+    if (!state || !input || !changes || !p25_voice_start_has_current_p1_crypto(ctx, state, slot)) {
         return 0;
     }
 
