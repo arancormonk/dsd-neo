@@ -150,16 +150,6 @@ p25p2_xcch_get_slot_src(const dsd_state* state, int slot) {
     return (slot == 0) ? state->lastsrc : state->lastsrcR;
 }
 
-static int
-p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
-    struct p25p2_mac_voice_identity identity;
-    if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
-        return p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src, identity.is_group,
-                                       identity.svc_bits);
-    }
-    return p25_sm_emit_active(opts, state, slot);
-}
-
 static void
 p25p2_xcch_set_slot_tg(dsd_state* state, int slot, int tg) {
     if (slot == 0) {
@@ -167,6 +157,38 @@ p25p2_xcch_set_slot_tg(dsd_state* state, int slot, int tg) {
     } else {
         state->lasttgR = tg;
     }
+}
+
+static void
+p25p2_xcch_store_active_identity(dsd_state* state, int slot, const struct p25p2_mac_voice_identity* identity) {
+    if (!state || !identity || !p25p2_xcch_slot_valid(slot)) {
+        return;
+    }
+
+    p25p2_xcch_set_slot_tg(state, slot, identity->is_group ? identity->tg : identity->dst);
+    if (slot == 0) {
+        state->lastsrc = identity->src;
+    } else {
+        state->lastsrcR = identity->src;
+    }
+    state->gi[slot] = identity->is_group ? 0 : 1;
+}
+
+static int
+p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
+    struct p25p2_mac_voice_identity identity;
+    if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
+        const int accepted = p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src,
+                                                     identity.is_group, identity.svc_bits);
+        if (!accepted) {
+            // A companion slot can retain the traffic carrier after this slot
+            // is rejected. Preserve the denied identity so later ESS updates
+            // cannot evaluate the preceding allowed call and reopen audio.
+            p25p2_xcch_store_active_identity(state, slot, &identity);
+        }
+        return accepted;
+    }
+    return p25_sm_emit_active(opts, state, slot);
 }
 
 static void

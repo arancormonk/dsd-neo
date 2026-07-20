@@ -872,7 +872,11 @@ test_rejected_voice_events_keep_media_closed(void) {
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_is_tuned = 1;
+    state.lasttg = 1000;
+    state.lastsrc = 101;
+    state.gi[0] = 1;
     state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 1;
     state.dmrburstL = 21;
     g_voice_event_accept = 0;
     g_voice_identity_result = 1;
@@ -882,24 +886,36 @@ test_rejected_voice_events_keep_media_closed(void) {
 
     p25p2_xcch_handle_sacch_mac_active(&opts, &state, 0, mac);
     rc |= expect_int("rejected sacch active emitted", g_active_count[0], 1);
+    rc |= expect_int("rejected sacch active records denied tg", state.lasttg, 1001);
+    rc |= expect_int("rejected sacch active records denied src", state.lastsrc, 303);
+    rc |= expect_int("rejected sacch active records group type", state.gi[0], 0);
     rc |= expect_int("rejected sacch active gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_int("rejected sacch active companion gate preserved", state.p25_p2_audio_allowed[1], 1);
     rc |= expect_int("rejected sacch active burst cleared", (int)state.dmrburstL, 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.trunk_is_tuned = 1;
+    state.lasttgR = 2000;
+    state.lastsrcR = 202;
+    state.gi[1] = 0;
+    state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
     state.dmrburstR = 21;
     g_voice_event_accept = 0;
     g_voice_identity_result = 1;
     g_voice_identity.dst = 2001;
-    g_voice_identity.src = 404;
+    g_voice_identity.src = 0;
     g_voice_identity.is_group = 0;
 
     p25p2_xcch_handle_facch_mac_active(&opts, &state, 1, mac);
-    rc |= expect_int("rejected facch active emitted", g_active_count[1], 1);
-    rc |= expect_int("rejected facch active gate closed", state.p25_p2_audio_allowed[1], 0);
-    rc |= expect_int("rejected facch active burst cleared", (int)state.dmrburstR, 0);
+    rc |= expect_int("rejected facch telephone active emitted", g_active_count[1], 1);
+    rc |= expect_int("rejected facch telephone active records denied target", state.lasttgR, 2001);
+    rc |= expect_int("rejected facch telephone active clears absent source", state.lastsrcR, 0);
+    rc |= expect_int("rejected facch telephone active records private type", state.gi[1], 1);
+    rc |= expect_int("rejected facch telephone active companion gate preserved", state.p25_p2_audio_allowed[0], 1);
+    rc |= expect_int("rejected facch telephone active gate closed", state.p25_p2_audio_allowed[1], 0);
+    rc |= expect_int("rejected facch telephone active burst cleared", (int)state.dmrburstR, 0);
 
     return rc;
 }
