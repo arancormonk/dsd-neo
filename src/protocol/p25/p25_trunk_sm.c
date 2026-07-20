@@ -2771,7 +2771,13 @@ p25_voice_start_update_crypto(p25_sm_ctx_t* ctx, dsd_state* state, int slot, int
     const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
     const int pending_p1_identity = p25_p1_identity_is_pending(ctx, state, slot);
     if (changes->preserve_crypto_classification && !force_clear) {
-        ctx->slots[slot].crypto_attempt_m = 0.0;
+        if (state && state->p25_p1_crypto_conflict.active) {
+            if (ctx->slots[slot].crypto_attempt_m <= 0.0) {
+                ctx->slots[slot].crypto_attempt_m = now_m;
+            }
+        } else {
+            ctx->slots[slot].crypto_attempt_m = 0.0;
+        }
         return;
     }
     if (!changes->new_epoch && !changes->service_changed && !force_clear && !pending_p1_identity) {

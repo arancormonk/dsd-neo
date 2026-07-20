@@ -885,6 +885,49 @@ test_p1_grant_hdu_conflict_survives_first_active(void) {
 }
 
 static int
+test_p1_follow_mode_preserves_grant_conflict_deadline(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 3069, 4009646, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+
+    g_state.p25_p1_hdu_crypto_fresh = 1;
+    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708),
+                           3069)
+            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || !g_state.p25_p1_crypto_conflict.active || ctx->slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Encrypted-follow fixture did not start the grant conflict deadline\n");
+        return 1;
+    }
+    const double started_m = ctx->slots[0].crypto_attempt_m;
+
+    ev = p25_sm_ev_active(0);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    if (ctx->state != P25_SM_TUNED || !ctx->slots[0].voice_active || !ctx->slots[0].grant_active
+        || !g_state.p25_p1_crypto_conflict.active || fabs(ctx->slots[0].crypto_attempt_m - started_m) > 1.0e-9
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || p25_crypto_audio_permitted(&g_opts, &g_state, 0) || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: First ACTIVE lost the encrypted-follow grant conflict deadline\n");
+        return 1;
+    }
+
+    ctx->slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx->config.grant_timeout_s - 0.1;
+    p25_sm_tick_ctx(ctx, &g_opts, &g_state);
+    if (ctx->state != P25_SM_TUNED || !ctx->slots[0].voice_active || !ctx->slots[0].grant_active
+        || g_state.p25_p1_crypto_conflict.active || ctx->slots[0].crypto_attempt_m > 0.0
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || !p25_crypto_audio_permitted(&g_opts, &g_state, 0)
+        || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Encrypted-follow grant conflict did not recover as clear at its deadline\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_p1_pending_identity_restarts_crypto_without_hdu(void) {
     reset_test_state();
     g_state.trunk_chan_map[0x1234] = 851500000;
@@ -2046,6 +2089,7 @@ main(void) {
     fail += test_p1_follow_mode_expires_clear_conflict();
     fail += test_p1_clear_conflict_restarts_deadline();
     fail += test_p1_grant_hdu_conflict_survives_first_active();
+    fail += test_p1_follow_mode_preserves_grant_conflict_deadline();
     fail += test_p1_pending_identity_restarts_crypto_without_hdu();
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();
