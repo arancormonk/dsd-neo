@@ -912,7 +912,7 @@ test_unassigned_companion_start_is_rejected(void) {
     ev = p25_sm_ev_active_call(1, 2000, 0, 456, 1, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.slots[1].voice_active || fabs(ctx.t_hangtime_m - hang_started_m) > 1.0e-9 || ctx.state != P25_SM_TUNED
-        || g_return_requests != 0) {
+        || g_return_requests != 0 || !g_state.p25_p2_media_rejected[1] || g_state.p25_p2_audio_allowed[1] != 0) {
         DSD_FPRINTF(stderr, "FAIL: Unassigned companion ACTIVE bypassed routing policy or canceled hang\n");
         return 1;
     }

@@ -30,6 +30,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
@@ -290,6 +291,17 @@ hdu_read_and_fec(dsd_opts* opts, dsd_state* state, char hex_data[20][6], char he
 
 static void
 hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, uint64_t mi) {
+    if (opts && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1) {
+        const p25_sm_ctx_t* sm = p25_sm_get_ctx();
+        if (sm && sm->initialized && sm->state == P25_SM_TUNED && !sm->vc_is_tdma && sm->slots[0].grant_active
+            && sm->vc_activity_seen) {
+            // A valid HDU after traffic activity is a new Phase 1 transmission,
+            // even when its predecessor's terminator was missed. Defer policy and
+            // encrypted-call attribution until an identity-bearing LCW arrives.
+            state->p25_p1_identity_pending = 1;
+            state->p25_p2_audio_allowed[0] = 0;
+        }
+    }
     // Set this before resolution because an encrypted-call lockout can
     // synchronously release the carrier and clear all Phase 1 crypto state.
     state->p25_p1_hdu_crypto_fresh = algid != 0;

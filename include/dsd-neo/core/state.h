@@ -693,6 +693,8 @@ struct dsd_state {
     int p25_p1_identity_pending;
     // Definitive Phase 1 HDU crypto arrived after the last authoritative LCW identity.
     int p25_p1_hdu_crypto_fresh;
+    // Sticky Phase 2 media rejection, cleared only after the slot receives an accepted assignment/activity.
+    int p25_p2_media_rejected[2];
     // ESS identity changes staged until the paired-timeslot audio drain completes.
     dsd_p25_p2_rekey_state p25_p2_rekey[2];
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)

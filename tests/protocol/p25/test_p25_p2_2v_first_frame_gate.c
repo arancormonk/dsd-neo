@@ -398,6 +398,35 @@ main(void) {
     rc |= expect_eq("slot1 allowed: soft mbe calls", g_mbe_soft_calls, 2);
     rc |= expect_eq("slot1 allowed: hard mbe calls", g_mbe_hard_calls, 0);
 
+    // A rejected slot remains closed when ordinary frame preparation
+    // re-evaluates an otherwise clear crypto identity.
+    reset_state(&opts, &st);
+    st.currentslot = 0;
+    st.payload_algid = 0x80;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_media_rejected[0] = 1;
+    st.p25_p2_audio_allowed[0] = 0;
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("rejected slot prepare: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("rejected slot prepare: gate stays closed", st.p25_p2_audio_allowed[0], 0);
+
+    // A later clear ESS classification must not reopen a slot whose media
+    // activity was rejected for lacking an accepted assignment.
+    reset_state(&opts, &st);
+    st.currentslot = 0;
+    st.payload_algid = 0x84;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    st.p25_p2_media_rejected[0] = 1;
+    st.p25_p2_audio_allowed[0] = 0;
+    st.dmrburstL = 21;
+    set_ess_algid(&st, 0, 0x80);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("rejected slot clear ESS: crypto resolves clear", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_eq("rejected slot clear ESS: mbe calls", g_mbe_calls, 0);
+    rc |= expect_eq("rejected slot clear ESS: gate stays closed", st.p25_p2_audio_allowed[0], 0);
+
     // A decryptable Phase 2 identity change belongs to the next crypto
     // stream. The final two frames and the completed output superframe must
     // retain the current tuple until the paired-timeslot drain has run.

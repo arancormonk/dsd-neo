@@ -159,9 +159,14 @@ p25_lfsr128_slot(dsd_state* state, int slot) {
 
 static void
 p25_sm_stub_reject_voice_slot(dsd_state* state, int slot) {
-    if (!state || slot < 0 || slot > 1 || g_voice_event_accept) {
+    if (!state || slot < 0 || slot > 1) {
         return;
     }
+    if (g_voice_event_accept) {
+        state->p25_p2_media_rejected[slot] = 0;
+        return;
+    }
+    state->p25_p2_media_rejected[slot] = 1;
     state->p25_p2_audio_allowed[slot] = 0;
     state->p25_policy_tg[slot] = 0;
     if (slot == 0) {
@@ -889,6 +894,7 @@ test_rejected_voice_events_keep_media_closed(void) {
     rc |= expect_int("rejected sacch active records denied tg", state.lasttg, 1001);
     rc |= expect_int("rejected sacch active records denied src", state.lastsrc, 303);
     rc |= expect_int("rejected sacch active records group type", state.gi[0], 0);
+    rc |= expect_int("rejected sacch active latches media rejection", state.p25_p2_media_rejected[0], 1);
     rc |= expect_int("rejected sacch active gate closed", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("rejected sacch active companion gate preserved", state.p25_p2_audio_allowed[1], 1);
     rc |= expect_int("rejected sacch active burst cleared", (int)state.dmrburstL, 0);
@@ -913,6 +919,7 @@ test_rejected_voice_events_keep_media_closed(void) {
     rc |= expect_int("rejected facch telephone active records denied target", state.lasttgR, 2001);
     rc |= expect_int("rejected facch telephone active clears absent source", state.lastsrcR, 0);
     rc |= expect_int("rejected facch telephone active records private type", state.gi[1], 1);
+    rc |= expect_int("rejected facch telephone active latches media rejection", state.p25_p2_media_rejected[1], 1);
     rc |= expect_int("rejected facch telephone active companion gate preserved", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_int("rejected facch telephone active gate closed", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("rejected facch telephone active burst cleared", (int)state.dmrburstR, 0);

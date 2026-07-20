@@ -1731,7 +1731,16 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     const int data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     ctx->vc_data_call = data_call;
     p25_grant_initialize_timing(ctx, state, now_m, reused_carrier, data_call);
-    p25_grant_store_slot_context(ctx, ev, freq, target_id, eval_ctx, p25_grant_logical_slot(ctx, slot), now_m);
+    const int logical_slot = p25_grant_logical_slot(ctx, slot);
+    p25_grant_store_slot_context(ctx, ev, freq, target_id, eval_ctx, logical_slot, now_m);
+    if (state) {
+        if (ctx->vc_is_tdma && logical_slot >= 0 && logical_slot <= 1) {
+            state->p25_p2_media_rejected[logical_slot] = 0;
+        } else {
+            state->p25_p2_media_rejected[0] = 0;
+            state->p25_p2_media_rejected[1] = 0;
+        }
+    }
     p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, slot, data_call, now_m);
     // Clear any stale one-shot VC CQPSK override from a previous attempt.
     p25_grant_clear_stale_cqpsk_override(state, reused_carrier);
@@ -1911,6 +1920,7 @@ p25_grant_refresh_duplicate_slot(p25_sm_ctx_t* ctx, dsd_state* state, const dsd_
     }
     if (state && ctx->vc_is_tdma) {
         state->p25_p2_active_slot = route->slot;
+        state->p25_p2_media_rejected[route->slot] = 0;
     }
 }
 
@@ -2919,7 +2929,14 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
     int s = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
     int new_epoch = !ctx->slots[s].voice_active;
     if (!p25_voice_start_apply_identity(ctx, opts, state, s, ev, now_m, &new_epoch)) {
+        if (state && ctx->vc_is_tdma) {
+            state->p25_p2_media_rejected[s] = 1;
+            state->p25_p2_audio_allowed[s] = 0;
+        }
         return 0;
+    }
+    if (state && ctx->vc_is_tdma) {
+        state->p25_p2_media_rejected[s] = 0;
     }
     const int reused = ctx->vc_activity_seen && new_epoch;
     if (new_epoch) {
@@ -3620,6 +3637,8 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         (void)dsd_tg_policy_clear_active_call(state, -1);
         state->p25_p2_audio_allowed[0] = 0;
         state->p25_p2_audio_allowed[1] = 0;
+        state->p25_p2_media_rejected[0] = 0;
+        state->p25_p2_media_rejected[1] = 0;
         state->p25_p1_identity_pending = 0;
         state->p25_p2_active_slot = -1;
         state->p25_vc_freq[0] = 0;
