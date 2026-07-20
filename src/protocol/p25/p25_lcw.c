@@ -1011,7 +1011,8 @@ p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irr
     ctx.lc_format = (uint8_t)convert_bits_into_output(&lcw_bits[0], 8);
     ctx.lc_opcode = (uint8_t)convert_bits_into_output(&lcw_bits[2], 6);
     ctx.lc_mfid = (uint8_t)convert_bits_into_output(&lcw_bits[8], 8);
-    ctx.lc_svcopt = (uint8_t)convert_bits_into_output(&lcw_bits[16], 8);
+    const int svcopt_offset = ctx.lc_format == 0x4A ? 8 : 16;
+    ctx.lc_svcopt = (uint8_t)convert_bits_into_output(&lcw_bits[svcopt_offset], 8);
     ctx.lc_pf = lcw_bits[0];
     ctx.lc_sf = lcw_bits[1];
     ctx.allow_voice_start = allow_voice_start;

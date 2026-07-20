@@ -212,12 +212,14 @@ test_extended_private_resolves_retained_identity(void) {
     uint8_t lcw[72];
     const int target = 0x034567;
     const int source = 0x040506;
+    const int svc = 0x81;
     int rc = 0;
 
     rc |= expect_eq_int("extended private retained fixture", init_retained_p1_call(&opts, &state, 0x1234, 0x010203), 1);
     DSD_MEMSET(lcw, 0, sizeof(lcw));
     set_bits_msb(lcw, 0, 8, 0x4A);
-    set_bits_msb(lcw, 16, 8, 0x00);
+    set_bits_msb(lcw, 8, 8, (unsigned)svc);
+    set_bits_msb(lcw, 16, 8, 0x40); // Reserved octet must not be treated as service options.
     set_bits_msb(lcw, 24, 24, (unsigned)target);
     set_bits_msb(lcw, 48, 24, (unsigned)source);
 
@@ -231,7 +233,45 @@ test_extended_private_resolves_retained_identity(void) {
     rc |= expect_eq_int("extended private SM target", sm->slots[0].dst, target);
     rc |= expect_eq_int("extended private SM source", sm->slots[0].src, source);
     rc |= expect_eq_int("extended private SM call kind", sm->slots[0].is_group, 0);
+    rc |= expect_eq_int("extended private service options", state.dmr_so, svc);
+    rc |= expect_eq_int("extended private SM service options", sm->slots[0].svc_bits, svc);
+    rc |= expect_eq_int("extended private emergency classification", strstr(state.call_string[0], "Emergency") != NULL,
+                        1);
     rc |= expect_eq_int("extended private voice active", sm->slots[0].voice_active, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_extended_private_encrypted_service_lockout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    const int target = 0x034567;
+    const int source = 0x040506;
+    int rc = 0;
+
+    rc |=
+        expect_eq_int("extended private encrypted fixture", init_retained_p1_call(&opts, &state, 0x1234, 0x010203), 1);
+    opts.trunk_tune_enc_calls = 0;
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, 0x4A);
+    set_bits_msb(lcw, 8, 8, 0x40);
+    set_bits_msb(lcw, 16, 8, 0x00); // Reserved octet must not make the call appear clear.
+    set_bits_msb(lcw, 24, 24, (unsigned)target);
+    set_bits_msb(lcw, 48, 24, (unsigned)source);
+
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("extended private encrypted remains tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_int("extended private encrypted no release", g_returns, 0);
+    rc |= expect_eq_int("extended private encrypted no follow-up retune", g_tunes, 1);
+    rc |= expect_eq_int("extended private encrypted service options", state.dmr_so, 0x40);
+    rc |= expect_eq_int("extended private encrypted SM service options", sm->slots[0].svc_bits, 0x40);
+    rc |= expect_eq_int("extended private encrypted classification", state.p25_crypto_state[0],
+                        DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq_int("extended private encrypted audio gate", state.p25_p2_audio_allowed[0], 0);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -514,6 +554,7 @@ main(void) {
 
     rc |= test_mfid90_regroup_reassigns_retained_call();
     rc |= test_extended_private_resolves_retained_identity();
+    rc |= test_extended_private_encrypted_service_lockout();
     rc |= test_telephone_resolves_retained_identity();
     rc |= test_telephone_after_missed_boundary_drops_old_source();
     rc |= test_rejected_lcw_stops_post_processing(0x00);
