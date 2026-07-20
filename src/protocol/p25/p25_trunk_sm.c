@@ -52,6 +52,7 @@ static void p25_sm_diagf(dsd_opts* opts, const dsd_state* state, const p25_sm_ct
 static void p25_voice_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot);
 static int p25_voice_other_slot_active(const p25_sm_ctx_t* ctx, const dsd_state* state, int other);
 static void p25_voice_clear_slot_burst(dsd_state* state, int slot);
+static int p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx);
 static void p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot,
                                                     const char* release_reason, const char* slot_diag,
                                                     const char* slot_log);
@@ -1984,7 +1985,7 @@ p25_grant_duplicate_starts_new_epoch(const p25_sm_ctx_t* ctx, const p25_sm_event
         return 0;
     }
     const int assignment_slot = p25_grant_logical_slot(ctx, route->slot);
-    return assignment_slot >= 0 && assignment_slot <= 1 && !ctx->slots[assignment_slot].voice_active;
+    return assignment_slot >= 0 && assignment_slot <= 1 && !p25_voice_slot_epoch_active(&ctx->slots[assignment_slot]);
 }
 
 static int
@@ -2587,6 +2588,13 @@ p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const 
     out->svc_bits = follows_completed_epoch ? P25_SM_SVC_UNKNOWN : slot_ctx->svc_bits;
 }
 
+static void
+p25_voice_start_preserve_assignment_source(const p25_sm_slot_ctx_t* slot_ctx, p25_sm_event_t* out) {
+    if (slot_ctx && out && !p25_source_id_known(out->src)) {
+        out->src = slot_ctx->src;
+    }
+}
+
 static int
 p25_voice_start_build_identity(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, const p25_sm_event_t* input,
                                p25_sm_event_t* out) {
@@ -2610,6 +2618,7 @@ p25_voice_start_build_identity(const p25_sm_ctx_t* ctx, const dsd_state* state, 
     if (!input->identity_valid) {
         p25_voice_start_fill_anonymous_identity(state, slot, slot_ctx, out);
     } else {
+        p25_voice_start_preserve_assignment_source(slot_ctx, out);
         // Phase 2 MAC_PTT exposes a 16-bit group-address field, but no
         // 24-bit private destination. Preserve an accepted private assignment
         // instead of reclassifying that field as an authoritative group.

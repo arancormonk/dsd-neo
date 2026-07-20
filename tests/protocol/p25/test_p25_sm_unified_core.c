@@ -263,6 +263,34 @@ test_authoritative_group_replaces_private_identity(void) {
 }
 
 static int
+test_inband_zero_source_preserves_grant_identity(void) {
+    for (int use_active = 0; use_active <= 1; use_active++) {
+        reset_test_state();
+        g_state.trunk_chan_map[0x1234] = 851500000;
+        g_state.p25_chan_tdma_explicit[1] = 2;
+
+        p25_sm_ctx_t ctx;
+        p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        ev = use_active ? p25_sm_ev_active_call(0, 1000, 0, 0, 1, 0) : p25_sm_ev_ptt_call(0, 1000, 0, 0, 1, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (!ctx.slots[0].voice_active || ctx.slots[0].src != 123 || g_state.lastsrc != 123) {
+            DSD_FPRINTF(stderr, "FAIL: Source-less in-band identity discarded the grant RID\n");
+            return 1;
+        }
+
+        ev = p25_sm_ev_end_call_at(0, 1000, 456, ctx.slots[0].last_start_m + 0.001);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (!ctx.slots[0].voice_active || ctx.slots[0].last_end_m > 0.0) {
+            DSD_FPRINTF(stderr, "FAIL: Delayed END bypassed the retained grant source guard\n");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 test_p2_resolved_crypto_survives_pending_active(void) {
     const struct {
         int svc_bits;
@@ -332,6 +360,16 @@ test_pending_crypto_uses_classification_deadline(void) {
     if (g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || ctx.slots[0].voice_active
         || ctx.slots[0].crypto_attempt_m <= 0.0 || ctx.t_hangtime_m > 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Pending crypto did not retain its classification-only deadline\n");
+        return 1;
+    }
+
+    const double classification_started_m = ctx.slots[0].crypto_attempt_m;
+    const double tune_started_m = ctx.t_tune_m;
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (fabs(ctx.slots[0].crypto_attempt_m - classification_started_m) > 1.0e-9
+        || fabs(ctx.t_tune_m - tune_started_m) > 1.0e-9 || ctx.slots[0].last_start_m <= ctx.slots[0].last_stop_m) {
+        DSD_FPRINTF(stderr, "FAIL: Repeated assignment restarted the pending classification epoch\n");
         return 1;
     }
 
@@ -1698,6 +1736,7 @@ main(void) {
     fail += test_ptt_voice_active();
     fail += test_private_ptt_preserves_grant_identity();
     fail += test_authoritative_group_replaces_private_identity();
+    fail += test_inband_zero_source_preserves_grant_identity();
     fail += test_p2_resolved_crypto_survives_pending_active();
     fail += test_pending_crypto_uses_classification_deadline();
     fail += test_p1_hdu_crypto_survives_identity_refinement();
