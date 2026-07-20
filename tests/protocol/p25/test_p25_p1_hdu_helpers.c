@@ -688,6 +688,7 @@ test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state(void) {
     rc |= expect_int("hdu resolver sees prior KID", g_resolve_entry_keyid, 0);
     rc |= expect_u64("hdu resolver sees prior MI", g_resolve_entry_mi, 0ULL);
     rc |= expect_int("good hdu xl flag", state.xl_is_hdu, 1);
+    rc |= expect_int("good hdu crypto freshness", state.p25_p1_hdu_crypto_fresh, 1);
     rc |= expect_int("good hdu aes lfsr", g_lfsr128_calls, 1);
 
     return rc;
@@ -706,6 +707,7 @@ test_hdu_nondefinitive_metadata_preserves_prior_tuple(void) {
     state.payload_keyid = 0x3456;
     state.payload_miP = 0x8877665544332211ULL;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    state.p25_p1_hdu_crypto_fresh = 1;
 
     hdu_handle_good_decode(&opts, &state, 0, 0, 0ULL, 0ULL, 0ULL);
 
@@ -717,6 +719,7 @@ test_hdu_nondefinitive_metadata_preserves_prior_tuple(void) {
     rc |= expect_u64("nondefinitive HDU preserves MI", state.payload_miP, 0x8877665544332211ULL);
     rc |=
         expect_int("nondefinitive HDU preserves classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("nondefinitive HDU clears freshness", state.p25_p1_hdu_crypto_fresh, 0);
     return rc;
 }
 

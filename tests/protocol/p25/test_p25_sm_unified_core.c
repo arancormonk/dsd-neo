@@ -223,7 +223,7 @@ test_private_ptt_preserves_grant_identity(void) {
         return 1;
     }
 
-    ev = p25_sm_ev_end_call_at(0, 0x4567, 0x010203, ctx.slots[0].last_active_m + 0.001);
+    ev = p25_sm_ev_end_call_at(0, 0x4567, 0x010203, ctx.slots[0].last_start_m + 0.001);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.slots[0].voice_active || !ctx.slots[0].grant_active || ctx.slots[0].last_end_m <= 0.0
         || ctx.t_hangtime_m <= 0.0) {
@@ -314,6 +314,43 @@ test_p2_resolved_crypto_survives_pending_active(void) {
 }
 
 static int
+test_pending_crypto_uses_classification_deadline(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ctx.config.hangtime_s = 0.0;
+    ctx.config.grant_timeout_s = 1.0;
+
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || ctx.slots[0].voice_active
+        || ctx.slots[0].crypto_attempt_m <= 0.0 || ctx.t_hangtime_m > 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Pending crypto did not retain its classification-only deadline\n");
+        return 1;
+    }
+
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].grant_active) {
+        DSD_FPRINTF(stderr, "FAIL: Zero hangtime released pending crypto before classification timeout\n");
+        return 1;
+    }
+
+    ctx.slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Pending crypto did not release on its classification timeout\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_p1_hdu_crypto_survives_identity_refinement(void) {
     const struct {
         int svc_bits;
@@ -365,6 +402,52 @@ test_p1_hdu_crypto_survives_identity_refinement(void) {
             DSD_FPRINTF(stderr, "FAIL: Phase 1 identity LCW discarded authoritative HDU crypto metadata\n");
             return 1;
         }
+    }
+    return 0;
+}
+
+static int
+test_p1_fresh_hdu_survives_missed_terminator(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.R = UINT64_C(0x0123456789ABCDEF);
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    const int algid = 0x81;
+    const int keyid = 0x5678;
+    const uint64_t mi = UINT64_C(0x1112131415161718);
+    g_state.p25_call_emergency[0] = 1;
+    g_state.p25_p1_hdu_crypto_fresh = 1;
+    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, 2000)
+        != DSD_P25_CRYPTO_DECRYPTABLE) {
+        DSD_FPRINTF(stderr, "FAIL: Missed-terminator HDU fixture did not resolve decryptable\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active_call(0, 2000, 0, 456, 1, 0x40);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || !ctx.slots[0].voice_active || ctx.slots[0].ota_tg != 2000
+        || ctx.slots[0].src != 456 || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_DECRYPTABLE
+        || g_state.payload_algid != algid || g_state.payload_keyid != keyid || g_state.payload_miP != mi
+        || !p25_crypto_audio_permitted(&g_opts, &g_state, 0) || g_state.p25_p1_hdu_crypto_fresh
+        || g_state.p25_call_emergency[0]) {
+        DSD_FPRINTF(stderr, "FAIL: Identity change after missed terminator discarded fresh HDU crypto\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active_call(0, 3000, 0, 789, 1, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].ota_tg != 3000 || ctx.slots[0].src != 789 || ctx.slots[0].voice_active
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || g_state.payload_algid != 0
+        || ctx.slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Consumed HDU freshness leaked crypto into a later epoch\n");
+        return 1;
     }
     return 0;
 }
@@ -1616,7 +1699,9 @@ main(void) {
     fail += test_private_ptt_preserves_grant_identity();
     fail += test_authoritative_group_replaces_private_identity();
     fail += test_p2_resolved_crypto_survives_pending_active();
+    fail += test_pending_crypto_uses_classification_deadline();
     fail += test_p1_hdu_crypto_survives_identity_refinement();
+    fail += test_p1_fresh_hdu_survives_missed_terminator();
     fail += test_p1_retained_hdu_waits_for_identity();
     fail += test_p1_retained_hdu_defers_lockout_attribution();
     fail += test_p1_pending_identity_restarts_crypto_without_hdu();

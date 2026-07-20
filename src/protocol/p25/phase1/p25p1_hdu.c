@@ -290,6 +290,9 @@ hdu_read_and_fec(dsd_opts* opts, dsd_state* state, char hex_data[20][6], char he
 
 static void
 hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, uint64_t mi) {
+    // Set this before resolution because an encrypted-call lockout can
+    // synchronously release the carrier and clear all Phase 1 crypto state.
+    state->p25_p1_hdu_crypto_fresh = algid != 0;
     (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, state->lasttg);
 }
 

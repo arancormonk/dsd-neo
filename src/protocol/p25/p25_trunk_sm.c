@@ -2412,6 +2412,27 @@ p25_voice_clear_state_source(dsd_state* state, int slot) {
 }
 
 static void
+p25_voice_clear_state_source_preserve_crypto(dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1) {
+        return;
+    }
+    const int algid = slot == 0 ? state->payload_algid : state->payload_algidR;
+    const int keyid = slot == 0 ? state->payload_keyid : state->payload_keyidR;
+    const uint64_t mi = slot == 0 ? state->payload_miP : state->payload_miN;
+
+    p25_voice_clear_state_source(state, slot);
+    if (slot == 0) {
+        state->payload_algid = algid;
+        state->payload_keyid = keyid;
+        state->payload_miP = mi;
+    } else {
+        state->payload_algidR = algid;
+        state->payload_keyidR = keyid;
+        state->payload_miN = mi;
+    }
+}
+
+static void
 p25_voice_flush_partial_audio(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
     if (!ctx->vc_is_tdma) {
         return;
@@ -2481,6 +2502,22 @@ p25_voice_close_slot_media_preserve_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd
     }
     ctx->slots[slot].voice_active = 0;
     ctx->slots[slot].last_active_m = 0.0;
+}
+
+static void
+p25_voice_close_slot_media_preserve_crypto(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+    if (!ctx || slot < 0 || slot > 1) {
+        return;
+    }
+    if (state) {
+        p25_voice_flush_partial_audio(ctx, opts, state, slot);
+        p25_p2_audio_ring_reset(state, slot);
+        p25_voice_close_slot_output(opts, state, slot);
+        p25_voice_clear_state_source_preserve_crypto(state, slot);
+    }
+    ctx->slots[slot].voice_active = 0;
+    ctx->slots[slot].last_active_m = 0.0;
+    ctx->slots[slot].src = 0;
 }
 
 static void
@@ -2617,6 +2654,13 @@ p25_p1_identity_clear(dsd_state* state) {
     }
 }
 
+static void
+p25_p1_hdu_crypto_consume_identity(const p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* input) {
+    if (ctx && state && input && !ctx->vc_is_tdma && input->identity_valid) {
+        state->p25_p1_hdu_crypto_fresh = 0;
+    }
+}
+
 static p25_voice_start_changes_t
 p25_voice_start_classify_changes(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* call_ev) {
     p25_voice_start_changes_t changes = {0};
@@ -2634,8 +2678,9 @@ p25_voice_start_has_current_p1_crypto(const p25_sm_ctx_t* ctx, const dsd_state* 
         return 0;
     }
 
-    // Phase 1 grant and END handling clear the tuple, so a definitive ALGID on
-    // the traffic channel was resolved afterward by the current epoch's HDU.
+    // A definitive ALGID is safe to retain within the current identity, after
+    // an explicit boundary, or when a fresh HDU proves it belongs to the
+    // transmission that is now occupying a carrier with a missed terminator.
     return state->payload_algid != 0
            && (p25_crypto_audio_ready(state, 0) || state->p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
 }
@@ -2650,7 +2695,8 @@ p25_voice_start_should_preserve_p1_crypto(const p25_sm_ctx_t* ctx, const dsd_sta
     // HDU belongs to the transmission currently occupying the carrier, even
     // when the retained assignment still names the preceding target. Preserve
     // its tuple while policy and media wait for an identity-bearing LCW.
-    return state->p25_p1_identity_pending || !changes->new_epoch || !input->identity_valid;
+    return state->p25_p1_identity_pending || state->p25_p1_hdu_crypto_fresh || !changes->new_epoch
+           || !input->identity_valid;
 }
 
 static int
@@ -2705,7 +2751,11 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
 
     if (changes->new_epoch && slot_ctx->voice_active) {
         (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
-        p25_voice_close_slot_media(ctx, opts, state, slot);
+        if (changes->preserve_crypto_classification) {
+            p25_voice_close_slot_media_preserve_crypto(ctx, opts, state, slot);
+        } else {
+            p25_voice_close_slot_media(ctx, opts, state, slot);
+        }
     }
 
     const int target_id = p25_grant_target_id(call_ev, decision);
@@ -2761,6 +2811,7 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     }
 
     if (!changes.requires_update) {
+        p25_p1_hdu_crypto_consume_identity(ctx, state, input);
         return 1;
     }
 
@@ -2776,6 +2827,7 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     }
 
     p25_voice_start_commit_identity(ctx, opts, state, slot, &call_ev, &decision, &eval_ctx, &changes, now_m);
+    p25_p1_hdu_crypto_consume_identity(ctx, state, input);
     return p25_voice_start_finish_p1_identity(ctx, opts, state, slot, &call_ev);
 }
 
@@ -2832,7 +2884,13 @@ p25_voice_start_wait_for_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
     ctx->slots[slot].voice_active = 0;
     ctx->slots[slot].last_active_m = 0.0;
     ctx->t_voice_m = 0.0;
-    ctx->t_hangtime_m = inactive_since_m;
+    if (state->p25_crypto_state[slot] == DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+        if (ctx->slots[slot].crypto_attempt_m <= 0.0) {
+            ctx->slots[slot].crypto_attempt_m = now_m;
+        }
+    } else {
+        ctx->t_hangtime_m = inactive_since_m;
+    }
     p25_sm_diagf(opts, state, ctx, "voice_classification_wait", "kind=%s slot=%d crypto_state=%d identity_pending=%d",
                  why, slot, (int)state->p25_crypto_state[slot], identity_pending);
     p25_sm_update_ui_mode(ctx, state);

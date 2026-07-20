@@ -206,6 +206,7 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
     }
     if (phase == DSD_P25_CRYPTO_PHASE1) {
         slot = 0;
+        state->p25_p1_hdu_crypto_fresh = 0;
     }
 
     DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));

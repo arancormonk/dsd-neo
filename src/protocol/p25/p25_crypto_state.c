@@ -19,6 +19,7 @@ p25_crypto_reset_slot(dsd_state* state, int slot) {
         state->payload_algid = 0;
         state->payload_keyid = 0;
         state->payload_miP = 0ULL;
+        state->p25_p1_hdu_crypto_fresh = 0;
     } else {
         state->payload_algidR = 0;
         state->payload_keyidR = 0;
