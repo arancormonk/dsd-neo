@@ -246,10 +246,12 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
     if (!state || !p25_crypto_slot_valid(slot) || (phase != DSD_P25_CRYPTO_PHASE1 && phase != DSD_P25_CRYPTO_PHASE2)) {
         return;
     }
+    // The conflict record is Phase 1-only. A new call in either phase must not
+    // inherit it from a retained carrier or a missed terminator.
+    p25_crypto_p1_clear_conflict(state);
     if (phase == DSD_P25_CRYPTO_PHASE1) {
         slot = 0;
         state->p25_p1_hdu_crypto_fresh = 0;
-        p25_crypto_p1_clear_conflict(state);
     }
 
     DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
@@ -302,10 +304,10 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
     }
     slot = phase == DSD_P25_CRYPTO_PHASE1 ? 0 : slot;
 
-    if (phase == DSD_P25_CRYPTO_PHASE1 && state->p25_p1_identity_pending) {
-        // A new retained-carrier transmission cannot inherit a candidate from
-        // the preceding call. Its LCW will decide whether this observation is
-        // contradictory after identity becomes authoritative.
+    if (phase == DSD_P25_CRYPTO_PHASE2 || state->p25_p1_identity_pending) {
+        // Phase 2 cannot inherit a Phase 1-only quarantine. Likewise, a new
+        // retained-carrier Phase 1 transmission must wait for its own LCW to
+        // decide whether this observation is contradictory.
         p25_crypto_p1_clear_conflict(state);
     }
 
@@ -333,7 +335,11 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
                                               : p25_crypto_classify_metadata(state, phase, slot, algid);
     p25_crypto_apply_resolution(opts, state, phase, slot, algid, keyid, mi, talkgroup, &previous, resolved);
     if (defer_clear_conflict && opts) {
-        p25_sm_emit_crypto_pending(opts, state, slot);
+        if (previous.state == DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+            p25_sm_emit_crypto_pending(opts, state, slot);
+        } else {
+            p25_sm_emit_crypto_pending_epoch(opts, state, slot);
+        }
     }
     return resolved;
 }

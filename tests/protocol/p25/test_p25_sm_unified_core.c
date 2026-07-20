@@ -675,9 +675,9 @@ test_p1_retained_hdu_defers_lockout_attribution(void) {
 }
 
 static int
-setup_p1_retained_clear_conflict(p25_sm_ctx_t* ctx) {
+setup_p1_retained_clear_conflict(p25_sm_ctx_t* ctx, int follow_encrypted) {
     reset_test_state();
-    g_opts.trunk_tune_enc_calls = 0;
+    g_opts.trunk_tune_enc_calls = follow_encrypted;
     g_state.trunk_chan_map[0x1234] = 851500000;
 
     p25_sm_init_ctx(ctx, &g_opts, &g_state);
@@ -718,7 +718,7 @@ setup_p1_retained_clear_conflict(p25_sm_ctx_t* ctx) {
 static int
 test_p1_clear_identity_quarantines_conflicting_hdu(void) {
     p25_sm_ctx_t ctx;
-    if (setup_p1_retained_clear_conflict(&ctx) != 0) {
+    if (setup_p1_retained_clear_conflict(&ctx, 0) != 0) {
         return 1;
     }
 
@@ -743,7 +743,7 @@ test_p1_clear_identity_quarantines_conflicting_hdu(void) {
         return 1;
     }
 
-    if (setup_p1_retained_clear_conflict(&ctx) != 0) {
+    if (setup_p1_retained_clear_conflict(&ctx, 0) != 0) {
         return 1;
     }
     if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x2122232425262728), 3069)
@@ -759,7 +759,7 @@ test_p1_clear_identity_quarantines_conflicting_hdu(void) {
         return 1;
     }
 
-    if (setup_p1_retained_clear_conflict(&ctx) != 0) {
+    if (setup_p1_retained_clear_conflict(&ctx, 0) != 0) {
         return 1;
     }
     ctx.slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
@@ -767,6 +767,70 @@ test_p1_clear_identity_quarantines_conflicting_hdu(void) {
     if (ctx.state != P25_SM_ON_CC || g_return_requests != 1 || encrypted_call_cache_has(3069U, 1)
         || g_state.p25_p1_crypto_conflict.active) {
         DSD_FPRINTF(stderr, "FAIL: Unconfirmed Phase 1 conflict timeout produced encrypted-call side effects\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_follow_mode_expires_clear_conflict(void) {
+    p25_sm_ctx_t ctx;
+    if (setup_p1_retained_clear_conflict(&ctx, 1) != 0) {
+        return 1;
+    }
+
+    ctx.slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].grant_active || !ctx.slots[0].voice_active
+        || ctx.slots[0].crypto_attempt_m > 0.0 || g_state.p25_p1_crypto_conflict.active
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || g_state.payload_algid != 0
+        || g_state.payload_keyid != 0 || !p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Encrypted-follow mode did not expire and release a clear conflict\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_clear_conflict_restarts_deadline(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 3069, 4009646, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    g_state.dmr_so = 0x04;
+    g_state.p25_service_options_valid[0] = 1;
+
+    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708),
+                           3069)
+            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || ctx->slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Initial clear conflict did not start a classification deadline\n");
+        return 1;
+    }
+    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, UINT64_C(0x1112131415161718), 3069)
+        != DSD_P25_CRYPTO_CLEAR) {
+        DSD_FPRINTF(stderr, "FAIL: Clear recovery did not retire the initial conflict epoch\n");
+        return 1;
+    }
+
+    const double stale_deadline_m = dsd_time_now_monotonic_s() - ctx->config.grant_timeout_s - 0.1;
+    ctx->slots[0].crypto_attempt_m = stale_deadline_m;
+    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x2122232425262728),
+                           3069)
+            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || ctx->slots[0].crypto_attempt_m <= stale_deadline_m + ctx->config.grant_timeout_s) {
+        DSD_FPRINTF(stderr, "FAIL: Fresh clear conflict reused the preceding epoch deadline\n");
+        return 1;
+    }
+    p25_sm_tick_ctx(ctx, &g_opts, &g_state);
+    if (ctx->state != P25_SM_TUNED || g_return_requests != 0 || !g_state.p25_p1_crypto_conflict.active) {
+        DSD_FPRINTF(stderr, "FAIL: Fresh clear conflict expired immediately after clear recovery\n");
         return 1;
     }
     return 0;
@@ -1931,6 +1995,8 @@ main(void) {
     fail += test_p1_retained_hdu_waits_for_identity();
     fail += test_p1_retained_hdu_defers_lockout_attribution();
     fail += test_p1_clear_identity_quarantines_conflicting_hdu();
+    fail += test_p1_follow_mode_expires_clear_conflict();
+    fail += test_p1_clear_conflict_restarts_deadline();
     fail += test_p1_pending_identity_restarts_crypto_without_hdu();
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();

@@ -243,6 +243,32 @@ test_phase1_clear_conflict_requires_corroboration(void) {
         p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE2, 0, 0xA0, 0x0064, UINT64_C(0x6162636465666768), 3069),
         DSD_P25_CRYPTO_BLOCKED);
     rc |= expect_int("Phase 2 leaves P1 candidate clear", state.p25_p1_crypto_conflict.active, 0);
+
+    state.p25_p1_crypto_conflict.active = 1U;
+    state.p25_p1_crypto_conflict.algid = 0xA0U;
+    state.p25_p1_crypto_conflict.keyid = 0x0064U;
+    state.R = UINT64_C(0x0102030405060708);
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE2, 0, 0x40, 0);
+    rc |= expect_int("Phase 2 begin clears retained P1 candidate", state.p25_p1_crypto_conflict.active, 0);
+    rc |= expect_int(
+        "Phase 2 decryptable tuple after retained candidate",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x1001, UINT64_C(0x7172737475767778), 3069),
+        DSD_P25_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("Phase 2 metadata is not suppressed by retained P1 candidate",
+                     p25_crypto_metadata_is_confirmed_encrypted(&state, 0), 1);
+    rc |= expect_int("Phase 2 decryptable audio is not suppressed by retained P1 candidate",
+                     p25_crypto_audio_permitted(&opts, &state, 0), 1);
+
+    state.p25_p1_crypto_conflict.active = 1U;
+    state.p25_p1_crypto_conflict.algid = 0x84U;
+    state.p25_p1_crypto_conflict.keyid = 0x1234U;
+    rc |= expect_int(
+        "Phase 2 resolve clears retained P1 candidate without begin",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, UINT64_C(0x8182838485868788), 3069),
+        DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("Phase 2 resolve retired retained P1 candidate", state.p25_p1_crypto_conflict.active, 0);
+    rc |= expect_int("Phase 2 clear audio survives retained P1 candidate", p25_crypto_audio_permitted(&opts, &state, 0),
+                     1);
     return rc;
 }
 

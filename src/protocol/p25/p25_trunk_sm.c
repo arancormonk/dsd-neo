@@ -2747,7 +2747,7 @@ p25_voice_start_finish_p1_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
         return 1;
     }
     if (p25_crypto_p1_defer_clear_conflict(state, call_ev->svc_bits)) {
-        p25_sm_event_t pending = p25_sm_ev_crypto_pending(0);
+        p25_sm_event_t pending = p25_sm_ev_crypto_pending_epoch(0);
         handle_crypto_pending(ctx, opts, state, &pending);
         return 1;
     }
@@ -3468,6 +3468,11 @@ handle_cc_sync(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+static int
+p25_crypto_pending_deadline_reused(const p25_sm_event_t* ev, dsd_p25_crypto_state previous, double crypto_attempt_m) {
+    return ev && !ev->crypto_new_epoch && previous == DSD_P25_CRYPTO_ENCRYPTED_PENDING && crypto_attempt_m > 0.0;
+}
+
 static void
 handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     if (!ctx || !state || !ev || ev->slot < 0 || ev->slot > 1) {
@@ -3491,7 +3496,7 @@ handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const
     }
 
     ctx->slots[slot].voice_active = 0;
-    if (previous == DSD_P25_CRYPTO_ENCRYPTED_PENDING && ctx->slots[slot].crypto_attempt_m > 0.0) {
+    if (p25_crypto_pending_deadline_reused(ev, previous, ctx->slots[slot].crypto_attempt_m)) {
         return;
     }
 
@@ -4814,9 +4819,41 @@ p25_sm_expired_slot_has_active_companion(const p25_sm_ctx_t* ctx, const dsd_stat
 }
 
 static int
+p25_sm_recover_expired_followed_p1_conflict(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m,
+                                            double grant_timeout) {
+    if (!ctx || !opts || !state || opts->trunk_tune_enc_calls == 0 || ctx->vc_is_tdma
+        || !state->p25_p1_crypto_conflict.active || !p25_sm_crypto_slot_expired(ctx, state, 0, now_m, grant_timeout)) {
+        return 0;
+    }
+
+    const int algid = state->payload_algid;
+    const int keyid = state->payload_keyid;
+    const int resume_voice = ctx->slots[0].grant_active && ctx->t_voice_m > 0.0;
+    p25_crypto_begin_voice_call(state, DSD_P25_CRYPTO_PHASE1, 0, ctx->slots[0].svc_bits, 1);
+    ctx->slots[0].crypto_attempt_m = 0.0;
+    if (resume_voice) {
+        ctx->slots[0].voice_active = 1;
+        ctx->slots[0].last_active_m = now_m;
+        ctx->t_voice_m = now_m;
+        ctx->t_hangtime_m = 0.0;
+    }
+    p25_sm_diagf(opts, state, ctx, "crypto_conflict_timeout",
+                 "slot=0 algid=0x%02X keyid=0x%04X freq=%ld tg=%d action=resume-clear", algid, keyid, ctx->vc_freq_hz,
+                 ctx->vc_tg);
+    sm_log(opts, state, "crypto-conflict-timeout-clear");
+    return 1;
+}
+
+static int
 p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m,
                                   double grant_timeout) {
-    if (!ctx || !opts || !state || opts->trunk_tune_enc_calls != 0) {
+    if (!ctx || !opts || !state) {
+        return 0;
+    }
+    if (p25_sm_recover_expired_followed_p1_conflict(ctx, opts, state, now_m, grant_timeout)) {
+        return 0;
+    }
+    if (opts->trunk_tune_enc_calls != 0) {
         return 0;
     }
 
@@ -5099,6 +5136,12 @@ p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid
 void
 p25_sm_emit_crypto_pending(dsd_opts* opts, dsd_state* state, int slot) {
     p25_sm_event_t ev = p25_sm_ev_crypto_pending(slot);
+    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+}
+
+void
+p25_sm_emit_crypto_pending_epoch(dsd_opts* opts, dsd_state* state, int slot) {
+    p25_sm_event_t ev = p25_sm_ev_crypto_pending_epoch(slot);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
 }
 
