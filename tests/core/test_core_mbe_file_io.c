@@ -652,6 +652,34 @@ test_sdrtrunk_json_encryption_metadata_updates_payload_state(void) {
 }
 
 static int
+test_sdrtrunk_json_p25p2_encryption_metadata_updates_event(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json[] =
+        "{\"version\":\"2\",\"protocol\":\"APCO25-PHASE2\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"132\",\"encryption_key_id\":\"8738\","
+        "\"encryption_mi\":\"0011223344556677\",\"to\":\"55\",\"from\":\"66\",\"time\":\"1700000000000\"}";
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    const Event_History* item = &history[0].Event_History_Items[0];
+    rc |= expect_int("sdrtrunk p25p2 crypto state", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("sdrtrunk p25p2 event encrypted", item->enc, 1);
+    rc |= expect_int("sdrtrunk p25p2 event algid", item->enc_alg, 0x84);
+    rc |= expect_u16("sdrtrunk p25p2 event key id", item->enc_key, 0x2222);
+    rc |= expect_u64("sdrtrunk p25p2 event mi", item->mi, 0x0011223344556677ULL);
+
+    return rc;
+}
+
+static int
 test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -1790,6 +1818,7 @@ main(void) {
     rc |= test_parse_raw_user_string_guards_and_bounds();
     rc |= test_sdrtrunk_json_metadata_protocols_and_time();
     rc |= test_sdrtrunk_json_encryption_metadata_updates_payload_state();
+    rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file();
     rc |= test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records();

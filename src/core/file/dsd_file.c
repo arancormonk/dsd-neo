@@ -1795,6 +1795,18 @@ sdrtrunk_json_log_keystream_ready(const dsd_opts* opts, uint8_t ks_available, ui
     }
 }
 
+static void
+sdrtrunk_json_classify_p25_crypto(dsd_state* state, const sdrtrunk_json_context* ctx) {
+    if (!DSD_SYNC_IS_P25(state->lastsynctype) || ctx->alg_id == 0) {
+        return;
+    }
+    if (ctx->alg_id == 0x80) {
+        state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        return;
+    }
+    state->p25_crypto_state[0] = ctx->ks_available ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_BLOCKED;
+}
+
 static int
 sdrtrunk_json_handle_mi(dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
                         sdrtrunk_json_context* ctx) {
@@ -1825,6 +1837,7 @@ sdrtrunk_json_handle_mi(dsd_opts* opts, dsd_state* state, const char* token, cha
     }
 
     ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, iv_str);
+    sdrtrunk_json_classify_p25_crypto(state, ctx);
     sdrtrunk_json_log_keystream_ready(opts, ctx->ks_available, ctx->alg_id);
     ctx->ks_idx = 0;
     ctx->imbe_counter = 0;
