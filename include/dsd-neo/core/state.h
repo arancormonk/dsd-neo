@@ -46,6 +46,13 @@ typedef enum DSD_ATTR_PACKED {
     DSD_P25_CRYPTO_BLOCKED = 4,
 } dsd_p25_crypto_state;
 
+/** Phase 1 traffic crypto tuple awaiting corroboration against clear service options. */
+typedef struct {
+    uint16_t keyid;
+    uint8_t algid;
+    uint8_t active;
+} dsd_p25_p1_crypto_conflict_state;
+
 /** Phase 2 ESS identity change held until boundary voice has drained. */
 typedef struct {
     uint64_t mi;
@@ -693,6 +700,8 @@ struct dsd_state {
     int p25_p1_identity_pending;
     // Definitive Phase 1 HDU crypto arrived after the last authoritative LCW identity.
     int p25_p1_hdu_crypto_fresh;
+    // One non-clear HDU/LDU2 tuple contradicted explicit-clear Phase 1 service options.
+    dsd_p25_p1_crypto_conflict_state p25_p1_crypto_conflict;
     // Sticky Phase 2 media rejection, cleared only after the slot receives an accepted assignment/activity.
     int p25_p2_media_rejected[2];
     // ESS identity changes staged until the paired-timeslot audio drain completes.

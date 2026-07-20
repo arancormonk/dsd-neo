@@ -57,6 +57,7 @@ static void p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts*
                                                     const char* release_reason, const char* slot_diag,
                                                     const char* slot_log);
 static void handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
+static void handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
 #ifdef USE_RADIO
 static int p25_sm_hold_release_for_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state,
                                                       const char* reason, double now_m);
@@ -2745,6 +2746,11 @@ p25_voice_start_finish_p1_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state*
     if (state->payload_algid == 0) {
         return 1;
     }
+    if (p25_crypto_p1_defer_clear_conflict(state, call_ev->svc_bits)) {
+        p25_sm_event_t pending = p25_sm_ev_crypto_pending(0);
+        handle_crypto_pending(ctx, opts, state, &pending);
+        return 1;
+    }
     if (state->p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED) {
         const int target = call_ev->is_group ? call_ev->tg : call_ev->dst;
         p25_sm_event_t enc = p25_sm_ev_enc(0, state->payload_algid, state->payload_keyid, target);
@@ -3474,6 +3480,14 @@ handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const
     p25_crypto_mark_encrypted_pending(state, slot);
     if (state->p25_crypto_state[slot] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
         return;
+    }
+
+    if (!ctx->vc_is_tdma && slot == 0 && state->p25_p1_crypto_conflict.active) {
+        const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[0];
+        const int target = slot_ctx->is_group ? slot_ctx->ota_tg : slot_ctx->dst;
+        p25_sm_diagf(opts, state, ctx, "crypto_conflict_deferred",
+                     "slot=0 algid=0x%02X keyid=0x%04X svc=0x%02X target=%d", state->payload_algid,
+                     state->payload_keyid, slot_ctx->svc_bits, target);
     }
 
     ctx->slots[slot].voice_active = 0;
@@ -4766,8 +4780,15 @@ p25_sm_crypto_slot_expired(const p25_sm_ctx_t* ctx, const dsd_state* state, int 
     return started_m > 0.0 && (now_m - started_m) >= grant_timeout;
 }
 
-static void
+static int
 p25_sm_block_expired_crypto_slot(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+    if (!ctx->vc_is_tdma && slot == 0 && state->p25_p1_crypto_conflict.active) {
+        ctx->slots[slot].voice_active = 0;
+        p25_sm_diagf(opts, state, ctx, "crypto_conflict_timeout", "slot=0 algid=0x%02X keyid=0x%04X freq=%ld tg=%d",
+                     state->payload_algid, state->payload_keyid, ctx->vc_freq_hz, ctx->vc_tg);
+        sm_log(opts, state, "crypto-conflict-timeout");
+        return 1;
+    }
     p25_crypto_block_pending(state, slot);
     ctx->slots[slot].voice_active = 0;
     if (ctx->vc_is_tdma) {
@@ -4776,6 +4797,7 @@ p25_sm_block_expired_crypto_slot(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     p25_sm_diagf(opts, state, ctx, "crypto_classification_timeout", "slot=%d freq=%ld tg=%d", slot, ctx->vc_freq_hz,
                  ctx->vc_tg);
     sm_log(opts, state, "crypto-classify-timeout");
+    return 0;
 }
 
 static int
@@ -4800,6 +4822,7 @@ p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
 
     int expired[2] = {0, 0};
     int expired_any = 0;
+    int conflict_expired = 0;
     const int slot_count = ctx->vc_is_tdma ? 2 : 1;
     for (int slot = 0; slot < slot_count; slot++) {
         if (!p25_sm_crypto_slot_expired(ctx, state, slot, now_m, grant_timeout)) {
@@ -4808,7 +4831,7 @@ p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
 
         expired[slot] = 1;
         expired_any = 1;
-        p25_sm_block_expired_crypto_slot(ctx, opts, state, slot);
+        conflict_expired |= p25_sm_block_expired_crypto_slot(ctx, opts, state, slot);
     }
 
     if (!expired_any) {
@@ -4818,7 +4841,7 @@ p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
         return 0;
     }
 
-    do_release(ctx, opts, state, "grant-timeout", 0);
+    do_release(ctx, opts, state, conflict_expired ? "crypto-conflict-timeout" : "grant-timeout", 0);
     return 1;
 }
 

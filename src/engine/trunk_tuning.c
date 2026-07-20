@@ -131,6 +131,7 @@ dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_audio_allowed[1] = 0;
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
+    DSD_MEMSET(&state->p25_p1_crypto_conflict, 0, sizeof(state->p25_p1_crypto_conflict));
     DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));
     state->p25_call_is_packet[0] = 0;
     state->p25_call_is_packet[1] = 0;

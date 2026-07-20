@@ -699,6 +699,7 @@ test_ldu1_softid_alias_state(void) {
     state.dmr_alias_block_len[0] = 2;
     state.lastsrc = 2468;
     state.payload_algid = 0xAA;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     opts.trunk_tune_enc_calls = 0;
     ctx.lsd_hex1 = 0x19;
     ctx.lsd_hex2 = 0x7F;
@@ -711,6 +712,27 @@ test_ldu1_softid_alias_state(void) {
     rc |= expect_int("softid encrypted policy upserts", g_policy_upsert_calls, 2);
     rc |= expect_cstr("softid encrypted no-key mode", g_last_policy_mode, "DE");
     rc |= expect_cstr("softid invalid alias name empty", g_last_policy_name, "");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    reset_hook_counters();
+    state.dmr_alias_format[0] = 0x02;
+    state.dmr_alias_block_len[0] = 2;
+    state.lastsrc = 3069;
+    state.payload_algid = 0xA0;
+    state.payload_keyid = 0x0064;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    state.p25_p1_crypto_conflict.active = 1U;
+    state.p25_p1_crypto_conflict.algid = 0xA0U;
+    state.p25_p1_crypto_conflict.keyid = 0x0064U;
+    opts.trunk_tune_enc_calls = 0;
+    ctx.lsd_hex1 = 0x41;
+    ctx.lsd_hex2 = 0x42;
+    ctx.lsd1_okay = 1;
+    ctx.lsd2_okay = 1;
+    p25p1_ldu1_handle_softid(&opts, &state, &ctx);
+    rc |= expect_cstr("softid pending conflict remains clear mode", g_last_policy_mode, "D");
 
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&ctx, 0, sizeof(ctx));

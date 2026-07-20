@@ -432,7 +432,7 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
     if (tsrc != 0) {
         const char* mode = "D";
         dsd_tg_policy_entry alias_entry;
-        if (state->payload_algid != 0x80 && opts->trunk_tune_enc_calls == 0 && state->R == 0) {
+        if (p25_crypto_metadata_is_confirmed_encrypted(state, 0) && opts->trunk_tune_enc_calls == 0 && state->R == 0) {
             mode = "DE";
         }
         if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)

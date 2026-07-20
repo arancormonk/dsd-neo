@@ -876,6 +876,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_p2_active_slot = -1;
     state->p25_p1_identity_pending = 0;
     state->p25_p1_hdu_crypto_fresh = 0;
+    DSD_MEMSET(&state->p25_p1_crypto_conflict, 0, sizeof(state->p25_p1_crypto_conflict));
     DSD_MEMSET(state->p25_p2_media_rejected, 0, sizeof(state->p25_p2_media_rejected));
     DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     state->p25_cc_is_tdma =

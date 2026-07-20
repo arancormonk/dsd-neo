@@ -107,6 +107,9 @@ main(void) {
     state->payload_keyidR = 0x5678;
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state->p25_p1_hdu_crypto_fresh = 1;
+    state->p25_p1_crypto_conflict.active = 1U;
+    state->p25_p1_crypto_conflict.algid = 0xA0U;
+    state->p25_p1_crypto_conflict.keyid = 0x0064U;
     state->p25_policy_tg[0] = 0x1234U;
     state->p25_policy_tg[1] = 0x5678U;
     state->p25_mac_frag[0].active = 1U;
@@ -174,7 +177,9 @@ main(void) {
         || state->payload_miP != 0ULL || state->payload_algid != 0 || state->payload_algidR != 0
         || state->payload_keyid != 0 || state->payload_keyidR != 0
         || state->p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN || state->p25_crypto_state[1] != DSD_P25_CRYPTO_UNKNOWN
-        || state->p25_p1_hdu_crypto_fresh != 0 || state->p25_policy_tg[0] != 0U || state->p25_policy_tg[1] != 0U) {
+        || state->p25_p1_hdu_crypto_fresh != 0 || state->p25_p1_crypto_conflict.active != 0U
+        || state->p25_p1_crypto_conflict.algid != 0U || state->p25_p1_crypto_conflict.keyid != 0U
+        || state->p25_policy_tg[0] != 0U || state->p25_policy_tg[1] != 0U) {
         DSD_FPRINTF(stderr, "initState did not clear payload crypto metadata\n");
         freeState(state);
         free(state);

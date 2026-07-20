@@ -168,6 +168,85 @@ test_begin_and_sticky_unknown(void) {
 }
 
 static int
+test_phase1_clear_conflict_requires_corroboration(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture(&opts, &state);
+    opts.unmute_encrypted_p25 = 1;
+
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
+    state.dmr_so = 0x04;
+    state.p25_service_options_valid[0] = 1;
+
+    int rc = 0;
+    rc |= expect_int(
+        "first clear-conflict tuple stays pending",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708), 3069),
+        DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("first clear-conflict tuple arms candidate", state.p25_p1_crypto_conflict.active, 1);
+    rc |= expect_int("clear-conflict candidate ALGID", state.p25_p1_crypto_conflict.algid, 0xA0);
+    rc |= expect_int("clear-conflict candidate KID", state.p25_p1_crypto_conflict.keyid, 0x0064);
+    rc |= expect_int("pending conflict is not confirmed", p25_crypto_metadata_is_confirmed_encrypted(&state, 0), 0);
+    rc |=
+        expect_int("pending conflict overrides explicit audio unmute", p25_crypto_audio_permitted(&opts, &state, 0), 0);
+
+    rc |= expect_int("ALGID zero does not confirm conflict",
+                     p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0, 0, 0, 3069),
+                     DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("ALGID zero preserves conflict candidate", state.p25_p1_crypto_conflict.active, 1);
+
+    rc |= expect_int(
+        "different tuple replaces conflict candidate",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x1234, UINT64_C(0x1112131415161718), 3069),
+        DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("replacement candidate ALGID", state.p25_p1_crypto_conflict.algid, 0x84);
+    rc |= expect_int("replacement candidate KID", state.p25_p1_crypto_conflict.keyid, 0x1234);
+
+    rc |= expect_int(
+        "matching second tuple confirms encryption",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x1234, UINT64_C(0x2122232425262728), 3069),
+        DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("confirmed tuple clears candidate", state.p25_p1_crypto_conflict.active, 0);
+    rc |= expect_int("confirmed tuple is encrypted", p25_crypto_metadata_is_confirmed_encrypted(&state, 0), 1);
+    rc |= expect_int("confirmed blocked tuple restores configured unmute", p25_crypto_audio_permitted(&opts, &state, 0),
+                     1);
+
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
+    state.dmr_so = 0x04;
+    state.p25_service_options_valid[0] = 1;
+    (void)p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x3132333435363738), 3069);
+    rc |= expect_int(
+        "clear ALGID resolves quarantined tuple",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, UINT64_C(0x4142434445464748), 3069),
+        DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_int("clear ALGID clears candidate", state.p25_p1_crypto_conflict.active, 0);
+
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
+    state.dmr_so = 0x04;
+    state.p25_service_options_valid[0] = 1;
+    state.p25_p1_identity_pending = 1;
+    rc |= expect_int(
+        "identity-pending tuple remains authoritative until LCW",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x5152535455565758), 3069),
+        DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("identity-pending tuple does not use stale clear service", state.p25_p1_crypto_conflict.active, 0);
+    state.p25_p1_identity_pending = 0;
+    rc |= expect_int("accepted clear LCW defers retained tuple", p25_crypto_p1_defer_clear_conflict(&state, 0x04), 1);
+    rc |= expect_int("retained tuple becomes pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+
+    p25_crypto_reset_slot(&state, 0);
+    rc |= expect_int("slot reset clears conflict", state.p25_p1_crypto_conflict.active, 0);
+    state.dmr_so = 0x04;
+    state.p25_service_options_valid[0] = 1;
+    rc |= expect_int(
+        "Phase 2 bypasses Phase 1 conflict policy",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE2, 0, 0xA0, 0x0064, UINT64_C(0x6162636465666768), 3069),
+        DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("Phase 2 leaves P1 candidate clear", state.p25_p1_crypto_conflict.active, 0);
+    return rc;
+}
+
+static int
 test_algorithm_and_manual_key_resolution(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -439,6 +518,7 @@ main(void) {
     rc |= test_explicit_audio_unmute_respects_lockout();
     rc |= test_phase1_resolution_does_not_override_phase2_gate();
     rc |= test_begin_and_sticky_unknown();
+    rc |= test_phase1_clear_conflict_requires_corroboration();
     rc |= test_algorithm_and_manual_key_resolution();
     rc |= test_imported_key_activation_is_slot_aware();
     rc |= test_slot_local_transition_purge_and_mi_refresh();
