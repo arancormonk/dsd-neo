@@ -2569,9 +2569,15 @@ p25_voice_start_source_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_e
 }
 
 static int
-p25_voice_start_begins_new_epoch(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
-    return !p25_voice_slot_epoch_active(slot_ctx) || p25_voice_start_target_changed(slot_ctx, ev)
-           || p25_voice_start_source_changed(slot_ctx, ev);
+p25_voice_start_is_p2_ptt(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev) {
+    return ctx && ev && ctx->vc_is_tdma && ev->type == P25_SM_EV_PTT;
+}
+
+static int
+p25_voice_start_begins_new_epoch(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_t* slot_ctx,
+                                 const p25_sm_event_t* input, const p25_sm_event_t* call_ev) {
+    return p25_voice_start_is_p2_ptt(ctx, input) || !p25_voice_slot_epoch_active(slot_ctx)
+           || p25_voice_start_target_changed(slot_ctx, call_ev) || p25_voice_start_source_changed(slot_ctx, call_ev);
 }
 
 static int
@@ -2600,9 +2606,21 @@ p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const 
 
 static void
 p25_voice_start_preserve_assignment_source(const p25_sm_slot_ctx_t* slot_ctx, p25_sm_event_t* out) {
-    if (slot_ctx && out && !p25_source_id_known(out->src)) {
+    if (slot_ctx && out && !p25_source_id_known(out->src) && !p25_voice_start_target_changed(slot_ctx, out)) {
         out->src = slot_ctx->src;
     }
+}
+
+static int
+p25_voice_start_resolve_service_bits(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_t* slot_ctx,
+                                     const p25_sm_event_t* input, const p25_sm_event_t* call_ev) {
+    if (p25_sm_svc_bits_valid(input->svc_bits)) {
+        return input->svc_bits;
+    }
+    if (p25_voice_start_is_p2_ptt(ctx, input) && p25_voice_slot_epoch_active(slot_ctx)) {
+        return P25_SM_SVC_UNKNOWN;
+    }
+    return p25_voice_start_requires_unknown_service(slot_ctx, call_ev) ? P25_SM_SVC_UNKNOWN : slot_ctx->svc_bits;
 }
 
 static int
@@ -2628,7 +2646,6 @@ p25_voice_start_build_identity(const p25_sm_ctx_t* ctx, const dsd_state* state, 
     if (!input->identity_valid) {
         p25_voice_start_fill_anonymous_identity(state, slot, slot_ctx, out);
     } else {
-        p25_voice_start_preserve_assignment_source(slot_ctx, out);
         // Phase 2 MAC_PTT exposes a 16-bit group-address field, but no
         // 24-bit private destination. Preserve an accepted private assignment
         // instead of reclassifying that field as an authoritative group.
@@ -2637,10 +2654,8 @@ p25_voice_start_build_identity(const p25_sm_ctx_t* ctx, const dsd_state* state, 
             out->tg = 0;
             out->dst = slot_ctx->dst;
         }
-        if (!p25_sm_svc_bits_valid(input->svc_bits)) {
-            out->svc_bits =
-                p25_voice_start_requires_unknown_service(slot_ctx, out) ? P25_SM_SVC_UNKNOWN : slot_ctx->svc_bits;
-        }
+        p25_voice_start_preserve_assignment_source(slot_ctx, out);
+        out->svc_bits = p25_voice_start_resolve_service_bits(ctx, slot_ctx, input, out);
     }
     out->identity_valid = 1;
     return p25_grant_ota_target_id(out) > 0;
@@ -2681,12 +2696,13 @@ p25_p1_hdu_crypto_consume_identity(const p25_sm_ctx_t* ctx, dsd_state* state, co
 }
 
 static p25_voice_start_changes_t
-p25_voice_start_classify_changes(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* call_ev) {
+p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_t* slot_ctx,
+                                 const p25_sm_event_t* input, const p25_sm_event_t* call_ev) {
     p25_voice_start_changes_t changes = {0};
     const int learned_source = !p25_source_id_known(slot_ctx->src) && p25_source_id_known(call_ev->src);
 
     changes.service_changed = p25_voice_start_service_changed(slot_ctx, call_ev);
-    changes.new_epoch = p25_voice_start_begins_new_epoch(slot_ctx, call_ev);
+    changes.new_epoch = p25_voice_start_begins_new_epoch(ctx, slot_ctx, input, call_ev);
     changes.requires_update = changes.new_epoch || changes.service_changed || learned_source;
     return changes;
 }
@@ -2819,7 +2835,7 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     }
 
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
-    p25_voice_start_changes_t changes = p25_voice_start_classify_changes(slot_ctx, &call_ev);
+    p25_voice_start_changes_t changes = p25_voice_start_classify_changes(ctx, slot_ctx, input, &call_ev);
     if (pending_p1_identity) {
         changes.requires_update = 1;
     }

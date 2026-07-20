@@ -268,6 +268,41 @@ test_telephone_resolves_retained_identity(void) {
 }
 
 static int
+test_telephone_after_missed_boundary_drops_old_source(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    const int old_tg = 0x1234;
+    const int old_source = 0x010203;
+    const int target = 0x034567;
+    int rc = 0;
+
+    rc |=
+        expect_eq_int("telephone missed-boundary fixture", init_retained_p1_call(&opts, &state, old_tg, old_source), 1);
+    rc |= expect_eq_int("telephone prior epoch reopened",
+                        p25_sm_emit_active_call(&opts, &state, 0, old_tg, 0, old_source, 1, 0), 1);
+
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, 0x46);
+    set_bits_msb(lcw, 16, 8, 0x00);
+    set_bits_msb(lcw, 32, 16, 125);
+    set_bits_msb(lcw, 48, 24, (unsigned)target);
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("telephone missed-boundary remains tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_int("telephone missed-boundary no retune", g_tunes, 1);
+    rc |= expect_eq_int("telephone missed-boundary no release", g_returns, 0);
+    rc |= expect_eq_int("telephone missed-boundary target", sm->slots[0].dst, target);
+    rc |= expect_eq_int("telephone missed-boundary source unknown", sm->slots[0].src, 0);
+    rc |= expect_eq_int("telephone missed-boundary decoder source cleared", state.lastsrc, 0);
+    rc |= expect_eq_int("telephone missed-boundary call kind", sm->slots[0].is_group, 0);
+    rc |= expect_eq_int("telephone missed-boundary voice active", sm->slots[0].voice_active, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_rejected_lcw_stops_post_processing(int format) {
     static dsd_opts opts;
     static dsd_state state;
@@ -480,6 +515,7 @@ main(void) {
     rc |= test_mfid90_regroup_reassigns_retained_call();
     rc |= test_extended_private_resolves_retained_identity();
     rc |= test_telephone_resolves_retained_identity();
+    rc |= test_telephone_after_missed_boundary_drops_old_source();
     rc |= test_rejected_lcw_stops_post_processing(0x00);
     rc |= test_rejected_lcw_stops_post_processing(0x03);
 

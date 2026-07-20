@@ -291,6 +291,92 @@ test_inband_zero_source_preserves_grant_identity(void) {
 }
 
 static int
+test_same_identity_ptt_starts_new_epoch_after_missed_end(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR) {
+        DSD_FPRINTF(stderr, "FAIL: Same-identity missed-END fixture did not begin clear\n");
+        return 1;
+    }
+
+    const double first_start_m = ctx.slots[0].last_start_m;
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].last_start_m <= first_start_m || ctx.slots[0].voice_active
+        || ctx.slots[0].svc_bits != P25_SM_SVC_UNKNOWN
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || g_state.p25_p2_audio_allowed[0] != 0
+        || ctx.slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Same-identity follow-up PTT did not replace the unclosed epoch\n");
+        return 1;
+    }
+
+    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, 1000) != DSD_P25_CRYPTO_CLEAR) {
+        DSD_FPRINTF(stderr, "FAIL: Same-identity follow-up crypto fixture did not resolve clear\n");
+        return 1;
+    }
+    const double followup_start_m = ctx.slots[0].last_start_m;
+    ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || fabs(ctx.slots[0].last_start_m - followup_start_m) > 1.0e-9
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR) {
+        DSD_FPRINTF(stderr, "FAIL: Repeated same-identity ACTIVE opened another epoch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_source_less_identity_change_does_not_inherit_rid(void) {
+    const struct {
+        int tg;
+        int dst;
+        int is_group;
+    } cases[] = {
+        {2000, 0, 1},
+        {0, 0x0ABCDE, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        reset_test_state();
+        g_opts.trunk_tune_private_calls = 1;
+        g_state.trunk_chan_map[0x1234] = 851500000;
+        g_state.p25_chan_tdma_explicit[1] = 2;
+
+        p25_sm_ctx_t ctx;
+        p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+        p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+        ev = p25_sm_ev_active_call(0, cases[i].tg, cases[i].dst, 0, cases[i].is_group, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        const int target = cases[i].is_group ? cases[i].tg : cases[i].dst;
+        if (!ctx.slots[0].voice_active || ctx.slots[0].target_id != target || ctx.slots[0].is_group != cases[i].is_group
+            || ctx.slots[0].src != 0 || g_state.lastsrc != 0) {
+            DSD_FPRINTF(stderr, "FAIL: Source-less changed identity case %zu inherited the preceding RID\n", i);
+            return 1;
+        }
+
+        ev = p25_sm_ev_end_call_at(0, cases[i].tg, 456, ctx.slots[0].last_start_m + 0.001);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (ctx.slots[0].voice_active || ctx.slots[0].last_end_m <= 0.0 || ctx.slots[0].last_end_src != 456) {
+            DSD_FPRINTF(stderr, "FAIL: END for source-less changed identity case %zu was rejected as stale\n", i);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 test_p2_resolved_crypto_survives_pending_active(void) {
     const struct {
         int svc_bits;
@@ -1737,6 +1823,8 @@ main(void) {
     fail += test_private_ptt_preserves_grant_identity();
     fail += test_authoritative_group_replaces_private_identity();
     fail += test_inband_zero_source_preserves_grant_identity();
+    fail += test_same_identity_ptt_starts_new_epoch_after_missed_end();
+    fail += test_source_less_identity_change_does_not_inherit_rid();
     fail += test_p2_resolved_crypto_survives_pending_active();
     fail += test_pending_crypto_uses_classification_deadline();
     fail += test_p1_hdu_crypto_survives_identity_refinement();
