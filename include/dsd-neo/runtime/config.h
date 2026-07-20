@@ -160,7 +160,6 @@ typedef struct dsdneoRuntimeConfig {
     /* P25 follower (UI-exposed) knobs */
     double p25_min_follow_dwell_s;
     double p25_grant_voice_to_s;
-    double p25_retune_backoff_s;
     double p25_force_release_extra_s;
     double p25_force_release_margin_s;
     double p25p1_err_hold_pct;
@@ -246,7 +245,6 @@ typedef struct dsdneoRuntimeConfig {
     /* P25 follower (UI-exposed) knobs */
     int p25_min_follow_dwell_is_set;
     int p25_grant_voice_to_is_set;
-    int p25_retune_backoff_is_set;
     int p25_force_release_extra_is_set;
     int p25_force_release_margin_is_set;
     int p25p1_err_hold_pct_is_set;

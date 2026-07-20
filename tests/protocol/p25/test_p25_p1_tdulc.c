@@ -326,6 +326,66 @@ expect_blank_call_string(const char* tag, const char* value) {
     return 0;
 }
 
+static int
+test_voice_user_metadata_does_not_restart_call(void) {
+    static const struct {
+        uint8_t format;
+        uint8_t mfid;
+        const char* name;
+    } cases[] = {
+        {0x00, 0x00, "group voice user"},
+        {0x03, 0x00, "unit voice user"},
+        {0x4A, 0x00, "extended unit voice user"},
+        {0x00, 0x90, "MFID90 regroup voice user"},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    int rc = 0;
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char label[96];
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.trunk_enable = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        opts.trunk_hangtime = 2.0F;
+        state.p25_cc_freq = 851000000;
+        state.p25_iden_fdma[1].base_freq = 851000000 / 5;
+        state.p25_iden_fdma[1].chan_type = 1;
+        state.p25_iden_fdma[1].chan_spac = 100;
+        state.p25_iden_fdma[1].trust = 2;
+        state.p25_iden_fdma[1].populated = 1;
+        state.p25_chan_tdma_explicit[1] = 1;
+
+        p25_sm_init_ctx(ctx, &opts, &state);
+        p25_sm_event_t grant = p25_sm_ev_group_grant(0x100A, 852125000, 0x1234, 0x010203, 0);
+        p25_sm_event(ctx, &opts, &state, &grant);
+        DSD_SNPRINTF(label, sizeof(label), "%s fixture tuned", cases[i].name);
+        rc |= expect_eq_int(label, ctx->state, P25_SM_TUNED);
+        DSD_SNPRINTF(label, sizeof(label), "%s fixture active", cases[i].name);
+        rc |= expect_eq_int(label, p25_sm_emit_active_call(&opts, &state, 0, 0x1234, 0, 0x010203, 1, 0), 1);
+        DSD_SNPRINTF(label, sizeof(label), "%s fixture voice active", cases[i].name);
+        rc |= expect_eq_int(label, ctx->slots[0].voice_active, 1);
+
+        // These LCWs are valid voice-user metadata. On a TDULC they describe
+        // the transmission that just ended and must not open a new voice epoch.
+        build_lcw_words(cases[i].format, cases[i].mfid, 0x00, 0x3333, 0x100A, 0x5678);
+        processTDULC(&opts, &state);
+
+        DSD_SNPRINTF(label, sizeof(label), "%s remains tuned", cases[i].name);
+        rc |= expect_eq_int(label, ctx->state, P25_SM_TUNED);
+        DSD_SNPRINTF(label, sizeof(label), "%s remains inactive", cases[i].name);
+        rc |= expect_eq_int(label, ctx->slots[0].voice_active, 0);
+        DSD_SNPRINTF(label, sizeof(label), "%s preserves hang timer", cases[i].name);
+        rc |= expect_true(label, ctx->t_hangtime_m > 0.0);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -401,12 +461,8 @@ main(void) {
     rc |= expect_eq_int("encrypted grant dispatched", (int)ctx->grant_count, 1);
     rc |= expect_eq_int("encrypted grant classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
-    // Case 4: Malformed/unsupported format (0x00) → no grant
-    build_lcw_words(0x00, 0x00, 0x00, 0x3333, 0x100A, 0x0000);
-    opts.trunk_tune_enc_calls = 1;
-    p25_sm_init_ctx(ctx, &opts, &state);
-    processTDULC(&opts, &state);
-    rc |= expect_eq_int("unsupported format", (int)ctx->grant_count, 0);
+    // Case 4: Voice-user metadata in the terminating frame does not restart voice.
+    rc |= test_voice_user_metadata_does_not_restart_call();
 
     // Case 5: Hard Reed-Solomon failure recovered by soft reliability still dispatches LCW.
     build_lcw_words(0x44, 0x00, 0x00, 0x3456, 0x100A, 0x0000);

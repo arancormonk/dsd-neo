@@ -86,7 +86,6 @@ struct dsd_opts {
     double p25_vc_grace_s;             // seconds after tune before eligible for VC->CC return
     double p25_min_follow_dwell_s;     // minimum seconds to dwell after first voice
     double p25_grant_voice_to_s;       // max seconds to wait from grant until voice before returning
-    double p25_retune_backoff_s;       // seconds to block immediate retune to same VC after return
     double p25_force_release_extra_s;  // safety-net extra seconds beyond hangtime
     double p25_force_release_margin_s; // safety-net hard margin seconds beyond extra
     double p25_p1_err_hold_pct;        // P25p1 IMBE error average threshold (percent) to extend hang

@@ -126,7 +126,6 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--p25-vc-grace <s>` seconds after VC tune before eligible to return to CC
 - `--p25-min-follow-dwell <s>` minimum follow dwell after first voice
 - `--p25-grant-voice-timeout <s>` max seconds from grant to voice before returning
-- `--p25-retune-backoff <s>` block immediate re‑tune to same VC for N seconds after return
 - `--p25-mac-hold <s>` keep MAC activity eligible for audio for this many seconds after the last MAC
 - `--p25-ring-hold <s>` ring gate window (seconds) used when deciding whether a slot still has recent audio activity
 - `--p25-cc-grace <s>` CC hunt grace window; delay hunting for a new control channel by this many seconds after loss
@@ -198,8 +197,7 @@ Windows console runs:
 - `-J <file>` Append event log output
 - `--frame-log <file>` Append frame-level one-line timestamped traces
 - `--p25-sm-log <file>` Append P25 state-machine health and frequency-decision traces. Grant traces identify initial
-  assignments versus updates; post-call stale-update handling reports guard, validation-probe, activity, and backoff
-  decisions.
+  assignments versus updates; post-call stale-update handling reports guard, validation-probe, and activity outcomes.
 
 For rdio-scanner API uploads that should not persist on disk, use API-only mode with a RAM-backed per-call WAV directory
 and post-upload deletion, for example `-7 /dev/shm/dsd-neo-rdio -P --rdio-mode api --rdio-api-delete-after-upload`.
@@ -329,6 +327,16 @@ Notes
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)
 - Hang time after voice/sync loss (seconds): `-t <secs>`
+  - P25 Talk Complete, TDU, TDULC, MAC_END_PTT, MAC_IDLE, and MAC_HANGTIME mark a transmission boundary. They close
+    that slot's media and start or refresh the traffic-carrier inactivity timer without returning to the control
+    channel. A follow-up PTT/ACTIVE on the retained carrier opens a clean call epoch without retuning.
+  - P25 returns immediately only for an explicit network/channel release, policy or encryption rejection, manual
+    release, or physical carrier/sync loss. Otherwise the configured hang time expires before control-channel return.
+  - `--p25-sm-log` distinguishes `transmission_end`, `traffic_hang`, `traffic_reuse`, `hang_expired`, and
+    `channel_release` events.
+  - One receiver can provide uninterrupted follow-up handling only while the accepted traffic stays on its currently
+    tuned carrier/slot. Grants on other carriers, control-channel-only grants, simultaneous calls, and RF/USB sample
+    loss remain best effort with a single narrowband tuner.
   - Env (advanced): Optional hangtime extension when P25p1 IMBE error % is high:
     - `DSD_NEO_P25P1_ERR_HOLD_PCT=<percent>` (default 0 = off)
     - `DSD_NEO_P25P1_ERR_HOLD_S=<seconds>` (default 0 = off)
@@ -580,7 +588,6 @@ P25 trunking timing
 - `DSD_NEO_P25_VC_GRACE=<seconds>` — grace after VC tune before eligible to return (also via `--p25-vc-grace`)
 - `DSD_NEO_P25_MIN_FOLLOW_DWELL=<seconds>` — minimum follow dwell after first voice
 - `DSD_NEO_P25_GRANT_VOICE_TO=<seconds>` — grant‑to‑voice timeout
-- `DSD_NEO_P25_RETUNE_BACKOFF=<seconds>` — block immediate re‑tune to same VC
 - `DSD_NEO_P25_MAC_HOLD=<seconds>` — keep MAC activity eligible for audio (also via `--p25-mac-hold`)
 - `DSD_NEO_P25_RING_HOLD=<seconds>` — ring gate window for recent audio activity (also via `--p25-ring-hold`)
 - `DSD_NEO_P25_VOICE_HOLD=<seconds>` — voice activity hold window

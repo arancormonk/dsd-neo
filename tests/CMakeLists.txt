@@ -5707,23 +5707,17 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_p2_audio_ring PRIVATE dsd-neo_runtime)
 add_test(NAME P25_P2_AUDIO_RING COMMAND dsd-neo_test_p25_p2_audio_ring)
 
-# P25 retune backoff respects TDMA slot (same RF)
+# P25 traffic-carrier reassignment and stale-update validation
 add_executable(
-    dsd-neo_test_p25_retune_backoff_slot
-    protocol/p25/test_p25_retune_backoff_slot.c
+    dsd-neo_test_p25_reassignment
+    protocol/p25/test_p25_reassignment.c
 )
 target_include_directories(
-    dsd-neo_test_p25_retune_backoff_slot
+    dsd-neo_test_p25_reassignment
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(
-    dsd-neo_test_p25_retune_backoff_slot
-    PRIVATE dsd-neo_proto_p25
-)
-add_test(
-    NAME P25_RETUNE_BACKOFF_SLOT
-    COMMAND dsd-neo_test_p25_retune_backoff_slot
-)
+target_link_libraries(dsd-neo_test_p25_reassignment PRIVATE dsd-neo_proto_p25)
+add_test(NAME P25_REASSIGNMENT COMMAND dsd-neo_test_p25_reassignment)
 
 # P25 TG Hold gating
 add_executable(

@@ -100,6 +100,8 @@ p25p2_teardown_call(dsd_opts* opts, dsd_state* state) {
 
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
+    state->p25_p2_media_rejected[0] = 0;
+    state->p25_p2_media_rejected[1] = 0;
     p25_crypto_reset_slot(state, 0);
     p25_crypto_reset_slot(state, 1);
     p25_p2_audio_ring_reset(state, -1);
@@ -805,6 +807,10 @@ p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
     if (slot < 0 || slot > 1) {
         return;
     }
+    if (state->p25_p2_media_rejected[slot]) {
+        state->p25_p2_audio_allowed[slot] = 0;
+        return;
+    }
     const int svc = (slot == 0) ? state->dmr_so : state->dmr_soR;
     if ((svc & 0x40) != 0 && !p25p2_voice_crypto_is_authoritatively_clear(state, slot)) {
         p25_sm_emit_crypto_pending(opts, state, slot);
@@ -1107,6 +1113,10 @@ p25p2_frame_vc_grace_s(const dsd_state* state, double fallback) {
 
 static void
 p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int slot, int alg, int burst) {
+    if (state->p25_p2_media_rejected[slot]) {
+        state->p25_p2_audio_allowed[slot] = 0;
+        return;
+    }
     if (!p25_crypto_audio_permitted(opts, state, slot)) {
         state->p25_p2_audio_allowed[slot] = 0;
         return;

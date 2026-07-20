@@ -4,9 +4,9 @@
  */
 
 /*
- * P25 LCW 0x4F (Call Termination) unit test.
- * Feeds a minimal LCW bit array to p25_lcw() and verifies that
- * p25_sm_release -> return_to_cc is invoked when tuned.
+ * P25 LCW call-termination lifecycle unit test. Only fixed network-controller
+ * targets release the traffic allocation; ordinary termination and Motorola
+ * Talker EOT close a transmission without returning to the control channel.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -132,7 +132,7 @@ main(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
 
-    // Minimal conditions for release on LCW 0x4F
+    // Minimal trunk-following conditions.
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
     st.p25_cc_freq = 851000000;
@@ -143,23 +143,28 @@ main(void) {
     set_bits_msb(lcw, 0, 8, 0x4F);  // lc_format
     set_bits_msb(lcw, 8, 8, 0x00);  // lc_mfid
     set_bits_msb(lcw, 16, 8, 0x00); // lc_svcopt
-    // Target field present at [48..71]; any value OK
+    // An ordinary target is a transmission boundary, not a channel release.
     set_bits_msb(lcw, 48, 24, 0x00FFEE);
 
     g_return_to_cc_called = 0;
     p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
-    rc |= expect_true("LCW_0x4F_release", g_return_to_cc_called >= 1 && opts.trunk_is_tuned == 0);
+    rc |= expect_true("LCW_0x4F_ordinary_retains", g_return_to_cc_called == 0 && opts.trunk_is_tuned == 1);
 
-    // Regression: some systems populate the MFID/reserved octet even when the LCW is standard
-    // (e.g., implicit MFID formats). Ensure 0x4F still releases even when byte 1 is non-zero.
-    opts.trunk_is_tuned = 1;
+    // Some systems populate the MFID/reserved octet even when the LCW is
+    // standard. Controller identity remains authoritative in that form.
     set_bits_msb(lcw, 8, 8, 0x90); // non-standard value in octet 1
-    g_return_to_cc_called = 0;
-    p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
-    rc |= expect_true("LCW_0x4F_release_nonzero_mfid_octet", g_return_to_cc_called >= 1 && opts.trunk_is_tuned == 0);
+    static const uint32_t controller_targets[] = {0x000000U, 0xFFFFFDU, 0xFFFFFFU};
+    for (size_t i = 0; i < sizeof(controller_targets) / sizeof(controller_targets[0]); i++) {
+        opts.trunk_is_tuned = 1;
+        st.p25_vc_freq[0] = 851500000;
+        set_bits_msb(lcw, 48, 24, controller_targets[i]);
+        g_return_to_cc_called = 0;
+        p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
+        rc |= expect_true("LCW_0x4F_controller_release", g_return_to_cc_called == 1 && opts.trunk_is_tuned == 0);
+    }
 
     // Motorola systems may emit MFID90 Talker EOT (format 0x0F, MFID 0x90) in place of standard call termination.
-    // Ensure it also triggers an explicit release when trunk-following.
+    // It ends only the talker epoch and must retain the carrier.
     opts.trunk_is_tuned = 1;
     set_bits_msb(lcw, 0, 8, 0x0F);       // lc_format (PB=0,SF=0,LCO=0x0F)
     set_bits_msb(lcw, 8, 8, 0x90);       // lc_mfid (Motorola)
@@ -167,7 +172,7 @@ main(void) {
     set_bits_msb(lcw, 48, 24, 0x000123); // SRC (for logging)
     g_return_to_cc_called = 0;
     p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
-    rc |= expect_true("LCW_MFID90_TalkerEOT_release", g_return_to_cc_called >= 1 && opts.trunk_is_tuned == 0);
+    rc |= expect_true("LCW_MFID90_TalkerEOT_retains", g_return_to_cc_called == 0 && opts.trunk_is_tuned == 1);
 
     // Protection Parameter Broadcast: ALGID starts at octet 3, then KID at octet 4.
     DSD_MEMSET(&st, 0, sizeof st);

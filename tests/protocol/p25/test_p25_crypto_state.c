@@ -90,7 +90,9 @@ test_phase1_resolution_does_not_override_phase2_gate(void) {
     reset_fixture(&opts, &state);
 
     int rc = 0;
+    state.p25_p1_hdu_crypto_fresh = 1;
     p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x40, 0);
+    rc |= expect_int("P1 begin clears HDU freshness", state.p25_p1_hdu_crypto_fresh, 0);
     state.R = 0x0102030405060708ULL;
     rc |= expect_int("P1 DES key decryptable",
                      p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x1001, 1, 101),
@@ -98,7 +100,9 @@ test_phase1_resolution_does_not_override_phase2_gate(void) {
     rc |= expect_int("P1 resolution preserves user unmute", opts.unmute_encrypted_p25, 0);
     rc |= expect_int("P1 decryptable audio permitted", p25_crypto_audio_permitted(&opts, &state, 0), 1);
 
+    state.p25_p1_hdu_crypto_fresh = 1;
     p25_crypto_reset_slot(&state, 0);
+    rc |= expect_int("P1 reset clears HDU freshness", state.p25_p1_hdu_crypto_fresh, 0);
     state.R = 0ULL;
     p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE2, 0, 0x40, 0);
     rc |= expect_int("P2 missing DES key blocked",

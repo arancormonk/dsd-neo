@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,12 +36,21 @@ static int g_vpdu_enc_pending_slot;
 static unsigned long long int g_vpdu_mac[24];
 static int g_ptt_count[2];
 static int g_active_count[2];
+static int g_voice_event_accept;
+static int g_active_tg[2];
+static int g_active_dst[2];
+static int g_active_src[2];
+static int g_active_is_group[2];
+static int g_active_svc[2];
+static int g_voice_identity_result;
+static struct p25p2_mac_voice_identity g_voice_identity;
 static int g_end_count[2];
 static int g_end_apply;
 static int g_end_tg[2];
 static int g_end_src[2];
 static double g_end_observed_m[2];
 static int g_idle_count[2];
+static int g_hangtime_count[2];
 static int g_enc_count[2];
 static int g_enc_algid[2];
 static int g_enc_keyid[2];
@@ -107,6 +117,16 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
 }
 
 int
+p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], struct p25p2_mac_voice_identity* out) {
+    (void)type;
+    (void)mac;
+    if (g_voice_identity_result == 1 && out) {
+        *out = g_voice_identity;
+    }
+    return g_voice_identity_result;
+}
+
+int
 dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
     (void)opts;
     (void)state;
@@ -137,22 +157,67 @@ p25_lfsr128_slot(dsd_state* state, int slot) {
     }
 }
 
-void
-p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot) {
-    (void)opts;
-    (void)state;
-    if (slot >= 0 && slot <= 1) {
-        g_ptt_count[slot]++;
+static void
+p25_sm_stub_reject_voice_slot(dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1) {
+        return;
+    }
+    if (g_voice_event_accept) {
+        state->p25_p2_media_rejected[slot] = 0;
+        return;
+    }
+    state->p25_p2_media_rejected[slot] = 1;
+    state->p25_p2_audio_allowed[slot] = 0;
+    state->p25_policy_tg[slot] = 0;
+    if (slot == 0) {
+        state->dmrburstL = 0;
+    } else {
+        state->dmrburstR = 0;
     }
 }
 
-void
+int
+p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot) {
+    (void)opts;
+    if (slot >= 0 && slot <= 1) {
+        g_ptt_count[slot]++;
+    }
+    p25_sm_stub_reject_voice_slot(state, slot);
+    return g_voice_event_accept;
+}
+
+int
+p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group, int svc_bits) {
+    (void)tg;
+    (void)dst;
+    (void)src;
+    (void)is_group;
+    (void)svc_bits;
+    return p25_sm_emit_ptt(opts, state, slot);
+}
+
+int
 p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
-    (void)state;
     if (slot >= 0 && slot <= 1) {
         g_active_count[slot]++;
     }
+    p25_sm_stub_reject_voice_slot(state, slot);
+    return g_voice_event_accept;
+}
+
+int
+p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                        int svc_bits) {
+    const int accepted = p25_sm_emit_active(opts, state, slot);
+    if (slot >= 0 && slot <= 1) {
+        g_active_tg[slot] = tg;
+        g_active_dst[slot] = dst;
+        g_active_src[slot] = src;
+        g_active_is_group[slot] = is_group;
+        g_active_svc[slot] = svc_bits;
+    }
+    return accepted;
 }
 
 void
@@ -175,6 +240,11 @@ p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
     return g_end_apply;
 }
 
+int
+p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int src, double observed_m) {
+    return p25_sm_emit_end_call_at(opts, state, slot, tg, src, observed_m) ? P25_SM_END_APPLIED : P25_SM_END_IGNORED;
+}
+
 void
 p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
@@ -188,6 +258,15 @@ void
 p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
     (void)observed_m;
     p25_sm_emit_idle(opts, state, slot);
+}
+
+void
+p25_sm_emit_hangtime(dsd_opts* opts, dsd_state* state, int slot) {
+    (void)opts;
+    (void)state;
+    if (slot >= 0 && slot <= 1) {
+        g_hangtime_count[slot]++;
+    }
 }
 
 int
@@ -365,12 +444,21 @@ reset_stubs(void) {
     DSD_MEMSET(g_vpdu_mac, 0, sizeof(g_vpdu_mac));
     DSD_MEMSET(g_ptt_count, 0, sizeof(g_ptt_count));
     DSD_MEMSET(g_active_count, 0, sizeof(g_active_count));
+    g_voice_event_accept = 1;
+    DSD_MEMSET(g_active_tg, 0, sizeof(g_active_tg));
+    DSD_MEMSET(g_active_dst, 0, sizeof(g_active_dst));
+    DSD_MEMSET(g_active_src, 0, sizeof(g_active_src));
+    DSD_MEMSET(g_active_is_group, 0, sizeof(g_active_is_group));
+    DSD_MEMSET(g_active_svc, 0, sizeof(g_active_svc));
+    g_voice_identity_result = 0;
+    DSD_MEMSET(&g_voice_identity, 0, sizeof(g_voice_identity));
     DSD_MEMSET(g_end_count, 0, sizeof(g_end_count));
     g_end_apply = 1;
     DSD_MEMSET(g_end_tg, 0, sizeof(g_end_tg));
     DSD_MEMSET(g_end_src, 0, sizeof(g_end_src));
     DSD_MEMSET(g_end_observed_m, 0, sizeof(g_end_observed_m));
     DSD_MEMSET(g_idle_count, 0, sizeof(g_idle_count));
+    DSD_MEMSET(g_hangtime_count, 0, sizeof(g_hangtime_count));
     DSD_MEMSET(g_enc_count, 0, sizeof(g_enc_count));
     DSD_MEMSET(g_enc_algid, 0, sizeof(g_enc_algid));
     DSD_MEMSET(g_enc_keyid, 0, sizeof(g_enc_keyid));
@@ -520,6 +608,19 @@ test_slot_ptt_and_end_helpers(void) {
     reset_stubs();
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.gi[0] = 1;
+    state.lasttg = 0xABCDEF;
+    fill_mac(mac, 0x80, 0, 0x010203, 0x4567);
+
+    p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 0, 1);
+    rc |= expect_int("private PTT destination preserved", state.lasttg, 0xABCDEF);
+    rc |= expect_int("private PTT source updated", state.lastsrc, 0x010203);
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 0;
     opts.pulse_digi_rate_out = 8000;
     opts.audio_gain = 4;
@@ -548,7 +649,7 @@ test_slot_ptt_and_end_helpers(void) {
 
     p25p2_xcch_handle_end_slot(&opts, &state, 0, 1);
     rc |= expect_int("end slot0 src clear", state.lastsrc, 0);
-    rc |= expect_int("end slot0 tg clear", state.lasttg, 0);
+    rc |= expect_int("end slot0 tg retained", state.lasttg, 0x2222);
     rc |= expect_int("end slot0 alg clear", state.payload_algid, 0);
     rc |= expect_int("end slot0 key clear", state.payload_keyid, 0);
     rc |= expect_int("end slot0 drop", state.dropL, 256);
@@ -612,13 +713,13 @@ test_facch_public_dispatch_and_crc_gates(void) {
     rc |= expect_int("facch idle vpdu", g_vpdu_count, 1);
     rc |= expect_int("facch idle vpdu type", g_vpdu_type, 0);
     rc |= expect_int("facch idle vpdu entry src clear", g_vpdu_entry_lastsrc[1], 0);
-    rc |= expect_int("facch idle vpdu entry tg clear", g_vpdu_entry_lasttg[1], 0);
+    rc |= expect_int("facch idle vpdu entry tg retained", g_vpdu_entry_lasttg[1], 77);
     rc |= expect_int("facch idle src clear", state.lastsrcR, 0);
-    rc |= expect_int("facch idle tg clear", state.lasttgR, 0);
+    rc |= expect_int("facch idle tg retained", state.lasttgR, 77);
     rc |= expect_int("facch idle gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("facch idle ring reset", g_ring_reset_count[1], 1);
     rc |= expect_int("facch idle packet clear", state.p25_call_is_packet[1], 0);
-    rc |= expect_int("facch idle policy clear", (int)state.p25_policy_tg[1], 0);
+    rc |= expect_int("facch idle policy retained", (int)state.p25_policy_tg[1], 0x5678);
     rc |= expect_int("facch idle service valid clear", state.p25_service_options_valid[1], 0);
     rc |= expect_int("facch idle service clear", state.dmr_soR, 0);
     rc |= expect_int("facch idle call blank", strncmp(state.call_string[1], P25P2_EMPTY_CALL_STRING, 21), 0);
@@ -643,10 +744,10 @@ test_facch_public_dispatch_and_crc_gates(void) {
     process_FACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("facch idle grant emitted", g_idle_count[1], 1);
     rc |= expect_int("facch idle grant vpdu entry src clear", g_vpdu_entry_lastsrc[1], 0);
-    rc |= expect_int("facch idle grant vpdu entry tg clear", g_vpdu_entry_lasttg[1], 0);
+    rc |= expect_int("facch idle grant vpdu entry tg retained", g_vpdu_entry_lasttg[1], 0x2468);
     rc |= expect_int("facch idle grant gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("facch idle grant ring reset", g_ring_reset_count[1], 1);
-    rc |= expect_int("facch idle grant src preserved", state.lastsrcR, 0x010204);
+    rc |= expect_int("facch idle grant source starts clean", state.lastsrcR, 0);
     rc |= expect_int("facch idle grant tg preserved", state.lasttgR, 0x2468);
     rc |= expect_int("facch idle grant packet preserved", state.p25_call_is_packet[1], 1);
     rc |= expect_int("facch idle grant policy preserved", (int)state.p25_policy_tg[1], 0x6789);
@@ -712,6 +813,121 @@ test_sacch_dispatch_and_lcch_crc_abort(void) {
 }
 
 static int
+test_rejected_voice_events_keep_media_closed(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int mac[24];
+    int rc = 0;
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_is_tuned = 1;
+    state.lasttg = 1000;
+    state.lastsrc = 101;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.dmrburstL = 21;
+    g_voice_event_accept = 0;
+    fill_mac(mac, 0x80, 0, 303, 1001);
+
+    p25p2_xcch_handle_sacch_mac_ptt(&opts, &state, 0, 0, 0, mac);
+    rc |= expect_int("rejected sacch ptt emitted", g_ptt_count[0], 1);
+    rc |= expect_int("rejected sacch ptt keeps carrier", opts.trunk_is_tuned, 1);
+    rc |= expect_int("rejected sacch ptt records denied tg", state.lasttg, 1001);
+    rc |= expect_int("rejected sacch ptt records denied src", state.lastsrc, 303);
+    rc |= expect_int("rejected sacch ptt gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_int("rejected sacch ptt companion gate preserved", state.p25_p2_audio_allowed[1], 1);
+    rc |= expect_int("rejected sacch ptt burst cleared", (int)state.dmrburstL, 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_is_tuned = 1;
+    state.lasttgR = 2000;
+    state.lastsrcR = 202;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.dmrburstR = 21;
+    g_voice_event_accept = 0;
+    fill_mac(mac, 0x80, 0, 404, 2001);
+
+    p25p2_xcch_handle_facch_mac_ptt(&opts, &state, 1, 0, 0, mac);
+    rc |= expect_int("rejected facch ptt emitted", g_ptt_count[1], 1);
+    rc |= expect_int("rejected facch ptt keeps carrier", opts.trunk_is_tuned, 1);
+    rc |= expect_int("rejected facch ptt records denied tg", state.lasttgR, 2001);
+    rc |= expect_int("rejected facch ptt records denied src", state.lastsrcR, 404);
+    rc |= expect_int("rejected facch ptt companion gate preserved", state.p25_p2_audio_allowed[0], 1);
+    rc |= expect_int("rejected facch ptt gate closed", state.p25_p2_audio_allowed[1], 0);
+    rc |= expect_int("rejected facch ptt burst cleared", (int)state.dmrburstR, 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.gi[0] = 1;
+    state.lasttg = 0xABCDEF;
+    state.lastsrc = 101;
+    g_voice_event_accept = 0;
+    fill_mac(mac, 0x80, 0, 303, 0x4567);
+
+    p25p2_xcch_handle_sacch_mac_ptt(&opts, &state, 0, 0, 0, mac);
+    rc |= expect_int("rejected private ptt preserves destination", state.lasttg, 0xABCDEF);
+    rc |= expect_int("rejected private ptt records source", state.lastsrc, 303);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_is_tuned = 1;
+    state.lasttg = 1000;
+    state.lastsrc = 101;
+    state.gi[0] = 1;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.dmrburstL = 21;
+    g_voice_event_accept = 0;
+    g_voice_identity_result = 1;
+    g_voice_identity.tg = 1001;
+    g_voice_identity.src = 303;
+    g_voice_identity.is_group = 1;
+
+    p25p2_xcch_handle_sacch_mac_active(&opts, &state, 0, mac);
+    rc |= expect_int("rejected sacch active emitted", g_active_count[0], 1);
+    rc |= expect_int("rejected sacch active records denied tg", state.lasttg, 1001);
+    rc |= expect_int("rejected sacch active records denied src", state.lastsrc, 303);
+    rc |= expect_int("rejected sacch active records group type", state.gi[0], 0);
+    rc |= expect_int("rejected sacch active latches media rejection", state.p25_p2_media_rejected[0], 1);
+    rc |= expect_int("rejected sacch active gate closed", state.p25_p2_audio_allowed[0], 0);
+    rc |= expect_int("rejected sacch active companion gate preserved", state.p25_p2_audio_allowed[1], 1);
+    rc |= expect_int("rejected sacch active burst cleared", (int)state.dmrburstL, 0);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_is_tuned = 1;
+    state.lasttgR = 2000;
+    state.lastsrcR = 202;
+    state.gi[1] = 0;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 1;
+    state.dmrburstR = 21;
+    g_voice_event_accept = 0;
+    g_voice_identity_result = 1;
+    g_voice_identity.dst = 2001;
+    g_voice_identity.src = 0;
+    g_voice_identity.is_group = 0;
+
+    p25p2_xcch_handle_facch_mac_active(&opts, &state, 1, mac);
+    rc |= expect_int("rejected facch telephone active emitted", g_active_count[1], 1);
+    rc |= expect_int("rejected facch telephone active records denied target", state.lasttgR, 2001);
+    rc |= expect_int("rejected facch telephone active clears absent source", state.lastsrcR, 0);
+    rc |= expect_int("rejected facch telephone active records private type", state.gi[1], 1);
+    rc |= expect_int("rejected facch telephone active latches media rejection", state.p25_p2_media_rejected[1], 1);
+    rc |= expect_int("rejected facch telephone active companion gate preserved", state.p25_p2_audio_allowed[0], 1);
+    rc |= expect_int("rejected facch telephone active gate closed", state.p25_p2_audio_allowed[1], 0);
+    rc |= expect_int("rejected facch telephone active burst cleared", (int)state.dmrburstR, 0);
+
+    return rc;
+}
+
+static int
 test_sacch_end_idle_active_hangtime_dispatch(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -749,7 +965,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch end identity src", g_end_src[1], 0x445566);
     rc |= expect_int("sacch end observed timestamp", g_end_observed_m[1] > 0.0 ? 1 : 0, 1);
     rc |= expect_int("sacch end src clear", state.lastsrcR, 0);
-    rc |= expect_int("sacch end tg clear", state.lasttgR, 0);
+    rc |= expect_int("sacch end tg retained", state.lasttgR, 0x3344);
     rc |= expect_int("sacch end alg clear", state.payload_algidR, 0);
     rc |= expect_int("sacch end keyid clear", state.payload_keyidR, 0);
     rc |= expect_int("sacch end gate clear", state.p25_p2_audio_allowed[1], 0);
@@ -783,7 +999,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch idle burst", (int)state.dmrburstR, 24);
     rc |= expect_int("sacch idle gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("sacch idle packet clear", state.p25_call_is_packet[1], 0);
-    rc |= expect_int("sacch idle policy clear", (int)state.p25_policy_tg[1], 0);
+    rc |= expect_int("sacch idle policy retained", (int)state.p25_policy_tg[1], 0x5678);
     rc |= expect_int("sacch idle service valid clear", state.p25_service_options_valid[1], 0);
     rc |= expect_int("sacch idle service clear", state.dmr_soR, 0);
     rc |= expect_int("sacch idle crypto clear", state.p25_crypto_state[1], DSD_P25_CRYPTO_UNKNOWN);
@@ -825,6 +1041,11 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     state.payload_keyidR = 0x2222;
     state.lasttgR = 0x3456;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
+    g_voice_identity_result = 1;
+    g_voice_identity.tg = 0x4567;
+    g_voice_identity.src = 0x123456;
+    g_voice_identity.is_group = 1;
+    g_voice_identity.svc_bits = 0x81;
     pack_payload_from_mac(payload, 180, mac, 0x4, 0, 0);
 
     process_SACCH_MAC_PDU(&opts, &state, payload);
@@ -834,6 +1055,11 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch active burst", (int)state.dmrburstR, 21);
     rc |= expect_int("sacch active does not re-emit enc", g_enc_count[1], 0);
     rc |= expect_int("sacch active timestamp", state.p25_p2_last_mac_active_m[1] > 0.0 ? 1 : 0, 1);
+    rc |= expect_int("sacch active identity tg", g_active_tg[1], 0x4567);
+    rc |= expect_int("sacch active identity dst", g_active_dst[1], 0);
+    rc |= expect_int("sacch active identity src", g_active_src[1], 0x123456);
+    rc |= expect_int("sacch active identity group", g_active_is_group[1], 1);
+    rc |= expect_int("sacch active identity svc", g_active_svc[1], 0x81);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -933,7 +1159,7 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch end identity src", g_end_src[0], 0x123456);
     rc |= expect_int("facch end observed timestamp", g_end_observed_m[0] > 0.0 ? 1 : 0, 1);
     rc |= expect_int("facch end src clear", state.lastsrc, 0);
-    rc |= expect_int("facch end tg clear", state.lasttg, 0);
+    rc |= expect_int("facch end tg retained", state.lasttg, 0x4567);
     rc |= expect_int("facch end gate clear", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("facch end burst", (int)state.dmrburstL, 23);
     rc |= expect_int("facch end close left", g_close_l_count, 1);
@@ -1014,6 +1240,11 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     state.payload_keyidR = 0x7777;
     state.lasttgR = 0x7654;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
+    g_voice_identity_result = 1;
+    g_voice_identity.dst = 0xABCDEF;
+    g_voice_identity.src = 0x654321;
+    g_voice_identity.is_group = 0;
+    g_voice_identity.svc_bits = 0x42;
     pack_payload_from_mac(payload, 156, mac, 0x4, 0, 0);
 
     process_FACCH_MAC_PDU(&opts, &state, payload);
@@ -1023,6 +1254,11 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch active gate", state.p25_p2_audio_allowed[1], 1);
     rc |= expect_int("facch active burst", (int)state.dmrburstR, 21);
     rc |= expect_int("facch active does not re-emit enc", g_enc_count[1], 0);
+    rc |= expect_int("facch active identity tg", g_active_tg[1], 0);
+    rc |= expect_int("facch active identity dst", g_active_dst[1], 0xABCDEF);
+    rc |= expect_int("facch active identity src", g_active_src[1], 0x654321);
+    rc |= expect_int("facch active identity group", g_active_is_group[1], 0);
+    rc |= expect_int("facch active identity svc", g_active_svc[1], 0x42);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1202,6 +1438,7 @@ main(void) {
     rc |= test_slot_ptt_and_end_helpers();
     rc |= test_facch_public_dispatch_and_crc_gates();
     rc |= test_sacch_dispatch_and_lcch_crc_abort();
+    rc |= test_rejected_voice_events_keep_media_closed();
     rc |= test_sacch_end_idle_active_hangtime_dispatch();
     rc |= test_facch_active_end_hangtime_and_invalid_slot_guards();
     rc |= test_encrypted_voice_user_stays_locked_through_mac_active();

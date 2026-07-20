@@ -662,12 +662,6 @@ act_set_p25_grant_voice(void* v) {
 }
 
 void
-act_set_p25_retune_backoff(void* v) {
-    act_prompt_p25_num(v, "DSD_NEO_P25_RETUNE_BACKOFF", "P25: Retune backoff (s)",
-                       env_get_double("DSD_NEO_P25_RETUNE_BACKOFF", 0));
-}
-
-void
 act_set_p25_cc_grace(void* v) {
     act_prompt_p25_num(v, "DSD_NEO_P25_CC_GRACE", "P25: CC hunt grace (s)", env_get_double("DSD_NEO_P25_CC_GRACE", 0));
 }

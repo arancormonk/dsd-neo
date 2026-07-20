@@ -96,6 +96,45 @@ rules:
         - /src/third_party/**
     pattern: assert(...)
 
+  - id: dsd-neo.no-floating-point-equality-in-tests
+    languages: [c, cpp]
+    severity: ERROR
+    message: Compare floating-point test values with an explicit tolerance instead of == or !=.
+    paths:
+      include:
+        - /tests/**
+    pattern-either:
+      - patterns:
+          - pattern-inside: |
+              $RET $FUNC(...) {
+                ...
+                double $FLOAT_VALUE = ...;
+                ...
+              }
+          - pattern-either:
+              - pattern: $OTHER == $FLOAT_VALUE
+              - pattern: $OTHER != $FLOAT_VALUE
+              - pattern: $FLOAT_VALUE == $OTHER
+              - pattern: $FLOAT_VALUE != $OTHER
+          - metavariable-regex:
+              metavariable: $OTHER
+              regex: '^[A-Za-z_]'
+      - patterns:
+          - pattern-inside: |
+              $RET $FUNC(...) {
+                ...
+                float $FLOAT_VALUE = ...;
+                ...
+              }
+          - pattern-either:
+              - pattern: $OTHER == $FLOAT_VALUE
+              - pattern: $OTHER != $FLOAT_VALUE
+              - pattern: $FLOAT_VALUE == $OTHER
+              - pattern: $FLOAT_VALUE != $OTHER
+          - metavariable-regex:
+              metavariable: $OTHER
+              regex: '^[A-Za-z_]'
+
   - id: dsd-neo.no-weak-process-rng
     languages: [c, cpp]
     severity: ERROR

@@ -477,10 +477,7 @@ main(void) {
         rc |= expect_true("Fmt0x42_second_active_channel", strstr(st.active_channel[1], "3333") != NULL);
     }
 
-    /*
-     * Format 0x4A is an extended unit-to-unit voice channel user. It does not set
-     * source/target state today, but it must mark the call as individual.
-     */
+    /* Format 0x4A is an extended unit-to-unit voice channel user. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&st, 0, sizeof st);
@@ -489,12 +486,14 @@ main(void) {
         DSD_MEMSET(lcw, 0, sizeof lcw);
         set_bits_msb(lcw, 0, 8, 0x4A);
         set_bits_msb(lcw, 8, 8, 0x00);
-        set_bits_msb(lcw, 16, 24, 0x101112);
-        set_bits_msb(lcw, 40, 24, 0x202122);
+        set_bits_msb(lcw, 16, 8, 0x00);
+        set_bits_msb(lcw, 24, 24, 0x101112);
+        set_bits_msb(lcw, 48, 24, 0x202122);
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("Fmt0x4A_sets_individual_flag", st.gi[0] == 1);
+        rc |= expect_true("Fmt0x4A_sets_private_identity",
+                          st.gi[0] == 1 && st.lasttg == 0x101112 && st.lastsrc == 0x202122);
     }
 
     /*

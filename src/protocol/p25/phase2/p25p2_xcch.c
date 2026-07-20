@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25_xcch.h>
+#include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdint.h>
@@ -33,11 +34,6 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static const char* P25P2_EMPTY_CALL_STRING = "                     ";
-
-typedef struct {
-    int lasttg;
-    int lastsrc;
-} p25p2_xcch_slot_ids_snapshot;
 
 static int
 p25p2_xcch_slot_valid(int slot) {
@@ -164,6 +160,38 @@ p25p2_xcch_set_slot_tg(dsd_state* state, int slot, int tg) {
 }
 
 static void
+p25p2_xcch_store_active_identity(dsd_state* state, int slot, const struct p25p2_mac_voice_identity* identity) {
+    if (!state || !identity || !p25p2_xcch_slot_valid(slot)) {
+        return;
+    }
+
+    p25p2_xcch_set_slot_tg(state, slot, identity->is_group ? identity->tg : identity->dst);
+    if (slot == 0) {
+        state->lastsrc = identity->src;
+    } else {
+        state->lastsrcR = identity->src;
+    }
+    state->gi[slot] = identity->is_group ? 0 : 1;
+}
+
+static int
+p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
+    struct p25p2_mac_voice_identity identity;
+    if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
+        const int accepted = p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src,
+                                                     identity.is_group, identity.svc_bits);
+        if (!accepted) {
+            // A companion slot can retain the traffic carrier after this slot
+            // is rejected. Preserve the denied identity so later ESS updates
+            // cannot evaluate the preceding allowed call and reopen audio.
+            p25p2_xcch_store_active_identity(state, slot, &identity);
+        }
+        return accepted;
+    }
+    return p25_sm_emit_active(opts, state, slot);
+}
+
+static void
 p25p2_xcch_set_slot_src_if_nonzero(dsd_state* state, int slot, uint32_t src) {
     if (src == 0) {
         return;
@@ -177,15 +205,29 @@ p25p2_xcch_set_slot_src_if_nonzero(dsd_state* state, int slot, uint32_t src) {
 }
 
 static void
-p25p2_xcch_clear_slot_ids(dsd_state* state, int slot) {
+p25p2_xcch_store_ptt_identity(const dsd_opts* opts, dsd_state* state, const unsigned long long int mac[24], int slot) {
+    const uint32_t src = p25p2_xcch_src_from_mac(mac);
+    const int tg = p25p2_xcch_tg_from_mac(mac);
+
+    p25p2_xcch_set_slot_src_if_nonzero(state, slot, src);
+
+    // MAC_PTT only carries a 16-bit group-address field. For a retained
+    // private assignment, keep the 24-bit destination restored by the state
+    // machine rather than replacing it with that group-address field.
+    const int private_trunk_assignment =
+        opts && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->gi[slot] == 1;
+    if (!private_trunk_assignment) {
+        p25p2_xcch_set_slot_tg(state, slot, tg);
+    }
+}
+
+static void
+p25p2_xcch_clear_slot_source(dsd_state* state, int slot) {
     if (slot == 0) {
         state->lastsrc = 0;
-        state->lasttg = 0;
     } else {
         state->lastsrcR = 0;
-        state->lasttgR = 0;
     }
-    state->p25_policy_tg[slot & 1] = 0;
 }
 
 static void
@@ -268,42 +310,14 @@ p25p2_xcch_blank_slot_call_string(dsd_state* state, int slot) {
 }
 
 static void
-p25p2_xcch_snapshot_slot_ids(const dsd_state* state, uint8_t slot, p25p2_xcch_slot_ids_snapshot* snapshot) {
-    if (!state || !snapshot || !p25p2_xcch_slot_valid(slot)) {
-        return;
-    }
-
-    snapshot->lasttg = p25p2_xcch_get_slot_tg(state, slot);
-    snapshot->lastsrc = p25p2_xcch_get_slot_src(state, slot);
-}
-
-static void
-p25p2_xcch_clear_slot_call_ids(dsd_state* state, uint8_t slot) {
-    if (!state || !p25p2_xcch_slot_valid(slot)) {
-        return;
-    }
-
-    if (slot == 0) {
-        state->lastsrc = 0;
-        state->lasttg = 0;
-    } else {
-        state->lastsrcR = 0;
-        state->lasttgR = 0;
-    }
-}
-
-static void
 p25p2_xcch_clear_slot_idle_metadata(dsd_state* state, uint8_t slot, int clear_slot_ids) {
     if (!state || !p25p2_xcch_slot_valid(slot)) {
         return;
     }
 
     p25p2_xcch_blank_slot_call_string(state, slot);
-    if (clear_slot_ids) {
-        p25p2_xcch_clear_slot_ids(state, slot);
-    } else {
-        state->p25_policy_tg[slot & 1] = 0;
-    }
+    (void)clear_slot_ids;
+    p25p2_xcch_clear_slot_source(state, slot);
     state->p25_call_is_packet[slot] = 0;
     state->p25_service_options_valid[slot] = 0;
     if (slot == 0) {
@@ -323,23 +337,6 @@ p25p2_xcch_clear_idle_metadata_if_stale(dsd_state* state, uint8_t slot, double i
     }
 
     p25p2_xcch_clear_slot_idle_metadata(state, slot, clear_slot_ids);
-}
-
-static void
-p25p2_xcch_restore_slot_ids_for_new_grant(dsd_state* state, uint8_t slot, double idle_observed_m,
-                                          const p25p2_xcch_slot_ids_snapshot* snapshot) {
-    if (!state || !snapshot || !p25p2_xcch_slot_valid(slot) || !p25_sm_slot_grant_newer_than(slot, idle_observed_m)) {
-        return;
-    }
-
-    if (p25p2_xcch_get_slot_tg(state, slot) == 0 && p25p2_xcch_get_slot_src(state, slot) == 0) {
-        p25p2_xcch_set_slot_tg(state, slot, snapshot->lasttg);
-        if (slot == 0) {
-            state->lastsrc = snapshot->lastsrc;
-        } else {
-            state->lastsrcR = snapshot->lastsrc;
-        }
-    }
 }
 
 static void
@@ -408,7 +405,6 @@ static void
 p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long long int mac[24], int slot,
                            int always_set_burst) {
     uint32_t src = p25p2_xcch_src_from_mac(mac);
-    int tg = p25p2_xcch_tg_from_mac(mac);
     int allow_audio = 0;
 
     p25p2_xcch_reset_ptt_slot_state(state, slot);
@@ -417,8 +413,7 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
     }
 
     DSD_FPRINTF(stderr, "\n VCH %d - ", slot + 1);
-    p25p2_xcch_set_slot_src_if_nonzero(state, slot, src);
-    p25p2_xcch_set_slot_tg(state, slot, tg);
+    p25p2_xcch_store_ptt_identity(opts, state, mac, slot);
 
     DSD_FPRINTF(stderr, "TG %d ", p25p2_xcch_get_slot_tg(state, slot));
     DSD_FPRINTF(stderr, "SRC %d ", src);
@@ -450,7 +445,7 @@ p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear
     DSD_FPRINTF(stderr, "TG %d ", p25p2_xcch_get_slot_tg(state, slot));
     DSD_FPRINTF(stderr, "SRC %d ", p25p2_xcch_get_slot_src(state, slot));
 
-    p25p2_xcch_clear_slot_ids(state, slot);
+    p25p2_xcch_clear_slot_source(state, slot);
     p25p2_xcch_close_slot_mbe_out(opts, state, slot);
 
     if (clear_call_string) {
@@ -574,8 +569,16 @@ p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     state->p25_p2_last_mac_active[slot] = time(NULL);
     state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
 
+    if (!p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(smac), 0, (int)p25p2_xcch_src_from_mac(smac), 1,
+                              P25_SM_SVC_UNKNOWN)) {
+        // A companion slot can keep the traffic carrier tuned after this slot
+        // is rejected. Preserve the denied identity so a later ESS decision
+        // cannot evaluate the preceding allowed call and reopen audio.
+        p25p2_xcch_store_ptt_identity(opts, state, smac, slot);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
     p25p2_xcch_handle_ptt_slot(opts, state, smac, slot, 0);
-    p25_sm_emit_ptt(opts, state, slot);
 
     if (opts->payload == 1) {
         p25p2_xcch_print_payload_dump("MAC_PTT_PAYLOAD_S", mac_offset, res, smac);
@@ -639,6 +642,9 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 
+    if (!p25p2_xcch_emit_active(opts, state, 1, slot, smac)) {
+        return;
+    }
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
     if (allow_audio) {
@@ -648,11 +654,14 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
 static void
 p25p2_xcch_handle_sacch_mac_hangtime(dsd_opts* opts, dsd_state* state, unsigned long long int smac[24]) {
+    int slot = 0;
     if (state->currentslot == 1) {
-        p25p2_xcch_handle_mac_hangtime_slot(opts, state, 0);
+        slot = 0;
     } else {
-        p25p2_xcch_handle_mac_hangtime_slot(opts, state, 1);
+        slot = 1;
     }
+    p25p2_xcch_handle_mac_hangtime_slot(opts, state, slot);
+    p25_sm_emit_hangtime(opts, state, slot);
 
     DSD_FPRINTF(stderr, " MAC_HANGTIME ");
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -666,8 +675,13 @@ p25p2_xcch_handle_facch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     DSD_FPRINTF(stderr, " MAC_PTT  ");
     DSD_FPRINTF(stderr, "%s", KGRN);
 
+    if (!p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(fmac), 0, (int)p25p2_xcch_src_from_mac(fmac), 1,
+                              P25_SM_SVC_UNKNOWN)) {
+        p25p2_xcch_store_ptt_identity(opts, state, fmac, slot);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
     p25p2_xcch_handle_ptt_slot(opts, state, fmac, slot, 1);
-    p25_sm_emit_ptt(opts, state, slot);
 
     if (opts->payload == 1) {
         p25p2_xcch_print_payload_dump("MAC_PTT_PAYLOAD_F", mac_offset, res, fmac);
@@ -689,8 +703,14 @@ p25p2_xcch_handle_facch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     DSD_FPRINTF(stderr, " MAC_END_PTT ");
     DSD_FPRINTF(stderr, "%s", KRED);
 
-    if (!p25_sm_emit_end_call_at(opts, state, slot, tg, src, end_observed_m)) {
+    const int end_result = p25_sm_emit_facch_end_call_at(opts, state, slot, tg, src, end_observed_m);
+    if (end_result == P25_SM_END_IGNORED) {
         DSD_FPRINTF(stderr, "(stale/repeated) ");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
+    if (end_result == P25_SM_END_CHANNEL_RELEASED) {
+        DSD_FPRINTF(stderr, "(channel release) ");
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
@@ -702,8 +722,6 @@ p25p2_xcch_handle_facch_mac_end(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
 static void
 p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot, unsigned long long int fmac[24]) {
-    p25p2_xcch_slot_ids_snapshot idle_ids = {0};
-
     if (!p25p2_xcch_slot_valid(slot)) {
         return;
     }
@@ -711,9 +729,8 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
     double idle_observed_m = dsd_time_now_monotonic_s();
 
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
-    p25p2_xcch_snapshot_slot_ids(state, slot, &idle_ids);
     p25p2_xcch_reset_idle_slot_facch(state, slot);
-    p25p2_xcch_clear_slot_call_ids(state, slot);
+    p25p2_xcch_clear_slot_source(state, slot);
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -722,7 +739,6 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
     p25p2_xcch_clear_idle_metadata_if_stale(state, slot, idle_observed_m, 1);
-    p25p2_xcch_restore_slot_ids_for_new_grant(state, slot, idle_observed_m, &idle_ids);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, 0);
     p25_p2_audio_ring_reset(state, slot);
 }
@@ -742,7 +758,9 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     process_MAC_VPDU(opts, state, 0, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    p25_sm_emit_active(opts, state, slot);
+    if (!p25p2_xcch_emit_active(opts, state, 0, slot, fmac)) {
+        return;
+    }
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
@@ -750,11 +768,14 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
 static void
 p25p2_xcch_handle_facch_mac_hangtime(dsd_opts* opts, dsd_state* state, unsigned long long int fmac[24]) {
+    int slot = 0;
     if (state->currentslot == 0) {
-        p25p2_xcch_handle_mac_hangtime_slot(opts, state, 0);
+        slot = 0;
     } else {
-        p25p2_xcch_handle_mac_hangtime_slot(opts, state, 1);
+        slot = 1;
     }
+    p25p2_xcch_handle_mac_hangtime_slot(opts, state, slot);
+    p25_sm_emit_hangtime(opts, state, slot);
 
     DSD_FPRINTF(stderr, " MAC_HANGTIME ");
     DSD_FPRINTF(stderr, "%s", KYEL);
@@ -764,7 +785,14 @@ p25p2_xcch_handle_facch_mac_hangtime(dsd_opts* opts, dsd_state* state, unsigned 
 
 void
 process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
-    uint8_t slot = (uint8_t)p25_sacch_to_voice_slot(state->currentslot);
+    if (!opts || !state || !payload) {
+        return;
+    }
+
+    int slot = p25_sacch_to_voice_slot(state->currentslot);
+    if (!p25p2_xcch_slot_valid(slot)) {
+        return;
+    }
     unsigned long long int smac[24] = {0};
     int opcode = 0;
     int mac_offset = 0;
@@ -782,40 +810,34 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[180]) {
         return;
     }
 
+    if (opcode == 0x0) {
+        p25p2_xcch_handle_sacch_mac_signal(opts, state, smac, err);
+        return;
+    }
+    if (err != 0) {
+        return;
+    }
+
     switch (opcode) {
-        case 0x0: p25p2_xcch_handle_sacch_mac_signal(opts, state, smac, err); break;
-        case 0x1:
-            if (err == 0) {
-                p25p2_xcch_handle_sacch_mac_ptt(opts, state, slot, mac_offset, res, smac);
-            }
-            break;
-        case 0x2:
-            if (err == 0) {
-                p25p2_xcch_handle_sacch_mac_end(opts, state, slot, smac);
-            }
-            break;
-        case 0x3:
-            if (err == 0) {
-                p25p2_xcch_handle_sacch_mac_idle(opts, state, slot, smac);
-            }
-            break;
-        case 0x4:
-            if (err == 0) {
-                p25p2_xcch_handle_sacch_mac_active(opts, state, slot, smac);
-            }
-            break;
-        case 0x6:
-            if (err == 0) {
-                p25p2_xcch_handle_sacch_mac_hangtime(opts, state, smac);
-            }
-            break;
+        case 0x1: p25p2_xcch_handle_sacch_mac_ptt(opts, state, slot, mac_offset, res, smac); break;
+        case 0x2: p25p2_xcch_handle_sacch_mac_end(opts, state, slot, smac); break;
+        case 0x3: p25p2_xcch_handle_sacch_mac_idle(opts, state, slot, smac); break;
+        case 0x4: p25p2_xcch_handle_sacch_mac_active(opts, state, slot, smac); break;
+        case 0x6: p25p2_xcch_handle_sacch_mac_hangtime(opts, state, smac); break;
         default: break;
     }
 }
 
 void
 process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
-    uint8_t slot = (uint8_t)state->currentslot;
+    if (!opts || !state || !payload) {
+        return;
+    }
+
+    int slot = state->currentslot;
+    if (!p25p2_xcch_slot_valid(slot)) {
+        return;
+    }
     unsigned long long int fmac[24] = {0};
     int opcode = 0;
     int mac_offset = 0;
@@ -833,36 +855,16 @@ process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int payload[156]) {
     res = p25p2_xcch_extract_res(payload);
 
     err = p25p2_xcch_validate_facch_crc(state, payload, fmac, &abort_processing);
-    if (abort_processing) {
+    if (abort_processing || err != 0) {
         return;
     }
 
     switch (opcode) {
-        case 0x1:
-            if (err == 0) {
-                p25p2_xcch_handle_facch_mac_ptt(opts, state, slot, mac_offset, res, fmac);
-            }
-            break;
-        case 0x2:
-            if (err == 0) {
-                p25p2_xcch_handle_facch_mac_end(opts, state, slot, fmac);
-            }
-            break;
-        case 0x3:
-            if (err == 0) {
-                p25p2_xcch_handle_facch_mac_idle(opts, state, slot, fmac);
-            }
-            break;
-        case 0x4:
-            if (err == 0) {
-                p25p2_xcch_handle_facch_mac_active(opts, state, slot, fmac);
-            }
-            break;
-        case 0x6:
-            if (err == 0) {
-                p25p2_xcch_handle_facch_mac_hangtime(opts, state, fmac);
-            }
-            break;
+        case 0x1: p25p2_xcch_handle_facch_mac_ptt(opts, state, slot, mac_offset, res, fmac); break;
+        case 0x2: p25p2_xcch_handle_facch_mac_end(opts, state, slot, fmac); break;
+        case 0x3: p25p2_xcch_handle_facch_mac_idle(opts, state, slot, fmac); break;
+        case 0x4: p25p2_xcch_handle_facch_mac_active(opts, state, slot, fmac); break;
+        case 0x6: p25p2_xcch_handle_facch_mac_hangtime(opts, state, fmac); break;
         default: break;
     }
 }

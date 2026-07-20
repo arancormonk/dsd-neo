@@ -363,6 +363,9 @@ matrix_age_tuned_timers(matrix_fixture* fixture) {
     double stale_m = now_m - 1.0;
     fixture->ctx.t_tune_m = stale_m;
     fixture->ctx.t_voice_m = stale_m;
+    if (fixture->ctx.t_hangtime_m > 0.0) {
+        fixture->ctx.t_hangtime_m = stale_m;
+    }
     fixture->state->last_vc_sync_time = time(NULL) - 1;
     fixture->state->last_vc_sync_time_m = stale_m;
     fixture->state->p25_last_vc_tune_time = time(NULL) - 1;
@@ -468,6 +471,8 @@ matrix_flow_vc_sync_hang(matrix_fixture* fixture, int event_slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_VC_SYNC;
     ev.slot = event_slot;
+    matrix_send_event(fixture, &ev);
+    ev = p25_sm_ev_idle(event_slot);
     matrix_send_event(fixture, &ev);
     matrix_tick_expired_voice(fixture);
 }

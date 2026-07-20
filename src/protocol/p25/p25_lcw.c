@@ -14,6 +14,7 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
@@ -88,6 +89,7 @@ typedef struct p25_lcw_ctx {
     uint8_t lc_svcopt;
     uint8_t lc_pf;
     uint8_t lc_sf;
+    uint8_t allow_voice_start;
     int is_standard_mfid;
 } p25_lcw_ctx;
 
@@ -155,9 +157,38 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
     }
     if (allow_regroup_clear_override && talkgroup > 0
         && (p25_patch_tg_key_is_clear(ctx->state, talkgroup) || p25_patch_sg_key_is_clear(ctx->state, talkgroup))) {
+        // An identity-bearing follow-up starts a clean crypto epoch and closes
+        // its media gate. KEY=0 is already authoritative clear classification,
+        // so reopen the Phase 1 gate immediately for this transmission.
+        ctx->state->p25_p2_audio_allowed[0] = 1;
         return;
     }
     p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
+}
+
+static int
+p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source) {
+    if (target != 0) {
+        ctx->state->lasttg = target;
+    }
+    if (source != 0) {
+        ctx->state->lastsrc = source;
+    }
+    ctx->state->generic_talker_alias[0][0] = '\0';
+    ctx->state->generic_talker_alias_src[0] = 0;
+    ctx->state->gi[0] = 1;
+    ctx->state->dmr_so = ctx->lc_svcopt;
+    ctx->state->p25_service_options_valid[0] = 1;
+
+    if (!ctx->allow_voice_start) {
+        return 0;
+    }
+    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt)) {
+        return 0;
+    }
+    p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
+    p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
+    return 1;
 }
 
 static void
@@ -186,6 +217,12 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 
+    if (!ctx->allow_voice_start) {
+        return;
+    }
+    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt)) {
+        return;
+    }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
     p25_lcw_set_call_string_prefix(ctx->state, "   Group ", ctx->lc_svcopt);
 }
@@ -197,20 +234,7 @@ p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " - Target %d Source %d", target, source);
 
-    if (target != 0) {
-        ctx->state->lasttg = target;
-    }
-    if (source != 0) {
-        ctx->state->lastsrc = source;
-    }
-    ctx->state->generic_talker_alias[0][0] = '\0';
-    ctx->state->generic_talker_alias_src[0] = 0;
-    ctx->state->gi[0] = 1;
-    ctx->state->dmr_so = ctx->lc_svcopt;
-    ctx->state->p25_service_options_valid[0] = 1;
-
-    p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
-    p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
+    (void)p25_lcw_accept_private_voice_user(ctx, target, source);
 }
 
 static void
@@ -354,8 +378,21 @@ p25_lcw_handle_format_45(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_format_46(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
-    DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User");
+    uint16_t timer = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User - Target %d Timer %.1fs", target,
+                (double)timer / 10.0);
+
+    int identity_accepted = p25_lcw_accept_private_voice_user(ctx, target, 0);
+    if (ctx->allow_voice_start && !identity_accepted) {
+        return;
+    }
+    if (identity_accepted) {
+        p25_lcw_set_call_string_prefix(ctx->state, "Telephone ", ctx->lc_svcopt);
+    }
+    DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "TELE Target: %d Timer: %.1fs; ",
+                 target, (double)timer / 10.0);
+    ctx->state->last_active_time = time(NULL);
 }
 
 static void
@@ -382,10 +419,10 @@ p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
 static void
 p25_lcw_handle_format_4a(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Unit to Unit Voice Channel User %s Extended", dsd_unicode_or_ascii("–", "-"));
-    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[16], 24);
-    uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[40], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
+    uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, "TGT: %d; SRC: %d; ", target, src);
-    ctx->state->gi[0] = 1;
+    (void)p25_lcw_accept_private_voice_user(ctx, target, src);
 }
 
 static void
@@ -669,10 +706,11 @@ p25_lcw_handle_call_termination(p25_lcw_ctx* ctx) {
     uint32_t tgt = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " Call Termination; TGT: %d;", tgt);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    if (ctx->opts->trunk_enable == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->trunk_is_tuned == 1) {
-        ctx->state->p25_sm_force_release = 1;
-        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "lcw-call-termination");
+    if (tgt == 0x000000U || tgt == 0xFFFFFDU || tgt == 0xFFFFFFU) {
+        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "lcw-network-release");
+        return;
     }
+    p25_sm_emit_end(ctx->opts, ctx->state, 0);
 }
 
 static int
@@ -738,6 +776,9 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     }
     ctx->state->gi[0] = 0;
     p25_patch_update(ctx->state, (int)sg, 1, 1);
+    if (ctx->allow_voice_start) {
+        (void)p25_sm_emit_active_call(ctx->opts, ctx->state, 0, (int)sg, 0, (int)src, 1, ctx->lc_svcopt);
+    }
 }
 
 static void
@@ -820,10 +861,7 @@ p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
     uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    if (ctx->opts->trunk_enable == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->trunk_is_tuned == 1) {
-        ctx->state->p25_sm_force_release = 1;
-        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "motorola-talker-eot");
-    }
+    p25_sm_emit_end_call_at(ctx->opts, ctx->state, 0, ctx->state->lasttg, (int)src, dsd_time_now_monotonic_s());
 }
 
 static void
@@ -957,8 +995,9 @@ p25_lcw_handle_unknown_vendor(const p25_lcw_ctx* ctx) {
     }
 }
 
-void
-p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+static void
+p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
+               uint8_t allow_voice_start) {
     UNUSED(irrecoverable_errors);
     if (opts == NULL || state == NULL || lcw_bits == NULL) {
         return;
@@ -972,9 +1011,11 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecovera
     ctx.lc_format = (uint8_t)convert_bits_into_output(&lcw_bits[0], 8);
     ctx.lc_opcode = (uint8_t)convert_bits_into_output(&lcw_bits[2], 6);
     ctx.lc_mfid = (uint8_t)convert_bits_into_output(&lcw_bits[8], 8);
-    ctx.lc_svcopt = (uint8_t)convert_bits_into_output(&lcw_bits[16], 8);
+    const int svcopt_offset = ctx.lc_format == 0x4A ? 8 : 16;
+    ctx.lc_svcopt = (uint8_t)convert_bits_into_output(&lcw_bits[svcopt_offset], 8);
     ctx.lc_pf = lcw_bits[0];
     ctx.lc_sf = lcw_bits[1];
+    ctx.allow_voice_start = allow_voice_start;
     ctx.is_standard_mfid = (ctx.lc_sf == 1) || ctx.lc_mfid == 0 || ctx.lc_mfid == 1;
 
     if (ctx.lc_pf == 1) {
@@ -1001,4 +1042,14 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecovera
     }
 
     DSD_FPRINTF(stderr, "\n");
+}
+
+void
+p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 1);
+}
+
+void
+p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 0);
 }

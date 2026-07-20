@@ -92,7 +92,6 @@ config_snapshot_equals_block_a(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(p25_voice_hold_s);
     CONFIG_EQ_FIELD(p25_min_follow_dwell_s);
     CONFIG_EQ_FIELD(p25_grant_voice_to_s);
-    CONFIG_EQ_FIELD(p25_retune_backoff_s);
     CONFIG_EQ_FIELD(p25_force_release_extra_s);
     CONFIG_EQ_FIELD(p25_force_release_margin_s);
     CONFIG_EQ_FIELD(p25p1_err_hold_pct);
@@ -161,7 +160,6 @@ config_snapshot_equals_block_b(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(p25_wd_ms);
     CONFIG_EQ_FIELD(p25_min_follow_dwell_is_set);
     CONFIG_EQ_FIELD(p25_grant_voice_to_is_set);
-    CONFIG_EQ_FIELD(p25_retune_backoff_is_set);
     CONFIG_EQ_FIELD(p25_force_release_extra_is_set);
     CONFIG_EQ_FIELD(p25_force_release_margin_is_set);
     CONFIG_EQ_FIELD(p25p1_err_hold_pct_is_set);
@@ -714,9 +712,6 @@ config_init_dmr_and_p25(dsdneoRuntimeConfig& c) {
 
     const char* p25_gvt = getenv("DSD_NEO_P25_GRANT_VOICE_TO");
     c.p25_grant_voice_to_is_set = env_parse_double_range(p25_gvt, 0.0, 120.0, &c.p25_grant_voice_to_s);
-
-    const char* p25_rb = getenv("DSD_NEO_P25_RETUNE_BACKOFF");
-    c.p25_retune_backoff_is_set = env_parse_double_range(p25_rb, 0.0, 120.0, &c.p25_retune_backoff_s);
 
     const char* p25_fe = getenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
     c.p25_force_release_extra_is_set = env_parse_double_range(p25_fe, 0.0, 120.0, &c.p25_force_release_extra_s);

@@ -284,7 +284,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     p25_status_accum_ensure_started(state);
 
     state->currentslot = 0;
-    p25_sm_emit_idle(opts, state, 0);
+    p25_sm_emit_tdu(opts, state);
 
     state->p25_call_emergency[0] = 0;
     state->p25_call_priority[0] = 0;
@@ -312,7 +312,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
 
     if (irrecoverable_errors == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
-        p25_lcw(opts, state, LCW_bits, 0);
+        p25_lcw_from_tdulc(opts, state, LCW_bits, 0);
         DSD_FPRINTF(stderr, "%s", KNRM);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);

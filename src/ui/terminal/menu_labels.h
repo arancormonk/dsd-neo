@@ -92,7 +92,6 @@ const char* lbl_mt(const void* v, char* b, size_t n);
 const char* lbl_p25_vc_grace(const void* v, char* b, size_t n);
 const char* lbl_p25_min_follow(const void* v, char* b, size_t n);
 const char* lbl_p25_grant_voice(const void* v, char* b, size_t n);
-const char* lbl_p25_retune_backoff(const void* v, char* b, size_t n);
 const char* lbl_p25_cc_grace(const void* v, char* b, size_t n);
 const char* lbl_p25_force_extra(const void* v, char* b, size_t n);
 const char* lbl_p25_force_margin(const void* v, char* b, size_t n);

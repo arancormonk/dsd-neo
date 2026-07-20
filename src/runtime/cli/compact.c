@@ -87,7 +87,6 @@ static const char* const k_skip_exact_next_any[] = {
     "--p25-vc-grace",
     "--p25-min-follow-dwell",
     "--p25-grant-voice-timeout",
-    "--p25-retune-backoff",
     "--p25-mac-hold",
     "--p25-ring-hold",
     "--p25-cc-grace",

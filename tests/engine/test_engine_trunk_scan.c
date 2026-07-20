@@ -2345,7 +2345,7 @@ test_channel_map_sequence_advances_on_equal_count_target_switches(void) {
 }
 
 static int
-test_p25_retune_backoff_state_isolated_per_target(void) {
+test_p25_encrypted_call_cache_state_isolated_per_target(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
@@ -2365,19 +2365,12 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
-        DSD_FPRINTF(stderr, "retune-backoff snapshot init failed rc=%d active=%zu err=%s\n", rc,
+        DSD_FPRINTF(stderr, "encrypted-call cache snapshot init failed rc=%d active=%zu err=%s\n", rc,
                     dsd_engine_trunk_scan_active_index(&state), err);
         test_rc = 1;
     }
 
     const time_t until0 = time(NULL) + 60;
-    state.p25_retune_block_until = until0;
-    state.p25_retune_block_freq = 851125000L;
-    state.p25_retune_block_slot = 1;
-    state.p25_retune_block_next = 5U;
-    state.p25_retune_block_history_until[0] = until0;
-    state.p25_retune_block_history_freq[0] = 851125000L;
-    state.p25_retune_block_history_slot[0] = 1;
     state.p25_enc_tg_cache_until[0] = until0;
     state.p25_enc_tg_cache_tg[0] = 2468U;
     state.p25_enc_tg_cache_is_group[0] = 1U;
@@ -2385,25 +2378,15 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
 
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_retune_block_until != 0
-        || state.p25_retune_block_freq != 0 || state.p25_retune_block_history_until[0] != 0
-        || state.p25_enc_tg_cache_until[0] != 0 || state.p25_enc_tg_cache_tg[0] != 0U
-        || state.p25_enc_tg_cache_is_group[0] != 0U) {
-        DSD_FPRINTF(stderr, "retune-backoff leaked into target 1 active=%zu until=%ld freq=%ld hist=%ld enc=%ld/%u\n",
-                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until,
-                    state.p25_retune_block_freq, (long)state.p25_retune_block_history_until[0],
-                    (long)state.p25_enc_tg_cache_until[0], state.p25_enc_tg_cache_tg[0]);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_enc_tg_cache_until[0] != 0
+        || state.p25_enc_tg_cache_tg[0] != 0U || state.p25_enc_tg_cache_is_group[0] != 0U) {
+        DSD_FPRINTF(stderr, "encrypted-call cache leaked into target 1 active=%zu enc=%ld/%u\n",
+                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_enc_tg_cache_until[0],
+                    state.p25_enc_tg_cache_tg[0]);
         test_rc = 1;
     }
 
     const time_t until1 = time(NULL) + 90;
-    state.p25_retune_block_until = until1;
-    state.p25_retune_block_freq = 852125000L;
-    state.p25_retune_block_slot = 0;
-    state.p25_retune_block_next = 7U;
-    state.p25_retune_block_history_until[0] = until1;
-    state.p25_retune_block_history_freq[0] = 852125000L;
-    state.p25_retune_block_history_slot[0] = 0;
     state.p25_enc_tg_cache_until[0] = until1;
     state.p25_enc_tg_cache_tg[0] = 3579U;
     state.p25_enc_tg_cache_is_group[0] = 0U;
@@ -2411,35 +2394,23 @@ test_p25_retune_backoff_state_isolated_per_target(void) {
 
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_retune_block_until != until0
-        || state.p25_retune_block_freq != 851125000L || state.p25_retune_block_slot != 1
-        || state.p25_retune_block_next != 5U || state.p25_retune_block_history_until[0] != until0
-        || state.p25_retune_block_history_freq[0] != 851125000L || state.p25_retune_block_history_slot[0] != 1
-        || state.p25_enc_tg_cache_until[0] != until0 || state.p25_enc_tg_cache_tg[0] != 2468U
-        || state.p25_enc_tg_cache_is_group[0] != 1U || state.p25_enc_tg_cache_next != 5U) {
-        DSD_FPRINTF(
-            stderr,
-            "retune-backoff target 0 restore failed active=%zu until=%ld freq=%ld slot=%d next=%u enc=%ld/%u/%u\n",
-            dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until, state.p25_retune_block_freq,
-            state.p25_retune_block_slot, state.p25_retune_block_next, (long)state.p25_enc_tg_cache_until[0],
-            state.p25_enc_tg_cache_tg[0], state.p25_enc_tg_cache_next);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_enc_tg_cache_until[0] != until0
+        || state.p25_enc_tg_cache_tg[0] != 2468U || state.p25_enc_tg_cache_is_group[0] != 1U
+        || state.p25_enc_tg_cache_next != 5U) {
+        DSD_FPRINTF(stderr, "encrypted-call cache target 0 restore failed active=%zu enc=%ld/%u/%u\n",
+                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_enc_tg_cache_until[0],
+                    state.p25_enc_tg_cache_tg[0], state.p25_enc_tg_cache_next);
         test_rc = 1;
     }
 
     trunk_scan_test_set_now(0.78);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_retune_block_until != until1
-        || state.p25_retune_block_freq != 852125000L || state.p25_retune_block_slot != 0
-        || state.p25_retune_block_next != 7U || state.p25_retune_block_history_until[0] != until1
-        || state.p25_retune_block_history_freq[0] != 852125000L || state.p25_retune_block_history_slot[0] != 0
-        || state.p25_enc_tg_cache_until[0] != until1 || state.p25_enc_tg_cache_tg[0] != 3579U
-        || state.p25_enc_tg_cache_is_group[0] != 0U || state.p25_enc_tg_cache_next != 7U) {
-        DSD_FPRINTF(
-            stderr,
-            "retune-backoff target 1 restore failed active=%zu until=%ld freq=%ld slot=%d next=%u enc=%ld/%u/%u\n",
-            dsd_engine_trunk_scan_active_index(&state), (long)state.p25_retune_block_until, state.p25_retune_block_freq,
-            state.p25_retune_block_slot, state.p25_retune_block_next, (long)state.p25_enc_tg_cache_until[0],
-            state.p25_enc_tg_cache_tg[0], state.p25_enc_tg_cache_next);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_enc_tg_cache_until[0] != until1
+        || state.p25_enc_tg_cache_tg[0] != 3579U || state.p25_enc_tg_cache_is_group[0] != 0U
+        || state.p25_enc_tg_cache_next != 7U) {
+        DSD_FPRINTF(stderr, "encrypted-call cache target 1 restore failed active=%zu enc=%ld/%u/%u\n",
+                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_enc_tg_cache_until[0],
+                    state.p25_enc_tg_cache_tg[0], state.p25_enc_tg_cache_next);
         test_rc = 1;
     }
 
@@ -3351,7 +3322,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_p25_targets_pass_cc_sps_to_retune_paths);
     rc |= run_with_default_tune_hook(test_p25_targets_use_rtl_output_rate_for_retune_sps);
     rc |= run_with_default_tune_hook(test_channel_map_sequence_advances_on_equal_count_target_switches);
-    rc |= run_with_default_tune_hook(test_p25_retune_backoff_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_p25_encrypted_call_cache_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_trunk_targets_reuse_restored_control_channel);
     rc |= run_with_default_tune_hook(test_locked_demod_mode_preserved_when_seeding_targets);
     rc |= run_with_default_tune_hook(test_target_retunes_select_four_level_sps_profile);

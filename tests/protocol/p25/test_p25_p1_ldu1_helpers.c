@@ -176,13 +176,14 @@ dsd_play_synthesized_voice(dsd_opts* opts, dsd_state* state) {
     g_audio_play_calls++;
 }
 
-void
+int
 p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
     (void)state;
     if (slot == 0) {
         g_active_calls++;
     }
+    return 1;
 }
 
 void

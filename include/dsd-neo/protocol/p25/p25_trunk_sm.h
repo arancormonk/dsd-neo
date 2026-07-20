@@ -82,9 +82,10 @@ typedef enum {
     P25_SM_EV_GRANT = 0,      // Channel grant received (channel, freq, tg, src, svc_bits)
     P25_SM_EV_PTT,            // MAC_PTT on slot
     P25_SM_EV_ACTIVE,         // MAC_ACTIVE on slot
-    P25_SM_EV_END,            // MAC_END on slot
-    P25_SM_EV_IDLE,           // MAC_IDLE on slot
-    P25_SM_EV_TDU,            // P1 Terminator Data Unit
+    P25_SM_EV_END,            // MAC_END transmission boundary on slot
+    P25_SM_EV_IDLE,           // MAC_IDLE transmission boundary on slot
+    P25_SM_EV_TDU,            // P1 Terminator Data Unit transmission boundary
+    P25_SM_EV_HANGTIME,       // P2 MAC_HANGTIME transmission boundary on slot
     P25_SM_EV_CC_SYNC,        // Control channel sync acquired
     P25_SM_EV_VC_SYNC,        // Voice channel sync acquired
     P25_SM_EV_SYNC_LOST,      // Sync lost
@@ -106,6 +107,8 @@ typedef struct {
     int algid;                                  // Algorithm ID (for ENC event)
     int keyid;                                  // Key ID (for ENC event)
     int data_call_override;                     // 0=infer from svc_bits, 1=force data, -1=force non-data
+    int identity_valid;                         // 1 when PTT/ACTIVE carries a decoded call identity
+    int facch;                                  // 1 when END was decoded from valid FACCH
     double observed_m;                          // Optional monotonic timestamp when the event was observed
 } p25_sm_event_t;
 
@@ -126,6 +129,7 @@ typedef struct {
 typedef struct {
     double last_active_m;    // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
     double last_start_m;     // Monotonic timestamp of the last PTT/ACTIVE call-epoch boundary
+    double last_stop_m;      // Monotonic timestamp when the last followed epoch transitioned inactive
     int voice_active;        // 1 if voice is currently active on this slot
     int algid;               // Current algorithm ID for this slot
     int keyid;               // Current key ID for this slot
@@ -146,6 +150,9 @@ typedef struct {
     double last_end_m;       // Monotonic timestamp of the last accepted MAC_END_PTT
     int last_end_tg;         // Talkgroup carried by the last accepted MAC_END_PTT
     int last_end_src;        // Source RID carried by the last accepted MAC_END_PTT
+    double facch_end_m;      // Monotonic timestamp of the first qualifying FACCH END_PTT
+    int facch_end_tg;        // Identity carried by the qualifying FACCH END_PTT
+    int facch_end_src;
 } p25_sm_slot_ctx_t;
 
 typedef struct {
@@ -183,6 +190,7 @@ typedef struct {
     int vc_reacquire_attempted;      // 1 after the one-shot CQPSK soft recovery check for this VC tune
     int vc_stale_regrant_probe;      // 1 while an ambiguous post-END update is being validated on the VC
     int vc_stale_regrant_probe_slot; // TDMA slot being validated, or -1 when no validation is active
+    int vc_activity_seen;            // 1 after the first traffic activity following a physical VC tune
     uint32_t cc_no_sync_passes;      // Completed frame-sync searches while a returned CC is still undecoded
     uint32_t vc_no_sync_passes;      // Completed frame-sync searches without P25P2 sync during VC acquisition
 
@@ -312,8 +320,8 @@ int p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
  * @brief Periodic tick for timeout-based transitions.
  *
  * Call at ~1-10 Hz. Handles:
- *   - ARMED -> ON_CC (grant timeout)
- *   - HANGTIME -> ON_CC (hangtime expired)
+ *   - ARMED -> ON_CC (initial traffic grant timeout)
+ *   - retained traffic carrier -> ON_CC (inactivity hangtime expired)
  *   - ON_CC -> HUNTING (CC lost)
  *
  * @param ctx State machine context.
@@ -422,13 +430,33 @@ int p25_sm_slot_grant_newer_than(int slot, double observed_m);
 
 /**
  * @brief Emit PTT event for a slot.
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
-void p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot);
+int p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot);
+
+/**
+ * @brief Emit a PTT event carrying an authoritative in-band call identity.
+ *
+ * The state machine reopens the call epoch from the retained carrier
+ * assignment, re-evaluates policy/crypto, and never invokes the tuner for an
+ * accepted identity on the current carrier.
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
+ */
+int p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                         int svc_bits);
 
 /**
  * @brief Emit ACTIVE event for a slot.
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
-void p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
+int p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
+
+/**
+ * @brief Emit an ACTIVE event carrying an authoritative in-band call identity.
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
+ */
+int p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                            int svc_bits);
 
 /**
  * @brief Emit END event for a slot.
@@ -452,6 +480,21 @@ void p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot);
  */
 int p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int src, double observed_m);
 
+enum {
+    P25_SM_END_IGNORED = 0,
+    P25_SM_END_APPLIED = 1,
+    P25_SM_END_CHANNEL_RELEASED = 2,
+};
+
+/**
+ * @brief Emit an identified FACCH END event.
+ *
+ * Two matching FACCH END messages within one second, without intervening
+ * PTT/ACTIVE activity, are an authoritative teardown hint once both slots are
+ * inactive. SACCH callers must continue using p25_sm_emit_end_call_at().
+ */
+int p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int src, double observed_m);
+
 /**
  * @brief Emit IDLE event for a slot.
  */
@@ -461,6 +504,9 @@ void p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot);
  * @brief Emit IDLE event with a previously captured monotonic observation timestamp.
  */
 void p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m);
+
+/** @brief Emit a MAC_HANGTIME boundary for a slot. */
+void p25_sm_emit_hangtime(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
  * @brief Emit TDU (P1 terminator) event.
@@ -593,10 +639,34 @@ p25_sm_ev_ptt(int slot) {
 }
 
 static inline p25_sm_event_t
+p25_sm_ev_ptt_call(int slot, int tg, int dst, int src, int is_group, int svc_bits) {
+    p25_sm_event_t ev = p25_sm_ev_ptt(slot);
+    ev.tg = tg;
+    ev.dst = dst;
+    ev.src = src;
+    ev.is_group = is_group ? 1 : 0;
+    ev.svc_bits = svc_bits;
+    ev.identity_valid = 1;
+    return ev;
+}
+
+static inline p25_sm_event_t
 p25_sm_ev_active(int slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_ACTIVE;
     ev.slot = slot;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_active_call(int slot, int tg, int dst, int src, int is_group, int svc_bits) {
+    p25_sm_event_t ev = p25_sm_ev_active(slot);
+    ev.tg = tg;
+    ev.dst = dst;
+    ev.src = src;
+    ev.is_group = is_group ? 1 : 0;
+    ev.svc_bits = svc_bits;
+    ev.identity_valid = 1;
     return ev;
 }
 
@@ -618,6 +688,13 @@ p25_sm_ev_end_call_at(int slot, int tg, int src, double observed_m) {
 }
 
 static inline p25_sm_event_t
+p25_sm_ev_facch_end_call_at(int slot, int tg, int src, double observed_m) {
+    p25_sm_event_t ev = p25_sm_ev_end_call_at(slot, tg, src, observed_m);
+    ev.facch = 1;
+    return ev;
+}
+
+static inline p25_sm_event_t
 p25_sm_ev_idle(int slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_IDLE;
@@ -629,6 +706,14 @@ static inline p25_sm_event_t
 p25_sm_ev_idle_at(int slot, double observed_m) {
     p25_sm_event_t ev = p25_sm_ev_idle(slot);
     ev.observed_m = observed_m;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_hangtime(int slot) {
+    p25_sm_event_t ev = {0};
+    ev.type = P25_SM_EV_HANGTIME;
+    ev.slot = slot;
     return ev;
 }
 

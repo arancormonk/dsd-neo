@@ -21,7 +21,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1394,7 +1393,8 @@ main(void) {
         rc |= expect_eq_long("0x6B rejected ga count", state.p25_ga_count, 0);
     }
 
-    // Case E: a grant decoded through MAC VPDU must honor failed-VC retune backoff.
+    // Case E: a grant decoded through MAC VPDU remains eligible immediately
+    // after an explicit release.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -1412,14 +1412,11 @@ main(void) {
         state.p25_iden_fdma[iden].trust = 2;
         state.p25_iden_fdma[iden].populated = 1;
         state.p25_chan_tdma_explicit[iden] = 1;
-        state.p25_retune_block_freq = 851125000;
-        state.p25_retune_block_slot = -1;
-        state.p25_retune_block_until = time(NULL) + 60;
 
         MAC[1] = 0x40; // Group Voice Channel Grant
         MAC[2] = 0x00; // svc
         MAC[3] = 0x10;
-        MAC[4] = 0x0A; // channel 0x100A -> blocked 851.125 MHz
+        MAC[4] = 0x0A; // channel 0x100A -> 851.125 MHz
         MAC[5] = 0x12;
         MAC[6] = 0x34; // group
         MAC[7] = 0x00;
@@ -1427,8 +1424,8 @@ main(void) {
         MAC[9] = 0x02; // source
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x40 blocked by backoff", opts.trunk_is_tuned == 0);
-        rc |= expect_eq_long("0x40 blocked vc", state.p25_vc_freq[0], 0);
+        rc |= expect_true("0x40 accepted after release", opts.trunk_is_tuned == 1);
+        rc |= expect_eq_long("0x40 reassigned vc", state.p25_vc_freq[0], 851125000);
     }
 
     // Case E2: same-carrier TDMA grants decoded on a VC MAC still reach the state machine.
@@ -1629,7 +1626,7 @@ main(void) {
         rc |= expect_eq_long("0x40 trunk alias vc", state.p25_vc_freq[0], 851125000);
     }
 
-    // Case I: compact grant-update paths must also honor failed-VC retune backoff.
+    // Case I: compact grant-update paths remain eligible after an explicit release.
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -1647,13 +1644,10 @@ main(void) {
         state.p25_iden_fdma[iden].trust = 2;
         state.p25_iden_fdma[iden].populated = 1;
         state.p25_chan_tdma_explicit[iden] = 1;
-        state.p25_retune_block_freq = 851125000;
-        state.p25_retune_block_slot = -1;
-        state.p25_retune_block_until = time(NULL) + 60;
 
         MAC[1] = 0x42; // Group Voice Channel Grant Update - Implicit
         MAC[2] = 0x10;
-        MAC[3] = 0x0A; // channel1 0x100A -> blocked 851.125 MHz
+        MAC[3] = 0x0A; // channel1 0x100A -> 851.125 MHz
         MAC[4] = 0x12;
         MAC[5] = 0x34; // group1
         MAC[6] = 0x10;
@@ -1662,8 +1656,8 @@ main(void) {
         MAC[9] = 0x35; // group2
 
         process_MAC_VPDU(&opts, &state, 0, MAC);
-        rc |= expect_true("0x42 blocked by backoff", opts.trunk_is_tuned == 0);
-        rc |= expect_eq_long("0x42 blocked vc", state.p25_vc_freq[0], 0);
+        rc |= expect_true("0x42 accepted after release", opts.trunk_is_tuned == 1);
+        rc |= expect_eq_long("0x42 reassigned vc", state.p25_vc_freq[0], 851125000);
     }
 
     // Case J: no-SVC 0x42 grants are suppressed after a proven encrypted call.

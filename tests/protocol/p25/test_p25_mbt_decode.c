@@ -492,7 +492,6 @@ main(void) {
         uint8_t grant[48];
         init_private_trunking(&opts, &state);
         opts.trunk_tune_enc_calls = 0;
-        opts.p25_retune_backoff_s = 5.0;
         build_ambtc_group_voice(grant, 0x40, 0x200A, 0x200A, 0x2345, 0x010205);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
@@ -512,7 +511,6 @@ main(void) {
         seed_fdma_iden(&state, 1);
         state.p25_cc_freq = 0;
         opts.trunk_tune_enc_calls = 0;
-        opts.p25_retune_backoff_s = 5.0;
         build_ambtc_mfid90_group_regroup(grant, 0x40, 0x100A, 0x100B, 0x3456, 0x010206);
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);

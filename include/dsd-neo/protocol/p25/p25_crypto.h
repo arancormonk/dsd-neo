@@ -63,6 +63,9 @@ p25_crypto_audio_permitted(const dsd_opts* opts, const dsd_state* state, int slo
     if (!state || slot < 0 || slot > 1) {
         return 0;
     }
+    if (slot == 0 && state->p25_p1_identity_pending) {
+        return 0;
+    }
     if (p25_crypto_audio_ready(state, slot)) {
         return 1;
     }

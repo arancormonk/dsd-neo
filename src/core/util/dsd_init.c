@@ -383,7 +383,6 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->p25_vc_grace_s = 0.0;
     opts->p25_min_follow_dwell_s = 0.0;
     opts->p25_grant_voice_to_s = 0.0;
-    opts->p25_retune_backoff_s = 0.0;
     opts->p25_force_release_extra_s = 0.0;
     opts->p25_force_release_margin_s = 0.0;
     opts->p25_p1_err_hold_pct = 0.0;
@@ -840,16 +839,7 @@ init_state_p25_patch_defaults(dsd_state* state) {
 }
 
 static void
-init_state_p25_retune_backoff_defaults(dsd_state* state) {
-    state->p25_retune_block_until = 0;
-    state->p25_retune_block_freq = 0;
-    state->p25_retune_block_slot = -1;
-    state->p25_retune_block_next = 0;
-    DSD_MEMSET(state->p25_retune_block_history_until, 0, sizeof(state->p25_retune_block_history_until));
-    DSD_MEMSET(state->p25_retune_block_history_freq, 0, sizeof(state->p25_retune_block_history_freq));
-    for (int i = 0; i < DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH; i++) {
-        state->p25_retune_block_history_slot[i] = -1;
-    }
+init_state_p25_encrypted_call_cache_defaults(dsd_state* state) {
     DSD_MEMSET(state->p25_enc_tg_cache_until, 0, sizeof(state->p25_enc_tg_cache_until));
     DSD_MEMSET(state->p25_enc_tg_cache_tg, 0, sizeof(state->p25_enc_tg_cache_tg));
     DSD_MEMSET(state->p25_enc_tg_cache_is_group, 0, sizeof(state->p25_enc_tg_cache_is_group));
@@ -884,6 +874,9 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_p2_soft_ess_max_depth = 0;
     state->p25_p1_soft_combined_ok = 0;
     state->p25_p2_active_slot = -1;
+    state->p25_p1_identity_pending = 0;
+    state->p25_p1_hdu_crypto_fresh = 0;
+    DSD_MEMSET(state->p25_p2_media_rejected, 0, sizeof(state->p25_p2_media_rejected));
     DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     state->p25_cc_is_tdma =
         2; //init on 2, TSBK NET_STS will set 0, TDMA NET_STS will set 1. //used to determine if we need to change symbol rate when cc hunting
@@ -908,7 +901,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_vc_freq[1] = 0;
 
     init_state_p25_patch_defaults(state);
-    init_state_p25_retune_backoff_defaults(state);
+    init_state_p25_encrypted_call_cache_defaults(state);
 
     //edacs - may need to make these user configurable instead for stability on non-ea systems
     state->ea_mode = -1; //init on -1, 0 is standard, 1 is ea

@@ -27,6 +27,7 @@
 #include "dsd-neo/protocol/p25/p25_crypto.h"
 #include "dsd-neo/protocol/p25/p25_lfsr.h"
 #include "dsd-neo/protocol/p25/p25_status_symbol.h"
+#include "dsd-neo/protocol/p25/p25_trunk_sm.h"
 #include "dsd-neo/protocol/p25/p25p1_check_hdu.h"
 #include "dsd-neo/runtime/p25_optional_hooks.h"
 
@@ -58,6 +59,13 @@ p25p1_llr_reliability(const int16_t* llr, int bit_count) {
 static int g_resolve_entry_algid;
 static int g_resolve_entry_keyid;
 static uint64_t g_resolve_entry_mi;
+static int g_resolve_entry_identity_pending;
+static p25_sm_ctx_t g_sm_ctx;
+
+p25_sm_ctx_t*
+p25_sm_get_ctx(void) {
+    return &g_sm_ctx;
+}
 
 dsd_p25_crypto_state
 p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
@@ -69,6 +77,7 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
     g_resolve_entry_algid = state->payload_algid;
     g_resolve_entry_keyid = state->payload_keyid;
     g_resolve_entry_mi = state->payload_miP;
+    g_resolve_entry_identity_pending = state->p25_p1_identity_pending;
     if (algid == 0) {
         return state->p25_crypto_state[0];
     }
@@ -321,6 +330,8 @@ reset_hook_counters(void) {
     g_resolve_entry_algid = 0;
     g_resolve_entry_keyid = 0;
     g_resolve_entry_mi = 0ULL;
+    g_resolve_entry_identity_pending = 0;
+    DSD_MEMSET(&g_sm_ctx, 0, sizeof(g_sm_ctx));
 }
 
 static void
@@ -688,6 +699,7 @@ test_hdu_key_reporting_preserves_user_unmute_and_good_decode_state(void) {
     rc |= expect_int("hdu resolver sees prior KID", g_resolve_entry_keyid, 0);
     rc |= expect_u64("hdu resolver sees prior MI", g_resolve_entry_mi, 0ULL);
     rc |= expect_int("good hdu xl flag", state.xl_is_hdu, 1);
+    rc |= expect_int("good hdu crypto freshness", state.p25_p1_hdu_crypto_fresh, 1);
     rc |= expect_int("good hdu aes lfsr", g_lfsr128_calls, 1);
 
     return rc;
@@ -706,6 +718,7 @@ test_hdu_nondefinitive_metadata_preserves_prior_tuple(void) {
     state.payload_keyid = 0x3456;
     state.payload_miP = 0x8877665544332211ULL;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    state.p25_p1_hdu_crypto_fresh = 1;
 
     hdu_handle_good_decode(&opts, &state, 0, 0, 0ULL, 0ULL, 0ULL);
 
@@ -717,6 +730,7 @@ test_hdu_nondefinitive_metadata_preserves_prior_tuple(void) {
     rc |= expect_u64("nondefinitive HDU preserves MI", state.payload_miP, 0x8877665544332211ULL);
     rc |=
         expect_int("nondefinitive HDU preserves classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("nondefinitive HDU clears freshness", state.p25_p1_hdu_crypto_fresh, 0);
     return rc;
 }
 
@@ -733,6 +747,12 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     state.event_history_s = g_event_history;
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
+    g_sm_ctx.initialized = 1;
+    g_sm_ctx.state = P25_SM_TUNED;
+    g_sm_ctx.vc_is_tdma = 0;
+    g_sm_ctx.vc_activity_seen = 1;
+    g_sm_ctx.slots[0].grant_active = 1;
+    g_sm_ctx.slots[0].voice_active = 1;
     DSD_SNPRINTF(opts.event_out_file, sizeof(opts.event_out_file), "%s", "events.log");
     state.lasttg = 1234;
     g_lookup_label = "Secure TG";
@@ -743,6 +763,8 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     rc |= expect_int("lockout preserves kid", state.payload_keyid, 0x2A2A);
     rc |= expect_u64("lockout preserves mi", state.payload_miP, 0xAABBCCDD10203040ULL);
     rc |= expect_int("lockout crypto state", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("missed terminator HDU marks identity pending", state.p25_p1_identity_pending, 1);
+    rc |= expect_int("resolver sees identity pending before lockout", g_resolve_entry_identity_pending, 1);
     rc |= expect_int("lockout gate", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("lockout does not make runtime policy", g_policy_make_calls, 0);
     rc |= expect_int("lockout does not upsert runtime policy", g_policy_upsert_calls, 0);

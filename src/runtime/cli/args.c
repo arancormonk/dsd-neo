@@ -647,15 +647,6 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             LOG_INFO("NOTICE: P25: Grant->Voice timeout set to %.2fs (CLI).\n", opts->p25_grant_voice_to_s);           \
             continue;                                                                                                  \
         }                                                                                                              \
-        if (strcmp(argv[i], "--p25-retune-backoff") == 0 && i + 1 < argc) {                                            \
-            DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-retune-backoff", DSD_PARSE_ARGS_NEXT_ARG(),                          \
-                                           opts->p25_retune_backoff_s);                                                \
-            char buf[32];                                                                                              \
-            DSD_SNPRINTF(buf, sizeof buf, "%.3f", opts->p25_retune_backoff_s);                                         \
-            dsd_setenv("DSD_NEO_P25_RETUNE_BACKOFF", buf, 1);                                                          \
-            LOG_INFO("NOTICE: P25: Retune backoff set to %.2fs (CLI).\n", opts->p25_retune_backoff_s);                 \
-            continue;                                                                                                  \
-        }                                                                                                              \
         if (strcmp(argv[i], "--p25-mac-hold") == 0 && i + 1 < argc) {                                                  \
             double v = 0.0;                                                                                            \
             DSD_CLI_PARSE_DOUBLE_OR_RETURN("--p25-mac-hold", DSD_PARSE_ARGS_NEXT_ARG(), v);                            \

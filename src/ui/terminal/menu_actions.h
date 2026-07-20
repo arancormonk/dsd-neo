@@ -92,7 +92,6 @@ void act_tcp_rcvtimeo_prompt(void* v);
 void act_set_p25_vc_grace(void* v);
 void act_set_p25_min_follow(void* v);
 void act_set_p25_grant_voice(void* v);
-void act_set_p25_retune_backoff(void* v);
 void act_set_p25_cc_grace(void* v);
 void act_set_p25_force_extra(void* v);
 void act_set_p25_force_margin(void* v);

@@ -468,6 +468,7 @@ run_direct_fixed_hb_case(const char* backend, complex_hb_backend_fn fn, const fl
                     tap_name, TapsLen, ch_len);
         return 1;
     }
+    // nosemgrep: dsd-neo.no-floating-point-equality-in-tests -- Exact sentinel detects any output write.
     if (len_simd == 0 && out_simd[0] != kOutputSentinel) {
         DSD_FPRINTF(stderr, "  FAIL: %s %s %d-tap zero-output block mutated output\n", backend,
                     fixed_buffer_mode_name(mode), TapsLen);
