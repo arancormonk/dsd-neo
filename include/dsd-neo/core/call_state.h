@@ -54,7 +54,7 @@ typedef enum {
 } dsd_call_boundary;
 
 typedef struct {
-    int protocol;
+    int protocol; /**< DSD_SYNC_* value; use DSD_SYNC_NONE when unobserved. */
     uint8_t slot;
     dsd_call_kind kind;
     uint32_t ota_target_id;
@@ -83,7 +83,7 @@ typedef struct {
     uint64_t revision;
     uint64_t epoch;
     dsd_call_phase phase;
-    int protocol;
+    int protocol; /**< DSD_SYNC_* value, or DSD_SYNC_NONE when unobserved. */
     uint8_t slot;
     dsd_call_kind kind;
     uint32_t ota_target_id;

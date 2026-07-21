@@ -3,6 +3,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 
 #include <assert.h>
 #include <stdint.h>
@@ -147,6 +148,38 @@ test_snapshot_clone(dsd_state* state) {
     free(clone);
 }
 
+static void
+test_positive_p25p1_protocol_observation(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+
+    dsd_call_observation observation = group_call(0U, 700U, 800U, 1.0);
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.epoch == 1U);
+    assert(snapshot.protocol == DSD_SYNC_P25P2_POS);
+
+    observation.protocol = DSD_SYNC_P25P1_POS;
+    observation.observed_m = 2.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.epoch == 2U);
+    assert(snapshot.protocol == DSD_SYNC_P25P1_POS);
+
+    observation.protocol = DSD_SYNC_NONE;
+    observation.observed_m = 3.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.epoch == 2U);
+    assert(snapshot.protocol == DSD_SYNC_P25P1_POS);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
@@ -155,6 +188,7 @@ main(void) {
     test_crypto_and_slot_isolation(state);
     test_recent_activity(state);
     test_snapshot_clone(state);
+    test_positive_p25p1_protocol_observation();
     dsd_state_ext_free_all(state);
     free(state);
     return 0;

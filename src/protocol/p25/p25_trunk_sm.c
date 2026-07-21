@@ -3945,6 +3945,9 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         const uint32_t tune_count = ctx->tune_count;
         const uint32_t grant_count = ctx->grant_count;
         p25_sm_diagf(opts, state, ctx, "release_stale_reset", "reason=%s", reason ? reason : "none");
+        const double ended_m = dsd_time_now_monotonic_s();
+        p25_call_end_slot(opts, state, 0, ended_m);
+        p25_call_end_slot(opts, state, 1, ended_m);
         p25_release_clear_context(ctx);
         const uint32_t release_count = ctx->release_count;
         const uint32_t cc_return_count = ctx->cc_return_count;

@@ -2513,6 +2513,21 @@ main(void) {
     candidate_decision.preempt_requested = 1;
     assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 1);
 
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_observation stale_call = {
+            .protocol = DSD_SYNC_P25P2_POS,
+            .slot = (uint8_t)slot,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 6201U + slot,
+            .policy_target_id = 6201U + slot,
+            .source_id = 7201U + slot,
+            .group_id = 6201U + slot,
+            .frequency_hz = 851125000L,
+            .observed_m = 1.0 + slot,
+        };
+        assert(dsd_call_state_observe(&s24, &stale_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    }
+
     g_result_return_to_cc_calls = 0;
     p25_sm_release(&ctx24, &o24, &s24, "external-return-stale-context");
     assert(g_result_return_to_cc_calls == 0);
@@ -2533,6 +2548,12 @@ main(void) {
     assert(s24.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN && s24.p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN);
     assert(s24.p25_policy_tg[0] == 0 && s24.p25_policy_tg[1] == 0);
     assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 0);
+    dsd_call_snapshot released_call;
+    assert(dsd_call_state_get(&s24, 0U, &released_call) == 1);
+    assert(released_call.phase == DSD_CALL_PHASE_ENDED);
+    assert(dsd_call_state_get(&s24, 1U, &released_call) == 1);
+    assert(released_call.phase == DSD_CALL_PHASE_ENDED);
+    dsd_state_ext_free_all(&s24);
 
     install_trunk_tuning_hooks();
 

@@ -7,6 +7,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -74,6 +75,7 @@ call_state_ext_allocate(void) {
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         ext->calls.slots[slot].slot = (uint8_t)slot;
         ext->calls.slots[slot].phase = DSD_CALL_PHASE_IDLE;
+        ext->calls.slots[slot].protocol = DSD_SYNC_NONE;
     }
     return ext;
 }
@@ -174,7 +176,8 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
     if (boundary == DSD_CALL_BOUNDARY_BEGIN || current->phase != DSD_CALL_PHASE_ACTIVE) {
         return 1;
     }
-    if (current->protocol != 0 && observation->protocol != 0 && current->protocol != observation->protocol) {
+    if (current->protocol != DSD_SYNC_NONE && observation->protocol != DSD_SYNC_NONE
+        && current->protocol != observation->protocol) {
         return 1;
     }
     const uint32_t old_target = call_state_effective_target_snapshot(current);
@@ -189,8 +192,8 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
 }
 
 static void
-call_state_apply_nonzero_observation(dsd_call_snapshot* snapshot, const dsd_call_observation* observation) {
-    if (observation->protocol != 0) {
+call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observation* observation) {
+    if (observation->protocol != DSD_SYNC_NONE) {
         snapshot->protocol = observation->protocol;
     }
     if (observation->kind != DSD_CALL_KIND_UNKNOWN) {
@@ -240,6 +243,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         snapshot->epoch = call_state_next_nonzero(prior_epoch);
         snapshot->slot = observation->slot;
+        snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
         snapshot->started_m = now_m;
         ext->events[observation->slot].ended_committed = 0U;
@@ -249,7 +253,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         ext->events[observation->slot].notice_handled = 0U;
     }
     snapshot->phase = DSD_CALL_PHASE_ACTIVE;
-    call_state_apply_nonzero_observation(snapshot, observation);
+    call_state_apply_observation(snapshot, observation);
     snapshot->updated_m = now_m;
     snapshot->ended_m = 0.0;
     snapshot->revision = call_state_next_nonzero(snapshot->revision);

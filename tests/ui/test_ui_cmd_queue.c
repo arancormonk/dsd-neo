@@ -8,6 +8,8 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -768,6 +770,38 @@ seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_fr
 }
 
 static int
+seed_active_canonical_calls(dsd_opts* opts, dsd_state* state, long vc_freq, int tg) {
+    int rc = 0;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_observation observation = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = (uint8_t)slot,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = (uint32_t)(tg + slot),
+            .policy_target_id = (uint32_t)(tg + slot),
+            .source_id = (uint32_t)(tg + slot + 10),
+            .group_id = (uint32_t)(tg + slot),
+            .frequency_hz = vc_freq,
+            .observed_m = 1.0 + slot,
+        };
+        rc |=
+            expect_int("seed canonical call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+        dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    }
+    return rc;
+}
+
+static int
+expect_call_phase(const char* tag, const dsd_state* state, uint8_t slot, dsd_call_phase want) {
+    dsd_call_snapshot snapshot;
+    if (dsd_call_state_get(state, slot, &snapshot) != 1) {
+        DSD_FPRINTF(stderr, "%s: canonical call unavailable\n", tag);
+        return 1;
+    }
+    return expect_int(tag, snapshot.phase, want);
+}
+
+static int
 test_manual_tune_commands_commit_only_after_acceptance(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -787,6 +821,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
 
     init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1201);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
     rc |= expect_int("deferred return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
@@ -805,6 +840,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("deferred return-to-CC keeps SPS", state.samplesPerSymbol, 7);
     rc |= expect_int("deferred return-to-CC keeps SPS profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
     rc |= expect_int("deferred return-to-CC keeps SPS hunt counter", state.sps_hunt_counter, 17);
+    rc |= expect_call_phase("deferred return-to-CC keeps canonical slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_call_phase("deferred return-to-CC keeps canonical slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
 
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_PENDING);
     rc |= expect_int("accepted timeout return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
@@ -819,6 +856,12 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("accepted timeout used profile-aware CC tune", g_cc_tune_calls, 1);
     rc |= expect_int("accepted timeout profile was staged before commit", g_cc_profile_at_tune,
                      DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    rc |= expect_call_phase("accepted return-to-CC ends canonical slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_call_phase("accepted return-to-CC ends canonical slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_int("accepted return-to-CC commits slot 1 history",
+                     (int)state.event_history_s[0].Event_History_Items[1].target_id, 1201);
+    rc |= expect_int("accepted return-to-CC commits slot 2 history",
+                     (int)state.event_history_s[1].Event_History_Items[1].target_id, 1202);
     freeState(&state);
 
     init_test_context(&opts, &state);
@@ -914,6 +957,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
 
     init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 855000000L, 856000000L, 3201);
+    rc |= seed_active_canonical_calls(&opts, &state, 856000000L, 3201);
     state.lcn_freq_count = 4;
     state.lcn_freq_roll = 0;
     state.trunk_lcn_freq[0] = 0L;
@@ -933,6 +977,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("deferred channel cycle keeps TG", state.lasttg, 3201);
     rc |= expect_true("deferred channel cycle keeps VC", state.p25_vc_freq[0] == 856000000L);
     rc |= expect_true("deferred channel cycle keeps CC sync", state.last_cc_sync_time_m == 42.0);
+    rc |= expect_call_phase("deferred channel cycle keeps canonical slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_call_phase("deferred channel cycle keeps canonical slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
 
     state.samplesPerSymbol = 8;
     state.symbolCenter = 3;
@@ -955,6 +1001,8 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_int("accepted channel cycle keeps symbol center", state.symbolCenter, 3);
     rc |= expect_int("accepted channel cycle keeps SPS profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     rc |= expect_int("accepted channel cycle keeps SPS hunt counter", state.sps_hunt_counter, 23);
+    rc |= expect_call_phase("accepted channel cycle ends canonical slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_call_phase("accepted channel cycle ends canonical slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
 
     rc |= expect_int("later channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
