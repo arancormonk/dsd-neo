@@ -24,7 +24,6 @@
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -763,8 +762,7 @@ p25_update_pdu_header_state(dsd_opts* opts, dsd_state* state, const P25PduHeader
         state->lastsrc = 0;
         state->lasttg = 0;
         state->p25_policy_tg[0] = 0;
-        watchdog_event_history(opts, state, 0);
-        dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
+        dsd_event_sync_slot(opts, state, 0);
     }
 
     if ((uint32_t)state->lasttg != h->address) {
@@ -1010,6 +1008,5 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     state->lastsrc = 0;
     state->lasttg = 0;
     state->p25_policy_tg[0] = 0;
-    watchdog_event_history(opts, state, 0);
-    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 0);
 }

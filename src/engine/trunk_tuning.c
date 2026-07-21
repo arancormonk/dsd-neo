@@ -4,7 +4,9 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -101,7 +103,13 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
 
 static void DSD_ATTR_USED
 dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
-    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+    const double ended_m = dsd_time_now_monotonic_s();
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+            dsd_event_sync_slot(opts, state, (uint8_t)slot);
+        }
+    }
+    (void)dsd_recent_activity_clear_all(state);
     DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     ");
     DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     ");
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));

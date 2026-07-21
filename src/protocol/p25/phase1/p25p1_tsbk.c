@@ -10,6 +10,7 @@
  * 2022-10 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -29,7 +30,6 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "../p25_cc_update.h"
 #include "../p25_mfid90_utils.h"
 #include "../p25_response_reason.h"
@@ -75,10 +75,7 @@ tsbk_prepare_frame_state(dsd_opts* opts, dsd_state* state) {
     p25_status_accum_ensure_started(state);
 
     // Clear stale active-channel text after a short idle gap.
-    const time_t now = time(NULL);
-    if ((now - state->last_active_time) > 3) {
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
-    }
+    (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
 }
 
 static void
@@ -236,7 +233,7 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 GRG Grant: %04X%s SG: %d; ",
                  channel, suf, sg);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
     DSD_FPRINTF(stderr, "\n");
     if (opts->trunk_enable == 1 && freq != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
@@ -260,7 +257,7 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
     p25_format_chan_suffix(state, (uint16_t)ch2, -1, suf2, sizeof suf2);
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 GRG Upd: %04X%s SG: %d; ", ch1,
                  suf1, sg1);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
     DSD_FPRINTF(stderr, "\n");
     if (opts->trunk_enable == 1 && ch1 != 0 && freq1 != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
@@ -454,7 +451,7 @@ tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t t
                      is_deny ? "DENY" : "QUEUED", target_addr, reason_str);
     }
     DSD_FPRINTF(stderr, " Target [%d]\n", target_addr);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     if (opts) {
         if (is_deny) {
@@ -477,7 +474,7 @@ tsbk_handle_mfid90_ack(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_
     DSD_FPRINTF(stderr, "  Service [%02X] Source [%d] Target [%d]\n", svc_type, source, target);
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
                  "MOT ACK Target: %d Source: %d Service: %02X; ", target, source, svc_type);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -583,7 +580,7 @@ tsbk_handle_mfid90_tdma_data_channel(const dsd_opts* opts, dsd_state* state,
         DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: %04X%s; ", channel,
                      suffix);
     }
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
     DSD_FPRINTF(stderr, "\n");
 }
 

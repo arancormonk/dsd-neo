@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/vocoder.h>
@@ -75,6 +76,32 @@ p25_crypto_set_state(dsd_state* state, int slot, dsd_p25_crypto_state crypto_sta
     if (!p25_crypto_audio_ready(state, slot)) {
         state->p25_p2_audio_allowed[slot] = 0;
     }
+}
+
+static dsd_call_crypto_state
+p25_crypto_canonical_classification(dsd_p25_crypto_state crypto_state) {
+    switch (crypto_state) {
+        case DSD_P25_CRYPTO_CLEAR: return DSD_CALL_CRYPTO_CLEAR;
+        case DSD_P25_CRYPTO_ENCRYPTED_PENDING: return DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+        case DSD_P25_CRYPTO_DECRYPTABLE: return DSD_CALL_CRYPTO_DECRYPTABLE;
+        case DSD_P25_CRYPTO_BLOCKED: return DSD_CALL_CRYPTO_ENCRYPTED;
+        default: return DSD_CALL_CRYPTO_UNKNOWN;
+    }
+}
+
+static void
+p25_crypto_publish_canonical(const dsd_opts* opts, dsd_state* state, int slot) {
+    if (!state || !p25_crypto_slot_valid(slot)) {
+        return;
+    }
+    dsd_call_crypto_update update = {
+        .classification = p25_crypto_canonical_classification(state->p25_crypto_state[slot]),
+        .algid = (uint8_t)p25_crypto_slot_algid(state, slot),
+        .kid = (uint16_t)p25_crypto_slot_keyid(state, slot),
+        .mi = p25_crypto_slot_mi(state, slot),
+        .audio_permitted = (uint8_t)(p25_crypto_audio_permitted(opts, state, slot) ? 1 : 0),
+    };
+    (void)dsd_call_state_update_crypto(state, (uint8_t)slot, &update);
 }
 
 static void
@@ -235,6 +262,7 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
         p25_crypto_reset_stream_state(state, phase, slot);
     }
     p25_crypto_set_state(state, slot, resolved);
+    p25_crypto_publish_canonical(opts, state, slot);
 
     if ((resolved == DSD_P25_CRYPTO_DECRYPTABLE || resolved == DSD_P25_CRYPTO_BLOCKED) && opts) {
         p25_sm_emit_enc(opts, state, slot, algid, keyid, talkgroup);
@@ -264,6 +292,7 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
     const int service_options_clear = svc_bits >= 0 && (svc_bits & 0x40) == 0;
     p25_crypto_set_state(
         state, slot, (force_clear || service_options_clear) ? DSD_P25_CRYPTO_CLEAR : DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    p25_crypto_publish_canonical(NULL, state, slot);
     state->p25_p2_audio_allowed[slot] = 0;
 }
 
@@ -283,6 +312,7 @@ p25_crypto_mark_encrypted_pending(dsd_state* state, int slot) {
     }
 
     p25_crypto_set_state(state, slot, DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    p25_crypto_publish_canonical(NULL, state, slot);
     dsd_mbe_purge_slot_audio(state, slot);
 }
 
@@ -294,6 +324,7 @@ p25_crypto_p1_defer_clear_conflict(dsd_state* state, int svc_bits) {
 
     p25_crypto_p1_arm_conflict(state, state->payload_algid, state->payload_keyid);
     p25_crypto_set_state(state, 0, DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    p25_crypto_publish_canonical(NULL, state, 0);
     dsd_mbe_purge_slot_audio(state, 0);
     return 1;
 }
@@ -352,5 +383,6 @@ p25_crypto_block_pending(dsd_state* state, int slot) {
         return;
     }
     p25_crypto_set_state(state, slot, DSD_P25_CRYPTO_BLOCKED);
+    p25_crypto_publish_canonical(NULL, state, slot);
     dsd_mbe_purge_slot_audio(state, slot);
 }

@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
@@ -306,7 +307,7 @@ p25_set_mfid90_active_channel_single(dsd_state* state, int channel, int group) {
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof(suffix));
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 Active Ch: %04X%s SG: %d; ",
                  channel, suffix, group);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static inline void
@@ -328,7 +329,7 @@ p25_set_mfid90_active_channel_update(dsd_state* state, int channel1, int group1,
         return;
     }
 
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 typedef struct {
@@ -582,7 +583,7 @@ p25p2_vpdu_set_active_group_single(dsd_state* state, int channel, int group) {
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof suffix);
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TG: %d; ", channel,
                  suffix, group);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -595,7 +596,7 @@ p25p2_vpdu_set_active_group_pair(dsd_state* state, int channel1, int group1, int
         DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
                      "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channel1, suffix1, group1, channel2, suffix2,
                      group2);
-        state->last_active_time = time(NULL);
+        (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
         return;
     }
     p25p2_vpdu_set_active_group_single(state, channel1, group1);
@@ -613,7 +614,7 @@ p25p2_vpdu_set_active_group_triple(dsd_state* state, int channel1, int group1, i
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
                  "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channel1, suffix1, group1,
                  channel2, suffix2, group2, channel3, suffix3, group3);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 typedef struct {
@@ -1246,7 +1247,7 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
             DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Tele Ch: %04X%s TGT: %u; ",
                          channel, suffix, target);
         }
-        state->last_active_time = time(NULL);
+        (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
         p25p2_vpdu_print_group_label(state, target);
         if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
@@ -1293,7 +1294,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(p25p2_vpdu_ctx* ctx, int opcode
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suffix, sizeof suffix);
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TGT: %d SRC: %d; ",
                  channel, suffix, target, source);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     if (opts->trunk_tune_private_calls == 0) {
         ctx->skip_rest = 1;
@@ -1341,7 +1342,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_extended(p25p2_vpdu_ctx* ctx, int opcode) {
     p25_format_chan_suffix(state, (uint16_t)channelt, -1, suffix, sizeof suffix);
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TGT: %d SRC: %d; ",
                  channelt, suffix, target, source);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     if (opts->trunk_tune_private_calls == 0) {
         ctx->skip_rest = 1;
@@ -1423,7 +1424,7 @@ p25p2_vpdu_iter_block_07(p25p2_vpdu_ctx* ctx) {
                          "Active Ch: %04X%s TG: %d; Ch: %04X%s TG: %d; ", channelt1, suffix1, group1, channelt2,
                          suffix2, group2);
         }
-        state->last_active_time = time(NULL);
+        (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
         if (opts->trunk_tune_group_calls == 0) {
             ctx->skip_rest = 1;
@@ -1701,7 +1702,7 @@ p25p2_vpdu_iter_block_11(p25p2_vpdu_ctx* ctx) {
             DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Data Ch: %04X%s TGT: %d; ",
                          channelt, suf_dat, target);
         }
-        state->last_active_time = time(NULL);
+        (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
         if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
             const int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
@@ -1970,7 +1971,7 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
         DSD_SNPRINTF(state->active_channel[slot], sizeof(state->active_channel[slot]),
                      "MFID90 GRG VCH Upd: %04X%s SG: %d; ", channel, suf, sg);
         p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
-        state->last_active_time = time(NULL);
+        (void)dsd_recent_activity_sync_legacy_entry(state, (uint8_t)slot);
         DSD_FPRINTF(stderr, "\n");
         // Route through SM for tuning consideration
         if (opts->trunk_enable == 1 && channel != 0 && freq != 0) {
@@ -4127,7 +4128,7 @@ p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
             DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "%s Target: %d Reason: %s; ",
                          is_deny ? "DENY" : "QUEUED", target_addr, reason_str);
         }
-        state->last_active_time = time(NULL);
+        (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
         // Notify the trunking state machine.
         if (opts) {
@@ -4225,7 +4226,7 @@ p25p2_vpdu_handle_status_update_abbreviated(p25p2_vpdu_ctx* ctx) {
                 user_status);
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "STATUS Target: %d Source: %d Unit: %02X User: %02X; ", target, source, unit_status, user_status);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static const char*
@@ -4260,7 +4261,7 @@ p25p2_vpdu_handle_query_alert_affiliation_abbreviated(p25p2_vpdu_ctx* ctx, int o
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d]", target, source);
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "%s Target: %d Source: %d; ", label, target,
                  source);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4277,7 +4278,7 @@ p25p2_vpdu_handle_message_update_abbreviated(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%d] Message [%04X]", target, source, message);
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "MSG Target: %d Source: %d Message: %04X; ",
                  target, source, message);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4302,7 +4303,7 @@ p25p2_vpdu_handle_ack_response_fne_abbreviated(p25p2_vpdu_ctx* ctx) {
     }
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "ACK Target: %d Service: %02X; ", target,
                  svc_type);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4350,7 +4351,7 @@ p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
     p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "TELE Target: %d Timer: %.1fs; ", target,
                  (double)timer / 10.0);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4370,7 +4371,7 @@ p25p2_vpdu_handle_radio_unit_monitor_abbreviated(p25p2_vpdu_ctx* ctx) {
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "RUM Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time, multiplier,
                  silent ? " Silent" : "");
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4394,7 +4395,7 @@ p25p2_vpdu_handle_radio_unit_monitor_enhanced_abbreviated(p25p2_vpdu_ctx* ctx) {
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "RUM-E Target: %d %s: %d Time: %d ALG: %02X KID: %04X%s; ", target, talkgroup_mode ? "TG" : "RID",
                  monitor, transmit_time, algid, key_id, silent ? " Silent" : "");
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4416,7 +4417,7 @@ p25p2_vpdu_handle_radio_unit_monitor_extended_vch(p25p2_vpdu_ctx* ctx) {
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "RUM-X Target: %d Source: %d Time: %d Mult: %d%s; ", target, source, transmit_time, multiplier,
                  silent ? " Silent" : "");
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4436,7 +4437,7 @@ p25p2_vpdu_handle_status_update_extended_vch(p25p2_vpdu_ctx* ctx) {
                 source_sys, source, unit_status, user_status);
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "STATUS-X Target: %d Source: %d Unit: %02X User: %02X; ", target, source, unit_status, user_status);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4454,7 +4455,7 @@ p25p2_vpdu_handle_status_query_alert_affiliation_extended_vch(p25p2_vpdu_ctx* ct
     DSD_FPRINTF(stderr, "\n  Target [%d] Source [%05X:%03X.%d]", target, source_wacn, source_sys, source);
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "%s-X Target: %d Source: %d; ", label,
                  target, source);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4473,7 +4474,7 @@ p25p2_vpdu_handle_message_update_extended_vch(p25p2_vpdu_ctx* ctx) {
                 message);
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "MSG-X Target: %d Source: %d Message: %04X; ", target, source, message);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4498,7 +4499,7 @@ p25p2_vpdu_handle_extended_function_extended_vch(p25p2_vpdu_ctx* ctx) {
     }
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "EXTFUNC-X Target: %d Source: %d Function: %04X Arg: %06X; ", target, source, function, argument);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4523,7 +4524,7 @@ p25p2_vpdu_handle_extended_function_extended_lcch(p25p2_vpdu_ctx* ctx) {
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "EXTFUNC-L Target: %d Source: %05X:%03X Function: %04X Arg: %06X; ", target, source_wacn, source_sys,
                  function, argument);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4545,7 +4546,7 @@ p25p2_vpdu_handle_group_affiliation_response_extended(p25p2_vpdu_ctx* ctx) {
                 response, announcement_group, group, source_wacn, source_sys, source_gid, target);
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "AFF-X Target: %d GA: %d AGA: %d Response: %d; ", target, group, announcement_group, response);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     if (response == 0) {
         p25_aff_register(state, (uint32_t)target);
@@ -4637,7 +4638,7 @@ p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
                      is_deny ? "DENY" : "QUEUED", target_addr, reason_str);
     }
     DSD_FPRINTF(stderr, " Target [%d]", target_addr);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     if (opts) {
         if (is_deny) {
@@ -4663,7 +4664,7 @@ p25p2_vpdu_handle_motorola_ack_response(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  Service [%02X] Source [%d] Target [%d]", svc_type, source, target);
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0],
                  "MOT ACK Target: %d Source: %d Service: %02X; ", target, source, svc_type);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4790,7 +4791,7 @@ p25p2_vpdu_handle_motorola_active_group_radios(p25p2_vpdu_ctx* ctx, int opcode) 
         DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "MOT AGR %d Radios: %s; ", opcode,
                      radios);
     }
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4813,7 +4814,7 @@ p25p2_vpdu_handle_motorola_active_group_marker(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, " MSG [%s]", raw);
     }
     DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "MOT AGR Feature Active: %s; ", raw);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void
@@ -4869,7 +4870,7 @@ p25p2_vpdu_handle_harris_data_channel_grant(p25p2_vpdu_ctx* ctx, int opcode) {
         DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "Harris Data Ch: %04X%s TGT: %d; ",
                      channel, suffix, target);
     }
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     if (p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
         int policy_encrypted = (opts->trunk_tune_enc_calls == 0) ? 1 : 0;
@@ -5095,7 +5096,7 @@ p25p2_vpdu_multifrag_set_active(dsd_state* state, const char* fmt, ...) {
     va_start(ap, fmt);
     DSD_VSNPRINTF(state->active_channel[0], sizeof state->active_channel[0], fmt, ap);
     va_end(ap);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 }
 
 static void

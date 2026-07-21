@@ -914,8 +914,7 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             dsd_event_history_mark_dirty(&state->event_history_s[0]);
             state->lastsrc =
                 0; //this could wipe a call, but usually on TDMA cc's, slot 1 is the control channel, so may never be set when this is run
-            watchdog_event_history(opts, state, 0);
-            watchdog_event_current(opts, state, 0);
+            dsd_event_sync_slot(opts, state, 0);
 
             opts->symbol_out_file_creation_time = time(NULL);
         }
@@ -1955,8 +1954,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     sdrtrunk_json_context_init(&ctx);
     sdrtrunk_json_reset_event_state(state);
     sdrtrunk_json_reset_crypto_state(state);
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 0);
 
     size_t source_size = fread(source_str, 1, 0x100000, opts->mbe_in_f);
     source_str[source_size] = '\0';
@@ -1981,8 +1979,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
 
     free(source_str);
     source_str = NULL;
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 0);
     if (opts->mbe_out_f != NULL) {
         closeMbeOutFile(opts, state);
     }

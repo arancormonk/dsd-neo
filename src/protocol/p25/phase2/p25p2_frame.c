@@ -13,6 +13,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -32,7 +33,6 @@
 #include <dsd-neo/protocol/p25/p25p2_soft.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -1491,8 +1491,14 @@ p25p2_duid_compute_pending_release(dsd_opts* opts, dsd_state* state, time_t now)
         return !(left_mac_active || right_mac_active);
     }
 
+    const double ended_m = dsd_time_now_monotonic_s();
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+            dsd_event_sync_slot(opts, state, (uint8_t)slot);
+        }
+    }
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+    (void)dsd_recent_activity_clear_all(state);
     state->voice_counter[0] = 0;
     state->voice_counter[1] = 0;
     DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
@@ -1503,8 +1509,9 @@ p25p2_duid_compute_pending_release(dsd_opts* opts, dsd_state* state, time_t now)
 
 static void
 p25p2_duid_clear_idle_state(const dsd_opts* opts, dsd_state* state, time_t now) {
-    if (duid_decoded == 13 && ((now - state->last_active_time) > 2) && opts->trunk_is_tuned == 0) {
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+    UNUSED(now);
+    if (duid_decoded == 13 && opts->trunk_is_tuned == 0
+        && dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS) > 0) {
         state->voice_counter[0] = 0;
         state->voice_counter[1] = 0;
         DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
@@ -1614,14 +1621,12 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, i
     ts_counter = timeslot_index;
     const int output_pair = (ts_counter & 1) != 0;
 
+    dsd_event_sync_slot(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 1);
+
     if (dsd_opts_frontend_active(opts)) {
         dsd_telemetry_publish_both_and_redraw(opts, state);
     }
-
-    watchdog_event_history(opts, state, 0);
-    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
-    watchdog_event_history(opts, state, 1);
-    dsd_p25_optional_hook_watchdog_event_current(opts, state, 1);
 
     vc_counter = vc_counter + 360;
 

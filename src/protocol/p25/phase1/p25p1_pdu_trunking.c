@@ -11,6 +11,7 @@
  * 2025-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -25,7 +26,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "../p25_cc_update.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -475,7 +475,7 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
     p25_format_chan_suffix(state, channelt, -1, suf1, sizeof(suf1));
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TG: %d; ", channelt,
                  suf1, group);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
@@ -543,7 +543,7 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
     p25_format_chan_suffix(state, channelt, -1, suf2, sizeof(suf2));
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active UU Ch: %04X%s SRC: %u TGT: %u; ",
                  channelt, suf2, source, target);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     p25p1_pdu_print_group_label(state, (uint32_t)target);
 
@@ -758,7 +758,7 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
         DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Tele Ch: %04X TGT: %u; ",
                      channel, target);
     }
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     p25p1_pdu_print_group_label(state, target);
 
@@ -810,7 +810,7 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
     p25_format_chan_suffix(state, channelt, -1, suf3, sizeof(suf3));
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 Ch: %04X%s SG: %d ", channelt,
                  suf3, group);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 

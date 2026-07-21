@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -1470,6 +1471,12 @@ no_carrier_sync_helper_tune_cache(const dsd_opts* opts, const dsd_state* state, 
 
 static void
 no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
+    const double ended_m = dsd_time_now_monotonic_s();
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+            dsd_event_sync_slot(opts, state, (uint8_t)slot);
+        }
+    }
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
@@ -1769,7 +1776,7 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
 
     if (accepted_cc_return || clear_failed_helper_state || clear_unreturnable_voice_state) {
         no_carrier_clear_voice_tune_state(opts, state);
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+        (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;
     }
 }
@@ -2086,7 +2093,7 @@ no_carrier_clear_stale_follow_state_if_needed(dsd_opts* opts, dsd_state* state, 
         state->dmr_branding[0] = '\0';
         state->dmr_site_parms[0] = '\0';
         opts->trunk_is_tuned = 0;
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+        (void)dsd_recent_activity_clear_all(state);
     }
 }
 
@@ -2449,10 +2456,8 @@ dsd_engine_cleanup_codec2(dsd_state* state) {
 
 static void
 dsd_engine_cleanup_watchdog_snapshots(dsd_opts* opts, dsd_state* state) {
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
-    watchdog_event_history(opts, state, 1);
-    watchdog_event_current(opts, state, 1);
+    dsd_event_sync_slot(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 1);
 }
 
 static void

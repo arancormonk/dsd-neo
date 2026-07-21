@@ -12,6 +12,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -30,7 +31,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -251,7 +251,8 @@ p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
         p25_format_chan_suffix(ctx->state, channel1, -1, suf, sizeof suf);
         DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
                      channel1, suf, group1);
-        ctx->state->last_active_time = time(NULL);
+    } else {
+        (void)dsd_recent_activity_clear(ctx->state, 0U);
     }
 
     if (channel2 && group2 && group1 != group2) {
@@ -260,8 +261,11 @@ p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
         p25_format_chan_suffix(ctx->state, channel2, -1, suf, sizeof suf);
         DSD_SNPRINTF(ctx->state->active_channel[1], sizeof ctx->state->active_channel[1], "Active Ch: %04X%s TG: %d; ",
                      channel2, suf, group2);
-        ctx->state->last_active_time = time(NULL);
+    } else {
+        (void)dsd_recent_activity_clear(ctx->state, 1U);
     }
+    (void)dsd_recent_activity_sync_legacy_entry(ctx->state, 0U);
+    (void)dsd_recent_activity_sync_legacy_entry(ctx->state, 1U);
 }
 
 static int
@@ -367,7 +371,7 @@ p25_lcw_handle_format_44(p25_lcw_ctx* ctx) {
     p25_format_chan_suffix(ctx->state, channelt, -1, suf, sizeof suf);
     DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
                  channelt, suf, group1);
-    ctx->state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(ctx->state, 0U);
 }
 
 static void
@@ -392,7 +396,7 @@ p25_lcw_handle_format_46(p25_lcw_ctx* ctx) {
     }
     DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "TELE Target: %d Timer: %.1fs; ",
                  target, (double)timer / 10.0);
-    ctx->state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(ctx->state, 0U);
 }
 
 static void
@@ -432,11 +436,9 @@ p25_lcw_handle_format_50(p25_lcw_ctx* ctx) {
     uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     if (group) {
         DSD_FPRINTF(stderr, " - TG %u", group);
-        ctx->state->lasttg = group;
     }
     if (source) {
         DSD_FPRINTF(stderr, " SRC %u", source);
-        ctx->state->lastsrc = source;
     }
     if (group && source) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
