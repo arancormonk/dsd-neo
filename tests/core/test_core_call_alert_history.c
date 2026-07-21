@@ -851,6 +851,7 @@ test_p25_and_dmr_current_append_security_flags(void) {
     state.nac = 0x293;
     state.payload_algid = 0x84U;
     state.payload_keyid = 0x2222U;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state.dmr_so = 0x80U;
     state.p25_service_options_valid[0] = 1;
     watchdog_event_current(&opts, &state, 0);
@@ -920,12 +921,35 @@ test_p25_and_dmr_current_append_security_flags(void) {
     state.nac = 0x293;
     state.payload_algid = 0x84U;
     state.payload_keyid = 0x2222U;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state.dmr_so = 0;
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_has_substr("p25 validated voice alg renders", item->event_string, "ENC; ALG: 84; KID: 2222;");
     rc |= expect_int("p25 validated voice alg marks encrypted", item->enc, 1);
     rc |= expect_int("p25 validated voice alg kept", item->enc_alg, 0x84);
+
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    state.lastp25type = 2;
+    state.lastsrc = 4009646U;
+    state.lasttg = 3069U;
+    state.gi[0] = 0;
+    state.nac = 0x798;
+    state.payload_algid = 0xA0U;
+    state.payload_keyid = 0x0064U;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    state.p25_p1_crypto_conflict.active = 1U;
+    state.p25_p1_crypto_conflict.algid = 0xA0U;
+    state.p25_p1_crypto_conflict.keyid = 0x0064U;
+    state.dmr_so = 0x04U;
+    state.p25_service_options_valid[0] = 1;
+    watchdog_event_current(&opts, &state, 0);
+    item = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_no_substr("p25 pending conflict stays clear", item->event_string, "ENC;");
+    rc |= expect_no_substr("p25 pending conflict omits candidate alg", item->event_string, "ALG:");
+    rc |= expect_int("p25 pending conflict event remains clear", item->enc, 0);
+    rc |= expect_int("p25 pending conflict event clears alg", item->enc_alg, 0);
     return rc;
 }
 

@@ -50,6 +50,20 @@ p25_crypto_companion_suppressed(const dsd_state* state, int slot) {
            || state->p25_crypto_state[slot] == DSD_P25_CRYPTO_BLOCKED;
 }
 
+/** Return non-zero only when non-clear metadata has completed classification. */
+static inline int
+p25_crypto_metadata_is_confirmed_encrypted(const dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1) {
+        return 0;
+    }
+    const int algid = slot == 0 ? state->payload_algid : state->payload_algidR;
+    if (algid == 0 || algid == 0x80 || (slot == 0 && state->p25_p1_crypto_conflict.active)) {
+        return 0;
+    }
+    return state->p25_crypto_state[slot] == DSD_P25_CRYPTO_DECRYPTABLE
+           || state->p25_crypto_state[slot] == DSD_P25_CRYPTO_BLOCKED;
+}
+
 /**
  * Return non-zero when a P25 voice frame may reach the vocoder.
  *
@@ -64,6 +78,9 @@ p25_crypto_audio_permitted(const dsd_opts* opts, const dsd_state* state, int slo
         return 0;
     }
     if (slot == 0 && state->p25_p1_identity_pending) {
+        return 0;
+    }
+    if (slot == 0 && state->p25_p1_crypto_conflict.active) {
         return 0;
     }
     if (p25_crypto_audio_ready(state, slot)) {
@@ -83,10 +100,19 @@ void p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, i
 void p25_crypto_mark_encrypted_pending(dsd_state* state, int slot);
 
 /**
+ * Quarantine a retained Phase 1 tuple that contradicts explicit-clear service
+ * options. Returns non-zero while the tuple is awaiting another HDU/LDU2
+ * observation.
+ */
+int p25_crypto_p1_defer_clear_conflict(dsd_state* state, int svc_bits);
+
+/**
  * Resolve definitive HDU/LDU2/MAC_PTT/ESS crypto metadata.
  *
  * Imported key material for @p keyid is activated before decryptability is
  * tested. ALGID 0 remains non-definitive; only ALGID 0x80 confirms clear voice.
+ * A Phase 1 non-clear tuple that contradicts explicit-clear service options
+ * remains pending until another FEC-accepted tuple repeats the ALGID and KID.
  */
 dsd_p25_crypto_state p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot,
                                         int algid, int keyid, uint64_t mi, int talkgroup);

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -619,7 +620,8 @@ watchdog_event_current_normalize_p25_crypto(const dsd_state* state, uint8_t slot
         ctx->enc = 0;
     }
 
-    if (watchdog_event_p25_algid_is_encrypted(ctx->alg_id) && watchdog_event_p25_has_current_voice_alg(state)) {
+    if (watchdog_event_p25_algid_is_encrypted(ctx->alg_id) && watchdog_event_p25_has_current_voice_alg(state)
+        && p25_crypto_metadata_is_confirmed_encrypted(state, slot & 1U)) {
         ctx->enc = 1;
         return;
     }
@@ -1036,6 +1038,10 @@ watchdog_event_current_append_policy_labels(const watchdog_event_current_ctx* ct
 
 void
 watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    if (!opts || !state || !state->event_history_s || slot > 1U) {
+        return;
+    }
+
     Event_History_I* event_struct = &state->event_history_s[slot];
     Event_History candidate;
     DSD_MEMCPY(&candidate, &event_struct->Event_History_Items[0], sizeof(candidate));

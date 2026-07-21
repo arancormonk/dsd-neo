@@ -109,6 +109,7 @@ typedef struct {
     int data_call_override;                     // 0=infer from svc_bits, 1=force data, -1=force non-data
     int identity_valid;                         // 1 when PTT/ACTIVE carries a decoded call identity
     int facch;                                  // 1 when END was decoded from valid FACCH
+    int crypto_new_epoch;                       // 1 when CRYPTO_PENDING must start a fresh deadline
     double observed_m;                          // Optional monotonic timestamp when the event was observed
 } p25_sm_event_t;
 
@@ -534,6 +535,9 @@ void p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int 
  */
 void p25_sm_emit_crypto_pending(dsd_opts* opts, dsd_state* state, int slot);
 
+/** Emit a pending indication that explicitly starts a new classification deadline. */
+void p25_sm_emit_crypto_pending_epoch(dsd_opts* opts, dsd_state* state, int slot);
+
 /**
  * @brief Apply group grant policy side effects without attempting route/tune.
  *
@@ -741,6 +745,13 @@ p25_sm_ev_crypto_pending(int slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_CRYPTO_PENDING;
     ev.slot = slot;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_crypto_pending_epoch(int slot) {
+    p25_sm_event_t ev = p25_sm_ev_crypto_pending(slot);
+    ev.crypto_new_epoch = 1;
     return ev;
 }
 

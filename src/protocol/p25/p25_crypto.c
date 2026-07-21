@@ -155,6 +155,48 @@ p25_crypto_capture_snapshot(const dsd_state* state, int slot) {
     return snapshot;
 }
 
+static void
+p25_crypto_p1_clear_conflict(dsd_state* state) {
+    if (state) {
+        DSD_MEMSET(&state->p25_p1_crypto_conflict, 0, sizeof(state->p25_p1_crypto_conflict));
+    }
+}
+
+static int
+p25_crypto_p1_has_explicit_clear_service(const dsd_state* state) {
+    return state && state->p25_service_options_valid[0] != 0 && (state->dmr_so & 0x40U) == 0;
+}
+
+static int
+p25_crypto_p1_conflict_matches(const dsd_state* state, int algid, int keyid) {
+    return state && state->p25_p1_crypto_conflict.active && state->p25_p1_crypto_conflict.algid == (uint8_t)algid
+           && state->p25_p1_crypto_conflict.keyid == (uint16_t)keyid;
+}
+
+static void
+p25_crypto_p1_arm_conflict(dsd_state* state, int algid, int keyid) {
+    if (!state) {
+        return;
+    }
+    state->p25_p1_crypto_conflict.active = 1U;
+    state->p25_p1_crypto_conflict.algid = (uint8_t)algid;
+    state->p25_p1_crypto_conflict.keyid = (uint16_t)keyid;
+}
+
+static int
+p25_crypto_p1_reconcile_clear_conflict(dsd_state* state, int algid, int keyid) {
+    if (algid == 0x80 || state->p25_p1_identity_pending || !p25_crypto_p1_has_explicit_clear_service(state)
+        || p25_crypto_p1_conflict_matches(state, algid, keyid)) {
+        // A matching resolver observation corroborates the tuple. Clear
+        // metadata and non-conflicting service contexts also retire it.
+        p25_crypto_p1_clear_conflict(state);
+        return 0;
+    }
+
+    p25_crypto_p1_arm_conflict(state, algid, keyid);
+    return 1;
+}
+
 static dsd_p25_crypto_state
 p25_crypto_resolve_algid_zero(dsd_state* state, int slot) {
     const dsd_p25_crypto_state current = state->p25_crypto_state[slot];
@@ -194,7 +236,7 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     }
     p25_crypto_set_state(state, slot, resolved);
 
-    if (algid != 0x80 && opts) {
+    if ((resolved == DSD_P25_CRYPTO_DECRYPTABLE || resolved == DSD_P25_CRYPTO_BLOCKED) && opts) {
         p25_sm_emit_enc(opts, state, slot, algid, keyid, talkgroup);
     }
 }
@@ -204,9 +246,14 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
     if (!state || !p25_crypto_slot_valid(slot) || (phase != DSD_P25_CRYPTO_PHASE1 && phase != DSD_P25_CRYPTO_PHASE2)) {
         return;
     }
+    // The conflict record is Phase 1-only. A new call in either phase must not
+    // inherit it from a retained carrier or a missed terminator.
+    p25_crypto_p1_clear_conflict(state);
     if (phase == DSD_P25_CRYPTO_PHASE1) {
         slot = 0;
         state->p25_p1_hdu_crypto_fresh = 0;
+        state->dmr_so = svc_bits >= 0 ? (unsigned int)svc_bits : 0U;
+        state->p25_service_options_valid[0] = svc_bits >= 0 ? 1U : 0U;
     }
 
     DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
@@ -239,6 +286,18 @@ p25_crypto_mark_encrypted_pending(dsd_state* state, int slot) {
     dsd_mbe_purge_slot_audio(state, slot);
 }
 
+int
+p25_crypto_p1_defer_clear_conflict(dsd_state* state, int svc_bits) {
+    if (!state || svc_bits < 0 || (svc_bits & 0x40) != 0 || state->payload_algid == 0 || state->payload_algid == 0x80) {
+        return 0;
+    }
+
+    p25_crypto_p1_arm_conflict(state, state->payload_algid, state->payload_keyid);
+    p25_crypto_set_state(state, 0, DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    dsd_mbe_purge_slot_audio(state, 0);
+    return 1;
+}
+
 dsd_p25_crypto_state
 p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid, int keyid,
                    uint64_t mi, int talkgroup) {
@@ -246,6 +305,13 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
         return DSD_P25_CRYPTO_UNKNOWN;
     }
     slot = phase == DSD_P25_CRYPTO_PHASE1 ? 0 : slot;
+
+    if (phase == DSD_P25_CRYPTO_PHASE2 || state->p25_p1_identity_pending) {
+        // Phase 2 cannot inherit a Phase 1-only quarantine. Likewise, a new
+        // retained-carrier Phase 1 transmission must wait for its own LCW to
+        // decide whether this observation is contradictory.
+        p25_crypto_p1_clear_conflict(state);
+    }
 
     if (algid == 0) {
         return p25_crypto_resolve_algid_zero(state, slot);
@@ -257,12 +323,26 @@ p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase,
     const p25_crypto_snapshot previous = p25_crypto_capture_snapshot(state, slot);
     p25_crypto_store_metadata(state, slot, algid, keyid, mi);
 
-    if (algid != 0x80 && state->keyloader == 1) {
+    int defer_clear_conflict = 0;
+    if (phase == DSD_P25_CRYPTO_PHASE1) {
+        defer_clear_conflict = p25_crypto_p1_reconcile_clear_conflict(state, algid, keyid);
+    }
+
+    if (!defer_clear_conflict && algid != 0x80 && state->keyloader == 1) {
         keyring_activate_slot(opts, state, slot);
     }
 
-    const dsd_p25_crypto_state resolved = p25_crypto_classify_metadata(state, phase, slot, algid);
+    const dsd_p25_crypto_state resolved = defer_clear_conflict
+                                              ? DSD_P25_CRYPTO_ENCRYPTED_PENDING
+                                              : p25_crypto_classify_metadata(state, phase, slot, algid);
     p25_crypto_apply_resolution(opts, state, phase, slot, algid, keyid, mi, talkgroup, &previous, resolved);
+    if (defer_clear_conflict && opts) {
+        if (previous.state == DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+            p25_sm_emit_crypto_pending(opts, state, slot);
+        } else {
+            p25_sm_emit_crypto_pending_epoch(opts, state, slot);
+        }
+    }
     return resolved;
 }
 

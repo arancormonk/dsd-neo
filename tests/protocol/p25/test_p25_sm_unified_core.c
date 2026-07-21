@@ -547,6 +547,7 @@ test_p1_fresh_hdu_survives_missed_terminator(void) {
     const int keyid = 0x5678;
     const uint64_t mi = UINT64_C(0x1112131415161718);
     g_state.p25_call_emergency[0] = 1;
+    g_state.p25_p1_identity_pending = 1;
     g_state.p25_p1_hdu_crypto_fresh = 1;
     if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, 2000)
         != DSD_P25_CRYPTO_DECRYPTABLE) {
@@ -668,6 +669,286 @@ test_p1_retained_hdu_defers_lockout_attribution(void) {
     if (ctx.state != P25_SM_ON_CC || g_return_requests != 1 || g_state.p25_p1_identity_pending
         || encrypted_call_cache_has(1000U, 1) || !encrypted_call_cache_has(2000U, 1)) {
         DSD_FPRINTF(stderr, "FAIL: Deferred Phase 1 HDU lockout was not attributed to the accepted identity\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+setup_p1_retained_clear_conflict(p25_sm_ctx_t* ctx, int follow_encrypted) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = follow_encrypted;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 3069, 0, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_tdu();
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+
+    if (!g_state.p25_p1_identity_pending
+        || p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708),
+                              3069)
+               != DSD_P25_CRYPTO_BLOCKED) {
+        DSD_FPRINTF(stderr, "FAIL: Clear-conflict fixture did not retain blocked HDU metadata\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_enc(0, 0xA0, 0x0064, 3069);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    if (ctx->state != P25_SM_TUNED || g_return_requests != 0 || encrypted_call_cache_has(3069U, 1)) {
+        DSD_FPRINTF(stderr, "FAIL: Anonymous conflicting HDU was not deferred\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    if (ctx->state != P25_SM_TUNED || !ctx->slots[0].grant_active || g_return_requests != 0
+        || encrypted_call_cache_has(3069U, 1) || !g_state.p25_p1_crypto_conflict.active
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || ctx->slots[0].crypto_attempt_m <= 0.0
+        || p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Clear LCW did not quarantine conflicting retained HDU metadata\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_clear_identity_quarantines_conflicting_hdu(void) {
+    p25_sm_ctx_t ctx;
+    if (setup_p1_retained_clear_conflict(&ctx, 0) != 0) {
+        return 1;
+    }
+
+    p25_sm_event_t ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x04);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!g_state.p25_p1_crypto_conflict.active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || g_return_requests != 0 || encrypted_call_cache_has(3069U, 1)) {
+        DSD_FPRINTF(stderr, "FAIL: Repeated clear LCW incorrectly corroborated crypto metadata\n");
+        return 1;
+    }
+
+    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, UINT64_C(0x1112131415161718), 3069)
+        != DSD_P25_CRYPTO_CLEAR) {
+        DSD_FPRINTF(stderr, "FAIL: Definitive clear metadata did not resolve quarantined conflict\n");
+        return 1;
+    }
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || !ctx.slots[0].voice_active || g_state.p25_p1_crypto_conflict.active
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || g_return_requests != 0
+        || encrypted_call_cache_has(3069U, 1) || !p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Clear metadata did not restore quarantined Phase 1 call\n");
+        return 1;
+    }
+
+    if (setup_p1_retained_clear_conflict(&ctx, 0) != 0) {
+        return 1;
+    }
+    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x2122232425262728), 3069)
+        != DSD_P25_CRYPTO_BLOCKED) {
+        DSD_FPRINTF(stderr, "FAIL: Matching second tuple did not confirm encryption\n");
+        return 1;
+    }
+    ev = p25_sm_ev_enc(0, 0xA0, 0x0064, 3069);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1 || g_state.p25_p1_crypto_conflict.active
+        || !encrypted_call_cache_has(3069U, 1)) {
+        DSD_FPRINTF(stderr, "FAIL: Corroborated Phase 1 encryption did not retain lockout behavior\n");
+        return 1;
+    }
+
+    if (setup_p1_retained_clear_conflict(&ctx, 0) != 0) {
+        return 1;
+    }
+    ctx.slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1 || encrypted_call_cache_has(3069U, 1)
+        || g_state.p25_p1_crypto_conflict.active) {
+        DSD_FPRINTF(stderr, "FAIL: Unconfirmed Phase 1 conflict timeout produced encrypted-call side effects\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_follow_mode_expires_clear_conflict(void) {
+    p25_sm_ctx_t ctx;
+    if (setup_p1_retained_clear_conflict(&ctx, 1) != 0) {
+        return 1;
+    }
+
+    ctx.slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].grant_active || !ctx.slots[0].voice_active
+        || ctx.slots[0].crypto_attempt_m > 0.0 || g_state.p25_p1_crypto_conflict.active
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || g_state.payload_algid != 0
+        || g_state.payload_keyid != 0 || !p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Encrypted-follow mode did not expire and release a clear conflict\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_follow_mode_does_not_clear_conflict_after_encrypted_lcw(void) {
+    p25_sm_ctx_t ctx;
+    if (setup_p1_retained_clear_conflict(&ctx, 1) != 0) {
+        return 1;
+    }
+
+    p25_sm_event_t ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x44);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].svc_bits != 0x44 || g_state.dmr_so != 0x44 || !g_state.p25_service_options_valid[0]
+        || !g_state.p25_p1_crypto_conflict.active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+        DSD_FPRINTF(stderr, "FAIL: Encrypted LCW did not replace the clear conflict service options\n");
+        return 1;
+    }
+
+    ctx.slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].grant_active
+        || !g_state.p25_p1_crypto_conflict.active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || g_state.payload_algid != 0xA0 || g_state.payload_keyid != 0x0064
+        || p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Conflict timeout reopened explicitly encrypted Phase 1 service as clear\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_clear_conflict_restarts_deadline(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 3069, 4009646, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    g_state.dmr_so = 0x04;
+    g_state.p25_service_options_valid[0] = 1;
+
+    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708),
+                           3069)
+            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || ctx->slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Initial clear conflict did not start a classification deadline\n");
+        return 1;
+    }
+    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0x80, 0, UINT64_C(0x1112131415161718), 3069)
+        != DSD_P25_CRYPTO_CLEAR) {
+        DSD_FPRINTF(stderr, "FAIL: Clear recovery did not retire the initial conflict epoch\n");
+        return 1;
+    }
+
+    const double stale_deadline_m = dsd_time_now_monotonic_s() - ctx->config.grant_timeout_s - 0.1;
+    ctx->slots[0].crypto_attempt_m = stale_deadline_m;
+    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x2122232425262728),
+                           3069)
+            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || ctx->slots[0].crypto_attempt_m <= stale_deadline_m + ctx->config.grant_timeout_s) {
+        DSD_FPRINTF(stderr, "FAIL: Fresh clear conflict reused the preceding epoch deadline\n");
+        return 1;
+    }
+    p25_sm_tick_ctx(ctx, &g_opts, &g_state);
+    if (ctx->state != P25_SM_TUNED || g_return_requests != 0 || !g_state.p25_p1_crypto_conflict.active) {
+        DSD_FPRINTF(stderr, "FAIL: Fresh clear conflict expired immediately after clear recovery\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_grant_hdu_conflict_survives_first_active(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 3069, 4009646, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    if (ctx->state != P25_SM_TUNED || g_state.dmr_so != 0x04 || !g_state.p25_service_options_valid[0]
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR) {
+        DSD_FPRINTF(stderr, "FAIL: Clear Phase 1 grant did not retain service options for HDU reconciliation\n");
+        return 1;
+    }
+
+    const int algid = 0xA0;
+    const int keyid = 0x0064;
+    const uint64_t mi = UINT64_C(0x0102030405060708);
+    g_state.p25_p1_hdu_crypto_fresh = 1;
+    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, 3069)
+            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || !g_state.p25_p1_crypto_conflict.active || ctx->slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Conflicting HDU did not enter Phase 1 quarantine after a clear grant\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_active(0);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    if (ctx->state != P25_SM_TUNED || ctx->slots[0].voice_active || !ctx->slots[0].grant_active
+        || !g_state.p25_p1_crypto_conflict.active || !g_state.p25_p1_hdu_crypto_fresh
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || g_state.payload_algid != algid
+        || g_state.payload_keyid != keyid || g_state.payload_miP != mi
+        || p25_crypto_audio_permitted(&g_opts, &g_state, 0) || g_return_requests != 0
+        || encrypted_call_cache_has(3069U, 1)) {
+        DSD_FPRINTF(stderr, "FAIL: First anonymous ACTIVE discarded the quarantined HDU tuple\n");
+        return 1;
+    }
+
+    if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, UINT64_C(0x1112131415161718), 3069)
+            != DSD_P25_CRYPTO_BLOCKED
+        || g_state.p25_p1_crypto_conflict.active) {
+        DSD_FPRINTF(stderr, "FAIL: Preserved HDU tuple did not await matching corroboration\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_p1_follow_mode_preserves_grant_conflict_deadline(void) {
+    reset_test_state();
+    g_opts.trunk_tune_enc_calls = 1;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 3069, 4009646, 0x04);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+
+    g_state.p25_p1_hdu_crypto_fresh = 1;
+    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708),
+                           3069)
+            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || !g_state.p25_p1_crypto_conflict.active || ctx->slots[0].crypto_attempt_m <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Encrypted-follow fixture did not start the grant conflict deadline\n");
+        return 1;
+    }
+    const double started_m = ctx->slots[0].crypto_attempt_m;
+
+    ev = p25_sm_ev_active(0);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    if (ctx->state != P25_SM_TUNED || !ctx->slots[0].voice_active || !ctx->slots[0].grant_active
+        || !g_state.p25_p1_crypto_conflict.active || fabs(ctx->slots[0].crypto_attempt_m - started_m) > 1.0e-9
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || p25_crypto_audio_permitted(&g_opts, &g_state, 0) || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: First ACTIVE lost the encrypted-follow grant conflict deadline\n");
+        return 1;
+    }
+
+    ctx->slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx->config.grant_timeout_s - 0.1;
+    p25_sm_tick_ctx(ctx, &g_opts, &g_state);
+    if (ctx->state != P25_SM_TUNED || !ctx->slots[0].voice_active || !ctx->slots[0].grant_active
+        || g_state.p25_p1_crypto_conflict.active || ctx->slots[0].crypto_attempt_m > 0.0
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || !p25_crypto_audio_permitted(&g_opts, &g_state, 0)
+        || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Encrypted-follow grant conflict did not recover as clear at its deadline\n");
         return 1;
     }
     return 0;
@@ -1831,6 +2112,12 @@ main(void) {
     fail += test_p1_fresh_hdu_survives_missed_terminator();
     fail += test_p1_retained_hdu_waits_for_identity();
     fail += test_p1_retained_hdu_defers_lockout_attribution();
+    fail += test_p1_clear_identity_quarantines_conflicting_hdu();
+    fail += test_p1_follow_mode_expires_clear_conflict();
+    fail += test_p1_follow_mode_does_not_clear_conflict_after_encrypted_lcw();
+    fail += test_p1_clear_conflict_restarts_deadline();
+    fail += test_p1_grant_hdu_conflict_survives_first_active();
+    fail += test_p1_follow_mode_preserves_grant_conflict_deadline();
     fail += test_p1_pending_identity_restarts_crypto_without_hdu();
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();
