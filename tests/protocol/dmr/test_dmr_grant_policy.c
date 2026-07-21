@@ -67,6 +67,13 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+void
 watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
     (void)opts;
     (void)state;

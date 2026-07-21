@@ -10,6 +10,23 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 
 add_library(
+    dsd-neo_test_call_state_support
+    STATIC
+    ${PROJECT_SOURCE_DIR}/src/core/util/call_state.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/event_sync_stub.c
+)
+target_include_directories(
+    dsd-neo_test_call_state_support
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/core/util
+)
+target_link_libraries(dsd-neo_test_call_state_support PUBLIC dsd-neo_platform)
+target_compile_definitions(
+    dsd-neo_test_call_state_support
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+
+add_library(
     dsd-neo_test_bit_packing
     OBJECT
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
@@ -440,6 +457,12 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_state_ext
   HEADERS_PUBLIC_CORE_STATE_EXT
   dsd-neo/core/state_ext.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_call_state
+  HEADERS_PUBLIC_CORE_CALL_STATE
+  dsd-neo/core/call_state.h
   C
 )
 dsd_neo_add_public_header_smoke_test(
@@ -1443,7 +1466,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_ncurses_p25_display_helpers
-        PRIVATE ${CURSES_LIBRARIES}
+        PRIVATE dsd-neo_test_call_state_support ${CURSES_LIBRARIES}
     )
     add_test(
         NAME UI_NCURSES_P25_DISPLAY_HELPERS
@@ -1467,7 +1490,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_ncurses_printer_helpers
-        PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE
+            dsd-neo_test_call_state_support
+            ${CURSES_LIBRARIES}
+            ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(
         NAME UI_NCURSES_PRINTER_HELPERS
@@ -1948,7 +1974,6 @@ add_executable(
     ui/test_ui_snapshot_event_history.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
-    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
@@ -1962,7 +1987,7 @@ target_compile_definitions(
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
-    PRIVATE dsd-neo_platform
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
 )
 add_test(
     NAME APP_CONTROL_SNAPSHOT_EVENT_HISTORY
@@ -2449,6 +2474,32 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_state_ext PRIVATE dsd-neo_core)
 add_test(NAME CORE_STATE_EXT COMMAND dsd-neo_test_core_state_ext)
+
+add_executable(dsd-neo_test_core_call_state core/test_core_call_state.c)
+target_include_directories(
+    dsd-neo_test_core_call_state
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_call_state PRIVATE dsd-neo_core)
+add_test(NAME CORE_CALL_STATE COMMAND dsd-neo_test_core_call_state)
+
+add_executable(
+    dsd-neo_test_core_call_state_alloc
+    core/test_core_call_state_alloc.c
+)
+target_include_directories(
+    dsd-neo_test_core_call_state_alloc
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_core_call_state_alloc
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_core_call_state_alloc
+    PRIVATE dsd-neo_test_call_state_support
+)
+add_test(NAME CORE_CALL_STATE_ALLOC COMMAND dsd-neo_test_core_call_state_alloc)
 
 add_executable(dsd-neo_test_core_input_level core/test_core_input_level.c)
 target_include_directories(
@@ -3466,7 +3517,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_p1_tsbk_handlers
-    PRIVATE dsd-neo_test_support
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_test_support
 )
 target_compile_options(
     dsd-neo_test_p25_p1_tsbk_handlers
@@ -3912,6 +3963,10 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/p25
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_p1_tsbk_sequence
+    PRIVATE dsd-neo_test_call_state_support
 )
 add_test(NAME P25_P1_TSBK_SEQUENCE COMMAND dsd-neo_test_p25_p1_tsbk_sequence)
 
@@ -4626,7 +4681,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_cmove
-    PRIVATE dsd-neo_platform dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_platform
+        dsd-neo_runtime
+        ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
 
@@ -4651,7 +4710,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_force_release
-    PRIVATE dsd-neo_platform dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_platform
+        dsd-neo_runtime
+        ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 
@@ -4676,7 +4739,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_move_release
-    PRIVATE dsd-neo_platform dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_platform
+        dsd-neo_runtime
+        ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DMR_T3_MOVE_RELEASE COMMAND dsd-neo_test_dmr_t3_move_release)
 
@@ -4701,7 +4768,11 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_ann_wd_tscc
-    PRIVATE dsd-neo_platform dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE
+        dsd-neo_test_call_state_support
+        dsd-neo_platform
+        dsd-neo_runtime
+        ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(NAME DMR_T3_ANN_WD_TSCC COMMAND dsd-neo_test_dmr_t3_ann_wd_tscc)
 
@@ -5776,7 +5847,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_p1_pdu_private_allowlist
-    PRIVATE dsd-neo_platform
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
 )
 add_test(
     NAME P25_P1_PDU_PRIVATE_ALLOWLIST

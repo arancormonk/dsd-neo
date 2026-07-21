@@ -78,6 +78,31 @@ static int g_trunk_scan_active_p25_cqpsk_is_set = 0;
 static int g_trunk_scan_active_p25_cqpsk_enable = 0;
 static int g_trunk_scan_active_p25_target = 0;
 static int g_runtime_config_is_set = 0;
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
+    (void)state;
+    (void)slot;
+    (void)observed_m;
+    return 0;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_recent_activity_clear_all(dsd_state* state) {
+    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+    return 0;
+}
+
 static int g_tune_generation_advance_calls = 0;
 static uint64_t g_tune_request_next = 0U;
 static uint64_t g_tune_request_pending = 0U;

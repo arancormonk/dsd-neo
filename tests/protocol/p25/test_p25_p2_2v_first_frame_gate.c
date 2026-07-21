@@ -10,6 +10,7 @@
  * decoded.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
@@ -51,6 +52,11 @@ void playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state);
 void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                               const char* detail);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void LFSRP(dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -135,6 +141,24 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
+}
+
+void
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+int
+dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                           const char* detail) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)call;
+    (void)detail;
+    return 0;
 }
 
 void

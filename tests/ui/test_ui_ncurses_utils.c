@@ -139,6 +139,21 @@ test_lockout_label_policy_lookup(void) {
     rc |= expect_int_eq("SG DE mode locks", ui_is_locked_from_label(state, "MFID90 GRG Grant: 82F2 SG: 321;"), 1);
     rc |= expect_int_eq("allow mode does not lock", ui_is_locked_from_label(state, "TG: 789"), 0);
     rc |= expect_int_eq("range-only match does not lock label", ui_is_locked_from_label(state, "TG: 1005"), 0);
+    rc |= expect_int_eq("later locked target is evaluated",
+                        ui_is_locked_from_label(state, "Grant TG: 789 TGT: 456 SG: 321"), 1);
+
+    size_t cursor = 0U;
+    ui_target_token token;
+    rc |= expect_int_eq("first target token", ui_target_token_next("TG: 789 TGT: 456 SG: 321", &cursor, &token), 1);
+    rc |= expect_int_eq("first target id", (int)token.id, 789);
+    rc |= expect_int_eq("first target group", token.is_group, 1);
+    rc |= expect_int_eq("second target token", ui_target_token_next("TG: 789 TGT: 456 SG: 321", &cursor, &token), 1);
+    rc |= expect_int_eq("second target id", (int)token.id, 456);
+    rc |= expect_int_eq("second target private", token.is_group, 0);
+    rc |= expect_int_eq("third target token", ui_target_token_next("TG: 789 TGT: 456 SG: 321", &cursor, &token), 1);
+    rc |= expect_int_eq("third target id", (int)token.id, 321);
+    rc |= expect_int_eq("third target group", token.is_group, 1);
+    rc |= expect_int_eq("target iterator end", ui_target_token_next("TG: 789 TGT: 456 SG: 321", &cursor, &token), 0);
 
     const time_t now = time(NULL);
     state->p25_enc_tg_cache_tg[0] = 21001U;
@@ -160,6 +175,8 @@ test_lockout_label_policy_lookup(void) {
     state->p25_enc_tg_cache_is_group[1] = 0U;
     rc |= expect_int_eq("private transient cache locks active TGT",
                         ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TGT: 21001;"), 1);
+    rc |= expect_int_eq("later transient target is evaluated",
+                        ui_is_transient_enc_locked_from_label(state, "TG: 999 TGT: 21001;"), 1);
     rc |= expect_int_eq("private voice cache does not color data target",
                         ui_is_transient_enc_locked_from_label(state, "Active Data Ch: 82F2 TGT: 21001;"), 0);
     rc |= expect_int_eq("transient enc cache does not mutate policy lock helper",

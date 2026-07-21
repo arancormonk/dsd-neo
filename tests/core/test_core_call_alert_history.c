@@ -3,11 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
@@ -953,6 +956,98 @@ test_p25_and_dmr_current_append_security_flags(void) {
     return rc;
 }
 
+static int
+test_canonical_call_lifecycle_is_epoch_driven(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 100U;
+    observation.policy_target_id = 100U;
+    observation.group_id = 100U;
+    observation.source_id = 200U;
+    observation.frequency_hz = 851012500L;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    dsd_call_crypto_update crypto = {0};
+    crypto.classification = DSD_CALL_CRYPTO_CLEAR;
+    crypto.audio_permitted = 1U;
+    crypto.observed_m = 1.1;
+    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = 0;
+    Event_History* current = &event_history[0].Event_History_Items[0];
+    rc |= expect_int("canonical start target", (int)current->target_id, 100);
+    rc |= expect_int("canonical start source", (int)current->source_id, 200);
+    rc |= expect_int("canonical clear state", current->enc, 0);
+    rc |= expect_int("canonical start alert once", g_beeper_count, 1);
+
+    crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
+    crypto.algid = 0x84U;
+    crypto.kid = 0x2222U;
+    crypto.audio_permitted = 0U;
+    crypto.observed_m = 1.2;
+    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    current = &event_history[0].Event_History_Items[0];
+    rc |= expect_int("crypto refinement stays current", (int)event_history[0].Event_History_Items[1].target_id, 0);
+    rc |= expect_int("crypto refinement marks encrypted", current->enc, 1);
+    rc |= expect_int("crypto refinement keeps alg", current->enc_alg, 0x84);
+    rc |= expect_int("crypto refinement does not alert", g_beeper_count, 1);
+
+    assert(dsd_call_state_end(&state, 0U, 2.0) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const uint64_t ended_revision = event_history[0].revision;
+    rc |= expect_int("ended epoch clears head", event_history[0].Event_History_Items[0].event_string[0], '\0');
+    rc |= expect_int("ended epoch stored target", (int)event_history[0].Event_History_Items[1].target_id, 100);
+    rc |= expect_int("ended epoch stored encrypted status", event_history[0].Event_History_Items[1].enc, 1);
+    rc |= expect_int("canonical end alert once", g_beeper_count, 2);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_u64("repeated end sync is idempotent", event_history[0].revision, ended_revision);
+    rc |= expect_int("repeated end sync does not alert", g_beeper_count, 2);
+
+    observation.observed_m = 3.0;
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(&state, 0U, &snapshot) == 1);
+    rc |= expect_u64("identical PTT after end advances epoch", snapshot.epoch, 2U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("identical PTT gets one new start alert", g_beeper_count, 3);
+
+    assert(dsd_call_state_end(&state, 0U, 3.5) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    observation.ota_target_id = observation.policy_target_id = observation.group_id = 300U;
+    observation.source_id = 0U;
+    observation.observed_m = 4.0;
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &snapshot) == 1);
+    const uint64_t late_identity_epoch = snapshot.epoch;
+    observation.source_id = 400U;
+    observation.observed_m = 4.1;
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &snapshot) == 1);
+    rc |= expect_u64("late source keeps epoch", snapshot.epoch, late_identity_epoch);
+    observation.ota_target_id = observation.policy_target_id = observation.group_id = 301U;
+    observation.observed_m = 4.2;
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("known target change rotates prior row", (int)event_history[0].Event_History_Items[1].target_id,
+                     300);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -979,6 +1074,7 @@ main(void) {
     rc |= test_nxdn_current_includes_channel_encryption_and_policy_labels();
     rc |= test_edacs_ea_mode_current_event_and_unknown_lid();
     rc |= test_p25_and_dmr_current_append_security_flags();
+    rc |= test_canonical_call_lifecycle_is_epoch_driven();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");

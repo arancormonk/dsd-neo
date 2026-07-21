@@ -13,6 +13,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -31,8 +32,11 @@
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dsd-neo/core/call_state.h"
+#include "dsd-neo/core/dsd_time.h"
 #include "dsd-neo/platform/platform.h"
 
 int ncurses_last_synctype;
@@ -869,6 +873,71 @@ test_lock_and_protocol_helpers(void) {
     assert(ui_nxdn_is_idas(&state) == 0);
 }
 
+static void
+test_canonical_p25_slot_and_recent_activity(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->dmrburstL = 0;
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 1201U;
+    observation.policy_target_id = 1201U;
+    observation.group_id = 1201U;
+    observation.frequency_hz = 851012500;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    dsd_call_crypto_update crypto = {0};
+    crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    crypto.audio_permitted = 0U;
+    crypto.observed_m = 1.1;
+    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+
+    ui_slot_view slot = ui_build_slot_view(state, 0);
+    assert(slot.canonical_p25 == 1);
+    assert(slot.lasttg == 1201);
+    assert(slot.lastsrc == 0);
+    reset_printw_capture();
+    ui_slot_render_flags flags = {0};
+    ui_render_slot_header_line(state, &slot, &flags);
+    ui_render_slot_vxtra_line(&(dsd_opts){0}, state, &slot, &flags);
+    assert_capture_contains("TGT: [    1201]");
+    assert_capture_contains("SRC: [ UNKNOWN]");
+    assert_capture_contains("ENC?");
+    assert_capture_contains("FREQ: 851.012500 MHz");
+
+    state->dmrburstR = 21;
+    state->lasttgR = 9999;
+    state->lastsrcR = 8888;
+    ui_slot_view idle_companion = ui_build_slot_view(state, 1);
+    assert(idle_companion.canonical_p25 == 1);
+    assert(idle_companion.call.phase == DSD_CALL_PHASE_IDLE);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &idle_companion);
+    assert(g_printw_capture[0] == '\0');
+
+    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    assert(dsd_recent_activity_set_at(state, 0U, "old TG: 100; ", now_ms - 4000U) == 1);
+    assert(dsd_recent_activity_set_at(state, 1U, "fresh TG: 200; ", now_ms - 1000U) == 1);
+    reset_printw_capture();
+    ui_render_active_channel_list(&(dsd_opts){0}, state, 31U);
+    assert(strstr(g_printw_capture, "old") == NULL);
+    assert_capture_contains("fresh TG: 200");
+
+    assert(dsd_call_state_end(state, 0U, 2.0) == 1);
+    slot = ui_build_slot_view(state, 0);
+    assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
+    assert(g_printw_capture[0] == '\0');
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     test_input_source_helpers();
@@ -883,6 +952,7 @@ main(void) {
     test_edacs_tree_update_helpers();
     test_patch_and_slot_helpers();
     test_lock_and_protocol_helpers();
+    test_canonical_p25_slot_and_recent_activity();
     return 0;
 }
 

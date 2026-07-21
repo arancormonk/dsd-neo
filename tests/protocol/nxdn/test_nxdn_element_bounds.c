@@ -284,6 +284,12 @@ dsd_time_monotonic_ns(void) {
     return 0ULL;
 }
 
+uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
+}
+
 dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,

@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -365,7 +366,10 @@ main(void) {
     s4.payload_keyid = 0x1234;
     s4.payload_miP = 0x1122334455667788ULL;
     p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1);
-    assert(s4_history[0].revision == 1U);
+    assert(s4_history[0].revision > 0U);
+    assert(strstr(s4_history[0].Event_History_Items[1].internal_str, "Target: 1234") != NULL);
+    assert(s4.lasttg == 0);
+    assert(s4.lastsrc == 0);
     assert(s4.payload_algid == 0x84);
     assert(s4.payload_keyid == 0x1234);
     assert(s4.payload_miP == 0x1122334455667788ULL);

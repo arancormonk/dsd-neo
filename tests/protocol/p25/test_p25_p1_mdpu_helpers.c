@@ -374,6 +374,13 @@ test_decode_blocks_use_candidates_or_fallback_and_pack_crc_bits(void) {
     P25MpduContext ctx;
     int rc = 0;
 
+    g_mbf34_candidate_count = 0;
+    g_mbf34_fallback_calls = 0;
+    p25_mpdu_decode_r34_block(NULL, 1);
+    p25_mpdu_decode_r34_block(&ctx, 0);
+    p25_mpdu_decode_r34_block(&ctx, P25_MPDU_MAX_BLOCKS + 1);
+    rc |= expect_int("invalid r34 block ignored", g_mbf34_fallback_calls, 0);
+
     p25_mpdu_context_init(&ctx);
     DSD_MEMSET(g_soft_candidates, 0, sizeof(g_soft_candidates));
     g_soft_candidate_count = 2;

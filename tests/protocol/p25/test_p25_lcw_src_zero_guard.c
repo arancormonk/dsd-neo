@@ -496,13 +496,16 @@ main(void) {
                           st.gi[0] == 1 && st.lasttg == 0x101112 && st.lastsrc == 0x202122);
     }
 
-    /*
-     * Format 0x50 updates affiliation/query context when both group and source
-     * are present.
-     */
+    /* Format 0x50 updates affiliation only; it is not a voice identity. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         DSD_MEMSET(&st, 0, sizeof st);
+        st.lasttg = 0x1111;
+        st.lastsrc = 0x222222;
+        st.gi[0] = 1;
+        st.payload_algid = 0x84;
+        st.payload_keyid = 0x1234;
+        st.payload_miP = UINT64_C(0x1122334455667788);
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -513,8 +516,13 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("Fmt0x50_group_affiliation_target", st.lasttg == 0x3456);
-        rc |= expect_true("Fmt0x50_group_affiliation_source", st.lastsrc == 0x654321);
+        rc |= expect_true("Fmt0x50_preserves_call_target", st.lasttg == 0x1111);
+        rc |= expect_true("Fmt0x50_preserves_call_source", st.lastsrc == 0x222222);
+        rc |= expect_true("Fmt0x50_preserves_call_kind", st.gi[0] == 1);
+        rc |= expect_true("Fmt0x50_preserves_call_crypto", st.payload_algid == 0x84 && st.payload_keyid == 0x1234
+                                                               && st.payload_miP == UINT64_C(0x1122334455667788));
+        rc |= expect_true("Fmt0x50_updates_affiliation",
+                          st.p25_ga_count == 1 && st.p25_ga_rid[0] == 0x654321 && st.p25_ga_tg[0] == 0x3456);
     }
 
     /*

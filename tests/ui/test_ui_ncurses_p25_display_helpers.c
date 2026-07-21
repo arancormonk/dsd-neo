@@ -10,6 +10,7 @@
 #include <curses.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -22,8 +23,10 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dsd-neo/core/call_state.h"
 #include "dsd-neo/platform/platform.h"
 
 int ncurses_last_synctype;
@@ -103,6 +106,11 @@ assert_capture_lines_fit(int max_cols) {
 
 uint64_t
 dsd_time_monotonic_ns(void) { // NOLINT(misc-use-internal-linkage)
+    return 0;
+}
+
+uint64_t
+dsd_time_monotonic_ms(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
@@ -353,6 +361,26 @@ run_active_vc_cases(void) {
     DSD_SNPRINTF(state.active_channel[0], sizeof(state.active_channel[0]), "TG 456 Ch: 1234");
     state.trunk_chan_map[1234] = 854012500L;
     assert(ui_guess_active_vc_freq(&state) == 854012500L);
+
+    dsd_state* canonical = (dsd_state*)calloc(1U, sizeof(*canonical));
+    assert(canonical != NULL);
+    canonical->synctype = DSD_SYNC_P25P2_POS;
+    canonical->p25_vc_freq[0] = 855012500L;
+    DSD_SNPRINTF(canonical->active_channel[0], sizeof(canonical->active_channel[0]), "TG: 1 Ch: 1234");
+    canonical->trunk_chan_map[1234] = 856012500L;
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 1U;
+    observation.frequency_hz = 857012500L;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(canonical, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(ui_guess_active_vc_freq(canonical) == 857012500L);
+    assert(dsd_call_state_end(canonical, 0U, 2.0) == 1);
+    assert(ui_guess_active_vc_freq(canonical) == 0L);
+    dsd_state_ext_free_all(canonical);
+    free(canonical);
 
     return 0;
 }

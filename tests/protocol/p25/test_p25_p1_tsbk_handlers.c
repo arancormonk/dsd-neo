@@ -90,6 +90,11 @@ dsd_time_monotonic_ns(void) {
     return 41000000000ULL;
 }
 
+uint64_t
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_patch_update(dsd_state* state, int sgid, int is_patch, int active) {

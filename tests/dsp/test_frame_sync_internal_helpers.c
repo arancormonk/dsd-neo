@@ -89,14 +89,7 @@ dsd_mark_cc_sync(dsd_state* state) { // NOLINT(misc-use-internal-linkage)
 }
 
 void
-watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    (void)slot;
-}
-
-void
-watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) { // NOLINT(misc-use-internal-linkage)
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
     (void)slot;
