@@ -53,6 +53,13 @@ main(void) {
     state->nid_corrections_total = 12;
     state->nid_failures_total = 34;
     state->nid_parity_overrides = 56;
+    state->p25_p1_accepted_frames = 71U;
+    state->p25_p1_clean_frames = 72U;
+    state->p25_p1_corrected_frames = 73U;
+    state->p25_p1_concealed_frames = 74U;
+    state->p25_p1_accepted_corrections = 75U;
+    state->p25_p1_suppressed_tail_frames = 76U;
+    state->p25_p1_excluded_tail_corrections = 77U;
     state->trunk_chan_map[0x0123] = 851000000L;
     state->trunk_chan_map_used[0] = 0x0123U;
     state->trunk_chan_map_used_count = 1U;
@@ -237,6 +244,14 @@ main(void) {
         freeState(state);
         free(state);
         return 3;
+    }
+    if (state->p25_p1_accepted_frames != 0U || state->p25_p1_clean_frames != 0U || state->p25_p1_corrected_frames != 0U
+        || state->p25_p1_concealed_frames != 0U || state->p25_p1_accepted_corrections != 0U
+        || state->p25_p1_suppressed_tail_frames != 0U || state->p25_p1_excluded_tail_corrections != 0U) {
+        DSD_FPRINTF(stderr, "expected P25P1 session voice counters to be reset after initState\n");
+        freeState(state);
+        free(state);
+        return 29;
     }
     if (state->ess_b[0][95] != 0 || state->ess_b_llr[1][95] != 0 || state->fourv_counter[0] != 0
         || state->fourv_counter[1] != 0) {

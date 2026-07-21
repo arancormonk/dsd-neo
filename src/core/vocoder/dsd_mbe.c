@@ -495,6 +495,40 @@ mbe_p25p1_multicrypt_enabled(const dsd_state* state) {
     }
 }
 
+static int
+mbe_p25p1_is_tail_erasure(const dsd_state* state, const char imbe_d[88], int corrections) {
+    if (state->p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || corrections < 10) {
+        return 0;
+    }
+
+    uint8_t prefix = 0;
+    int set_bits = 0;
+    for (int i = 0; i < 88; i++) {
+        const uint8_t bit = (uint8_t)(imbe_d[i] & 1);
+        if (i < 8) {
+            prefix = (uint8_t)((prefix << 1) | bit);
+        }
+        set_bits += bit;
+    }
+    return prefix == 0xFCU && set_bits <= 24;
+}
+
+static void
+mbe_p25p1_record_accepted_frame(dsd_state* state, int corrections, unsigned process_flags) {
+    state->p25_p1_accepted_frames++;
+    if (corrections > 0) {
+        state->p25_p1_accepted_corrections += (uint64_t)corrections;
+    }
+
+    if (corrections == 0) {
+        state->p25_p1_clean_frames++;
+    } else if ((process_flags & (MBE_PROCESS_FLAG_REPEAT | MBE_PROCESS_FLAG_MUTE)) != 0U) {
+        state->p25_p1_concealed_frames++;
+    } else {
+        state->p25_p1_corrected_frames++;
+    }
+}
+
 static void
 mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
                   mbe_frame_ctx_t* frame_ctx) {
@@ -503,6 +537,21 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
     if (!have_imbe_result) {
         store_process_result(MBE_STATUS_INVALID_BITS, state->audio_out_temp_buf, &state->errs, &state->errs2,
                              state->err_str, sizeof(state->err_str), NULL);
+        return;
+    }
+
+    const int decoded_corrections = imbe_result.total_errors;
+    if (mbe_p25p1_is_tail_erasure(state, frame_ctx->imbe_d, decoded_corrections)) {
+        if (dsd_frame_detail_enabled(opts)) {
+            PrintIMBEData(opts, state, frame_ctx->imbe_d);
+        }
+        dsd_frame_logf(opts, "FRAME EVENT slot=1 type=P25P1_TAIL_ERASURE action=mute excluded_corrections=%d",
+                       decoded_corrections);
+        mbe_synthesizeSilencef(state->audio_out_temp_buf);
+        state->p25_p1_suppressed_tail_frames++;
+        state->p25_p1_excluded_tail_corrections += (uint64_t)decoded_corrections;
+        clear_mbe_status(&state->errs, &state->errs2, state->err_str, sizeof(state->err_str));
+        state->p25vc++;
         return;
     }
 
@@ -525,6 +574,7 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
                                                state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
     (void)store_process_result(process_ret, state->audio_out_temp_buf, &state->errs, &state->errs2, state->err_str,
                                sizeof(state->err_str), &imbe_result);
+    mbe_p25p1_record_accepted_frame(state, decoded_corrections, imbe_result.flags);
     update_p25_p1_voice_err_hist(state);
 
     if (dsd_frame_detail_enabled(opts)) {
