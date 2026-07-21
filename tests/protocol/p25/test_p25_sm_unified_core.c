@@ -792,6 +792,33 @@ test_p1_follow_mode_expires_clear_conflict(void) {
 }
 
 static int
+test_p1_follow_mode_does_not_clear_conflict_after_encrypted_lcw(void) {
+    p25_sm_ctx_t ctx;
+    if (setup_p1_retained_clear_conflict(&ctx, 1) != 0) {
+        return 1;
+    }
+
+    p25_sm_event_t ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x44);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].svc_bits != 0x44 || g_state.dmr_so != 0x44 || !g_state.p25_service_options_valid[0]
+        || !g_state.p25_p1_crypto_conflict.active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+        DSD_FPRINTF(stderr, "FAIL: Encrypted LCW did not replace the clear conflict service options\n");
+        return 1;
+    }
+
+    ctx.slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
+    p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || !ctx.slots[0].grant_active
+        || !g_state.p25_p1_crypto_conflict.active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || g_state.payload_algid != 0xA0 || g_state.payload_keyid != 0x0064
+        || p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Conflict timeout reopened explicitly encrypted Phase 1 service as clear\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_p1_clear_conflict_restarts_deadline(void) {
     reset_test_state();
     g_opts.trunk_tune_enc_calls = 0;
@@ -2087,6 +2114,7 @@ main(void) {
     fail += test_p1_retained_hdu_defers_lockout_attribution();
     fail += test_p1_clear_identity_quarantines_conflicting_hdu();
     fail += test_p1_follow_mode_expires_clear_conflict();
+    fail += test_p1_follow_mode_does_not_clear_conflict_after_encrypted_lcw();
     fail += test_p1_clear_conflict_restarts_deadline();
     fail += test_p1_grant_hdu_conflict_survives_first_active();
     fail += test_p1_follow_mode_preserves_grant_conflict_deadline();

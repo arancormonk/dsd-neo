@@ -4831,7 +4831,9 @@ static int
 p25_sm_recover_expired_followed_p1_conflict(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m,
                                             double grant_timeout) {
     if (!ctx || !opts || !state || opts->trunk_tune_enc_calls == 0 || ctx->vc_is_tdma
-        || !state->p25_p1_crypto_conflict.active || !p25_sm_crypto_slot_expired(ctx, state, 0, now_m, grant_timeout)) {
+        || !state->p25_p1_crypto_conflict.active
+        || !p25_grant_service_options_are_explicit_clear(ctx->slots[0].svc_bits)
+        || !p25_sm_crypto_slot_expired(ctx, state, 0, now_m, grant_timeout)) {
         return 0;
     }
 
