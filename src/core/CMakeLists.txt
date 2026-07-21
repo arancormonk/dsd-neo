@@ -22,6 +22,7 @@ target_sources(
         util/bit_packing.c
         util/dsd_init.c
         util/dsd_events.c
+        util/call_state.c
         util/edacs_afs.c
         util/dsd_alias.c
         util/talkgroup_policy.c
