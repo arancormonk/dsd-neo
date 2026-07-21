@@ -18,6 +18,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -234,8 +235,7 @@ dmr_heuristic_report_fill(dsd_opts* opts, dsd_state* state, const dmr_heuristic_
     opts->call_alert = 0;
     watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, msg, 0);
     opts->call_alert = prev_alert;
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 0);
 }
 
 // Attempt to fill missing LCNs heuristically from learned anchors.
@@ -301,8 +301,7 @@ dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int fre
         opts->call_alert = 0; // suppress beeper for system-status events
         watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, msg, 0);
         opts->call_alert = prev_alert;
-        watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
+        dsd_event_sync_slot(opts, state, 0);
     }
 
     // Try heuristic gap fill after learning a new anchor
@@ -527,7 +526,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
 
     dmr_cspdu_pf0_update_active_channels(state, lcn, lpchannum, mbc_lpchannum, target, csbk_o);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, lcn);
 
     int data_call = 0;
     if (!dmr_cspdu_pf0_prepare_dispatch(opts, state, &csbk_o, &data_call, freq, target)) {
@@ -592,14 +591,14 @@ dmr_cspdu_pf0_move_debounce_slot(dsd_state* state, int tslot) {
     if (tslot == 0) {
         state->dmrburstL = 16;
         state->dmrburstR = 9;
-        state->active_channel[1][0] = '\0';
+        (void)dsd_recent_activity_clear(state, 1U);
         state->call_string[1][0] = '\0';
         return;
     }
 
     state->dmrburstR = 16;
     state->dmrburstL = 9;
-    state->active_channel[0][0] = '\0';
+    (void)dsd_recent_activity_clear(state, 0U);
     state->call_string[0][0] = '\0';
 }
 
@@ -628,7 +627,7 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
     if (move_lpcn != 0) {
         DSD_SNPRINTF(state->active_channel[tslot], sizeof state->active_channel[tslot], "Active Ch: %04X%s TG: %u; ",
                      move_lpcn, suf, mv_target);
-        state->last_active_time = time(NULL);
+        (void)dsd_recent_activity_sync_legacy_entry(state, tslot);
     }
 
     dmr_cspdu_pf0_move_debounce_slot(state, tslot);
@@ -1024,13 +1023,13 @@ dmr_cspdu_pf0_p_clear_mark_slots_idle(dsd_state* state) {
         state->dmrburstL = 9;
         state->dmrburstR = 9;
         state->call_string[0][0] = '\0';
-        state->active_channel[0][0] = '\0';
+        (void)dsd_recent_activity_clear(state, 0U);
         return;
     }
     state->dmrburstR = 9;
     state->dmrburstL = 9;
     state->call_string[1][0] = '\0';
-    state->active_channel[1][0] = '\0';
+    (void)dsd_recent_activity_clear(state, 1U);
 }
 
 static void
@@ -1905,9 +1904,9 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
     int x = 0;
 
     DSD_FPRINTF(stderr, "\n  ");
-    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+    (void)dsd_recent_activity_clear_all(state);
     DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Cap+ ");
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
     dmr_cspdu_cap_plus_3e_calc_window(ctx);
 
     for (int i = ctx->start; i < ctx->end; i++) {
@@ -1954,6 +1953,7 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
             DSD_FPRINTF(stderr, " Idle;  ");
         }
     }
+    (void)dsd_recent_activity_sync_legacy(state);
 }
 
 static void
@@ -2233,7 +2233,7 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     dmr_format_chan_suffix(g.tslot, suf, sizeof suf);
     DSD_SNPRINTF(state->active_channel[g.tslot], sizeof(state->active_channel[g.tslot]), "Active Ch: %04X%s TG: %d; ",
                  g.lcn, suf, g.grp_addr);
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, g.tslot);
 
     if (opts->trunk_enable == 0 && state->trunk_chan_map[g.lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[g.lcn];
@@ -2259,8 +2259,7 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     dsd_tg_policy_decision policy_decision;
     int policy_allowed;
     char suf[24];
-    char prev_active_channel[sizeof state->active_channel[0]];
-    time_t prev_last_active_time;
+    dsd_recent_activity_transaction activity_transaction;
     time_t now;
 
     if (csbk_o != 0x06) {
@@ -2281,12 +2280,11 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     }
 
     dmr_format_chan_suffix(tslot, suf, sizeof suf);
-    DSD_SNPRINTF(prev_active_channel, sizeof prev_active_channel, "%s", state->active_channel[tslot]);
-    prev_last_active_time = state->last_active_time;
+    (void)dsd_recent_activity_save(state, tslot, &activity_transaction);
     now = time(NULL);
     DSD_SNPRINTF(state->active_channel[tslot], sizeof(state->active_channel[tslot]), "Active Ch: %04X%s TG: %d; ", lcn,
                  suf, dtarget);
-    state->last_active_time = now;
+    (void)dsd_recent_activity_sync_legacy_entry(state, tslot);
     if (opts->trunk_enable == 0 && state->trunk_chan_map[lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[lcn];
         state->trunk_vc_freq[1] = state->trunk_chan_map[lcn];
@@ -2303,9 +2301,7 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
             dsd_trunk_tune_result tune_result =
                 dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0, NULL);
             if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-                DSD_SNPRINTF(state->active_channel[tslot], sizeof(state->active_channel[tslot]), "%s",
-                             prev_active_channel);
-                state->last_active_time = prev_last_active_time;
+                (void)dsd_recent_activity_restore(state, &activity_transaction);
                 return;
             }
             state->is_con_plus = 1;
@@ -2403,7 +2399,7 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
     } else {
         DSD_SNPRINTF(state->active_channel[xpt_seq], sizeof(state->active_channel[xpt_seq]), "%s", "");
     }
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_sync_legacy_entry(state, xpt_seq);
 
     for (int i = 0; i < 6; i++) {
         int slot_idx = i + xpt_bank;
@@ -2437,6 +2433,7 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
             t_tg[slot_idx] = 1;
         }
     }
+    (void)dsd_recent_activity_sync_legacy_entry(state, xpt_seq);
 }
 
 static void
@@ -2656,9 +2653,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
     if (IrrecoverableErrors == 0 && CRCCorrect == 1) {
         //clear stale Active Channel messages here
-        if (((time(NULL) - state->last_active_time) > 3) && ((time(NULL) - state->last_vc_sync_time) > 3)) {
-            DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
-        }
+        (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
 
         //update time to prevent random 'Control Channel Signal Lost' hopping
         //in the middle of voice call on current Control Channel (con+ and t3)

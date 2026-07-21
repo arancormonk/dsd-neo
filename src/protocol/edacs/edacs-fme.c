@@ -26,6 +26,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -2072,8 +2073,7 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
 
     //watchdog event at this point
     state->lastsynctype = DSD_SYNC_EDACS_NEG;
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 0);
 
     //close and rename wav file here, then open a new one
     if (opts->dmr_stereo_wav == 1) {
@@ -2102,8 +2102,8 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
         state->payload_miP = 0;
         DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "                     "); //21 spaces
         DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
-        DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "%s", "");
-        DSD_SNPRINTF(state->active_channel[1], sizeof state->active_channel[1], "%s", "");
+        (void)dsd_recent_activity_clear(state, 0U);
+        (void)dsd_recent_activity_clear(state, 1U);
         state->edacs_tuned_lcn = -1;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;

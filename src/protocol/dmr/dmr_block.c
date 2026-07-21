@@ -974,8 +974,7 @@ dmr_udt_finalize(dmr_udt_ctx* ctx) {
         ctx->state->lastsrcR = 0;
         ctx->state->lasttgR = 0;
     }
-    watchdog_event_history(ctx->opts, ctx->state, ctx->slot);
-    watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
+    dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
 }
 
 static void DSD_ATTR_USED

@@ -9,6 +9,7 @@
 
 #include <curses.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
@@ -1228,10 +1229,56 @@ ui_print_p25_iden_plan(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+static long int
+ui_canonical_active_p25_freq(const dsd_call_state_snapshot* calls) {
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        const dsd_call_snapshot* call = &calls->slots[slot];
+        if (call->phase == DSD_CALL_PHASE_ACTIVE && ui_is_p25_synctype(call->protocol) && call->frequency_hz > 0) {
+            return (long int)call->frequency_hz;
+        }
+    }
+    return 0;
+}
+
+static int
+ui_state_has_p25_context(const dsd_state* state) {
+    return ui_is_p25_synctype(state->synctype) || ui_is_p25_synctype(state->lastsynctype);
+}
+
+static long int
+ui_recent_activity_vc_freq(const dsd_state* state) {
+    for (int i = 0; i < 31; i++) {
+        const char* activity = state->active_channel[i];
+        if (!activity || activity[0] == '\0') {
+            continue;
+        }
+        char channel[8] = {0};
+        if (!ui_extract_channel_token(activity, channel, sizeof(channel))) {
+            continue;
+        }
+        const long int frequency = ui_lookup_trunk_chan_map(state, channel);
+        if (frequency != 0) {
+            return frequency;
+        }
+    }
+    return 0;
+}
+
 long int
 ui_guess_active_vc_freq(const dsd_state* state) {
     if (!state) {
         return 0;
+    }
+    dsd_call_state_snapshot calls;
+    const int has_canonical = dsd_call_state_copy_snapshot(state, &calls) > 0;
+    if (has_canonical) {
+        const long int canonical_frequency = ui_canonical_active_p25_freq(&calls);
+        if (canonical_frequency != 0) {
+            return canonical_frequency;
+        }
+        if (ui_state_has_p25_context(state)) {
+            return 0;
+        }
     }
     if (state->trunk_vc_freq[0] != 0) {
         return state->trunk_vc_freq[0];
@@ -1239,19 +1286,5 @@ ui_guess_active_vc_freq(const dsd_state* state) {
     if (state->p25_vc_freq[0] != 0) {
         return state->p25_vc_freq[0];
     }
-    for (int i = 0; i < 31; i++) {
-        const char* s = state->active_channel[i];
-        if (!s || s[0] == '\0') {
-            continue;
-        }
-        char tok[8] = {0};
-        if (!ui_extract_channel_token(s, tok, sizeof(tok))) {
-            continue;
-        }
-        long int freq = ui_lookup_trunk_chan_map(state, tok);
-        if (freq != 0) {
-            return freq;
-        }
-    }
-    return 0;
+    return ui_recent_activity_vc_freq(state);
 }

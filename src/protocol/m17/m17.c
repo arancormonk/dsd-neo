@@ -2123,8 +2123,7 @@ m17_str_iter_tail(m17_str_ctx* ctx) {
     if (dsd_opts_frontend_active(ctx->opts)) {
         dsd_telemetry_publish_both_and_redraw(ctx->opts, ctx->state);
     }
-    watchdog_event_history(ctx->opts, ctx->state, 0);
-    watchdog_event_current(ctx->opts, ctx->state, 0);
+    dsd_event_sync_slot(ctx->opts, ctx->state, 0);
 }
 
 static int
@@ -3177,8 +3176,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
         if (dsd_opts_frontend_active(opts)) {
             dsd_telemetry_publish_both_and_redraw(opts, state);
         }
-        watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
+        dsd_event_sync_slot(opts, state, 0);
         DSD_MEMSET(ip_frame, 0, sizeof(ip_frame));
     }
     return 0;

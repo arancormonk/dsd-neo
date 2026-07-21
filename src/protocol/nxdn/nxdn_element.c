@@ -16,6 +16,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -417,7 +418,7 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
 
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+        (void)dsd_recent_activity_clear_all(state);
         state->nxdn_last_rid = 0;
         state->nxdn_last_tg = 0;
         if (state->M == 0) {
@@ -1496,8 +1497,8 @@ nxdn_vcall_assgn_adjust_duplicate(dsd_opts* opts, const dsd_state* state, time_t
 }
 
 static void
-nxdn_vcall_assgn_track_active_channel(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info,
-                                      time_t now) {
+nxdn_vcall_assgn_track_active_channel(const dsd_opts* opts, dsd_state* state,
+                                      const struct nxdn_vcall_assgn_info* info) {
     const int dup = (info->message_type == 0x05U) ? 1 : 0;
     const uint16_t grant_chan = (state->nxdn_rcn == 1) ? info->ofn : (uint16_t)(info->channel & 0x3FFU);
     const long int grant_freq = nxdn_channel_to_frequency_quiet(state, grant_chan);
@@ -1518,7 +1519,7 @@ nxdn_vcall_assgn_track_active_channel(const dsd_opts* opts, dsd_state* state, co
         DSD_SNPRINTF(state->active_channel[dup], sizeof state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ",
                      grant_chan, info->destination_id, info->source_unit_id);
     }
-    state->last_active_time = now;
+    (void)dsd_recent_activity_sync_legacy_entry(state, (uint8_t)dup);
 }
 
 static int
@@ -1618,7 +1619,7 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message
     nxdn_vcall_assgn_parse(state, Message, &info);
     nxdn_vcall_assgn_print(state, &info);
     nxdn_vcall_assgn_adjust_duplicate(opts, state, now, &info);
-    nxdn_vcall_assgn_track_active_channel(opts, state, &info, now);
+    nxdn_vcall_assgn_track_active_channel(opts, state, &info);
     if (nxdn_vcall_assgn_should_tune(opts, &info)) {
         const long int freq = nxdn_vcall_assgn_frequency(opts, state, &info);
         nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
@@ -1780,7 +1781,6 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
 
 static void
 NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
-    const time_t now = time(NULL);
     uint32_t location_id = 0;
     uint16_t svc_info = 0; //service information
     uint32_t rst_info = 0; //restriction information
@@ -1807,8 +1807,7 @@ NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Mess
     nxdn_anchor_control_channel_from_current_tuner(opts, state, 0);
 
     //clear stale active channel listing -- consider best placement for this (NXDN Type C Trunking -- inside SRV_INFO)
-    if ((now - state->last_active_time) > 3) {
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+    if (dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS) > 0) {
         state->nxdn_grant_chan = 0;
         state->nxdn_grant_freq = 0;
     }
@@ -2503,7 +2502,7 @@ nxdn_scch_update_busy_display(dsd_state* state, const struct nxdn_scch_info* inf
             DSD_SNPRINTF(state->active_channel[info->rep1], sizeof(state->active_channel[info->rep1]),
                          "Active Private Ch: %d TGT: %d-%d; ", info->rep1, info->rep2, info->id);
         }
-        state->last_active_time = info->now;
+        (void)dsd_recent_activity_sync_legacy_entry(state, info->rep1);
     }
 }
 
@@ -2519,17 +2518,15 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
 
 static void
 nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    if ((info->now - state->last_active_time) > 3) {
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
-    }
+    (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
 
     if (info->id == 2046U) {
         DSD_FPRINTF(stderr, "Idle Repeater Message - ");
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
         DSD_FPRINTF(stderr, "Repeater 1: %d; ", info->rep1);
         DSD_FPRINTF(stderr, "Repeater 2: %d; ", info->rep2);
-        DSD_SNPRINTF(state->active_channel[info->rep1], sizeof(state->active_channel[info->rep1]), "%s", "");
-        DSD_SNPRINTF(state->active_channel[info->rep2], sizeof(state->active_channel[info->rep2]), "%s", "");
+        (void)dsd_recent_activity_clear(state, info->rep1);
+        (void)dsd_recent_activity_clear(state, info->rep2);
     } else if (info->id == 2045U) {
         DSD_FPRINTF(stderr, "Halt Repeater Message - ");
         DSD_FPRINTF(stderr, "Area: %d; ", info->area);
