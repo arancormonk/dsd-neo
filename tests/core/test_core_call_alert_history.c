@@ -1037,12 +1037,16 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
     dsd_event_sync_slot(&opts, &state, 0U);
     assert(dsd_call_state_get(&state, 0U, &snapshot) == 1);
     rc |= expect_u64("late source keeps epoch", snapshot.epoch, late_identity_epoch);
-    observation.ota_target_id = observation.policy_target_id = observation.group_id = 301U;
+    observation.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    observation.ota_target_id = observation.policy_target_id = observation.private_id = 0xABCDEFU;
+    observation.group_id = 0U;
     observation.observed_m = 4.2;
+    state.gi[0] = 1;
     assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     rc |= expect_int("known target change rotates prior row", (int)event_history[0].Event_History_Items[1].target_id,
                      300);
+    rc |= expect_int("canonical rotation preserves live private identity", state.gi[0], 1);
 
     dsd_state_ext_free_all(&state);
     return rc;

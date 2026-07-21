@@ -914,7 +914,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     state->lasttgR = 9999;
     state->lastsrcR = 8888;
     ui_slot_view idle_companion = ui_build_slot_view(state, 1);
-    assert(idle_companion.canonical_p25 == 1);
+    assert(idle_companion.canonical_p25 == 0);
     assert(idle_companion.call.phase == DSD_CALL_PHASE_IDLE);
     reset_printw_capture();
     ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &idle_companion);
@@ -934,6 +934,27 @@ test_canonical_p25_slot_and_recent_activity(void) {
     reset_printw_capture();
     ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
     assert(g_printw_capture[0] == '\0');
+
+    state->dmrburstL = 25;
+    state->payload_algid = 0x84;
+    state->payload_keyid = 0x2468;
+    state->payload_miP = 0x1122334455667788ULL;
+    slot = ui_build_slot_view(state, 0);
+    assert(slot.canonical_p25 == 0);
+    assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
+    assert_capture_contains("HDU");
+    assert_capture_contains("ALG: 0x84 KEY ID: 0x2468 MI: 0x1122334455667788");
+
+    static dsd_opts tuned_opts;
+    DSD_MEMSET(&tuned_opts, 0, sizeof(tuned_opts));
+    tuned_opts.trunk_enable = 1;
+    tuned_opts.trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = 851025000L;
+    reset_printw_capture();
+    ui_render_p25_dmr_tuned_freq_line(&tuned_opts, state);
+    assert_capture_contains("Frequency: 851.025000 MHz");
 
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;

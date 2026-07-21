@@ -2563,7 +2563,10 @@ ui_build_slot_view(const dsd_state* state, int slot_idx) {
     if (dsd_call_state_copy_snapshot(state, &calls) > 0) {
         const dsd_call_snapshot* call = &calls.slots[slot_idx];
         if (ui_call_snapshot_has_p25_context(state, call)) {
-            ui_apply_canonical_p25_slot(&slot, call);
+            slot.call = *call;
+            if (call->phase == DSD_CALL_PHASE_ACTIVE) {
+                ui_apply_canonical_p25_slot(&slot, call);
+            }
         }
     }
     return slot;
@@ -3029,7 +3032,7 @@ ui_render_slot_dxtra_line(const dsd_state* state, const ui_slot_view* slot, int 
 
 static void
 ui_render_p25_dmr_slot_block(const dsd_opts* opts, const dsd_state* state, const ui_slot_view* slot) {
-    if (slot->canonical_p25 && slot->call.phase != DSD_CALL_PHASE_ACTIVE) {
+    if (!slot->canonical_p25 && ui_call_snapshot_has_p25_context(state, &slot->call) && slot->burst != 25) {
         return;
     }
     ui_slot_render_flags flags = {0};
@@ -3065,7 +3068,7 @@ ui_render_p25_dmr_tuned_freq_line(const dsd_opts* opts, const dsd_state* state) 
                 }
             }
         }
-        if (vc == 0 && !(DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype))) {
+        if (vc == 0) {
             vc = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
         }
         if (vc == 0) {
