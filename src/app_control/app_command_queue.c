@@ -8,6 +8,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -1547,7 +1548,7 @@ static void
 reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+    (void)dsd_recent_activity_clear_all(state);
     dmr_reset_blocks(opts, state);
     state->lasttg = state->lasttgR = 0;
     state->lastsrc = state->lastsrcR = 0;
@@ -2968,8 +2969,7 @@ ui_cmd_handle_symcap_save(dsd_opts* opts, dsd_state* state, const struct dsd_app
                                             DSD_EVENT_CATEGORY_SYSTEM);
         dsd_event_history_mark_dirty(&state->event_history_s[0]);
         state->lastsrc = 0;
-        watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
+        dsd_event_sync_slot(opts, state, 0);
     }
     opts->symbol_out_file_creation_time = time(NULL);
     opts->symbol_out_file_is_auto = 1;
@@ -2990,8 +2990,7 @@ ui_cmd_handle_symcap_stop(dsd_opts* opts, dsd_state* state, const struct dsd_app
                                                 DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_SYSTEM);
             dsd_event_history_mark_dirty(&state->event_history_s[0]);
             state->lastsrc = 0;
-            watchdog_event_history(opts, state, 0);
-            watchdog_event_current(opts, state, 0);
+            dsd_event_sync_slot(opts, state, 0);
         }
     }
     opts->symbol_out_file_is_auto = 0;
