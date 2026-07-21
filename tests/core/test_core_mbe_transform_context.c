@@ -130,6 +130,25 @@ static const char k_p25p1_aes128_expected_imbe[88] = {
     0, 1, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 1,
 };
 
+/* Capture-derived P25P1 teardown frame: FEC yields FC000... with 10 corrections. */
+static const uint32_t k_p25p1_tail_erasure_rows[8] = {
+    0x0A313EU, 0x20C3CFU, 0x44347CU, 0x1FA29DU, 0x235500U, 0x208200U, 0x3C2200U, 0x000000U,
+};
+
+/* Zero-correction D800... silence and an ordinary corrected speech frame. */
+static const uint32_t k_p25p1_clean_silence_rows[8] = {
+    0x04001BU, 0x7DA198U, 0x018ABDU, 0x6044CDU, 0x404400U, 0x729300U, 0x1B7800U, 0x000000U,
+};
+
+static const uint32_t k_p25p1_corrected_speech_rows[8] = {
+    0x08596CU, 0x0885DBU, 0x16017EU, 0x733AC5U, 0x706D60U, 0x18C13FU, 0x56DD92U, 0x625FC9U,
+};
+
+/* FEC yields dense FCC33D... with 12 corrections, outside the narrow popcount gate. */
+static const uint32_t k_p25p1_dense_fc_rows[8] = {
+    0x01DA2FU, 0x0CC1C2U, 0x3A1639U, 0x4DCA44U, 0x1D50D3U, 0x3B2016U, 0x5E587DU, 0x303FB8U,
+};
+
 static const char k_dmr_rc4_left_expected_ambe[49] = {
     0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1,
     0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0,
@@ -552,6 +571,44 @@ create_playback_temp(char* path, size_t path_size, const char* prefix) {
     return dsd_mkstemp(path);
 }
 
+static int
+read_test_text_file(const char* path, char* buf, size_t buf_size) {
+    if (!path || !buf || buf_size == 0U) {
+        return 1;
+    }
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return 1;
+    }
+    size_t n = fread(buf, 1U, buf_size - 1U, fp);
+    if (n == 0U && ferror(fp)) {
+        fclose(fp);
+        return 1;
+    }
+    buf[n] = '\0';
+    fclose(fp);
+    return 0;
+}
+
+static void
+load_imbe7200_rows(const uint32_t rows[8], char frame[8][23]) {
+    for (int row = 0; row < 8; row++) {
+        for (int bit = 0; bit < 23; bit++) {
+            frame[row][bit] = (char)((rows[row] >> (22 - bit)) & 1U);
+        }
+    }
+}
+
+static void
+load_imbe7200_soft_rows(const uint32_t rows[8], dsd_vocoder_soft_bit frame[8][23]) {
+    for (int row = 0; row < 8; row++) {
+        for (int bit = 0; bit < 23; bit++) {
+            frame[row][bit].bit = (uint8_t)((rows[row] >> (22 - bit)) & 1U);
+            frame[row][bit].reliability = 255U;
+        }
+    }
+}
+
 static SNDFILE*
 create_wav_temp(char* path, size_t path_size, const char* prefix) {
     int fd = create_playback_temp(path, path_size, prefix);
@@ -725,6 +782,264 @@ copy_ambe2450_soft_to_mbelib(const dsd_vocoder_soft_bit src[4][24], mbe_soft_bit
             dst[row][bit].reliability = src[row][bit].reliability;
         }
     }
+}
+
+static int
+test_process_mbe_frame_p25p1_suppresses_tail_erasure_hard(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+    float silence[160] = {0};
+    uint8_t history_before[64];
+    mbe_parms cur_before;
+    mbe_parms prev_before;
+    mbe_parms prev_enhanced_before;
+    char log_path[1024];
+    char log_text[2048];
+
+    int log_fd = create_playback_temp(log_path, sizeof(log_path), "p25p1_tail_erasure_log");
+    FILE* mbe_out = tmpfile();
+    if (log_fd < 0 || mbe_out == NULL) {
+        if (log_fd >= 0) {
+            dsd_close(log_fd);
+            (void)remove(log_path);
+        }
+        if (mbe_out) {
+            fclose(mbe_out);
+        }
+        return 1;
+    }
+    dsd_close(log_fd);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    opts.mbe_out_f = mbe_out;
+    DSD_SNPRINTF(opts.frame_log_file, sizeof(opts.frame_log_file), "%s", log_path);
+    opts.frame_log_file[sizeof(opts.frame_log_file) - 1U] = '\0';
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25vc = 4;
+    state.debug_audio_errors = 9U;
+    state.errs = 31;
+    state.errs2 = 32;
+    DSD_SNPRINTF(state.err_str, sizeof(state.err_str), "%s", "stale");
+    state.p25_p1_voice_err_hist_len = 4;
+    state.p25_p1_voice_err_hist_pos = 2;
+    state.p25_p1_voice_err_hist_sum = 7U;
+    state.p25_p1_voice_err_hist[0] = 3U;
+    state.p25_p1_voice_err_hist[1] = 4U;
+    DSD_MEMSET(state.audio_out_temp_buf, 0x5A, sizeof(state.audio_out_temp_buf));
+    DSD_MEMCPY(history_before, state.p25_p1_voice_err_hist, sizeof(history_before));
+    DSD_MEMCPY(&cur_before, &cur, sizeof(cur_before));
+    DSD_MEMCPY(&prev_before, &prev, sizeof(prev_before));
+    DSD_MEMCPY(&prev_enhanced_before, &prev_enhanced, sizeof(prev_enhanced_before));
+    load_imbe7200_rows(k_p25p1_tail_erasure_rows, imbe_fr);
+
+    processMbeFrame(&opts, &state, imbe_fr, NULL, NULL);
+
+    rc |= expect_eq_mem("p25p1-tail-hard silence", state.audio_out_temp_buf, silence, sizeof(silence));
+    rc |= expect_eq_mem("p25p1-tail-hard staged silence", state.f_l, silence, sizeof(silence));
+    rc |= expect_eq_mem("p25p1-tail-hard current history", &cur, &cur_before, sizeof(cur));
+    rc |= expect_eq_mem("p25p1-tail-hard previous history", &prev, &prev_before, sizeof(prev));
+    rc |=
+        expect_eq_mem("p25p1-tail-hard enhanced history", &prev_enhanced, &prev_enhanced_before, sizeof(prev_enhanced));
+    rc |= expect_eq_mem("p25p1-tail-hard rolling history", state.p25_p1_voice_err_hist, history_before,
+                        sizeof(history_before));
+    rc |= expect_eq_int("p25p1-tail-hard history position", state.p25_p1_voice_err_hist_pos, 2);
+    rc |= expect_eq_int("p25p1-tail-hard history sum", (int)state.p25_p1_voice_err_hist_sum, 7);
+    rc |= expect_eq_int("p25p1-tail-hard errs", state.errs, 0);
+    rc |= expect_eq_int("p25p1-tail-hard errs2", state.errs2, 0);
+    rc |= expect_eq_int("p25p1-tail-hard status", state.err_str[0], '\0');
+    rc |= expect_eq_int("p25p1-tail-hard vc", state.p25vc, 5);
+    rc |= expect_eq_int("p25p1-tail-hard legacy errors", (int)state.debug_audio_errors, 9);
+    rc |= expect_eq_int("p25p1-tail-hard accepted", (int)state.p25_p1_accepted_frames, 0);
+    rc |= expect_eq_int("p25p1-tail-hard suppressed", (int)state.p25_p1_suppressed_tail_frames, 1);
+    rc |= expect_eq_int("p25p1-tail-hard excluded", (int)state.p25_p1_excluded_tail_corrections, 10);
+
+    rc |= expect_eq_int("p25p1-tail-hard mbe flush", fflush(mbe_out), 0);
+    rc |= expect_eq_int("p25p1-tail-hard mbe seek", fseek(mbe_out, 0, SEEK_END), 0);
+    rc |= expect_eq_int("p25p1-tail-hard mbe empty", (int)ftell(mbe_out), 0);
+    fclose(mbe_out);
+    opts.mbe_out_f = NULL;
+
+    dsd_frame_log_close(&opts);
+    if (read_test_text_file(log_path, log_text, sizeof(log_text)) != 0) {
+        rc = 1;
+    } else {
+        rc |= expect_eq_int("p25p1-tail-hard raw frame log",
+                            strstr(log_text, "FRAME IMBE slot=1 data=FC00000000000000000000 err=[2] [A]") != NULL, 1);
+        rc |= expect_eq_int(
+            "p25p1-tail-hard event log",
+            strstr(log_text, "FRAME EVENT slot=1 type=P25P1_TAIL_ERASURE action=mute excluded_corrections=10") != NULL,
+            1);
+    }
+    (void)remove(log_path);
+    return rc;
+}
+
+static int
+test_process_mbe_frame_p25p1_suppresses_tail_erasure_soft(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    dsd_vocoder_soft_bit imbe_soft[8][23];
+    float silence[160] = {0};
+    uint8_t history_before[64];
+    mbe_parms cur_before;
+    mbe_parms prev_before;
+    mbe_parms prev_enhanced_before;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_P25P1_NEG;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25vc = 8;
+    state.debug_audio_errors = 5U;
+    state.p25_p1_voice_err_hist_len = 3;
+    state.p25_p1_voice_err_hist_pos = 1;
+    state.p25_p1_voice_err_hist_sum = 6U;
+    state.p25_p1_voice_err_hist[0] = 6U;
+    DSD_MEMSET(state.audio_out_temp_buf, 0xA5, sizeof(state.audio_out_temp_buf));
+    DSD_MEMCPY(history_before, state.p25_p1_voice_err_hist, sizeof(history_before));
+    DSD_MEMCPY(&cur_before, &cur, sizeof(cur_before));
+    DSD_MEMCPY(&prev_before, &prev, sizeof(prev_before));
+    DSD_MEMCPY(&prev_enhanced_before, &prev_enhanced, sizeof(prev_enhanced_before));
+    load_imbe7200_soft_rows(k_p25p1_tail_erasure_rows, imbe_soft);
+
+    processMbeFrameSoft(&opts, &state, imbe_soft, NULL, NULL);
+
+    rc |= expect_eq_mem("p25p1-tail-soft silence", state.audio_out_temp_buf, silence, sizeof(silence));
+    rc |= expect_eq_mem("p25p1-tail-soft staged silence", state.f_l, silence, sizeof(silence));
+    rc |= expect_eq_mem("p25p1-tail-soft current history", &cur, &cur_before, sizeof(cur));
+    rc |= expect_eq_mem("p25p1-tail-soft previous history", &prev, &prev_before, sizeof(prev));
+    rc |=
+        expect_eq_mem("p25p1-tail-soft enhanced history", &prev_enhanced, &prev_enhanced_before, sizeof(prev_enhanced));
+    rc |= expect_eq_mem("p25p1-tail-soft rolling history", state.p25_p1_voice_err_hist, history_before,
+                        sizeof(history_before));
+    rc |= expect_eq_int("p25p1-tail-soft history position", state.p25_p1_voice_err_hist_pos, 1);
+    rc |= expect_eq_int("p25p1-tail-soft history sum", (int)state.p25_p1_voice_err_hist_sum, 6);
+    rc |= expect_eq_int("p25p1-tail-soft errs", state.errs, 0);
+    rc |= expect_eq_int("p25p1-tail-soft errs2", state.errs2, 0);
+    rc |= expect_eq_int("p25p1-tail-soft status", state.err_str[0], '\0');
+    rc |= expect_eq_int("p25p1-tail-soft vc", state.p25vc, 9);
+    rc |= expect_eq_int("p25p1-tail-soft legacy errors", (int)state.debug_audio_errors, 5);
+    rc |= expect_eq_int("p25p1-tail-soft accepted", (int)state.p25_p1_accepted_frames, 0);
+    rc |= expect_eq_int("p25p1-tail-soft suppressed", (int)state.p25_p1_suppressed_tail_frames, 1);
+    rc |= expect_eq_int("p25p1-tail-soft excluded", (int)state.p25_p1_excluded_tail_corrections, 10);
+    return rc;
+}
+
+static int
+test_process_mbe_frame_p25p1_tail_erasure_requires_exact_clear_state(void) {
+    int rc = 0;
+    const dsd_p25_crypto_state crypto_states[] = {
+        DSD_P25_CRYPTO_DECRYPTABLE,
+        DSD_P25_CRYPTO_ENCRYPTED_PENDING,
+        DSD_P25_CRYPTO_BLOCKED,
+    };
+
+    for (size_t i = 0; i < sizeof(crypto_states) / sizeof(crypto_states[0]); i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        static mbe_parms cur;
+        static mbe_parms prev;
+        static mbe_parms prev_enhanced;
+        static mbe_parms cur2;
+        static mbe_parms prev2;
+        static mbe_parms prev_enhanced2;
+        char imbe_fr[8][23] = {{0}};
+
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.floating_point = 1;
+        init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+        state.synctype = DSD_SYNC_P25P1_POS;
+        state.p25_crypto_state[0] = crypto_states[i];
+        load_imbe7200_rows(k_p25p1_tail_erasure_rows, imbe_fr);
+
+        processMbeFrame(&opts, &state, imbe_fr, NULL, NULL);
+
+        rc |= expect_eq_int("p25p1-tail-nonclear errs2", state.errs2, 10);
+        rc |= expect_eq_int("p25p1-tail-nonclear vc", state.p25vc, 1);
+        rc |= expect_eq_int("p25p1-tail-nonclear history", state.p25_p1_voice_err_hist_pos, 1);
+        rc |= expect_eq_int("p25p1-tail-nonclear accepted", (int)state.p25_p1_accepted_frames, 1);
+        rc |= expect_eq_int("p25p1-tail-nonclear concealed", (int)state.p25_p1_concealed_frames, 1);
+        rc |= expect_eq_int("p25p1-tail-nonclear corrections", (int)state.p25_p1_accepted_corrections, 10);
+        rc |= expect_eq_int("p25p1-tail-nonclear suppressed", (int)state.p25_p1_suppressed_tail_frames, 0);
+        rc |= expect_eq_int("p25p1-tail-nonclear excluded", (int)state.p25_p1_excluded_tail_corrections, 0);
+    }
+    return rc;
+}
+
+static int
+test_process_mbe_frame_p25p1_normalized_metrics_and_nonmatches(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+
+    load_imbe7200_rows(k_p25p1_clean_silence_rows, imbe_fr);
+    processMbeFrame(&opts, &state, imbe_fr, NULL, NULL);
+    rc |= expect_eq_int("p25p1-metrics clean accepted", (int)state.p25_p1_accepted_frames, 1);
+    rc |= expect_eq_int("p25p1-metrics clean", (int)state.p25_p1_clean_frames, 1);
+    rc |= expect_eq_int("p25p1-metrics clean corrections", (int)state.p25_p1_accepted_corrections, 0);
+
+    load_imbe7200_rows(k_p25p1_corrected_speech_rows, imbe_fr);
+    processMbeFrame(&opts, &state, imbe_fr, NULL, NULL);
+    rc |= expect_eq_int("p25p1-metrics corrected accepted", (int)state.p25_p1_accepted_frames, 2);
+    rc |= expect_eq_int("p25p1-metrics corrected", (int)state.p25_p1_corrected_frames, 1);
+    rc |= expect_eq_int("p25p1-metrics corrected corrections", (int)state.p25_p1_accepted_corrections, 8);
+
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    load_imbe7200_rows(k_p25p1_tail_erasure_rows, imbe_fr);
+    processMbeFrame(&opts, &state, imbe_fr, NULL, NULL);
+    rc |= expect_eq_int("p25p1-metrics concealed accepted", (int)state.p25_p1_accepted_frames, 3);
+    rc |= expect_eq_int("p25p1-metrics concealed", (int)state.p25_p1_concealed_frames, 1);
+    rc |= expect_eq_int("p25p1-metrics accepted corrections", (int)state.p25_p1_accepted_corrections, 18);
+    rc |=
+        expect_eq_int("p25p1-metrics category sum",
+                      (int)(state.p25_p1_clean_frames + state.p25_p1_corrected_frames + state.p25_p1_concealed_frames),
+                      (int)state.p25_p1_accepted_frames);
+    rc |= expect_eq_int("p25p1-metrics vc", state.p25vc, 3);
+    rc |= expect_eq_int("p25p1-metrics history", state.p25_p1_voice_err_hist_pos, 3);
+    rc |= expect_eq_int("p25p1-metrics no suppression", (int)state.p25_p1_suppressed_tail_frames, 0);
+
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    load_imbe7200_rows(k_p25p1_dense_fc_rows, imbe_fr);
+    processMbeFrame(&opts, &state, imbe_fr, NULL, NULL);
+    rc |= expect_eq_int("p25p1-dense-fc errs2", state.errs2, 12);
+    rc |= expect_eq_int("p25p1-dense-fc accepted", (int)state.p25_p1_accepted_frames, 1);
+    rc |= expect_eq_int("p25p1-dense-fc not suppressed", (int)state.p25_p1_suppressed_tail_frames, 0);
+    rc |= expect_eq_int("p25p1-dense-fc not excluded", (int)state.p25_p1_excluded_tail_corrections, 0);
+    return rc;
 }
 
 static int
@@ -2156,6 +2471,10 @@ main(void) {
     rc |= test_imbe_changed_strips_c0_c4_context();
     rc |= test_changed_frame_restores_total_error_repeat_fallback();
     rc |= test_keyring_tracks_aes_segment_metadata();
+    rc |= test_process_mbe_frame_p25p1_suppresses_tail_erasure_hard();
+    rc |= test_process_mbe_frame_p25p1_suppresses_tail_erasure_soft();
+    rc |= test_process_mbe_frame_p25p1_tail_erasure_requires_exact_clear_state();
+    rc |= test_process_mbe_frame_p25p1_normalized_metrics_and_nonmatches();
     rc |= test_process_mbe_frame_soft_p25p1_copies_soft_imbe_audio();
     rc |= test_process_mbe_frame_soft_nxdn_copies_soft_ambe_audio();
     rc |= test_process_mbe_frame_p25p1_rc4_transforms_imbe_payload();

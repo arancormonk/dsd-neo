@@ -855,6 +855,15 @@ struct dsd_state {
     int p25_p1_voice_err_hist_pos;          // ring head
     unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
 
+    // P25 Phase 1 session-lifetime voice telemetry (not reset on retune/no-carrier)
+    uint64_t p25_p1_accepted_frames;
+    uint64_t p25_p1_clean_frames;
+    uint64_t p25_p1_corrected_frames;
+    uint64_t p25_p1_concealed_frames;
+    uint64_t p25_p1_accepted_corrections;
+    uint64_t p25_p1_suppressed_tail_frames;
+    uint64_t p25_p1_excluded_tail_corrections;
+
     /*
      * P25 status symbol classification.
      *

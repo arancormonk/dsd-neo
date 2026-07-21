@@ -695,6 +695,13 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->nid_corrections_total = 0;
     state->nid_failures_total = 0;
     state->nid_parity_overrides = 0;
+    state->p25_p1_accepted_frames = 0;
+    state->p25_p1_clean_frames = 0;
+    state->p25_p1_corrected_frames = 0;
+    state->p25_p1_concealed_frames = 0;
+    state->p25_p1_accepted_corrections = 0;
+    state->p25_p1_suppressed_tail_frames = 0;
+    state->p25_p1_excluded_tail_corrections = 0;
     state->debug_mode = 0;
 
     state->nxdn_last_ran = -1;
