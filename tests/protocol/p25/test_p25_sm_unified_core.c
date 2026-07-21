@@ -1101,6 +1101,72 @@ test_conventional_end_is_follower_noop(void) {
     return 0;
 }
 
+static int
+test_conventional_anonymous_activity_waits_for_identity(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    g_state.lasttg = 1000;
+    g_state.lastsrc = 123;
+    g_state.gi[0] = 0;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    dsd_call_snapshot call;
+
+    if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0x85)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional stale-identity fixture did not publish its first epoch\n");
+        return 1;
+    }
+    const uint64_t first_epoch = call.epoch;
+
+    p25_sm_emit_tdu(&g_opts, &g_state);
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
+        || call.epoch != first_epoch) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional TDU did not finish the stale-identity fixture\n");
+        return 1;
+    }
+    const uint64_t ended_revision = call.revision;
+
+    if (!p25_sm_emit_active(&g_opts, &g_state, 0) || dsd_call_state_get(&g_state, 0U, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ENDED || call.epoch != first_epoch || call.revision != ended_revision) {
+        DSD_FPRINTF(stderr, "FAIL: Anonymous conventional activity reopened the completed legacy identity\n");
+        return 1;
+    }
+
+    if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 2000, 0, 456, 1, 0x82)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.epoch != first_epoch + 1U || call.ota_target_id != 2000U || call.source_id != 456U) {
+        DSD_FPRINTF(stderr, "FAIL: Identified conventional follow-up did not open exactly one correct epoch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_conventional_anonymous_activity_preserves_service_options(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    g_state.lasttg = 1000;
+    g_state.lastsrc = 123;
+    g_state.gi[0] = 0;
+    g_state.dmr_so = 0x85;
+    g_state.p25_service_options_valid[0] = 1U;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    dsd_call_snapshot call;
+
+    if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0x85)
+        || !p25_sm_emit_active(&g_opts, &g_state, 0) || !p25_sm_emit_ptt(&g_opts, &g_state, 0)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != 1U
+        || call.service_options != 0x85U || !call.emergency || call.priority != 5U) {
+        DSD_FPRINTF(stderr, "FAIL: Anonymous conventional activity cleared service options or rotated the epoch\n");
+        return 1;
+    }
+    return 0;
+}
+
 // Test: END closes one transmission but retains the traffic allocation until
 // its inactivity hang expires.
 static int
@@ -2142,6 +2208,8 @@ main(void) {
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();
     fail += test_conventional_end_is_follower_noop();
+    fail += test_conventional_anonymous_activity_waits_for_identity();
+    fail += test_conventional_anonymous_activity_preserves_service_options();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
     fail += test_tdma_idle_ends_voice_with_newer_grant();

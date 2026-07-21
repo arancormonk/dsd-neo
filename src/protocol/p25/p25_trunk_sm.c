@@ -5214,38 +5214,127 @@ p25_sm_conventional_protocol(const dsd_state* state) {
     return DSD_SYNC_IS_P25P2(state->synctype) ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
 }
 
+static int
+p25_sm_conventional_active_voice(const dsd_state* state, int slot, dsd_call_snapshot* call) {
+    if (!state || !call || slot < 0 || slot > 1 || dsd_call_state_get(state, (uint8_t)slot, call) <= 0) {
+        return 0;
+    }
+    return call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25(call->protocol)
+           && (call->kind == DSD_CALL_KIND_GROUP_VOICE || call->kind == DSD_CALL_KIND_PRIVATE_VOICE);
+}
+
+static uint32_t
+p25_sm_conventional_snapshot_target(const dsd_call_snapshot* call) {
+    if (call->ota_target_id != 0U) {
+        return call->ota_target_id;
+    }
+    if (call->kind == DSD_CALL_KIND_GROUP_VOICE && call->group_id != 0U) {
+        return call->group_id;
+    }
+    if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE && call->private_id != 0U) {
+        return call->private_id;
+    }
+    return call->policy_target_id;
+}
+
+typedef struct {
+    int protocol;
+    int is_group;
+    uint32_t target;
+    uint32_t source;
+    uint32_t group_id;
+    uint32_t private_id;
+    long frequency_hz;
+} p25_sm_conventional_call_t;
+
+static long
+p25_sm_conventional_frequency(const dsd_state* state, int slot, long fallback_hz) {
+    long frequency_hz = state->p25_vc_freq[slot];
+    if (frequency_hz == 0) {
+        frequency_hz = state->trunk_vc_freq[slot];
+    }
+    return frequency_hz != 0 ? frequency_hz : fallback_hz;
+}
+
+static int
+p25_sm_conventional_identified_call(const dsd_state* state, const p25_sm_event_t* ev, int slot,
+                                    p25_sm_conventional_call_t* call) {
+    call->is_group = p25_sm_conventional_is_group(state, ev, slot);
+    call->target = p25_sm_conventional_target(state, ev, slot, call->is_group);
+    if (call->target == 0U) {
+        return 0;
+    }
+    call->source = p25_call_positive_id(p25_sm_conventional_source(state, ev, slot));
+    call->protocol = p25_sm_conventional_protocol(state);
+    call->frequency_hz = p25_sm_conventional_frequency(state, slot, 0);
+    if (call->is_group) {
+        call->group_id = call->target;
+    } else {
+        call->private_id = call->target;
+    }
+    return 1;
+}
+
+static int
+p25_sm_conventional_anonymous_call(const dsd_state* state, int slot, p25_sm_conventional_call_t* call) {
+    dsd_call_snapshot active_call;
+    if (!p25_sm_conventional_active_voice(state, slot, &active_call)) {
+        return 0;
+    }
+    call->target = p25_sm_conventional_snapshot_target(&active_call);
+    if (call->target == 0U) {
+        return 0;
+    }
+    call->is_group = active_call.kind == DSD_CALL_KIND_GROUP_VOICE;
+    call->source = active_call.source_id;
+    call->protocol = active_call.protocol;
+    call->frequency_hz = p25_sm_conventional_frequency(state, slot, active_call.frequency_hz);
+    if (call->is_group) {
+        call->group_id = call->target;
+    } else {
+        call->private_id = call->target;
+    }
+    return 1;
+}
+
+static int
+p25_sm_conventional_resolve_call(const dsd_state* state, const p25_sm_event_t* ev, int slot,
+                                 p25_sm_conventional_call_t* call) {
+    if (ev->identity_valid) {
+        return p25_sm_conventional_identified_call(state, ev, slot, call);
+    }
+    return p25_sm_conventional_anonymous_call(state, slot, call);
+}
+
 static void
 p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     if (!state || !ev) {
         return;
     }
     const int slot = p25_sm_conventional_slot(ev);
-    const int is_group = p25_sm_conventional_is_group(state, ev, slot);
-    const uint32_t target = p25_sm_conventional_target(state, ev, slot, is_group);
-    if (target == 0U) {
+    p25_sm_conventional_call_t call = {0};
+    if (!p25_sm_conventional_resolve_call(state, ev, slot, &call)) {
         return;
     }
-    const int source = p25_sm_conventional_source(state, ev, slot);
     const int service_options = p25_sm_conventional_service_options(state, ev, slot);
-    long frequency_hz = state->p25_vc_freq[slot];
-    if (frequency_hz == 0) {
-        frequency_hz = state->trunk_vc_freq[slot];
-    }
     dsd_call_observation observation = {
-        .protocol = p25_sm_conventional_protocol(state),
+        .protocol = call.protocol,
         .slot = (uint8_t)slot,
-        .kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
-        .ota_target_id = target,
-        .policy_target_id = target,
-        .source_id = p25_call_positive_id(source),
-        .group_id = is_group ? target : 0U,
-        .private_id = is_group ? 0U : target,
-        .frequency_hz = frequency_hz,
+        .kind = call.is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = call.target,
+        .policy_target_id = call.target,
+        .source_id = call.source,
+        .group_id = call.group_id,
+        .private_id = call.private_id,
+        .frequency_hz = call.frequency_hz,
         .service_options = (uint16_t)service_options,
         .emergency = (uint8_t)((service_options & 0x80) != 0),
         .priority = (uint8_t)(service_options & 0x07),
     };
-    const dsd_call_boundary boundary = ev->type == P25_SM_EV_PTT ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
+    dsd_call_boundary boundary = DSD_CALL_BOUNDARY_CONTINUE;
+    if (ev->identity_valid && ev->type == P25_SM_EV_PTT) {
+        boundary = DSD_CALL_BOUNDARY_BEGIN;
+    }
     (void)dsd_call_state_observe(state, &observation, boundary);
     p25_call_publish_crypto(opts, state, slot, 0.0);
     (void)dsd_call_state_update_media(state, (uint8_t)slot, 1, 0.0);
