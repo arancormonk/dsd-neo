@@ -243,6 +243,9 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
         snapshot->started_m = now_m;
         ext->events[observation->slot].ended_committed = 0U;
+        ext->events[observation->slot].notice_epoch = 0U;
+        ext->events[observation->slot].notice_target_id = 0U;
+        ext->events[observation->slot].notice_kind = DSD_CALL_KIND_UNKNOWN;
         ext->events[observation->slot].notice_handled = 0U;
     }
     snapshot->phase = DSD_CALL_PHASE_ACTIVE;

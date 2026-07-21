@@ -22,6 +22,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -212,6 +213,12 @@ capture_lcw_output(dsd_opts* opts, dsd_state* st, uint8_t lcw[96], char* out, si
     return 0;
 }
 
+static void
+reset_lcw_state(dsd_state* state) {
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+}
+
 /* ── Test cases ───────────────────────────────────────────────────────── */
 
 int
@@ -226,7 +233,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lastsrc = 0x13579B;
 
         uint8_t lcw[96];
@@ -250,7 +257,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lastsrc = 1234567;
 
         uint8_t lcw[96];
@@ -280,7 +287,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lastsrc = 102;
 
         uint8_t lcw[96];
@@ -314,7 +321,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lastsrc = 54321;
 
         uint8_t lcw[96];
@@ -347,7 +354,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lastsrc = 0;
 
         uint8_t lcw[96];
@@ -370,7 +377,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lastsrc = 111;
 
         uint8_t lcw[96];
@@ -393,7 +400,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lastsrc = 222;
 
         uint8_t lcw[96];
@@ -416,7 +423,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         opts.payload = 1;
 
         uint8_t lcw[96];
@@ -439,7 +446,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -461,7 +468,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -480,7 +487,7 @@ main(void) {
     /* Format 0x4A is an extended unit-to-unit voice channel user. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -499,7 +506,7 @@ main(void) {
     /* Format 0x50 updates affiliation only; it is not a voice identity. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lasttg = 0x1111;
         st.lastsrc = 0x222222;
         st.gi[0] = 1;
@@ -534,7 +541,7 @@ main(void) {
         const uint8_t algids[] = {0x81, 0x82, 0x83, 0x84, 0x85, 0x88, 0x89, 0x9F, 0xAA, 0xAF};
         for (size_t i = 0; i < sizeof(algids) / sizeof(algids[0]); i++) {
             DSD_MEMSET(&opts, 0, sizeof opts);
-            DSD_MEMSET(&st, 0, sizeof st);
+            reset_lcw_state(&st);
 
             uint8_t lcw[96];
             DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -558,7 +565,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -582,7 +589,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -610,7 +617,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.gi[0] = 1;
 
         uint8_t lcw[96];
@@ -633,7 +640,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -670,7 +677,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lasttg = 0xAAAA;
         st.lastsrc = 0xBBBBCC;
         char out[2048];
@@ -707,7 +714,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         g_nmea_harris_calls = 0;
         g_nmea_harris_src = 0;
         g_nmea_harris_prefix = 0;
@@ -749,7 +756,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         opts.trunk_is_tuned = 1;
         st.p25_vc_freq[0] = 851000000;
         st.p25_vc_freq[1] = 851000000;
@@ -780,7 +787,7 @@ main(void) {
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         g_apx_gps_calls = 0;
         g_apx_alias_header_calls = 0;
         g_apx_alias_block_calls = 0;
@@ -852,7 +859,7 @@ main(void) {
 
         for (size_t i = 0; i < sizeof(unknown_cases) / sizeof(unknown_cases[0]); i++) {
             DSD_MEMSET(&opts, 0, sizeof opts);
-            DSD_MEMSET(&st, 0, sizeof st);
+            reset_lcw_state(&st);
             st.lastsrc = 0x123456;
             st.lasttg = 0x3456;
             st.gi[0] = 1;
@@ -884,7 +891,7 @@ main(void) {
 
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_lcw_state(&st);
         st.lastsrc = 0x234567;
         st.lasttg = 0x4567;
         st.gi[0] = 1;
@@ -904,6 +911,7 @@ main(void) {
                           st.lastsrc == 0x234567 && st.lasttg == 0x4567 && st.gi[0] == 1 && st.p25_prot_valid == 0);
     }
 
+    dsd_state_ext_free_all(&st);
     return rc;
 }
 

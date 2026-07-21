@@ -11,6 +11,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +27,14 @@
 
 /* External entry point under test */
 void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
+
+static dsd_state st;
+
+static void
+reset_test_state(void) {
+    dsd_state_ext_free_all(&st);
+    DSD_MEMSET(&st, 0, sizeof st);
+}
 
 /* Alias decode helpers referenced by MAC VPDU handler */
 void
@@ -116,9 +125,8 @@ build_moto_que_deny_mac(unsigned long long MAC[24], int is_deny, int svc_type, i
 static int
 test_que_rsp_field_extraction_known_payload(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     unsigned long long MAC[24];
     // SVC=0x15, Reason=0x20, Addl=0x123456, Target=0xABCDEF (11259375)
@@ -150,9 +158,8 @@ test_que_rsp_field_extraction_known_payload(void) {
 static int
 test_deny_rsp_field_extraction_known_payload(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     unsigned long long MAC[24];
     // SVC=0x3F, Reason=0xFF, Addl=0xFEDCBA, Target=0x000001
@@ -184,7 +191,6 @@ test_deny_rsp_field_extraction_known_payload(void) {
 static int
 test_que_reason_code_lookup_all_known(void) {
     static dsd_opts opts;
-    static dsd_state st;
     int rc = 0;
 
     struct {
@@ -207,7 +213,7 @@ test_que_reason_code_lookup_all_known(void) {
 
     for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_test_state();
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 0, 0x01, cases[i].code, 0, 12345);
@@ -240,7 +246,6 @@ test_que_reason_code_lookup_all_known(void) {
 static int
 test_deny_reason_code_lookup_all_known(void) {
     static dsd_opts opts;
-    static dsd_state st;
     int rc = 0;
 
     struct {
@@ -278,7 +283,7 @@ test_deny_reason_code_lookup_all_known(void) {
 
     for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
         DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&st, 0, sizeof st);
+        reset_test_state();
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 1, 0x02, cases[i].code, 0, 54321);
@@ -311,9 +316,8 @@ test_deny_reason_code_lookup_all_known(void) {
 static int
 test_que_rsp_user_reason_range(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0xAB, 0, 999);
     process_MAC_VPDU(&opts, &st, 0, MAC);
@@ -344,9 +348,8 @@ test_que_rsp_user_reason_range(void) {
 static int
 test_deny_rsp_user_reason_range(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x99, 0, 888);
     process_MAC_VPDU(&opts, &st, 0, MAC);
@@ -377,9 +380,8 @@ test_deny_rsp_user_reason_range(void) {
 static int
 test_sm_queued_releases_when_tuned(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     /* Force SM into TUNED state */
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
@@ -412,9 +414,8 @@ test_sm_queued_releases_when_tuned(void) {
 static int
 test_sm_deny_releases_when_tuned(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
@@ -445,9 +446,8 @@ test_sm_deny_releases_when_tuned(void) {
 static int
 test_sm_queued_noop_when_on_cc(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
@@ -478,9 +478,8 @@ test_sm_queued_noop_when_on_cc(void) {
 static int
 test_sm_deny_noop_when_on_cc(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
@@ -510,9 +509,8 @@ test_sm_deny_noop_when_on_cc(void) {
 static int
 test_sm_queued_counter_increments(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
@@ -540,9 +538,8 @@ test_sm_queued_counter_increments(void) {
 static int
 test_sm_deny_counter_increments(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
@@ -570,9 +567,8 @@ test_sm_deny_counter_increments(void) {
 static int
 test_active_channel_que_format(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0x40, 0, 67890);
@@ -597,9 +593,8 @@ test_active_channel_que_format(void) {
 static int
 test_active_channel_deny_format(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 12345);
@@ -624,12 +619,11 @@ test_active_channel_deny_format(void) {
 static int
 test_additional_info_indicator_controls_display(void) {
     static dsd_opts opts;
-    static dsd_state st;
     int rc = 0;
 
     unsigned long long MAC[24];
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
     build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 0);
     process_MAC_VPDU(&opts, &st, 0, MAC);
     if (strstr(st.active_channel[0], "Info:") != NULL) {
@@ -639,7 +633,7 @@ test_additional_info_indicator_controls_display(void) {
     }
 
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
     build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 1);
     process_MAC_VPDU(&opts, &st, 0, MAC);
     if (strstr(st.active_channel[0], "Info: 123456") == NULL) {
@@ -656,9 +650,8 @@ test_additional_info_indicator_controls_display(void) {
 static int
 test_motorola_queued_response_field_extraction(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     unsigned long long MAC[24];
     build_moto_que_deny_mac(MAC, 0, 0x15, 0x42, 0x123456, 0xABCDEF, 1);
@@ -680,9 +673,8 @@ test_motorola_queued_response_field_extraction(void) {
 static int
 test_motorola_deny_response_field_extraction(void) {
     static dsd_opts opts;
-    static dsd_state st;
     DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&st, 0, sizeof st);
+    reset_test_state();
 
     unsigned long long MAC[24];
     build_moto_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 0x000123, 0);
@@ -731,6 +723,7 @@ main(void) {
     if (rc == 0) {
         DSD_FPRINTF(stderr, "All P25 queued/deny response tests passed.\n");
     }
+    dsd_state_ext_free_all(&st);
     return rc;
 }
 

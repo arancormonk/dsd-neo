@@ -9,6 +9,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
@@ -519,6 +520,7 @@ test_decode_guards_and_unknown_dispatch(void) {
     rc |= expect_int("unknown-crc-recorded", state->NxdnElementsContent.VCallCrcIsGood, 0);
     rc |= expect_int("unknown-keeps-data-state", state->data_header_valid[0], 1);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -565,6 +567,7 @@ test_sacch_full_decode_crc_gate_and_reset(void) {
     rc |= expect_int("sacch-good-crc-reset", all_sacch_segments_are(1U, state), 1);
     rc |= expect_int("sacch-recorded-type", state->NxdnElementsContent.MessageType, 0x17);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -628,6 +631,7 @@ test_disc_trunk_return_clears_call_state(void) {
     rc |= expect_int("disc-sacch-reset", all_sacch_segments_are(1U, state), 1);
     rc |= expect_int("disc-active-channels-reset", active_channels_are_zero(state), 1);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1480,6 +1484,7 @@ test_assignment_group_grant_anchors_tunes_and_loads_scrambler(void) {
     rc |= expect_int("assignment-group-sync-reset", state->lastsynctype, DSD_SYNC_NONE);
     rc |= expect_int("assignment-group-sacch-reset", all_sacch_segments_are(1U, state), 1);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1541,6 +1546,7 @@ test_assignment_data_gate_and_duplicate_release(void) {
     rc |= expect_string("assignment-dup-call-string", state->call_string[0], "Group Call");
     rc |= expect_contains("assignment-dup-active", state->active_channel[0], "TG: 1282 SRC: 1025");
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;

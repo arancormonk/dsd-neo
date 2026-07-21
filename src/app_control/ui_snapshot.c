@@ -173,9 +173,11 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
     // Clone canonical calls, recent activity, and history under the core transaction lock.
     if (state->event_history_s != NULL) {
         const int force_copy = !g_have || !g_pub_eh_present || g_pub_eh_source != state->event_history_s;
-        (void)dsd_event_state_copy_snapshot(&g_pub, state, g_pub_eh);
+        uint8_t copied[2] = {0U, 0U};
+        (void)dsd_event_state_copy_snapshot_incremental(&g_pub, state, g_pub_eh, g_pub_eh_source_revision, force_copy,
+                                                        copied);
         for (size_t slot = 0; slot < 2U; slot++) {
-            if (force_copy || g_pub_eh_source_revision[slot] != g_pub_eh[slot].revision) {
+            if (copied[slot]) {
                 g_pub_eh_source_revision[slot] = g_pub_eh[slot].revision;
                 g_pub_eh_seq[slot]++;
                 UI_SNAPSHOT_COUNT_SOURCE_COPY(slot);

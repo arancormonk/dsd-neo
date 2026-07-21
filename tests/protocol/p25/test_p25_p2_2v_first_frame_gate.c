@@ -13,6 +13,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
@@ -316,6 +317,7 @@ expect_eq(const char* tag, int got, int want) {
 
 static void
 reset_state(dsd_opts* opts, dsd_state* st) {
+    dsd_state_ext_free_all(st);
     DSD_MEMSET(opts, 0, sizeof *opts);
     DSD_MEMSET(st, 0, sizeof *st);
     // Ensure deterministic behavior
@@ -883,5 +885,6 @@ main(void) {
     rc |= expect_eq("slot1 clear algid overrides svc: mbe calls", g_mbe_calls, 2);
     rc |= expect_eq("slot1 clear algid overrides svc: gate open", st.p25_p2_audio_allowed[1], 1);
 
+    dsd_state_ext_free_all(&st);
     return rc;
 }

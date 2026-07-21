@@ -934,6 +934,20 @@ test_canonical_p25_slot_and_recent_activity(void) {
     reset_printw_capture();
     ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
     assert(g_printw_capture[0] == '\0');
+
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->dmrburstL = 21;
+    state->lasttg = 4321;
+    state->lastsrc = 8765;
+    slot = ui_build_slot_view(state, 0);
+    assert(slot.canonical_p25 == 0);
+    assert(slot.lasttg == 4321);
+    assert(slot.lastsrc == 8765);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
+    assert_capture_contains("TGT: [    4321]");
+    assert_capture_contains("SRC: [    8765]");
     dsd_state_ext_free_all(state);
     free(state);
 }

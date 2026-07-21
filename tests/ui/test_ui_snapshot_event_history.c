@@ -20,13 +20,27 @@
 #include "dsd-neo/core/state_fwd.h"
 
 int
-dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]) {
+dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2],
+                                          const uint64_t source_revisions[2], int force_copy, uint8_t copied[2]) {
     (void)dsd_call_state_copy_to_state(dst, src);
+    copied[0] = 0U;
+    copied[1] = 0U;
     if (!src || !src->event_history_s) {
         return 0;
     }
-    DSD_MEMCPY(event_history, src->event_history_s, sizeof(Event_History_I) * 2U);
+    for (size_t slot = 0; slot < 2U; slot++) {
+        if (force_copy || source_revisions == NULL || source_revisions[slot] != src->event_history_s[slot].revision) {
+            DSD_MEMCPY(&event_history[slot], &src->event_history_s[slot], sizeof(Event_History_I));
+            copied[slot] = 1U;
+        }
+    }
     return 1;
+}
+
+int
+dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]) {
+    uint8_t copied[2];
+    return dsd_event_state_copy_snapshot_incremental(dst, src, event_history, NULL, 1, copied);
 }
 
 static void

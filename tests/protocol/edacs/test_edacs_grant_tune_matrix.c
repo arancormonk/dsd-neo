@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -466,6 +467,7 @@ edacs_extended_all_call_msg1(int lcn, int is_digital, int is_update) {
 
 static void
 edacs_setup_fixture(const edacs_grant_case* test_case) {
+    dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
 
@@ -491,6 +493,7 @@ edacs_setup_fixture(const edacs_grant_case* test_case) {
 
 static void
 edacs_setup_state_fixture(int ea_mode) {
+    dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
 
@@ -624,6 +627,7 @@ edacs_run_retry_after_reject_case(const edacs_grant_case* test_case, dsd_trunk_t
 
 static void
 edacs_setup_eot_fixture(void) {
+    dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
 
@@ -1402,6 +1406,7 @@ main(void) {
     if (rc == 0) {
         printf("EDACS_GRANT_TUNE_MATRIX: OK\n");
     }
+    dsd_state_ext_free_all(&g_state);
     return rc;
 }
 

@@ -6,7 +6,9 @@
 /* Focused tests for P25 trunk SM timing, carrier reuse, and CC-hunt behaviors. */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -386,6 +388,28 @@ main(void) {
     dsd_tg_policy_lookup lockout_lookup;
     assert(dsd_tg_policy_lookup_id(&s4, 1234U, &lockout_lookup) == 0);
     assert(lockout_lookup.match == DSD_TG_POLICY_MATCH_NONE);
+
+    dsd_call_observation old_call = {0};
+    old_call.protocol = DSD_SYNC_P25P1_POS;
+    old_call.slot = 0U;
+    old_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    old_call.ota_target_id = 2222U;
+    old_call.policy_target_id = 2222U;
+    old_call.group_id = 2222U;
+    old_call.source_id = 3333U;
+    old_call.observed_m = 1.0;
+    assert(dsd_call_state_observe(&s4, &old_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 2222, 0x40, 1);
+    assert(dsd_call_state_end(&s4, 0U, 2.0) == 1);
+    dsd_event_sync_slot(&o4, &s4, 0U);
+    s4.lastsynctype = DSD_SYNC_P25P1_POS;
+    s4.lasttg = 2222;
+    s4.lastsrc = 3333;
+    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 5678, 0x40, 1);
+    assert(s4_history[0].Event_History_Items[1].target_id == 5678U);
+    assert(s4_history[0].Event_History_Items[1].source_id == 0U);
+    assert(strstr(s4_history[0].Event_History_Items[1].internal_str, "Target: 5678") != NULL);
+    dsd_state_ext_free_all(&s4);
 
     // 4) NAC mismatch uses the latched expected CC NAC, not mutable state->p2_cc.
     static dsd_opts o5;

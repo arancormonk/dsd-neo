@@ -5399,30 +5399,51 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
  * Encryption Lockout Helper
  * ============================================================================ */
 
+static uint32_t
+p25_lockout_call_target(const dsd_call_snapshot* call) {
+    if (call->ota_target_id != 0U) {
+        return call->ota_target_id;
+    }
+    if (call->policy_target_id != 0U) {
+        return call->policy_target_id;
+    }
+    return call->kind == DSD_CALL_KIND_GROUP_VOICE ? call->group_id : call->private_id;
+}
+
+static uint64_t
+p25_lockout_next_epoch(uint64_t epoch) {
+    epoch++;
+    return epoch == 0U ? 1U : epoch;
+}
+
 static void
 p25_lockout_snapshot_from_legacy(const dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
-                                 dsd_call_snapshot* call) {
+                                 uint64_t epoch, dsd_call_snapshot* call) {
     int source;
     uint8_t algid;
     uint16_t kid;
     uint64_t mi;
+    int legacy_target;
     int fallback_protocol;
     if (slot == 0U) {
         source = state->lastsrc;
         algid = state->payload_algid;
         kid = state->payload_keyid;
         mi = state->payload_miP;
+        legacy_target = state->lasttg;
         fallback_protocol = DSD_SYNC_P25P1_POS;
     } else {
         source = state->lastsrcR;
         algid = state->payload_algidR;
         kid = state->payload_keyidR;
         mi = state->payload_miN;
+        legacy_target = state->lasttgR;
         fallback_protocol = DSD_SYNC_P25P2_POS;
     }
+    const int legacy_matches = legacy_target == target && state->gi[slot] == (is_group ? 0 : 1);
 
     DSD_MEMSET(call, 0, sizeof(*call));
-    call->epoch = 1U;
+    call->epoch = epoch;
     call->phase = DSD_CALL_PHASE_ACTIVE;
     call->protocol = DSD_SYNC_IS_P25(state->lastsynctype) ? state->lastsynctype : fallback_protocol;
     call->slot = slot;
@@ -5431,21 +5452,27 @@ p25_lockout_snapshot_from_legacy(const dsd_state* state, uint8_t slot, int targe
     call->policy_target_id = (uint32_t)target;
     call->group_id = is_group ? (uint32_t)target : 0U;
     call->private_id = is_group ? 0U : (uint32_t)target;
-    call->source_id = p25_call_positive_id(source);
+    call->source_id = legacy_matches ? p25_call_positive_id(source) : 0U;
     call->service_options = (uint16_t)svc_bits;
     call->crypto = DSD_CALL_CRYPTO_ENCRYPTED;
-    call->algid = algid;
-    call->kid = kid;
-    call->mi = mi;
+    call->algid = legacy_matches ? algid : 0U;
+    call->kid = legacy_matches ? kid : 0U;
+    call->mi = legacy_matches ? mi : 0U;
 }
 
 static void
 p25_lockout_get_call_context(const dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
                              dsd_call_snapshot* call) {
+    uint64_t epoch = 1U;
     if (dsd_call_state_get(state, slot, call) > 0) {
-        return;
+        const dsd_call_kind kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
+        if (call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25(call->protocol) && call->kind == kind
+            && p25_lockout_call_target(call) == (uint32_t)target) {
+            return;
+        }
+        epoch = p25_lockout_next_epoch(call->epoch);
     }
-    p25_lockout_snapshot_from_legacy(state, slot, target, svc_bits, is_group, call);
+    p25_lockout_snapshot_from_legacy(state, slot, target, svc_bits, is_group, epoch, call);
 }
 
 void

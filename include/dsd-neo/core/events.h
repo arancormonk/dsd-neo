@@ -88,6 +88,9 @@ void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
 int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                const char* detail);
 int dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[2]);
+/* Copy telemetry atomically, copying history slots only when forced or when their source revision changed. */
+int dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2],
+                                              const uint64_t source_revisions[2], int force_copy, uint8_t copied[2]);
 int dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]);
 void watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot);
 void watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string,

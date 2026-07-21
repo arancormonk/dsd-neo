@@ -2526,7 +2526,8 @@ ui_fill_slot_legacy(const dsd_state* state, int slot_idx, ui_slot_view* slot) {
 
 static int
 ui_call_snapshot_has_p25_context(const dsd_state* state, const dsd_call_snapshot* call) {
-    return DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype) || DSD_SYNC_IS_P25(call->protocol);
+    return DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype)
+           || (call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25(call->protocol));
 }
 
 static uint32_t

@@ -2135,6 +2135,16 @@ no_carrier_reset_ysf_and_dstar_strings(dsd_state* state) {
 }
 
 static void
+no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state) {
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        const uint8_t call_slot = (uint8_t)slot;
+        if (dsd_call_state_end(state, call_slot, 0.0) > 0) {
+            dsd_event_sync_slot(opts, state, call_slot);
+        }
+    }
+}
+
+static void
 no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
@@ -2203,6 +2213,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 
     no_carrier_step_scanner_mode_if_needed(opts, state, now);
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
+    no_carrier_finalize_canonical_calls(opts, state);
     no_carrier_clear_stale_p25_return_hints_after_generic_activity(opts, state);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);

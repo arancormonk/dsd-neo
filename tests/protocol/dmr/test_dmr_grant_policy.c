@@ -134,6 +134,7 @@ extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint3
 
 static void
 init_env(dsd_opts* opts, dsd_state* state) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
@@ -1022,6 +1023,10 @@ main(void) {
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }
+    dsd_state_ext_free_all(&cap_st);
+    dsd_state_ext_free_all(&con_st);
+    dsd_state_ext_free_all(&pf0_st);
+    dsd_state_ext_free_all(&xpt_st);
     free_test_state(st);
     free(opts);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

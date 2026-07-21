@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
@@ -300,6 +301,7 @@ build_scch(uint8_t* message_bits, const nxdn_case* test_case) {
 
 static void
 nxdn_setup_fixture(const nxdn_case* test_case) {
+    dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
 
@@ -609,6 +611,7 @@ main(void) {
     if (rc == 0) {
         printf("NXDN_GRANT_TUNE_MATRIX: OK\n");
     }
+    dsd_state_ext_free_all(&g_state);
     return rc;
 }
 
