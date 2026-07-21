@@ -59,6 +59,9 @@ void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
 int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                const char* detail);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+int dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                             const dsd_call_snapshot* call, const char* detail);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 void LFSRP(dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void LFSR128(dsd_state* state);
@@ -154,6 +157,17 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 int
 dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                            const char* detail) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)call;
+    (void)detail;
+    return 0;
+}
+
+int
+dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                         const char* detail) {
     (void)opts;
     (void)state;
     (void)slot;

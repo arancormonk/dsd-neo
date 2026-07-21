@@ -206,6 +206,18 @@ dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     return 0;
 }
 
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                         const char* detail) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)call;
+    (void)detail;
+    return 0;
+}
+
 void
 processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]) {
     (void)opts;

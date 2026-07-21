@@ -87,6 +87,9 @@ void watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot
 void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
 int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                const char* detail);
+/** Commit an informational call notice without call-end alerts, WAV rotation, or slot-identity reset. */
+int dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                             const dsd_call_snapshot* call, const char* detail);
 int dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[2]);
 /* Copy telemetry atomically, copying history slots only when forced or when their source revision changed. */
 int dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2],

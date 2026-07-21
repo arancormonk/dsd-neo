@@ -346,18 +346,30 @@ watchdog_event_maybe_beep_call_end(dsd_opts* opts, dsd_state* state, uint8_t slo
 }
 
 static void
-watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
-                                        uint8_t swrite, int last_event_is_data, int reset_slot_identity) {
+watchdog_event_handle_source_transition_ex(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct,
+                                           uint8_t slot, uint8_t swrite, int last_event_is_data,
+                                           int reset_slot_identity, int call_end_side_effects) {
     if (opts->event_out_file[0] != 0) {
         write_event_to_log_file(opts, state, slot, swrite, event_struct->Event_History_Items[0].event_string);
     }
 
     event_struct->Event_History_Items[0].write = 1;
-    watchdog_event_rotate_wav_if_needed(opts, event_struct, slot);
+    if (call_end_side_effects) {
+        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot);
+    }
     push_event_history(event_struct);
     init_event_history(event_struct, 0, 1);
     watchdog_event_reset_post_push(state, slot, reset_slot_identity);
-    watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
+    if (call_end_side_effects) {
+        watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
+    }
+}
+
+static void
+watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
+                                        uint8_t swrite, int last_event_is_data, int reset_slot_identity) {
+    watchdog_event_handle_source_transition_ex(opts, state, event_struct, slot, swrite, last_event_is_data,
+                                               reset_slot_identity, 1);
 }
 
 static uint32_t
@@ -1411,9 +1423,9 @@ watchdog_event_notice_already_committed(const dsd_call_state_ext* ext, const dsd
     return ext == NULL && watchdog_event_notice_matches_history(event_struct, call, detail);
 }
 
-int
-dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
-                           const char* detail) {
+static int
+dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                const char* detail, int finalize_call) {
     if (!opts || !state || !state->event_history_s || !call || call->epoch == 0U || !detail || slot > 1U) {
         return -1;
     }
@@ -1435,14 +1447,26 @@ dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
                  sizeof(event_struct->Event_History_Items[0].internal_str), "%s", detail);
     dsd_event_history_mark_dirty(event_struct);
-    watchdog_event_handle_source_transition(opts, state, event_struct, slot, watchdog_event_should_write_slot(state),
-                                            call->kind == DSD_CALL_KIND_DATA, 1);
+    watchdog_event_handle_source_transition_ex(opts, state, event_struct, slot, watchdog_event_should_write_slot(state),
+                                               call->kind == DSD_CALL_KIND_DATA, finalize_call, finalize_call);
     watchdog_event_notice_mark_handled(lifecycle, call);
     if (canonical_lifecycle != NULL && call->phase == DSD_CALL_PHASE_ENDED) {
         canonical_lifecycle->ended_committed = 1U;
     }
     watchdog_event_unlock_if_present(ext);
     return 1;
+}
+
+int
+dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                           const char* detail) {
+    return dsd_event_emit_call_notice_impl(opts, state, slot, call, detail, 1);
+}
+
+int
+dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                         const char* detail) {
+    return dsd_event_emit_call_notice_impl(opts, state, slot, call, detail, 0);
 }
 
 int
@@ -1491,6 +1515,17 @@ dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, 
     copied[0] = 0U;
     copied[1] = 0U;
     const dsd_call_state_ext* src_ext = dsd_call_state_ext_peek(src);
+    if (dst == src) {
+        if (src_ext) {
+            dsd_call_state_ext_lock(src_ext);
+        }
+        const int copied_history =
+            dsd_event_history_copy_incremental_locked(src, event_history, source_revisions, force_copy, copied);
+        if (src_ext) {
+            dsd_call_state_ext_unlock(src_ext);
+        }
+        return copied_history;
+    }
     dsd_call_state_ext* dst_ext = NULL;
     if (src_ext) {
         dst_ext = dsd_call_state_ext_get(dst, 1);

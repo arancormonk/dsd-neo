@@ -3331,11 +3331,10 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
 
     p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, now_m);
 
-    p25_call_end_slot(opts, state, s, now_m);
-
     p25_voice_end_record(&ctx->slots[s], is_explicit_end, arm_stale_regrant_guard, now_m, ended_tg, ended_src);
     p25_voice_end_clear_policy_route(ctx, state, s, preserve_recent_idle_grant);
     p25_voice_close_slot_media_for_end(ctx, opts, state, s, preserve_recent_idle_grant);
+    p25_call_end_slot(opts, state, s, now_m);
     if (state && !ctx->vc_is_tdma && arm_stale_regrant_guard) {
         state->p25_p1_identity_pending = 1;
     }
@@ -5557,7 +5556,7 @@ p25_lockout_snapshot_from_legacy(const dsd_state* state, uint8_t slot, int targe
     call->mi = legacy_matches ? mi : 0U;
 }
 
-static void
+static int
 p25_lockout_get_call_context(const dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
                              dsd_call_snapshot* call) {
     uint64_t epoch = 1U;
@@ -5565,11 +5564,12 @@ p25_lockout_get_call_context(const dsd_state* state, uint8_t slot, int target, i
         const dsd_call_kind kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
         if (call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25(call->protocol) && call->kind == kind
             && p25_lockout_call_target(call) == (uint32_t)target) {
-            return;
+            return 1;
         }
         epoch = p25_lockout_next_epoch(call->epoch);
     }
     p25_lockout_snapshot_from_legacy(state, slot, target, svc_bits, is_group, epoch, call);
+    return 0;
 }
 
 void
@@ -5584,10 +5584,14 @@ p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     slot &= 1U;
     if (state->event_history_s) {
         dsd_call_snapshot call;
-        p25_lockout_get_call_context(state, slot, target, svc_bits, is_group, &call);
+        const int finalizes_call = p25_lockout_get_call_context(state, slot, target, svc_bits, is_group, &call);
         char detail[160];
         DSD_SNPRINTF(detail, sizeof(detail), "Target: %d; has been locked out; Encryption Lock Out Enabled.", target);
-        (void)dsd_event_emit_call_notice(opts, state, slot, &call, detail);
+        if (finalizes_call) {
+            (void)dsd_event_emit_call_notice(opts, state, slot, &call, detail);
+        } else {
+            (void)dsd_event_emit_call_notice_nonfinalizing(opts, state, slot, &call, detail);
+        }
     } else if (opts->verbose > 1) {
         p25_sm_log_status(opts, state, "enc-lo-skip-nohist");
     }

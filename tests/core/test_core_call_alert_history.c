@@ -247,6 +247,76 @@ test_watchdog_current_marks_only_semantic_changes(void) {
 }
 
 static int
+test_nonfinalizing_call_notice_has_no_call_end_side_effects(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+    opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+    state.gi[0] = 1;
+
+    const dsd_call_snapshot call = {
+        .epoch = 1U,
+        .phase = DSD_CALL_PHASE_ACTIVE,
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1234U,
+        .policy_target_id = 1234U,
+        .group_id = 1234U,
+    };
+    const char* detail = "Target: 1234; has been locked out; Encryption Lock Out Enabled.";
+
+    int rc = expect_int("nonfinalizing notice committed",
+                        dsd_event_emit_call_notice_nonfinalizing(&opts, &state, 0U, &call, detail), 1);
+    rc |= expect_has_substr("nonfinalizing notice stored", event_history[0].Event_History_Items[1].internal_str,
+                            "Target: 1234");
+    rc |= expect_int("nonfinalizing notice does not beep", g_beeper_count, 0);
+    rc |= expect_int("nonfinalizing notice does not close WAV", g_close_wav_count, 0);
+    rc |= expect_int("nonfinalizing notice does not open WAV", g_open_wav_count, 0);
+    rc |= expect_int("nonfinalizing notice preserves slot identity", state.gi[0], 1);
+    return rc;
+}
+
+static int
+test_event_state_snapshot_copy_accepts_aliased_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static Event_History_I copied_history[2];
+    reset_fixture(&opts, &state, event_history);
+    DSD_MEMSET(copied_history, 0, sizeof(copied_history));
+
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 2201U,
+        .policy_target_id = 2201U,
+        .source_id = 3301U,
+        .group_id = 2201U,
+        .observed_m = 1.0,
+    };
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_int("aliased event-state snapshot copy succeeds",
+                        dsd_event_state_copy_snapshot(&state, &state, copied_history), 1);
+    rc |= expect_int("aliased event-state snapshot copies target",
+                     (int)copied_history[0].Event_History_Items[0].target_id, 2201);
+    rc |= expect_u64("aliased event-state snapshot copies revision", copied_history[0].revision,
+                     event_history[0].revision);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) == 1);
+    rc |= expect_int("aliased event-state snapshot preserves canonical target", (int)call.ota_target_id, 2201);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_end_only_data_call_does_not_emit_voice_end_alert(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1131,6 +1201,8 @@ main(void) {
 
     rc |= test_event_history_revision_primitives();
     rc |= test_watchdog_current_marks_only_semantic_changes();
+    rc |= test_nonfinalizing_call_notice_has_no_call_end_side_effects();
+    rc |= test_event_state_snapshot_copy_accepts_aliased_state();
     rc |= test_end_only_data_call_does_not_emit_voice_end_alert();
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_data_call_emits_frame_log_record();
