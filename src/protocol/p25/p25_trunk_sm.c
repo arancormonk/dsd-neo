@@ -5326,7 +5326,12 @@ p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg
         p25_sm_init_ctx(ctx, opts, state);
     }
     p25_sm_event_t ev = p25_sm_ev_facch_end_call_at(slot, tg, src, observed_m);
-    return handle_facch_voice_end(ctx, opts, state, &ev);
+    const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
+    const int result = handle_facch_voice_end(ctx, opts, state, &ev);
+    if (!trunk_assignment_active && result != P25_SM_END_IGNORED) {
+        p25_call_end_slot(opts, state, slot, observed_m);
+    }
+    return result;
 }
 
 void

@@ -8,6 +8,7 @@
  * 4-state model: IDLE, ON_CC, TUNED, HUNTING
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -1065,13 +1066,32 @@ test_conventional_end_is_follower_noop(void) {
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     p25_sm_init_ctx(ctx, &g_opts, &g_state);
     const double now_m = dsd_time_now_monotonic_s();
+    dsd_call_snapshot call;
 
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0) || dsd_call_state_get(&g_state, 0U, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional SACCH fixture did not publish an active canonical call\n");
+        return 1;
+    }
     if (!p25_sm_emit_end_call_at(&g_opts, &g_state, 0, 1000, 123, now_m)) {
         DSD_FPRINTF(stderr, "FAIL: Conventional SACCH END was rejected by the trunk follower\n");
         return 1;
     }
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional SACCH END did not finalize the canonical call\n");
+        return 1;
+    }
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 1, 2000, 0, 456, 1, 0) || dsd_call_state_get(&g_state, 1U, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional FACCH fixture did not publish an active canonical call\n");
+        return 1;
+    }
     if (p25_sm_emit_facch_end_call_at(&g_opts, &g_state, 1, 2000, 456, now_m) != P25_SM_END_APPLIED) {
         DSD_FPRINTF(stderr, "FAIL: Conventional FACCH END was rejected by the trunk follower\n");
+        return 1;
+    }
+    if (dsd_call_state_get(&g_state, 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional FACCH END did not finalize the canonical call\n");
         return 1;
     }
     if (ctx->state != P25_SM_IDLE || g_return_requests != 0) {

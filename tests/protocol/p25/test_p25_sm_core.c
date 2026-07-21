@@ -384,7 +384,10 @@ main(void) {
     }
     assert(enc_cache_seen == 1);
     // re-emit should not create a runtime policy block
+    const uint64_t first_lockout_revision = s4_history[0].revision;
     p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1);
+    assert(s4_history[0].revision == first_lockout_revision);
+    assert(s4_history[0].Event_History_Items[2].internal_str[0] == '\0');
     dsd_tg_policy_lookup lockout_lookup;
     assert(dsd_tg_policy_lookup_id(&s4, 1234U, &lockout_lookup) == 0);
     assert(lockout_lookup.match == DSD_TG_POLICY_MATCH_NONE);

@@ -969,7 +969,7 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
     observation.slot = 0U;
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.ota_target_id = 100U;
-    observation.policy_target_id = 100U;
+    observation.policy_target_id = 900U;
     observation.group_id = 100U;
     observation.source_id = 200U;
     observation.frequency_hz = 851012500L;
@@ -1049,6 +1049,41 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
 }
 
 static int
+test_active_canonical_call_does_not_suppress_explicit_data(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P1_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 100U;
+    observation.policy_target_id = 100U;
+    observation.group_id = 100U;
+    observation.source_id = 200U;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    watchdog_event_datacall(&opts, &state, 700U, 800U, "P25 packet data;", 0U);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* current = &event_history[0].Event_History_Items[0];
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    int rc = 0;
+    rc |= expect_int("active call is restored after explicit data", (int)current->target_id, 100);
+    rc |= expect_int("active-call data target is preserved", (int)committed->target_id, 800);
+    rc |= expect_int("active-call data source is preserved", (int)committed->source_id, 700);
+    rc |= expect_int("active-call data subtype is preserved", committed->subtype, INT8_MAX);
+    rc |= expect_has_substr("active-call data detail is preserved", committed->event_string, "P25 packet data");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_ended_canonical_call_does_not_suppress_later_data(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1113,6 +1148,7 @@ main(void) {
     rc |= test_edacs_ea_mode_current_event_and_unknown_lid();
     rc |= test_p25_and_dmr_current_append_security_flags();
     rc |= test_canonical_call_lifecycle_is_epoch_driven();
+    rc |= test_active_canonical_call_does_not_suppress_explicit_data();
     rc |= test_ended_canonical_call_does_not_suppress_later_data();
 
     if (rc == 0) {
