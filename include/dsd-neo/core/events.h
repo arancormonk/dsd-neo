@@ -13,6 +13,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_EVENTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_EVENTS_H_H
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -83,6 +84,11 @@ dsd_event_history_item_set_message(Event_History* item, dsd_event_severity sever
 void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string);
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 void watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
+void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
+int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                               const char* detail);
+int dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[2]);
+int dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]);
 void watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot);
 void watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string,
                              uint8_t slot);

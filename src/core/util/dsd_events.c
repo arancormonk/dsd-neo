@@ -12,6 +12,7 @@
 *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -27,8 +28,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "call_state_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 
@@ -355,32 +358,137 @@ watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_
     watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
 }
 
-// run once per loop to check for and push and update event history
-void
-watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    Event_History_I* event_struct = &state->event_history_s[slot];
-    const Event_History* last_event = &event_struct->Event_History_Items[0];
-    uint8_t swrite = watchdog_event_should_write_slot(state);
-    uint32_t last_source_id = last_event->source_id;
-    int last_event_forces_history = watchdog_event_is_explicit_data_event(last_event);
-    int last_event_is_data = watchdog_event_is_data_event(last_event);
-    int last_event_has_content = watchdog_event_item_has_content(last_event);
-    uint32_t source_id = watchdog_event_source_id(opts, state, slot);
+static uint32_t
+watchdog_event_target_id(const dsd_state* state, uint8_t slot) {
+    if (!state) {
+        return 0U;
+    }
+    if (slot == 0U) {
+        if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+            return state->nxdn_last_tg;
+        }
+        return (uint32_t)state->lasttg;
+    }
+    return (uint32_t)state->lasttgR;
+}
 
-    //call alert beep when new call detected
-    if (last_source_id == 0 && source_id != 0
+static dsd_call_kind
+watchdog_event_fallback_kind(const dsd_state* state, uint8_t slot) {
+    if (!state) {
+        return DSD_CALL_KIND_UNKNOWN;
+    }
+    if (state->gi[slot & 1U] == 0) {
+        return DSD_CALL_KIND_GROUP_VOICE;
+    }
+    if (state->gi[slot & 1U] == 1) {
+        return DSD_CALL_KIND_PRIVATE_VOICE;
+    }
+    return DSD_CALL_KIND_UNKNOWN;
+}
+
+static int
+watchdog_event_fallback_boundary(const Event_History* last_event, int protocol, dsd_call_kind kind, uint32_t target_id,
+                                 uint32_t source_id) {
+    if (!last_event) {
+        return 0;
+    }
+    /* Preserve the legacy known-source transition, including known -> zero. */
+    if (last_event->source_id != 0U && last_event->source_id != source_id) {
+        return 1;
+    }
+    /* A zero -> known identity is late resolution, not a boundary. */
+    if (last_event->target_id != 0U && last_event->target_id != target_id) {
+        return 1;
+    }
+    if (!watchdog_event_item_has_content(last_event)) {
+        return 0;
+    }
+    if (last_event->systype != -1 && protocol != DSD_SYNC_NONE && last_event->systype != protocol) {
+        return 1;
+    }
+    const dsd_call_kind old_kind = last_event->gi == 0   ? DSD_CALL_KIND_GROUP_VOICE
+                                   : last_event->gi == 1 ? DSD_CALL_KIND_PRIVATE_VOICE
+                                                         : DSD_CALL_KIND_UNKNOWN;
+    if (old_kind != DSD_CALL_KIND_UNKNOWN && kind != DSD_CALL_KIND_UNKNOWN && old_kind != kind) {
+        return 1;
+    }
+    return 0;
+}
+
+static void
+watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                     dsd_call_event_lifecycle* lifecycle) {
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    const int epoch_changed = lifecycle->epoch != call->epoch;
+    if (!epoch_changed) {
+        return;
+    }
+
+    if (lifecycle->epoch != 0U && watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
+        const int is_data = watchdog_event_is_data_event(&event_struct->Event_History_Items[0]);
+        watchdog_event_handle_source_transition(opts, state, event_struct, slot,
+                                                watchdog_event_should_write_slot(state), is_data);
+    } else if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
+        init_event_history(event_struct, 0, 1);
+    }
+
+    lifecycle->epoch = call->epoch;
+    lifecycle->ended_committed = 0U;
+    lifecycle->notice_handled = 0U;
+    if (call->phase == DSD_CALL_PHASE_ACTIVE
         && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
         beeper(opts, state, slot, 40, 86, 3);
     }
+}
 
+static void
+watchdog_event_history_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                            dsd_call_event_lifecycle* lifecycle) {
+    if (!opts || !state || !state->event_history_s || slot > 1U) {
+        return;
+    }
+    if (call && call->epoch != 0U && lifecycle) {
+        watchdog_event_history_authoritative(opts, state, slot, call, lifecycle);
+        return;
+    }
+
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    const Event_History* last_event = &event_struct->Event_History_Items[0];
+    const uint8_t swrite = watchdog_event_should_write_slot(state);
+    const int last_event_forces_history = watchdog_event_is_explicit_data_event(last_event);
+    const int last_event_is_data = watchdog_event_is_data_event(last_event);
+    const int last_event_has_content = watchdog_event_item_has_content(last_event);
+    const uint32_t source_id = watchdog_event_source_id(opts, state, slot);
+    const uint32_t target_id = watchdog_event_target_id(state, slot);
+    const dsd_call_kind kind = watchdog_event_fallback_kind(state, slot);
+
+    if (last_event->source_id == 0U && source_id != 0U
+        && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
+        beeper(opts, state, slot, 40, 86, 3);
+    }
     if (last_event_forces_history && last_event_has_content) {
         watchdog_event_handle_source_transition(opts, state, event_struct, slot, swrite, last_event_is_data);
         return;
     }
-
-    if (source_id != last_source_id && last_source_id != 0) {
+    if (watchdog_event_fallback_boundary(last_event, state->lastsynctype, kind, target_id, source_id)) {
         watchdog_event_handle_source_transition(opts, state, event_struct, slot, swrite, last_event_is_data);
     }
+}
+
+// run once per loop to check for and push and update event history
+void
+watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    if (!opts || !state || !state->event_history_s || slot > 1U) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        watchdog_event_history_impl(opts, state, slot, NULL, NULL);
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    watchdog_event_history_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot]);
+    dsd_call_state_ext_unlock(ext);
 }
 
 //similar to above, but constantly testing and checking the most recent event only
@@ -389,6 +497,9 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 typedef struct {
     dsd_event_severity severity;
     dsd_event_category category;
+    int protocol;
+    dsd_call_kind kind;
+    dsd_call_crypto_state crypto;
     uint32_t source_id;
     uint32_t target_id;
     char src_str[200];
@@ -527,10 +638,13 @@ watchdog_event_set_ysf_text_message(dsd_state* state, Event_History* item) {
 }
 
 static void
-watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, watchdog_event_current_ctx* ctx) {
+watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                 watchdog_event_current_ctx* ctx) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->severity = DSD_EVENT_SEVERITY_INFO;
     ctx->category = DSD_EVENT_CATEGORY_VOICE;
+    ctx->protocol = state->lastsynctype;
+    ctx->kind = watchdog_event_fallback_kind(state, slot);
 
     if (slot == 0) {
         ctx->source_id = state->lastsrc;
@@ -580,6 +694,26 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, watchdog_
             DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DMR_CC_%d", ctx->sys_id2);
         }
     }
+
+    if (!call || call->epoch == 0U) {
+        return;
+    }
+    ctx->protocol = call->protocol;
+    ctx->kind = call->kind;
+    ctx->crypto = call->crypto;
+    ctx->source_id = call->source_id;
+    ctx->target_id = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
+    if (ctx->target_id == 0U) {
+        ctx->target_id = call->kind == DSD_CALL_KIND_GROUP_VOICE ? call->group_id : call->private_id;
+    }
+    ctx->svc_opts = call->service_options;
+    ctx->subtype = slot == 0U ? state->dmrburstL : state->dmrburstR;
+    ctx->enc = call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED
+               || call->crypto == DSD_CALL_CRYPTO_DECRYPTABLE;
+    ctx->alg_id = call->algid;
+    ctx->key_id = call->kid;
+    ctx->mi = call->mi;
+    ctx->channel = call->channel;
 }
 
 static int
@@ -775,13 +909,15 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
                                    const watchdog_event_current_ctx* ctx, time_t now) {
     item->write = 0;
     dsd_event_history_item_set_metadata(item, ctx->severity, ctx->category);
-    if (state->lastsynctype != DSD_SYNC_NONE) {
-        item->systype = state->lastsynctype;
+    if (ctx->protocol != DSD_SYNC_NONE) {
+        item->systype = ctx->protocol;
     } else {
         item->systype = 39;
     }
     item->subtype = ctx->subtype;
-    item->gi = state->gi[slot];
+    item->gi = ctx->kind == DSD_CALL_KIND_GROUP_VOICE     ? 0
+               : ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1
+                                                          : state->gi[slot];
     item->sys_id1 = ctx->sys_id1;
     item->sys_id2 = ctx->sys_id2;
     item->sys_id3 = ctx->sys_id3;
@@ -942,15 +1078,17 @@ watchdog_event_current_build_event_p25(const dsd_state* state, uint8_t slot, con
         char ess_str[30];
         DSD_SNPRINTF(ess_str, sizeof(ess_str), "ENC; ALG: %02X; KID: %04X; ", ctx->alg_id, ctx->key_id);
         watchdog_event_str_append(event_string, event_size, ess_str);
-    } else if (ctx->enc) {
+    } else if (ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING || ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED
+               || ctx->enc) {
         watchdog_event_str_append(event_string, event_size, "ENC; ");
     }
     if (ctx->svc_opts & 0x80) {
         watchdog_event_str_append(event_string, event_size, "Emergency; ");
     }
-    if (state->gi[slot] == 0) {
+    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE || (ctx->kind == DSD_CALL_KIND_UNKNOWN && state->gi[slot] == 0)) {
         watchdog_event_str_append(event_string, event_size, "Group; ");
-    } else if (state->gi[slot] == 1) {
+    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE
+               || (ctx->kind == DSD_CALL_KIND_UNKNOWN && state->gi[slot] == 1)) {
         watchdog_event_str_append(event_string, event_size, "Private; ");
     }
 }
@@ -998,23 +1136,23 @@ static void
 watchdog_event_current_build_event_string(const dsd_state* state, uint8_t slot, const watchdog_event_current_ctx* ctx,
                                           const char* datestr, const char* timestr, const char* sys_string,
                                           char* event_string, size_t event_size) {
-    if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
+    if (DSD_SYNC_IS_YSF(ctx->protocol)) {
         watchdog_event_current_build_event_ysf(state, datestr, timestr, sys_string, event_string, event_size);
-    } else if (state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG) {
+    } else if (ctx->protocol == DSD_SYNC_M17_LSF_POS || ctx->protocol == DSD_SYNC_M17_LSF_NEG) {
         watchdog_event_current_build_event_m17(state, datestr, timestr, sys_string, event_string, event_size);
-    } else if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) {
+    } else if (DSD_SYNC_IS_DSTAR(ctx->protocol)) {
         watchdog_event_current_build_event_dstar(state, datestr, timestr, sys_string, event_string, event_size);
-    } else if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
+    } else if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
         watchdog_event_current_build_event_dpmr(state, datestr, timestr, sys_string, event_string, event_size);
-    } else if (DSD_SYNC_IS_EDACS(state->lastsynctype)) {
+    } else if (DSD_SYNC_IS_EDACS(ctx->protocol)) {
         watchdog_event_current_build_event_edacs(state, ctx, datestr, timestr, sys_string, event_string, event_size);
-    } else if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
+    } else if (DSD_SYNC_IS_DMR(ctx->protocol)) {
         watchdog_event_current_build_event_dmr(state, slot, ctx, datestr, timestr, sys_string, event_string,
                                                event_size);
-    } else if (DSD_SYNC_IS_P25(state->lastsynctype)) {
+    } else if (DSD_SYNC_IS_P25(ctx->protocol)) {
         watchdog_event_current_build_event_p25(state, slot, ctx, datestr, timestr, sys_string, event_string,
                                                event_size);
-    } else if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+    } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
         watchdog_event_current_build_event_nxdn(state, slot, ctx, datestr, timestr, sys_string, event_string,
                                                 event_size);
     }
@@ -1036,9 +1174,61 @@ watchdog_event_current_append_policy_labels(const watchdog_event_current_ctx* ct
     }
 }
 
-void
-watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    if (!opts || !state || !state->event_history_s || slot > 1U) {
+static int
+watchdog_event_current_args_valid(const dsd_opts* opts, const dsd_state* state, uint8_t slot) {
+    return opts != NULL && state != NULL && state->event_history_s != NULL && slot <= 1U;
+}
+
+static int
+watchdog_event_call_is_authoritative(const dsd_call_snapshot* call) {
+    return call != NULL && call->epoch != 0U;
+}
+
+static int
+watchdog_event_current_skip_ended(const dsd_call_snapshot* call, dsd_call_event_lifecycle* lifecycle) {
+    if (!call || !lifecycle || call->phase != DSD_CALL_PHASE_ENDED) {
+        return 0;
+    }
+    if (lifecycle->notice_handled) {
+        lifecycle->ended_committed = 1U;
+        return 1;
+    }
+    return lifecycle->epoch == call->epoch && lifecycle->ended_committed;
+}
+
+static void
+watchdog_event_commit_candidate(Event_History_I* event_struct, const Event_History* candidate) {
+    // The candidate starts as an exact byte copy of the current row, so padding bytes remain identical.
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison,cert-exp42-c,cert-flp37-c)
+    if (memcmp(candidate, &event_struct->Event_History_Items[0], sizeof(*candidate)) != 0) {
+        DSD_MEMCPY(&event_struct->Event_History_Items[0], candidate, sizeof(*candidate));
+        dsd_event_history_mark_dirty(event_struct);
+    }
+}
+
+static void
+watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                              dsd_call_event_lifecycle* lifecycle, Event_History_I* event_struct, int finalize_ended) {
+    if (!finalize_ended || !call || !lifecycle) {
+        return;
+    }
+    if (call->phase != DSD_CALL_PHASE_ENDED || lifecycle->epoch != call->epoch || lifecycle->ended_committed) {
+        return;
+    }
+    if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
+        watchdog_event_handle_source_transition((dsd_opts*)opts, state, event_struct, slot,
+                                                watchdog_event_should_write_slot(state),
+                                                call->kind == DSD_CALL_KIND_DATA);
+    } else {
+        init_event_history(event_struct, 0, 1);
+    }
+    lifecycle->ended_committed = 1U;
+}
+
+static void
+watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                            dsd_call_event_lifecycle* lifecycle, int finalize_ended) {
+    if (!watchdog_event_current_args_valid(opts, state, slot) || watchdog_event_current_skip_ended(call, lifecycle)) {
         return;
     }
 
@@ -1047,16 +1237,19 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     DSD_MEMCPY(&candidate, &event_struct->Event_History_Items[0], sizeof(candidate));
 
     watchdog_event_current_ctx ctx;
-    watchdog_event_current_init_base(state, slot, &ctx);
+    watchdog_event_current_init_base(state, slot, call, &ctx);
 
-    if (slot == 0) {
+    const int authoritative = watchdog_event_call_is_authoritative(call);
+    if (!authoritative && slot == 0) {
         watchdog_event_current_apply_slot0_overrides(opts, state, &candidate, &ctx);
     }
 
-    watchdog_event_current_normalize_p25_crypto(state, slot, &ctx);
+    if (!authoritative) {
+        watchdog_event_current_normalize_p25_crypto(state, slot, &ctx);
+    }
     watchdog_event_current_load_labels(state, &ctx);
 
-    const char* sys_string = dsd_synctype_to_string(state->lastsynctype);
+    const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 
     char timestr[9];
     char datestr[11];
@@ -1074,14 +1267,161 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
     DSD_SNPRINTF(candidate.event_string, sizeof(candidate.event_string), "%s", event_string);
 
-    // The candidate starts as an exact byte copy of the current row, so padding bytes remain identical.
-    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison,cert-exp42-c,cert-flp37-c)
-    if (memcmp(&candidate, &event_struct->Event_History_Items[0], sizeof(candidate)) != 0) {
-        DSD_MEMCPY(&event_struct->Event_History_Items[0], &candidate, sizeof(candidate));
-        dsd_event_history_mark_dirty(event_struct);
-    }
+    watchdog_event_commit_candidate(event_struct, &candidate);
+    watchdog_event_finalize_ended(opts, state, slot, call, lifecycle, event_struct, finalize_ended);
 
     /* stack buffers; no free */
+}
+
+void
+watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    if (!opts || !state || !state->event_history_s || slot > 1U) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        watchdog_event_current_impl(opts, state, slot, NULL, NULL, 0);
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    watchdog_event_current_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot], 1);
+    dsd_call_state_ext_unlock(ext);
+}
+
+void
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    if (!opts || !state || !state->event_history_s || slot > 1U) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        watchdog_event_history_impl(opts, state, slot, NULL, NULL);
+        watchdog_event_current_impl(opts, state, slot, NULL, NULL, 0);
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    watchdog_event_history_impl(opts, state, slot, call, lifecycle);
+    watchdog_event_current_impl(opts, state, slot, call, lifecycle, 1);
+    dsd_call_state_ext_unlock(ext);
+}
+
+static void
+watchdog_event_lock_if_present(const dsd_call_state_ext* ext) {
+    if (ext) {
+        dsd_call_state_ext_lock(ext);
+    }
+}
+
+static void
+watchdog_event_unlock_if_present(const dsd_call_state_ext* ext) {
+    if (ext) {
+        dsd_call_state_ext_unlock(ext);
+    }
+}
+
+static int
+watchdog_event_notice_already_handled(const dsd_call_event_lifecycle* lifecycle, uint64_t epoch) {
+    return lifecycle != NULL && lifecycle->epoch == epoch && lifecycle->notice_handled;
+}
+
+static void
+watchdog_event_notice_mark_handled(dsd_call_event_lifecycle* lifecycle, uint64_t epoch) {
+    if (!lifecycle) {
+        return;
+    }
+    lifecycle->epoch = epoch;
+    lifecycle->notice_handled = 1U;
+    lifecycle->ended_committed = 1U;
+}
+
+int
+dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                           const char* detail) {
+    if (!opts || !state || !state->event_history_s || !call || call->epoch == 0U || !detail || slot > 1U) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    watchdog_event_lock_if_present(ext);
+    dsd_call_event_lifecycle* lifecycle = ext ? &ext->events[slot] : NULL;
+    if (watchdog_event_notice_already_handled(lifecycle, call->epoch)) {
+        watchdog_event_unlock_if_present(ext);
+        return 0;
+    }
+
+    if (lifecycle) {
+        watchdog_event_history_authoritative(opts, state, slot, call, lifecycle);
+    }
+    watchdog_event_current_impl(opts, state, slot, call, NULL, 0);
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
+                 sizeof(event_struct->Event_History_Items[0].internal_str), "%s", detail);
+    dsd_event_history_mark_dirty(event_struct);
+    watchdog_event_handle_source_transition(opts, state, event_struct, slot, watchdog_event_should_write_slot(state),
+                                            call->kind == DSD_CALL_KIND_DATA);
+    watchdog_event_notice_mark_handled(lifecycle, call->epoch);
+    watchdog_event_unlock_if_present(ext);
+    return 1;
+}
+
+int
+dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[2]) {
+    if (!state || !out) {
+        return -1;
+    }
+    if (!state->event_history_s) {
+        DSD_MEMSET(out, 0, sizeof(Event_History_I) * 2U);
+        return 0;
+    }
+    const dsd_call_state_ext* ext = dsd_call_state_ext_peek(state);
+    if (ext) {
+        dsd_call_state_ext_lock(ext);
+    }
+    DSD_MEMCPY(out, state->event_history_s, sizeof(Event_History_I) * 2U);
+    if (ext) {
+        dsd_call_state_ext_unlock(ext);
+    }
+    return 1;
+}
+
+int
+dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]) {
+    if (!dst || !src || !event_history) {
+        return -1;
+    }
+    const dsd_call_state_ext* src_ext = dsd_call_state_ext_peek(src);
+    dsd_call_state_ext* dst_ext = NULL;
+    if (src_ext) {
+        dst_ext = dsd_call_state_ext_get(dst, 1);
+        if (!dst_ext) {
+            (void)dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_CALL_STATE, NULL, NULL);
+        }
+        dsd_call_state_ext_lock(src_ext);
+        if (dst_ext) {
+            dsd_call_state_ext_lock(dst_ext);
+            dst_ext->calls = src_ext->calls;
+            dst_ext->recent = src_ext->recent;
+            DSD_MEMCPY(dst_ext->events, src_ext->events, sizeof(dst_ext->events));
+        }
+    } else {
+        (void)dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_CALL_STATE, NULL, NULL);
+    }
+
+    int copied = 0;
+    if (src->event_history_s) {
+        DSD_MEMCPY(event_history, src->event_history_s, sizeof(Event_History_I) * 2U);
+        copied = 1;
+    } else {
+        DSD_MEMSET(event_history, 0, sizeof(Event_History_I) * 2U);
+    }
+    if (dst_ext) {
+        dsd_call_state_ext_unlock(dst_ext);
+    }
+    if (src_ext) {
+        dsd_call_state_ext_unlock(src_ext);
+    }
+    return dst_ext || !src_ext ? copied : -1;
 }
 
 void
