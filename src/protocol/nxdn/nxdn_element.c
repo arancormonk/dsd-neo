@@ -2528,7 +2528,7 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
 }
 
 static void
-nxdn_scch_update_busy_display(dsd_state* state, const struct nxdn_scch_info* info) {
+nxdn_scch_update_busy_display(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     if (info->rep1 == 31U) {
         DSD_FPRINTF(stderr, "\n%s ", KRED);
     } else {
@@ -2539,8 +2539,10 @@ nxdn_scch_update_busy_display(dsd_state* state, const struct nxdn_scch_info* inf
     DSD_FPRINTF(stderr, "%s ", info->gu == 0U ? "Group Call" : "Private Call");
     if (info->rep1 == 31U) {
         DSD_FPRINTF(stderr, "Termination ");
-    }
-    if (info->rep1 != 0U && info->rep1 != 31U) {
+        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+            dsd_event_sync_slot(opts, state, 0U);
+        }
+    } else if (info->rep1 != 0U) {
         const dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,
             .slot = 0U,
@@ -2584,7 +2586,7 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     DSD_FPRINTF(stderr, "Area: %d; ", info->area);
     DSD_FPRINTF(stderr, "Go to Repeater: %d; ", info->rep1);
     DSD_FPRINTF(stderr, "Home Repeater: %d; ", info->rep2);
-    nxdn_scch_update_busy_display(state, info);
+    nxdn_scch_update_busy_display(opts, state, info);
     nxdn_scch_apply_busy_tune(opts, state, info);
 }
 

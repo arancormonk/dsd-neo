@@ -33,6 +33,7 @@
 
 void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
+unsigned int dsd_call_state_stub_event_sync_count(uint8_t slot);
 
 typedef enum {
     NXDN_MATRIX_TYPE_C = 0,
@@ -551,6 +552,33 @@ nxdn_run_hold_match_retune_case(void) {
     return rc;
 }
 
+static int
+nxdn_run_scch_termination_case(void) {
+    const nxdn_case termination = {
+        "type-d-scch-termination", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 31U, 3U, 1400U, 935000000L,
+    };
+    nxdn_setup_fixture(&termination);
+    g_state.last_vc_sync_time = time(NULL);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = termination.scch_id,
+    };
+    (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+
+    nxdn_run_case_decode(&termination);
+
+    dsd_call_snapshot call;
+    int rc = 0;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, termination.name, "termination",
+                      "canonical call exists");
+    rc |= nxdn_expect(call.phase == DSD_CALL_PHASE_ENDED, termination.name, "termination", "canonical call ended");
+    rc |= nxdn_expect(dsd_call_state_stub_event_sync_count(0U) == 1U, termination.name, "termination",
+                      "ended slot synchronized");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -609,6 +637,7 @@ main(void) {
     rc |= nxdn_run_duplicate_no_tune_case();
     rc |= nxdn_run_active_other_tg_no_tune_case();
     rc |= nxdn_run_hold_match_retune_case();
+    rc |= nxdn_run_scch_termination_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     if (rc == 0) {

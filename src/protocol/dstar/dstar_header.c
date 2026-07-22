@@ -95,12 +95,12 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
         DSD_FPRINTF(stderr, " URGENT");
     }
 
-    if (crc_cmp == crc_ext && (((uint8_t)radioheader[0] & 0x80U) == 0U)) {
+    if (crc_cmp == crc_ext) {
         int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_HD_POS;
         dsd_call_observation observation = {
             .protocol = protocol,
             .slot = 0U,
-            .kind = DSD_CALL_KIND_VOICE,
+            .kind = ((uint8_t)radioheader[0] & 0x80U) != 0U ? DSD_CALL_KIND_DATA : DSD_CALL_KIND_VOICE,
         };
         DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", str4);
         DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", str3);

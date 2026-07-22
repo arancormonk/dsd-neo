@@ -30,7 +30,7 @@ gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state) {
 }
 
 static void pack_slow_data_bytes(const uint8_t bytes[60], uint8_t bits[480]);
-static void build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS]);
+static void build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint8_t flags);
 static void set_compacted_slow_data_bytes(uint8_t bytes[60], const uint8_t compact[51]);
 
 static dsd_call_snapshot
@@ -101,7 +101,7 @@ test_soft_decode_pipeline(void) {
 }
 
 static void
-build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS]) {
+build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint8_t flags) {
     uint8_t header[41];
     int info_bits[DSD_DSTAR_HEADER_INFO_BITS];
     int coded[DSD_DSTAR_HEADER_CODED_BITS];
@@ -110,7 +110,7 @@ build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS]) {
     uint16_t soft_scrambled[DSD_DSTAR_HEADER_CODED_BITS];
 
     DSD_MEMSET(header, 0, sizeof header);
-    header[0] = 0x78U;
+    header[0] = flags;
     DSD_MEMCPY(header + 3, "RPT2TST ", 8);
     DSD_MEMCPY(header + 11, "RPT1TST ", 8);
     DSD_MEMCPY(header + 19, "CQCQCQ  ", 8);
@@ -147,11 +147,33 @@ test_soft_header_decode_extracts_callsigns(void) {
     state.min = -1.0F;
     state.center = 0.0F;
     state.max = 1.0F;
-    build_encoded_header_fixture(soft_rx);
+    build_encoded_header_fixture(soft_rx, 0x78U);
 
     dstar_header_decode_soft(&state, soft_rx);
 
     const dsd_call_snapshot call = get_dstar_call(&state);
+    assert(call.kind == DSD_CALL_KIND_VOICE);
+    assert(strcmp(call.route_text[1], "RPT2TST") == 0);
+    assert(strcmp(call.route_text[0], "RPT1TST") == 0);
+    assert(strcmp(call.target_text, "CQCQCQ") == 0);
+    assert(strcmp(call.source_text, "N0CALL /TST") == 0);
+}
+
+static void
+test_soft_data_header_preserves_callsigns(void) {
+    static dsd_state state;
+    float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture(soft_rx, 0x80U);
+
+    dstar_header_decode_soft(&state, soft_rx);
+
+    const dsd_call_snapshot call = get_dstar_call(&state);
+    assert(call.kind == DSD_CALL_KIND_DATA);
     assert(strcmp(call.route_text[1], "RPT2TST") == 0);
     assert(strcmp(call.route_text[0], "RPT1TST") == 0);
     assert(strcmp(call.target_text, "CQCQCQ") == 0);
@@ -320,6 +342,7 @@ int
 main(void) {
     test_soft_decode_pipeline();
     test_soft_header_decode_extracts_callsigns();
+    test_soft_data_header_preserves_callsigns();
     test_crc16();
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_text_keeps_byte_after_marker();

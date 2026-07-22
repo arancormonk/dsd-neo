@@ -26,6 +26,10 @@ static int g_stub_mutex_initialized;
 static dsd_call_snapshot g_stub_calls[DSD_CALL_STATE_SLOT_COUNT];
 #endif
 static uint64_t g_stub_epoch;
+static unsigned int g_stub_event_sync_counts[DSD_CALL_STATE_SLOT_COUNT];
+
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+unsigned int dsd_call_state_stub_event_sync_count(uint8_t slot);
 
 static void
 stub_select_state(dsd_state* state) {
@@ -41,6 +45,7 @@ stub_select_state(dsd_state* state) {
     if (g_stub_state != state || state->state_ext[DSD_STATE_EXT_CORE_CALL_STATE] != stub_ext) {
         g_stub_state = state;
         DSD_MEMSET(g_stub_calls, 0, sizeof(g_stub_calls));
+        DSD_MEMSET(g_stub_event_sync_counts, 0, sizeof(g_stub_event_sync_counts));
         state->state_ext[DSD_STATE_EXT_CORE_CALL_STATE] = stub_ext;
         state->state_ext_cleanup[DSD_STATE_EXT_CORE_CALL_STATE] = NULL;
     }
@@ -179,8 +184,16 @@ dsd_recent_activity_expire(dsd_state* state, uint64_t now_m_ms, uint64_t ttl_ms)
 void
 dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
-    (void)state;
-    (void)slot;
+    if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return;
+    }
+    stub_select_state(state);
+    g_stub_event_sync_counts[slot]++;
+}
+
+unsigned int
+dsd_call_state_stub_event_sync_count(uint8_t slot) {
+    return slot < DSD_CALL_STATE_SLOT_COUNT ? g_stub_event_sync_counts[slot] : 0U;
 }
 
 int

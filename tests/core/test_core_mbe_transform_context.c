@@ -2389,6 +2389,25 @@ test_process_mbe_frame_media_protocol_lifecycle(void) {
         rc |= expect_eq_int("dstar-header media", call.media_active, 1);
     }
 
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    dsd_call_observation dstar_data = {
+        .protocol = DSD_SYNC_DSTAR_HD_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_DATA,
+    };
+    DSD_SNPRINTF(dstar_data.source_text, sizeof(dstar_data.source_text), "%s", "N0CALL /TST");
+    DSD_SNPRINTF(dstar_data.target_text, sizeof(dstar_data.target_text), "%s", "CQCQCQ");
+    (void)dsd_call_state_observe(&state, &dstar_data, DSD_CALL_BOUNDARY_BEGIN);
+    rc |= expect_eq_int("dstar-data initial call", dsd_call_state_get(&state, 0U, &call), 1);
+    const uint64_t dstar_data_epoch = call.epoch;
+    state.synctype = DSD_SYNC_DSTAR_HD_POS;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("dstar-data retained call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("dstar-data retained epoch", call.epoch == dstar_data_epoch, 1);
+    rc |= expect_eq_int("dstar-data retained kind", call.kind, DSD_CALL_KIND_DATA);
+    rc |= expect_eq_int("dstar-data retained source", strcmp(call.source_text, "N0CALL /TST"), 0);
+    rc |= expect_eq_int("dstar-data retained target", strcmp(call.target_text, "CQCQCQ"), 0);
+
     static const int clear_dpmr_synctypes[] = {DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_DPMR_FS4_NEG};
     for (size_t i = 0U; i < sizeof(clear_dpmr_synctypes) / sizeof(clear_dpmr_synctypes[0]); i++) {
         init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
