@@ -10,6 +10,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -304,6 +305,23 @@ make_fich_bits_for_vd_type2(uint8_t fich_bits[48]) {
     set_bits_msb(fich_bits, 18U, 3U, 1U); // mr
     set_bits_msb(fich_bits, 21U, 1U, 0U); // vp
     set_bits_msb(fich_bits, 22U, 2U, 2U); // dt: V/D Type 2
+    set_bits_msb(fich_bits, 24U, 1U, 0U); // st
+    set_bits_msb(fich_bits, 25U, 7U, 0U); // sc
+    append_ysf_crc(fich_bits);
+}
+
+static void
+make_fich_bits_for_terminator(uint8_t fich_bits[48]) {
+    DSD_MEMSET(fich_bits, 0, 48U);
+    set_bits_msb(fich_bits, 0U, 2U, 2U);  // fi: terminator communication channel
+    set_bits_msb(fich_bits, 4U, 2U, 0U);  // cm: group/CQ
+    set_bits_msb(fich_bits, 6U, 2U, 0U);  // bn
+    set_bits_msb(fich_bits, 8U, 2U, 0U);  // bt
+    set_bits_msb(fich_bits, 10U, 3U, 0U); // fn
+    set_bits_msb(fich_bits, 13U, 3U, 0U); // ft
+    set_bits_msb(fich_bits, 18U, 3U, 1U); // mr
+    set_bits_msb(fich_bits, 21U, 1U, 0U); // vp
+    set_bits_msb(fich_bits, 22U, 2U, 0U); // dt: V/D Type 1
     set_bits_msb(fich_bits, 24U, 1U, 0U); // st
     set_bits_msb(fich_bits, 25U, 7U, 0U); // sc
     append_ysf_crc(fich_bits);
@@ -767,6 +785,51 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     assert(state.f_l[159] == 5.0F);
 }
 
+static void
+test_process_ysf_terminator_enriches_identity_before_call_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch0[180];
+    uint8_t dch1[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    state.event_history_s = event_history;
+    init_event_history(&event_history[0], 0U, 255U);
+    init_event_history(&event_history[1], 0U, 255U);
+    begin_test_ysf_call(&state);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+
+    make_fich_bits_for_terminator(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input("TERMDST001TERMSRC002", 20U, dch0, 176U, 9U, 0);
+    encode_dch_payload_to_input("TERMUPL003TERMDNL004", 20U, dch1, 176U, 9U, 0);
+
+    append_dibits_to_stream(fich_input, 100U);
+    append_interleaved_full_rate_dch_blocks(dch0, dch1);
+
+    processYSF(&opts, &state);
+
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(strcmp(call.target_text, "TERMDST001") == 0);
+    assert(strcmp(call.source_text, "TERMSRC002") == 0);
+    assert(strcmp(call.route_text[0], "TERMUPL003") == 0);
+    assert(strcmp(call.route_text[1], "TERMDNL004") == 0);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    assert(strcmp(committed->tgt_str, "TERMDST001") == 0);
+    assert(strcmp(committed->src_str, "TERMSRC002") == 0);
+}
+
 int
 main(void) {
     test_dch_csd1_tracks_destination_and_source();
@@ -782,6 +845,7 @@ main(void) {
     test_process_ysf_full_rate_data_routes_fich_and_dch_state();
     test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
+    test_process_ysf_terminator_enriches_identity_before_call_end();
     return 0;
 }
 

@@ -888,7 +888,10 @@ ysf_update_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info*
             dsd_event_sync_slot(opts, state, 0U);
         }
     }
+}
 
+static void
+ysf_end_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
     if (info->err == 0 && info->fi == 2U && dsd_call_state_end(state, 0U, 0.0) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
@@ -921,6 +924,7 @@ processYSF(dsd_opts* opts, dsd_state* state) {
 
     ysf_update_call_lifecycle(opts, state, &info);
     ysf_dispatch_payload(opts, state, &info);
+    ysf_end_call_lifecycle(opts, state, &info);
 
     DSD_FPRINTF(stderr, "%s", KNRM);
     DSD_FPRINTF(stderr, "\n");

@@ -461,6 +461,32 @@ test_data_call_emits_frame_log_record(void) {
 }
 
 static int
+test_data_notice_preserves_decoded_payload_fields(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    Event_History* decoded = &event_history[0].Event_History_Items[0];
+    decoded->pdu[0] = 0x12U;
+    decoded->pdu[1] = 0x34U;
+    DSD_SNPRINTF(decoded->text_message, sizeof(decoded->text_message), "%s", "$GPRMC,validated");
+    DSD_SNPRINTF(decoded->gps_s, sizeof(decoded->gps_s), "%s", "41.500000 -87.250000");
+
+    assert(emit_test_data_notice(&opts, &state, 1234U, 5678U, "NMEA SRC: 1234; TGT: 5678;", 0U) == 0);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    int rc = 0;
+    rc |= expect_int("data payload first byte", committed->pdu[0], 0x12);
+    rc |= expect_int("data payload second byte", committed->pdu[1], 0x34);
+    rc |= expect_str_eq("data payload text", committed->text_message, "$GPRMC,validated");
+    rc |= expect_str_eq("data payload GPS", committed->gps_s, "41.500000 -87.250000");
+    rc |= expect_int("data payload category", committed->category, DSD_EVENT_CATEGORY_DATA);
+    rc |= expect_has_substr("data payload notice", committed->event_string, "NMEA SRC: 1234; TGT: 5678;");
+    return rc;
+}
+
+static int
 test_system_notice_is_not_attributed_as_radio_data(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1475,6 +1501,7 @@ main(void) {
     rc |= test_end_only_data_call_does_not_emit_voice_end_alert();
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_data_call_emits_frame_log_record();
+    rc |= test_data_notice_preserves_decoded_payload_fields();
     rc |= test_system_notice_is_not_attributed_as_radio_data();
     rc |= test_status_event_is_not_data_call_or_frame_log();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();

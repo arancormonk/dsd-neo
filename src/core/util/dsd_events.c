@@ -1361,6 +1361,13 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
     dsd_event_history_mark_dirty(event_struct);
 }
 
+static void
+dsd_event_copy_data_payload(Event_History* dst, const Event_History* src) {
+    DSD_MEMCPY(dst->pdu, src->pdu, sizeof(dst->pdu));
+    DSD_SNPRINTF(dst->gps_s, sizeof(dst->gps_s), "%s", src->gps_s);
+    DSD_SNPRINTF(dst->text_message, sizeof(dst->text_message), "%s", src->text_message);
+}
+
 int
 dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
                            const char* notice) {
@@ -1386,6 +1393,7 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     item->event_time = time(NULL);
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
+    dsd_event_copy_data_payload(item, &active);
 
     char timestr[9];
     char datestr[11];
