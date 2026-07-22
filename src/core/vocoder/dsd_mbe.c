@@ -1739,7 +1739,8 @@ mark_vocoder_call_media_sync_supported(int protocol) {
     return DSD_SYNC_IS_P25P1(protocol) || protocol == DSD_SYNC_X2TDMA_VOICE_POS || protocol == DSD_SYNC_X2TDMA_VOICE_NEG
            || DSD_SYNC_IS_DSTAR(protocol) || protocol == DSD_SYNC_DMR_BS_VOICE_POS
            || protocol == DSD_SYNC_DMR_BS_VOICE_NEG || protocol == DSD_SYNC_DMR_MS_VOICE
-           || DSD_SYNC_IS_PROVOICE(protocol) || DSD_SYNC_IS_NXDN(protocol) || DSD_SYNC_IS_YSF(protocol);
+           || DSD_SYNC_IS_PROVOICE(protocol) || DSD_SYNC_IS_NXDN(protocol) || DSD_SYNC_IS_YSF(protocol)
+           || DSD_SYNC_IS_DPMR(protocol);
 }
 
 typedef enum {

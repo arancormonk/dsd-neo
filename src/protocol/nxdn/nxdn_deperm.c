@@ -723,19 +723,23 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
     }
 
     state->nxdn_last_ran = 7;
-    const dsd_call_observation observation = {
-        .protocol = DSD_SYNC_NXDN_POS,
-        .slot = 0U,
-        .kind = DSD_CALL_KIND_GROUP_VOICE,
-        .ota_target_id = 777U,
-        .policy_target_id = 777U,
-        .ota_source_id = 777U,
-    };
-    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-    dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
-        (void)dsd_event_enrich_alias(state, 0U, call.epoch, "JPN DCR");
+    if (nxdn_dcr_is_sb0_message_type(fields->sf_mes)) {
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_NXDN_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 777U,
+            .policy_target_id = 777U,
+            .ota_source_id = 777U,
+        };
+        (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+            (void)dsd_event_enrich_alias(state, 0U, call.epoch, "JPN DCR");
+        }
+    } else if (fields->sf_mes == 0x1EU && dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
     if (fields->sf_fb) {
         state->payload_miN = 0;

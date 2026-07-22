@@ -2389,6 +2389,25 @@ test_process_mbe_frame_media_protocol_lifecycle(void) {
         rc |= expect_eq_int("dstar-header media", call.media_active, 1);
     }
 
+    static const int clear_dpmr_synctypes[] = {DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_DPMR_FS4_NEG};
+    for (size_t i = 0U; i < sizeof(clear_dpmr_synctypes) / sizeof(clear_dpmr_synctypes[0]); i++) {
+        init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+        const dsd_call_observation observation = {
+            .protocol = clear_dpmr_synctypes[i],
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        rc |= expect_eq_int("clear-dpmr initial call", dsd_call_state_get(&state, 0U, &call), 1);
+        const uint64_t epoch = call.epoch;
+        state.synctype = clear_dpmr_synctypes[i];
+        processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+        rc |= expect_eq_int("clear-dpmr retained call", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_eq_int("clear-dpmr retained epoch", call.epoch == epoch, 1);
+        rc |= expect_eq_int("clear-dpmr retained protocol", call.protocol, clear_dpmr_synctypes[i]);
+        rc |= expect_eq_int("clear-dpmr media", call.media_active, 1);
+    }
+
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     const dsd_call_observation stale_dmr = {
         .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
