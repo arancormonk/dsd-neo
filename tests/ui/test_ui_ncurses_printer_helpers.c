@@ -893,12 +893,16 @@ test_canonical_p25_slot_and_recent_activity(void) {
 
     dsd_call_crypto_update crypto = {0};
     crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    crypto.algid = 0x84U;
+    crypto.kid = 0x2468U;
+    crypto.mi = 0x1122334455667788ULL;
     crypto.audio_permitted = 0U;
     crypto.observed_m = 1.1;
     assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
 
     ui_slot_view slot = ui_build_slot_view(state, 0);
     assert(slot.canonical_p25 == 1);
+    assert(slot.burst == 21);
     assert(slot.lasttg == 1201);
     assert(slot.lastsrc == 0);
     reset_printw_capture();
@@ -906,9 +910,14 @@ test_canonical_p25_slot_and_recent_activity(void) {
     ui_render_slot_header_line(state, &slot, &flags);
     ui_render_slot_vxtra_line(&(dsd_opts){0}, state, &slot, &flags);
     assert_capture_contains("TGT: [    1201]");
-    assert_capture_contains("SRC: [ UNKNOWN]");
-    assert_capture_contains("ENC?");
-    assert_capture_contains("FREQ: 851.012500 MHz");
+    assert_capture_contains("SRC: [       0]");
+    assert_capture_contains("ALG: 0x84 KEY ID: 0x2468 MI: 0x1122334455667788");
+    assert(strstr(g_printw_capture, "UNKNOWN") == NULL);
+    assert(strstr(g_printw_capture, "ENC?") == NULL);
+    assert(strstr(g_printw_capture, "FREQ:") == NULL);
+    assert(strstr(g_printw_capture, "[GROUP]") == NULL);
+    assert(strstr(g_printw_capture, "P25 VOICE") == NULL);
+    assert_capture_contains(" | VOICE");
 
     state->dmrburstR = 21;
     state->lasttgR = 9999;
@@ -918,7 +927,9 @@ test_canonical_p25_slot_and_recent_activity(void) {
     assert(idle_companion.call.phase == DSD_CALL_PHASE_IDLE);
     reset_printw_capture();
     ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &idle_companion);
-    assert(g_printw_capture[0] == '\0');
+    assert_capture_contains("TGT: [        ] SRC: [        ]");
+    assert(strstr(g_printw_capture, "9999") == NULL);
+    assert(strstr(g_printw_capture, "8888") == NULL);
 
     const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
     assert(dsd_recent_activity_set_at(state, 0U, "old TG: 100; ", now_ms - 4000U) == 1);
@@ -927,13 +938,18 @@ test_canonical_p25_slot_and_recent_activity(void) {
     ui_render_active_channel_list(&(dsd_opts){0}, state, 31U);
     assert(strstr(g_printw_capture, "old") == NULL);
     assert_capture_contains("fresh TG: 200");
+    reset_printw_capture();
+    ui_render_p25_dmr_active_channels_line(&(dsd_opts){0}, state);
+    assert_capture_contains("|        | fresh TG: 200");
+    assert(strstr(g_printw_capture, "RECENT") == NULL);
 
     assert(dsd_call_state_end(state, 0U, 2.0) == 1);
     slot = ui_build_slot_view(state, 0);
     assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
     reset_printw_capture();
     ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
-    assert(g_printw_capture[0] == '\0');
+    assert_capture_contains("TGT: [        ] SRC: [        ]");
+    assert(strstr(g_printw_capture, "1201") == NULL);
 
     state->dmrburstL = 25;
     state->payload_algid = 0x84;

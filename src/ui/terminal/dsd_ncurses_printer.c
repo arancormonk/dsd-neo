@@ -2541,10 +2541,22 @@ ui_call_snapshot_target(const dsd_call_snapshot* call) {
     return call->kind == DSD_CALL_KIND_GROUP_VOICE ? call->group_id : call->private_id;
 }
 
+static int
+ui_canonical_p25_burst(const dsd_call_snapshot* call, int legacy_burst) {
+    if (ui_burst_is_active_p25_call(legacy_burst)) {
+        return legacy_burst;
+    }
+    if (call->kind == DSD_CALL_KIND_DATA) {
+        return 6;
+    }
+    return DSD_SYNC_IS_P25P2(call->protocol) ? 21 : 26;
+}
+
 static void
 ui_apply_canonical_p25_slot(ui_slot_view* slot, const dsd_call_snapshot* call) {
     slot->call = *call;
     slot->canonical_p25 = 1;
+    slot->burst = ui_canonical_p25_burst(call, slot->burst);
     slot->lasttg = (int)ui_call_snapshot_target(call);
     slot->lastsrc = (int)call->source_id;
     slot->p25_call_emergency = call->emergency;
@@ -2683,44 +2695,11 @@ ui_slot_has_colored_ids(const dsd_state* state, const ui_slot_view* slot) {
 }
 
 static void
-ui_set_slot_render_flags(const ui_slot_view* slot, ui_slot_render_flags* flags) {
-    flags->show_ids =
-        slot->canonical_p25 ? slot->call.phase == DSD_CALL_PHASE_ACTIVE : ui_burst_is_active_call(slot->burst);
+ui_set_slot_render_flags(const dsd_state* state, const ui_slot_view* slot, ui_slot_render_flags* flags) {
+    const int canonical_p25_context = ui_call_snapshot_has_p25_context(state, &slot->call) && slot->burst != 25;
+    flags->show_ids = canonical_p25_context ? slot->canonical_p25 : ui_burst_is_active_call(slot->burst);
     flags->show_p25_vxtra = slot->canonical_p25 || ui_burst_has_p25_crypto_metadata(slot->burst);
     flags->show_crypto_status = slot->canonical_p25 || slot->burst == 16 || flags->show_p25_vxtra;
-}
-
-static const char*
-ui_call_kind_label(dsd_call_kind kind) {
-    switch (kind) {
-        case DSD_CALL_KIND_GROUP_VOICE: return "GROUP";
-        case DSD_CALL_KIND_PRIVATE_VOICE: return "PRIVATE";
-        case DSD_CALL_KIND_DATA: return "DATA";
-        default: return "CALL";
-    }
-}
-
-static void
-ui_render_slot_identifiers(const ui_slot_view* slot) {
-    if (slot->lasttg > 0) {
-        printw("TGT: [%8i] ", slot->lasttg);
-    } else {
-        printw("TGT: [ UNKNOWN] ");
-    }
-    if (slot->lastsrc > 0) {
-        printw("SRC: [%8i] ", slot->lastsrc);
-    } else {
-        printw("SRC: [ UNKNOWN] ");
-    }
-    if (slot->canonical_p25) {
-        printw("[%s] ", ui_call_kind_label(slot->call.kind));
-    }
-    if (slot->p25_call_emergency) {
-        printw("[EM] ");
-    }
-    if (slot->p25_call_priority > 0) {
-        printw("[PR:%d] ", slot->p25_call_priority);
-    }
 }
 
 static void
@@ -2731,9 +2710,15 @@ ui_render_slot_header_line(const dsd_state* state, const ui_slot_view* slot, ui_
         attron(COLOR_PAIR(2));
     }
 
-    ui_set_slot_render_flags(slot, flags);
+    ui_set_slot_render_flags(state, slot, flags);
     if (flags->show_ids) {
-        ui_render_slot_identifiers(slot);
+        printw("TGT: [%8i] SRC: [%8i] ", slot->lasttg, slot->lastsrc);
+        if (slot->p25_call_emergency) {
+            printw("[EM] ");
+        }
+        if (slot->p25_call_priority > 0) {
+            printw("[PR:%d] ", slot->p25_call_priority);
+        }
     } else {
         printw("TGT: [        ] SRC: [        ] ");
     }
@@ -2743,7 +2728,7 @@ ui_render_slot_header_line(const dsd_state* state, const ui_slot_view* slot, ui_
         attron(COLOR_PAIR(3));
     }
     printw("%s | ", flags->show_ids ? slot->call_banner : "                     ");
-    printw("%s ", slot->canonical_p25 ? "P25 VOICE" : DMRBusrtTypes[slot->burst]);
+    printw("%s ", DMRBusrtTypes[slot->burst]);
     printw("\n");
 }
 
@@ -2883,46 +2868,6 @@ ui_render_slot_named_crypto_details(const ui_slot_view* slot, int show_crypto_st
     (void)ui_render_slot_named_crypto_vendor(slot, show_keys);
 }
 
-static const char*
-ui_call_crypto_label(dsd_call_crypto_state crypto) {
-    switch (crypto) {
-        case DSD_CALL_CRYPTO_CLEAR: return "CLEAR";
-        case DSD_CALL_CRYPTO_ENCRYPTED: return "ENC";
-        case DSD_CALL_CRYPTO_DECRYPTABLE: return "ENC/DEC";
-        default: return "ENC?";
-    }
-}
-
-static int
-ui_call_crypto_is_blocked(dsd_call_crypto_state crypto) {
-    return crypto == DSD_CALL_CRYPTO_ENCRYPTED || crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
-}
-
-static int
-ui_call_has_crypto_metadata(const dsd_call_snapshot* call) {
-    return call->algid != 0U || call->kid != 0U || call->mi != 0U;
-}
-
-static void
-ui_render_canonical_p25_vxtra(const dsd_state* state, const ui_slot_view* slot) {
-    if (ui_call_crypto_is_blocked(slot->call.crypto)) {
-        attron(COLOR_PAIR(2));
-    } else {
-        attron(COLOR_PAIR(4));
-    }
-    printw("%s ", ui_call_crypto_label(slot->call.crypto));
-    attron(COLOR_PAIR(4));
-    if (slot->call.frequency_hz > 0) {
-        printw("FREQ: %.06lf MHz ", (double)slot->call.frequency_hz / 1000000.0);
-    }
-    if (ui_call_has_crypto_metadata(&slot->call)) {
-        printw("ALG: 0x%02X KEY ID: 0x%04X MI: 0x%016llX ", slot->call.algid, slot->call.kid,
-               (unsigned long long)slot->call.mi);
-    }
-    ui_restore_call_info_color(state);
-    printw("\n");
-}
-
 static int
 ui_slot_has_basic_privacy(const ui_slot_view* slot) {
     return slot->burst == 16 && slot->payload_algid == 0 && (slot->dmr_so & 0x40);
@@ -2967,12 +2912,6 @@ static void
 ui_render_slot_vxtra_line(const dsd_opts* opts, const dsd_state* state, const ui_slot_view* slot,
                           const ui_slot_render_flags* flags) {
     printw("| V XTRA | ");
-
-    if (slot->canonical_p25) {
-        ui_render_canonical_p25_vxtra(state, slot);
-        return;
-    }
-
     ui_render_slot_basic_privacy(opts, state, slot);
     ui_render_slot_p25_dmr_alg_details(slot, flags->show_p25_vxtra);
     ui_render_slot_named_crypto_details(slot, flags->show_crypto_status, opts->show_keys);
@@ -3032,9 +2971,6 @@ ui_render_slot_dxtra_line(const dsd_state* state, const ui_slot_view* slot, int 
 
 static void
 ui_render_p25_dmr_slot_block(const dsd_opts* opts, const dsd_state* state, const ui_slot_view* slot) {
-    if (!slot->canonical_p25 && ui_call_snapshot_has_p25_context(state, &slot->call) && slot->burst != 25) {
-        return;
-    }
     ui_slot_render_flags flags = {0};
     ui_render_slot_header_line(state, slot, &flags);
     ui_render_slot_vxtra_line(opts, state, slot, &flags);
@@ -3043,7 +2979,7 @@ ui_render_p25_dmr_slot_block(const dsd_opts* opts, const dsd_state* state, const
 
 static void
 ui_render_p25_dmr_active_channels_line(const dsd_opts* opts, const dsd_state* state) {
-    printw("| RECENT | ");
+    printw("|        | ");
     attron(COLOR_PAIR(4));
     ui_render_active_channel_list(opts, state, 31);
     printw("\n");
@@ -3105,7 +3041,7 @@ ui_render_call_info_p25_dmr(const dsd_opts* opts, dsd_state* state) {
 
 static void
 ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
-    ui_print_header("Live Calls");
+    ui_print_header("Call Info");
 
     ui_render_call_info_dstar(state);
 
