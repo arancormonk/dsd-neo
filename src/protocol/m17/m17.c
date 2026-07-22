@@ -302,7 +302,9 @@ m17_lsf_has_key(const dsd_state* state, const struct m17_lsf_result* res) {
 
 static void
 m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
-    if (res->packet_stream == 0U || (res->dt != 2U && res->dt != 3U)) {
+    const int is_voice = res->packet_stream != 0U && (res->dt == 2U || res->dt == 3U);
+    const int is_data = res->packet_stream == 0U || res->dt == 1U;
+    if (!is_voice && !is_data) {
         return;
     }
     int protocol = DSD_SYNC_IS_M17(state->synctype) ? state->synctype : state->lastsynctype;
@@ -312,7 +314,7 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
     dsd_call_observation observation = {
         .protocol = protocol,
         .slot = 0U,
-        .kind = DSD_CALL_KIND_VOICE,
+        .kind = is_voice ? DSD_CALL_KIND_VOICE : DSD_CALL_KIND_DATA,
         .ota_target_id = res->dst,
         .ota_source_id = res->src,
         .service_options = res->cn,

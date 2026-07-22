@@ -1268,7 +1268,10 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
     err |= expect_int("valid IP stream sets carrier", state->carrier, 1);
     err |= expect_int("valid IP stream sets synctype", state->synctype, DSD_SYNC_M17_STR_POS);
     dsd_call_snapshot call;
-    err |= expect_int("data IP stream does not publish call", get_m17_call(state, &call), 0);
+    err |= expect_int("data IP stream publishes identity", get_m17_call(state, &call), 1);
+    err |= expect_int("data IP stream publishes data kind", call.kind, DSD_CALL_KIND_DATA);
+    err |= expect_u64("data IP stream destination", call.ota_target_id, dst);
+    err |= expect_u64("data IP stream source", call.ota_source_id, src);
     err |= expect_u8("valid IP stream data type", state->m17_str_dt, 1U);
     err |= expect_u8("valid IP stream CAN", state->m17_can, 5U);
     err |= expect_u8("valid IP stream AES mode", state->m17_enc, 2U);
@@ -1279,6 +1282,7 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
         err |= expect_u8("valid IP stream copied LSF bits", state->m17_lsf[i], lsf_bits[i]);
     }
 
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
     state->m17_str_dt = 1U;
@@ -1306,10 +1310,16 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     uint8_t mpkt_frame[80];
     uint8_t app[2U + M17_META_BYTES];
     uint8_t expected_text[M17_TEXT_BLOCK_BYTES];
+    Event_History_I event_history[2];
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(app, 0, sizeof(app));
     DSD_MEMSET(expected_text, 0, sizeof(expected_text));
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&event_history[slot], 0, 255);
+    }
+    state->event_history_s = event_history;
 
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
@@ -1328,7 +1338,15 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
 
     int err = 0;
     dsd_call_snapshot call;
-    err |= expect_int("valid MPKT does not publish call", get_m17_call(state, &call), 0);
+    err |= expect_int("valid MPKT publishes identity", get_m17_call(state, &call), 1);
+    err |= expect_int("valid MPKT publishes data kind", call.kind, DSD_CALL_KIND_DATA);
+    err |= expect_u64("valid MPKT destination", call.ota_target_id, dst);
+    err |= expect_u64("valid MPKT source", call.ota_source_id, src);
+    err |= expect_int("valid MPKT event destination",
+                      strcmp(event_history[0].Event_History_Items[0].tgt_str, M17_REF_LSF_DST_CSD), 0);
+    err |= expect_int("valid MPKT event source",
+                      strcmp(event_history[0].Event_History_Items[0].src_str, M17_REF_LSF_SRC_CSD), 0);
+    err |= expect_int("valid MPKT event row", event_history[0].Event_History_Items[0].event_string[0] != '\0', 1);
     err |= expect_u8("valid MPKT packet mode data type", state->m17_str_dt, 20U);
     err |= expect_u8("valid MPKT CAN", state->m17_can, 5U);
     err |= expect_u8("valid MPKT clear encryption", state->m17_enc, 0U);
@@ -1337,7 +1355,9 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     err |= expect_u8("valid MPKT text control", state->m17_text_meta_control_or, 0x11U);
     err |= expect_bytes("valid MPKT text bytes", state->m17_text_meta, expected_text, sizeof(expected_text));
 
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
+    state->event_history_s = event_history;
     state->m17_can_en = -1;
     state->m17_text_meta_expected_bitmap = 0x0FU;
     state->m17_text_meta_received_bitmap = 0x02U;
@@ -1354,6 +1374,7 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     for (size_t i = 0U; i < sizeof(state->m17_text_meta); i++) {
         err |= expect_u8("bad MPKT CRC preserves text bytes", state->m17_text_meta[i], 0x5AU);
     }
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -1811,8 +1832,12 @@ test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     err |= expect_int("packet LSF monitor bypasses NXDN decoder chainback", g_conv_chainback_calls, 0);
     err |= expect_bytes("packet LSF monitor exact roundtrip", state->m17_lsf, expected_lsf, sizeof(expected_lsf));
     dsd_call_snapshot call;
-    err |= expect_int("packet LSF monitor does not publish voice call", get_m17_call(state, &call), 0);
+    err |= expect_int("packet LSF monitor publishes identity", get_m17_call(state, &call), 1);
+    err |= expect_int("packet LSF monitor publishes data kind", call.kind, DSD_CALL_KIND_DATA);
+    err |= expect_u64("packet LSF monitor destination", call.ota_target_id, dst);
+    err |= expect_u64("packet LSF monitor source", call.ota_source_id, src);
     err |= expect_u8("packet LSF monitor CAN", state->m17_can, 7U);
+    dsd_state_ext_free_all(state);
     return err;
 }
 

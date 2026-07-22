@@ -40,6 +40,15 @@ gps_enrich_active_call(dsd_state* state, uint8_t slot, uint32_t expected_source,
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
         || (expected_source != 0U && call.ota_source_id != expected_source)) {
+        if (state != NULL && state->event_history_s != NULL && slot < DSD_CALL_STATE_SLOT_COUNT && text != NULL) {
+            dsd_event_history_transaction transaction;
+            dsd_event_history_transaction_begin(state, &transaction);
+            Event_History_I* history = &state->event_history_s[slot];
+            DSD_SNPRINTF(history->Event_History_Items[0].gps_s, sizeof(history->Event_History_Items[0].gps_s), "%s",
+                         text);
+            dsd_event_history_mark_dirty(history);
+            dsd_event_history_transaction_end(&transaction);
+        }
         return 0;
     }
     if (call_out) {

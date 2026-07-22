@@ -43,6 +43,7 @@ static uint32_t g_watchdog_src;
 static uint32_t g_watchdog_dst;
 static uint8_t g_watchdog_slot;
 static char g_watchdog_data[128];
+static char g_watchdog_gps[256];
 
 // Minimal stubs for direct link with dsd_gps.c
 const char*
@@ -77,6 +78,10 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     g_watchdog_dst = observation->ota_target_id;
     g_watchdog_slot = slot;
     DSD_SNPRINTF(g_watchdog_data, sizeof g_watchdog_data, "%s", notice ? notice : "");
+    if (state != NULL && state->event_history_s != NULL && slot < DSD_CALL_STATE_SLOT_COUNT) {
+        DSD_SNPRINTF(g_watchdog_gps, sizeof g_watchdog_gps, "%s",
+                     state->event_history_s[slot].Event_History_Items[0].gps_s);
+    }
     return 0;
 }
 
@@ -132,6 +137,7 @@ reset_watchdog_capture(void) {
     g_watchdog_dst = 0;
     g_watchdog_slot = 0xFFU;
     DSD_MEMSET(g_watchdog_data, 0, sizeof g_watchdog_data);
+    DSD_MEMSET(g_watchdog_gps, 0, sizeof g_watchdog_gps);
 }
 
 static void
@@ -348,6 +354,16 @@ test_nxdn_gps_report_paths(dsd_opts* opts, dsd_state* st) {
     rc |= expect_u32("nxdn-watchdog-dst", g_watchdog_dst, 5678U);
     rc |= expect_u32("nxdn-source-reset", st->dmr_lrrp_source[0], 0U);
     rc |= expect_u32("nxdn-target-reset", st->dmr_lrrp_target[0], 0U);
+
+    (void)dsd_call_state_end(st, 0U, 0.0);
+    DSD_MEMSET(st->event_history_s[0].Event_History_Items[0].gps_s, 0,
+               sizeof st->event_history_s[0].Event_History_Items[0].gps_s);
+    st->dmr_lrrp_source[0] = 1234U;
+    st->dmr_lrrp_target[0] = 5678U;
+    reset_watchdog_capture();
+    nxdn_gps_report(opts, st, bits, 900003U);
+    rc |= expect_has_substr(g_watchdog_gps, "41.", "standalone-nxdn-data-event-lat");
+    rc |= expect_has_substr(g_watchdog_gps, "87.", "standalone-nxdn-data-event-lon");
 
     DSD_MEMSET(bits, 0, sizeof bits);
     set_bits_msb(bits, (int)sizeof bits, 184, 9900U, 16);
